@@ -119,7 +119,7 @@ public sealed class Module
     public Corsac.Lang.Lto.RegionHints? RegionHints { get; set; }
 
     /// <summary>The unit's interrupt facts, for the link's check of handlers across units (Lto.InterruptNotes). Null: none kept.</summary>
-    public List<Corsac.Lang.Lto.InterruptNotes.Fact>? InterruptFacts { get; set; }
+    public byte[]? InterruptFacts { get; set; }
 
     /// <summary>
     /// The link's answer, for a unit it regenerates: which parameters of the

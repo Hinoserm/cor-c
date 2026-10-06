@@ -828,6 +828,7 @@ public static class Driver
             return 1;
         }
         Module module = made.Module;
+        { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE back:lowered " + (__l>>20) + " MB"); }
         // --unused-report: what each definition names as written, taken now,
         // before a pass inlines a call away (UsesCapture), for the link's
         // report of the program's dead code (UnusedReport).
@@ -886,6 +887,7 @@ public static class Driver
             };
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding);
             Phase("optimise");
+            { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE back:optimised " + (__l>>20) + " MB"); }
             // The lifetime hints are complete once the passes are (Escape and
             // its owned-unit pass wrote them): written now, as the region
             // hints were, and the hints themselves let go.
@@ -1041,6 +1043,7 @@ public static class Driver
         if (x86Backend.ReleaseBodies && backend == x86Backend) module.KeepCalls.Clear();
         ObjectFile obj = backend.Generate(module, backendErrors);
         Phase("codegen");
+        { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE back:codegen " + (__l>>20) + " MB"); }
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode).Attach(obj);
         // The C libraries its [DllImport]s call, for the link to need.
@@ -1048,7 +1051,7 @@ public static class Driver
         ManagedLayoutContract.Attach(obj, layouts);
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
         // What the link checks interrupt handlers' calls into other units by.
-        if (module.InterruptFacts is { Count: > 0 } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
+        if (module.InterruptFacts is { } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the

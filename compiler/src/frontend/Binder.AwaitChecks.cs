@@ -252,7 +252,8 @@ public sealed partial class Binder
 
             if (CollectInterruptFacts)
             {
-                _r.InterruptFacts = InterruptFactsOf();
+                List<Corsac.Lang.Lto.InterruptNotes.Fact> interrupts = InterruptFactsOf();
+                _r.InterruptFacts = interrupts.Count > 0 ? Corsac.Lang.Lto.InterruptNotes.Encode(interrupts) : null;
             }
         }
         finally
@@ -1041,6 +1042,15 @@ public sealed partial class Binder
     private List<Corsac.Lang.Lto.InterruptNotes.Fact> InterruptFactsOf()
     {
         List<Corsac.Lang.Lto.InterruptNotes.Fact> made = new();
+        // ONE NAME A METHOD, however many call it: the facts are held from
+        // here to the object's writing, and a name spelt again at every call
+        // to it -- its owner, its parameters -- was most of what they held.
+        Dictionary<MethodSymbol, string> names = new(ReferenceEqualityComparer.Instance);
+        string NameOf(MethodSymbol method)
+        {
+            if (!names.TryGetValue(method, out string? name)) names[method] = name = DefinitionName(method);
+            return name;
+        }
         foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
         {
             string file = d.File is { Length: > 0 } own ? own : m.Owner.Decl?.File ?? "";
@@ -1064,11 +1074,11 @@ public sealed partial class Binder
             {
                 if (_r.Calls.TryGetValue(call, out MethodSymbol? callee) && !ReferenceEquals(callee, m))
                 {
-                    string label = DefinitionName(callee);
+                    string label = NameOf(callee);
                     if (seen.Add(label)) calls.Add(label);
                 }
             }
-            made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(DefinitionName(m), $"{m.Owner.Name}.{m.Name}",
+            made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(NameOf(m), $"{m.Owner.Name}.{m.Name}",
                 IsInterruptHandler(m), allocates, calls.ToArray()));
         }
         return made;

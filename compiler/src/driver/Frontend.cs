@@ -13,6 +13,8 @@ namespace Corsac;
 /// </summary>
 public static class Frontend
 {
+    static void __Pause(string tag) { string f = "/home/hinoserm/tmp/rg/ag1-probe/pause-" + tag; if (!System.IO.File.Exists(f)) return; Console.Error.WriteLine("PAUSE " + Environment.ProcessId); while (System.IO.File.Exists(f)) System.Threading.Thread.Sleep(200); }
+
     /// <summary>
     /// Parses and binds a set of sources against the prelude, with the
     /// generic-method discovery rounds the binder needs. Returns null after
@@ -216,7 +218,7 @@ public static class Frontend
         IReadOnlyList<CompileError> generic;
         Meter expanding = Meter.Start();
         unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
-        expanding.Stop("front:expand");
+        expanding.Stop("front:expand"); { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE front:expand " + (__l>>20) + " MB"); __Pause("expand"); }
 
         if (Report(generic))
         {
@@ -230,7 +232,7 @@ public static class Frontend
         BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
             declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
                 declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
-        binding.Stop("front:bind");
+        binding.Stop("front:bind"); { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE front:bind " + (__l>>20) + " MB"); __Pause("bind"); }
 
         // The checker's first pass discovers which generic methods were called
         // with which type arguments; each becomes a copy, and the whole thing
@@ -292,7 +294,7 @@ public static class Frontend
 
                 Meter again = Meter.Start();
                 unit = Monomorphiser.Expand(unit, name, library, out generic, declarations is null ? null : declarations.Require);
-                again.Stop("front:expand-round");
+                again.Stop("front:expand-round"); { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE front:expand-round " + (__l>>20) + " MB"); }
 
                 if (Report(generic))
                 {
@@ -312,7 +314,7 @@ public static class Frontend
                 bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                     declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
                     declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces);
-                fresh.Stop("front:bind-fresh");
+                fresh.Stop("front:bind-fresh"); { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE front:bind-fresh " + (__l>>20) + " MB"); }
 
                 Flag(unit.Types, null, fresh: false);
             }
@@ -330,7 +332,7 @@ public static class Frontend
             bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                 declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
                 declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces);
-            rebinding.Stop("front:bind-round");
+            rebinding.Stop("front:bind-round"); { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE front:bind-round " + (__l>>20) + " MB"); __Pause("round"); }
             if (Switches.TraceWants)
             {
                 foreach (var w in bound.Wanted)

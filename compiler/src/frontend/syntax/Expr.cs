@@ -11,7 +11,19 @@ public abstract class Expr : Node
     /// Twice;` -- as the checker worked it out and spelt it, so the next
     /// expansion makes it when no source names it (Binder.NaturalTypes).
     /// </summary>
-    public TypeRef? NaturalType { get; set; }
+    /// KEPT WITH THE RARER FACTS (ExprFacts), which outlive the binding that
+    /// wrote the rest: a field on every expression was eight bytes on half a
+    /// million of them, held to the end of a unit, for the few that are a
+    /// lambda or a method group with nothing to say what delegate it is.
+    public TypeRef? NaturalType
+    {
+        get => Facts?.Natural;
+        set
+        {
+            if (value is not null) (Facts ??= new ExprFacts()).Natural = value;
+            else if (Facts is { } facts) facts.Natural = null;
+        }
+    }
 
     // What the checker found this expression's type to be, and which binding
     // found it (ExprTypes): read back only by that binding.

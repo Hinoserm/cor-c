@@ -113,7 +113,7 @@ public sealed partial class Binder
             order.Add(n);
         }
         call.Args.Clear(); call.Args.AddRange(placed!);
-        call.WritableArgNames.Clear();
+        call.ForgetArgNames();
         if (named) { call.WritableLocalArgumentOrder.Clear(); call.WritableLocalArgumentOrder.AddRange(order); }
     }
 }

@@ -71,7 +71,7 @@ public sealed partial class Binder
         }
         expression.Args.Clear();
         expression.Args.AddRange(ordered!);
-        expression.WritableArgNames.Clear();
+        expression.ForgetArgNames();
         if (named)
         {
             expression.WritableArgumentOrder.Clear();

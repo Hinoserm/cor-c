@@ -132,6 +132,36 @@ public sealed class Parser
     private int End(int index) => Lexer.TokenEnd(Source!, _t[index].Pos);
 
     /// <summary>
+    /// The spans written since <paramref name="mark"/>, and the text they
+    /// index ([CallerArgumentExpression]): THE TEXT THEY COVER, not the
+    /// file's, and the spans counted from its start. A call held the whole
+    /// of the file it was written in for the few that are ever asked what
+    /// an argument said, and with it every source a unit parses bodies
+    /// from -- the class library's among them -- was held to the end of the
+    /// compile: eleven megabytes of text in a unit of the compiler, live at
+    /// the end of binding. A span not written (-1) stays one.
+    /// </summary>
+    private (int[] Spans, string Text) TakeSpans(int mark)
+    {
+        int count = _spans.Count - mark;
+        int from = int.MaxValue, to = -1;
+        for (int k = mark; k + 1 < _spans.Count; k += 2)
+        {
+            if (_spans[k] < 0) continue;
+            from = Math.Min(from, _spans[k]);
+            to = Math.Max(to, _spans[k + 1]);
+        }
+        int[] spans = new int[count];
+        for (int k = 0; k < count; k++)
+        {
+            int at = _spans[mark + k];
+            spans[k] = at < 0 || to < 0 ? at : at - from;
+        }
+        _spans.RemoveRange(mark, count);
+        return (spans, to < 0 ? "" : Source!.Substring(from, to - from));
+    }
+
+    /// <summary>
     /// Where an argument's expression starts: after `ref`, `out` or `in`,
     /// which C# leaves out of the argument's text.
     /// </summary>
@@ -1607,9 +1637,7 @@ public sealed class Parser
                     Expect(Tok.RParen, "')' after the base constructor's arguments");
                     if (Source is not null)
                     {
-                        decl.BaseSpans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
-                        decl.BaseSource = Source;
-                        _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                        (decl.BaseSpans, decl.BaseSource) = TakeSpans(spanMark);
                     }
                 }
             }
@@ -2479,9 +2507,7 @@ public sealed class Parser
                 Expect(Tok.RParen, "')' after the constructor initialiser");
                 if (Source is not null)
                 {
-                    chain.Spans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
-                    chain.Source = Source;
-                    _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                    (chain.Spans, chain.Source) = TakeSpans(spanMark);
                 }
             }
 
@@ -8088,9 +8114,7 @@ public sealed class Parser
                 Expect(Tok.RParen, "')' to close the argument list");
                 if (Source is not null)
                 {
-                    call.Spans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
-                    call.Source = Source;
-                    _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                    (call.Spans, call.Source) = TakeSpans(spanMark);
                 }
                 receiverLast = -1;
                 e = call;
@@ -8460,9 +8484,7 @@ public sealed class Parser
                     Expect(Tok.RParen, "')' after the constructor arguments");
                     if (Source is not null)
                     {
-                        n.Spans = _spans.GetRange(spanMark, _spans.Count - spanMark).ToArray();
-                        n.Source = Source;
-                        _spans.RemoveRange(spanMark, _spans.Count - spanMark);
+                        (n.Spans, n.Source) = TakeSpans(spanMark);
                     }
                 }
 
