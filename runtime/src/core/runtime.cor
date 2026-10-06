@@ -1375,11 +1375,12 @@ static class Runtime
     /// open, opened by a frame no deeper than ours -- one a throw has not
     /// left -- and room for the block in the chunk being filled: header,
     /// footer and kind written, then the pointer, as Gc.AllocRegion lays a
-    /// block (a scan of a stopped thread sees it whole or not at all), and
-    /// counted in the thread's block (Tls.RegionCount, added to
-    /// Gc.RegionBlocks where a region ends). Anything else -- no thread
-    /// block yet, no region, a stale one to close, a chunk to grow into, a
-    /// sampled allocation -- the long way (AllocRegionSlow).
+    /// block (a scan of a stopped thread sees it whole or not at all). Not
+    /// counted: the statistics send every region allocation the long way,
+    /// which counts it (Gc.FastRegionMask). Anything else -- no thread block
+    /// yet, no region, a stale one to close, a chunk to grow into, a sampled
+    /// allocation -- the long way (AllocRegionSlow). A size the compiler
+    /// knows is AllocRegionSized's, put in place.
     public static long AllocRegion(nint bytes, nint kind, nint frame)
     {
         // The block ANDed with Gc.FastRegionMask (no block yet, a sampler, the
