@@ -1,0 +1,37 @@
+// test: runtime helpers get hash code
+// expect-exit: 0
+// expect-output:
+// same True
+// null 0
+// apart True
+// found 2
+//
+// RuntimeHelpers.GetHashCode is an object's own hash, whatever its
+// GetHashCode is overridden to say: the same for one object every time, 0
+// for null, and what a table keyed by identity hashes by.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Same
+{
+    public override int GetHashCode() => 7;
+    public override bool Equals(object? other) => other is Same;
+}
+
+static class P
+{
+    static void Main()
+    {
+        Same a = new(), b = new();
+        Console.WriteLine("same " + (RuntimeHelpers.GetHashCode(a) == RuntimeHelpers.GetHashCode(a)));
+        Console.WriteLine("null " + RuntimeHelpers.GetHashCode(null));
+        int distinct = 0;
+        HashSet<int> seen = new();
+        for (int i = 0; i < 64; i++) if (seen.Add(RuntimeHelpers.GetHashCode(new Same()))) distinct++;
+        Console.WriteLine("apart " + (distinct > 32));
+        Dictionary<object, int> byIdentity = new(ReferenceEqualityComparer.Instance) { [a] = 1, [b] = 2 };
+        Console.WriteLine("found " + byIdentity[b]);
+    }
+}

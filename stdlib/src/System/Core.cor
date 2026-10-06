@@ -11754,6 +11754,10 @@ readonly struct Range : IEquatable<Range> {
 /// the bytes it came from. The two-number form is what the compiler calls for
 /// a range written in the brackets, where the numbers are at hand.
 static class RuntimeHelpers {
+    /// THE OBJECT'S OWN HASH, whatever its GetHashCode says: the one
+    /// ReferenceEqualityComparer hashes by. 0 for null, as .NET's.
+    public static int GetHashCode(object? o) { return o == null ? 0 : (int)Sys.HashValue(o); }
+
     public static T[] GetSubArray<T>(T[] array, Range range) {
         (int offset, int length) = range.GetOffsetAndLength(array.Length);
         return GetSubArray(array, offset, length);
