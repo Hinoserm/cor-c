@@ -798,15 +798,30 @@ public sealed partial class Lowering
     /// a static, a struct's field (held in a local, an array or a class:
     /// reached through an address into something), and an access at any
     /// other offset: what region inference cannot know the class of.
+    /// And null for a field that holds no reference: a family names a
+    /// REFERENCE field, so a load of one that finds a word never read as a
+    /// reference is a load from an object of another class, which reads
+    /// nothing (RegionEscape.Loaded). A number, an address kept as one
+    /// among them, stays the untyped word's, "the unknown object at most".
     /// </summary>
     private static string? FieldFamily(FieldSymbol f, long offset)
     {
-        if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset) return null;
+        if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset || HoldsNumber(f.Type)) return null;
         if (f.FamilyMade is string made) return made;
         TypeSymbol owner = f.Owner;
         string declaring = owner.Decl is { Specialised: true, Template: string template } d ? template + "`" + d.TemplateArgs.Count : TypeKey(owner);
         return f.FamilyMade = declaring + "::" + f.Name;
     }
+
+    /// <summary>
+    /// A number and only that: no class, struct or array, nothing nullable,
+    /// and not `object` or a type parameter, which may hold a reference
+    /// (Prim.Any). An enum is its number.
+    /// </summary>
+    private static bool HoldsNumber(Corsac.Lang.Type ty)
+        => !ty.IsArray && !ty.IsNullableValue && ty.Symbol is not { Kind: TypeKind.Class or TypeKind.Interface or TypeKind.Struct }
+            && ty.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+                or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char;
 
     /// <summary>Whether a field's loads and stores carry it (Instr.Field): a reference, held by a class or statically.</summary>
     private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class);
