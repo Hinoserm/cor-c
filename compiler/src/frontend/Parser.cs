@@ -281,6 +281,15 @@ public sealed class Parser
 
         void Join(Expr piece)
         {
+            // A HOLE FIRST IS JOINED TO TEXT, not to the next hole: `$"{a}{b}"`
+            // of two ints was `a + b`, a sum and no string at all, and `$"{n}"`
+            // alone was the int. Behind an empty literal it is a join from the
+            // start, and the empty piece is dropped where the join is made
+            // (EmitConcat), so it costs nothing.
+            if (built is null && piece is not LiteralExpr { Kind: Lit.Str })
+            {
+                built = new LiteralExpr { Kind = Lit.Str, Text = "", Line = at.Line, Col = at.Col };
+            }
             built = built is null
                 ? piece
                 : new BinaryExpr
