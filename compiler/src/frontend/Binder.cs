@@ -1207,10 +1207,6 @@ public sealed partial class Binder
     /// </summary>
     private void Retire()
     {
-        if (!_freshOnly) { Console.Error.WriteLine("DEMANDED dollar=" + _demanded.Count(x => x.Contains((char)36)) + "/" + _demanded.Where(x => x.Contains((char)36)).Sum(x => (long)x.Length) + " dollarUndotted=" + _demanded.Count(x => x.Contains((char)36) && !x.Contains((char)46)) + " " + _demanded.Count + " chars=" + _demanded.Sum(x => (long)x.Length) + " notnull=" + _notNullPaths.Count + " constraints=" + _constraintsChecked.Count);
-          foreach (var g in _demanded.GroupBy(x => x.Contains('.') ? x[(x.LastIndexOf('.')+1)..] : x).OrderByDescending(g => g.Count()).Take(15)) Console.Error.WriteLine("  DEM " + g.Count() + " " + g.Key + " e.g. " + g.First());
-          foreach (var g in _demanded.GroupBy(x => x.Contains('.') ? x[..x.LastIndexOf('.')] : "").OrderByDescending(g => g.Count()).Take(15)) Console.Error.WriteLine("  DEMNS " + g.Count() + " " + g.Key);
-          foreach (var x in _demanded.Take(30)) Console.Error.WriteLine("  DEMX " + x); }
         _bound = true;
         _boundBodies.Clear();
         _lockSummary.Clear();
