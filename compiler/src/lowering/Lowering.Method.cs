@@ -117,8 +117,29 @@ public sealed partial class Lowering
     /// <summary>The block that reports a failed bounds check; one per function, made on demand.</summary>
     private Block? _boundsFail;
 
+    // THE METHOD'S LOCAL-FUNCTION ENVIRONMENT, where it has one
+    // (BindResult.Environments): the block in its frame, and its address.
+    private LocalEnvironment? _env;
+    private VReg? _envAddr;
+
+    /// <summary>
+    /// The cell of a captured variable: its word in the method's environment
+    /// block when it lives there (Binder.ArrangeLocalFunctionEnvironment),
+    /// else one made on the heap.
+    /// </summary>
+    private VReg CellFor(Node at, long bytes, LocalDecl? local = null, int parameter = -1, LocalSym? symbol = null)
+    {
+        if (_env is { } env && _envAddr is { } block
+            && (local is not null && env.Locals.TryGetValue(local, out int offset) || parameter >= 0 && env.Params.TryGetValue(parameter, out offset)
+                || symbol is not null && env.Syms.TryGetValue(symbol, out offset)))
+            return _e.Binary(Opcode.Add, block, offset);
+        return Allocate(at, bytes);
+    }
+
     private void ResetMethodState()
     {
+        _env = null;
+        _envAddr = null;
         _localRegs.Clear();
         _localSlots.Clear();
         _slotRegs.Clear();
@@ -233,6 +254,15 @@ public sealed partial class Lowering
         }
 
         ScanAddressTaken(decl.Body!);
+        // The local-function environment first: the parameters' cells below
+        // may be words of it. Zeroed, as every cell begins.
+        if (_stateMachine is null && _b.Environments.TryGetValue(decl, out LocalEnvironment? environment))
+        {
+            FrameSlot block = _f.NewSlot(environment.Bytes, 8, Corsac.Lang.Opt.Escape.EnvironmentSlot);
+            _env = environment;
+            _envAddr = RegOf(new SlotOperand(block));
+            _e.Emit(Opcode.MemSet, null, R(_envAddr), new ImmOperand(0, IrType.I32), new ImmOperand(environment.Bytes, IrTypes.Word));
+        }
         MakeCapturedCells(decl.Body!);
         MakeParamCells(decl.Body!);
 
@@ -433,7 +463,7 @@ public sealed partial class Lowering
     private void MakeParamCell(ParamSym p, Node at)
     {
         if (p.Index >= _params.Length || _paramCells.ContainsKey(p.Index)) return;
-        VReg cell = Allocate(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)));
+        VReg cell = CellFor(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)), parameter: p.Index);
         // A struct parameter's bytes are its caller's: the cell holds a copy (HeapStruct).
         _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, _params[p.Index], p.Type)), 0, LoadSize(p.Type));
         _paramCells[p.Index] = cell;
@@ -450,7 +480,7 @@ public sealed partial class Lowering
             && sym is LocalSym { Boxed: true } held && DeclOf(held) is null
             && !_symCells.ContainsKey(held))
         {
-            _symCells[held] = Allocate(e, Math.Max(_t.WordSize, Math.Max(1, held.Type.Size)));
+            _symCells[held] = CellFor(e, Math.Max(_t.WordSize, Math.Max(1, held.Type.Size)), symbol: held);
         }
 
         // AND A PATTERN'S BINDING, whose only mention in the body may be inside
@@ -460,7 +490,7 @@ public sealed partial class Lowering
         if (_b.PatternSym.TryGetValue(n, out LocalSym? bound) && bound.Boxed
             && DeclOf(bound) is null && !_symCells.ContainsKey(bound))
         {
-            _symCells[bound] = Allocate(n, Math.Max(_t.WordSize, Math.Max(1, bound.Type.Size)));
+            _symCells[bound] = CellFor(n, Math.Max(_t.WordSize, Math.Max(1, bound.Type.Size)), symbol: bound);
         }
 
         List<Node> children = Children(n);

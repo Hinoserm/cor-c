@@ -83,7 +83,7 @@ public sealed partial class Lowering
                             Type held = _b.LocalType.TryGetValue(early, out Type? known) ? known : Type.I32;
 
                             _e.CopyTo(LocalReg(early),
-                                      RegOperand.Of(Allocate(early, Math.Max(_t.WordSize, held.Size))));
+                                      RegOperand.Of(CellFor(early, Math.Max(_t.WordSize, held.Size), early)));
                         }
                     }
 
@@ -453,7 +453,7 @@ public sealed partial class Lowering
         // because that is the first moment the name exists.
         if (boxed && !_cellsMade.Contains(d))
         {
-            VReg cell = Allocate(d, Math.Max(_t.WordSize, type.Size));
+            VReg cell = CellFor(d, Math.Max(_t.WordSize, type.Size), d);
             _e.CopyTo(LocalReg(d), RegOperand.Of(cell));
         }
 

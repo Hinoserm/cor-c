@@ -5245,6 +5245,7 @@ public sealed partial class Binder
             PopScope();
             SettleGenericCaptures();
             SettleCapturedCells();
+            ArrangeLocalFunctionEnvironment(md);
             _r.FrameSize[md] = _maxSlot;
             NoteBoundBody(_method, md);
             _method = null;
@@ -5446,6 +5447,7 @@ public sealed partial class Binder
             _r.LocalSymbols[local] = symbol;
             _declOf[symbol] = local;
             _hoistedFunctions[local] = symbol;
+            if (local.Init is LambdaExpr itsLambda) _localFunctionOf[itsLambda] = local;
             foreach (LocalScope kept in _scopes) kept.Captured = true;
             _localFunctionContexts[local] = new(new(_scopes), _scope, _thisType, _lexicalType, _member);
             Declare(local, local.Name, symbol);
@@ -7640,7 +7642,9 @@ public sealed partial class Binder
                     new ParamSym(i, ContextualParameterType(wanted, invoke, i), lam.Params[i].Name, false));
         }
 
-        Look(lam, ContextualMemberResult(wanted, invoke));
+        _lambdaDepth++;
+        try { Look(lam, ContextualMemberResult(wanted, invoke)); }
+        finally { _lambdaDepth--; }
         PopScope();
         _quiet--;
         RefuseCapturedRefLocals(lam, captured.Keys);
@@ -7921,6 +7925,7 @@ public sealed partial class Binder
         RegisterType(name2, closure);
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
+        if (_method is not null) (_lambdaDepth == 0 ? _methodLambdas : _innerLambdas).Add(lam);
         if (bound) _boundClosures[name2] = _r.Closures[lam];
         else if (lam.GroupIdentity is not null) _groupClosures[name2] = _r.Closures[lam];
 
@@ -8027,7 +8032,9 @@ public sealed partial class Binder
                     new ParamSym(i, run.Params[i].Type, lam.Params[i].Name, run.Params[i].ByRef, run.Params[i].ReadOnly));
         }
 
-        Look(lam, closureReturns, final: true);
+        _lambdaDepth++;
+        try { Look(lam, closureReturns, final: true); }
+        finally { _lambdaDepth--; }
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();
@@ -15995,6 +16002,8 @@ public sealed partial class Binder
         if (sym != null)
         {
             _r.Resolved[n] = sym;
+            if (LocalFunctionDeclaration(sym) is { } referenced)
+                (_localFunctionRefs.TryGetValue(referenced, out HashSet<NameExpr>? refs) ? refs : _localFunctionRefs[referenced] = new(ReferenceEqualityComparer.Instance)).Add(n);
 
             if (sym is LocalSym local && !_assigned.Contains(local))
             {

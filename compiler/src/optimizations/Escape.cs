@@ -2879,6 +2879,8 @@ continue;
         // The registers that hold the object itself, or null, and nothing
         // else: the roots, and what is only ever copied from them (exact).
         HashSet<VReg>? bases = null;
+        // Words of a frame block holding the block's own address (HolderUse).
+        HashSet<(object Root, long Offset)>? selfRefs = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -3512,10 +3514,25 @@ continue;
                     // What was stored at this offset is what is read back.
                     if (Holding(i.Operands[0]) is not var (r3, d3)) { flow.Escapes = true; return; }
                     if (Holds(r3, d3 + i.Offset)) Derive(i.Dest);
+                    // Its own address, read back from a word of it (below):
+                    // the holder again.
+                    else if (i.Dest is not null && selfRefs is not null && selfRefs.Contains((Canon(r3), d3 + i.Offset))) HolderAlias(i.Dest, r3, 0);
                     return;
                 case Opcode.Store:
-                    // Into it is fine; its address stored anywhere is not.
-                    if (Holding(i.Operands[1]) is not null) flow.Escapes = true;
+                    // Into it is fine; its address stored anywhere is not --
+                    // but into a word of the same frame block it stays in the
+                    // frame: a call-only local function's variable holds its
+                    // closure, which is the method's environment block that
+                    // variable lives in (Binder.ArrangeLocalFunctionEnvironment).
+                    if (Holding(i.Operands[1]) is var (sr, sd))
+                    {
+                        if (sd == 0 && sr is FrameSlot { Name: EnvironmentSlot } && HolderAt(i.Operands[0], 0) is var (dr, dd) && Equals(Canon(dr), Canon(sr)))
+                        {
+                            if ((selfRefs ??= new()).Add((Canon(sr), dd + i.Offset))) changed = true;
+                            return;
+                        }
+                        flow.Escapes = true;
+                    }
                     return;
                 case Opcode.MemSet:
                     if (Holding(i.Operands[0]) is null) flow.Escapes = true;
@@ -3733,7 +3750,15 @@ continue;
                 if (Holding(i.Operands[o]) is not var (root, delta)) continue;
                 // Memory that holds nothing of the object: nothing of it goes.
                 if (!held!.TryGetValue(root, out HashSet<long>? holding) || holding.Count == 0) continue;
-                if (o < first || delta != 0 || root is not VReg box || !Acceptable(box))
+                // A FRAME BLOCK HANDED WHOLE TO A FUNCTION BY NAME -- a call-only
+                // local function's environment, which is its closure
+                // (Binder.ArrangeLocalFunctionEnvironment) -- is judged as a box
+                // is: the callee keeps nothing of it, and its field summary
+                // leaves every word holding the object clean. Its own memory,
+                // so nothing to accept of how it was made.
+                VReg? box = root as VReg;
+                bool frameBlock = box is null && root is FrameSlot { Name: EnvironmentSlot } && i.Op == Opcode.Call && i.Callee is not null && delta == 0;
+                if (!frameBlock && (o < first || delta != 0 || box is null || !Acceptable(box)))
                 {
                     if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} operand {o} not a box's base ({root} +{delta})");
                     return false;
@@ -3745,28 +3770,28 @@ continue;
                 if (o == 0 && StorageFreed(i, ZeroOrigin) is not null) continue;
                 string[]? targets = i.Op == Opcode.Call ? (i.Callee is null ? null : new[] { i.Callee })
                     // On the receiver of a type known here: that type's method.
-                    : o == first && TypedTargets(i, box) is { } typed ? typed
+                    : o == first && TypedTargets(i, box!) is { } typed ? typed
                     : IndirectOverrides(i) is string[] found ? found
                     // Through the one function's address (Devirtualize's
                     // answer for a box it saw made): that function.
                     : i.Operands[0] is RegOperand { Reg: var method } && (writes ??= AnalysisCache.WritesOf(f)).TryGetValue(method, out WriteList known) && known.Count == 1
                       && known[0] is { Op: Opcode.Copy, Operands: [SymOperand { Name: var named, Offset: 0 }] } ? new[] { named } : null;
                 // No method there in any type it is: never called with it.
-                if (targets is { Length: 0 } && i.Op == Opcode.CallIndirect && o == first && KindsOf(box) is { Length: > 0 }) continue;
+                if (targets is { Length: 0 } && i.Op == Opcode.CallIndirect && o == first && box is not null && KindsOf(box) is { Length: > 0 }) continue;
                 if (targets is not { Length: > 0 })
                 {
                     if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} reaches nothing known");
                     return false;
                 }
-                HashSet<long> holds = held!.TryGetValue(box, out HashSet<long>? at) ? at : new();
-                Stamp[]? boxKinds = KindsOf(box);
+                HashSet<long> holds = held!.TryGetValue(root, out HashSet<long>? at) ? at : new();
+                Stamp[]? boxKinds = box is null ? null : KindsOf(box);
                 List<Stamp>? copiedAs = null;
                 foreach (string t in targets)
                 {
                     int p = o - first;
                     // HANDED BACK, OR A COPY OF ITS WORDS (Copies): an
                     // iterator's GetEnumerator. The result holds the object.
-                    if (p == 0 && Copies(t) is Stamp[] copies) { (copiedAs ??= new()).AddRange(copies); continue; }
+                    if (p == 0 && Copies(t) is Stamp[] copies) { if (box is null) return false; (copiedAs ??= new()).AddRange(copies); continue; }
                     bool keeps = !summaries.TryGetValue(t, out bool[]? summary) || p >= summary.Length || summary[p];
                     // What it does to the box's words: for the box's own
                     // types where those are known (TypedFields), so a call
@@ -3787,7 +3812,7 @@ continue;
                     // The box again, or a box the callee stamped with the
                     // same words: a holder of its own, at the same offsets.
                     if (result.Id < defs.Length && defs[result.Id] > 1) return false;
-                    Stamp[]? same = KindsOf(box) is { } was ? was.Concat(copiedAs).Distinct().ToArray() : null;
+                    Stamp[]? same = KindsOf(box!) is { } was ? was.Concat(copiedAs).Distinct().ToArray() : null;
                     foreach (long h in holds.ToList()) Hold(result, h);
                     HolderAlias(result, result, 0);
                     (boxes ??= new()).Add(result);
@@ -4015,6 +4040,9 @@ continue;
     /// image (Lto.VirtualTargets) and answers as for any function.
     /// </summary>
     public const string VirtualPrefix = "__virtual:";
+
+    /// <summary>The frame slot a method's call-only local functions share (Lowering, LocalEnvironment): the only frame block the holder rules let a call take whole.</summary>
+    public const string EnvironmentSlot = "env";
 
     public static string VirtualCallee(string declaring, long slot) => VirtualPrefix + declaring + "+" + slot;
 

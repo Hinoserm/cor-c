@@ -452,6 +452,8 @@ public sealed partial class BindResult
     /// own lambda's Invoke, and lowering calls that directly (no slot read).
     /// </summary>
     public Dictionary<CallExpr, LocalDecl> LocalFunctionCalls { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>Each method whose call-only local functions share one block of its frame (Binder.ArrangeLocalFunctionEnvironment).</summary>
+    public Dictionary<MethodDecl, LocalEnvironment> Environments { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<CallExpr> EnumHasFlags { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
@@ -760,6 +762,7 @@ public sealed partial class BindResult
         DiscardAssignments.Clear();
         CapturedReceivers.Clear();
         LocalFunctionCalls.Clear();
+        Environments.Clear();
         EnumHasFlags.Clear();
         EnumStatics.Clear();
         CatchType.Clear();

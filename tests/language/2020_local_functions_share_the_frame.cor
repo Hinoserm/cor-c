@@ -1,0 +1,127 @@
+// test: local functions share the frame
+// expect-exit: 0
+// expect-output:
+// sum 55 depth 10 calls 11
+// siblings 21 pending 7
+// param 13 this 7
+// loop 0,1,4,9,16
+// delegate 12 3
+// nested 5 6
+// point 3,4
+// 40000
+//
+// Local functions that are only ever called keep what they capture in their
+// method's frame, and a captured variable is read and written in place there:
+// recursion that changes the method's variables, siblings that call each
+// other, a parameter one writes, `this`, a variable inside a loop. A local
+// function also used as a delegate, one with a lambda inside reaching the
+// method's variables, and one capturing a struct keep theirs on the heap as
+// before, and every answer is the same.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Holder
+{
+    int _seven = 7;
+    public int Through() { int got = 0; Read(); return got; void Read() { got = _seven; } }
+}
+
+struct Point { public int X, Y; }
+
+static class P
+{
+    static string Recursion()
+    {
+        int sum = 0, depth = 0, calls = 0;
+        Walk(10);
+        return "sum " + sum + " depth " + depth + " calls " + calls;
+        void Walk(int n)
+        {
+            calls++;
+            if (n == 0) return;
+            sum += n;
+            depth = Math.Max(depth, 11 - n);
+            Walk(n - 1);
+        }
+    }
+
+    static string Siblings()
+    {
+        List<int> pending = new();
+        int total = 0;
+        Even(6);
+        return "siblings " + total + " pending " + pending.Count;
+        void Even(int n) { if (n < 0) return; total += n; pending.Add(n); Odd(n - 1); }
+        void Odd(int n) { if (n < 0) return; total += n; Even(n - 1); pending.Add(-n); }
+    }
+
+    static int Param(int x)
+    {
+        Bump(); Bump();
+        return x;
+        void Bump() { x += 4; }
+    }
+
+    static string Loop()
+    {
+        List<string> seen = new();
+        for (int i = 0; i < 5; i++)
+        {
+            int square = 0;
+            Square();
+            seen.Add(square.ToString());
+            void Square() { square = i * i; }
+        }
+        return "loop " + string.Join(",", seen);
+    }
+
+    static string Delegate()
+    {
+        int count = 0;
+        Func<int, int> f = Twice;
+        int a = f(6);
+        Twice(1); Twice(2);
+        return "delegate " + a + " " + count;
+        int Twice(int v) { count++; return v * 2; }
+    }
+
+    static string Nested()
+    {
+        int seen = 0;
+        int Count(int n) { Func<int, int> add = k => seen += k; return add(n); }
+        Count(2); Count(3);
+        int other = 0;
+        Inc(); Inc(); Inc(); Inc(); Inc(); Inc();
+        return "nested " + seen + " " + other;
+        void Inc() { other++; }
+    }
+
+    static string Struct()
+    {
+        Point p = new() { X = 1, Y = 2 };
+        Move();
+        return "point " + p.X + "," + p.Y;
+        void Move() { p.X += 2; p.Y += 2; }
+    }
+
+    static int Many()
+    {
+        int total = 0;
+        for (int k = 0; k < 20000; k++) total += Two();
+        return total;
+        int Two() { int a = 1; Add(); return a; void Add() { a++; } }
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Recursion());
+        Console.WriteLine(Siblings());
+        Console.WriteLine("param " + Param(5) + " this " + new Holder().Through());
+        Console.WriteLine(Loop());
+        Console.WriteLine(Delegate());
+        Console.WriteLine(Nested());
+        Console.WriteLine(Struct());
+        Console.WriteLine(Many());
+    }
+}

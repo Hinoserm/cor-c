@@ -1699,6 +1699,24 @@ public sealed partial class Lowering
     /// </summary>
     private VReg EmitLambda(LambdaExpr lam, ClosureInfo made)
     {
+        // A CALL-ONLY LOCAL FUNCTION'S CLOSURE IS THE METHOD'S ENVIRONMENT
+        // BLOCK (Binder.ArrangeLocalFunctionEnvironment): its cell variables
+        // are words of the block already; what it captures by value -- `this`,
+        // a parameter nothing writes -- is written into its word here.
+        if (_env is { } env && _envAddr is { } block && env.Lambdas.Contains(lam))
+        {
+            foreach ((FieldSymbol f, Sym from) in made.Captures)
+            {
+                // Its own word of the block already: nothing to put there.
+                if (from is LocalSym own && (DeclOf(own) is LocalDecl declared && env.Locals.ContainsKey(declared) || env.Syms.ContainsKey(own))) continue;
+                if (from is ParamSym { Boxed: true } kept && env.Params.ContainsKey(kept.Index)) continue;
+                // A shared variable's cell, or a value.
+                if (CaptureValue(from, lam) is not { } value) continue;
+                if (f.Boxed) StoreNewReference(block, value, f.Offset);
+                else StoreNew(block, value, f.Offset, f.Type, f);
+            }
+            return block;
+        }
         if (made.Captures.Count == 0)
         {
             return _e.Address(StaticClosure(made.Type));
@@ -1707,6 +1725,25 @@ public sealed partial class Lowering
         _e.Store(R(obj), VtableOf(made.Type), 0, _t.WordSize);
 
         foreach ((FieldSymbol f, Sym from) in made.Captures)
+        {
+            if (CaptureValue(from, lam) is not { } value) continue;
+
+            if (f.Boxed)
+            {
+                StoreNewReference(obj, value, f.Offset);
+            }
+            else
+            {
+                StoreNew(obj, value, f.Offset, f.Type, f);
+            }
+        }
+
+        return obj;
+    }
+
+    /// <summary>What a closure field over `from` is filled with where the closure is made: a cell, or a value.</summary>
+    private VReg? CaptureValue(Sym from, LambdaExpr lam)
+    {
         {
             VReg value;
 
@@ -1754,22 +1791,12 @@ public sealed partial class Lowering
                 Place? p = PlaceOfSym(from, lam);
                 if (p is null)
                 {
-                    continue;
+                    return null;
                 }
                 value = LoadPlace(p);
             }
-
-            if (f.Boxed)
-            {
-                StoreNewReference(obj, value, f.Offset);
-            }
-            else
-            {
-                StoreNew(obj, value, f.Offset, f.Type, f);
-            }
+            return value;
         }
-
-        return obj;
     }
 
     private readonly Dictionary<TypeSymbol, string> _staticClosures = new();
