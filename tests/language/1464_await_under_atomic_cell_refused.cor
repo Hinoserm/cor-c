@@ -1,0 +1,49 @@
+// test: await under the runtime's AtomicCell refused
+// expect-compile-error: cannot await while 'AtomicCell' (its Enter) is held
+// The runtime's own spin cell (InterruptCompletions keeps its free list
+// under one) is a lock like any other: from its Enter to its Exit an await
+// is refused, as C# refuses one in a `lock` (CS1996).
+
+using System;
+using System.Threading.Tasks;
+
+class AtomicCell
+{
+    long _word;
+
+    public void Enter()
+    {
+        _word = 1;
+    }
+
+    public void Exit()
+    {
+        _word = 0;
+    }
+}
+
+static class Program
+{
+    static readonly AtomicCell Cell = new AtomicCell();
+    static int _shared;
+
+    static async Task Work()
+    {
+        Cell.Enter();
+        try
+        {
+            _shared++;
+            await Task.Yield();
+        }
+        finally
+        {
+            Cell.Exit();
+        }
+    }
+
+    static async Task Main()
+    {
+        await Work();
+        Console.WriteLine(_shared);
+    }
+}

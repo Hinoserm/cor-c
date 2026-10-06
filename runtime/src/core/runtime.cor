@@ -2011,6 +2011,27 @@ static class Runtime
         Gc.Barrier((long)(nuint)slot, (long)(nuint)value);
     }
 
+    /// THE STORE SEQUENCES' BARRIERS (X86Backend: __corsac_refstore,
+    /// __corsac_refxchg, __corsac_refcas), called while Marking is set: the
+    /// report, the store and its card made together (Gc.BarrierStore).
+    public static void WriteBarrierStore(nint slot, nint value)
+    {
+        Gc.BarrierStore((long)(nuint)slot, (long)(nuint)value);
+    }
+
+    /// The same for an exchange: what the slot held.
+    public static nint WriteBarrierExchange(nint slot, nint value)
+    {
+        return (nint)Gc.BarrierExchange((long)(nuint)slot, (long)(nuint)value);
+    }
+
+    /// The same for a compare-exchange: what the slot held, `value` stored
+    /// only where that was `expected`.
+    public static nint WriteBarrierCompareExchange(nint slot, nint value, nint expected)
+    {
+        return (nint)Gc.BarrierCompareExchange((long)(nuint)slot, (long)(nuint)value, (long)(nuint)expected);
+    }
+
     /// The same, told the reference being overwritten rather than where it
     /// is: what a barrier becomes when the object it guarded no longer lives
     /// in memory -- the optimiser kept its fields in registers

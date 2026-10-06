@@ -11564,6 +11564,63 @@ static class Gc
         Sys.Poke(tb + Tls.InAlloc, was);
     }
 
+    /// THE STORE SEQUENCES' BARRIER: the report, the store and its card,
+    /// all inside the thread's InAlloc, for a thread its collector stops at
+    /// any instruction (Lowering.StoreSequences). Barrier alone restored
+    /// InAlloc in its own epilogue and returned to the stub to store: a
+    /// thread sent to its handshake in between could answer the next
+    /// cycle's snapshot with its report given to the last one, and then
+    /// overwrite a reference the new mark was never told of -- one another
+    /// thread had copied into an object that mark had already scanned. Sent
+    /// after this has returned, it has nothing left to do but return.
+    public static void BarrierStore(long slot, long value)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        Note(Sys.Peek(slot), value);
+        Sys.Poke(slot, value);
+        Card(slot);
+        Sys.Poke(tb + Tls.InAlloc, was);
+    }
+
+    /// BarrierStore for an exchange: the reference the slot held.
+    public static long BarrierExchange(long slot, long value)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        long old = Sys.AtomicSwap(slot, value);
+        Note(old, value);
+        Card(slot);
+        Sys.Poke(tb + Tls.InAlloc, was);
+        return old;
+    }
+
+    /// BarrierStore for a compare-exchange: what the slot held, and `value`
+    /// in it -- reported, with its card -- only where that was `expected`.
+    public static long BarrierCompareExchange(long slot, long value, long expected)
+    {
+        long tb = Sys.ThreadBlock();
+        long was = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
+        long seen = Sys.Cas(slot, expected, value);
+        if ((seen & WordSize.AddressMask) == (expected & WordSize.AddressMask))
+        {
+            Note(seen, value);
+            Card(slot);
+        }
+        Sys.Poke(tb + Tls.InAlloc, was);
+        return seen;
+    }
+
+    // The card of `slot`, where there is a table.
+    static void Card(long slot)
+    {
+        long cards = Runtime.Cards;
+        if (cards != 0) Sys.PokeByte(cards + ((slot & WordSize.AddressMask) >> Runtime.CardShift), 1);
+    }
+
     /// Barrier, told the overwritten reference itself: for an object whose
     /// fields the optimiser keeps in registers (Runtime.WriteBarrierValues).
     public static void BarrierValues(long old, long value)
