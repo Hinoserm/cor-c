@@ -29,5 +29,26 @@ public sealed class SyntaxTokenCache
         return new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
     }
 
+    /// <summary>
+    /// One declaration of a file, parsed where it sits in it (Lexer.TokenizeRange):
+    /// positions, lines and columns are the whole file's, and so is Source,
+    /// so nothing is cut out of the text. <paramref name="space"/> and
+    /// <paramref name="path"/> are where the declaration was written
+    /// (Parser.StartNamespace). <paramref name="hoisted"/> says whether the
+    /// parse named anything by the file-wide hoisting count (Parser.Hoisted).
+    /// </summary>
+    public CompilationUnit ParseRange(string text, int from, int to, int line, int col, string file,
+        IReadOnlyCollection<string>? symbols, string space, string path, out bool hoisted,
+        bool declarationsOnly = false, bool includeTemplateBodies = false)
+    {
+        Interlocked.Increment(ref misses);
+        Token[] snapshot = Lexer.TokenizeRange(text, from, to, file, line, col, symbols).ToArray();
+        Parser parser = new(snapshot, file, declarationsOnly, includeTemplateBodies)
+        { Source = text, StartNamespace = space, StartTypePath = path };
+        CompilationUnit unit = parser.ParseUnit();
+        hoisted = parser.Hoisted;
+        return unit;
+    }
+
     public void Clear() { }
 }

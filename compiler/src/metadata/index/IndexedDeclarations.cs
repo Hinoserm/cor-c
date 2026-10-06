@@ -365,15 +365,84 @@ public sealed class IndexedDeclarations : IDisposable
         // and the binder still demands anything this does not foresee.
         Queue<string> pending = new(loaded);
         HashSet<string> visited = new(StringComparer.Ordinal);
-        // ONE FILE IS PARSED ONCE FOR ITS TEMPLATE BODIES, however many of
-        // its declarations this unit imports. A template's body is not in
-        // the index slice, so it is taken from the file, and the file is
-        // parsed WHOLE -- so importing ten generic types out of
-        // Collections.cor parsed Collections.cor ten times and threw nine of
-        // the results away. The declarations taken out of one parse are
-        // disjoint (each is picked by its own source span), and the map dies
-        // with this call, so nothing is shared between discovery passes.
-        Dictionary<(string Path, string Symbols), CompilationUnit> templateFiles = new();
+        // A TEMPLATE IS PARSED FROM ITS OWN SPAN, not from its whole file. A
+        // template's body is not in the index slice, so it is read from the
+        // file -- and the file was parsed WHOLE, the bodies of every generic
+        // in it, for each unit that imported one: a unit naming List parsed
+        // every collection and all of LINQ in Core.cor's fourteen thousand
+        // lines, and held all of it until this returned. Now only the
+        // declaration's own text is read (Lexer.TokenizeRange), where it sits
+        // in the file, so its positions, lines and columns are the ones a
+        // whole-file parse gives it, and Parser.StartNamespace puts it where it
+        // was written, so its Namespace and Outer, its nested types' paths
+        // and a delegate's multicast come out as the whole file makes them.
+        //
+        // A TYPE NESTED IN A GENERIC ONE takes the outer's parameters first
+        // (TypeDecl.OuterParams), which its own text cannot say: `struct
+        // Enumerator { T Current; }` read alone has none. So it is read out
+        // of the span of its outermost GENERIC enclosing type, whose key is a
+        // prefix of its own (List`1+Enumerator, under List`1); the
+        // non-generic types around that one give it nothing.
+        //
+        // THE WHOLE FILE IS STILL READ where a span provably cannot be:
+        //  - the file `#define`s or `#undef`s a symbol before the span, which
+        //    a span read alone would not see (FirstDefine);
+        //  - the span does not read alone: a `#if` around it whose `#elif`,
+        //    `#else` or `#endif` falls inside it, which the lexer refuses as
+        //    unpaired -- the only way a directive outside a span reaches in;
+        //  - the span names a generic local function or a local-function
+        //    delegate. Their names carry a count over the whole file
+        //    (Parser.Hoisted), they are members and types other code names,
+        //    and a span counts from zero;
+        //  - the record of the enclosing generic type is not found, or the
+        //    span read has no type of the record's own span in it.
+        // Nothing else outside a span reaches the tokens inside it: the
+        // conditional state at its start is "compiling" (its first token is
+        // compiled), and the symbols are the record's own.
+        //
+        // ONE SPAN IS PARSED ONCE, and a parse is let go as soon as every
+        // declaration in it that can be asked for has been taken: an outer
+        // generic type and the types nested in it come out of one parse, and
+        // a lone generic type's parse dies as its one declaration is taken.
+        // The declarations taken out of one parse are disjoint (each is picked
+        // by its own span), and the map dies with this call, so nothing is
+        // shared between discovery passes. A span found unreadable is kept as
+        // null, so the next declaration in it goes to the whole file at once.
+        Dictionary<(string Path, string Symbols, int From, int To), CompilationUnit?> templateFiles = new();
+        Dictionary<string, int> firstDefine = new(StringComparer.Ordinal);
+        (CompilationUnit Unit, (string, string, int, int) Key) Templates(SourceDeclaration source, string displayFile, bool inGeneric)
+        {
+            string symbols = string.Join("\n", source.ConditionalSymbols);
+            string text = catalog.ReadSource(source);
+            if (!firstDefine.TryGetValue(source.Path, out int define)) firstDefine[source.Path] = define = FirstDefine(text);
+            DeclarationSpan? span = inGeneric ? EnclosingGeneric(source)
+                : new DeclarationSpan(source.From, source.To, source.Line, source.Column, source.Namespace, source.Outer);
+            if (span is { } at && define >= at.From)
+            {
+                var spanKey = (source.Path, symbols, at.From, at.To);
+                if (!templateFiles.TryGetValue(spanKey, out CompilationUnit? parsed))
+                {
+                    try
+                    {
+                        parsed = Tokens.ParseRange(text, at.From, at.To, at.Line, at.Column, displayFile,
+                            source.ConditionalSymbols, at.Namespace, at.Outer, out bool hoisted,
+                            declarationsOnly: true, includeTemplateBodies: true);
+                        if (hoisted) parsed = null;
+                    }
+                    catch (CompileError) { parsed = null; }
+                    templateFiles[spanKey] = parsed;
+                }
+                if (parsed is not null && parsed.Types.Any(type => type.SourceFrom == source.From && type.SourceTo == source.To))
+                    return (parsed, spanKey);
+            }
+            var wholeKey = (source.Path, symbols, 0, -1);
+            if (!templateFiles.TryGetValue(wholeKey, out CompilationUnit? whole) || whole is null)
+            {
+                whole = Tokens.Parse(text, displayFile, source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
+                templateFiles[wholeKey] = whole;
+            }
+            return (whole, wholeKey);
+        }
         while (pending.Count != 0)
         {
             string key = pending.Dequeue();
@@ -394,47 +463,60 @@ public sealed class IndexedDeclarations : IDisposable
                 // sites embed it in executable string data, so different paths
                 // would make identical generic instantiations disagree at link.
                 string displayFile = Path.GetFileName(source.Path);
-                CompilationUnit header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true);
-                // A CLASS OF ANOTHER RING parses to nothing (Parser.Ring): an
-                // index built for every ring holds it, and this compile does
-                // not, any more than its own sources' copy of it.
-                if (header.Types.Count == 0) continue;
-                // A slice can parse to more than one declaration: a delegate's
-                // text also yields the multicast class synthesised beside it.
-                // The record names which one it is for.
-                string wanted = source.Key[(source.Key.LastIndexOf('.') + 1)..];
-                if (wanted.Contains('\n')) wanted = wanted[(wanted.LastIndexOf('\n') + 1)..];
-                TypeDecl root = header.Types.FirstOrDefault(type => type.Name == wanted)
-                    ?? header.Types.OrderBy(type => type.SourceFrom).First();
-                // A TYPE NESTED IN A GENERIC ONE takes the outer's parameters
-                // first (TypeDecl.OuterParams), which its own slice cannot
-                // say: `struct Enumerator { T Current; }` cut out of List<T>
-                // parses with none. Its key names the outer's arity
-                // (List`1+Enumerator`1), and the whole file parses it right.
+                // WHETHER IT IS A TEMPLATE, from its key where the key says so:
+                // a generic type, or one nested in a generic type, has a
+                // backtick in its name (List`1, List`1+Enumerator), and for
+                // those the signature-only parse of the slice was made only to
+                // be thrown away for the template's. Only a type the key
+                // cannot tell about -- one that may have generic methods --
+                // is parsed as a signature first.
                 string typeName = source.Key[(source.Key.LastIndexOf('\n') + 1)..];
                 int plus = typeName.LastIndexOf('+');
                 bool inGeneric = plus > 0 && typeName[..plus].Contains('`');
-                if (inGeneric || root.TypeParams.Count != 0 || root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0))
+                bool template = typeName.Contains('`');
+                // Set below, by one branch or the other.
+                TypeDecl root = null!;
+                if (!template)
+                {
+                    CompilationUnit header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true);
+                    // A CLASS OF ANOTHER RING parses to nothing (Parser.Ring): an
+                    // index built for every ring holds it, and this compile does
+                    // not, any more than its own sources' copy of it.
+                    if (header.Types.Count == 0) continue;
+                    // A slice can parse to more than one declaration: a delegate's
+                    // text also yields the multicast class synthesised beside it.
+                    // The record names which one it is for.
+                    string wanted = source.Key[(source.Key.LastIndexOf('.') + 1)..];
+                    if (wanted.Contains('\n')) wanted = wanted[(wanted.LastIndexOf('\n') + 1)..];
+                    root = header.Types.FirstOrDefault(type => type.Name == wanted)
+                        ?? header.Types.OrderBy(type => type.SourceFrom).First();
+                    template = root.Members.OfType<MethodDecl>().Any(method => method.TypeParams.Count != 0);
+                }
+                if (template)
                 {
                     implementations.Add(key);
                     // Templates need implementations for specialization. Keep
                     // unrelated ordinary bodies out of this imported tree.
-                    var templateKey = (source.Path, string.Join("\n", source.ConditionalSymbols));
-                    if (!templateFiles.TryGetValue(templateKey, out CompilationUnit? templates))
-                    {
-                        templates = Tokens.Parse(catalog.ReadSource(source), displayFile,
-                            source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true);
-                        templateFiles[templateKey] = templates;
-                    }
+                    (CompilationUnit templates, var templateKey) = Templates(source, displayFile, inGeneric);
                     // BY ITS SPAN, AND ITS NAME WHERE TWO SHARE ONE: declarations
-                    // a pass made beside a type (COM's wrappers for a
-                    // [ComImport] interface) carry the span of what they were
-                    // made from, and Single found two.
+                    // made beside a type (a delegate's multicast class, COM's
+                    // wrappers for a [ComImport] interface) carry the span of
+                    // what they were made from, and Single found two.
                     string simple = typeName[(Math.Max(typeName.LastIndexOf('+'), typeName.LastIndexOf('.')) + 1)..];
                     int tick = simple.IndexOf('`');
                     if (tick >= 0) simple = simple[..tick];
                     List<TypeDecl> spanned = templates.Types.Where(type => type.SourceFrom == source.From && type.SourceTo == source.To).ToList();
+                    // None, as for a class of another ring above: it, and
+                    // everything written inside it, parses to nothing in a
+                    // span or a whole file alike.
+                    if (spanned.Count == 0) continue;
                     root = spanned.Count == 1 ? spanned[0] : spanned.FirstOrDefault(type => type.Name == simple) ?? spanned.First();
+                    // TAKEN, so out of the parse; and the parse out of the map
+                    // once nothing in it can still be asked for. A local
+                    // function's delegate (LocalOnly) is in no index, so no
+                    // record will ever come for it.
+                    templates.Types.Remove(root);
+                    if (!templates.Types.Any(type => !type.LocalOnly)) templateFiles.Remove(templateKey);
                 }
                 // Nested declarations have separate index records. Import the
                 // requested declaration only, retaining its own lexical scope.
@@ -495,6 +577,61 @@ public sealed class IndexedDeclarations : IDisposable
                 });
             }
         }
+    }
+
+    /// <summary>Where a declaration is read from in its file, and where it was written (Parser.StartNamespace).</summary>
+    private readonly record struct DeclarationSpan(int From, int To, int Line, int Column, string Namespace, string Outer);
+
+    /// <summary>
+    /// The span of the outermost generic type a nested declaration is written
+    /// inside: what gives it its outer parameters (TypeDecl.OuterParams), all
+    /// of them, since a type nested in that one has its parameters before its
+    /// own and the non-generic types around it have none. Its key is a prefix
+    /// of the nested one's, ending at the first part with a backtick:
+    /// Ns.A+B`1 for Ns.A+B`1+C+D. Of a partial one, the part in the same file
+    /// whose span holds this declaration. Null when there is no such record.
+    /// </summary>
+    private DeclarationSpan? EnclosingGeneric(SourceDeclaration source)
+    {
+        string key = source.Key;
+        int at = key.LastIndexOf('\n') + 1, end = -1;
+        for (int plus = key.IndexOf('+', at); plus > 0; plus = key.IndexOf('+', at))
+        {
+            if (key.AsSpan(at, plus - at).Contains('`')) { end = plus; break; }
+            at = plus + 1;
+        }
+        if (end < 0) return null;
+        using DeclarationLease? lease = catalog.AcquireKey(key[..end]);
+        if (lease is null) return null;
+        foreach (SourceDeclaration outer in lease.Records)
+            if (outer.Path == source.Path && outer.From <= source.From && outer.To >= source.To
+                && outer.SourceHash.AsSpan().SequenceEqual(source.SourceHash))
+                return new DeclarationSpan(outer.From, outer.To, outer.Line, outer.Column, outer.Namespace, outer.Outer);
+        return null;
+    }
+
+    /// <summary>
+    /// Where a file's first `#define` or `#undef` is, or int.MaxValue when it
+    /// has none: a declaration after it cannot be read on its own, because
+    /// the symbols it changes are the file's from there on. Any line whose
+    /// first non-blank text is one counts, even inside a comment, a string or
+    /// a branch not compiled; a span is then read with its whole file, which
+    /// is never wrong, only slower.
+    /// </summary>
+    private static int FirstDefine(string text)
+    {
+        for (int hash = text.IndexOf('#'); hash >= 0; hash = text.IndexOf('#', hash + 1))
+        {
+            int line = hash;
+            while (line > 0 && text[line - 1] is ' ' or '\t' or '\r') line--;
+            if (line > 0 && text[line - 1] != '\n') continue;
+            int word = hash + 1;
+            while (word < text.Length && text[word] is ' ' or '\t') word++;
+            ReadOnlySpan<char> rest = text.AsSpan(word);
+            if (rest.StartsWith("define", StringComparison.Ordinal) || rest.StartsWith("undef", StringComparison.Ordinal))
+                return line;
+        }
+        return int.MaxValue;
     }
 
     public void Dispose()

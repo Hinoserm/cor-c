@@ -117,6 +117,12 @@ public sealed class Lexer
     private readonly string _src;
     private readonly string _file;
     private int _pos;
+
+    /// <summary>
+    /// Where reading stops: the end of the text, or of the declaration a
+    /// range is read for (TokenizeRange).
+    /// </summary>
+    private int _end;
     private int _line = 1;
     private int _col = 1;
 
@@ -170,6 +176,7 @@ public sealed class Lexer
                  IReadOnlyCollection<string>? symbols = null)
     {
         _src = source ?? throw new ArgumentNullException(nameof(source));
+        _end = source.Length;
         _file = file;
         _line = line;
         _col = col;
@@ -214,9 +221,37 @@ public sealed class Lexer
         }
     }
 
-    private char Cur => _pos < _src.Length ? _src[_pos] : '\0';
-    private char Peek(int n = 1) => _pos + n < _src.Length ? _src[_pos + n] : '\0';
-    private bool Done => _pos >= _src.Length;
+    /// <summary>
+    /// ONE DECLARATION OF A FILE, read where it sits: from
+    /// <paramref name="from"/> up to <paramref name="to"/>, which begins at
+    /// <paramref name="line"/> and <paramref name="col"/>. Every token keeps
+    /// the position, line and column it has when the whole file is read, so
+    /// a parse of the range can be given the whole text as its Source and
+    /// its spans and diagnostics are the whole file's.
+    ///
+    /// The range starts with no `#if` open and with only the given symbols:
+    /// a directive that pairs with one outside it is refused like any
+    /// unpaired one, and a `#define` written above it is not seen. The
+    /// caller decides whether that can matter (IndexedDeclarations.AddHeaders).
+    /// </summary>
+    public static List<Token> TokenizeRange(string source, int from, int to, string file, int line, int col,
+                                            IReadOnlyCollection<string>? symbols = null)
+    {
+        if (from < 0 || to < from || to > source.Length) throw new ArgumentOutOfRangeException(nameof(to));
+        Lexer lexer = new(source, file, line, col, symbols) { _pos = from, _end = to };
+        List<Token> tokens = new(Math.Min(4096, (to - from) / 4 + 1));
+
+        while (true)
+        {
+            Token t = lexer.Next();
+            tokens.Add(t);
+            if (t.Kind == Tok.End) return tokens;
+        }
+    }
+
+    private char Cur => _pos < _end ? _src[_pos] : '\0';
+    private char Peek(int n = 1) => _pos + n < _end ? _src[_pos + n] : '\0';
+    private bool Done => _pos >= _end;
     /// <summary>End of the last consumed token, for source-index spelling preservation.</summary>
     public int Position => _pos;
 
