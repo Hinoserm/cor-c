@@ -45,62 +45,11 @@ public static class IrLinkOptimizer
         foreach (var input in inputs)
             if (!archives.ContainsKey(input.Object))
                 foreach (Section section in input.Object.Sections) foreach (Relocation reloc in section.Relocs) foreign.Add(reloc.Symbol);
-        // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
-        // call's targets on a type nothing stamps an object with run on no
-        // object, and drop out of every answer the link gives by dispatch --
-        // the lifetimes' merges, the owned fields' callers and borrowers,
-        // the regions' calls and the judge's callers. Only where nothing
-        // outside makes objects: a closed image (the caller says it is not
-        // a shared object, links no shared library and exports nothing),
-        // whose foreign code names what it calls ("*" for anything) -- and
-        // not under --no-rta.
-        VirtualTargets.Made? made = enabled && madeOnly && !openTypes && closedImageEntry is not null && !foreign.Contains("*")
-            ? VirtualTargets.MadeIn(inputs, archives.Values) : null;
-        VirtualTargets.Made? lifetimeMade = made?.Again();
-        // NOT WHERE THE TYPES ARE OPEN: a kernel linked with exports has
-        // modules that derive from its classes and override what it calls, so
-        // the image's own overrides are not every one a call can reach, and
-        // each virtual call stays the escape an unresolved one is.
-        Dictionary<string, string[]> virtuals = enabled && hints.Count > 0 && !openTypes
-            ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
-                .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
-                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)), lifetimeMade)
-            : new(StringComparer.Ordinal);
-        if (regionReport is not null) Console.Error.WriteLine("lifetimes: rta " + (lifetimeMade is null ? "off" : lifetimeMade.Summary()));
-        LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
-        if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
-        LinkTimings.Phase("virtual targets and lifetime solve");
-        // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's
-        // consumers could throw anything -- and only where every unit with
-        // IR said what it throws.
-        string[]? catchable = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
-            ? ForeignCatchable(inputs, hintOrder, lifetimes) : null;
-        bool programFacts = catchable is not null;
-        if (programFacts) Console.Error.WriteLine("LTO catches: " + (catchable!.Length == 0 ? "every catch frees what it caught" : catchable.Length + " types keep what they catch"));
-        // FIELDS THAT OWN WHAT THEY HOLD, judged over every unit's hints as a
-        // flat compile judges them over its module (OwnedFieldSolver); every
-        // regenerated unit frees what a store replaces and gives the types it
-        // defines their owned-field maps. A body that stores into one may be
-        // imported into another unit like any other: the importing unit is
-        // regenerated with the same answer, and a store frees what it
-        // replaces only in an object the function made and keeps to itself
-        // (Escape.PrivateOwner), which is what inlining a constructor or a
-        // setter into the function that made the object gives it -- a
-        // Holder's Grow freeing the buffer it replaces. Every unit with IR must have said, as for catches; and every unit
-        // with hints is then regenerated, so none keeps a store that does
-        // not free what it replaces, or a type without its map.
-        OwnedFieldFacts? ownedFields = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
-            ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
-                Switches.AllocReport
-                    ? line => { if (Switches.AllocReportOnly is not { } which || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null) : null;
-        if (ownedFields is { IsEmpty: true }) ownedFields = null;
-        if (ownedFields is not null)
-            Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
-                + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
-                + ", elements owned through " + ownedFields.Elements.Count
-                + (Switches.AllocReport ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
-        LinkTimings.Phase("catches and owned fields");
-        bool regionsPossible = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
+        // WHAT A CLOSED IMAGE KEEPS, before anything asks which types it
+        // makes: only kept code makes them (VirtualTargets.MadeTypes), and the
+        // lifetime solve below is the first to ask. Nothing here needs its
+        // answers -- the roots are the hints' helpers and the runtime's own.
+        bool regionsPossible = enabled && hints.Count > 0 && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
             && archives.Keys.All(regionHints.Contains)
             && new[] { RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegion, RuntimeAbi.RegionCatch }.All(owners.ContainsKey);
         // A closed image keeps only what is reached, and reaching is judged
@@ -110,7 +59,7 @@ public static class IrLinkOptimizer
         // list -- and those field sites become, through symbols the link
         // defines at the end (DefineFieldSites). Their targets are roots.
         SortedSet<string> linkRoots = new(StringComparer.Ordinal);
-        if (lifetimes is not null) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
+        if (enabled && hints.Count > 0) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
         if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
         // And what regions call, wherever a regenerated unit may open one.
         // And the allocator a collection's elements are made beside it with,
@@ -155,6 +104,61 @@ public static class IrLinkOptimizer
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && reachEntry is not null
             ? IrReachability.Find(inputs, archives, owners, reachEntry, linkRoots) : null;
         LinkTimings.Phase("reachability");
+        // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
+        // call's targets on a type nothing stamps an object with run on no
+        // object, and drop out of every answer the link gives by dispatch --
+        // the lifetimes' merges, the owned fields' callers and borrowers,
+        // the regions' calls and the judge's callers. Only where nothing
+        // outside makes objects: a closed image (the caller says it is not
+        // a shared object, links no shared library and exports nothing),
+        // whose foreign code names what it calls ("*" for anything) -- and
+        // not under --no-rta.
+        VirtualTargets.Made? made = enabled && madeOnly && !openTypes && closedImageEntry is not null && !foreign.Contains("*")
+            ? VirtualTargets.MadeIn(inputs, archives, closedImageEntry is not null ? reachability : null) : null;
+        VirtualTargets.Made? lifetimeMade = made?.Again();
+        // NOT WHERE THE TYPES ARE OPEN: a kernel linked with exports has
+        // modules that derive from its classes and override what it calls, so
+        // the image's own overrides are not every one a call can reach, and
+        // each virtual call stays the escape an unresolved one is.
+        Dictionary<string, string[]> virtuals = enabled && hints.Count > 0 && !openTypes
+            ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
+                .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
+                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)), lifetimeMade)
+            : new(StringComparer.Ordinal);
+        if (regionReport is not null) Console.Error.WriteLine("lifetimes: rta " + (lifetimeMade is null ? "off" : lifetimeMade.Summary()));
+        LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
+        if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
+        LinkTimings.Phase("virtual targets and lifetime solve");
+        // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's
+        // consumers could throw anything -- and only where every unit with
+        // IR said what it throws.
+        string[]? catchable = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
+            ? ForeignCatchable(inputs, hintOrder, lifetimes) : null;
+        bool programFacts = catchable is not null;
+        if (programFacts) Console.Error.WriteLine("LTO catches: " + (catchable!.Length == 0 ? "every catch frees what it caught" : catchable.Length + " types keep what they catch"));
+        // FIELDS THAT OWN WHAT THEY HOLD, judged over every unit's hints as a
+        // flat compile judges them over its module (OwnedFieldSolver); every
+        // regenerated unit frees what a store replaces and gives the types it
+        // defines their owned-field maps. A body that stores into one may be
+        // imported into another unit like any other: the importing unit is
+        // regenerated with the same answer, and a store frees what it
+        // replaces only in an object the function made and keeps to itself
+        // (Escape.PrivateOwner), which is what inlining a constructor or a
+        // setter into the function that made the object gives it -- a
+        // Holder's Grow freeing the buffer it replaces. Every unit with IR must have said, as for catches; and every unit
+        // with hints is then regenerated, so none keeps a store that does
+        // not free what it replaces, or a type without its map.
+        OwnedFieldFacts? ownedFields = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
+            ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
+                Switches.AllocReport
+                    ? line => { if (Switches.AllocReportOnly is not { } which || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null) : null;
+        if (ownedFields is { IsEmpty: true }) ownedFields = null;
+        if (ownedFields is not null)
+            Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
+                + hintOrder.SelectMany(unit => unit.Owned!.Fields.Keys).Distinct(StringComparer.Ordinal).Count()
+                + ", elements owned through " + ownedFields.Elements.Count
+                + (Switches.AllocReport ? ": " + string.Join(" ", ownedFields.Fields.Keys.Order(StringComparer.Ordinal)) : ""));
+        LinkTimings.Phase("catches and owned fields");
         // REGIONS OVER EVERY UNIT (RegionSolver): the boundaries to open and
         // the allocation sites to make in the innermost open region, for a
         // closed image whose every unit with IR said what its functions do

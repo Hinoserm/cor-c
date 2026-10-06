@@ -182,8 +182,9 @@ public static class VirtualTargets
     /// The descriptors <paramref name="inputs"/> make (Made), named by any
     /// relocation in them or by any function of <paramref name="archives"/>.
     /// </summary>
-    public static Made MadeIn(List<(string Name, ObjectFile Object)> inputs, IEnumerable<IrArchive> archives)
-        => IndexOf(inputs).MadeTypes(archives);
+    public static Made MadeIn(List<(string Name, ObjectFile Object)> inputs, IReadOnlyDictionary<ObjectFile, IrArchive> archives,
+        IReadOnlyDictionary<ObjectFile, HashSet<string>>? reached = null)
+        => IndexOf(inputs).MadeTypes(archives, reached);
 
     /// <summary>
     /// WHERE EACH METHOD IS HELD IN A METHOD TABLE: for every function some
@@ -337,7 +338,17 @@ public static class VirtualTargets
         /// toolchain's way to a local symbol -- counts every descriptor
         /// defined in that section of that object: nothing says which.
         /// </summary>
-        public Made MadeTypes(IEnumerable<IrArchive> archives)
+        ///
+        /// ONLY WHAT A CLOSED IMAGE KEEPS MAKES ANYTHING (`reached`, from
+        /// IrReachability: each unit with IR, the symbols it keeps). A function
+        /// the link drops never runs, and the types only it stamps are made by
+        /// nobody: the standard library's own code made a Windows Forms
+        /// collection for every program, and every IEnumerable's
+        /// GetEnumerator reached that collection's, which kept its source
+        /// (1311). Relocations inside a dropped function and a dropped
+        /// function's or data item's IR name nothing made; everything else
+        /// counts as before.
+        public Made MadeTypes(IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<ObjectFile, HashSet<string>>? reached)
         {
             if (_made is not null) return _made;
             Made made = new() { Defined = _named.Count };
@@ -386,6 +397,19 @@ public static class VirtualTargets
                     else merged.Add(range);
                 skipped[section] = merged;
             }
+            // Sorted by start; functions do not overlap, so the last start at
+            // or before `at` is the only one that can hold it.
+            static bool InsideAny(List<(long Start, long End)> ranges, long at)
+            {
+                int lo = 0, hi = ranges.Count - 1, found = -1;
+                while (lo <= hi)
+                {
+                    int mid = (lo + hi) >>> 1;
+                    if (ranges[mid].Start <= at) { found = mid; lo = mid + 1; }
+                    else hi = mid - 1;
+                }
+                return found >= 0 && at < ranges[found].End;
+            }
             static bool Inside(List<(long Start, long End)> ranges, long at)
             {
                 int lo = 0, hi = ranges.Count - 1;
@@ -399,12 +423,30 @@ public static class VirtualTargets
                 return false;
             }
             foreach (var (_, obj) in _inputs)
+            {
+                HashSet<string>? kept = reached?.GetValueOrDefault(obj);
+                IrArchive? its = kept is null ? null : archives.GetValueOrDefault(obj);
                 foreach (Section section in obj.Sections)
                 {
                     if (section.Kind == SectionKind.Note) continue;
                     List<(long Start, long End)>? ranges = skipped.GetValueOrDefault(section);
+                    // The functions the link drops, by where they lie in the
+                    // section: only those the unit's IR holds and the link did
+                    // not keep. A function the late passes made after the IR
+                    // was archived (a constant-specialised copy) is never in
+                    // the kept set, kept or not, and counts as before.
+                    List<(long Start, long End)>? dropped = null;
+                    if (kept is not null && its is not null)
+                    {
+                        foreach (Symbol symbol in obj.Symbols)
+                            if (symbol.IsDefined && symbol.IsFunction && symbol.Size > 0 && ReferenceEquals(symbol.Section, section)
+                                && its.Entries.ContainsKey("F:" + symbol.Name) && !kept.Contains("F:" + symbol.Name))
+                                (dropped ??= new()).Add((symbol.Offset, symbol.Offset + symbol.Size));
+                        dropped?.Sort((a, b) => a.Start.CompareTo(b.Start));
+                    }
                     foreach (Relocation r in section.Relocs)
                     {
+                        if (dropped is not null && InsideAny(dropped, r.Offset)) continue;
                         if (!IsDescriptor(r.Symbol))
                         {
                             if (r.Symbol.StartsWith('.'))
@@ -418,7 +460,10 @@ public static class VirtualTargets
                         made.Descriptors.Add(r.Symbol);
                     }
                 }
-            foreach (IrArchive archive in archives)
+            }
+            foreach (var (owner, archive) in archives)
+            {
+                HashSet<string>? kept = reached?.GetValueOrDefault(owner);
                 foreach (IrArchiveEntry entry in archive.Entries.Values)
                 {
                     // A function: every descriptor it names. A data item (and
@@ -427,10 +472,14 @@ public static class VirtualTargets
                     bool function = entry.Key.StartsWith("F:", StringComparison.Ordinal);
                     if (!function && !entry.Key.StartsWith("D:", StringComparison.Ordinal) && !entry.Key.StartsWith("S:", StringComparison.Ordinal)) continue;
                     string own = entry.Key[2..];
+                    // Kept by its key (IrReachability keeps F: and D: records);
+                    // a shadow (S:) is never a record it keeps, and counts.
+                    if (kept is not null && entry.Key[0] != 'S' && !kept.Contains(entry.Key)) continue;
                     if (!function && tableNames.Contains(own)) continue;
                     foreach (string named in entry.References)
                         if (IsDescriptor(named) && (function || named != own)) made.Descriptors.Add(named);
                 }
+            }
             return _made = made;
         }
 
