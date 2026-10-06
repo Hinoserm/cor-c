@@ -436,7 +436,8 @@ public sealed partial class Lowering
     {
         if (p.Index >= _params.Length || _paramCells.ContainsKey(p.Index)) return;
         VReg cell = Allocate(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)));
-        _e.Store(RegOperand.Of(cell), RegOperand.Of(_params[p.Index]), 0, LoadSize(p.Type));
+        // A struct parameter's bytes are its caller's: the cell holds a copy (HeapStruct).
+        _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, _params[p.Index], p.Type)), 0, LoadSize(p.Type));
         _paramCells[p.Index] = cell;
     }
 
@@ -1234,7 +1235,7 @@ public sealed partial class Lowering
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
-            _e.Store(RegOperand.Of(cell), RegOperand.Of(value), 0, LoadSize(held));
+            _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, value, held)), 0, LoadSize(held));
             return;
         }
 

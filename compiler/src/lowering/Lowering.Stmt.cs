@@ -462,7 +462,12 @@ public sealed partial class Lowering
             VReg value = EvalAs(d.Init, type);
             if (boxed)
             {
-                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(value), 0, LoadSize(type));
+                // A STRUCT'S CELL HOLDS A HEAP COPY (HeapStruct), as StorePlace
+                // writes one: the value a call answers is in its caller's
+                // result buffer, and a cell holding that buffer's address held
+                // a frame long gone when the lambda ran (Monomorphiser's
+                // deferred members, natively).
+                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(HeapStruct(d, value, type)), 0, LoadSize(type));
             }
             else if (_addressTakenLocals.Contains(d))
             {
