@@ -734,11 +734,13 @@ public sealed class Monomorphiser
         // Concrete declarations pass through, with their bodies rewritten so
         // any generic reference inside them names a specialisation.
         Metadata.DeclarationBatch required = new();
+        _rewritingUnit = true;
         foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count == 0))
         {
             try { output.Types.Add(RewriteDecl(t, new Dictionary<string, TypeRef>(StringComparer.Ordinal), t.Name)); }
             catch (Metadata.DeclarationDemand demand) { required.Add(demand); }
         }
+        _rewritingUnit = false;
         foreach (string key in _templateBatch.Keys) required.Add(new Metadata.DeclarationDemand(key));
         required.ThrowIfAny();
 
@@ -2521,12 +2523,29 @@ public sealed class Monomorphiser
                 _usings = members[i].Scope;
             }
 
-            _canonSelf = _canonParams is not null && !members[i].Mods.HasFlag(Mods.Static);
-            _canonMarked = false;
+            // A MEMBER THIS UNIT'S LAST EXPANSION ALREADY REWROTE, and nothing
+            // has changed since, rewrites to itself: every name in it already
+            // names the specialisation it means. Each round copied the whole
+            // unit's bodies all the same, node for node -- the largest run of
+            // allocation in a compile. Passed through instead, it keeps its
+            // nodes, and what the last binding left on them is told apart by
+            // its generation (ExprTypes, NodeBinding). Changed is Fresh: a
+            // copy just made of a generic method (Frontend.Specialise), and a
+            // body whose calls were pointed at one (Frontend.Unsettled).
+            bool unit = _rewritingUnit && map.Count == 0 && d.TypeParams.Count == 0 && !_bodiesElsewhere && _canonParams is null;
             MemberDecl copy;
-            try { copy = RewriteMember(members[i], map, name); }
-            finally { _canonSelf = false; }
-            copy.ReadsTypeArguments = _canonMarked || members[i].ReadsTypeArguments;
+            if (unit && members[i].Expanded && !members[i].Fresh)
+            {
+                copy = members[i];
+            }
+            else
+            {
+                _canonSelf = _canonParams is not null && !members[i].Mods.HasFlag(Mods.Static);
+                _canonMarked = false;
+                try { copy = RewriteMember(members[i], map, name); }
+                finally { _canonSelf = false; }
+                copy.ReadsTypeArguments = _canonMarked || members[i].ReadsTypeArguments;
+            }
 
             copy.Scope = members[i].Scope;
             copy.OwnedImplementation = d.TypeParams.Count != 0 ? true : members[i].OwnedImplementation;
@@ -2543,6 +2562,7 @@ public sealed class Monomorphiser
             // ordinary call to a stub whose body does nothing, and the machine
             // ran, halted cleanly and said not one word.
             copy.File = members[i].File;
+            copy.Expanded = unit;
             into.Add(copy);
             _inNamespace = wasNamespace;
             _usings = wasUsings;
@@ -2557,6 +2577,8 @@ public sealed class Monomorphiser
     /// it is the template that method is specialised from, per call.
     /// </summary>
     private bool _bodiesElsewhere;
+
+    private bool _rewritingUnit;
 
     private Block? Body(Block? body, Dictionary<string, TypeRef> map, bool template = false)
         => body is null ? null

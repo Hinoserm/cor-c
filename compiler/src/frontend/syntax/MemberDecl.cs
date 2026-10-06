@@ -82,6 +82,8 @@ public abstract class MemberDecl : Node
     /// because only they can want a copy nothing has made yet.
     /// </summary>
     public bool Fresh { get; set; }
+
+    internal bool Expanded { get; set; }
     /// <summary>Indexed unit ownership; null retains the enclosing type's legacy ownership.</summary>
     public bool? OwnedImplementation { get; set; }
 
