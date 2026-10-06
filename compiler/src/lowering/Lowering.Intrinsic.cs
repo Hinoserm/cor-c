@@ -322,10 +322,22 @@ public sealed partial class Lowering
                 Type t = _b.TypeOf(call.Args[0]);
                 bool couldBe = t.Prim is Prim.String or Prim.Any or Prim.NullLiteral || t.ParamName is not null
                             || t.Symbol is { Kind: TypeKind.Class or TypeKind.Interface } || t.IsArray;
-                if (!couldBe)
+                // NOR IS A CLASS's VALUE, unless the class is one a string is
+                // held as (object, and the rest NarrowKey refuses): a class
+                // that is not String cannot hold one, String being sealed.
+                // A table keyed by its own class asked this of every key.
+                if (!couldBe || NarrowKey(t) is { Kind: TypeKind.Class })
                 {
                     Eval(call.Args[0]);
                     return _e.Const(0, IrType.I32);
+                }
+                // A STRING IS ONE, unless it is null: the descriptor need not
+                // be read to learn what the static type already says. Every
+                // probe of a table keyed by string asked it twice.
+                if (t is { Prim: Prim.String, IsArray: false, IsPointer: false })
+                {
+                    VReg text = ToWord(Eval(call.Args[0]));
+                    return _e.Binary(Opcode.Ne, R(text), Imm(0, text.Type), IrType.I32);
                 }
                 VReg obj = Eval(call.Args[0]);
                 VReg result = _f.NewReg(IrType.I32, "isstr");
@@ -387,7 +399,19 @@ public sealed partial class Lowering
                 }
                 VReg one = ToWord(Arg(call, target, 0));
                 VReg two = ToWord(Arg(call, target, 1));
-                return _e.Call(KeyEqualsStub(_b.TypeOf(call.Args[0])), IrType.I32, R(one), R(two))!;
+                // THE SAME OBJECT IS EQUAL WITHOUT A CALL, as the routine's
+                // first test says (KeyEqualsStub): a table's probe reaches
+                // here once the full hashes match, which is nearly always
+                // the key it holds being the very one asked about.
+                VReg same = _f.NewReg(IrType.I32, "kesame");
+                Block ask = _f.NewBlock("keask"), done = _f.NewBlock("kedone");
+                _e.CopyTo(same, Imm(1, IrType.I32));
+                _e.Branch(_e.Binary(Opcode.Eq, R(one), R(two), IrType.I32), done, ask);
+                _e.SetBlock(ask);
+                _e.CopyTo(same, R(_e.Call(KeyEqualsStub(_b.TypeOf(call.Args[0])), IrType.I32, R(one), R(two))!));
+                _e.Jump(done);
+                _e.SetBlock(done);
+                return same;
             }
             case "EqualValues":
             {
