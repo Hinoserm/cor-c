@@ -17,15 +17,30 @@ internal static class Peephole
     public static void Run(MFunction m)
     {
         DeadSpillStores(m);
-        int[] liveOut = LiveOut(m);
+        int[] liveOut = LiveOut(m, out int[] liveIn);
+        Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < m.Blocks.Count; b++) at[m.Blocks[b]] = b;
+        // WHAT A JUMP IN A BLOCK'S MIDDLE NEEDS: the registers live where it
+        // goes. A walk from the block's end passing it must count them live
+        // again -- a write after it (LoopRotate's copied test) is no reason to
+        // drop a move the jump's way reads.
+        int Jumped(MInstr i)
+        {
+            int live = 0;
+            if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to })
+                live = at.TryGetValue(to, out int t) ? liveIn[t] : 0xFF;
+            else if (i.Op == MOp.JmpTable && i.Table is { } table)
+                foreach (MBlock each in table) live |= at.TryGetValue(each, out int e) ? liveIn[e] : 0xFF;
+            return live;
+        }
         for (int b = 0; b < m.Blocks.Count; b++)
         {
             MBlock block = m.Blocks[b];
             MBlock? next = b + 1 < m.Blocks.Count ? m.Blocks[b + 1] : null;
             ForwardStoreLoad(block.Instrs);
             ForwardSpillLoads(block.Instrs);
-            DeadDefs(block.Instrs, liveOut[b]);
-            RepeatedStores(block.Instrs, liveOut[b], Usable(m));
+            DeadDefs(block.Instrs, liveOut[b], Jumped);
+            RepeatedStores(block.Instrs, liveOut[b], Usable(m), Jumped);
             MergePops(block.Instrs);
             RedundantTests(block.Instrs);
             ZeroWithXor(block.Instrs);
@@ -41,7 +56,7 @@ internal static class Peephole
     /// registers, so dead-definition removal can see past a block's end
     /// instead of assuming everything is wanted there.
     /// </summary>
-    private static int[] LiveOut(MFunction m)
+    private static int[] LiveOut(MFunction m, out int[] liveInOut)
     {
         // A BLOCK MAY LEAVE FROM ITS MIDDLE: a conditional jump with more
         // after it (LoopRotate copies a loop's test over a latch's jump, so
@@ -109,6 +124,7 @@ internal static class Peephole
                 }
             }
         }
+        liveInOut = liveIn;
         // And once more for the ends, now that every block's entry is settled.
         for (int b = 0; b < nb; b++)
         {
@@ -342,13 +358,14 @@ internal static class Peephole
         return usable;
     }
 
-    private static void RepeatedStores(List<MInstr> instrs, int liveOut, int usable)
+    private static void RepeatedStores(List<MInstr> instrs, int liveOut, int usable, Func<MInstr, int> jumped)
     {
         int[] deadBefore = new int[instrs.Count];
         int dead = ~liveOut & 0xFF & ~(1 << (int)Gpr.Esp) & ~(1 << (int)Gpr.Ebp);
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
+            dead &= ~jumped(i);
             if (!Understood(i)) dead = 0;
             else
             {
@@ -449,7 +466,7 @@ internal static class Peephole
         }
     }
 
-    private static void DeadDefs(List<MInstr> instrs, int liveOut)
+    private static void DeadDefs(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
     {
         HashSet<int> dead = new();
         for (int r = 0; r < 8; r++)
@@ -462,6 +479,8 @@ internal static class Peephole
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
+            int needed = jumped(i);
+            if (needed != 0) for (int r = 0; r < 8; r++) if ((needed & (1 << r)) != 0) dead.Remove(r);
             if (Removable(i) && i.Operands[0] is MReg d && dead.Contains(d.Id))
             {
                 instrs.RemoveAt(k);
@@ -528,7 +547,10 @@ internal static class Peephole
             {
                 return ForwardCopy(c, instrs[k], deadAfter) ? j : -1;
             }
-            if (!Understood(c))
+            // NOT ACROSS A JUMP: where it goes may read A, which the copy
+            // would no longer have written (a block that leaves from its
+            // middle, LoopRotate's).
+            if (!Understood(c) || c.Op is MOp.Jcc or MOp.Jmp or MOp.JmpTable)
             {
                 return -1;
             }
