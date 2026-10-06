@@ -30,6 +30,6 @@ internal static class FunctionWorkers
         }
         Task.WhenAll(tasks).Wait();
         for (int i = 0; i < failures.Length; i++)
-            if (failures[i] is Exception error) throw error;
+            if (failures[i] is Exception error) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
     }
 }
