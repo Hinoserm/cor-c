@@ -114,6 +114,21 @@ public sealed class Lexer
     private NameTable? _names;
     private bool _measuring;
 
+    /// <summary>
+    /// The text of the string literal being read, emptied at each one. A
+    /// builder per literal was a builder and its growing chunks for every
+    /// string in every file; none of the readers that use it reads another
+    /// token before it is done with it.
+    /// </summary>
+    private readonly StringBuilder _text = new();
+
+    /// <summary>
+    /// A slice of the source as a string: through the file's name table, so
+    /// a literal such as `0` or `1` written a thousand times is one string.
+    /// </summary>
+    private string Slice(int start, int end) => _measuring ? _src[start..end]
+        : (_names ??= new NameTable(1024, KeywordNames)).Get(_src, start, end - start);
+
     private readonly string _src;
     private readonly string _file;
     private int _pos;
@@ -885,7 +900,7 @@ public sealed class Lexer
             // Keep the suffix in the token.  Its letters are not part of the
             // numeric value, but they ARE part of the literal's type: 1L must
             // remain a long even though its value fits in an int.
-            return new Token(Tok.Int, _src[start.._pos], line, col, start);
+            return new Token(Tok.Int, Slice(start, _pos), line, col, start);
         }
 
         bool real = false;
@@ -971,7 +986,7 @@ public sealed class Lexer
         // Keep the complete spelling. The parser strips a suffix only after it
         // knows the radix, so hexadecimal digits named d/f are never mistaken
         // for decimal floating suffixes, and the binder can preserve L's type.
-        return new Token(real ? Tok.Real : Tok.Int, _src[start.._pos], line, col, start);
+        return new Token(real ? Tok.Real : Tok.Int, Slice(start, _pos), line, col, start);
     }
 
     private static bool IsRadixDigit(char c, bool hex)
@@ -989,7 +1004,7 @@ public sealed class Lexer
         Advance();                              // the '@'
         Advance();                              // the opening quote
 
-        StringBuilder sb = new();
+        StringBuilder sb = _text.Clear();
 
         while (true)
         {
@@ -1053,7 +1068,9 @@ public sealed class Lexer
             if (Cur == '\n') { Advance(); }
         }
 
-        StringBuilder sb = new();
+        // NO BUILDER: there are no escapes, so the body is exactly the
+        // source between the delimiters, and is cut out of it once.
+        int body = _pos;
 
         while (true)
         {
@@ -1079,18 +1096,16 @@ public sealed class Lexer
                         Advance();
                     }
 
-                    return new Token(Tok.Str, Finish(sb.ToString(), multi, at), line, col, start);
+                    return new Token(Tok.Str, Finish(_src.Substring(body, at - body), multi, at), line, col, start);
                 }
 
                 for (int i = 0; i < run; i++)
                 {
-                    sb.Append('"');
                     Advance();
                 }
                 continue;
             }
 
-            sb.Append(Cur);
             Advance();
         }
     }
@@ -1116,41 +1131,70 @@ public sealed class Lexer
         // line was collected as content. So the newline that ends the real
         // content and the indentation that follows it come off together --
         // taking the newline first finds none, since the body ends in spaces.
-        List<string> lines = new(body.Replace("\r\n", "\n").Split('\n'));
+        //
+        // Walked in place rather than split into a list of lines and joined
+        // again: the compiler's own preludes are raw literals thousands of
+        // lines long, and each line was a string made only to be copied.
+        string text = body.IndexOf('\r') < 0 ? body : body.Replace("\r\n", "\n");
 
-        if (lines.Count == 0)
+        // The last line starts after the last newline: the indentation.
+        int last = text.Length;
+        while (last > 0 && text[last - 1] != '\n')
         {
-            return "";
+            last--;
         }
+        int indent = text.Length - last;
 
-        string indent = lines[^1];
-
-        if (indent.Trim().Length != 0)
+        if (!Blank(text, last, text.Length))
         {
             // Closing quotes were not alone on their line: nothing to strip,
             // and nothing to drop either.
-            return string.Join("\n", lines);
+            return text;
         }
 
-        lines.RemoveAt(lines.Count - 1);
-
-        for (int i = 0; i < lines.Count; i++)
+        // Every line before the last ends in a newline, the last of them at
+        // last - 1; the newlines between them are kept, that one is not.
+        StringBuilder sb = _text.Clear();
+        for (int at = 0; at < last;)
         {
-            if (lines[i].StartsWith(indent, StringComparison.Ordinal))
+            int end = at;
+            while (text[end] != '\n')
             {
-                lines[i] = lines[i][indent.Length..];
+                end++;
             }
-            else if (lines[i].Trim().Length == 0)
+            if (at > 0)
             {
-                // A BLANK LINE NEED NOT BE PADDED. An editor that strips
-                // trailing whitespace would otherwise change what the program
-                // means, which is not a thing a program's value should depend
-                // on.
-                lines[i] = "";
+                sb.Append('\n');
             }
+            if (end - at >= indent && string.CompareOrdinal(text, at, text, last, indent) == 0)
+            {
+                sb.Append(text, at + indent, end - at - indent);
+            }
+            else if (!Blank(text, at, end))
+            {
+                sb.Append(text, at, end - at);
+            }
+            // Otherwise A BLANK LINE NEED NOT BE PADDED. An editor that
+            // strips trailing whitespace would otherwise change what the
+            // program means, which is not a thing a program's value should
+            // depend on.
+            at = end + 1;
         }
 
-        return string.Join("\n", lines);
+        return sb.ToString();
+    }
+
+    /// <summary>Whether text[from..to) is all white space, as Trim() would leave it empty.</summary>
+    private static bool Blank(string text, int from, int to)
+    {
+        for (int i = from; i < to; i++)
+        {
+            if (!char.IsWhiteSpace(text[i]))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Token StringLiteral(int line, int col, int start)
@@ -1164,7 +1208,7 @@ public sealed class Lexer
         }
 
         Advance();
-        StringBuilder sb = new();
+        StringBuilder sb = _text.Clear();
 
         while (true)
         {
@@ -1258,7 +1302,7 @@ public sealed class Lexer
 
         Advance();                              // '"'
 
-        StringBuilder sb = new();
+        StringBuilder sb = _text.Clear();
         int depth = 0;
 
         while (true)
@@ -1352,7 +1396,7 @@ public sealed class Lexer
         }
         Advance();
 
-        return new Token(Tok.Char, value.ToString(), line, col, start);
+        return new Token(Tok.Char, value < CharacterText.Length ? CharacterText[value] : value.ToString(), line, col, start);
     }
 
     private char ReadChar()
