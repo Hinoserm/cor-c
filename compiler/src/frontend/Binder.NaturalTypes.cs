@@ -70,6 +70,12 @@ public sealed partial class Binder
                 return null;
             }
             source.NaturalType = spelt;
+            // A MEMBER WITH A TYPE SPELT IN IT IS EXPANDED AGAIN, not passed
+            // through as unchanged (Monomorphiser.RewriteMembers): the
+            // expansion is what makes the delegate type the spelling names,
+            // and a member passed through left a lambda's natural type with
+            // no copy behind it -- "LambdaExpr is not implemented".
+            if (_member is not null) _member.Expanded = false;
         }
 
         // A SYNTHESISED DELEGATE NOT DECLARED YET: the driver declares it.
