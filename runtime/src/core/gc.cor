@@ -434,6 +434,7 @@ static class Gc
     /// line (gc.checkoldcards=1).
     public static bool CheckOldCards;
     static long _oldCardsReports;
+    static long _aloneSaid;
 
     /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
     /// read word by word, and a word that lands on a young block this cycle
@@ -11291,6 +11292,19 @@ static class Gc
         long clock = PauseClock;
         long t = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
         BuildBlockAnchors(false);
+        // Under CheckOldCards, which cycles are collected alone and leave the
+        // pages unwalked: the first few, then every fiftieth.
+        if (CheckOldCards)
+        {
+            _aloneSaid = _aloneSaid + 1;
+            if (_aloneSaid <= 4 || _aloneSaid % 50 == 0)
+            {
+                SayNumber("gc old cards: collected alone, cycle ", _cycle);
+                SayNumber("gc old cards:   minor ", _minor ? 1 : 0);
+                SayNumber("gc old cards:   pages unwalked ", _pagesUnwalked ? 1 : 0);
+                SayNumber("gc old cards:   alone so far ", _aloneSaid);
+            }
+        }
         if (clock != 0) SnapshotMicros = SnapshotMicros + ((Sys.Call(clock, 0, 0, 0) - t) & 0xFFFFFFFF);
         _rootsOnly = false;
         GcRoots.Enter();
