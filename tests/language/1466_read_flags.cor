@@ -1,0 +1,31 @@
+// test: Sys.ReadFlags reads the flags register with no call
+// expect-exit: 0
+// expect-output:
+// reserved bit True
+// interrupts True
+// the same twice True
+//
+// pushfd; pop (pushfq on x86-64). Bit 1 of EFLAGS always reads 1, and a
+// program in user mode runs with interrupts on (bit 9); nothing between two
+// reads changes the bits a program cannot set but the arithmetic ones,
+// which are masked off here.
+
+static class Program
+{
+    static void SayBool(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? "True" : "False");
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        long flags = Sys.ReadFlags();
+        SayBool("reserved bit ", (flags & 2) != 0);
+        SayBool("interrupts ", (flags & 0x200) != 0);
+        long again = Sys.ReadFlags();
+        SayBool("the same twice ", (flags & 0x200) == (again & 0x200) && (again & 2) != 0);
+        return 0;
+    }
+}

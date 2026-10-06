@@ -434,7 +434,8 @@ public sealed partial class Lowering
     {
         if (p.Index >= _params.Length || _paramCells.ContainsKey(p.Index)) return;
         VReg cell = Allocate(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)));
-        _e.Store(RegOperand.Of(cell), RegOperand.Of(_params[p.Index]), 0, LoadSize(p.Type));
+        // A struct parameter's bytes are its caller's: the cell holds a copy (HeapStruct).
+        _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, _params[p.Index], p.Type)), 0, LoadSize(p.Type));
         _paramCells[p.Index] = cell;
     }
 
@@ -812,15 +813,30 @@ public sealed partial class Lowering
     /// a static, a struct's field (held in a local, an array or a class:
     /// reached through an address into something), and an access at any
     /// other offset: what region inference cannot know the class of.
+    /// And null for a field that holds no reference: a family names a
+    /// REFERENCE field, so a load of one that finds a word never read as a
+    /// reference is a load from an object of another class, which reads
+    /// nothing (RegionEscape.Loaded). A number, an address kept as one
+    /// among them, stays the untyped word's, "the unknown object at most".
     /// </summary>
     private static string? FieldFamily(FieldSymbol f, long offset)
     {
-        if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset) return null;
+        if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset || HoldsNumber(f.Type)) return null;
         if (f.FamilyMade is string made) return made;
         TypeSymbol owner = f.Owner;
         string declaring = owner.Decl is { Specialised: true, Template: string template } d ? template + "`" + d.TemplateArgs.Count : TypeKey(owner);
         return f.FamilyMade = declaring + "::" + f.Name;
     }
+
+    /// <summary>
+    /// A number and only that: no class, struct or array, nothing nullable,
+    /// and not `object` or a type parameter, which may hold a reference
+    /// (Prim.Any). An enum is its number.
+    /// </summary>
+    private static bool HoldsNumber(Corsac.Lang.Type ty)
+        => !ty.IsArray && !ty.IsNullableValue && ty.Symbol is not { Kind: TypeKind.Class or TypeKind.Interface or TypeKind.Struct }
+            && ty.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+                or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char;
 
     /// <summary>Whether a field's loads and stores carry it (Instr.Field): a reference, held by a class or statically.</summary>
     private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class);
@@ -984,6 +1000,7 @@ public sealed partial class Lowering
         {
             Require(values);
         }
+        RequireSequenceRoutines();
         _statics.Add(flag);
 
         Block report = _f.NewBlock("barrier");
@@ -1014,6 +1031,21 @@ public sealed partial class Lowering
     /// (StoreSequences): asked, on i386, of a runtime with a concurrent
     /// collector's barrier and a card table, which the sequences read.
     /// </summary>
+    /// <summary>
+    /// What the store sequences call (X86Backend, "THE STORE SEQUENCES"):
+    /// Runtime.WriteBarrier, and the three routines that report, store and
+    /// mark the card while a mark is under way. The backend writes the stubs
+    /// only into a module that has all four, and a program compiled whole,
+    /// with no link to keep them, had only the first: its stubs were never
+    /// written, and its calls of them did not link.
+    /// </summary>
+    private void RequireSequenceRoutines()
+    {
+        if (!MakesStoreSequences) return;
+        foreach ((string name, int arity) in new[] { ("WriteBarrier", 2), ("WriteBarrierStore", 2), ("WriteBarrierExchange", 2), ("WriteBarrierCompareExchange", 3) })
+            if (RuntimeMethod(name, arity) is MethodSymbol routine) Require(routine);
+    }
+
     private bool MakesStoreSequences
         => StoreSequences && _t.Name == "x86" && _b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
             && rt.Fields.Any(f => f.Static && f.Name == "Marking") && rt.Fields.Any(f => f.Static && f.Name == "Cards")
@@ -1160,7 +1192,15 @@ public sealed partial class Lowering
         {
             return;
         }
-        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" })
+        // NOT IN THE COLLECTOR'S AND THE RUNTIME'S OWN CODE -- EXCEPT A STATIC'S
+        // STORE. A minor collection reads only the statics' cards that are
+        // set (Gc.ScanStatics), so a reference stored into a static with no
+        // card is one it never sees: Runtime's stop signal and CRC tables,
+        // a bare-metal Platform's console. The mark is a byte stored into
+        // the card table, committed for the statics from the moment it
+        // exists (Gc.StartGenerations), and calls nothing.
+        if (_method is { Owner.Name: "Gc" or "GcThreads" or "GcLock" or "GcRoots" or "HeapChunks" or "Runtime" or "Platform" }
+            && address is not SymOperand)
         {
             return;
         }
@@ -1249,7 +1289,7 @@ public sealed partial class Lowering
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
-            _e.Store(RegOperand.Of(cell), RegOperand.Of(value), 0, LoadSize(held));
+            _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, value, held)), 0, LoadSize(held));
             return;
         }
 

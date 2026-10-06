@@ -277,6 +277,7 @@ public enum MOp : byte
     Rdmsr, Wrmsr,       // ECX the MSR, EDX:EAX the value
     Cpuid,              // EAX, ECX in; EAX, EBX, ECX, EDX out
     Rdtsc,              // EDX:EAX
+    ReadFlags,          // r64 <- RFLAGS: pushfq; pop r64
     Swapgs,
     SoftInt,            // int imm8: a trap gate other than Linux's, with syscall's registers
 }

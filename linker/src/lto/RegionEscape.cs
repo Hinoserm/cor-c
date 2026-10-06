@@ -2804,7 +2804,8 @@ internal sealed class RegionEscape
             if (!pts.Add(loc)) return;
             if (_owner.Why is not null && _locObject[loc] == 0)
             {
-                string how = _via >= 0 ? _viaHow : "added directly" + (_appliedAt.Count > 0 ? ", last summary " + _appliedAt[^1].Callee : "");
+                string how = _via >= 0 ? _viaHow : _viaHow.StartsWith("added directly:", StringComparison.Ordinal) ? _viaHow
+                    : "added directly" + (_appliedAt.Count > 0 ? ", last summary " + _appliedAt[^1].Callee : "");
                 if ((_unknownVia ??= new()).TryAdd(node, (_via, how))) (_unknownOrder ??= new()).Add((node, _via, how));
             }
             Delta(node, loc);
@@ -2824,7 +2825,12 @@ internal sealed class RegionEscape
                 int sink = UnknownCell();
                 // The places it held, and the unknown object for those to come.
                 for (int i = 0, n = pts.Count; i < n; i++) { int held = pts.Items[i]; if ((_locClass[held] & PlaceClass) != 0) Add(sink, held); }
-                if (pts.Add(Unknown)) Delta(node, Unknown);
+                if (pts.Add(Unknown))
+                {
+                    if (_owner.Why is not null && (_unknownVia ??= new()).TryAdd(node, (-1, $"added directly: past {MostPlacesHeld} places held ({pts.Count - made})")))
+                        (_unknownOrder ??= new()).Add((node, -1, $"added directly: past {MostPlacesHeld} places held ({pts.Count - made})"));
+                    Delta(node, Unknown);
+                }
             }
         }
 
@@ -3020,6 +3026,23 @@ internal sealed class RegionEscape
             }
         }
 
+        // A SUMMARY'S DEEP STEP READS BY REFERENCES: what a callee may reach
+        // below a place, which its summary names rather than lists. A word
+        // of numbers is nothing it reaches -- a callee that takes one for an
+        // address already holds the unknown object in its own summary, where
+        // its load of the number was made -- so an object of numbers read
+        // so gives nothing (LoadedAll). Only these nodes; a raw read of a
+        // whole object (MemCopy) still takes its numbers for the unknown
+        // object at most. A tree's every node of numbers -- a Num, an Id --
+        // read deep was the unknown object, and every tree with it (1200).
+        private readonly HashSet<int> _deepReaders = new();
+
+        private void DeepLoadAllEdge(int dest, int address)
+        {
+            _deepReaders.Add(dest);
+            LoadAllEdge(dest, address);
+        }
+
         // Every cell of what `address` points to, into `dest`.
         private void LoadAllEdge(int dest, int address)
         {
@@ -3113,8 +3136,14 @@ internal sealed class RegionEscape
             if (IsConstant(o)) { Add(dest, Constant); return; }
             int at = Offset(_locOffset[loc], offset);
             if (at == Any) { LoadedAll(loc, dest); return; }
-            // A word never read as a reference holds a number: the unknown object at most.
-            if (NoReference(o, at)) { Add(dest, Unknown); return; }
+            // A word never read as a reference holds a number: the unknown
+            // object at most. But a load naming a field names a reference
+            // field of its class (Lowering.FieldFamily), and an object whose
+            // word there is never one is of another class -- a summary's
+            // typed path walked through a child of every class a field may
+            // hold: `this.Right.Left` on a Num, whose word there is its int.
+            // In a type-safe program that load never reads it (1200).
+            if (NoReference(o, at)) { if (family < 0) Add(dest, Unknown); return; }
             // Typed only from the object's start: at an address into it, the
             // field named is not where the offset says.
             int named = _locOffset[loc] == 0 ? Named(o, at, family) : -1;
@@ -3179,7 +3208,7 @@ internal sealed class RegionEscape
             int o = _locObject[loc];
             if (o == 0) { Add(dest, Unknown); return; }
             if (IsConstant(o)) { Add(dest, Constant); return; }
-            if (NoReference(o, Any)) { Add(dest, Unknown); return; }
+            if (NoReference(o, Any)) { if (!_deepReaders.Contains(dest)) Add(dest, Unknown); return; }
             HashSet<int> readers = _allReaders[o] ??= new();
             if (!readers.Add(dest)) return;
             Cell(o, Any);
@@ -3527,6 +3556,19 @@ internal sealed class RegionEscape
         private void Received(VCall v, int loc)
         {
             int o = _locObject[loc];
+            // A CONSTANT IS NO RECEIVER: an address no one writes is never an
+            // object of the call's class, and it reaches a receiver only by the
+            // words it shares a cell with -- an array's descriptor at its start
+            // and its elements at any offset, so every List's element was it
+            // too. Dispatched, it ran every target's merged summary on the
+            // constant, and the unknown object that summary holds went into
+            // every tree a foreach walked (1200). The call's other arguments
+            // still meet its targets: the group is made all the same.
+            if (IsConstant(o))
+            {
+                if (!v.Wide && v.Outside.Length > 0) Group(v, v.Outside);
+                return;
+            }
             // A call on a blob, noted to be dispatched again as members join.
             if (_membersOf.ContainsKey(o) && _blobCallsSeen.Add((v, loc)))
                 (_blobCalls.TryGetValue(o, out List<(VCall, int)>? calls) ? calls : _blobCalls[o] = new()).Add((v, loc));
@@ -3925,7 +3967,7 @@ internal sealed class RegionEscape
                     if (!chains.TryGetValue((at, step), out int next))
                     {
                         next = NewNode();
-                        if (step == DeepStep) { LoadAllEdge(next, at); LoadAllEdge(next, next); }
+                        if (step == DeepStep) { DeepLoadAllEdge(next, at); DeepLoadAllEdge(next, next); }
                         else if (IsGuard(step)) FilterEdge(at, next, GuardOf(step));
                         // A field naming its field, loaded as it.
                         else LoadEdge(next, at, StepOffset(step), StepFamily(step));
@@ -3967,9 +4009,9 @@ internal sealed class RegionEscape
                         {
                             if (a < 0) continue;
                             CopyEdge(a, node[k], 0);
-                            LoadAllEdge(node[k], a);
+                            DeepLoadAllEdge(node[k], a);
                         }
-                        LoadAllEdge(node[k], node[k]);
+                        DeepLoadAllEdge(node[k], node[k]);
                         break;
                     }
                     case Kind.Made when o.Param == ConstantParam:
@@ -4265,7 +4307,10 @@ internal sealed class RegionEscape
                 if (_pts[n] is { } held)
                 {
                     _pts[n] = null;
+                    int wasVia = _via; string wasHow = _viaHow;
+                    _via = n; _viaHow = "merged into it (a copy cycle)";
                     for (int i = 0; i < held.Count; i++) Add(keep, held.Items[i]);
+                    _via = wasVia; _viaHow = wasHow;
                 }
             }
         }
@@ -4297,6 +4342,7 @@ internal sealed class RegionEscape
                     if (_kind[o] != Kind.Made || _placedMade.Contains(o)) continue;
                     WrittenNode();
                     more = true;
+                    _via = -1; _viaHow = "added directly: reached from a place written (Aliased.Placed) " + Describe(o);
                     Placed(o);
                 }
                 // Each place's word into what is written into places: its
@@ -4314,10 +4360,15 @@ internal sealed class RegionEscape
                             }
                 foreach (int o in Reached(new[] { 0 }))
                 {
-                    if (o == 0 || _kind[o] != Kind.Made || _unknownMade.Contains(o)) continue;
+                    // NOT A CONSTANT: it lies in read-only memory, and what the
+                    // unknown object's holder writes cannot land there; what is
+                    // read out of it is a constant again (RegionConstants).
+                    if (o == 0 || _kind[o] != Kind.Made || IsConstant(o) || _unknownMade.Contains(o)) continue;
                     more = true;
+                    _via = -1; _viaHow = "added directly: reached by the unknown object (Aliased) " + Describe(o);
                     ReachedByUnknown(o);
                 }
+                _viaHow = "";
                 if (!more) break;
                 Propagate();
             }
@@ -4562,7 +4613,7 @@ internal sealed class RegionEscape
                     foreach (int n in own.Take(12))
                         _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: node {n} has the unknown object from {UnknownChain(Find(Node(m, n)))}");
                     if (_unknownOrder is not null)
-                        foreach (var (node, from, how) in _unknownOrder.Where(r => r.From >= 0).Take(40))
+                        foreach (var (node, from, how) in _unknownOrder.Where(r => r.From >= 0 || !r.How.Contains("last summary")).Take(40))
                         {
                             string name = _cellName is not null && _cellName.TryGetValue(node, out var cell)
                                 ? $"cell {(cell.O == 0 ? "of the unknown object" : Describe(cell.O) + " sites " + string.Join(",", _owner.SitesOf(_origins[cell.O]).Take(4).Select(_owner.SiteName)))} +{StepText(cell.Offset)}"

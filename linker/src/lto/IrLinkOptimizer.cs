@@ -136,6 +136,15 @@ public static class IrLinkOptimizer
         // see the whole unit, what the image keeps of it or not (UnitBackend),
         // and the one holding the runtime called it unkept.
         linkRoots.Add(RuntimeAbi.WriteBarrierValues);
+        // And the store sequences' barriers, where the image has the stubs
+        // (the runtime's unit defines __corsac_refstore): only those stubs,
+        // which the backend writes, call them, and no unit's IR names them.
+        if (owners.ContainsKey(RuntimeAbi.RefStore))
+        {
+            linkRoots.Add(RuntimeAbi.WriteBarrierStore);
+            linkRoots.Add(RuntimeAbi.WriteBarrierExchange);
+            linkRoots.Add(RuntimeAbi.WriteBarrierCompareExchange);
+        }
         // A KERNEL WITH EXPORTS, PRUNED (reachableFrom, keep): open -- its
         // types are subclassed and its virtual calls overridden by modules, so
         // no closed fact holds -- but what neither the kernel nor any module
@@ -246,10 +255,11 @@ public static class IrLinkOptimizer
                 // by name, whatever the bounds above. Only to a unit made
                 // again anyway: one taken as its compile left it keeps its
                 // calls, and is right with them.
-                if (planned && !defined.Contains(RuntimeAbi.AllocFastSized) && imports.All(import => import.Symbol != RuntimeAbi.AllocFastSized)
-                    && owners.TryGetValue(RuntimeAbi.AllocFastSized, out ObjectFile? allocOwner) && archives.TryGetValue(allocOwner, out IrArchive? allocArchive)
-                    && allocArchive.Entries.TryGetValue("F:" + RuntimeAbi.AllocFastSized, out IrArchiveEntry? allocBody) && allocBody.Importable)
-                    imports.Add((RuntimeAbi.AllocFastSized, allocArchive, allocBody));
+                foreach (string placed in new[] { RuntimeAbi.AllocFastSized, RuntimeAbi.AllocFast })
+                    if (planned && !defined.Contains(placed) && imports.All(import => import.Symbol != placed)
+                        && owners.TryGetValue(placed, out ObjectFile? allocOwner) && archives.TryGetValue(allocOwner, out IrArchive? allocArchive)
+                        && allocArchive.Entries.TryGetValue("F:" + placed, out IrArchiveEntry? allocBody) && allocBody.Importable)
+                        imports.Add((placed, allocArchive, allocBody));
                 // And a region's allocation of a size the compiler knows, which
                 // the region sites become as the unit is regenerated.
                 if (planned && regionsPossible && !defined.Contains(RuntimeAbi.AllocRegionSized) && imports.All(import => import.Symbol != RuntimeAbi.AllocRegionSized)

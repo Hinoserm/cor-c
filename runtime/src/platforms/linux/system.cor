@@ -508,6 +508,10 @@ static class Platform
         Gc.WorkerCountHook = Sys.AddressOf(Platform.CollectorWorkers);
         Gc.WorkerStartHook = Sys.AddressOf(Platform.StartCollectorWorker);
         Gc.WorkerQuietHook = Sys.AddressOf(Platform.QuietWorker);
+        // And its statics read by their cards in a minor cycle: a user-mode
+        // program's statics take a reference only through a store the
+        // compiler marks (Gc.ScanStatics).
+        Gc.StaticsByCards = true;
         Sys.Poke(block + Tls.Self, block);
 
 #if TARGET_AMD64
@@ -688,6 +692,12 @@ static class Platform
     /// to (Gc.CommitCards).
     public static void Commit(long at, long bytes) { }
     public const long TaskArenaBytes = 0;
+
+    /// A thread here is a thread: its block is its own, and what it runs
+    /// keeps its words there (the bare-metal platform's hooks of these names).
+    public const long ThreadStaticsHook = 0;
+    public const long TypeInitOwnerHook = 0;
+    public const long TypeInitWaitHook = 0;
 
     /// Free memory as the collector may ask it: with the heap held, so without
     /// allocating (SysinfoBytes answers into a page of the system's own).

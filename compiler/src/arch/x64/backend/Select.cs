@@ -1949,6 +1949,9 @@ internal sealed class Selector
             case Corsac.Lang.X86.MachineIntrinsics.Invlpg:
                 Emit(MOp.Invlpg, R(i.Operands[0]));
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.ReadFlags:
+                if (i.Dest is not null) Emit(MOp.ReadFlags, V(i.Dest));
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.ReadCr:
             {
                 long number = ControlRegister(i.Operands[0]);

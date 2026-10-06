@@ -1,0 +1,59 @@
+// test: a program proved to need no collector stores without a barrier, a card or a sequence
+// flags-x86: --store-sequences
+// expect-no-asm-x86: Store: __corsac_refstore [s_Runtime_Marking] __corsac_cardmark __corsac_barrier m_Runtime_WriteBarrier m_Runtime_CardMark
+// expect-exit: 0
+// expect-output:
+// stored first
+// stored second
+//
+// THE RULE 06_store_sequences ran into. A write barrier and a card mark are
+// the collector's: they tell a concurrent mark of the reference a store
+// overwrites, and a minor cycle where an old object points. When the whole
+// program is proved to need no collector -- every allocation it makes is
+// given back where it dies or lives to the end, and its own source never
+// calls into the collector (Escape, NeedsHeap) -- there is no mark for a
+// store to race and no cycle to read a card, and both are taken out with the
+// collector itself (Escape: "bookkeeping for a collector there will not
+// be"). So is the sequence a store is made as where the image stops its
+// threads anywhere (--store-sequences): it exists only to keep the barrier's
+// test, the store and the card together.
+//
+// That holds for any store, however reachable its object: here into a node
+// held by a static and handed in as a parameter. What decides it is the
+// program, not the object: the same Store in a program with a collector --
+// 06_store_sequences, which collects; 09_store_sequences_run, which makes
+// garbage -- keeps its sequence, and its barrier is reported when Marking is
+// set. A kernel is never such a program: it collects, and its modules are
+// linked against it (a program with exports keeps everything).
+
+using System.Runtime.CompilerServices;
+
+class Node
+{
+    public object? Next;
+}
+
+static class Program
+{
+    // Made after the host has given the runtime its heap.
+    static Node? _held;
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        _held = new Node();
+        Store(_held!, "first");
+        Host.Line("stored " + (string)_held!.Next!);
+        Store(_held!, "second");
+        Host.Line("stored " + (string)_held!.Next!);
+        Host.Done(0);
+        return 0;
+    }
+
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Store(Node into, object value)
+    {
+        into.Next = value;
+    }
+}

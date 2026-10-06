@@ -1506,6 +1506,20 @@ public sealed partial class Escape
     private void ReleaseFieldReads(string field)
     {
         if (_module is not { KeepCalls.Count: > 0 } m) return;
+        if (_fieldLoads is not null)
+        {
+            // The reads from the index (FieldsInUnit), in the order the walk
+            // below finds them, a function's graph made once for its reads.
+            if (!_fieldLoads.TryGetValue(field, out var reads)) return;
+            Function? last = null;
+            Defs? lastDefs = null;
+            foreach ((Function g, Instr i) in reads)
+            {
+                if (!ReferenceEquals(g, last)) { last = g; lastDefs = new Defs(g, buildCfg: false); }
+                ReleaseRead(m, g, lastDefs!, i);
+            }
+            return;
+        }
         foreach (Function g in m.Functions)
         {
             Defs? defs = null;
@@ -1514,15 +1528,45 @@ public sealed partial class Escape
                 {
                     if (i.Op != Opcode.Load || i.Field != field || i.Dest is null) continue;
                     defs ??= new Defs(g, buildCfg: false);
-                    HashSet<VReg> container = OwnedElements.Container(g, defs, i);
-                    foreach (string kind in new[] { "List", "Dictionary" })
-                    {
-                        List<(Block B, Instr Call, OwnedElements.Role Role)> found = new();
-                        OwnedElements.Uses(g, defs, kind, container, i, out _, into: found);
-                        foreach (var c in found) m.KeepCalls.Remove(c.Call);
-                    }
+                    ReleaseRead(m, g, defs, i);
                 }
         }
+    }
+
+    /// <summary>One read's kept calls let go (ReleaseFieldReads).</summary>
+    private static void ReleaseRead(Module m, Function g, Defs defs, Instr i)
+    {
+        HashSet<VReg> container = OwnedElements.Container(g, defs, i);
+        foreach (string kind in new[] { "List", "Dictionary" })
+        {
+            List<(Block B, Instr Call, OwnedElements.Role Role)> found = new();
+            OwnedElements.Uses(g, defs, kind, container, i, out _, into: found);
+            foreach (var c in found) m.KeepCalls.Remove(c.Call);
+        }
+    }
+
+    /// <summary>
+    /// EVERY READ OF EVERY FIELD, by field, while FieldsInUnit judges them:
+    /// ReleaseFieldReads walked every instruction of the unit for each field
+    /// it let go -- fields times instructions, at the link's run of a unit
+    /// holding the runtime and the class library. Nothing judged there adds
+    /// or takes away a read (KeepAlives adds calls), so the reads found once
+    /// are the ones each walk would find, in the same order.
+    /// </summary>
+    private Dictionary<string, List<(Function F, Instr Load)>>? _fieldLoads;
+
+    private static Dictionary<string, List<(Function F, Instr Load)>> FieldLoads(Module m)
+    {
+        Dictionary<string, List<(Function F, Instr Load)>> loads = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions)
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Load || i.Field is not { } field || i.Dest is null) continue;
+                    if (!loads.TryGetValue(field, out var list)) loads[field] = list = new();
+                    list.Add((g, i));
+                }
+        return loads;
     }
 
     /// <summary>
@@ -1534,17 +1578,22 @@ public sealed partial class Escape
     /// </summary>
     private void FieldsInUnit(Module m, Dictionary<string, bool[]> summaries)
     {
-        if (_elementMode == ElementMode.Hints)
+        if (_elementMode is not (ElementMode.Hints or ElementMode.Linked)) return;
+        _fieldLoads = m.KeepCalls.Count > 0 ? FieldLoads(m) : null;
+        try
         {
-            foreach ((string field, string kind) in m.ElementFields) FieldElementsProved(field, kind, summaries);
-            return;
+            if (_elementMode == ElementMode.Hints)
+            {
+                foreach ((string field, string kind) in m.ElementFields) FieldElementsProved(field, kind, summaries);
+                return;
+            }
+            HashSet<string> loaded = LoadedFields(m);
+            foreach ((string field, string kind) in _elementFacts!.Elements.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                if (loaded.Contains(field)) FieldElementsProved(field, kind, summaries);
+            foreach (string field in _elementFacts.ElementKept.Order(StringComparer.Ordinal))
+                if (loaded.Contains(field) && !_elementFacts.Elements.ContainsKey(field)) ReleaseFieldReads(field);
         }
-        if (_elementMode != ElementMode.Linked) return;
-        HashSet<string> loaded = LoadedFields(m);
-        foreach ((string field, string kind) in _elementFacts!.Elements.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-            if (loaded.Contains(field)) FieldElementsProved(field, kind, summaries);
-        foreach (string field in _elementFacts.ElementKept.Order(StringComparer.Ordinal))
-            if (loaded.Contains(field) && !_elementFacts.Elements.ContainsKey(field)) ReleaseFieldReads(field);
+        finally { _fieldLoads = null; }
     }
 
     /// <summary>Every field the module reads or takes the address of: anything but a store, and no call's own tag.</summary>
@@ -1647,6 +1696,7 @@ public sealed partial class Escape
                 int k = at.Instrs.IndexOf(origin);
                 at.Instrs.RemoveAt(k);
                 at.Instrs.InsertRange(k, RegionPointsTo.Beside(f, origin, made.Dest));
+                f.Edited();
             }
         }
         _elementSites.Clear();
@@ -3150,7 +3200,7 @@ public sealed partial class Escape
                 if (i.Op == Opcode.Call && IsAllocator(i.Callee) && i.Dest is not null && i.Field is null)
                     arrays.Add(i);
         if (arrays.Count == 0) return;
-        Defs defs = new(f, buildCfg: false);
+        Defs defs = AnalysisCache.DefsOf(f, buildCfg: false);
         HashSet<Block>? repeating = null;
         foreach (Instr made in arrays)
         {

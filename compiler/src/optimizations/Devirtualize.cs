@@ -814,17 +814,29 @@ public sealed class Devirtualize : IModulePass
 /// second iterator goes, and the enumerator is the one object the rules can
 /// follow -- which a register holding either of two never was.
 /// </summary>
-public sealed class LateCleanup : IModulePass
+public sealed class LateCleanup : IParallelModulePass
 {
     public string Name => "late-cleanup";
+
+    /// <summary>
+    /// SPREAD OVER THE PIPELINE'S WORKERS, as the passes it runs are
+    /// everywhere else (Pipeline.RunFunctions): each function's rounds read
+    /// only the function and the unit's read-only data, so a function comes
+    /// out the same whichever worker takes it and whatever runs beside it.
+    /// One worker after another took every function of the unit, and at the
+    /// link's run of the unit holding the runtime and the class library that
+    /// was a second of fifteen passes a function with the machine idle.
+    /// </summary>
+    public int Workers { get; set; } = 1;
 
     public void Run(Module m)
     {
         Dictionary<string, DataItem> items = Devirtualize.ReadOnlyItems(m);
-        Devirtualize devirtualize = new();
         IPass[] after = { new ConstantAndCopyPropagation(), new ConstantFold { AcrossFunction = true }, new BranchSimplify(), new DeadCodeElimination() };
-        foreach (Function f in m.Functions)
+        FunctionWorkers.Run(m, Workers, (f, index) =>
         {
+            // One of its own a function: it counts what it resolves.
+            Devirtualize devirtualize = new();
             // Twice round: a test folded to a constant is a register until it
             // is propagated into the branch that reads it, and the branch gone,
             // the enumerator is the one object, whose vtable can then be read.
@@ -839,7 +851,7 @@ public sealed class LateCleanup : IModulePass
                 f.Dump(text);
                 Console.Error.WriteLine("== after late-cleanup " + f.Name + "\n" + text);
             }
-        }
+        });
     }
 }
 

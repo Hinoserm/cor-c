@@ -6805,10 +6805,13 @@ public sealed class Parser
         }
 
         // Unary, so that `or` and `and` bind looser than the operand does and
-        // an alternative cannot swallow the one after it.
+        // an alternative cannot swallow the one after it. A RELATIONAL
+        // pattern's operand is a whole shift-level expression, as C#'s is:
+        // `is >= 1 and <= Reach + 1` -- a constant written as a sum stopped
+        // the parser at its `+`. `and` and `or` are no operators to it.
         return new BinaryExpr
         {
-            Op = op, Left = subject, Right = ParseUnary(),
+            Op = op, Left = subject, Right = op == BinOp.Eq ? ParseUnary() : ParseBinary(9),
             PatternConstant = op == BinOp.Eq,
             Line = at.Line, Col = at.Col,
         };

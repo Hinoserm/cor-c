@@ -732,6 +732,11 @@ internal sealed class Encoder
             case MOp.Wrmsr: B(0x0F, 0x30); break;
             case MOp.Cpuid: B(0x0F, 0xA2); break;
             case MOp.Rdtsc: B(0x0F, 0x31); break;
+            case MOp.ReadFlags:
+                // 9C pushfd, then 58+r pop r32.
+                B(0x9C);
+                _out.Add((byte)(0x58 + ((MReg)i.Operands[0]).Id));
+                break;
             case MOp.Ltr:
                 B(0x0F, 0x00);
                 ModRM(3, i.Operands[0]);

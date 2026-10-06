@@ -1,0 +1,25 @@
+// test: a response file names sources and flags
+// flags: @tests/language/support/1480_response_file.list
+// expect-exit: 42
+// expect-output:
+// the listed source answered 42
+//
+// `corc compile @list` takes its arguments from a file, because a kernel is
+// a hundred sources and a command line is not (Driver.Response). The list
+// here (support/1480_response_file.list, named relative to the repository
+// root, where the runner is started) has comments and blank lines, a source
+// named relative to the list itself, and --cpu=486: the class Listed is in
+// no other file, so this program builds only if the list was read and its
+// path resolved beside it. The refusals are 1481 and 1482; a link address
+// that is not the load address (--base with --load) is
+// tests/freestanding/05_higher_half.cor.
+
+static class Program
+{
+    static int Main()
+    {
+        int answer = Listed.Answer();
+        System.Console.WriteLine("the listed source answered " + answer);
+        return answer;
+    }
+}

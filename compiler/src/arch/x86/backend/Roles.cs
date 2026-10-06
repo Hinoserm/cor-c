@@ -36,6 +36,7 @@ public static class Roles
             case MOp.GotPc:
             case MOp.GsSelf:
             case MOp.GetGs:
+            case MOp.ReadFlags:
                 return operand == 0 ? Role.Def : Role.Use;
             case MOp.Add:
             case MOp.Adc:

@@ -19,32 +19,6 @@ public sealed class Lexer
         for (int i = 0; i < result.Length; i++) result[i] = ((char)i).ToString();
         return result;
     }
-    private static readonly (string text, Tok kind)[] ThreePunctuation =
-        {
-            ("<<=", Tok.ShlEq), (">>=", Tok.ShrEq),
-
-            // `??=`, which has to be matched before `??` or the `=` would
-            // be read as a second, separate assignment.
-            ("??=", Tok.QuestionQuestionEq),
-        };
-
-    private static readonly (string text, Tok kind)[] TwoPunctuation =
-        {
-            ("=>", Tok.FatArrow), ("->", Tok.Arrow),
-            ("==", Tok.Eq), ("!=", Tok.NotEq), ("<=", Tok.LtEq), (">=", Tok.GtEq),
-            ("&&", Tok.AndAnd), ("||", Tok.OrOr),
-            ("++", Tok.PlusPlus), ("--", Tok.MinusMinus),
-            ("+=", Tok.PlusEq), ("-=", Tok.MinusEq), ("*=", Tok.StarEq),
-            ("/=", Tok.SlashEq), ("%=", Tok.PercentEq),
-            ("&=", Tok.AmpEq), ("|=", Tok.PipeEq), ("^=", Tok.CaretEq),
-            ("<<", Tok.Shl), (">>", Tok.Shr),
-            ("??", Tok.QuestionQuestion), ("?.", Tok.QuestionDot),
-
-            // `..`, which is a range and not two member accesses.
-            ("..", Tok.DotDot),
-        };
-
-
     /// <summary>
     /// Whether a name is a keyword, which source has to write as `@name` to
     /// use it as an identifier: a name kept without its `@` is written back
@@ -1518,70 +1492,110 @@ public sealed class Lexer
         }
     }
 
+    /// <summary>
+    /// PUNCTUATION BY A SWITCH ON ITS FIRST CHARACTER, the next one or two
+    /// looked at only where an operator can go on. It went through the three
+    /// and then the twenty-two longer operators in turn, a tuple and a
+    /// string's characters each, for every bracket, comma and semicolon --
+    /// the most frequent tokens there are. Longest match first, as before:
+    /// `>>>=`, then `<<=` `>>=` `??=`, then the two-character operators, then
+    /// the one. The texts are those the tables held, and a single character's
+    /// its interned string (CharacterText).
+    /// </summary>
     private Token Punct(int line, int col, int start)
     {
         char c = Cur;
         char n = Peek();
-        char n2 = Peek(2);
-
-        // Longest match first, so >>= does not lex as >> then =, and `>>>=`
-        // is the one four-character operator.
-        if (c == '>' && n == '>' && n2 == '>')
+        // THE CASES IN THE ORDER THEY ARE MET: the switch is a chain of
+        // compares, and brackets, dots, commas and semicolons are most of the
+        // punctuation a program has.
+        switch (c)
         {
-            Advance();
-            Advance();
-            Advance();
-            if (Cur == '=')
-            {
-                Advance();
-                return new Token(Tok.UShrEq, ">>>=", line, col, start);
-            }
-            return new Token(Tok.UShr, ">>>", line, col, start);
+            case '(': return Taken(1, Tok.LParen, CharacterText[c], line, col, start);
+            case ')': return Taken(1, Tok.RParen, CharacterText[c], line, col, start);
+            case '.':
+                if (n == '.') return Taken(2, Tok.DotDot, "..", line, col, start);
+                return Taken(1, Tok.Dot, CharacterText[c], line, col, start);
+            case ',': return Taken(1, Tok.Comma, CharacterText[c], line, col, start);
+            case ';': return Taken(1, Tok.Semi, CharacterText[c], line, col, start);
+            case '=':
+                if (n == '>') return Taken(2, Tok.FatArrow, "=>", line, col, start);
+                if (n == '=') return Taken(2, Tok.Eq, "==", line, col, start);
+                return Taken(1, Tok.Assign, CharacterText[c], line, col, start);
+            case '{': return Taken(1, Tok.LBrace, CharacterText[c], line, col, start);
+            case '}': return Taken(1, Tok.RBrace, CharacterText[c], line, col, start);
+            case '[': return Taken(1, Tok.LBracket, CharacterText[c], line, col, start);
+            case ']': return Taken(1, Tok.RBracket, CharacterText[c], line, col, start);
+            case ':': return Taken(1, Tok.Colon, CharacterText[c], line, col, start);
+            case '<':
+                if (n == '<') return Peek(2) == '=' ? Taken(3, Tok.ShlEq, "<<=", line, col, start) : Taken(2, Tok.Shl, "<<", line, col, start);
+                if (n == '=') return Taken(2, Tok.LtEq, "<=", line, col, start);
+                return Taken(1, Tok.Lt, CharacterText[c], line, col, start);
+            case '>':
+                if (n == '>')
+                {
+                    char n2 = Peek(2);
+                    if (n2 == '>')
+                    {
+                        if (Peek(3) == '=') return Taken(4, Tok.UShrEq, ">>>=", line, col, start);
+                        return Taken(3, Tok.UShr, ">>>", line, col, start);
+                    }
+                    if (n2 == '=') return Taken(3, Tok.ShrEq, ">>=", line, col, start);
+                    return Taken(2, Tok.Shr, ">>", line, col, start);
+                }
+                if (n == '=') return Taken(2, Tok.GtEq, ">=", line, col, start);
+                return Taken(1, Tok.Gt, CharacterText[c], line, col, start);
+            case '!':
+                if (n == '=') return Taken(2, Tok.NotEq, "!=", line, col, start);
+                return Taken(1, Tok.Bang, CharacterText[c], line, col, start);
+            case '+':
+                if (n == '+') return Taken(2, Tok.PlusPlus, "++", line, col, start);
+                if (n == '=') return Taken(2, Tok.PlusEq, "+=", line, col, start);
+                return Taken(1, Tok.Plus, CharacterText[c], line, col, start);
+            case '-':
+                if (n == '>') return Taken(2, Tok.Arrow, "->", line, col, start);
+                if (n == '-') return Taken(2, Tok.MinusMinus, "--", line, col, start);
+                if (n == '=') return Taken(2, Tok.MinusEq, "-=", line, col, start);
+                return Taken(1, Tok.Minus, CharacterText[c], line, col, start);
+            case '&':
+                if (n == '&') return Taken(2, Tok.AndAnd, "&&", line, col, start);
+                if (n == '=') return Taken(2, Tok.AmpEq, "&=", line, col, start);
+                return Taken(1, Tok.Amp, CharacterText[c], line, col, start);
+            case '|':
+                if (n == '|') return Taken(2, Tok.OrOr, "||", line, col, start);
+                if (n == '=') return Taken(2, Tok.PipeEq, "|=", line, col, start);
+                return Taken(1, Tok.Pipe, CharacterText[c], line, col, start);
+            case '?':
+                if (n == '?') return Peek(2) == '=' ? Taken(3, Tok.QuestionQuestionEq, "??=", line, col, start) : Taken(2, Tok.QuestionQuestion, "??", line, col, start);
+                if (n == '.') return Taken(2, Tok.QuestionDot, "?.", line, col, start);
+                return Taken(1, Tok.Question, CharacterText[c], line, col, start);
+            case '*':
+                if (n == '=') return Taken(2, Tok.StarEq, "*=", line, col, start);
+                return Taken(1, Tok.Star, CharacterText[c], line, col, start);
+            case '/':
+                if (n == '=') return Taken(2, Tok.SlashEq, "/=", line, col, start);
+                return Taken(1, Tok.Slash, CharacterText[c], line, col, start);
+            case '%':
+                if (n == '=') return Taken(2, Tok.PercentEq, "%=", line, col, start);
+                return Taken(1, Tok.Percent, CharacterText[c], line, col, start);
+            case '^':
+                if (n == '=') return Taken(2, Tok.CaretEq, "^=", line, col, start);
+                return Taken(1, Tok.Caret, CharacterText[c], line, col, start);
+            case '~': return Taken(1, Tok.Tilde, CharacterText[c], line, col, start);
+            default:
+                throw Error($"'{c}' is not valid here", line, col);
         }
+    }
 
-        foreach ((string text, Tok kind) in ThreePunctuation)
-        {
-            if (c == text[0] && n == text[1] && n2 == text[2])
-            {
-                Advance();
-                Advance();
-                Advance();
-                return new Token(kind, text, line, col, start);
-            }
-        }
-
-        foreach ((string text, Tok kind) in TwoPunctuation)
-        {
-            if (c == text[0] && n == text[1])
-            {
-                Advance();
-                Advance();
-                return new Token(kind, text, line, col, start);
-            }
-        }
-
-        Tok single = c switch
-        {
-            '(' => Tok.LParen, ')' => Tok.RParen,
-            '{' => Tok.LBrace, '}' => Tok.RBrace,
-            '[' => Tok.LBracket, ']' => Tok.RBracket,
-            ',' => Tok.Comma, ';' => Tok.Semi, '.' => Tok.Dot,
-            ':' => Tok.Colon, '?' => Tok.Question,
-            '=' => Tok.Assign,
-            '+' => Tok.Plus, '-' => Tok.Minus, '*' => Tok.Star,
-            '/' => Tok.Slash, '%' => Tok.Percent,
-            '&' => Tok.Amp, '|' => Tok.Pipe, '^' => Tok.Caret,
-            '~' => Tok.Tilde, '!' => Tok.Bang,
-            '<' => Tok.Lt, '>' => Tok.Gt,
-            _   => Tok.End,
-        };
-
-        if (single == Tok.End)
-        {
-            throw Error($"'{c}' is not valid here", line, col);
-        }
-
-        Advance();
-        return new Token(single, CharacterText[c], line, col, start);
+    /// <summary>
+    /// An operator of `length` characters at the current position taken: no
+    /// operator holds a newline, so the column moves with the position, as
+    /// Advance would move it a character at a time.
+    /// </summary>
+    private Token Taken(int length, Tok kind, string text, int line, int col, int start)
+    {
+        _pos += length;
+        _col += length;
+        return new Token(kind, text, line, col, start);
     }
 }

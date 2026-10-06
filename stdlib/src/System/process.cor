@@ -487,6 +487,34 @@ class Process : IDisposable
         return all.ToArray();
     }
 
+    /// What is known of it read again, as .NET's Refresh: its /proc entry.
+    public void Refresh() { Read(); }
+
+    /// This process, as .NET's GetCurrentProcess: read from /proc as any other.
+    public static Process GetCurrentProcess()
+    {
+        return GetProcessById(Environment.ProcessId);
+    }
+
+    /// The most memory it has had resident at once, in bytes: VmHWM of
+    /// /proc/<pid>/status, read when asked (0 when it cannot be read).
+    public long PeakWorkingSet64
+    {
+        get
+        {
+            string text;
+            try { text = File.ReadAllText("/proc/" + _pid + "/status"); }
+            catch (IOException) { return 0; }
+            foreach (string line in text.Split('\n'))
+            {
+                if (!line.StartsWith("VmHWM:")) continue;
+                string[] parts = line.Substring(6).Trim().Split(' ');
+                if (parts.Length > 0 && long.TryParse(parts[0], out long kilobytes)) return kilobytes * 1024;
+            }
+            return 0;
+        }
+    }
+
     /// The process with this id; ArgumentException when there is none.
     public static Process GetProcessById(int processId)
     {

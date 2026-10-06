@@ -640,7 +640,10 @@ public sealed class Monomorphiser
         // in its declaration.
         foreach (TypeDecl t in unit.Types)
         {
-            string path = t.Outer is null ? t.Name : t.Outer + "." + t.Name;
+            // One string a path, whichever round spelt it: every round's
+            // monomorphiser lives on in the lists it deferred, and each held
+            // the unit's paths again, joined anew.
+            string path = t.Outer is null ? t.Name : Interned.Name(t.Outer + "." + t.Name);
 
             AddPath(path);
 
@@ -903,10 +906,36 @@ public sealed class Monomorphiser
         // made here belong to the unit returned; the type arguments settled
         // and the tuple namings found were for the rewrite just finished and
         // are recorded again by any rewrite that follows (MakeMembers).
+        // THE ROOM THEY TOOK GOES WITH THEM: emptied, a table keeps the
+        // buckets it grew to, and the settled references and the queue of a
+        // compiler unit's expansion were a megabyte and more of empty slots
+        // held through every later round by the lists this one deferred.
         _made.Clear();
+        _made.TrimExcess();
         _settled.Clear();
+        _settled.TrimExcess();
         _tupleNamings.Clear();
+        _tupleNamings.TrimExcess();
         _sharedNames.Clear();
+        _sharedNames.TrimExcess();
+        _pending.TrimExcess();
+        // AND WHAT IS ONLY REMEMBERED TO SAVE ASKING AGAIN: the names found
+        // not to be templates in a scope, the scopes' parents, and the arrays
+        // whose sequences were instantiated where they were read. Asked again
+        // by a deferred list, each is answered as it was -- a name absent is
+        // one already demanded (Candidate), a sequence one already claimed
+        // (Instantiate) -- and kept, they were a megabyte of keys spelt for
+        // this round held through every later one. Now that interfaces wait
+        // to be asked for too, nearly every round leaves a list deferred.
+        _absent.Clear();
+        _absent.TrimExcess();
+        _absentAt = -1;
+        _parents.Clear();
+        _parents.TrimExcess();
+        _sequencesSeen.Clear();
+        _sequencesSeen.TrimExcess();
+        _sequencesSeenUnscoped.Clear();
+        _sequencesSeenUnscoped.TrimExcess();
         return output;
     }
 
@@ -948,8 +977,15 @@ public sealed class Monomorphiser
     /// held in line are read off its symbol wherever one is held by value,
     /// and each of those reads declares and lays it out first
     /// (TypeSymbol.InstanceSize, InlineAlign, HeldInline, InlineDecided).
-    /// Not an interface, whose methods are counted for the slot numbering of
-    /// every family, and not an enum, which has no members to speak of.
+    /// Not an enum, which has no members to speak of.
+    ///
+    /// OR AN INTERFACE, whose methods are counted for the slot numbering of
+    /// every family: they are counted as its template's, which every copy
+    /// has in the same order, from a copy that was declared (Binder.Run),
+    /// and one declared after the numbering takes its family's slots
+    /// (Binder.InterfaceSlotsLater). Not one whose members carry a slot an
+    /// imported template chose (VtableSlotHint), which the numbering reserves
+    /// before it counts anything.
     ///
     /// NOT A DELEGATE, which is an interface here and is numbered as one;
     /// its one or two members are too few to be worth a doubt.
@@ -964,8 +1000,9 @@ public sealed class Monomorphiser
     /// and a copy per argument with some is not deferred (BodiesLater).
     /// </summary>
     private static bool MembersLater(TypeDecl template)
-        => template.Kind is TypeKind.Class or TypeKind.Struct && !template.IsDelegate
-        && !template.Members.Any(m => m is MethodDecl { Params.Count: > 0 } method && method.Params[0].IsThis);
+        => template.Kind is TypeKind.Class or TypeKind.Struct or TypeKind.Interface && !template.IsDelegate
+        && !template.Members.Any(m => m is MethodDecl { Params.Count: > 0 } method && method.Params[0].IsThis
+            || m.VtableSlotHint >= 0);
 
     /// <summary>
     /// WHETHER A COPY MADE PER ARGUMENT MAY HAVE ITS MEMBERS AND THEIR BODIES
@@ -979,11 +1016,36 @@ public sealed class Monomorphiser
     /// are copied (CanonMadeWritten), and which every word-shaped copy's
     /// code is. NOT ONE WITH STATIC STATE, which is initialised in an order
     /// set over every type (Binder.StaticInitialisers). NOT AN EXTERNAL ONE,
-    /// whose code is another image's. And NOT IN A LIBRARY, which publishes
-    /// every method of every type it holds (Lowering.Run), asked for or not.
+    /// whose code is another image's. And NOT IN A WHOLE LIBRARY, which
+    /// publishes every method of every type it holds (Lowering.Run), asked
+    /// for or not.
+    ///
+    /// A PART OF ONE DEFERS THEM LIKE A PROGRAM. Every unit of a project but
+    /// its entry is compiled as a library, and one of several roots no copy:
+    /// an instantiation belongs to whoever wanted it, and is reached from
+    /// that one's code (Lowering.PartOfALibrary). So a copy nothing in the
+    /// unit asks for has no code here either way, and its code and the
+    /// records that describe code are what they were. What such a unit no
+    /// longer writes is what came of checking bodies it never emitted:
+    ///
+    /// THEIR INTERRUPT FACTS (Lto.InterruptNotes). The link follows only the
+    /// calls a handler's chain names, and each is a call from a body checked
+    /// in the unit that makes it, to a method whose copy that unit asked for
+    /// and so checked too (Binder.DeclareMembersNow): the fact the link
+    /// follows is that unit's own. A fact is named for its copy, arguments
+    /// and all, so the one a unit drops is the very fact any other unit
+    /// holding the copy writes. The rest are in the order checked, the
+    /// copies asked for after the others.
+    ///
+    /// THE LAYOUT RECORDS OF TYPES ONLY THOSE BODIES USED (ManagedLayouts):
+    /// the records follow use, a type's own unit always describes it, and
+    /// the link only compares what two units both describe -- an opinion
+    /// about a type no code of this unit's touches had nothing to check.
+    ///
+    /// And the lookups those bodies made, from the dependency receipt.
     /// </summary>
     private bool BodiesLater(Job job)
-        => job.Canon is null && !job.External && !_library && !HasStaticState(job.Template)
+        => job.Canon is null && !job.External && (!_library || Corsac.Lang.Lower.Lowering.PartOfALibrary) && !HasStaticState(job.Template)
         && job.Name != CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count);
 
     /// <summary>
@@ -1000,7 +1062,7 @@ public sealed class Monomorphiser
     /// a generic method's copies, are spelt with the type's name or a `$`,
     /// and TypeSymbol.MayHave never answers no to either.
     /// </summary>
-    private static HashSet<string> MemberNames(List<MemberDecl> members)
+    internal static HashSet<string> MemberNames(List<MemberDecl> members)
     {
         HashSet<string> names = new(StringComparer.Ordinal);
         foreach (MemberDecl m in members)
@@ -1770,7 +1832,9 @@ public sealed class Monomorphiser
             return writtenName;
         }
 
-        string mangled = MangledName(name, args);
+        // The one spelling of it, shared with the copy's declaration and with
+        // every later round's table of what was claimed (Interned).
+        string mangled = Interned.Name(MangledName(name, args));
 
         // CLAIMED AT THE MOMENT IT IS QUEUED, not when it is finished.
         //
@@ -2344,13 +2408,16 @@ public sealed class Monomorphiser
     /// and made again on first use (DeferImported): one the index says can be
     /// read again (IndexedDeclarations.ReadLater), that nothing has looked at
     /// since -- so reading it again gives exactly what is being rewritten --
-    /// copied as itself rather than as a template's copy. Not in a library,
-    /// which publishes every type it holds, and not one whose name another
-    /// declaration of the unit has too: the binder moves such a one into
-    /// System, or adds it to the prelude's type of its name, there and then.
+    /// copied as itself rather than as a template's copy. Not one whose name
+    /// another declaration of the unit has too: the binder moves such a one
+    /// into System, or adds it to the prelude's type of its name, there and
+    /// then. IN A LIBRARY TOO, even one that publishes everything it holds:
+    /// what it holds of an imported type is the declaration, its code being
+    /// another unit's (Lowering.Run passes over a type from elsewhere with no
+    /// implementation of its own here), so nothing of it is published.
     /// </summary>
     private bool ImportedLater(TypeDecl d, Dictionary<string, TypeRef> map)
-        => d.UntouchedSinceRead && map.Count == 0 && !_library && !_sharedNames.Contains(d.Name);
+        => d.UntouchedSinceRead && map.Count == 0 && !_sharedNames.Contains(d.Name);
 
     /// <summary>The simple names more than one declaration of the unit has (ImportedLater).</summary>
     private readonly HashSet<string> _sharedNames = new(StringComparer.Ordinal);

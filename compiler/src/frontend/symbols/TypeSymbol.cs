@@ -269,7 +269,10 @@ public sealed class TypeSymbol
     /// </summary>
     public bool MayHave(string name)
     {
-        if (_declareMembers is null || Decl?.MemberNames is not { } names
+        // A declaration whose members are all here has its names made from
+        // them on this first asking (TypeDecl.NamesOfMembers).
+        if (_declareMembers is null || Decl is null
+            || (Decl.MemberNames ?? (Decl.MembersPending ? null : Decl.NamesOfMembers())) is not { } names
             || name.Contains('$') || name.Contains('.') || name == Name || name == Decl.Name
             || names.Contains(name))
         {

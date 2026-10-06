@@ -1,0 +1,7 @@
+// Named by test 1480's response file alone (support/1480_response_file.list),
+// by a path relative to that file: the program finds this class only if the
+// compiler read the list and resolved its paths where the list lies.
+static class Listed
+{
+    public static int Answer() { return 42; }
+}

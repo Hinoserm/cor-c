@@ -31,6 +31,7 @@ internal static class Roles
             case MOp.CvtFToF:
             case MOp.SqrtF:
             case MOp.MovFromCr:
+            case MOp.ReadFlags:
                 return operand == 0 ? Role.Def : Role.Use;
             case MOp.Add:
             case MOp.Sub:

@@ -44,6 +44,19 @@ public sealed class CopyForward : IPass
         if (twice is not null) foreach (VReg r in twice) slotOf.Remove(r);
         if (slotOf.Count == 0) return;
 
+        // A COPY FOUND NOT TO GO is not asked again until a copy that does go
+        // touches one of its two slots. The walk starts over after every
+        // copy it forwards, and asked every copy before it again each time,
+        // each question a walk of the whole function: copies times copies
+        // times instructions, in a function of many struct arguments. What a
+        // copy's answer reads is only what names its own two slots and where
+        // that stands against the copy; forwarding another copy changes only
+        // what names that copy's slots (its readers now name the original,
+        // the copy and its zeroing go). So an answer stands while neither of
+        // its slots is one of those, and the first copy that goes is the one
+        // the walk from the start would have found.
+        Dictionary<Instr, (FrameSlot To, FrameSlot From)> refused = new(ReferenceEqualityComparer.Instance);
+        List<Instr> stale = new();
         bool changed = true;
         while (changed)
         {
@@ -56,32 +69,51 @@ public sealed class CopyForward : IPass
                     if (copy.Op != Opcode.MemCopy || copy.Operands.Count != 3
                         || copy.Operands[0] is not RegOperand { Reg: var dst } || copy.Operands[1] is not RegOperand { Reg: var src }
                         || !slotOf.TryGetValue(dst, out FrameSlot? to) || !slotOf.TryGetValue(src, out FrameSlot? from)
-                        || ReferenceEquals(to, from)) continue;
+                        || ReferenceEquals(to, from) || refused.ContainsKey(copy)) continue;
                     if (Forward(f, b, k, dst, to, src, from, slotOf))
                     {
                         changed = true;
+                        foreach (var (asked, slots) in refused)
+                            if (ReferenceEquals(slots.To, to) || ReferenceEquals(slots.To, from)
+                                || ReferenceEquals(slots.From, to) || ReferenceEquals(slots.From, from)) stale.Add(asked);
+                        foreach (Instr asked in stale) refused.Remove(asked);
+                        stale.Clear();
                         break;
                     }
+                    refused[copy] = (to, from);
                 }
                 if (changed) break;
             }
         }
     }
 
+    /// <summary>Whether an instruction names a slot: the slot itself, or a register holding its address (slotOf).</summary>
+    private static bool Names(Instr i, FrameSlot slot, Dictionary<VReg, FrameSlot> slotOf)
+    {
+        // A loop, not LINQ: asked of every instruction for every copy, the
+        // closure and the operand list's boxed enumerator each time were
+        // most of what the whole optimiser allocated.
+        for (int n = 0; n < i.Operands.Count; n++)
+        {
+            Operand o = i.Operands[n];
+            if (o is SlotOperand s && ReferenceEquals(s.Slot, slot)
+                || o is RegOperand r && slotOf.TryGetValue(r.Reg, out FrameSlot? of) && ReferenceEquals(of, slot)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Whether an instruction has the slot itself among its operands.</summary>
+    private static bool HasSlot(Instr i, FrameSlot slot)
+    {
+        for (int n = 0; n < i.Operands.Count; n++)
+            if (i.Operands[n] is SlotOperand s && ReferenceEquals(s.Slot, slot)) return true;
+        return false;
+    }
+
     private static bool Forward(Function f, Block home, int at, VReg dst, FrameSlot to, VReg src, FrameSlot from,
         Dictionary<VReg, FrameSlot> slotOf)
     {
-        // A LOOP, NOT Any WITH A LAMBDA: asked twice of every instruction of
-        // the function for every copy weighed, the lambda and the closure it
-        // captured were a third of a gigabyte of a hosted compile's garbage.
-        bool Names(Instr i, FrameSlot slot)
-        {
-            foreach (Operand o in i.Operands)
-                if (o is SlotOperand s && ReferenceEquals(s.Slot, slot)
-                    || o is RegOperand r && slotOf.TryGetValue(r.Reg, out FrameSlot? of) && ReferenceEquals(of, slot)) return true;
-            return false;
-        }
-        List<Instr> zeroings = new();
+        List<Instr>? zeroings = null;
         foreach (Block b in f.Blocks)
         {
             for (int k = 0; k < b.Instrs.Count; k++)
@@ -93,7 +125,7 @@ public sealed class CopyForward : IPass
 
                 // THE ORIGINAL: nothing may name it after the copy, anywhere
                 // -- in this block after it, or in any other block at all.
-                if (Names(i, from))
+                if (Names(i, from, slotOf))
                 {
                     bool definesAddress = i.Op == Opcode.Copy && i.Dest is not null && slotOf.TryGetValue(i.Dest, out FrameSlot? d) && ReferenceEquals(d, from);
                     if (!before && !definesAddress) return false;
@@ -101,14 +133,14 @@ public sealed class CopyForward : IPass
 
                 // THE COPY: made, zeroed, and then only read -- by loads
                 // through it or as a call's argument -- after the copy.
-                if (Names(i, to))
+                if (Names(i, to, slotOf))
                 {
                     if (i.Op == Opcode.Copy && i.Dest is not null && slotOf.TryGetValue(i.Dest, out FrameSlot? d) && ReferenceEquals(d, to)) continue;
-                    if (before && i.Op == Opcode.MemSet && i.Operands[1] is ImmOperand { Value: 0 }) { zeroings.Add(i); continue; }
+                    if (before && i.Op == Opcode.MemSet && i.Operands[1] is ImmOperand { Value: 0 }) { (zeroings ??= new()).Add(i); continue; }
                     if (!after) return false;
                     bool reads = i.Op == Opcode.Load && i.Operands.Count == 1
                         || i.Op is Opcode.Call or Opcode.CallIndirect
-                            && !i.Operands.Any(o => o is SlotOperand s && ReferenceEquals(s.Slot, to));
+                            && !HasSlot(i, to);
                     if (!reads) return false;
                 }
             }
@@ -125,7 +157,7 @@ public sealed class CopyForward : IPass
                     i.Operands[n] = new SlotOperand(from);
         }
         home.Instrs.RemoveAt(at);
-        foreach (Instr z in zeroings) home.Instrs.Remove(z);
+        if (zeroings is not null) foreach (Instr z in zeroings) home.Instrs.Remove(z);
         return true;
     }
 }

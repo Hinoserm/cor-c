@@ -1,0 +1,24 @@
+// test: the current process, its working set and its peak
+// expect-exit: 0
+// expect-output:
+// True True True
+//
+// Process.GetCurrentProcess and PeakWorkingSet64, which the compiler's own
+// --report-phases reads: the process's id is Environment.ProcessId, and its
+// resident set and peak are positive with the peak no smaller.
+using System;
+using System.Diagnostics;
+
+public static class Program
+{
+    public static int Main()
+    {
+        using Process self = Process.GetCurrentProcess();
+        byte[] touched = new byte[4 << 20];
+        for (int i = 0; i < touched.Length; i += 4096) touched[i] = 1;
+        self.Refresh();
+        long rss = self.WorkingSet64, peak = self.PeakWorkingSet64;
+        Console.WriteLine((self.Id == Environment.ProcessId) + " " + (rss > 0) + " " + (peak >= rss));
+        return touched[4096] - 1;
+    }
+}

@@ -1,0 +1,51 @@
+// test: a rotated loop's early exit keeps what is live where it goes
+// expect-exit: 0
+// expect-output:
+// 60
+//
+// An interpreter loop -- foreach over a list of instructions, a switch on
+// each one's op, a stack pointer kept in a register -- as a front end's
+// tests run one. LoopRotate copies a loop's short test over a latch's jump,
+// so a block may now leave from its middle (`jl body`) and then write a
+// register for the copy's other way. The peephole's liveness summed a block
+// as one use and one def: the copy's write killed the register for the
+// jump's way too, the stack pointer was taken for dead after `sp--`, the
+// move that kept it was removed, and the pushes ran off the stack's end.
+using System;
+using System.Collections.Generic;
+
+public sealed class Instr { public int Op, A; public Instr(int op, int a) { Op = op; A = a; } }
+
+static class P
+{
+    static int Run(List<Instr> code, int slotCount)
+    {
+        int[] slots = new int[slotCount];
+        int[] stack = new int[64];
+        int sp = 0;
+        foreach (Instr i in code)
+            switch (i.Op)
+            {
+                case 1: stack[sp++] = i.A; break;
+                case 2: stack[sp++] = slots[i.A]; break;
+                case 3: sp--; stack[sp - 1] += stack[sp]; break;
+                case 4: slots[i.A] = stack[--sp]; break;
+            }
+        int sum = 0;
+        foreach (int s in slots) sum += s;
+        return sum;
+    }
+
+    static int Main()
+    {
+        var code = new List<Instr>();
+        for (int k = 0; k < 10; k++)
+        {
+            code.Add(new Instr(1, k)); code.Add(new Instr(1, 1)); code.Add(new Instr(3, 0)); code.Add(new Instr(4, k % 3));
+        }
+        int total = 0;
+        for (int r = 0; r < 3; r++) total += Run(code, 3) > 0 ? 20 : 0;
+        Console.WriteLine(total);
+        return 0;
+    }
+}
