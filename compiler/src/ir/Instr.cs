@@ -21,7 +21,8 @@ public sealed class Instr : OperandList
     private string? _callee;
     private string? _field;
     private string? _family;
-    private List<Block>? _targets;
+    // Exactly as many as there are (TargetList); null for none.
+    internal Block[]? TargetBlocks;
     private InstrRare? _rare;
     private int _offset;
     private int _line;
@@ -148,14 +149,29 @@ public sealed class Instr : OperandList
     public bool ReturnsFreshStruct => Op is Opcode.Call or Opcode.CallIndirect && Field == FreshStruct;
 
     /// <summary>Jump, Branch, Switch, LabelAddr: where. Phi: the predecessor each operand comes from.</summary>
-    // TO READ: one shared empty list for the instructions that have none --
-    // all but the branches, and a list each was a hundred and seventy
-    // thousand of them live through a unit. Never written through: every
-    // writer goes by WritableTargets, which makes the list on first use (the
-    // compiler found them all when this was briefly read-only).
-    public List<Block> Targets => _targets ?? NoTargets;
-    public List<Block> WritableTargets => _targets ??= new();
-    private static readonly List<Block> NoTargets = new();
+    // A VIEW OF AN ARRAY OF EXACTLY THE TARGETS, held by the instruction and
+    // null for the instructions that have none -- all but the branches and
+    // the phis. A List each was a list and a backing array with room for
+    // four, for a hundred and seventy thousand instructions live through a
+    // large unit; the array alone is a third of that. WritableTargets is the
+    // same view, kept for the writers that went by it when an empty list
+    // was shared.
+    public TargetList Targets => new(this);
+    public TargetList WritableTargets => new(this);
+
+    /// <summary>
+    /// Where, as an instruction is made: `new Instr { Op = Opcode.Jump,
+    /// InitialTargets = new[] { to } }`. The array is kept, not copied, so
+    /// it must be one nobody else holds.
+    /// </summary>
+    public Block[] InitialTargets { init => TargetBlocks = value.Length == 0 ? null : value; }
+
+    /// <summary>Points target `index` somewhere else (Targets is a view, and a view's indexer cannot be written through).</summary>
+    public void SetTarget(int index, Block to)
+    {
+        if ((uint)index >= (uint)(TargetBlocks?.Length ?? 0)) throw new ArgumentOutOfRangeException(nameof(index));
+        TargetBlocks![index] = to;
+    }
 
     /// <summary>Switch: where an out-of-range index goes.</summary>
     public Block? Default

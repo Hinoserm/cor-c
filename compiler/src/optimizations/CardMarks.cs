@@ -187,7 +187,7 @@ public sealed class CardMarks : IModulePass
                 Fuse(stored, at, RefStore);
                 // The test goes: the branch is a jump to the store, the
                 // report block nobody's.
-                test.Instrs[^1] = new Instr { Op = Opcode.Jump, WritableTargets = { stored }, Line = branch.Line };
+                test.Instrs[^1] = new Instr { Op = Opcode.Jump, InitialTargets = new[] { stored }, Line = branch.Line };
                 gone.Add(report);
                 break;
             }

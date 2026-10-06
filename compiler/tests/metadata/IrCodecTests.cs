@@ -74,7 +74,7 @@ public static class IrCodecTests
         head.Instrs.Add(new Instr { Op = Opcode.Call, Callee = "alloc", Dest = made, Operands = { RegOperand.Of(count) }, RegionSite = true, Field = Instr.FreshStruct });
         head.Instrs.Add(new Instr { Op = Opcode.CallIndirect, Operands = { RegOperand.Of(made), RegOperand.Of(made) }, DispatchType = "t_Node" });
         head.Instrs.Add(new Instr { Op = Opcode.Load, Dest = marked.NewReg(IrTypes.Word), Size = IrTypes.Word.Bytes(), Operands = { RegOperand.Of(at) } });
-        head.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { lap } });
+        head.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { lap } });
         lap.RegionLoop = true; lap.RegionLoopBytes = 96;
         lap.Instrs.Add(new Instr { Op = Opcode.Ret });
         bytes = IrFunctionCodec.Write(marked);

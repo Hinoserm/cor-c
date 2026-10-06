@@ -50,7 +50,7 @@ public static partial class Program
             new Builder(f, entry).Branch(condition, body, exit);
             body.Instrs.Add(new Instr { Op = Opcode.Load, Dest = second, Size = 4,
                 Operands = { RegOperand.Of(address) } });
-            if (backEdge) body.Instrs.Add(new Instr { Op = Opcode.Jump, Targets = { entry } });
+            if (backEdge) body.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { entry } });
             else new Builder(f, body).Ret(RegOperand.Of(second));
             new Builder(f, exit).Ret(RegOperand.Of(first));
             Verifier.Check(f, "before entry load reuse");

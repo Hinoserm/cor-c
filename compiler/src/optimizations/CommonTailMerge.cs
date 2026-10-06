@@ -47,8 +47,8 @@ public sealed class CommonTailMerge : IPass
                 tail.Instrs.AddRange(block.Instrs.Skip(block.Instrs.Count - count));
                 block.Instrs.RemoveRange(block.Instrs.Count - count, count);
                 other.Instrs.RemoveRange(other.Instrs.Count - count, count);
-                block.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, WritableTargets = { tail } });
-                other.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, WritableTargets = { tail } });
+                block.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, InitialTargets = new[] { tail } });
+                other.Instrs.Add(new Instr { Op = Opcode.Jump, Line = end.Line, InitialTargets = new[] { tail } });
                 merged = true;
                 break;
             }
@@ -90,7 +90,7 @@ public sealed class CommonTailMerge : IPass
         foreach (Instr instruction in function.Blocks.SelectMany(b => b.Instrs))
         {
             for (int k = 0; k < instruction.Targets.Count; k++)
-                if (instruction.Targets[k] == from) instruction.WritableTargets[k] = to;
+                if (instruction.Targets[k] == from) instruction.SetTarget(k, to);
             if (instruction.Default == from) instruction.Default = to;
         }
     }

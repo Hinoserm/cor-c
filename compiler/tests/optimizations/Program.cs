@@ -2026,7 +2026,7 @@ public static partial class Program
         {
             Op = Opcode.Phi, Dest = d,
             Operands = { new ImmOperand(1, IrType.I32), new ImmOperand(2, IrType.I32) },
-            Targets = { f.Blocks[1], f.Blocks[2] },
+            InitialTargets = new[] { f.Blocks[1], f.Blocks[2] },
         });
         jb.Instrs[^1].Operands[0] = RegOperand.Of(d);
         Verifier.Check(f, "built");

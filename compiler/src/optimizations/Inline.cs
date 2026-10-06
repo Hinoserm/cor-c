@@ -775,7 +775,7 @@ public sealed class Inline : IParallelModulePass
             VReg param = Reg(callee.Params[p]);
             site.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = param, Operands = { call.Operands[p] } });
         }
-        site.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { blocks[callee.Entry] } });
+        site.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { blocks[callee.Entry] } });
 
         // WHERE AN INLINED INSTRUCTION IS, for a trace: at the call, as .NET
         // reports a method its JIT inlined -- the callee is not a frame of its
@@ -796,7 +796,7 @@ public sealed class Inline : IParallelModulePass
                         // A number the call answered (Instr.Number) stays one where its result is taken.
                         into.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = call.Dest, Operands = { Op(i.Operands[0]) }, Number = call.Number });
                     }
-                    into.Instrs.Add(new Instr { Op = Opcode.Jump, WritableTargets = { cont } });
+                    into.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { cont } });
                     continue;
                 }
 

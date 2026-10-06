@@ -82,7 +82,7 @@ public static class Phi
             int k = IndexOf(phi, oldPred);
             if (k >= 0)
             {
-                phi.WritableTargets[k] = newPred;
+                phi.SetTarget(k, newPred);
             }
         }
     }
