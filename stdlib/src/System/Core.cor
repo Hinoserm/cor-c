@@ -259,24 +259,48 @@ static class String {
     // `List<string>` and `List<Node>` all reach the same routine. A list of a
     // narrow value type -- `List<int>` -- strides by four where the canonical
     // copy strides by eight, and is refused rather than read wrongly.
+    //
+    // ONE STRING, LENGTHS FIRST (Joined): each element made text once, the
+    // result made at its final size and every piece copied into it once.
+    // Joined with `+` a piece at a time, a list of n names was 2n strings,
+    // the early characters copied again at every step.
     public static string Join<T>(string separator, IReadOnlyList<T> values) {
-        string result = "";
+        int n = values.Count;
+        if (n == 0) { return ""; }
+        string[] texts = new string[n];
         int i = 0;
-        while (i < values.Count) {
-            if (i > 0) { result = result + separator; }
-            result = result + values[i];
+        while (i < n) {
+            texts[i] = "" + values[i];
             i = i + 1;
         }
-        return result;
+        return Joined(separator, texts);
     }
 
     public static string Join<T>(string separator, T[] values) {
-        string result = "";
+        int n = values.Length;
+        if (n == 0) { return ""; }
+        string[] texts = new string[n];
         int i = 0;
-        while (i < values.Length) {
-            if (i > 0) { result = result + separator; }
-            result = result + values[i];
+        while (i < n) {
+            texts[i] = "" + values[i];
             i = i + 1;
+        }
+        return Joined(separator, texts);
+    }
+
+    /// The texts with the separator between them, in one allocation. A null
+    /// separator is nothing between them, and a null text is nothing.
+    private static string Joined(string? separator, string?[] texts) {
+        if (texts.Length == 0) { return ""; }
+        string between = separator ?? "";
+        long total = (long)between.Length * (texts.Length - 1);
+        for (int i = 0; i < texts.Length; i++) { if (texts[i] is string one) { total += one.Length; } }
+        if (total > int.MaxValue) { throw new OutOfMemoryException(); }
+        string result = Sys.NewChars((int)total);
+        int at = 0;
+        for (int i = 0; i < texts.Length; i++) {
+            if (i > 0) { CopyRange(result, at, between, 0, between.Length); at += between.Length; }
+            if (texts[i] is string one) { CopyRange(result, at, one, 0, one.Length); at += one.Length; }
         }
         return result;
     }
@@ -950,9 +974,9 @@ static class String {
 
     public static string Concat(params object?[] args) {
         if (args == null) { throw new ArgumentNullException("args"); }
-        StringBuilder made = new StringBuilder();
-        for (int i = 0; i < args.Length; i++) { made.Append(Concat(args[i])); }
-        return made.ToString();
+        string[] texts = new string[args.Length];
+        for (int i = 0; i < args.Length; i++) { texts[i] = Concat(args[i]); }
+        return Joined("", texts);
     }
 
     public static string Concat(ReadOnlySpan<char> str0, ReadOnlySpan<char> str1) {
@@ -991,24 +1015,17 @@ static class String {
     /// is nothing between them, and a null element is nothing.
     public static string Join(string? separator, params string?[] value) {
         if (value == null) { throw new ArgumentNullException(nameof(value)); }
-        StringBuilder made = new StringBuilder();
-        for (int i = 0; i < value.Length; i++) {
-            if (i > 0 && separator != null) { made.Append(separator); }
-            string? one = value[i];
-            if (one != null) { made.Append(one); }
-        }
-        return made.ToString();
+        return Joined(separator, value);
     }
 
     public static string Join(string? separator, params object?[] values) {
         if (values == null) { throw new ArgumentNullException(nameof(values)); }
-        StringBuilder made = new StringBuilder();
+        string?[] texts = new string?[values.Length];
         for (int i = 0; i < values.Length; i++) {
-            if (i > 0 && separator != null) { made.Append(separator); }
             object? one = values[i];
-            if (one != null) { made.Append(one.ToString()); }
+            if (one != null) { texts[i] = one.ToString(); }
         }
-        return made.ToString();
+        return Joined(separator, texts);
     }
 
     public static string Join(char separator, params string?[] value) { return Join(String.FromChar(separator), value); }
