@@ -4901,16 +4901,9 @@ static class Gc
         {
             long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
             if (page == 0) continue;
-            long from = HeapChunks.First(page);
-            long at = count;
-            while (at > 0 && Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)) > from)
-            {
-                Sys.Poke(table + at * (2 * WordSize.Bytes), Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)));
-                Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes) + WordSize.Bytes));
-                at = at - 1;
-            }
-            Sys.Poke(table + at * (2 * WordSize.Bytes), from);
-            Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, HeapChunks.End(page));
+            // Appended: the caller sorts the whole table once (CaptureBuffersInto).
+            Sys.Poke(table + count * (2 * WordSize.Bytes), HeapChunks.First(page));
+            Sys.Poke(table + count * (2 * WordSize.Bytes) + WordSize.Bytes, HeapChunks.End(page));
             count = count + 1;
         }
         return count;
@@ -5462,6 +5455,7 @@ static class Gc
     static long _recycleAt;         // the next block in it to look at
     static long _recycleNext;       // the next chunk to consider
     static long _recycleBuffers;    // the threads' buffers as a walk begins, mapped once
+    static long _recycleBuffersFor;   // the thread capacity it was mapped for (GcThreads.Sized)
 
     /// Called as a collection ends: every chunk may be recycled again.
     static void RestartRecycling()
@@ -5516,13 +5510,10 @@ static class Gc
             return 0;
         }
 
+        _recycleBuffers = GcThreads.Sized(_recycleBuffers, ref _recycleBuffersFor);
         if (_recycleBuffers == 0)
         {
-            _recycleBuffers = Platform.Map(GcThreads.BufferTableBytes());
-            if (_recycleBuffers == 0)
-            {
-                return 0;
-            }
+            return 0;
         }
         long buffers = GcThreads.CaptureBuffersInto(_recycleBuffers);
 
@@ -7872,11 +7863,8 @@ static class Gc
             vtable = RevokedVtable(_revokeSlots);
             if (vtable == 0) return;
         }
-        if (_heapCheckTable == 0)
-        {
-            _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
-            if (_heapCheckTable == 0) return;
-        }
+        _heapCheckTable = GcThreads.Sized(_heapCheckTable, ref _heapCheckTableFor);
+        if (_heapCheckTable == 0) return;
         long buffers = GcThreads.CaptureBuffersInto(_heapCheckTable);
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
@@ -8251,6 +8239,7 @@ static class Gc
         Platform.Exit(93);
     }
     static long _heapCheckTable;
+    static long _heapCheckTableFor;
     static long _heapCheckFaults;
 
     static void CheckFault(string what, long at, long word, long when)
@@ -8273,11 +8262,8 @@ static class Gc
     /// fraction of it live is fragmented or leaking, and this says which.
     static void SayFreeShape()
     {
-        if (_heapCheckTable == 0)
-        {
-            _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
-            if (_heapCheckTable == 0) return;
-        }
+        _heapCheckTable = GcThreads.Sized(_heapCheckTable, ref _heapCheckTableFor);
+        if (_heapCheckTable == 0) return;
         long buffers = GcThreads.CaptureBuffersInto(_heapCheckTable);
         long bufferBytes = 0;
         long usedBytes = 0;
@@ -8394,13 +8380,10 @@ static class Gc
 
     static void CheckHeap(long when)
     {
+        _heapCheckTable = GcThreads.Sized(_heapCheckTable, ref _heapCheckTableFor);
         if (_heapCheckTable == 0)
         {
-            _heapCheckTable = Platform.Map(GcThreads.BufferTableBytes());
-            if (_heapCheckTable == 0)
-            {
-                return;
-            }
+            return;
         }
         long buffers = GcThreads.CaptureBuffersInto(_heapCheckTable);
         long listed = 0;
@@ -14231,7 +14214,8 @@ static class GcThreads
 {
     const long Max = 256;
 
-    static long _blocks;        // Max words: the registered threads' blocks
+    static long _blocks;        // _capacity words: the registered threads' blocks
+    static long _capacity;      // Max at first, doubled as threads come
     static long _count;
     static long _first;         // the one thread, before there is a table
 
@@ -14294,6 +14278,7 @@ static class GcThreads
         if (_blocks == 0)
         {
             _blocks = Platform.Map(Max * WordSize.Bytes);
+            _capacity = _blocks != 0 ? Max : 0;
             Add(_first);
             _first = 0;
         }
@@ -14356,7 +14341,26 @@ static class GcThreads
     /// Called with the lock held.
     static void Add(long block)
     {
-        if (_blocks != 0 && _count < Max && block != 0)
+        // A THREAD PAST THE TABLE'S END WAS NOT WRITTEN DOWN, and nothing
+        // said so: its stack was never scanned, and what only it held was
+        // swept while it still ran and handed out again. An NT kernel past
+        // its 256th thread broke three tables at once as a process started.
+        // The table doubles instead, under the heap lock as every reader of
+        // it is; the old one stays mapped for a reader that read its address.
+        if (_blocks != 0 && _count == _capacity && block != 0)
+        {
+            long bigger = Platform.Map(_capacity * 2 * WordSize.Bytes);
+            if (bigger == 0)
+            {
+                Runtime.WriteLiteral(2, "gc: no memory for the thread table; a thread would go unscanned\n");
+                Platform.Exit(97);
+            }
+            for (long i = 0; i < _count; i++) Sys.Poke(bigger + i * WordSize.Bytes, At(i));
+            Sys.Fence();
+            _blocks = bigger;
+            _capacity = _capacity * 2;
+        }
+        if (_blocks != 0 && _count < _capacity && block != 0)
         {
             Sys.Poke(_blocks + _count * WordSize.Bytes, block);
             _count = _count + 1;
@@ -14702,6 +14706,7 @@ static class GcThreads
     const long CopyEntry = 3 * WordSize.Bytes;      // the copy, the bytes written, the bytes mapped
     const long NoCopy = 0;
     static long _stackCopies;
+    static long _stackCopiesFor;    // the threads it has an entry for (Max, or the grown table's capacity)
 
     static long CopyAt(long i)
     {
@@ -14712,13 +14717,25 @@ static class GcThreads
     /// held: the table ready and empty.
     public static bool StartStackCopies()
     {
+        // AN ENTRY FOR EVERY THREAD THERE IS ROOM FOR: past the 256th, a
+        // thread's stack had no copy, the cycle was lost (BarrierLost) and
+        // begun again, and three hundred threads collected for minutes. The
+        // table follows the thread table's capacity, mapped again between
+        // cycles -- the last one gave every copy back (ReleaseStackCopies).
+        long capacity = _capacity > 0 ? _capacity : Max;
+        if (_stackCopies != 0 && _stackCopiesFor < capacity)
+        {
+            Platform.Unmap(_stackCopies, (_stackCopiesFor + 1) * CopyEntry);
+            _stackCopies = 0;
+        }
         if (_stackCopies == 0)
         {
-            _stackCopies = Platform.Map((Max + 1) * CopyEntry);
+            _stackCopies = Platform.Map((capacity + 1) * CopyEntry);
             if (_stackCopies == 0)
             {
                 return false;
             }
+            _stackCopiesFor = capacity;
         }
         Sys.AtomicSwap(_stackCopies, NoCopy);
         return true;
@@ -14755,7 +14772,7 @@ static class GcThreads
         // own words (Gc.ScanOwnStack): twice them, mapped, and touched only
         // as far as written; the arena's words after them.
         long mapped = (2 * words + 16 + regionWords) * w;
-        long copy = slot < Max ? Platform.Map(mapped) : NoCopy;
+        long copy = slot < _stackCopiesFor ? Platform.Map(mapped) : NoCopy;
         if (copy == 0)
         {
             Sys.AtomicSwap(ctl + GcLock.BarrierLost, 1);
@@ -14800,7 +14817,7 @@ static class GcThreads
             return;
         }
         long count = Sys.Peek(_stackCopies);
-        if (count > Max) count = Max;
+        if (count > _stackCopiesFor) count = _stackCopiesFor;
         for (long i = 0; i < count; i++)
         {
             long copy = Sys.Peek(CopyAt(i));
@@ -14821,7 +14838,7 @@ static class GcThreads
             return;
         }
         long count = Sys.Peek(_stackCopies);
-        if (count > Max) count = Max;
+        if (count > _stackCopiesFor) count = _stackCopiesFor;
         for (long i = 0; i < count; i++)
         {
             long copy = Sys.Peek(CopyAt(i));
@@ -15095,10 +15112,12 @@ static class GcThreads
 
     // ---- the buffers in use, for the walks to step over ------------------------
 
-    const long BufferMax = Max;
-    // A buffer and a page of every class for each thread.
-    const long SpanMax = Max * (Gc.Classes + 1);
-    static long _buffers;           // BufferMax pairs: base, limit; sorted by base
+    // A buffer and a page of every class for each thread the table has room
+    // for (_capacity, which grows): a table mapped for fewer is mapped again
+    // (Sized), and nothing past its end is ever written.
+    static long SpanMax => (_capacity > 0 ? _capacity : Max) * (Gc.Classes + 1);
+    static long _buffers;           // SpanMax pairs: base, limit; sorted by base
+    static long _buffersFor;
     static long _bufferCount;
 
     /// Every registered thread's allocation buffer as it stands, sorted by
@@ -15106,22 +15125,17 @@ static class GcThreads
     public static void CaptureBuffers()
     {
         _bufferCount = 0;
-
+        _buffers = Sized(_buffers, ref _buffersFor);
         if (_buffers == 0)
         {
-            _buffers = Platform.Map(SpanMax * (2 * WordSize.Bytes));
-
-            if (_buffers == 0)
-            {
-                return;
-            }
+            return;
         }
 
         _bufferCount = CaptureBuffersInto(_buffers);
     }
 
     /// Every registered thread's buffer, base and limit, into `table`
-    /// (room for BufferMax pairs), sorted by base; answers how many. The
+    /// (room for SpanMax pairs), sorted by base; answers how many. The
     /// heap lock is held, so no buffer is replaced meanwhile -- a thread only
     /// bumps its pointer inside its own without it.
     public static long CaptureBuffersInto(long table)
@@ -15142,18 +15156,8 @@ static class GcThreads
 
             if (from != 0 && limit > from && count < SpanMax)
             {
-                // Insertion by base: a few entries, captured twice a collection.
-                long at = count;
-
-                while (at > 0 && Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)) > from)
-                {
-                    Sys.Poke(table + at * (2 * WordSize.Bytes), Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes)));
-                    Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, Sys.Peek(table + (at - 1) * (2 * WordSize.Bytes) + WordSize.Bytes));
-                    at = at - 1;
-                }
-
-                Sys.Poke(table + at * (2 * WordSize.Bytes), from);
-                Sys.Poke(table + at * (2 * WordSize.Bytes) + WordSize.Bytes, limit);
+                Sys.Poke(table + count * (2 * WordSize.Bytes), from);
+                Sys.Poke(table + count * (2 * WordSize.Bytes) + WordSize.Bytes, limit);
                 count = count + 1;
             }
 
@@ -15166,7 +15170,45 @@ static class GcThreads
             }
             i = i + 1;
         }
+        SortPairs(table, count);
         return count;
+    }
+
+    // BY BASE, ONCE, IN PLACE: a heap sort of the (base, limit) pairs. Kept
+    // in order as each was added, a buffer and a page of every class for
+    // every thread was an insertion sort of thousands, twice a collection:
+    // three hundred threads made every collection take minutes.
+    static void SortPairs(long table, long count)
+    {
+        for (long start = count / 2 - 1; start >= 0; start--) SiftPair(table, start, count);
+        for (long end = count - 1; end > 0; end--)
+        {
+            SwapPairs(table, 0, end);
+            SiftPair(table, 0, end);
+        }
+    }
+
+    static void SiftPair(long table, long root, long count)
+    {
+        while (true)
+        {
+            long child = root * 2 + 1;
+            if (child >= count) return;
+            if (child + 1 < count && Sys.Peek(table + (child + 1) * (2 * WordSize.Bytes)) > Sys.Peek(table + child * (2 * WordSize.Bytes))) child = child + 1;
+            if (Sys.Peek(table + root * (2 * WordSize.Bytes)) >= Sys.Peek(table + child * (2 * WordSize.Bytes))) return;
+            SwapPairs(table, root, child);
+            root = child;
+        }
+    }
+
+    static void SwapPairs(long table, long a, long b)
+    {
+        long pa = table + a * (2 * WordSize.Bytes), pb = table + b * (2 * WordSize.Bytes);
+        long baseA = Sys.Peek(pa), limitA = Sys.Peek(pa + WordSize.Bytes);
+        Sys.Poke(pa, Sys.Peek(pb));
+        Sys.Poke(pa + WordSize.Bytes, Sys.Peek(pb + WordSize.Bytes));
+        Sys.Poke(pb, baseA);
+        Sys.Poke(pb + WordSize.Bytes, limitA);
     }
 
     /// The bump pointer of the registered thread whose buffer begins at
@@ -15191,6 +15233,18 @@ static class GcThreads
     public static long BufferTableBytes()
     {
         return SpanMax * (2 * WordSize.Bytes);
+    }
+
+    /// `table` if it was mapped for the thread capacity there is now (`mappedFor`),
+    /// else one mapped for it; 0 when there is no memory. The old one stays
+    /// mapped: a capture table is scratch, and a reader may hold its address.
+    public static long Sized(long table, ref long mappedFor)
+    {
+        long capacity = _capacity > 0 ? _capacity : Max;
+        if (table != 0 && mappedFor >= capacity) return table;
+        long made = Platform.Map(BufferTableBytes());
+        if (made != 0) mappedFor = capacity;
+        return made;
     }
 
     public static long BufferCount()

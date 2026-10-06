@@ -1,0 +1,49 @@
+// test: more than 256 threads keep what they hold
+// expect-exit: 0
+// expect-output:
+// threads 300 intact 300
+//
+// The collector writes down every thread it scans. Its table held 256, and
+// a thread past that was dropped without a word: its stack never scanned,
+// what only it held was swept while it still ran and handed out again --
+// another thread's list then held strings of somebody else's. Three hundred
+// threads here each make a list only their own stack holds, wait while the
+// others collect, and then read it back.
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+
+static class P
+{
+    static int _ready, _intact;
+    static readonly object _gate = new();
+
+    static void Main()
+    {
+        const int N = 300;
+        Thread[] threads = new Thread[N];
+        ManualResetEventSlim go = new(false);
+        for (int t = 0; t < N; t++)
+        {
+            int id = t;
+            threads[t] = new Thread(() =>
+            {
+                List<string> mine = new();
+                for (int i = 0; i < 40; i++) mine.Add("t" + id + "-" + i);
+                Interlocked.Increment(ref _ready);
+                go.Wait();
+                for (int r = 0; r < 3; r++) { List<int[]> junk = new(); for (int i = 0; i < 200; i++) junk.Add(new int[16]); }
+                bool ok = mine.Count == 40;
+                for (int i = 0; ok && i < 40; i++) ok = mine[i] == "t" + id + "-" + i;
+                if (ok) Interlocked.Increment(ref _intact);
+            }, 256 * 1024);
+            threads[t].Start();
+        }
+        while (Volatile.Read(ref _ready) < N) Thread.Sleep(1);
+        for (int c = 0; c < 3; c++) { GC.Collect(); List<string> churn = new(); for (int i = 0; i < 20000; i++) churn.Add("c" + i); }
+        go.Set();
+        foreach (Thread t in threads) t.Join();
+        Console.WriteLine("threads " + N + " intact " + _intact);
+    }
+}
