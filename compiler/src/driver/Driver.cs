@@ -107,6 +107,13 @@ public static class Driver
             Switches.HandOn("--gc-census");
             AppContext.SetSwitch("Corsac.GC.Census", true);
         }
+        // And what the collector found dead, by type (Gc.AskDeadCensus).
+        if (taken.Remove("--gc-dead-census"))
+        {
+            while (taken.Remove("--gc-dead-census")) { }
+            Switches.HandOn("--gc-dead-census");
+            AppContext.SetSwitch("Corsac.GC.DeadCensus", true);
+        }
         // Where the allocations come from, sampled and said at exit (AllocSamples).
         if (taken.Remove("--alloc-sample"))
         {

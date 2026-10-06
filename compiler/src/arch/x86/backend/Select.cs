@@ -1865,6 +1865,7 @@ internal sealed partial class Selector
     private void SelectMemCopy(Instr i)
     {
         if (SelectMmxFrameCopy(i)) return;
+        if (SelectSmallCopy(i)) return;
         Mov(Edi, RM(i.Operands[0]));
         Mov(Esi, RM(i.Operands[1]));
         if (i.Operands[2] is ImmOperand n)
@@ -1893,6 +1894,39 @@ internal sealed partial class Selector
         Mov(Ecx, remainder);
         Emit(MOp.And, Ecx, Imm(3));
         Emit(MOp.RepMovsb);
+    }
+
+    // A SMALL CONSTANT COPY IS WORD MOVES, not REP MOVSD: a struct of two or
+    // three words (an enumerator, a tuple, a span) is copied at every foreach
+    // and every pass by value, and REP's start-up costs more than the copy --
+    // the hottest instruction of the native compiler's escape analysis was
+    // one. In ascending order a word at a time, as MOVSD goes, so an
+    // overlapping copy reads what it read before.
+    private const int SmallCopyBytes = 32;
+
+    private static bool Addressable(Operand o) => o is RegOperand { Type: IrType.I32 } or SymOperand or SlotOperand;
+
+    private bool SelectSmallCopy(Instr i)
+    {
+        if (i.Operands[2] is not ImmOperand { Value: > 0 and <= SmallCopyBytes } n
+            || !Addressable(i.Operands[0]) || !Addressable(i.Operands[1])) return false;
+        MMem destination = Address(i.Operands[0], 0), source = Address(i.Operands[1], 0);
+        int offset = 0;
+        for (; offset + 4 <= n.Value; offset += 4)
+        {
+            MReg word = Temp();
+            Mov(word, Displaced(source, offset));
+            Mov(Displaced(destination, offset), word);
+        }
+        for (; offset < n.Value; offset++)
+        {
+            // Stored a byte: one of the four with a low byte (ByteRegs).
+            MReg tail = Temp();
+            _m.ByteRegs.Add(tail.Id);
+            EmitW(MOp.Movzx, 1, tail, Displaced(source, offset));
+            EmitW(MOp.Mov, 1, Displaced(destination, offset), tail);
+        }
+        return true;
     }
 
     private void SelectAtomic(Instr i)

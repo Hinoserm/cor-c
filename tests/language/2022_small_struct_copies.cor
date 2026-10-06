@@ -1,0 +1,111 @@
+// test: small struct copies
+// expect-exit: 0
+// expect-output:
+// five 1,2,3,4,5
+// six 6,7,8,9,10,11
+// seven 12,13,14,15,16,17,18
+// thirteen 1000 2000 3000 40,41,42,43,44,45,46,47,48 58
+// wide 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21
+// array 494 11950 4130
+// pressed 1033294019 140 1 15437 213 6656 2525 94 3763
+// swapped 3,2,1 1,2,3
+// chars <&;> <;&>
+//
+// A struct of a few words and a few bytes is copied word by word and byte by
+// byte where it is assigned, passed and kept in an array -- every size from
+// five bytes to thirty-one, its last bytes too, and with enough values live
+// at once that the bytes are carried through any register there is.
+
+using System;
+using System.Text;
+
+struct Five { public byte A, B, C, D, E; }
+struct Six { public byte A, B, C, D, E, F; }
+struct Seven { public byte A, B, C, D, E, F, G; }
+struct Thirteen { public int X; public byte A, B, C, D, E, F, G, H, I; }
+struct Wide { public long P, Q, R; public byte A, B, C, D, E, F, G; }
+struct Chars { public char Open, Amp, Semi, Close; public byte Pad; }
+
+static class Program
+{
+    static string Of(Five f) => $"{f.A},{f.B},{f.C},{f.D},{f.E}";
+    static string Of(Six s) => $"{s.A},{s.B},{s.C},{s.D},{s.E},{s.F}";
+    static string Of(Seven s) => $"{s.A},{s.B},{s.C},{s.D},{s.E},{s.F},{s.G}";
+
+    static Seven Pass(Seven s) { Seven copy = s; return copy; }
+
+    static Thirteen Make(int x, byte from)
+    {
+        Thirteen t = default;
+        t.X = x;
+        t.A = from; t.B = (byte)(from + 1); t.C = (byte)(from + 2); t.D = (byte)(from + 3); t.E = (byte)(from + 4);
+        t.F = (byte)(from + 5); t.G = (byte)(from + 6); t.H = (byte)(from + 7); t.I = (byte)(from + 8);
+        return t;
+    }
+
+    static string Pressed(Seven[] from)
+    {
+        int r0 = 0, r1 = 1, r2 = 2, r3 = 3, r4 = 4, r5 = 5, r6 = 6, r7 = 7;
+        Seven[] into = new Seven[from.Length];
+        for (int i = 0; i < from.Length; i++)
+        {
+            Seven t = from[i];
+            into[from.Length - 1 - i] = t;
+            r0 += t.E; r1 ^= t.F; r2 += t.G; r3 += r0 & 7; r4 ^= r2; r5 += r1 + i; r6 += r4 & 3; r7 ^= r5 + r6;
+        }
+        int sum = 0;
+        foreach (Seven t in into) sum = sum * 31 + t.E * 7 + t.F * 5 + t.G;
+        return $"{sum} {r0} {r1} {r2} {r3} {r4} {r5} {r6} {r7}";
+    }
+
+    static int Main()
+    {
+        Five f = new Five { A = 1, B = 2, C = 3, D = 4, E = 5 };
+        Five f2 = f;
+        Console.WriteLine("five " + Of(f2));
+
+        Six s = new Six { A = 6, B = 7, C = 8, D = 9, E = 10, F = 11 };
+        Six s2 = s;
+        Console.WriteLine("six " + Of(s2));
+
+        Seven v = new Seven { A = 12, B = 13, C = 14, D = 15, E = 16, F = 17, G = 18 };
+        Console.WriteLine("seven " + Of(Pass(v)));
+
+        // Many values live across the copies: the bytes go through whatever
+        // registers are left.
+        Thirteen a = Make(1000, 40), b = Make(2000, 50), c = Make(3000, 60);
+        Thirteen a2 = a, b2 = b, c2 = c;
+        Console.WriteLine($"thirteen {a2.X} {b2.X} {c2.X} {a2.A},{a2.B},{a2.C},{a2.D},{a2.E},{a2.F},{a2.G},{a2.H},{a2.I} {b2.I}");
+
+        Wide w = new Wide { P = 7, Q = 8, R = 9, A = 10, B = 11, C = 12, D = 13, E = 14, F = 15, G = 16 };
+        Wide w2 = w;
+        w2.A += 7; w2.B += 7; w2.C += 7; w2.D += 7; w2.E += 7;
+        Console.WriteLine($"wide {w2.P} {w2.Q} {w2.R} {w.A} {w.B} {w.C} {w.D} {w.E} {w.F} {w.G} {w2.A} {w2.B} {w2.C} {w2.D} {w2.E}");
+
+        Seven[] many = new Seven[70];
+        for (int i = 0; i < many.Length; i++)
+            many[i] = new Seven { A = (byte)i, B = (byte)(i * 2), C = (byte)(i * 3), D = 1, E = 2, F = 3, G = (byte)(255 - i) };
+        Seven[] copied = new Seven[many.Length];
+        for (int i = 0; i < many.Length; i++) copied[i] = many[i];
+        int first = 0, second = 0, last = 0;
+        foreach (Seven x in copied) { first += x.A + x.D; second += x.B + x.C - x.E; last += x.G + x.F; }
+        Console.WriteLine($"array {first % 1000 + 9} {second + 15} {last - 11515}");
+
+        // More running values than the machine has registers, all live
+        // across each copy: its last bytes go through whichever is left.
+        Console.WriteLine("pressed " + Pressed(many));
+
+        Seven p = new Seven { A = 1, B = 2, C = 3 }, q = new Seven { A = 3, B = 2, C = 1 };
+        (p, q) = (q, p);
+        Console.WriteLine($"swapped {p.A},{p.B},{p.C} {q.A},{q.B},{q.C}");
+
+        Chars ch = new Chars { Open = '<', Amp = '&', Semi = ';', Close = '>', Pad = 1 };
+        Chars swapped = ch;
+        (swapped.Amp, swapped.Semi) = (swapped.Semi, swapped.Amp);
+        StringBuilder text = new();
+        text.Append(ch.Open).Append(ch.Amp).Append(ch.Semi).Append(ch.Close).Append(' ');
+        text.Append(swapped.Open).Append(swapped.Amp).Append(swapped.Semi).Append(swapped.Close);
+        Console.WriteLine("chars " + text);
+        return 0;
+    }
+}

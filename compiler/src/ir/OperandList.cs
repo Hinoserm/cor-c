@@ -149,13 +149,20 @@ public abstract class OperandList : IReadOnlyList<Operand>
     IEnumerator<Operand> IEnumerable<Operand>.GetEnumerator() => new Boxed(this);
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => new Boxed(this);
 
+    // THE COUNT TAKEN ONCE, AND NO BOUNDS CHECKED TWICE: as List's, the
+    // operands are not added to or taken from while they are walked. Read
+    // afresh at every step, Count's two ways and the indexer's check made
+    // MoveNext and Current too large to inline into the compiler's own large
+    // passes, and a call each per operand was the hottest loop of escape
+    // analysis.
     public struct Enumerator
     {
         private readonly OperandList _list;
+        private readonly int _count;
         private int _at;
-        internal Enumerator(OperandList list) { _list = list; _at = -1; }
-        public Operand Current => _list[_at];
-        public bool MoveNext() => ++_at < _list.Count;
+        internal Enumerator(OperandList list) { _list = list; _count = list.Count; _at = -1; }
+        public Operand Current => _at == 0 ? _list._o0! : _at == 1 ? _list._o1! : _list._rest![_at - 2];
+        public bool MoveNext() => ++_at < _count;
     }
 
     private sealed class Boxed : IEnumerator<Operand>

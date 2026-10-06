@@ -6867,7 +6867,7 @@ static class Gc
         SkippedFreePaths = Platform.SkippedFreePaths();
         GuardReleases = Platform.GuardReleases();
         _census = Platform.GcCensus();
-        _deadCensus = _census && Platform.GcDeadCensus();
+        _deadCensus = _census && (_deadCensusAsked || Platform.GcDeadCensus());
         _thresholdCap = Platform.GcThreshold();
         _nurseryFixed = Platform.GcNursery();
         _heapCheck = Platform.HeapCheck();
@@ -8594,6 +8594,19 @@ static class Gc
         _censusAsked = true;
         _census = true;
     }
+
+    /// And what every sweep found dead, by type, over the run
+    /// (AppContext.SetSwitch("Corsac.GC.DeadCensus", true): corc's
+    /// --gc-dead-census), as CORSAC_GC_CENSUS=2 does: what the collector, not
+    /// the program, gave back, and of which types.
+    public static void AskDeadCensus()
+    {
+        _deadCensusAsked = true;
+        AskCensus();
+        _deadCensus = true;
+    }
+
+    static bool _deadCensusAsked;
 
     // Asked by the program (AskCensus); every collection asks the platform
     // afresh as well, and must not take back what the program asked for.
@@ -10694,7 +10707,7 @@ static class Gc
         // Asked afresh at every collection: a program may be told to take
         // the census after it started (Platform.CensusWanted).
         _census = _censusAsked || Platform.GcCensus();
-        _deadCensus = _census && Platform.GcDeadCensus();
+        _deadCensus = _census && (_deadCensusAsked || Platform.GcDeadCensus());
         _thresholdCap = Platform.GcThreshold();
         long clock = PauseClock;
         long began = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;

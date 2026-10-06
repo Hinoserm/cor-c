@@ -85,7 +85,7 @@ internal sealed class Allocator
     private readonly int[] _start;
     private readonly int[] _end;
     /// <summary>The positions each virtual register is live at, as ranges.</summary>
-    private readonly List<(int S, int E)>[] _ranges;
+    private readonly List<(int S, int E)>?[] _ranges;
     private readonly int[][] _busy = new int[8][];
     private readonly int[] _assigned;
     private readonly int[] _spilledFrom;
@@ -142,10 +142,11 @@ internal sealed class Allocator
         _spilledFrom = new int[_n];
         _slot = new int[_n];
         _remat = new MImm?[_n];
-        _ranges = new List<(int, int)>[_n];
+        _ranges = new List<(int, int)>?[_n];
+        // A register's ranges made as it is first marked: most numbers are
+        // halves never used, values selection dropped, or the machine's own.
         for (int v = 0; v < _n; v++)
         {
-            _ranges[v] = new List<(int, int)>();
             _start[v] = int.MaxValue;
             _end[v] = -1;
             _assigned[v] = -1;
@@ -357,7 +358,7 @@ internal sealed class Allocator
             _end[reg] = Math.Max(_end[reg], pos);
             // The walk is backward within a block, marking an instruction's
             // late pair before its early one, so a run grows downward.
-            List<(int S, int E)> list = _ranges[reg];
+            List<(int S, int E)> list = _ranges[reg] ??= new List<(int S, int E)>();
             if (list.Count > 0 && pos >= list[^1].S - 2 && pos <= list[^1].E + 1)
             {
                 list[^1] = (Math.Min(list[^1].S, pos), Math.Max(list[^1].E, pos));
@@ -536,8 +537,8 @@ internal sealed class Allocator
 
         for (int v = 8; v < _n; v++)
         {
-            List<(int S, int E)> list = _ranges[v];
-            if (list.Count < 2)
+            List<(int S, int E)>? list = _ranges[v];
+            if (list is null || list.Count < 2)
             {
                 continue;
             }
@@ -592,7 +593,7 @@ internal sealed class Allocator
         {
             if (_end[v] >= 0)
             {
-                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v], Ranges = _ranges[v] });
+                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v], Ranges = _ranges[v]! });
             }
         }
 

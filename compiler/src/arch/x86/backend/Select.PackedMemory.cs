@@ -43,7 +43,7 @@ internal sealed partial class Selector
         EndMmx();
         for (; offset < count.Value; offset++)
         {
-            MReg tail = Temp(); EmitW(MOp.Movzx, 1, tail, MMem.Frame(src + offset));
+            MReg tail = Temp(); _m.ByteRegs.Add(tail.Id); EmitW(MOp.Movzx, 1, tail, MMem.Frame(src + offset));
             EmitW(MOp.Mov, 1, MMem.Frame(dest + offset), tail);
         }
         return true;
