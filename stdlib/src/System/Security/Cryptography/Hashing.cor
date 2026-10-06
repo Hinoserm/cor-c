@@ -300,19 +300,22 @@ sealed class Sha256Implementation : SHA256
             int p = at + i * 4;
             w[i] = ((uint)data[p] << 24) | ((uint)data[p + 1] << 16) | ((uint)data[p + 2] << 8) | data[p + 3];
         }
-        for (int i = 16; i < 64; i++)
+        // BOUNDED BY THE ARRAY ITSELF, which is 64 words: the loops' own tests
+        // then prove every index in range (InductionBounds), and the rounds
+        // read w[i] to w[i + 7] with no bounds check between them.
+        for (int i = 16; i < w.Length; i++)
         {
             uint x = w[i - 15], y = w[i - 2];
             uint s0 = Rotr(x, 7) ^ Rotr(x, 18) ^ (x >> 3);
             uint s1 = Rotr(y, 17) ^ Rotr(y, 19) ^ (y >> 10);
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
-        for (int i = 0; i < 64; i++) w[i] = w[i] + k[i];
+        for (int i = 0; i < w.Length; i++) w[i] = w[i] + k[i];
 
         uint[] state = _state;
         uint a = state[0], b = state[1], c = state[2], d = state[3];
         uint e = state[4], f = state[5], g = state[6], h = state[7];
-        for (int i = 0; i < 64; i += 8)
+        for (int i = 0; i + 7 < w.Length; i += 8)
         {
             h = h + (Rotr(e, 6) ^ Rotr(e, 11) ^ Rotr(e, 25)) + (g ^ (e & (f ^ g))) + w[i];
             d = d + h;
