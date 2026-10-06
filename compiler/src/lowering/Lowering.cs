@@ -500,19 +500,6 @@ public sealed partial class Lowering
     private void Run(CompilationUnit unit)
     {
         MethodSymbol? entry = null;
-        {
-            var __c = new Dictionary<string, (int all, long nodes)>(); long __withFile = 0, __natural = 0;
-            foreach (var (__d, __m) in _b.Methods)
-            {
-                if (__d.Body is not AstBlock __b) continue;
-                string __k = (__m.Owner.Decl?.Specialised == true ? (__m.Owner.Decl.Canon is null ? "copy" : "shared") : __m.Owner.Decl?.SignatureOnly == true ? "imported" : __m.Owner.Decl?.FromLibrary == true ? "lib" : "own") + (__m.Owner.Decl?.Elsewhere == true ? "-elsewhere" : "") + (__d.LocalCopy ? "-genericcopy" : "");
-                var __v = __c.GetValueOrDefault(__k);
-                long __n = 0; var __st = new Stack<Node>(); __st.Push(__b); while (__st.Count > 0) { var __x = __st.Pop(); __n++; if (__x.File.Length > 0) __withFile++; if (__x is Expr __e && (__e.NaturalType is not null)) __natural++; foreach (var __ch in Children(__x)) __st.Push(__ch); }
-                __c[__k] = (__v.all + 1, __v.nodes + __n);
-            }
-            foreach (var __kv in __c) Console.Error.WriteLine("BODIES-START " + __kv.Key + " total=" + __kv.Value.all + " nodes=" + __kv.Value.nodes);
-            Console.Error.WriteLine("NODES withFile=" + __withFile + " natural=" + __natural);
-        }
 
         // NOT A TYPE WHOSE MEMBERS WERE NEVER ASKED FOR, here and in the walks
         // over every type below: a word-shaped specialisation, whose methods
@@ -615,13 +602,10 @@ public sealed partial class Lowering
             }
         }
 
-        int __lowered = 0; var __loweredDecls = new HashSet<MethodDecl>(ReferenceEqualityComparer.Instance);
         while (_work.Count > 0)
         {
             SealFunctions();
             MethodSymbol m = _work.Dequeue();
-            if (m.Decl is MethodDecl __md) __loweredDecls.Add(__md);
-            if (++__lowered % 500 == 0) { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE lower:" + __lowered + " " + (__l>>20) + " MB"); }
 
             if (m.Decl is null
                 && (m.Owner.Name.StartsWith("ArrayView$", StringComparison.Ordinal)
@@ -649,22 +633,6 @@ public sealed partial class Lowering
         }
 
         SealFunctions();
-        { long __l = GC.GetTotalMemory(true); Console.Error.WriteLine("LIVE lower:end " + (__l>>20) + " MB"); string __f = "/home/hinoserm/tmp/rg/ag1-probe/pause-lower"; if (System.IO.File.Exists(__f)) { Console.Error.WriteLine("PAUSE " + Environment.ProcessId); while (System.IO.File.Exists(__f)) System.Threading.Thread.Sleep(200); } }
-        {
-            var __c = new Dictionary<string, (int all, int left, long nodes)>(); var __unl = new Dictionary<string, (int n, long nodes)>();
-            foreach (var (__d, __m) in _b.Methods)
-            {
-                if (__d.Body is not AstBlock __b) continue;
-                string __k = (__m.Owner.Decl?.Specialised == true ? (__m.Owner.Decl.Canon is null ? "copy" : "shared") : __m.Owner.Decl?.SignatureOnly == true ? "imported" : __m.Owner.Decl?.FromLibrary == true ? "lib" : "own") + (__m.Owner.Decl?.Elsewhere == true ? "-elsewhere" : "") + (__d.LocalCopy ? "-genericcopy" : "");
-                var __v = __c.GetValueOrDefault(__k);
-                long __n = 0;
-                if (__b.Statements.Count > 0) { var __st = new Stack<Node>(); __st.Push(__b); while (__st.Count > 0) { var __x = __st.Pop(); __n++; foreach (var __ch in Children(__x)) __st.Push(__ch); } }
-                __c[__k] = (__v.all + 1, __v.left + (__b.Statements.Count > 0 ? 1 : 0), __v.nodes + __n);
-                if (__n > 0) { string __why = !__loweredDecls.Contains(__d) ? "never-lowered" : "lowered-kept"; var __u = __unl.GetValueOrDefault(__k + " " + __why); __unl[__k + " " + __why] = (__u.n + 1, __u.nodes + __n); }
-            }
-            foreach (var __kv in __unl) Console.Error.WriteLine("HELD " + __kv.Key + " n=" + __kv.Value.n + " nodes=" + __kv.Value.nodes);
-            foreach (var __kv in __c) Console.Error.WriteLine("BODIES " + __kv.Key + " total=" + __kv.Value.all + " still-held=" + __kv.Value.left + " nodes-held=" + __kv.Value.nodes);
-        }
         NoteUnlowered();
 
         TypeSymbol? runtimeOwner = _b.Types.Values.FirstOrDefault(t => t.Name == RuntimeType);
