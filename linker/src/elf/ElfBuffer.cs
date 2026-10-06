@@ -70,6 +70,13 @@ internal sealed class ElfBuffer
         }
     }
 
+    /// <summary>
+    /// A placed section's bytes moved in, each chunk let go once it is
+    /// written: the image and the sections it is made of are never both held
+    /// whole, which a link of a large program on a capped heap cannot afford.
+    /// </summary>
+    public void Take(ChunkedBytes source) => source.MoveTo((chunk, length) => Bytes(new ReadOnlySpan<byte>(chunk, 0, length)));
+
     public void Zeros(int count)
     {
         if (count < 0) throw new InvalidOperationException($"layout error: {count} zero bytes asked for");

@@ -19,13 +19,25 @@ public sealed class OptimizationSummary
         Section text = obj.Section(".text");
         TextHash = HashCode(text, 0, text.Bytes.Count);
         Section output = new(SectionName, SectionKind.Note);
-        output.Bytes.AddRange(Write());
+        WriteTo(output.Bytes);
         obj.Sections.Add(output);
     }
 
     public byte[] Write()
     {
-        List<byte> data = new();
+        ChunkedBytes data = new();
+        WriteTo(data);
+        return data.ToArray();
+    }
+
+    /// <summary>
+    /// The summary appended to `data`, a section's bytes: a record a direct
+    /// call, so a large unit's is megabytes, and built as a list and copied
+    /// out it was held three times over, each contiguous.
+    /// </summary>
+    public void WriteTo(ChunkedBytes data)
+    {
+        int start = data.Count;
         void Word(uint value)
         {
             for (int i = 0; i < 4; i++) data.Add((byte)(value >> (i * 8)));
@@ -57,22 +69,33 @@ public sealed class OptimizationSummary
             Word((uint)item.Offset);
             Text(item.Symbol);
         }
-        byte[] result = data.ToArray();
-        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(8), (uint)result.Length);
-        return result;
+        data.WriteUInt32(start + 8, (uint)(data.Count - start));
     }
 
     /// <summary>ELF REL stores addends in code words; normalize those fields for hashing.</summary>
     public static byte[] HashCode(Section section, int offset, int length)
     {
-        byte[] code = section.Bytes.Slice(offset, length);
-        foreach (Relocation relocation in section.Relocs)
+        // A WINDOW AT A TIME, hashed as it goes: the whole .text of a unit,
+        // copied out as one array to be hashed, was megabytes in one run.
+        // The bytes hashed are the same, so the hash is too.
+        const int Window = 64 * 1024;
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        byte[] code = new byte[Math.Min(length, Window)];
+        for (int done = 0; done < length;)
         {
-            long start = Math.Max((long)offset, relocation.Offset);
-            long end = Math.Min((long)offset + length, (long)relocation.Offset + 4);
-            for (long i = start; i < end; i++) code[(int)(i - offset)] = 0;
+            int n = Math.Min(Window, length - done);
+            section.Bytes.CopyTo(offset + done, code, n);
+            long from = (long)offset + done, until = from + n;
+            foreach (Relocation relocation in section.Relocs)
+            {
+                long start = Math.Max(from, relocation.Offset);
+                long end = Math.Min(until, (long)relocation.Offset + 4);
+                for (long i = start; i < end; i++) code[(int)(i - from)] = 0;
+            }
+            hash.AppendData(code, 0, n);
+            done += n;
         }
-        return SHA256.HashData(code);
+        return hash.GetHashAndReset();
     }
 
     public static OptimizationSummary? Read(ObjectFile obj)
@@ -80,40 +103,41 @@ public sealed class OptimizationSummary
         Section[] sections = obj.Sections.Where(s => s.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
         if (sections.Length != 1) throw new ElfFormatException("duplicate LTO section");
-        byte[] bytes = sections[0].Bytes.ToArray();
+        // Read where it lies, in the section's chunks, not copied out whole.
+        ChunkedBytes bytes = sections[0].Bytes;
         int at = 0;
         uint Word()
         {
-            if (at > bytes.Length - 4) throw new ElfFormatException("truncated LTO record");
-            uint value = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(at, 4));
+            if (at > bytes.Count - 4) throw new ElfFormatException("truncated LTO record");
+            uint value = bytes.ReadUInt32(at);
             at += 4;
             return value;
         }
         byte[] Blob(int size)
         {
-            if (size < 0 || at > bytes.Length - size) throw new ElfFormatException("truncated LTO data");
-            byte[] value = bytes.AsSpan(at, size).ToArray();
+            if (size < 0 || at > bytes.Count - size) throw new ElfFormatException("truncated LTO data");
+            byte[] value = bytes.Slice(at, size);
             at += size;
             return value;
         }
         string Text()
         {
             uint size = Word();
-            if (size == 0 || size > (uint)(bytes.Length - at)) throw new ElfFormatException("invalid LTO string length");
+            if (size == 0 || size > (uint)(bytes.Count - at)) throw new ElfFormatException("invalid LTO string length");
             string value;
             try { value = new UTF8Encoding(false, true).GetString(Blob((int)size)); }
             catch (DecoderFallbackException) { throw new ElfFormatException("invalid LTO UTF-8"); }
             if (value.Contains('\0')) throw new ElfFormatException("invalid LTO symbol name");
             return value;
         }
-        if (bytes.Length < 52 || !bytes.AsSpan(0, 4).SequenceEqual("CLTO"u8))
+        if (bytes.Count < 52 || !bytes.Slice(0, 4).AsSpan().SequenceEqual("CLTO"u8))
             throw new ElfFormatException("invalid LTO header");
         at = 4;
         if (Word() != 1) throw new ElfFormatException("unsupported LTO version");
-        if (Word() != bytes.Length) throw new ElfFormatException("invalid LTO byte length");
+        if (Word() != bytes.Count) throw new ElfFormatException("invalid LTO byte length");
         uint returns = Word();
         uint calls = Word();
-        if (returns > (bytes.Length - 52) / 41 || calls > (bytes.Length - 52) / 9)
+        if (returns > (bytes.Count - 52) / 41 || calls > (bytes.Count - 52) / 9)
             throw new ElfFormatException("invalid LTO record count");
         OptimizationSummary result = new() { TextHash = Blob(32) };
         HashSet<string> names = new(StringComparer.Ordinal);
@@ -131,7 +155,7 @@ public sealed class OptimizationSummary
                 throw new ElfFormatException("invalid or duplicate LTO call offset");
             result.Calls.Add(new DirectCall((int)offset, Text()));
         }
-        if (at != bytes.Length) throw new ElfFormatException("trailing LTO data");
+        if (at != bytes.Count) throw new ElfFormatException("trailing LTO data");
         Section[] text = obj.Sections.Where(s => s.Name == ".text").ToArray();
         if (text.Length != 1 || text[0].Kind != SectionKind.Code
             || !HashCode(text[0], 0, text[0].Bytes.Count).SequenceEqual(result.TextHash))

@@ -1152,7 +1152,7 @@ public static class Driver
             }
             try
             {
-                link.Add((Path.GetFileName(with), ElfReader.ReadObject(File.ReadAllBytes(with))));
+                link.Add((Path.GetFileName(with), ElfReader.ReadObjectFile(with, leaveInFile: false)));
             }
             catch (ElfFormatException e)
             {
@@ -1224,15 +1224,17 @@ public static class Driver
                 program.IconResource = icon;
             }
         }
-        byte[] exe = sharedLibs.Count > 0
-            ? Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"), program: program)
-            : Linker.Link(link, entry, loadBase ?? Linker.DefaultLoadAddress, physicalBase, program);
-        File.WriteAllBytes(output, exe);
+        // A static image goes to its file a chunk at a time (Linker.LinkTo),
+        // never as one array of its whole size.
+        if (sharedLibs.Count > 0)
+            File.WriteAllBytes(output, Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"), program: program));
+        else Linker.LinkTo(output, link, entry, loadBase ?? Linker.DefaultLoadAddress, physicalBase, program);
+        long exeLength = new FileInfo(output).Length;
         if (!OperatingSystem.IsWindows())
         {
             File.SetUnixFileMode(output, File.GetUnixFileMode(output) | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
         }
-        Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {exe.Length} bytes");
+        Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {exeLength} bytes");
         return 0;
     }
 

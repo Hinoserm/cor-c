@@ -229,6 +229,106 @@ public sealed class ChunkedBytes : IReadOnlyList<byte>
         this[offset + 3] = (byte)(value >> 24);
     }
 
+    public uint ReadUInt32(int offset) => unchecked((uint)ReadInt32(offset));
+
+    public void WriteUInt32(int offset, uint value) => WriteInt32(offset, unchecked((int)value));
+
+    public long ReadInt64(int offset) => (uint)ReadInt32(offset) | (long)ReadInt32(offset + 4) << 32;
+
+    public void WriteInt64(int offset, long value)
+    {
+        WriteInt32(offset, (int)value);
+        WriteInt32(offset + 4, (int)(value >> 32));
+    }
+
+    /// <summary>Bytes [index, index + count) decoded, straight from the chunk when they lie in one.</summary>
+    public string GetString(System.Text.Encoding encoding, int index, int count)
+    {
+        if (index < 0 || count < 0 || index > _count - count) throw new ArgumentOutOfRangeException(nameof(index));
+        if ((index & ChunkMask) + count <= ChunkSize) return encoding.GetString(_chunks[index >> ChunkShift], index & ChunkMask, count);
+        return encoding.GetString(Slice(index, count));
+    }
+
+    /// <summary>Where `value` next is in [start, end), or -1.</summary>
+    public int IndexOf(byte value, int start, int end)
+    {
+        if (start < 0 || end > _count) throw new ArgumentOutOfRangeException(nameof(start));
+        for (int at = start; at < end;)
+        {
+            int n = Math.Min(end - at, ChunkSize - (at & ChunkMask));
+            int found = Array.IndexOf(_chunks[at >> ChunkShift], value, at & ChunkMask, n);
+            if (found >= 0) return (at & ~ChunkMask) + found;
+            at += n;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// The content moved to a new instance, chunks and all, and this one left
+    /// empty: a link takes a section's bytes this way rather than copying
+    /// them (Section.HandOver).
+    /// </summary>
+    public ChunkedBytes TakeAll()
+    {
+        ChunkedBytes taken = new();
+        taken._chunks.AddRange(_chunks);
+        taken._count = _count;
+        taken._capacity = _capacity;
+        Clear();
+        return taken;
+    }
+
+    /// <summary>A copy, in chunks of its own.</summary>
+    public ChunkedBytes Clone()
+    {
+        ChunkedBytes copy = new();
+        copy.AddRange(this);
+        return copy;
+    }
+
+    /// <summary>
+    /// Each run handed to `write` and let go as soon as it is written, then
+    /// the whole emptied: content copied out this way is never held twice,
+    /// for longer than one chunk.
+    /// </summary>
+    public void MoveTo(Action<byte[], int> write)
+    {
+        for (int i = 0; i < SegmentCount; i++)
+        {
+            (byte[] chunk, int length) = Segment(i);
+            write(chunk, length);
+            _chunks[i] = Array.Empty<byte>();
+        }
+        Clear();
+    }
+
+    /// <summary>
+    /// `count` bytes appended from a file at `offset`, read straight into the
+    /// chunks: an object's sections come in without the file ever being one
+    /// array (ElfReader.ReadObjectFile).
+    /// </summary>
+    public void AddFromFile(Microsoft.Win32.SafeHandles.SafeFileHandle file, long offset, int count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+        Reserve(checked(_count + count));
+        int done = 0;
+        while (done < count)
+        {
+            int at = _count & ChunkMask;
+            int n = Math.Min(count - done, _chunks[_count >> ChunkShift].Length - at);
+            Span<byte> into = _chunks[_count >> ChunkShift].AsSpan(at, n);
+            int filled = 0;
+            while (filled < n)
+            {
+                int got = RandomAccess.Read(file, into[filled..], offset + done + filled);
+                if (got <= 0) throw new EndOfStreamException("file ends before its section does");
+                filled += got;
+            }
+            done += n;
+            _count += n;
+        }
+    }
+
     /// <summary>A struct, as List's is, so a foreach over the bytes allocates nothing.</summary>
     public struct Enumerator : IEnumerator<byte>
     {

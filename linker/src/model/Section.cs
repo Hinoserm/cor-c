@@ -35,16 +35,36 @@ public sealed class Section
     public int? HandedOver { get; private set; }
 
     /// <summary>
-    /// The bytes, as an array the caller owns, and the list let go: a link
-    /// that places every section of a large program held each one twice,
-    /// in its list and in the placed copy it relocates.
+    /// The bytes, taken by the caller and let go here: a link that places
+    /// every section of a large program held each one twice, in the section
+    /// and in the placed copy it relocates. The chunks themselves move, so
+    /// nothing is copied and no section is ever one array.
     /// </summary>
-    public byte[] HandOver()
+    public ChunkedBytes HandOver()
     {
-        byte[] made = Bytes.ToArray();
-        HandedOver = made.Length;
-        Bytes.Clear();
-        return made;
+        HandedOver = Bytes.Count;
+        return Bytes.TakeAll();
+    }
+
+    /// <summary>
+    /// The section's content as a stream, from its chunks or from the file it
+    /// was left in: what a note reader parses, without the content ever being
+    /// one array of its own (Content).
+    /// </summary>
+    public Stream OpenRead()
+    {
+        if (HandedOver is not null) throw new InvalidOperationException("section '" + Name + "' was handed to a link");
+        if (FileBacked is (string path, long offset, int length)) return new Corsac.Lang.Elf.SectionReadStream(path, offset, length);
+        return new Corsac.Lang.Elf.SectionReadStream(Bytes);
+    }
+
+    /// <summary>Content left in its file brought into the chunks, a chunk at a time, and the file let go of.</summary>
+    public void Load()
+    {
+        if (FileBacked is not (string path, long offset, int length)) return;
+        using Microsoft.Win32.SafeHandles.SafeFileHandle file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        Bytes.AddFromFile(file, offset, length);
+        FileBacked = null;
     }
 
     /// <summary>The section's content, read from its file if it was left there.</summary>

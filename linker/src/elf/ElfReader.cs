@@ -199,17 +199,38 @@ public static class ElfReader
     /// a record at a time, and the object knows its file (SourcePath), so a
     /// link hands the file itself to the backend rather than a copy.
     /// </summary>
-    public static ObjectFile ReadObjectFile(string path)
+    public static ObjectFile ReadObjectFile(string path) => ReadObjectFile(path, leaveInFile: true);
+
+    /// <summary>
+    /// An object read from its file by position, a section at a time and
+    /// each section straight into its chunks: the file is never one array.
+    /// File.ReadAllBytes of a large unit's object -- its code, its notes and
+    /// its IR, tens of megabytes -- was one contiguous request, and a copy of
+    /// every section held beside it. With `leaveInFile` the IR and the notes
+    /// a link reads and drops stay in the file (LeftInFile); without it the
+    /// file may go once this returns (a backend's output).
+    /// </summary>
+    public static ObjectFile ReadObjectFile(string path, bool leaveInFile)
     {
         string full = Path.GetFullPath(path);
-        BackingPath = full;
-        try
+        using Microsoft.Win32.SafeHandles.SafeFileHandle handle = File.OpenHandle(full, FileMode.Open, FileAccess.Read, FileShare.Read);
+        FileSource source = new(handle, RandomAccess.GetLength(handle));
+        if (source.Length >= Elf.HeaderSize)
         {
-            ObjectFile obj = ReadObject(File.ReadAllBytes(full));
-            obj.SourcePath = full;
-            return obj;
+            ReadOnlySpan<byte> ident = source.Read(0, 6, "ELF header");
+            // x86-64 objects are read whole, as they always were (Elf64Object).
+            if (ident[..4].SequenceEqual(Elf.Magic) && ident[4] == Elf.Class64 && ident[5] == Elf.Data2Lsb)
+                return WithSource(ReadObject(File.ReadAllBytes(full)), leaveInFile ? full : null);
         }
+        BackingPath = leaveInFile ? full : null;
+        try { return WithSource(ReadObject32(source), leaveInFile ? full : null); }
         finally { BackingPath = null; }
+    }
+
+    private static ObjectFile WithSource(ObjectFile obj, string? path)
+    {
+        if (path is not null) obj.SourcePath = path;
+        return obj;
     }
 
     public static ObjectFile ReadObject(byte[] bytes)
@@ -224,6 +245,85 @@ public static class ElfReader
         if (f[4] == Elf.Class64 && f[5] == Elf.Data2Lsb)
         {
             return Elf64Object.Read(bytes);
+        }
+        return ReadObject32(new ArraySource(bytes));
+    }
+
+    /// <summary>Where an object's bytes come from: an array in memory, or its file read by position.</summary>
+    private abstract class ObjectSource
+    {
+        public abstract long Length { get; }
+
+        /// <summary>[offset, offset + size), checked against the end; a file's is a new array of that size.</summary>
+        public abstract ReadOnlySpan<byte> Read(uint offset, uint size, string what);
+
+        /// <summary>[offset, offset + size) appended to a section's chunks.</summary>
+        public abstract void ReadInto(ChunkedBytes into, uint offset, uint size, string what);
+
+        public void Check(uint offset, uint size, string what)
+        {
+            if ((ulong)offset + size > (ulong)Length)
+            {
+                throw new ElfFormatException($"{what}: 0x{offset:x}+0x{size:x} is past the end of the file ({Length} bytes)");
+            }
+        }
+    }
+
+    private sealed class ArraySource : ObjectSource
+    {
+        private readonly byte[] _bytes;
+        public ArraySource(byte[] bytes) { _bytes = bytes; }
+        public override long Length => _bytes.Length;
+        public override ReadOnlySpan<byte> Read(uint offset, uint size, string what)
+        {
+            Check(offset, size, what);
+            return new ReadOnlySpan<byte>(_bytes, (int)offset, (int)size);
+        }
+        public override void ReadInto(ChunkedBytes into, uint offset, uint size, string what) => into.AddRange(Read(offset, size, what));
+    }
+
+    private sealed class FileSource : ObjectSource
+    {
+        private readonly Microsoft.Win32.SafeHandles.SafeFileHandle _file;
+        private readonly long _length;
+        public FileSource(Microsoft.Win32.SafeHandles.SafeFileHandle file, long length) { _file = file; _length = length; }
+        public override long Length => _length;
+        public override ReadOnlySpan<byte> Read(uint offset, uint size, string what)
+        {
+            Check(offset, size, what);
+            byte[] read = new byte[size];
+            int done = 0;
+            while (done < read.Length)
+            {
+                int got = RandomAccess.Read(_file, read.AsSpan(done), (long)offset + done);
+                if (got <= 0) throw new ElfFormatException($"{what}: the file ends early");
+                done += got;
+            }
+            return read;
+        }
+        public override void ReadInto(ChunkedBytes into, uint offset, uint size, string what)
+        {
+            Check(offset, size, what);
+            into.AddFromFile(_file, offset, checked((int)size));
+        }
+    }
+
+    /// <summary>
+    /// TABLES READ A PIECE AT A TIME: a large unit's symbol table and its
+    /// .rel.text are megabytes, and read whole each was one array of it.
+    /// </summary>
+    private const int TablePiece = 64 * 1024;
+
+    private static ObjectFile ReadObject32(ObjectSource src)
+    {
+        if (src.Length < Elf.HeaderSize)
+        {
+            throw new ElfFormatException("not an ELF file");
+        }
+        ReadOnlySpan<byte> f = src.Read(0, (uint)Elf.HeaderSize, "ELF header");
+        if (!f[..4].SequenceEqual(Elf.Magic))
+        {
+            throw new ElfFormatException("not an ELF file");
         }
         if (f[4] != Elf.Class32)
         {
@@ -259,13 +359,18 @@ public static class ElfReader
         SectionHeader[] sh = new SectionHeader[shnum];
         for (int i = 0; i < shnum; i++)
         {
-            sh[i] = SectionHeader.Read(Slice(f, shoff + (uint)(i * Elf.SectionHeaderSize), Elf.SectionHeaderSize, $"section header {i}"));
+            src.Check(shoff + (uint)(i * Elf.SectionHeaderSize), Elf.SectionHeaderSize, $"section header {i}");
+        }
+        ReadOnlySpan<byte> headerTable = src.Read(shoff, (uint)(shnum * Elf.SectionHeaderSize), "section header 0");
+        for (int i = 0; i < shnum; i++)
+        {
+            sh[i] = SectionHeader.Read(headerTable.Slice(i * Elf.SectionHeaderSize, Elf.SectionHeaderSize));
         }
         if (shstrndx >= shnum || sh[shstrndx].Type != Elf.ShtStrTab)
         {
             throw new ElfFormatException("section name string table is missing");
         }
-        ReadOnlySpan<byte> shstr = Content(f, sh[shstrndx], "section name table");
+        ReadOnlySpan<byte> shstr = Content(src, sh[shstrndx], "section name table");
         string[] names = new string[shnum];
         for (int i = 0; i < shnum; i++)
         {
@@ -303,10 +408,10 @@ public static class ElfReader
                 // link reads and drops (LeftInFile).
                 if (ElfReader.BackingPath is string backing && LeftInFile(names[i]))
                 {
-                    Content(f, h, $"section '{names[i]}'");
+                    src.Check(h.Offset, h.Size, $"section '{names[i]}'");
                     s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
                 }
-                else s.Bytes.AddRange(Content(f, h, $"section '{names[i]}'"));
+                else src.ReadInto(s.Bytes, h.Offset, h.Size, $"section '{names[i]}'");
             }
             obj.Sections.Add(s);
             bySh[i] = s;
@@ -342,16 +447,27 @@ public static class ElfReader
             {
                 throw new ElfFormatException("symbol table has no string table");
             }
-            ReadOnlySpan<byte> strtab = Content(f, sh[h.Link], "symbol string table");
-            ReadOnlySpan<byte> table = Content(f, h, "symbol table");
+            // The names in chunks and the table a piece at a time: both are
+            // megabytes in a large unit (TablePiece).
+            ChunkedBytes strtab = new();
+            if (sh[h.Link].Type != Elf.ShtNoBits) src.ReadInto(strtab, sh[h.Link].Offset, sh[h.Link].Size, "symbol string table");
+            src.Check(h.Offset, h.Size, "symbol table");
             int count = (int)(h.Size / Elf.SymbolSize);
+            int perPiece = TablePiece / Elf.SymbolSize, pieceAt = -1;
+            ReadOnlySpan<byte> table = default;
             syms = new SymbolEntry[count];
             symNames = new string[count];
             sectionSym = new Section?[count];
             HashSet<string> symbolNames = new();
             for (int j = 1; j < count; j++)
             {
-                SymbolEntry e = SymbolEntry.Read(table[(j * Elf.SymbolSize)..]);
+                if (j / perPiece != pieceAt)
+                {
+                    pieceAt = j / perPiece;
+                    int first = pieceAt * perPiece, n = Math.Min(perPiece, count - first);
+                    table = src.Read(h.Offset + (uint)(first * Elf.SymbolSize), (uint)(n * Elf.SymbolSize), "symbol table");
+                }
+                SymbolEntry e = SymbolEntry.Read(table[((j - pieceAt * perPiece) * Elf.SymbolSize)..]);
                 syms[j] = e;
                 symNames[j] = StringTable.Read(strtab, e.Name, $"symbol {j}");
                 if (e.Type == Elf.SttSection)
@@ -444,15 +560,24 @@ public static class ElfReader
             {
                 throw new ElfFormatException($"'{names[i]}' relocates '{target.Name}', which has no contents");
             }
-            ReadOnlySpan<byte> table = Content(f, h, $"'{names[i]}'");
+            src.Check(h.Offset, h.Size, $"'{names[i]}'");
             int count = (int)(h.Size / Elf.RelSize);
+            int perPiece = TablePiece / Elf.RelSize, pieceAt = -1;
+            ReadOnlySpan<byte> table = default;
             // Sized once from the table: a link reads every object's relocations
             // and keeps them, and grown by doubling they kept up to twice their size.
             target.Relocs.EnsureCapacity(target.Relocs.Count + count);
             for (int j = 0; j < count; j++)
             {
-                uint offset = BinaryPrimitives.ReadUInt32LittleEndian(table[(j * Elf.RelSize)..]);
-                uint info = BinaryPrimitives.ReadUInt32LittleEndian(table[(j * Elf.RelSize + 4)..]);
+                if (j / perPiece != pieceAt)
+                {
+                    pieceAt = j / perPiece;
+                    int first = pieceAt * perPiece, n = Math.Min(perPiece, count - first);
+                    table = src.Read(h.Offset + (uint)(first * Elf.RelSize), (uint)(n * Elf.RelSize), $"'{names[i]}'");
+                }
+                int entry = (j - pieceAt * perPiece) * Elf.RelSize;
+                uint offset = BinaryPrimitives.ReadUInt32LittleEndian(table[entry..]);
+                uint info = BinaryPrimitives.ReadUInt32LittleEndian(table[(entry + 4)..]);
                 int symIdx = (int)(info >> 8);
                 byte rtype = (byte)(info & 0xff);
                 RelocKind? kind = Elf.RelocKindOf(rtype);
@@ -492,7 +617,7 @@ public static class ElfReader
                 }
                 // REL: the addend is whatever sits in the word -- of a section
                 // left in its file too, which then comes into memory.
-                if (target.FileBacked is not null) { target.Bytes.AddRange(target.Content()); target.FileBacked = null; }
+                target.Load();
                 int addend = target.Bytes.ReadInt32((int)offset);
                 target.Relocs.Add(new Relocation((int)offset, symbol, addend, kind.Value));
             }
@@ -536,13 +661,13 @@ public static class ElfReader
         return SectionKind.ReadOnlyData;
     }
 
-    private static ReadOnlySpan<byte> Content(ReadOnlySpan<byte> f, in SectionHeader h, string what)
+    private static ReadOnlySpan<byte> Content(ObjectSource src, in SectionHeader h, string what)
     {
         if (h.Type == Elf.ShtNoBits)
         {
             return ReadOnlySpan<byte>.Empty;
         }
-        return Slice(f, h.Offset, h.Size, what);
+        return src.Read(h.Offset, h.Size, what);
     }
 
     private static ReadOnlySpan<byte> Slice(ReadOnlySpan<byte> f, uint offset, uint size, string what)

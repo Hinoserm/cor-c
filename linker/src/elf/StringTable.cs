@@ -50,6 +50,21 @@ internal sealed class StringTable
         }
     }
 
+    /// <summary>A name from a table held in chunks (ElfReader reads a large unit's so), as Read gives it.</summary>
+    public static string Read(ChunkedBytes table, uint offset, string what)
+    {
+        if (offset >= table.Count)
+        {
+            throw new ElfFormatException($"{what}: string offset 0x{offset:x} is past the end of its string table");
+        }
+        int end = table.IndexOf(0, (int)offset, table.Count);
+        if (end < 0)
+        {
+            throw new ElfFormatException($"{what}: unterminated string at 0x{offset:x}");
+        }
+        return string.Intern(table.GetString(Encoding.UTF8, (int)offset, end - (int)offset));
+    }
+
     public static string Read(ReadOnlySpan<byte> table, uint offset, string what)
     {
         if (offset >= table.Length)
