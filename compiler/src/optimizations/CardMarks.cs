@@ -161,7 +161,16 @@ public sealed class CardMarks : IModulePass
                     found = here;
                     continue;
                 }
-                if (!preds.TryGetValue(b, out var more) || more.Count == 0) return null;   // the entry, with r unset: a parameter's or none
+                if (!preds.TryGetValue(b, out var more) || more.Count == 0)
+                {
+                    // The entry, with r unset: a parameter's or none. Any
+                    // other block nothing reaches is dead -- a report block
+                    // whose diamond was just fused (VesaAdapter.Probe: the
+                    // object's field stored and then the local's) -- and no
+                    // path to the store runs through it.
+                    if (ReferenceEquals(b, f.Blocks[0])) return null;
+                    continue;
+                }
                 foreach (Block p in more) work.Push(p);
             }
             return found;

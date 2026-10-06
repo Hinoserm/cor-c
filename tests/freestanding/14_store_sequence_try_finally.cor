@@ -1,0 +1,69 @@
+// test: a store after a try/finally and an early static store is one sequence
+// sources: stdlib/src/System/Threading/interlocked.cor
+// flags: --ring1-syscalls
+// run: no
+// expect-asm-x86: Probe: __corsac_refstore
+// expect-no-asm-x86: Probe: __corsac_barrier __corsac_cardmark
+//
+// VesaAdapter.Probe's shape: a static string stored on an early return, a
+// local null on one path and a call's answer on the other assigned inside
+// a try whose finally always runs, and then a new object stored into a field
+// of that local. The new object's own field is stored first (Output's
+// constructor, inlined) and its diamond fused, which left that diamond's
+// report block reached by nothing until the pass ended; the search for what
+// reaches the local's store took that dead block for the function's entry and
+// gave up, and the store was left a test of Runtime.Marking, a barrier call
+// and a card. Every reference store in it is one __corsac_refstore.
+//
+// A PROGRAM WITH A COLLECTOR: Main asks for a collection (06's rule).
+
+using System.Runtime.CompilerServices;
+
+class Output
+{
+    public Card? Of;
+    public Output(Card of) { Of = of; }
+}
+
+class Card
+{
+    public Output? Shown;
+    public int Version;
+}
+
+static class Program
+{
+    static string? Why;
+    static int _depth;
+    static int _calls;
+
+    static int Main()
+    {
+        Card? card = Probe();
+        Gc.Collect();
+        return card != null && card.Shown != null && card.Shown.Of == card ? 0 : 1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Begin() { _depth++; return _calls >= 0; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void End() { _depth--; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Card? Ask() { _calls++; if (_calls > 100) { Why = "too many"; return null; } return new Card { Version = 2 }; }
+
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Card? Probe()
+    {
+        if (!Begin()) { Why = "no BIOS"; return null; }
+        Card? card = null;
+        try { card = Ask(); }
+        finally { End(); }
+        if (card == null) return null;
+
+        card.Shown = new Output(card);
+        return card;
+    }
+}
