@@ -25,6 +25,25 @@ public sealed class Parser
     /// </summary>
     public string? Source { get; init; }
 
+    /// <summary>
+    /// WHERE THE TOKENS SIT, for tokens that are one declaration cut out of a
+    /// file (Lexer.TokenizeRange): the namespace it was written in and the
+    /// path it was written at (TypeDecl.Outer -- the namespace for a top-level
+    /// type, the outer types' path for a nested one). Read so, it comes out
+    /// with the same Namespace and Outer, and its nested types with the same
+    /// paths, as when its whole file is read. Empty for a whole file.
+    /// </summary>
+    public string StartNamespace { get; init; } = "";
+    public string? StartTypePath { get; init; }
+
+    /// <summary>
+    /// Whether anything read took a number from the file-wide count that names
+    /// generic local functions and local-function delegates. Those names are
+    /// members and types other units name, so a declaration read on its own,
+    /// which counts from zero, may not be read so if it took any.
+    /// </summary>
+    public bool Hoisted => _hoistSerial != 0;
+
     /// <summary>Spans of the calls being parsed, innermost last; see CallExpr.Spans.</summary>
     private readonly List<int> _spans = new();
     private readonly bool _declarationsOnly;
@@ -733,8 +752,8 @@ public sealed class Parser
         Token start = Cur;
         CompilationUnit unit = new() { Line = start.Line, Col = start.Col };
 
-        _namespace = "";
-        _typePath = "";
+        _namespace = StartNamespace;
+        _typePath = StartTypePath ?? StartNamespace;
         _fileScope = new FileScope();
         foreach (string project in ProjectUsings)
         {
@@ -765,7 +784,7 @@ public sealed class Parser
             unit.Types.Add(ParseTopLevel(start));
         }
 
-        ParseNamespaceMembers(unit, "");
+        ParseNamespaceMembers(unit, StartNamespace, StartTypePath ?? StartNamespace);
         unit.UsesDynamic = _sawDynamic;
         return unit;
     }
@@ -799,14 +818,14 @@ public sealed class Parser
 
     /// The types and namespaces of one namespace (`within`, "" for the
     /// global one), up to the brace that closes it or the end of the file.
-    private void ParseNamespaceMembers(CompilationUnit unit, string within)
+    private void ParseNamespaceMembers(CompilationUnit unit, string within, string? path = null)
     {
         while (!At(Tok.End) && !At(Tok.RBrace))
         {
             if (!At(Tok.KwNamespace))
             {
                 _namespace = within;
-                _typePath = within;
+                _typePath = path ?? within;
                 TakeTypeDecl(unit);
                 continue;
             }
