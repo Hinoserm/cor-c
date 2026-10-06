@@ -8763,9 +8763,28 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
 
     public int Count => count;
 
+    // THE ROOM ASKED OF A LOCAL, as .NET's Add asks it: the array and the
+    // count read once, and the room tested as the store's own bounds check
+    // tests it -- an unsigned compare of the index with the length -- so the
+    // check is a question already answered on the way in (edge predicates).
+    // Before, the field was loaded again for the null test, the length and
+    // the store. A list that is full, or has no array yet, grows in Added,
+    // as it grew here -- the growth a call apart, so the common store holds
+    // no join of the field read before Grow with the field read after it.
     public void Add(T value) {
         version = version + 1;
-        if (items == null || count == items.Length) { Grow(); }
+        T[] array = items;
+        int n = count;
+        if (array != null && (uint)n < (uint)array.Length) {
+            array[n] = value;
+            count = n + 1;
+            return;
+        }
+        Added(value);
+    }
+
+    private void Added(T value) {
+        Grow();
         items[count] = value;
         count = count + 1;
     }
@@ -12189,6 +12208,16 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     public static StringComparer InvariantCulture => Ordinal;
     public static StringComparer InvariantCultureIgnoreCase => OrdinalIgnoreCase;
 
+    /// WHETHER A COMPARER IS THE ORDINAL ONE, which a table asks once when it
+    /// is made (Dictionary.Comparing) so that its probes reach the string's
+    /// own hash and String.Equals directly instead of through the interface.
+    /// THE VERY OBJECT, not "a StringComparer that does not fold": this class
+    /// is not sealed, and a derived one may answer differently; the singleton
+    /// is exactly what Equals and GetHashCode above say for `!fold`.
+    internal static bool IsOrdinal(object? comparer) {
+        return comparer != null && comparer == (object?)exact;
+    }
+
     // IGNORING CASE IS COMPARING UPPER CASE, which is .NET's OrdinalIgnoreCase:
     // Equals, Compare and GetHashCode all fold the same way, or a table keyed
     // by this comparer finds a key its Equals says is there under another hash.
@@ -12322,6 +12351,28 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // cannot, so a table of strings is given one -- see the task list.
     private IEqualityComparer<K>? by;
 
+    // HOW THE KEYS ARE COMPARED, decided once when the comparer is given
+    // (Comparing) rather than asked of it at every probe. The shared copy of
+    // a word-shaped table calls its comparer through the interface, and the
+    // two the compiler gives its tables most -- ReferenceEqualityComparer
+    // and StringComparer.Ordinal -- answer what a field test and a direct
+    // call answer: the word itself, or the string's own hash (worked out
+    // once and kept on the string, Runtime.StringHashCode) and
+    // String.Equals. Any other comparer is asked as before.
+    private int compares;
+    private const int ByDefault = 0;      // no comparer: the key is asked (Same, FullHash)
+    private const int ByReference = 1;    // ReferenceEqualityComparer: the machine word
+    private const int ByText = 2;         // StringComparer.Ordinal: the text, unfolded
+    private const int ByComparer = 3;     // anything else: through the interface
+
+    private static int Comparing(IEqualityComparer<K>? comparer) {
+        if (comparer == null) { return ByDefault; }
+        // Sealed, so what an instance answers is the class's own: the word.
+        if ((object)comparer is ReferenceEqualityComparer) { return ByReference; }
+        if (StringComparer.IsOrdinal(comparer)) { return ByText; }
+        return ByComparer;
+    }
+
     // IN THE ORDER THINGS WENT IN, which is the order .NET's walks them in
     // while nothing has been removed, and what a program that fills a table
     // and then writes it out depends on without saying so -- this compiler's
@@ -12451,11 +12502,13 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         count = 0;
         mask = 15;
         by = comparer;
+        compares = Comparing(comparer);
     }
 
     /// Both: sized once, keys compared the comparer's way.
     public Dictionary(int capacity, IEqualityComparer<K>? comparer) : this(capacity) {
         by = comparer;
+        compares = Comparing(comparer);
     }
 
     // The normal Dictionary copy constructor, including an explicit comparer.
@@ -12496,21 +12549,43 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // COPIED TO A LOCAL FIRST, which is what a C# programmer does when the
     // checker cannot see that a field is unchanged -- a field is not tracked
     // across a call, so testing one proves nothing about the read after it.
+    //
+    // `a` is always the key a slot holds and `b` the key asked about, and
+    // they are only ever compared once their full hashes are the same.
     private bool Same(K a, K b) {
-        IEqualityComparer<K>? with = by;
+        int how = compares;
 
-        if (with != null) { return with.Equals(a, b); }
-
-        // THE DEFAULT COMPARER KNOWS STRINGS, as .NET's does: a table keyed
-        // by text compares the text, whoever built the keys. A word-shaped
-        // instantiation cannot know its K at compile time, so it asks the
-        // object -- one load of its descriptor -- and a value-typed K asks
-        // nothing, because the compiler folds the question to false.
-        // AN OBJECT IS ASKED, as .NET's default comparer asks it: text for a
-        // string, its own Equals for anything that has one -- a tuple, a type
-        // made of types. A number is the word it is.
-        if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
-        return Sys.EqualValues(a, b);
+        if (how == ByDefault) {
+            // THE DEFAULT COMPARER KNOWS STRINGS, as .NET's does: a table
+            // keyed by text compares the text, whoever built the keys. A
+            // word-shaped instantiation cannot know its K at compile time,
+            // so it asks the object -- one load of its descriptor -- and a
+            // value-typed K asks nothing, because the compiler folds the
+            // question to false.
+            // A STRING IS TOLD APART HERE, inline, where Sys.KeyEquals would
+            // call the shared key routine to find the same descriptor bit
+            // and then call String.Equals: the same answer -- the same
+            // object, or another string of the same text, and never a
+            // string equal to null or to something that is not one -- with
+            // one call where there were two. IsString folds to false for a
+            // value-typed K, as IsObject does, so nothing changes there.
+            if (Sys.IsString(a)) { return Sys.IsString(b) && String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+            // AN OBJECT IS ASKED, as .NET's default comparer asks it: text
+            // for a string, its own Equals for anything that has one -- a
+            // tuple, a type made of types. A number is the word it is.
+            if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
+            return Sys.EqualValues(a, b);
+        }
+        // ReferenceEqualityComparer.Equals is exactly this.
+        if (how == ByReference) { return Sys.EqualValues(a, b); }
+        // StringComparer.Ordinal's Equals is String.Equals once neither is
+        // null, and String.Equals answers null as it does (the same
+        // reference, or not equal). `b` was hashed by the ordinal comparer
+        // to get here, which throws for null, so it is a string -- asked of
+        // the descriptor all the same, because that is what folds the whole
+        // path away in a value-typed copy, where a string never gets here.
+        if (how == ByText && Sys.IsString(b)) { return String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+        return by!.Equals(a, b);
     }
 
     // A SLOT'S STATE IS IN ITS HASH: 0 empty, 1 erased, and a used slot's
@@ -12523,11 +12598,24 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private int Hash(K key) { return FullHash(key) & mask; }
 
     /// The key's hash before it is cut to the table: what `hashes` keeps.
+    /// Each path answers what the one it stands for answered (see Same).
     private int FullHash(K key) {
-        IEqualityComparer<K>? with = by;
-        if (with != null) { return Mixed(with.GetHashCode(key)); }
-        if (Sys.IsObject(key)) { return Mixed(Sys.KeyHash(key)); }
-        return Mixed(Sys.HashValue(key));
+        int how = compares;
+        if (how == ByDefault) {
+            // A string's hash is Runtime.StringHashCode wherever it is asked
+            // for -- the shared key routine finds the text bit and calls
+            // String.KeyHash, which calls it -- and it is kept on the string
+            // after the first time, so this is a load and a test.
+            if (Sys.IsString(key)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(key))); }
+            if (Sys.IsObject(key)) { return Mixed(Sys.KeyHash(key)); }
+            return Mixed(Sys.HashValue(key));
+        }
+        // ReferenceEqualityComparer.GetHashCode: the word, cut to an int.
+        if (how == ByReference) { return Mixed((int)Sys.HashValue(key)); }
+        // StringComparer.Ordinal's: the string's own. A null key goes on to
+        // the comparer, whose ArgumentNullException is the one it threw.
+        if (how == ByText && Sys.IsString(key)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(key))); }
+        return Mixed(by!.GetHashCode(key));
     }
 
     /// A cheap avalanche over the hash. Without it, sequential integer keys
@@ -12563,15 +12651,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // TryGetValue, which is what a caller that cares uses in C# anyway.
     public V this[K key] {
         get {
-            if (hashes == null) { ThrowHelper.KeyNotFound(KeyText(key)); return default(V)!; }
-            int full = FullHash(key) | Used;
-            int i = full & mask;
-            while (hashes[i] != 0) {
-                if (hashes[i] == full && Same(keys[i], key)) { return values[i]; }
-                i = (i + 1) & mask;
-            }
-            ThrowHelper.KeyNotFound(KeyText(key));
-            return default(V)!;
+            int i = Find(key);
+            if (i < 0) { ThrowHelper.KeyNotFound(KeyText(key)); return default(V)!; }
+            return values[i];
         }
         set {
             // Grow at three quarters: linear probing degrades sharply above.
@@ -12579,46 +12661,107 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             // BY WHAT IS FILLED, NOT BY WHAT IS HELD: an erased slot ends no
             // probe, and a table with none empty is a search that never ends.
             if (hashes == null) { Rehash(mask + 1); }
-            else if ((filled + 1) * 4 > (mask + 1) * 3) { Grow(); }
-
-            int full = FullHash(key);
-            int i = full & mask;
-            int free = -1;
-
-            // THE WHOLE CHAIN, past the erased ones. Stopping at the first of
-            // them wrote a second copy of a key that lives further along.
-            int used = full | Used;
-            while (hashes[i] != 0) {
-                if (hashes[i] == used && Same(keys[i], key)) {
-                    values[i] = value;
-                    return;
-                }
-                if (hashes[i] == Erased && free < 0) { free = i; }
-                i = (i + 1) & mask;
-            }
-            if (free >= 0) { i = free; } else { filled = filled + 1; }
-            keys[i] = key;
-            values[i] = value;
-            hashes[i] = used;
-            count = count + 1;
-            Placed(i);
+            else if (Crowded()) { Grow(); }
+            Put(key, value, true);
         }
+    }
+
+    // Whether one more filled slot would take the table past three quarters.
+    private bool Crowded() { return (filled + 1) * 4 > (mask + 1) * 3; }
+
+    // THE SLOT `key` IS IN, or -1: every lookup's probe, written once.
+    //
+    // THE HASHES READ AS A LOCAL A ROUND AT A TIME. A slot of another key
+    // is passed on its hash alone, so most rounds of the probe call nothing,
+    // and there the array and the mask are a register each where the field
+    // was loaded again for every test of every slot. Each round reads the
+    // fields afresh after the comparer has run -- a local held across that
+    // call would be a second read of the field joined with the first, which
+    // the owned-field rules cannot follow (Placed) -- and so the comparer
+    // sees, and may do, exactly what it could before. The order of the slots
+    // looked at and of the comparer's calls is the loop's that this was.
+    private int Find(K key) {
+        if (hashes == null) { return -1; }
+        int full = FullHash(key) | Used;
+        int i = full & mask;
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full) {
+                if (at == 0) { return -1; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (Same(keys[i], key)) { return i; }
+            i = (i + 1) & mask;
+        }
+    }
+
+    // PUT INTO A TABLE THAT IS MADE AND HAS ROOM: the indexer's store, and
+    // Add's and TryAdd's. A key already there has its value replaced when
+    // `replace` says so and is left alone when not; the answer is whether
+    // the key was new. The probe is Find's, one round per call of the
+    // comparer, and remembers the first erased slot it passes.
+    private bool Put(K key, V value, bool replace) {
+        int full = FullHash(key) | Used;
+        int i = full & mask;
+        int free = -1;
+
+        // THE WHOLE CHAIN, past the erased ones. Stopping at the first of
+        // them wrote a second copy of a key that lives further along.
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full && at != 0) {
+                if (at == Erased && free < 0) { free = i; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (at == 0) { break; }
+            if (Same(keys[i], key)) {
+                if (replace) { values[i] = value; }
+                return false;
+            }
+            i = (i + 1) & mask;
+        }
+        if (free >= 0) { i = free; } else { filled = filled + 1; }
+        keys[i] = key;
+        values[i] = value;
+        hashes[i] = full;
+        count = count + 1;
+        Placed(i);
+        return true;
     }
 
     /// A key already there is an error, as in .NET: the indexer is how a value
     /// is replaced.
+    ///
+    /// ONE PROBE, where this asked ContainsKey and then the indexer: the
+    /// key's hash worked out and its chain walked once. A table that has to
+    /// be made or grown first goes the way it went, looked up before it is
+    /// grown -- a key already there grows nothing -- and stored after.
     public void Add(K key, V value) {
-        if (ContainsKey(key)) ThrowHelper.DuplicateKey(KeyText(key));
-        this[key] = value;
+        if (hashes == null || Crowded()) {
+            if (ContainsKey(key)) ThrowHelper.DuplicateKey(KeyText(key));
+            this[key] = value;
+            return;
+        }
+        if (!Put(key, value, false)) ThrowHelper.DuplicateKey(KeyText(key));
     }
 
     /// TRUE WHEN IT WENT IN, false when the key was already there and the
     /// value it had was LEFT ALONE. .NET's TryAdd, and the difference from Add
     /// is the whole of why it exists: a first-writer-wins table is one call.
+    /// One probe, as Add's.
     public bool TryAdd(K key, V value) {
-        if (ContainsKey(key)) { return false; }
-        this[key] = value;
-        return true;
+        if (hashes == null || Crowded()) {
+            if (ContainsKey(key)) { return false; }
+            this[key] = value;
+            return true;
+        }
+        return Put(key, value, false);
     }
 
     /// .NET's GetValueOrDefault, which says out loud what the indexer here
@@ -12804,54 +12947,30 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         return false;
     }
 
-    public bool ContainsKey(K key) {
-        if (hashes == null) { return false; }
-        int full = FullHash(key) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(keys[i], key)) { return true; }
-            i = (i + 1) & mask;
-        }
-        return false;
-    }
+    public bool ContainsKey(K key) { return Find(key) >= 0; }
 
     // THE ONE THE COMPILER'S OWN SOURCE USES CONSTANTLY, and the reason `out`
     // had to exist before this could be written at all: one lookup answers both
     // whether the key was there and what was under it, where ContainsKey then
     // an index is two.
     public bool TryGetValue(K key, out V value) {
-        if (hashes == null) { value = default(V)!; return false; }
-        int full = FullHash(key) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(keys[i], key)) {
-                value = values[i];
-                return true;
-            }
-            i = (i + 1) & mask;
-        }
-        value = default(V)!;
-        return false;
+        int i = Find(key);
+        if (i < 0) { value = default(V)!; return false; }
+        value = values[i];
+        return true;
     }
 
     public bool Remove(K key) {
-        if (hashes == null) { return false; }
-        int full = FullHash(key) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(keys[i], key)) {
-                // A tombstone, not an empty: erasing to empty would cut the
-                // probe chain and hide everything after it.
-                hashes[i] = Erased;
-                keys[i] = default(K)!;
-                values[i] = default(V)!;
-                count = count - 1;
-                Unplaced(i);
-                return true;
-            }
-            i = (i + 1) & mask;
-        }
-        return false;
+        int i = Find(key);
+        if (i < 0) { return false; }
+        // A tombstone, not an empty: erasing to empty would cut the probe
+        // chain and hide everything after it.
+        hashes[i] = Erased;
+        keys[i] = default(K)!;
+        values[i] = default(V)!;
+        count = count - 1;
+        Unplaced(i);
+        return true;
     }
 
     public void Clear() {
@@ -14277,6 +14396,23 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // The comparer this set was given, or null for the default: an object's
     // own Equals and hash, a number's word -- as Dictionary's.
     private IEqualityComparer<T>? by;
+
+    // HOW THE MEMBERS ARE COMPARED, decided once when the comparer is given,
+    // as Dictionary decides it: the reference comparer and the ordinal one
+    // answered by a field test and a direct call, anything else asked
+    // through the interface.
+    private int compares;
+    private const int ByDefault = 0;
+    private const int ByReference = 1;
+    private const int ByText = 2;
+    private const int ByComparer = 3;
+
+    private static int Comparing(IEqualityComparer<T>? comparer) {
+        if (comparer == null) { return ByDefault; }
+        if ((object)comparer is ReferenceEqualityComparer) { return ByReference; }
+        if (StringComparer.IsOrdinal(comparer)) { return ByText; }
+        return ByComparer;
+    }
     private T[] items;
     // A SLOT'S STATE IS IN ITS HASH, as Dictionary's: 0 empty, 1 erased,
     // a member's hash with the top bit set.
@@ -14406,7 +14542,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     }
 
     /// Both: sized once, members compared the comparer's way.
-    public HashSet(int capacity, IEqualityComparer<T>? comparer) : this(capacity) { by = comparer; }
+    public HashSet(int capacity, IEqualityComparer<T>? comparer) : this(capacity) { by = comparer; compares = Comparing(comparer); }
 
     public HashSet(IEnumerable<T> source) : this() {
         foreach (T value in source) { Add(value); }
@@ -14414,10 +14550,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
 
     /// Equality by `comparer` -- StringComparer.OrdinalIgnoreCase,
     /// ReferenceEqualityComparer -- or, given null, the default.
-    public HashSet(IEqualityComparer<T>? comparer) : this() { by = comparer; }
+    public HashSet(IEqualityComparer<T>? comparer) : this() { by = comparer; compares = Comparing(comparer); }
 
     public HashSet(IEnumerable<T> source, IEqualityComparer<T>? comparer) : this() {
         by = comparer;
+        compares = Comparing(comparer);
         foreach (T value in source) { Add(value); }
     }
 
@@ -14426,11 +14563,18 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     /// The comparer the set compares by: the one it was given, or the default.
     public IEqualityComparer<T> Comparer => by ?? EqualityComparer<T>.Default;
 
+    // As Dictionary's Same, path for path, and with the same reasons: `a`
+    // the member a slot holds, `b` the value asked about.
     private bool Same(T a, T b) {
-        IEqualityComparer<T>? with = by;
-        if (with != null) { return with.Equals(a, b); }
-        if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
-        return Sys.EqualValues(a, b);
+        int how = compares;
+        if (how == ByDefault) {
+            if (Sys.IsString(a)) { return Sys.IsString(b) && String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+            if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
+            return Sys.EqualValues(a, b);
+        }
+        if (how == ByReference) { return Sys.EqualValues(a, b); }
+        if (how == ByText && Sys.IsString(b)) { return String.Equals(Sys.As<string>(a), Sys.As<string>(b)); }
+        return by!.Equals(a, b);
     }
 
     // The same avalanche Dictionary uses. Without it, sequential integer keys
@@ -14441,10 +14585,16 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         // The comparer's hash, or the key's own when it is an object that has
         // one, as .NET's default comparer asks: a set of strings, or of
         // tuples, holds equal ones once. Mixed as Dictionary mixes its keys.
-        IEqualityComparer<T>? with = by;
-        if (with != null) { return Mixed(with.GetHashCode(value)); }
-        if (Sys.IsObject(value)) { return Mixed(Sys.KeyHash(value)); }
-        return Mixed(Sys.HashValue(value));
+        // As Dictionary's FullHash, path for path.
+        int how = compares;
+        if (how == ByDefault) {
+            if (Sys.IsString(value)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(value))); }
+            if (Sys.IsObject(value)) { return Mixed(Sys.KeyHash(value)); }
+            return Mixed(Sys.HashValue(value));
+        }
+        if (how == ByReference) { return Mixed((int)Sys.HashValue(value)); }
+        if (how == ByText && Sys.IsString(value)) { return Mixed(Runtime.StringHashCode(Sys.As<string>(value))); }
+        return Mixed(by!.GetHashCode(value));
     }
 
     private static int Mixed(long h) {
@@ -14468,12 +14618,22 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         int i = full & mask;
         int free = -1;
 
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(items[i], value)) { return false; }
-            // A tombstone is reusable, but only after the whole probe chain has
-            // been searched -- taking it early would let the same value be
-            // added twice with a copy further along the chain.
-            if (hashes[i] == Erased && free < 0) { free = i; }
+        // A round at a time, the array and the mask locals between calls of
+        // the comparer, as Dictionary's probe (Find).
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full && at != 0) {
+                // A tombstone is reusable, but only after the whole probe
+                // chain has been searched -- taking it early would let the
+                // same value be added twice with a copy further along.
+                if (at == Erased && free < 0) { free = i; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (at == 0) { break; }
+            if (Same(items[i], value)) { return false; }
             i = (i + 1) & mask;
         }
 
@@ -14486,15 +14646,26 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         return true;
     }
 
-    public bool Contains(T value) {
-        if (hashes == null) { return false; }
+    public bool Contains(T value) { return Find(value) >= 0; }
+
+    // THE SLOT `value` IS IN, or -1: Dictionary's Find, and for its reasons
+    // -- the array and the mask held only between calls of the comparer.
+    private int Find(T value) {
+        if (hashes == null) { return -1; }
         int full = FullHash(value) | Used;
         int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(items[i], value)) { return true; }
+        while (true) {
+            int[] h = hashes;
+            int m = mask;
+            int at = h[i];
+            while (at != full) {
+                if (at == 0) { return -1; }
+                i = (i + 1) & m;
+                at = h[i];
+            }
+            if (Same(items[i], value)) { return i; }
             i = (i + 1) & mask;
         }
-        return false;
     }
 
     /// .NET's HashSet<T>.Enumerator: a struct, so a foreach over a set
@@ -14527,22 +14698,15 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new HashSetEnumerator<T>(this); }
 
     public bool Remove(T value) {
-        if (hashes == null) { return false; }
-        int full = FullHash(value) | Used;
-        int i = full & mask;
-        while (hashes[i] != 0) {
-            if (hashes[i] == full && Same(items[i], value)) {
-                // A tombstone, not an empty: erasing to empty would cut the
-                // probe chain and hide everything after it.
-                hashes[i] = Erased;
-                items[i] = default(T)!;
-                count = count - 1;
-                Unplaced(i);
-                return true;
-            }
-            i = (i + 1) & mask;
-        }
-        return false;
+        int i = Find(value);
+        if (i < 0) { return false; }
+        // A tombstone, not an empty: erasing to empty would cut the probe
+        // chain and hide everything after it.
+        hashes[i] = Erased;
+        items[i] = default(T)!;
+        count = count - 1;
+        Unplaced(i);
+        return true;
     }
 
     public void Clear() {
@@ -14654,15 +14818,21 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     }
 
     /// The member equal to `equalValue`, which may not be the same object.
+    ///
+    /// FOUND BY ITS HASH, as Contains finds it and as .NET's TryGetValue
+    /// does, where this walked every member asking the comparer of each:
+    /// a set holds at most one member equal to a value, and the comparer's
+    /// hash agrees with its equality or the set could not hold it once, so
+    /// the one the walk found is the one in the value's chain. Same asks
+    /// what Comparer.Equals asked -- the member first, the value second.
     public bool TryGetValue(T equalValue, out T actualValue) {
-        foreach (T value in this) {
-            if (Comparer.Equals(value, equalValue)) {
-                actualValue = value;
-                return true;
-            }
+        int i = Find(equalValue);
+        if (i < 0) {
+            actualValue = default!;
+            return false;
         }
-        actualValue = default!;
-        return false;
+        actualValue = items[i];
+        return true;
     }
 
     public void CopyTo(T[] array) { CopyTo(array, 0, Count); }
