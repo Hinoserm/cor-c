@@ -17,4 +17,9 @@ public sealed class ForeachStmt : Stmt
     /// a dictionary read the way it does in C#.
     /// </summary>
     public List<Binding>? Bindings { get; set; }
+
+    // What the checker rewrote this loop into (BindResult.Lowered), and which
+    // binding wrote it (NodeBinding): read back only by that binding.
+    internal Stmt? BoundLowered;
+    internal int BoundLoweredBy;
 }

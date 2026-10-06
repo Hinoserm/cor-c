@@ -20,4 +20,8 @@ public abstract class Expr : Node
     // And what a name or a member access resolved to (ExprSyms).
     internal Sym? BoundSym;
     internal int BoundSymBy;
+    // The rarer facts a binding keeps about an expression (ExprFacts): made
+    // only for the expressions that have any, so one reference is all the
+    // rest of them pay.
+    internal ExprFacts? Facts;
 }

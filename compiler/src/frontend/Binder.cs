@@ -2373,7 +2373,7 @@ public sealed partial class Binder
                 List<Type> args = made.Decl!.TemplateArgs.Select(arg => Resolve(arg, made)).ToList();
                 // Every argument resolved, or none kept: the name stays the
                 // specialisation's own rather than spell an error.
-                if (args.All(a => !Unresolved(a))) made.TemplateArgTypes.AddRange(args);
+                if (args.All(a => !Unresolved(a))) made.WritableTemplateArgTypes.AddRange(args);
             }
             // And what a shared copy's code makes for it (TypeDecl.CanonMade).
             foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl?.CanonMade is { Count: > 0 } && t.CanonMadeTypes.Count == 0).ToList())
@@ -2383,7 +2383,7 @@ public sealed partial class Binder
                     Type resolved = Resolve(each, made);
                     // An array of one (Monomorphiser.CanonTested) by its element:
                     // lowering makes the array's descriptor of it.
-                    made.CanonMadeTypes.Add(Unresolved(resolved) ? null
+                    made.WritableCanonMadeTypes.Add(Unresolved(resolved) ? null
                         : resolved.IsArray ? resolved.Element is { Symbol: { } element } inner && !inner.IsArray ? element : null
                         : resolved.Symbol);
                 }
@@ -3142,7 +3142,7 @@ public sealed partial class Binder
 
             if (based.Kind == TypeKind.Interface)
             {
-                sym.Interfaces.Add(based);
+                sym.WritableInterfaces.Add(based);
             }
             else if (sym.Base != null)
             {
@@ -3164,7 +3164,7 @@ public sealed partial class Binder
         // delegates are what they were.
         if (d.IsDelegate && DelegateRoot() is { } root && !ReferenceEquals(root, sym) && !sym.Interfaces.Contains(root))
         {
-            sym.Interfaces.Add(root);
+            sym.WritableInterfaces.Add(root);
         }
     }
 
@@ -3230,7 +3230,7 @@ public sealed partial class Binder
                     next++;
                     continue;
                 }
-                sym.EnumValues[m.Name] = next++;
+                sym.WritableEnumValues[m.Name] = next++;
             }
             return;
         }
@@ -3275,7 +3275,7 @@ public sealed partial class Binder
                         break;
                     }
 
-                    sym.Fields.Add(new FieldSymbol
+                    sym.WritableFields.Add(new FieldSymbol
                     {
                         Name = f.Name, Type = Resolve(f.Type, sym), Owner = sym,
                         Static = f.Mods.HasFlag(Mods.Static),
@@ -3334,7 +3334,7 @@ public sealed partial class Binder
                         // An auto property is a field plus accessors, and the
                         // field is what layout and code generation use: `x.N`
                         // finds it and loads it, with no call at all.
-                        sym.Fields.Add(new FieldSymbol
+                        sym.WritableFields.Add(new FieldSymbol
                         {
                             Name = "<" + p.Name + ">", Type = propType, Owner = sym,
                             Static = p.Mods.HasFlag(Mods.Static),
@@ -3438,7 +3438,7 @@ public sealed partial class Binder
                             getter.WritableParams.Add(ip);
                             gs.WritableParams.Add(new ParamSymbol { Name = ip.Name, Type = Resolve(ip.Type, sym) });
                         }
-                        sym.Methods.Add(gs);
+                        sym.WritableMethods.Add(gs);
                         _r.Methods[getter] = gs;
                         Synthesised(sym, getter);
                     }
@@ -3479,7 +3479,7 @@ public sealed partial class Binder
                             ss.WritableParams.Add(new ParamSymbol { Name = ip.Name, Type = Resolve(ip.Type, sym) });
                         }
                         ss.WritableParams.Add(new ParamSymbol { Name = "value", Type = propType });
-                        sym.Methods.Add(ss);
+                        sym.WritableMethods.Add(ss);
                         _r.Methods[setter] = ss;
                         Synthesised(sym, setter);
                     }
@@ -3569,7 +3569,7 @@ public sealed partial class Binder
                         break;
                     }
 
-                    sym.Methods.Add(ms);
+                    sym.WritableMethods.Add(ms);
                     _r.Methods[md] = ms;
                     break;
                 }
@@ -3981,7 +3981,7 @@ public sealed partial class Binder
                 {
                     MethodSymbol? replacement = sym.Methods.FirstOrDefault(m => m.Override
                         && m.Name == inherited.Name && MethodSignatures.Implements(m, inherited));
-                    sym.InterfaceImplementations[want.VtableSlot] = replacement ?? inherited;
+                    sym.WritableInterfaceImplementations[want.VtableSlot] = replacement ?? inherited;
                     continue;
                 }
                 // AN EXPLICIT IMPLEMENTATION FOR THIS INTERFACE FIRST, as C#
@@ -4045,7 +4045,7 @@ public sealed partial class Binder
                     }
                     continue;
                 }
-                sym.InterfaceImplementations[want.VtableSlot] = impl;
+                sym.WritableInterfaceImplementations[want.VtableSlot] = impl;
             }
         }
 
@@ -6796,11 +6796,11 @@ public sealed partial class Binder
         pair.WritableParams.Add(new ParamSymbol { Name = "a", Type = Type.Any });
         pair.WritableParams.Add(new ParamSymbol { Name = "b", Type = Type.Any });
 
-        _rooted.Methods.Add(str);
-        _rooted.Methods.Add(same);
-        _rooted.Methods.Add(hashed);
-        _rooted.Methods.Add(identical);
-        _rooted.Methods.Add(pair);
+        _rooted.WritableMethods.Add(str);
+        _rooted.WritableMethods.Add(same);
+        _rooted.WritableMethods.Add(hashed);
+        _rooted.WritableMethods.Add(identical);
+        _rooted.WritableMethods.Add(pair);
         return _rooted;
     }
 
@@ -7129,7 +7129,7 @@ public sealed partial class Binder
             Decl = decl,
         };
 
-        closure.Interfaces.Add(face!);
+        closure.WritableInterfaces.Add(face!);
 
         int at = Target.Current.ObjectHeaderBytes;                 // past descriptor and sync word
         List<(FieldSymbol, Sym)> fields = new();
@@ -7146,7 +7146,7 @@ public sealed partial class Binder
                 Name = BoundTargetField, Type = _r.TypeOf(boundReceiver!), Owner = closure, Offset = at,
             };
             at += Math.Max(8, targetField.Type.Size);
-            closure.Fields.Add(targetField);
+            closure.WritableFields.Add(targetField);
             fields.Add((targetField, new ValueSym(boundReceiver!)));
         }
         else if (_method is { Static: false })
@@ -7180,7 +7180,7 @@ public sealed partial class Binder
                 Name = "$this", Type = thisType, Owner = closure, Offset = at,
             };
             at += 8;
-            closure.Fields.Add(thisField);
+            closure.WritableFields.Add(thisField);
             fields.Add((thisField, enclosingThisSource));
         }
 
@@ -7216,7 +7216,7 @@ public sealed partial class Binder
             };
 
             at += Math.Max(8, held.Size);
-            closure.Fields.Add(f);
+            closure.WritableFields.Add(f);
             fields.Add((f, from));
             if (!f.Boxed) _closureCopies.Add((f, from));
             if (LocalFunctionDeclaration(from) is { } localFunction)
@@ -7277,7 +7277,7 @@ public sealed partial class Binder
 
         static string Passing(string how) => how.Length == 0 ? "by value" : "with '" + how + "'";
 
-        closure.Methods.Add(run);
+        closure.WritableMethods.Add(run);
         // WHAT IT IS AS A DELEGATE: the members every delegate has
         // (DelegateMembers), and -- a method group's -- the method it calls,
         // by which its delegates are equal to those another class made of
@@ -7958,7 +7958,7 @@ public sealed partial class Binder
                     ?? (want.Decl?.Body is not null ? want : null);
                 if (impl is not null)
                 {
-                    closure.InterfaceImplementations[want.VtableSlot] = impl;
+                    closure.WritableInterfaceImplementations[want.VtableSlot] = impl;
                 }
             }
         }
@@ -9449,7 +9449,7 @@ public sealed partial class Binder
         {
             TypeSymbol transient = new() { Name = name, Kind = TypeKind.Struct, Structural = true };
             for (int i = 0; i < elements.Count; i++)
-                transient.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = Unmarked(elements[i]), Owner = transient });
+                transient.WritableFields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = Unmarked(elements[i]), Owner = transient });
             return transient;
         }
 
@@ -9464,7 +9464,7 @@ public sealed partial class Binder
         {
             // ITS ITEMS AS STORAGE HAS THEM: a reference's `?` is the use's
             // (Type.UseArgs), and one shape serves `(int, Box?)` and `(int, Box)`.
-            tuple.Fields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = Unmarked(elements[i]), Owner = tuple });
+            tuple.WritableFields.Add(new FieldSymbol { Name = "Item" + (i + 1), Type = Unmarked(elements[i]), Owner = tuple });
         }
 
         // VALUETUPLE'S OWN MEMBERS, written by the code generator from the
@@ -9478,7 +9478,7 @@ public sealed partial class Binder
         {
             MethodSymbol m = new() { Name = name, Returns = returns, Owner = tuple };
             foreach ((string n, Type t) in parameters) m.WritableParams.Add(new ParamSymbol { Name = n, Type = t });
-            tuple.Methods.Add(m);
+            tuple.WritableMethods.Add(m);
             return m;
         }
         Member("Equals", Type.Bool, ("other", self));
@@ -9569,7 +9569,7 @@ public sealed partial class Binder
         foreach (TypeSymbol face in faces)
         {
             if (tuple.Interfaces.Contains(face)) continue;
-            tuple.Interfaces.Add(face);
+            tuple.WritableInterfaces.Add(face);
             bool explicitly = face.Name is "IComparable" || face.Name.EndsWith("ITuple", StringComparison.Ordinal);
             foreach (MethodSymbol want in face.Methods.Where(m => !m.Static && m.TypeParams.Count == 0))
             {
@@ -9583,9 +9583,9 @@ public sealed partial class Binder
                         Returns = want.Returns, Owner = tuple,
                     };
                     foreach (ParamSymbol p in want.Params) impl.WritableParams.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
-                    tuple.Methods.Add(impl);
+                    tuple.WritableMethods.Add(impl);
                 }
-                if (want.VtableSlot >= 0) tuple.InterfaceImplementations[want.VtableSlot] = impl;
+                if (want.VtableSlot >= 0) tuple.WritableInterfaceImplementations[want.VtableSlot] = impl;
             }
         }
     }
@@ -9636,7 +9636,7 @@ public sealed partial class Binder
 
         if (!shape.TupleNamings.Any(had => had.SequenceEqual(names)))
         {
-            shape.TupleNamings.Add(names.ToArray());
+            shape.WritableTupleNamings.Add(names.ToArray());
         }
 
         if (!shape.TupleNamesSeen)
@@ -9729,7 +9729,7 @@ public sealed partial class Binder
                 {
                     method.WritableParams.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
                 }
-                made.Methods.Add(method);
+                made.WritableMethods.Add(method);
             }
         }
     }
@@ -9757,12 +9757,12 @@ public sealed partial class Binder
         // had written.
         foreach (TypeSymbol also in SequenceFaces(element, face))
         {
-            view.Interfaces.Add(also);
+            view.WritableInterfaces.Add(also);
         }
 
         view.InstanceSize = Target.Current.ObjectHeaderBytes + Target.Current.WordSize;
         view.InlineDecided = true;                    // laid out here, nothing in line
-        view.Fields.Add(new FieldSymbol
+        view.WritableFields.Add(new FieldSymbol
         {
             Name = "items", Type = Type.ArrayOf(element), Owner = view,
             Offset = Target.Current.ObjectHeaderBytes,
@@ -9803,14 +9803,14 @@ public sealed partial class Binder
         int header = Target.Current.ObjectHeaderBytes;
         int word = Target.Current.WordSize;
 
-        walker.Interfaces.Add(face);
+        walker.WritableInterfaces.Add(face);
         walker.InstanceSize = header + word + 4;
         walker.InlineDecided = true;                    // laid out here, nothing in line
-        walker.Fields.Add(new FieldSymbol
+        walker.WritableFields.Add(new FieldSymbol
         {
             Name = "items", Type = Type.ArrayOf(element), Owner = walker, Offset = header,
         });
-        walker.Fields.Add(new FieldSymbol
+        walker.WritableFields.Add(new FieldSymbol
         {
             Name = "at", Type = Type.I32, Owner = walker, Offset = header + word,
         });

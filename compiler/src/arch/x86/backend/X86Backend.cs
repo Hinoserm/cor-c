@@ -696,35 +696,6 @@ public sealed class X86Backend : IBackend
     }
 
     /// <summary>
-    /// The stack-map table, as described in docs/X86-BACKEND.md.
-    ///
-    ///   header, 20 bytes: magic 'CSM1', version 2, entry count, entry
-    ///     stride, then the BASE: the address of the first function that
-    ///     has a call site, the table's one relocation
-    ///   entries, 16 bytes each, in code order within each function:
-    ///     +0  the return address of the call, MINUS THE BASE
-    ///     +4  callee-saved registers holding references, bit per hardware number
-    ///     +8  byte offset from the table's start to this entry's slot
-    ///         bitmap, or zero when the frame holds no live reference
-    ///     +12 bytes of frame below EBP, so a walker can check a bitmap
-    ///         against the frame it is reading
-    ///   bitmaps, after the entries: a word of length in words, then that
-    ///   many words, bit i of word k standing for [EBP - 4*(32k + i + 1)].
-    ///
-    /// ONE RELOCATION, NOT ONE PER ENTRY. Version 1 stored each return
-    /// address whole, and in a shared object every entry was a relocation
-    /// the loader applied at every exec: four thousand of the runtime
-    /// library's six and a half thousand, and the pages holding them were
-    /// then a private copy in every process. Every function of this object
-    /// is in its one text section, so the distance from the first to any
-    /// call site is known here, and is what is written; a reader adds the
-    /// base, exactly as the frame table's reader does.
-    ///
-    /// Entries are not sorted here: the linker decides the addresses, so
-    /// ordering is the runtime's to do once at startup if it wants a binary
-    /// search rather than a scan.
-    /// </summary>
-    /// <summary>
     /// The callee-saved registers a function's prologue pushes, by hardware
     /// number: after `push ebp; mov ebp, esp; sub esp, FrameSize` they are
     /// pushed in the order EBX, ESI, EDI, so the k-th of them present is at
@@ -759,6 +730,28 @@ public sealed class X86Backend : IBackend
         return words.ToList();
     }
 
+    /// <summary>
+    /// The stack-map table: one per object, read by the collector to know,
+    /// at each call a frame is stopped in, which of its words and saved
+    /// registers hold live references.
+    ///
+    /// VERSION 6, VARINTS AND SHARED BITMAPS: the layout is StackMapTable's,
+    /// in the linker's object model, where it is written down in full; the
+    /// link decodes and re-encodes it with the same code when it cuts
+    /// duplicate bodies, and runtime/src/core/gc.cor (MapSite) reads it. In
+    /// short: a header, a checkpoint every thirty-two call sites for the
+    /// binary search, then per function its start, frame size, saved
+    /// registers and frame-slot bitmap, and per call site its return address
+    /// from the one before and its live registers and spill-slot bitmap, all
+    /// as varints; a bitmap of up to sixteen words is held inline, a larger
+    /// one once in a pool, the most used first.
+    ///
+    /// ONE RELOCATION, NOT ONE PER ENTRY. Every function of this object is in
+    /// its one text section, so the distance from the first function with a
+    /// call site to any call is known here, and is what is written; a reader
+    /// adds the base, exactly as the frame table's reader does. A shared
+    /// object then has one loader-written word in the table, not one a call.
+    /// </summary>
     private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize, uint Saved, List<int> Objects)> maps, HashSet<string> defined, bool pic)
     {
         // The base is a relocation, so in a shared object the page holding
@@ -768,107 +761,36 @@ public sealed class X86Backend : IBackend
             pic ? SectionKind.Data : SectionKind.ReadOnlyData) { Align = 4 };
         obj.Sections.Add(s);
 
-        // VERSION 5: WHAT BELONGS TO A FUNCTION IS SAID ONCE FOR IT. Version 4
-        // gave every call site five words, three of them -- the frame size,
-        // the saved registers, the frame slots' bitmap -- the same for every
-        // call in the function: 20 bytes a site, 6.7 MB of the compiler.
-        //
-        //   header, 32 bytes: 'CSM1', 5, function count, site count, the
-        //     BASE (relocated: the first function with a call site), the
-        //     site table's offset, the code span the table covers from the
-        //     base, the bitmap pool's offset
-        //   functions, 16 bytes each, ascending: start from the base; frame
-        //     size (low 24 bits) and saved registers (top 8, by hardware
-        //     number); the frame slots' bitmap; the index of its first site
-        //   sites, 8 bytes each, by function, ascending: the return address
-        //     from the function's start (low 23 bits), bit 23 a call with no
-        //     map (its frame is read whole), the live registers in the top 8;
-        //     the live spill slots' bitmap
-        //   a BITMAP is inline when its top bit is set -- bit b the word at
-        //     EBP-4(b+1), for the thirty-one words under EBP -- zero for none,
-        //     or else the offset of a pooled one: a word of length in words,
-        //     then the words
-        void Word(long v)
-        {
-            for (int i = 0; i < 4; i++)
-            {
-                s.Bytes.Add((byte)(v >> (8 * i)));
-            }
-        }
-
-        List<(int Start, int FrameSize, uint Saved, List<int> Objects, int First)> functions = new();
+        // The sites come in code order, a function's together: a function
+        // record each time the start changes, its sites after it.
+        List<StackMapTable.Function> functions = new();
+        int baseAt = maps.Count > 0 ? maps[0].At - maps[0].Return : 0;
+        int[]? objects = null;
+        List<int>? objectsOf = null;
         foreach (var site in maps)
         {
             int start = site.At - site.Return;
-            if (functions.Count == 0 || functions[^1].Start != start)
-                functions.Add((start, site.FrameSize, site.Saved, site.Objects, functions.Count == 0 ? 0 : -1));
-        }
-        int baseAt = functions.Count > 0 ? functions[0].Start : 0;
-        int span = maps.Count > 0 ? maps.Max(site => site.At) - baseAt + 1 : 0;
-        int functionsAt = 32, sitesAt = functionsAt + functions.Count * 16, poolAt = sitesAt + maps.Count * 8;
-
-        List<uint[]> pool = new();
-        Dictionary<string, int> shared = new(StringComparer.Ordinal);
-        int poolWords = 0;
-        uint Bitmap(List<int> slots)
-        {
-            if (slots.Count == 0) return 0;
-            int top = 0;
-            foreach (int off in slots) top = Math.Max(top, -off / 4);
-            if (top <= 31)
+            if (functions.Count == 0 || functions[^1].Start != start - baseAt)
             {
-                uint inline = 0x80000000;
-                foreach (int off in slots) inline |= 1u << (-off / 4 - 1);
-                return inline;
+                if (site.FrameSize > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
+                // ObjectWords is computed once a function and shared by its sites.
+                if (!ReferenceEquals(objectsOf, site.Objects))
+                {
+                    objectsOf = site.Objects;
+                    objects = StackMapTable.Words(site.Objects);
+                }
+                functions.Add(new StackMapTable.Function
+                {
+                    Start = start - baseAt, FrameSize = site.FrameSize, Saved = site.Saved, Objects = objects!,
+                });
             }
-            uint[] bits = new uint[(top + 31) / 32];
-            foreach (int off in slots)
-            {
-                int bit = -off / 4 - 1;
-                bits[bit / 32] |= 1u << (bit % 32);
-            }
-            string key = string.Join(',', bits);
-            if (shared.TryGetValue(key, out int existing)) return (uint)existing;
-            int at = poolAt + poolWords * 4;
-            shared.Add(key, at);
-            poolWords += 1 + bits.Length;
-            pool.Add(bits);
-            return (uint)at;
-        }
-
-        Word(0x314d5343);       // 'CSM1'
-        Word(5);
-        Word(functions.Count);
-        Word(maps.Count);
-        if (maps.Count > 0) s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Abs32));
-        Word(0);
-        Word(sitesAt);
-        Word(span);
-        Word(poolAt);
-
-        int siteIndex = 0;
-        for (int f = 0; f < functions.Count; f++)
-        {
-            var fn = functions[f];
-            if (fn.FrameSize > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
-            Word(fn.Start - baseAt);
-            Word((uint)fn.FrameSize | (fn.Saved & 0xFF) << 24);
-            Word(Bitmap(fn.Objects));
-            Word(siteIndex);
-            while (siteIndex < maps.Count && maps[siteIndex].At - maps[siteIndex].Return == fn.Start) siteIndex++;
-        }
-        foreach (var site in maps)
-        {
             if (site.Return > 0x7FFFFF) throw new InvalidOperationException("a function over 8 MB has no stack map");
-            uint regs = site.Map is null ? 0xFFu : site.Map.Registers & 0xFFu;
-            Word((uint)site.Return | (site.Map is null ? 1u << 23 : 0) | regs << 24);
-            Word(Bitmap(site.Map?.SlotOffsets ?? new List<int>()));
+            functions[^1].Sites.Add(new StackMapTable.Site(site.Return, site.Map is null, site.Map?.Registers ?? 0,
+                site.Map is null ? Array.Empty<int>() : StackMapTable.Words(site.Map.SlotOffsets)));
         }
-        foreach (uint[] bits in pool)
-        {
-            Word(bits.Length);
-            foreach (uint w in bits) Word(w);
-        }
+
+        s.Bytes.AddRange(StackMapTable.Encode(functions));
+        if (maps.Count > 0) s.Relocs.Add(new Relocation(StackMapTable.BaseOffset, maps[0].Function, 0, RelocKind.Abs32));
 
         // Each independently compiled object owns a complete table. These
         // boundaries must not collide or bind another object's table. A future

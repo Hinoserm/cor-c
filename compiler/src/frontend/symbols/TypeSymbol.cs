@@ -62,10 +62,23 @@ public sealed class TypeSymbol
     /// closure's Equals slot. Null for a lambda's closure and every other type.
     /// </summary>
     public string? DelegateGroup { get; set; }
+    // EVERY COLLECTION BELOW IS MADE ON ITS FIRST WRITE: the plain property
+    // reads one shared empty instance until then, never written through, and
+    // every writer goes by its Writable twin. A symbol for a tuple, a closure
+    // or an interface has no fields, methods, enum values or template
+    // arguments, and eight empty collections each were a large share of the
+    // symbols' memory in a big unit. The read stays the concrete type so a
+    // foreach over it takes no enumerator object.
     /// <summary>A specialisation's type arguments, resolved where it was written: what .NET's name of it spells out.</summary>
-    public List<Type> TemplateArgTypes { get; } = new();
+    public List<Type> TemplateArgTypes => _templateArgTypes ?? NoTemplateArgTypes;
+    public List<Type> WritableTemplateArgTypes => _templateArgTypes ??= new();
+    private List<Type>? _templateArgTypes;
+    private static readonly List<Type> NoTemplateArgTypes = new();
     /// <summary>The classes a shared copy's code makes for this copy's arguments (TypeDecl.CanonMade); null where one did not resolve.</summary>
-    public List<TypeSymbol?> CanonMadeTypes { get; } = new();
+    public List<TypeSymbol?> CanonMadeTypes => _canonMadeTypes ?? NoCanonMadeTypes;
+    public List<TypeSymbol?> WritableCanonMadeTypes => _canonMadeTypes ??= new();
+    private List<TypeSymbol?>? _canonMadeTypes;
+    private static readonly List<TypeSymbol?> NoCanonMadeTypes = new();
     /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
     public bool Structural { get; init; }
 
@@ -78,27 +91,57 @@ public sealed class TypeSymbol
     /// </summary>
     public bool Used { get; set; }
     public TypeSymbol? Base { get; set; }
-    public List<TypeSymbol> Interfaces { get; } = new();
+    public List<TypeSymbol> Interfaces => _interfaces ?? NoInterfaces;
+    public List<TypeSymbol> WritableInterfaces => _interfaces ??= new();
+    private List<TypeSymbol>? _interfaces;
+    private static readonly List<TypeSymbol> NoInterfaces = new();
+
     // EVERY WAY IN TO ITS MEMBERS DECLARES THEM FIRST when they were left
     // for later (DeclareMembersLater): its fields, its methods, its slots and
-    // its size. FindField and FindMethods come through these too.
+    // its size, read or written. FindField and FindMethods come through these
+    // too. A write must come through the Writable accessor, never through the
+    // read one, which hands out a shared empty collection while there is none.
     public List<FieldSymbol> Fields
     {
         get
         {
             EnsureMembers();
-            return _fields;
+            return _fields ?? NoFields;
         }
     }
+
+    public List<FieldSymbol> WritableFields
+    {
+        get
+        {
+            EnsureMembers();
+            return _fields ??= new();
+        }
+    }
+
+    private List<FieldSymbol>? _fields;
+    private static readonly List<FieldSymbol> NoFields = new();
 
     public List<MethodSymbol> Methods
     {
         get
         {
             EnsureMembers();
-            return _methods;
+            return _methods ?? NoMethods;
         }
     }
+
+    public List<MethodSymbol> WritableMethods
+    {
+        get
+        {
+            EnsureMembers();
+            return _methods ??= new();
+        }
+    }
+
+    private List<MethodSymbol>? _methods;
+    private static readonly List<MethodSymbol> NoMethods = new();
 
     /// <summary>One implementation can occupy several distinct interface slots.</summary>
     public Dictionary<int, MethodSymbol> InterfaceImplementations
@@ -106,13 +149,21 @@ public sealed class TypeSymbol
         get
         {
             EnsureMembers();
-            return _implementations;
+            return _interfaceImplementations ?? NoInterfaceImplementations;
         }
     }
 
-    private readonly List<FieldSymbol> _fields = new();
-    private readonly List<MethodSymbol> _methods = new();
-    private readonly Dictionary<int, MethodSymbol> _implementations = new();
+    public Dictionary<int, MethodSymbol> WritableInterfaceImplementations
+    {
+        get
+        {
+            EnsureMembers();
+            return _interfaceImplementations ??= new();
+        }
+    }
+
+    private Dictionary<int, MethodSymbol>? _interfaceImplementations;
+    private static readonly Dictionary<int, MethodSymbol> NoInterfaceImplementations = new();
 
     /// <summary>
     /// What declares this type's members, while that is still to do: a
@@ -146,6 +197,7 @@ public sealed class TypeSymbol
             declare(this);
         }
     }
+
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<string> NoTypeParams = new();
     private List<string>? _typeParams;
@@ -154,7 +206,10 @@ public sealed class TypeSymbol
     /// <summary>To write: made on first use.</summary>
     public List<string> WritableTypeParamNames => _typeParams ??= new();
     /// <summary>Enum member values, when this is an enum.</summary>
-    public Dictionary<string, long> EnumValues { get; } = new();
+    public Dictionary<string, long> EnumValues => _enumValues ?? NoEnumValues;
+    public Dictionary<string, long> WritableEnumValues => _enumValues ??= new();
+    private Dictionary<string, long>? _enumValues;
+    private static readonly Dictionary<string, long> NoEnumValues = new();
 
     /// <summary>
     /// What an enum is STORED AS: `enum E : long` is eight bytes and `enum
@@ -263,7 +318,10 @@ public sealed class TypeSymbol
     /// does not survive the trip. What is never done is answer with the wrong
     /// element.
     /// </summary>
-    public List<IReadOnlyList<string>> TupleNamings { get; } = new();
+    public List<IReadOnlyList<string>> TupleNamings => _tupleNamings ?? NoTupleNamings;
+    public List<IReadOnlyList<string>> WritableTupleNamings => _tupleNamings ??= new();
+    private List<IReadOnlyList<string>>? _tupleNamings;
+    private static readonly List<IReadOnlyList<string>> NoTupleNamings = new();
 
     /// <summary>The element this name can only mean, or -1 when it could mean two.</summary>
     public int TupleElement(string name)

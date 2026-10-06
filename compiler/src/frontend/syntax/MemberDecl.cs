@@ -6,11 +6,12 @@ public abstract class MemberDecl : Node
     public Mods Mods { get; init; }
 
     /// <summary>
-    /// Whether a shared generic copy's code in this member reads its type
-    /// arguments through `this` (ICanonSlot): its initialiser's helper is then
-    /// an instance method (InitializerMethods), which the constructor calls.
+    /// What few members carry, kept apart (MemberRare): null until one of its
+    /// fields is set to something other than its default.
     /// </summary>
-    public bool ReadsTypeArguments { get; set; }
+    internal MemberRare? _rare;
+    /// <summary>The side object, made by the first writer that needs it.</summary>
+    internal MemberRare Rare => _rare ??= new();
 
     /// <summary>
     /// The attributes written in front of this member, with their arguments.
@@ -46,8 +47,11 @@ public abstract class MemberDecl : Node
     /// in `IEnumerator<T> IEnumerable<T>.GetEnumerator()` -- or null. Such a
     /// member fills that interface's slot and is not on the type's own surface.
     /// </summary>
-    public string? ExplicitInterface { get => _explicitInterface; set => _explicitInterface = value is null ? null : Interned.Name(value); }
-    private string? _explicitInterface;
+    public string? ExplicitInterface
+    {
+        get => _rare?.ExplicitInterface;
+        set { if (value is not null) Rare.ExplicitInterface = Interned.Name(value); else if (_rare is not null) _rare.ExplicitInterface = null; }
+    }
 
     /// <summary>
     /// A specialised copy THIS compilation made for its own use, which is its
@@ -62,6 +66,14 @@ public abstract class MemberDecl : Node
     /// this was found.
     /// </summary>
     public bool LocalCopy { get; set; }
+
+    /// <summary>
+    /// Whether a shared generic copy's code in this member reads its type
+    /// arguments through `this` (ICanonSlot): its initialiser's helper is then
+    /// an instance method (InitializerMethods), which the constructor calls.
+    /// </summary>
+    // Declared beside the other flags so the bytes pack into one word.
+    public bool ReadsTypeArguments { get; set; }
 
     /// <summary>
     /// Made since the last binding: a generic method's new copy, or a method
@@ -102,5 +114,37 @@ public abstract class MemberDecl : Node
     /// declaration before monomorphisation, and every specialised clone keeps
     /// it so the binder lays the consumer out to the library's ABI.
     /// </summary>
-    public int VtableSlotHint { get; set; } = -1;
+    public int VtableSlotHint
+    {
+        get => _rare?.VtableSlotHint ?? -1;
+        set { if (value != -1) Rare.VtableSlotHint = value; else if (_rare is not null) _rare.VtableSlotHint = -1; }
+    }
+}
+
+/// <summary>
+/// THE FIELDS OF A MEMBER THAT ALMOST NO MEMBER SETS, in one object made only
+/// for those that do.
+///
+/// A large unit binds a hundred thousand method declarations, and each held
+/// a word for a constructor chain, an explicit interface, a vtable hint and
+/// six more that only a hoisted generic local function or an annotated
+/// return ever fills: the declarations were 128 bytes apiece, a large share
+/// of the front end's heap. Each property of MemberDecl and MethodDecl over
+/// these reads its default while this is null and makes it only to store
+/// something other than that default, so a reader sees exactly what it saw
+/// when the fields were the declaration's own.
+/// </summary>
+internal sealed class MemberRare
+{
+    public string? ExplicitInterface;
+    public int VtableSlotHint = -1;
+    // MethodDecl's, below.
+    public CtorInit? Init;
+    public string? NotNullIfNotNull;
+    public string? HoistedName;
+    public string? HoistedIn;
+    public List<string>? CarriedTypeParams;
+    public List<(string Name, string Method)>? LocalGenerics;
+    public Dictionary<string, string>? Rehosted;
+    public int Captures = -1;
 }
