@@ -179,11 +179,12 @@ public sealed class Pipeline
         // Not without an operating system: there a thread block is a
         // processor's, and the runtime keeps no arena (baremetal.cor).
         if (regions) p.LatePasses.Add(new RegionPointsTo { Report = regionReport });
+        p.LatePasses.Add(Inliner());
         // Every allocation still a call to the runtime's allocators made the
         // allocation itself, in place: after every pass that knows a `new` by
-        // that call (AllocatorFastPaths).
+        // that call (AllocatorFastPaths), and after the last inliner, whose
+        // choices are then the ones it made with the calls.
         p.LatePasses.Add(new InlineAllocators());
-        p.LatePasses.Add(Inliner());
         // The card marks written out, last: to every pass above they are a
         // call that lets nothing go (CardMarks).
         p.LatePasses.Add(new CardMarks());

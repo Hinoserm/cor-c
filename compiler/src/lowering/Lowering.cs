@@ -209,7 +209,7 @@ public sealed partial class Lowering
         // call: declared is enough, the body may be another unit's.
         foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                        ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1),
-                                                       ("AllocFast", 2) })
+                                                       ("AllocFast", 2), ("AllocFastSized", 4) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
         if (l.MakesStoreSequences) l._m.RuntimeHelpers.Add(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         errors.AddRange(l.Errors);
@@ -534,7 +534,7 @@ public sealed partial class Lowering
             foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                            ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1),
                                                            // The allocation put in place last (AllocatorFastPaths).
-                                                           ("AllocFast", 2) })
+                                                           ("AllocFast", 2), ("AllocFastSized", 4) })
                 if (RuntimeMethod(helper, arity) is MethodSymbol provided) Require(provided);
         }
 
