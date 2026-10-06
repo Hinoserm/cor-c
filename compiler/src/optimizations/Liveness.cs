@@ -175,20 +175,40 @@ public sealed class Liveness
         {
             Instr i = b.Instrs[k];
             yield return (i, live);
-            if (i.Dest is not null && (!skipNewer || i.Dest.Id < _registers))
+            StepBackwards(i, live, skipNewer);
+        }
+    }
+
+    /// <summary>
+    /// WalkBackwards by hand, for a walk made often enough that its iterator
+    /// and its set were the cost: the registers live out of the block, in
+    /// `into` when it is already the right size (else a new set, kept there).
+    /// Each instruction is then passed to StepBackwards, last first, after
+    /// its live-after set has been read.
+    /// </summary>
+    public ulong[] LiveOutInto(Block b, ref ulong[]? into)
+    {
+        if (into is null || into.Length != _words) into = new ulong[_words];
+        Array.Copy(_out, RowOf(b), into, 0, _words);
+        return into;
+    }
+
+    /// <summary>From the registers live after an instruction to those live before it, in place.</summary>
+    public void StepBackwards(Instr i, ulong[] live, bool skipNewer)
+    {
+        if (i.Dest is not null && (!skipNewer || i.Dest.Id < _registers))
+        {
+            Clear(live, i.Dest.Id);
+        }
+        if (i.Op == Opcode.Phi)
+        {
+            return;       // its reads belong to the predecessors
+        }
+        foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
+        {
+            if (!skipNewer || r.Id < _registers)
             {
-                Clear(live, i.Dest.Id);
-            }
-            if (i.Op == Opcode.Phi)
-            {
-                continue;       // its reads belong to the predecessors
-            }
-            foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
-            {
-                if (!skipNewer || r.Id < _registers)
-                {
-                    Set(live, r.Id);
-                }
+                Set(live, r.Id);
             }
         }
     }

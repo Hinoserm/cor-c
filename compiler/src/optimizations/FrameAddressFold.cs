@@ -15,6 +15,15 @@ public sealed class FrameAddressFold : IPass
     public void Run(Function function)
     {
         if (function.Async is not null || IrTypes.Word != IrType.I32) return;
+        // NOTHING TO FOLD, NO GRAPH: a function with no access through a
+        // register gets no Cfg and no Defs, which were built for every
+        // function and dropped. The blocks are numbered as the Cfg would
+        // have numbered them, for whatever reads Order next.
+        if (!AnyRegisterAccess(function))
+        {
+            for (int k = 0; k < function.Blocks.Count; k++) function.Blocks[k].Order = k;
+            return;
+        }
         Cfg cfg = new(function);
         Defs defs = new(cfg);
         Address? Resolve(Operand operand, Block useBlock, int useIndex, int depth)
@@ -68,8 +77,20 @@ public sealed class FrameAddressFold : IPass
             Instr replacement = new() { Op = i.Op, Dest = i.Dest, Size = i.Size,
                 Signed = i.Signed, Offset = offset, Line = i.Line, Number = i.Number, Family = i.Family, Field = i.Field };
             replacement.Operands.Add(new SlotOperand(address.Slot));
-            replacement.Operands.AddRange(i.Operands.Skip(1));
+            for (int k = 1; k < i.Operands.Count; k++) replacement.Operands.Add(i.Operands[k]);
             block.Instrs[index] = replacement;
         }
+    }
+
+    /// <summary>Whether any load, store or fill reaches memory through a register: the only kind Run can fold.</summary>
+    private static bool AnyRegisterAccess(Function function)
+    {
+        foreach (Block block in function.Blocks)
+        foreach (Instr i in block.Instrs)
+        {
+            if (i.Op is Opcode.Load or Opcode.Store or Opcode.MemSet && i.Operands.Count > 0 && i.Operands[0] is RegOperand)
+                return true;
+        }
+        return false;
     }
 }

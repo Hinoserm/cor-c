@@ -4394,7 +4394,8 @@ continue;
                     continue;
                 }
 
-                Flow flow = Analyse(f, new[] { i.Dest }, summaries, i, closure: IsClosure(f, i));
+                _oneRoot[0] = i.Dest;
+                Flow flow = Analyse(f, _oneRoot, summaries, i, closure: IsClosure(f, i));
                 OwnedFieldEscape.Owner promotedOwner = new() { Block = b, Root = i.Dest, Bytes = size, Stamp = ClosureStamp(f, i) };
                 promotedOwner.Aliases.Add(i.Dest);
                 bool canAnchor = true;
@@ -4456,9 +4457,11 @@ continue;
                 // a span of one literal or another -- are one object as far as
                 // anything after the join can tell, and are judged together:
                 // if none of them escapes, each gets a slot of its own.
-                List<VReg> promotedMembers = new();
+                // A list of its own only when there is a join to fill it: an
+                // empty one read-only for every other allocation judged.
+                List<VReg> promotedMembers = NoMembers;
                 if (flow.Escapes && sized && flow.Why is { Op: Opcode.Copy, Dest: { } joined }
-                    && JoinedAllocations(f, joined, budget, promotedMembers) is { } group && group.Contains(i))
+                    && JoinedAllocations(f, joined, budget, promotedMembers = new List<VReg>()) is { } group && group.Contains(i))
                 {
                     Flow together = Analyse(f, group.Select(g => g.Dest!).Concat(promotedMembers).ToList(), summaries, i);
                     if (!together.Escapes) flow = together;
@@ -4701,12 +4704,22 @@ continue;
 
     private bool HandedOverWithField(Function f, Block b, Instr st, HashSet<VReg> derived, Liveness live)
     {
-        if (derived.Any(r => !live.Tracks(r))) { if (HandTrace) Console.Error.WriteLine($"handed {f.Name} {st}: untracked"); return false; }
+        foreach (VReg r in derived)
+        {
+            if (!live.Tracks(r)) { if (HandTrace) Console.Error.WriteLine($"handed {f.Name} {st}: untracked"); return false; }
+        }
         // ONLY WHAT RUNS AFTER THE STORE: the blocks reachable from it (its
         // own block again only round a loop). Before it, the object is
         // handed to its constructor, as it must be.
-        HashSet<Block> after = new(ReferenceEqualityComparer.Instance);
-        Stack<Block> reach = new();
+        //
+        // The set, the stack and the live set of the walk are this pass's,
+        // emptied for each question rather than made for it: asked for every
+        // store of a fresh object into a field, they were most of what the
+        // pass gave the collector.
+        HashSet<Block> after = _handedAfter;
+        Stack<Block> reach = _handedReach;
+        after.Clear();
+        reach.Clear();
         foreach (Block s in live.Cfg.Succs(b)) reach.Push(s);
         while (reach.TryPop(out Block? next))
             if (after.Add(next)) foreach (Block s in live.Cfg.Succs(next)) reach.Push(s);
@@ -4715,8 +4728,13 @@ continue;
             if (!ReferenceEquals(x, b) && !after.Contains(x)) continue;
             int start = ReferenceEquals(x, b) && !after.Contains(b) ? b.Instrs.IndexOf(st) : -1;
             int at = x.Instrs.Count;
-            foreach ((Instr i, ulong[] liveAfter) in live.WalkBackwards(x, skipNewer: true))
+            ulong[] liveAfter = live.LiveOutInto(x, ref _handedLive);
+            // WalkBackwards by hand: each instruction's step is taken as the
+            // next one up is reached, so a `continue` below still takes it.
+            for (int place = x.Instrs.Count - 1; place >= 0; place--)
             {
+                if (place < x.Instrs.Count - 1) live.StepBackwards(x.Instrs[place + 1], liveAfter, skipNewer: true);
+                Instr i = x.Instrs[place];
                 at--;
                 if (at <= start) break;
                 // Nor the zeroing that makes a promoted object again round a
@@ -4746,6 +4764,15 @@ continue;
         }
         return true;
     }
+
+    /// <summary>Never written: the joined members of an allocation that has no join.</summary>
+    private static readonly List<VReg> NoMembers = new();
+    /// <summary>One allocation's register as Analyse's roots, which it reads once as it starts.</summary>
+    private readonly VReg[] _oneRoot = new VReg[1];
+
+    private readonly HashSet<Block> _handedAfter = new(ReferenceEqualityComparer.Instance);
+    private readonly Stack<Block> _handedReach = new();
+    private ulong[]? _handedLive;
 
     /// <summary>The runtime's release of a frame-made collection's storage (Runtime.FreeStorageInFrame).</summary>
     public const string StorageFreer = "m_Runtime_FreeStorageInFrame_1_V$Any";

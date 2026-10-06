@@ -159,10 +159,13 @@ public sealed class BranchSimplify : IPass
         }
 
         // Follows the chain to its end, also returning the last hop: the
-        // end's phis know the value by that name.
+        // end's phis know the value by that name. One set of the blocks
+        // passed, emptied for each walk: a set each was one for every edge
+        // of every block, every round.
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
         (Block End, Block LastHop) Final(Block b)
         {
-            HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+            seen.Clear();
             Block last = b;
             while (next.TryGetValue(b, out Block? n) && seen.Add(b))
             {
@@ -177,6 +180,11 @@ public sealed class BranchSimplify : IPass
         // directly with a different value cannot be redirected.
         Block? Redirect(Block from, Block target)
         {
+            // Not a block that only jumps on: its own end, so nothing to do.
+            if (!next.ContainsKey(target))
+            {
+                return null;
+            }
             (Block end, Block hop) = Final(target);
             if (ReferenceEquals(end, target))
             {

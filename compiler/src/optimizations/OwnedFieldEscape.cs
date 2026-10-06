@@ -141,8 +141,11 @@ internal sealed class OwnedFieldEscape
 
         public Dictionary<VReg, long> Find(IEnumerable<VReg> roots)
         {
-            Dictionary<VReg, long> result = roots.Distinct().ToDictionary(r => r, _ => 0L);
-            Follow(_steps, result, result.Keys.ToList());
+            // The first of each root, in order, as Distinct and ToDictionary
+            // gave them, without the iterators and the copy of the keys.
+            Dictionary<VReg, long> result = new();
+            foreach (VReg r in roots) result.TryAdd(r, 0L);
+            Follow(_steps, result, result.Keys);
             if (_joins) JoinedAliases(_f, _defs, result, _steps, _writes ??= MultiWrites(_f, _defs));
             return result;
         }
@@ -159,8 +162,10 @@ internal sealed class OwnedFieldEscape
     /// listed against its order took a sweep a link -- a whole library's
     /// unit sat minutes in it.
     /// </summary>
-    private static void Follow(List<Instr> steps, Dictionary<VReg, long> result, List<VReg> from)
+    private static void Follow(List<Instr> steps, Dictionary<VReg, long> result, IEnumerable<VReg> from)
     {
+        // `from` is read whole into the queue before `result` is written, so
+        // it may be result's own keys, or a set the caller keeps.
         Queue<VReg> next = new(from);
         while (next.TryDequeue(out VReg? at))
         {
@@ -199,19 +204,47 @@ internal sealed class OwnedFieldEscape
     private static void JoinedAliases(Function f, Defs defs, Dictionary<VReg, long> result, List<Instr> steps,
         Dictionary<VReg, List<Instr>> writes)
     {
+        // ONE GROUP AND ONE SNAPSHOT OF IT, emptied each round: emptied, a
+        // set takes its members in the order a new one would, and the loops
+        // below are loops, not All over a closure for every register.
+        HashSet<VReg> group = new();
+        List<VReg> members = new();
         while (true)
         {
-            HashSet<VReg> group = new();
+            group.Clear();
             foreach ((VReg r, List<Instr> all) in writes)
-                if (!result.ContainsKey(r) && all.All(w => w is { Op: Opcode.Copy, Operands: [ImmOperand { Value: 0 } or RegOperand] }))
-                    group.Add(r);
+            {
+                if (result.ContainsKey(r)) continue;
+                bool copies = true;
+                foreach (Instr w in all)
+                {
+                    if (w is not { Op: Opcode.Copy, Operands: [ImmOperand { Value: 0 } or RegOperand] })
+                    {
+                        copies = false;
+                        break;
+                    }
+                }
+                if (copies) group.Add(r);
+            }
             bool shrank = true;
             while (shrank)
             {
                 shrank = false;
-                foreach (VReg r in group.ToList())
-                    if (!writes[r].All(w => w.Operands[0] is ImmOperand || w.Operands[0] is RegOperand { Reg: var from } && (result.ContainsKey(from) || group.Contains(from))))
-                    { group.Remove(r); shrank = true; }
+                members.Clear();
+                members.AddRange(group);
+                foreach (VReg r in members)
+                {
+                    bool held = true;
+                    foreach (Instr w in writes[r])
+                    {
+                        if (!(w.Operands[0] is ImmOperand || w.Operands[0] is RegOperand { Reg: var from } && (result.ContainsKey(from) || group.Contains(from))))
+                        {
+                            held = false;
+                            break;
+                        }
+                    }
+                    if (!held) { group.Remove(r); shrank = true; }
+                }
             }
             // One offset for the group, from the addresses written into it.
             long? offset = null;
@@ -226,7 +259,7 @@ internal sealed class OwnedFieldEscape
             if (group.Count == 0 || offset is null || !agree) return;
             foreach (VReg r in group) result[r] = offset.Value;
             // Whatever follows from them, as the single writes do.
-            Follow(steps, result, group.ToList());
+            Follow(steps, result, group);
         }
     }
 

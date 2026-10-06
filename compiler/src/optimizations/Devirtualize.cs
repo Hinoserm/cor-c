@@ -96,7 +96,10 @@ public sealed class Devirtualize : IModulePass
         //     iterator over a List or over anything else, joined, then asked
         //     by an inlined Sum whether it is a List or an array -- answered
         //     where every object it can be answers alike.
-        if (FoldTypeTests(f, items)) defs = new(f, buildCfg: false);
+        //     The definitions are found again only where they are read
+        //     next, below: found again after a fold and then once more,
+        //     with nothing changed between, the first was never read.
+        FoldTypeTests(f, items);
         if (!any) return;
         defs = new(f, buildCfg: false);
 
@@ -109,7 +112,8 @@ public sealed class Devirtualize : IModulePass
                 if (i.Op != Opcode.Load || i.Size != word || i.Dest is null || i.Dest.Type != IrTypes.Word) continue;
                 if (Symbol(i.Operands[0]) is not { } table || !items.TryGetValue(table.Name, out DataItem? item)) continue;
                 long at = table.Offset + i.Offset;
-                if (item.Relocs.FirstOrDefault(rel => rel.Offset == at) is not { Symbol: { } named } exact)
+                int hit = RelocIndex(item, at);
+                if (hit < 0 || item.Relocs[hit] is not { Symbol: { } named } exact)
                 {
                     // A SLOT A TYPE DOES NOT FILL, in its whole descriptor (one
                     // this unit wrote, naming itself): a method its objects do
@@ -124,7 +128,7 @@ public sealed class Devirtualize : IModulePass
                     // descriptor for. Written by lowering and nothing after
                     // it, unlike words the link fills in.
                     if (table.Name.StartsWith("t_", StringComparison.Ordinal) && at == DescFlagsWord * word && at + word <= item.Bytes.Length
-                        && !item.Relocs.Any(rel => rel.Offset == at))
+                        && RelocIndex(item, at) < 0)
                         b.Instrs[k] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Line = i.Line,
                             Operands = { new ImmOperand(word == 8 ? BitConverter.ToInt64(item.Bytes, (int)at) : BitConverter.ToInt32(item.Bytes, (int)at), i.Dest.Type) } };
                     continue;
@@ -159,6 +163,16 @@ public sealed class Devirtualize : IModulePass
         Guarded(f, items);
     }
 
+    /// <summary>The first relocation of an item at this offset, or -1: a loop, where a closure over the offset was made for every load from a descriptor.</summary>
+    private static int RelocIndex(DataItem item, long at)
+    {
+        for (int k = 0; k < item.Relocs.Count; k++)
+        {
+            if (item.Relocs[k].Offset == at) return k;
+        }
+        return -1;
+    }
+
     /// <summary>
     /// GUARDED, WHEN THE RECEIVER IS ONE OF A KNOWN FEW: a register every
     /// write of which is an object made in this function -- an inlined
@@ -171,7 +185,11 @@ public sealed class Devirtualize : IModulePass
     /// </summary>
     private void Guarded(Function f, Dictionary<string, DataItem> items)
     {
-        if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.CallIndirect))) return;
+        bool indirect = false;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                indirect |= i.Op == Opcode.CallIndirect;
+        if (!indirect) return;
         int word = IrTypes.Word.Bytes();
         Dictionary<VReg, List<Instr>> writes = new();
         foreach (Block b in f.Blocks)
