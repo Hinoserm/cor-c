@@ -38,14 +38,16 @@ public abstract class MemberDecl : Node
     public FileScope? Scope { get; set; }
 
     /// <summary>The namespace this member was written in.</summary>
-    public string Namespace { get; set; } = "";
+    public string Namespace { get => _namespace; set => _namespace = Interned.Name(value); }
+    private string _namespace = "";
 
     /// <summary>
     /// The interface an explicit implementation is written for -- `IEnumerable`
     /// in `IEnumerator<T> IEnumerable<T>.GetEnumerator()` -- or null. Such a
     /// member fills that interface's slot and is not on the type's own surface.
     /// </summary>
-    public string? ExplicitInterface { get; set; }
+    public string? ExplicitInterface { get => _explicitInterface; set => _explicitInterface = value is null ? null : Interned.Name(value); }
+    private string? _explicitInterface;
 
     /// <summary>
     /// A specialised copy THIS compilation made for its own use, which is its
@@ -76,7 +78,8 @@ public abstract class MemberDecl : Node
     /// becomes `Where$Node` and `Where$Token`, and the call site names the one
     /// it wants. Everything else sets it once, at construction.
     /// </summary>
-    public required string Name { get; set; }
+    public required string Name { get => _name; set => _name = Interned.Name(value); }
+    private string _name = "";
 
     /// <summary>
     /// Which member of the generic template this was cloned from, or -1.

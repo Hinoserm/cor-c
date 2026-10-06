@@ -5,7 +5,8 @@ public sealed class FieldSymbol
 {
     /// <summary>Its names in the lowering (FieldKey, its family, its static symbol), made once rather than at every load and store.</summary>
     internal string? KeyMade, FamilyMade, StaticSymbolMade;
-    public required string Name { get; init; }
+    public required string Name { get => _name; init => _name = Interned.Name(value); }
+    private readonly string _name = "";
     public required Type Type { get; init; }
     public required TypeSymbol Owner { get; init; }
     public bool Static { get; init; }

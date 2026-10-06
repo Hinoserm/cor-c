@@ -5,7 +5,8 @@ public sealed class MethodSymbol
 {
     /// <summary>Its label (Lowering.Label), made once: every call site asked, and each got a string of its own.</summary>
     internal string? LabelMade;
-    public required string Name { get; init; }
+    public required string Name { get => _name; init => _name = Interned.Name(value); }
+    private readonly string _name = "";
     public required Type Returns { get; init; }
     public required TypeSymbol Owner { get; init; }
     /// <summary>To read: one shared empty list until a parameter is added.</summary>
@@ -36,7 +37,8 @@ public sealed class MethodSymbol
     /// name finds it and it never meets a member of that name the type has
     /// of its own.
     /// </summary>
-    public string? ExplicitInterface { get; init; }
+    public string? ExplicitInterface { get => _explicitInterface; init => _explicitInterface = value is null ? null : Interned.Name(value); }
+    private readonly string? _explicitInterface;
     public string? ExplicitMember { get; init; }
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<string> NoTypeParams = new();

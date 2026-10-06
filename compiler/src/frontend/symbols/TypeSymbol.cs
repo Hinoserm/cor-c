@@ -6,7 +6,8 @@ public sealed class TypeSymbol
 {
     /// <summary>Its key spelled as a symbol (Lowering.TypeKey), made once.</summary>
     internal string? TypeKeyMade;
-    public required string Name { get; init; }
+    public required string Name { get => _name; init => _name = Interned.Name(value); }
+    private readonly string _name = "";
 
     /// <summary>
     /// What this type is called when it has to be told apart from every other
@@ -28,7 +29,7 @@ public sealed class TypeSymbol
     public string Key
     {
         get => _key ?? Name;
-        init => _key = value;
+        init => _key = value is null ? null : Interned.Name(value);
     }
 
     private readonly string? _key;

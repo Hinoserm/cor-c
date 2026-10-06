@@ -963,8 +963,11 @@ public static class Driver
             // Only a collector reads stack maps: a program found to need none
             // (Escape) carries none.
             StackMaps = !args.Contains("--no-stackmaps") && module.NeedsHeap,
-            // Nothing below reads a function's body once Generate has it.
-            ReleaseBodies = true,
+            // Unless the object's IR is taken from the module after Generate
+            // (IrUnitCodec.Attach, below): with the link's records taken
+            // before the late passes, or no IR in the object, nothing below
+            // reads a function's body once Generate has placed it.
+            ReleaseBodies = linkRecords is not null || !(args.Contains("--obj") || library),
         };
         foreach (string symbol in imported)
         {

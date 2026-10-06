@@ -158,6 +158,8 @@ public static class ProjectCompile
 
         int One(Unit unit)
         {
+            // Names a unit before this one on this thread are its, not ours.
+            Corsac.Lang.Interned.Forget();
             if (Current(unit))
             {
                 lock (gate) { done++; skipped++; }

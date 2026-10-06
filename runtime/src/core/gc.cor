@@ -5231,6 +5231,7 @@ static class Gc
         // it is waited out, and if what it frees is still not enough -- it
         // frees only what was garbage when it began -- this thread runs one
         // of its own.
+        long lapped = 0;
         for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
             // A cycle has not found the room: the platform asked for it,
@@ -5252,6 +5253,11 @@ static class Gc
             // Mapping failure must not reject usable existing free space.
             if (block == 0 && dedicated) block = Take(need);
             _growPast = false;
+            if (block == 0 && attempt == 2 && MostlyGarbage(lapped))
+            {
+                lapped = lapped + 1;
+                attempt = 0;
+            }
         }
 
         if (block == 0)
@@ -5297,6 +5303,7 @@ static class Gc
     {
         long c = Sys.Peek(_classOf + (need >> 3) * WordSize.Bytes);
         long failedAt = -1;
+        long lapped = 0;
         for (long attempt = 0; attempt < 4; attempt++)
         {
             // After a whole cycle has failed it: room asked for, the lock
@@ -5356,7 +5363,12 @@ static class Gc
                 GcLock.Exit();
                 return block + HeaderBytes;
             }
-            if (attempt == 3) break;
+            if (attempt == 3)
+            {
+                if (!MostlyGarbage(lapped)) break;
+                lapped = lapped + 1;
+                attempt = 1;
+            }
             ClassStarved = ClassStarved + 1;
             _forceMajor = true;
             // A CYCLE ALREADY UNDER WAY when this thread first came up short
@@ -9136,6 +9148,21 @@ static class Gc
     /// owed while this thread was away -- a handshake's answer, a buffer
     /// given back -- seen to as at the allocator's entry. The caller's state
     /// is what it reads again after: the free lists, a cycle under way.
+    /// <summary>
+    /// WHETHER A REQUEST THE LAST TRY FAILED IS STILL NOT OUT OF MEMORY: the
+    /// last collection found less than half the heap live, so what fills it
+    /// is garbage made since, and more cycles find room. Under load, a
+    /// thread short of a block waits out a cycle and wakes to find the other
+    /// threads, running all the while, have filled the heap again; three
+    /// tries were three such races lost, and a program holding 3.8 MB in a
+    /// 21 MB heap was told it was out of memory (test 1185 on a busy
+    /// machine). A few laps more, two cycles each, and only while the heap
+    /// is mostly garbage: a program that really holds the heap still hears
+    /// it on the third try.
+    /// </summary>
+    static bool MostlyGarbage(long lapped) => lapped < MostLaps && _liveBytes * 2 < HeapChunks.HeapBytes;
+    const long MostLaps = 8;
+
     static void WaitForRoom(long tb, long need)
     {
         if (RoomHook == 0 || tb == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return;

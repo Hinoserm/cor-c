@@ -39,7 +39,8 @@ public sealed class TypeRef : Node
     /// </summary>
     public const string Anything = "__anything";
 
-    public required string Name { get; set; }
+    public required string Name { get => _name; set => _name = Interned.Name(value); }
+    private string _name = "";
 
     /// <summary>
     /// The name a function pointer, `delegate* [unmanaged]<A, B, R>`, is
