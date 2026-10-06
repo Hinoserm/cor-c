@@ -1293,29 +1293,41 @@ a function came to sixty kilobytes on the kernel. The addresses ascend,
 so each entry says only how far its function starts past the end of the
 one before, and the whole table needs ONE relocation -- the first
 function's address. A name is a delta from the name before, a file is
-said only when it changes, and a line program by its length. Nothing can
-binary-search it and nothing needs to: the only reader is a fault, and a
-fault can afford a walk. The layout is `FrameTableFormat`'s, in the
+said only when it changes, and a line program by its length (or, when
+other functions carry the same one, by where the shared copy lies).
+Nothing can binary-search it and nothing needs to: the only reader is a
+fault, and a fault can afford a walk. The layout is `FrameTableFormat`'s, in the
 linker's object model (linker/src/model/FrameTableFormat.cs).
 
 All little-endian, all offsets from the symbol:
 
 | part | contents |
 | --- | --- |
-| header | `u32` magic `'CFR3'`, `u32` count, `u32` base (relocated), `u32` strings, `u32` lines |
-| an entry | sleb start less the previous entry's end, uleb size, sleb name less the previous name, uleb file (0 the previous one's, else file + 1), uleb line program length (0 none) |
-| a line program | uleb count, then that many (uleb offset delta, sleb line delta); in entry order |
+| header | `u32` magic `'CFR5'`, `u32` count, `u32` base (relocated), `u32` strings, `u32` own line programs, `u32` shared line programs |
+| an entry | a lead byte (bits 0-2 start less the previous entry's end, 7 meaning an sleb of it follows; bit 3 the file changed; bits 4-5 line program none/own/shared; bits 6-7 the size's low bits), then uleb size >> 2, sleb name less the previous name, uleb file if it changed, and for an own program uleb its length and sleb its first line less the previous own program's, for a shared one uleb where it lies among the shared programs |
+| own line programs | in entry order: uleb first offset, then ops |
+| shared line programs | most used first: uleb length, sleb first line, uleb first offset, then ops |
 | the strings | each ending in a zero byte |
 
-At the link every table becomes `'CFR4'`: the word at +12 is the address
+A line program's ops each move the code offset forward by A and the line by
+L, never 0, in the style of DWARF's special opcodes: a byte under 160 is
+A = b / 2 + 1 and L = 1 or 2; a byte from 160 to 254 and the one after it
+cover A up to 506 and L from -24 to 24; 255 is a uleb A and an sleb L.
+Nearly four ops in ten take one byte and all but a few of the rest two. A pair that does not change the line is
+dropped, and a program more than one function carries is stored once.
+
+At the link every table becomes `'CFR6'`: the word at +12 is the address
 of the image's one name pool, `__corsac_frame_pool`, and a name or file is
-the offset of a name there. The pool (`'CFP1'`, its token count, the
+the offset of a name there. The pool (`'CFP2'`, its token count, the
 names' offset, a word per token for where it starts and one for where the
 last ends, the tokens' bytes, then the names) spells each name as a
 ULEB128 count of tokens and their indices: a token is a run of separators
 (`. $ _ ( ) , [ ] < > `` ` `` / ` and space) and the run after it, and
 generic names repeat in tokens far more than whole, so most of a name is
-one-byte indices of words stored once.
+one-byte indices of words stored once. After the names the pool holds
+the line programs the image's tables share -- the same generic body in
+forty units is one program -- and each `'CFR6'` table's +20 is where they
+start in the pool.
 
 `Sys.FrameTable()` is the address of the table and `Sys.FramePointer()`
 the current frame; `Runtime.Trace(frame)` walks the one and looks each

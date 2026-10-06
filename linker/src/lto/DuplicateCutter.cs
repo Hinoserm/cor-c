@@ -23,7 +23,7 @@ internal static class DuplicateCutter
     const string CodeBase = "__corsac_code_base";
     const string FramesBase = "__corsac_frames_base";
     const uint StackMapMagic = 0x314d5343;      // 'CSM1'
-    const uint FrameMagic = FrameTableFormat.Local;     // 'CFR3'
+    const uint FrameMagic = FrameTableFormat.Local;     // 'CFR5'
     const string FrameSymbol = "__corsac_frames";
     const string StackMapStart = "__corsac_stackmaps";
     const string StackMapEnd = "__corsac_stackmaps_end";
@@ -74,7 +74,25 @@ internal static class DuplicateCutter
         }
         foreach (var list in cuts.Values) list.Sort();
 
+        // THE FRAME TABLE REBUILT FIRST, before anything is written. With
+        // fewer functions it is nearly always smaller, but its deltas and its
+        // shared line programs are all chosen afresh, and a table that would
+        // come out longer leaves the code uncut rather than move what follows.
+        byte[]? frameBytes = null;
         long framesBase = 0;
+        if (code is not null && frames is not null)
+        {
+            frameBytes = frames.Build(cuts[code], out framesBase);
+            if (frameBytes.Length > frames.Symbol.Size)
+            {
+                foreach (Symbol s in cutSymbols.Where(s => s.Section == code).ToList()) { kept.Add(s); cutSymbols.Remove(s); }
+                cuts.Remove(code);
+                code = null;
+                maps = null;
+                frames = null;
+                frameBytes = null;
+            }
+        }
         if (code is not null)
         {
             List<(long Start, long End)> codeCuts = cuts[code];
@@ -94,10 +112,9 @@ internal static class DuplicateCutter
             {
                 // The table shrinks; the rodata after it moves down by whole
                 // alignment units, and what does not divide is left as zeros.
-                byte[] bytes = frames.Build(codeCuts, out framesBase);
+                byte[] bytes = frameBytes!;
                 Section at = frames.Section;
                 int old = (int)frames.Symbol.Size;
-                if (bytes.Length > old) throw new ElfFormatException("frame table grew while cutting duplicates");
                 int spare = (old - bytes.Length) / at.Align * at.Align;
                 for (int i = 0; i < old; i++) at.Bytes[(int)frames.Symbol.Offset + i] = i < bytes.Length ? bytes[i] : (byte)0;
                 if (spare > 0)
@@ -311,7 +328,9 @@ internal static class DuplicateCutter
 
     /// The frame table (FrameTable in the compiler, FrameTableFormat its
     /// layout): a header, entries delta-coded from a relocated base, then the
-    /// line programs in entry order and the strings.
+    /// line programs and the strings. Read whole, its line programs decoded,
+    /// and written again, so the programs the cut functions shared go with
+    /// them and the rest are shared afresh.
     sealed class Frames
     {
         public required Section Section;
@@ -319,7 +338,7 @@ internal static class DuplicateCutter
         public bool Unknown;
         long _base;
         int _strings;
-        List<(FrameTableFormat.Entry Entry, int ProgramAt)> _entries = new();
+        List<FrameTableFormat.Entry> _entries = new();
 
         public static Frames? Read(ObjectFile obj, Section code)
         {
@@ -339,25 +358,23 @@ internal static class DuplicateCutter
             return f;
         }
 
-        /// The table without the cut functions, their line programs gone with
-        /// them; `first` is where the first kept function now starts, the new base.
+        /// The table without the cut functions; `first` is where the first
+        /// kept function now starts, the new base.
         public byte[] Build(List<(long Start, long End)> cuts, out long first)
         {
             List<byte> b = Section.Bytes;
             int at = (int)Symbol.Offset;
             List<FrameTableFormat.Entry> kept = new();
-            List<byte> programs = new();
             first = -1;
-            foreach ((FrameTableFormat.Entry e, int programAt) in _entries)
+            foreach (FrameTableFormat.Entry e in _entries)
             {
                 long to = Map(cuts, _base + e.Start);
                 if (to < 0) continue;
                 if (first < 0) first = to;
                 kept.Add(e with { Start = to - first });
-                if (programAt >= 0) programs.AddRange(b.GetRange(at + programAt, e.Program));
             }
             if (first < 0) first = 0;
-            return FrameTableFormat.Build(FrameMagic, kept, programs, b.GetRange(at + _strings, (int)Symbol.Size - _strings));
+            return FrameTableFormat.Build(FrameMagic, kept, b.GetRange(at + _strings, (int)Symbol.Size - _strings));
         }
     }
 }

@@ -23,10 +23,11 @@ namespace Corsac.Lang.X86;
 /// always under four bytes of padding -- and the whole table needs ONE
 /// relocation, the first function's address. Its name is a delta from the
 /// name before, its file is said only when it changes, and its line program
-/// by its length. Nothing can binary-search it, and nothing needs to: the
-/// only reader is a fault, and a fault can afford a walk.
+/// by its length or by where it lies among the programs the table shares.
+/// Nothing can binary-search it, and nothing needs to: the only reader is a
+/// fault, and a fault can afford a walk.
 ///
-/// The layout ('CFR3') is FrameTableFormat's, in the linker's object model,
+/// The layout ('CFR5') is FrameTableFormat's, in the linker's object model,
 /// which the link shares when it rewrites the table; the strings follow the
 /// line programs, each ending in a zero byte.
 /// </summary>
@@ -68,29 +69,16 @@ internal static class FrameTable
             return at;
         }
 
-        // The line programs, in entry order: an entry says only how long its own is.
-        List<byte> lines = new();
+        // The line programs go in as pairs; the format codes them, and shares
+        // the ones more than one function here carries.
         List<FrameTableFormat.Entry> coded = new(entries.Count);
         long origin = entries.Count > 0 ? entries[0].Start : 0;
 
         foreach (Entry e in entries)
         {
-            int programAt = lines.Count;
-            if (e.Lines.Count > 0)
-            {
-                FrameTableFormat.Uleb(lines, (ulong)e.Lines.Count);
-                int offset = 0, line = 0;
-                foreach ((int at, int n) in e.Lines)
-                {
-                    FrameTableFormat.Uleb(lines, (ulong)(at - offset));
-                    FrameTableFormat.Sleb(lines, n - line);
-                    offset = at;
-                    line = n;
-                }
-            }
-            coded.Add(new FrameTableFormat.Entry(e.Start - origin, e.Size, String(e.Name), String(e.File), lines.Count - programAt));
+            coded.Add(new FrameTableFormat.Entry(e.Start - origin, e.Size, String(e.Name), String(e.File), FrameTableFormat.Normal(e.Lines)));
         }
 
-        return FrameTableFormat.Build(FrameTableFormat.Local, coded, lines, strings);
+        return FrameTableFormat.Build(FrameTableFormat.Local, coded, strings);
     }
 }
