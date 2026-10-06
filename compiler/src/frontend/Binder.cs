@@ -18232,7 +18232,10 @@ public sealed partial class Binder
                 _r.Invocations[c] = invoke;
                 if (c.Target is NameExpr && _r.Resolved.TryGetValue(c.Target, out Sym? calledLocal)
                     && LocalFunctionDeclaration(calledLocal) is { } function)
+                {
                     _r.LocalFunctionCalls[c] = function;
+                    _r.LocalFunctionCallTargets.Add((NameExpr)c.Target);
+                }
                 return invoke.Returns;
             }
 

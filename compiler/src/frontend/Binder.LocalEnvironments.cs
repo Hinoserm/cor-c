@@ -104,6 +104,8 @@ public sealed partial class Binder
 
     private void Arrange(MethodDecl md)
     {
+        // Most methods have no local function at all: nothing made for them.
+        if (_methodLambdas.Count == 0) return;
         // --trace-escape NAME: why each of a method's local functions was or
         // was not given the environment, for methods whose name contains NAME.
         bool tracing = Corsac.Lang.Opt.Escape.PromoteTrace is { } traced && md.Name.Contains(traced, StringComparison.Ordinal);
@@ -113,9 +115,7 @@ public sealed partial class Binder
         }
         // The call-only local functions written at the method's own level.
         Dictionary<LambdaExpr, ClosureInfo> chosen = new(ReferenceEqualityComparer.Instance);
-        HashSet<NameExpr> called = new(ReferenceEqualityComparer.Instance);
-        foreach ((CallExpr call, LocalDecl _) in _r.LocalFunctionCalls)
-            if (call.Target is NameExpr name) called.Add(name);
+        HashSet<NameExpr> called = _r.LocalFunctionCallTargets;
         foreach (LambdaExpr lam in _methodLambdas)
         {
             if (!_localFunctionOf.TryGetValue(lam, out LocalDecl? function) || !_r.Closures.TryGetValue(lam, out ClosureInfo? info)) continue;

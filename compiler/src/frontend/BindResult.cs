@@ -452,6 +452,13 @@ public sealed partial class BindResult
     /// own lambda's Invoke, and lowering calls that directly (no slot read).
     /// </summary>
     public Dictionary<CallExpr, LocalDecl> LocalFunctionCalls { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
+    /// The names those calls are made through (each call's NameExpr target),
+    /// kept with them: what Binder.ArrangeLocalFunctionEnvironment asks of
+    /// every method, made once rather than again from every call in the unit
+    /// for each method -- a twentieth of what the collector took.
+    /// </summary>
+    public HashSet<NameExpr> LocalFunctionCallTargets { get; } = new(ReferenceEqualityComparer.Instance);
     /// <summary>Each method whose call-only local functions share one block of its frame (Binder.ArrangeLocalFunctionEnvironment).</summary>
     public Dictionary<MethodDecl, LocalEnvironment> Environments { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<CallExpr> EnumHasFlags { get; } = new(ReferenceEqualityComparer.Instance);
@@ -682,7 +689,7 @@ public sealed partial class BindResult
                     GenericDispatches.Remove(c);
                     PointerCalls.Remove(c);
                     CapturedReceivers.Remove(c);
-                    LocalFunctionCalls.Remove(c);
+                    if (LocalFunctionCalls.Remove(c) && c.Target is NameExpr callName) LocalFunctionCallTargets.Remove(callName);
                     EnumHasFlags.Remove(c);
                     EnumStatics.Remove(c);
                     AddressOf.Remove(c);
@@ -762,6 +769,7 @@ public sealed partial class BindResult
         DiscardAssignments.Clear();
         CapturedReceivers.Clear();
         LocalFunctionCalls.Clear();
+        LocalFunctionCallTargets.Clear();
         Environments.Clear();
         EnumHasFlags.Clear();
         EnumStatics.Clear();
