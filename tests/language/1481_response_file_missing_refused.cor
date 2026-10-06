@@ -1,0 +1,14 @@
+// test: a response file that does not exist is refused
+// flags: @tests/language/support/1481_no_such.list
+// expect-compile-error: response file 'tests/language/support/1481_no_such.list' does not exist
+//
+// An @ argument naming no file is an error the compiler says, not a crash
+// and not an argument it quietly drops (Driver.Response).
+
+static class Program
+{
+    static int Main()
+    {
+        return 0;
+    }
+}
