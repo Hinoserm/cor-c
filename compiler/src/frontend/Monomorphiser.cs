@@ -882,10 +882,19 @@ public sealed class Monomorphiser
         // made here belong to the unit returned; the type arguments settled
         // and the tuple namings found were for the rewrite just finished and
         // are recorded again by any rewrite that follows (MakeMembers).
+        // THE ROOM THEY TOOK GOES WITH THEM: emptied, a table keeps the
+        // buckets it grew to, and the settled references and the queue of a
+        // compiler unit's expansion were a megabyte and more of empty slots
+        // held through every later round by the lists this one deferred.
         _made.Clear();
+        _made.TrimExcess();
         _settled.Clear();
+        _settled.TrimExcess();
         _tupleNamings.Clear();
+        _tupleNamings.TrimExcess();
         _sharedNames.Clear();
+        _sharedNames.TrimExcess();
+        _pending.TrimExcess();
         return output;
     }
 
@@ -979,7 +988,7 @@ public sealed class Monomorphiser
     /// a generic method's copies, are spelt with the type's name or a `$`,
     /// and TypeSymbol.MayHave never answers no to either.
     /// </summary>
-    private static HashSet<string> MemberNames(List<MemberDecl> members)
+    internal static HashSet<string> MemberNames(List<MemberDecl> members)
     {
         HashSet<string> names = new(StringComparer.Ordinal);
         foreach (MemberDecl m in members)
@@ -2276,13 +2285,16 @@ public sealed class Monomorphiser
     /// and made again on first use (DeferImported): one the index says can be
     /// read again (IndexedDeclarations.ReadLater), that nothing has looked at
     /// since -- so reading it again gives exactly what is being rewritten --
-    /// copied as itself rather than as a template's copy. Not in a library,
-    /// which publishes every type it holds, and not one whose name another
-    /// declaration of the unit has too: the binder moves such a one into
-    /// System, or adds it to the prelude's type of its name, there and then.
+    /// copied as itself rather than as a template's copy. Not one whose name
+    /// another declaration of the unit has too: the binder moves such a one
+    /// into System, or adds it to the prelude's type of its name, there and
+    /// then. IN A LIBRARY TOO, even one that publishes everything it holds:
+    /// what it holds of an imported type is the declaration, its code being
+    /// another unit's (Lowering.Run passes over a type from elsewhere with no
+    /// implementation of its own here), so nothing of it is published.
     /// </summary>
     private bool ImportedLater(TypeDecl d, Dictionary<string, TypeRef> map)
-        => d.UntouchedSinceRead && map.Count == 0 && !_library && !_sharedNames.Contains(d.Name);
+        => d.UntouchedSinceRead && map.Count == 0 && !_sharedNames.Contains(d.Name);
 
     /// <summary>The simple names more than one declaration of the unit has (ImportedLater).</summary>
     private readonly HashSet<string> _sharedNames = new(StringComparer.Ordinal);

@@ -188,6 +188,14 @@ public sealed class TypeDecl : Node
     /// </summary>
     internal HashSet<string>? MemberNames { get; private set; }
 
+    /// <summary>
+    /// The same names for a declaration whose members are here and whose
+    /// symbols wait to be asked for (Binder.DeclaredLater), made from its
+    /// list on the first lookup that asks and kept: most such types are
+    /// asked nothing, and a set each was more than the symbols it spares.
+    /// </summary>
+    internal HashSet<string> NamesOfMembers() => MemberNames ??= Monomorphiser.MemberNames(Members);
+
     // Made with the declaration, as it always was; null only while deferred.
     private List<MemberDecl>? _members = new();
     private Func<TypeDecl, List<MemberDecl>>? _makeMembers;
