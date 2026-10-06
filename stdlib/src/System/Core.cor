@@ -9608,6 +9608,20 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 
     public int Count => count;
 
+    /// What it holds, in an array of no more room than that, as .NET's
+    /// TrimExcess gives back its spare capacity (kept at 90% full or more).
+    public void TrimExcess() {
+        if (count >= (int)(items.Length * 0.9)) { return; }
+        T[] kept = new T[count];
+        for (int i = 0; i < count; i++) {
+            int at = head + i;
+            if (at >= items.Length) { at = at - items.Length; }
+            kept[i] = items[at];
+        }
+        items = kept;
+        head = 0;
+    }
+
     public void Enqueue(T value) {
         if (count == items.Length) { Grow(); }
 
@@ -9715,7 +9729,8 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // wrap arithmetic above stays simple. Copying in queue order rather than
     // storage order is what makes that true.
     private void Grow() {
-        T[] bigger = new T[items.Length * 2];
+        // Doubled; from nothing (an empty queue trimmed), four.
+        T[] bigger = new T[items.Length == 0 ? 4 : items.Length * 2];
 
         for (int i = 0; i < count; i++) {
             int at = head + i;
@@ -11893,6 +11908,20 @@ static class Array {
 
     public static void Sort<T>(T[] items, int index, int howMany, IComparer<T> by) {
         Sorting.Introspective<T>(items, index, howMany, by);
+    }
+
+    /// KEYS AND THEIR ITEMS SORTED TOGETHER, as .NET's Array.Sort(keys, items):
+    /// the same introspective sort, each move of a key made of its item too,
+    /// so ties come out in the order .NET's leave them. No items: the keys alone.
+    public static void Sort<TKey, TValue>(TKey[] keys, TValue[]? items) {
+        Sort<TKey, TValue>(keys, items, null);
+    }
+
+    public static void Sort<TKey, TValue>(TKey[] keys, TValue[]? items, IComparer<TKey>? by) {
+        if (keys == null) { throw new ArgumentNullException("keys"); }
+        if (items == null) { Sort<TKey>(keys, by); return; }
+        if (items.Length < keys.Length) { throw new ArgumentException("The items array is shorter than the keys array."); }
+        PairSorting<TKey, TValue>.Introspective(keys, items, 0, keys.Length, by ?? Comparer<TKey>.Default);
     }
 
     public static void Reverse<T>(T[] items) { Reverse(items, 0, items.Length); }
@@ -15644,6 +15673,122 @@ static class Sorting {
 
             for (int k = 0; k < count; k++) { items[from + k] = scratch[k]; }
             width = width * 2;
+        }
+    }
+}
+
+/// SORTING'S INTROSPECTIVE SORT OVER KEYS AND THEIR ITEMS (Array.Sort(keys,
+/// items)): step for step the same as Sorting's, every key moved with its
+/// item, as .NET's ArraySortHelper<TKey, TValue> does it.
+static class PairSorting<TKey, TValue> {
+    public static void Introspective(TKey[] keys, TValue[] items, int from, int count, IComparer<TKey> by) {
+        if (count > 1) { IntroSort(keys, items, from, count, 2 * (Log2(count) + 1), by); }
+    }
+
+    private static int Log2(int n) {
+        int log = 0;
+        while (n > 1) { n = n >> 1; log = log + 1; }
+        return log;
+    }
+
+    private static void IntroSort(TKey[] keys, TValue[] items, int lo, int size, int depthLimit, IComparer<TKey> by) {
+        int partitionSize = size;
+        while (partitionSize > 1) {
+            if (partitionSize <= 16) {
+                if (partitionSize == 2) {
+                    SwapIfGreater(keys, items, lo, lo + 1, by);
+                    return;
+                }
+                if (partitionSize == 3) {
+                    SwapIfGreater(keys, items, lo, lo + 1, by);
+                    SwapIfGreater(keys, items, lo, lo + 2, by);
+                    SwapIfGreater(keys, items, lo + 1, lo + 2, by);
+                    return;
+                }
+                InsertionSort(keys, items, lo, partitionSize, by);
+                return;
+            }
+            if (depthLimit == 0) {
+                HeapSort(keys, items, lo, partitionSize, by);
+                return;
+            }
+            depthLimit = depthLimit - 1;
+            int p = PickPivotAndPartition(keys, items, lo, partitionSize, by);
+            IntroSort(keys, items, lo + p + 1, partitionSize - (p + 1), depthLimit, by);
+            partitionSize = p;
+        }
+    }
+
+    private static void SwapIfGreater(TKey[] keys, TValue[] items, int i, int j, IComparer<TKey> by) {
+        if (by.Compare(keys[i], keys[j]) > 0) { Swap(keys, items, i, j); }
+    }
+
+    private static void Swap(TKey[] keys, TValue[] items, int i, int j) {
+        TKey k = keys[i];
+        keys[i] = keys[j];
+        keys[j] = k;
+        TValue v = items[i];
+        items[i] = items[j];
+        items[j] = v;
+    }
+
+    private static int PickPivotAndPartition(TKey[] keys, TValue[] items, int lo, int size, IComparer<TKey> by) {
+        int hi = size - 1;
+        int middle = hi >> 1;
+        SwapIfGreater(keys, items, lo, lo + middle, by);
+        SwapIfGreater(keys, items, lo, lo + hi, by);
+        SwapIfGreater(keys, items, lo + middle, lo + hi, by);
+        TKey pivot = keys[lo + middle];
+        Swap(keys, items, lo + middle, lo + hi - 1);
+        int left = 0;
+        int right = hi - 1;
+        while (left < right) {
+            left = left + 1;
+            while (by.Compare(keys[lo + left], pivot) < 0) { left = left + 1; }
+            right = right - 1;
+            while (by.Compare(pivot, keys[lo + right]) < 0) { right = right - 1; }
+            if (left >= right) { break; }
+            Swap(keys, items, lo + left, lo + right);
+        }
+        if (left != hi - 1) { Swap(keys, items, lo + left, lo + hi - 1); }
+        return left;
+    }
+
+    private static void HeapSort(TKey[] keys, TValue[] items, int lo, int n, IComparer<TKey> by) {
+        for (int i = n >> 1; i >= 1; i--) { DownHeap(keys, items, lo, i, n, by); }
+        for (int i = n; i > 1; i--) {
+            Swap(keys, items, lo, lo + i - 1);
+            DownHeap(keys, items, lo, 1, i - 1, by);
+        }
+    }
+
+    private static void DownHeap(TKey[] keys, TValue[] items, int lo, int i, int n, IComparer<TKey> by) {
+        TKey d = keys[lo + i - 1];
+        TValue dv = items[lo + i - 1];
+        while (i <= n >> 1) {
+            int child = 2 * i;
+            if (child < n && by.Compare(keys[lo + child - 1], keys[lo + child]) < 0) { child = child + 1; }
+            if (!(by.Compare(d, keys[lo + child - 1]) < 0)) { break; }
+            keys[lo + i - 1] = keys[lo + child - 1];
+            items[lo + i - 1] = items[lo + child - 1];
+            i = child;
+        }
+        keys[lo + i - 1] = d;
+        items[lo + i - 1] = dv;
+    }
+
+    private static void InsertionSort(TKey[] keys, TValue[] items, int lo, int size, IComparer<TKey> by) {
+        for (int i = 0; i < size - 1; i++) {
+            TKey t = keys[lo + i + 1];
+            TValue tv = items[lo + i + 1];
+            int j = i;
+            while (j >= 0 && by.Compare(t, keys[lo + j]) < 0) {
+                keys[lo + j + 1] = keys[lo + j];
+                items[lo + j + 1] = items[lo + j];
+                j = j - 1;
+            }
+            keys[lo + j + 1] = t;
+            items[lo + j + 1] = tv;
         }
     }
 }

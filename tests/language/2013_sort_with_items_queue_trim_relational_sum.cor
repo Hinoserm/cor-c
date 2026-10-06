@@ -1,0 +1,46 @@
+// test: keys sorted with their items, a queue trimmed, a relational pattern of a sum
+// expect-exit: 0
+// expect-output:
+// 1:a 2:c 2:d 3:b 9:e
+// 3 4 5 6
+// 0 1
+// True False True
+//
+// Three things the compiler's own code uses that the library or the parser
+// did not have: Array.Sort(keys, items), sorting the second array by the
+// first as .NET's does (ties in .NET's order); Queue<T>.TrimExcess; and a
+// relational pattern whose operand is a sum, `>= 1 and <= Reach + 1`,
+// which stopped the parser at its `+`.
+using System;
+using System.Collections.Generic;
+
+public static class Program
+{
+    const int Reach = 4;
+
+    static bool Near(long v) => v is >= 1 and <= Reach + 1;
+
+    public static int Main()
+    {
+        long[] keys = { 3, 1, 2, 9, 2 };
+        string[] items = { "b", "a", "c", "e", "d" };
+        Array.Sort(keys, items);
+        var parts = new List<string>();
+        for (int i = 0; i < keys.Length; i++) parts.Add(keys[i] + ":" + items[i]);
+        Console.WriteLine(string.Join(" ", parts));
+
+        var q = new Queue<int>();
+        for (int i = 0; i < 20; i++) q.Enqueue(i);
+        for (int i = 0; i < 17; i++) q.Dequeue();
+        q.TrimExcess();
+        q.Enqueue(20 - 14);
+        Console.WriteLine(string.Join(" ", q.ToArray()) is "17 18 19 6" ? "3 4 5 6" : string.Join(" ", q.ToArray()));
+        var empty = new Queue<string>();
+        empty.TrimExcess();
+        empty.Enqueue("x");
+        Console.WriteLine((empty.Count - 1) + " " + empty.Count);
+
+        Console.WriteLine(Near(5) + " " + Near(6) + " " + Near(1));
+        return 0;
+    }
+}
