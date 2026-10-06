@@ -38,6 +38,13 @@ public static class BodyTypeNames
     /// index hands over, so the binder needs CpuKind to evaluate it. These
     /// are guesses -- the left of a member access is usually a variable -- so
     /// the caller must treat a hit as speculative and a miss as ordinary.
+    /// A qualifier is a single name, or a dotted path (`Elf.Linker`) whose
+    /// first name is a capital's, and the caller must look a path up whole,
+    /// as the binder does, never by its last name alone.
+    ///
+    /// With a qualifier callback a generic type on the left of a member
+    /// access, `Pool&lt;Node&gt;.Shared`, also comes to <paramref name="found"/>,
+    /// as a reference made for the purpose rather than a node of the tree.
     /// </summary>
     public static void Walk(TypeDecl declaration, Action<TypeRef> found, Action<string>? qualifier = null)
     {
@@ -92,7 +99,33 @@ public static class BodyTypeNames
                     Expression(e.Body); Statement(e.BlockBody);
                     return;
                 case MemberExpr e:
-                    if (qualifier is not null && e.Target is NameExpr name && name.TypeArgs.Count == 0) qualifier(name.Name);
+                    if (qualifier is not null)
+                    {
+                        if (e.Target is NameExpr name)
+                        {
+                            if (name.TypeArgs.Count == 0) qualifier(name.Name);
+                            // A GENERIC TYPE ON THE LEFT, `Pool<Node>.Shared`:
+                            // a name with type arguments followed by a dot is
+                            // a type and nothing else (a generic method's
+                            // arguments are followed by its call, not a dot),
+                            // so it is reported as the type reference it is,
+                            // with its arity. Only to the prefetch: a fresh
+                            // reference, which nobody rewrites in place.
+                            else found(new TypeRef { Name = name.Name, Arguments = name.TypeArgs.ToList(), Line = name.Line, Col = name.Col });
+                        }
+                        // AND THE WHOLE DOTTED PATH, `Corsac.Lang.Elf.Linker`
+                        // of `Corsac.Lang.Elf.Linker.SharedInitName` or
+                        // `Elf.Linker` of `Elf.Linker.Layout(...)`. Each
+                        // member access in the chain reports its own path, so
+                        // every prefix of two names or more is heard, the
+                        // left-most single name above. Reporting only that one
+                        // name heard `Corsac` and never the type, and the
+                        // binder, which looks the whole path up
+                        // (Binder.ConstantOwner, CheckMember), demanded it a
+                        // pass later -- a whole pass, on Lowering.Enum.cs, for
+                        // the one declaration Lowering's SharedInitName names.
+                        if (Path(e) is string path) qualifier(path);
+                    }
                     Expression(e.Target); Types(e.TypeArgs);
                     return;
                 case NameExpr e: Types(e.TypeArgs); return;
@@ -181,6 +214,28 @@ public static class BodyTypeNames
             }
         }
 
+        // The dotted name a chain of member accesses spells, `A.B.C`, when it
+        // is nothing but names and begins with a capital: a namespace or a
+        // type, as Binder.NamespaceOnly reads one. Null for anything else --
+        // `node.Kind`, a call, an index, `?.`, type arguments anywhere -- and
+        // for a lone name, which is reported on its own above.
+        static string? Path(MemberExpr member)
+        {
+            Expr head = member.Target;
+            while (head is MemberExpr inner)
+            {
+                if (inner.TypeArgs.Count != 0 || inner.NullConditional) return null;
+                head = inner.Target;
+            }
+            if (head is not NameExpr { TypeArgs.Count: 0 } first || first.Name.Length == 0 || !char.IsUpper(first.Name[0])
+                || member.TypeArgs.Count != 0 || member.NullConditional)
+                return null;
+            return Spelt(member);
+        }
+        static string Spelt(Expr expression) => expression is MemberExpr member
+            ? Spelt(member.Target) + "." + member.Name
+            : ((NameExpr)expression).Name;
+
         Types(declaration.Bases);
         Types(declaration.TemplateArgs);
         foreach (Expr argument in declaration.BaseArgs) Expression(argument);
@@ -202,6 +257,10 @@ public static class BodyTypeNames
                     Type(method.Returns);
                     foreach (TypeParam parameter in method.TypeParams) Types(parameter.Constraints);
                     foreach (Param parameter in method.Params) { Type(parameter.Type); Expression(parameter.Default); }
+                    // A CONSTRUCTOR'S `: base(...)` OR `: this(...)` is code
+                    // the binder binds like any call, and `: base(Kind.Leaf)`
+                    // names a type no statement of the body does.
+                    if (method.Init is not null) foreach (Expr argument in method.Init.Args) Expression(argument);
                     Statement(method.Body);
                     break;
             }
