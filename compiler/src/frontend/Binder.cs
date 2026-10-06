@@ -4708,6 +4708,11 @@ public sealed partial class Binder
             }
 
             _method = _r.Methods[md];
+            // ITS FRAME USES ITS SIGNATURE'S TYPES, which no expression need
+            // name: a struct parameter held in line is laid out with the
+            // frame lowering builds for it (ForceBody).
+            foreach (ParamSymbol p in _method.Params) ForceBody(p.Type);
+            ForceBody(_method.Returns);
 
             // AN ENTRY TAKING ITS ARGUMENTS reads them through
             // Environment.GetCommandLineArgs, which the entry stub calls

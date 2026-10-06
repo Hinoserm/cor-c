@@ -903,13 +903,15 @@ public sealed class Monomorphiser
     /// them first. What is left out is what something can need WITHOUT
     /// asking, by walking every type:
     ///
-    /// ONLY A CLASS. A struct's size is read off its symbol wherever one is
-    /// held by value, an interface's methods are counted for the slot
-    /// numbering of every family, and an enum has no members to speak of.
+    /// A CLASS OR A STRUCT. A struct's size, alignment and whether it is
+    /// held in line are read off its symbol wherever one is held by value,
+    /// and each of those reads declares and lays it out first
+    /// (TypeSymbol.InstanceSize, InlineAlign, HeldInline, InlineDecided).
+    /// Not an interface, whose methods are counted for the slot numbering of
+    /// every family, and not an enum, which has no members to speak of.
     ///
-    /// NOT A DELEGATE, whose Invoke the binder and lowering find in ways of
-    /// their own (closures, method groups, natural types), and which carry
-    /// one or two members each, too few to be worth a doubt.
+    /// NOT A DELEGATE, which is an interface here and is numbered as one;
+    /// its one or two members are too few to be worth a doubt.
     ///
     /// NO EXTENSION METHOD in it, because extension lookup walks every type
     /// of a namespace (Binder.Extension) and passes over the deferred ones.
@@ -921,7 +923,7 @@ public sealed class Monomorphiser
     /// and a copy per argument with some is not deferred (BodiesLater).
     /// </summary>
     private static bool MembersLater(TypeDecl template)
-        => template.Kind == TypeKind.Class && !template.IsDelegate
+        => template.Kind is TypeKind.Class or TypeKind.Struct && !template.IsDelegate
         && !template.Members.Any(m => m is MethodDecl { Params.Count: > 0 } method && method.Params[0].IsThis);
 
     /// <summary>

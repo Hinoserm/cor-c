@@ -42,15 +42,47 @@ public sealed class TypeSymbol
     /// <summary>
     /// Whether its instance fields' FieldSymbol.Inline has been decided, and
     /// -- a struct's -- the alignment it is held in line at.
+    /// LAID OUT WITH ITS MEMBERS, as InstanceSize is: a struct whose members
+    /// wait to be asked for (DeclareMembersLater) is declared, and laid out
+    /// once layout has begun, by the first read of any of these three.
     /// </summary>
-    public bool InlineDecided { get; set; }
-    public int InlineAlign { get; set; } = 1;
+    public bool InlineDecided
+    {
+        get
+        {
+            EnsureMembers();
+            return _inlineDecided;
+        }
+        set => _inlineDecided = value;
+    }
+
+    public int InlineAlign
+    {
+        get
+        {
+            EnsureMembers();
+            return _inlineAlign;
+        }
+        set => _inlineAlign = value;
+    }
+
     /// <summary>
     /// A struct's: whether it is held in line wherever it is held -- a field
     /// (FieldSymbol.Inline) and an array's element alike -- its fields all
     /// numbers, references, or structs held in line themselves.
     /// </summary>
-    public bool HeldInline { get; set; }
+    public bool HeldInline
+    {
+        get
+        {
+            EnsureMembers();
+            return _heldInline;
+        }
+        set => _heldInline = value;
+    }
+
+    private bool _inlineDecided, _heldInline;
+    private int _inlineAlign = 1;
     /// <summary>A tuple shape's: whether it has been given ValueTuple's interfaces (Binder.TupleFaces).</summary>
     public bool TupleFacesGiven { get; set; }
 
