@@ -1214,10 +1214,13 @@ static class Runtime
     }
 
     /// The same for a size the compiler does not know -- an array's, a
-    /// string's -- as a call of its own: its class and size from the
-    /// collector's tables, as AllocWord finds them. Not put in place: an
-    /// array's site would carry the table lookups for one call saved.
-    [MethodImpl(MethodImplOptions.NoInlining)]
+    /// string's (Sys.NewChars: Concat, Substring, a builder's ToString) --
+    /// put in place too (AllocatorFastPaths): its class and size from the
+    /// collector's tables, as AllocWord finds them -- the rounded size
+    /// shifted to an index into the class of every eight bytes, and the
+    /// class's size by its index: two loads, no division. A call of its
+    /// own, these were the compiler's most frequent allocations still made
+    /// through a call and a frame.
     public static long AllocFast(nint bytes, nint kind)
     {
         // THE CLASS TEST ON THE REQUEST ITSELF, unsigned: the rounded size
@@ -1232,20 +1235,23 @@ static class Runtime
             {
                 Sys.Poke(tb + (nint)Tls.InAlloc, 1);
                 nint cache = (nint)Sys.Peek(tb + (nint)Tls.Classes);
-                nint small = (bytes + (nint)Gc.ClassBlockRounding) & (nint)Gc.BlockSizeMask;
-                // The tables read as words: they are addresses, and read as
-                // longs on i386 each was two loads, one of them dead.
-                nint c = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classOf)) + (small >> 3) * w);
-                nint slot = cache + c * (2 * w) + w;
-                nint free = cache != 0 ? (nint)Sys.Peek(slot) : 0;
-                if (free != 0)
+                if (cache != 0)
                 {
-                    nint size = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classSize)) + c * w);
-                    Sys.Poke(slot, Sys.Peek(free + (nint)Gc.BlockKindAt));
-                    Sys.Poke(free, size);
-                    Sys.Poke(free + (nint)Gc.BlockKindAt, kind);
-                    Sys.Poke(tb + (nint)Tls.InAlloc, 0);
-                    return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
+                    nint small = (bytes + (nint)Gc.ClassBlockRounding) & (nint)Gc.BlockSizeMask;
+                    // The tables read as words: they are addresses, and read as
+                    // longs on i386 each was two loads, one of them dead.
+                    nint c = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classOf)) + (small >> 3) * w);
+                    nint slot = cache + c * (2 * w) + w;
+                    nint free = (nint)Sys.Peek(slot);
+                    if (free != 0)
+                    {
+                        nint size = (nint)Sys.Peek((nint)Sys.Peek(Sys.AddressOf(ref Gc._classSize)) + c * w);
+                        Sys.Poke(slot, Sys.Peek(free + (nint)Gc.BlockKindAt));
+                        Sys.Poke(free, size);
+                        Sys.Poke(free + (nint)Gc.BlockKindAt, kind);
+                        Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+                        return (long)(nuint)(free + (nint)Gc.BlockHeaderBytes);
+                    }
                 }
                 // InAlloc left set: AllocMissed clears it (AllocFastSized).
             }
