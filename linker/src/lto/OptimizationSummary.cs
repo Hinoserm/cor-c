@@ -17,7 +17,7 @@ public sealed class OptimizationSummary
     {
         if (obj.Sections.Any(s => s.Name == SectionName)) throw new ElfFormatException("duplicate LTO section");
         Section text = obj.Section(".text");
-        TextHash = HashCode(text, 0, text.Bytes.Count);
+        TextHash = TextCheck(text);
         Section output = new(SectionName, SectionKind.Note);
         WriteTo(output.Bytes);
         obj.Sections.Add(output);
@@ -50,7 +50,7 @@ public sealed class OptimizationSummary
             data.AddRange(bytes);
         }
         data.AddRange("CLTO"u8.ToArray());
-        Word(1);
+        Word(3);
         Word(0); // Filled with total byte length below.
         Word((uint)Returns.Count);
         Word((uint)Calls.Count);
@@ -75,11 +75,34 @@ public sealed class OptimizationSummary
     /// <summary>ELF REL stores addends in code words; normalize those fields for hashing.</summary>
     public static byte[] HashCode(Section section, int offset, int length)
     {
-        // A WINDOW AT A TIME, hashed as it goes: the whole .text of a unit,
-        // copied out as one array to be hashed, was megabytes in one run.
-        // The bytes hashed are the same, so the hash is too.
-        const int Window = 64 * 1024;
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Normalized(section, offset, length, (code, n) => hash.AppendData(code, 0, n));
+        return hash.GetHashAndReset();
+    }
+
+    /// <summary>
+    /// THE WHOLE .text's CHECK, by FastHash: the link asks of it only that the
+    /// code is what the summary was made from, and SHA-256 of every unit's
+    /// code, made at its compile and again when the link read the summary,
+    /// was a large part of the hashing a native unit compile did. (A
+    /// function's own CodeHash stays SHA-256, as a summary's maker writes it.)
+    /// Version 3 of the summary; version 1 held SHA-256 here.
+    /// </summary>
+    public static byte[] TextCheck(Section text)
+    {
+        FastHash hash = new();
+        Normalized(text, 0, text.Bytes.Count, (code, n) => hash.Append(code, 0, n));
+        return hash.Finish();
+    }
+
+    /// <summary>
+    /// The bytes [offset, offset + length) with every relocated field zeroed,
+    /// a window at a time: the whole .text of a unit, copied out as one array,
+    /// was megabytes in one run.
+    /// </summary>
+    private static void Normalized(Section section, int offset, int length, Action<byte[], int> consume)
+    {
+        const int Window = 64 * 1024;
         byte[] code = new byte[Math.Min(length, Window)];
         for (int done = 0; done < length;)
         {
@@ -92,10 +115,9 @@ public sealed class OptimizationSummary
                 long end = Math.Min(until, (long)relocation.Offset + 4);
                 for (long i = start; i < end; i++) code[(int)(i - from)] = 0;
             }
-            hash.AppendData(code, 0, n);
+            consume(code, n);
             done += n;
         }
-        return hash.GetHashAndReset();
     }
 
     public static OptimizationSummary? Read(ObjectFile obj)
@@ -133,7 +155,7 @@ public sealed class OptimizationSummary
         if (bytes.Count < 52 || !bytes.Slice(0, 4).AsSpan().SequenceEqual("CLTO"u8))
             throw new ElfFormatException("invalid LTO header");
         at = 4;
-        if (Word() != 1) throw new ElfFormatException("unsupported LTO version");
+        if (Word() != 3) throw new ElfFormatException("unsupported LTO version");
         if (Word() != bytes.Count) throw new ElfFormatException("invalid LTO byte length");
         uint returns = Word();
         uint calls = Word();
@@ -158,7 +180,7 @@ public sealed class OptimizationSummary
         if (at != bytes.Count) throw new ElfFormatException("trailing LTO data");
         Section[] text = obj.Sections.Where(s => s.Name == ".text").ToArray();
         if (text.Length != 1 || text[0].Kind != SectionKind.Code
-            || !HashCode(text[0], 0, text[0].Bytes.Count).SequenceEqual(result.TextHash))
+            || !TextCheck(text[0]).SequenceEqual(result.TextHash))
             throw new ElfFormatException("LTO text hash mismatch");
         return result;
     }

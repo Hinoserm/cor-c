@@ -121,7 +121,8 @@ public static class ProjectCompile
         // library's missing export stayed missing across rebuilds until the
         // objects were deleted by hand.
         //
-        // AND THE LIBRARIES IT REFERENCES, by what is in them. A unit copies
+        // AND THE LIBRARIES IT REFERENCES, by which write of them they are
+        // (ProjectState.FileIdentity: path, write time, length). A unit copies
         // the bodies of the library generics it uses into itself, so a changed
         // library is a changed unit whatever its own source says: stamped by
         // the libraries' names alone, a unit kept its copy of an old
@@ -530,19 +531,13 @@ public static class ProjectCompile
         string assembly = typeof(ProjectCompile).Assembly.Location;
         if (assembly.Length > 0 && File.Exists(assembly)) parts.Add(assembly);
         if (parts.Count == 0) return _compilerIdentity = "unknown";
+        // EACH FILE BY WHICH WRITE OF IT IT IS (ProjectState.FileIdentity):
+        // its path, write time and length. Hashing the native compiler's
+        // tens of megabytes in every process a build started was most of
+        // the SHA-256 a unit compile ran; a rebuilt compiler is written
+        // again, and that is what changes its identity.
         using SHA256 sha = SHA256.Create();
-        // STREAMED, and each file once. A native compiler is tens of
-        // megabytes, and read whole it was one contiguous array in every
-        // process a build started -- twice, because a native image is its
-        // own assembly.
-        byte[] buffer = new byte[65536];
-        foreach (string part in parts.Distinct(StringComparer.Ordinal))
-        {
-            using FileStream file = new(part, FileMode.Open, FileAccess.Read, FileShare.Read, 1);
-            int read;
-            while ((read = file.Read(buffer, 0, buffer.Length)) > 0) sha.TransformBlock(buffer, 0, read, null, 0);
-        }
-        sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-        return _compilerIdentity = Convert.ToHexString(sha.Hash!);
+        byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.FileIdentity)));
+        return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(described));
     }
 }
