@@ -3526,10 +3526,17 @@ sealed class AsyncContext
                 // is closed or left behind by now), then the block's own.
                 Gc.ReleaseRegion(block);
                 Sys.Poke(block + Tls.TaskArena, 0);
-                Sys.Poke(block + Tls.RegionBase, saved.RegionBase);
+                // THE FIRST CHUNK LAST: a scan that lands in the middle
+                // (ScanRegion, from a handshake) reads an arena only from
+                // its first chunk, and finds none until every word of it is
+                // back. Put back first, it was walked with the pointer and
+                // the chunk being filled still the run's -- zero -- and every
+                // chunk's fill taken from trailers that were stale for the
+                // one being filled.
                 Sys.Poke(block + Tls.RegionAt, saved.RegionAt);
                 Sys.Poke(block + Tls.RegionEnd, saved.RegionEnd);
                 Sys.Poke(block + Tls.RegionOpen, saved.RegionOpen);
+                Sys.Poke(block + Tls.RegionBase, saved.RegionBase);
             }
             Sys.Poke(block + Tls.ThreadStatics, saved.Statics);
             Sys.Poke(block + Tls.AsyncContext, saved.Running);

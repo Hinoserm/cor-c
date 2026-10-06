@@ -1821,10 +1821,20 @@ static class Gc
     static long InBuffer(long block)
     {
         if (block == 0) return 0;
+        // THIS THREAD'S OWN, read inside the allocator (Tls.InAlloc): an
+        // interrupt that refilled the buffer between the two reads paired
+        // one buffer's base with another's pointer, and the count was the
+        // distance between two chunks. Another thread's is read under the
+        // heap lock, or stopped.
+        bool own = block == Sys.ThreadBlock();
+        long inside = own ? Sys.Peek(block + Tls.InAlloc) : 0;
+        if (own) Sys.Poke(block + Tls.InAlloc, 1);
         long started = Sys.Peek(block + Tls.AllocBase);
         long at = Sys.Peek(block + Tls.AllocPtr);
         // And what its class lists have handed out and not yet been counted.
-        return (started != 0 && at > started ? at - started : 0) + Sys.Peek(block + Tls.ClassBytes);
+        long counted = (started != 0 && at > started ? at - started : 0) + Sys.Peek(block + Tls.ClassBytes);
+        if (own) Sys.Poke(block + Tls.InAlloc, inside);
+        return counted;
     }
 
     /// Charges `bytes` to the program and to the thread whose block this is.
@@ -2514,9 +2524,15 @@ static class Gc
         long at = Sys.Peek(tb + Tls.RegionAt);
         long top = chunk == last ? at : Sys.Peek(chunk + 3 * w);
         // The pointer first: a scan that lands in the middle reads no further
-        // than `to`, never the bytes being cleared.
+        // than `to`, never the bytes being cleared. AND THE CHUNK WITH IT,
+        // with no handshake between the two (Tls.InAlloc): `to` paired with
+        // the old chunk being filled, when the cut is in an earlier one, is
+        // a scan from that chunk's start to an address in another.
+        long inside = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
         Sys.Poke(tb + Tls.RegionAt, to);
         Sys.Poke(tb + Tls.RegionEnd, chunk);
+        Sys.Poke(tb + Tls.InAlloc, inside);
         long freed = top - to;
         if (top > to) Sys.MemorySet(to, 0, top - to);
         if (chunk != last)
@@ -2558,8 +2574,16 @@ static class Gc
         Sys.Poke(last + 3 * WordSize.Bytes, Sys.Peek(tb + Tls.RegionAt));
         // As full as the chunk left behind will get: measured as it is left.
         ArenaMeasure(tb);
+        // THE POINTER AND THE CHUNK IT IS IN CHANGE TOGETHER (Tls.InAlloc):
+        // a handshake that lands between the two stores reads the arena for
+        // its answer (ScanRegion, CopyRegion), and a pointer into the next
+        // chunk paired with the last one as the chunk being filled walked
+        // from the last chunk's start to an address in another mapping.
+        long inside = Sys.Peek(tb + Tls.InAlloc);
+        Sys.Poke(tb + Tls.InAlloc, 1);
         Sys.Poke(tb + Tls.RegionAt, ChunkStart(next));
         Sys.Poke(tb + Tls.RegionEnd, next);
+        Sys.Poke(tb + Tls.InAlloc, inside);
         return true;
     }
 
@@ -8059,20 +8083,31 @@ static class Gc
         }
         long block = at - HeaderBytes;
         long tb = Sys.ThreadBlock();
+        // INSIDE THE ALLOCATOR BEFORE ITS OWN BUFFER AND PAGES ARE READ
+        // (Tls.InAlloc), as Free is: an interrupt that frees or refills
+        // between the reads moves the buffer under them, and ShedPages gives
+        // back the pages of a thread that is not in the allocator -- a page
+        // found in the cache here, given back and released before its record
+        // was read, was a read of memory no longer mapped. Already inside
+        // (an interrupt on top of the allocator): nothing of its is read.
+        if (tb != 0 && Sys.Peek(tb + Tls.InAlloc) != 0)
+        {
+            return false;
+        }
         if (tb != 0)
         {
+            Sys.Poke(tb + Tls.InAlloc, 1);
             long ptr = Sys.Peek(tb + Tls.AllocPtr);
             if (ptr != 0 && block >= Sys.Peek(tb + Tls.AllocBase) && block < ptr)
             {
                 long word = Sys.Peek(block);
                 long size = word & SizeMask;
-                return size >= Smallest && (word & FlagFree) == 0 && block + size <= ptr
+                bool live = size >= Smallest && (word & FlagFree) == 0 && block + size <= ptr
                     && Sys.Peek(block + size - FooterBytes) == word && Described(block, at);
+                Sys.Poke(tb + Tls.InAlloc, 0);
+                return live;
             }
-            if (Sys.Peek(tb + Tls.InAlloc) != 0)
-            {
-                return false;
-            }
+            Sys.Poke(tb + Tls.InAlloc, 0);
         }
         if (GcLock.HeldByMe())
         {
@@ -8082,9 +8117,13 @@ static class Gc
         // and its blocks' headers are this thread's while it owns the page,
         // so they are read with no lock. Every free of an object a compiler
         // made took the heap lock twice, here and in Free.
-        if (tb != 0 && Runtime.Marking == 0 && !_sweeping && !_collecting && OwnPageBlock(tb, block) is long bytes and > 0)
+        if (tb != 0 && Runtime.Marking == 0 && !_sweeping && !_collecting)
         {
-            return Described(block, at);
+            Sys.Poke(tb + Tls.InAlloc, 1);
+            long bytes = OwnPageBlock(tb, block);
+            bool live = bytes > 0 && Described(block, at);
+            Sys.Poke(tb + Tls.InAlloc, 0);
+            if (bytes > 0) return live;
         }
         GcLock.Enter();
         bool live = ValidAllocated(at) != 0 && Described(block, at);
