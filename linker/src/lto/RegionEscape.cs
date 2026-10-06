@@ -350,6 +350,8 @@ internal sealed class RegionEscape
     // shares.
     private readonly Dictionary<string, int> _familyIds = new(StringComparer.Ordinal);
 
+    internal string FamilyName(int id) => _familyIds.FirstOrDefault(kv => kv.Value == id).Key ?? "?";
+
     private int FamilyOf(RegionFunction f, int local)
     {
         if (local < 0 || local >= f.Families.Length) return -1;
@@ -2721,6 +2723,7 @@ internal sealed class RegionEscape
             node = NewNode();
             _cells[o][offset] = node;
             if (o == 0) _unknownCell = node;
+            if (_owner.Why is not null) (_cellName ??= new())[node] = (o, offset);
             // A field's word: read by every load at its offset naming none (FieldsAt).
             if (StepFamily(offset) >= 0 && _offsetReaders.TryGetValue(Pair(o, StepOffset(offset)), out List<int>? atReaders))
                 foreach (int r in atReaders.ToArray()) CopyEdge(node, r, 0);
@@ -2740,6 +2743,15 @@ internal sealed class RegionEscape
         private const int MostHeld = 256;
         private int _saturatedCount;
         private int _unknownCell = -1;
+
+        // FOR A REPORT (+why): where the unknown object first came into each
+        // node -- the node it was carried from and how, or what added it
+        // there directly -- and which object's word each cell is.
+        private Dictionary<int, (int From, string How)>? _unknownVia;
+        private List<(int Node, int From, string How)>? _unknownOrder;
+        private Dictionary<int, (int O, int Offset)>? _cellName;
+        private int _via = -1;
+        private string _viaHow = "";
         // What Aliased feeds loads (what is written into places): all of it is
         // outside already, and cut short it would put every one of those
         // writes where nobody follows.
@@ -2790,6 +2802,11 @@ internal sealed class RegionEscape
             }
             LocSet pts = _pts[node] ??= new();
             if (!pts.Add(loc)) return;
+            if (_owner.Why is not null && _locObject[loc] == 0)
+            {
+                string how = _via >= 0 ? _viaHow : "added directly" + (_appliedAt.Count > 0 ? ", last summary " + _appliedAt[^1].Callee : "");
+                if ((_unknownVia ??= new()).TryAdd(node, (_via, how))) (_unknownOrder ??= new()).Add((node, _via, how));
+            }
             Delta(node, loc);
             if (node == _unknownCell || (flags & NeverSaturated) != 0) return;
             int made = (kind & MadeClass) != 0 ? ++CollectionsMarshal.AsSpan(_madeHeld)[node] : _madeHeld[node];
@@ -3840,6 +3857,41 @@ internal sealed class RegionEscape
             return at ?? "?";
         }
 
+        // Where the unknown object came into `node` from, back to where it was
+        // added, for a report: each step the node it was carried from and how.
+        private string UnknownChain(int node)
+        {
+            List<string> steps = new();
+            HashSet<int> seen = new();
+            while (steps.Count < 12 && seen.Add(node))
+            {
+                string name = _cellName is not null && _cellName.TryGetValue(node, out var cell)
+                    ? $"cell {(cell.O == 0 ? "of the unknown object" : Describe(cell.O) + " sites " + string.Join(",", _owner.SitesOf(_origins[cell.O]).Take(6).Select(_owner.SiteName)))} +{StepText(cell.Offset)}"
+                      + (StepFamily(cell.Offset) is int fam and >= 0 ? " " + _owner.FamilyName(fam) : "")
+                    : $"node {node}";
+                (int From, string How) via = default;
+                bool found = _unknownVia is not null && _unknownVia.TryGetValue(node, out via);
+                // A node merged into this one (Collapse) may hold the record.
+                if (!found && _unknownVia is not null)
+                    foreach (var (k, v) in _unknownVia)
+                        if (k != node && Find(k) == node && (v.From < 0 || Find(v.From) != node)) { via = v; found = true; name += $" (merged {k})"; break; }
+                if (!found) { steps.Add(name + " (no record)"); break; }
+                if (via.From < 0) { steps.Add(name + " " + via.How); break; }
+                steps.Add(name + " " + via.How);
+                // Carried from a node since merged into this one: its own record.
+                if (Find(via.From) == node && _unknownVia!.TryGetValue(via.From, out var inner) && via.From != node)
+                {
+                    steps.Add($"node {via.From} (merged here) {inner.How}");
+                    if (inner.From < 0) break;
+                    node = Find(inner.From);
+                    if (node == Find(via.From)) { steps.Add($"node {inner.From} (merged here too)"); break; }
+                    continue;
+                }
+                node = Find(via.From);
+            }
+            return string.Join(" <- ", steps);
+        }
+
         private void Explain(int f, string? callee, int[] targets, Summary applied)
         {
             _applying = callee + " (" + targets.Length + " targets" + (targets.Length >= 1 ? " " + _owner._functions[targets[0]].Name : "") + ")";
@@ -4004,6 +4056,8 @@ internal sealed class RegionEscape
                     _owner.Progress($"escape graphs:   cycle solve: {Describe()}, heap {GC.GetTotalMemory(false) >> 20} MB");
                 // Edges are read afresh each time: one made while these are
                 // carried is carried along too, as a list walked by index was.
+                _via = n;
+                _viaHow = "copied";
                 if (_copies[n] is { } copies)
                     for (int e = 0; e < copies.Count; e++)
                     {
@@ -4011,18 +4065,23 @@ internal sealed class RegionEscape
                         if (shift == 0) for (int k = 0; k < count; k++) Add(to, delta[k]);
                         else for (int k = 0; k < count; k++) Add(to, Shift(delta[k], shift));
                     }
+                _viaHow = "loaded through";
                 if (_loads[n] is { } loads)
                     for (int e = 0; e < loads.Count; e++)
                     {
                         (int dest, int offset, int family) = loads[e];
                         for (int k = 0; k < count; k++) Loaded(delta[k], dest, offset, family);
                     }
+                _viaHow = "stored through";
                 if (_stores[n] is { } stores)
                     for (int e = 0; e < stores.Count; e++)
                     {
                         (int value, int offset, int family) = stores[e];
+                        _via = value; _viaHow = "stored as the value";
                         for (int k = 0; k < count; k++) Stored(delta[k], value, offset, family);
+                        _via = n;
                     }
+                _viaHow = "read whole";
                 if (_readsAll[n] is { } all)
                     for (int e = 0; e < all.Count; e++)
                     {
@@ -4031,18 +4090,21 @@ internal sealed class RegionEscape
                     }
                 // Through a guard, and to a virtual call's overrides by what
                 // the receiver may be (Received).
+                _viaHow = "guarded";
                 if (_filters[n] is { } filters)
                     for (int e = 0; e < filters.Count; e++)
                     {
                         (int to, int guard) = filters[e];
                         for (int k = 0; k < count; k++) Add(to, Filtered(delta[k], guard));
                     }
+                _viaHow = "a call's receiver";
                 if (_vcalls[n] is { } vcalls)
                     for (int e = 0; e < vcalls.Count; e++)
                     {
                         VCall v = vcalls[e];
                         for (int k = 0; k < count; k++) Received(v, delta[k]);
                     }
+                _via = -1;
                 _spareDeltas.Push(delta);
             }
         }
@@ -4497,6 +4559,17 @@ internal sealed class RegionEscape
                         if (Pts(Node(m, n)) is { } held)
                             foreach (int loc in held) if (_locObject[loc] == 0) { own.Add(n); break; }
                     _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: its nodes that may be the unknown object: {string.Join(",", own)}");
+                    foreach (int n in own.Take(12))
+                        _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: node {n} has the unknown object from {UnknownChain(Find(Node(m, n)))}");
+                    if (_unknownOrder is not null)
+                        foreach (var (node, from, how) in _unknownOrder.Where(r => r.From >= 0).Take(40))
+                        {
+                            string name = _cellName is not null && _cellName.TryGetValue(node, out var cell)
+                                ? $"cell {(cell.O == 0 ? "of the unknown object" : Describe(cell.O) + " sites " + string.Join(",", _owner.SitesOf(_origins[cell.O]).Take(4).Select(_owner.SiteName)))} +{StepText(cell.Offset)}"
+                                  + (StepFamily(cell.Offset) is int fam and >= 0 ? " " + _owner.FamilyName(fam) : "")
+                                : $"node {node}";
+                            _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: unknown, in order: {name} {how}{(from >= 0 ? " from node " + from : "")}");
+                        }
                 }
                 // AND WHAT WROTE THE UNKNOWN OBJECT INTO A MADE ONE: a store whose
                 // value may be the unknown object, through a node that may be

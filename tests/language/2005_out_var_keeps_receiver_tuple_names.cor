@@ -1,0 +1,35 @@
+// test: an out var declared at a call takes the receiver's tuple names, however other uses of the shape name its elements
+// expect-exit: 0
+// expect-output:
+// 2 2 7
+// 30 1
+//
+// `parent.TryGetValue(at, out var up)` on a Dictionary<int, (int From, int
+// Offset)>: the dictionary is one shared copy for every (int, int) value, and
+// `up` was given the copy's parameter type, which names nothing. `up.From` was
+// then asked of every naming the shape had in the program, and `(int O, int
+// From)` names From second where `(int From, int Offset)` names it first: no
+// such member. The receiver's use says which, as it does for an argument
+// passed by value.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Main()
+    {
+        List<(int O, int From)> pairs = new() { (1, 2) };
+        Dictionary<int, (int O, int Offset)> cells = new() { [5] = (7, 8) };
+        Dictionary<int, (int From, int Offset)> parent = new() { [3] = (2, 10), [2] = (1, 20) };
+        int t = 0;
+        if (parent.TryGetValue(3, out var up)) t = up.From;
+        Console.WriteLine(t + " " + pairs[0].From + " " + cells[5].O);
+        int total = 0;
+        for (int at = 3; parent.TryGetValue(at, out var step); at = step.From) total += step.Offset;
+        int start = 3;
+        while (parent.TryGetValue(start, out var back)) start = back.From;
+        Console.WriteLine(total + " " + start);
+        return 0;
+    }
+}

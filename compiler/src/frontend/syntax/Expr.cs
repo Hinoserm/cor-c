@@ -12,4 +12,12 @@ public abstract class Expr : Node
     /// expansion makes it when no source names it (Binder.NaturalTypes).
     /// </summary>
     public TypeRef? NaturalType { get; set; }
+
+    // What the checker found this expression's type to be, and which binding
+    // found it (ExprTypes): read back only by that binding.
+    internal Type? BoundType;
+    internal int BoundBy;
+    // And what a name or a member access resolved to (ExprSyms).
+    internal Sym? BoundSym;
+    internal int BoundSymBy;
 }

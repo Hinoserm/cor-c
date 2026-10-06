@@ -17997,7 +17997,19 @@ public sealed partial class Binder
             if (c.Args[i] is RefArgExpr { Declare: null, Name: not null } inferred
                 && i < best.Params.Count)
             {
-                LocalSym made = new(NewSlot(), best.Params[i].Type, inferred.Name);
+                // AS THE RECEIVER'S USE WROTE IT, names and all, as an argument
+                // passed by value is checked against: `parent.TryGetValue(at,
+                // out var up)` on a Dictionary<int, (int From, int Offset)> made
+                // `up` the shared copy's (int, int), and `up.From` was asked of
+                // every naming of the shape -- ambiguous wherever another names
+                // its elements otherwise, `(int O, int From)`.
+                Type declared = !c.ReceiverAdded && c.Target is MemberExpr declaredOn
+                    ? ContextualParameterType(_r.TypeOf(declaredOn.Target), best, i)
+                    : best.Params[i].Type;
+                if (!declared.AsNonNullable().Equals(best.Params[i].Type.AsNonNullable())
+                    && !MethodSignatures.SameType(declared.AsNonNullable(), best.Params[i].Type.AsNonNullable()))
+                    declared = best.Params[i].Type;
+                LocalSym made = new(NewSlot(), declared, inferred.Name);
                 Declare(inferred, inferred.Name, made);
                 _assigned.Add(made);
 

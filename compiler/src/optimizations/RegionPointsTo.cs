@@ -2669,6 +2669,13 @@ public sealed class RegionPointsTo : IModulePass
     internal static bool Harmless(string callee) =>
         Opt.Escape.IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
         || callee.StartsWith("m_Runtime_Free", StringComparison.Ordinal)
+        // NOR GROWING AN ARRAY WHERE IT LIES (Runtime.GrowInPlace): it is handed
+        // the array's address as a number, writes the array's own length and
+        // its region's top, and keeps nothing. Followed, that number reached
+        // the region's raw bookkeeping, every List's array was taken for the
+        // unknown object's, and every element any list ever held with it --
+        // a front end's tokens and tree all went to the heap (1200).
+        || callee.StartsWith("m_Runtime_GrowInPlace", StringComparison.Ordinal)
         // NOR DOES A FAILED CAST'S THROW (Escape.KeepsNothing): its exception
         // names the object's type, reads nothing else of it, and keeps none
         // of it; what it makes it throws. Followed as a call, it is a member

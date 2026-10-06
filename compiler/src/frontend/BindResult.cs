@@ -132,8 +132,8 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<LambdaExpr, ClosureInfo> Closures { get; } = new(ReferenceEqualityComparer.Instance);
 
-    public Dictionary<Expr, Type> ExprType { get; } = new(ReferenceEqualityComparer.Instance);
-    public Dictionary<Expr, Sym> Resolved { get; } = new(ReferenceEqualityComparer.Instance);
+    public ExprTypes ExprType { get; } = new();
+    public ExprSyms Resolved { get; } = new();
     public Dictionary<Expr, MethodSymbol> Calls { get; } = new(ReferenceEqualityComparer.Instance);
     /// <summary>A delegate += or -=: the synthesised Combine or Remove call that replaces it, already bound.</summary>
     public Dictionary<AssignExpr, CallExpr> DelegateCompounds { get; } = new(ReferenceEqualityComparer.Instance);
@@ -787,4 +787,69 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
         symbol = null;
         return false;
     }
+}
+
+/// <summary>
+/// EACH EXPRESSION'S TYPE, kept on the expression. A dictionary of every
+/// expression a unit binds grew by doubling to tables of megabytes, each
+/// rehash holding the old table and the new at once: on a 256 MB machine the
+/// two-megabyte one a large unit asked for found no hole in a heap of free
+/// pieces, and the compile ran out of memory with a third of the heap free.
+///
+/// The same trees are bound again in a later round (Frontend's rebinds), so a
+/// type is read back only by the binding that wrote it: each table is a
+/// generation, and Clear starts a new one, leaving nothing behind to read.
+/// </summary>
+public sealed class ExprTypes
+{
+    private static int _generations;
+    private int _generation = Interlocked.Increment(ref _generations);
+
+    public Type this[Expr e]
+    {
+        get => TryGetValue(e, out Type? t) ? t : throw new KeyNotFoundException("an expression this binding has not typed");
+        set { e.BoundType = value; e.BoundBy = _generation; }
+    }
+
+    public bool TryGetValue(Expr e, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out Type type)
+    {
+        if (e.BoundBy == _generation && e.BoundType is { } bound) { type = bound; return true; }
+        type = null;
+        return false;
+    }
+
+    public bool ContainsKey(Expr e) => e.BoundBy == _generation && e.BoundType is not null;
+
+    public void Clear() => _generation = Interlocked.Increment(ref _generations);
+}
+
+/// <summary>What each name or member access resolved to, kept on the expression as ExprTypes keeps its type.</summary>
+public sealed class ExprSyms
+{
+    private static int _generations;
+    private int _generation = Interlocked.Increment(ref _generations);
+
+    public Sym this[Expr e]
+    {
+        get => TryGetValue(e, out Sym? s) ? s : throw new KeyNotFoundException("an expression this binding has not resolved");
+        set { e.BoundSym = value; e.BoundSymBy = _generation; }
+    }
+
+    public bool TryGetValue(Expr e, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out Sym sym)
+    {
+        if (e.BoundSymBy == _generation && e.BoundSym is { } bound) { sym = bound; return true; }
+        sym = null;
+        return false;
+    }
+
+    public bool ContainsKey(Expr e) => e.BoundSymBy == _generation && e.BoundSym is not null;
+
+    public bool Remove(Expr e)
+    {
+        if (!ContainsKey(e)) return false;
+        e.BoundSym = null;
+        return true;
+    }
+
+    public void Clear() => _generation = Interlocked.Increment(ref _generations);
 }
