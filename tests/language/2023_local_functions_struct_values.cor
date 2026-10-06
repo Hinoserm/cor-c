@@ -1,0 +1,95 @@
+// test: local functions capture struct values in the frame
+// expect-exit: 0
+// expect-output:
+// exact Name-7 7 hits 4
+// none 0
+// span alpha..omega 3 deep 6
+// kept made-0 made-1 made-2 made-3 made-4 made-5 made-6 made-7
+// all 280
+//
+// A call-only local function that captures a parameter nothing writes keeps
+// it in its method's frame however large -- a nullable tuple of a string and
+// a number, a struct of two strings -- and the strings in it stay alive there
+// through collections made while only the frame holds them.
+
+using System;
+using System.Collections.Generic;
+
+struct Span2
+{
+    public string From;
+    public string To;
+    public int Width;
+}
+
+static class Program
+{
+    static string Churn()
+    {
+        // Garbage enough to make the collector look, and look again.
+        string last = "";
+        for (int i = 0; i < 2000; i++) last = new string('x', i % 50) + i;
+        GC.Collect();
+        return last;
+    }
+
+    static string Exact((string Name, long Offset)? exact, int[] items)
+    {
+        int hits = 0;
+        bool Matches(int item)
+        {
+            if (exact is not { } known) return false;
+            Churn();
+            return item == known.Offset || item * 2 == known.Offset + 1 || known.Name.Length == item;
+        }
+        int Count(int at) => at == items.Length ? 0 : (Matches(items[at]) ? 1 : 0) + Count(at + 1);
+        hits = Count(0);
+        if (exact is not { } e) return "none " + hits;
+        return $"exact {e.Name} {e.Offset} hits {hits}";
+    }
+
+    static string Walk(Span2 span, int depth)
+    {
+        int deepest = 0;
+        string Say() => span.From + ".." + span.To;
+        void Down(int level)
+        {
+            if (level > deepest) deepest = level;
+            Churn();
+            if (level < depth && Say().Length > 0) Down(level + 1);
+        }
+        Down(1);
+        return $"span {Say()} {span.Width} deep {deepest}";
+    }
+
+    static string Kept(KeyValuePair<string, List<string>> pair)
+    {
+        List<string> into = new();
+        void Add(int n)
+        {
+            if (n == 0) return;
+            Add(n - 1);
+            Churn();
+            into.Add(pair.Key + "-" + pair.Value[n - 1]);
+        }
+        Add(pair.Value.Count);
+        return "kept " + string.Join(" ", into);
+    }
+
+    static int Main()
+    {
+        string name = "Name-" + 7;
+        Console.WriteLine(Exact((name, 7), new[] { 7, 4, 6, 3, 9, 6 }));
+        Console.WriteLine(Exact(null, new[] { 1, 2 }));
+        Span2 span = new Span2 { From = "al" + "pha", To = "ome" + "ga", Width = 3 };
+        Console.WriteLine(Walk(span, 6));
+        List<string> numbers = new();
+        for (int i = 0; i < 8; i++) numbers.Add(i.ToString());
+        Console.WriteLine(Kept(new KeyValuePair<string, List<string>>("ma" + "de", numbers)));
+        int all = 0;
+        for (int round = 0; round < 40; round++)
+            all += Exact(("r" + round, round), new[] { round, round + 1, 2 }).Length > 0 ? 7 : 0;
+        Console.WriteLine("all " + all);
+        return 0;
+    }
+}

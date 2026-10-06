@@ -251,6 +251,31 @@ public sealed partial class Escape
         return null;
     }
 
+    /// <summary>
+    /// StorageFreed, a register's origin its one write (RegisterWrites): no
+    /// delegate made of the caller's own local function, which would take it
+    /// and what it captures out of the frame (Escape.Analyse).
+    /// </summary>
+    internal static RegOperand? StorageFreed(Instr call, RegisterWrites writes)
+    {
+        if (call.Op != Opcode.Call) return null;
+        if (call.Callee == Freer) return call.Operands is [RegOperand only] ? only : null;
+        if (call.Callee == OwnedReplacedFreer && call.Operands is [RegOperand old, var current] && IsZeroWord(current, writes)) return old;
+        return null;
+    }
+
+    private static bool IsZeroWord(Operand o, RegisterWrites writes)
+    {
+        for (int hop = 0; hop < 8; hop++)
+        {
+            if (o is ImmOperand { Value: 0 }) return true;
+            if (o is not RegOperand { Reg: var r } || !writes.TryGetValue(r, out WriteList all) || all.Count != 1
+                || all[0] is not { Op: Opcode.Copy or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Trunc64, Operands: [var from] }) return false;
+            o = from;
+        }
+        return false;
+    }
+
     /// <summary>Whether an operand is the constant zero: written so, or a register written once from one, through copies and widenings.</summary>
     private static bool IsZeroWord(Operand o, Func<VReg, Instr?> origin)
     {

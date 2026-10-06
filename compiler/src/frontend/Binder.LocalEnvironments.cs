@@ -47,7 +47,8 @@ public sealed partial class Binder
     /// Only what is sure: a method that is neither async nor an iterator;
     /// local functions written at its own level, neither async nor iterators
     /// nor returning by reference; captures that are the method's own
-    /// declared locals of a word or less, its parameters, or `this`; no other
+    /// declared locals of a word or less, its parameters (any size when
+    /// nothing writes them), or `this`; no other
     /// lambda capturing the same variable as a cell; and no lambda inside one
     /// of them reaching the method's variables through its closure.
     /// </summary>
@@ -86,7 +87,12 @@ public sealed partial class Binder
             case LocalSym { Boxed: true } undeclared when InlineInEnvironment(undeclared.Type):
                 cell = true;
                 return undeclared;
-            case ParamSym { ByRef: false, Cell: false } parameter when InlineInEnvironment(parameter.Type):
+            // A VALUE OF ANY SIZE when nothing writes it: copied into its
+            // words of the block where the function's closure is made, as
+            // into a closure's field (StoreNew), and read from there -- a
+            // nullable tuple as much as a word. Only a variable the block
+            // holds in place is kept to a word.
+            case ParamSym { ByRef: false, Cell: false } parameter when !parameter.Boxed || InlineInEnvironment(parameter.Type):
                 cell = parameter.Boxed;
                 return parameter.Index;
             case ThisSym:

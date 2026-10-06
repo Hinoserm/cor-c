@@ -3357,7 +3357,12 @@ continue;
             flow.HeldReturned = new();
             foreach (VReg root in flow.HeldRoots)
                 if (held is not null && held.TryGetValue(Canon(root), out HashSet<long>? at)) flow.HeldReturned.UnionWith(at);
-            flow.HeldOwnsNothing = flow.HeldRoots.All(root => Acceptable(root));
+            // A loop, not All with a lambda: a lambda calling Acceptable would
+            // take it, and every local function it calls, out of the frame's
+            // environment (Binder.ArrangeLocalFunctionEnvironment).
+            flow.HeldOwnsNothing = true;
+            foreach (VReg root in flow.HeldRoots)
+                if (!Acceptable(root)) { flow.HeldOwnsNothing = false; break; }
             List<Stamp>? stamps = new();
             foreach (VReg root in flow.HeldRoots)
             {
@@ -3727,13 +3732,6 @@ continue;
             return bases.Contains(r);
         }
 
-        // A register's one write, where it has one (StorageFreed's zero).
-        Instr? ZeroOrigin(VReg zeroReg)
-        {
-            writes ??= AnalysisCache.WritesOf(f);
-            return writes.TryGetValue(zeroReg, out WriteList zeroWrites) && zeroWrites.Count == 1 ? zeroWrites[0] : null;
-        }
-
         // A HOLDER HANDED TO A CALL: a box -- a block made here and stamped
         // one, or a call's result that holds the object -- at its base, to
         // functions that each keep nothing of that argument and whose field
@@ -3767,7 +3765,7 @@ continue;
                 // Or the library's spelling of that free, as an owned field's
                 // old value (StorageFreed): the box alone, given back as by
                 // Runtime.Free, and at once where it is its region's top.
-                if (o == 0 && StorageFreed(i, ZeroOrigin) is not null) continue;
+                if (o == 0 && StorageFreed(i, writes ??= AnalysisCache.WritesOf(f)) is not null) continue;
                 string[]? targets = i.Op == Opcode.Call ? (i.Callee is null ? null : new[] { i.Callee })
                     // On the receiver of a type known here: that type's method.
                     : o == first && TypedTargets(i, box!) is { } typed ? typed
