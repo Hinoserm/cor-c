@@ -26,6 +26,7 @@ public sealed class Narrowing : IPass
     public void Run(Function f)
     {
         Defs defs = new(f);
+        List<(Block Block, int Index, Instr Truncation)> pending = new();
         foreach (Block b in f.Blocks)
         {
             for (int k = 0; k < b.Instrs.Count; k++)
@@ -98,17 +99,45 @@ public sealed class Narrowing : IPass
                 // address widened to a long, offset, and truncated back is
                 // one 32-bit add, not a pair add and two moves.
                 if (def is { Op: Opcode.Add or Opcode.Sub or Opcode.Mul or Opcode.And or Opcode.Or or Opcode.Xor }
-                    && defs.Site(r.Reg) is not null)
+                    && defs.Site(r.Reg) is (Block opBlock, int opIndex))
                 {
-                    Operand? a = LowWord(def.Operands[0], defs, b, k);
-                    Operand? c = a is null ? null : LowWord(def.Operands[1], defs, b, k);
+                    // A LONG HELD AS IS -- the runtime's addresses, `page + 40`
+                    // -- is truncated here instead: its low word, read where
+                    // the truncation is, so long as the long is the one the
+                    // operation read. The 64-bit add, its adc and the high
+                    // word then go, and the address is a 32-bit add the
+                    // selector folds into the load or store that uses it.
+                    // The truncation goes in when the walk is done (pending),
+                    // so no index the definition table holds moves under it.
+                    VReg? made = null;
+                    Operand? Held(Operand o, Operand? low)
+                    {
+                        if (low is not null || made is not null) return low;
+                        if (o is not RegOperand { Reg: var wide } || wide.Type != IrType.I64
+                            || !defs.CanForward(wide, opBlock, opIndex, b, k)) return null;
+                        made = f.NewReg(IrType.I32);
+                        pending.Add((b, k, new Instr { Op = Opcode.Trunc64, Dest = made, Operands = { o }, Line = i.Line }));
+                        return RegOperand.Of(made);
+                    }
+                    int was = pending.Count;
+                    Operand? a = Held(def.Operands[0], LowWord(def.Operands[0], defs, b, k));
+                    Operand? c = a is null ? null : Held(def.Operands[1], LowWord(def.Operands[1], defs, b, k));
                     if (a is not null && c is not null)
                     {
                         b.Instrs[k] = new Instr { Op = def.Op, Dest = i.Dest, Operands = { a, c }, Line = i.Line };
                     }
+                    else if (pending.Count > was)
+                    {
+                        pending.RemoveAt(pending.Count - 1);
+                    }
                 }
             }
         }
+
+        // The truncations a rewrite above reads, each before the instruction
+        // that reads it: last first, so the indices still name the places.
+        for (int p = pending.Count - 1; p >= 0; p--)
+            pending[p].Block.Instrs.Insert(pending[p].Index, pending[p].Truncation);
 
         // Copy propagation and dead-code elimination finish the job: the
         // Copies above are what those passes eat.

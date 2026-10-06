@@ -14,6 +14,9 @@ public sealed class LoadReuse : IPass
     private readonly record struct Entry(Instr Load, Block Block, int Index);
     private readonly record struct Key(object Base, long Offset, int Size, bool Signed, IrType Type);
 
+    /// <summary>The Size of an array length's key: no load has it.</summary>
+    private const int Length = -1;
+
     public void Run(Function function)
     {
         if (function.Async is not null) return;
@@ -85,7 +88,8 @@ public sealed class LoadReuse : IPass
         private void ForgetAll()
         {
             if (_memory.Count == 0) return;
-            foreach (var pair in _memory) _all.Add(pair.Key);
+            // An array's length outlives every write and call (Length below).
+            foreach (var pair in _memory) if (pair.Key.Size != Length) _all.Add(pair.Key);
             foreach (Key key in _all)
             {
                 _undo.Add((key, _memory[key], true));
@@ -99,6 +103,34 @@ public sealed class LoadReuse : IPass
             for (int index = 0; index < block.Instrs.Count; index++)
             {
                 Instr i = block.Instrs[index];
+                // AN ARRAY'S LENGTH NEVER CHANGES once it is made, so a read
+                // of it is the same as one before it whatever happened between
+                // -- a store, a call, a collection. `for (i = 0; i < a.Length;
+                // i++) a[i]` read it twice a lap, for the loop's test and
+                // again for the element's bounds check, and a read through a
+                // register forgot every other load this pass remembered.
+                // Only an array being made has its length written
+                // (InitArrayLength), and that forgets it.
+                if (i.Op == Opcode.ArrayLength && i.Dest is { } length && i.Operands.Count == 1
+                    && i.Operands[0] is RegOperand { Reg: var array })
+                {
+                    Key lengthKey = new(array, 0, Length, false, length.Type);
+                    if (_memory.TryGetValue(lengthKey, out Entry known)
+                        && Stable(known.Load.Dest!, known.Block, known.Index + 1, block, index)
+                        && Stable(array, known.Block, known.Index, block, index))
+                    {
+                        block.Instrs[index] = IrInfo.CopyOf(i, RegOperand.Of(known.Load.Dest!));
+                        continue;
+                    }
+                    Set(lengthKey, new(i, block, index));
+                    continue;
+                }
+                if (i.Op == Opcode.InitArrayLength && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var made })
+                {
+                    foreach (var pair in _memory) if (pair.Key.Size == Length && pair.Key.Base == (object)made) _all.Add(pair.Key);
+                    foreach (Key gone in _all) { _undo.Add((gone, _memory[gone], true)); _memory.Remove(gone); }
+                    _all.Clear();
+                }
                 if (i.Op == Opcode.Load && i.Dest is { } result && result.Type.IsInt()
                     && Address(i, out Key key))
                 {
@@ -126,6 +158,7 @@ public sealed class LoadReuse : IPass
         foreach (Instr i in block.Instrs)
         {
             if (i.Op == Opcode.Load && i.Dest is { } result && result.Type.IsInt() && Address(i, out _)) return true;
+            if (i.Op == Opcode.ArrayLength) return true;
         }
         return false;
     }

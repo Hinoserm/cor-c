@@ -115,6 +115,21 @@ public sealed partial class Lowering
             && !m.Name.StartsWith("get_", StringComparison.Ordinal))
             _m.CallsCollector = true;
         VReg? made = _e.Call(CallLabel(m), returns, args.ToArray());
+        // A CALL THAT NEVER COMES BACK ENDS ITS BLOCK: a method declared
+        // [DoesNotReturn] (ThrowHelper's, Environment.Exit) is followed by
+        // nothing. Left to fall through, the path past it joined the code
+        // after, every value live there was live across the call, and the
+        // register allocator moved a loop's index and sum out of the
+        // registers a call clobbers, into ones it saves or onto the stack,
+        // for a throw that never returns to use them -- List's indexer
+        // inlined into a loop spilled its counter in every lap.
+        if (returns == IrType.Void && buffer is null && m.Decl is { } declared
+            && declared.Attributes.Any(a => a.Target.Length == 0 && a.Name is "DoesNotReturn" or "DoesNotReturnAttribute"))
+        {
+            _e.Emit(Opcode.Trap, null);
+            _e.Unreachable();
+            _e.SetBlock(_f.NewBlock("afternoreturn"));
+        }
         if (buffer is not null) MarkBuffer(buffer, m.Returns);
         // A struct a method of source returns other than through a buffer is
         // made for this caller.
@@ -177,6 +192,19 @@ public sealed partial class Lowering
             TouchType(m.Owner);
         }
 
+        // A SEALED CLASS'S SLOT HOLDS ONE METHOD, so a call through a receiver
+        // whose type is one is a direct call to it (SealedImplementation):
+        // `xs[i].Area()` on a sealed Sq read the vtable and called through it
+        // in every lap, where a direct call can be inlined. The receiver is
+        // still read first, as any call on a reference is, so null still
+        // throws at the call.
+        if (UsesVirtualDispatch(m) && !viaBase && receiver is not null
+            && SealedImplementation(through ?? m.Owner, m) is MethodSymbol sealedTarget)
+        {
+            if (!ReferenceEquals(receiver, _this)) _e.Load(IrTypes.Word, receiver, 0);
+            return CallDirect(sealedTarget, returns, args);
+        }
+
         if (UsesVirtualDispatch(m) && !viaBase && receiver is not null)
         {
             if (m.VtableSlot == _b.ToStringSlot && m.Params.Count == 0)
@@ -226,6 +254,30 @@ public sealed partial class Lowering
         }
 
         return CallDirect(m, returns, args);
+    }
+
+    /// <summary>
+    /// The method a sealed class (or its nearest ancestor) puts in `m`'s slot,
+    /// when the receiver's type is that class: a class method of source, not
+    /// a generic virtual, not object's own Equals, GetHashCode, ToString or CompareTo
+    /// (whose stubs are made per unit, SealedTarget), and not a shared generic
+    /// copy's, whose hidden type arguments a virtual call does not pass. What
+    /// is decided here is decided from declarations alone, alike in every unit.
+    /// </summary>
+    private MethodSymbol? SealedImplementation(TypeSymbol? t, MethodSymbol m)
+    {
+        if (t is not { Kind: TypeKind.Class, Decl: TypeDecl d } || !d.Mods.HasFlag(Mods.Sealed) || t.Structural || SharedCopy(t)
+            || m.Owner.Kind != TypeKind.Class || m.GenericVirtual || m.VtableSlot < 0
+            || m.VtableSlot == _b.ToStringSlot || m.VtableSlot == _b.EqualsSlot || m.VtableSlot == _b.HashSlot || m.VtableSlot == _b.CompareSlot
+            || (t != m.Owner && !Derives(t, m.Owner)))
+            return null;
+        for (TypeSymbol? s = t; s is not null; s = s.Base)
+        {
+            if (s.Methods.FirstOrDefault(x => x.VtableSlot == m.VtableSlot && !x.Static) is not MethodSymbol own) continue;
+            return own is { Abstract: false, Decl: not null, GenericVirtual: false } && own.Owner.Kind == TypeKind.Class
+                && !SharedCopy(own.Owner) && Monomorphiser.SharedMethodCopy(own.Name) == 0 ? own : null;
+        }
+        return null;
     }
 
     private VReg CallAccessor(MethodSymbol accessor, bool self, Expr? target, VReg? receiver = null, VReg? value = null)

@@ -26,6 +26,7 @@ internal static class Peephole
             DeadDefs(block.Instrs, liveOut[b]);
             RepeatedStores(block.Instrs, liveOut[b], Usable(m));
             MergePops(block.Instrs);
+            RedundantTests(block.Instrs);
             ZeroWithXor(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
@@ -611,6 +612,54 @@ internal static class Peephole
     // ---- mov r, 0 -> xor r, r ---------------------------------------------------------
 
     private static bool ReadsFlags(MInstr i) => i.Op is MOp.Jcc or MOp.Setcc or MOp.Adc or MOp.Sbb;
+
+    // ---- test after an instruction that set the flags --------------------------------
+
+    /// <summary>
+    /// `and r, x ; test r, r ; je` tests twice: the and already set ZF and SF
+    /// from r, and cleared CF and OF as the test does, so the test changes no
+    /// flag and goes. After add, sub, neg or a shift by a constant only ZF, SF
+    /// and PF are the test's (CF and OF are the arithmetic's), so the test goes
+    /// only where every reader before the next flag write asks equal, sign or
+    /// parity. An allocation's `if ((x &amp; Mask) == 0)`, a countdown's
+    /// `if (--n != 0)`: one instruction each. The readers must be in the
+    /// block, as the selector always leaves them; anything not known to leave
+    /// the flags alone keeps the test.
+    /// </summary>
+    private static void RedundantTests(List<MInstr> instrs)
+    {
+        for (int k = 1; k < instrs.Count; k++)
+        {
+            MInstr test = instrs[k], before = instrs[k - 1];
+            if (test.Op != MOp.Test || test.Width != 4 || test.Operands.Count != 2
+                || test.Operands[0] is not MReg r || test.Operands[1] is not MReg r2 || r.Id != r2.Id
+                || before.Width != 4 || before.Lock || before.Operands.Count < 1 || before.Operands[0] is not MReg written || written.Id != r.Id)
+                continue;
+            bool logical = before.Op is MOp.And or MOp.Or or MOp.Xor && before.Operands.Count == 2;
+            bool arithmetic = before.Op is MOp.Add or MOp.Sub && before.Operands.Count == 2
+                || before.Op == MOp.Neg && before.Operands.Count == 1
+                || before.Op is MOp.Shl or MOp.Shr or MOp.Sar && before.Operands.Count == 2 && before.Operands[1] is MImm { Value: >= 1 and <= 31 };
+            if (!logical && !arithmetic) continue;
+            bool safe = true;
+            for (int j = k + 1; j < instrs.Count && safe; j++)
+            {
+                MInstr after = instrs[j];
+                if (after.Op is MOp.Jcc or MOp.Setcc)
+                {
+                    if (!logical && after.Cond is not (Cond.E or Cond.Ne or Cond.S or Cond.Ns or Cond.P or Cond.Np)) safe = false;
+                    continue;
+                }
+                if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp) continue;
+                if (WritesFlags(after) && !ReadsFlags(after)) break;
+                safe = false;
+            }
+            if (safe)
+            {
+                instrs.RemoveAt(k);
+                k--;
+            }
+        }
+    }
 
     private static bool WritesFlags(MInstr i) => i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or
         or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg

@@ -24,6 +24,8 @@ namespace Corsac.Lang.X86;
 ///      scale-1 index after it in the block: each becomes [.. + Z*2^k]
 ///      and the pair goes.
 ///
+///   3. `mov t, [m] ; op d, t` whose t is read nowhere else: `op d, [m]`.
+///
 /// A fold is refused where X, Y or Z is written again before a use (the
 /// IR is not SSA), or where something after the removed arithmetic might
 /// read the flags it set.
@@ -103,6 +105,16 @@ internal static class AddressFold
                 case MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop:
                     continue;
                 case MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg:
+                    return true;
+                // A shift by a constant from 1 up writes the flags it leaves
+                // (a count of 0, which only CL can give, leaves them all);
+                // imul writes them too. `xs[i] * 4` shifted the element it
+                // had just loaded, and the shift, taken for a reader, kept
+                // every int array's element address out of the addressing
+                // mode: four instructions and a register for [a+i*4+16].
+                case MOp.Shl or MOp.Shr or MOp.Sar when ins[j].Operands.Count == 2 && ins[j].Operands[1] is MImm { Value: >= 1 and <= 31 }:
+                    return true;
+                case MOp.Imul or MOp.Imul3:
                     return true;
                 case MOp.Call or MOp.Jmp or MOp.Ret or MOp.Epilogue:
                     return true;
@@ -218,6 +230,68 @@ internal static class AddressFold
             any = true;
         }
 
+        // ---- 1b. base = (anything) +/- imm, the add alone folded ----
+        //
+        // `mov t, [m] ; add t, 4 ; xchg [t], r`: t loaded from a static, a
+        // field or a register the copy step cannot take, then offset by a
+        // constant and used only as an address. The load stays, and the
+        // constant goes into each address: `xchg [t+4], r`. A sub of a
+        // constant is an add of its negation: the allocator's `sub edx, 4 ;
+        // mov [edx], eax` is `mov [edx-4], eax`. The runtime's word-sized
+        // addresses are all made so.
+        for (int q = 1; q < ins.Count; q++)
+        {
+            MInstr add = ins[q];
+            if (add.Op is not (MOp.Add or MOp.Sub) || add.Lock || add.Width != 4 || add.Operands.Count != 2
+                || add.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 2 || add.Operands[1] is not MImm { IsPlain: true } amount)
+            {
+                continue;
+            }
+            long delta = add.Op == MOp.Add ? amount.Value : -amount.Value;
+            int p = q - 1;
+            while (p >= 0 && !Touches(ins[p], t.Id)) p--;
+            if (p < 0) continue;
+            MInstr start = ins[p];
+            if (start.Op != MOp.Mov || start.Width != 4 || start.Operands.Count != 2
+                || start.Operands[0] is not MReg s0 || s0.Id != t.Id || Touches(new MInstr(MOp.Nop, start.Operands[1]), t.Id))
+            {
+                continue;
+            }
+            if (!FlagsDead(ins, q)) continue;
+            List<(int J, int K)> uses = new();
+            bool ok = true;
+            for (int j = q + 1; j < ins.Count && ok; j++)
+            {
+                MInstr u = ins[j];
+                for (int k = 0; k < u.Operands.Count && ok; k++)
+                {
+                    switch (u.Operands[k])
+                    {
+                        case MReg r when r.Id == t.Id:
+                            ok = false;
+                            break;
+                        case MMem mem when mem.Index?.Id == t.Id:
+                            ok = false;
+                            break;
+                        case MMem mem when mem.Base?.Id == t.Id:
+                            if (!Plain(mem) || !FitsDisp(mem.Disp, delta)) ok = false;
+                            else uses.Add((j, k));
+                            break;
+                    }
+                }
+            }
+            if (!ok || uses.Count == 0 || occurrences[t.Id] != 2 + uses.Count) continue;
+            foreach ((int j, int k) in uses)
+            {
+                MMem mem = (MMem)ins[j].Operands[k];
+                ins[j].Operands[k] = new MMem(mem.Base, checked(mem.Disp + (int)delta)) { Index = mem.Index, Scale = mem.Scale };
+            }
+            occurrences[t.Id]--;
+            defs[t.Id]--;
+            ins[q] = Gone();
+            any = true;
+        }
+
         // ---- 2. index = Z << k ----
         for (int q = 1; q < ins.Count; q++)
         {
@@ -293,6 +367,48 @@ internal static class AddressFold
             occurrences[yv.Id] = 0;
             ins[p] = Gone();
             ins[q] = Gone();
+            any = true;
+        }
+        // ---- 3. a load read once, as an ALU instruction's source ----
+        //
+        // `mov t, [m] ; and d, t` whose t is read nowhere else: `and d, [m]`,
+        // one instruction and no register. A global's mask anded into an
+        // allocation's address, a field added to a sum: the selector loads
+        // every operand into a register first. Only where nothing between
+        // the two can write memory or the address's registers.
+        for (int q = 1; q < ins.Count; q++)
+        {
+            MInstr alu = ins[q];
+            if (alu.Op is not (MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Imul)
+                || alu.Width != 4 || alu.Lock || alu.Operands.Count != 2
+                || alu.Operands[1] is not MReg { IsPhys: false } t || alu.Operands[0] is not MReg dst || dst.Id == t.Id
+                || defs[t.Id] != 1 || occurrences[t.Id] != 2)
+            {
+                continue;
+            }
+            int p = q - 1;
+            while (p >= 0 && !Touches(ins[p], t.Id)) p--;
+            if (p < 0) continue;
+            MInstr load = ins[p];
+            if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
+                || load.Operands[0] is not MReg l0 || l0.Id != t.Id || load.Operands[1] is not MMem mem)
+            {
+                continue;
+            }
+            bool quiet = true;
+            for (int j = p + 1; j < q && quiet; j++)
+            {
+                MInstr between = ins[j];
+                quiet = between.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
+                        or MOp.Xor or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Cmp or MOp.Test or MOp.Setcc
+                    && !between.Lock && !between.Operands.Any(o => o is MMem)
+                    && (mem.Base is null || !Writes(between, mem.Base.Id))
+                    && (mem.Index is null || !Writes(between, mem.Index.Id));
+            }
+            if (!quiet) continue;
+            alu.Operands[1] = mem;
+            occurrences[t.Id] = 0;
+            ins[p] = Gone();
             any = true;
         }
         return any;
