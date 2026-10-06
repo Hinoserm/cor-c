@@ -27,16 +27,16 @@ public sealed class InductionBounds : IPass
 {
     public string Name => "induction-bounds";
 
-    // PER THREAD, NOT PER INSTANCE: the pipeline runs one instance of each
-    // pass over many functions at once (FunctionWorkers), and a function's
-    // state kept in the instance was cleared under another thread's walk.
-    [ThreadStatic] private static Function? _fNow;
-    [ThreadStatic] private static Cfg? _cfgNow;
-    [ThreadStatic] private static Defs? _defsNow;
-    [ThreadStatic] private static Dictionary<VReg, List<(Block Block, int Index)>>? _writes;
-    private static Function _f { get => _fNow!; set => _fNow = value; }
-    private static Cfg _cfg { get => _cfgNow!; set => _cfgNow = value; }
-    private static Defs _defs { get => _defsNow!; set => _defsNow = value; }
+    // ONE WALK A RUN: the pipeline runs a pass's one instance over several
+    // functions at once (FunctionWorkers), so what a walk holds is its own.
+    public void Run(Function function) => new Walk().Run(function);
+
+    private sealed class Walk
+    {
+    private Function _f = null!;
+    private Cfg _cfg = null!;
+    private Defs _defs = null!;
+    private Dictionary<VReg, List<(Block Block, int Index)>>? _writes;
 
     public void Run(Function function)
     {
@@ -224,4 +224,5 @@ public sealed class InductionBounds : IPass
                 }
         return _writes;
     }
+}
 }

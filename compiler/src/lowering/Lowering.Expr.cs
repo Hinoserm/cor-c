@@ -4463,7 +4463,7 @@ public sealed partial class Lowering
 
         if (op is BinOp.Eq or BinOp.Ne && StringEqualsRoutine() is MethodSymbol equals)
         {
-            VReg same = _e.Call(CallLabel(equals), IrTypes.Of(equals.Returns), R(l), R(r))!;
+            VReg same = EqualStrings(l, r, equals);
 
             return op == BinOp.Eq ? same : _e.Binary(Opcode.Eq, R(same), Imm(0, same.Type), IrType.I32);
         }
@@ -4502,11 +4502,48 @@ public sealed partial class Lowering
         return found;
     }
 
+    /// <summary>
+    /// `a == b` of strings with String.Equals's own first answers inline:
+    /// the same string is equal (every literal is one object, and a table's
+    /// key is very often the very string it was given), a null is equal to
+    /// nothing else, and strings of different lengths differ. Only what is
+    /// left -- two strings of one length -- calls Equals, which looks at the
+    /// characters. A lexer's `if (word == "class")` and a dictionary's key
+    /// test made the call for every one of them.
+    /// </summary>
+    private VReg EqualStrings(VReg a, VReg b, MethodSymbol equals)
+    {
+        IrType returns = IrTypes.Of(equals.Returns);
+        VReg result = _f.NewReg(returns);
+        Block same = _f.NewBlock("streq.same"), notSame = _f.NewBlock("streq.check"), aHeld = _f.NewBlock("streq.held"),
+            bothHeld = _f.NewBlock("streq.lengths"), compare = _f.NewBlock("streq.call"), differ = _f.NewBlock("streq.differ"),
+            done = _f.NewBlock("streq.done");
+        _e.Branch(_e.Binary(Opcode.Eq, R(a), R(b), IrType.I32), same, notSame);
+        _e.SetBlock(same);
+        _e.Emit(Opcode.Copy, result, Imm(1, returns));
+        _e.Jump(done);
+        _e.SetBlock(notSame);
+        _e.Branch(_e.Binary(Opcode.Eq, R(a), Imm(0, a.Type), IrType.I32), differ, aHeld);
+        _e.SetBlock(aHeld);
+        _e.Branch(_e.Binary(Opcode.Eq, R(b), Imm(0, b.Type), IrType.I32), differ, bothHeld);
+        _e.SetBlock(bothHeld);
+        _e.Branch(_e.Binary(Opcode.Ne, R(CountOf(_e, a)), R(CountOf(_e, b)), IrType.I32), differ, compare);
+        _e.SetBlock(compare);
+        VReg called = _e.Call(CallLabel(equals), returns, R(a), R(b))!;
+        _e.Emit(Opcode.Copy, result, R(called));
+        _e.Jump(done);
+        _e.SetBlock(differ);
+        _e.Emit(Opcode.Copy, result, Imm(0, returns));
+        _e.Jump(done);
+        _e.SetBlock(done);
+        return result;
+    }
+
     private VReg StringEquals(Node at, VReg a, VReg b)
     {
         if (StringEqualsRoutine() is MethodSymbol equals)
         {
-            return _e.Call(CallLabel(equals), IrTypes.Of(equals.Returns), R(a), R(b))!;
+            return EqualStrings(a, b, equals);
         }
 
         MethodSymbol? routine = StringMethod(at, Prelude.CompareMethod, 2, "comparing strings in a switch arm");
