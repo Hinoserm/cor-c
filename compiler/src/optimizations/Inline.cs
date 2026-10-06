@@ -995,6 +995,14 @@ public sealed class Inline : IParallelModulePass
         // suspensions become saves and calls after the optimiser has finished
         // (AsyncTransform), so while any function is one, its helper stays.
         bool coroutines = m.Functions.Any(fn => fn.Async is not null);
+        // NOR IS THE STORE SEQUENCES' BARRIER: the backend writes the stubs
+        // (X86Backend, "THE STORE SEQUENCES") into the module that defines
+        // Runtime.WriteBarrier, and they are its callers. A program whose own
+        // stores the optimiser had all removed or proved fresh left it with
+        // none in the IR, the barrier went, the stubs with it, and the link
+        // failed on the library's Interlocked ("undefined symbol
+        // __corsac_refxchg").
+        bool sequences = m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         bool changed = true;
         while (changed)
         {
@@ -1004,7 +1012,8 @@ public sealed class Inline : IParallelModulePass
             {
                 Function f = m.Functions[i];
                 if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
-                    || (coroutines && f.Name == AsyncTransform.CardMarkObject))
+                    || (coroutines && f.Name == AsyncTransform.CardMarkObject)
+                    || (sequences && f.Name == Corsac.Lang.Lto.RuntimeAbi.WriteBarrier))
                 {
                     continue;
                 }
