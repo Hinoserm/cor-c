@@ -3,6 +3,8 @@ namespace Corsac.Lang;
 
 public sealed class FieldSymbol
 {
+    /// <summary>Its names in the lowering (FieldKey, its family, its static symbol), made once rather than at every load and store.</summary>
+    internal string? KeyMade, FamilyMade, StaticSymbolMade;
     public required string Name { get; init; }
     public required Type Type { get; init; }
     public required TypeSymbol Owner { get; init; }

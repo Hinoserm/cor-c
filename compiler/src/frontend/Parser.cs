@@ -995,12 +995,12 @@ public sealed class Parser
 
         while (!At(Tok.End) && !At(Tok.RBrace) && !StartsTypeDecl())
         {
-            body.Statements.Add(ParseStmt());
+            body.WritableStatements.Add(ParseStmt());
         }
 
         if (body.Statements.Count == 0 || body.Statements[^1] is not ReturnStmt)
         {
-            body.Statements.Add(new ReturnStmt
+            body.WritableStatements.Add(new ReturnStmt
             {
                 Value = new LiteralExpr
                 {
@@ -1544,7 +1544,8 @@ public sealed class Parser
         // valid code.
         if (isRecord && At(Tok.LParen))
         {
-            ParseParams(positional);
+            List<Param>? positionalRead = positional;
+            ParseParams(ref positionalRead);
         }
 
         if (Take(Tok.Colon))
@@ -1741,7 +1742,7 @@ public sealed class Parser
             Name = "Invoke", Returns = returns, Mods = Mods.Public | Mods.Abstract | byReference,
             File = _file, Scope = _fileScope, Namespace = _namespace, Line = start.Line, Col = start.Col,
         };
-        ParseParams(invoke.Params); ParseConstraints(declaration.TypeParams);
+        { List<Param>? read = null; ParseParams(ref read); invoke.AdoptParams(read); } ParseConstraints(declaration.TypeParams);
         declaration.Members.Add(invoke);
         declaration.SourceTo = Expect(Tok.Semi, "';' after delegate declaration").Pos + 1;
         TypeDecl? multicast = Multicast(declaration, invoke);
@@ -2071,13 +2072,13 @@ public sealed class Parser
             // until the base has run. The assignment reads `this.Name = Name`
             // and is unambiguous for the same reason -- a property is reached
             // through `this`, a parameter by its bare name.
-            ctor.Params.Add(new Param
+            ctor.WritableParams.Add(new Param
             {
                 Name = p.Name, Type = p.Type, Default = p.Default,
                 Line = p.Line, Col = p.Col,
             });
 
-            ctor.Body.Statements.Add(new ExprStmt
+            ctor.Body.WritableStatements.Add(new ExprStmt
             {
                 Expr = new AssignExpr
                 {
@@ -2190,13 +2191,13 @@ public sealed class Parser
         {
             // Named apart from the property so the assignment below can say
             // which is which: `out_X = this.X`.
-            taken.Params.Add(new Param
+            taken.WritableParams.Add(new Param
             {
                 Name = "out_" + p.Name, Type = p.Type, IsOut = true,
                 Line = p.Line, Col = p.Col,
             });
 
-            taken.Body.Statements.Add(new ExprStmt
+            taken.Body.WritableStatements.Add(new ExprStmt
             {
                 Expr = new AssignExpr
                 {
@@ -2254,7 +2255,7 @@ public sealed class Parser
         });
 
         Block body = new() { Line = start.Line, Col = start.Col };
-        body.Statements.Add(new ReturnStmt { Value = text, Line = start.Line, Col = start.Col });
+        body.WritableStatements.Add(new ReturnStmt { Value = text, Line = start.Line, Col = start.Col });
 
         decl.Members.Add(new MethodDecl
         {
@@ -2415,7 +2416,7 @@ public sealed class Parser
                 Line = start.Line, Col = start.Col,
                 Body = null,
             };
-            ParseParams(ctor.Params);
+            { List<Param>? read = null; ParseParams(ref read); ctor.AdoptParams(read); }
 
             // A constructor may chain: ': base(...)', ': this(...)', or the
             // base type named directly, which reads better than 'base' does.
@@ -2484,7 +2485,7 @@ public sealed class Parser
                 Name = isImplicit ? "op_Implicit" : "op_Explicit", Mods = mods, Returns = ParseTypeRef(),
                 Line = start.Line, Col = start.Col, Body = null,
             };
-            ParseParams(conversion.Params);
+            { List<Param>? read = null; ParseParams(ref read); conversion.AdoptParams(read); }
 
             if (conversion.Params.Count != 1)
             {
@@ -2643,7 +2644,7 @@ public sealed class Parser
             Expect(Tok.Semi, "';' after an expression-bodied property");
 
             Block getter = new() { Line = bodyAt.Line, Col = bodyAt.Col };
-            getter.Statements.Add(new ReturnStmt { Value = value, Line = bodyAt.Line, Col = bodyAt.Col });
+            getter.WritableStatements.Add(new ReturnStmt { Value = value, Line = bodyAt.Line, Col = bodyAt.Col });
 
             return new PropertyDecl
             {
@@ -2671,7 +2672,7 @@ public sealed class Parser
             // declaration (Binder.NeverReturns).
             if (attributes.Count > 0) m.WritableAttributes.AddRange(attributes);
             if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
-            ParseParams(m.Params);
+            { List<Param>? read = null; ParseParams(ref read); m.AdoptParams(read); }
             ParseConstraints(m.TypeParams);
             return FinishMethod(m);
         }
@@ -2752,7 +2753,7 @@ public sealed class Parser
         if (!abstractOnly)
         {
             body = new Block { Line = at.Line, Col = at.Col };
-            body.Statements.Add(new ExprStmt
+            body.WritableStatements.Add(new ExprStmt
             {
                 Expr = new AssignExpr
                 {
@@ -2770,7 +2771,7 @@ public sealed class Parser
             Returns = new TypeRef { Name = "void", Line = at.Line, Col = at.Col },
             Body = body, Line = at.Line, Col = at.Col,
         };
-        accessor.Params.Add(new Param { Name = "value", Type = type, Line = at.Line, Col = at.Col });
+        accessor.WritableParams.Add(new Param { Name = "value", Type = type, Line = at.Line, Col = at.Col });
         return accessor;
     }
 
@@ -2801,7 +2802,7 @@ public sealed class Parser
             Line = start.Line, Col = start.Col, Body = null,
         };
 
-        ParseParams(made.Params);
+        { List<Param>? read = null; ParseParams(ref read); made.AdoptParams(read); }
 
         string? name = made.Params.Count switch
         {
@@ -3080,7 +3081,7 @@ public sealed class Parser
 
             Expect(Tok.Semi, "';' after an expression body");
             body = new Block { Line = at.Line, Col = at.Col };
-            body.Statements.Add(m.Returns is null or { Name: "void", ArrayRank: 0, PointerDepth: 0 }
+            body.WritableStatements.Add(m.Returns is null or { Name: "void", ArrayRank: 0, PointerDepth: 0 }
                 ? new ExprStmt { Expr = value, Line = at.Line, Col = at.Col }
                 : new ReturnStmt { Value = value, Line = at.Line, Col = at.Col });
         }
@@ -3096,7 +3097,7 @@ public sealed class Parser
                     && !(m.Returns.Name == "void" && m.Returns.ArrayRank == 0
                          && m.Returns.PointerDepth == 0))
                 {
-                    body.Statements.Add(new ReturnStmt
+                    body.WritableStatements.Add(new ReturnStmt
                     {
                         Value = new DefaultExpr
                         {
@@ -3151,7 +3152,7 @@ public sealed class Parser
                 Expr done = ReadBodyExpression();
                 Expect(Tok.Semi, "';' after an expression-bodied accessor");
                 body = new Block { Line = bodyAt.Line, Col = bodyAt.Col };
-                body.Statements.Add(new ExprStmt { Expr = done, Line = bodyAt.Line, Col = bodyAt.Col });
+                body.WritableStatements.Add(new ExprStmt { Expr = done, Line = bodyAt.Line, Col = bodyAt.Col });
             }
             else
             {
@@ -3165,7 +3166,7 @@ public sealed class Parser
                 Body = body, Line = which.Line, Col = which.Col,
                 ExplicitInterface = explicitInterface,
             };
-            accessor.Params.Add(new Param { Name = "value", Type = type, Line = which.Line, Col = which.Col });
+            accessor.WritableParams.Add(new Param { Name = "value", Type = type, Line = which.Line, Col = which.Col });
 
             if (which.Text == "add") add = accessor;
             else remove = accessor;
@@ -3215,7 +3216,7 @@ public sealed class Parser
             throw Error("an indexer needs bodies for its accessors; there is no field to back one");
         }
 
-        p.Params.AddRange(parameters);
+        p.WritableParams.AddRange(parameters);
         return p;
     }
 
@@ -3233,7 +3234,7 @@ public sealed class Parser
             Expect(Tok.Semi, "';' after an expression-bodied property");
 
             Block body = new() { Line = bodyAt.Line, Col = bodyAt.Col };
-            body.Statements.Add(new ReturnStmt { Value = only, Line = bodyAt.Line, Col = bodyAt.Col });
+            body.WritableStatements.Add(new ReturnStmt { Value = only, Line = bodyAt.Line, Col = bodyAt.Col });
 
             return new PropertyDecl
             {
@@ -3270,7 +3271,7 @@ public sealed class Parser
                     Expr value = ReadBodyExpression();
                     Expect(Tok.Semi, "';' after the expression-bodied getter");
                     getter = new Block { Line = at.Line, Col = at.Col };
-                    getter.Statements.Add(new ReturnStmt
+                    getter.WritableStatements.Add(new ReturnStmt
                     {
                         Value = value, Line = at.Line, Col = at.Col,
                     });
@@ -3323,7 +3324,7 @@ public sealed class Parser
                     Expr value = ReadBodyExpression();
                     Expect(Tok.Semi, "';' after the expression-bodied setter");
                     setter = new Block { Line = at.Line, Col = at.Col };
-                    setter.Statements.Add(new ExprStmt
+                    setter.WritableStatements.Add(new ExprStmt
                     {
                         Expr = value, Line = at.Line, Col = at.Col,
                     });
@@ -3352,7 +3353,11 @@ public sealed class Parser
         };
     }
 
-    private void ParseParams(List<Param> into)
+    /// <summary>
+    /// Reads a parameter list into <paramref name="into"/>, made at the first
+    /// parameter: `()` makes none, and most members are read with `()`.
+    /// </summary>
+    private void ParseParams(ref List<Param>? into)
     {
         Expect(Tok.LParen, "'(' to open the parameter list");
 
@@ -3413,7 +3418,7 @@ public sealed class Parser
             string name = Expect(Tok.Ident, "a parameter name").Text;
             Expr? def = Take(Tok.Assign) ? ParseExpr() : null;
 
-            into.Add(new Param
+            (into ??= new()).Add(new Param
             {
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
@@ -3953,7 +3958,7 @@ public sealed class Parser
 
         while (!At(Tok.RBrace) && !At(Tok.End))
         {
-            block.Statements.Add(ParseStmt());
+            block.WritableStatements.Add(ParseStmt());
         }
 
         Expect(Tok.RBrace, "'}' to close the block");
@@ -4006,14 +4011,14 @@ public sealed class Parser
 
         for (int i = 0; i < at; i++)
         {
-            result.Statements.Add(block.Statements[i]);
+            result.WritableStatements.Add(block.Statements[i]);
         }
-        result.Statements.Add(marker.Declaration);
+        result.WritableStatements.Add(marker.Declaration);
 
         Block tail = new() { Line = marker.Line, Col = marker.Col };
         for (int i = at + 1; i < block.Statements.Count; i++)
         {
-            tail.Statements.Add(block.Statements[i]);
+            tail.WritableStatements.Add(block.Statements[i]);
         }
         tail = LowerUsings(tail);
 
@@ -4035,7 +4040,7 @@ public sealed class Parser
         if (marker.Async)
             dispose = new AwaitExpr { Operand = dispose, Line = marker.Line, Col = marker.Col };
         Block cleanup = new() { Line = marker.Line, Col = marker.Col };
-        cleanup.Statements.Add(new IfStmt
+        cleanup.WritableStatements.Add(new IfStmt
         {
             // A struct resource is disposed without a test, as C# does: the
             // binder answers this one true over a value type (PatternNullTest).
@@ -4059,7 +4064,7 @@ public sealed class Parser
             Col = marker.Col,
         });
 
-        result.Statements.Add(new TryStmt
+        result.WritableStatements.Add(new TryStmt
         {
             Body = tail,
             Finally = cleanup,
@@ -4096,7 +4101,7 @@ public sealed class Parser
                 each.AddRange(first.Also);
                 foreach (LocalDecl d in each)
                 {
-                    built.Statements.Add(new UsingDeclStmt
+                    built.WritableStatements.Add(new UsingDeclStmt
                     {
                         Declaration = new LocalDecl
                         {
@@ -4113,7 +4118,7 @@ public sealed class Parser
             {
                 // No name was given, so one is made: the resource still has
                 // to be held somewhere the finally can reach.
-                built.Statements.Add(new UsingDeclStmt
+                built.WritableStatements.Add(new UsingDeclStmt
                 {
                     Declaration = new LocalDecl
                     {
@@ -4130,7 +4135,7 @@ public sealed class Parser
                 throw new CompileError(_file, at.Line, at.Col, "a using statement needs a declaration or an expression");
             }
 
-            built.Statements.Add(body);
+            built.WritableStatements.Add(body);
             return LowerUsings(built);
         }
 
@@ -4219,25 +4224,25 @@ public sealed class Parser
                     ?? new Block { Line = body.Line, Col = body.Col };
                 if (body is not Block)
                 {
-                    protectedBody.Statements.Add(body);
+                    protectedBody.WritableStatements.Add(body);
                 }
 
                 Block cleanup = new() { Line = at.Line, Col = at.Col };
-                cleanup.Statements.Add(new ExprStmt
+                cleanup.WritableStatements.Add(new ExprStmt
                 {
                     Expr = exit, Line = at.Line, Col = at.Col,
                 });
 
                 Block lowered = new() { Line = at.Line, Col = at.Col };
-                lowered.Statements.Add(new LocalDecl
+                lowered.WritableStatements.Add(new LocalDecl
                 {
                     Name = held, Init = guarded, Line = at.Line, Col = at.Col,
                 });
-                lowered.Statements.Add(new ExprStmt
+                lowered.WritableStatements.Add(new ExprStmt
                 {
                     Expr = enter, Line = at.Line, Col = at.Col,
                 });
-                lowered.Statements.Add(new TryStmt
+                lowered.WritableStatements.Add(new TryStmt
                 {
                     Body = protectedBody, Finally = cleanup,
                     Line = at.Line, Col = at.Col,
@@ -5032,7 +5037,7 @@ public sealed class Parser
             Returns = returns, ReturnMods = returnMods,
             Line = at.Line, Col = at.Col,
         };
-        made.Params.AddRange(inner.Params);
+        made.WritableParams.AddRange(inner.Params);
         made.WritableAttributes.AddRange(inner.Attributes);
         return made;
     }
@@ -5263,7 +5268,7 @@ public sealed class Parser
         for (int k = 0; k < names.Count; k++)
         {
             Tok modifier = modifiers is null ? Tok.End : modifiers[k];
-            done.Params.Add(new Param
+            done.WritableParams.Add(new Param
             {
                 Name = names[k],
                 Type = typed ? types![k]! : new TypeRef { Name = "", Line = made.Line, Col = made.Col },
@@ -5875,7 +5880,7 @@ public sealed class Parser
         };
         string? parent = _hoistParents.Count > 0 ? _hoistParents.Peek() : null;
         if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
-        ParseParams(m.Params);
+        { List<Param>? read = null; ParseParams(ref read); m.AdoptParams(read); }
         ParseConstraints(m.TypeParams);
         MethodDecl finished = FinishMethod(m);
         finished.HoistedName = name;
@@ -5918,7 +5923,7 @@ public sealed class Parser
         };
         foreach (Param p in parameters)
         {
-            invoke.Params.Add(new Param
+            invoke.WritableParams.Add(new Param
             {
                 Type = p.Type, Name = p.Name, IsRef = p.IsRef, IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,
                 Line = p.Line, Col = p.Col,
@@ -5960,7 +5965,7 @@ public sealed class Parser
         // THE SAME PARAMETER LIST A METHOD HAS: attributes (caller
         // information among them), `params`, ref, out and in, and defaults.
         LambdaExpr made = new() { BlockBody = null!, Line = at.Line, Col = at.Col };
-        ParseParams(made.Params);
+        { List<Param>? read = null; ParseParams(ref read); made.AdoptParams(read); }
         List<TypeRef> takes = made.Params.Select(p => p.Type).ToList();
         bool passedByReference = made.Params.Any(p => p.IsRef || p.IsOut);
 
@@ -5984,7 +5989,7 @@ public sealed class Parser
             lam = new LambdaExpr { BlockBody = ReadBodyBlock(returns, at.Line, at.Col), Async = isAsync, Line = at.Line, Col = at.Col };
         }
 
-        lam.Params.AddRange(made.Params);
+        lam.WritableParams.AddRange(made.Params);
 
         // Action for no result, Func with the result last -- C#'s own spelling
         // -- when one fits: nothing passed by reference, the result not
@@ -5995,7 +6000,7 @@ public sealed class Parser
         TypeRef shape;
         if (passedByReference || byReference != Mods.None || takes.Count > 8)
         {
-            shape = LocalFunctionDelegate(at, name, returns, made.Params, byReference);
+            shape = LocalFunctionDelegate(at, name, returns, made.WritableParams, byReference);
         }
         else
         {
@@ -7818,7 +7823,7 @@ public sealed class Parser
                     Line = at.Line, Col = at.Col,
                 };
                 made.WritableAttributes.AddRange(inner.Attributes);
-                made.Params.AddRange(inner.Params);
+                made.WritableParams.AddRange(inner.Params);
                 return made;
             }
 
@@ -8672,7 +8677,7 @@ internal static class MethodDeclExtensions
     public static MethodDecl CopyListsFrom(this MethodDecl to, MethodDecl from)
     {
         if (from.TypeParams.Count > 0) to.WritableTypeParams.AddRange(from.TypeParams);
-        to.Params.AddRange(from.Params);
+        to.WritableParams.AddRange(from.Params);
         if (from.Attributes.Count > 0) to.WritableAttributes.AddRange(from.Attributes);
         return to;
     }

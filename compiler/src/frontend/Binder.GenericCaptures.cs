@@ -389,7 +389,7 @@ public sealed partial class Binder
         {
             hidden.Add(new Param { Name = name, Type = spelt, IsRef = true, Line = template.Line, Col = template.Col });
         }
-        template.Params.InsertRange(0, hidden);
+        template.WritableParams.InsertRange(0, hidden);
         template.Captures = hidden.Count;
 
         // THE TYPE PARAMETERS ITS CAPTURES ARE OF, made its own, as Roslyn
@@ -410,7 +410,7 @@ public sealed partial class Binder
         foreach ((string name, ConstSym constant) in p.Constants)
         {
             if (SpellConstant(constant, template) is not Expr value || RefOf(constant.Type) is not TypeRef type) continue;
-            template.Body.Statements.Insert(at++, new LocalDecl
+            template.Body.WritableStatements.Insert(at++, new LocalDecl
             {
                 Name = name, Type = type, Init = value, IsConst = true, Line = template.Line, Col = template.Col,
             });

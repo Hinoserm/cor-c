@@ -14,7 +14,15 @@ public sealed class LambdaExpr : Expr
     /// </summary>
     public string? LocalGroup { get; set; }
 
-    public List<Param> Params { get; } = new();
+    /// <summary>To read: one shared empty list until a parameter is added.</summary>
+    public List<Param> Params => _params ?? NoParams;
+    /// <summary>To write: made on first use.</summary>
+    public List<Param> WritableParams => _params ??= new();
+    private List<Param>? _params;
+    /// <summary>Takes a list the parser read; none for `()`.</summary>
+    internal void AdoptParams(List<Param>? read) { if (read is { Count: > 0 }) { if (_params is null) _params = read; else _params.AddRange(read); } }
+    // Never written through: every writer goes by WritableParams.
+    private static readonly List<Param> NoParams = new();
     public Expr? Body { get; init; }
     public Block? BlockBody { get; init; }
     public bool Async { get; init; }

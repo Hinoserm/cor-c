@@ -233,7 +233,7 @@ public sealed partial class Binder
             Block back = new() { Line = c.Line, Col = c.Col };
             for (int i = 0; i < c.Args.Count; i++)
             {
-                if (c.Args[i] is RefArgExpr ra) back.Statements.Add(LateWriteBack(ra, Held(1), i));
+                if (c.Args[i] is RefArgExpr ra) back.WritableStatements.Add(LateWriteBack(ra, Held(1), i));
             }
             SequenceExpr tail = new() { Effect = back, Value = Held(0), Line = c.Line, Col = c.Col };
             Expr invoke = member
@@ -560,13 +560,13 @@ public sealed partial class Binder
         }
         string element = "__late_element" + _lateTemps++;
         Block body = new() { Line = fe.Line, Col = fe.Col };
-        body.Statements.Add(new LocalDecl
+        body.WritableStatements.Add(new LocalDecl
         {
             Type = fe.Type, Name = fe.Name,
             Init = new CastExpr { Type = fe.Type, Operand = new NameExpr { Name = element, Line = fe.Line, Col = fe.Col }, Line = fe.Line, Col = fe.Col },
             Line = fe.Line, Col = fe.Col,
         });
-        body.Statements.Add(fe.Body);
+        body.WritableStatements.Add(fe.Body);
         return new ForeachStmt
         {
             Type = LateRef("dynamic", fe), Name = element, Sequence = sequence, Body = body,

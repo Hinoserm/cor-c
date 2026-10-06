@@ -178,7 +178,7 @@ public sealed partial class Binder
             Type = new TypeRef { Name = "Exception" }, File = type.File, Line = type.Line, Col = type.Col,
         });
         Block body = new();
-        body.Statements.AddRange(statements);
+        body.WritableStatements.AddRange(statements);
         // A source-level return exits the body, not the completion protocol.
         type.Members.Add(new MethodDecl
         {
@@ -188,27 +188,27 @@ public sealed partial class Binder
             File = type.File, Line = type.Line, Col = type.Col,
         });
         Block wrapper = new();
-        wrapper.Statements.Add(new LocalDecl
+        wrapper.WritableStatements.Add(new LocalDecl
         {
             Name = status, Type = new TypeRef { Name = "int" },
             Init = Call("Runtime", "EnterTypeInitialization", type, Address()),
         });
-        wrapper.Statements.Add(new IfStmt
+        wrapper.WritableStatements.Add(new IfStmt
         {
             Cond = new BinaryExpr { Op = BinOp.Eq, Left = Name(status), Right = Number(0) },
             Then = new ReturnStmt(),
         });
-        wrapper.Statements.Add(new IfStmt
+        wrapper.WritableStatements.Add(new IfStmt
         {
             Cond = new BinaryExpr { Op = BinOp.Eq, Left = Name(status), Right = Number(2) },
             Then = new ThrowStmt { Value = Name(failure) },
         });
-        wrapper.Statements.Add(new LocalDecl { Name = success, Type = new TypeRef { Name = "bool" }, Init = Boolean(false) });
+        wrapper.WritableStatements.Add(new LocalDecl { Name = success, Type = new TypeRef { Name = "bool" }, Init = Boolean(false) });
         Block guarded = new();
-        guarded.Statements.Add(new ExprStmt { Expr = new CallExpr { Target = Name("StaticInitBody$") } });
-        guarded.Statements.Add(Assign(success, Boolean(true)));
+        guarded.WritableStatements.Add(new ExprStmt { Expr = new CallExpr { Target = Name("StaticInitBody$") } });
+        guarded.WritableStatements.Add(Assign(success, Boolean(true)));
         Block cleanup = new();
-        cleanup.Statements.Add(new IfStmt
+        cleanup.WritableStatements.Add(new IfStmt
         {
             Cond = Name(success), Then = RuntimeCall("CompleteTypeInitialization"), Else = RuntimeCall("FailTypeInitialization"),
         });
@@ -217,14 +217,14 @@ public sealed partial class Binder
         // Only ever a TypeInitializationException in the static: every later
         // access throws that same object again, and a catch that can take it
         // must keep it (Escape's foreign throws), so its type must be known.
-        failed.Statements.Add(Assign(failure, new NewExpr
+        failed.WritableStatements.Add(Assign(failure, new NewExpr
         {
             Type = new TypeRef { Name = "TypeInitializationException" },
             Args = { new LiteralExpr { Kind = Lit.Str, Text = InitializerKey(type) }, Name(error) },
         }));
-        failed.Statements.Add(new ThrowStmt { Value = Name(failure) });
+        failed.WritableStatements.Add(new ThrowStmt { Value = Name(failure) });
         attempt.Catches.Add(new CatchClause { Type = new TypeRef { Name = "Exception" }, Name = error, Body = failed });
-        wrapper.Statements.Add(attempt);
+        wrapper.WritableStatements.Add(attempt);
         type.Members.Add(new MethodDecl
         {
             Name = "StaticInit$", Mods = Mods.Static | Mods.Public,

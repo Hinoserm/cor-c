@@ -785,7 +785,7 @@ public sealed partial class Lowering
     private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null, FieldSymbol? Field = null) : Place(Type);
 
     /// <summary>A field's name as the IR carries it on the loads and stores of it (Instr.Field).</summary>
-    private static string FieldKey(FieldSymbol f) => TypeKey(f.Owner) + "::" + f.Name;
+    private static string FieldKey(FieldSymbol f) => f.KeyMade ??= TypeKey(f.Owner) + "::" + f.Name;
 
     /// <summary>
     /// WHICH FIELD A LOAD OR STORE IS, for region inference (Instr.Family):
@@ -801,9 +801,10 @@ public sealed partial class Lowering
     private static string? FieldFamily(FieldSymbol f, long offset)
     {
         if (f.Static || f.Owner.Kind != TypeKind.Class || f.Inline || f.Offset <= 0 || offset != f.Offset) return null;
+        if (f.FamilyMade is string made) return made;
         TypeSymbol owner = f.Owner;
         string declaring = owner.Decl is { Specialised: true, Template: string template } d ? template + "`" + d.TemplateArgs.Count : TypeKey(owner);
-        return declaring + "::" + f.Name;
+        return f.FamilyMade = declaring + "::" + f.Name;
     }
 
     /// <summary>Whether a field's loads and stores carry it (Instr.Field): a reference, held by a class or statically.</summary>

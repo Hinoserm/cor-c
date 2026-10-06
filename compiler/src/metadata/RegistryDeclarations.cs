@@ -271,7 +271,7 @@ public static class RegistryDeclarations
 
         Block getter = new() { Line = field.Line, Col = field.Col };
 
-        getter.Statements.Add(new ReturnStmt { Value = read, Line = field.Line, Col = field.Col });
+        getter.WritableStatements.Add(new ReturnStmt { Value = read, Line = field.Line, Col = field.Col });
 
         Expr written = new NameExpr { Name = "value", Line = field.Line, Col = field.Col };
 
@@ -282,7 +282,7 @@ public static class RegistryDeclarations
 
         Block setter = new() { Line = field.Line, Col = field.Col };
 
-        setter.Statements.Add(new ExprStmt
+        setter.WritableStatements.Add(new ExprStmt
         {
             Expr = Call(field, Writer(entry.Kind), Text(key, field), written, Scope("User", field)),
             Line = field.Line, Col = field.Col,

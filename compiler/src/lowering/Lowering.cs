@@ -236,7 +236,9 @@ public sealed partial class Lowering
     /// types never collide, and it is identical to what the old backend used
     /// so `corc syms` and every library header keep working.
     /// </summary>
-    public static string Label(MethodSymbol m)
+    public static string Label(MethodSymbol m) => m.LabelMade ??= MakeLabel(m);
+
+    private static string MakeLabel(MethodSymbol m)
         => (m.Params.Count == 0
          ? $"m_{Owner(m)}_{m.Name}_0"
          : $"m_{Owner(m)}_{m.Name}_{m.Params.Count}_"
@@ -270,7 +272,9 @@ public sealed partial class Lowering
         return encoded.ToString();
     }
 
-    private static string TypeKey(TypeSymbol t)
+    private static string TypeKey(TypeSymbol t) => t.TypeKeyMade ??= MakeTypeKey(t);
+
+    private static string MakeTypeKey(TypeSymbol t)
     {
         StringBuilder sb = new();
         foreach (char c in t.Key)
@@ -284,7 +288,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>The symbol of a static field: its own ELF symbol, so a library's statics are the library's.</summary>
-    private static string StaticSymbol(FieldSymbol f) => $"s_{TypeKey(f.Owner)}_{f.Name}";
+    private static string StaticSymbol(FieldSymbol f) => f.StaticSymbolMade ??= $"s_{TypeKey(f.Owner)}_{f.Name}";
 
     /// <summary>
     /// THE PROGRAM'S DECLARATIONS NOTHING LOWERED, for the unused-code report

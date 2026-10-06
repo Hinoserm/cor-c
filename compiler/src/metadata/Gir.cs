@@ -1381,7 +1381,7 @@ public static class Gir
                     if (typeParams.Count > 0) d.WritableTypeParams.AddRange(typeParams);
 
                     if (attributes.Count > 0) d.WritableAttributes.AddRange(attributes);
-                    d.Params.AddRange(ps);
+                    d.WritableParams.AddRange(ps);
 
                     string hoisted = Str();
                     d.HoistedName = hoisted.Length == 0 ? null : hoisted;
@@ -1417,7 +1417,7 @@ public static class Gir
 
                     for (int i = 0; i < np; i++)
                     {
-                        p.Params.Add(Param());
+                        p.WritableParams.Add(Param());
                     }
                     return p;
                 }
@@ -1449,7 +1449,7 @@ public static class Gir
                     {
                         if (Stmt() is Stmt one)
                         {
-                            b.Statements.Add(one);
+                            b.WritableStatements.Add(one);
                         }
                     }
                     return b;
@@ -1929,7 +1929,7 @@ public static class Gir
                     Mods returnMods = (Mods)I32();
                     LambdaExpr la = new() { Async = async, Body = body, BlockBody = blockBody, Returns = returns, ReturnMods = returnMods, TypesWritten = Bool() };
 
-                    la.Params.AddRange(ps);
+                    la.WritableParams.AddRange(ps);
                     return la;
                 }
 

@@ -207,7 +207,7 @@ public sealed class Monomorphiser
             AutoAccessor = made.AutoAccessor,
         };
         if (made.Attributes.Count > 0) plain.WritableAttributes.AddRange(made.Attributes);
-        plain.Params.AddRange(made.Params);
+        plain.WritableParams.AddRange(made.Params);
         return plain;
     }
 
@@ -2071,7 +2071,7 @@ public sealed class Monomorphiser
                 // declaration has to be added here too.
                 foreach (Param ip in p.Params)
                 {
-                    copy.Params.Add(new Param
+                    copy.WritableParams.Add(new Param
                     {
                         Name = ip.Name, Type = Sub(ip.Type, map),
                         IsRef = ip.IsRef, IsOut = ip.IsOut, IsReadOnlyRef = ip.IsReadOnlyRef,
@@ -2121,7 +2121,7 @@ public sealed class Monomorphiser
 
                 foreach (Param p in md.Params)
                 {
-                    made.Params.Add(new Param
+                    made.WritableParams.Add(new Param
                     {
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef, IsOut = p.IsOut,
                         IsReadOnlyRef = p.IsReadOnlyRef, IsParams = p.IsParams, IsThis = p.IsThis,
@@ -2211,7 +2211,7 @@ public sealed class Monomorphiser
 
                 foreach (Stmt inner in b.Statements)
                 {
-                    made.Statements.Add(Rewrite(inner, map));
+                    made.WritableStatements.Add(Rewrite(inner, map));
                 }
                 return made;
             }
@@ -2724,7 +2724,7 @@ public sealed class Monomorphiser
                 made.WritableAttributes.AddRange(lambda.Attributes);
                 foreach (Param p in lambda.Params)
                 {
-                    made.Params.Add(new Param
+                    made.WritableParams.Add(new Param
                     {
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef,
                         IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,

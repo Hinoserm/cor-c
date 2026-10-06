@@ -5,7 +5,17 @@ public sealed class Block : Stmt
 {
     /// <summary>0 inherits the lexical context, 1 is checked, 2 is unchecked.</summary>
     public byte ArithmeticContext { get; set; }
-    public List<Stmt> Statements { get; } = new();
+    /// <summary>
+    /// The statements, to read. A body skipped by a declarations-only parse
+    /// is an empty block, and nearly every method a unit loads from another
+    /// is one: they shared one empty list instead of a list each.
+    /// </summary>
+    public List<Stmt> Statements => _statements ?? NoStatements;
+    /// <summary>To write: made on first use.</summary>
+    public List<Stmt> WritableStatements => _statements ??= new();
+    private List<Stmt>? _statements;
+    // Never written through: every writer goes by WritableStatements.
+    private static readonly List<Stmt> NoStatements = new();
 
     /// <summary>
     /// The generic local functions declared in this block, by the name the

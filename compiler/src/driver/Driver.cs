@@ -963,6 +963,8 @@ public static class Driver
             // Only a collector reads stack maps: a program found to need none
             // (Escape) carries none.
             StackMaps = !args.Contains("--no-stackmaps") && module.NeedsHeap,
+            // Nothing below reads a function's body once Generate has it.
+            ReleaseBodies = true,
         };
         foreach (string symbol in imported)
         {

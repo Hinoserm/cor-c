@@ -34,6 +34,14 @@ public sealed class X86Backend : IBackend
     /// <summary>Bounded task workers for selection/allocation; emission stays ordered.</summary>
     public int Workers { get; set; } = 1;
     public bool EmitLinkSummary { get; set; }
+    /// <summary>
+    /// Whether a function's IR is let go once its code is placed, for a
+    /// caller that reads nothing of the module's bodies after Generate
+    /// (Driver.Compile). The whole module's IR lived through code generation
+    /// beside the machine code and the link's copy of it, and that was the
+    /// largest a compile ever got: a unit of this compiler peaked there.
+    /// </summary>
+    public bool ReleaseBodies { get; set; }
     /// <summary>Hosted ABI owns x87/MMX state; freestanding kernel code must not borrow it implicitly.</summary>
     public bool AutomaticPacked { get; set; } = true;
     public Func<int, Function>? FunctionLoader { get; set; }
@@ -356,6 +364,11 @@ public sealed class X86Backend : IBackend
                 }
             }
             encoder.ReleaseFunction();
+            if (ReleaseBodies)
+            {
+                f.Blocks.Clear();
+                f.Blocks.TrimExcess();
+            }
         }
 
         // THE FRAME TABLE, once every function's bytes are placed. It goes in

@@ -4,6 +4,8 @@ namespace Corsac.Lang;
 /// <summary>A declared type: class, interface, struct or enum.</summary>
 public sealed class TypeSymbol
 {
+    /// <summary>Its key spelled as a symbol (Lowering.TypeKey), made once.</summary>
+    internal string? TypeKeyMade;
     public required string Name { get; init; }
 
     /// <summary>

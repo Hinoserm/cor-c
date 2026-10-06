@@ -20,7 +20,7 @@ internal static class InitializerMethods
         {
             Name = name, Mods = member.ReadsTypeArguments && !member.Mods.HasFlag(Mods.Static) ? Mods.Private : Mods.Static | Mods.Private,
             Returns = returns,
-            Body = new Block { Statements = { new ReturnStmt { Value = expression, Line = member.Line, Col = member.Col } } },
+            Body = new Block { WritableStatements = { new ReturnStmt { Value = expression, Line = member.Line, Col = member.Col } } },
             OwnedImplementation = member.OwnedImplementation,
             File = member.File, Scope = member.Scope, Namespace = member.Namespace,
             Line = member.Line, Col = member.Col,

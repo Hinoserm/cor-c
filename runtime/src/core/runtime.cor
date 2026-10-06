@@ -264,8 +264,8 @@ static class Tls
 /// process ends, for tools/sym to name. Nothing here allocates.
 static class AllocSamples
 {
-    const long Slots = 65536;           // entries of six words: site, caller, bytes, count, freed, collected
-    const long Words = 6;
+    const long Slots = 65536;           // entries of eight words: site, caller, bytes, count, freed, collected, and the two calls above the caller
+    const long Words = 8;
     static long _table;
     static long _lost;
 
@@ -316,7 +316,14 @@ static class AllocSamples
         long site = Sys.Peek(fp + WordSize.Bytes) | (kind << 30);
         long up = Sys.Peek(fp) & WordSize.AddressMask;
         long caller = up != 0 ? Sys.Peek(up + WordSize.Bytes) : 0;
-        long h = ((site >> 2) ^ (caller << 3)) * 40503 & (Slots - 1);
+        // AND THE TWO CALLS ABOVE IT: a table's arrays are made by its Rehash
+        // for whichever set_Item grew it, and only further up is the code
+        // whose table it was.
+        long up2 = up != 0 ? Sys.Peek(up) & WordSize.AddressMask : 0;
+        long above = up2 != 0 ? Sys.Peek(up2 + WordSize.Bytes) : 0;
+        long up3 = up2 != 0 ? Sys.Peek(up2) & WordSize.AddressMask : 0;
+        long above2 = up3 != 0 ? Sys.Peek(up3 + WordSize.Bytes) : 0;
+        long h = ((site >> 2) ^ (caller << 3) ^ (above << 5) ^ (above2 << 7)) * 40503 & (Slots - 1);
         for (long probe = 0; probe < 64; probe++)
         {
             long e = _table + ((h + probe) & (Slots - 1)) * Words * WordSize.Bytes;
@@ -325,9 +332,12 @@ static class AllocSamples
             {
                 Sys.Poke(e, site);
                 Sys.Poke(e + WordSize.Bytes, caller);
+                Sys.Poke(e + 6 * WordSize.Bytes, above);
+                Sys.Poke(e + 7 * WordSize.Bytes, above2);
                 at = site;
             }
-            if (at == site && Sys.Peek(e + WordSize.Bytes) == caller)
+            if (at == site && Sys.Peek(e + WordSize.Bytes) == caller
+                && Sys.Peek(e + 6 * WordSize.Bytes) == above && Sys.Peek(e + 7 * WordSize.Bytes) == above2)
             {
                 Sys.Poke(e + 2 * WordSize.Bytes, Sys.Peek(e + 2 * WordSize.Bytes) + bytes);
                 Sys.Poke(e + 3 * WordSize.Bytes, Sys.Peek(e + 3 * WordSize.Bytes) + 1);
@@ -421,6 +431,8 @@ static class AllocSamples
             if (Sys.Peek(e) == 0) continue;
             Gc.SayNumber("alloc sample site ", Sys.Peek(e));
             Gc.SayNumber("alloc sample caller ", Sys.Peek(e + WordSize.Bytes));
+            Gc.SayNumber("alloc sample above ", Sys.Peek(e + 6 * WordSize.Bytes));
+            Gc.SayNumber("alloc sample above2 ", Sys.Peek(e + 7 * WordSize.Bytes));
             Gc.SayNumber("alloc sample bytes ", Sys.Peek(e + 2 * WordSize.Bytes));
             // AND THE LINE THE CALL IS ON, for a tool to read without
             // decoding the image's line program itself -- written where the

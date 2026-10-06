@@ -565,7 +565,7 @@ public static class DynamicDeclarations
                     || first.Type.Name != keyword && first.Type.Name != holder && first.Type.Name != "System." + holder) continue;
                 if (md.Params.Skip(1).Any(p => p.Type.Name.Contains("Span", StringComparison.Ordinal) || p.Type.PointerDepth > 0)) continue;
                 MethodDecl view = new() { Name = md.Name, Returns = md.Returns, Line = md.Line, Col = md.Col };
-                view.Params.AddRange(md.Params.Skip(1));
+                view.WritableParams.AddRange(md.Params.Skip(1));
                 if (!methods.TryGetValue(md.Name, out List<MethodDecl>? all)) methods[md.Name] = all = new();
                 all.Add(view);
             }

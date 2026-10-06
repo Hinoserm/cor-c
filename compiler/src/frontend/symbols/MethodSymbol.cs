@@ -3,10 +3,18 @@ namespace Corsac.Lang;
 
 public sealed class MethodSymbol
 {
+    /// <summary>Its label (Lowering.Label), made once: every call site asked, and each got a string of its own.</summary>
+    internal string? LabelMade;
     public required string Name { get; init; }
     public required Type Returns { get; init; }
     public required TypeSymbol Owner { get; init; }
-    public List<ParamSymbol> Params { get; } = new();
+    /// <summary>To read: one shared empty list until a parameter is added.</summary>
+    public List<ParamSymbol> Params => _params ?? NoParams;
+    /// <summary>To write: made on first use.</summary>
+    public List<ParamSymbol> WritableParams => _params ??= new();
+    private List<ParamSymbol>? _params;
+    // Never written through: every writer goes by WritableParams.
+    private static readonly List<ParamSymbol> NoParams = new();
     public bool Static { get; init; }
     public bool Virtual { get; init; }
     public bool Override { get; init; }

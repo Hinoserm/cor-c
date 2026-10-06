@@ -2488,7 +2488,7 @@ public sealed partial class Binder
     private static Stmt Scoped(Stmt one)
     {
         Block block = new() { Line = one.Line, Col = one.Col };
-        block.Statements.Add(one);
+        block.WritableStatements.Add(one);
         return block;
     }
 
@@ -2730,7 +2730,7 @@ public sealed partial class Binder
         // and emptied them again.
         foreach (MethodDecl c in ctors.Where(c => c.Init is not { IsThis: true }))
         {
-            c.Body?.Statements.InsertRange(0, prologue);
+            c.Body?.WritableStatements.InsertRange(0, prologue);
         }
     }
 
@@ -3117,7 +3117,7 @@ public sealed partial class Binder
                         // interface never calls them, so dead-function removal
                         // drops the pair.
                         getBody = new Block { Line = p.Line, Col = p.Col };
-                        getBody.Statements.Add(new ReturnStmt
+                        getBody.WritableStatements.Add(new ReturnStmt
                         {
                             Value = new NameExpr { Name = p.Name, Line = p.Line, Col = p.Col },
                             Line = p.Line, Col = p.Col,
@@ -3126,7 +3126,7 @@ public sealed partial class Binder
                         if (p.HasSetter)
                         {
                             setBody = new Block { Line = p.Line, Col = p.Col };
-                            setBody.Statements.Add(new ExprStmt
+                            setBody.WritableStatements.Add(new ExprStmt
                             {
                                 Expr = new AssignExpr
                                 {
@@ -3197,8 +3197,8 @@ public sealed partial class Binder
                         // of what makes get_Item different from get_Name.
                         foreach (Param ip in p.Params)
                         {
-                            getter.Params.Add(ip);
-                            gs.Params.Add(new ParamSymbol { Name = ip.Name, Type = Resolve(ip.Type, sym) });
+                            getter.WritableParams.Add(ip);
+                            gs.WritableParams.Add(new ParamSymbol { Name = ip.Name, Type = Resolve(ip.Type, sym) });
                         }
                         sym.Methods.Add(gs);
                         _r.Methods[getter] = gs;
@@ -3221,10 +3221,10 @@ public sealed partial class Binder
                         // below builds its arguments in.
                         foreach (Param ip in p.Params)
                         {
-                            setter.Params.Add(ip);
+                            setter.WritableParams.Add(ip);
                         }
 
-                        setter.Params.Add(new Param { Name = "value", Type = p.Type, Line = p.Line, Col = p.Col });
+                        setter.WritableParams.Add(new Param { Name = "value", Type = p.Type, Line = p.Line, Col = p.Col });
 
                         MethodSymbol ss = new()
                         {
@@ -3238,9 +3238,9 @@ public sealed partial class Binder
 
                         foreach (Param ip in p.Params)
                         {
-                            ss.Params.Add(new ParamSymbol { Name = ip.Name, Type = Resolve(ip.Type, sym) });
+                            ss.WritableParams.Add(new ParamSymbol { Name = ip.Name, Type = Resolve(ip.Type, sym) });
                         }
-                        ss.Params.Add(new ParamSymbol { Name = "value", Type = propType });
+                        ss.WritableParams.Add(new ParamSymbol { Name = "value", Type = propType });
                         sym.Methods.Add(ss);
                         _r.Methods[setter] = ss;
                         Synthesised(sym, setter);
@@ -3287,7 +3287,7 @@ public sealed partial class Binder
                     {
                         Param p = md.Params[pi];
                         Type resolved = Resolve(p.Type, sym);
-                        ms.Params.Add(new ParamSymbol
+                        ms.WritableParams.Add(new ParamSymbol
                         {
                             Name = p.Name,
                             Type = resolved,
@@ -5010,11 +5010,11 @@ public sealed partial class Binder
                     had = had.Underlying;
                 }
 
-                block.Statements.Add(new LocalDecl
+                block.WritableStatements.Add(new LocalDecl
                 {
                     Name = held, Init = whole, Line = taken.Line, Col = taken.Col,
                 });
-                block.Statements.AddRange(Deconstruct(
+                block.WritableStatements.AddRange(Deconstruct(
                     taken,
                     new NameExpr { Name = held, Line = taken.Line, Col = taken.Col },
                     taken.Names,
@@ -6525,7 +6525,7 @@ public sealed partial class Binder
             VtableSlot = _r.EqualsSlot,
         };
 
-        same.Params.Add(new ParamSymbol { Name = "other", Type = Type.Any });
+        same.WritableParams.Add(new ParamSymbol { Name = "other", Type = Type.Any });
 
         MethodSymbol hashed = new()
         {
@@ -6543,16 +6543,16 @@ public sealed partial class Binder
             Name = "ReferenceEquals", Returns = Type.Bool, Owner = _rooted, Static = true,
         };
 
-        identical.Params.Add(new ParamSymbol { Name = "a", Type = Type.Any });
-        identical.Params.Add(new ParamSymbol { Name = "b", Type = Type.Any });
+        identical.WritableParams.Add(new ParamSymbol { Name = "a", Type = Type.Any });
+        identical.WritableParams.Add(new ParamSymbol { Name = "b", Type = Type.Any });
 
         MethodSymbol pair = new()
         {
             Name = "Equals", Returns = Type.Bool, Owner = _rooted, Static = true,
         };
 
-        pair.Params.Add(new ParamSymbol { Name = "a", Type = Type.Any });
-        pair.Params.Add(new ParamSymbol { Name = "b", Type = Type.Any });
+        pair.WritableParams.Add(new ParamSymbol { Name = "a", Type = Type.Any });
+        pair.WritableParams.Add(new ParamSymbol { Name = "b", Type = Type.Any });
 
         _rooted.Methods.Add(str);
         _rooted.Methods.Add(same);
@@ -7004,12 +7004,12 @@ public sealed partial class Binder
                 Error(lam, $"parameter {i + 1} of the lambda is passed {Passing(written.IsOut ? "out" : written.IsRef ? "ref" : written.IsReadOnlyRef ? "in" : "")}, "
                          + $"and the delegate's is passed {Passing(delegated.ByRef ? (delegated.ReadOnly ? "in" : "out or ref") : delegated.ReadOnly ? "in" : "")}");
             }
-            run.Params.Add(new ParamSymbol
+            run.WritableParams.Add(new ParamSymbol
             {
                 Name = written.Name, Type = ContextualParameterType(wanted, invoke, i),
                 ByRef = delegated.ByRef, ReadOnly = delegated.ReadOnly,
             });
-            body.Params.Add(new Param
+            body.WritableParams.Add(new Param
             {
                 Name = written.Name, Type = new TypeRef { Name = "" },
                 IsRef = delegated.ByRef && !written.IsOut, IsOut = written.IsOut, IsReadOnlyRef = delegated.ReadOnly,
@@ -7251,7 +7251,7 @@ public sealed partial class Binder
     {
         Block block = new() { Line = value.Line, Col = value.Col };
 
-        block.Statements.Add(returns.IsVoid
+        block.WritableStatements.Add(returns.IsVoid
             ? new ExprStmt { Expr = value, Line = value.Line, Col = value.Col }
             : new ReturnStmt { Value = value, Line = value.Line, Col = value.Col });
 
@@ -7957,7 +7957,7 @@ public sealed partial class Binder
             // -- `TryIt f = Len;` over `bool Len(string s, out int v)`.
             bool isOut = delegated.ByRef && chosen is not null && i < chosen.Params.Count
                       && chosen.Decl is MethodDecl { } declared && i < declared.Params.Count && declared.Params[i].IsOut;
-            made.Params.Add(new Param
+            made.WritableParams.Add(new Param
             {
                 Name = name,
                 Type = new TypeRef { Name = "object", Line = source.Line, Col = source.Col },
@@ -8030,7 +8030,7 @@ public sealed partial class Binder
         {
             string name = "$arg" + i;
             ParamSymbol delegated = invoke.Params[i];
-            made.Params.Add(new Param
+            made.WritableParams.Add(new Param
             {
                 Name = name,
                 Type = new TypeRef { Name = "object", Line = source.Line, Col = source.Col },
@@ -8246,16 +8246,16 @@ public sealed partial class Binder
             };
 
             take.Args.Add(new NameExpr { Name = cursor, Line = fe.Line, Col = fe.Col });
-            inside.Statements.Add(new LocalDecl
+            inside.WritableStatements.Add(new LocalDecl
             {
                 Name = element, Init = take, Line = fe.Line, Col = fe.Col,
             });
-            inside.Statements.AddRange(Deconstruct(
+            inside.WritableStatements.AddRange(Deconstruct(
                 fe,
                 new NameExpr { Name = element, Line = fe.Line, Col = fe.Col },
                 split,
                 seq.Element ?? Type.Error));
-            inside.Statements.Add(fe.Body);
+            inside.WritableStatements.Add(fe.Body);
 
             ForStmt stepping = new()
             {
@@ -8293,11 +8293,11 @@ public sealed partial class Binder
 
             Block whole = new() { Line = fe.Line, Col = fe.Col };
 
-            whole.Statements.Add(new LocalDecl
+            whole.WritableStatements.Add(new LocalDecl
             {
                 Name = walked, Init = fe.Sequence, Line = fe.Line, Col = fe.Col,
             });
-            whole.Statements.Add(stepping);
+            whole.WritableStatements.Add(stepping);
             return whole;
         }
 
@@ -8371,23 +8371,23 @@ public sealed partial class Binder
                                   Received(walked, e))
                           : Type.Error;
 
-                body.Statements.Add(new LocalDecl
+                body.WritableStatements.Add(new LocalDecl
                 {
                     Name = element, Init = Current(),
                     Line = fe.Line, Col = fe.Col,
                 });
-                body.Statements.AddRange(Deconstruct(fe, Named(element), taken, each));
+                body.WritableStatements.AddRange(Deconstruct(fe, Named(element), taken, each));
             }
             else
             {
-                body.Statements.Add(new LocalDecl
+                body.WritableStatements.Add(new LocalDecl
                 {
                     Type = fe.Type, Name = fe.Name, Init = Current(),
                     Line = fe.Line, Col = fe.Col,
                 });
             }
 
-            body.Statements.Add(fe.Body);
+            body.WritableStatements.Add(fe.Body);
 
             Expr moving = Called(Named(walker), "MoveNext");
             if (fast is { } chosen)
@@ -8408,8 +8408,8 @@ public sealed partial class Binder
                     Line = fe.Line, Col = fe.Col,
                 };
 
-                outer.Statements.Add(new LocalDecl { Type = written, Name = held, Init = fe.Sequence, Line = fe.Line, Col = fe.Col });
-                outer.Statements.Add(new LocalDecl
+                outer.WritableStatements.Add(new LocalDecl { Type = written, Name = held, Init = fe.Sequence, Line = fe.Line, Col = fe.Col });
+                outer.WritableStatements.Add(new LocalDecl
                 {
                     Type = new TypeRef { Name = "int", Line = fe.Line, Col = fe.Col },
                     Name = mode,
@@ -8431,7 +8431,7 @@ public sealed partial class Binder
                 });
                 if (chosen.Walker is { } listWalking)
                 {
-                    outer.Statements.Add(new LocalDecl
+                    outer.WritableStatements.Add(new LocalDecl
                     {
                         // NO INITIALISER: read only where the List was taken,
                         // after the one assignment there. A default made a
@@ -8443,12 +8443,12 @@ public sealed partial class Binder
                         Line = fe.Line, Col = fe.Col,
                     });
                 }
-                outer.Statements.Add(new LocalDecl
+                outer.WritableStatements.Add(new LocalDecl
                 {
                     Type = RefOf(Type.ArrayOf(chosen.Element).AsNullable())!, Name = array, Init = Null(), Line = fe.Line, Col = fe.Col,
                 });
-                outer.Statements.Add(new LocalDecl { Type = new TypeRef { Name = "int", Line = fe.Line, Col = fe.Col }, Name = step, Init = Num(-1), Line = fe.Line, Col = fe.Col });
-                outer.Statements.Add(new LocalDecl
+                outer.WritableStatements.Add(new LocalDecl { Type = new TypeRef { Name = "int", Line = fe.Line, Col = fe.Col }, Name = step, Init = Num(-1), Line = fe.Line, Col = fe.Col });
+                outer.WritableStatements.Add(new LocalDecl
                 {
                     Type = RefOf(Close(walk.Returns, Received(seq, walk.Owner ?? had)).AsNullable())!, Name = walker, Init = Null(),
                     Line = fe.Line, Col = fe.Col,
@@ -8460,7 +8460,7 @@ public sealed partial class Binder
                     Else = Set(walker, Called(Named(held), "GetEnumerator")),
                     Line = fe.Line, Col = fe.Col,
                 };
-                outer.Statements.Add(chosen.List is { } listType
+                outer.WritableStatements.Add(chosen.List is { } listType
                     ? new IfStmt
                     {
                         Cond = Is(1),
@@ -8482,7 +8482,7 @@ public sealed partial class Binder
             }
             else
             {
-                outer.Statements.Add(new LocalDecl
+                outer.WritableStatements.Add(new LocalDecl
                 {
                     Name = walker, Init = Called(fe.Sequence, "GetEnumerator"),
                     Line = fe.Line, Col = fe.Col,
@@ -8542,17 +8542,17 @@ public sealed partial class Binder
 
             if (release is null)
             {
-                outer.Statements.Add(stepping);
+                outer.WritableStatements.Add(stepping);
             }
             else
             {
                 Block guarded = new() { Line = fe.Line, Col = fe.Col };
-                guarded.Statements.Add(stepping);
+                guarded.WritableStatements.Add(stepping);
                 Block finish = new() { Line = fe.Line, Col = fe.Col };
                 // Only the interface's enumerator is the loop's to dispose: a
                 // List<E>'s does nothing, and an array has none.
-                finish.Statements.Add(fast is null ? release : new IfStmt { Cond = Is(0), Then = release, Line = fe.Line, Col = fe.Col });
-                outer.Statements.Add(new TryStmt { Body = guarded, Finally = finish, Line = fe.Line, Col = fe.Col });
+                finish.WritableStatements.Add(fast is null ? release : new IfStmt { Cond = Is(0), Then = release, Line = fe.Line, Col = fe.Col });
+                outer.WritableStatements.Add(new TryStmt { Body = guarded, Finally = finish, Line = fe.Line, Col = fe.Col });
             }
             return outer;
         }
@@ -8584,21 +8584,21 @@ public sealed partial class Binder
                      ?? Type.Error;
 
 
-            stepped.Statements.Add(new LocalDecl
+            stepped.WritableStatements.Add(new LocalDecl
             {
                 Name = element, Init = read, Line = fe.Line, Col = fe.Col,
             });
-            stepped.Statements.AddRange(Deconstruct(fe, Named(element), names, each));
+            stepped.WritableStatements.AddRange(Deconstruct(fe, Named(element), names, each));
         }
         else
         {
-            stepped.Statements.Add(new LocalDecl
+            stepped.WritableStatements.Add(new LocalDecl
             {
                 Type = fe.Type, Name = fe.Name, Init = read, Line = fe.Line, Col = fe.Col,
             });
         }
 
-        stepped.Statements.Add(fe.Body);
+        stepped.WritableStatements.Add(fe.Body);
 
         ForStmt loop = new()
         {
@@ -8623,11 +8623,11 @@ public sealed partial class Binder
             Op = UnOp.PostInc, Operand = Named(at), Line = fe.Line, Col = fe.Col,
         });
 
-        outer.Statements.Add(new LocalDecl
+        outer.WritableStatements.Add(new LocalDecl
         {
             Name = over, Init = fe.Sequence, Line = fe.Line, Col = fe.Col,
         });
-        outer.Statements.Add(loop);
+        outer.WritableStatements.Add(loop);
         return outer;
     }
 
@@ -9219,7 +9219,7 @@ public sealed partial class Binder
         MethodSymbol Member(string name, Type returns, params (string Name, Type Type)[] parameters)
         {
             MethodSymbol m = new() { Name = name, Returns = returns, Owner = tuple };
-            foreach ((string n, Type t) in parameters) m.Params.Add(new ParamSymbol { Name = n, Type = t });
+            foreach ((string n, Type t) in parameters) m.WritableParams.Add(new ParamSymbol { Name = n, Type = t });
             tuple.Methods.Add(m);
             return m;
         }
@@ -9324,7 +9324,7 @@ public sealed partial class Binder
                         Name = ExplicitName(face) + "." + want.Name, ExplicitInterface = ExplicitName(face), ExplicitMember = want.Name,
                         Returns = want.Returns, Owner = tuple,
                     };
-                    foreach (ParamSymbol p in want.Params) impl.Params.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
+                    foreach (ParamSymbol p in want.Params) impl.WritableParams.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
                     tuple.Methods.Add(impl);
                 }
                 if (want.VtableSlot >= 0) tuple.InterfaceImplementations[want.VtableSlot] = impl;
@@ -9469,7 +9469,7 @@ public sealed partial class Binder
                 };
                 foreach (ParamSymbol p in want.Params)
                 {
-                    method.Params.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
+                    method.WritableParams.Add(new ParamSymbol { Name = p.Name, Type = p.Type });
                 }
                 made.Methods.Add(method);
             }
