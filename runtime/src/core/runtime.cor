@@ -1375,9 +1375,9 @@ static class Runtime
     /// open, opened by a frame no deeper than ours -- one a throw has not
     /// left -- and room for the block in the chunk being filled: header,
     /// footer and kind written, then the pointer, as Gc.AllocRegion lays a
-    /// block (a scan of a stopped thread sees it whole or not at all). Not
-    /// counted: the statistics send every region allocation the long way,
-    /// which counts it (Gc.FastRegionMask). Anything else -- no thread block
+    /// block (a scan of a stopped thread sees it whole or not at all), and
+    /// counted in the thread's block (Tls.RegionCount, added to
+    /// Gc.RegionBlocks where a region ends). Anything else -- no thread block
     /// yet, no region, a stale one to close, a chunk to grow into, a sampled
     /// allocation -- the long way (AllocRegionSlow). A size the compiler
     /// knows is AllocRegionSized's, put in place.
@@ -1406,6 +1406,11 @@ static class Runtime
                 Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
                 Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
                 Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                // Counted in the thread's block (Tls.RegionCount), added to
+                // Gc.RegionBlocks where a region ends: what says how much a
+                // program makes in its regions.
+                nint counted = tb + (nint)Tls.RegionCount;
+                Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
                 return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
             }
         }
@@ -1420,11 +1425,19 @@ static class Runtime
     /// then the block laid down, header, footer and kind, before the
     /// pointer passes it, so that a scan of the stopped thread (ScanRegion)
     /// sees it whole or not at all. The memory is zero already: a region's
-    /// end clears what it held (Gc.CutBack), as a fresh chunk is. NOT
-    /// COUNTED in the thread's block (Tls.RegionCount): the statistics,
-    /// when asked for, send every region allocation the long way, which
-    /// counts (Gc.FastRegionMask). Everything else is AllocRegionSlow, the
-    /// call AllocRegion's long way is.
+    /// end clears what it held (Gc.CutBack), as a fresh chunk is. Then the
+    /// block counted in the thread's block (Tls.RegionCount), one add.
+    /// Everything else is AllocRegionSlow, the call AllocRegion's long way is.
+    ///
+    /// NOT INSIDE THE ALLOCATOR (Tls.InAlloc), as NextChunk's and CutBack's
+    /// stores are: those change the pointer and the chunk it is in, two
+    /// words a handshake reads together. This changes the pointer alone,
+    /// within the chunk being filled, after the block it passes is whole: a
+    /// scan (ScanRegion, CopyRegion) landing before the store reads the
+    /// chunk to the old pointer, after it to the new one past a whole
+    /// block, and either is an arena as it is. The count is read only by
+    /// this thread at a region's end (CountRegionBlocks) and as it ends
+    /// (ReleaseRegion), never by a handshake.
     public static long AllocRegionSized(nint bytes, nint kind, nint frame, nint need)
     {
         nint tb = (nint)Sys.ThreadBlock() & Gc.FastRegionMask;
@@ -1438,6 +1451,11 @@ static class Runtime
                 Sys.Poke(next - (nint)Gc.BlockFooterBytes, need);
                 Sys.Poke(at + (nint)Gc.BlockKindAt, kind);
                 Sys.Poke(tb + (nint)Tls.RegionAt, next);
+                // Counted in the thread's block (Tls.RegionCount), added to
+                // Gc.RegionBlocks where a region ends: what says how much a
+                // program makes in its regions.
+                nint counted = tb + (nint)Tls.RegionCount;
+                Sys.Poke(counted, (nint)Sys.Peek(counted) + 1);
                 return (long)(nuint)(at + (nint)Gc.BlockHeaderBytes);
             }
         }

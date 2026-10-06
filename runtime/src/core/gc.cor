@@ -3829,17 +3829,15 @@ static class Gc
     public static void FastPathsChanged()
     {
         FastClassMask = _classSize != 0 && !_heapCheck && Runtime.AllocHook == 0 ? (nint)(-1) : (nint)0;
-        FastRegionMask = Runtime.AllocHook == 0 && !StatsAsked && !CountingCollected ? (nint)(-1) : (nint)0;
+        FastRegionMask = Runtime.AllocHook == 0 ? (nint)(-1) : (nint)0;
         FastFreeMask = _classSize != 0 && !_heapCheck && !_verify && !VerifyingFieldFrees && !AllocSamples.Tracking
             && Runtime.FreeLogRing == 0 && IgnoredFrees == 0 && SkippedFreePaths == 0 ? (nint)(-1) : (nint)0;
     }
 
     /// THE SAME FOR AN ALLOCATION IN A REGION (Runtime.AllocRegionSized,
-    /// AllocRegion): all ones but while a sampler counts (AllocHook) or the
-    /// statistics are asked for, when every region allocation takes the long
-    /// way, which counts its blocks (Tls.RegionCount) -- the way in place
-    /// counts nothing. 0 too until the heap starts, which is at the first
-    /// allocation of any kind.
+    /// AllocRegion): all ones but while a sampler counts (AllocHook), whose
+    /// samples the long way takes. 0 too until the heap starts, which is at
+    /// the first allocation of any kind.
     public static nint FastRegionMask;
     public static long _classOf;    // ClassMax / 8 + 1 words: need >> 3 -> class
     static long _classPages;        // Classes words: pages with room, unowned

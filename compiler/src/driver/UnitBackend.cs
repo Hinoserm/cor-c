@@ -390,7 +390,9 @@ public sealed class UnitBackend : IUnitBackend
         foreach (string name in called)
             if (callee(name) is Function body && body.Name == name && !ReferenceEquals(body, function)) tail.Functions.Add(body);
         if (tail.Functions.Count == 1) return;
-        new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0 }.Run(tail);
+        // PlacesAllocations: AllocRegionSized among the bodies, which every
+        // other inliner keeps a call (Inline's pinned).
+        new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
         cleanup.Run(tail);
     }
 
