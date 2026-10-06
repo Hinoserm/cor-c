@@ -16,6 +16,16 @@ public static class RuntimeAbi
     public const string Alloc = "m_Runtime_Alloc_1_" + Word;
     public const string AllocLeaf = "m_Runtime_AllocLeaf_1_" + Word;
     public const string AllocObject = "m_Runtime_AllocObject_1_" + Word;
+    /// <summary>
+    /// THE ALLOCATION IN PLACE (Opt.AllocatorFastPaths): after every pass
+    /// that knows a `new` by its call to the three above, one of a size a
+    /// class holds becomes AllocFastSized, its class's slot and size given,
+    /// put in place; one of a size not known, a call to AllocFast. Both take
+    /// AllocMissed, the call the site was, as their long way.
+    /// </summary>
+    public const string AllocFastSized = "m_Runtime_AllocFastSized_4_" + Word + "_" + Word + "_" + Word + "_" + Word;
+    public const string AllocFast = "m_Runtime_AllocFast_2_" + Word + "_" + Word;
+    public const string AllocMissed = "m_Runtime_AllocMissed_2_" + Word + "_" + Word;
     public const string AllocManual = "m_Runtime_AllocManual_1_" + Word;
     public const string AllocManualObject = "m_Runtime_AllocManualObject_1_" + Word;
     public const string Free = "m_Runtime_Free_1_" + Word;

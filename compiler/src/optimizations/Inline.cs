@@ -119,6 +119,9 @@ public sealed class Inline : IParallelModulePass
     /// <summary>Functions never inlined in this run, by label (the link's first round keeps the allocators).</summary>
     public IReadOnlyCollection<string> Keep { get; init; } = Array.Empty<string>();
 
+    /// <summary>The run that puts Runtime.AllocFastSized in place (AllocatorFastPaths), which every other run keeps a call.</summary>
+    public bool PlacesAllocations { get; init; }
+
     public int Workers { get; set; } = 1;
 
     public void Run(Module m)
@@ -207,6 +210,10 @@ public sealed class Inline : IParallelModulePass
             // What a barrier on a replaced object becomes (ScalarObjects).
             pinned.Add(Escape.ValueBarrier);
         }
+        // THE ALLOCATION PUT IN PLACE AFTER EVERY INLINER (AllocatorFastPaths),
+        // which nothing calls until then: kept by every one, and given to none.
+        if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.Sized);
+        pinned.Add(AllocatorFastPaths.Fast);
         addressTaken.UnionWith(pinned);
         _keepCalls = m.KeepCalls;
 

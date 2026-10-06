@@ -2436,6 +2436,8 @@ static class Gc
     public const long BlockKindAt = KindAt;
     public const long BlockRounding = Overhead + 7;
     public const long BlockSizeMask = SizeMask;
+    /// What a request is rounded by for a size-class block (Runtime.AllocFast).
+    public const long ClassBlockRounding = ClassRounding;
     public const long SmallestBlock = Smallest;
     public const long MostRequest = MaxRequest;
     public const long RegionRecordBytes = RecordBytes;
@@ -3475,8 +3477,7 @@ static class Gc
             Sys.Poke(slot + w, Sys.Peek(free + (nint)KindAt));
             Sys.Poke(free, size);
             Sys.Poke(free + (nint)KindAt, kind);
-            nint counted = tb + (nint)Tls.ClassBytes;
-            Sys.Poke(counted, (nint)Sys.Peek(counted) + size);
+            // Not counted here: the list was, as it was handed over (ClassRefill).
             Sys.Poke(tb + (nint)Tls.InAlloc, 0);
             return free + (nint)HeaderBytes;
         }
@@ -3524,7 +3525,6 @@ static class Gc
                     Sys.Poke(slot + WordSize.Bytes, Sys.Peek(free + KindAt));
                     Sys.Poke(free, size);
                     Sys.Poke(free + KindAt, kind);
-                    Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
                     Sys.Poke(tb + Tls.InAlloc, 0);
                     if (_heapCheck) { CheckMade(free, "class fast path", Zero); CheckList(Sys.Peek(slot + WordSize.Bytes), size, "class fast path"); }
                     return free + HeaderBytes;
@@ -3603,8 +3603,25 @@ static class Gc
 
     public const long ClassMax = 1024;      // the largest block a class holds
     public const long Classes = 39;
-    static long _classSize;         // Classes words: each class's block size
-    static long _classOf;           // ClassMax / 8 + 1 words: need >> 3 -> class
+    // PUBLIC FOR THE ALLOCATION INLINED AT EVERY `new` (Runtime.AllocFast),
+    // which reads them as AllocWord does. Mapped once, at Start, and never
+    // moved: 0 until then, which sends that path to the long way.
+    public static long _classSize;  // Classes words: each class's block size
+    /// THE ONE TEST THE ALLOCATION IN PLACE MAKES (Runtime.AllocFast): the
+    /// thread's class cache, ANDed with this, is 0 -- the slow path -- with
+    /// no cache (none yet, or a handshake took it, which is how a thread is
+    /// sent to answer) and whenever this is: before the heap starts, while
+    /// the heap check wants its guards, and while a sampler counts
+    /// allocations (Runtime.AllocHook). All ones otherwise. A word, so the
+    /// test is a load, an AND and a branch. Set by FastPathsChanged, which
+    /// every change to those calls.
+    public static nint FastClassMask;
+
+    public static void FastPathsChanged()
+    {
+        FastClassMask = _classSize != 0 && !_heapCheck && Runtime.AllocHook == 0 ? (nint)(-1) : (nint)0;
+    }
+    public static long _classOf;    // ClassMax / 8 + 1 words: need >> 3 -> class
     static long _classPages;        // Classes words: pages with room, unowned
     static long _classStep;         // Classes words: ceil(2^32 / the class's size), for OnGrid
     static long _pool;              // empty pages, through their next-page word
@@ -3931,6 +3948,7 @@ static class Gc
             if (returned != 0)
             {
                 HeapChunks.SetPageFree(page, Zero);
+                Charge(tb, HeapChunks.LargestHole(page));
                 HeapChunks.SetLargestHole(page, Zero);
                 Sys.Poke(slot + WordSize.Bytes, returned);
                 return true;
@@ -3946,6 +3964,7 @@ static class Gc
             long more = FormatMore(page, c);
             if (more != 0)
             {
+                Charge(tb, HeapChunks.End(page) - more);
                 Sys.Poke(slot + WordSize.Bytes, more);
                 return true;
             }
@@ -3985,13 +4004,31 @@ static class Gc
         HeapChunks.SetPageFree(page, Zero);
         HeapChunks.SetOwner(page, tb);
         HeapChunks.SetYoung(page, true);
-        // NOT CHARGED HERE: what the thread takes is counted as it takes it
-        // (Tls.ClassBytes). Charged a page at a time, a program touching a
-        // dozen classes was a threshold's worth of pressure at once.
+        // CHARGED AS IT IS HANDED OVER, the whole list (Charge).
+        Charge(tb, HeapChunks.LargestHole(page));
         HeapChunks.SetLargestHole(page, Zero);
         Sys.Poke(slot, page);
         Sys.Poke(slot + WordSize.Bytes, head);
         return head != 0;
+    }
+
+    /// A THREAD'S LIST IS COUNTED AS IT IS HANDED OVER, every block on it,
+    /// into the thread's pending count (Tls.ClassBytes, folded into the
+    /// pressure counter by FoldClassBytes) -- not a block at a time as each
+    /// is taken: the allocation compiled code makes in place (Runtime.
+    /// AllocFast) is then a pop and a header, with no count to add to. What
+    /// the thread hands back untaken goes off it again (RetireClasses); a
+    /// block it frees onto its own list is still on a list it was charged
+    /// for, and is neither counted again nor taken off. Charged a page at a
+    /// time this was once a threshold's worth of pressure at once for a
+    /// program touching a dozen classes -- when a threshold was 256 KB; a
+    /// page's list is a sixteenth of the least nursery now. The bytes are a
+    /// page's free bytes (LargestHole), kept as blocks go on and off its
+    /// list, or what FormatMore just laid out. The heap lock is held.
+    static void Charge(long tb, long bytes)
+    {
+        if (tb == 0 || bytes <= 0) return;
+        Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + bytes);
     }
 
     /// Every page a thread owns given up: what is left of each list goes
@@ -4025,6 +4062,8 @@ static class Gc
                 Sys.Poke(tail + KindAt, HeapChunks.PageFree(page));
                 HeapChunks.SetPageFree(page, head);
                 HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + unused);
+                // Charged as the list was handed over (Charge), never taken.
+                Uncount(tb, unused);
             }
             // A page given up with its list dry but not all laid out: more
             // laid out, so that it goes on its class's list and its room is
@@ -4074,7 +4113,11 @@ static class Gc
         for (long i = 0; i < count; i++)
         {
             long tb = GcThreads.BlockAt(i);
-            if (tb == 0 || tb == self || Sys.Peek(tb + Tls.InAlloc) != 0) continue;
+            // ONLY A THREAD THAT IS BLOCKED (Tls.State): a running one may
+            // have read its class cache just before a handshake took it, and
+            // be about to pop off it (AllocWord, Runtime.AllocFast) -- its
+            // InAlloc not yet set, and its pages not to be given up then.
+            if (tb == 0 || tb == self || Sys.Peek(tb + Tls.InAlloc) != 0 || Sys.Peek(tb + Tls.State) == 0) continue;
             if (Sys.Peek(tb + Tls.Classes) != 0 || Sys.Peek(tb + Tls.ClassesSaved) == 0) continue;
             RetireClasses(tb);
             PagesShed = PagesShed + 1;
@@ -4111,11 +4154,10 @@ static class Gc
         long cache = tb != 0 ? Sys.Peek(tb + Tls.Classes) : 0;
         if (cache == 0 && tb != 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
         long slot = cache + (HeapChunks.PageClass(page) - 1) * (2 * WordSize.Bytes);
-        // ONTO THE THREAD'S OWN LIST, and off its count (Tls.ClassBytes):
-        // a block made and freed in a loop is no pressure at all.
+        // ONTO THE THREAD'S OWN LIST, a list it was charged for (Charge):
+        // a block made and freed in a loop is no pressure past that once.
         if (owner != 0 && owner == tb && cache != 0 && Sys.Peek(slot) == page)
         {
-            Uncount(tb, size);
             Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
             Sys.Poke(slot + WordSize.Bytes, block);
             return;
@@ -4184,8 +4226,6 @@ static class Gc
         Sys.Poke(slot + WordSize.Bytes, Sys.Peek(block + KindAt));
         Sys.Poke(block, size);
         Sys.Poke(block + KindAt, kind);
-        long tb = Sys.ThreadBlock();
-        Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) + size);
         if (_heapCheck) { CheckMade(block, "PopClass", Zero); CheckList(Sys.Peek(slot + WordSize.Bytes), size, "PopClass"); }
         return block + HeaderBytes;
     }
@@ -6517,6 +6557,7 @@ static class Gc
         {
             OutOfMemory();
         }
+        FastPathsChanged();
         MapBarrier(BarrierBytes);
         _markAt = Platform.Map(MarkBytes);
 
@@ -6752,8 +6793,7 @@ static class Gc
                 // WHOLE AS A PAGE'S BLOCK IS (Whole): live, the class's size,
                 // on the class's grid. It has no footer to agree.
                 if ((head & SizeMask) == bytes && (head & FlagFree) == 0 && block + bytes <= HeapChunks.End(page)
-                    && (int)(block - HeapChunks.First(page)) % (int)bytes == 0
-                    && Sys.Peek(tb + Tls.ClassBytes) >= bytes)
+                    && (int)(block - HeapChunks.First(page)) % (int)bytes == 0)
                 {
                     if (VerifyingFieldFrees)
                     {
@@ -6761,7 +6801,7 @@ static class Gc
                     }
                     ZeroWords(block + HeaderBytes, block + bytes);
                     StampClass(block, bytes, FlagFree);
-                    Sys.Poke(tb + Tls.ClassBytes, Sys.Peek(tb + Tls.ClassBytes) - bytes);
+                    // Back on a list the thread was charged for (Charge).
                     Sys.Poke(block + KindAt, Sys.Peek(slot + WordSize.Bytes));
                     Sys.Poke(slot + WordSize.Bytes, block);
                     Frees = Frees + 1;
@@ -7183,7 +7223,8 @@ static class Gc
     // listed must be what the lists hold. The first faults are said, and the
     // process ends with 94. A diagnostic: it walks the whole heap twice a
     // collection.
-    static bool _heapCheck;
+    // Public for Runtime.AllocFast, which leaves a checked heap's guards to AllocWord.
+    public static bool _heapCheck;
     static long _badFrees;
 
     /// The heap check (CheckHeap, before and after every collection) turned
@@ -7342,6 +7383,7 @@ static class Gc
     public static void CheckHeapOn()
     {
         _heapCheck = true;
+        FastPathsChanged();
         HeapChunks.CheckOverlaps = true;
     }
 
