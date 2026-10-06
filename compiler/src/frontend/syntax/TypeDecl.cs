@@ -106,10 +106,11 @@ public sealed class TypeDecl : Node
     /// is a copy of the one deferred (DeferMembersAs), so that what the making
     /// settles about the declaration is said of the one that holds the list.
     /// </summary>
-    internal void DeferMembers(Func<TypeDecl, List<MemberDecl>> make)
+    internal void DeferMembers(Func<TypeDecl, List<MemberDecl>> make, HashSet<string> names)
     {
         _members = null;
         _makeMembers = make;
+        MemberNames = names;
     }
 
     /// <summary>The same deferred members as another copy of this declaration, not made yet either.</summary>
@@ -117,7 +118,17 @@ public sealed class TypeDecl : Node
     {
         _members = null;
         _makeMembers = other._makeMembers;
+        MemberNames = other.MemberNames;
     }
+
+    /// <summary>
+    /// EVERY NAME ITS DEFERRED MEMBERS CAN BE DECLARED UNDER, from its
+    /// template's list (Monomorphiser.MemberNames), so that a lookup of a name
+    /// none of them has is answered without making and declaring them all
+    /// (TypeSymbol.MayHave). Shared by every copy of one template in one
+    /// round, and never written once made. Null for a type never deferred.
+    /// </summary>
+    internal HashSet<string>? MemberNames { get; private set; }
 
     // Made with the declaration, as it always was; null only while deferred.
     private List<MemberDecl>? _members = new();

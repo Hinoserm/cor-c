@@ -133,8 +133,9 @@ public sealed class TypeSymbol
     // EVERY WAY IN TO ITS MEMBERS DECLARES THEM FIRST when they were left
     // for later (DeclareMembersLater): its fields, its methods, its slots and
     // its size, read or written. FindField and FindMethods come through these
-    // too. A write must come through the Writable accessor, never through the
-    // read one, which hands out a shared empty collection while there is none.
+    // too, once MayHave has said the name may be among them. A write must
+    // come through the Writable accessor, never through the read one, which
+    // hands out a shared empty collection while there is none.
     public List<FieldSymbol> Fields
     {
         get
@@ -236,8 +237,55 @@ public sealed class TypeSymbol
         {
             _declareMembers = null;
             declare(this);
+            DeferredDeclared++;
+            DeferredMembersDeclared += (_fields?.Count ?? 0) + (_methods?.Count ?? 0);
         }
     }
+
+    /// <summary>
+    /// How many deferred types had their members declared after all, how
+    /// many members that declared, and how many lookups of a name were
+    /// answered from a deferred type's names without declaring it (MayHave):
+    /// printed with the declaration statistics.
+    /// </summary>
+    public static long DeferredDeclared, DeferredMembersDeclared, ProbesAnswered;
+
+    /// <summary>
+    /// WHETHER A MEMBER OF ITS OWN CAN BE CALLED THIS, asked before looking
+    /// among its own members, without declaring them when they wait to be
+    /// asked for. True for every type whose members are declared, so a
+    /// caller looks as it always did. For one whose members wait, false only
+    /// when its template's names (TypeDecl.MemberNames) have no such name:
+    /// declared, it would have no field or method called this, so the answer
+    /// a look would give -- nothing of its own -- is given without making and
+    /// binding every member of it. ITS OWN ONLY: a base class's member and an
+    /// interface's are its base's and its interfaces' to answer, and every
+    /// caller goes on to ask them as before.
+    ///
+    /// Never no for a name with a `$` (a generic method's copy, an
+    /// initialiser's helper), a `.` (an explicit implementation's whole
+    /// name), or the type's own name (a constructor): those are spelt as the
+    /// copy is declared rather than as its template was written.
+    /// </summary>
+    public bool MayHave(string name)
+    {
+        if (_declareMembers is null || Decl?.MemberNames is not { } names
+            || name.Contains('$') || name.Contains('.') || name == Name || name == Decl.Name
+            || names.Contains(name))
+        {
+            return true;
+        }
+        ProbesAnswered++;
+        return false;
+    }
+
+    /// <summary>
+    /// MayHave(prefix + name + suffix) -- an accessor, a backing field --
+    /// with the name joined only for a type whose members wait, so that a
+    /// lookup on any other type makes no string to ask with.
+    /// </summary>
+    public bool MayHave(string prefix, string name, string suffix)
+        => _declareMembers is null || MayHave(prefix + name + suffix);
 
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<string> NoTypeParams = new();
@@ -414,6 +462,9 @@ public sealed class TypeSymbol
         // is asked of every member access the binder checks.
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
+            // A NAME NONE OF ITS OWN MEMBERS HAS is looked for on its base
+            // without declaring it (MayHave): the walk goes on up either way.
+            if (!t.MayHave(name)) continue;
             foreach (FieldSymbol f in t.Fields)
             {
                 if (f.Name == name)
@@ -434,6 +485,7 @@ public sealed class TypeSymbol
     {
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
+            if (!t.MayHave("<", name, ">")) continue;
             foreach (FieldSymbol f in t.Fields)
             {
                 if (IsBackingName(f.Name, name))
@@ -455,6 +507,7 @@ public sealed class TypeSymbol
 
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
+            if (!t.MayHave(prefix, name, "")) continue;
             foreach (MethodSymbol m in t.Methods)
                 if (IsJoined(m.Name, prefix, name)) found.Add(m);
         }
@@ -478,6 +531,7 @@ public sealed class TypeSymbol
 
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
+            if (!t.MayHave(name)) continue;
             foreach (MethodSymbol m in t.Methods)
                 if (m.Name == name) found.Add(m);
         }

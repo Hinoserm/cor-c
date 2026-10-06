@@ -701,6 +701,12 @@ public sealed partial class Lowering
     /// </summary>
     private MethodSymbol? StructCompareTo(TypeSymbol sym, out bool boxed)
     {
+        // A struct that cannot have one is not declared to say so (TypeSymbol.MayHave).
+        if (!sym.MayHave("CompareTo"))
+        {
+            boxed = true;
+            return null;
+        }
         MethodSymbol? typed = sym.Methods.FirstOrDefault(m => m.Name == "CompareTo" && !m.Static && m.Params.Count == 1
                                                             && !m.Params[0].ByRef && m.Params[0].Type.Symbol == sym);
         boxed = typed is null;

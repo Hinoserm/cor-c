@@ -31,6 +31,9 @@ public sealed class Monomorphiser
 
     /// <summary>Each template's members as this round read them, for the copies it deferred (MakeMembers).</summary>
     private readonly Dictionary<TypeDecl, List<MemberDecl>> _templateMembers = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The names those members are declared under, one set a template a round (MemberNames).</summary>
+    private readonly Dictionary<TypeDecl, HashSet<string>> _templateNames = new(ReferenceEqualityComparer.Instance);
     private readonly List<CompileError> _errors = new();
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
@@ -840,7 +843,12 @@ public sealed class Monomorphiser
                     _templateMembers[template] = read;
                 }
                 List<MemberDecl> members = read;
-                made.DeferMembers(asking => MakeMembers(template, members, args, name, scope, bodies ? asking : null));
+                if (!_templateNames.TryGetValue(template, out HashSet<string>? names))
+                {
+                    names = MemberNames(read);
+                    _templateNames[template] = names;
+                }
+                made.DeferMembers(asking => MakeMembers(template, members, args, name, scope, bodies ? asking : null), names);
                 DeferredSpecialisations++;
                 if (bodies) DeferredWithBodies++;
             }
@@ -948,6 +956,43 @@ public sealed class Monomorphiser
     private bool BodiesLater(Job job)
         => job.Canon is null && !job.External && !_library && !HasStaticState(job.Template)
         && job.Name != CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count);
+
+    /// <summary>
+    /// EVERY NAME A COPY OF THESE MEMBERS IS DECLARED UNDER (Binder.
+    /// DeclareMembersIn), read off the template's list: a copy keeps each
+    /// member's name, its constructors apart, which are named for the copy.
+    /// A field by its name; a property by its backing field and both its
+    /// accessors, whether or not it has them; a method by its name, and an
+    /// explicit implementation by the member it implements as well, which is
+    /// what the matching of an override or a slot compares. MORE THAN IT HAS
+    /// IS HARMLESS -- a name here only means the type is declared to look --
+    /// and what is not here must be nothing it can have. What binding adds
+    /// when it declares the copy, a constructor and initialiser helpers, and
+    /// a generic method's copies, are spelt with the type's name or a `$`,
+    /// and TypeSymbol.MayHave never answers no to either.
+    /// </summary>
+    private static HashSet<string> MemberNames(List<MemberDecl> members)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+        foreach (MemberDecl m in members)
+        {
+            switch (m)
+            {
+                case FieldDecl f:
+                    names.Add(f.Name);
+                    break;
+                case PropertyDecl p:
+                    names.Add("<" + p.Name + ">");
+                    names.Add(NameTable.Accessor("get_", p.Name));
+                    names.Add(NameTable.Accessor("set_", p.Name));
+                    break;
+                default:
+                    names.Add(m.Name);
+                    break;
+            }
+        }
+        return names;
+    }
 
     /// <summary>
     /// A deferred specialisation's members, made now: the rewrite its job
