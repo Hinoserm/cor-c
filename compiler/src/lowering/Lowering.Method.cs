@@ -968,6 +968,7 @@ public sealed partial class Lowering
         {
             Require(values);
         }
+        RequireSequenceRoutines();
         _statics.Add(flag);
 
         Block report = _f.NewBlock("barrier");
@@ -998,6 +999,21 @@ public sealed partial class Lowering
     /// (StoreSequences): asked, on i386, of a runtime with a concurrent
     /// collector's barrier and a card table, which the sequences read.
     /// </summary>
+    /// <summary>
+    /// What the store sequences call (X86Backend, "THE STORE SEQUENCES"):
+    /// Runtime.WriteBarrier, and the three routines that report, store and
+    /// mark the card while a mark is under way. The backend writes the stubs
+    /// only into a module that has all four, and a program compiled whole,
+    /// with no link to keep them, had only the first: its stubs were never
+    /// written, and its calls of them did not link.
+    /// </summary>
+    private void RequireSequenceRoutines()
+    {
+        if (!MakesStoreSequences) return;
+        foreach ((string name, int arity) in new[] { ("WriteBarrier", 2), ("WriteBarrierStore", 2), ("WriteBarrierExchange", 2), ("WriteBarrierCompareExchange", 3) })
+            if (RuntimeMethod(name, arity) is MethodSymbol routine) Require(routine);
+    }
+
     private bool MakesStoreSequences
         => StoreSequences && _t.Name == "x86" && _b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
             && rt.Fields.Any(f => f.Static && f.Name == "Marking") && rt.Fields.Any(f => f.Static && f.Name == "Cards")

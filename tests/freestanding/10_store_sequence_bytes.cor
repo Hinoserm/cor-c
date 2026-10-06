@@ -1,11 +1,11 @@
 // test: the store sequences' bytes, which the kernels' handshakes rely on
 // sources: stdlib/src/System/Threading/interlocked.cor
 // flags-x86: --store-sequences
-// expect-bytes-x86: __corsac_refstore: 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 50 e8 (m_Runtime_WriteBarrier_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3
+// expect-bytes-x86: __corsac_refstore: 83 3d [s_Runtime_Marking] 00 74 11 51 52 50 52 50 e8 (m_Runtime_WriteBarrierStore_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3
 // expect-bytes-x86: __corsac_cardstore: 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3
-// expect-bytes-x86: __corsac_refxchg: 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 50 e8 (m_Runtime_WriteBarrier_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 51 89 c1 89 d0 87 01 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3
-// expect-bytes-x86: __corsac_refcas: 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 51 e8 (m_Runtime_WriteBarrier_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 f0 0f b1 11 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a c3
-// expect-bytes-x86: __corsac_store_sequences: 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 50 e8 (m_Runtime_WriteBarrier_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 50 e8 (m_Runtime_WriteBarrier_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 51 89 c1 89 d0 87 01 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 51 e8 (m_Runtime_WriteBarrier_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 f0 0f b1 11 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a c3
+// expect-bytes-x86: __corsac_refxchg: 83 3d [s_Runtime_Marking] 00 74 0f 51 52 52 50 e8 (m_Runtime_WriteBarrierExchange_2_V$NInt_V$NInt) 83 c4 08 5a 59 c3 51 89 c1 89 d0 87 01 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3
+// expect-bytes-x86: __corsac_refcas: 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 51 e8 (m_Runtime_WriteBarrierCompareExchange_3_V$NInt_V$NInt_V$NInt) 83 c4 0c 5a 59 c3 f0 0f b1 11 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a c3
+// expect-bytes-x86: __corsac_store_sequences: 83 3d [s_Runtime_Marking] 00 74 11 51 52 50 52 50 e8 (m_Runtime_WriteBarrierStore_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3 83 3d [s_Runtime_Marking] 00 74 0f 51 52 52 50 e8 (m_Runtime_WriteBarrierExchange_2_V$NInt_V$NInt) 83 c4 08 5a 59 c3 51 89 c1 89 d0 87 01 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3 83 3d [s_Runtime_Marking] 00 74 10 51 52 50 52 51 e8 (m_Runtime_WriteBarrierCompareExchange_3_V$NInt_V$NInt_V$NInt) 83 c4 0c 5a 59 c3 f0 0f b1 11 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a c3
 // expect-exit: 0
 // expect-output:
 // stored a
@@ -23,10 +23,13 @@
 // 09_store_sequences_run's run, if the change was one it reached.
 //
 // Each stub is read from the image and compared whole, the addresses of
-// Runtime.Marking and Runtime.Cards and the call of Runtime.WriteBarrier
-// included, and the region is the four of them back to back and nothing
-// else. The JE over the report is 16 bytes, the JZ over the card 9: both are
-// in the bytes, so a report or a card made longer without its jump is found.
+// Runtime.Marking and Runtime.Cards and the calls of WriteBarrierStore,
+// WriteBarrierExchange and WriteBarrierCompareExchange included -- which,
+// while a mark is under way, report, store and mark the card inside InAlloc
+// and RET from the stub with their answer -- and the region is the four of
+// them back to back and nothing else. Each JE over the marking call and each
+// JZ over the card is in the bytes, so a call or a card made longer without
+// its jump is found.
 // (The x86-64 image makes no sequences; there the program only runs.)
 
 using System.Threading;

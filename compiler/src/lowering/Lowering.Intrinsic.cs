@@ -250,6 +250,7 @@ public sealed partial class Lowering
                 VReg value = ToWord(Arg(call, target, swap ? 1 : 2));
                 if (MakesStoreSequences)
                 {
+                    RequireSequenceRoutines();
                     VReg seen = swap
                         ? _e.Call(MachineIntrinsicRefExchange, IrTypes.Word, R(at), R(value))!
                         : _e.Call(MachineIntrinsicRefCompareExchange, IrTypes.Word, R(at), R(expect), R(value))!;
