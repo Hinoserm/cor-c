@@ -15313,8 +15313,8 @@ sealed class CreatedComparer<T> : Comparer<T> {
     public override int Compare(T x, T y) { return comparison.Invoke(x, y); }
 }
 
-class DefaultEqualityComparer<T> : IEqualityComparer<T> {
-    public bool Equals(T a, T b) {
+class DefaultEqualityComparer<T> : EqualityComparer<T> {
+    public override bool Equals(T a, T b) {
         // AN OBJECT IS ASKED, as .NET's default comparer asks it: text for a
         // string, its own Equals for anything that has one -- a tuple, a type
         // made of types. A number is the word it is.
@@ -15322,17 +15322,22 @@ class DefaultEqualityComparer<T> : IEqualityComparer<T> {
         return Sys.EqualValues(a, b);
     }
 
-    public int GetHashCode(T value) {
+    public override int GetHashCode(T value) {
         if (Sys.IsObject(value)) { return Sys.KeyHash(value); }
         return (int)Sys.HashValue(value);
     }
 }
 
-class EqualityComparer<T> {
+// AN ABSTRACT CLASS, as .NET's is, so `EqualityComparer<T> same =
+// EqualityComparer<T>.Default;` compiles: Default is typed as the class, not
+// only as the interface it implements.
+abstract class EqualityComparer<T> : IEqualityComparer<T> {
     // ONE, as .NET has one: made at every use, a record's synthesised
     // GetHashCode allocated a comparer for each field it hashed.
-    static readonly IEqualityComparer<T> _default = new DefaultEqualityComparer<T>();
-    public static IEqualityComparer<T> Default => _default;
+    static readonly EqualityComparer<T> _default = new DefaultEqualityComparer<T>();
+    public static EqualityComparer<T> Default => _default;
+    public abstract bool Equals(T a, T b);
+    public abstract int GetHashCode(T value);
 }
 
 /// THE SORT ITSELF, in one place, over a plain array and a length.

@@ -1,0 +1,32 @@
+// test: EqualityComparer<T>.Default is typed as the abstract class
+// expect-exit: 0
+// expect-output:
+// True False
+// True False
+// True
+//
+// .NET declares `public static EqualityComparer<T> Default`, an abstract
+// class implementing IEqualityComparer<T>; the library typed it as the
+// interface, so `EqualityComparer<T> equal = EqualityComparer<T>.Default;`
+// would not convert.
+using System;
+using System.Collections.Generic;
+
+public static class Program
+{
+    static bool Has<T>(T[] items, T item)
+    {
+        EqualityComparer<T> equal = EqualityComparer<T>.Default;
+        foreach (T x in items) if (equal.Equals(x, item)) return true;
+        return false;
+    }
+
+    public static int Main()
+    {
+        Console.WriteLine(Has(new[] { 1, 2, 3 }, 2) + " " + Has(new[] { 1, 2, 3 }, 5));
+        Console.WriteLine(Has(new[] { "a", "b" }, "b") + " " + Has(new[] { "a", "b" }, "c"));
+        IEqualityComparer<string> face = EqualityComparer<string>.Default;
+        Console.WriteLine(face.GetHashCode("xy") == EqualityComparer<string>.Default.GetHashCode("xy"));
+        return 0;
+    }
+}

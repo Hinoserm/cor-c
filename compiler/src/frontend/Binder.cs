@@ -11898,7 +11898,7 @@ public sealed partial class Binder
     private bool NamesConstant(string name)
     {
         if (FindConstant(_thisType, name) is not null || FindText(_thisType, name) is not null) return true;
-        for (string? outerKey = Enclosing((_thisType ?? _lexicalType ?? _scope)?.Key ?? ""); outerKey is not null; outerKey = Enclosing(outerKey))
+        for (string? outerKey = OuterKey(_thisType ?? _lexicalType ?? _scope); outerKey is not null; outerKey = Enclosing(outerKey))
         {
             if (_r.Types.TryGetValue(outerKey, out TypeSymbol? outer)
                 && (FindConstant(outer, name) is not null || FindText(outer, name) is not null))
@@ -11911,7 +11911,59 @@ public sealed partial class Binder
 
     /// <summary>The type this one is written inside, if any.</summary>
     private TypeSymbol? Outer(TypeSymbol t)
-        => Enclosing(t.Key) is { } key && _r.Types.TryGetValue(key, out TypeSymbol? outer) ? outer : null;
+        => OuterKey(t) is { } key && _r.Types.TryGetValue(key, out TypeSymbol? outer) ? outer : null;
+
+    /// <summary>
+    /// The key of the type `t` is written inside, or null at the top level.
+    ///
+    /// A SPECIALISED NESTED TYPE IS NOT NESTED BY ITS KEY: the monomorphiser
+    /// gives every copy a unique top-level name, so `Chunks<int>.Enumerator`
+    /// has no dot to cut, and its members naming the outer class's private
+    /// constants by their bare names found nothing. Its template path still
+    /// says where it was written, and its leading type arguments are the
+    /// outer class's (a nested type takes its outer's parameters first), so
+    /// the outer is the copy of that template over those arguments.
+    /// </summary>
+    private string? OuterKey(TypeSymbol? t)
+    {
+        if (t?.Decl is not { Specialised: true, Template: string template } made
+            || Enclosing(template) is not string outerTemplate)
+        {
+            return Enclosing(t?.Key ?? "");
+        }
+        if (_specialisedOuter.TryGetValue(t, out string? known)) return known;
+        string? found = _r.Types.ContainsKey(outerTemplate) ? outerTemplate
+            : CopyOver(outerTemplate, made, t, inner: false)?.Key;
+        _specialisedOuter[t] = found;
+        return found;
+    }
+
+    /// <summary>
+    /// The copy of `template` whose type arguments and those of `made` (a copy
+    /// itself, read in `context`) agree as far as the shorter list goes: an
+    /// outer class's copy for a nested one's leading arguments, or (`inner`)
+    /// a nested type's copy for its outer's arguments. Null when none was made.
+    /// </summary>
+    private TypeSymbol? CopyOver(string template, TypeDecl made, TypeSymbol context, bool inner)
+    {
+        foreach (TypeSymbol candidate in _r.Types.Values)
+        {
+            if (candidate.Decl is not { Template: string candidateTemplate } other
+                || candidateTemplate != template
+                || (inner ? other.TemplateArgs.Count < made.TemplateArgs.Count
+                          : other.TemplateArgs.Count > made.TemplateArgs.Count)) continue;
+            int count = Math.Min(other.TemplateArgs.Count, made.TemplateArgs.Count);
+            bool same = true;
+            for (int i = 0; i < count && same; i++)
+            {
+                same = MethodSignatures.SameType(Resolve(other.TemplateArgs[i], candidate), Resolve(made.TemplateArgs[i], context));
+            }
+            if (same) return candidate;
+        }
+        return null;
+    }
+
+    private readonly Dictionary<TypeSymbol, string?> _specialisedOuter = new(ReferenceEqualityComparer.Instance);
 
     private Type CheckExpr(Expr e)
     {
@@ -15838,7 +15890,7 @@ public sealed partial class Binder
         // outer -- so consts, static fields, static methods, static
         // properties and nested types (the last already handled by FindType
         // below) are what the walk offers.
-        for (string? outerKey = Enclosing((_thisType ?? _lexicalType ?? _scope)?.Key ?? "");
+        for (string? outerKey = OuterKey(_thisType ?? _lexicalType ?? _scope);
              outerKey is not null;
              outerKey = Enclosing(outerKey))
         {
@@ -16239,6 +16291,17 @@ public sealed partial class Binder
         {
             _r.Resolved[m] = new TypeNameSym(nested);
             return Type.Plain(nested, Prim.Void);
+        }
+
+        // AND THROUGH A COPY OF A GENERIC ONE: `Chunks<int>.Enumerator` is the
+        // copy of the nested template `Chunks.Enumerator` made over the outer's
+        // arguments, since a copy's key is a unique top-level name with no
+        // nested path under it.
+        if (qualifier is TypeNameSym { Symbol.Decl: { Specialised: true, Template: string outerTemplate } outerMade } copyHolder
+            && CopyOver(outerTemplate + "." + m.Name, outerMade, copyHolder.Symbol, inner: true) is TypeSymbol nestedCopy)
+        {
+            _r.Resolved[m] = new TypeNameSym(nestedCopy);
+            return Type.Plain(nestedCopy, Prim.Void);
         }
 
         // Enum member access: State.Idle.

@@ -1,0 +1,52 @@
+// test: a struct nested in a generic class reads the outer class's constants
+// expect-exit: 0
+// expect-output:
+// 2048 2047 5
+// 7
+//
+// A nested type sees its enclosing type's members by their bare names, its
+// private constants included, as C# has it. In a generic class the nested
+// struct's members said 'ChunkShift' is not declared.
+using System;
+using System.Collections.Generic;
+
+public sealed class Chunks<T>
+{
+    private const int ChunkShift = 11, ChunkSize = 1 << ChunkShift, ChunkMask = ChunkSize - 1;
+    private T[][] _chunks = new T[1][];
+    private int _count;
+
+    public void Add(T item)
+    {
+        if (_chunks[0] is null) _chunks[0] = new T[ChunkSize];
+        _chunks[_count >> ChunkShift][_count & ChunkMask] = item;
+        _count++;
+    }
+
+    public Enumerator GetEnumerator() => new Enumerator(this);
+
+    public struct Enumerator
+    {
+        private readonly Chunks<T> _list;
+        private int _at;
+        internal Enumerator(Chunks<T> list) { _list = list; _at = -1; }
+        public T Current => _list._chunks[_at >> ChunkShift][_at & ChunkMask];
+        public bool MoveNext() => ++_at < _list._count;
+        public static int Size => ChunkSize + ChunkMask * 0;
+        public static int Mask() => ChunkMask;
+    }
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        var c = new Chunks<int>();
+        c.Add(3); c.Add(4);
+        int sum = 0;
+        foreach (int x in c) sum += x;
+        Console.WriteLine(Chunks<int>.Enumerator.Size + " " + Chunks<string>.Enumerator.Mask() + " " + (sum - 2));
+        Console.WriteLine(sum);
+        return 0;
+    }
+}
