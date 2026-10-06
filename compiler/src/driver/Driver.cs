@@ -1071,7 +1071,7 @@ public static class Driver
         ManagedLayoutContract.Attach(obj, layouts);
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
         // What the link checks interrupt handlers' calls into other units by.
-        if (module.InterruptFacts is { Count: > 0 } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
+        if (module.InterruptFacts is { } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the

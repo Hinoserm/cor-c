@@ -253,7 +253,8 @@ public sealed partial class Binder
 
             if (CollectInterruptFacts)
             {
-                _r.InterruptFacts = InterruptFactsOf();
+                List<Corsac.Lang.Lto.InterruptNotes.Fact> interrupts = InterruptFactsOf();
+                _r.InterruptFacts = interrupts.Count > 0 ? Corsac.Lang.Lto.InterruptNotes.Encode(interrupts) : null;
             }
         }
         finally

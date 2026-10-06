@@ -32,6 +32,12 @@ public sealed class CallExpr : Expr
     /// <summary>To write: made on first use; almost every node has none.</summary>
     public List<string?> WritableArgNames => _argNames ??= new();
     private List<string?>? _argNames;
+    /// <summary>
+    /// The names consumed (the binder has put the arguments in parameter
+    /// order): the list let go, not emptied, so a call keeps no array of its
+    /// own for names it no longer has.
+    /// </summary>
+    public void ForgetArgNames() => _argNames = null;
     private static readonly List<string?> NoArgNames = new();
 
     /// <summary>

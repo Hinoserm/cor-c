@@ -726,7 +726,16 @@ public sealed partial class Binder
         // and handed on, it was the collector's on every path. A name asked
         // again in this pass is already in the batch, or loaded and still
         // missing: asking again does nothing either way.
-        if (_requireDeclaration is null || _demanded.Contains(key)) return false;
+        // NOT A NAME THE MONOMORPHISER MADE, inside something: `List$Node.
+        // Enumerator`, `Action$__canon.Combine` -- every name a body uses,
+        // tried as a type nested in every copy it is read in. No index has
+        // a key with a '$' in it (DeclarationCatalog.Remembered), and a
+        // dotted one is no simple name it could answer either (Sole), so
+        // asking is no query and can be no demand: it only remembered the
+        // name, here and in the index's table of answers, seventy thousand
+        // long names a large unit, held through lowering. A bare one is
+        // still asked, which records the query its receipt has always had.
+        if (_requireDeclaration is null || key.Contains('$') && key.Contains('.') || _demanded.Contains(key)) return false;
         string kept = key.Substring(0);
         _demanded.Add(kept);
         try { _requireDeclaration(kept); }
@@ -1198,6 +1207,10 @@ public sealed partial class Binder
     /// </summary>
     private void Retire()
     {
+        if (!_freshOnly) { Console.Error.WriteLine("DEMANDED dollar=" + _demanded.Count(x => x.Contains((char)36)) + "/" + _demanded.Where(x => x.Contains((char)36)).Sum(x => (long)x.Length) + " dollarUndotted=" + _demanded.Count(x => x.Contains((char)36) && !x.Contains((char)46)) + " " + _demanded.Count + " chars=" + _demanded.Sum(x => (long)x.Length) + " notnull=" + _notNullPaths.Count + " constraints=" + _constraintsChecked.Count);
+          foreach (var g in _demanded.GroupBy(x => x.Contains('.') ? x[(x.LastIndexOf('.')+1)..] : x).OrderByDescending(g => g.Count()).Take(15)) Console.Error.WriteLine("  DEM " + g.Count() + " " + g.Key + " e.g. " + g.First());
+          foreach (var g in _demanded.GroupBy(x => x.Contains('.') ? x[..x.LastIndexOf('.')] : "").OrderByDescending(g => g.Count()).Take(15)) Console.Error.WriteLine("  DEMNS " + g.Count() + " " + g.Key);
+          foreach (var x in _demanded.Take(30)) Console.Error.WriteLine("  DEMX " + x); }
         _bound = true;
         _boundBodies.Clear();
         _lockSummary.Clear();
@@ -5222,7 +5235,7 @@ public sealed partial class Binder
 
                 md.Init.Args.Clear();
                 md.Init.Args.AddRange(chained.Args);
-                md.Init.WritableArgNames.Clear();
+                md.Init.ForgetArgNames();
                 // A later round finds the names already consumed and makes
                 // no order; the first round's stands.
                 if (chained.ArgumentOrder.Count != 0)
@@ -8153,7 +8166,7 @@ public sealed partial class Binder
     {
         if (c.ArgNames.Count == 0 || c.ArgNames.All(n => n is null))
         {
-            c.WritableArgNames.Clear();
+            c.ForgetArgNames();
             return;
         }
 
@@ -8263,13 +8276,13 @@ public sealed partial class Binder
             (MethodSymbol _, Expr?[] chosen, int _) = fitting.OrderBy(f => f.Filled).First();
             c.Args.Clear();
             c.Args.AddRange(chosen!);
-            c.WritableArgNames.Clear();
+            c.ForgetArgNames();
             return;
         }
 
         Error(c, $"no overload of '{group.Methods[0].Name}' takes arguments named "
                 + string.Join(", ", c.ArgNames.Where(n => n != null).Select(n => $"'{n}'")));
-        c.WritableArgNames.Clear();
+        c.ForgetArgNames();
     }
 
     /// <summary>
@@ -17475,7 +17488,7 @@ public sealed partial class Binder
         string? named = c.ArgNames.Count > 0 ? c.ArgNames[0] : null;
         if (c.Args.Count != wanted || m.TypeArgs.Count > 0
             || (named is not null && named != (m.Name == "Equals" ? "other" : "defaultValue"))) return null;
-        c.WritableArgNames.Clear();
+        c.ForgetArgNames();
         if (!on.IsNullableValue || RefOf(on.Underlying) is not TypeRef inner) return null;
 
         int line = m.Line, col = m.Col;

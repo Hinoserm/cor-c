@@ -6,9 +6,11 @@ public sealed partial class BindResult
     /// <summary>
     /// For a unit compiled on its own (Binder.CollectInterruptFacts): what the
     /// link needs to check its interrupt handlers' calls into other units, a
-    /// fact for every method it binds (Lto.InterruptNotes). Null otherwise.
+    /// fact for every method it binds (Lto.InterruptNotes), already in the
+    /// section's form (InterruptNotes.Encode). Null otherwise, and when it
+    /// binds none.
     /// </summary>
-    public List<Corsac.Lang.Lto.InterruptNotes.Fact>? InterruptFacts { get; set; }
+    public byte[]? InterruptFacts { get; set; }
 
     /// <summary>
     /// How many 64-bit words each type's ancestor mask takes.
@@ -1024,6 +1026,13 @@ internal sealed class ExprFacts
     internal MethodSymbol? Setter;
     internal MethodSymbol? Invoke;
     internal bool? Receiver;
+
+    /// <summary>
+    /// The expression's natural type as spelt (Expr.NaturalType): syntax, not
+    /// a binding's, so it survives every binding's emptying below. Made with
+    /// none of the rest, the facts are read as none (By is no binding's).
+    /// </summary>
+    internal TypeRef? Natural;
 
     /// <summary>This binding's facts about e, or null when it has written none.</summary>
     internal static ExprFacts? Read(Expr e, NodeBinding binding)

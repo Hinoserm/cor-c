@@ -30,7 +30,15 @@ public static class InterruptNotes
     /// </summary>
     public sealed record Fact(string Name, string Display, bool Handler, string? Allocates, string[] Calls);
 
-    public static void Attach(ObjectFile obj, IReadOnlyList<Fact> facts)
+    public static void Attach(ObjectFile obj, IReadOnlyList<Fact> facts) => Attach(obj, Encode(facts));
+
+    /// <summary>
+    /// The facts as the section holds them. A compiler keeps them so from the
+    /// end of binding to the writing of its object: as records, every name a
+    /// string and every list an array, they were twice the section's size,
+    /// held through the whole of lowering.
+    /// </summary>
+    public static byte[] Encode(IReadOnlyList<Fact> facts)
     {
         using MemoryStream stream = new();
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
@@ -47,8 +55,14 @@ public static class InterruptNotes
                 foreach (string call in f.Calls) writer.Write(call);
             }
         }
+        return stream.ToArray();
+    }
+
+    /// <summary>Facts already in the section's form (Encode).</summary>
+    public static void Attach(ObjectFile obj, byte[] encoded)
+    {
         Section section = new(SectionName, SectionKind.Note) { Align = 1 };
-        section.Bytes.AddRange(stream.ToArray());
+        section.Bytes.AddRange(encoded);
         obj.Sections.Add(section);
     }
 

@@ -246,6 +246,10 @@ public sealed class TypeDecl : Node
     /// <summary>The using directives of the file this was written in.</summary>
     public FileScope? Scope { get; set; }
 
+    /// <summary>The file it was written in (Node.File): a declaration's is its own field.</summary>
+    public override string File { get => _file; set => _file = value; }
+    private string _file = "";
+
     /// <summary>
     /// Whether this came from the CLASS LIBRARY rather than from the program.
     ///
