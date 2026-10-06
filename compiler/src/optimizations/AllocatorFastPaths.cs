@@ -112,8 +112,8 @@ public static class AllocatorFastPaths
 
     /// <summary>
     /// Each allocation call of `f` made AllocFastSized (a constant size a
-    /// class holds) or AllocFast (a size not known); whether any became
-    /// AllocFastSized, the one to put in place.
+    /// class holds) or AllocFast (a size not known); whether any was, both
+    /// to be put in place.
     /// </summary>
     public static bool Retarget(Function f)
     {
@@ -146,6 +146,7 @@ public static class AllocatorFastPaths
                     Operands = { i.Operands[0], new ImmOperand(kind, IrTypes.Word) },
                     Line = i.Line,
                 };
+                sized = true;
             }
         }
         return sized;
@@ -167,6 +168,10 @@ public static class AllocatorFastPaths
         Module tail = new(local.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = local.NeedsHeap };
         tail.Functions.Add(function);
         tail.Functions.Add(fast);
+        // AND THE ONE OF A SIZE NOT KNOWN, where its body is to be had: a
+        // call to it otherwise, as before.
+        if (function.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee == Fast))
+            && body(Fast) is Function sized && sized.Name == Fast) tail.Functions.Add(sized);
         new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
         cleanup.Run(tail);
     }
@@ -218,10 +223,11 @@ public sealed class InlineAllocators : IModulePass
         // AllocFast too, which sites of a size not known are made to call.
         if (fast is not null && m.Functions.Any(f => f.Name == AllocatorFastPaths.Fast))
         {
+            Function? unsized = m.Functions.FirstOrDefault(f => f.Name == AllocatorFastPaths.Fast);
             foreach (Function f in m.Functions.ToArray())
             {
-                if (ReferenceEquals(f, fast)) continue;
-                AllocatorFastPaths.Run(f, m, name => name == AllocatorFastPaths.Sized ? fast : null, cleanup);
+                if (ReferenceEquals(f, fast) || ReferenceEquals(f, unsized)) continue;
+                AllocatorFastPaths.Run(f, m, name => name == AllocatorFastPaths.Sized ? fast : name == AllocatorFastPaths.Fast ? unsized : null, cleanup);
             }
         }
         // And a region's allocation of a size known, where the region pass
