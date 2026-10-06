@@ -508,6 +508,10 @@ static class Platform
         Gc.WorkerCountHook = Sys.AddressOf(Platform.CollectorWorkers);
         Gc.WorkerStartHook = Sys.AddressOf(Platform.StartCollectorWorker);
         Gc.WorkerQuietHook = Sys.AddressOf(Platform.QuietWorker);
+        // And its statics read by their cards in a minor cycle: a user-mode
+        // program's statics take a reference only through a store the
+        // compiler marks (Gc.ScanStatics).
+        Gc.StaticsByCards = true;
         Sys.Poke(block + Tls.Self, block);
 
 #if TARGET_AMD64

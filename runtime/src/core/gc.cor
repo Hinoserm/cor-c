@@ -312,6 +312,10 @@ static class Gc
     // the kilobytes of old chunks' cards, of young chunks' (by block), the
     // blocks the stacks held, and the stacks and registers themselves.
     public static long OldCardWords;
+
+    /// The words of the statics a minor collection read by their cards, and
+    /// the words it would have read whole (Gc.ScanStatics).
+    public static long StaticCardWords, StaticWordsSkipped;
     public static long YoungCardWords;
     public static long HeldWords;
     public static long StackWords;
@@ -1547,6 +1551,86 @@ static class Gc
         }
     }
 
+    // ---- the statics by their cards ----------------------------------------
+    //
+    // A MINOR COLLECTION READS THE STATICS AS IT READS AN OLD CHUNK: only the
+    // kilobytes whose cards a store set since the last cycle. A young object
+    // a static holds was put there since the last cycle -- it was made since
+    // -- and every store of a reference into a static marks its card: the
+    // compiler marks it after the store as it does a field's, in the
+    // collector's and the runtime's own classes too (Lowering.CardMarkAt),
+    // Interlocked's exchanges with it, a struct copied in for each reference
+    // in it. A static set before the cards existed is set before the first
+    // collection, which is major. What holds references in the statics and
+    // is written without a store the compiler sees is read whole every time:
+    // the main thread's block (Tls), where the thread's statics table, its
+    // async context and the rest are poked; and every range registered as
+    // roots (GcRoots.Register) is scanned whole as before. A major collection
+    // reads them all.
+    //
+    // ONLY WHERE THE PLATFORM SAYS SO (StaticsByCards): a user-mode Linux
+    // program, whose statics are written by compiled code alone. A kernel's
+    // may be written by hand at ring 0, and reads its statics whole until
+    // its platform sets this.
+
+    /// Set by a platform whose statics take a reference only through a store
+    /// the compiler card-marks; false reads them whole at every collection.
+    public static bool StaticsByCards;
+
+    // Whether this cycle reads the statics by their cards: minor, with
+    // generations, a platform that allows it, and no census -- whose roots
+    // are each attributed, and read whole.
+    static bool StaticsCarded() => _minor && _generational && StaticsByCards && !_census && Runtime.Cards != 0 && _taken != 0;
+
+    /// AT THE SNAPSHOT, with TakeCards: the statics' set cards cleared, and
+    /// for a minor cycle moved into the taken table to be read (ScanStatics).
+    /// A store after this sets its card for the next cycle; one between this
+    /// and the scan is the barrier's, as an old chunk's is.
+    static void TakeStaticCards(bool minor)
+    {
+        if (!StaticsByCards || Runtime.Cards == 0 || _taken == 0) return;
+        long cards = Runtime.Cards;
+        bool take = StaticsCarded();
+        long first = (Sys.DataStart() & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((Sys.DataEnd() - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        for (long card = first; card <= last; card++)
+        {
+            if (Sys.PeekByte(cards + card) == 0) continue;
+            Sys.PokeByte(cards + card, 0);
+            if (take) Sys.PokeByte(_taken + card, 1);
+        }
+    }
+
+    /// The statics [from, to) marked from: whole, or -- a minor cycle that
+    /// may (StaticsCarded) -- the kilobytes whose cards were taken at the
+    /// snapshot, and the main thread's block whole.
+    public static void ScanStatics(long from, long to)
+    {
+        if (!StaticsCarded())
+        {
+            ScanRootsAttributed(from, to, 2, false);
+            return;
+        }
+        long block = Sys.MainThreadBlock();
+        if (block >= from && block < to) ScanRange(block, block + Tls.Bytes);
+        long first = (from & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((to - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        long read = 0;
+        for (long card = first; card <= last; card++)
+        {
+            if (Sys.PeekByte(_taken + card) == 0) continue;
+            Sys.PokeByte(_taken + card, 0);
+            long low = card << Runtime.CardShift;
+            long high = low + (1 << Runtime.CardShift);
+            if (low < from) low = from;
+            if (high > to) high = to;
+            ScanRange(low, high);
+            read = read + (high - low);
+        }
+        StaticCardWords = StaticCardWords + read / WordSize.Bytes;
+        StaticWordsSkipped = StaticWordsSkipped + (to - from - read) / WordSize.Bytes;
+    }
+
     /// Flags every card an old block lies in, for TakeCards -- a leaf holds
     /// no reference and flags none.
     static void OldCards(long block, long size)
@@ -2727,7 +2811,11 @@ static class Gc
                 long size = c + TrailerBytes - ChunkStart(c);
                 if (keeping && (keep == chunk || kept + size <= budget))
                 {
-                    if (filled > 0) Sys.MemorySet(ChunkStart(c), 0, filled);
+                    // NOT CLEARED NOW: how far it is dirty is written down
+                    // (SpareDirty), and cleared as the arena moves into it
+                    // (NextChunk). A spare handed back later, or with its
+                    // thread's arena, is never cleared at all.
+                    if (filled > 0 && ChunkStart(c) + filled > SpareDirty(c)) Sys.Poke(c + SpareDirtyAt * w, ChunkStart(c) + filled);
                     Sys.Poke(c + 3 * w, ChunkStart(c));
                     kept = kept + size;
                     keep = c;
@@ -2745,6 +2833,21 @@ static class Gc
             DropChunks(tb, keep);
         }
         return freed;
+    }
+
+    // A SPARE'S DIRTY TOP, in a word of its trailer only the first chunk uses
+    // otherwise (its lowest start; a spare is never the first): how far its
+    // bytes were left as its regions left them, its start when it is clean.
+    // Nothing reads a spare's bytes -- every walk stops at the chunk being
+    // filled (ScanRegion, CopyRegion, RegionWords), and a spare is filled to
+    // its first byte (ChunkTop) -- until the arena moves into it, which
+    // clears them first (NextChunk).
+    const long SpareDirtyAt = 4;
+
+    static long SpareDirty(long chunk)
+    {
+        long dirty = Sys.Peek(chunk + SpareDirtyAt * WordSize.Bytes);
+        return dirty > ChunkStart(chunk) && dirty <= chunk ? dirty : ChunkStart(chunk);
     }
 
     /// The bytes of spare chunks an arena keeps past the one being filled
@@ -2770,7 +2873,15 @@ static class Gc
             next = 0;
         }
         if (next == 0) next = MapChunk(tb, need, exact);
-        else ArenaSparesReused = ArenaSparesReused + 1;
+        else
+        {
+            ArenaSparesReused = ArenaSparesReused + 1;
+            // The spare's bytes cleared now that they are to be handed out
+            // (SpareDirty): a fresh chunk is zero, and so must this be.
+            long dirty = SpareDirty(next);
+            if (dirty > ChunkStart(next)) Sys.MemorySet(ChunkStart(next), 0, dirty - ChunkStart(next));
+            Sys.Poke(next + SpareDirtyAt * WordSize.Bytes, ChunkStart(next));
+        }
         if (next == 0) return false;
         // How far the chunk left behind is filled, before it stops being the
         // one the bump pointer is in.
@@ -6185,6 +6296,8 @@ static class Gc
         SayNumber("gc: cards taken ", TakenCards);
         SayNumber("gc: card words ", YoungCardWords);
         SayNumber("gc: old card words ", OldCardWords);
+        SayNumber("gc: static card words ", StaticCardWords);
+        SayNumber("gc: static words skipped ", StaticWordsSkipped);
         // The pressure counter's total is what went out and did not come back
         // by hand: a byte freed by the program is taken off it again. What was
         // handed out, all of it, is that and the program's frees together.
@@ -11662,6 +11775,7 @@ static class Gc
         if (_generational)
         {
             TakeCards(_minor);
+            TakeStaticCards(_minor);
         }
     }
 
@@ -13559,7 +13673,7 @@ static class GcRoots
         }
         // And its region arena, as every other thread's is with its stack.
         if (self != 0) Gc.ScanRegion(self);
-        Gc.ScanRootsAttributed(Sys.DataStart(), Sys.DataEnd(), 2, false);
+        Gc.ScanStatics(Sys.DataStart(), Sys.DataEnd());
 
         long i = 0;
 
