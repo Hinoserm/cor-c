@@ -394,6 +394,13 @@ static class Gc
     // cannot mark -- leaves its card set for the next cycle. Read and cleared
     // in the cycle's marking (ScanTakenCards).
     static long _taken;
+    // THE CARDS A PAGE'S OLD BLOCKS LIE IN, a byte a card as the cards are,
+    // written as each page is swept (SweepPage, SweepPageAlone): what a
+    // minor cycle's snapshot read off every young page's blocks one by one
+    // (OldCards), kept instead from the sweep that made them old, so that
+    // the snapshot need not walk the pages at all (_pagesUnwalked). 0 when
+    // there is none to be had: the pages are walked.
+    static long _oldCards;
 
     static bool _verifyGenerations;
     static long _verifyReports;
@@ -625,6 +632,7 @@ static class Gc
             return;
         }
         _taken = taken;
+        _oldCards = Platform.MapLazy(CardTableBytes);
         _held = held;
         _holding = holding;
         Runtime.Cards = cards;
@@ -654,6 +662,7 @@ static class Gc
         long last = ((at + bytes - 1) & WordSize.AddressMask) >> Runtime.CardShift;
         Platform.Commit(cards + first, last - first + 1);
         if (_taken != 0) Platform.Commit(_taken + first, last - first + 1);
+        if (_oldCards != 0) Platform.Commit(_oldCards + first, last - first + 1);
     }
 
     /// Whether the cycle about to run may be minor: there has been a major
@@ -1502,7 +1511,11 @@ static class Gc
         long chunk = HeapChunks.SnapshotChunk(0);
         while (chunk != 0)
         {
-            bool young = HeapChunks.StartsCycle(chunk) == _cycle;
+            // A page this cycle did not walk (_pagesUnwalked): young by its
+            // flag, and its old blocks' cards in _oldCards, which its last
+            // sweep wrote.
+            bool unwalked = _pagesUnwalked && HeapChunks.PageClass(chunk) != 0;
+            bool young = unwalked ? HeapChunks.IsYoung(chunk) : HeapChunks.StartsCycle(chunk) == _cycle;
             long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
             long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
             while (card <= last)
@@ -1523,7 +1536,7 @@ static class Gc
                 }
                 else
                 {
-                    bool old = Sys.PeekByte(_taken + card) == 2;
+                    bool old = unwalked ? Sys.PeekByte(_oldCards + card) != 0 : Sys.PeekByte(_taken + card) == 2;
                     bool keep = set && (old || BufferOverlaps(card << Runtime.CardShift, (card + 1) << Runtime.CardShift));
                     Sys.PokeByte(_taken + card, keep ? 1 : 0);
                 }
@@ -1675,7 +1688,9 @@ static class Gc
     {
         long first = HeapChunks.First(chunk);
         long end = HeapChunks.End(chunk);
-        bool indexed = _snapshots && HeapChunks.StartsCycle(chunk) == _cycle;
+        // A page is read block by block by its class whatever its start
+        // table (ScanCardBlocks): only its old blocks, walked or not.
+        bool indexed = _snapshots && (HeapChunks.StartsCycle(chunk) == _cycle || _pagesUnwalked && HeapChunks.PageClass(chunk) != 0);
         long card = (first & WordSize.AddressMask) >> Runtime.CardShift;
         long last = ((end - 1) & WordSize.AddressMask) >> Runtime.CardShift;
         long taken = 0;
@@ -1831,7 +1846,7 @@ static class Gc
             long bits = Sys.Peek(map + (1 + index / 32) * w) & 0xFFFFFFFF;
             if (((bits >> (int)(index & 31)) & 1) != 0)
             {
-                MarkWord((nuint)Sys.Peek(payload + index * w), local);
+                MarkRefW((nuint)Sys.Peek(payload + index * w), local);
             }
             index = index + 1;
         }
@@ -4710,6 +4725,7 @@ static class Gc
         bool captured = step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == first;
         if (captured || HeapChunks.Owner(page) != 0)
         {
+            OldCardsOfPage(page, 1);
             if (!captured) UnmarkRange(first, end);
             _sweepLive = _sweepLive + HeapChunks.LiveBlocks(page);
             _sweepLiveBytes = _sweepLiveBytes + (end - first);
@@ -4725,6 +4741,7 @@ static class Gc
         bool stillYoung = false;
         long block = first;
         long run = 0;           // the first of the dead blocks not yet cleared (ClearDeadRun)
+        OldCardsOfPage(page, 0);
         while (block + size <= end)
         {
             long word = Sys.Peek(block);
@@ -4757,6 +4774,7 @@ static class Gc
                 if (_generational && (word & FlagMark) != 0)
                 {
                     if (word != (size | FlagMark | FlagScan)) StampClass(block, size, FlagMark | FlagScan);
+                    OldCardsOfBlock(block, size);
                 }
                 else
                 {
@@ -4856,6 +4874,7 @@ static class Gc
         bool concurrent = _concurrent;
         nuint block = first;
         nuint run = 0;          // the first of the dead blocks not yet cleared (ClearDeadRun)
+        OldCardsOfPage(page, 0);
         while (block + size <= end)
         {
             nuint word = PeekW(block);
@@ -4892,6 +4911,7 @@ static class Gc
                 if (generational && marked)
                 {
                     if (word != oldHeader) Sys.Poke((long)block, (long)oldHeader);
+                    OldCardsOfBlock((long)block, sizeLong);
                 }
                 else
                 {
@@ -4924,6 +4944,32 @@ static class Gc
         HeapChunks.SetYoung(page, stillYoung);
         HeapChunks.SetOwner(page, (long)collected);
         HeapChunks.SetSwept(page, true);
+    }
+
+    /// A page's old-block cards (_oldCards) all cleared, as its sweep begins,
+    /// or all set: a page a thread owns, which the sweep does not walk and
+    /// whose marked blocks stay old, is taken to have an old block in every
+    /// kilobyte -- a card read for nothing costs a read, a card missed costs
+    /// a young object swept from under an old one.
+    static void OldCardsOfPage(long page, long value)
+    {
+        if (_oldCards == 0) return;
+        long first = (page & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((HeapChunks.Limit(page) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        Sys.MemorySet(_oldCards + first, (int)value, last - first + 1);
+    }
+
+    /// An old block's cards set in _oldCards (a leaf's none: it holds no reference).
+    static void OldCardsOfBlock(long block, long size)
+    {
+        if (_oldCards == 0 || Sys.Peek(block + KindAt) == KindLeaf) return;
+        long card = (block & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((block + size - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        while (card <= last)
+        {
+            Sys.PokeByte(_oldCards + card, 1);
+            card = card + 1;
+        }
     }
 
     /// A RUN OF DEAD BLOCKS OF A PAGE, [run, stop), cleared at once and laid
@@ -8898,6 +8944,12 @@ static class Gc
     static long SnapshotBlock(long at)
     {
         long chunk = HeapChunks.OfSnapshot(at);
+        // A page by its class, as the marker finds it, where the pages were
+        // not walked for their start bits (_pagesUnwalked).
+        if (chunk != 0 && _pagesUnwalked && HeapChunks.PageClass(chunk) != 0)
+        {
+            return (long)PageBlockW((nuint)chunk, (nuint)at, (nuint)HeapChunks.PageClass(chunk));
+        }
 
         if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle)
         {
@@ -9519,12 +9571,48 @@ static class Gc
     /// (TailIn). It is queued with PagedBit set in its address -- eight-
     /// aligned, the low bits are free -- and whoever pops it reads the bit
     /// back (Untag) rather than look the chunk up again for every block.
+    // A CALL OF ITS OWN, so that what calls it stays small enough to be put
+    // in place in the scan loops (MarkRefW): put into MarkRefW itself, it
+    // made that a call, and every null word a scan met paid for one.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void MarkWord(nuint at, nuint local)
     {
         if (CountMarks) MarkCalls = MarkCalls + 1;
         nuint block;
         nuint tail;
-        if (_snapshots)
+        nuint slots = _markSlots;
+        if (slots != 0)
+        {
+            // ONE LOAD FOR THE CHUNK, by the word's 4 KB (HeapChunks.Of's
+            // table): 0 for a null, a number, a code or static address --
+            // most of the words a scan meets -- and for a chunk not mapped.
+            // Where OfSnapshotW searched the snapshot's chunks from a word per
+            // 64 KB and read each one's limit. No chunk is given back while a
+            // mark runs (Free and the pool's drain refuse then, and the sweep
+            // comes after), and one made since holds only newcomers: a page's
+            // are refused by their headers or marked and kept, a mixed
+            // chunk's by its start table, which is not this cycle's.
+            nuint chunk = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
+            block = 0;
+            tail = 0;
+            if (chunk != 0)
+            {
+                nuint cls = PeekW(chunk + (nuint)HeapChunks.ClassAt);
+                if (cls != 0 && !_concurrent)
+                {
+                    block = PageBlockW(chunk, at, cls);
+                }
+                else if (at < PeekW(chunk + (nuint)HeapChunks.LimitAt))
+                {
+                    // A mixed chunk's block by its start bits; and a page's
+                    // too in a cycle beside running threads, whose newcomers
+                    // only the start bits tell (PageBlockW).
+                    block = SnapshotBlockInW(chunk, at);
+                    tail = cls != 0 ? (nuint)0 : (nuint)FooterBytes;
+                }
+            }
+        }
+        else if (_snapshots)
         {
             nuint chunk = HeapChunks.OfSnapshotW(at);
             block = chunk == 0 ? 0 : SnapshotBlockInW(chunk, at);
@@ -9569,6 +9657,60 @@ static class Gc
         if (tail == 0) block = block | (nuint)PagedBit;
         if (local != 0) PushLocal(local, block);
         else PushGreyW(block);
+    }
+
+    /// THE BLOCK OF A SIZE-CLASS PAGE A WORD POINTS INTO, by its class: the
+    /// offset times the class's reciprocal (OnGrid's), with no start bits
+    /// read and no division. The candidate is the block holding the word a
+    /// header below `at` -- a payload pointer is one past its header, and
+    /// one past a payload's end is still its block, as SnapshotBlockInW has
+    /// it -- and it is one only if its header says the class's size: the
+    /// page's tail not yet laid out, its header, its start table, are not.
+    /// Free blocks pass here and are refused by the mark (MarkFlagsW).
+    ///
+    /// NO START BITS: ONLY WITH THE WORLD STOPPED (MarkWord asks it only when
+    /// the cycle is not concurrent), when every block a page holds was there
+    /// at the snapshot -- the start bits would say the same of each, and
+    /// need not be written (BuildBlockAnchors, _pagesUnwalked). Beside
+    /// running threads a page's newcomers are told by their missing start
+    /// bits, which this cannot see. In a minor cycle a page not walked holds
+    /// old blocks only, marked already, and free ones: the mark refuses both.
+    static nuint PageBlockW(nuint page, nuint at, nuint cls)
+    {
+        nuint first = page + (nuint)HeapChunks.FirstAt;
+        nuint highest = (at - (nuint)HeaderBytes) & ~(nuint)7;
+        if (at < first + (nuint)HeaderBytes || highest >= PeekW(page + (nuint)HeapChunks.EndAt))
+        {
+            return 0;
+        }
+        nint c = (nint)cls - 1;
+        nuint size = PeekW((nuint)_classSize + (nuint)c * (nuint)WordSize.Bytes);
+        long offset = (long)(highest - first);
+        // Under 2^16 in a page, as OnGrid requires for the floor to be exact.
+        if (offset >= 0x10000) return 0;
+        long quotient = (offset * Sys.Peek(_classStep + (long)c * WordSize.Bytes)) >> 32;
+        nuint block = first + (nuint)quotient * size;
+        if ((PeekW(block) & ~(nuint)7) != size || at > block + size)
+        {
+            return 0;
+        }
+        return block;
+    }
+
+    /// The marker's 4 KB table (HeapChunks.SlotTable) while the snapshot is
+    /// whole (BuildBlockAnchors), else 0: MarkWord's way in, and MarkRefW's.
+    static nuint _markSlots;
+
+    /// A word of a block being scanned, marked from: those that lie in no
+    /// chunk -- null above all -- turned away by one load before the call.
+    static void MarkRefW(nuint at, nuint local)
+    {
+        nuint slots = _markSlots;
+        if (slots != 0 && PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) == 0)
+        {
+            return;
+        }
+        MarkWord(at, local);
     }
 
     /// The bit a queued block carries when it lies in a size-class page and
@@ -9761,7 +9903,7 @@ static class Gc
 
         while (p < to)
         {
-            MarkWord(PeekW(p), local);
+            MarkRefW(PeekW(p), local);
             p = p + w;
         }
     }
@@ -9823,7 +9965,7 @@ static class Gc
             {
                 if ((bits & 1) != 0 && at + w <= end)
                 {
-                    MarkWord(PeekW(at), local);
+                    MarkRefW(PeekW(at), local);
                 }
                 bits = bits >> 1;
                 at = at + w;
@@ -10731,6 +10873,8 @@ static class Gc
         _stamping = false;
         HeapChunks.SetBlockAnchorsActive(false);
         _snapshots = false;
+        _markSlots = 0;
+        _pagesUnwalked = false;
         _concurrent = false;
         _collecting = false;
         // The marks just cleared may have been an old block's: only a major
@@ -10789,6 +10933,8 @@ static class Gc
         _sweeping = false;
         RestartRecycling();
         _snapshots = false;
+        _markSlots = 0;
+        _pagesUnwalked = false;
         _concurrent = false;
         ShedPages();
 
@@ -10896,7 +11042,10 @@ static class Gc
             long end = HeapChunks.End(chunk);
             long tail = TailIn(chunk);
 
-            if (_snapshots)
+            // A page this cycle did not walk has no start bits of this
+            // cycle: its blocks by their chain, below, as a chunk's are
+            // without a snapshot.
+            if (_snapshots && !(_pagesUnwalked && HeapChunks.PageClass(chunk) != 0))
             {
                 block = HeapChunks.StartsCycle(chunk) == _cycle ? HeapChunks.NextStart(chunk, block) : 0;
 
@@ -10938,6 +11087,12 @@ static class Gc
                     }
                     block = block + size;
                 }
+            }
+            if (_snapshots)
+            {
+                which = which + 1;
+                chunk = HeapChunks.SnapshotChunk(which);
+                continue;
             }
             chunk = HeapChunks.Next(chunk);
         }
@@ -11285,6 +11440,20 @@ static class Gc
         // sets them. Listed in the walk below, done after it (SnapshotTogether).
         bool together = !stepping && Workers > 0 && !_census && !_heapCheck && !_verify && !_deadCensus
                      && HeapChunks.HeapBytes >= WorkersWorthBytes && SnapshotQueue();
+        // A MINOR CYCLE WITH THE WORLD STOPPED WALKS NO PAGE. A page's walk
+        // wrote each block's start bit, flagged the cards its old blocks lie
+        // in (OldCards), and -- in a major cycle -- took their marks off. The
+        // marker finds a page's blocks by its class now (PageBlockW), with
+        // nothing made since the snapshot to tell apart; the old blocks'
+        // cards are kept as each page is swept (_oldCards); and a minor
+        // cycle takes no marks off. So only a major cycle, one beside
+        // running threads (whose newcomers only start bits tell), or one
+        // checking or counting walks them. A page left so keeps the start
+        // table of an earlier cycle, which everything that reads one tells
+        // by its cycle (StartsCycle) and takes the page by its class instead.
+        _pagesUnwalked = _minor && !stepping && _oldCards != 0 && !_census && !_deadCensus && !_heapCheck
+                      && !_verify && !_verifyGenerations && !VerifyHeap && !VerifyMarks && _referencesEnd == 0
+                      && HeapChunks.SlotTable != 0 && WordSize.Bytes == 4;
         _snapCount = 0;
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
@@ -11295,6 +11464,12 @@ static class Gc
             // blocks are all old, and old is kept.
             if (_minor && !HeapChunks.IsYoung(chunk))
             {
+                chunk = HeapChunks.Next(chunk);
+                continue;
+            }
+            if (_pagesUnwalked && HeapChunks.PageClass(chunk) != 0)
+            {
+                PagesUnwalked = PagesUnwalked + 1;
                 chunk = HeapChunks.Next(chunk);
                 continue;
             }
@@ -11377,6 +11552,13 @@ static class Gc
         if (_snapCount > 0 && !SnapshotTogether()) every = false;
         HeapChunks.SetBlockAnchorsActive(true);
         _snapshots = every;
+        // THE MARKER'S LOOKUP BY THE 4 KB TABLE (MarkWord), where the
+        // snapshot is whole and no quarantined range's references are being
+        // counted -- which wants every word that is not the heap's said.
+        _markSlots = 0;
+#if !TARGET_64BIT
+        if (every && _referencesEnd == 0) _markSlots = (nuint)HeapChunks.SlotTable;
+#endif
         // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
         // simply cleared by a major one, which marks everything anyway.
         if (_generational)
@@ -11384,6 +11566,11 @@ static class Gc
             TakeCards(_minor);
         }
     }
+
+    /// Whether this cycle's snapshot left the pages unwalked (BuildBlockAnchors).
+    static bool _pagesUnwalked;
+    /// Pages a minor cycle's snapshot did not walk, over every cycle.
+    public static long PagesUnwalked;
 
     static long _snapQueue;
     static long _snapQueueBytes;
@@ -11930,6 +12117,16 @@ static class HeapChunks
     // neighbours on its class's list of pages with room, and the thread that
     // owns it, or 0. On a page the largest-hole word is its free bytes.
     const long ChunkClass = 8 * WordSize.Bytes;
+    /// For the marker's lookups in words (Gc.MarkWord): where a chunk's end,
+    /// limit and class are, and where its first block is.
+    public const long EndAt = ChunkEnd, LimitAt = ChunkLimit, ClassAt = ChunkClass, FirstAt = ChunkBytes;
+
+    /// THE CHUNK OF EVERY 4 KB (Of's table), for the marker: 0 where there is
+    /// none -- not a platform that commits lazily, or above four gigabytes.
+    public static long SlotTable
+    {
+        get { return _slots; }
+    }
     const long ChunkFree = 9 * WordSize.Bytes;
     const long ChunkPageNext = 10 * WordSize.Bytes;
     const long ChunkPagePrev = 11 * WordSize.Bytes;
