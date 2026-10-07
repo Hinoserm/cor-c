@@ -650,6 +650,7 @@ static class Gc
     /// filled with a string only that thread's stack held (test 1011).
     static void VerifyNewcomers()
     {
+        _verifySaidPage = 0;
         long chunk = HeapChunks.Newest();
         while (chunk != 0 && _verifyReports < 40)
         {
@@ -688,6 +689,7 @@ static class Gc
                                 SayNumber("gc verify newcomer:   whose chunk is a page ", HeapChunks.PageClass(home));
                                 SayNumber("gc verify newcomer:   whose chunk owner ", HeapChunks.Owner(home));
                                 SayNumber("gc verify newcomer:   minor ", _minor ? 1 : 0);
+                                if (chunk != _verifySaidPage) SayNewcomerPage(chunk);
                                 _verifyReports = _verifyReports + 1;
                             }
                         }
@@ -698,6 +700,68 @@ static class Gc
             }
             chunk = HeapChunks.Next(chunk);
         }
+    }
+
+    static long _verifySaidPage;
+
+    /// THE PAGE A NEWCOMER LIES IN, once: how much of it has starts this
+    /// cycle and where they stop, whether the walk stepped over it as a
+    /// thread's, and whether its owner's cache still holds it -- which of
+    /// stamping's paths left it out.
+    static void SayNewcomerPage(long chunk)
+    {
+        _verifySaidPage = chunk;
+        long first = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        long live = 0;
+        long started = 0;
+        long firstMissing = 0;
+        long lastStarted = 0;
+        long block = first;
+        while (block < end)
+        {
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+            if (size < Smallest || block + size > end) break;
+            if ((word & FlagFree) == 0)
+            {
+                live = live + 1;
+                if (HeapChunks.IsStart(chunk, block))
+                {
+                    started = started + 1;
+                    lastStarted = block;
+                }
+                else if (firstMissing == 0) firstMissing = block;
+            }
+            block = block + size;
+        }
+        SayNumber("gc verify page: chunk ", chunk);
+        SayNumber("gc verify page:   first ", first);
+        SayNumber("gc verify page:   end ", end);
+        SayNumber("gc verify page:   walk stopped at ", block);
+        SayNumber("gc verify page:   starts cycle ", HeapChunks.StartsCycle(chunk));
+        SayNumber("gc verify page:   cycle ", _cycle);
+        SayNumber("gc verify page:   live slots ", live);
+        SayNumber("gc verify page:   with starts ", started);
+        SayNumber("gc verify page:   first without ", firstMissing);
+        SayNumber("gc verify page:   last with ", lastStarted);
+        long at = GcThreads.BufferAtOrAbove(first);
+        SayNumber("gc verify page:   captured ", at < GcThreads.BufferCount() && GcThreads.BufferBase(at) == first ? 1 : 0);
+        SayNumber("gc verify page:   young ", HeapChunks.IsYoung(chunk) ? 1 : 0);
+        SayNumber("gc verify page:   pooled ", HeapChunks.IsPooled(chunk) ? 1 : 0);
+        long tb = HeapChunks.Owner(chunk);
+        if (tb == 0) return;
+        long c = HeapChunks.PageClass(chunk) - 1;
+        long cache = Sys.Peek(tb + Tls.Classes);
+        long saved = Sys.Peek(tb + Tls.ClassesSaved);
+        SayNumber("gc verify page:   owner's cache ", cache);
+        SayNumber("gc verify page:   owner's saved cache ", saved);
+        SayNumber("gc verify page:   in cache ", cache != 0 && c >= 0 && Sys.Peek(cache + c * (2 * WordSize.Bytes)) == chunk ? 1 : 0);
+        SayNumber("gc verify page:   in saved cache ", saved != 0 && c >= 0 && Sys.Peek(saved + c * (2 * WordSize.Bytes)) == chunk ? 1 : 0);
+        SayNumber("gc verify page:   owner state ", Sys.Peek(tb + Tls.State));
+        SayNumber("gc verify page:   owner epoch ", Sys.Peek(tb + Tls.Epoch));
+        SayNumber("gc verify page:   round epoch ", Sys.Peek(GcLock.Words() + GcLock.Epoch));
+        SayNumber("gc verify page:   owner alloc base ", Sys.Peek(tb + Tls.AllocBase));
     }
 
     /// AN ESCAPE FROM A REGION, under the verifier: every live heap block's
