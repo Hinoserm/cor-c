@@ -125,13 +125,16 @@ internal sealed class Allocator
     /// </summary>
     private readonly HashSet<int> _keepBefore = new();
     private int[] _blockFirst = Array.Empty<int>();
+    // Every block's successors, a run a block (ComputeLiveness).
+    private int[] _succStart = Array.Empty<int>();
+    private int[] _succAll = Array.Empty<int>();
+    private int _blockCount;
     /// <summary>
     /// The first block of the straight run each block belongs to: a block
     /// entered only from the one laid out before it continues that one's run.
     /// </summary>
     private int[] _runHead = Array.Empty<int>();
     private int[] _blockOfInstr = Array.Empty<int>();
-    private int[][] _succ = Array.Empty<int[]>();
     private BitRows _liveIn = new();
     private int _seq;
 
@@ -199,24 +202,33 @@ internal sealed class Allocator
         // What the kept tables point at goes with the function.
         Array.Clear(a._remat, 0, a._n);
         Array.Clear(a._ranges, 0, a._n);
+        _keptIndex?.Clear();
     }
 
     [ThreadStatic] private static int[]? _keptOccFirst, _keptStart, _keptEnd, _keptAssigned, _keptSpilledFrom, _keptSlot, _keptRunS, _keptRunE;
     [ThreadStatic] private static MImm?[]? _keptRemat;
+    [ThreadStatic] private static int[]? _keptFill, _keptFirst, _keptCount, _keptSuccStart, _keptSucc, _keptPreds, _keptOnlyPred, _keptRunHead, _keptBlockOfInstr, _keptCallsBefore;
+    [ThreadStatic] private static Occurrence[]? _keptOccAll;
+    [ThreadStatic] private static Dictionary<MBlock, int>? _keptIndex;
+    [ThreadStatic] private static List<MBlock>? _keptSuccessors;
     [ThreadStatic] private static List<(int, int)>?[]? _keptRanges;
     private const int KeptRegs = 1 << 18;
 
     // At least `length` of a kept table, cleared that far when asked; one
     // longer than KeptRegs is the function's alone.
-    private static T[] Table<T>(ref T[]? kept, int length, bool clear)
+    private static T[] Table<T>(ref T[]? kept, int length, bool clear, bool grow = false, int used = 0)
     {
         if (kept is not null && kept.Length >= length)
         {
             if (clear) Array.Clear(kept, 0, length);
             return kept;
         }
-        T[] made = new T[length];
-        if (length <= KeptRegs) kept = made;
+        // GROWN where a list is filled into it (grow): doubled, what was
+        // written so far kept, and kept whatever its size, as it is the
+        // only home of what it holds until the function is done.
+        T[] made = new T[grow ? Math.Max(length, Math.Max(16, (kept?.Length ?? 0) * 2)) : length];
+        if (grow && kept is not null && used > 0) Array.Copy(kept, made, used);
+        if (grow || length <= KeptRegs) kept = made;
         return made;
     }
 
@@ -358,8 +370,8 @@ internal sealed class Allocator
         {
             _occFirst[v + 1] += _occFirst[v];
         }
-        _occAll = new Occurrence[_occFirst[_n]];
-        int[] fill = new int[_n];
+        _occAll = Table(ref _keptOccAll, _occFirst[_n], clear: false);
+        int[] fill = Table(ref _keptFill, _n, clear: false);
         Array.Copy(_occFirst, fill, _n);
         for (int i = 0; i < _lin.Count; i++)
         {
@@ -432,9 +444,13 @@ internal sealed class Allocator
     private void ComputeLiveness()
     {
         int nb = _m.Blocks.Count;
-        Dictionary<MBlock, int> index = new();
-        int[] first = new int[nb];
-        int[] count = new int[nb];
+        // THE BLOCKS' TABLES KEPT A THREAD as the registers' are (Table): an
+        // index, a run a block and every successor in one array, read only up
+        // to this function's counts.
+        Dictionary<MBlock, int> index = _keptIndex ??= new(ReferenceEqualityComparer.Instance);
+        index.Clear();
+        int[] first = Table(ref _keptFirst, nb, clear: false);
+        int[] count = Table(ref _keptCount, nb, clear: false);
         for (int b = 0, at = 0; b < nb; b++)
         {
             index[_m.Blocks[b]] = b;
@@ -472,36 +488,43 @@ internal sealed class Allocator
             }
         }
 
-        int[][] succ = new int[nb][];
-        List<int> to = new();
-        List<MBlock> successors = new();
+        // Every block's successors in one array, a run a block from succStart.
+        int[] succStart = Table(ref _keptSuccStart, nb + 1, clear: false);
+        List<MBlock> successors = _keptSuccessors ??= new();
+        int edges = 0;
         for (int b = 0; b < nb; b++)
         {
-            to.Clear();
+            succStart[b] = edges;
             _m.SuccessorsInto(b, successors);
-            foreach (MBlock s in successors) to.Add(index[s]);
-            succ[b] = to.ToArray();
+            int[] all = Table(ref _keptSucc, edges + successors.Count, clear: false, grow: true, used: edges);
+            foreach (MBlock s in successors) all[edges++] = index[s];
         }
+        succStart[nb] = edges;
+        successors.Clear();
+        int[] succ = _keptSucc ?? Array.Empty<int>();
+        _succStart = succStart;
+        _succAll = succ;
+        _blockCount = nb;
 
         _blockFirst = first;
-        _succ = succ;
-        int[] preds = new int[nb];
-        int[] onlyPred = new int[nb];
+        int[] preds = Table(ref _keptPreds, nb, clear: true);
+        int[] onlyPred = Table(ref _keptOnlyPred, nb, clear: false);
         for (int b = 0; b < nb; b++)
         {
-            foreach (int s in succ[b])
+            for (int e = succStart[b]; e < succStart[b + 1]; e++)
             {
+                int s = succ[e];
                 preds[s]++;
                 onlyPred[s] = b;
             }
         }
-        _runHead = new int[nb];
+        _runHead = Table(ref _keptRunHead, nb, clear: false);
         for (int b = 0; b < nb; b++)
         {
             _runHead[b] = b > 0 && preds[b] == 1 && onlyPred[b] == b - 1 && _m.Blocks[b].Source?.IsLandingPad != true
                 ? _runHead[b - 1] : b;
         }
-        _blockOfInstr = new int[_lin.Count];
+        _blockOfInstr = Table(ref _keptBlockOfInstr, _lin.Count, clear: false);
         for (int b = 0; b < nb; b++)
         {
             for (int i = first[b]; i < first[b] + count[b]; i++)
@@ -521,8 +544,9 @@ internal sealed class Allocator
             for (int b = nb - 1; b >= 0; b--)
             {
                 tmp.Clear();
-                foreach (int s in succ[b])
+                for (int e = succStart[b]; e < succStart[b + 1]; e++)
                 {
+                    int s = succ[e];
                     inS.CopyFrom(live, s);
                     inS.AndNot(def, s);
                     inS.Or(use, s);
@@ -645,7 +669,8 @@ internal sealed class Allocator
 
     private void Scan()
     {
-        _callsBefore = new int[_lin.Count + 1];
+        _callsBefore = Table(ref _keptCallsBefore, _lin.Count + 1, clear: false);
+        _callsBefore[0] = 0;
         for (int i = 0; i < _lin.Count; i++)
         {
             _callsBefore[i + 1] = _callsBefore[i] + (_lin[i].Op is MOp.Call or MOp.CallInd ? 1 : 0);
@@ -1367,10 +1392,11 @@ internal sealed class Allocator
         {
             return true;
         }
-        for (int b = _blockOfInstr[from]; b < _succ.Length; b++)
+        for (int b = _blockOfInstr[from]; b < _blockCount; b++)
         {
-            foreach (int s in _succ[b])
+            for (int e = _succStart[b]; e < _succStart[b + 1]; e++)
             {
+                int s = _succAll[e];
                 if (_blockFirst[s] < from && _liveIn.Get(s, vreg))
                 {
                     return false;
