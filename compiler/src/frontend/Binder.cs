@@ -672,7 +672,7 @@ public sealed partial class Binder
             return false;
         }
         bool demandedBefore = _declarationBatch.Any;
-        bool found = TypeCandidate(within + "." + name, out symbol);
+        bool found = TypeCandidate(SpeltKey(within, name), out symbol);
         if (!found && within.Length > 0 && !_namingOnly) _demandedWithin.Add((within, name));
         if (!found && plain && within.Length == 0 && !_namingOnly && (demandedBefore || !_declarationBatch.Any)) Absent(within, name);
         return found;
@@ -689,6 +689,22 @@ public sealed partial class Binder
     }
 
     private readonly Dictionary<(string Within, string Name), (string Scope, string Tail)> _dottedParts = new();
+
+    /// <summary>
+    /// `within + "." + name`, spelt once a pair: a type asked for while its
+    /// declaration is still pending is asked again from every expression that
+    /// names it, and each asking spelt the key anew -- three thousand copies
+    /// of "System.Runtime" sat in one unit's heap.
+    /// </summary>
+    private string SpeltKey(string within, string name)
+    {
+        if (_speltKeys.TryGetValue((within, name), out string? key)) return key;
+        key = within + "." + name;
+        _speltKeys[(within, name)] = key;
+        return key;
+    }
+
+    private readonly Dictionary<(string Within, string Name), string> _speltKeys = new();
 
     private void Absent(string within, string name)
     {
@@ -5657,7 +5673,7 @@ public sealed partial class Binder
                         Type had = CheckExpr(d.Init);
 
                         _wanted = outer;
-                        CheckAssignable(had, type, d.Init, $"initialiser for '{d.Name}'");
+                        CheckAssignable(had, type, d.Init, What.InitialiserFor(d.Name));
                     }
                 }
 
@@ -6393,8 +6409,46 @@ public sealed partial class Binder
         return true;
     }
 
+    /// <summary>
+    /// WHAT A VALUE IS CHECKED AS, said only if it is wrong: a literal, or the
+    /// pieces of an argument's or an element's description. Formatted for
+    /// every argument of every call, the descriptions were strings made and
+    /// dropped by the hundred thousand while nothing was ever wrong.
+    /// </summary>
+    private readonly struct What
+    {
+        private readonly string _text;
+        private readonly string? _name;
+        private readonly int _n;
+        private readonly byte _kind;
+
+        private What(byte kind, string text, string? name, int n) { _kind = kind; _text = text; _name = name; _n = n; }
+
+        public static implicit operator What(string text) => new(0, text, null, 0);
+        /// <summary>argument N of 'NAME'</summary>
+        public static What ArgumentOf(int n, string name) => new(1, "", name, n);
+        /// <summary>constructor argument N</summary>
+        public static What ConstructorArgument(int n) => new(2, "", null, n);
+        /// <summary>element N</summary>
+        public static What Element(int n) => new(3, "", null, n);
+        /// <summary>initialiser for 'NAME'</summary>
+        public static What InitialiserFor(string name) => new(4, "", name, 0);
+        /// <summary>'NAME'</summary>
+        public static What Quoted(string name) => new(5, "", name, 0);
+
+        public override string ToString() => _kind switch
+        {
+            1 => $"argument {_n} of '{_name}'",
+            2 => $"constructor argument {_n}",
+            3 => $"element {_n}",
+            4 => $"initialiser for '{_name}'",
+            5 => $"'{_name}'",
+            _ => _text,
+        };
+    }
+
     /// <summary>The one place assignability and nullability are decided.</summary>
-    private void CheckAssignable(Type from, Type to, Node at, string what)
+    private void CheckAssignable(Type from, Type to, Node at, What what)
     {
         if (from.IsError || to.IsError || Unmade(to))
         {
@@ -6592,7 +6646,7 @@ public sealed partial class Binder
                 // C# gives the literal its own code rather than the general
                 // "possibly null" one below, because a literal null is not
                 // possibly anything -- it is certainly null, every time.
-                Warning(at, NullLiteralCode(what), $"{what}: '{to}' is not nullable; declare it as '{to}?' to allow null");
+                Warning(at, NullLiteralCode(what.ToString()), $"{what}: '{to}' is not nullable; declare it as '{to}?' to allow null");
             }
             return;
         }
@@ -6601,11 +6655,11 @@ public sealed partial class Binder
         // conversion check. A nullable Foo is still not an unrelated Bar.
         if (from.Nullable && !to.Nullable && to.IsReference)
         {
-            Warning(at, NullCode(what), $"{what}: '{from}' may be null but '{to}' may not");
+            Warning(at, NullCode(what.ToString()), $"{what}: '{from}' may be null but '{to}' may not");
         }
         else if (WeakensPromise(from, to))
         {
-            Warning(at, ElementNullCode(what), $"{what}: an element of '{from}' may be null but '{to}' says its elements may not");
+            Warning(at, ElementNullCode(what.ToString()), $"{what}: an element of '{from}' may be null but '{to}' says its elements may not");
         }
 
         // A Nullable<T> WHERE A T IS WANTED is not a conversion the compiler
@@ -12030,7 +12084,7 @@ public sealed partial class Binder
                 _r.InitSetter[init] = setter!;
             }
 
-            CheckAssignable(value, wants, init.Value!, $"'{init.Name}'");
+            CheckAssignable(value, wants, init.Value!, What.Quoted(init.Name));
         }
 
         // A COLLECTION INITIALISER, which C# defines as a sequence of calls to
@@ -12106,7 +12160,7 @@ public sealed partial class Binder
                     _wanted = saved;
                 }
                 given[i] = Settle(add.Args[i], chosen.Params[i].Type, given[i]);
-                CheckAssignable(given[i], chosen.Params[i].Type, add.Args[i], $"argument {i + 1} of 'Add'");
+                CheckAssignable(given[i], chosen.Params[i].Type, add.Args[i], What.ArgumentOf(i + 1, "Add"));
             }
 
             _r.InitAdder[add] = chosen;
@@ -13332,7 +13386,7 @@ public sealed partial class Binder
                             _wanted = outer;
                         }
 
-                        CheckAssignable(one, element, written[i], $"element {i}");
+                        CheckAssignable(one, element, written[i], What.Element(i));
                     }
 
                     if (nw.ArraySize != null)
@@ -14999,7 +15053,7 @@ public sealed partial class Binder
                     }
 
                     _r.InitField[init] = field;
-                    CheckAssignable(value, field.Type, given, $"'{init.Name}'");
+                    CheckAssignable(value, field.Type, given, What.Quoted(init.Name));
                 }
 
                 return of;
@@ -17443,7 +17497,7 @@ public sealed partial class Binder
                 // `new List<Node?>(...)` takes what the use says, `?` and all.
                 Type want = made is null ? ctor.Params[i].Type : ContextualParameterType(made, ctor, i);
                 constructorArgs[i] = Settle(nw.Args[i], want, constructorArgs[i]);
-                CheckAssignable(constructorArgs[i], want, nw.Args[i], $"constructor argument {i + 1}");
+                CheckAssignable(constructorArgs[i], want, nw.Args[i], What.ConstructorArgument(i + 1));
             }
         }
         // A STRUCT'S `new S()` NEEDS NO CONSTRUCTOR: every struct has the
@@ -19364,7 +19418,7 @@ public sealed partial class Binder
                 // is checked against what T was worked out to be, not against
                 // the type parameter -- otherwise every generic call reports
                 // that it cannot convert its argument to 'T'.
-                CheckAssignable(args[i], want, c.Args[i], $"argument {i + 1} of '{best.Name}'");
+                CheckAssignable(args[i], want, c.Args[i], What.ArgumentOf(i + 1, best.Name));
             }
             else if (c.Args[i] is RefArgExpr { IsOut: true, Target: NameExpr outName }
                      && Lookup(outName.Name) is LocalSym filled)

@@ -67,23 +67,29 @@ public static class IrFunctionCodec
         writer.Write(function.NoInlining);
         writer.Write(function.CalleePops);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
-        Dictionary<int, IrType> registers = new();
+        // EACH REGISTER'S TYPE BY NUMBER, in an array, every instruction walked
+        // without an enumerator: a table and a query a function were most of
+        // what writing its record made.
+        int count = function.RegCount;
+        IrType?[] registers = count == 0 ? Array.Empty<IrType?>() : new IrType?[count];
         void Remember(VReg? register)
         {
             if (register is null) return;
-            if (register.Id < 0 || register.Id >= function.RegCount
-                || registers.TryGetValue(register.Id, out IrType previous) && previous != register.Type)
+            if (register.Id < 0 || register.Id >= count
+                || registers[register.Id] is IrType previous && previous != register.Type)
                 throw new InvalidDataException("Inconsistent IR register identity");
             registers[register.Id] = register.Type;
         }
         foreach (VReg parameter in function.Params) Remember(parameter);
-        foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
-        {
-            Remember(instruction.Dest);
-            foreach (RegOperand operand in instruction.Operands.OfType<RegOperand>()) Remember(operand.Reg);
-        }
-        writer.Write(function.RegCount);
-        for (int i = 0; i < function.RegCount; i++) writer.Write((byte)registers.GetValueOrDefault(i, IrType.I32));
+        foreach (IrBlock block in function.Blocks)
+            foreach (Instr instruction in block.Instrs)
+            {
+                Remember(instruction.Dest);
+                foreach (Operand operand in instruction.Operands)
+                    if (operand is RegOperand reg) Remember(reg.Reg);
+            }
+        writer.Write(count);
+        for (int i = 0; i < count; i++) writer.Write((byte)(registers[i] ?? IrType.I32));
         writer.Write(function.Params.Count);
         foreach (VReg parameter in function.Params) { writer.Write(parameter.Id); writer.Write(parameter.Number); }
         // A lowered async body keeps the record that it was one (AsyncFrame).

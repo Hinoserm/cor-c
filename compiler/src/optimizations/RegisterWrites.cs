@@ -30,12 +30,20 @@ public sealed class RegisterWrites
                 }
         for (int r = 0; r < registers; r++) _start[r + 1] += _start[r];
         _all = total == 0 ? Array.Empty<Instr>() : new Instr[total];
-        int[] next = new int[registers];
-        Array.Copy(_start, next, registers);
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-                if (i.Dest is { } d && d.Id < registers)
-                    _all[next[d.Id]++] = i;
+        // FILLED FROM THE END, each register's run downwards from where the
+        // next one's starts, which leaves every entry at its own run's start:
+        // the same order with no array of cursors beside the table.
+        for (int bi = f.Blocks.Count - 1; bi >= 0; bi--)
+        {
+            List<Instr> instrs = f.Blocks[bi].Instrs;
+            for (int k = instrs.Count - 1; k >= 0; k--)
+                if (instrs[k].Dest is { } d && d.Id < registers)
+                    _all[--_start[d.Id + 1]] = instrs[k];
+        }
+        // Each end stepped down to its own run's start, so _start[r + 1] holds
+        // where r begins: moved back one place, and the last end put back.
+        for (int r = 0; r < registers; r++) _start[r] = _start[r + 1];
+        _start[registers] = total;
     }
 
     /// <summary>The writes of `r`; false, as a missing key was, when there are none or `r` is newer than the index.</summary>

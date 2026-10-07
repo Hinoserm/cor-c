@@ -67,7 +67,8 @@ internal static class IrBinary
         if (length < 0 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
             throw new InvalidDataException("Invalid IR text length");
         budget?.Charge(32L + 3L * length, 1, "text");
-        string value = Utf8.GetString(reader.ReadBytes(length));
+        byte[] buffer = Fill(reader, length);
+        string value = Utf8.GetString(buffer, 0, length);
         if (value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
         return value;
     }
@@ -84,20 +85,49 @@ internal static class IrBinary
         if (length < 0 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
             throw new InvalidDataException("Invalid IR text length");
         budget?.Charge(32L + 3L * length, 1, "text");
+        byte[] buffer = Fill(reader, length);
+        // FOUND BY ITS BYTES, NOT DECODED: an ASCII name met before is the
+        // interned string this thread already has, checked byte for byte. A
+        // name decoded at every reading only for Intern to hand back the copy
+        // it held was a thirtieth of what a native compile left the collector.
+        bool ascii = true;
+        ulong hash = 14695981039346656037UL;
+        for (int k = 0; k < length; k++)
+        {
+            byte c = buffer[k];
+            ascii &= c < 0x80;
+            hash = (hash ^ c) * 1099511628211UL;
+        }
+        Dictionary<ulong, string> seen = _names ??= new();
+        if (ascii && seen.TryGetValue(hash, out string? known) && known.Length == length)
+        {
+            int k = 0;
+            while (k < length && known[k] == buffer[k]) k++;
+            if (k == length) return known;
+        }
+        string value = Utf8.GetString(buffer, 0, length);
+        if (value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
+        value = string.Intern(value);
+        if (ascii) seen[hash] = value;
+        return value;
+    }
+
+    // The next `length` bytes, into this thread's buffer.
+    private static byte[] Fill(BinaryReader reader, int length)
+    {
         byte[] buffer = _nameBuffer ??= new byte[16384];
         int got = 0;
         while (got < length)
         {
             int n = reader.Read(buffer, got, length - got);
-            if (n <= 0) throw new InvalidDataException("Truncated IR name");
+            if (n <= 0) throw new InvalidDataException("Truncated IR text");
             got += n;
         }
-        string value = Utf8.GetString(buffer, 0, length);
-        if (value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
-        return string.Intern(value);
+        return buffer;
     }
 
     [ThreadStatic] private static byte[]? _nameBuffer;
+    [ThreadStatic] private static Dictionary<ulong, string>? _names;
     public static bool Flag(BinaryReader reader) => reader.ReadByte() switch
     { 0 => false, 1 => true, _ => throw new InvalidDataException("Invalid IR flag") };
     public static int Count(BinaryReader reader, int maximum = 1000000)

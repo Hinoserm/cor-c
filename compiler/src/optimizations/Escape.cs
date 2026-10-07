@@ -1182,9 +1182,24 @@ public sealed partial class Escape : IModulePass
         // store in its block, none live out of it. A field that owns an
         // object its maker still uses would free it under the maker.
         bool HandedOver(Function f, Block b, Instr st, HashSet<VReg> derived)
+            => HandedOverWithField(f, b, st, derived, StoresLive(f));
+
+        // THE LIVENESS OF THE FUNCTION WHOSE STORES ARE BEING JUDGED, kept
+        // while they are: the judging edits nothing, and between two of one
+        // function's stores its callers' and callees' analyses (Sink, Analyse)
+        // pushed it out of the analysis cache, so it was worked out afresh
+        // for nearly every store -- a twentieth of what a native compile left
+        // the collector. Let go as the next function's stores begin.
+        Function? storesOf = null;
+        Liveness? storesLive = null;
+        Liveness StoresLive(Function f)
         {
-            Liveness live = AnalysisCache.LivenessOf(f);
-            return HandedOverWithField(f, b, st, derived, live);
+            if (!ReferenceEquals(f, storesOf) || storesLive is null)
+            {
+                storesOf = f;
+                storesLive = AnalysisCache.LivenessOf(f);
+            }
+            return storesLive;
         }
 
         // Where a value comes from, through copies and joins.
@@ -1361,6 +1376,8 @@ public sealed partial class Escape : IModulePass
         // Stores whose object is used after them, with the object made: each a
         // read of its field from the store on (ForwardedRead).
         Dictionary<Instr, VReg> forwarded = new(ReferenceEqualityComparer.Instance);
+        storesOf = null;
+        storesLive = null;
         foreach ((Function f, Block b, Instr st) in stores)
         {
             // AN ASYNC BODY'S STORES ARE JUDGED AS ANY OTHER'S. The analysis
@@ -1381,7 +1398,7 @@ public sealed partial class Escape : IModulePass
                         new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }, joinable: filling.Joins);
                     // Dead once stored, but for the variable: a `??=` round a
                     // loop makes the next lap's object in the same registers.
-                    Liveness fillLive = AnalysisCache.LivenessOf(f);
+                    Liveness fillLive = StoresLive(f);
                     int stAt = b.Instrs.IndexOf(st);
                     // The variable and its copies are the field's value after
                     // the store, judged as the read they hold (below).

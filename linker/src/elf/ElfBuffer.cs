@@ -18,17 +18,72 @@ namespace Corsac.Lang.Elf;
 internal sealed class ElfBuffer
 {
     private const int ChunkShift = 16, ChunkBytes = 1 << ChunkShift;
-    private readonly List<byte[]> _chunks = new();
+    // A chunk only where something was written: zeros and spliced sections
+    // make none.
+    private readonly List<byte[]?> _chunks = new();
     private int _length;
+    // A FILE-BACKED SECTION SPLICED IN, not copied (Splice): where it lies,
+    // and what it is, read from its file as the bytes are written out or
+    // hashed. A unit's IR archive, tens of megabytes, went through chunks
+    // made for it only to be written out again, and every one of them was
+    // the collector's.
+    private List<(int At, int Length, Section Source)>? _splices;
 
     public int Length => _length;
 
     /// <summary>The chunk holding byte `offset`, made if it is not yet.</summary>
     private byte[] Chunk(int offset)
     {
+        if (_splices is not null)
+            foreach ((int at, int length, Section _) in _splices)
+                if (offset >= at && offset < at + length) throw new InvalidOperationException($"layout error: 0x{offset:x} is in a spliced section");
         int index = offset >> ChunkShift;
-        while (_chunks.Count <= index) _chunks.Add(new byte[ChunkBytes]);
-        return _chunks[index];
+        while (_chunks.Count <= index) _chunks.Add(null);
+        return _chunks[index] ??= new byte[ChunkBytes];
+    }
+
+    /// <summary>A file-backed section's bytes, here, read from its file when the buffer is written or hashed.</summary>
+    public void Splice(Section source)
+    {
+        if (source.FileBacked is not (_, _, int length)) throw new InvalidOperationException($"section {source.Name}: only a file-backed section is spliced");
+        (_splices ??= new()).Add((_length, length, source));
+        _length = checked(_length + length);
+    }
+
+    /// <summary>
+    /// Every byte in order, a run at a time: a chunk's, zeros where none was
+    /// made, a spliced section's from its file.
+    /// </summary>
+    private void Each(Action<byte[], int, int> sink)
+    {
+        byte[]? zeros = null;
+        byte[]? piece = null;
+        int splice = 0;
+        int pos = 0;
+        while (pos < _length)
+        {
+            if (_splices is not null && splice < _splices.Count && _splices[splice].At == pos)
+            {
+                (int _, int length, Section source) = _splices[splice++];
+                using Stream from = source.OpenRead();
+                piece ??= new byte[ChunkBytes];
+                for (int left = length; left > 0;)
+                {
+                    int got = from.Read(piece, 0, Math.Min(piece.Length, left));
+                    if (got <= 0) throw new IOException($"section {source.Name}: its file ended {left} bytes short");
+                    sink(piece, 0, got);
+                    left -= got;
+                }
+                pos += length;
+                continue;
+            }
+            int next = _splices is not null && splice < _splices.Count ? _splices[splice].At : _length;
+            int stop = Math.Min(next, ((pos >> ChunkShift) + 1) << ChunkShift);
+            int index = pos >> ChunkShift;
+            byte[] run = index < _chunks.Count && _chunks[index] is { } made ? made : zeros ??= new byte[ChunkBytes];
+            sink(run, pos & (ChunkBytes - 1), stop - pos);
+            pos = stop;
+        }
     }
 
     public void U8(byte v)
@@ -114,12 +169,8 @@ internal sealed class ElfBuffer
     public byte[] ToArray()
     {
         byte[] made = new byte[_length];
-        for (int i = 0; i < _chunks.Count && (i << ChunkShift) < _length; i++)
-        {
-            int from = i << ChunkShift;
-            int n = Math.Min(ChunkBytes, _length - from);
-            _chunks[i].AsSpan(0, n).CopyTo(made.AsSpan(from, n));
-        }
+        int at = 0;
+        Each((run, from, count) => { Array.Copy(run, from, made, at, count); at += count; });
         return made;
     }
 
@@ -143,18 +194,7 @@ internal sealed class ElfBuffer
     public byte[] Hash()
     {
         FastHash hash = new();
-        for (int i = 0; i < _chunks.Count && (i << ChunkShift) < _length; i++)
-        {
-            int from = i << ChunkShift;
-            hash.Append(_chunks[i], 0, Math.Min(ChunkBytes, _length - from));
-        }
-        // Zeros past the last chunk made, as WriteTo writes them.
-        byte[]? zeros = null;
-        for (int at = _chunks.Count << ChunkShift; at < _length; at += ChunkBytes)
-        {
-            zeros ??= new byte[ChunkBytes];
-            hash.Append(zeros, 0, Math.Min(ChunkBytes, _length - at));
-        }
+        Each(hash.Append);
         return hash.Finish();
     }
 
@@ -163,17 +203,5 @@ internal sealed class ElfBuffer
     /// its file without ever being one array, which on a 32-bit heap is a
     /// contiguous run of address space a large unit's object can fail to get.
     /// </summary>
-    public void WriteTo(Stream output)
-    {
-        for (int i = 0; i < _chunks.Count && (i << ChunkShift) < _length; i++)
-        {
-            int from = i << ChunkShift;
-            output.Write(_chunks[i], 0, Math.Min(ChunkBytes, _length - from));
-        }
-        // Zeros past the last chunk made (Zeros only moves the length).
-        for (int at = _chunks.Count << ChunkShift; at < _length; at += ChunkBytes)
-        {
-            output.Write(new byte[Math.Min(ChunkBytes, _length - at)]);
-        }
-    }
+    public void WriteTo(Stream output) => Each(output.Write);
 }

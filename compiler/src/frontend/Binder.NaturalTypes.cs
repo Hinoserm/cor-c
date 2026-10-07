@@ -44,7 +44,7 @@ public sealed partial class Binder
         else
         {
             Type had = group is null ? CheckExpr(d.Init) : _r.TypeOf(d.Init);
-            CheckAssignable(had, type, d.Init, $"initialiser for '{d.Name}'");
+            CheckAssignable(had, type, d.Init, What.InitialiserFor(d.Name));
         }
         return type;
     }

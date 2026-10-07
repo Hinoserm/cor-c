@@ -54,12 +54,13 @@ public static class ElfWriter
             File.WriteAllBytes(path, Elf64Object.Write(obj));
             return;
         }
-        ElfBuffer built = Build(obj);
+        ElfBuffer built = Build(obj, Path.GetFullPath(path));
         using FileStream output = new(path, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
         built.WriteTo(output);
     }
 
-    private static ElfBuffer Build(ObjectFile obj)
+    /// <summary>`writingTo`: the file the object is about to be written over, whose own sections are copied in, not spliced.</summary>
+    private static ElfBuffer Build(ObjectFile obj, string? writingTo = null)
     {
 
         // Section header indices: the object's sections in the order given,
@@ -205,11 +206,22 @@ public static class ElfWriter
             {
                 if (s.FileBacked is not null)
                 {
-                    // From its file a piece at a time: a unit's IR archive is
-                    // tens of megabytes, and Content made it one array.
-                    using Stream from = s.OpenRead();
-                    byte[] piece = new byte[64 * 1024];
-                    for (int got; (got = from.Read(piece, 0, piece.Length)) > 0;) b.Bytes(new ReadOnlySpan<byte>(piece, 0, got));
+                    // Spliced, read from its file only as the object is written
+                    // or hashed: a unit's IR archive is tens of megabytes, and
+                    // Content made it one array, then copying it in made it
+                    // as many chunks.
+                    // Not a section of the very file about to be written over,
+                    // which is made empty before it would be read.
+                    if (writingTo is null || s.FileBacked is not (string backing, _, _) || Path.GetFullPath(backing) != writingTo)
+                    {
+                        b.Splice(s);
+                    }
+                    else
+                    {
+                        using Stream from = s.OpenRead();
+                        byte[] piece = new byte[64 * 1024];
+                        for (int got; (got = from.Read(piece, 0, piece.Length)) > 0;) b.Bytes(new ReadOnlySpan<byte>(piece, 0, got));
+                    }
                 }
                 else
                 {
