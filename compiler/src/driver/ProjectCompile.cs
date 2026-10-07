@@ -134,11 +134,16 @@ public static class ProjectCompile
             if (args[i] is "--ref" or "--kernel") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
         }
         string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
+        // ENCODED ONCE, an entry unit's and a library unit's: the text names
+        // every library by path, time and length, and was encoded afresh for
+        // every stamp of every unit.
+        byte[] entryOptions = Encoding.UTF8.GetBytes(optionsText + "\tentry");
+        byte[] libraryOptions = Encoding.UTF8.GetBytes(optionsText + "\tlib");
         string Stamp(Unit unit) => StampOf(unit, File.ReadAllBytes(unit.Source));
         string StampOf(Unit unit, byte[] source)
         {
             using SHA256 sha = SHA256.Create();
-            byte[] options = Encoding.UTF8.GetBytes(optionsText + (unit.Entry ? "\tentry" : "\tlib"));
+            byte[] options = unit.Entry ? entryOptions : libraryOptions;
             sha.TransformBlock(source, 0, source.Length, null, 0);
             sha.TransformFinalBlock(options, 0, options.Length);
             return Convert.ToHexString(sha.Hash!);

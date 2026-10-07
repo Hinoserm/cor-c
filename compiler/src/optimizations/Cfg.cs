@@ -438,10 +438,16 @@ public sealed class Cfg
     /// </summary>
     public static bool RemoveUnreachable(Function f)
     {
-        Cfg cfg = new(f);
+        // IN THE LAST ONE'S STORAGE, kept a thread: asked of every function
+        // after every pass that may cut an edge, a graph made and dropped
+        // each time was a ninetieth of what a native compile left the
+        // collector. Nothing holds it once this returns.
+        Cfg cfg = new(f, _unreachableSpare);
+        _unreachableSpare = null;
         bool[] live = cfg.Live;
         if (cfg.ReversePostorder.Count == f.Blocks.Count)
         {
+            _unreachableSpare = cfg;
             return false;
         }
         foreach (Block dead in f.Blocks)
@@ -465,8 +471,14 @@ public sealed class Cfg
         for (int k = 0; k < f.Blocks.Count; k++)
             if (live[f.Blocks[k].Order]) f.Blocks[kept++] = f.Blocks[k];
         f.Blocks.RemoveRange(kept, f.Blocks.Count - kept);
+        _unreachableSpare = cfg;
         return true;
     }
+
+    [ThreadStatic] private static Cfg? _unreachableSpare;
+
+    /// <summary>A unit is over on this thread: the graph kept for RemoveUnreachable, and the function it holds, let go.</summary>
+    internal static void ForgetThread() => _unreachableSpare = null;
 
     /// <summary>
     /// The immediate dominator: the nearest strict dominator. Null for a

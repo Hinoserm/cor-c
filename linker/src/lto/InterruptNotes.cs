@@ -40,7 +40,17 @@ public static class InterruptNotes
     /// </summary>
     public static byte[] Encode(IReadOnlyList<Fact> facts)
     {
-        using MemoryStream stream = new();
+        // INTO AN ARRAY OF ITS EXACT SIZE, counted first: a large unit's facts
+        // are megabytes, and a stream grown by doubling to them, then copied
+        // out, left several times that to the collector.
+        long size = 8;
+        foreach (Fact f in facts)
+        {
+            size += Written(f.Name) + Written(f.Display) + 1 + Written(f.Allocates ?? "") + 4;
+            foreach (string call in f.Calls) size += Written(call);
+        }
+        byte[] bytes = new byte[checked((int)size)];
+        using MemoryStream stream = new(bytes);
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
         {
             writer.Write(Version);
@@ -55,7 +65,18 @@ public static class InterruptNotes
                 foreach (string call in f.Calls) writer.Write(call);
             }
         }
-        return stream.ToArray();
+        if (stream.Position != bytes.Length) throw new InvalidOperationException("interrupt notes: counted " + bytes.Length + " bytes, wrote " + stream.Position);
+        return bytes;
+    }
+
+    // What BinaryWriter.Write(string) writes: its UTF-8 length as seven-bit
+    // groups, then the bytes.
+    private static long Written(string text)
+    {
+        int length = Encoding.UTF8.GetByteCount(text);
+        int prefix = 1;
+        for (uint rest = (uint)length >> 7; rest != 0; rest >>= 7) prefix++;
+        return prefix + length;
     }
 
     /// <summary>Facts already in the section's form (Encode).</summary>

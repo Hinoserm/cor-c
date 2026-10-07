@@ -732,6 +732,16 @@ class MemoryStream : Stream, IOwnsStorage
         _visible = true;
     }
 
+    /// Empty, with room for `capacity` bytes before it must grow, as .NET's.
+    public MemoryStream(int capacity)
+    {
+        if (capacity < 0) throw new ArgumentOutOfRangeException("capacity", "Non-negative number required.");
+        _bytes = new byte[capacity];
+        _capacity = capacity;
+        _expandable = true;
+        _visible = true;
+    }
+
     /// Over all of `buffer`, which it reads and writes in place and never
     /// grows.
     public MemoryStream(byte[] buffer) : this(buffer, 0, buffer.Length) { _visible = true; }

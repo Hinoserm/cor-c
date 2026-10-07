@@ -1,0 +1,28 @@
+// test: string.Concat of spans
+// expect-exit: 0
+// expect-output:
+// Corsac.Lang.Ir
+// ab-cd
+// [x|y|z|w]
+// 0 
+//
+// string.Concat over two, three and four character spans -- slices of
+// strings, a string passed where a span is wanted -- makes the joined
+// text, as .NET does; an empty span adds nothing.
+
+using System;
+
+static class Program
+{
+    static void Main()
+    {
+        string within = "Corsac";
+        string name = "Lang.Ir.Block";
+        int dot = name.LastIndexOf('.');
+        Console.WriteLine(string.Concat(within, ".", name.AsSpan(0, dot)));
+        Console.WriteLine(string.Concat("ab".AsSpan(), "-cd".AsSpan()));
+        Console.WriteLine(string.Concat("[x".AsSpan(), "|y".AsSpan(), "|z".AsSpan(), "|w]".AsSpan()));
+        string none = string.Concat(ReadOnlySpan<char>.Empty, "".AsSpan());
+        Console.WriteLine(none.Length + " " + none);
+    }
+}

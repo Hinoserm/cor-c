@@ -147,17 +147,20 @@ internal sealed class Allocator
             }
         }
         _n = m.NextVReg;
-        _occFirst = new int[_n + 1];
-        _start = new int[_n];
-        _end = new int[_n];
-        _assigned = new int[_n];
-        _spilledFrom = new int[_n];
-        _slot = new int[_n];
-        _remat = new MImm?[_n];
-        _ranges = new List<(int, int)>?[_n];
-        _runS = new int[_n];
-        _runE = new int[_n];
-        Array.Fill(_runS, -1);
+        // THE TABLES BY VIRTUAL REGISTER kept a thread, as the busy tables
+        // are: ten arrays the function's size were made and dropped for every
+        // function the allocator saw. Read only up to _n.
+        _occFirst = Table(ref _keptOccFirst, _n + 1, clear: true);
+        _start = Table(ref _keptStart, _n, clear: false);
+        _end = Table(ref _keptEnd, _n, clear: false);
+        _assigned = Table(ref _keptAssigned, _n, clear: false);
+        _spilledFrom = Table(ref _keptSpilledFrom, _n, clear: false);
+        _slot = Table(ref _keptSlot, _n, clear: true);
+        _remat = Table(ref _keptRemat, _n, clear: true);
+        _ranges = Table(ref _keptRanges, _n, clear: true);
+        _runS = Table(ref _keptRunS, _n, clear: false);
+        _runE = Table(ref _keptRunE, _n, clear: true);
+        Array.Fill(_runS, -1, 0, _n);
         // A register's ranges made as it is first marked: most numbers are
         // halves never used, values selection dropped, or the machine's own.
         for (int v = 0; v < _n; v++)
@@ -193,6 +196,28 @@ internal sealed class Allocator
         a.ComputeLiveness();
         a.Scan();
         a.Rewrite();
+        // What the kept tables point at goes with the function.
+        Array.Clear(a._remat, 0, a._n);
+        Array.Clear(a._ranges, 0, a._n);
+    }
+
+    [ThreadStatic] private static int[]? _keptOccFirst, _keptStart, _keptEnd, _keptAssigned, _keptSpilledFrom, _keptSlot, _keptRunS, _keptRunE;
+    [ThreadStatic] private static MImm?[]? _keptRemat;
+    [ThreadStatic] private static List<(int, int)>?[]? _keptRanges;
+    private const int KeptRegs = 1 << 18;
+
+    // At least `length` of a kept table, cleared that far when asked; one
+    // longer than KeptRegs is the function's alone.
+    private static T[] Table<T>(ref T[]? kept, int length, bool clear)
+    {
+        if (kept is not null && kept.Length >= length)
+        {
+            if (clear) Array.Clear(kept, 0, length);
+            return kept;
+        }
+        T[] made = new T[length];
+        if (length <= KeptRegs) kept = made;
+        return made;
     }
 
     private static void PruneUnusedValues(MFunction m)

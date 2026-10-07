@@ -96,10 +96,13 @@ public sealed class IrArchive
         section.Bytes.AddRange(NativeHash(obj));
         section.Bytes.AddRange(index.Hash());
         section.Bytes.AddRange(index);
-        for (int k = 0; k < records.Count; k++)
+        using (ChunkedBytesWriteStream bodies = new(section.Bytes))
         {
-            section.Bytes.AddRange(records[k].Body());
-            if (consumed is not null) consumed[k] = consumed[k] with { Payload = Array.Empty<byte>() };
+            for (int k = 0; k < records.Count; k++)
+            {
+                records[k].WriteBodyTo(bodies);
+                if (consumed is not null) consumed[k] = consumed[k] with { Payload = Array.Empty<byte>() };
+            }
         }
         obj.Sections.Add(section);
     }
@@ -215,10 +218,15 @@ public sealed class IrArchive
 
     private static void WriteName(BinaryWriter writer, string name)
     {
-        byte[] encoded = Utf8.GetBytes(name);
-        if (encoded.Length == 0 || encoded.Length > 16384 || name.Contains('\0')) throw new ElfFormatException("Invalid IR name");
-        writer.Write(encoded.Length); writer.Write(encoded);
+        // Encoded into a buffer kept a thread, not an array a name.
+        int most = Utf8.GetMaxByteCount(name.Length);
+        byte[] buffer = _nameBuffer is { } kept && kept.Length >= most ? kept : _nameBuffer = new byte[Math.Max(most, 256)];
+        int length = Utf8.GetBytes(name, 0, name.Length, buffer, 0);
+        if (length == 0 || length > 16384 || name.Contains('\0')) throw new ElfFormatException("Invalid IR name");
+        writer.Write(length); writer.Write(buffer, 0, length);
     }
+
+    [ThreadStatic] private static byte[]? _nameBuffer;
 
     private static string ReadName(BinaryReader reader)
     {

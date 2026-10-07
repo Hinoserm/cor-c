@@ -979,8 +979,38 @@ static class String {
         return Joined("", texts);
     }
 
+    // THE SPANS AS THEY ARE, into the one string made for them: as strings
+    // first, and with three or four parts as objects -- each span boxed,
+    // made a string, then joined -- a dotted name cut from another's
+    // characters was four allocations for one.
     public static string Concat(ReadOnlySpan<char> str0, ReadOnlySpan<char> str1) {
-        return Concat(str0.ToString(), str1.ToString());
+        string result = Sys.NewChars(str0.Length + str1.Length);
+        CopySpan(result, 0, str0);
+        CopySpan(result, str0.Length, str1);
+        return result;
+    }
+
+    public static string Concat(ReadOnlySpan<char> str0, ReadOnlySpan<char> str1, ReadOnlySpan<char> str2) {
+        string result = Sys.NewChars(str0.Length + str1.Length + str2.Length);
+        CopySpan(result, 0, str0);
+        CopySpan(result, str0.Length, str1);
+        CopySpan(result, str0.Length + str1.Length, str2);
+        return result;
+    }
+
+    public static string Concat(ReadOnlySpan<char> str0, ReadOnlySpan<char> str1, ReadOnlySpan<char> str2, ReadOnlySpan<char> str3) {
+        string result = Sys.NewChars(str0.Length + str1.Length + str2.Length + str3.Length);
+        int at = 0;
+        CopySpan(result, at, str0); at += str0.Length;
+        CopySpan(result, at, str1); at += str1.Length;
+        CopySpan(result, at, str2); at += str2.Length;
+        CopySpan(result, at, str3);
+        return result;
+    }
+
+    // Into a string made a moment ago and seen by nobody else.
+    private static void CopySpan(string dst, int at, ReadOnlySpan<char> src) {
+        for (int k = 0; k < src.Length; k++) { Sys.SetChar(dst, at + k, (int)src[k]); }
     }
 
     // WALKED RATHER THAN INDEXED, which is what .NET's Join over a sequence

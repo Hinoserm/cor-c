@@ -96,6 +96,7 @@ public sealed partial class Escape : IModulePass
         _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null;
         _repeating = null;
         AnalysisCache.Close();
+        Cfg.ForgetThread();
         _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null;
         _returnsFirst = null; _bodies = null; _invokeOnly = null; _unresolvedWhy = null; UsedAfterWhy = null;
         OwnedFieldEscape.Forget();
