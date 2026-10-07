@@ -213,17 +213,7 @@ public sealed class Liveness
         return k < 0 ? -1 : k * _words;
     }
 
-    private int RowOf(Block b)
-    {
-        if (_retired) throw new InvalidOperationException("liveness of " + Cfg.Function.Name + " read after the analysis cache let it go (AnalysisCache.Retire)");
-        return Row(b) is int row and >= 0 ? row : throw new KeyNotFoundException("block " + b.Label + " is not in this liveness");
-    }
-
-    // Under --verify-analyses, one the analysis cache has let go of, whose
-    // storage would otherwise be the next one's: any read is a pass holding
-    // an answer for a state the function has left.
-    private bool _retired;
-    internal void Retire() => _retired = true;
+    private int RowOf(Block b) => Row(b) is int row and >= 0 ? row : throw new KeyNotFoundException("block " + b.Label + " is not in this liveness");
 
     public bool IsLiveIn(Block b, VReg r) => Test(_in, RowOf(b), r.Id);
     public bool IsLiveOut(Block b, VReg r) => Test(_out, RowOf(b), r.Id);

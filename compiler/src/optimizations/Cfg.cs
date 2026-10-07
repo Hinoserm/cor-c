@@ -128,7 +128,8 @@ public sealed class Cfg
             if (b.Terminator is { } end) most += end.Targets.Count + (end.Default is null ? 0 : 1);
         _succEdges = most == 0 ? Array.Empty<Block>() : Take(spare?._succEdges, most, clear: false);
         _succStart = Take(spare?._succStart, count + 1, clear: false);
-        int[] incoming = new int[count + 1];
+        int[] incoming = _incoming is { } kept && kept.Length >= count + 1 ? kept : _incoming = new int[Math.Max(count + 1, 64)];
+        Array.Clear(incoming, 0, count + 1);
         int edges = 0;
         for (int k = 0; k < count; k++)
         {
@@ -188,11 +189,21 @@ public sealed class Cfg
     {
         IReadOnlyList<Block> order = ReversePostorder;
         int count = Function.Blocks.Count;
-        int[] firstChild = new int[count];
-        int[] nextSibling = new int[count];
-        bool[] child = new bool[count];
-        Array.Fill(firstChild, -1);
-        Array.Fill(nextSibling, -1);
+        // Tables a thread keeps, as the walks are many and each forgets its
+        // own when it returns; a walker does not start another walk.
+        if (_soleFirst is null || _soleFirst.Length < count)
+        {
+            int size = Math.Max(count, 64);
+            _soleFirst = new int[size];
+            _soleNext = new int[size];
+            _soleChild = new bool[size];
+        }
+        int[] firstChild = _soleFirst;
+        int[] nextSibling = _soleNext!;
+        bool[] child = _soleChild!;
+        Array.Fill(firstChild, -1, 0, count);
+        Array.Fill(nextSibling, -1, 0, count);
+        Array.Clear(child, 0, count);
         // Linked by prepending in RPO, so each list runs in reverse RPO and,
         // pushed in that order, the children pop in RPO.
         for (int r = 0; r < order.Count; r++)
@@ -209,7 +220,8 @@ public sealed class Cfg
         // A walker kept between walks starts clean even if the last one was
         // abandoned part way: everything it logged is undone.
         walker.Undo(0);
-        Stack<(int Block, int Mark)> walk = new();
+        Stack<(int Block, int Mark)> walk = _soleWalk ??= new();
+        walk.Clear();
         foreach (Block root in order)
         {
             if (child[root.Order]) continue;
@@ -476,6 +488,9 @@ public sealed class Cfg
     }
 
     [ThreadStatic] private static Cfg? _unreachableSpare;
+    [ThreadStatic] private static int[]? _incoming, _soleFirst, _soleNext;
+    [ThreadStatic] private static bool[]? _soleChild;
+    [ThreadStatic] private static Stack<(int Block, int Mark)>? _soleWalk;
 
     /// <summary>A unit is over on this thread: the graph kept for RemoveUnreachable, and the function it holds, let go.</summary>
     internal static void ForgetThread() => _unreachableSpare = null;
