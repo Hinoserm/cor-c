@@ -26,14 +26,22 @@ public sealed class Defs
     public Cfg Cfg => _cfg ?? throw new InvalidOperationException("definition-only analysis has no control-flow snapshot");
 
     // BY REGISTER NUMBER, NOT BY IDENTITY. A function numbers its registers
-    // densely as it makes them and says how many there are, so the two maps
-    // here are arrays: as dictionaries keyed on the register object they
-    // hashed a reference for every lookup, and this analysis is built fifty
+    // densely as it makes them and says how many there are, so the map here
+    // is an array: as dictionaries keyed on the register object they hashed
+    // a reference for every lookup, and this analysis is built fifty
     // thousand times compiling one source. A register from outside the
     // function -- there should be none -- reads as never defined.
-    private readonly int[] _count;
-    private readonly Block?[] _siteBlock;
-    private readonly int[] _siteIndex;
+    //
+    // ONE WORD A REGISTER: 0 never defined, Many defined more than once (a
+    // parameter's entry counting as one), Param a parameter alone, else the
+    // defining instruction's place counted through the blocks in order, plus
+    // one; the block is found from the block starts (_blockStart). A count,
+    // a block and an index a register were three arrays, built for every
+    // question, and the most of them that a native compile left behind.
+    private const int Many = -1, Param = -2;
+    private readonly int[] _site;
+    private readonly Block[] _blocks;
+    private readonly int[] _blockStart;
 
     /// <summary>
     /// Whether the function is in SSA form: every register has one
@@ -50,28 +58,32 @@ public sealed class Defs
         _cfg = buildCfg ? new Cfg(f) : null;
         Function = f;
         int registers = f.RegCount;
-        _count = new int[registers];
-        _siteBlock = new Block?[registers];
-        _siteIndex = new int[registers];
+        int[] site = _site = new int[registers];
+        int blocks = f.Blocks.Count;
+        _blocks = blocks == 0 ? Array.Empty<Block>() : new Block[blocks];
+        _blockStart = new int[blocks + 1];
         foreach (VReg p in Function.Params)
         {
-            if (p.Id < registers) _count[p.Id] = 1;
+            if (p.Id < registers) site[p.Id] = site[p.Id] == 0 ? Param : Many;
         }
-        foreach (Block b in Function.Blocks)
+        int at = 0;
+        for (int n = 0; n < blocks; n++)
         {
-            for (int k = 0; k < b.Instrs.Count; k++)
+            Block b = f.Blocks[n];
+            _blocks[n] = b;
+            _blockStart[n] = at;
+            List<Instr> instrs = b.Instrs;
+            for (int k = 0; k < instrs.Count; k++)
             {
-                VReg? d = b.Instrs[k].Dest;
-                if (d is null || d.Id >= registers)
+                VReg? d = instrs[k].Dest;
+                if (d is not null && d.Id < registers)
                 {
-                    continue;
+                    site[d.Id] = site[d.Id] == 0 ? at + k + 1 : Many;
                 }
-                _count[d.Id]++;
-                _siteBlock[d.Id] = b;
-                _siteIndex[d.Id] = k;
             }
+            at += instrs.Count;
         }
-    
+        _blockStart[blocks] = at;
     }
 
     public Defs(Cfg cfg, bool ssa = false) : this(cfg.Function, ssa, false)
@@ -79,12 +91,35 @@ public sealed class Defs
         _cfg = cfg;
     }
 
-    public int Count(VReg r) => r.Id < _count.Length ? _count[r.Id] : 0;
+    /// <summary>How many times `r` is defined, a parameter's entry counting as one: 0, 1, or 2 for more.</summary>
+    public int Count(VReg r)
+    {
+        int w = r.Id < _site.Length ? _site[r.Id] : 0;
+        return w == 0 ? 0 : w == Many ? 2 : 1;
+    }
+
     private bool TrySite(VReg r, out (Block Block, int Index) site)
     {
-        if (r.Id < _siteBlock.Length && _siteBlock[r.Id] is Block b) { site = (b, _siteIndex[r.Id]); return true; }
-        site = default; return false;
+        int w = r.Id < _site.Length ? _site[r.Id] : 0;
+        if (w <= 0)
+        {
+            site = default;
+            return false;
+        }
+        int at = w - 1;
+        int lo = 0, hi = _blocks.Length - 1;
+        // The last block starting at or before `at`: blocks without
+        // instructions start where the next one does, and hold none of them.
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) >> 1;
+            if (_blockStart[mid] <= at) lo = mid;
+            else hi = mid - 1;
+        }
+        site = (_blocks[lo], at - _blockStart[lo]);
+        return true;
     }
+
     public bool IsSingle(VReg r) => Count(r) == 1;
 
     /// <summary>Where a single-def register is defined, or null for a parameter or a multi-def register.</summary>

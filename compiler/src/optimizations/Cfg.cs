@@ -51,7 +51,12 @@ public sealed class Cfg
     private int _words;
     private ulong[]? _reachBits;
     private bool[]? _reachDone;
-    private ulong[]? _dom;
+    private int[]? _rpoAt;
+    private int[]? _idomAt;
+    private int[]? _pre;
+    private int[]? _post;
+    private bool[]? _seen;
+    private Stack<(Block, int)>? _dfs;
     private bool[]? _live;
     private Block?[]? _idom;
     private Block[]? _children;
@@ -245,8 +250,9 @@ public sealed class Cfg
             {
                 List<Block> post = _spare?._rpo is { } kept ? kept : new(Function.Blocks.Count);
                 post.Clear();
-                bool[] seen = new bool[Function.Blocks.Count];
-                Stack<(Block, int)> stack = new();
+                bool[] seen = _seen = Take(_spare?._seen, Function.Blocks.Count, clear: true);
+                Stack<(Block, int)> stack = _dfs = _spare?._dfs ?? new();
+                stack.Clear();
                 // The entry goes first so it ends up last in postorder, ahead
                 // of every pad, and the pads follow in block order so the
                 // result is deterministic.
@@ -398,77 +404,31 @@ public sealed class Cfg
 
     /// <summary>
     /// Whether <paramref name="a"/> dominates <paramref name="b"/>: every path
-    /// from a root to b passes through a. A block dominates itself. Computed
-    /// as bit sets by iteration, which is asymptotically worse than the
-    /// Cooper-Harvey-Kennedy tree but handles several roots without special
-    /// cases, and functions are small enough that it is not the cost that
-    /// matters. Blocks reachable from no root dominate nothing and are
-    /// dominated by everything, which is the conventional answer.
+    /// from a root to b passes through a. A block dominates itself. Read off
+    /// the dominator tree (BuildTree) by its walk's numbering: a dominates b
+    /// when b's visit lies inside a's. Blocks reachable from no root
+    /// dominate nothing and are dominated by everything, which is the
+    /// conventional answer.
     /// </summary>
     public bool Dominates(Block a, Block b)
     {
-        _dom ??= ComputeDominators();
-        int ia = a.Order;
-        return (_dom[b.Order * Words + (ia >> 6)] & (1UL << (ia & 63))) != 0;
+        BuildTree();
+        int ia = a.Order, ib = b.Order;
+        if (_rpoAt![ib] < 0) return true;
+        if (_rpoAt[ia] < 0) return false;
+        return _pre![ia] <= _pre[ib] && _post![ib] <= _post[ia];
     }
 
-    private ulong[] ComputeDominators()
+    // The nearest block that dominates both, climbing the tree by position
+    // in reverse postorder (the virtual root at n is before every block).
+    private static int Intersect(int[] rpo, int[] idom, int a, int b)
     {
-        int n = Function.Blocks.Count;
-        int words = Words;
-        // Every row written below before any is read.
-        ulong[] dom = Take(_spare?._dom, n * words, clear: false);
-        ulong[] all = new ulong[words];
-        for (int k = 0; k < n; k++)
+        while (a != b)
         {
-            all[k >> 6] |= 1UL << (k & 63);
+            while (rpo[a] > rpo[b]) a = idom[a];
+            while (rpo[b] > rpo[a]) b = idom[b];
         }
-        for (int k = 0; k < n; k++)
-        {
-            Array.Copy(all, 0, dom, k * words, words);
-        }
-        foreach (Block root in _roots)
-        {
-            int r = root.Order;
-            Array.Clear(dom, r * words, words);
-            dom[r * words + (r >> 6)] |= 1UL << (r & 63);
-        }
-
-        IReadOnlyList<Block> order = ReversePostorder;
-        ulong[] tmp = new ulong[words];
-        bool changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (Block b in order)
-            {
-                if (IsRoot(b))
-                {
-                    continue;
-                }
-                int ib = b.Order;
-                Array.Copy(all, tmp, words);
-                foreach (Block p in Preds(b))
-                {
-                    int dp = p.Order * words;
-                    for (int w = 0; w < words; w++)
-                    {
-                        tmp[w] &= dom[dp + w];
-                    }
-                }
-                tmp[ib >> 6] |= 1UL << (ib & 63);
-                int db = ib * words;
-                for (int w = 0; w < words; w++)
-                {
-                    if (dom[db + w] != tmp[w])
-                    {
-                        dom[db + w] = tmp[w];
-                        changed = true;
-                    }
-                }
-            }
-        }
-        return dom;
+        return a;
     }
 
     /// <summary>
@@ -565,55 +525,114 @@ public sealed class Cfg
         return _frontier[b.Order] ?? NoFrontier;
     }
 
+    /// <summary>
+    /// The dominator tree, by Cooper, Harvey and Kennedy's iteration over
+    /// reverse postorder, every root a child of one virtual root (position
+    /// n). Dominator sets as rows of bits, as this was, were a row a block:
+    /// quadratic in the blocks, the second most a native compile left to
+    /// the collector, and the immediate dominator a scan of every row.
+    /// </summary>
     private void BuildTree()
     {
         if (_idom is not null)
         {
             return;
         }
-        _dom ??= ComputeDominators();
-        int n = Function.Blocks.Count, words = Words;
-        // Every slot written below.
-        _idom = Take(_spare?._idom, n, clear: false);
-        bool[] live = Live;
-        int[] size = new int[n];
+        int n = Function.Blocks.Count;
+        IReadOnlyList<Block> order = ReversePostorder;
+        int[] rpo = _rpoAt = Take(_spare?._rpoAt, n + 1, clear: false);
+        int[] idom = _idomAt = Take(_spare?._idomAt, n + 1, clear: false);
         for (int k = 0; k < n; k++)
         {
-            for (int w = 0; w < words; w++)
-            {
-                size[k] += System.Numerics.BitOperations.PopCount(_dom[k * words + w]);
-            }
+            rpo[k] = -1;
+            idom[k] = -1;
         }
-        int[] childCount = new int[n + 1];
-        foreach (Block b in Function.Blocks)
+        for (int k = 0; k < order.Count; k++) rpo[order[k].Order] = k;
+        rpo[n] = -1;
+        idom[n] = n;
+        for (int k = 0; k < order.Count; k++)
+            if (IsRoot(order[k])) idom[order[k].Order] = n;
+        bool changed = true;
+        while (changed)
         {
-            Block? best = null;
-            if (live[b.Order] && !IsRoot(b))
+            changed = false;
+            for (int k = 0; k < order.Count; k++)
             {
-                int ib = b.Order;
-                foreach (Block d in Function.Blocks)
+                Block b = order[k];
+                if (IsRoot(b))
                 {
-                    int id = d.Order;
-                    if (id != ib && (_dom[ib * words + (id >> 6)] & (1UL << (id & 63))) != 0
-                        && (best is null || size[id] > size[best.Order]))
+                    continue;
+                }
+                int best = -1;
+                foreach (Block p in Preds(b))
+                {
+                    int pi = p.Order;
+                    if (idom[pi] < 0)
                     {
-                        best = d;
+                        continue;
                     }
+                    best = best < 0 ? pi : Intersect(rpo, idom, pi, best);
+                }
+                if (best >= 0 && idom[b.Order] != best)
+                {
+                    idom[b.Order] = best;
+                    changed = true;
                 }
             }
-            _idom[b.Order] = best;
-            if (best is not null) childCount[best.Order]++;
         }
+
+        _idom = Take(_spare?._idom, n, clear: false);
         // The tree's children as the edges are kept: one array, a run a
         // block, in block order.
-        _childStart = Take(_spare?._childStart, n + 1, clear: false);
-        _childStart[0] = 0;
-        for (int k = 0; k < n; k++) _childStart[k + 1] = _childStart[k] + childCount[k];
+        _childStart = Take(_spare?._childStart, n + 1, clear: true);
+        for (int k = 0; k < n; k++)
+        {
+            int d = idom[k];
+            _idom[k] = d >= 0 && d < n ? Function.Blocks[d] : null;
+            if (d >= 0 && d < n) _childStart[d + 1]++;
+        }
+        for (int k = 0; k < n; k++) _childStart[k + 1] += _childStart[k];
         _children = _childStart[n] == 0 ? Array.Empty<Block>() : Take(_spare?._children, _childStart[n], clear: false);
-        int[] at = new int[n];
+        int[] pre = _pre = Take(_spare?._pre, n, clear: false);
+        int[] post = _post = Take(_spare?._post, n, clear: false);
+        int[] at = post;
         for (int k = 0; k < n; k++) at[k] = _childStart[k];
-        foreach (Block b in Function.Blocks)
-            if (_idom[b.Order] is { } parent) _children[at[parent.Order]++] = b;
+        for (int k = 0; k < n; k++)
+            if (_idom[k] is { } parent) _children[at[parent.Order]++] = Function.Blocks[k];
+
+        // Numbered by a walk of each tree, without a stack: the parent is
+        // the immediate dominator, and each block's next child is kept in
+        // what was the iteration's table. A tree for every child of the
+        // virtual root -- every root, and every block reached from two roots
+        // on paths nothing else lies across, which only it dominates.
+        int[] next = idom;
+        for (int k = 0; k < n; k++) next[k] = _childStart[k];
+        int clock = 0;
+        for (int k = 0; k < order.Count; k++)
+        {
+            if (_idom[order[k].Order] is not null)
+            {
+                continue;
+            }
+            int top = order[k].Order;
+            int v = top;
+            pre[v] = clock++;
+            while (true)
+            {
+                if (next[v] < _childStart[v + 1])
+                {
+                    int c = _children[next[v]++].Order;
+                    pre[c] = clock++;
+                    v = c;
+                }
+                else
+                {
+                    post[v] = clock++;
+                    if (v == top) break;
+                    v = _idom[v]!.Order;
+                }
+            }
+        }
     }
 }
 
