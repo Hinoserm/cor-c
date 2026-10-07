@@ -5,10 +5,11 @@ namespace Corsac.Lang.X86;
 
 using Block = Corsac.Lang.Ir.Block;
 
-public sealed class MInstr
+public sealed class MInstr : MOperandList
 {
     public MOp Op { get; init; }
-    public List<MOperand> Operands { get; } = new();
+    /// <summary>Its operands, held in the instruction itself (MOperandList).</summary>
+    public MOperandList Operands => this;
 
     /// <summary>Operand width in bytes: 1, 2, 4, or 8 for an x87 qword. Registers are always 32-bit except at width 1 and 2.</summary>
     public int Width { get; init; } = 4;
