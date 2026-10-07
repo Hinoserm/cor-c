@@ -1,0 +1,35 @@
+// test: binary writer strings through a kept buffer
+// expect-exit: 0
+// expect-output:
+// 7 70355
+// 4 97 195 98
+// ArgumentException
+//
+// BinaryWriter.Write(string) encodes through a buffer it keeps, and
+// UTF8Encoding.GetBytes into a caller's array writes there directly: the
+// same bytes and lengths as .NET, the same refusal of a buffer too small.
+
+using System;
+using System.IO;
+using System.Text;
+
+static class P
+{
+    static int Main()
+    {
+        MemoryStream ms = new();
+        BinaryWriter w = new(ms);
+        string[] texts = { "", "a", "héllo wörld", new string('x', 300), "日本語テキスト", "😀 emoji", new string('y', 70000) };
+        foreach (string t in texts) w.Write(t);
+        w.Flush();
+        ms.Position = 0;
+        BinaryReader r = new(ms);
+        int ok = 0;
+        foreach (string t in texts) if (r.ReadString() == t) ok++;
+        Console.WriteLine(ok + " " + ms.Length);
+        byte[] into = new byte[8];
+        Console.WriteLine(Encoding.UTF8.GetBytes("añb", 0, 3, into, 2) + " " + into[2] + " " + into[3] + " " + into[5]);
+        try { Encoding.UTF8.GetBytes("abcdefgh", 0, 8, into, 4); } catch (ArgumentException e) { Console.WriteLine(e.GetType().Name); }
+        return 0;
+    }
+}

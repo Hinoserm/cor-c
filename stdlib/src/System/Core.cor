@@ -6162,6 +6162,21 @@ class UTF8Encoding : Encoding {
         return Utf8Transcoder.Encode(s, 0, s.Length);
     }
 
+    /// Into the caller's array with nothing made on the way: a BinaryWriter
+    /// writing every name of a compiler's archive made a byte array for each.
+    public override int GetBytes(string s, int charIndex, int charCount, byte[] bytes, int byteIndex) {
+        if (throwOnInvalid) { return base.GetBytes(s, charIndex, charCount, bytes, byteIndex); }
+        if (s == null) { throw new ArgumentNullException("s"); }
+        if (bytes == null) { throw new ArgumentNullException("bytes"); }
+        if (charIndex < 0 || charCount < 0) { throw new ArgumentOutOfRangeException(charIndex < 0 ? "charIndex" : "charCount", "Non-negative number required."); }
+        if (charIndex > s.Length - charCount) { throw new ArgumentOutOfRangeException("s", "Index and count must refer to a location within the string."); }
+        if (byteIndex < 0 || byteIndex > bytes.Length) { throw new ArgumentOutOfRangeException("byteIndex", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
+        if (Utf8Transcoder.ByteCount(s, charIndex, charCount) > bytes.Length - byteIndex) {
+            throw new ArgumentException("The output byte buffer is too small to contain the encoded data.", "bytes");
+        }
+        return Utf8Transcoder.Encode(s, charIndex, charCount, bytes, byteIndex);
+    }
+
     public override string GetString(byte[] bytes, int index, int count) {
         CheckRange(bytes, index, count);
         if (throwOnInvalid) {

@@ -445,11 +445,19 @@ class BinaryWriter : IDisposable
         }
 
         // The COUNT OF BYTES, not of characters, which is what .NET writes:
-        // the encoded length, then the encoding.
-        byte[] bytes = _encoding.GetBytes(value);
-        Write7BitEncodedInt(bytes.Length);
-        _stream.Write(bytes, 0, bytes.Length);
+        // the encoded length, then the encoding -- through a buffer the
+        // writer keeps, as .NET's does, not an array made for each string.
+        // One past KeptText bytes is made for that string alone.
+        int count = _encoding.GetByteCount(value);
+        Write7BitEncodedInt(count);
+        byte[] bytes = _text is { } kept && kept.Length >= count ? kept
+            : count > KeptText ? new byte[count] : (_text = new byte[Math.Max(count, 256)]);
+        int made = _encoding.GetBytes(value, 0, value.Length, bytes, 0);
+        _stream.Write(bytes, 0, made);
     }
+
+    private byte[]? _text;
+    private const int KeptText = 1 << 16;
 
     public void Write7BitEncodedInt(int value)
     {
