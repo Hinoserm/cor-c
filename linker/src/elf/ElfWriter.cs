@@ -225,10 +225,13 @@ public static class ElfWriter
                 }
                 else
                 {
+                    // Referred to, not copied: the object is written or
+                    // hashed straight after it is built, and its addends
+                    // are laid over these bytes, not written into them.
                     for (int k = 0; k < s.Bytes.SegmentCount; k++)
                     {
                         (byte[] array, int length) = s.Bytes.Segment(k);
-                        b.Bytes(new ReadOnlySpan<byte>(array, 0, length));
+                        b.Share(array, length);
                     }
                 }
                 foreach ((int offset, uint addend) in addends[i])

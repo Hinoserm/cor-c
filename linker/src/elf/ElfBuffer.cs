@@ -27,16 +27,21 @@ internal sealed class ElfBuffer
     // hashed. A unit's IR archive, tens of megabytes, went through chunks
     // made for it only to be written out again, and every one of them was
     // the collector's.
-    private List<(int At, int Length, Section Source)>? _splices;
+    // A section's own bytes, in memory, are spliced the same way
+    // (Share): referred to, not copied into chunks made only to be written
+    // out once. Source is null for those, Array the bytes.
+    private List<(int At, int Length, Section? Source, byte[]? Array)>? _splices;
+    // What PatchU32 wrote over shared bytes, laid over them as they are
+    // written out: the section's own bytes are left as they were.
+    private List<(int At, int Seq, uint Value)>? _patches;
+    private bool _patchesSorted = true;
 
     public int Length => _length;
 
     /// <summary>The chunk holding byte `offset`, made if it is not yet.</summary>
     private byte[] Chunk(int offset)
     {
-        if (_splices is not null)
-            foreach ((int at, int length, Section _) in _splices)
-                if (offset >= at && offset < at + length) throw new InvalidOperationException($"layout error: 0x{offset:x} is in a spliced section");
+        if (_splices is not null && SplicedAt(offset) >= 0) throw new InvalidOperationException($"layout error: 0x{offset:x} is in a spliced section");
         int index = offset >> ChunkShift;
         while (_chunks.Count <= index) _chunks.Add(null);
         return _chunks[index] ??= new byte[ChunkBytes];
@@ -46,8 +51,34 @@ internal sealed class ElfBuffer
     public void Splice(Section source)
     {
         if (source.FileBacked is not (_, _, int length)) throw new InvalidOperationException($"section {source.Name}: only a file-backed section is spliced");
-        (_splices ??= new()).Add((_length, length, source));
+        (_splices ??= new()).Add((_length, length, source, null));
         _length = checked(_length + length);
+    }
+
+    /// <summary>
+    /// `length` bytes of `array` here, referred to rather than copied: the
+    /// array must not change until the buffer is written or hashed.
+    /// </summary>
+    public void Share(byte[] array, int length)
+    {
+        if (length <= 0) return;
+        (_splices ??= new()).Add((_length, length, null, array));
+        _length = checked(_length + length);
+    }
+
+    /// <summary>The splice holding byte `offset` (they are in order), or -1.</summary>
+    private int SplicedAt(int offset)
+    {
+        List<(int At, int Length, Section? Source, byte[]? Array)> splices = _splices!;
+        int lo = 0, hi = splices.Count - 1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >> 1;
+            if (offset < splices[mid].At) hi = mid - 1;
+            else if (offset >= splices[mid].At + splices[mid].Length) lo = mid + 1;
+            else return mid;
+        }
+        return -1;
     }
 
     /// <summary>
@@ -59,12 +90,53 @@ internal sealed class ElfBuffer
         byte[]? zeros = null;
         byte[]? piece = null;
         int splice = 0;
+        if (_patches is not null && !_patchesSorted)
+        {
+            _patches.Sort((x, y) => x.At != y.At ? x.At.CompareTo(y.At) : x.Seq.CompareTo(y.Seq));
+            _patchesSorted = true;
+        }
+        int patch = 0, patchCount = _patches?.Count ?? 0;
         int pos = 0;
         while (pos < _length)
         {
             if (_splices is not null && splice < _splices.Count && _splices[splice].At == pos)
             {
-                (int _, int length, Section source) = _splices[splice++];
+                (int _, int length, Section? source, byte[]? array) = _splices[splice++];
+                if (source is null)
+                {
+                    // Shared bytes, with what was patched over them.
+                    for (int done = 0; done < length;)
+                    {
+                        int n = Math.Min(ChunkBytes, length - done);
+                        int first = patch;
+                        while (patch < patchCount && _patches![patch].At < pos + done + n) patch++;
+                        if (first == patch)
+                        {
+                            sink(array!, done, n);
+                        }
+                        else
+                        {
+                            piece ??= new byte[ChunkBytes];
+                            Array.Copy(array!, done, piece, 0, n);
+                            for (int k = first; k < patch; k++)
+                            {
+                                (int at, int _, uint value) = _patches![k];
+                                for (int byteAt = 0; byteAt < 4; byteAt++)
+                                {
+                                    int into = at + byteAt - (pos + done);
+                                    if (into >= 0 && into < n) piece[into] = (byte)(value >> (8 * byteAt));
+                                }
+                            }
+                            // A patch straddling the piece's end is laid
+                            // over the next one too.
+                            if (patch > first && _patches![patch - 1].At + 4 > pos + done + n) patch--;
+                            sink(piece, 0, n);
+                        }
+                        done += n;
+                    }
+                    pos += length;
+                    continue;
+                }
                 using Stream from = source.OpenRead();
                 piece ??= new byte[ChunkBytes];
                 for (int left = length; left > 0;)
@@ -158,6 +230,18 @@ internal sealed class ElfBuffer
     public void PatchU32(int offset, uint v)
     {
         if (offset < 0 || offset + 4 > _length) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (_splices is not null && SplicedAt(offset) is int k and >= 0)
+        {
+            // All four bytes shared, though they may run on into the next
+            // segment of the section.
+            for (int byteAt = 0; byteAt < 4; byteAt++)
+                if (SplicedAt(offset + byteAt) is not (int j and >= 0) || _splices[j].Source is not null)
+                    throw new InvalidOperationException($"layout error: 0x{offset:x} is in a spliced section");
+            _patches ??= new();
+            if (_patches.Count > 0 && _patches[^1].At >= offset) _patchesSorted = false;
+            _patches.Add((offset, _patches.Count, v));
+            return;
+        }
         Span<byte> s = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(s, v);
         for (int i = 0; i < 4; i++)

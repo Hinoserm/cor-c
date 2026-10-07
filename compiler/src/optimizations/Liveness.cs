@@ -36,7 +36,11 @@ public sealed class Liveness
     private readonly ulong[] _in;
     private readonly ulong[] _out;
     private readonly Block[] _blocks;
-    private readonly VReg?[] _regs;
+    // The registers by number, for the walks that yield them (LiveIn,
+    // LiveOut): found from the function when first asked. Most askers test
+    // bits and never want one, and a table as long as the function's
+    // registers was a third of what each liveness made.
+    private VReg?[]? _regs;
 
     public Liveness(Function f) : this(new Cfg(f))
     {
@@ -90,7 +94,6 @@ public sealed class Liveness
         _words = (_registers + 63) >> 6;
         int count = f.Blocks.Count;
         _blocks = f.Blocks.ToArray();
-        _regs = new VReg?[_registers];
         _in = Take(spare?._in, count * _words);
         _out = Take(spare?._out, count * _words);
 
@@ -119,7 +122,6 @@ public sealed class Liveness
                     {
                         if (i.Operands[k] is RegOperand pr && Row(i.Targets[k]) is int po and >= 0)
                         {
-                            _regs[pr.Reg.Id] = pr.Reg;
                             int from = _words == 0 ? 0 : po / _words;
                             Append(ref _keptPhiBlocks, ref phis, from);
                             phis--;
@@ -131,13 +133,11 @@ public sealed class Liveness
                 {
                     foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                     {
-                        _regs[r.Id] = r;
                         if (defAt[r.Id] != at + 1) Append(ref _keptUses, ref uses, r.Id);
                     }
                 }
                 if (i.Dest is not null)
                 {
-                    _regs[i.Dest.Id] = i.Dest;
                     if (defAt[i.Dest.Id] != at + 1)
                     {
                         defAt[i.Dest.Id] = at + 1;
@@ -213,7 +213,17 @@ public sealed class Liveness
         return k < 0 ? -1 : k * _words;
     }
 
-    private int RowOf(Block b) => Row(b) is int row and >= 0 ? row : throw new KeyNotFoundException("block " + b.Label + " is not in this liveness");
+    private int RowOf(Block b)
+    {
+        if (_retired) throw new InvalidOperationException("liveness of " + Cfg.Function.Name + " read after the analysis cache let it go (AnalysisCache.Retire)");
+        return Row(b) is int row and >= 0 ? row : throw new KeyNotFoundException("block " + b.Label + " is not in this liveness");
+    }
+
+    // Under --verify-analyses, one the analysis cache has let go of, whose
+    // storage would otherwise be the next one's: any read is a pass holding
+    // an answer for a state the function has left.
+    private bool _retired;
+    internal void Retire() => _retired = true;
 
     public bool IsLiveIn(Block b, VReg r) => Test(_in, RowOf(b), r.Id);
     public bool IsLiveOut(Block b, VReg r) => Test(_out, RowOf(b), r.Id);
@@ -288,8 +298,30 @@ public sealed class Liveness
     private static bool Test(ulong[] rows, int row, int id) => (rows[row + (id >> 6)] & (1UL << (id & 63))) != 0;
     private static void Set(ulong[] rows, int row, int id) => rows[row + (id >> 6)] |= 1UL << (id & 63);
 
+    /// <summary>
+    /// The registers by number, from the function as it is now: a register
+    /// an edit since has removed from every instruction is in no table and
+    /// is left out, as nothing in the function can read it.
+    /// </summary>
+    private VReg?[] Registers()
+    {
+        if (_regs is { } made) return made;
+        VReg?[] regs = new VReg?[_registers];
+        foreach (VReg p in Cfg.Function.Params) if (p.Id < _registers) regs[p.Id] = p;
+        foreach (Block b in Cfg.Function.Blocks)
+        {
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is { } d && d.Id < _registers) regs[d.Id] = d;
+                foreach (Operand o in i.Operands) if (o is RegOperand { Reg: var r } && r.Id < _registers) regs[r.Id] = r;
+            }
+        }
+        return _regs = regs;
+    }
+
     private IEnumerable<VReg> Enumerate(ulong[] rows, int row)
     {
+        VReg?[] regs = Registers();
         for (int w = 0; w < _words; w++)
         {
             ulong bits = rows[row + w];
@@ -297,7 +329,7 @@ public sealed class Liveness
             {
                 int bit = System.Numerics.BitOperations.TrailingZeroCount(bits);
                 bits &= bits - 1;
-                yield return _regs[(w << 6) + bit]!;
+                if (regs[(w << 6) + bit] is { } r) yield return r;
             }
         }
     }
