@@ -15,11 +15,20 @@ public sealed class RegisterWrites
 {
     private readonly int[] _start;
     private readonly Instr[] _all;
+    private readonly int _registers;
 
-    public RegisterWrites(Function f)
+    public RegisterWrites(Function f) : this(f, null) { }
+
+    /// <summary>
+    /// The index of `f` in the storage of `spare` -- an index of an earlier
+    /// state nobody will read again -- where it is large enough: read only up
+    /// to this function's own counts.
+    /// </summary>
+    internal RegisterWrites(Function f, RegisterWrites? spare)
     {
-        int registers = f.RegCount;
-        _start = new int[registers + 1];
+        int registers = _registers = f.RegCount;
+        _start = spare is not null && spare._start.Length >= registers + 1 ? spare._start : new int[registers + 1];
+        Array.Clear(_start, 0, registers + 1);
         int total = 0;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -29,7 +38,7 @@ public sealed class RegisterWrites
                     total++;
                 }
         for (int r = 0; r < registers; r++) _start[r + 1] += _start[r];
-        _all = total == 0 ? Array.Empty<Instr>() : new Instr[total];
+        _all = total == 0 ? Array.Empty<Instr>() : spare is not null && spare._all.Length >= total ? spare._all : new Instr[total];
         // FILLED FROM THE END, each register's run downwards from where the
         // next one's starts, which leaves every entry at its own run's start:
         // the same order with no array of cursors beside the table.
@@ -49,7 +58,7 @@ public sealed class RegisterWrites
     /// <summary>The writes of `r`; false, as a missing key was, when there are none or `r` is newer than the index.</summary>
     public bool TryGetValue(VReg r, out WriteList writes)
     {
-        if ((uint)r.Id >= (uint)(_start.Length - 1) || _start[r.Id] == _start[r.Id + 1])
+        if ((uint)r.Id >= (uint)_registers || _start[r.Id] == _start[r.Id + 1])
         {
             writes = default;
             return false;

@@ -101,6 +101,7 @@ public sealed class Devirtualize : IModulePass
         //     with nothing changed between, the first was never read.
         FoldTypeTests(f, items);
         if (!any) return;
+        // Fresh: the one before is the pipeline's, kept for other passes.
         defs = new(f, buildCfg: false);
 
         // 2. A slot read from read-only data at a relocation.
@@ -135,7 +136,8 @@ public sealed class Devirtualize : IModulePass
                 }
                 b.Instrs[k] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Line = i.Line, Operands = { new SymOperand(named, exact.Addend) } };
             }
-        defs = new(f, buildCfg: false);
+        // In the storage of the one just made here, which nothing else holds.
+        defs = new(f, false, false, defs);
 
         // 3. The call through it.
         foreach (Block b in f.Blocks)

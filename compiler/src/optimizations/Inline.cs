@@ -294,7 +294,7 @@ public sealed class Inline : IParallelModulePass
         // Many rejected call sites ask the same definition/CFG questions.
         // Reuse the analysis only until Expand mutates this caller.
         Defs? callerDefs = null;
-        FreshValues? callerFresh = null;
+        FreshValues? callerFresh = null, staleFresh = null;
         // The caller's blocks that lie on a loop, found once until a call is
         // expanded into it (LoopBlocks): a walk of the whole function for
         // every call site weighed was minutes on a library's single unit.
@@ -325,7 +325,7 @@ public sealed class Inline : IParallelModulePass
                     // (FreshDispatched) -- a List built from an iterator, a
                     // Join over one -- or everywhere, with InlineHandlers.
                     bool handlers = caller.Async is null && (InlineHandlers
-                        || !Inlineable(callee, pinned) && Size(callee) <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh));
+                        || !Inlineable(callee, pinned) && Size(callee) <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh));
                     if (!Inlineable(callee, pinned, handlers) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
                     {
                         continue;
@@ -372,7 +372,7 @@ public sealed class Inline : IParallelModulePass
                         && FreshOwner(caller, b, i, call, ref callerDefs);
                     bool dispatchesFresh = ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren
                         && size + calleeSize <= GrowthLimit
-                        && (calleeSize <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh)
+                        && (calleeSize <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh)
                             || calleeSize <= FreshResultBody && call.Dest is not null && MakesWhatItReturnsOnce(callee));
                     exposesChildren |= dispatchesFresh;
                     if (ordinaryCost > smallBody && !single && !specializesBranch && !exposesChildren)
@@ -391,6 +391,7 @@ public sealed class Inline : IParallelModulePass
                     TraceDecision?.Invoke(caller, callee, $"expand: body={calleeSize} small-limit={smallBody} caller={size} single={single} constant-branch={specializesBranch} fresh-owner={exposesChildren}");
                     Expand(caller, b, i, call, callee, _keepCalls);
                     callerDefs = null;
+                    staleFresh = callerFresh ?? staleFresh;
                     callerFresh = null;
                     loopBlocks = null;
                     size += calleeSize;
@@ -501,9 +502,15 @@ public sealed class Inline : IParallelModulePass
     /// allocator's result, through copies) on which the callee makes a
     /// virtual call: the call FreshArgumentBody brings into sight.
     /// </summary>
-    private static bool FreshDispatched(Function caller, Instr call, Function callee, ref FreshValues? cached)
+    private static bool FreshDispatched(Function caller, Instr call, Function callee, ref FreshValues? cached, ref FreshValues? stale)
     {
-        FreshValues fresh = cached ??= new FreshValues(caller);
+        // Made in the stale one's storage, which is then this one's alone.
+        if (cached is null)
+        {
+            cached = new FreshValues(caller, stale);
+            stale = null;
+        }
+        FreshValues fresh = cached;
         for (int k = 0; k < call.Operands.Count && k < callee.Params.Count; k++)
         {
             if (call.Operands[k] is not RegOperand value || !fresh.Made(value.Reg)) continue;
@@ -569,15 +576,21 @@ public sealed class Inline : IParallelModulePass
         // By register number: 0 not asked, 1 no, 2 yes. A register made since
         // has no writes in the index, and is no allocation's, as before.
         private readonly byte[] _known;
-        public FreshValues(Function f)
+        private readonly int _registers;
+        // IN THE STORAGE OF THE LAST ONE, made stale by an inline into the
+        // same caller: a whole index of the caller made afresh after every
+        // inline was a thirtieth of what a native compile left the collector.
+        public FreshValues(Function f, FreshValues? spare = null)
         {
-            _writes = new RegisterWrites(f);
-            _known = new byte[f.RegCount];
+            _writes = new RegisterWrites(f, spare?._writes);
+            _registers = f.RegCount;
+            _known = spare is not null && spare._known.Length >= _registers ? spare._known : new byte[_registers];
+            Array.Clear(_known, 0, _registers);
         }
         public bool Made(VReg r) => Made(r, 0);
         private bool Made(VReg r, int depth)
         {
-            if ((uint)r.Id < (uint)_known.Length && _known[r.Id] != 0) return _known[r.Id] == 2;
+            if ((uint)r.Id < (uint)_registers && _known[r.Id] != 0) return _known[r.Id] == 2;
             if (depth > 8 || !_writes.TryGetValue(r, out WriteList defs)) return false;
             _known[r.Id] = 1;   // a cycle of copies is no allocation
             foreach (Instr d in defs)
