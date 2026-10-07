@@ -936,7 +936,7 @@ public sealed partial class Escape
             // function stored there, which it may hold on to as well.
             if (r.Renew is not null)
             {
-                liveness ??= new Liveness(f);
+                liveness ??= AnalysisCache.LivenessOf(f);
                 pads ??= PadLive(liveness);
                 // Field by field: a live one keeps its own object, not the others'.
                 bool HeldLive(long offset) => LiveAt(f, liveness, pads, r.Renew,

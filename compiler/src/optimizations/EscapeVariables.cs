@@ -128,7 +128,7 @@ public sealed partial class Escape
             // The previous value dead at every assignment -- and never read
             // by a handler, which an exception can reach from anywhere after
             // the assignment (Escape.PadLive).
-            liveness ??= new Liveness(f);
+            liveness ??= AnalysisCache.LivenessOf(f);
             HashSet<VReg> pads = PadLive(liveness);
             bool live = false;
             foreach (VReg r in flow.Derived)

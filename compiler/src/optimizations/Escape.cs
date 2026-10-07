@@ -841,7 +841,7 @@ public sealed partial class Escape : IModulePass
                 }
             Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
             bool keptAnyway = flow.Escapes || list.Any(e => CatchesForeign(e.End));
-            if (!keptAnyway) catchLiveness ??= new Liveness(f);
+            if (!keptAnyway) catchLiveness ??= AnalysisCache.LivenessOf(f);
             if (keptAnyway || UsedAfterEnd(f, keep, flow, list, catchLiveness!))
             {
                 string why = flow.Escapes ? $"escapes via {flow.Why?.Op} {flow.Why?.Callee}" : keptAnyway ? "may catch something not just made" : "used after the catch ends: " + UsedAfterWhy;
@@ -1133,7 +1133,6 @@ public sealed partial class Escape : IModulePass
                     }
         Dictionary<Function, RegisterWrites> writesOf = new();
         Dictionary<(Function, int), List<Instr>?> sinks = new();
-        Dictionary<Function, Liveness> sinkLiveness = new();
         // WHAT EVERY CALLER HANDS OVER FOR PARAMETER `index`: the fresh objects
         // taken over, or null when some caller does not hand one over.
         List<Instr>? Sink(Function f, int index, int depth)
@@ -1168,7 +1167,7 @@ public sealed partial class Escape : IModulePass
                             Flow flow = Analyse(g, new[] { src.Made.Dest }, summaries, src.Made, consumers: new(ReferenceEqualityComparer.Instance) { c });
                             if (flow.Escapes) return null;
                             // Nothing of it read after the call that took it.
-                            if (!sinkLiveness.TryGetValue(g, out Liveness? live)) sinkLiveness[g] = live = new Liveness(g);
+                            Liveness live = AnalysisCache.LivenessOf(g);
                             if (flow.Derived.Any(r => !live.Tracks(r) || live.IsLiveOut(b, r))) return null;
                             for (int after = k + 1; after < b.Instrs.Count; after++)
                                 if (b.Instrs[after].Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))) return null;
@@ -1184,7 +1183,7 @@ public sealed partial class Escape : IModulePass
         // object its maker still uses would free it under the maker.
         bool HandedOver(Function f, Block b, Instr st, HashSet<VReg> derived)
         {
-            if (!sinkLiveness.TryGetValue(f, out Liveness? live)) sinkLiveness[f] = live = new Liveness(f);
+            Liveness live = AnalysisCache.LivenessOf(f);
             return HandedOverWithField(f, b, st, derived, live);
         }
 
@@ -1382,7 +1381,7 @@ public sealed partial class Escape : IModulePass
                         new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }, joinable: filling.Joins);
                     // Dead once stored, but for the variable: a `??=` round a
                     // loop makes the next lap's object in the same registers.
-                    if (!sinkLiveness.TryGetValue(f, out Liveness? fillLive)) sinkLiveness[f] = fillLive = new Liveness(f);
+                    Liveness fillLive = AnalysisCache.LivenessOf(f);
                     int stAt = b.Instrs.IndexOf(st);
                     // The variable and its copies are the field's value after
                     // the store, judged as the read they hold (below).
@@ -1654,7 +1653,7 @@ continue;
             // a foreach's finally disposing the box a walk of it is held in --
             // liveness does not follow it, so wherever that handler can be
             // entered from counts as where it is live (PadLiveAt).
-            if (!livenessOf.TryGetValue(f, out Liveness? liveness)) livenessOf[f] = liveness = new Liveness(f);
+            Liveness liveness = AnalysisCache.LivenessOf(f);
             if (!padsOf.TryGetValue(f, out HashSet<VReg>? pads)) padsOf[f] = pads = PadLive(liveness);
             if (flow.Derived.Any(r => !liveness.Tracks(r))) { Refuse(field, "read lives where liveness does not follow it", f, ld); continue; }
             bool intoPad = flow.Derived.Overlaps(pads);
@@ -1881,7 +1880,7 @@ continue;
                     foreach (Block b in f.Blocks)
                         if (b.Terminator is { Op: Opcode.Ret } ret && ret.Operands.Any(x => x is RegOperand { Reg: var back } && held.Contains(back))) return true;
                     if (r.Renew is null) return false;
-                    liveness ??= new Liveness(f);
+                    liveness ??= AnalysisCache.LivenessOf(f);
                     pads ??= PadLive(liveness);
                     return LiveAt(f, liveness, pads, r.Renew, held);
                 });
