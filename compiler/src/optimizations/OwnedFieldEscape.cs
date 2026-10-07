@@ -361,7 +361,7 @@ internal sealed class OwnedFieldEscape
         foreach (var b in f.Blocks)
         foreach (Instr i in b.Instrs)
         {
-            if (!IrInfo.Uses(i).Any(addresses.ContainsKey) && !NamesSlot(i, slots)) continue;
+            if (!IrInfo.UsesAnyOf(i, addresses) && !NamesSlot(i, slots)) continue;
             if (i.Dest is { } alias && addresses.ContainsKey(alias)
                 && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Add or Opcode.Sub) continue;
             if (i.Op is Opcode.Load or Opcode.Store)

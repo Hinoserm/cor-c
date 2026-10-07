@@ -143,6 +143,34 @@ public abstract class OperandList : IReadOnlyList<Operand>
         _n = (byte)Math.Min(count, 2);
     }
 
+    // LINQ'S QUESTIONS, ASKED HERE: Any, All and FirstOrDefault
+    // over an instruction's operands went through IEnumerable, an enumerator
+    // made on the heap for every question -- two million of them for one
+    // large unit of the compiler. These win over the extensions where the
+    // static type is the list, and answer as they do.
+    public bool Any(Func<Operand, bool> predicate)
+    {
+        int count = Count;
+        for (int k = 0; k < count; k++) if (predicate(this[k])) return true;
+        return false;
+    }
+
+    public bool Any() => Count > 0;
+
+    public bool All(Func<Operand, bool> predicate)
+    {
+        int count = Count;
+        for (int k = 0; k < count; k++) if (!predicate(this[k])) return false;
+        return true;
+    }
+
+    public Operand? FirstOrDefault(Func<Operand, bool> predicate)
+    {
+        int count = Count;
+        for (int k = 0; k < count; k++) if (predicate(this[k])) return this[k];
+        return null;
+    }
+
     public Enumerator GetEnumerator() => new(this);
     // Behind an interface (LINQ, a list made from them): one object over the
     // instruction, not a copy of its operands as well.

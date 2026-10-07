@@ -14,6 +14,15 @@ using Block = Corsac.Lang.Ir.Block;
 public static class IrInfo
 {
     /// <summary>The registers an instruction reads.</summary>
+    /// <summary>Whether a register the instruction reads is a key of `of`: Uses(i).Any(of.ContainsKey) with no iterator.</summary>
+    public static bool UsesAnyOf<T>(Instr i, Dictionary<VReg, T> of)
+    {
+        OperandList operands = i.Operands;
+        for (int k = 0; k < operands.Count; k++)
+            if (operands[k] is RegOperand r && of.ContainsKey(r.Reg)) return true;
+        return false;
+    }
+
     public static IEnumerable<VReg> Uses(Instr i)
     {
         foreach (Operand o in i.Operands)

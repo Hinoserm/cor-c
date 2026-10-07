@@ -155,8 +155,9 @@ public sealed class ScalarObjects : IParallelModulePass
             // No loop-carried references, calls, address escapes,
             // identity tests, unknown offsets, overlapping fields or partial loads.
             if (!defs.Cfg.Dominates(block, b) || (b == block && k <= start)) return false;
-            foreach (VReg r in IrInfo.Uses(i).Where(addresses.ContainsKey))
+            for (int u = 0; u < i.Operands.Count; u++)
             {
+                if (i.Operands[u] is not RegOperand { Reg: var r } || !addresses.ContainsKey(r)) continue;
                 var site = defs.Site(r);
                 if (site is null || !defs.Cfg.Dominates(site.Value.Block, b)
                     || (site.Value.Block == b && site.Value.Index >= k)) return false;
