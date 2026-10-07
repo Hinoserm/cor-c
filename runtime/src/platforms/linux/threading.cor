@@ -48,6 +48,27 @@ static partial class Scheduler
     }
 }
 
+/// .NET's own way to ask for a pool of a size, and the one a program
+/// compiled by both can call: SetMinThreads starts the scheduler's workers
+/// (Scheduler.UseThreads), once -- a later call leaves them as they are.
+/// corc asks for its --jobs this way; an #if !NET around UseThreads was
+/// never compiled, as corc defines NET for the framework it builds for.
+static partial class ThreadPool
+{
+    public static bool SetMinThreads(int workerThreads, int completionPortThreads)
+    {
+        if (workerThreads < 0 || completionPortThreads < 0) return false;
+        if (Scheduler.ThreadCount == 0 && workerThreads > 0) Scheduler.UseThreads(workerThreads);
+        return true;
+    }
+}
+
+static partial class Scheduler
+{
+    /// How many worker threads UseThreads started: zero for the event loop alone.
+    public static int ThreadCount => _workers;
+}
+
 /// The monotonic clock and sleeping, through Linux system calls.
 ///
 /// (These belong to lib/sys/linux.cor in spirit -- they are the only Linux

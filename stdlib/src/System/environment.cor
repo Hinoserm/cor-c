@@ -524,6 +524,11 @@ static class AppContext
     public static object? GetData(string name)
     {
         if (name == null) throw new ArgumentNullException(nameof(name));
+        // The collector's counters, read as data: what the program freed and
+        // what the collector took (counted with Corsac.GC.Stats). Null under
+        // .NET, which has neither.
+        if (name == "Corsac.GC.FreedBytes") return Gc.FreedBytes;
+        if (name == "Corsac.GC.CollectedBytes") return Gc.CollectedBytes;
         lock (_switchLock)
         {
             return _data is not null && _data.TryGetValue(name, out object? value) ? value : null;

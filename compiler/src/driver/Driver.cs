@@ -786,11 +786,11 @@ public static class Driver
         // check of handlers across units (InterruptNotes).
         Binder.CollectInterruptFacts = args.Contains("--obj") || library;
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
-#if !NET
         // Native task workers serve parsing, optimization and code generation.
-        // Initialize once before publishing work in any compilation phase.
-        if (workers > 1) Scheduler.UseThreads(workers);
-#endif
+        // Initialize once before publishing work in any compilation phase:
+        // .NET's call, the scheduler's workers in a native corc (an #if !NET
+        // was never compiled -- corc defines NET as the SDK does).
+        if (workers > 1) ThreadPool.SetMinThreads(workers, workers);
         string? declarationIndex = Value(args, "--decl-index");
         if (declarationIndex is not null && Value(args, "--assembly") is null)
             return Fail("--decl-index requires --assembly");
@@ -828,9 +828,7 @@ public static class Driver
         bool phases = Switches.ReportPhases;
         System.Diagnostics.Stopwatch phaseClock = System.Diagnostics.Stopwatch.StartNew();
         long phaseBytes = GC.GetAllocatedBytesForCurrentThread();
-#if !NET
-        long phaseFreed = Gc.FreedBytes, phaseCollected = Gc.CollectedBytes;
-#endif
+        long phaseFreed = AppContext.GetData("Corsac.GC.FreedBytes") as long? ?? 0, phaseCollected = AppContext.GetData("Corsac.GC.CollectedBytes") as long? ?? 0;
         void Phase(string what)
         {
             if (!phases) return;
@@ -839,14 +837,15 @@ public static class Driver
             // a collection, and the process's resident set and its peak.
             long held = GC.GetTotalMemory(true) >> 20;
             using System.Diagnostics.Process self = System.Diagnostics.Process.GetCurrentProcess();
-            string given = "";
-#if !NET
             // Native, with --gc-stats: what the phase gave back, by the program
             // and by the collector -- the collection just made took what died
-            // in it.
-            given = " freed " + ((Gc.FreedBytes - phaseFreed) >> 20) + "MiB collected " + ((Gc.CollectedBytes - phaseCollected) >> 20) + "MiB";
-            phaseFreed = Gc.FreedBytes; phaseCollected = Gc.CollectedBytes;
-#endif
+            // in it. Nothing under .NET, whose AppContext has no such data.
+            string given = "";
+            if (AppContext.GetData("Corsac.GC.FreedBytes") is long freedNow && AppContext.GetData("Corsac.GC.CollectedBytes") is long collectedNow)
+            {
+                given = " freed " + ((freedNow - phaseFreed) >> 20) + "MiB collected " + ((collectedNow - phaseCollected) >> 20) + "MiB";
+                phaseFreed = freedNow; phaseCollected = collectedNow;
+            }
             Console.Error.WriteLine("phase " + what + " " + phaseClock.ElapsedMilliseconds + "ms " + ((now - phaseBytes) >> 20) + "MiB"
                 + " live " + held + "MiB rss " + (self.WorkingSet64 >> 20) + "MiB peak " + (self.PeakWorkingSet64 >> 20) + "MiB" + given);
             phaseClock.Restart(); phaseBytes = now;

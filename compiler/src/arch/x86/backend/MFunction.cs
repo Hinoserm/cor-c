@@ -47,6 +47,24 @@ public sealed class MFunction
 
     public MReg NewReg() => new(NextVReg++);
 
+    /// <summary>
+    /// Successors(index) into a list the caller keeps (emptied first): the
+    /// iterator was an object for every block of every function the allocator
+    /// and the peephole walked.
+    /// </summary>
+    public void SuccessorsInto(int index, List<MBlock> into)
+    {
+        into.Clear();
+        MBlock b = Blocks[index];
+        for (int k = 0; k < b.Instrs.Count; k++)
+        {
+            MInstr i = b.Instrs[k];
+            if (i.Op is MOp.Jmp or MOp.Jcc) into.Add(((MLabel)i.Operands[0]).Target);
+            else if (i.Op == MOp.JmpTable) into.AddRange(i.Table!);
+        }
+        if (!b.EndsUnconditionally && index + 1 < Blocks.Count) into.Add(Blocks[index + 1]);
+    }
+
     /// <summary>The blocks control can reach from the one at <paramref name="index"/>: jump targets, then the next block unless it never falls through.</summary>
     public IEnumerable<MBlock> Successors(int index)
     {

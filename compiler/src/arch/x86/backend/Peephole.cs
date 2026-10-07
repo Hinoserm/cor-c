@@ -75,9 +75,13 @@ internal static class Peephole
         int[] liveIn = new int[nb];
         int[] liveOut = new int[nb];
         int[][] succ = new int[nb][];
+        List<MBlock> successors = new();
         for (int b = 0; b < nb; b++)
         {
-            succ[b] = m.Successors(b).Select(t => index[t]).ToArray();
+            m.SuccessorsInto(b, successors);
+            int[] to = new int[successors.Count];
+            for (int t = 0; t < to.Length; t++) to[t] = index[successors[t]];
+            succ[b] = to;
         }
         bool changed = true;
         while (changed)

@@ -3367,7 +3367,7 @@ static class Timeouts
     }
 }
 
-static class ThreadPool
+static partial class ThreadPool
 {
     public static bool QueueUserWorkItem(Action callBack)
     {

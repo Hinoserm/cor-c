@@ -87,6 +87,17 @@ internal sealed class Allocator
     /// <summary>The positions each virtual register is live at, as ranges.</summary>
     private readonly List<(int S, int E)>?[] _ranges;
     private readonly int[][] _busy = new int[8][];
+    // How much of each busy table this function uses: the tables are a
+    // thread's, kept from one function to the next (SpareBusy).
+    private readonly int _busyLength;
+
+    // THE BUSY TABLES KEPT, A THREAD'S: eight of four words an instruction,
+    // made for every function, were the largest thing the allocator left to
+    // the collector. Grown as a function needs, cleared as far as it uses
+    // them; one past KeptBusy is made for that function alone, so that one
+    // huge function does not hold its tables for the rest of the run.
+    [ThreadStatic] private static int[][]? _spareBusy;
+    private const int KeptBusy = 1 << 16;
     private readonly int[] _assigned;
     private readonly int[] _spilledFrom;
     private readonly int[] _slot;
@@ -152,9 +163,21 @@ internal sealed class Allocator
             _assigned[v] = -1;
             _spilledFrom[v] = int.MaxValue;
         }
+        _busyLength = _lin.Count * 4 + 1;
+        int[][] spare = _spareBusy ??= new int[8][];
         for (int r = 0; r < 8; r++)
         {
-            _busy[r] = new int[_lin.Count * 4 + 1];
+            int[]? kept = spare[r];
+            if (kept is not null && kept.Length >= _busyLength)
+            {
+                Array.Clear(kept, 0, _busyLength);
+                _busy[r] = kept;
+            }
+            else
+            {
+                _busy[r] = new int[_busyLength];
+                if (_busyLength <= KeptBusy) spare[r] = _busy[r];
+            }
         }
     }
 
@@ -417,10 +440,12 @@ internal sealed class Allocator
 
         int[][] succ = new int[nb][];
         List<int> to = new();
+        List<MBlock> successors = new();
         for (int b = 0; b < nb; b++)
         {
             to.Clear();
-            foreach (MBlock s in _m.Successors(b)) to.Add(index[s]);
+            _m.SuccessorsInto(b, successors);
+            foreach (MBlock s in successors) to.Add(index[s]);
             succ[b] = to.ToArray();
         }
 
@@ -564,7 +589,7 @@ internal sealed class Allocator
         for (int r = 0; r < 8; r++)
         {
             int[] arr = _busy[r];
-            for (int p = 1; p < arr.Length; p++)
+            for (int p = 1; p < _busyLength; p++)
             {
                 arr[p] += arr[p - 1];
             }
@@ -575,7 +600,7 @@ internal sealed class Allocator
     {
         int[] arr = _busy[reg];
         int before = start == 0 ? 0 : arr[start - 1];
-        return arr[Math.Min(end, arr.Length - 1)] - before > 0;
+        return arr[Math.Min(end, _busyLength - 1)] - before > 0;
     }
 
     // ---- the scan ----------------------------------------------------------------
