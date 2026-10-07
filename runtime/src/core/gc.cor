@@ -452,7 +452,7 @@ static class Gc
     }
 
     /// `how`: 1 a sweep's, 2 a free by hand.
-    static void Journal(long block, long how)
+    static void NoteFreed(long block, long how)
     {
         if (_journalAddr == 0) return;
         long slot = ((block >> 3) & (JournalSlots - 1)) * WordSize.Bytes;
@@ -4700,7 +4700,7 @@ static class Gc
     /// page's. The heap lock is held and no collection is under way.
     static void ClassFree(long page, long block, long size, long tb)
     {
-        Journal(block, 2);
+        NoteFreed(block, 2);
         if (_heapCheck) Forget(block);
         ZeroWords(block + HeaderBytes, block + size);
         StampClass(block, size, FlagFree);
@@ -5483,7 +5483,7 @@ static class Gc
     /// Words, not longs, as the marker's loops are (ScanRangeW).
     static void ClearDeadRun(long run, long stop, long size)
     {
-        if (_journalAddr != 0) for (long b = run; b < stop; b = b + size) Journal(b, 1);
+        if (_journalAddr != 0) for (long b = run; b < stop; b = b + size) NoteFreed(b, 1);
         Sys.MemorySet(run, 0, stop - run);
         nuint at = (nuint)run;
         nuint last = (nuint)(stop - size);
