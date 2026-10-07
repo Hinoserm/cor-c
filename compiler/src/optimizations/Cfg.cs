@@ -42,7 +42,7 @@ public sealed class Cfg
     private readonly int[] _predStart;
     private readonly int[] _succStart;
     private readonly bool[] _root;
-    private readonly List<Block> _roots = new();
+    private readonly List<Block> _roots;
     private List<Block>? _rpo;
     // THE ANALYSES, BY POSITION TOO: a row of bits a block (reachability,
     // dominators), a slot a block (the immediate dominator), the tree's
@@ -61,12 +61,36 @@ public sealed class Cfg
     private Stack<Block>? _walk;
     private int[]? _mark;
     private int _stamp;
+    // A GRAPH NOBODY HOLDS ANY MORE (PipelineAnalyses' spare), whose arrays
+    // this one takes as it needs them, cleared as far as it uses them: the
+    // tables are by position and read only up to the function's own count.
+    private Cfg? _spare;
 
-    public Cfg(Function f)
+    private static T[] Take<T>(T[]? spare, int count, bool clear)
+    {
+        if (spare is null || spare.Length < count) return new T[count];
+        if (clear) Array.Clear(spare, 0, count);
+        return spare;
+    }
+
+    public Cfg(Function f) : this(f, null) { }
+
+    /// <summary>
+    /// The graph of `f`, made in the storage of `spare` -- a graph of any
+    /// function that nothing will read again -- where that is large enough
+    /// (PipelineAnalyses.TakeSpare): the graphs a pipeline makes again and
+    /// again were a tenth of what the collector took in a native compile.
+    /// </summary>
+    internal Cfg(Function f, Cfg? spare)
     {
         Function = f;
+        _spare = spare;
+        // One graph back, no further: the spare's own spare is let go.
+        if (spare is not null) spare._spare = null;
         int count = f.Blocks.Count;
-        _root = new bool[count];
+        _root = Take(spare?._root, count, clear: true);
+        _roots = spare?._roots ?? new();
+        _roots.Clear();
         for (int k = 0; k < count; k++) f.Blocks[k].Order = k;
 
         Root(f.Entry);
@@ -97,8 +121,8 @@ public sealed class Cfg
         int most = 0;
         foreach (Block b in f.Blocks)
             if (b.Terminator is { } end) most += end.Targets.Count + (end.Default is null ? 0 : 1);
-        _succEdges = most == 0 ? Array.Empty<Block>() : new Block[most];
-        _succStart = new int[count + 1];
+        _succEdges = most == 0 ? Array.Empty<Block>() : Take(spare?._succEdges, most, clear: false);
+        _succStart = Take(spare?._succStart, count + 1, clear: false);
         int[] incoming = new int[count + 1];
         int edges = 0;
         for (int k = 0; k < count; k++)
@@ -118,9 +142,10 @@ public sealed class Cfg
             }
         }
         _succStart[count] = edges;
-        _predStart = new int[count + 1];
+        _predStart = Take(spare?._predStart, count + 1, clear: false);
+        _predStart[0] = 0;
         for (int k = 0; k < count; k++) _predStart[k + 1] = _predStart[k] + incoming[k];
-        _predEdges = edges == 0 ? Array.Empty<Block>() : new Block[edges];
+        _predEdges = edges == 0 ? Array.Empty<Block>() : Take(spare?._predEdges, edges, clear: false);
         // Filled in block order, as the lists were: a block's predecessors
         // in the order their branches appear.
         for (int k = 0; k < count; k++) incoming[k] = _predStart[k];
@@ -218,7 +243,8 @@ public sealed class Cfg
         {
             if (_rpo is null)
             {
-                List<Block> post = new(Function.Blocks.Count);
+                List<Block> post = _spare?._rpo is { } kept ? kept : new(Function.Blocks.Count);
+                post.Clear();
                 bool[] seen = new bool[Function.Blocks.Count];
                 Stack<(Block, int)> stack = new();
                 // The entry goes first so it ends up last in postorder, ahead
@@ -303,13 +329,13 @@ public sealed class Cfg
     public bool Reaches(Block from, Block to)
     {
         int n = Function.Blocks.Count, words = Words;
-        _reachBits ??= new ulong[n * words];
-        _reachDone ??= new bool[n];
+        _reachBits ??= Take(_spare?._reachBits, n * words, clear: true);
+        _reachDone ??= Take(_spare?._reachDone, n, clear: true);
         int row = from.Order * words;
         if (!_reachDone[from.Order])
         {
             _reachDone[from.Order] = true;
-            Stack<Block> work = _walk ??= new Stack<Block>();
+            Stack<Block> work = _walk ??= _spare?._walk ?? new Stack<Block>();
             work.Clear();
             foreach (Block s0 in Succs(from)) work.Push(s0);
             while (work.Count > 0)
@@ -344,10 +370,10 @@ public sealed class Cfg
         {
             return false;
         }
-        int[] mark = _mark ??= new int[Function.Blocks.Count];
+        int[] mark = _mark ??= Take(_spare?._mark, Function.Blocks.Count, clear: true);
         int stamp = ++_stamp;
         mark[from.Order] = stamp;
-        Stack<Block> work = _walk ??= new Stack<Block>();
+        Stack<Block> work = _walk ??= _spare?._walk ?? new Stack<Block>();
         work.Clear();
         foreach (Block s0 in Succs(from)) work.Push(s0);
         while (work.Count > 0)
@@ -390,7 +416,8 @@ public sealed class Cfg
     {
         int n = Function.Blocks.Count;
         int words = Words;
-        ulong[] dom = new ulong[n * words];
+        // Every row written below before any is read.
+        ulong[] dom = Take(_spare?._dom, n * words, clear: false);
         ulong[] all = new ulong[words];
         for (int k = 0; k < n; k++)
         {
@@ -511,7 +538,7 @@ public sealed class Cfg
         if (_frontier is null)
         {
             BuildTree();
-            _frontier = new HashSet<Block>?[Function.Blocks.Count];
+            _frontier = Take(_spare?._frontier, Function.Blocks.Count, clear: true);
             bool[] live = Live;
             foreach (Block join in Function.Blocks)
             {
@@ -546,7 +573,8 @@ public sealed class Cfg
         }
         _dom ??= ComputeDominators();
         int n = Function.Blocks.Count, words = Words;
-        _idom = new Block?[n];
+        // Every slot written below.
+        _idom = Take(_spare?._idom, n, clear: false);
         bool[] live = Live;
         int[] size = new int[n];
         for (int k = 0; k < n; k++)
@@ -578,9 +606,10 @@ public sealed class Cfg
         }
         // The tree's children as the edges are kept: one array, a run a
         // block, in block order.
-        _childStart = new int[n + 1];
+        _childStart = Take(_spare?._childStart, n + 1, clear: false);
+        _childStart[0] = 0;
         for (int k = 0; k < n; k++) _childStart[k + 1] = _childStart[k] + childCount[k];
-        _children = _childStart[n] == 0 ? Array.Empty<Block>() : new Block[_childStart[n]];
+        _children = _childStart[n] == 0 ? Array.Empty<Block>() : Take(_spare?._children, _childStart[n], clear: false);
         int[] at = new int[n];
         for (int k = 0; k < n; k++) at[k] = _childStart[k];
         foreach (Block b in Function.Blocks)

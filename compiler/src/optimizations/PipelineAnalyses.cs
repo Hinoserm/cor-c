@@ -32,6 +32,11 @@ internal static class PipelineAnalyses
     [ThreadStatic] private static long _print;
     [ThreadStatic] private static long _shapePrint;
     [ThreadStatic] private static Cfg? _cfg;
+    // A GRAPH NOBODY WILL READ AGAIN, whose storage the next one is made in
+    // (Cfg's spare): one the function's shape left behind during a pass is
+    // stale until the pass is over -- the pass may still hold it -- and
+    // spare from then (PassEnded), as the one kept is when the pipeline ends.
+    [ThreadStatic] private static Cfg? _stale, _spare;
     [ThreadStatic] private static Defs? _withCfg, _withoutCfg, _ssaWithCfg;
 
     private static readonly bool Verifying = Switches.VerifyAnalyses;
@@ -49,6 +54,8 @@ internal static class PipelineAnalyses
 
     public static void End()
     {
+        _spare = _cfg ?? _stale ?? _spare;
+        _stale = null;
         _f = null;
         _cfg = null; _withCfg = null; _withoutCfg = null; _ssaWithCfg = null;
     }
@@ -115,6 +122,7 @@ internal static class PipelineAnalyses
         if (shape != _shapePrint)
         {
             _shapePrint = shape;
+            if (_cfg is not null) _stale = _cfg;
             _cfg = null; _withCfg = null; _ssaWithCfg = null;
         }
         if (now != _print)
@@ -125,6 +133,21 @@ internal static class PipelineAnalyses
         return true;
     }
 
+    /// <summary>A pipeline's pass is over: what it may have held of the graph it left behind is free to be made over.</summary>
+    public static void PassEnded()
+    {
+        if (_stale is null) return;
+        _spare = _stale;
+        _stale = null;
+    }
+
+    private static Cfg NewCfg(Function f)
+    {
+        Cfg? spare = _spare;
+        _spare = null;
+        return new Cfg(f, spare);
+    }
+
     public static Cfg CfgOf(Function f)
     {
         if (!Current(f)) return new Cfg(f);
@@ -133,7 +156,7 @@ internal static class PipelineAnalyses
             if (Verifying) Same(kept, new Cfg(f), f);
             return kept;
         }
-        return _cfg = new Cfg(f);
+        return _cfg = NewCfg(f);
     }
 
     /// <summary>
@@ -148,7 +171,7 @@ internal static class PipelineAnalyses
             if (Verifying) Same(kept, new Defs(f, buildCfg: false), f);
             return kept;
         }
-        return _ssaWithCfg = new Defs(_cfg ??= new Cfg(f), ssa: true);
+        return _ssaWithCfg = new Defs(_cfg ??= NewCfg(f), ssa: true);
     }
 
     public static Defs DefsOf(Function f, bool buildCfg = true)
@@ -159,7 +182,7 @@ internal static class PipelineAnalyses
             if (Verifying) Same(kept, new Defs(f, buildCfg: false), f);
             return kept;
         }
-        Defs made = buildCfg ? new Defs(_cfg ??= new Cfg(f)) : new Defs(f, buildCfg: false);
+        Defs made = buildCfg ? new Defs(_cfg ??= NewCfg(f)) : new Defs(f, buildCfg: false);
         if (buildCfg) _withCfg = made; else _withoutCfg = made;
         return made;
     }

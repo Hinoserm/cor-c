@@ -395,9 +395,11 @@ public sealed class Pipeline
                 {
                     long t0 = System.Diagnostics.Stopwatch.GetTimestamp(), b0 = GC.GetAllocatedBytesForCurrentThread();
                     p.Run(f);
+                    if (keeping) PipelineAnalyses.PassEnded();
                     Account(p.Name, System.Diagnostics.Stopwatch.GetTimestamp() - t0, GC.GetAllocatedBytesForCurrentThread() - b0);
                 }
                 else p.Run(f);
+                if (keeping) PipelineAnalyses.PassEnded();
                 marks?.Report(f, p.Name);
                 if (Verify)
                 {
