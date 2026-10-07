@@ -8608,6 +8608,105 @@ static class Gc
 
     static bool _deadCensusAsked;
 
+    // ---- who holds what: the parent census ----
+    //
+    // A TYPE AT THE TOP OF THE CENSUS SAYS WHAT, NOT WHY: twenty megabytes of
+    // int arrays alive in a native compile, and a seventh of that in the same
+    // compile under .NET. Asked for (AppContext "Corsac.GC.ParentCensus":
+    // corc's --gc-parent-census), every whole collection's census also walks
+    // each live object's reference fields and counts what each one holds by
+    // the pair of types -- the field's object's and the holder's -- with its
+    // bytes. An array is not walked: its elements are counted as its own.
+    const long ParentEntry = 4 * WordSize.Bytes;        // child, parent, bytes, blocks
+    static long _parentAt;
+    static bool _parentAsked;
+
+    public static void AskParentCensus()
+    {
+        _parentAsked = true;
+        AskCensus();
+    }
+
+    static void StartParentCensus()
+    {
+        if (!_parentAsked) return;
+        if (_parentAt == 0) _parentAt = Platform.Map(CensusSlots * ParentEntry);
+        if (_parentAt != 0) ZeroWords(_parentAt, _parentAt + CensusSlots * ParentEntry);
+    }
+
+    /// What the live block holds, by type, if it is an object described by its descriptor.
+    static void ParentCensus(long block)
+    {
+        if (_parentAt == 0 || Sys.Peek(block + KindAt) != KindObject) return;
+        long w = WordSize.Bytes;
+        long payload = block + HeaderBytes;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (vt == 0 || InQuarantine(vt)) return;
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return;
+        if ((Sys.Peek(desc + DescFlagsWord * w) & SequenceFlag) != 0) return;
+        long map = Sys.Peek(desc + DescRefMapWord * w) & WordSize.AddressMask;
+        if (map == 0) return;
+        long end = block + (Sys.Peek(block) & SizeMask);
+        long words = Sys.Peek(map);
+        for (long k = 0; k < words; k++)
+        {
+            if (((Sys.Peek(map + (1 + k / 32) * w) & 0xFFFFFFFF) & (1L << (int)(k % 32))) == 0) continue;
+            long at = payload + k * w;
+            if (at + w > end) break;
+            long child = Sys.Peek(at) & WordSize.AddressMask;
+            if (child == 0 || HeapChunks.Of(child) == 0) continue;
+            long childBlock = child - HeaderBytes;
+            long childSize = Sys.Peek(childBlock) & SizeMask;
+            if (childSize <= 0) continue;
+            ParentAdd(CensusKey(childBlock, childSize), vt, childSize);
+        }
+    }
+
+    static void ParentAdd(long child, long parent, long size)
+    {
+        long w = WordSize.Bytes;
+        long slot = (((child >> 3) * 0x9E3779B1) ^ ((parent >> 3) * 40503)) & (CensusSlots - 1);
+        for (long probes = 0; probes < CensusSlots; probes++)
+        {
+            long at = _parentAt + slot * ParentEntry;
+            long there = Sys.Peek(at);
+            if (there == 0 || there == child && Sys.Peek(at + w) == parent)
+            {
+                Sys.Poke(at, child);
+                Sys.Poke(at + w, parent);
+                Sys.Poke(at + 2 * w, Sys.Peek(at + 2 * w) + size);
+                Sys.Poke(at + 3 * w, Sys.Peek(at + 3 * w) + 1);
+                return;
+            }
+            slot = (slot + 1) & (CensusSlots - 1);
+        }
+    }
+
+    /// The largest pairs, taken out as they are said.
+    static void SayParents()
+    {
+        if (_parentAt == 0) return;
+        long w = WordSize.Bytes;
+        Runtime.WriteLiteral(2, "gc parent census: what live objects hold, by type\n");
+        for (long said = 0; said < 2 * CensusShown; said++)
+        {
+            long best = -1, bestBytes = 0;
+            for (long slot = 0; slot < CensusSlots; slot++)
+            {
+                long bytes = Sys.Peek(_parentAt + slot * ParentEntry + 2 * w);
+                if (bytes > bestBytes) { bestBytes = bytes; best = slot; }
+            }
+            if (best < 0) return;
+            long at = _parentAt + best * ParentEntry;
+            SayNumber("gc parent census: bytes ", bestBytes);
+            SayNumber("gc parent census:   blocks ", Sys.Peek(at + 3 * w));
+            SayNumber("gc parent census:   child ", Sys.Peek(at));
+            SayNumber("gc parent census:   parent ", Sys.Peek(at + w));
+            Sys.Poke(at + 2 * w, Zero);
+        }
+    }
+
     // Asked by the program (AskCensus); every collection asks the platform
     // afresh as well, and must not take back what the program asked for.
     static bool _censusAsked;
@@ -8623,11 +8722,13 @@ static class Gc
             }
         }
         ZeroWords(_censusAt, _censusAt + CensusSlots * CensusEntry);
+        StartParentCensus();
     }
 
     static void Census(long block, long size)
     {
         CensusInto(_censusAt, block, size);
+        if (_parentAt != 0) ParentCensus(block);
     }
 
     static void CensusInto(long table, long block, long size)
@@ -8636,6 +8737,13 @@ static class Gc
         {
             return;
         }
+        CensusAdd(table, CensusKey(block, size), size);
+    }
+
+    /// What the census counts a block as: its type where its descriptor says
+    /// one, CensusLeaf, CensusNoVtable, or CensusUntyped plus its size.
+    static long CensusKey(long block, long size)
+    {
         long w = WordSize.Bytes;
         long kind = Sys.Peek(block + KindAt);
         long key;
@@ -8663,6 +8771,12 @@ static class Gc
         {
             key = CensusUntyped + (size < 0x10000000 ? size : 0x0FFFFFFF);
         }
+        return key;
+    }
+
+    static void CensusAdd(long table, long key, long size)
+    {
+        long w = WordSize.Bytes;
         long slot = ((key >> 3) * 0x9E3779B1) & (CensusSlots - 1);
         long probes = 0;
         while (probes < CensusSlots)
@@ -8694,6 +8808,7 @@ static class Gc
             Runtime.WriteLiteral(2, "gc dead census: everything swept so far\n");
             SayTable(_deadAt, "gc dead census: bytes ", "gc dead census:   blocks ", "gc dead census:   key ", false);
         }
+        SayParents();
         // And where the allocations came from, when they are sampled.
         AllocSamples.Top(CensusShown);
     }

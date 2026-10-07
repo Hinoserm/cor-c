@@ -114,6 +114,13 @@ public static class Driver
             Switches.HandOn("--gc-dead-census");
             AppContext.SetSwitch("Corsac.GC.DeadCensus", true);
         }
+        // And who holds what, by the pair of types (Gc.AskParentCensus).
+        if (taken.Remove("--gc-parent-census"))
+        {
+            while (taken.Remove("--gc-parent-census")) { }
+            Switches.HandOn("--gc-parent-census");
+            AppContext.SetSwitch("Corsac.GC.ParentCensus", true);
+        }
         // Where the allocations come from, sampled and said at exit (AllocSamples).
         if (taken.Remove("--alloc-sample"))
         {
@@ -821,6 +828,9 @@ public static class Driver
         bool phases = Switches.ReportPhases;
         System.Diagnostics.Stopwatch phaseClock = System.Diagnostics.Stopwatch.StartNew();
         long phaseBytes = GC.GetAllocatedBytesForCurrentThread();
+#if !NET
+        long phaseFreed = Gc.FreedBytes, phaseCollected = Gc.CollectedBytes;
+#endif
         void Phase(string what)
         {
             if (!phases) return;
@@ -829,8 +839,16 @@ public static class Driver
             // a collection, and the process's resident set and its peak.
             long held = GC.GetTotalMemory(true) >> 20;
             using System.Diagnostics.Process self = System.Diagnostics.Process.GetCurrentProcess();
+            string given = "";
+#if !NET
+            // Native, with --gc-stats: what the phase gave back, by the program
+            // and by the collector -- the collection just made took what died
+            // in it.
+            given = " freed " + ((Gc.FreedBytes - phaseFreed) >> 20) + "MiB collected " + ((Gc.CollectedBytes - phaseCollected) >> 20) + "MiB";
+            phaseFreed = Gc.FreedBytes; phaseCollected = Gc.CollectedBytes;
+#endif
             Console.Error.WriteLine("phase " + what + " " + phaseClock.ElapsedMilliseconds + "ms " + ((now - phaseBytes) >> 20) + "MiB"
-                + " live " + held + "MiB rss " + (self.WorkingSet64 >> 20) + "MiB peak " + (self.PeakWorkingSet64 >> 20) + "MiB");
+                + " live " + held + "MiB rss " + (self.WorkingSet64 >> 20) + "MiB peak " + (self.PeakWorkingSet64 >> 20) + "MiB" + given);
             phaseClock.Restart(); phaseBytes = now;
         }
         if (phases) Corsac.Lang.Opt.Pipeline.Stage = Phase;

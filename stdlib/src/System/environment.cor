@@ -483,6 +483,7 @@ static class AppContext
         if (switchName == "Corsac.GC.AllocSample" && isEnabled) AllocSamples.Begin();
         if (switchName == "Corsac.GC.Census" && isEnabled) Gc.AskCensus();
         if (switchName == "Corsac.GC.DeadCensus" && isEnabled) Gc.AskDeadCensus();
+        if (switchName == "Corsac.GC.ParentCensus" && isEnabled) Gc.AskParentCensus();
     }
 
     public static bool TryGetSwitch(string switchName, out bool isEnabled)
