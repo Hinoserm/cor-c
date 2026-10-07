@@ -7367,27 +7367,37 @@ static class Gc
     static bool FreeOwnBlock(nuint at)
     {
         nuint slots = (nuint)HeapChunks.SlotTable;
-        if (FastFreeMask == 0 || slots == 0 || (at & 7) != 0 || Runtime.Marking != 0 || _sweeping || _collecting)
-        {
-            return false;
-        }
-        nuint page = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
-        if (page == 0)
-        {
-            return false;
-        }
-        nuint cls = PeekW(page + (nuint)HeapChunks.ClassAt);
         nint tb = (nint)Sys.ThreadBlock();
-        if (cls == 0 || tb == 0 || (nint)PeekW(page + (nuint)HeapChunks.OwnerAt) != tb)
+        if (FastFreeMask == 0 || slots == 0 || (at & 7) != 0 || tb == 0 || Sys.Peek(tb + Tls.InAlloc) != 0)
         {
             return false;
         }
         long words = GcLock.Words();
-        if (words != 0 && (nint)Sys.Peek(words + GcLock.Held) == tb || Sys.Peek(tb + Tls.InAlloc) != 0)
+        if (words != 0 && (nint)Sys.Peek(words + GcLock.Held) == tb)
         {
             return false;
         }
+        // IN THE ALLOCATOR BEFORE A COLLECTION'S FLAGS ARE READ, as the rest
+        // of Free is: a handshake that lands between the two answers STAMP,
+        // and its StampPages writes the start of the block about to be freed
+        // here. Freed with the flags read before it, the block went back on
+        // this thread's list with the snapshot's start, the next object made
+        // in it was taken for the snapshot's -- and, held only by objects
+        // made since, never marked and swept under them (the NT kernel's
+        // address spaces losing their reservation lists and locks).
         Sys.Poke(tb + (nint)Tls.InAlloc, 1);
+        if (Runtime.Marking != 0 || _sweeping || _collecting)
+        {
+            Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+            return false;
+        }
+        nuint page = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
+        nuint cls = page == 0 ? 0 : PeekW(page + (nuint)HeapChunks.ClassAt);
+        if (cls == 0 || (nint)PeekW(page + (nuint)HeapChunks.OwnerAt) != tb)
+        {
+            Sys.Poke(tb + (nint)Tls.InAlloc, 0);
+            return false;
+        }
         nuint cache = (nuint)Sys.Peek(tb + (nint)Tls.Classes);
         nint c = (nint)cls - 1;
         nuint slot = cache + (nuint)c * (nuint)(2 * WordSize.Bytes);
