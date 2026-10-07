@@ -433,6 +433,46 @@ static class Gc
     /// would not read (CheckOldCardsOf). A kernel sets it from its command
     /// line (gc.checkoldcards=1).
     public static bool CheckOldCards;
+
+    // THE FREE JOURNAL (gc.freejournal=1): every block a sweep frees, and
+    // every one freed by hand, written down by its address -- the cycle,
+    // whether it was minor, concurrent, or a free by hand -- so that a
+    // block found free under a live reference says which collection took
+    // it (FreedAt). A table of JournalSlots address and word pairs, mapped
+    // once as it is turned on: nothing is asked for while a sweep runs.
+    const long JournalSlots = 65536;
+    static long _journalAddr, _journalInfo;
+
+    public static void FreeJournalOn()
+    {
+        if (_journalAddr != 0) return;
+        _journalAddr = Platform.Map(JournalSlots * WordSize.Bytes);
+        _journalInfo = _journalAddr != 0 ? Platform.Map(JournalSlots * WordSize.Bytes) : 0;
+        if (_journalInfo == 0) _journalAddr = 0;
+    }
+
+    /// `how`: 1 a sweep's, 2 a free by hand.
+    static void Journal(long block, long how)
+    {
+        if (_journalAddr == 0) return;
+        long slot = ((block >> 3) & (JournalSlots - 1)) * WordSize.Bytes;
+        Sys.Poke(_journalAddr + slot, block);
+        Sys.Poke(_journalInfo + slot, (_cycle << 4) | (_minor ? 1 : 0) | (_concurrent ? 2 : 0) | (how == 2 ? 4 : 0) | (_collecting ? 8 : 0));
+    }
+
+    /// What the journal says of the block whose payload is at `payload`:
+    /// (cycle << 4) | 1 minor | 2 concurrent | 4 by hand | 8 inside a
+    /// collection, or -1 when it holds nothing for that block.
+    public static long FreedAt(long payload)
+    {
+        if (_journalAddr == 0) return -1;
+        long block = payload - HeaderBytes;
+        long slot = ((block >> 3) & (JournalSlots - 1)) * WordSize.Bytes;
+        return Sys.Peek(_journalAddr + slot) == block ? Sys.Peek(_journalInfo + slot) : -1;
+    }
+
+    /// The cycle being run, or the last one run (FreedAt's counterpart).
+    public static long Cycle() { return _cycle; }
     static long _oldCardsReports;
     static long _aloneSaid;
 
@@ -4660,6 +4700,7 @@ static class Gc
     /// page's. The heap lock is held and no collection is under way.
     static void ClassFree(long page, long block, long size, long tb)
     {
+        Journal(block, 2);
         if (_heapCheck) Forget(block);
         ZeroWords(block + HeaderBytes, block + size);
         StampClass(block, size, FlagFree);
@@ -5442,6 +5483,7 @@ static class Gc
     /// Words, not longs, as the marker's loops are (ScanRangeW).
     static void ClearDeadRun(long run, long stop, long size)
     {
+        if (_journalAddr != 0) for (long b = run; b < stop; b = b + size) Journal(b, 1);
         Sys.MemorySet(run, 0, stop - run);
         nuint at = (nuint)run;
         nuint last = (nuint)(stop - size);
