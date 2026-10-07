@@ -17,7 +17,17 @@ public sealed class LoadReuse : IPass
     /// <summary>The Size of an array length's key: no load has it.</summary>
     private const int Length = -1;
 
+    // ONE GRAPH WHILE ITS EDGES STAND, in a pipeline or not (Devirtualize's
+    // rounds run it on their own): outside one, every walk made its own Cfg
+    // -- three a run, and twenty thousand runs a unit (PipelineAnalyses).
     public void Run(Function function)
+    {
+        bool kept = PipelineAnalyses.Begin(function);
+        try { RunInScope(function); }
+        finally { if (kept) PipelineAnalyses.End(); }
+    }
+
+    private void RunInScope(Function function)
     {
         if (function.Async is not null) return;
         // NO LOAD TO REUSE, NO GRAPH: a function without one gets no Cfg and

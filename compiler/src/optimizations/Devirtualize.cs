@@ -835,6 +835,15 @@ public sealed class LateCleanup : IParallelModulePass
         IPass[] after = { new ConstantAndCopyPropagation(), new ConstantFold { AcrossFunction = true }, new BranchSimplify(), new DeadCodeElimination() };
         FunctionWorkers.Run(m, Workers, (f, index) =>
         {
+            // The function's graph and definitions kept from one walk to the
+            // next while it has their shape, as in a pipeline (PipelineAnalyses).
+            bool kept = PipelineAnalyses.Begin(f);
+            try { Each(f); }
+            finally { if (kept) PipelineAnalyses.End(); }
+        });
+
+        void Each(Function f)
+        {
             // One of its own a function: it counts what it resolves.
             Devirtualize devirtualize = new();
             // Twice round: a test folded to a constant is a register until it
@@ -851,7 +860,7 @@ public sealed class LateCleanup : IParallelModulePass
                 f.Dump(text);
                 Console.Error.WriteLine("== after late-cleanup " + f.Name + "\n" + text);
             }
-        });
+        }
     }
 }
 

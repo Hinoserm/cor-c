@@ -7,7 +7,17 @@ public sealed class LocalCopies : IPass
 {
     public string Name => "local-copies";
 
+    // ONE GRAPH WHILE ITS EDGES STAND, in a pipeline or not (Devirtualize's
+    // rounds run it on their own): outside one, every walk made its own Cfg
+    // -- three a run, and twenty thousand runs a unit (PipelineAnalyses).
     public void Run(Function f)
+    {
+        bool kept = PipelineAnalyses.Begin(f);
+        try { RunInScope(f); }
+        finally { if (kept) PipelineAnalyses.End(); }
+    }
+
+    private void RunInScope(Function f)
     {
         // ONE TABLE, SCOPED (Cfg.WalkSolePredecessors): a block with one
         // predecessor, not a root, starts from that predecessor's copies as

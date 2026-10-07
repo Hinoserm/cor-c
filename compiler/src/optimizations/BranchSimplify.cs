@@ -21,7 +21,17 @@ public sealed class BranchSimplify : IPass
 {
     public string Name => "branches";
 
+    // ONE GRAPH WHILE ITS EDGES STAND, in a pipeline or not (Devirtualize's
+    // rounds run it on their own): outside one, every walk made its own Cfg
+    // -- three a run, and twenty thousand runs a unit (PipelineAnalyses).
     public void Run(Function f)
+    {
+        bool kept = PipelineAnalyses.Begin(f);
+        try { RunInScope(f); }
+        finally { if (kept) PipelineAnalyses.End(); }
+    }
+
+    private void RunInScope(Function f)
     {
         bool changed = true;
         while (changed)
