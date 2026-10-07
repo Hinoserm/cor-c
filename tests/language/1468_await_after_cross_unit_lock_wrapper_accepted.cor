@@ -1,0 +1,31 @@
+// test: await after a marked lock wrapper of another unit has given the lock back, accepted
+// units: tests/language/support/1467_lock_units.cor
+// expect-exit: 0
+// expect-output:
+// updated 2
+//
+// The lock is taken and given back through another unit's [TakesLock] and
+// [GivesLock] wrappers before the await: nothing is held across it.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int _rows;
+
+    static async Task<int> Update()
+    {
+        TableLock.Enter();
+        try { _rows = _rows + 2; }
+        finally { TableLock.Leave(); }
+        await Task.Delay(1);
+        return _rows;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("updated " + Update().Result);
+        return 0;
+    }
+}

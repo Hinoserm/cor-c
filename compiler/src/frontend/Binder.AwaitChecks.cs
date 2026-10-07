@@ -30,6 +30,14 @@ namespace Corsac.Lang;
 /// out -- and a call to it counts as that. Summaries are of what the unit
 /// compiles from source; a library method compiled elsewhere is neither.
 ///
+/// A WRAPPER ANOTHER UNIT COMPILES is summarised nowhere this unit can see
+/// (a kernel unit is one source file: `RegistryDomain.Enter` called from
+/// another file counted for nothing). Marked [TakesLock] it is a lock's
+/// taking to every caller, [GivesLock] its giving back, whichever unit
+/// compiles its body; a summary this unit made of its own body wins. A
+/// wrapper whose bool answers whether it took the lock is
+/// [TakesLock(MayFail = true)], and holds it in the branch that says so.
+///
 /// What the analysis does not see: a lock taken through a delegate or a
 /// virtual call to an override other than the one the call names, a lock
 /// handed from method to method in a field, and a `goto` backwards over an
@@ -175,7 +183,7 @@ public sealed partial class Binder
                     else if (n is CallExpr c && _r.Calls.TryGetValue(c, out MethodSymbol? callee))
                     {
                         found.Calls.Add(callee);
-                        if (IsLockType(callee.Owner)) found.TakesLocks = true;
+                        if (IsLockType(callee.Owner) || MarkedLockEffect(callee) != 0) found.TakesLocks = true;
                         if (!callers.TryGetValue(callee, out List<MethodSymbol>? who))
                         {
                             who = new List<MethodSymbol>();
@@ -833,8 +841,21 @@ public sealed partial class Binder
         {
             return 1 * (LockEffectOf(c) == LockEffect.Give ? -1 : 1);
         }
-        return _lockSummary.TryGetValue(m, out int net) ? net : 0;
+        return _lockSummary.TryGetValue(m, out int net) ? net : MarkedLockEffect(m);
     }
+
+    /// <summary>[TakesLock] (1) or [GivesLock] (-1) on a method, else 0: a wrapper whose body another unit compiles.</summary>
+    private static int MarkedLockEffect(MethodSymbol m)
+    {
+        if (m.Decl is not MethodDecl d) return 0;
+        if (d.Attributes.Any(a => a.Is("TakesLock"))) return 1;
+        if (d.Attributes.Any(a => a.Is("GivesLock"))) return -1;
+        return 0;
+    }
+
+    /// <summary>[TakesLock(MayFail = true)]: a wrapper whose bool answers whether it took the lock, held in the branch that says so only.</summary>
+    private static bool MarkedMayFail(MethodSymbol m)
+        => m.Decl is MethodDecl d && d.Attributes.Any(a => a.Is("TakesLock") && a.Says("MayFail"));
 
     private string LockName(CallExpr c)
     {
@@ -868,13 +889,14 @@ public sealed partial class Binder
             }
             return LockEffect.None;
         }
-        if (_lockSummary.TryGetValue(m, out int net))
+        int effect = _lockSummary.TryGetValue(m, out int net) ? net : MarkedLockEffect(m);
+        if (effect != 0)
         {
-            if (net < 0)
+            if (effect < 0)
             {
                 return LockEffect.Give;
             }
-            return m.Name.StartsWith("Try", StringComparison.Ordinal) && m.Returns.Prim == Prim.Bool ? LockEffect.TryTake : LockEffect.Take;
+            return (m.Name.StartsWith("Try", StringComparison.Ordinal) || MarkedMayFail(m)) && m.Returns.Prim == Prim.Bool ? LockEffect.TryTake : LockEffect.Take;
         }
         return LockEffect.None;
     }

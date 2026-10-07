@@ -1,0 +1,31 @@
+// test: await under a lock wrapper another unit compiles, marked [TakesLock], refused
+// units: tests/language/support/1467_lock_units.cor
+// expect-compile-error: cannot await while the lock 'TableLock.Enter' takes is held
+//
+// TableLock.Enter's body is another unit's: this unit has no summary of it,
+// and before the marker its call counted for nothing. [TakesLock] makes it
+// a lock's taking here as well.
+
+using System.Threading.Tasks;
+
+static class Program
+{
+    static async Task<int> Update()
+    {
+        TableLock.Enter();
+        try
+        {
+            await Task.Delay(1);
+            return 1;
+        }
+        finally
+        {
+            TableLock.Leave();
+        }
+    }
+
+    static int Main()
+    {
+        return Update().Result;
+    }
+}

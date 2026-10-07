@@ -1,0 +1,35 @@
+// test: await in the branch where another unit's [TakesLock(MayFail = true)] wrapper took the lock, refused
+// units: tests/language/support/1467_lock_units.cor
+// expect-compile-error: cannot await while the lock 'TableLock.Take' takes is held
+//
+// TableLock.Take answers whether it took the lock: held where it said
+// true, and the await there is refused; the branch where it said false
+// holds nothing.
+
+using System.Threading.Tasks;
+
+static class Program
+{
+    static async Task<int> Update()
+    {
+        if (!TableLock.Take())
+        {
+            await Task.Delay(1);
+            return 0;
+        }
+        try
+        {
+            await Task.Delay(1);
+            return 1;
+        }
+        finally
+        {
+            TableLock.Leave();
+        }
+    }
+
+    static int Main()
+    {
+        return Update().Result;
+    }
+}

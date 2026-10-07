@@ -1,0 +1,20 @@
+// The other unit of 1467, 1468 and 1469: a lock's wrapper, compiled here, which the
+// test's own unit sees only by its declaration. Marked, its Enter is a lock's
+// taking to every caller and its Leave the giving back.
+
+using System.Threading;
+
+static class TableLock
+{
+    static readonly object _gate = new object();
+
+    [TakesLock]
+    public static void Enter() { Monitor.Enter(_gate); }
+
+    [GivesLock]
+    public static void Leave() { Monitor.Exit(_gate); }
+
+    // Answers whether it took the lock, as RegistryDomain.Enter does.
+    [TakesLock(MayFail = true)]
+    public static bool Take() { Monitor.Enter(_gate); return true; }
+}
