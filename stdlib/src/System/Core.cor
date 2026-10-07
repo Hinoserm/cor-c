@@ -10317,8 +10317,34 @@ static class Enumerable {
         return SelectManyIterator(source, selector);
     }
 
+    // AS WHERE'S, AND EACH INNER SEQUENCE TOO: an array or a List, outside
+    // or in, walked as itself -- by index, or with the list's own struct
+    // enumerator -- not with an enumerator boxed for the interface. Every
+    // block's instructions through SelectMany made a list's enumerator on
+    // the heap a block.
     private static IEnumerable<R> SelectManyIterator<T, R>(IEnumerable<T> source, Func<T, IEnumerable<R>> selector) {
-        foreach (T item in source) { foreach (R each in selector(item)) { yield return each; } }
+        if (source is T[] array) {
+            for (int i = 0; i < array.Length; i++) {
+                IEnumerable<R> inner = selector(array[i]);
+                if (inner is R[] innerArray) { for (int k = 0; k < innerArray.Length; k++) { yield return innerArray[k]; } }
+                else if (inner is List<R> innerList) { foreach (R each in innerList) { yield return each; } }
+                else { foreach (R each in inner) { yield return each; } }
+            }
+        } else if (source is List<T> list) {
+            foreach (T item in list) {
+                IEnumerable<R> inner = selector(item);
+                if (inner is R[] innerArray) { for (int k = 0; k < innerArray.Length; k++) { yield return innerArray[k]; } }
+                else if (inner is List<R> innerList) { foreach (R each in innerList) { yield return each; } }
+                else { foreach (R each in inner) { yield return each; } }
+            }
+        } else {
+            foreach (T item in source) {
+                IEnumerable<R> inner = selector(item);
+                if (inner is R[] innerArray) { for (int k = 0; k < innerArray.Length; k++) { yield return innerArray[k]; } }
+                else if (inner is List<R> innerList) { foreach (R each in innerList) { yield return each; } }
+                else { foreach (R each in inner) { yield return each; } }
+            }
+        }
     }
 
     public static IEnumerable<R> SelectMany<T, R>(this IEnumerable<T> source, Func<T, int, IEnumerable<R>> selector) {
@@ -10857,12 +10883,22 @@ static class Enumerable {
             for (int i = 0; i < count; i++) { if (predicate(items[i])) { return items[i]; } }
             return defaultValue;
         }
+        if (source is IReadOnlyList<T> view) {
+            for (int i = 0; i < view.Count; i++) { T item = view[i]; if (predicate(item)) { return item; } }
+            return defaultValue;
+        }
         foreach (T item in source) { if (predicate(item)) { return item; } }
         return defaultValue;
     }
 
+    // A LIST IS ASKED FROM ITS END, as .NET asks any IList: its last, or
+    // with a predicate the first from the end that passes -- no walk of
+    // the rest, and no enumerator boxed for the interface.
     public static T Last<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
+        if (Items(source, out int count) is { } items) { if (count > 0) { return items[count - 1]; } throw NoElements(); }
+        if (source is IList<T> list) { if (list.Count > 0) { return list[list.Count - 1]; } throw NoElements(); }
+        if (source is IReadOnlyList<T> view) { if (view.Count > 0) { return view[view.Count - 1]; } throw NoElements(); }
         bool found = false;
         T last = default(T)!;
         foreach (T item in source) { found = true; last = item; }
@@ -10872,6 +10908,18 @@ static class Enumerable {
 
     public static T Last<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
+        if (Items(source, out int count) is { } items) {
+            for (int i = count - 1; i >= 0; i--) { T item = items[i]; if (predicate(item)) { return item; } }
+            throw NoMatch();
+        }
+        if (source is IList<T> list) {
+            for (int i = list.Count - 1; i >= 0; i--) { T item = list[i]; if (predicate(item)) { return item; } }
+            throw NoMatch();
+        }
+        if (source is IReadOnlyList<T> view) {
+            for (int i = view.Count - 1; i >= 0; i--) { T item = view[i]; if (predicate(item)) { return item; } }
+            throw NoMatch();
+        }
         bool found = false;
         T last = default(T)!;
         foreach (T item in source) { if (predicate(item)) { found = true; last = item; } }
@@ -10883,6 +10931,9 @@ static class Enumerable {
 
     public static T LastOrDefault<T>(this IEnumerable<T> source, T defaultValue) {
         NotNull(source, "source");
+        if (Items(source, out int count) is { } items) { return count > 0 ? items[count - 1] : defaultValue; }
+        if (source is IList<T> list) { return list.Count > 0 ? list[list.Count - 1] : defaultValue; }
+        if (source is IReadOnlyList<T> view) { return view.Count > 0 ? view[view.Count - 1] : defaultValue; }
         T last = defaultValue;
         foreach (T item in source) { last = item; }
         return last;
@@ -10892,6 +10943,18 @@ static class Enumerable {
 
     public static T LastOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate, T defaultValue) {
         NotNull(source, "source"); NotNull(predicate, "predicate");
+        if (Items(source, out int count) is { } items) {
+            for (int i = count - 1; i >= 0; i--) { T item = items[i]; if (predicate(item)) { return item; } }
+            return defaultValue;
+        }
+        if (source is IList<T> list) {
+            for (int i = list.Count - 1; i >= 0; i--) { T item = list[i]; if (predicate(item)) { return item; } }
+            return defaultValue;
+        }
+        if (source is IReadOnlyList<T> view) {
+            for (int i = view.Count - 1; i >= 0; i--) { T item = view[i]; if (predicate(item)) { return item; } }
+            return defaultValue;
+        }
         T last = defaultValue;
         foreach (T item in source) { if (predicate(item)) { last = item; } }
         return last;
@@ -10988,6 +11051,11 @@ static class Enumerable {
             for (int i = 0; i < count; i++) { if (predicate(items[i])) { return true; } }
             return false;
         }
+        // An array's view (Binder.ArrayView), by index, not an enumerator boxed.
+        if (source is IReadOnlyList<T> view) {
+            for (int i = 0; i < view.Count; i++) { if (predicate(view[i])) { return true; } }
+            return false;
+        }
         foreach (T item in source) { if (predicate(item)) { return true; } }
         return false;
     }
@@ -10996,6 +11064,10 @@ static class Enumerable {
         NotNull(source, "source"); NotNull(predicate, "predicate");
         if (Items(source, out int count) is { } items) {
             for (int i = 0; i < count; i++) { if (!predicate(items[i])) { return false; } }
+            return true;
+        }
+        if (source is IReadOnlyList<T> view) {
+            for (int i = 0; i < view.Count; i++) { if (!predicate(view[i])) { return false; } }
             return true;
         }
         foreach (T item in source) { if (!predicate(item)) { return false; } }
@@ -11044,6 +11116,10 @@ static class Enumerable {
         int count = 0;
         if (Items(source, out int length) is { } items) {
             for (int i = 0; i < length; i++) { if (predicate(items[i])) { count = count + 1; } }
+            return count;
+        }
+        if (source is IReadOnlyList<T> view) {
+            for (int i = 0; i < view.Count; i++) { if (predicate(view[i])) { count = count + 1; } }
             return count;
         }
         foreach (T item in source) { if (predicate(item)) { count = checked(count + 1); } }

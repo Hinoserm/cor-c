@@ -1669,21 +1669,21 @@ internal sealed class Allocator
             if (_remat[r.Id] is MImm imm)
             {
                 if (!held)
-                    _rwBefore.Add(new MInstr(MOp.Mov, new MReg(reg), imm) { Line = i.Line });
+                    _rwBefore.Add(new MInstr(MOp.Mov, MReg.Of(reg), imm) { Line = i.Line });
             }
             else
             {
                 if ((role & Role.Use) != 0 && !held)
                 {
-                    _rwBefore.Add(new MInstr(MOp.Mov, new MReg(reg), MMem.Spill(_slot[r.Id])) { Line = i.Line });
+                    _rwBefore.Add(new MInstr(MOp.Mov, MReg.Of(reg), MMem.Spill(_slot[r.Id])) { Line = i.Line });
                 }
                 if ((role & Role.Def) != 0)
                 {
-                    _rwAfter.Add(new MInstr(MOp.Mov, MMem.Spill(_slot[r.Id]), new MReg(reg)) { Line = i.Line });
+                    _rwAfter.Add(new MInstr(MOp.Mov, MMem.Spill(_slot[r.Id]), MReg.Of(reg)) { Line = i.Line });
                 }
             }
         }
-        return new MReg(reg);
+        return MReg.Of(reg);
     }
 }
 

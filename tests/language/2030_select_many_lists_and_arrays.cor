@@ -1,0 +1,39 @@
+// test: SelectMany over lists and arrays
+// expect-exit: 0
+// expect-output:
+// 1 2 3 4 5 6
+// 1 2 3 4 5 6
+// a b c d
+// 7 8 9
+// InvalidOperationException
+//
+// SelectMany walks an array or a List, outside or inside, as itself,
+// and gives what .NET gives: the same order, and a list changed while
+// it is walked refused as .NET's own enumerator refuses it.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static IEnumerable<int> Seven() { yield return 7; yield return 8; yield return 9; }
+
+    static void Main()
+    {
+        List<List<int>> lists = new() { new() { 1, 2 }, new() { 3 }, new(), new() { 4, 5, 6 } };
+        Console.WriteLine(string.Join(" ", lists.SelectMany(l => l)));
+        int[][] arrays = { new[] { 1, 2, 3 }, Array.Empty<int>(), new[] { 4, 5, 6 } };
+        Console.WriteLine(string.Join(" ", arrays.SelectMany(a => a)));
+        string[] words = { "a b", "c d" };
+        Console.WriteLine(string.Join(" ", words.SelectMany(w => w.Split(' '))));
+        Console.WriteLine(string.Join(" ", new[] { 0 }.SelectMany(_ => Seven())));
+        List<int> inner = new() { 1, 2, 3 };
+        try
+        {
+            foreach (int x in new[] { inner }.SelectMany(l => l)) { if (x == 1) inner.Add(4); }
+            Console.WriteLine("no exception");
+        }
+        catch (InvalidOperationException) { Console.WriteLine("InvalidOperationException"); }
+    }
+}

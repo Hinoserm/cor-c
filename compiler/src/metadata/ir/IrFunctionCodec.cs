@@ -35,15 +35,20 @@ public static class IrFunctionCodec
         Text(function.Name); Text(function.SourceFile); Text(function.Display);
         // A lowered async body's record (Write): its size symbol and the frame.
         if (function.Async is AsyncFrame frame) { bytes = checked(bytes + 128); Text(frame.SizeSymbol); Text(frame.StackSymbol); }
-        foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
-        {
-            bytes = checked(bytes + 256 + 64L * instruction.Operands.Count + 16L * instruction.Targets.Count);
-            Text(instruction.Callee);
-            Text(instruction.DispatchType);
-            Text(instruction.Field);
-            Text(instruction.Family);
-            foreach (SymOperand address in instruction.Operands.OfType<SymOperand>()) Text(address.Name);
-        }
+        // WALKED WITHOUT A QUERY: a SelectMany over the blocks and an OfType
+        // over every instruction's operands were an iterator, a closure and a
+        // boxed enumerator an instruction, for every function archived.
+        foreach (IrBlock block in function.Blocks)
+            foreach (Instr instruction in block.Instrs)
+            {
+                bytes = checked(bytes + 256 + 64L * instruction.Operands.Count + 16L * instruction.Targets.Count);
+                Text(instruction.Callee);
+                Text(instruction.DispatchType);
+                Text(instruction.Field);
+                Text(instruction.Family);
+                foreach (Operand operand in instruction.Operands)
+                    if (operand is SymOperand address) Text(address.Name);
+            }
         return bytes;
     }
 
@@ -108,8 +113,10 @@ public static class IrFunctionCodec
         }
         writer.Write(function.Slots.Count);
         foreach (FrameSlot slot in function.Slots) { writer.Write(slot.Bytes); writer.Write(slot.Align); }
-        Dictionary<FrameSlot, int> slots = function.Slots.Select((slot, id) => (slot, id)).ToDictionary(pair => pair.slot, pair => pair.id);
-        Dictionary<IrBlock, int> blocks = function.Blocks.Select((block, id) => (block, id)).ToDictionary(pair => pair.block, pair => pair.id);
+        Dictionary<FrameSlot, int> slots = new(function.Slots.Count);
+        for (int id = 0; id < function.Slots.Count; id++) slots.Add(function.Slots[id], id);
+        Dictionary<IrBlock, int> blocks = new(function.Blocks.Count);
+        for (int id = 0; id < function.Blocks.Count; id++) blocks.Add(function.Blocks[id], id);
         writer.Write(function.Blocks.Count);
         foreach (IrBlock block in function.Blocks)
         {
@@ -146,11 +153,12 @@ public static class IrFunctionCodec
         if (kept is { Count: > 0 })
         {
             int at = 0;
-            foreach (Instr instruction in function.Blocks.SelectMany(block => block.Instrs))
-            {
-                if (instruction.Op == Opcode.Call && kept.Contains(instruction)) keeping.Add(at);
-                at++;
-            }
+            foreach (IrBlock block in function.Blocks)
+                foreach (Instr instruction in block.Instrs)
+                {
+                    if (instruction.Op == Opcode.Call && kept.Contains(instruction)) keeping.Add(at);
+                    at++;
+                }
         }
         writer.Write(keeping.Count);
         foreach (int at in keeping) writer.Write(at);

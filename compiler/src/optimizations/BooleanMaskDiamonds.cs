@@ -18,7 +18,11 @@ public sealed class BooleanMaskDiamonds : IPass
             Instr? branch = block.Terminator;
             if (branch is not { Op: Opcode.Branch } || branch.Targets.Count != 2 || branch.Operands.Count != 1
                 || branch.Operands[0] is not RegOperand condition) continue;
-            Instr? producer = block.Instrs.LastOrDefault(i => i.Dest == condition.Reg);
+            // The last write of the condition, found from the end: a query here
+            // boxed the list's enumerator and made a closure every branch.
+            Instr? producer = null;
+            for (int k = block.Instrs.Count - 1; k >= 0; k--)
+                if (block.Instrs[k].Dest == condition.Reg) { producer = block.Instrs[k]; break; }
             if (producer is null || producer.Op is not (Opcode.Eq or Opcode.Ne or Opcode.LtS or Opcode.LeS or Opcode.GtS or Opcode.GeS
                 or Opcode.LtU or Opcode.LeU or Opcode.GtU or Opcode.GeU or Opcode.FEq or Opcode.FNe or Opcode.FLt or Opcode.FLe or Opcode.FGt or Opcode.FGe)) continue;
             Block yes = branch.Targets[0], no = branch.Targets[1];

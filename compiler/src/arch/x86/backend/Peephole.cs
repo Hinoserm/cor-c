@@ -214,7 +214,7 @@ internal static class Peephole
             }
             else
             {
-                instrs[k + 1] = new MInstr(MOp.Mov, new MReg(lr.Id), new MReg(sr.Id));
+                instrs[k + 1] = new MInstr(MOp.Mov, MReg.Of(lr.Id), MReg.Of(sr.Id));
             }
         }
     }
@@ -313,7 +313,7 @@ internal static class Peephole
                     if (SameMem(memory, slot))
                     {
                         if ((clobbered & (1 << value!.Id)) == 0)
-                            instrs[k] = new MInstr(MOp.Mov, new MReg(dest.Id), new MReg(value.Id)) { Line = load.Line };
+                            instrs[k] = new MInstr(MOp.Mov, MReg.Of(dest.Id), MReg.Of(value.Id)) { Line = load.Line };
                         break;
                     }
                     // Be conservative about partial overlaps, including unusual frames.
@@ -609,7 +609,7 @@ internal static class Peephole
             switch (user.Operands[k])
             {
                 case MReg r when r.Id == a.Id:
-                    user.Operands[k] = new MReg(b.Id);
+                    user.Operands[k] = MReg.Of(b.Id);
                     break;
                 case MMem m when m.Base?.Id == a.Id || m.Index?.Id == a.Id:
                     // Everything about the operand but the register survives.
@@ -617,9 +617,9 @@ internal static class Peephole
                     // into an absolute address, which a shared object can only
                     // honour with a text relocation -- and the whole point of
                     // position-independent code is not needing one.
-                    user.Operands[k] = new MMem(m.Base?.Id == a.Id ? new MReg(b.Id) : m.Base, m.Disp)
+                    user.Operands[k] = new MMem(m.Base?.Id == a.Id ? MReg.Of(b.Id) : m.Base, m.Disp)
                     {
-                        Index = m.Index?.Id == a.Id ? new MReg(b.Id) : m.Index,
+                        Index = m.Index?.Id == a.Id ? MReg.Of(b.Id) : m.Index,
                         Scale = m.Scale,
                         Symbol = m.Symbol,
                         Reloc = m.Reloc,
@@ -801,7 +801,7 @@ internal static class Peephole
             }
             else if (!flagsLive && IsMov(i) && i.Operands[0] is MReg r && i.Operands[1] is MImm { IsPlain: true, Value: 0 })
             {
-                instrs[k] = new MInstr(MOp.Xor, new MReg(r.Id), new MReg(r.Id));
+                instrs[k] = new MInstr(MOp.Xor, MReg.Of(r.Id), MReg.Of(r.Id));
             }
         }
     }
