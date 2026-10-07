@@ -52,9 +52,21 @@ public static class LandingPadHomes
         }
     }
 
+    // THE LAST PLACE'S LIVENESS AND GRAPH, nothing reading them once it has
+    // returned: the next one is made in their storage (Liveness, Cfg).
+    [ThreadStatic] private static Liveness? _spare;
+
     internal static void Place(Function f, Func<VReg, bool> wanted)
     {
-        Liveness liveness = new(f);
+        Liveness? spare = _spare;
+        _spare = null;
+        Liveness liveness = new(new Cfg(f, spare?.Cfg), spare);
+        try { PlaceWith(f, wanted, liveness); }
+        finally { _spare = liveness; }
+    }
+
+    private static void PlaceWith(Function f, Func<VReg, bool> wanted, Liveness liveness)
+    {
         Dictionary<int, VReg> registers = new();
         foreach (VReg p in f.Params)
         {

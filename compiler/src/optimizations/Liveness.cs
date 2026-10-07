@@ -43,7 +43,36 @@ public sealed class Liveness
     
     }
 
-    public Liveness(Cfg cfg)
+    public Liveness(Cfg cfg) : this(cfg, null) { }
+
+    // THE SETS MADE ONLY TO BUILD THESE -- every block's uses, definitions
+    // and phi reads -- a thread's, cleared as far as each graph uses them:
+    // three arrays the function's size for every liveness any pass made.
+    // One past KeptScratch words is made for that function alone.
+    [ThreadStatic] private static ulong[]? _keptUse, _keptDef, _keptPhi;
+    private const int KeptScratch = 1 << 20;
+
+    private static ulong[] Scratch(ref ulong[]? kept, int words)
+    {
+        if (words > KeptScratch) return new ulong[words];
+        if (kept is null || kept.Length < words) return kept = new ulong[words];
+        Array.Clear(kept, 0, words);
+        return kept;
+    }
+
+    private static ulong[] Take(ulong[]? spare, int words)
+    {
+        if (spare is null || spare.Length < words) return new ulong[words];
+        Array.Clear(spare, 0, words);
+        return spare;
+    }
+
+    /// <summary>
+    /// The liveness of `cfg`'s function, in the storage of `spare` -- one
+    /// nothing will read again (LandingPadHomes.Place's last) -- where that
+    /// is large enough: rows read only up to this function's own count.
+    /// </summary>
+    internal Liveness(Cfg cfg, Liveness? spare)
     {
         Cfg = cfg;
         Function f = cfg.Function;
@@ -52,17 +81,17 @@ public sealed class Liveness
         int count = f.Blocks.Count;
         _blocks = f.Blocks.ToArray();
         _regs = new VReg?[_registers];
-        _in = new ulong[count * _words];
-        _out = new ulong[count * _words];
+        _in = Take(spare?._in, count * _words);
+        _out = Take(spare?._out, count * _words);
 
         // Per-block use (read before any write in the block) and def sets,
         // computed once; the iteration only combines them.
-        ulong[] use = new ulong[count * _words];
-        ulong[] def = new ulong[count * _words];
+        ulong[] use = Scratch(ref _keptUse, count * _words);
+        ulong[] def = Scratch(ref _keptDef, count * _words);
         // A phi reads its operand at the end of the predecessor it names,
         // not at the top of its own block: those reads are gathered per
         // predecessor and folded into that block's live-out.
-        ulong[] phiOut = new ulong[count * _words];
+        ulong[] phiOut = Scratch(ref _keptPhi, count * _words);
         for (int at = 0; at < count; at++)
         {
             Block b = _blocks[at];
