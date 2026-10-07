@@ -86,6 +86,7 @@ internal sealed class Allocator
     private readonly int[] _end;
     /// <summary>The positions each virtual register is live at, as ranges.</summary>
     private readonly List<(int S, int E)>?[] _ranges;
+    private readonly int[] _runS, _runE;
     private readonly int[][] _busy = new int[8][];
     // How much of each busy table this function uses: the tables are a
     // thread's, kept from one function to the next (SpareBusy).
@@ -131,7 +132,7 @@ internal sealed class Allocator
     private int[] _runHead = Array.Empty<int>();
     private int[] _blockOfInstr = Array.Empty<int>();
     private int[][] _succ = Array.Empty<int[]>();
-    private BitSet[] _liveIn = Array.Empty<BitSet>();
+    private BitRows _liveIn = new();
     private int _seq;
 
     private Allocator(MFunction m)
@@ -154,6 +155,9 @@ internal sealed class Allocator
         _slot = new int[_n];
         _remat = new MImm?[_n];
         _ranges = new List<(int, int)>?[_n];
+        _runS = new int[_n];
+        _runE = new int[_n];
+        Array.Fill(_runS, -1);
         // A register's ranges made as it is first marked: most numbers are
         // halves never used, values selection dropped, or the machine's own.
         for (int v = 0; v < _n; v++)
@@ -380,15 +384,22 @@ internal sealed class Allocator
             _start[reg] = Math.Min(_start[reg], pos);
             _end[reg] = Math.Max(_end[reg], pos);
             // The walk is backward within a block, marking an instruction's
-            // late pair before its early one, so a run grows downward.
-            List<(int S, int E)> list = _ranges[reg] ??= new List<(int S, int E)>();
-            if (list.Count > 0 && pos >= list[^1].S - 2 && pos <= list[^1].E + 1)
+            // late pair before its early one, so a run grows downward. THE
+            // RUN BEING GROWN IN TWO WORDS (_runS, _runE), a list made only
+            // when a second, apart from it, begins: most registers live in
+            // one run, and a list each was the allocator's most numerous
+            // leaving to the collector.
+            int runS = _runS[reg];
+            if (runS >= 0 && pos >= runS - 2 && pos <= _runE[reg] + 1)
             {
-                list[^1] = (Math.Min(list[^1].S, pos), Math.Max(list[^1].E, pos));
+                _runS[reg] = Math.Min(runS, pos);
+                _runE[reg] = Math.Max(_runE[reg], pos);
             }
             else
             {
-                list.Add((pos, pos));
+                if (runS >= 0) (_ranges[reg] ??= new List<(int S, int E)>()).Add((runS, _runE[reg]));
+                _runS[reg] = pos;
+                _runE[reg] = pos;
             }
         }
     }
@@ -407,14 +418,12 @@ internal sealed class Allocator
             at += count[b];
         }
 
-        BitSet[] use = new BitSet[nb];
-        BitSet[] def = new BitSet[nb];
-        BitSet[] live = new BitSet[nb];
+        // A BLOCK'S SETS AS ROWS of one table each, kept a thread (BitRows):
+        // three sets and their arrays a block were the allocator's largest
+        // leaving to the collector after its intervals.
+        BitRows use = BitRows.Kept(0, nb, _n), def = BitRows.Kept(1, nb, _n), live = BitRows.Kept(2, nb, _n);
         for (int b = 0; b < nb; b++)
         {
-            use[b] = new BitSet(_n);
-            def[b] = new BitSet(_n);
-            live[b] = new BitSet(_n);
             for (int i = first[b]; i < first[b] + count[b]; i++)
             {
                 foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
@@ -423,16 +432,16 @@ internal sealed class Allocator
                     {
                         continue;
                     }
-                    if ((role & Role.Use) != 0 && !def[b].Get(r.Id))
+                    if ((role & Role.Use) != 0 && !def.Get(b, r.Id))
                     {
-                        use[b].Set(r.Id);
+                        use.Set(b, r.Id);
                     }
                 }
                 foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
                 {
                     if (Tracked(r) && (role & Role.Def) != 0)
                     {
-                        def[b].Set(r.Id);
+                        def.Set(b, r.Id);
                     }
                 }
             }
@@ -489,14 +498,14 @@ internal sealed class Allocator
                 tmp.Clear();
                 foreach (int s in succ[b])
                 {
-                    inS.CopyFrom(live[s]);
-                    inS.AndNot(def[s]);
-                    inS.Or(use[s]);
+                    inS.CopyFrom(live, s);
+                    inS.AndNot(def, s);
+                    inS.Or(use, s);
                     tmp.Or(inS);
                 }
-                if (!tmp.Equals(live[b]))
+                if (!live.RowEquals(b, tmp))
                 {
-                    live[b].CopyFrom(tmp);
+                    live.CopyRow(b, tmp);
                     changed = true;
                 }
             }
@@ -507,9 +516,9 @@ internal sealed class Allocator
         _liveIn = use;
         for (int b = 0; b < nb; b++)
         {
-            tmp.CopyFrom(live[b]);
-            tmp.AndNot(def[b]);
-            use[b].Or(tmp);
+            tmp.CopyFrom(live, b);
+            tmp.AndNot(def, b);
+            use.OrRow(b, tmp);
         }
 
         // Backward walk of each block, marking every position each register
@@ -518,7 +527,7 @@ internal sealed class Allocator
         BitSet cur = new(_n);
         for (int b = 0; b < nb; b++)
         {
-            cur.CopyFrom(live[b]);
+            cur.CopyFrom(live, b);
             for (int i = first[b] + count[b] - 1; i >= first[b]; i--)
             {
                 int p = i * 4;
@@ -563,10 +572,12 @@ internal sealed class Allocator
         for (int v = 8; v < _n; v++)
         {
             List<(int S, int E)>? list = _ranges[v];
-            if (list is null || list.Count < 2)
+            // One run and no list: its span, which a null Ranges means.
+            if (list is null)
             {
                 continue;
             }
+            list.Add((_runS[v], _runE[v]));
             list.Sort();
             // Merged in place: the merged run is never longer than what has
             // been read, so writing at `w` overwrites only ranges already read.
@@ -618,7 +629,7 @@ internal sealed class Allocator
         {
             if (_end[v] >= 0)
             {
-                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v], Ranges = _ranges[v]! });
+                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v], Ranges = _ranges[v] });
             }
         }
 
@@ -687,6 +698,10 @@ internal sealed class Allocator
         }
         return true;
     }
+
+    // An interval's ranges, one -- its whole span -- where it keeps no list.
+    private static int RangeCount(Interval iv) => iv.Ranges?.Count ?? 1;
+    private static (int S, int E) RangeAt(Interval iv, int k) => iv.Ranges is { } ranges ? ranges[k] : (iv.Start, iv.End);
 
     /// <summary>Whether two intervals are live at a common position: a hole in one may hold the other.</summary>
     private static bool Overlaps(Interval a, Interval b)
@@ -987,8 +1002,9 @@ internal sealed class Allocator
             return iv.Start;
         }
         int until = int.MaxValue;
-        foreach ((int s, int e) in iv.Ranges!)
+        for (int k = 0; k < RangeCount(iv); k++)
         {
+            (int s, int e) = RangeAt(iv, k);
             if (Busy(reg, s, e))
             {
                 int lo = s, hi = e;
@@ -1007,15 +1023,15 @@ internal sealed class Allocator
             {
                 continue;
             }
-            List<(int S, int E)> ra = a.Ranges ?? new() { (a.Start, a.End) };
-            int x = 0, y = 0;
-            while (x < ra.Count && y < iv.Ranges.Count)
+            int x = 0, y = 0, na = RangeCount(a), ni = RangeCount(iv);
+            while (x < na && y < ni)
             {
-                if (ra[x].E < iv.Ranges[y].S) x++;
-                else if (iv.Ranges[y].E < ra[x].S) y++;
+                (int S, int E) rx = RangeAt(a, x), ry = RangeAt(iv, y);
+                if (rx.E < ry.S) x++;
+                else if (ry.E < rx.S) y++;
                 else
                 {
-                    until = Math.Min(until, Math.Max(ra[x].S, iv.Ranges[y].S));
+                    until = Math.Min(until, Math.Max(rx.S, ry.S));
                     break;
                 }
             }
@@ -1070,8 +1086,9 @@ internal sealed class Allocator
             return -1;
         }
         List<(int S, int E)> clipped = new();
-        foreach ((int s, int e) in cur.Ranges!)
+        for (int k = 0; k < RangeCount(cur); k++)
         {
+            (int s, int e) = RangeAt(cur, k);
             if (s >= from * 4)
             {
                 break;
@@ -1329,7 +1346,7 @@ internal sealed class Allocator
         {
             foreach (int s in _succ[b])
             {
-                if (_blockFirst[s] < from && _liveIn[s].Get(vreg))
+                if (_blockFirst[s] < from && _liveIn.Get(s, vreg))
                 {
                     return false;
                 }
@@ -1620,6 +1637,46 @@ internal sealed class Allocator
 }
 
 /// <summary>A fixed-size set of small integers.</summary>
+/// <summary>
+/// A set a row, every row the same width, in one array: the allocator's sets
+/// for each block. Kept a thread by kind (Kept), grown as a function needs
+/// and cleared as far as it uses; a table past KeptWords is the function's
+/// alone, so one huge function does not keep it for the rest of the run.
+/// </summary>
+internal sealed class BitRows
+{
+    internal ulong[] Bits = Array.Empty<ulong>();
+    internal int Words;
+
+    [ThreadStatic] private static BitRows?[]? _kept;
+    private const int KeptWords = 1 << 18;
+
+    public static BitRows Kept(int kind, int rows, int size)
+    {
+        int words = (size + 63) / 64, need = rows * words;
+        BitRows[] kept = (_kept ??= new BitRows?[3])!;
+        BitRows table = need <= KeptWords ? kept[kind] ??= new BitRows() : new BitRows();
+        table.Words = words;
+        if (table.Bits.Length < need) table.Bits = new ulong[need];
+        else Array.Clear(table.Bits, 0, need);
+        return table;
+    }
+
+    public bool Get(int row, int i) => (Bits[row * Words + (i >> 6)] & (1UL << (i & 63))) != 0;
+    public void Set(int row, int i) => Bits[row * Words + (i >> 6)] |= 1UL << (i & 63);
+
+    public void OrRow(int row, BitSet o)
+    {
+        ulong[] from = o.Words;
+        int at = row * Words;
+        for (int k = 0; k < Words; k++) Bits[at + k] |= from[k];
+    }
+
+    public void CopyRow(int row, BitSet o) => Array.Copy(o.Words, 0, Bits, row * Words, Words);
+
+    public bool RowEquals(int row, BitSet o) => Bits.AsSpan(row * Words, Words).SequenceEqual(o.Words);
+}
+
 internal sealed class BitSet : IEquatable<BitSet>
 {
     private readonly ulong[] _bits;
@@ -1649,6 +1706,25 @@ internal sealed class BitSet : IEquatable<BitSet>
     }
 
     public void CopyFrom(BitSet o) => Array.Copy(o._bits, _bits, _bits.Length);
+
+    // A row of a BitRows table of the same width, as a set.
+    public void CopyFrom(BitRows rows, int row) => Array.Copy(rows.Bits, row * rows.Words, _bits, 0, _bits.Length);
+
+    public void Or(BitRows rows, int row)
+    {
+        ulong[] bits = rows.Bits;
+        int at = row * rows.Words;
+        for (int k = 0; k < _bits.Length; k++) _bits[k] |= bits[at + k];
+    }
+
+    public void AndNot(BitRows rows, int row)
+    {
+        ulong[] bits = rows.Bits;
+        int at = row * rows.Words;
+        for (int k = 0; k < _bits.Length; k++) _bits[k] &= ~bits[at + k];
+    }
+
+    internal ulong[] Words => _bits;
 
     /// <summary>The members, lowest first, by a struct walk: an iterator here was an object for every instruction the intervals were built over.</summary>
     public MemberWalk Members() => new(_bits);
