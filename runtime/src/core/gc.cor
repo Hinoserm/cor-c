@@ -422,6 +422,11 @@ static class Gc
     /// it may be set after the heap started.
     public static bool VerifyMarks;
 
+    /// Only the major cycles' marks checked (VerifyMajor), and nothing else
+    /// changed: a kernel's gc.verifymajors=1, light enough that the boots it
+    /// runs in still reach what the full check (VerifyMarks) slows them past.
+    public static bool VerifyMajors;
+
     /// Every size-class page walked at every minor cycle, as a checking one
     /// walks them: the unwalked minor cycle (_pagesUnwalked) never taken. A
     /// kernel sets it from its command line (gc.walkpages=1).
@@ -601,7 +606,28 @@ static class Gc
                                 SayNumber("gc verify major:   points at unmarked ", target);
                                 SayNumber("gc verify major:   whose vtable ", Sys.Peek(target + HeaderBytes));
                                 SayNumber("gc verify major:   whose kind ", Sys.Peek(target + KindAt));
-                                if (reads) _verifyReports = _verifyReports + 1;
+                                if (reads)
+                                {
+                                    // WHERE EACH LIES AND WHAT THE SNAPSHOT SAID OF IT: a
+                                    // parent marked and never scanned, or a target in a page
+                                    // whose starts some path wrote or failed to write.
+                                    long parentHome = HeapChunks.OfSnapshot(block + HeaderBytes);
+                                    SayNumber("gc verify major:   cycle ", _cycle);
+                                    SayNumber("gc verify major:   parent scanned ", (word & FlagScan) != 0 ? 1 : 0);
+                                    SayNumber("gc verify major:   parent start ", parentHome != 0 && HeapChunks.IsStart(parentHome, block) ? 1 : 0);
+                                    SayNumber("gc verify major:   parent page class ", parentHome != 0 ? HeapChunks.PageClass(parentHome) : -1);
+                                    SayNumber("gc verify major:   parent page owner ", parentHome != 0 && HeapChunks.PageClass(parentHome) != 0 ? HeapChunks.Owner(parentHome) : -1);
+                                    SayNumber("gc verify major:   parent starts cycle ", parentHome != 0 ? HeapChunks.StartsCycle(parentHome) : -1);
+                                    SayNumber("gc verify major:   target start ", HeapChunks.IsStart(home, target) ? 1 : 0);
+                                    SayNumber("gc verify major:   target page class ", HeapChunks.PageClass(home));
+                                    SayNumber("gc verify major:   target page owner ", HeapChunks.PageClass(home) != 0 ? HeapChunks.Owner(home) : -1);
+                                    SayNumber("gc verify major:   target starts cycle ", HeapChunks.StartsCycle(home));
+                                    SayNumber("gc verify major:   target page young ", HeapChunks.IsYoung(home) ? 1 : 0);
+                                    long at = GcThreads.BufferAtOrAbove(HeapChunks.First(home));
+                                    SayNumber("gc verify major:   target page captured ", at < GcThreads.BufferCount() && GcThreads.BufferBase(at) == HeapChunks.First(home) ? 1 : 0);
+                                    SayFreed("gc verify major:   target", target + HeaderBytes);
+                                    _verifyReports = _verifyReports + 1;
+                                }
                             }
                         }
                         p = p + WordSize.Bytes;
@@ -11411,7 +11437,7 @@ static class Gc
         if (helped) WorkersMark(false);
         long reportsBefore = _verifyReports;
         if (_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyMajors || VerifyHeap)) VerifyMajor();
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyRegionEscapes();
         VerifyStop(reportsBefore);
         HeapChunks.SetBlockAnchorsActive(false);
@@ -11569,7 +11595,7 @@ static class Gc
         MarkToEmpty();
         long verifiedBefore = _verifyReports;
         if (_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyMajors || VerifyHeap)) VerifyMajor();
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyNewcomers();
 
         GcLock.Enter();
