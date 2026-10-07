@@ -4800,6 +4800,10 @@ public sealed partial class Binder
                 Function = new FunctionPointer(r.Args.Take(r.Args.Count - 1).Select(p => Resolve(p, context)).ToList(),
                     Resolve(r.Args[^1], context), r.Name == TypeRef.UnmanagedFunction),
             }
+            // Nullable<T> WRITTEN OUT is T? (C#'s own spelling of it), unless
+            // the program declares a type of that name.
+            : r.Name is "Nullable" or "System.Nullable" && r.Args.Count == 1 && !_r.Types.ContainsKey("Nullable")
+                ? Resolve(r.Args[0], context).AsNullable()
             : ResolveCore(r, context);
 
         // POINTERS FIRST, then the array: `byte*[]` is an array OF pointers,
@@ -12190,6 +12194,30 @@ public sealed partial class Binder
     /// specialisation that follows copies it; a bare name would mean something
     /// else there, or nothing at all.
     /// </summary>
+    private int _asNullables;
+
+    /// <summary>T of a written `T?` or `Nullable&lt;T&gt;` that is no array or pointer, else null.</summary>
+    private static TypeRef? NullableUnderlying(TypeRef t)
+    {
+        if (t.ArrayRank > 0 || t.PointerDepth > 0) return null;
+        if (t.Nullable)
+            return new TypeRef { Name = t.Name, Arguments = t.Args, TupleNames = t.TupleNames, Line = t.Line, Col = t.Col };
+        if (t.Name is "Nullable" or "System.Nullable" && t.Args.Count == 1) return t.Args[0];
+        return null;
+    }
+
+    /// <summary>Whether a call with `count` arguments could be one of `method`: as many, fewer with defaults for the rest, or enough for a params array.</summary>
+    private static bool MayTake(MethodSymbol method, int count)
+    {
+        List<ParamSymbol> parameters = method.Params;
+        if (parameters.Count > 0 && parameters[^1].IsParams) return count >= parameters.Count - 1;
+        if (count >= parameters.Count) return count == parameters.Count;
+        if (method.Decl is not MethodDecl declared || declared.Params.Count != parameters.Count) return true;
+        for (int k = count; k < parameters.Count; k++)
+            if (declared.Params[k].Default is null) return false;
+        return true;
+    }
+
     private Expr Written(MethodSymbol declared, Param p)
     {
         if (!_writtenDefaults.TryGetValue(p, out Expr? written))
@@ -14977,6 +15005,25 @@ public sealed partial class Binder
                 return of;
             }
 
+            // `e as T?` FOR A VALUE TYPE T, which C# allows: e's value when it
+            // is a T, null when it is not -- `e is T v ? (T?)v : default`,
+            // with e read once. Written so and checked so; lowering sees
+            // only the rewrite.
+            case AsExpr nullableAs when NullableUnderlying(nullableAs.Type) is { } underlying
+                && Resolve(nullableAs.Type, _thisType) is { IsNullableValue: true }:
+            {
+                string held = "as$" + nullableAs.Line + "$" + nullableAs.Col + "$" + _asNullables++;
+                ConditionalExpr instead = new()
+                {
+                    Cond = new IsExpr { Operand = nullableAs.Operand, Type = underlying, Binding = held, Line = nullableAs.Line, Col = nullableAs.Col },
+                    Then = new CastExpr { Type = nullableAs.Type, Operand = new NameExpr { Name = held, Line = nullableAs.Line, Col = nullableAs.Col }, Line = nullableAs.Line, Col = nullableAs.Col },
+                    Else = new DefaultExpr { Type = nullableAs.Type, Line = nullableAs.Line, Col = nullableAs.Col },
+                    Line = nullableAs.Line, Col = nullableAs.Col,
+                };
+                _r.Rewrites[nullableAs] = instead;
+                return CheckExpr(instead);
+            }
+
             case AsExpr asx:
             {
                 CheckExpr(asx.Operand);
@@ -17136,6 +17183,18 @@ public sealed partial class Binder
                 if (!overridden) (widened ??= new List<MethodSymbol>(group)).Add(root);
             }
             if (widened is not null) group = widened;
+        }
+
+        // THE EXTENSIONS WHEN NO METHOD OF THE TYPE TAKES THE CALL (C#
+        // 12.8.10.3): an OperandList that answers FirstOrDefault(predicate)
+        // itself still has LINQ's FirstOrDefault() called on it with none.
+        if (group.Count > 0 && ReferenceEquals(m, _callee) && _calleeArgs >= 0
+            && !group.Any(method => MayTake(method, _calleeArgs))
+            && Extension(target, m.Name) is { Count: > 0 } extensionsTaking)
+        {
+            _r.Resolved[m] = new MethodGroupSym(extensionsTaking);
+            _r.Receivers[m] = true;
+            return Type.Void;
         }
 
         if (group.Count > 0)

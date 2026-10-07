@@ -1,0 +1,36 @@
+// test: extension when no instance method fits
+// expect-exit: 0
+// expect-output:
+// first 2 any True
+// default 1 any True all False
+// count 3
+//
+// A type's own method hides an extension of the same name only where it can
+// take the call: with no argument, Bag's FirstOrDefault(predicate) cannot,
+// and LINQ's FirstOrDefault() is the one called (C# 12.8.10.3).
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Bag : IEnumerable<int>
+{
+    private readonly List<int> _items = new() { 1, 2, 3 };
+    public int FirstOrDefault(Func<int, bool> predicate) { foreach (int i in _items) if (predicate(i)) return i * 100; return -1; }
+    public bool Any(Func<int, bool> predicate) => _items.Exists(i => predicate(i));
+    public IEnumerator<int> GetEnumerator() => _items.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Bag bag = new();
+        Console.WriteLine($"first {bag.FirstOrDefault(i => i > 1) / 100} any {bag.Any(i => i == 3)}");
+        Console.WriteLine($"default {bag.FirstOrDefault()} any {bag.Any()} all {bag.All(i => i > 1)}");
+        Console.WriteLine($"count {bag.Count()}");
+        return 0;
+    }
+}

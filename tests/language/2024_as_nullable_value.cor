@@ -1,0 +1,39 @@
+// test: as with a nullable value type
+// expect-exit: 0
+// expect-output:
+// 42 null 7 null
+// 3,4 null
+// read once 1
+// sum 14
+//
+// `e as T?` for a value type T is C#: e's value when e holds a T, null when
+// it holds anything else or nothing -- with e read once.
+
+using System;
+using System.Collections.Generic;
+
+struct Point { public int X, Y; public override string ToString() => X + "," + Y; }
+
+static class Program
+{
+    static int reads;
+    static object Next() { reads++; return 1L; }
+
+    static string Say(long? v) => v is { } x ? x.ToString() : "null";
+
+    static int Main()
+    {
+        object a = 42L, b = "text", c = 7L, d = null!;
+        Console.WriteLine($"{Say(a as long?)} {Say(b as long?)} {Say(c as Nullable<long>)} {Say(d as long?)}");
+        object p = new Point { X = 3, Y = 4 }, q = 5;
+        Point? hit = p as Point?, miss = q as Point?;
+        Console.WriteLine($"{(hit.HasValue ? hit.Value.ToString() : "null")} {(miss.HasValue ? "?" : "null")}");
+        long? once = Next() as long?;
+        Console.WriteLine($"read once {reads}");
+        long sum = 0;
+        foreach (object o in new List<object> { 1, 2L, "x", 3L, 4L, 5L, 6 })
+            sum += (o as long?) ?? 0;
+        Console.WriteLine("sum " + sum);
+        return once == 1 ? 0 : 1;
+    }
+}
