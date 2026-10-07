@@ -427,6 +427,20 @@ static class Gc
     /// runs in still reach what the full check (VerifyMarks) slows them past.
     public static bool VerifyMajors;
 
+    /// VerifyMajors at every Nth major cycle only (1, or 0, for every one):
+    /// a kernel's gc.verifymajors=N, so that a check slow enough to close
+    /// the window it looks for can still run in a boot that reaches it.
+    public static long VerifyMajorsEvery;
+    static long _majorsSeen;
+
+    // Whether this major cycle is one VerifyMajors checks.
+    static bool MajorChecked()
+    {
+        if (!VerifyMajors) return false;
+        _majorsSeen = _majorsSeen + 1;
+        return VerifyMajorsEvery <= 1 || _majorsSeen % VerifyMajorsEvery == 0;
+    }
+
     /// Every size-class page walked at every minor cycle, as a checking one
     /// walks them: the unwalked minor cycle (_pagesUnwalked) never taken. A
     /// kernel sets it from its command line (gc.walkpages=1).
@@ -11501,7 +11515,7 @@ static class Gc
         if (helped) WorkersMark(false);
         long reportsBefore = _verifyReports;
         if (_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyMajors || VerifyHeap)) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap || MajorChecked())) VerifyMajor();
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyRegionEscapes();
         VerifyStop(reportsBefore);
         HeapChunks.SetBlockAnchorsActive(false);
@@ -11659,7 +11673,7 @@ static class Gc
         MarkToEmpty();
         long verifiedBefore = _verifyReports;
         if (_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMinor();
-        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyMajors || VerifyHeap)) VerifyMajor();
+        if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap || MajorChecked())) VerifyMajor();
         if (_verifyGenerations || VerifyMarks || VerifyHeap) VerifyNewcomers();
 
         GcLock.Enter();
