@@ -473,6 +473,17 @@ static class Gc
 
     /// The cycle being run, or the last one run (FreedAt's counterpart).
     public static long Cycle() { return _cycle; }
+
+    /// What the free journal says of the block at `payload`, said: its word
+    /// (FreedAt) and the cycle now. Nothing when the journal is off.
+    public static void SayFreed(string what, long payload)
+    {
+        if (_journalAddr == 0) return;
+        SayNumber(what + " at ", payload);
+        SayNumber(what + ", its first word ", Sys.Peek(payload));
+        SayNumber(what + ", freed: journal word ((cycle<<4)|1 minor|2 concurrent|4 by hand|8 in a collection), -1 none ", FreedAt(payload));
+        SayNumber(what + ", the cycle now ", _cycle);
+    }
     static long _oldCardsReports;
     static long _aloneSaid;
 

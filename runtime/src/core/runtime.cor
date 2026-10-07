@@ -3870,9 +3870,15 @@ static class Runtime
         {
             return;
         }
-        long of = (Sys.Peek(value) & WordSize.AddressMask) - DescWordsHere * w;
-        if (!DescribedAs(of, element))
+        // A VALUE WHOSE TYPE WORD IS 0 is a block freed and cleared under a
+        // live reference: said with what the collector's free journal knows
+        // of it (gc.freejournal), and refused as a mismatch rather than read
+        // through a description at address 0.
+        long vtable = Sys.Peek(value) & WordSize.AddressMask;
+        if (vtable == 0 || !DescribedAs(vtable - DescWordsHere * w, element))
         {
+            Gc.SayFreed("array store: the value", value);
+            Gc.SayFreed("array store: the array", array);
             throw new ArrayTypeMismatchException();
         }
     }
