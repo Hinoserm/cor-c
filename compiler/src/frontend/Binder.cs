@@ -17,7 +17,9 @@ public sealed partial class Binder
     // Declaration/layout completion precedes the source-ordered body queue.
     // Worker-local binding contexts can consume this boundary without racing
     // declaration discovery or silently omitting extending declarations.
-    private readonly List<(TypeDecl Decl, TypeSymbol Symbol)> _bodyWork = new();
+    // A TYPE'S BODIES, or one method's (Only): a body left unchecked until
+    // something used it is checked alone when something does (WantBody).
+    private readonly List<(TypeDecl Decl, TypeSymbol Symbol, MethodDecl? Only)> _bodyWork = new();
     private readonly string _file;
     private readonly Action<string>? _requireDeclaration;
     private readonly Action<string, string>? _requireExtensions;
@@ -1178,6 +1180,10 @@ public sealed partial class Binder
         }
         b._freshOnly = freshOnly;
         b._usesDynamic = unit.UsesDynamic;
+        // Every method a node binds to, and every one lowering reaches: a
+        // copy's body left unchecked until used is checked then (WantBody).
+        b._r.OnMethodReferenced(b.WantBody);
+        b._r.BodyWantedLate = b.WantBody;
         b.Run(unit);
         // The declarations' tables carry straight on into the bodies': a copy
         // of every one, the original then dropped, was a unit's whole binding
@@ -2721,7 +2727,7 @@ public sealed partial class Binder
             if (_r.Types.TryGetValue(TypeKey(d), out TypeSymbol? sym)
                 && ReferenceEquals(sym.Decl, d) && !IsTemplate(sym) && !sym.MembersPending)
             {
-                _bodyWork.Add((d, sym));
+                _bodyWork.Add((d, sym, null));
             }
         }
 
@@ -2736,7 +2742,7 @@ public sealed partial class Binder
         // labelled <prelude>. Three misleading messages, one cause.
         foreach ((TypeDecl d, TypeSymbol sym) in extend)
         {
-            _bodyWork.Add((d, sym));
+            _bodyWork.Add((d, sym, null));
         }
 
         // A TYPE WHOSE MEMBERS ARE DECLARED FROM HERE ON joins this list
@@ -2755,8 +2761,15 @@ public sealed partial class Binder
         _inBodies = true;
         try
         {
-            for (int ordinal = 0; ordinal < _bodyWork.Count; ordinal++)
+            for (int ordinal = 0; ; ordinal++)
             {
+                // AND WHAT THE BODIES CHECKED SO FAR USE, through a table no
+                // node holds (SweepWantedBodies), before the work is over.
+                if (ordinal >= _bodyWork.Count)
+                {
+                    SweepWantedBodies();
+                    if (ordinal >= _bodyWork.Count) break;
+                }
                 var work = _bodyWork[ordinal];
                 // ONE MEMBER'S MISSING TYPE MUST NOT COST A WHOLE REBUILD. A body
                 // names types no signature mentioned -- devfs names Tty, Vga, Arch
@@ -2764,7 +2777,7 @@ public sealed partial class Binder
                 // unit away once per name. Checking continues to the next member
                 // with the request recorded; what this pass then reports is
                 // discarded with the transaction, so only the requests survive.
-                try { CheckBodyItem(work.Decl, work.Symbol, ordinal); }
+                try { CheckBodyItem(work.Decl, work.Symbol, ordinal, work.Only); }
                 catch (Metadata.DeclarationDemand demand)
                 {
                     _declarationBatch.Add(demand);
@@ -2785,11 +2798,11 @@ public sealed partial class Binder
         _declarationBatch.ThrowIfAny();
     }
 
-    private void CheckBodyItem(TypeDecl declaration, TypeSymbol symbol, int ordinal)
+    private void CheckBodyItem(TypeDecl declaration, TypeSymbol symbol, int ordinal, MethodDecl? only = null)
     {
         _closures = 0;
         _in = declaration.File;
-        CheckBodies(declaration, symbol);
+        CheckBodies(declaration, symbol, only);
     }
 
     /// <summary>
@@ -3331,7 +3344,7 @@ public sealed partial class Binder
         }
         else if (_bodiesListed)
         {
-            _bodyWork.Add((d, sym));
+            _bodyWork.Add((d, sym, null));
         }
     }
 
@@ -3344,7 +3357,7 @@ public sealed partial class Binder
     /// nobody prints -- said here rather than compiled into something wrong.
     /// Before it is over, they are recorded and answered as any body's are.
     /// </summary>
-    private void CheckLate(TypeDecl d, TypeSymbol sym)
+    private void CheckLate(TypeDecl d, TypeSymbol sym, MethodDecl? only = null)
     {
         int wanted = _r.Wanted.Count, overrides = _r.WantedOverrides.Count, anonymous = _r.AnonymousDelegates.Count;
         int statics = _staticNext;
@@ -3355,7 +3368,7 @@ public sealed partial class Binder
         {
             _in = d.File;
             _closures = 0;
-            CheckBodies(d, sym);
+            CheckBodies(d, sym, only);
         }
         catch (Metadata.DeclarationDemand demand)
         {
@@ -3370,6 +3383,7 @@ public sealed partial class Binder
         if (!_bound)
         {
             _declarationBatch.ThrowIfAny();
+            if (_lateDraining == 0 && _lateWanted.Count > 0) DrainLateBodies();
             return;
         }
         if (_r.Wanted.Count != wanted || _r.WantedOverrides.Count != overrides || _r.AnonymousDelegates.Count != anonymous
@@ -3378,6 +3392,8 @@ public sealed partial class Binder
             throw new InvalidOperationException($"the bodies of '{sym.Name}', first asked for after binding, "
                 + "wanted a copy, a delegate or static storage that no round of binding can now make");
         }
+        // What this check wanted, now that it is done (WantBody).
+        if (_lateDraining == 0 && _lateWanted.Count > 0) DrainLateBodies();
     }
 
     /// <summary>
@@ -5123,7 +5139,131 @@ public sealed partial class Binder
     /// </summary>
     private bool _freshOnly;
 
-    private void CheckBodies(TypeDecl d, TypeSymbol sym)
+    // ---- a copy's bodies, checked when used ----------------------------------
+    //
+    // A COPY MADE PER ARGUMENT CARRIES EVERY METHOD OF ITS TEMPLATE, and every
+    // one was checked: List<Foo> has fifty, a unit calls a handful, and the
+    // checking of the rest declared every type their bodies name, whose
+    // members were then checked in turn -- two thirds of the members a unit
+    // declared, and two fifths of what its front end allocated, for code
+    // lowering never reached. A copy's method that nothing can reach but by
+    // name -- not virtual, not an interface's, not a constructor, an operator
+    // or an accessor -- is left unchecked (_deferredBodies) until a node binds
+    // to it (BindResult.OnMethodReferenced) or a table names it
+    // (SweepWantedBodies), and is checked then, alone, while binding can
+    // still make what it wants; lowering asks for any other it reaches
+    // (BodyWantedLate), checked late as a type first asked for then is.
+    private readonly Dictionary<MethodDecl, (TypeDecl Decl, TypeSymbol Symbol)> _deferredBodies = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<MethodDecl> _wantedUnlisted = new(ReferenceEqualityComparer.Instance);
+
+    private bool LeaveUntilUsed(TypeDecl d, TypeSymbol sym, MethodDecl md)
+    {
+        if (Switches.EagerCopyBodies || d.Template is null || _freshOnly) return false;
+        if (_wantedUnlisted.Remove(md)) return false;
+        if (!_r.Methods.TryGetValue(md, out MethodSymbol? m)) return false;
+        if (m.Virtual || m.Override || m.Abstract || m.IsCtor || m.VtableSlot >= 0) return false;
+        // A delegate's methods are its descriptor's, called by Delegate's own.
+        if (d.IsDelegate || sym.Name.Contains("__Multicast", StringComparison.Ordinal)) return false;
+        // WHAT LOWERING CALLS THAT NO NODE NAMES: a value type's methods -- a
+        // span's Slice and CopyTo for a range, an awaiter's -- and a task's,
+        // which an async method's own lowering drives; and the helpers binding
+        // writes (StaticInit$, FieldInit$...), named by '$'.
+        if (sym.Kind == TypeKind.Struct || md.Name.Contains('$')) return false;
+        if (d.Name.StartsWith("Task", StringComparison.Ordinal) || d.Name.StartsWith("ValueTask", StringComparison.Ordinal)
+            || d.Name.Contains("Awaiter", StringComparison.Ordinal) || d.Name.Contains("MethodBuilder", StringComparison.Ordinal)) return false;
+        string name = md.Name;
+        if (name == d.Name || name.Contains('.') || name.StartsWith("op_", StringComparison.Ordinal)
+            || name.StartsWith("get_", StringComparison.Ordinal) || name.StartsWith("set_", StringComparison.Ordinal)
+            || name.StartsWith("add_", StringComparison.Ordinal) || name.StartsWith("remove_", StringComparison.Ordinal)
+            || name is "Main" or "Finalize" or ".cctor"
+        || name.StartsWith("StaticInit", StringComparison.Ordinal) || name.StartsWith("FieldInit", StringComparison.Ordinal))
+            return false;
+        foreach (MethodSymbol implementing in sym.InterfaceImplementations.Values)
+            if (ReferenceEquals(implementing, m)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// A method something now uses: its body, if it was left unchecked, checked
+    /// -- with the body work while there is any, and once it is over NEVER IN
+    /// THE MIDDLE OF ANOTHER: a node binds to it while some body is being
+    /// checked, and checked there and then it took that body's type, member
+    /// and method for its own. Queued instead (_lateWanted), and checked once
+    /// the check under way is done (DrainLateBodies).
+    /// </summary>
+    private void WantBody(MethodSymbol m)
+    {
+        // A WORD-SHAPED COPY'S METHOD RUNS ITS CANONICAL COPY'S BODY (Canon):
+        // the same member of that one, wanted with it, by its place in the
+        // members both were made from.
+        if (m.Owner.Decl is { Canon: string canon } shared && m.Decl is MethodDecl own
+            && _r.Types.TryGetValue(canon, out TypeSymbol? canonical) && canonical.Decl is { } canonDecl
+            && !canonDecl.MembersPending)
+        {
+            int at0 = shared.Members.IndexOf(own);
+            if (at0 >= 0 && at0 < canonDecl.Members.Count && canonDecl.Members[at0] is MethodDecl twin
+                && _r.Methods.TryGetValue(twin, out MethodSymbol? twinSym))
+                WantBody(twinSym);
+        }
+        if (m.Decl is not MethodDecl md) return;
+        if (!_deferredBodies.Remove(md, out var at))
+        {
+            // WANTED BEFORE ITS COPY'S BODIES WERE LISTED: a call can name a
+            // copy's method as soon as the copy is declared, and the listing
+            // that would leave it unchecked comes later -- remembered, so
+            // that listing checks it.
+            if (m.Owner.Decl?.Template is not null) _wantedUnlisted.Add(md);
+            return;
+        }
+        if (!_bodiesChecked)
+        {
+            _bodyWork.Add((at.Decl, at.Symbol, md));
+            return;
+        }
+        _lateWanted.Add((at.Decl, at.Symbol, md));
+        if (!_inBodies && _lateDraining == 0) DrainLateBodies();
+    }
+
+    private readonly List<(TypeDecl Decl, TypeSymbol Symbol, MethodDecl Only)> _lateWanted = new();
+    private int _lateDraining;
+
+    /// <summary>The bodies wanted after the body work, each checked on its own, as many as checking them wants.</summary>
+    private void DrainLateBodies()
+    {
+        _lateDraining++;
+        try
+        {
+            for (int k = 0; k < _lateWanted.Count; k++)
+            {
+                var wanted = _lateWanted[k];
+                CheckLate(wanted.Decl, wanted.Symbol, wanted.Only);
+            }
+            _lateWanted.Clear();
+        }
+        finally { _lateDraining--; }
+    }
+
+    /// <summary>The methods the binder's tables name, not its nodes: each wanted.</summary>
+    private void SweepWantedBodies()
+    {
+        if (_deferredBodies.Count == 0) return;
+        foreach (MethodSymbol m in _r.InitAdder.Values) WantBody(m);
+        foreach (MethodSymbol m in _r.InitSetter.Values) WantBody(m);
+        foreach (MethodSymbol m in _r.InitGetter.Values) WantBody(m);
+        foreach (MethodSymbol m in _r.InitIndexer.Values) WantBody(m);
+        foreach (MethodSymbol m in _r.MethodAddresses.Values) WantBody(m);
+        foreach (MethodSymbol m in _r.AddressOf.Values) WantBody(m);
+        foreach (MethodSymbol m in _r.Chained.Values) WantBody(m);
+        foreach (AwaitInfo a in _r.Awaits.Values)
+        {
+            WantBody(a.GetAwaiter);
+            WantBody(a.IsCompleted);
+            WantBody(a.OnCompleted);
+            WantBody(a.GetResult);
+        }
+    }
+
+    private void CheckBodies(TypeDecl d, TypeSymbol sym, MethodDecl? only = null)
     {
         _thisType = sym;
         _member = null;
@@ -5164,6 +5304,12 @@ public sealed partial class Binder
             // what gets checked and compiled.
             if (md.TypeParams.Count > 0)
             {
+                continue;
+            }
+
+            if (only is not null ? !ReferenceEquals(md, only) : LeaveUntilUsed(d, sym, md))
+            {
+                if (only is null) _deferredBodies[md] = (d, sym);
                 continue;
             }
 

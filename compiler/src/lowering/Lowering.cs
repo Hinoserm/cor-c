@@ -640,6 +640,9 @@ public sealed partial class Lowering
                 continue;       // abstract, external, or an intrinsic
             }
 
+            // A COPY'S METHOD NOTHING BOUND TO BEFORE: its body was left
+            // unchecked until used (Binder.WantBody), and is checked now.
+            _b.BodyWantedLate?.Invoke(m);
             EmitMethod(m, m.Decl);
             // Its syntax and what the binder said of it, now that nothing
             // will read them again (Lowering.Release).

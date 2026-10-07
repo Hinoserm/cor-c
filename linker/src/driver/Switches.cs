@@ -49,6 +49,8 @@ public static class Switches
     public static bool VerifyAnalyses;
     /// <summary>--no-local-environments: call-only local functions keep heap cells and closures (Binder.ArrangeLocalFunctionEnvironment off), for bisecting.</summary>
     public static bool NoLocalEnvironments;
+    /// <summary>--eager-copy-bodies: every method of a copy made per argument checked, used or not (Binder.WantBody off), for bisecting.</summary>
+    public static bool EagerCopyBodies;
 
     /// <summary>--verify-marks: every pass checked for a mark it lost off an instruction it kept (MarkVerifier).</summary>
     public static bool VerifyMarks;
@@ -169,6 +171,7 @@ public static class Switches
         VerifyMarks |= Switch(taken, "--verify-marks");
         VerifyAnalyses |= Switch(taken, "--verify-analyses");
         NoLocalEnvironments |= Switch(taken, "--no-local-environments");
+        EagerCopyBodies |= Switch(taken, "--eager-copy-bodies");
         SkipPasses = Valued(taken, "--skip-passes") ?? SkipPasses;
         ReportPasses |= Switch(taken, "--report-passes");
         TraceDemand |= Switch(taken, "--trace-demand");

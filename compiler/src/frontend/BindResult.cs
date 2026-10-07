@@ -143,6 +143,20 @@ public sealed partial class BindResult
     /// </summary>
     private readonly NodeBinding _binding = new();
 
+    /// <summary>The binder's ear for every method a node binds to (Binder.WantBody), or none.</summary>
+    internal void OnMethodReferenced(Action<MethodSymbol>? heard)
+    {
+        _binding.Referenced = heard;
+        Resolved.Referenced = heard;
+    }
+
+    /// <summary>
+    /// A method lowering is about to lower whose body was left unchecked until
+    /// something used it, checked now (Binder.WantBody), when the binder that
+    /// left it is still here to.
+    /// </summary>
+    internal Action<MethodSymbol>? BodyWantedLate { get; set; }
+
     public CallTargets Calls { get; }
     /// <summary>A delegate += or -=: the synthesised Combine or Remove call that replaces it, already bound.</summary>
     public Dictionary<AssignExpr, CallExpr> DelegateCompounds { get; } = new(ReferenceEqualityComparer.Instance);
@@ -981,13 +995,33 @@ public sealed class ExprTypes
 /// <summary>What each name or member access resolved to, kept on the expression as ExprTypes keeps its type.</summary>
 public sealed class ExprSyms
 {
+    /// <summary>Told of every method a resolved name stands for (NodeBinding.Referenced).</summary>
+    internal Action<MethodSymbol>? Referenced;
+
     private static int _generations;
     private int _generation = Interlocked.Increment(ref _generations);
 
     public Sym this[Expr e]
     {
         get => TryGetValue(e, out Sym? s) ? s : throw new KeyNotFoundException("an expression this binding has not resolved");
-        set { e.BoundSym = value; e.BoundSymBy = _generation; }
+        set
+        {
+            e.BoundSym = value;
+            e.BoundSymBy = _generation;
+            // A METHOD NAMED, not called: a group made a delegate, a property
+            // read or written -- each a method a body now uses (Referenced).
+            if (Referenced is { } told)
+            {
+                switch (value)
+                {
+                    case MethodGroupSym group: foreach (MethodSymbol m in group.Methods) told(m); break;
+                    case CapturedMethodGroupSym captured: foreach (MethodSymbol m in captured.Methods) told(m); break;
+                    case PropertyGetSym get: told(get.Getter); break;
+                    case PropertySetSym set: told(set.Setter); break;
+                    case CapturedPropertyGetSym got: told(got.Getter); break;
+                }
+            }
+        }
     }
 
     public bool TryGetValue(Expr e, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out Sym sym)
@@ -1029,6 +1063,13 @@ public sealed class NodeBinding
     internal int Current = Interlocked.Increment(ref _generations);
 
     internal void Next() => Current = Interlocked.Increment(ref _generations);
+
+    /// <summary>
+    /// Told of every method a node is bound to call or run -- a call, a `new`,
+    /// an indexer, an Invoke or a setter -- so that a body whose checking was
+    /// left until something used it (Binder.WantBody) is checked then.
+    /// </summary>
+    internal Action<MethodSymbol>? Referenced;
 }
 
 /// <summary>
@@ -1092,7 +1133,7 @@ public sealed class CallTargets
     public MethodSymbol this[CallExpr c]
     {
         get => TryGetValue(c, out MethodSymbol? m) ? m : throw new KeyNotFoundException("a call this binding has not bound");
-        set { c.BoundCall = value; c.BoundCallBy = _binding.Current; }
+        set { c.BoundCall = value; c.BoundCallBy = _binding.Current; _binding.Referenced?.Invoke(value); }
     }
 
     public bool TryGetValue(CallExpr c, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol method)
@@ -1122,7 +1163,7 @@ public sealed class NewTargets
     public MethodSymbol this[NewExpr n]
     {
         get => TryGetValue(n, out MethodSymbol? m) ? m : throw new KeyNotFoundException("a new this binding has not bound");
-        set { n.BoundCtor = value; n.BoundCtorBy = _binding.Current; }
+        set { n.BoundCtor = value; n.BoundCtorBy = _binding.Current; _binding.Referenced?.Invoke(value); }
     }
 
     public bool TryGetValue(NewExpr n, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol ctor)
@@ -1171,6 +1212,7 @@ public sealed class IndexTargets
         }
         if (_setters) ix.BoundSetter = value;
         else ix.BoundGetter = value;
+        _binding.Referenced?.Invoke(value);
     }
 
     public MethodSymbol this[IndexExpr ix]
@@ -1302,6 +1344,7 @@ public sealed class ExprMethods
             ExprFacts facts = ExprFacts.Write(e, _binding);
             if (_invokes) facts.Invoke = value;
             else facts.Setter = value;
+            _binding.Referenced?.Invoke(value);
         }
     }
 
