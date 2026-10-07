@@ -1,0 +1,36 @@
+// test: MemoryStream.Capacity
+// expect-exit: 0
+// expect-output:
+// True
+// 0
+// 100 3 1 2 3
+// 3
+// ArgumentOutOfRangeException
+// 4 NotSupportedException
+//
+// A memory stream's capacity, as .NET has it: at least its length, set
+// larger with its bytes kept, refused below the length, and fixed for a
+// stream over a caller's array.
+
+using System;
+using System.IO;
+
+static class Program
+{
+    static void Main()
+    {
+        MemoryStream grown = new();
+        Console.WriteLine(grown.Capacity >= 0 && grown.Capacity >= grown.Length);
+        Console.WriteLine(grown.Length);
+        grown.Write(new byte[] { 1, 2, 3 }, 0, 3);
+        grown.Capacity = 100;
+        byte[] back = grown.ToArray();
+        Console.WriteLine($"{grown.Capacity} {back.Length} {back[0]} {back[1]} {back[2]}");
+        grown.Capacity = 3;
+        Console.WriteLine(grown.Capacity);
+        try { grown.Capacity = 2; } catch (ArgumentOutOfRangeException) { Console.WriteLine("ArgumentOutOfRangeException"); }
+        MemoryStream fixedOne = new(new byte[4]);
+        Console.Write(fixedOne.Capacity + " ");
+        try { fixedOne.Capacity = 8; } catch (NotSupportedException) { Console.WriteLine("NotSupportedException"); }
+    }
+}

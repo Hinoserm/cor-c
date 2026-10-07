@@ -1,0 +1,46 @@
+// test: a struct converted from string, concatenated and interpolated
+// expect-exit: 0
+// expect-output:
+// initialiser: cannot convert to 'int'
+// plain initialiser end
+// argument 2: cannot convert to 'string'
+// plain argument 2 end
+// argument 3 of 'List': cannot convert to 'int'
+// plain argument 3 of 'List' end
+//
+// A struct with an implicit conversion from string, put into an
+// interpolation and a `+` with strings: each is its ToString, and the
+// string beside it is no candidate for the conversion. And an
+// interpolated string handed where the struct is wanted is a string first,
+// converted after: lowering the interpolation went round itself until the
+// compiler's stack ran out.
+
+using System;
+
+readonly struct What
+{
+    private readonly string _text;
+    private readonly int _n;
+    private What(string text, int n) { _text = text; _n = n; }
+    public static implicit operator What(string text) => new(text, 0);
+    public static What Argument(int n) => new("", n);
+    public override string ToString() => _n > 0 ? $"argument {_n}" : _text;
+}
+
+static class Program
+{
+    static void Check(What what, string to)
+    {
+        Console.WriteLine($"{what}: cannot convert to '{to}'");
+        Console.WriteLine("plain " + what + " end");
+    }
+
+    static void Main()
+    {
+        Check("initialiser", "int");
+        Check(What.Argument(2), "string");
+        int n = 3;
+        string list = "List";
+        Check($"argument {n} of '{list}'", "int");
+    }
+}

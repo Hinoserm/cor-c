@@ -4723,10 +4723,15 @@ public sealed partial class Lowering
     /// The operands of a chain of string joins, left to right: a `+` whose
     /// either side is a string and that the checker did not make a call of (a
     /// user-defined operator) is a join, and its operands are the chain's.
+    /// One rewritten INTO a call that takes it -- an interpolated string
+    /// converted to a struct by its implicit operator -- is a join again
+    /// inside that call (_rewriting), where it is the string written: left
+    /// whole there, it was its own only part, and lowering it went round
+    /// itself until the compiler's stack ran out.
     /// </summary>
     private void ConcatParts(Expr e, List<Expr> parts)
     {
-        if (e is BinaryExpr { Op: BinOp.Add } join && !_b.Rewrites.ContainsKey(join)
+        if (e is BinaryExpr { Op: BinOp.Add } join && (!_b.Rewrites.ContainsKey(join) || _rewriting.Contains(join))
             && (_b.TypeOf(join.Left).Prim == Prim.String || _b.TypeOf(join.Right).Prim == Prim.String))
         {
             ConcatParts(join.Left, parts);

@@ -763,6 +763,31 @@ class MemoryStream : Stream, IOwnsStorage
         if (_position > length) _position = length;
     }
 
+    /// The bytes it holds before it must grow, as .NET's: set below the
+    /// length it is refused, and a stream over a caller's array keeps the
+    /// size it was given.
+    public virtual int Capacity
+    {
+        get { return _capacity; }
+        set
+        {
+            if (value < _length) throw new ArgumentOutOfRangeException("value", "capacity was less than the current size.");
+            if (!_expandable)
+            {
+                if (value != _capacity) throw new NotSupportedException("memory stream is not expandable");
+                return;
+            }
+            if (value == _capacity) return;
+            byte[] made = new byte[value];
+            if (_length > 0) Array.Copy(_bytes, _origin, made, 0, _length);
+            byte[] outgrown = _bytes;
+            _bytes = made;
+            _origin = 0;
+            _capacity = value;
+            if (!_lent) Runtime.FreeOwnedReplaced((nint)Sys.Word(outgrown), 0);
+        }
+    }
+
     /// Over `count` bytes of `buffer` from `index`: position 0 is
     /// buffer[index], and the stream ends after `count` bytes.
     public MemoryStream(byte[] buffer, int index, int count)
