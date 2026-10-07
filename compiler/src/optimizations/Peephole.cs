@@ -43,12 +43,12 @@ public sealed class Peephole : IPass
                 Instr? r = Algebra(i);
                 if (r is null && i.Op is (Opcode.Not or Opcode.Neg or Opcode.ByteSwap))
                 {
-                    defs ??= new Defs(f, _ssa);
+                    defs ??= _ssa ? PipelineAnalyses.SsaDefsOf(f) : PipelineAnalyses.DefsOf(f);
                     r = CancelUnary(i, b, k, defs);
                 }
                 if (r is null && i.Op is (Opcode.Eq or Opcode.Ne))
                 {
-                    defs ??= new Defs(f, _ssa);
+                    defs ??= _ssa ? PipelineAnalyses.SsaDefsOf(f) : PipelineAnalyses.DefsOf(f);
                     r = CompareOfCompare(i, b, k, defs);
                 }
                 if (r is not null)

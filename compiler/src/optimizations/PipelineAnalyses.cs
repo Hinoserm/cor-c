@@ -32,7 +32,7 @@ internal static class PipelineAnalyses
     [ThreadStatic] private static long _print;
     [ThreadStatic] private static long _shapePrint;
     [ThreadStatic] private static Cfg? _cfg;
-    [ThreadStatic] private static Defs? _withCfg, _withoutCfg;
+    [ThreadStatic] private static Defs? _withCfg, _withoutCfg, _ssaWithCfg;
 
     private static readonly bool Verifying = Switches.VerifyAnalyses;
 
@@ -43,14 +43,14 @@ internal static class PipelineAnalyses
         _f = f;
         _print = 0;
         _shapePrint = 0;
-        _cfg = null; _withCfg = null; _withoutCfg = null;
+        _cfg = null; _withCfg = null; _withoutCfg = null; _ssaWithCfg = null;
         return true;
     }
 
     public static void End()
     {
         _f = null;
-        _cfg = null; _withCfg = null; _withoutCfg = null;
+        _cfg = null; _withCfg = null; _withoutCfg = null; _ssaWithCfg = null;
     }
 
     // By index, and the targets' array itself: the fingerprint is taken at
@@ -115,12 +115,12 @@ internal static class PipelineAnalyses
         if (shape != _shapePrint)
         {
             _shapePrint = shape;
-            _cfg = null; _withCfg = null;
+            _cfg = null; _withCfg = null; _ssaWithCfg = null;
         }
         if (now != _print)
         {
             _print = now;
-            _withCfg = null; _withoutCfg = null;
+            _withCfg = null; _withoutCfg = null; _ssaWithCfg = null;
         }
         return true;
     }
@@ -134,6 +134,21 @@ internal static class PipelineAnalyses
             return kept;
         }
         return _cfg = new Cfg(f);
+    }
+
+    /// <summary>
+    /// The definitions in SSA form (Defs.Ssa), on the flow graph kept: what
+    /// constant propagation and the peephole ask of a function in SSA.
+    /// </summary>
+    public static Defs SsaDefsOf(Function f)
+    {
+        if (!Current(f)) return new Defs(f, ssa: true);
+        if (_ssaWithCfg is { } kept)
+        {
+            if (Verifying) Same(kept, new Defs(f, buildCfg: false), f);
+            return kept;
+        }
+        return _ssaWithCfg = new Defs(_cfg ??= new Cfg(f), ssa: true);
     }
 
     public static Defs DefsOf(Function f, bool buildCfg = true)

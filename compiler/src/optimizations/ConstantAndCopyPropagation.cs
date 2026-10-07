@@ -32,7 +32,7 @@ public sealed class ConstantAndCopyPropagation : IPass
 
     public void Run(Function f)
     {
-        Defs defs = new(f, _ssa);
+        Defs defs = _ssa ? PipelineAnalyses.SsaDefsOf(f) : PipelineAnalyses.DefsOf(f);
         Dictionary<VReg, (Operand Value, Block Block, int Index)> copies = new();
         foreach (Block b in f.Blocks)
         {
