@@ -52,7 +52,10 @@ public static class AsyncTransform
                 // machine at each suspension; its cards are marked there, when
                 // the runtime has a card table to mark (Gc, generations).
                 string? cards = m.RuntimeHelpers.Contains(CardMarkObject) ? CardMarkObject : null;
-                int size = Transform(f, frame, wordSize, cards, out bool stays);
+                // AND WHAT IT HELD IS REPORTED FIRST, while a collection marks
+                // (Runtime.ShadeObject): the save overwrites it with no barrier.
+                string? shade = m.RuntimeHelpers.Contains(ShadeObject) ? ShadeObject : null;
+                int size = Transform(f, frame, wordSize, cards, shade, out bool stays);
                 if (!stays && frame.StackSymbol is string stack
                     && m.Data.FirstOrDefault(d => d.Name == stack) is DataItem allowed)
                 {
@@ -89,6 +92,9 @@ public static class AsyncTransform
 
     /// <summary>Runtime.CardMarkObject: every card of an object, from its payload address.</summary>
     public const string CardMarkObject = Corsac.Lang.Lto.RuntimeAbi.CardMarkObject;
+
+    /// <summary>Runtime.ShadeObject: what an object holds, reported while a collection marks, before it is saved over.</summary>
+    public const string ShadeObject = Corsac.Lang.Lto.RuntimeAbi.ShadeObject;
 
     /// <summary>
     /// Whether each register points into the machine: 1 always (the machine,
@@ -181,7 +187,7 @@ public static class AsyncTransform
         return kind;
     }
 
-    private static int Transform(Function f, AsyncFrame frame, int wordSize, string? cards, out bool stays)
+    private static int Transform(Function f, AsyncFrame frame, int wordSize, string? cards, string? shade, out bool stays)
     {
         stays = true;
         frame.Lowered = true;
@@ -402,6 +408,11 @@ public static class AsyncTransform
             // this marker into that resumption's new block.
             (Block sb, int s) = Locate(f, suspend);
             List<Instr> saves = new();
+            if (shade is not null && resume.Live.Count > 0)
+            {
+                VReg held = Escape.Word(f, saves, machine, 0, "shadep");
+                saves.Add(new Instr { Op = Opcode.Call, Callee = shade, Operands = { RegOperand.Of(held) } });
+            }
             foreach (VReg v in resume.Live)
             {
                 int pointsInto = into.TryGetValue(v.Id, out int k) ? k : 0;

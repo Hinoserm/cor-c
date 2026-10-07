@@ -1150,6 +1150,9 @@ public sealed partial class Lowering
         {
             Require(helper);
         }
+        // And what it reports of the machine before saving over it, while a
+        // collection marks (Runtime.ShadeObject).
+        if (RuntimeMethod("ShadeObject", 1) is MethodSymbol shade) Require(shade);
     }
 
     /// <summary>

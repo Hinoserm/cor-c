@@ -2021,6 +2021,14 @@ static class Runtime
         Gc.CardMarkObject((long)(nuint)payload);
     }
 
+    /// What an object holds, reported as a barrier reports what a store
+    /// overwrites, while a collection marks: a coroutine's machine, before
+    /// its frame is saved over it at a suspension (AsyncTransform).
+    public static void ShadeObject(nint payload)
+    {
+        if (Marking != 0) Gc.ShadeObject((long)(nuint)payload);
+    }
+
     public static void CardMark(nint slot)
     {
         long cards = Cards;

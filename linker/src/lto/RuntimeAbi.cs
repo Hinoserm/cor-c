@@ -45,6 +45,8 @@ public static class RuntimeAbi
     public const string WriteBarrierCompareExchange = "m_Runtime_WriteBarrierCompareExchange_3_" + Word + "_" + Word + "_" + Word;
     public const string CardMark = "m_Runtime_CardMark_1_" + Word;
     public const string CardMarkObject = "m_Runtime_CardMarkObject_1_" + Word;
+    /// <summary>What a coroutine's machine holds, reported before its frame is saved over it (Runtime.ShadeObject).</summary>
+    public const string ShadeObject = "m_Runtime_ShadeObject_1_" + Word;
     /// <summary>An array grown where it is, at its region's top: keeps no pointer (Runtime.GrowInPlace).</summary>
     public const string GrowInPlace = "m_Runtime_GrowInPlace_2_" + Word + "_" + Word;
     /// <summary>

@@ -1972,6 +1972,73 @@ static class Gc
         }
     }
 
+    /// Runtime.ShadeObject: every reference a block holds, reported as a
+    /// barrier reports the one a store overwrites (Note), while a collection
+    /// marks -- a coroutine's machine, about to have its frame saved over it
+    /// word by word with no barrier (AsyncTransform). A reference the machine
+    /// held at the snapshot, read into the frame at a resumption after its
+    /// thread answered STAMP and then saved over before the marker read the
+    /// machine, was the frame's alone, and the stack copy had been taken
+    /// before it got there: stored on into an object the mark had scanned
+    /// already, or saved back into the machine once the mark had read it, it
+    /// was never marked, and was swept under them. The words reported are
+    /// the ones the marker reads (ScanBlockWithin).
+    public static void ShadeObject(long payload)
+    {
+        if (Runtime.Marking == 0 || payload == 0) return;
+        long tb = Sys.ThreadBlock();
+        long was = tb == 0 ? 0 : Sys.Peek(tb + Tls.InAlloc);
+        if (tb != 0) Sys.Poke(tb + Tls.InAlloc, 1);
+        ShadeWords(payload);
+        if (tb != 0) Sys.Poke(tb + Tls.InAlloc, was);
+    }
+
+    static void ShadeWords(long payload)
+    {
+        long w = WordSize.Bytes;
+        long block = payload - HeaderBytes;
+        long size = Sys.Peek(block) & SizeMask;
+        long kind = Sys.Peek(block + KindAt);
+        // A machine still in its kickoff's frame is on a stack, which the
+        // stack copies hold as it was; a size no block has is not read.
+        if (size < Smallest || size >= 0x1000000 || kind == KindLeaf) return;
+        // A footer, where there is one, repeats the header: no reference.
+        long end = block + size;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (kind != KindObject || vt == 0 || (_quarantinedHigh != 0 && InQuarantine(vt)))
+        {
+            ShadeRange(payload, end);
+            return;
+        }
+        long desc = vt - DescWords * w;
+        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc
+            || (Sys.Peek(desc + DescFlagsWord * w) & SequenceFlag) != 0)
+        {
+            ShadeRange(payload, end);
+            return;
+        }
+        long map = Sys.Peek(desc + DescRefMapWord * w) & WordSize.AddressMask;
+        if (map == 0) return;
+        long words = Sys.Peek(map);
+        long most = (end - payload) / w;
+        if (words > most) words = most;
+        for (long i = 0; i < words; i++)
+        {
+            if (((Sys.Peek(map + (1 + i / 32) * w) >> (int)(i & 31)) & 1) == 0) continue;
+            long value = Sys.Peek(payload + i * w);
+            if (value != 0) Note(value, 0);
+        }
+    }
+
+    static void ShadeRange(long from, long to)
+    {
+        for (long p = from; p < to; p = p + WordSize.Bytes)
+        {
+            long value = Sys.Peek(p);
+            if (value != 0) Note(value, 0);
+        }
+    }
+
     // ---- what a program can ask ---------------------------------------------
 
     /// Bytes the sweep found live at the last collection.

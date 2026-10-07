@@ -696,7 +696,8 @@ public sealed class Inline : IParallelModulePass
             {
                 Instr i = b.Instrs[k];
                 if (i.Op == Opcode.Call && i.Callee is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues
-                        or Corsac.Lang.Lto.RuntimeAbi.CardMark or Corsac.Lang.Lto.RuntimeAbi.CardMarkObject)
+                        or Corsac.Lang.Lto.RuntimeAbi.CardMark or Corsac.Lang.Lto.RuntimeAbi.CardMarkObject
+                        or Corsac.Lang.Lto.RuntimeAbi.ShadeObject)
                 {
                     continue;
                 }
@@ -1036,7 +1037,7 @@ public sealed class Inline : IParallelModulePass
             {
                 Function f = m.Functions[i];
                 if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
-                    || (coroutines && f.Name == AsyncTransform.CardMarkObject) || forLink.Contains(f.Name)
+                    || (coroutines && f.Name is AsyncTransform.CardMarkObject or AsyncTransform.ShadeObject) || forLink.Contains(f.Name)
                     || (sequences && f.Name is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore
                         or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange))
                 {

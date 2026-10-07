@@ -76,6 +76,7 @@ public static class IrLinkOptimizer
         // closed image without lifetime hints dropped the helper and failed
         // to link ("undefined symbol m_Runtime_CardMarkObject").
         linkRoots.Add(RuntimeAbi.CardMarkObject);
+        linkRoots.Add(RuntimeAbi.ShadeObject);
         // And the allocation every `new` becomes as each unit is regenerated
         // (AllocatorFastPaths), with its long way: nothing calls either in
         // the IR the units archived.

@@ -216,7 +216,7 @@ public sealed partial class Lowering
         l._m.InterruptFacts = bound.InterruptFacts;
         // The frees the lifetime passes may add (Escape), by the label they
         // call: declared is enough, the body may be another unit's.
-        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
+        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("ShadeObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                        ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1),
                                                        ("AllocFast", 2), ("AllocFastSized", 4), ("AllocRegionSized", 4) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
@@ -1483,7 +1483,7 @@ public sealed partial class Lowering
     private static readonly HashSet<string> WordHelpers = new(StringComparer.Ordinal)
     {
         "Alloc", "AllocLeaf", "AllocObject", "AllocManual", "AllocManualObject", "Free", "FreeReplaced",
-        "FreeOwnedReplaced", "FreeField", "KeepField", "WriteBarrier", "WriteBarrierValues", "CardMark", "CardMarkObject",
+        "FreeOwnedReplaced", "FreeField", "KeepField", "WriteBarrier", "WriteBarrierValues", "CardMark", "CardMarkObject", "ShadeObject",
     };
 
     private MethodSymbol? RequireRuntime(Node at, string name, int arity, string because)
