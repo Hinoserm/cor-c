@@ -46,18 +46,28 @@ public sealed class Liveness
     public Liveness(Cfg cfg) : this(cfg, null) { }
 
     // THE SETS MADE ONLY TO BUILD THESE -- every block's uses, definitions
-    // and phi reads -- a thread's, cleared as far as each graph uses them:
-    // three arrays the function's size for every liveness any pass made.
-    // One past KeptScratch words is made for that function alone.
-    [ThreadStatic] private static ulong[]? _keptUse, _keptDef, _keptPhi;
-    private const int KeptScratch = 1 << 20;
+    // and phi reads -- as lists of register numbers, a run a block, in
+    // arrays a thread keeps (Kept). As rows of bits, a block's row as wide as
+    // the function's registers, they were three arrays of blocks times
+    // registers for every liveness any pass made: tens of megabytes for one
+    // large function, and a twelfth of what a native compile left the
+    // collector. A block reads and writes a handful of registers.
+    [ThreadStatic] private static int[]? _keptUseStart, _keptDefStart, _keptPhiStart, _keptUses, _keptDefs, _keptPhiBlocks, _keptPhiRegs, _keptPhis, _keptDefAt;
+    [ThreadStatic] private static ulong[]? _keptRow;
 
-    private static ulong[] Scratch(ref ulong[]? kept, int words)
+    // At least `length` of a kept array, its old contents kept up to `used`.
+    private static int[] Kept(ref int[]? kept, int length, int used = 0)
     {
-        if (words > KeptScratch) return new ulong[words];
-        if (kept is null || kept.Length < words) return kept = new ulong[words];
-        Array.Clear(kept, 0, words);
-        return kept;
+        if (kept is not null && kept.Length >= length) return kept;
+        int[] made = new int[Math.Max(length, Math.Max(64, (kept?.Length ?? 0) * 2))];
+        if (kept is not null && used > 0) Array.Copy(kept, made, used);
+        return kept = made;
+    }
+
+    private static void Append(ref int[]? list, ref int count, int value)
+    {
+        int[] at = Kept(ref list, count + 1, count);
+        at[count++] = value;
     }
 
     private static ulong[] Take(ulong[]? spare, int words)
@@ -84,18 +94,23 @@ public sealed class Liveness
         _in = Take(spare?._in, count * _words);
         _out = Take(spare?._out, count * _words);
 
-        // Per-block use (read before any write in the block) and def sets,
-        // computed once; the iteration only combines them.
-        ulong[] use = Scratch(ref _keptUse, count * _words);
-        ulong[] def = Scratch(ref _keptDef, count * _words);
-        // A phi reads its operand at the end of the predecessor it names,
-        // not at the top of its own block: those reads are gathered per
-        // predecessor and folded into that block's live-out.
-        ulong[] phiOut = Scratch(ref _keptPhi, count * _words);
+        // Per-block use (read before any write in the block) and def lists,
+        // computed once; the iteration only combines them. A phi reads its
+        // operand at the end of the predecessor it names, not at the top of
+        // its own block: those reads are gathered by predecessor and folded
+        // into that block's live-out.
+        int[] useStart = Kept(ref _keptUseStart, count + 1);
+        int[] defStart = Kept(ref _keptDefStart, count + 1);
+        // The block, plus one, that last wrote each register: a read after it
+        // in the same block is no use.
+        int[] defAt = Kept(ref _keptDefAt, _registers);
+        Array.Clear(defAt, 0, _registers);
+        int uses = 0, defs = 0, phis = 0;
         for (int at = 0; at < count; at++)
         {
             Block b = _blocks[at];
-            int u = at * _words;
+            useStart[at] = uses;
+            defStart[at] = defs;
             foreach (Instr i in b.Instrs)
             {
                 if (i.Op == Opcode.Phi)
@@ -105,7 +120,10 @@ public sealed class Liveness
                         if (i.Operands[k] is RegOperand pr && Row(i.Targets[k]) is int po and >= 0)
                         {
                             _regs[pr.Reg.Id] = pr.Reg;
-                            Set(phiOut, po, pr.Reg.Id);
+                            int from = _words == 0 ? 0 : po / _words;
+                            Append(ref _keptPhiBlocks, ref phis, from);
+                            phis--;
+                            Append(ref _keptPhiRegs, ref phis, pr.Reg.Id);
                         }
                     }
                 }
@@ -114,19 +132,35 @@ public sealed class Liveness
                     foreach (Operand rOperand in (i).Operands) if (rOperand is RegOperand { Reg: var r })
                     {
                         _regs[r.Id] = r;
-                        if (!Test(def, u, r.Id))
-                        {
-                            Set(use, u, r.Id);
-                        }
+                        if (defAt[r.Id] != at + 1) Append(ref _keptUses, ref uses, r.Id);
                     }
                 }
                 if (i.Dest is not null)
                 {
                     _regs[i.Dest.Id] = i.Dest;
-                    Set(def, u, i.Dest.Id);
+                    if (defAt[i.Dest.Id] != at + 1)
+                    {
+                        defAt[i.Dest.Id] = at + 1;
+                        Append(ref _keptDefs, ref defs, i.Dest.Id);
+                    }
                 }
             }
         }
+        useStart[count] = uses;
+        defStart[count] = defs;
+        if (_words == 0) return;
+        int[] useList = _keptUses ?? Array.Empty<int>();
+        int[] defList = _keptDefs ?? Array.Empty<int>();
+        // The phi reads by the block they are live out of, a run a block.
+        int[] phiStart = Kept(ref _keptPhiStart, count + 1);
+        Array.Clear(phiStart, 0, count + 1);
+        for (int k = 0; k < phis; k++) phiStart[_keptPhiBlocks![k] + 1]++;
+        for (int k = 0; k < count; k++) phiStart[k + 1] += phiStart[k];
+        int[] phiList = Kept(ref _keptPhis, phis);
+        for (int k = phis - 1; k >= 0; k--) phiList[--phiStart[_keptPhiBlocks![k] + 1]] = _keptPhiRegs![k];
+        for (int k = 0; k < count; k++) phiStart[k] = phiStart[k + 1];
+        phiStart[count] = phis;
+        ulong[] row = _keptRow is { } r0 && r0.Length >= _words ? r0 : _keptRow = new ulong[_words];
 
         // Blocks no root reaches are left with empty sets: nothing runs
         // there, so nothing is live there, and they are about to be
@@ -143,7 +177,9 @@ public sealed class Liveness
             {
                 Block b = order[k];
                 int o = RowOf(b);
-                Array.Copy(phiOut, o, _out, o, _words);
+                int at = o / _words;
+                Array.Clear(_out, o, _words);
+                for (int p = phiStart[at]; p < phiStart[at + 1]; p++) Set(_out, o, phiList[p]);
                 foreach (Block s in cfg.Succs(b))
                 {
                     int si = RowOf(s);
@@ -152,12 +188,16 @@ public sealed class Liveness
                         _out[o + w] |= _in[si + w];
                     }
                 }
+                // In: what is live out but for what the block writes, and
+                // what it reads before it writes.
+                Array.Copy(_out, o, row, 0, _words);
+                for (int d = defStart[at]; d < defStart[at + 1]; d++) row[defList[d] >> 6] &= ~(1UL << (defList[d] & 63));
+                for (int u = useStart[at]; u < useStart[at + 1]; u++) row[useList[u] >> 6] |= 1UL << (useList[u] & 63);
                 for (int w = 0; w < _words; w++)
                 {
-                    ulong v = use[o + w] | (_out[o + w] & ~def[o + w]);
-                    if (v != _in[o + w])
+                    if (row[w] != _in[o + w])
                     {
-                        _in[o + w] = v;
+                        _in[o + w] = row[w];
                         changed = true;
                     }
                 }
