@@ -7,8 +7,7 @@ public static class IrDataCodec
     public static byte[] Write(DataItem item)
     {
         if (item.Zero && item.Bytes.Any(value => value != 0)) throw new InvalidDataException("Nonzero bytes in zero-filled IR data");
-        using MemoryStream stream = new();
-        using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
+        BinaryWriter writer = IrBinary.Writer();
         writer.Write(2); IrBinary.Text(writer, item.Name); writer.Write(item.Align);
         writer.Write(item.ReadOnly); writer.Write(item.Zero); writer.Write(item.Exported);
         writer.Write(item.FromLibrary); writer.Write(item.Coalescible); writer.Write(item.NoReferences);
@@ -17,7 +16,7 @@ public static class IrDataCodec
         writer.Write(item.Relocs.Count);
         foreach (DataReloc relocation in item.Relocs)
         { writer.Write(relocation.Offset); IrBinary.Text(writer, relocation.Symbol); writer.Write(relocation.Addend); }
-        return stream.ToArray();
+        return IrBinary.Written(writer);
     }
 
     public static DataItem Read(byte[] payload, long maximumBytes = 64L * 1024 * 1024, IrReadBudget? budget = null)

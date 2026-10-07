@@ -61,8 +61,7 @@ public static class IrFunctionCodec
         // hands back.
         if (function.Async is { Lowered: false, SuspendResult: not (null or ImmOperand) })
             throw new InvalidDataException("An async body's suspension result is not a constant");
-        using MemoryStream stream = new();
-        using BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true);
+        BinaryWriter writer = IrBinary.Writer();
         writer.Write(Version); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
         writer.Write(function.NoInlining);
@@ -149,7 +148,7 @@ public static class IrFunctionCodec
         }
         writer.Write(keeping.Count);
         foreach (int at in keeping) writer.Write(at);
-        return stream.ToArray();
+        return IrBinary.Written(writer);
     }
 
     /// <summary>The function a record holds; the calls it keeps (Write) added to `kept` when one is given.</summary>

@@ -163,6 +163,63 @@ public sealed class Devirtualize : IModulePass
         Guarded(f, items);
     }
 
+    /// <summary>
+    /// EVERY WRITE OF EACH REGISTER as the function stood when this was made,
+    /// by number: the first in an array, a list only for a register written
+    /// more than once. A list for every register, in a table keyed by it,
+    /// was most of what this pass left the collector -- made for every
+    /// function. Instructions, not places, as Guarded's splits move them. A
+    /// parameter has none to be read, and a register made since none at all.
+    /// </summary>
+    private sealed class Writes
+    {
+        private readonly Instr?[] _first;
+        private readonly Dictionary<int, List<Instr>>? _more;
+
+        public Writes(Function f)
+        {
+            int regs = f.RegCount;
+            _first = regs == 0 ? Array.Empty<Instr?>() : new Instr?[regs];
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { Id: var id } && id < regs)
+                    {
+                        if (_first[id] is not { } one) { _first[id] = i; continue; }
+                        _more ??= new();
+                        if (!_more.TryGetValue(id, out List<Instr>? list)) _more[id] = list = new() { one };
+                        list.Add(i);
+                    }
+            foreach (VReg p in f.Params)
+                if (p.Id < regs) { _first[p.Id] = null; _more?.Remove(p.Id); }
+        }
+
+        /// <summary>How many writes `r` has.</summary>
+        public int Count(VReg r)
+        {
+            if (r.Id >= _first.Length || _first[r.Id] is null) return 0;
+            return _more is not null && _more.TryGetValue(r.Id, out List<Instr>? list) ? list.Count : 1;
+        }
+
+        /// <summary>The `k`th write of `r`, in the order the blocks hold them.</summary>
+        public Instr At(VReg r, int k)
+            => _more is not null && _more.TryGetValue(r.Id, out List<Instr>? list) ? list[k] : _first[r.Id]!;
+
+        /// <summary>The one write of `r`, or null for none or several.</summary>
+        public Instr? Single(VReg r) => Count(r) == 1 ? _first[r.Id] : null;
+
+        /// <summary>Whether some register's one write is an allocation.</summary>
+        public bool AnySingleAllocation
+        {
+            get
+            {
+                for (int id = 0; id < _first.Length; id++)
+                    if (_first[id] is { Op: Opcode.Call } c && Escape.IsAllocator(c.Callee) && (_more is null || !_more.ContainsKey(id)))
+                        return true;
+                return false;
+            }
+        }
+    }
+
     /// <summary>The first relocation of an item at this offset, or -1: a loop, where a closure over the offset was made for every load from a descriptor.</summary>
     private static int RelocIndex(DataItem item, long at)
     {
@@ -191,22 +248,13 @@ public sealed class Devirtualize : IModulePass
                 indirect |= i.Op == Opcode.CallIndirect;
         if (!indirect) return;
         int word = IrTypes.Word.Bytes();
-        Dictionary<VReg, List<Instr>> writes = new();
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-                if (i.Dest is { } d)
-                {
-                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
-                    list.Add(i);
-                }
-        foreach (VReg p in f.Params) writes.Remove(p);
+        Writes writes = new(f);
         // The vtable stored into each object as it is made.
         Dictionary<Instr, SymOperand> stamped = new(ReferenceEqualityComparer.Instance);
         Instr? MadeBy(VReg r)
         {
-            for (int depth = 0; depth < 8 && writes.TryGetValue(r, out List<Instr>? list) && list.Count == 1; depth++)
+            for (int depth = 0; depth < 8 && writes.Single(r) is { } d; depth++)
             {
-                Instr d = list[0];
                 if (d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)) return d;
                 if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next) return null;
                 r = next.Reg;
@@ -225,9 +273,11 @@ public sealed class Devirtualize : IModulePass
         {
             if (depth > 8 || !seen.Add(r)) return depth <= 8;
             if (MadeBy(r) is { } one) { into.Add(one); return true; }
-            if (!writes.TryGetValue(r, out List<Instr>? list)) return false;
-            foreach (Instr d in list)
+            int count = writes.Count(r);
+            if (count == 0) return false;
+            for (int w = 0; w < count; w++)
             {
+                Instr d = writes.At(r, w);
                 // Null before it is set (a foreach's enumerator): no call is
                 // made through it then.
                 if (d.Op == Opcode.Copy && d.Operands[0] is ImmOperand { Value: 0 }) continue;
@@ -243,9 +293,9 @@ public sealed class Devirtualize : IModulePass
             {
                 Instr i = b.Instrs[k];
                 if (i.Op != Opcode.CallIndirect || i.Operands.Count < 2 || i.Operands[0] is not RegOperand fn
-                    || !writes.TryGetValue(fn.Reg, out List<Instr>? fd) || fd.Count != 1 || fd[0] is not { Op: Opcode.Load } slotLoad
-                    || slotLoad.Operands[0] is not RegOperand vt || !writes.TryGetValue(vt.Reg, out List<Instr>? vd) || vd.Count != 1
-                    || vd[0] is not { Op: Opcode.Load, Offset: 0 } vtLoad || vtLoad.Operands[0] is not RegOperand recv) continue;
+                    || writes.Single(fn.Reg) is not { Op: Opcode.Load } slotLoad
+                    || slotLoad.Operands[0] is not RegOperand vt
+                    || writes.Single(vt.Reg) is not { Op: Opcode.Load, Offset: 0 } vtLoad || vtLoad.Operands[0] is not RegOperand recv) continue;
                 List<Instr> origins = new();
                 if (!Origins(recv.Reg, origins, new HashSet<VReg>(), 0) || origins.Count < 2) continue;
                 // Each type's method in the slot read. A type with nothing
@@ -332,26 +382,24 @@ public sealed class Devirtualize : IModulePass
     private static bool FoldTypeTests(Function f, Dictionary<string, DataItem> items)
     {
         int word = IrTypes.Word.Bytes();
-        Dictionary<VReg, List<Instr>> writes = new();
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-                if (i.Dest is { } d)
-                {
-                    if (!writes.TryGetValue(d, out List<Instr>? list)) writes[d] = list = new();
-                    list.Add(i);
-                }
-        foreach (VReg p in f.Params) writes.Remove(p);
+        // Nothing made here, nothing to ask about: known before any table.
         bool anyAlloc = false;
-        foreach (List<Instr> ws in writes.Values) if (ws.Count == 1 && ws[0] is { Op: Opcode.Call } c && Escape.IsAllocator(c.Callee)) { anyAlloc = true; break; }
+        foreach (Block b in f.Blocks)
+        {
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Dest is not null && Escape.IsAllocator(i.Callee)) { anyAlloc = true; break; }
+            if (anyAlloc) break;
+        }
         if (!anyAlloc) return false;
+        Writes writes = new(f);
+        if (!writes.AnySingleAllocation) return false;
         // The vtable stored into each object as it is made: its one store of
         // word 0, a symbol, through the allocation's own register chain.
         Dictionary<Instr, SymOperand?> stamped = new(ReferenceEqualityComparer.Instance);
         Instr? MadeBy(VReg r)
         {
-            for (int depth = 0; depth < 8 && writes.TryGetValue(r, out List<Instr>? list) && list.Count == 1; depth++)
+            for (int depth = 0; depth < 8 && writes.Single(r) is { } d; depth++)
             {
-                Instr d = list[0];
                 if (d.Op == Opcode.Call && Escape.IsAllocator(d.Callee)) return d;
                 if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next) return null;
                 r = next.Reg;
@@ -376,9 +424,11 @@ public sealed class Devirtualize : IModulePass
         {
             if (depth > 8 || !seen.Add(r)) return depth <= 8;
             if (MadeBy(r) is { } one) { into.Add(one); return true; }
-            if (!writes.TryGetValue(r, out List<Instr>? list)) return false;
-            foreach (Instr d in list)
+            int count = writes.Count(r);
+            if (count == 0) return false;
+            for (int w = 0; w < count; w++)
             {
+                Instr d = writes.At(r, w);
                 if (d.Op == Opcode.Copy && d.Operands[0] is ImmOperand { Value: 0 }) continue;
                 if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands[0] is not RegOperand next
                     || !Origins(next.Reg, into, seen, depth + 1)) return false;
@@ -392,8 +442,7 @@ public sealed class Devirtualize : IModulePass
             if (depth > 10) return null;
             if (o is ImmOperand imm) return new() { (null, imm.Value) };
             if (o is SymOperand sym) return new() { (sym.Name, sym.Offset) };
-            if (o is not RegOperand { Reg: var r } || !writes.TryGetValue(r, out List<Instr>? ws) || ws.Count != 1) return null;
-            Instr d = ws[0];
+            if (o is not RegOperand { Reg: var r } || writes.Single(r) is not { } d) return null;
             switch (d.Op)
             {
                 case Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 when d.Operands.Count == 1:

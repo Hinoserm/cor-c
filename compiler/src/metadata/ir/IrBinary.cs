@@ -6,12 +6,59 @@ namespace Corsac.Lang.Metadata;
 internal static class IrBinary
 {
     public static readonly UTF8Encoding Utf8 = new(false, true);
+
+    // A STREAM AND A WRITER KEPT A THREAD (Writer, Written), for the records
+    // written a function and a data item at a time: a stream made for each
+    // grew by doubling to the record's size, and every array it outgrew was
+    // the collector's -- a thirtieth of what a native compile left it. Not
+    // while one is open already on this thread (a record written inside
+    // another's), and let go when a record left it larger than KeptBytes.
+    [ThreadStatic] private static MemoryStream? _stream;
+    [ThreadStatic] private static BinaryWriter? _writer;
+    [ThreadStatic] private static bool _open;
+    [ThreadStatic] private static byte[]? _text;
+    private const int KeptBytes = 1 << 20;
+
+    /// <summary>A writer onto an empty stream, this thread's kept one when it is free; give it to Written for the bytes.</summary>
+    public static BinaryWriter Writer()
+    {
+        if (_open) return new BinaryWriter(new MemoryStream(), Utf8, leaveOpen: false);
+        _open = true;
+        MemoryStream stream = _stream ??= new MemoryStream();
+        stream.SetLength(0);
+        stream.Position = 0;
+        return _writer ??= new BinaryWriter(stream, Utf8, leaveOpen: true);
+    }
+
+    /// <summary>What `writer` (from Writer) holds; the kept stream is free again.</summary>
+    public static byte[] Written(BinaryWriter writer)
+    {
+        writer.Flush();
+        MemoryStream stream = (MemoryStream)writer.BaseStream;
+        byte[] bytes = stream.ToArray();
+        if (!ReferenceEquals(writer, _writer))
+        {
+            writer.Dispose();
+            return bytes;
+        }
+        if (stream.Capacity > KeptBytes)
+        {
+            _stream = null;
+            _writer = null;
+        }
+        _open = false;
+        return bytes;
+    }
+
     public static void Text(BinaryWriter writer, string? value)
     {
         if (value is null) { writer.Write(-1); return; }
-        byte[] bytes = Utf8.GetBytes(value);
-        if (bytes.Length > 16384 || value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
-        writer.Write(bytes.Length); writer.Write(bytes);
+        // Encoded into a buffer kept a thread, not an array a string.
+        int most = Utf8.GetMaxByteCount(value.Length);
+        byte[] text = _text is { } kept && kept.Length >= most ? kept : _text = new byte[Math.Max(most, 256)];
+        int length = Utf8.GetBytes(value, 0, value.Length, text, 0);
+        if (length > 16384 || value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
+        writer.Write(length); writer.Write(text, 0, length);
     }
     public static string? Text(BinaryReader reader, IrReadBudget? budget = null)
     {
