@@ -2826,26 +2826,13 @@ continue;
         }
 
         // A register with more than one definition may hold something else
-        // at another time; anything derived through it is unknowable. Count
-        // definitions once -- by register number, in an array the function's
-        // size: this runs for every allocation of the function, and a
-        // dictionary grown to every register each time was the pass's own
-        // largest allocation.
-        int[] defs = new int[f.RegCount];
-        foreach (Block b in f.Blocks)
-        {
-            foreach (Instr i in b.Instrs)
-            {
-                if (i.Dest is { } d && d.Id < defs.Length)
-                {
-                    defs[d.Id]++;
-                }
-            }
-        }
-        foreach (VReg p in f.Params)
-        {
-            if (p.Id < defs.Length) defs[p.Id]++;
-        }
+        // at another time; anything derived through it is unknowable. The
+        // definitions counted once A FUNCTION STATE, not once an allocation:
+        // this runs for every allocation of the function, and an array the
+        // function's size made each time -- a dictionary before it -- was the
+        // pass's own largest allocation, a tenth of what the collector took
+        // in a native compile (AnalysisCache, kept while the function stands).
+        Defs defs = AnalysisCache.DefsOf(f, buildCfg: false);
 
         HashSet<VReg>? pending = null;
         RegisterWrites? writes = null;
@@ -3582,8 +3569,8 @@ continue;
         void HolderAlias(VReg d, object root, long delta)
         {
             if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
-                Console.Error.WriteLine($"alias {f.Name}: {d} to {root} +{delta} defs {(d.Id < defs.Length ? defs[d.Id] : -1)}");
-            if (d.Id < defs.Length && defs[d.Id] > 1)
+                Console.Error.WriteLine($"alias {f.Name}: {d} to {root} +{delta} defs {defs.Count(d)}");
+            if (defs.Count(d) > 1)
             {
                 // A VARIABLE THAT HOLDS THE HOLDER OR NULL -- an enumerator
                 // set to null before the `try` that disposes it -- is the
@@ -3604,7 +3591,7 @@ continue;
         // types the callee stamps it with, where those are known.
         bool HoldsResult(Instr call, IEnumerable<long> offsets, Stamp[]? stamps)
         {
-            if (call.Dest is not { } result || result.Id < defs.Length && defs[result.Id] > 1) return false;
+            if (call.Dest is not { } result || defs.Count(result) > 1) return false;
             foreach (long o in offsets) Hold(result, o);
             HolderAlias(result, result, 0);
             (boxes ??= new()).Add(result);
@@ -3870,7 +3857,7 @@ continue;
                 {
                     // The box again, or a box the callee stamped with the
                     // same words: a holder of its own, at the same offsets.
-                    if (result.Id < defs.Length && defs[result.Id] > 1) return false;
+                    if (defs.Count(result) > 1) return false;
                     Stamp[]? same = KindsOf(box!) is { } was ? was.Concat(copiedAs).Distinct().ToArray() : null;
                     foreach (long h in holds.ToList()) Hold(result, h);
                     HolderAlias(result, result, 0);
@@ -3934,7 +3921,7 @@ continue;
             {
                 return;
             }
-            if (d.Id < defs.Length && defs[d.Id] > 1 && (returnable is null || !returnable.Contains(d))
+            if (defs.Count(d) > 1 && (returnable is null || !returnable.Contains(d))
                 && (joinable is null || !joinable.Contains(d)))
             {
                 // A JOIN THAT IS ONLY EVER A NUMBER -- a hash's word, the
