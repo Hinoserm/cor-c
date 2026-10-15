@@ -899,26 +899,38 @@ static class Runtime
                 if (Sys.Cas(state, 0, self) == 0) return 1;
                 continue;
             }
+            // THE GRAPH'S WORD NAMES ITS HOLDER, and nobody spins on their own:
+            // a kernel's interrupt handler that meets a type being made
+            // elsewhere, on the processor whose interrupted code holds the
+            // word, would spin for ever on a holder that cannot run again
+            // until it returns. Its context already holds the walk -- and
+            // the edge word is that context's too -- so it neither publishes
+            // nor walks, and only waits, as every waiter did before the word.
             long graph = Sys.AddressOf(ref _typeInitGraph);
-            while (Sys.Cas(graph, 0, 1) != 0) Sys.Pause();
-            if (Sys.Peek(state) != owner)
+            long held;
+            while ((held = Sys.Cas(graph, 0, self)) != 0 && held != self) Sys.Pause();
+            bool nested = held == self;
+            if (!nested)
             {
+                if (Sys.Peek(state) != owner)
+                {
+                    Sys.AtomicSwap(graph, 0);
+                    continue;
+                }
+                Sys.AtomicSwap(self + Tls.TypeInitWait, state);
+                long peer = owner;
+                bool cycle = false;
+                for (int steps = 0; peer > 2 && steps < 256; steps++)
+                {
+                    if (peer == self) { cycle = true; break; }
+                    long waits = Sys.Peek(peer + Tls.TypeInitWait);
+                    if (waits == 0) break;
+                    peer = Sys.Peek(waits);
+                }
+                if (cycle) Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
                 Sys.AtomicSwap(graph, 0);
-                continue;
+                if (cycle) return 0;
             }
-            Sys.AtomicSwap(self + Tls.TypeInitWait, state);
-            long peer = owner;
-            bool cycle = false;
-            for (int steps = 0; peer > 2 && steps < 256; steps++)
-            {
-                if (peer == self) { cycle = true; break; }
-                long waits = Sys.Peek(peer + Tls.TypeInitWait);
-                if (waits == 0) break;
-                peer = Sys.Peek(waits);
-            }
-            if (cycle) Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
-            Sys.AtomicSwap(graph, 0);
-            if (cycle) return 0;
             // A CALL THAT CAN PARK WAITS PARKED (Platform.TypeInitWaitHook):
             // the owner may itself be parked, and resumed only where this
             // would spin. Otherwise a waiter exposes its roots before
@@ -931,7 +943,7 @@ static class Runtime
                 if (Sys.Peek(state) == owner) Platform.Wait(state, owner);
                 EndBlocking();
             }
-            Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
+            if (!nested) Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
         }
     }
 
