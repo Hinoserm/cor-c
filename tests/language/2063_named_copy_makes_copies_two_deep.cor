@@ -1,0 +1,54 @@
+// test: named_copy_makes_copies_two_deep
+// expect-exit: 0
+// expect-output:
+// False
+// True
+// Foo
+//
+// A shared generic copy only named in a body (`o is Outer<Foo>`) whose
+// shared code makes another (Inner<Foo>), whose shared code makes a copy per
+// argument (Counter<Foo>) whose body asks for a generic method's copy
+// (Names.Of<Foo>): every one of them is declared, and its body checked,
+// while binding can still make that copy -- left for lowering to declare,
+// it asked for one no round of binding was left to make.
+
+using System;
+
+static class Names
+{
+    public static string Of<U>() => typeof(U).Name;
+}
+
+class Counter<T>
+{
+    static int made;
+
+    public override string ToString()
+    {
+        made++;
+        return Names.Of<T>();
+    }
+}
+
+class Inner<T>
+{
+    public bool Test(object o) => o is Counter<T>;
+}
+
+class Outer<T>
+{
+    public bool Test(object o) => o is Inner<T>;
+}
+
+class Foo { }
+
+static class P
+{
+    static void Main()
+    {
+        object o = new object();
+        Console.WriteLine(o is Outer<Foo>);
+        Console.WriteLine(new Outer<Foo>().Test(new Inner<Foo>()));
+        Console.WriteLine(new Counter<Foo>().ToString());
+    }
+}
