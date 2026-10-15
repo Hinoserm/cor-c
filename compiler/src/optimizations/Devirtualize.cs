@@ -635,8 +635,8 @@ public sealed class Devirtualize : IModulePass
     /// general walk they guard -- an enumerator through an interface, which
     /// keeps the List for all the analysis knows -- goes with it, so the
     /// parameter is proved kept by nothing and the caller frees its List.
-    /// A test of C itself or a class below it reads what only the object
-    /// says, and is left.
+    /// A test of a class below C reads what only the object says, and is
+    /// left; one of C itself or above it is answered.
     /// </summary>
     private static bool FoldParamClassTests(Function f, Dictionary<string, DataItem> items,
         Func<string, Function?>? callees, Dictionary<(string, int), bool>? guards, bool guardsFixed)
@@ -738,12 +738,16 @@ public sealed class Devirtualize : IModulePass
                         };
                         break;
                     // An ancestor's place in the display: the same descriptor in each.
-                    case Kind.Named when i.Op is Opcode.Eq or Opcode.Ne && Symbol(i.Operands[1], 0) is { } named:
+                    case Kind.Named when i.Op is Opcode.Eq or Opcode.Ne && Symbol(i.Operands[1], 0) is { } named
+                        && !named.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal):
                         answer = (i.Op == Opcode.Eq) == (named.Name == x.Chain[x.At] && named.Offset == 0);
                         break;
                     // The descriptor itself, compared with one exact type's: never
                     // one that is not C or derived from it.
+                    // Never a canonical copy's: what shared code makes may be
+                    // stamped with one whatever it is (Lowering.ParamClass).
                     case Kind.Descriptor when i.Op is Opcode.Eq or Opcode.Ne && Symbol(i.Operands[1], 0) is { } exact
+                        && !exact.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal)
                         && exact.Offset == x.At && Below(exact.Name, x.Chain) == false:
                         answer = i.Op == Opcode.Ne;
                         break;
@@ -776,6 +780,10 @@ public sealed class Devirtualize : IModulePass
                 if (start is not { Op: Opcode.Copy, Operands: [var list] } || Read(list, 0) is not { Kind: Kind.Interfaces } of
                     || !faces.TryGetValue(of.Param, out HashSet<string>? listed)
                     || Symbol(wantedAt, 0) is not { Offset: 0 } wanted || !listed.Contains(wanted.Name)) continue;
+                // An edge into yes it did not have: only where yes takes no
+                // phi, which would want a value from here.
+                if (yes.Instrs.Any(i => i.Op == Opcode.Phi)) continue;
+                Phi.RemoveIncoming(loop, pre);
                 pre.Instrs[^1] = new Instr { Op = Opcode.Jump, InitialTargets = new[] { yes }, Line = jump.Line };
                 folded = true;
             }
@@ -832,6 +840,9 @@ public sealed class Devirtualize : IModulePass
             foreach ((Block at, VReg checkedParam) in checks)
                 if (ReferenceEquals(checkedParam, p) && (ReferenceEquals(at, b) || cfg.Dominates(at, b))) { after = true; break; }
             if (!after) continue;
+            // The edge to the null side gone, and with it what its phis took from here.
+            Block nullSide = ReferenceEquals(branch.Targets[0], notNull) ? branch.Targets[1] : branch.Targets[0];
+            Phi.RemoveIncoming(nullSide, b);
             b.Instrs[^1] = new Instr { Op = Opcode.Jump, InitialTargets = new[] { notNull }, Line = branch.Line };
             folded = true;
         }

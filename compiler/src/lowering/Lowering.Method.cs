@@ -187,6 +187,12 @@ public sealed partial class Lowering
         if (Monomorphiser.SharedMethodCopy(m.Name) > 0 || SharedCopy(m.Owner) || CanonicalCopy(m.Owner)
             || m.Owner.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal))
             return null;
+        // NOR A CLASS WHOSE ARGUMENTS HOLD A REFERENCE TYPE AT ANY DEPTH:
+        // shared code makes `new X<(T, int)>` stamped with the canonical
+        // copy's descriptor where its context has no entry for it
+        // (CanonMadeVtable), and such an object can be handed to a parameter
+        // declared X<(string, int)>, whose own chain it does not carry.
+        if (MentionsReference(c, 0)) return null;
         // NAMED, NOT MADE: ClassDescriptor would write the descriptor and its
         // vtable here, pulling methods into a unit that never uses them. The
         // names are the ones it gives a class (and its display holds).
@@ -209,6 +215,15 @@ public sealed partial class Lowering
         HashSet<string> names = new(StringComparer.Ordinal);
         foreach (TypeSymbol face in faces) names.Add("i_" + TypeKey(face));
         return names;
+    }
+
+    /// <summary>Whether a class's type arguments, at any depth, name a reference type.</summary>
+    private static bool MentionsReference(TypeSymbol c, int depth)
+    {
+        if (depth > 8) return true;
+        foreach (Type argument in c.TemplateArgTypes)
+            if (argument.IsReference || argument.Symbol is { } inner && MentionsReference(inner, depth + 1)) return true;
+        return false;
     }
 
     private void EmitMethod(MethodSymbol m, MethodDecl decl)
