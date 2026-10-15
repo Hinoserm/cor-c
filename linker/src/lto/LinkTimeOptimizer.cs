@@ -80,12 +80,28 @@ public static class LinkTimeOptimizer
                     changes.Add((text, matches[0], value));
             }
         }
+        // THE CERTIFICATES, READ BEFORE THE CODE THEY CERTIFY IS CHANGED: a
+        // shared copy calling a routine that answers a constant
+        // (Runtime.CollectorLinked) has that call made the constant below, in
+        // every copy alike, and its certificate's fingerprint of the code as
+        // compiled no longer matched -- every link of two units sharing
+        // List.FreeOwnedElements stopped with "integrity mismatch". Made again
+        // over the changed code, with the same semantics.
+        Dictionary<ObjectFile, Dictionary<string, byte[]>> certified = new(ReferenceEqualityComparer.Instance);
+        if (enabled && changes.Count > 0)
+            foreach (var input in inputs) certified[input.Object] = CoalescingContract.Read(input.Object);
         if (enabled) foreach (var change in changes)
         {
             int offset = change.Relocation.Offset;
             change.Text.Bytes[offset - 1] = 0xb8;
             for (int i = 0; i < 4; i++) change.Text.Bytes[offset + i] = (byte)((uint)change.Value >> (8 * i));
             change.Text.Relocs.Remove(change.Relocation);
+        }
+        foreach ((ObjectFile obj, Dictionary<string, byte[]> semantics) in certified)
+        {
+            if (semantics.Count == 0) continue;
+            obj.Sections.RemoveAll(section => section.Name == CoalescingContract.SectionName);
+            CoalescingContract.Attach(obj, semantics);
         }
         // After the calls are rewritten: coalescing cuts duplicate copies out
         // of their sections (DuplicateCutter), which moves the relocations
