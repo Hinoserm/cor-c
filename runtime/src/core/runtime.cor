@@ -1566,6 +1566,15 @@ static class Runtime
     const long ManualMagic = 0x4D48434D;   // 'MCHM'
     const long ManualFree = 1;
     const long ManualObjectFlag = 2;
+    // FREED IN THE CHECKED MODE (Platform.VerifyFrees, CORSAC_VERIFY_FREES=1 on
+    // Linux), as Gc.VerifyFree does for a collected heap: the payload filled
+    // with ManualPoison and the block never handed out again, so a read
+    // after the free finds the pattern and a second free is reported and
+    // ends the process with 97. Asked once, at the first allocation, on the
+    // thread that starts the program.
+    const long ManualChecked = 4;
+    const long ManualPoison = 0xFEEEFEEE;
+    static bool _manualVerify;
     const long ManualBinCount = 65;        // 0 is the list of large blocks
     const long ManualSmall = 1024;
 
@@ -1589,6 +1598,7 @@ static class Runtime
         long need = (bytes + 2 * w + 15) & (0 - 16);
         if (_manualBins == 0)
         {
+            _manualVerify = Platform.VerifyFrees();
             ManualGrow(ManualBinCount * w + w);
             _manualBins = _manualAt;
             _manualAt = _manualAt + ((ManualBinCount * w + w + 15) & (0 - 16));
@@ -1661,6 +1671,13 @@ static class Runtime
     /// The header of the live block `at` is the payload of, or 0.
     static long ManualBlock(long at)
     {
+        long block = ManualHeader(at);
+        return block != 0 && (Sys.Peek(block) & ManualFree) == 0 ? block : 0;
+    }
+
+    /// The header of the block of this heap `at` is the payload of, freed or not, or 0.
+    static long ManualHeader(long at)
+    {
         long w = WordSize.Bytes;
         long block = at - 2 * w;
         if (at == 0 || (block & 15) != 0)
@@ -1672,12 +1689,7 @@ static class Runtime
         {
             if (block >= chunk + 2 * w && block < Sys.Peek(chunk + w))
             {
-                long word = Sys.Peek(block);
-                if (Sys.Peek(block + w) != ManualMagic || (word & ManualFree) != 0)
-                {
-                    return 0;
-                }
-                return block;
+                return Sys.Peek(block + w) == ManualMagic ? block : 0;
             }
             chunk = Sys.Peek(chunk);
         }
@@ -1696,8 +1708,26 @@ static class Runtime
         {
             Sys.Pause();
         }
-        long block = ManualBlock(at);
-        if (block != 0)
+        long block = ManualHeader(at);
+        if (block != 0 && _manualVerify)
+        {
+            long word = Sys.Peek(block);
+            if ((word & ManualChecked) != 0)
+            {
+                Sys.AtomicSwap(lockAt, 0);
+                WriteLiteral(2, "runtime: checked free: freed twice\n");
+                Platform.Exit(97);
+            }
+            if ((word & ManualFree) == 0)
+            {
+                long end = block + (word & (0 - 16));
+                Sys.Poke(block, (word & (0 - 16)) | ManualFree | ManualChecked);
+                for (long p = block + 2 * w; p + 4 <= end; p = p + 4) Sys.PokeWord(p, ManualPoison);
+            }
+            Sys.AtomicSwap(lockAt, 0);
+            return;
+        }
+        if (block != 0 && (Sys.Peek(block) & ManualFree) == 0)
         {
             long size = Sys.Peek(block) & (0 - 16);
             long list = size <= ManualSmall ? _manualBins + (size >> 4) * w : _manualBins;
