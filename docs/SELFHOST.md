@@ -57,7 +57,7 @@ stage 1 (stage 2) should be the same file.
 This branch is NOT on main. Before it lands: the language suite (249 pass; 191,
 271 and 272 need disc images a fresh worktree does not have), then the
 libraries, the userland and the kernel built with it, then the VM harnesses.
-`lib/std.cor` changed in ways every program sees (below), so the harnesses are
+`stdlib/src/System/Core.cor` changed in ways every program sees (below), so the harnesses are
 not optional.
 
 ## Building and running it

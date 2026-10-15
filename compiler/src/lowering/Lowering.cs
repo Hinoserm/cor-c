@@ -458,7 +458,7 @@ public sealed partial class Lowering
     // ---- the thread block ------------------------------------------------------
     //
     // Everything the runtime needs ONE OF PER THREAD lives in a block of words
-    // this compiler and lib/rt/runtime.cor (class Tls) both know the shape of.
+    // this compiler and runtime/src/core/runtime.cor (class Tls) both know the shape of.
     // The handler chain head and the entry stack pointer used to be single
     // words of .bss, which is exactly one of each for the whole process: two
     // threads inside `try` interleaved one list, and the collector scanned one
@@ -473,7 +473,7 @@ public sealed partial class Lowering
     //
     // The offsets are byte offsets into the block, scaled by the word size the
     // same way the handler record's are, so the layout is the same shape on a
-    // 64-bit target. KEEP IN STEP WITH class Tls IN lib/rt/runtime.cor.
+    // 64-bit target. KEEP IN STEP WITH class Tls IN runtime/src/core/runtime.cor.
 
     /// <summary>The main thread's block: .bss, so it needs no allocator.</summary>
     public const string ThreadBlock0 = "__corsac_tls0";

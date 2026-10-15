@@ -13,7 +13,7 @@
 // that the system library adds to the same Runtime class: Alloc, Exit and
 // WriteBytes. Compile both together:
 //
-//   corc compile lib/std.cor lib/rt/runtime.cor lib/sys/linux.cor program.cor -o program
+//   corc compile program.cor -o program
 //
 // RULES THIS FILE KEEPS.
 //   - Nothing in the division helpers uses `/` or `%` on a long, because the
@@ -118,7 +118,7 @@ static class WordSize
 /// there), which is the other half of this agreement.
 ///
 /// The block is reached with Sys.ThreadBlock(): on Linux one load through GS,
-/// whose descriptor lib/sys/linux.cor makes with set_thread_area(2), and on a
+/// whose descriptor runtime/src/platforms/linux/system.cor makes with set_thread_area(2), and on a
 /// machine with no operating system a word of .bss, because there is one
 /// thread and nothing to switch.
 static class Tls
@@ -1076,7 +1076,7 @@ static class Runtime
     // ---- answering the collector from the outside -------------------------------
     //
     // A collector never stops a thread; it asks each, in handshake rounds, for
-    // a piece of work only that thread can do (lib/rt/gc.cor, GcThreads). A
+    // a piece of work only that thread can do (runtime/src/core/gc.cor, GcThreads). A
     // thread answers at its next safepoint. One that reaches none for a long
     // time -- a processor in a kernel copying a page -- is prompted: the
     // platform's stop hook interrupts it, and the interrupt handler, with
@@ -1142,7 +1142,7 @@ static class Runtime
         return Sys.Peek(block + Tls.State) == 0;
     }
 
-    /// The heap: the garbage-collected one in lib/rt/gc.cor. This is the
+    /// The heap: the garbage-collected one in runtime/src/core/gc.cor. This is the
     /// one call the compiler makes for memory, for every class, struct,
     /// array, string, closure and nullable cell, and it answers zeroed,
     /// 8-aligned memory. Everything about policy is Gc's.

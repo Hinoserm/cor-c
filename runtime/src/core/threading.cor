@@ -3393,7 +3393,7 @@ static partial class ThreadPool
 // code, so a position-independent load is free to put it anywhere. What is NOT
 // The state that used to be on the other side of the boundary -- the exception
 // handler chain's head and the stack a thread stands on, one word of the
-// executable's .bss each -- is now a block per thread (lib/rt/runtime.cor,
+// executable's .bss each -- is now a block per thread (runtime/src/core/runtime.cor,
 // class Tls), reached through GS, so a thread other than the first can throw,
 // catch and allocate, and the collector sees every thread's stack.
 

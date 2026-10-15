@@ -1,9 +1,9 @@
 // The bare-metal platform library: the ONLY file that knows there is no
 // operating system under the program.
 //
-// It sits exactly where lib/sys/linux.cor sits and answers exactly the same
-// questions, so that nothing above it -- lib/rt/runtime.cor, lib/rt/gc.cor,
-// lib/std.cor, the program -- can tell which one is linked. Where linux.cor
+// It sits exactly where runtime/src/platforms/linux/system.cor sits and answers exactly the same
+// questions, so that nothing above it -- runtime/src/core/runtime.cor, runtime/src/core/gc.cor,
+// stdlib/src/System/Core.cor, the program -- can tell which one is linked. Where system.cor
 // makes an `int 0x80`, this drives the hardware directly with the port I/O
 // intrinsics (docs/software/X86-BACKEND.md and X86-KERNEL.md, "Drivers: port
 // I/O").
@@ -16,7 +16,7 @@
 //
 // THE CONTRACT, the same one linux.cor's header states:
 //
-//   Platform   what lib/rt/runtime.cor needs from a system: memory, exit,
+//   Platform   what runtime/src/core/runtime.cor needs from a system: memory, exit,
 //              and writing bytes. The runtime calls nothing else here.
 //                long Platform.Map(long bytes)  zeroed, aligned, or 0
 //                void Platform.Exit(int code)   does not return
@@ -80,7 +80,7 @@ interface IConsole
     void Write(long address, long count);
 }
 
-/// What lib/rt/runtime.cor and lib/rt/gc.cor ask of the system.
+/// What runtime/src/core/runtime.cor and runtime/src/core/gc.cor ask of the system.
 ///
 /// The heap is the caller of Map, so NOTHING in this class may allocate: no
 /// `new`, no arrays, no strings built at run time. A string LITERAL is data
@@ -645,7 +645,7 @@ static class Platform
     /// and `int 0x80` on a machine with no interrupt table is a triple fault,
     /// so the pressure is made honestly instead: six 32-bit halves live
     /// across the call, more than the three registers that survive one, which
-    /// leaves the allocator no choice. See GcRoots in lib/rt/gc.cor for the
+    /// leaves the allocator no choice. See GcRoots in runtime/src/core/gc.cor for the
     /// full reasoning.
     public static void EnterCollection()
     {

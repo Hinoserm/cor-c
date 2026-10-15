@@ -5,7 +5,7 @@
 // wait and a wake on a word, and for a thread -- through the names Clock,
 // Native and Thread. This file is those names on Linux: clock_gettime and
 // nanosleep, futexes, clone(2) with a stack of its own, and the pool of
-// worker threads Scheduler.UseThreads starts. lib/sys/baremetal.cor answers
+// worker threads Scheduler.UseThreads starts. runtime/src/arch/x86/baremetal.cor answers
 // the same names with the PIT and no threads, which is how the same
 // scheduler runs in the bootloader and the kernel.
 
@@ -71,7 +71,7 @@ static partial class Scheduler
 
 /// The monotonic clock and sleeping, through Linux system calls.
 ///
-/// (These belong to lib/sys/linux.cor in spirit -- they are the only Linux
+/// (These belong to runtime/src/platforms/linux/system.cor in spirit -- they are the only Linux
 /// facts in this file -- and move there when a second target needs its own.)
 static class Clock
 {
@@ -454,14 +454,14 @@ static class Native
 ///
 /// A thread body may allocate, throw and catch like any other code: the
 /// handler chain and the allocation buffer are words of the block this class
-/// gives every thread it starts (lib/rt/runtime.cor, class Tls), and the
+/// gives every thread it starts (runtime/src/core/runtime.cor, class Tls), and the
 /// collector is told where the thread's stack is before the thread runs.
 ///
 /// THE ONE THING TO KNOW. A collection stops every thread, and a thread stops
 /// when it allocates, when it waits on a lock or a futex, or when it sleeps.
 /// A thread in a long computation that does none of those DELAYS every other
 /// thread's collection until it does one. See the note above GcLock in
-/// lib/rt/gc.cor for why, and for what fixes it.
+/// runtime/src/core/gc.cor for why, and for what fixes it.
 public delegate void ThreadStart();
 
 /// A thread body handed one argument, Start(object) passing it, as .NET's.

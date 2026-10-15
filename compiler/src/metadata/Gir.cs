@@ -215,7 +215,7 @@ public static class Gir
     // record a ... in a template", which sounds like a policy and is actually a
     // hole: any node missing from these enums is a node that cannot appear in
     // any generic body in any library. `default(V)!` in Dictionary -- one
-    // SuppressExpr, three characters of source -- made lib/std.cor
+    // SuppressExpr, three characters of source -- made stdlib/src/System/Core.cor
     // uncompilable and took every disc build down with it, because the
     // serialiser had never learned the node.
     //

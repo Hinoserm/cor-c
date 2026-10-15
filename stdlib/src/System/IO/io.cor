@@ -1,7 +1,7 @@
 // System.IO, as .NET spells it: Stream and the streams over descriptors
 // and memory, the text readers and writers, Directory. One-to-one with
 // .NET's names and behaviour where .NET has them; the platform's Os calls
-// underneath (lib/sys/linux.cor), so a program written for .NET compiles
+// underneath (runtime/src/platforms/linux/system.cor), so a program written for .NET compiles
 // here unchanged.
 
 enum FileMode
@@ -2399,7 +2399,7 @@ enum FileAttributes
     ReparsePoint = 1024
 }
 
-/// THE SAME CLOCK, through DateTimeOffset. It is here and not in lib/std.cor
+/// THE SAME CLOCK, through DateTimeOffset. It is here and not in stdlib/src/System/Core.cor
 /// beside the rest of the type for the reason DateTime's UtcNow is here:
 /// reading a clock is a call on the platform, and a freestanding build has
 /// no platform to call. This machine keeps no zone, so the local reading and

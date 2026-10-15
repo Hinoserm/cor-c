@@ -36,7 +36,7 @@
 // built out of. (lib/process.cor is built out of it, and is the worked
 // example.)
 //
-// Everything here is a thin, named wrapper over lib/sys/linux.cor -- that
+// Everything here is a thin, named wrapper over runtime/src/platforms/linux/system.cor -- that
 // file is still the only one that issues a system call.
 
 /// waitpid(2)'s options.

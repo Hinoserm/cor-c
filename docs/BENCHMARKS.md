@@ -195,7 +195,7 @@ at the scan loop using stable bounds, preserving every plausible pointer
 (including unaligned interiors and one-past payload pointers), MarkCalls
 semantics, and all full block/header/footer checks for candidates.
 Prove bounds stability under GC locking/stop-the-world before hoisting.
-Do not edit lib/rt/gc.cor while the active language milestone reads it.
+Do not edit runtime/src/core/gc.cor while the active language milestone reads it.
 
 Isolated filter prototype: build/gc-scan-filter.cor copies the runtime and
 hoists HeapChunks' envelope into ScanRange, leaving full validation for every

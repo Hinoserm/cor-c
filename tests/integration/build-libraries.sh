@@ -11,7 +11,7 @@
 # System.Net -- so that a program loads what it uses and nothing else. The
 # exception is the bottom of the stack, and it is an honest one: the runtime
 # is written in COR-C# and the core of the class library is written against
-# the runtime, so `stdlib/src/System/Core.cor` and `lib/rt/*.cor` refer to each other and
+# the runtime, so `stdlib/src/System/Core.cor` and `runtime/src/core/*.cor` refer to each other and
 # cannot be two files. That one is libcorsacrt.so.
 #
 # THE SOURCE LIST IS PART OF THE ABI. Interface method slots are numbered

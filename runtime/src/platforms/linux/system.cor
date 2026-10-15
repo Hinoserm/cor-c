@@ -9,11 +9,11 @@
 // this file only says which number and what to pass, and where the two ABIs
 // ask for different shapes it says so under TARGET_AMD64.
 //
-//   corc compile lib/std.cor lib/rt/runtime.cor lib/sys/linux.cor program.cor -o program
+//   corc compile program.cor -o program
 //
 // Two layers live here:
 //
-//   Platform   what lib/rt/runtime.cor needs from an operating system:
+//   Platform   what runtime/src/core/runtime.cor needs from an operating system:
 //              memory, exit, and writing bytes. The runtime calls nothing
 //              else in this file.
 //   Os, Console, Fd, O, Err, Call
@@ -121,7 +121,7 @@ static class Cmsg
     }
 }
 
-/// What lib/rt/runtime.cor and lib/rt/gc.cor ask of the operating system,
+/// What runtime/src/core/runtime.cor and runtime/src/core/gc.cor ask of the operating system,
 /// and nothing else. The heap is the caller of Map, so NOTHING in this
 /// class may allocate: no `new`, no arrays, no strings built at run time.
 /// A string LITERAL is data the compiler laid out, and is fine.
@@ -1156,7 +1156,7 @@ static class Platform
     /// for the same reason: a reference the caller left in EBX, ESI or EDI is
     /// invisible to a collector that reads memory unless a prologue pushed it,
     /// and the stack pointer written down inside GcThreads.SafePoint is below
-    /// these pushes. See GcRoots in lib/rt/gc.cor.
+    /// these pushes. See GcRoots in runtime/src/core/gc.cor.
     public static void SafePoint(long mode)
     {
         Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0);
@@ -1171,7 +1171,7 @@ static class Platform
     /// every callee-saved register and its prologue pushes them; the values
     /// the caller of Runtime.Alloc left in them are then on the stack, above
     /// the ESP that Gc.CollectInner scans from. getpid is the cheapest call
-    /// with no effect. See GcRoots in lib/rt/gc.cor for the full reasoning.
+    /// with no effect. See GcRoots in runtime/src/core/gc.cor for the full reasoning.
     public static void EnterCollection()
     {
         Sys.Syscall(Call.Getpid, 0, 0, 0, 0, 0, 0);

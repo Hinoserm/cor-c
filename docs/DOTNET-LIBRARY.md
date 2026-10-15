@@ -28,7 +28,7 @@ and runs, unchanged, on Linux or on CORSAC/OS. Consequences:
 
 | File | .NET namespace | Contents |
 |---|---|---|
-| `lib/std.cor` | System, System.Collections.Generic, System.Linq, System.Text | string, StringBuilder, List, Dictionary, Queue, Math, Convert, BitConverter, Random, DateTime, TimeSpan, Path, Array, Enumerable, Char, Rune, the encodings, the exceptions |
+| `stdlib/src/System/Core.cor` | System, System.Collections.Generic, System.Linq, System.Text | string, StringBuilder, List, Dictionary, Queue, Math, Convert, BitConverter, Random, DateTime, TimeSpan, Path, Array, Enumerable, Char, Rune, the encodings, the exceptions |
 | `lib/io.cor` | System.IO | Stream, FileStream, MemoryStream, TextReader/Writer, StreamReader/Writer, File, Directory, FileSystemInfo, FileInfo, DirectoryInfo, FileAttributes, FileMode/Access, SeekOrigin |
 | `lib/console.cor` | System | Console (In/Out/Error, Write/WriteLine, ReadLine, ReadKey, KeyAvailable, CancelKeyPress, IsInputRedirected, OpenStandard*) |
 | `lib/environment.cor` | System | Environment (GetCommandLineArgs, GetEnvironmentVariable(s), CurrentDirectory, Exit, ExitCode, ProcessId, UserName, NewLine) |
@@ -59,7 +59,7 @@ the same list.
   them; every other program uses Process.
 - `FileSystemInfo.OwnerId/GroupId/LinkCount/Inode/Blocks`: five
   properties .NET leaves to P/Invoke and `ls -l` cannot do without.
-- Everything under `lib/sys/` and `lib/rt/`: the platform seam and the
+- Everything under `runtime/src/platforms/` and `runtime/src/core/`: the platform seam and the
   runtime. Not for programs.
 
 ## Behaviour worth knowing
@@ -98,7 +98,7 @@ the same list.
   declared in the PRELUDE may be reopened, and a second declaration of a type
   the library already has is a duplicate. Anything they lack is added there.
 - `Random()` with no seed is xoshiro256**, as .NET's is, but its state cannot
-  be unpredictable: nothing below `lib/std.cor` has entropy, so the seed is a
+  be unpredictable: nothing below `stdlib/src/System/Core.cor` has entropy, so the seed is a
   constant stirred by a counter. `Random(seed)` reproduces .NET's sequence
   number for number. `NextInt64` is the one member whose sequence has not been
   checked against .NET's.
@@ -109,7 +109,7 @@ the same list.
 - Doubles print fifteen significant digits where .NET prints the shortest run
   that reads back as the same value: the two agree on every number a program
   writes down and differ in the sixteenth-digit tail of a computed one.
-- `ExitCode` (`lib/sys/linux.cor`) and `Args` (`os/lib/user.cor`) are
+- `ExitCode` (`runtime/src/platforms/linux/system.cor`) and `Args` (`os/lib/user.cor`) are
   the CORSAC one-string argument ABI's leftovers and go when the last
   utility stops naming them.
 

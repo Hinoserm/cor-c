@@ -837,7 +837,7 @@ public static class Prelude
             // One block of words per thread, holding what used to be one word
             // of .bss for the whole process: the exception handler chain's
             // head, the stack this thread is standing on, and its share of the
-            // heap. The compiler and lib/rt/runtime.cor's class Tls agree on
+            // heap. The compiler and runtime/src/core/runtime.cor's class Tls agree on
             // the offsets; ThreadBlock is the address of the block itself.
             //
             // On Linux the operating system keeps that address in a GDT entry

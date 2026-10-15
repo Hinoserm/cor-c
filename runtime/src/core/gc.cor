@@ -7050,7 +7050,7 @@ static class Gc
     /// Zeroes [from, to) a word at a time. A loop rather than the block-set
     /// intrinsic because the string instruction the backend selects for it
     /// mis-assigns its fixed registers as of this writing (see the note on
-    /// Os.CString in lib/sys/linux.cor); a loop is right on any backend.
+    /// Os.CString in runtime/src/platforms/linux/system.cor); a loop is right on any backend.
     static void ZeroWords(long from, long to)
     {
         // THE STRING INSTRUCTION: every reused buffer is cleared here, a

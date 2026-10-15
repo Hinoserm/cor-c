@@ -293,7 +293,7 @@ public static class Driver
                                  repeated, and several may be separated by commas
               -Wno-error         show warnings and go on; by default a warning fails the compile
               --entry <sym>      the entry symbol (default _start)
-              --freestanding     no operating system: link lib/sys/baremetal.cor,
+              --freestanding     no operating system: link runtime/src/arch/x86/baremetal.cor,
                                  no thread scheduler, and an entry stub that
                                  touches neither the entry stack nor a syscall
               --tls-gs           with --freestanding: the thread block is found

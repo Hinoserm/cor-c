@@ -409,7 +409,7 @@ nothing else. `tests/integration/build-libraries.sh` holds the list and builds t
 
 The exception is the bottom of the stack, and it is an honest one. The
 runtime is written in COR-C# and the core of the class library is written
-against the runtime -- `lib/std.cor` allocates and throws, `lib/rt/gc.cor`
+against the runtime -- `stdlib/src/System/Core.cor` allocates and throws, `runtime/src/core/gc.cor`
 walks strings and arrays -- so they refer to each other and cannot be two
 files. `libcorsacrt.so` is therefore the runtime, the collector, the
 threads, the system-call layer and what .NET calls
@@ -597,7 +597,7 @@ every method keeps one. It costs a few stores per `try` and nothing per
 call, which is the right trade for a 486.
 
 **The thread block.** Everything the runtime keeps per thread is one
-64-byte block (`Tls` in `lib/rt/runtime.cor`, mirrored by constants in the
+64-byte block (`Tls` in `runtime/src/core/runtime.cor`, mirrored by constants in the
 lowering), reached by `Sys.ThreadBlock()`: on Linux `mov r, gs:[0]` with
 GS set through `set_thread_area` at thread start; freestanding, a static
 the entry stub fills, so bare metal needs no GS until the kernel wants
@@ -682,7 +682,7 @@ call: it asks its platform for the time (`Clock.Now`), a sleep until a
 deadline (`Clock.SleepUntil`), and a wait and a wake on a word
 (`Native.Wait/Wake`). On Linux `lib/threading-linux.cor` answers with
 `clock_gettime`, `nanosleep`, futexes, and `clone` for `Thread` and the
-pool; on bare metal `lib/sys/baremetal.cor` answers with the PIT --
+pool; on bare metal `runtime/src/arch/x86/baremetal.cor` answers with the PIT --
 polled with wraps counted while interrupts are off, or driven by the
 kernel's tick through `Clock.StartClock`/`OnTick` once they are on -- and
 no threads. `--freestanding` links the core and that platform, so the
@@ -1222,13 +1222,13 @@ blocks.
 ## The runtime
 
 Everything the compiler emits a call to lives in COR-C# source under
-`lib/` and is linked by default; `corc compile program.cor` is a complete
-command. The default set, in link order, is `lib/std.cor`,
-`lib/rt/runtime.cor`, `lib/rt/gc.cor` (only when `Module.NeedsHeap`),
-`lib/threading.cor` and `lib/sys/linux.cor`; `--lib-root` points the driver
+`stdlib/src` and `runtime/src` and is linked by default; `corc compile program.cor` is a complete
+command. The default set, in link order, is `stdlib/src/System/Core.cor`,
+`runtime/src/core/runtime.cor`, `runtime/src/core/gc.cor` (only when `Module.NeedsHeap`),
+`lib/threading.cor` and `runtime/src/platforms/linux/system.cor`; `--lib-root` points the driver
 at another tree and `--no-default-libs` turns the set off.
 
-- `lib/rt/runtime.cor`: the contract methods -- `Alloc`, `AllocManual`,
+- `runtime/src/core/runtime.cor`: the contract methods -- `Alloc`, `AllocManual`,
   `Free`, `Print*`, `Exit`, `Unhandled`, the throw helpers
   (`IndexOutOfRange`, `DivideByZero`, `Overflow`, `NullReference`,
   `InvalidCast`), 64-bit division and remainder, the byte and string
@@ -1248,12 +1248,12 @@ at another tree and `--no-default-libs` turns the set off.
   `Scheduler.UseThreads(n)` turns on worker threads made with `clone(2)`
   and futex-based locks. Per-thread runtime state (the handler chain,
   the entry stack) is what the pool needs from the runtime next.
-- `lib/sys/baremetal.cor`: the freestanding platform. A bump region the
+- `runtime/src/arch/x86/baremetal.cor`: the freestanding platform. A bump region the
   image's own start-up names (`SetHeap`) until an operating system in
   the image installs `MapHook`/`UnmapHook` -- the kernel points them at
   its page mapper -- after which every chunk is real memory mapped and
   unmapped page by page (X86-KERNEL.md "Memory").
-- `lib/sys/linux.cor`: the only file that knows it is on Linux. It makes
+- `runtime/src/platforms/linux/system.cor`: the only file that knows it is on Linux. It makes
   `int 0x80` calls through `Sys.Syscall` and provides the POSIX surface --
   files, directories, pipes, fork and exec, sockets, time, memory mapping,
   the environment -- as negative-errno results. The bare-metal variant

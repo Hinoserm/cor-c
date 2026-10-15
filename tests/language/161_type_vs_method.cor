@@ -9,7 +9,7 @@
 // A simple name in `X.Y` that is both a type and a method of the enclosing
 // class names the TYPE: a method group is a value only where it is invoked or
 // converted to a delegate, so `Gauge.Room()` calls the static class's Room
-// while `Gauge("x")` still calls the method. lib/sys/linux.cor had to name a
+// while `Gauge("x")` still calls the method. runtime/src/platforms/linux/system.cor had to name a
 // class StatBuf and forward through a method called Stat before this worked.
 
 static class Gauge
