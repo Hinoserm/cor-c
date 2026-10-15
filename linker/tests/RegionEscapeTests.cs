@@ -1109,7 +1109,7 @@ public static class RegionEscapeTests
         const string call = VirtualTargets.Prefix + "t_Base+0";
 
         var inputs = Image(archived: false);
-        VirtualTargets.Made made = VirtualTargets.MadeIn(inputs, Array.Empty<IrArchive>());
+        VirtualTargets.Made made = VirtualTargets.MadeIn(inputs, new Dictionary<ObjectFile, IrArchive>(), null);
         Check(made.Descriptors.SetEquals(new[] { "t_Made", "t_Static" }), "made: what code and data stamp, not what a self word or a display names: " + string.Join(",", made.Descriptors));
         string[] all = VirtualTargets.Resolve(inputs, new[] { call })[call];
         Check(all.SequenceEqual(new[] { "m_Base_Run", "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "every type's override without the set: " + string.Join(",", all));
@@ -1119,7 +1119,7 @@ public static class RegionEscapeTests
         Check(made.Dropped.SetEquals(new[] { "t_Base", "t_Never" }), "the unmade types the call reached");
 
         var again = Image(archived: true);
-        VirtualTargets.Made remade = VirtualTargets.MadeIn(again, again.Select(input => IrArchive.Read(input.Object)!));
+        VirtualTargets.Made remade = VirtualTargets.MadeIn(again, again.ToDictionary(input => input.Object, input => IrArchive.Read(input.Object)!), null);
         string[] still = VirtualTargets.Resolve(again, new[] { call }, remade)[call];
         Check(still.SequenceEqual(new[] { "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "a type the unit's IR makes is made: " + string.Join(",", still));
 
