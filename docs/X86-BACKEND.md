@@ -404,7 +404,7 @@ block to allocate, no `.eh_frame` to register, no atexit list to keep.
 
 One shared object per .NET assembly: a type goes to the file named after
 the assembly it lives in in .NET, so a program maps what it uses and
-nothing else. `os/build-libs.sh` holds the list and builds them into
+nothing else. `tests/integration/build-libraries.sh` holds the list and builds them into
 `build/lib`; on a disc they are installed in `/lib`.
 
 The exception is the bottom of the stack, and it is an honest one. The
@@ -433,7 +433,7 @@ threads, the system-call layer and what .NET calls
 | `libSystem.Diagnostics.Process.so` | `process.cor` | rt, Extensions, IO, Console, Posix |
 
 The order of that table is the build order and the dependency order: a
-library may only name what is above it, and `os/build-libs.sh` checks
+library may only name what is above it, and `tests/integration/build-libraries.sh` checks
 after every build that no undefined symbol points back down the stack.
 Three edges in `lib/` had to be turned round to make it true, and each
 was a library calling UPWARDS: the platform library's `Exit` called
@@ -468,8 +468,8 @@ numbered program-wide, in the order the interfaces are declared, so every
 image that meets another must have been compiled from the same sources in
 the same order -- which is why a library build is given the whole list
 and marks the rest `--ref` rather than being given only its own files.
-`os/build-linux.sh` holds the one list and every build reads it from
-there.
+The compiler holds the one list (`Driver.DefaultLibraries`, asked with
+`corc library-sources`) and every build reads it from there.
 
 ### Position-independent code
 

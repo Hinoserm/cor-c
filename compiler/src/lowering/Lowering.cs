@@ -374,7 +374,7 @@ public sealed partial class Lowering
     /// <summary>
     /// Whether a type was written in the class library rather than in the
     /// program. What a shared object may supply in this compilation's place:
-    /// see Module.Provided, and tests/lang/502 for the case that makes the
+    /// see Module.Provided, and tests/language/502_program_shadows_library.cor for the case that makes the
     /// question worth asking.
     /// </summary>
     private static bool IsLibrary(TypeSymbol? t) => t?.Decl?.FromLibrary ?? false;

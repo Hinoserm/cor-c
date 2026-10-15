@@ -2,7 +2,7 @@
 
   <!-- Tests for Corsac.Lang.Opt: small functions built by hand with the
        IR Builder, run through the passes, and their dumps checked. Plain
-       console program, like tests/elf: no test framework, no packages.
+       console program, like linker/tests: no test framework, no packages.
        Exit status is the verdict. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

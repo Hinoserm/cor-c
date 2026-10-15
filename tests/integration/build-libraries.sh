@@ -2,9 +2,9 @@
 #
 # Builds the class library as shared objects into build/lib.
 #
-#   os/build-libs.sh           build every library that is out of date
-#   os/build-libs.sh -f        build them all again
-#   os/build-libs.sh -v        say what each one needs and what it cost
+#   tests/integration/build-libraries.sh           build every library that is out of date
+#   tests/integration/build-libraries.sh -f        build them all again
+#   tests/integration/build-libraries.sh -v        say what each one needs and what it cost
 #
 # ONE SHARED OBJECT PER .NET ASSEMBLY. A type goes to the file named after
 # the assembly it lives in in .NET -- System.Collections, System.IO,

@@ -16,7 +16,7 @@ Source, image and logs remain in the reported temporary evidence directory.
 Run from the repository root:
 
 ```sh
-tools/build/bin/Release/net10.0/build --file compiler/tests/arch/x86/isa/corsac.build
+compiler/bin/managed/Release/net10.0/corc build --file compiler/tests/arch/x86/isa/corsac.build
 ```
 
 Requires GNU `as`, `objcopy`, and `qemu-system-i386`. These checks do not establish

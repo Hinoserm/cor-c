@@ -873,7 +873,7 @@ ConstantBranchBody=80 and ordinary GrowthLimit=1200, versus 40/160/4000.
 Fresh-owner bodies remain capped at 320, with a separate 4000-instruction
 growth allowance. All ordinary legality/exceptions/recursion/address guards
 remain. This is policy tuning, not multiple new optimization-count entries.
-PERF_SIZE=1 selects it for tests/perf/build.sh; default behavior is unchanged.
+PERF_SIZE=1 selects it for tests/benchmarks/build.sh; default behavior is unchanged.
 
 The first compact policy halved crypto code but restored 47 collections per
 4,000 fresh X25519 operations: the tight caller cap blocked constructor

@@ -28,7 +28,8 @@ Host executables use Native AOT by default on Linux x64, including the compiler,
 linker, and build utility. The `bin/managed` directory identifies their Roslyn
 build provenance; its executable files are native ELF binaries, not JIT launchers.
 Set the standard project property `PublishAot=false` for an explicit JIT build.
-The independent linker is `linker/bin/managed/Release/net10.0/corlink`. The compiler
+Linking is a command of the one toolchain executable, `corc link` (`corlink` is
+an alias for it). The compiler
 emits ELF relocatable `.o` files with `--obj`; see
 [OBJECT-FORMAT.md](docs/OBJECT-FORMAT.md). Native bootstrap activation
 is not implemented yet; the runner never silently substitutes the host compiler.

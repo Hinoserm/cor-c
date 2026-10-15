@@ -525,7 +525,7 @@ public static class Frontend
     /// object files: every unit is parsed, their declarations merged, and the
     /// whole thing bound together. That means a library and its user are
     /// type-checked against each other rather than against a header, and it is
-    /// what lets the standard library be written in CORSAC Script itself.
+    /// what lets the standard library be written in C# itself.
     /// </summary>
     /// <summary>
     /// Compiles a copy of each generic method the checker asked for, and points

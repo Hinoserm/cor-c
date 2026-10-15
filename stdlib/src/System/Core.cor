@@ -1,11 +1,11 @@
-// The CORSAC Script standard library.
+// The COR-C# standard library.
 //
 // Written in the language itself rather than built into the compiler, which is
 // the whole reason linking exists: this file is compiled alongside a program
 // and type-checked against it, so the library and its user are held to the same
 // rules. Anything here can be read, copied and replaced by whoever is using it.
 //
-//   corsac cc lib/std.cor myprogram.cor --run
+//   corc compile myprogram.cor -o myprogram
 
 // ---- String ---------------------------------------------------------------
 // What '+', '==' and the ordering comparisons on strings actually call. The

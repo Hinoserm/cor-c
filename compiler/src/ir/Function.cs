@@ -24,7 +24,7 @@ public sealed class Function
     /// Whether this came out of the class library's sources rather than the
     /// program's. What a shared object may supply in this one's place: a
     /// program that declares a type of its own shadowing a library type
-    /// (see tests/lang/502) compiles a function under the very name the
+    /// (see tests/language/502_program_shadows_library.cor) compiles a function under the very name the
     /// library exports, and that one is the program's and must stay.
     /// </summary>
     public bool FromLibrary { get; init; }

@@ -9,7 +9,7 @@
 // String.Concat, which is libcorsacrt.so; the number was formatted there too.
 // Three images, one line of output.
 //
-// tests/tools/shared-libraries.sh compiles this one --dynamic and runs it
+// tests/integration/shared-libraries.sh compiles this one --dynamic and runs it
 // against build/lib. Here it is linked statically, which is what says that
 // the two ways of building it agree.
 static class Program

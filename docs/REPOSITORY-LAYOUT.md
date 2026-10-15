@@ -32,9 +32,10 @@ cor-c/
     corc.csproj          the one executable: build, compile, link, asm, index
     src/
       arch/
-        corsac/
-          assembler/
+        x64/
+          backend/
         x86/
+          assembler/
           backend/
       driver/
       frontend/
@@ -45,7 +46,6 @@ cor-c/
       metadata/
     tests/
       arch/
-        corsac/
         x86/
       optimizations/
   linker/                library reached as `corc link`
@@ -64,7 +64,6 @@ cor-c/
         x86/
       platforms/
         linux/
-        corsac/
   stdlib/
     README.md
     src/
@@ -78,7 +77,6 @@ cor-c/
         Threading/
       platforms/
         linux/
-        corsac/
   tests/
     README.md
     language/
@@ -169,7 +167,7 @@ OS-and-architecture-specific code belongs below the combined location, such as
 syscall numbers in generic `arch/x86`, or duplicate OS-neutral x86 machinery in
 every platform directory.
 
-`corsac` denotes the CORSAC user-process environment. Bare x86 execution
+Bare x86 execution
 mechanisms without user-process OS services belong below `runtime/src/arch/x86`;
 they are not a separate top-level layout category. CORSAC device drivers, the
 kernel, and bootloader product code remain in `corsac86`; only reusable execution
@@ -202,7 +200,7 @@ not leak out as a replacement public API such as a Linux-only substitute for
 `System.IO.File`.
 
 `platforms/posix` is shared implementation only where behavior is genuinely
-common to the supported POSIX targets. Linux and CORSAC adapters specialize
+common to the supported POSIX targets. Platform adapters specialize
 actual differences; a POSIX label must not assume identical syscalls or layouts.
 Raw calling conventions stay in runtime platform/architecture support.
 

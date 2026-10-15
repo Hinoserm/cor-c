@@ -54,7 +54,7 @@ public static class Header
 
         s.Append("// The interface of ").Append(from).Append(", generated.\n")
          .Append("//\n")
-         .Append("// Do not edit: this is written out by `corsac lib` from the source it\n")
+         .Append("// Do not edit: this is written out by `corc compile --lib` from the source it\n")
          .Append("// compiled, and the copy that matters lives inside the library image.\n\n");
 
         // WHAT EACH SPECIALISATION WAS MADE FROM.

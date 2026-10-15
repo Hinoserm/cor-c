@@ -33,7 +33,7 @@ old branch to work around current language/compiler gaps.
 
 Follow-up snapshot e7916c98 (99 compiler files) gets past that parse error.
 Local defaults now work through direct/captured calls and preserve named
-argument evaluation order; tests/lang/optimizer_local_defaults.cor passes.
+argument evaluation order; tests/language/optimizer_local_defaults.cor passes.
 The next bootstrap stops during type checking, with its complete diagnostics
 retained in build/selfcompile.0N55Ho/bootstrap.log. Remaining categories are
 target-typed construction contexts, primitive CompareTo, comparer-taking
@@ -62,7 +62,7 @@ not optional.
 
 ## Building and running it
 
-    libs=$(sed -n 's/^libs="${CORC_LIBS:-\(.*\)}"/\1/p' tests/lang/run.sh)
+    libs=$(corc library-sources | tr '\n' ' ')
     srcs=$(find compiler -name '*.cs' -not -path '*/obj/*' -not -path '*/bin/*' \
                -not -path '*/Legacy/*' -not -path 'compiler/tests/*' | sort)
     dotnet compiler/bin/Release/net10.0/corc.dll compile -Wno-error $libs $srcs -o corc.self
@@ -84,7 +84,7 @@ wrong binary.
 3. When both compilers run but disagree, diff their `--dump-ir`, then
    `--dump-opt`, then `--trace-opt <function>`, which prints one function after
    every optimiser pass: the first pass after which they differ is the one.
-4. Fix it to match .NET, add a `tests/lang/6NN` test, commit it alone.
+4. Fix it to match .NET, add a `tests/language/` test, commit it alone.
 
 ## What it found
 

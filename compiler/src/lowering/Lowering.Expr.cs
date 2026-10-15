@@ -4606,7 +4606,7 @@ public sealed partial class Lowering
                 return found;
             }
         }
-        Error(at, $"{because} needs {Prelude.StringType}.{method}, which no compiled source provides; compile with the standard library (lib/std.cor)");
+        Error(at, $"{because} needs {Prelude.StringType}.{method}, which no compiled source provides; compile with the standard library (stdlib/src/System/Core.cor, which corc library-sources names)");
         return null;
     }
 

@@ -2,8 +2,8 @@
 #
 # THE SAME TESTS, LINKED AGAINST THE SHARED OBJECTS.
 #
-#   tests/tools/shared-libraries.sh          build build/lib and run them all
-#   tests/tools/shared-libraries.sh 621      run the one whose name matches
+#   tests/integration/shared-libraries.sh    build build/lib and run them all
+#   tests/integration/shared-libraries.sh 621  run the one whose name matches
 #
 # tests/language/run.sh compiles every test with the class library's source
 # compiled into it. These are the tests numbered 620 and up, compiled

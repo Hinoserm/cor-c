@@ -8,7 +8,7 @@ using Corsac.Lang.Elf;
 using Block = Corsac.Lang.Ir.Block;
 
 // Hand-built IR through the x86 backend, with the bytes checked against
-// objdump. Run from anywhere: `dotnet run --project compiler/tests/x86`.
+// objdump. Run from anywhere: `dotnet run --project compiler/tests/arch/x86`.
 // Exit code is the number of failed checks.
 
 namespace Corsac.Tests.X86;

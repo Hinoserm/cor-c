@@ -2,13 +2,13 @@
 #
 # Language test runner for the COR-C# compiler.
 #
-#   tests/lang/run.sh            run every tests/lang/*.cor
-#   tests/lang/run.sh strings    run the one whose file is *strings*.cor
-#   tests/lang/run.sh -v hello   also show the compiler's output
-#   tests/lang/run.sh --target=x86-64   every test compiled for long mode
-#   tests/lang/run.sh --opt-size  exercise size-oriented compilation
-#   tests/lang/run.sh --experimental-batch  exercise the staged optimizer group
-#   tests/lang/run.sh --through-link [--region-engine escape|andersen]
+#   tests/language/run.sh            run every tests/language/*.cor
+#   tests/language/run.sh strings    run the one whose file is *strings*.cor
+#   tests/language/run.sh -v hello   also show the compiler's output
+#   tests/language/run.sh --target=x86-64   every test compiled for long mode
+#   tests/language/run.sh --opt-size  exercise size-oriented compilation
+#   tests/language/run.sh --experimental-batch  exercise the staged optimizer group
+#   tests/language/run.sh --through-link [--region-engine escape|andersen]
 #                                every test compiled to an object and linked
 #                                (corc link --closed): through the link-time
 #                                optimiser and its region solver
@@ -341,7 +341,7 @@ for f in "${tests[@]}"; do
 
     # WARNINGS ARE NOT ERRORS HERE, and that is deliberate. Warnings became
     # errors by default in this compiler because that is the right policy for
-    # BUILDING THIS SYSTEM, and os/build-linux.sh and the kernel keep it. A
+    # BUILDING THIS SYSTEM, and the kernel's build keeps it. A
     # language test is a different thing: it states what the language does,
     # it was written before the policy, and it may not be edited (the tests
     # are the specification). In C# a warning is not an error unless somebody

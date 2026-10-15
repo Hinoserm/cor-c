@@ -72,7 +72,7 @@ audits. The parent TODO inventory requirement remains open for those.
 
 `--experimental-ssa` now runs the existing SSA wrapper once after the normal
 pipeline, with verification before entry and after each inner stage. It is
-off by default. `PERF_SSA=1` in tests/perf/build.sh selects it; use a separate
+off by default. `PERF_SSA=1` in tests/benchmarks/build.sh selects it; use a separate
 compiler artifacts/output directory while a milestone suite runs.
 
 The first allocation benchmark compile found invalid IR already produced by

@@ -2380,7 +2380,7 @@ public sealed partial class Binder
         // order that depends on nothing but the sources -- the template's
         // name and how many type arguments it takes, ordinally. Every build
         // is given the same sources in the same order (see
-        // os/build-libs.sh), so every build hands out the same numbers,
+        // tests/integration/build-libraries.sh), so every build hands out the same numbers,
         // whether or not it instantiates the interface at all.
         //
         // ASKED OF THE DECLARATION, never counted out of the mangled name.

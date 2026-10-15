@@ -1,4 +1,4 @@
-// The unit 1195_struct_constrained_nullable_across_units uses: a
+// The unit 1225_struct_constrained_nullable_across_units uses: a
 // struct-constrained `T?` in a generic method of a plain class and in a
 // generic type, both compiled here and copied by the consumer.
 
