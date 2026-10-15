@@ -97,6 +97,25 @@ public static class IrFunctionCodec
         for (int i = 0; i < count; i++) writer.Write((byte)(registers[i] ?? IrType.I32));
         writer.Write(function.Params.Count);
         foreach (VReg parameter in function.Params) { writer.Write(parameter.Id); writer.Write(parameter.Number); }
+        // The class each class parameter is declared as and the
+        // interfaces it implements (Function.ParamClasses, ParamInterfaces),
+        // by the parameter's place: what the link's run of the late passes
+        // names a virtual call on it with (Escape.VirtualCallee) and folds
+        // its type tests by, as the compile did.
+        int classed = 0;
+        for (int k = 0; k < function.Params.Count; k++) if (function.ParamClasses?.ContainsKey(function.Params[k]) == true) classed++;
+        writer.Write(classed);
+        for (int k = 0; k < function.Params.Count && classed > 0; k++)
+        {
+            if (function.ParamClasses?.TryGetValue(function.Params[k], out string[]? chain) != true) continue;
+            writer.Write(k);
+            writer.Write(chain!.Length);
+            foreach (string name in chain) IrBinary.Text(writer, name);
+            HashSet<string>? faces = function.ParamInterfaces?.GetValueOrDefault(function.Params[k]);
+            string[] ordered = faces is null ? Array.Empty<string>() : faces.Order(StringComparer.Ordinal).ToArray();
+            writer.Write(ordered.Length);
+            foreach (string name in ordered) IrBinary.Text(writer, name);
+        }
         // A lowered async body keeps the record that it was one (AsyncFrame).
         writer.Write(function.Async is not null);
         if (function.Async is AsyncFrame frame)
@@ -194,6 +213,23 @@ public static class IrFunctionCodec
                 VReg parameter = At(registers, reader.ReadInt32());
                 parameter.Number = IrBinary.Flag(reader);
                 function.Params.Add(parameter);
+            }
+            int classed = IrBinary.Count(reader);
+            budget.Charge(classed, 64, "parameter classes");
+            for (int i = 0; i < classed; i++)
+            {
+                VReg parameter = At(function.Params.ToArray(), reader.ReadInt32());
+                int depth = IrBinary.Count(reader);
+                budget.Charge(depth, 32, "parameter class chain");
+                string[] chain = new string[depth];
+                for (int k = 0; k < depth; k++) chain[k] = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("A parameter class without a name");
+                int faceCount = IrBinary.Count(reader);
+                budget.Charge(faceCount, 32, "parameter interfaces");
+                HashSet<string> faces = new(StringComparer.Ordinal);
+                for (int k = 0; k < faceCount; k++) faces.Add(IrBinary.Text(reader, budget) ?? throw new InvalidDataException("A parameter interface without a name"));
+                if (depth == 0) throw new InvalidDataException("A parameter class with no chain");
+                (function.ParamClasses ??= new())[parameter] = chain;
+                (function.ParamInterfaces ??= new())[parameter] = faces;
             }
             if (IrBinary.Flag(reader))
             {
