@@ -1,0 +1,47 @@
+// test: does_not_return_payload_kept
+// expect-exit: 0
+// expect-output:
+// 100000000 True
+//
+// A [DoesNotReturn] method throws an exception holding an array its caller
+// made in the block the call ends; a catch round a loop keeps each exception
+// in a static. The call that never comes back is followed: what it throws,
+// and what was made on the way to it, are garbage once the next replaces them.
+
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+
+sealed class Fault : System.Exception
+{
+    public int[] Payload;
+    public Fault(int[] payload) { Payload = payload; }
+}
+
+static class Program
+{
+    static System.Exception? s_keep;
+
+    [DoesNotReturn, MethodImpl(MethodImplOptions.NoInlining)]
+    static void Raise(int[] payload) => throw new Fault(payload);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Check(int k)
+    {
+        if (k >= 0) Raise(new int[1000]);
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { Check(k); }
+            catch (Fault e) { s_keep = e; total += e.Payload.Length; }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

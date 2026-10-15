@@ -24,6 +24,219 @@ public sealed partial class Escape
     /// <summary>The types each function's catches keep what they caught of, "*" for all (KeepCaughtIn).</summary>
     private readonly Dictionary<string, HashSet<string>> _keptCatchesIn = new(StringComparer.Ordinal);
 
+    // ---- the throw budget, and the fields that leak -----------------------------------
+    //
+    // AN UNWIND LEAVES THINGS BEHIND: the object thrown, the frees placed in
+    // the frames it leaves, the frames a throw records into what it throws
+    // again. Where every catch the program reaches runs at most once, and it
+    // reaches no async body (whose catch-all takes what its awaits throw, as
+    // often as they do), every unwind ends at a catch that runs once or ends
+    // the program -- boundedly many in a run -- and all it leaves behind is
+    // bounded too: no collector is needed for any of it. Where a catch can
+    // run more than once, it is not (CollectorSites, HeapDecision).
+    //
+    // A FIELD A STORE CAN REPLACE WITHOUT FREEING, round and round, holds
+    // nothing the collector can be spared for: a fresh object held by it
+    // (OwnedFields' held pairs) is its owner's to free only where every
+    // reached store into it that may replace a value nobody frees runs at
+    // most once, or is into what is being thrown (bounded with the unwinds).
+
+    /// <summary>Every block of a reached function that ends a catch, with its end, noted before OwnCaught makes freeing catches into frees.</summary>
+    private readonly List<(Function F, Block B, Instr End)> _catchEnds = new();
+
+    /// <summary>The stores into an owned field that may replace a value nobody frees (StoreMayReplace), and whether into what is thrown.</summary>
+    private readonly List<(Function F, Block B, string Field, bool AtThrow)> _replacing = new();
+
+    /// <summary>The field each held object is held by (OwnedFields' held pairs); and the held calls not owned for another reason.</summary>
+    private readonly Dictionary<Instr, string> _heldBy = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<Instr> _heldCalls = new(ReferenceEqualityComparer.Instance);
+
+    private void NoteCatchEnds(Module m)
+    {
+        _catchEnds.Clear();
+        foreach (Function f in m.Functions)
+        {
+            if (_reachedFunctions is not null && !_reachedFunctions.Contains(f.Name)) continue;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && IsCatchEnd(i.Callee)) _catchEnds.Add((f, b, i));
+        }
+    }
+
+    /// <summary>Why unwinds are unbounded: each reached catch that can run more than once, and each reached async body. Empty: bounded.</summary>
+    private List<string> RepeatingCatches(Module m, OnceRun once)
+    {
+        List<string> found = new();
+        foreach ((Function f, Block b, Instr end) in _catchEnds)
+            if (!once.RunsOnce(f, b)) found.Add($"{f.Name}:{end.Line} a catch of {end.DispatchType ?? "everything"} that can run more than once");
+        foreach (Function f in m.Functions)
+            if (f.Async is not null && (_reachedFunctions is null || _reachedFunctions.Contains(f.Name)))
+                found.Add($"{f.Name}: an async body, whose catch takes what its awaits throw");
+        return found;
+    }
+
+    /// <summary>The fields a reached store may replace without freeing, more than once in a run, not into what is thrown.</summary>
+    private HashSet<string> LeakyFields(OnceRun once)
+    {
+        HashSet<string> leaky = new(StringComparer.Ordinal);
+        foreach ((Function f, Block b, string field, bool atThrow) in _replacing)
+            if (!atThrow && (_reachedFunctions is null || _reachedFunctions.Contains(f.Name)) && !once.RunsOnce(f, b)) leaky.Add(field);
+        return leaky;
+    }
+
+    /// <summary>
+    /// WHETHER A STORE INTO A FIELD MAY REPLACE A VALUE NOBODY FREES: not a
+    /// `??=` (FillStoreShape, whose window the owned-field rules hold clear
+    /// of other stores), the first store into an object just made
+    /// (FirstStoreIntoMade, FirstStores), a store the function's own free of
+    /// the field's value covers (EscapeSelfFrees), a fill behind a test that
+    /// found the field empty (GuardedFill), nor a store into an object only
+    /// this function sees, whose old value the owned-field rules free where
+    /// it is replaced (PrivateOwner).
+    /// </summary>
+    private bool StoreMayReplace(Function f, Block b, Instr st, SelfFrees self, FirstStores first, Dictionary<Instr, bool> firstFill,
+        Dictionary<Function, Cfg> cfgOf, Dictionary<string, bool[]> summaries, Dictionary<Instr, bool> privateOwner)
+    {
+        if (st.Field is not { } field || st.Operands.Count < 2 || st.Operands[0] is not RegOperand baseReg) return false;
+        if (FillStoreShape(f, new Defs(f), new RegisterWrites(f), st) is not null) return false;
+        if (FirstStoreIntoMade(f, st, firstFill, cfgOf) || first.Fills(b, b.Instrs.IndexOf(st)) || self.FreedFields.Contains(field)) return false;
+        Dictionary<VReg, Instr> defs = SingleDefs(f);
+        if (GuardedFill(f, b, st, defs)) return false;
+        return !(OriginOf(defs, baseReg.Reg) is Instr madeOwner && PrivateOwner(f, madeOwner, summaries, privateOwner));
+    }
+
+    /// <summary>
+    /// THE FIRST STORE INTO AN OBJECT JUST MADE -- a record's `with` filling
+    /// its copy -- replaces nothing: the object's memory is zero where it is
+    /// made, and this store is the field's only one there, not round a loop.
+    /// </summary>
+    private bool FirstStoreIntoMade(Function f, Instr st, Dictionary<Instr, bool> firstFill, Dictionary<Function, Cfg> cfgOf)
+    {
+        if (firstFill.TryGetValue(st, out bool known)) return known;
+        firstFill[st] = false;
+        Dictionary<VReg, Instr> defs = SingleDefs(f);
+        if (st.Operands[0] is not RegOperand { Reg: var baseReg } || OriginOf(defs, baseReg) is not { Op: Opcode.Call } made
+            || !IsAllocator(made.Callee) || made.Dest is null) return false;
+        HashSet<VReg> names = new() { made.Dest };
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Block x in f.Blocks)
+                foreach (Instr i in x.Instrs)
+                    if (i.Dest is not null && !names.Contains(i.Dest) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                        && i.Operands[0] is RegOperand r && names.Contains(r.Reg) && defs.ContainsKey(i.Dest))
+                    { names.Add(i.Dest); grew = true; }
+        }
+        int count = 0;
+        Block? at = null, madeIn = null;
+        foreach (Block x in f.Blocks)
+            foreach (Instr i in x.Instrs)
+            {
+                if (ReferenceEquals(i, made)) madeIn = x;
+                if (ReferenceEquals(i, st)) at = x;
+                if (i.Op == Opcode.Store && i.Field == st.Field && i.Operands[0] is RegOperand { Reg: var q } && names.Contains(q)) count++;
+            }
+        if (count != 1 || at is null || madeIn is null) return false;
+        if (!cfgOf.TryGetValue(f, out Cfg? cfg)) cfgOf[f] = cfg = new Cfg(f);
+        if (ReachesAvoiding(cfg, at, at, madeIn)) return false;
+        return firstFill[st] = true;
+    }
+
+    /// <summary>
+    /// A FILL BEHIND ITS TEST -- `if (o.f == null) o.f = new T();` -- replaces
+    /// nothing: the store's block is entered only by the null edge of a test
+    /// of the same field of the same object, nothing between the test's read
+    /// and the store but allocations, the collector's notes and stores into
+    /// other fields, and the store is not round a loop back to itself without
+    /// the test.
+    /// </summary>
+    private static bool GuardedFill(Function f, Block b, Instr st, Dictionary<VReg, Instr> defs)
+    {
+        if (st.Operands[0] is not RegOperand { Reg: var baseReg }) return false;
+        VReg Root(VReg r)
+        {
+            for (int hop = 0; hop < 8 && defs.TryGetValue(r, out Instr? d) && d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands is [RegOperand from]; hop++) r = from.Reg;
+            return r;
+        }
+        Cfg cfg = new(f);
+        bool Harmless(Instr i) => i.Op is not (Opcode.Call or Opcode.CallIndirect or Opcode.Store)
+            || i.Op == Opcode.Call && (IsAllocator(i.Callee) || IsCollectorNote(i.Callee))
+            || i.Op == Opcode.Store && i.Field != st.Field && !(i.Operands[0] is RegOperand { Reg: var into } && Root(into) == Root(baseReg) && i.Offset == st.Offset);
+        foreach (Block p in f.Blocks)
+        {
+            if (p.Terminator is not { Op: Opcode.Branch, Operands: [RegOperand { Reg: var cond }] } br || br.Targets.Count != 2
+                || ReferenceEquals(br.Targets[0], br.Targets[1]) || !defs.TryGetValue(cond, out Instr? test)) continue;
+            Block nullEdge;
+            VReg read;
+            if (test is { Op: Opcode.Eq, Operands: [RegOperand { Reg: var eq }, ImmOperand { Value: 0 }] }) { nullEdge = br.Targets[0]; read = eq; }
+            else if (test is { Op: Opcode.Ne, Operands: [RegOperand { Reg: var ne }, ImmOperand { Value: 0 }] }) { nullEdge = br.Targets[1]; read = ne; }
+            else { nullEdge = br.Targets[1]; read = cond; }
+            read = Root(read);
+            if (!defs.TryGetValue(read, out Instr? load) || load.Op != Opcode.Load || load.Offset != st.Offset
+                || load.Operands is not [RegOperand { Reg: var loadBase }] || Root(loadBase) != Root(baseReg)) continue;
+            if (cfg.Preds(nullEdge).Count != 1 || !cfg.Dominates(nullEdge, b)) continue;
+            int from = p.Instrs.IndexOf(load);
+            if (from < 0) continue;
+            // Every block between the null edge and the store, not round again through the test.
+            HashSet<Block> forward = new(ReferenceEqualityComparer.Instance);
+            Stack<Block> work = new();
+            work.Push(nullEdge);
+            while (work.TryPop(out Block? x))
+            {
+                if (ReferenceEquals(x, p) || !forward.Add(x) || ReferenceEquals(x, b)) continue;
+                foreach (Block n in cfg.Succs(x)) work.Push(n);
+            }
+            if (!forward.Contains(b)) continue;
+            HashSet<Block> backward = new(ReferenceEqualityComparer.Instance);
+            work.Push(b);
+            while (work.TryPop(out Block? x))
+            {
+                if (!forward.Contains(x) || !backward.Add(x) || ReferenceEquals(x, nullEdge)) continue;
+                foreach (Block n in cfg.Preds(x)) work.Push(n);
+            }
+            bool loops = false;
+            foreach (Block n in cfg.Succs(b)) if (forward.Contains(n) && backward.Contains(n) || ReferenceEquals(n, b)) loops = true;
+            if (loops) continue;
+            bool ok = true;
+            for (int k = from + 1; k < p.Instrs.Count && ok; k++) ok = Harmless(p.Instrs[k]);
+            foreach (Block x in backward)
+            {
+                int end = ReferenceEquals(x, b) ? x.Instrs.IndexOf(st) : x.Instrs.Count;
+                for (int k = 0; k < end && ok; k++) ok = Harmless(x.Instrs[k]);
+            }
+            if (ok) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// WHAT THE THROW WRITES INTO WHAT IS THROWN (Exception.Thrown$ and
+    /// Placed$, called by the runtime's Capture at the throw): a store into
+    /// the first parameter, through copies and through a join of it and null
+    /// (an `is Exception e` binding).
+    /// </summary>
+    private static bool IntoThrown(Function g, VReg r)
+    {
+        if (g.Params.Count == 0 || !g.Name.StartsWith("m_Exception_Thrown$_", StringComparison.Ordinal)
+            && !g.Name.StartsWith("m_Runtime_Capture_3_", StringComparison.Ordinal) && !g.Name.StartsWith("m_Exception_Placed$_", StringComparison.Ordinal)) return false;
+        RegisterWrites writes = new(g);
+        HashSet<VReg> seen = new();
+        Stack<VReg> work = new();
+        work.Push(r);
+        while (work.TryPop(out VReg? at))
+        {
+            if (at == g.Params[0] || !seen.Add(at)) continue;
+            if (!writes.TryGetValue(at, out WriteList ws) || ws.Count == 0) return false;
+            foreach (Instr d in ws)
+            {
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands is [ImmOperand { Value: 0 }]) continue;
+                if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands is [RegOperand from]) { work.Push(from.Reg); continue; }
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>
     /// The unit's records for the link's walk (Lto.HeapRecords), from the
     /// module as this run leaves its lifetimes: every allocation it owns,
@@ -47,11 +260,6 @@ public sealed partial class Escape
     private HeapFunction HeapFunctionOf(Function f, Dictionary<string, bool[]> summaries)
     {
         HeapFunction record = new(f.Name) { Async = f.Async is not null };
-        if (_keptCatchesIn.TryGetValue(f.Name, out HashSet<string>? kept))
-        {
-            record.KeptCatchAll = kept.Contains("*");
-            record.KeptCatches.AddRange(kept.Where(type => type != "*").Order(StringComparer.Ordinal));
-        }
 
         // The latch flags, as OnceRun reads them over the whole program.
         SortedSet<string> sets = new(StringComparer.Ordinal), breaks = new(StringComparer.Ordinal);
@@ -75,16 +283,40 @@ public sealed partial class Escape
         Dictionary<Instr, string> held = HeldByFields(f, summaries);
         _freshOrigins.TryGetValue(f.Name, out HashSet<Instr>? origins);
         Dictionary<Instr, string[]>? virtuals = null;
+        // Its catches, and its stores that may replace what nobody frees (the
+        // throw budget and the fields that leak, which the link decides with
+        // the program's reach): of a field the unit has not refused, whose
+        // owner the link may yet find frees what it holds.
+        HashSet<Block> catches = new(_catchEnds.Where(c => ReferenceEquals(c.F, f)).Select(c => c.B), ReferenceEqualityComparer.Instance);
+        SelfFrees? self = null;
+        FirstStores? first = null;
+        Dictionary<Instr, bool> firstFill = new(ReferenceEqualityComparer.Instance), privateOwner = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Function, Cfg> cfgOf = new();
+        Corsac.Lang.Lto.OwnedFieldHints? hints = _hinting ? _module?.LifetimeHints?.Owned : null;
+        bool Replaces(Block b, Instr st)
+        {
+            if (st is not { Op: Opcode.Store, Field: { } field } || st.Operands.Count < 2 || st.Operands[0] is not RegOperand) return false;
+            if (hints is not null && hints.Fields.TryGetValue(field, out Corsac.Lang.Lto.OwnedFieldRecord? known) && known.Refused) return false;
+            self ??= SelfFreesOf(f, _inserted);
+            first ??= new FirstStores(f, SingleDefs(f), _promotedMade, _promotedZeroing);
+            return StoreMayReplace(f, b, st, self, first, firstFill, cfgOf, summaries, privateOwner);
+        }
         foreach (Block b in f.Blocks)
         {
             HeapFlags block = (repeating.Contains(b) ? HeapFlags.None : HeapFlags.Once)
                 | (b.Terminator is { Op: Opcode.Unreachable } ? HeapFlags.Trapping : HeapFlags.None);
             string[] latches = latched.TryGetValue(b, out HashSet<string>? flags) ? flags.Order(StringComparer.Ordinal).ToArray() : Array.Empty<string>();
+            if (catches.Contains(b))
+                foreach ((Function _, Block _, Instr end) in _catchEnds.Where(c => ReferenceEquals(c.B, b)))
+                    record.Events.Add(new(HeapEventKind.Catch, end.DispatchType ?? "*", block, latches, null, null));
             int dying = DyingFrom(b);
             for (int at = 0; at < b.Instrs.Count; at++)
             {
                 Instr i = b.Instrs[at];
                 if (at == dying) block |= HeapFlags.Dying;
+                if (Replaces(b, i))
+                    record.Events.Add(new(HeapEventKind.Store, i.Field!, block | (IntoThrown(f, ((RegOperand)i.Operands[0]).Reg) ? HeapFlags.AtThrow : HeapFlags.None),
+                        latches, null, null));
                 if (i.Callee is not null)
                 {
                     HeapFlags call = block | (i.Op == Opcode.Call ? HeapFlags.Direct : HeapFlags.None)
@@ -95,7 +327,7 @@ public sealed partial class Escape
                     if (site) call |= HeapFlags.Site;
                     record.Events.Add(new(HeapEventKind.Call, i.Callee, call, latches,
                         site ? permanent.GetValueOrDefault(i) : null,
-                        site && _thrown.Contains(i) && _thrownType.TryGetValue(i, out string? type) ? type : null) { Held = held.GetValueOrDefault(i) });
+                        site && _thrown.Contains(i) ? _thrownType.GetValueOrDefault(i) ?? "*" : null) { Held = held.GetValueOrDefault(i) });
                 }
                 foreach (Operand o in i.Operands)
                     if (o is SymOperand sym) record.Events.Add(new(HeapEventKind.Named, sym.Name, block, latches, null, null));
@@ -148,21 +380,41 @@ public sealed partial class Escape
     private Dictionary<Instr, string> HeldByFields(Function f, Dictionary<string, bool[]> summaries)
     {
         Dictionary<Instr, string> held = new(ReferenceEqualityComparer.Instance);
-        Dictionary<VReg, Instr>? defs = null;
+        RegisterWrites? writes = null;
         foreach (Block b in f.Blocks)
             foreach (Instr st in b.Instrs)
             {
                 if (st is not { Op: Opcode.Store, Field: { } field } || st.Operands.Count < 2 || st.Operands[1] is not RegOperand { Reg: var value }) continue;
-                defs ??= SingleDefs(f);
+                writes ??= new RegisterWrites(f);
+                // THROUGH COPIES AND JOINS with null or static data -- `site ??
+                // ""`, the trace a null fault places -- to the one fresh object
+                // the value may be, as OwnedFields' Sources goes: what the field
+                // then holds is that object or nothing the owner's free touches.
                 Instr? made = null;
-                for (int hop = 0; hop < 8 && defs.TryGetValue(value, out Instr? d); hop++)
+                HashSet<VReg> joins = new(), seen = new();
+                Stack<VReg> work = new();
+                work.Push(value);
+                bool other = false;
+                while (!other && work.TryPop(out VReg? at))
                 {
-                    if (d.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && d.Operands.Count == 1 && d.Operands[0] is RegOperand from) { value = from.Reg; continue; }
-                    made = d;
-                    break;
+                    if (!seen.Add(at)) continue;
+                    if (seen.Count > 16 || f.Params.Contains(at) || !writes.TryGetValue(at, out WriteList ws)) { other = true; break; }
+                    if (ws.Count > 1) joins.Add(at);
+                    foreach (Instr w in ws)
+                    {
+                        if (w.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
+                        {
+                            foreach (Operand o in w.Operands)
+                                if (o is RegOperand from) work.Push(from.Reg);
+                                else if (o is not (ImmOperand { Value: 0 } or SymOperand)) other = true;
+                        }
+                        else if (w is { Op: Opcode.Call, Dest: not null } && (IsAllocator(w.Callee) || IsFreshCall(w)) && (made is null || ReferenceEquals(made, w))) made = w;
+                        else other = true;
+                    }
                 }
-                if (made is not { Op: Opcode.Call, Dest: { } dest } || !(IsAllocator(made.Callee) || IsFreshCall(made)) || held.ContainsKey(made)) continue;
-                if (Analyse(f, new[] { dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }).Escapes) continue;
+                if (other || made is not { Dest: { } dest } || held.ContainsKey(made)) continue;
+                if (Analyse(f, new[] { dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st },
+                    joinable: joins.Count > 0 ? joins : null).Escapes) continue;
                 held[made] = field;
             }
         return held;

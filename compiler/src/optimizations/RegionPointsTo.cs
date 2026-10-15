@@ -445,7 +445,7 @@ public sealed class RegionPointsTo : IModulePass
         {
             List<int> headers = MarkedLoops(f, out Dictionary<int, long> lapBytes);
             if (facts.Boundaries.Contains(f.Name)) { Open(f, headers.Count > 0, facts.BoundaryBytes.GetValueOrDefault(f.Name)); opened++; }
-            if (headers.Count > 0) { OpenLoops(f, headers, lapBytes); loops += headers.Count; }
+            if (headers.Count > 0) { OpenLoops(f, headers, lapBytes); loops += headers.Count; Escape.PlaceLapFrees(f); }
         }
         if (sites > 0 || opened > 0 || loops > 0) CatchUp(m);
         if ((sites > 0 || opened > 0 || loops > 0) && report)

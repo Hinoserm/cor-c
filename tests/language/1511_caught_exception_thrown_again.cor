@@ -1,0 +1,29 @@
+// test: caught_exception_thrown_again
+// expect-exit: 0
+// expect-output:
+// 100000 True
+//
+// `throw e;` of what a catch took records the throw afresh, dropping the
+// frames the first throw recorded: garbage, round a loop.
+
+static class Program
+{
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try
+            {
+                try { throw new System.InvalidOperationException(); }
+                catch (System.InvalidOperationException e) { throw e; }
+            }
+            catch (System.InvalidOperationException) { total++; }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

@@ -1,0 +1,13 @@
+// The other unit: a generic factory over an interface on its type
+// parameter, a maker that keeps what it makes, and the helper that makes it.
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public int A; public int[] Pad; public Node(int a) { A = a; Pad = new int[6]; for (int i = 0; i < 6; i++) Pad[i] = a + i; } }
+public interface IMaker<T> { T Make(int k); }
+public static class H { [MethodImpl(MethodImplOptions.NoInlining)] public static Node Make(int k) { return new Node(k); } }
+public static class Keep { public static Node[] Arr = new Node[64]; }
+public sealed class NodeMaker : IMaker<Node>
+{
+    public Node Make(int k) { Node n = H.Make(k); Keep.Arr[k & 63] = n; return n; }
+}
+public sealed class Factory<T> { public IMaker<T> M; public Factory(IMaker<T> m) { M = m; } [MethodImpl(MethodImplOptions.NoInlining)] public T Get(int k) { return M.Make(k); } }

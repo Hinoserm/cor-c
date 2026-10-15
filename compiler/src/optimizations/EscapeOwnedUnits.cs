@@ -513,7 +513,7 @@ public sealed partial class Escape
         // (FreeFramedOwnedFields): an object this run promoted to its frame
         // is never handed to Runtime.Free, whose FreeOwnedFields reads the
         // maps above, so what its owned fields hold is freed where it dies.
-        if (byName.ContainsKey(FieldFreer) || m.RuntimeHelpers.Contains(FieldFreer)) FreeFramedOwnedFields(items, offsets, m.RegionFacts is not null);
+        if (byName.ContainsKey(FieldFreer) || m.RuntimeHelpers.Contains(FieldFreer)) FreeFramedOwnedFields(items, offsets);
     }
 
     /// <summary>What a read of a value does while it is live, judged without knowing which field it is.</summary>

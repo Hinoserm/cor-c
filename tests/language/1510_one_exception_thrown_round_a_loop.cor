@@ -1,0 +1,30 @@
+// test: one_exception_thrown_round_a_loop
+// expect-exit: 0
+// expect-output:
+// 100000 True
+//
+// One exception, made once and kept in a static, thrown and caught round a
+// loop: each throw records where it happened in a new array and drops the
+// last throw's, which is garbage.
+
+sealed class Stop : System.Exception { }
+
+static class Program
+{
+    static readonly Stop s_stop = new Stop();
+
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { throw s_stop; }
+            catch (Stop) { total++; }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

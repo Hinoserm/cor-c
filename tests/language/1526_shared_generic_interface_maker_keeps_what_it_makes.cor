@@ -1,0 +1,67 @@
+// test: shared_generic_interface_maker_keeps_what_it_makes
+// expect-exit: 0
+// expect-output:
+// Arr[39]: A 999 (want 999) Pad len 6 (want len 6)
+// kept 64 bad 0 ok True
+//
+// A method of a concrete class reached only through an interface call a
+// shared generic copy makes (IMaker<__canon>.Make), storing into a static
+// an object a helper makes -- the helper's site dies under another
+// boundary, so the helper's site may be taken; reached here beneath B, the
+// object is made in B's region and kept in a static past B.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public int A; public int[] Pad; public Node(int a) { A = a; Pad = new int[6]; for (int i = 0; i < 6; i++) Pad[i] = a + i; } }
+public interface IMaker<T> { T Make(int k); }
+public static class H { [MethodImpl(MethodImplOptions.NoInlining)] public static Node Make(int k) { return new Node(k); } }
+public static class Keep { public static Node[] Arr = new Node[64]; }
+public sealed class NodeMaker : IMaker<Node>
+{
+    public Node Make(int k) { Node n = H.Make(k); Keep.Arr[k & 63] = n; return n; }
+}
+public sealed class Factory<T> { public IMaker<T> M; public Factory(IMaker<T> m) { M = m; } [MethodImpl(MethodImplOptions.NoInlining)] public T Get(int k) { return M.Make(k); } }
+
+public static class R
+{
+    public static Factory<Node> F = new Factory<Node>(new NodeMaker());
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B(int k)
+    {
+        List<int> scratch = new();
+        for (int i = 0; i < 20; i++) scratch.Add(i);
+        Node n = F.Get(k);
+        return n.A + scratch.Count;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B2(int k)
+    {
+        Node t = H.Make(-k);
+        List<int> scratch = new();
+        for (int i = 0; i < 20; i++) scratch.Add(i);
+        return t.A + t.Pad[5] + scratch.Count;
+    }
+}
+
+static class P
+{
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 1000; k++) t += R.B(k) + R.B2(k);
+        for (int k = 0; k < 20000; k++) t += R.B2(k);
+        Gc.Collect();
+        int bad = 0, nulls = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            Node? n = Keep.Arr[i];
+            if (n == null) { nulls++; continue; }
+            if (n.A < 936 || n.A > 999 || (n.A & 63) != i) bad++;
+            if (n.Pad == null) { bad++; continue; }
+            for (int j = 0; j < 6; j++) if (n.Pad[j] != n.A + j) bad++;
+        }
+        Node z = Keep.Arr[999 & 63]; Console.WriteLine("Arr[39]: A " + z.A + " (want 999) Pad " + (z.Pad == null ? "null" : "len " + z.Pad.Length) + " (want len 6)");
+        Console.WriteLine("kept " + (64 - nulls) + " bad " + bad + (bad == 0 && nulls == 0 ? " ok" : " WRONG") + " " + (t != 0));
+    }
+}

@@ -1,0 +1,29 @@
+// test: field_replaced_in_long_lived_owner
+// expect-exit: 0
+// expect-output:
+// 100750000 True
+//
+// A field that owns what it holds, replaced over and over in an owner that
+// lives the whole run: the store frees what it replaces only in an object its
+// function made and kept to itself, so here each replaced array is garbage.
+
+sealed class Holder { public int[]? Data; }
+
+static class Program
+{
+    static Holder? s_h;
+
+    static void Fill(Holder x, int k) { x.Data = new int[1000 + (k & 15)]; }
+
+    static int Main()
+    {
+        s_h = new Holder();
+        long total = 0;
+        for (int k = 0; k < 100000; k++) { Fill(s_h, k); total += s_h.Data!.Length; }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

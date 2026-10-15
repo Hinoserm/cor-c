@@ -1,0 +1,32 @@
+// test: field_cleared_in_long_lived_owner
+// expect-exit: 0
+// expect-output:
+// 100750000 True
+//
+// A `??=` that fills an owned field replaces nothing, but a store of null
+// into it does, in an owner that lives the whole run: each array the fill
+// made is dropped by the clear, and is garbage.
+
+sealed class Holder { public int[]? Data; }
+
+static class Program
+{
+    static readonly Holder s_h = new Holder();
+
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            Holder h = s_h;
+            h.Data ??= new int[1000 + (k & 15)];
+            total += h.Data.Length;
+            h.Data = null;
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

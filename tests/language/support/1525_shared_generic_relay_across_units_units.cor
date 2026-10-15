@@ -1,0 +1,17 @@
+// The other unit: a relay over a shared generic class, handing what it is
+// given to a sink an interface over its type parameter names.
+using System.Collections.Generic;
+
+public interface ISink<T> { void Take(T x); }
+public sealed class KeepSink : ISink<IEnumerable<int>> { public static IEnumerable<int>? Kept; public void Take(IEnumerable<int> x) { Kept = x; } }
+public sealed class Relay<T>
+{
+    public ISink<T> Sink;
+    public Relay(ISink<T> s) { Sink = s; }
+    public int Pass(T s) { Sink.Take(s); return 1; }
+}
+public static class Hub
+{
+    public static Relay<IEnumerable<int>> R = new Relay<IEnumerable<int>>(new KeepSink());
+    public static int Pass(IEnumerable<int> s) { return R.Pass(s); }
+}

@@ -13,6 +13,16 @@ public static class RuntimeAbi
     /// <summary>How a parameter of type nint is mangled.</summary>
     public const string Word = "V$NInt";
 
+    /// <summary>
+    /// The calls that end the program, never coming back by return or by
+    /// unwind: Runtime.Exit and Unhandled, the platform's and the system's
+    /// exits, Environment.Exit. A block that ends in a trap dies at one of
+    /// them (Escape.DyingFrom); any other call it ends with -- a throw --
+    /// comes back to a catch.
+    /// </summary>
+    public static bool EndsProcess(string? callee) => callee is "m_Runtime_Exit_1_V$I32" or "m_Runtime_Unhandled_1_V$Any"
+        or "m_Platform_Exit_1_V$I32" or "m_Os_Exit_1_V$I32" or "m_Environment_Exit_1_V$I32";
+
     public const string Alloc = "m_Runtime_Alloc_1_" + Word;
     public const string AllocLeaf = "m_Runtime_AllocLeaf_1_" + Word;
     public const string AllocObject = "m_Runtime_AllocObject_1_" + Word;

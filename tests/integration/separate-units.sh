@@ -47,8 +47,20 @@ if [ ${#tests[@]} = 0 ]; then
         # regions, which only a closed link finds: a loop's region left on
         # every way out, and a lap's carried chain on the heap
         1070_region_loop_laps
+        # a shared generic's face (Func<__canon>, IMaker<__canon>) reaches every instantiation's methods
+        1518_shared_generic_lazy_factory_keeps_what_it_stores 1519_shared_generic_maker_variants_keep_what_they_make
+        1520_shared_generic_func_keeps_what_it_makes 1521_shared_generic_action_keeps_what_it_is_handed
+        1522_shared_generic_lazy_value_keeps_its_sink 1524_shared_generic_factory_across_units
+        1525_shared_generic_relay_across_units 1526_shared_generic_interface_maker_keeps_what_it_makes
+        # a frame object's frees where each lap of a region ends, before the lap is given back
+        1514_lap_region_frame_list_freed_where_the_lap_ends 1515_lap_region_frame_fields_freed_where_the_lap_ends
+        1516_lap_region_frame_builder_freed_where_the_lap_ends 1517_lap_region_frame_freed_on_every_way_out
+        1527_lap_region_frame_freed_where_the_loop_ends 1528_lap_region_frame_freed_where_a_break_leaves
         # no collector, which only a closed link can say of units (HeapDecision)
         63_no_heap 762_gcless_static_tables 767_gcless_run_once 768_gcless_latched_once
+        # a collector where unwinds are unbounded or a held field leaks, none where neither
+        1503_trap_path_exception_kept 1506_owned_array_across_bounds_throw 1508_field_replaced_in_long_lived_owner
+        1509_field_cleared_in_long_lived_owner 1510_one_exception_thrown_round_a_loop 1513_gcless_caught_once
         # what a catch may free, over the throws of what the program reaches
         1483_catch_keeps_and_rethrows 1484_filter_keeps_and_declines 1485_thrower_reads_what_its_catch_took
         1486_rethrow_caught_again_then_reused 1489_rethrow_only_and_finally_free_at_catch

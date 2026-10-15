@@ -1028,6 +1028,9 @@ public sealed partial class Escape
             foreach ((long o, string callee) in frees) AppendFieldFree(f, before, addr, o, renewLine, callee);
             b.Instrs.InsertRange(at, before);
             _bookkeeping.UnionWith(before);
+            // Where the link gave the loop a region, again where each lap ends (PlaceLapFrees).
+            if (LapRegions(f))
+                NoteLapFree(f, new LapFree { Slot = r.Slot!, Renew = r.Renew!, Roots = new HashSet<VReg> { r.Root, r.SlotAddress! }, FieldFrees = frees });
             break;
         }
 

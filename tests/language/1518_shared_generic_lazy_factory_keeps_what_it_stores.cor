@@ -1,0 +1,34 @@
+// test: shared_generic_lazy_factory_keeps_what_it_stores
+// expect-exit: 0
+// expect-output:
+// inside Seed: stash.A=11 stash.B=22
+// in Main:    stash.A=11 stash.B=22
+//
+using System;
+using System.Runtime.CompilerServices;
+
+public sealed class Payload { public int A; public int B; public Payload(int a){ A=a; B=a*2; } }
+public sealed class Holder { public Payload? P; }
+
+static class Program
+{
+    static Payload? stash;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Seed()
+    {
+        Holder h = new Holder();
+        h.P = new Payload(11);
+        Lazy<string> lz = new Lazy<string>(() => { stash = h.P; return "x"; });
+        string s = lz.Value;
+        Console.WriteLine("inside Seed: stash.A=" + stash!.A + " stash.B=" + stash.B);
+        return s.Length;
+    }
+
+    static int Main()
+    {
+        int n = Seed();
+        Console.WriteLine("in Main:    stash.A=" + stash!.A + " stash.B=" + stash.B);
+        return 0;
+    }
+}

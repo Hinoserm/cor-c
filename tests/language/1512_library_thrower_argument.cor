@@ -1,0 +1,31 @@
+// test: library_thrower_argument
+// expect-exit: 0
+// expect-output:
+// 100000 True
+//
+// A dictionary's indexer throws through ThrowHelper.KeyNotFound, which never
+// returns, handed the key's text made for it; a catch round a loop frees the
+// exception, but what was made on the way to the call is never given back
+// without a collector.
+
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        var d = new Dictionary<int, int>();
+        d[1] = 1;
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { total += d[(k & 1) + 1]; }
+            catch (KeyNotFoundException) { total++; }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

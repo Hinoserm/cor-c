@@ -1,0 +1,33 @@
+// test: null_fault_exception_kept
+// expect-exit: 0
+// expect-output:
+// 50000 True
+//
+// A null dereference becomes a NullReferenceException made by the runtime
+// (Runtime.NullFault, entered from the fault handler), and a catch round a
+// loop keeps each in a static, dropping the one before: garbage the program
+// needs a collector for.
+
+sealed class Node { public int X; }
+
+static class Program
+{
+    static System.Exception? s_keep;
+    static Node?[] s_nodes = new Node?[2];
+
+    static int Main()
+    {
+        s_nodes[0] = new Node();
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { s_nodes[k & 1]!.X = k; }
+            catch (System.NullReferenceException e) { s_keep = e; total++; }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

@@ -1,0 +1,41 @@
+// test: shared_generic_factory_across_units
+// units: tests/language/support/1524_shared_generic_factory_across_units_units.cor
+// expect-exit: 0
+// expect-output:
+// kept 64 bad 0 ok True
+//
+// Boundaries of this unit calling the other unit's generic factory, and
+// its helper directly.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public static class R
+{
+    public static Factory<Node> F = new Factory<Node>(new NodeMaker());
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B(int k) { List<int> s = new(); for (int i = 0; i < 20; i++) s.Add(i); Node n = F.Get(k); return n.A + s.Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B2(int k) { Node t = H.Make(-k); List<int> s = new(); for (int i = 0; i < 20; i++) s.Add(i); return t.A + t.Pad[5] + s.Count; }
+}
+
+static class P
+{
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 1000; k++) t += R.B(k) + R.B2(k);
+        for (int k = 0; k < 20000; k++) t += R.B2(k);
+        Gc.Collect();
+        int bad = 0, nulls = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            Node? n = Keep.Arr[i];
+            if (n == null) { nulls++; continue; }
+            if (n.A < 936 || n.A > 999 || (n.A & 63) != i) bad++;
+            if (n.Pad == null) { bad++; continue; }
+            for (int j = 0; j < 6; j++) if (n.Pad[j] != n.A + j) bad++;
+        }
+        Console.WriteLine("kept " + (64 - nulls) + " bad " + bad + (bad == 0 && nulls == 0 ? " ok" : " WRONG") + " " + (t != 0));
+    }
+}

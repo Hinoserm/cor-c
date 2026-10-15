@@ -60,6 +60,26 @@ public static class VirtualTargets
     private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
 
     /// <summary>
+    /// The generic a SHARED FACE is of -- `i_Func$0024__canon`, the type the
+    /// one body every reference instantiation of a generic runs calls through
+    /// -- its name up to its first type argument; null for any other type.
+    /// </summary>
+    public static string? SharedFace(string type)
+    {
+        if (!type.Contains("$0024__canon", StringComparison.Ordinal)) return null;
+        int at = type.IndexOf("$0024", StringComparison.Ordinal);
+        return type[..(at + "$0024".Length)];
+    }
+
+    /// <summary>
+    /// Whether a type whose ancestry is `ancestors` is a `declaring` to a call:
+    /// one of them, or, for a shared face, any instantiation of its generic --
+    /// a Func<string> lambda is the Func<__canon> Lazy<T>'s shared body calls.
+    /// </summary>
+    public static bool Answers(IReadOnlySet<string> ancestors, string declaring)
+        => ancestors.Contains(declaring) || SharedFace(declaring) is string generic && ancestors.Any(up => up.StartsWith(generic, StringComparison.Ordinal));
+
+    /// <summary>
     /// WHETHER AN OBJECT STAMPED WITH A DESCRIPTOR MAY ANSWER AN INTERFACE ITS
     /// TABLES DO NOT NAME: a box (b_) or a string (q_string) answers its
     /// system interfaces -- IComparable, IComparable&lt;T&gt;, IEquatable&lt;T&gt;,
@@ -627,6 +647,10 @@ public static class VirtualTargets
             if (type == "t_object") return true;
             if (_named.GetValueOrDefault(descriptor) != 1 || !ByName.TryGetValue(descriptor, out int d)) return null;
             if (Ancestors(d).Contains(type)) return true;
+            // A shared generic's face is each instantiation of the generic
+            // (Targets): a Func<string> lambda is a Func<__canon> to the one
+            // body Lazy<T> shares, which calls its factory through that face.
+            if (SharedFace(type) is string generic && Ancestors(d).Any(up => up.StartsWith(generic, StringComparison.Ordinal))) return true;
             // A box's or a string's system interfaces are in no table of it.
             return MayAnswer(descriptor, type) ? null : false;
         }
@@ -693,6 +717,19 @@ public static class VirtualTargets
         /// program's type safety. Left unresolved, one such call made every
         /// method a descriptor names a root (RegionSolver.Addressed).
         /// </summary>
+        private Dictionary<string, List<int>>? _instantiations;
+
+        /// <summary>Every descriptor that is some instantiation of `generic` (a name up to its first type argument), whatever its arguments.</summary>
+        private List<int> Instantiations(string generic)
+        {
+            _instantiations ??= new(StringComparer.Ordinal);
+            if (_instantiations.TryGetValue(generic, out List<int>? known)) return known;
+            HashSet<int> found = new();
+            foreach ((string type, List<int> under) in _derived!)
+                if (type.StartsWith(generic, StringComparison.Ordinal)) found.UnionWith(under);
+            return _instantiations[generic] = found.Order().ToList();
+        }
+
         public string[]? Targets(string declaring, long slot, Made? made = null, string? within = null)
         {
             if (_derived is null)
@@ -711,6 +748,15 @@ public static class VirtualTargets
             // And every box and the string, for an interface (MayAnswer).
             if (!everyType && IsBoxedFace(declaring))
                 reaching = reaching.Union(Enumerable.Range(0, _descriptors.Count).Where(d => MayAnswer(_descriptors[d].Name, declaring)));
+            // A SHARED GENERIC'S FACE -- `i_Func$0024__canon`, through which the
+            // one body every reference instantiation of Lazy<T> runs calls its
+            // factory -- is called on objects of every instantiation of that
+            // generic: a lambda written as a Func<string> names i_Func$0024string
+            // among what it is, never the shared face, and no call made through
+            // that face reached it -- what it stored outlived nothing, and its
+            // region was given back under it.
+            if (!everyType && SharedFace(declaring) is string generic)
+                reaching = reaching.Union(Instantiations(generic));
             // ONLY THE RECEIVER'S OWN CLASS AND WHAT DERIVES FROM IT, where the
             // unit knew it (a parameter declared as a class, Escape.VirtualCallee):
             // a List's GetEnumerator through IEnumerable is the List's, not

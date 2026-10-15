@@ -1,0 +1,36 @@
+// test: shared_generic_func_keeps_what_it_makes
+// expect-exit: 0
+// expect-output:
+// kept 40 400
+//
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public struct V { public int A; public V(int a) { A = a; } }
+public abstract class Sink { public abstract void Put(List<V> l); }
+public sealed class Keep : Sink { public static List<V>? Kept; public override void Put(List<V> l) { Kept = l; } }
+public sealed class Box<T> { public Func<T> F; public Box(Func<T> f) { F = f; } [MethodImpl(MethodImplOptions.NoInlining)] public T Make() { return F(); } }
+
+public static class R
+{
+    public static Box<Sink> Z = new Box<Sink>(() => new Keep());
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Fill(List<V> l, int b) { for (int i = 0; i < 40; i++) l.Add(new V(b + i)); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B(int k)
+    {
+        List<V> l = new(); Fill(l, k * 100);
+        R.Z.Make().Put(l);
+        return l.Count;
+    }
+}
+
+static class P
+{
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 10; k++) t += R.B(k);
+        Console.WriteLine("kept " + (Keep.Kept == null ? "null" : Keep.Kept.Count.ToString()) + " " + t);
+    }
+}

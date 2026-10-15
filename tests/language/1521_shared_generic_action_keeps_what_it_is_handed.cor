@@ -1,0 +1,62 @@
+// test: shared_generic_action_keeps_what_it_is_handed
+// expect-exit: 0
+// expect-output:
+// kept set list set
+// node A 999 pad 6
+// list count 9
+// node 999 bad 0 list 9 89946 bad 0 ok
+//
+// A delegate invoked inside a shared generic class's method, handed an
+// object a caller made and drops: the lambda keeps it in a static.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public int A; public int[] Pad; public Node(int a) { A = a; Pad = new int[6]; for (int i = 0; i < 6; i++) Pad[i] = a + i; } }
+public sealed class Box<T> { public Action<T> F; public Box(Action<T> f) { F = f; } [MethodImpl(MethodImplOptions.NoInlining)] public void Run(T x) { F(x); } }
+
+public static class Keep { public static Node? Kept; public static List<Node>? KeptList; }
+
+public static class R
+{
+    public static Box<Node> Z = new Box<Node>(n => { Keep.Kept = n; });
+    public static Box<List<Node>> L = new Box<List<Node>>(l => { Keep.KeptList = l; });
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int G(int k)
+    {
+        Node n = new Node(k);
+        R.Z.Run(n);
+        List<Node> l = new();
+        for (int i = 0; i < 9; i++) l.Add(new Node(k * 10 + i));
+        R.L.Run(l);
+        return n.A + l.Count;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Churn(int k)
+    {
+        List<Node> l = new();
+        for (int i = 0; i < 9; i++) l.Add(new Node(-1));
+        Node m = new Node(-2);
+        return l.Count + m.A;
+    }
+}
+
+static class P
+{
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 1000; k++) t += R.G(k);
+        for (int k = 0; k < 20000; k++) t += R.Churn(k);
+        Gc.Collect();
+        for (int k = 0; k < 20000; k++) t += R.Churn(k);
+        Console.WriteLine("kept " + (Keep.Kept == null ? "null" : "set") + " list " + (Keep.KeptList == null ? "null" : "set"));
+        Node n = Keep.Kept!;
+        Console.WriteLine("node A " + n.A + " pad " + (n.Pad == null ? "null" : n.Pad.Length.ToString()));
+        int bad = 0; if (n.Pad != null) for (int i = 0; i < 6; i++) if (n.Pad[i] != n.A + i) bad++;
+        Console.WriteLine("list count " + Keep.KeptList!.Count);
+        int lbad = 0; long ls = 0;
+        foreach (Node x in Keep.KeptList!) { if (x == null) { lbad += 100; continue; } ls += x.A; if (x.Pad == null) { lbad += 10; continue; } for (int i = 0; i < 6; i++) if (x.Pad[i] != x.A + i) lbad++; }
+        Console.WriteLine("node " + n.A + " bad " + bad + " list " + Keep.KeptList!.Count + " " + ls + " bad " + lbad + (n.A == 999 && bad == 0 && ls == 9 * 9990 + 36 && lbad == 0 ? " ok" : " WRONG"));
+    }
+}

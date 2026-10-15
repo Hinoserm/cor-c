@@ -1,0 +1,104 @@
+// test: lap_region_frame_fields_freed_where_the_lap_ends
+// expect-exit: 0
+// expect-output:
+// node 1499500 bad 0
+// list 1499500 bad 0
+// array 1503500 bad 0
+//
+// Frame objects with a clean owned field filled by a fresh function's
+// result, made every lap of a loop region; on odd laps a probe array is
+// made before them, in the lap's region, where the last lap's field value
+// was. The probe must keep its contents to the lap's end.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Node { public int V; public Node? Next; public Node(int v) { V = v; } }
+sealed class BoxN { public Node? Head; public int Tag; }
+sealed class BoxL { public List<int>? L; public int Tag; }
+sealed class BoxA { public int[]? A; public int Tag; }
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node MakeNode(int v) { Node n = new Node(v); n.Next = new Node(v + 1); return n; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<int> MakeList(int v) { List<int> l = new(); l.Add(v); l.Add(v + 1); return l; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseN(BoxN b) => b.Head!.V + b.Head.Next!.V + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseL(BoxL b) => b.L![0] + b.L[1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k) return 1;
+        return 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long LapsN(int laps, int m)
+    {
+        long sum = 0; int bad = 0;
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe(lap, m);
+            BoxN b = new BoxN();
+            b.Head = MakeNode(lap);
+            b.Tag = lap;
+            sum += UseN(b);
+            if (probe != null) bad += Check(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long LapsL(int laps, int m)
+    {
+        long sum = 0; int bad = 0;
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe(lap, m);
+            BoxL b = new BoxL();
+            b.L = MakeList(lap);
+            b.Tag = lap;
+            sum += UseL(b);
+            if (probe != null) bad += Check(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long LapsA(int laps, int m, int n)
+    {
+        long sum = 0; int bad = 0;
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe(lap, m);
+            BoxA b = new BoxA();
+            b.A = MakeArr(lap, n);
+            b.Tag = lap;
+            sum += UseA(b);
+            if (probe != null) bad += Check(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+
+    static void Main()
+    {
+        long r = LapsN(1000, 6);
+        Console.WriteLine("node " + (r / 1000) + " bad " + (r % 1000));
+        r = LapsL(1000, 6);
+        Console.WriteLine("list " + (r / 1000) + " bad " + (r % 1000));
+        r = LapsA(1000, 6, 6);
+        Console.WriteLine("array " + (r / 1000) + " bad " + (r % 1000));
+    }
+}

@@ -1,0 +1,31 @@
+// test: trap_path_exception_kept
+// expect-exit: 0
+// expect-output:
+// 100000 True
+//
+// A bounds check that fails throws from the runtime (Runtime.IndexOutOfRange,
+// a call that never returns), and a catch round a loop keeps each exception
+// in a static, dropping the one before. The trap path is the program going
+// on, not dying: every dropped exception is garbage, so the program needs a
+// collector, and the collector runs.
+
+static class Program
+{
+    static System.Exception? s_keep;
+    static int[] s_arr = new int[4];
+
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { s_arr[(k & 7) + 4] = k; }
+            catch (System.IndexOutOfRangeException e) { s_keep = e; total++; }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

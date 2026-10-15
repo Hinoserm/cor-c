@@ -61,7 +61,6 @@ public sealed class HeapRecords
         {
             names.Add(function.Name);
             names.UnionWith(function.LatchSets); names.UnionWith(function.LatchBreaks);
-            names.UnionWith(function.KeptCatches);
             foreach (HeapEvent e in function.Events)
             {
                 names.Add(e.Name);
@@ -91,8 +90,8 @@ public sealed class HeapRecords
         writer.Write(Functions.Count);
         foreach (HeapFunction function in Functions.OrderBy(f => f.Name, StringComparer.Ordinal))
         {
-            writer.Write(index[function.Name]); writer.Write(function.Async); writer.Write(function.KeptCatchAll);
-            Names(function.LatchSets); Names(function.LatchBreaks); Names(function.KeptCatches);
+            writer.Write(index[function.Name]); writer.Write(function.Async);
+            Names(function.LatchSets); Names(function.LatchBreaks);
             writer.Write(function.Events.Count);
             foreach (HeapEvent e in function.Events)
             {
@@ -172,15 +171,14 @@ public sealed class HeapRecords
                 string function = Name();
                 if (!records.Gone.TryAdd(function, NameList())) throw new ElfFormatException("Duplicate heap record");
             }
-            for (int f = Count(15); f > 0; f--)
+            for (int f = Count(13); f > 0; f--)
             {
-                HeapFunction function = new(Name()) { Async = reader.ReadBoolean(), KeptCatchAll = reader.ReadBoolean() };
+                HeapFunction function = new(Name()) { Async = reader.ReadBoolean() };
                 function.LatchSets.AddRange(NameList()); function.LatchBreaks.AddRange(NameList());
-                function.KeptCatches.AddRange(NameList());
                 for (int e = Count(23); e > 0; e--)
                 {
                     byte kind = reader.ReadByte();
-                    if (kind > (byte)HeapEventKind.Virtual) throw new ElfFormatException("Invalid heap event");
+                    if (kind > (byte)HeapEventKind.Store) throw new ElfFormatException("Invalid heap event");
                     HeapFlags flags = (HeapFlags)reader.ReadUInt16();
                     string name = Name();
                     string[] latches = NameList();
@@ -199,18 +197,15 @@ public sealed class HeapRecords
 /// <summary>
 /// One function's part of the walk (Escape.CollectorSites, OnceRun): its
 /// events in block order, and what the whole program's answers need of it --
-/// the latch flags it sets only to true and those it touches any other way,
-/// and the types its catches keep what they caught of (every one, KeptCatchAll).
+/// the latch flags it sets only to true and those it touches any other way.
 /// </summary>
 public sealed class HeapFunction
 {
     public HeapFunction(string name) => Name = name;
     public string Name { get; }
     public bool Async { get; set; }
-    public bool KeptCatchAll { get; set; }
     public List<string> LatchSets { get; } = new();
     public List<string> LatchBreaks { get; } = new();
-    public List<string> KeptCatches { get; } = new();
     public List<HeapEvent> Events { get; } = new();
 }
 
@@ -224,6 +219,10 @@ public enum HeapEventKind : byte
     Target,
     /// <summary>A virtual call by its slot's name (Escape.VirtualCallee), for the link to resolve; "*" when the unit could not name it.</summary>
     Virtual,
+    /// <summary>The end of a catch of the type named ("*" for all), in its block: the throw budget asks whether it runs more than once.</summary>
+    Catch,
+    /// <summary>A store into the field named that may replace a value nobody frees (Escape.StoreMayReplace).</summary>
+    Store,
 }
 
 [Flags]
@@ -245,17 +244,21 @@ public enum HeapFlags : ushort
     /// <summary>A direct call (Opcode.Call), which OnceRun counts against its callee.</summary>
     Direct = 64,
     /// <summary>
-    /// In a trapping block, from its last call on: the call that never comes
-    /// back, and what follows it. The walk does not follow it (Escape.CollectorSites).
+    /// In a trapping block, from its last call on where that call ends the
+    /// program (Escape.DyingFrom), and what follows it. The walk does not
+    /// follow it (Escape.CollectorSites).
     /// </summary>
     Dying = 128,
+    /// <summary>A Store into what is being thrown (Escape.IntoThrown): bounded with the unwinds.</summary>
+    AtThrow = 256,
 }
 
 /// <summary>
-/// One call, named address or site. A site's Permanent is the static field
-/// it is stored to in a static initialiser, on no cycle (Escape.PermanentStatics,
-/// which holds where nothing else writes the field); Thrown, the type it is
-/// thrown as (ThrownCovered). Latches are the flags whose latch lets the
+/// One call, named address or site, catch or store. A site's Permanent is the
+/// static field it is stored to in a static initialiser, on no cycle
+/// (Escape.PermanentStatics, which holds where nothing else writes the field);
+/// Thrown, the type it is thrown as ("*" where not known): made on the way to
+/// one of boundedly many unwinds, where the throw budget holds. Latches are the flags whose latch lets the
 /// event's block through once (OnceRun.LatchedBlocks). Held, the field a
 /// fresh object the event makes or hands back is stored into, going nowhere
 /// else: the field's owner frees it where the whole program finds the field

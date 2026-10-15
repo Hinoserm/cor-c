@@ -127,6 +127,7 @@ public sealed partial class Escape : IModulePass
         _unresolvedWhy = Switches.AllocReport ? new() : null;
         _module = m;
         _fieldElements.Clear();
+        _replacing.Clear(); _heldBy.Clear(); _heldCalls.Clear();
         _elementReadHints.Clear(); _elementHandOffHints.Clear(); _elementCallHints.Clear();
         _storedParameters = null;
         _items = null;
@@ -228,6 +229,9 @@ public sealed partial class Escape : IModulePass
         // program with no window -- made every exception anywhere the
         // collector's.
         _reachedFunctions = !m.PreserveExports && m.Entry is not null ? Reached(m) : null;
+        // Its catches, before OwnCaught makes those that free what they
+        // caught into frees: the throw budget asks whether one repeats.
+        NoteCatchEnds(m);
         // Elements owned through a field: judged over a whole program; in a
         // unit's compile, for the link; in the link's run of a unit's late
         // passes, with its answer (OwnedElements).
@@ -1014,18 +1018,6 @@ public sealed partial class Escape : IModulePass
         return false;
     }
 
-    /// <summary>
-    /// A thrown allocation is covered if no catch that keeps what it caught can
-    /// take its type: a catch of T takes X when T is X or an ancestor of X.
-    /// </summary>
-    private bool ThrownCovered(Instr i, Dictionary<string, DataItem> items)
-    {
-        if (!_thrown.Contains(i) || _keptCatchAll || !_thrownType.TryGetValue(i, out string? type)) return false;
-        if (_keptCatches.Count == 0) return true;
-        HashSet<string> ancestors = Ancestry(items, type);
-        return !_keptCatches.Any(ancestors.Contains);
-    }
-
     /// <summary>Whether register `into` is `made` narrowed or copied (the stamping store's address).</summary>
     private static bool Stamped(Function f, VReg into, VReg made)
     {
@@ -1417,23 +1409,11 @@ public sealed partial class Escape : IModulePass
         }
         // A store in a function into an object that function made is into
         // something no reader outside it had before the function ran.
-        // AND WHAT THE THROW WRITES INTO WHAT IS THROWN (Exception.Thrown$,
-        // called by the runtime's Capture at the throw): the exception's own
-        // record of where it was thrown, as much its making as a constructor's.
-        // Counted as a writer, every call that could throw could replace an
-        // exception's frames, and no exception owned its trace.
-        bool IntoThrown(Function g, VReg r)
-        {
-            if (g.Params.Count == 0 || g.Name is not ("m_Exception_Thrown$_2_V$String_A$1$V$I64" or "m_Runtime_Capture_3_V$Any_V$I64_V$String")) return false;
-            Dictionary<VReg, Instr> defs = Defs(g);
-            for (int hop = 0; hop < 8; hop++)
-            {
-                if (r == g.Params[0]) return true;
-                if (!defs.TryGetValue(r, out Instr? d) || d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand from]) return false;
-                r = from.Reg;
-            }
-            return false;
-        }
+        // AND WHAT THE THROW WRITES INTO WHAT IS THROWN (IntoThrown): the
+        // exception's own record of where it was thrown, as much its making
+        // as a constructor's. Counted as a writer, every call that could
+        // throw could replace an exception's frames, and no exception owned
+        // its trace.
         initializing = (g, st) => st.Operands[0] is RegOperand baseReg
             && (g.Params.Count > 0 && baseReg.Reg == g.Params[0] && freshThis.Contains(g.Name)
                 || IntoThrown(g, baseReg.Reg)
@@ -1607,36 +1587,7 @@ continue;
         // loop. No danger to a read of anything.
         Dictionary<Instr, bool> firstFill = new(ReferenceEqualityComparer.Instance);
         Dictionary<Function, Cfg> cfgOf = new();
-        bool FirstFill(Function f, Instr st)
-        {
-            if (firstFill.TryGetValue(st, out bool known)) return known;
-            firstFill[st] = false;
-            if (st.Operands[0] is not RegOperand { Reg: var baseReg } || Origin(Defs(f), baseReg) is not { Op: Opcode.Call } made
-                || !IsAllocator(made.Callee) || made.Dest is null) return false;
-            HashSet<VReg> names = new() { made.Dest };
-            for (bool grew = true; grew;)
-            {
-                grew = false;
-                foreach (Block x in f.Blocks)
-                    foreach (Instr i in x.Instrs)
-                        if (i.Dest is not null && !names.Contains(i.Dest) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
-                            && i.Operands[0] is RegOperand r && names.Contains(r.Reg) && Defs(f).ContainsKey(i.Dest))
-                        { names.Add(i.Dest); grew = true; }
-            }
-            int count = 0;
-            Block? at = null, madeIn = null;
-            foreach (Block x in f.Blocks)
-                foreach (Instr i in x.Instrs)
-                {
-                    if (ReferenceEquals(i, made)) madeIn = x;
-                    if (ReferenceEquals(i, st)) at = x;
-                    if (i.Op == Opcode.Store && i.Field == st.Field && i.Operands[0] is RegOperand { Reg: var q } && names.Contains(q)) count++;
-                }
-            if (count != 1 || at is null || madeIn is null) return false;
-            if (!cfgOf.TryGetValue(f, out Cfg? cfg)) cfgOf[f] = cfg = new Cfg(f);
-            if (ReachesAvoiding(cfg, at, at, madeIn)) return false;
-            return firstFill[st] = true;
-        }
+        bool FirstFill(Function f, Instr st) => FirstStoreIntoMade(f, st, firstFill, cfgOf);
 
         // One liveness per function, however many loads it has.
         Dictionary<Function, Liveness> livenessOf = new();
@@ -1820,6 +1771,13 @@ continue;
         // the old value is the collector's. The object's first store finds
         // nothing there, which the freer ignores.
         Dictionary<Instr, bool> privateOwner = new(ReferenceEqualityComparer.Instance);
+        // WHAT A STORE MAY REPLACE AND LEAVE (StoreMayReplace), judged before
+        // the frees of what it replaces go in: a field such a store can run
+        // into more than once holds nothing the collector is spared for
+        // (CollectorSites, the fields that leak).
+        foreach ((Function f, Block b, Instr st) in stores)
+            if (owned.Contains(st.Field!) && StoreMayReplace(f, b, st, SelfOf(f), FirstOf(f), firstFill, cfgOf, summaries, privateOwner))
+                _replacing.Add((f, b, st.Field!, st.Operands[0] is RegOperand { Reg: var into } && IntoThrown(f, into)));
         foreach ((Function f, Block b, Instr st) in stores)
         {
             if (!owned.Contains(st.Field!)) continue;
@@ -1879,8 +1837,9 @@ continue;
         foreach ((Instr made, Instr st) in held)
         {
             if (!owned.Contains(st.Field!)) continue;
+            _heldBy[made] = st.Field!;
             if (IsAllocator(made.Callee)) _fieldOwned.Add(made);
-            else _ownedCalls.Add(made);
+            else { if (!_ownedCalls.Contains(made)) _heldCalls.Add(made); _ownedCalls.Add(made); }
         }
 
         // Each class's owned-field map, its ancestors' fields included; and
@@ -1937,7 +1896,7 @@ continue;
     /// fields are (SlotFieldFrees): before the slot is made again round a
     /// loop, and on every return. A field freed there already is found empty.
     /// </summary>
-    private void FreeFramedOwnedFields(Dictionary<string, DataItem> items, Dictionary<string, List<long>> offsets, bool linkRegions = false)
+    private void FreeFramedOwnedFields(Dictionary<string, DataItem> items, Dictionary<string, List<long>> offsets)
     {
         if (offsets.Count == 0) return;
         int word = IrTypes.Word.Bytes();
@@ -1945,11 +1904,6 @@ continue;
             foreach (OwnedRecord r in records)
             {
                 if (r.Slot is null || r.SlotAddress is null) continue;
-                // AT THE LINK, NOT ROUND A LOOP REGION IT MARKED: the link judged
-                // the object a heap or region allocation dead where a lap ends,
-                // and what its owned fields hold may be the lap's -- given back
-                // when the next lap begins, before the slot is made again.
-                if (linkRegions && f.Blocks.Any(b => b.RegionLoop)) { OwnedElements.Say(f, "frame object: owned fields left, a loop region the link marked"); continue; }
                 // Its type, by the descriptor stamped into it.
                 HashSet<VReg> names = Derivations(f, new[] { r.Root, r.SlotAddress });
                 string? type = null;
@@ -4462,7 +4416,8 @@ continue;
             {
                 // A box or a string answers its system interfaces in no
                 // table of it (VirtualTargets.MayAnswer).
-                if (!everyType && !Ancestors(d.Name).Contains(declaring) && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
+                // A shared generic's face is any instantiation's (VirtualTargets.Answers).
+                if (!everyType && !Corsac.Lang.Lto.VirtualTargets.Answers(Ancestors(d.Name), declaring) && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
                 foreach (DataReloc r in d.Relocs)
                     if (r.Addend == 0 && bases.Contains(r.Offset - slot)) found.Add(r.Symbol);
             }
@@ -4504,7 +4459,7 @@ continue;
                     // call is never made, and calls nothing.
                     if (!instantiated.TryGetValue(declaring, out bool made))
                         instantiated[declaring] = made = declaring == "t_object"
-                            || descriptors.Any(d => Ancestors(d.Name).Contains(declaring) || Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring));
+                            || descriptors.Any(d => Corsac.Lang.Lto.VirtualTargets.Answers(Ancestors(d.Name), declaring) || Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring));
                     if (!made)
                     {
                         if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}: no object of the type");
@@ -5009,6 +4964,11 @@ continue;
                         b.Instrs.InsertRange(renewAt, before); OwnedFieldEscape.Changed(); f.Edited();
                         _bookkeeping.UnionWith(before);
                         k += before.Count;
+                        // Where the link gave the loop a region, again where each lap ends (PlaceLapFrees).
+                        if (LapRegions(f))
+                            NoteLapFree(f, new LapFree { Slot = slot, Renew = replacement[1], Roots = new HashSet<VReg>(flow.Derived) { i.Dest, addr },
+                                ElementFreer = i.Field == Instr.OwnsElements ? (_arrayOwners.Contains(i) ? OwnedElements.ArrayFreer : OwnedElements.Freer) : null,
+                                Storage = storage });
                     }
                     foreach (Block exit in f.Blocks)
                     {
@@ -6150,7 +6110,6 @@ continue;
         // every method of every live descriptor is reached, as before. An
         // indirect call that is not virtual calls through an address some
         // code or data named, which the walk follows anyway.
-        Dictionary<string, DataItem> items = data;
         bool everyMethod = m.Functions.Any(f => f.Blocks.Any(b => b.Instrs.Any(i =>
             i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i)))));
 
@@ -6171,15 +6130,18 @@ continue;
         List<string> sites = new();
         HashSet<Instr> counted = new(ReferenceEqualityComparer.Instance);
         OnceRun once = new(m, byName, entry);
+        // THE THROW BUDGET: a catch that can run more than once, or an async
+        // body, lets unwinds come round without bound, and what they leave
+        // behind with them -- a collector, each the reason.
+        List<string> repeating = RepeatingCatches(m, once);
+        if (repeating.Count > 0) return paths ? repeating.Select(r => r + "\n      what unwinds to it is unbounded").ToList() : repeating;
+        // A held object of a field that leaks is no owner's to free.
+        HashSet<string> leaky = LeakyFields(once);
+        bool Leaky(Instr i) => _heldBy.TryGetValue(i, out string? field) && leaky.Contains(field);
         while (work.Count > 0)
         {
             (string name, bool unowned) = work.Pop();
             if (reached[name] != unowned) continue;     // superseded by a stronger visit
-            // A NULL DEREFERENCE'S EXCEPTION decides nothing either, as a
-            // trapping block's allocations do not: it is made only once the
-            // program has faulted, and without a collector it is made on the
-            // manual heap, where the catch that owns it gives it back.
-            if (name == NullFault) continue;
             if (data.TryGetValue(name, out DataItem? item))
             {
                 bool descriptor = IsDescriptor(name);
@@ -6191,20 +6153,21 @@ continue;
             _freshOrigins.TryGetValue(f.Name, out HashSet<Instr>? origins);
             foreach (Block b in f.Blocks)
             {
-                // A BLOCK THAT ENDS IN A TRAP is the program dying: what it
-                // allocates on the way decides nothing, nor does the call
-                // that never comes back (its last). What it calls before
-                // that comes back, and goes on: the entry stub's Main, which
-                // its Runtime.Exit follows. Skipped whole, a stub whose Exit
-                // was not inlined reached nothing at all.
+                // A BLOCK THAT ENDS IN A TRAP goes on into its last call -- a
+                // throw, and what the unwind runs -- unless that call ends the
+                // program (DyingFrom): the entry stub's Runtime.Exit, after its
+                // Main. What it makes on the way to the trap is made on the way
+                // to one of boundedly many unwinds (the throw budget), and so
+                // is what is thrown.
                 bool trapping = b.Terminator is { Op: Opcode.Unreachable };
                 int dying = trapping ? DyingFrom(b) : b.Instrs.Count;
+                int lastCall = trapping ? b.Instrs.FindLastIndex(x => x.Op is Opcode.Call or Opcode.CallIndirect) : -1;
                 for (int at = 0; at < b.Instrs.Count && at < dying; at++)
                 {
                     Instr i = b.Instrs[at];
                     bool origin = origins is not null && origins.Contains(i);
-                    if (!trapping && i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i) && !_fieldOwned.Contains(i)
-                        && !ThrownCovered(i, items) && !once.RunsOnce(f, b)
+                    if (!(trapping && at < lastCall) && i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i)
+                        && !(_fieldOwned.Contains(i) && !Leaky(i)) && !_thrown.Contains(i) && !once.RunsOnce(f, b)
                         && (!origin || unowned) && counted.Add(i))
                     {
                         // AND WHY: the instruction the object escapes through,
@@ -6224,7 +6187,8 @@ continue;
                         // The callee's returned object is freed here when the
                         // call is owned; handed on as this function's own
                         // result, it is owned exactly as far as this one is.
-                        bool callUnowned = _ownedCalls.Contains(i) ? false : origin ? unowned : true;
+                        bool ownedCall = _ownedCalls.Contains(i) && !(_heldCalls.Contains(i) && Leaky(i));
+                        bool callUnowned = ownedCall ? false : origin ? unowned : true;
                         Reach(i.Callee, callUnowned, f.Name);
                     }
                     foreach (Operand o in i.Operands) if (o is SymOperand sym) Reach(sym.Name, true, f.Name);
@@ -6244,15 +6208,17 @@ continue;
     }
 
     /// <summary>
-    /// Where a block that ends in a trap starts dying: its last call, the one
-    /// that never comes back (a [DoesNotReturn] call ends its block); the
-    /// block's length where it calls nothing, or ends otherwise.
+    /// Where a block that ends in a trap starts dying: its last call, when
+    /// that call ends the program (RuntimeAbi.EndsProcess); otherwise the
+    /// block's length -- a throw comes back by an unwind, to a catch -- and
+    /// nothing at all where it calls nothing.
     /// </summary>
     internal static int DyingFrom(Block b)
     {
         if (b.Terminator is not { Op: Opcode.Unreachable }) return b.Instrs.Count;
         for (int at = b.Instrs.Count - 1; at >= 0; at--)
-            if (b.Instrs[at].Op is Opcode.Call or Opcode.CallIndirect) return at;
+            if (b.Instrs[at].Op is Opcode.Call or Opcode.CallIndirect)
+                return b.Instrs[at].Op == Opcode.Call && RuntimeAbi.EndsProcess(b.Instrs[at].Callee) ? at : b.Instrs.Count;
         return 0;
     }
 
@@ -6473,6 +6439,12 @@ continue;
             Console.Error.WriteLine("alloc report: field " + line);
         Console.Error.WriteLine($"alloc report: owned fields {_fieldsJudged.Owned} of {_fieldsJudged.Judged}");
         Console.Error.WriteLine($"alloc report: thrown {_thrown.Count} ({_thrownType.Count} typed), catches keeping: {(_keptCatchAll ? "everything; " : "")}{string.Join(", ", _keptCatches.Take(12))}");
+        // The throw budget and the fields that leak, as CollectorSites decides with them.
+        OnceRun budget = new(m, byName, entry);
+        List<string> repeating = RepeatingCatches(m, budget);
+        Console.Error.WriteLine($"alloc report: unwinds {(repeating.Count == 0 ? "bounded" : "unbounded: " + string.Join("; ", repeating.Take(6)))}");
+        HashSet<string> leaking = LeakyFields(budget);
+        if (leaking.Count > 0) Console.Error.WriteLine($"alloc report: fields a store may replace unfreed, more than once: {string.Join(", ", leaking.Order(StringComparer.Ordinal).Take(12))}");
         if (Switches.AllocReportOnly is { } which)
             foreach (Function f in m.Functions.Where(f => f.Name.Contains(which, StringComparison.Ordinal)))
                 for (int p2 = 0; p2 < f.Params.Count; p2++)

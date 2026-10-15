@@ -11,7 +11,9 @@ namespace Corsac.Lang.Lto;
 /// collector that are not
 ///   - stored, in a static initialiser on no cycle, into a static nothing
 ///     else writes (a table for the life of the program, PermanentStatics);
-///   - thrown only where no catch that keeps what it caught can take them;
+///   - thrown, or made in a block that ends in a throw, where every catch
+///     the program reaches runs at most once and it reaches no async body
+///     (the throw budget: boundedly many unwinds, and what they leave);
 ///   - made at most once in a run: in the entry or a static initialiser, or
 ///     a function every direct call to which is made once from one that is,
 ///     on no cycle, and whose address nothing takes; or behind a latch that
@@ -22,9 +24,6 @@ namespace Corsac.Lang.Lto;
 /// </summary>
 public static class HeapDecision
 {
-    /// <summary>Where the fault handler sends a thread that read through null: made only once the program has faulted.</summary>
-    private const string NullFault = "m_Runtime_NullFault_2_V$I64_V$I64";
-
     public sealed class Answer
     {
         public bool NeedsHeap { get; init; }
@@ -34,7 +33,7 @@ public static class HeapDecision
         public string? Because { get; set; }
         /// <summary>For --alloc-report: each site reached and excused, and why.</summary>
         public List<string> Excused { get; } = new();
-        /// <summary>For --alloc-report: the catches that keep what they caught, as the whole program reports them.</summary>
+        /// <summary>For --alloc-report: whether unwinds are bounded, and the fields that leak.</summary>
         public string Catches { get; set; } = "";
     }
 
@@ -55,8 +54,11 @@ public static class HeapDecision
         // with anything, as often as it likes -- roots, and taken addresses.
         IReadOnlyCollection<string> outside = foreign ?? Array.Empty<string>();
         // A fresh object stored into a field the whole program found owns
-        // what it holds is the field's owner's to free (HeapEvent.Held).
-        bool Held(HeapEvent e) => e.Held is string field && ownedFields?.Contains(field) == true;
+        // what it holds is the field's owner's to free (HeapEvent.Held) --
+        // unless a store the program reaches may replace a value of it that
+        // nobody frees, more than once (the fields that leak, below).
+        HashSet<string> leaky = new(StringComparer.Ordinal);
+        bool Held(HeapEvent e) => e.Held is string field && ownedFields?.Contains(field) == true && !leaky.Contains(field);
         foreach ((ObjectFile _, HeapRecords records) in units)
             if (records.CallsCollector) return new Answer { NeedsHeap = true, Because = "the program calls into the collector" };
         World world = new(inputs, units);
@@ -83,26 +85,37 @@ public static class HeapDecision
         List<Node> entryRoots = world.Roots(entry, initialisers: false).ToList();
         (HashSet<Node> reached, HashSet<string> addressed, Func<string, string[]?> virtuals, bool everyMethod) = ReachFrom(world, inputs, units, entryRoots, outside);
         addressed.UnionWith(outside);
-        bool keptCatchAll = false;
-        HashSet<string> keptCatches = new(StringComparer.Ordinal);
-        foreach (Node node in reached)
-        {
-            HeapFunction f = world.Record(node);
-            keptCatchAll |= f.KeptCatchAll;
-            keptCatches.UnionWith(f.KeptCatches);
-        }
-        bool ThrownCovered(string? type)
-        {
-            if (type is null || keptCatchAll) return false;
-            if (keptCatches.Count == 0) return true;
-            HashSet<string> ancestors = ancestry(new[] { type });
-            return !keptCatches.Any(ancestors.Contains);
-        }
 
         // Once, over the same reach: a caller the program cannot reach runs
         // never. A whole program's module holds only what its entry reaches;
         // a unit holds every method of its types, and every one was a caller.
         Once once = new(world, entry, reached, addressed);
+        // A PROGRAM THAT SAID IT RUNS WITHOUT A COLLECTOR gets none, as a
+        // whole program's does: what is left is never given back.
+        bool none = units.Any(unit => unit.Records.NoCollector);
+
+        // THE THROW BUDGET (Escape.RepeatingCatches): a reached catch that can
+        // run more than once, or a reached async body, lets unwinds come round
+        // without bound, and what they leave behind with them.
+        List<string> repeating = new();
+        foreach (Node node in reached)
+        {
+            HeapFunction f = world.Record(node);
+            if (f.Async) repeating.Add(node.Name + ": an async body");
+            foreach (HeapEvent e in f.Events)
+                if (e.Kind == HeapEventKind.Catch && !once.RunsOnce(node.Name, e)) repeating.Add(node.Name + ": a catch of " + e.Name + " that can run more than once");
+        }
+        if (repeating.Count > 0)
+        {
+            Answer unbounded = new() { NeedsHeap = !none, Because = (none ? "--no-collector; " : "") + "unwinds unbounded: " + string.Join("; ", repeating.Take(4)) };
+            unbounded.Sites.AddRange(repeating);
+            return unbounded;
+        }
+        // THE FIELDS THAT LEAK (Escape.LeakyFields): a reached store that may
+        // replace what nobody frees, more than once, not into what is thrown.
+        foreach (Node node in reached)
+            foreach (HeapEvent e in world.Record(node).Events)
+                if (e.Kind == HeapEventKind.Store && (e.Flags & HeapFlags.AtThrow) == 0 && !once.RunsOnce(node.Name, e)) leaky.Add(e.Name);
 
         // THE COLLECTOR'S SITES (Escape.CollectorSites): from the entry, each
         // function reached as through a call that frees its fresh result or
@@ -130,14 +143,15 @@ public static class HeapDecision
         while (work.Count > 0)
         {
             (Node node, bool unowned) = work.Pop();
-            if (state[node] != unowned || node.Name == NullFault) continue;
+            if (state[node] != unowned) continue;
             current = node;
             HeapFunction f = world.Record(node);
             for (int k = 0; k < f.Events.Count; k++)
             {
                 HeapEvent e = f.Events[k];
-                // A trapping block's own allocations decide nothing; its call that
-                // never comes back is not followed (Escape.CollectorSites).
+                // A trapping block's own allocations are made on the way to one of
+                // boundedly many unwinds; its call that ends the program is not
+                // followed, and its throw is (Escape.CollectorSites).
                 if ((e.Flags & HeapFlags.Dying) != 0) continue;
                 bool trapping = (e.Flags & HeapFlags.Trapping) != 0;
                 bool origin = (e.Flags & HeapFlags.Origin) != 0;
@@ -148,7 +162,7 @@ public static class HeapDecision
                         {
                             string? why = Held(e) ? "held by " + e.Held
                                 : e.Permanent is not null && !writtenElsewhere.Contains(e.Permanent) ? "permanent in " + e.Permanent
-                                : ThrownCovered(e.Thrown) ? "thrown " + e.Thrown + ", no catch keeps it"
+                                : e.Thrown is not null ? "thrown " + e.Thrown + ", one of boundedly many unwinds"
                                 : once.RunsOnce(node.Name, e) ? "runs once"
                                 : origin && !unowned ? "handed back to a caller that frees it" : null;
                             if (why is null && counted.Add((node, k))) sites.Add(node.Name + ": " + e.Name + " (reached: " + Path(node) + ")");
@@ -174,14 +188,11 @@ public static class HeapDecision
             for (Node at = node; chain.Count < 10 && cameFrom.TryGetValue(at, out Node up) && !chain.Contains(up.Name); at = up) chain.Add(up.Name);
             return string.Join(" <- ", chain);
         }
-        // A PROGRAM THAT SAID IT RUNS WITHOUT A COLLECTOR gets none, as a
-        // whole program's does: what is left is never given back (the
-        // caller names each).
-        bool none = units.Any(unit => unit.Records.NoCollector);
         Answer answer = new()
         {
             NeedsHeap = sites.Count > 0 && !none, Because = none && sites.Count > 0 ? "--no-collector" : null,
-            Catches = (keptCatchAll ? "everything; " : "") + string.Join(", ", keptCatches.Order(StringComparer.Ordinal).Take(12)) + " (" + reached.Count + " functions reached)",
+            Catches = "unwinds bounded; fields that leak: " + (leaky.Count == 0 ? "none" : string.Join(", ", leaky.Order(StringComparer.Ordinal).Take(12)))
+                + " (" + reached.Count + " functions reached)",
         };
         answer.Sites.AddRange(sites);
         answer.Excused.AddRange(excused.Distinct());

@@ -3842,8 +3842,11 @@ static class Runtime
     public static void Capture(object thrown, long frame, string site) {
         // The iterator stop signal has no reader to show a trace to.
         if (thrown is IteratorStopSignal) { return; }
-        if (thrown is Exception) {
-            ((Exception)thrown).Thrown$(site, Frames(frame));
+        // Tested and bound at once: a cast after the test was a failure path
+        // never taken, an InvalidCastException and its message made on it,
+        // which a program's walk for allocations still reached.
+        if (thrown is Exception e) {
+            e.Thrown$(site, Frames(frame));
         }
     }
 

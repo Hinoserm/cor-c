@@ -1,0 +1,30 @@
+// test: gcless_caught_once
+// expect-exit: 0
+// expect-output:
+// 1 4950 heap 0
+//
+// A catch that runs at most once in a run -- in Main, on no loop -- ends at
+// most one unwind, so whatever unwinding leaves behind is bounded: the
+// program needs no collector, though it throws and keeps what it caught.
+
+static class Program
+{
+    static System.Exception? s_keep;
+    static int[] s_arr = new int[4];
+
+    static int Main()
+    {
+        int caught = 0;
+        try { s_arr[7] = 1; }
+        catch (System.IndexOutOfRangeException e) { s_keep = e; caught++; }
+        long sum = 0;
+        for (int i = 0; i < 100; i++) sum += i;
+        Sys.PrintInt(caught);
+        Sys.Print(" ");
+        Sys.PrintInt(sum);
+        Sys.Print(" heap ");
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}

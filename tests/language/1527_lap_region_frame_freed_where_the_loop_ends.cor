@@ -1,0 +1,56 @@
+// test: lap_region_frame_freed_where_the_loop_ends
+// expect-exit: 0
+// expect-output:
+// exit bad 0
+//
+// The exit path: a frame List made every lap of a loop region, its storage
+// the lap's; after the loop, in the caller's region (this function opens
+// none), a result object the size of the loop's record and then its array,
+// where the last lap's storage was. The return's free of the frame List's
+// storage must not touch the result's array.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Out { public int[]? Res; }
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Use(List<int> l) => l[0] + l[l.Count - 1];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Out F(int laps, int m)
+    {
+        int sum = 0;
+        for (int lap = 0; lap < laps; lap++)
+        {
+            List<int> l = new List<int>();
+            l.Add(lap); l.Add(lap + 1);
+            sum += Use(l);
+        }
+        Out o = new Out();
+        int[] res = new int[m];
+        for (int k = 0; k < m; k++) res[k] = sum + k;
+        o.Res = res;
+        return o;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int G(int laps, int m)
+    {
+        Out o = F(laps, m);
+        int want = 0;
+        for (int lap = 0; lap < laps; lap++) want += 2 * lap + 1;
+        int bad = 0;
+        for (int k = 0; k < m; k++) if (o.Res![k] != want + k) bad++;
+        return bad;
+    }
+
+    static void Main()
+    {
+        int bad = 0;
+        for (int r = 0; r < 300; r++) bad += G(10 + r % 50, 6) > 0 ? 1 : 0;
+        Console.WriteLine("exit bad " + bad);
+    }
+}

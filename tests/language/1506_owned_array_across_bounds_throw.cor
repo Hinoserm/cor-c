@@ -1,0 +1,60 @@
+// test: owned_array_across_bounds_throw
+// expect-exit: 0
+// expect-output:
+// 17999488 True
+//
+// An array its function frees after its last use is live across a call whose
+// bounds check throws. The catch further out frees the exception, but the
+// unwind passes over the free. Each array a throw leaves behind is garbage,
+// and a catch that runs round a loop makes them without end: what stays
+// resident must not grow with the loop.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static readonly byte[] s_statm = new byte[128];
+
+    /// The bytes the process has resident (/proc/self/statm), read with no heap.
+    static long Resident()
+    {
+        int fd = Os.Open("/proc/self/statm", 0);
+        int n = Os.Read(fd, s_statm, 0, s_statm.Length);
+        Os.Close(fd);
+        int at = 0;
+        while (at < n && s_statm[at] != ' ') at++;
+        long pages = 0;
+        for (at++; at < n && s_statm[at] >= '0' && s_statm[at] <= '9'; at++) pages = pages * 10 + (s_statm[at] - '0');
+        return pages * 4096;
+    }
+
+    static int[] s_arr = new int[4];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Thrower(int k) => s_arr[k & 7];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Depth(int k)
+    {
+        int[] tmp = new int[k + 300];
+        tmp[0] = k;
+        int r = Thrower(k);
+        return r + tmp[0] + tmp.Length;
+    }
+
+    static int Main()
+    {
+        long before = Resident();
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { total += Depth(k & 63); }
+            catch (System.IndexOutOfRangeException) { total++; }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.Print(Resident() - before < (16L << 20) ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

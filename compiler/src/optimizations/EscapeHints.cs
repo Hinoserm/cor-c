@@ -382,6 +382,9 @@ public sealed partial class Escape
         // among the frees the function had then: a free placed now, while
         // what was read is live, could free the field's owner under it. The
         // caller then takes the function back as it was (-1).
+        // The renewal frees again where each lap of a loop with a region ends,
+        // its RegionLoop already in place (PlaceLapFrees).
+        PlaceLapFrees(f, pass._bookkeeping);
         if (facts.OwnedFields is { Fields.Count: > 0 } owned && pass._bookkeeping.Count > 0 && FreesUnderOwnedRead(f, owned, pass._bookkeeping)) return -1;
         return pass.Promoted + pass.Owned + pass.FieldsOwned;
     }

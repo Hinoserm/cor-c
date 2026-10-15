@@ -1,0 +1,83 @@
+// test: shared_generic_maker_variants_keep_what_they_make
+// expect-exit: 0
+// expect-output:
+// abstract kept 64 bad 0 ok
+// addrange kept 64 bad 0 ok
+// direct-too kept 64 bad 0 ok
+//
+// Calls a shared generic copy makes on a generic interface or class over
+// its type parameter, landing on a concrete class's method that stores, in
+// a static, an object a helper makes. Three shapes: an abstract generic
+// class, a custom IEnumerable<T> handed to List<T>.AddRange, and the
+// interface again with the method also called once directly from Main.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public int A; public int[] Pad; public Node(int a) { A = a; Pad = new int[6]; for (int i = 0; i < 6; i++) Pad[i] = a + i; } }
+public static class H1 { [MethodImpl(MethodImplOptions.NoInlining)] public static Node Make(int k) { return new Node(k); } }
+public static class H2 { [MethodImpl(MethodImplOptions.NoInlining)] public static Node Make(int k) { return new Node(k); } }
+public static class H3 { [MethodImpl(MethodImplOptions.NoInlining)] public static Node Make(int k) { return new Node(k); } }
+public static class Keep { public static Node[] Arr1 = new Node[64], Arr2 = new Node[64], Arr3 = new Node[64]; }
+
+// 1: an abstract generic class.
+public abstract class Maker<T> { public abstract T Make(int k); }
+public sealed class NodeMaker1 : Maker<Node> { public override Node Make(int k) { Node n = H1.Make(k); Keep.Arr1[k & 63] = n; return n; } }
+public sealed class Factory1<T> { public Maker<T> M; public Factory1(Maker<T> m) { M = m; } [MethodImpl(MethodImplOptions.NoInlining)] public T Get(int k) { return M.Make(k); } }
+
+// 2: a custom sequence, walked by List<T>.AddRange.
+public sealed class Seq2 : IEnumerable<Node>
+{
+    public int K;
+    public IEnumerator<Node> GetEnumerator() { Node n = H2.Make(K); Keep.Arr2[K & 63] = n; List<Node> one = new(); one.Add(n); return one.GetEnumerator(); }
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+}
+
+// 3: the interface, the method also called directly once.
+public interface IMaker<T> { T Make(int k); }
+public sealed class NodeMaker3 : IMaker<Node> { public Node Make(int k) { Node n = H3.Make(k); Keep.Arr3[k & 63] = n; return n; } }
+public sealed class Factory3<T> { public IMaker<T> M; public Factory3(IMaker<T> m) { M = m; } [MethodImpl(MethodImplOptions.NoInlining)] public T Get(int k) { return M.Make(k); } }
+
+public static class R
+{
+    public static Factory1<Node> F1 = new Factory1<Node>(new NodeMaker1());
+    public static Factory3<Node> F3 = new Factory3<Node>(new NodeMaker3());
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B1(int k) { List<int> s = new(); for (int i = 0; i < 20; i++) s.Add(i); return F1.Get(k).A + s.Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B2(int k) { List<int> s = new(); for (int i = 0; i < 20; i++) s.Add(i); List<Node> into = new(); Seq2 q = new Seq2(); q.K = k; into.AddRange(q); return into.Count + s.Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B3(int k) { List<int> s = new(); for (int i = 0; i < 20; i++) s.Add(i); return F3.Get(k).A + s.Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Drop(int k) { Node t = H1.Make(-k); Node t2 = H2.Make(-k); Node t3 = H3.Make(-k); List<int> s = new(); for (int i = 0; i < 20; i++) s.Add(i); return t.A + t.Pad[5] + t2.Pad[5] + t3.Pad[5] + s.Count; }
+}
+
+static class P
+{
+    static string Check(string name, Node[] arr)
+    {
+        int bad = 0, nulls = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            Node? n = arr[i];
+            if (n == null) { nulls++; continue; }
+            if (n.A < 936 || n.A > 999 || (n.A & 63) != i) bad++;
+            if (n.Pad == null) { bad++; continue; }
+            for (int j = 0; j < 6; j++) if (n.Pad[j] != n.A + j) bad++;
+        }
+        return name + " kept " + (64 - nulls) + " bad " + bad + (bad == 0 && nulls == 0 ? " ok" : " WRONG");
+    }
+
+    static void Main()
+    {
+        new NodeMaker3().Make(5000);
+        long t = 0;
+        for (int k = 0; k < 1000; k++) t += R.B1(k) + R.B2(k) + R.B3(k) + R.Drop(k);
+        for (int k = 0; k < 20000; k++) t += R.Drop(k);
+        Gc.Collect();
+        Console.WriteLine(Check("abstract", Keep.Arr1));
+        Console.WriteLine(Check("addrange", Keep.Arr2));
+        Console.WriteLine(Check("direct-too", Keep.Arr3));
+    }
+}

@@ -1,0 +1,75 @@
+// test: library_delegates_without_captures_keep_what_they_store
+// expect-exit: 0
+// expect-output:
+// foreach 9998 bad 0 ok
+// find 9998 bad 0 ok
+// select 9998 bad 0 ok
+// where 9998 bad 0 ok
+// removeall 9998 bad 0 ok
+// sort 9998 bad 0 ok
+// exists 9998 bad 0 ok
+// orderby 9998 bad 0 ok
+//
+// Library methods of shared generic classes calling a delegate or an
+// interface method the program supplies, which keeps what it is handed.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public int A; public int[] Pad; public Node(int a) { A = a; Pad = new int[6]; for (int i = 0; i < 6; i++) Pad[i] = a + i; } }
+
+public sealed class KeepingComparer : IComparer<Node>
+{
+    public static Node? Seen;
+    public int Compare(Node? x, Node? y) { Seen = x; return x!.A.CompareTo(y!.A); }
+}
+
+public static class K { public static Node? ForEach, Find, Select, Where, RemoveAll, Sort, Exists, OrderBy; }
+
+public static class R
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<Node> Make(int k) { List<Node> l = new(); for (int i = 0; i < 9; i++) l.Add(new Node(k * 10 + i)); return l; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F1(int k) { List<Node> l = Make(k); l.ForEach(n => { if (n.A % 10 == 8) K.ForEach = n; }); return l.Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F2(int k) { List<Node> l = Make(k); Node? f = l.Find(n => { if (n.A % 10 == 8) K.Find = n; return false; }); return l.Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F3(int k) { List<Node> l = Make(k); return l.Select(n => { if (n.A % 10 == 8) K.Select = n; return n.A; }).Sum(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F4(int k) { List<Node> l = Make(k); return l.Where(n => { if (n.A % 10 == 8) K.Where = n; return n.A > 0; }).Count(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F5(int k) { List<Node> l = Make(k); return l.RemoveAll(n => { if (n.A % 10 == 8) K.RemoveAll = n; return false; }); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F6(int k) { List<Node> l = Make(k); l.Sort(new KeepingComparer()); return l.Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F7(int k) { List<Node> l = Make(k); return l.Exists(n => { if (n.A % 10 == 8) K.Exists = n; return false; }) ? 1 : 0; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static int F8(int k) { List<Node> l = Make(k); return l.OrderBy(n => { if (n.A % 10 == 8) K.OrderBy = n; return -n.A; }).First().A; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Churn(int k) { List<Node> l = new(); for (int i = 0; i < 9; i++) l.Add(new Node(-1)); return l.Count + new Node(-2).A; }
+}
+
+static class P
+{
+    static string Check(string name, Node? n, bool any)
+    {
+        if (n == null) return name + " null";
+        int bad = 0;
+        if (n.Pad == null) bad = 100; else for (int i = 0; i < 6; i++) if (n.Pad[i] != n.A + i) bad++;
+        bool right = any ? n.A % 10 >= 0 && n.A >= 0 && n.A < 10000 : n.A == 9998;
+        return name + " " + n.A + " bad " + bad + (bad == 0 && right ? " ok" : " WRONG");
+    }
+
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 1000; k++) t += R.F1(k) + R.F2(k) + R.F3(k) + R.F4(k) + R.F5(k) + R.F6(k) + R.F7(k) + R.F8(k);
+        for (int k = 0; k < 20000; k++) t += R.Churn(k);
+        Gc.Collect();
+        for (int k = 0; k < 20000; k++) t += R.Churn(k);
+        Console.WriteLine(Check("foreach", K.ForEach, false));
+        Console.WriteLine(Check("find", K.Find, false));
+        Console.WriteLine(Check("select", K.Select, false));
+        Console.WriteLine(Check("where", K.Where, false));
+        Console.WriteLine(Check("removeall", K.RemoveAll, false));
+        Console.WriteLine(Check("sort", KeepingComparer.Seen, true));
+        Console.WriteLine(Check("exists", K.Exists, false));
+        Console.WriteLine(Check("orderby", K.OrderBy, false));
+    }
+}
