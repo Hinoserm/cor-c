@@ -14385,7 +14385,9 @@ public sealed partial class Binder
                 // it (C# 12.9.7): `(Action)(() => { })` says what the lambda
                 // is, which nothing else around it may. Checked as wanted by
                 // the type, and then converted as an assignment converts it.
-                if (cast.Operand is LambdaExpr || IsFunctionSource(cast.Operand))
+                // A BARE `default` the same: `((int, string))default` is the
+                // type's zero, its type the cast's.
+                if (cast.Operand is LambdaExpr || IsFunctionSource(cast.Operand) || cast.Operand is DefaultExpr { Type.Name.Length: 0 })
                 {
                     Type target = Resolve(cast.Type, _thisType);
                     Type? outerWanted = _wanted;
