@@ -1,0 +1,45 @@
+// test: parameter_rewritten_after_test
+// expect-exit: 0
+// expect-output:
+// 9 3
+// fallback given
+// 707 -99
+// 5 0
+//
+// A branch's test says what the register it tested holds where the branch
+// goes (ConstantFold.EdgeConstants), and a register copied only from a
+// parameter says the same of the parameter (StandsFor) -- but a parameter
+// holds the caller's value until something writes it, and that first value
+// is written by no instruction. `if (v == 0) v = f;` writes v only with f:
+// v is not f, and on the edge where v is 0 neither is f 0.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int OrElse(int v, int f) { if (v == 0) v = f; return v; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Given(string? given, string fallback) { if (given == null) given = fallback; return given; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Pick(int a, int b) { int r = -1; if (a == 5) { r = b; a = b; } return r * 100 + a; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Loop(int n, int stop)
+    {
+        int seen = 0, last = 0;
+        for (int i = 0; i < n; i++) { last = i; if (last == stop) break; seen++; }
+        return last;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(OrElse(0, 9) + " " + OrElse(3, 9));
+        Console.WriteLine(Given(null, "fallback") + " " + Given("given", "fallback"));
+        Console.WriteLine(Pick(5, 7) + " " + Pick(1, 5));
+        Console.WriteLine(Loop(10, 5) + " " + Loop(1, 5));
+    }
+}

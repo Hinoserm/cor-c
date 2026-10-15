@@ -95,7 +95,7 @@ public sealed class ConstantFold : IPass
             if (!single.ContainsKey(p)) unwritten.Add(p);
             many.Add(p);
         }
-        List<(VReg X, long K, Block Where)> edges = new();
+        List<(VReg X, long K, Block Where, Block At, int Index)> edges = new();
         Dictionary<Block, (VReg X, long K)> entering = new(ReferenceEqualityComparer.Instance);
         foreach (Block b in f.Blocks)
         {
@@ -103,9 +103,19 @@ public sealed class ConstantFold : IPass
             VReg? x = null;
             long k = 0;
             Block? where = null;
+            int at = b.Instrs.Count - 1;
             if (!many.Contains(c) && single.TryGetValue(c, out Instr? test) && test.Op is Opcode.Eq or Opcode.Ne
                 && test.Operands[0] is RegOperand { Reg: var tested } && test.Operands[1] is ImmOperand imm)
             {
+                // THE COMPARE IN THE BRANCH'S OWN BLOCK, and the register not
+                // written between them: what it compared is what it holds
+                // where the branch goes. A compare elsewhere may have read an
+                // earlier value of it, a loop's lap ago.
+                at = b.Instrs.IndexOf(test);
+                if (at < 0) continue;
+                bool rewritten = false;
+                for (int later = at + 1; later < b.Instrs.Count && !rewritten; later++) rewritten = ReferenceEquals(b.Instrs[later].Dest, tested);
+                if (rewritten) continue;
                 x = tested; k = imm.Value;
                 where = test.Op == Opcode.Eq ? branch.Targets[0] : branch.Targets[1];
             }
@@ -115,14 +125,14 @@ public sealed class ConstantFold : IPass
                 x = c; k = 0; where = branch.Targets[1];
             }
             if (x is null || where is null || ReferenceEquals(where, b) || entered.Contains(where) || into.GetValueOrDefault(where) != 1) continue;
-            edges.Add((x, k, where));
+            edges.Add((x, k, where, b, at));
             entering[where] = (x, IrInfo.Normalise(k, x.Type));
         }
         Dictionary<VReg, List<(Block Block, Instr Def)>>? defsOf = null;
-        foreach ((VReg x, long k, Block where) in edges)
+        foreach ((VReg x, long k, Block where, Block testedIn, int testedAt) in edges)
         {
             Substitute(where, x, k);
-            if (StandsFor(x) is { } y) Substitute(where, y, k);
+            if (StandsFor(x, testedIn, testedAt) is { } y) Substitute(where, y, k);
         }
 
         static void Substitute(Block where, VReg x, long k)
@@ -141,9 +151,12 @@ public sealed class ConstantFold : IPass
         // known to be where that copy is made -- in a block entered only by
         // the edge on which a test of the parameter said so. Whatever the
         // register is tested equal to, then, so is the parameter.
-        VReg? StandsFor(VReg x)
+        VReg? StandsFor(VReg x, Block testedIn, int testedAt)
         {
-            if (unwritten.Count == 0 || unwritten.Contains(x)) return null;
+            // NEVER A PARAMETER: it holds the caller's value until something
+            // writes it, and that first value is written by no instruction --
+            // `if (v == 0) v = f;` writes v only with f, and v is not f.
+            if (unwritten.Count == 0 || f.Params.Contains(x)) return null;
             if (defsOf is null)
             {
                 defsOf = new();
@@ -164,6 +177,9 @@ public sealed class ConstantFold : IPass
                     y = from;
                 }
             if (y is null || !unwritten.Contains(y) || y.Type != x.Type) return null;
+            // AND WRITTEN ON EVERY WAY TO THE COMPARE: a register read before
+            // anything writes it holds whatever it held, not the parameter.
+            if (!WrittenBefore(x, defs, testedIn, testedAt)) return null;
             foreach ((Block b, Instr d) in defs)
             {
                 if (d is { Op: Opcode.Copy, Operands: [RegOperand] }) continue;
@@ -172,6 +188,38 @@ public sealed class ConstantFold : IPass
                     || known.K != IrInfo.Normalise(constant.Value, y.Type)) return null;
             }
             return y;
+        }
+
+        // Whether every way from where the function can be entered to
+        // `index` in `at` passes a write of `x`: a forward must-pass over the
+        // blocks, the roots (the entry, landing pads, labels whose address is
+        // taken) starting unwritten.
+        bool WrittenBefore(VReg x, List<(Block Block, Instr Def)> defs, Block at, int index)
+        {
+            for (int k = 0; k < index && k < at.Instrs.Count; k++) if (ReferenceEquals(at.Instrs[k].Dest, x)) return true;
+            HashSet<Block> writes = new(ReferenceEqualityComparer.Instance);
+            foreach ((Block b, Instr _) in defs) writes.Add(b);
+            Dictionary<Block, List<Block>> preds = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in f.Blocks)
+            {
+                if (b.Terminator is not { } end) continue;
+                foreach (Block t in end.Targets) (preds.TryGetValue(t, out var l) ? l : preds[t] = new()).Add(b);
+                if (end.Default is { } d) (preds.TryGetValue(d, out var l2) ? l2 : preds[d] = new()).Add(b);
+            }
+            Dictionary<Block, bool> inWritten = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in f.Blocks) inWritten[b] = !entered.Contains(b);
+            for (bool changed = true; changed;)
+            {
+                changed = false;
+                foreach (Block b in f.Blocks)
+                {
+                    if (entered.Contains(b)) continue;
+                    bool all = preds.TryGetValue(b, out var from) && from.Count > 0;
+                    if (all) foreach (Block p in from!) all &= inWritten[p] || writes.Contains(p);
+                    if (all != inWritten[b]) { inWritten[b] = all; changed = true; }
+                }
+            }
+            return inWritten[at];
         }
     }
 
