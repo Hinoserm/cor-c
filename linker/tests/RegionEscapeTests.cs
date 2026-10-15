@@ -1022,6 +1022,8 @@ public static class RegionEscapeTests
         owned.Mapped.Add("T::list");
         owned.SelfFreed.Add("T::list");
         owned.Borrowers.Add("m_T_get_List_0");
+        owned.Borrowers.Add(VirtualTargets.Prefix + "t_T+48");
+        owned.Resolved.Add(VirtualTargets.Prefix + "t_T+48"); owned.Resolved.Add(VirtualTargets.Prefix + "t_T+52");
         owned.Elements["T::list"] = "list";
         owned.ElementCallees[("m_T_Fill_1", 1)] = "T::list";
         owned.ElementKept.Add("T::name");
@@ -1043,7 +1045,13 @@ public static class RegionEscapeTests
         Check(o.Fields.Count == 2 && o.Fields["T::list"] == 8 && o.Fields["T::name"] == 16, "each owned field and its offset");
         Check(o.Mapped.SetEquals(new[] { "T::list" }) && o.SelfFreed.SetEquals(new[] { "T::list" }), "the mapped and self-freed flags, on that field alone");
         Check(o.Beside, "storage made beside");
-        Check(o.Borrowers.SetEquals(new[] { "m_T_get_List_0" }) && o.Elements.Count == 1 && o.Elements["T::list"] == "list", "the borrowers and the elements' fields");
+        Check(o.Borrowers.SetEquals(owned.Borrowers) && o.Elements.Count == 1 && o.Elements["T::list"] == "list", "the borrowers and the elements' fields");
+        Check(o.Resolved.SetEquals(owned.Resolved), "the virtual names the link resolved");
+        // A call is judged by its name or its plain one; one the link never
+        // resolved under either may hand back anything.
+        Check(o.Borrows(VirtualTargets.Prefix + "t_T@t_U+48") && !o.Borrows(VirtualTargets.Prefix + "t_T+52")
+            && !o.Borrows(VirtualTargets.Prefix + "t_T@t_U+52") && o.Borrows(VirtualTargets.Prefix + "t_V+8")
+            && !o.Borrows("m_T_set_List_1"), "a virtual name's borrowing, under its plain name and unresolved");
         Check(o.ElementCallees.Count == 1 && o.ElementCallees[("m_T_Fill_1", 1)] == "T::list" && o.ElementKept.SetEquals(new[] { "T::name" }), "the element callees and the fields kept");
         RegionFacts r = request.Facts?.Regions ?? throw new Exception("the regions do not cross");
         Check(r.Boundaries.SetEquals(regions.Boundaries) && r.Sites.SetEquals(regions.Sites) && r.Loops.SetEquals(regions.Loops), "the boundaries, sites and loops");

@@ -27,7 +27,20 @@ public sealed class OwnedFieldFacts
     /// call is given where it sits names fewer targets than the link judged
     /// under another of its names, never more (VirtualTargets.Plain).
     /// </summary>
-    public bool Borrows(string name) => Borrowers.Contains(name) || name.Contains('@') && Borrowers.Contains(VirtualTargets.Plain(name));
+    public bool Borrows(string name)
+    {
+        if (Borrowers.Contains(name)) return true;
+        if (!name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) return false;
+        string plain = VirtualTargets.Plain(name);
+        // ONE THE LINK NEVER JUDGED, under either name, may be anything: a
+        // call the unit's hints did not name (taken out before they were
+        // written, and still there where the backend runs the passes again).
+        if (!Resolved.Contains(name) && !Resolved.Contains(plain)) return Borrowers.Count > 0;
+        return name.Contains('@') && Borrowers.Contains(plain);
+    }
+
+    /// <summary>The virtual call symbols the link resolved, borrowers or not (Borrows).</summary>
+    public HashSet<string> Resolved { get; } = new(StringComparer.Ordinal);
     /// <summary>
     /// The fields a collection handed to them gives its elements back
     /// through, by the collection's kind: every read of the field in the
@@ -86,7 +99,10 @@ public static class OwnedFieldSolver
         foreach (OwnedFieldHints unit in all)
         {
             addressed.UnionWith(unit.Addressed); codeNamed.UnionWith(unit.CodeNamed); slotted.UnionWith(unit.Slotted);
-            unresolvedVirtual |= unit.UnresolvedVirtual || unit.VirtualNames().Any(name => !virtuals.ContainsKey(name));
+            // And an `@` name whose plain one the link could not resolve: a
+            // call renamed where it is inlined is judged by its plain name.
+            unresolvedVirtual |= unit.UnresolvedVirtual || unit.VirtualNames().Any(name => !virtuals.ContainsKey(name)
+                || name.Contains('@') && !virtuals.ContainsKey(VirtualTargets.Plain(name)));
         }
         bool IsVirtualTarget(string name) => slotted.Contains(name) && !codeNamed.Contains(name) && !unresolvedVirtual;
         static bool IsVirtual(string name) => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal);
@@ -307,6 +323,7 @@ public static class OwnedFieldSolver
             if (fields.Any(facts.Fields.ContainsKey)) facts.Borrowers.Add(function);
         foreach ((string symbol, string[] targets) in virtuals)
             if (targets.Any(facts.Borrowers.Contains)) facts.Borrowers.Add(symbol);
+        facts.Resolved.UnionWith(virtuals.Keys);
 
         // ITS ARRAYS OWNING THEIR ELEMENTS (Escape.ArrayFieldElements): an
         // owned field every unit that stores or reads it proved so, some
