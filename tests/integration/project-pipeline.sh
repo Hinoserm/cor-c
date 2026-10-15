@@ -5,7 +5,7 @@ cd "$root"
 mkdir -p build
 work="$(mktemp -d "$root/build/project-pipeline.XXXXXX")"
 cp tests/integration/project/Basic.csproj tests/integration/project/Program.cs tests/integration/project/Answer.cs "$work/"
-corc="${CORC_DLL:-$root/build/native-project-host/corc.dll}"
+corc="${CORC_DLL:-$root/compiler/bin/managed/Release/net10.0/corc.dll}"
 run_build() { dotnet "$corc" project "$work/Basic.csproj" --jobs 4; }
 run_build > "$work/first.log" 2>&1
 program="$work/bin/cor-c/Release/net10.0/Basic"

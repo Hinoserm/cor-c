@@ -190,15 +190,15 @@ if [ "$failed" -eq 0 ]; then
         [ -f "$out/$soname" ] || continue
         missing="$(
             readelf -sW --dyn-syms "$out/$soname" 2>/dev/null |
-                awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > /tmp/.corsac-und.$$
-            : > /tmp/.corsac-def.$$
+                awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$out/.corsac-und.$$"
+            : > "$out/.corsac-def.$$"
             for lower in $below; do
                 readelf -sW --dyn-syms "$out/$lower" 2>/dev/null |
-                    awk '$7 != "UND" && $8 != "" { print $8 }' >> /tmp/.corsac-def.$$
+                    awk '$7 != "UND" && $8 != "" { print $8 }' >> "$out/.corsac-def.$$"
             done
-            sort -u /tmp/.corsac-def.$$ -o /tmp/.corsac-def.$$
-            comm -23 /tmp/.corsac-und.$$ /tmp/.corsac-def.$$
-            rm -f /tmp/.corsac-und.$$ /tmp/.corsac-def.$$
+            sort -u "$out/.corsac-def.$$" -o "$out/.corsac-def.$$"
+            comm -23 "$out/.corsac-und.$$" "$out/.corsac-def.$$"
+            rm -f "$out/.corsac-und.$$" "$out/.corsac-def.$$"
         )"
         if [ -n "$missing" ]; then
             echo "CYCLE $soname needs names no library below it defines:"

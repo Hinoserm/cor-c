@@ -11,7 +11,7 @@ mkdir -p build
 work="$(mktemp -d "$root/build/project-slots.XXXXXX")"
 cp tests/integration/project-slots/Slots.csproj tests/integration/project-slots/Program.cs \
    tests/integration/project-slots/Shapes.cs tests/integration/project-slots/Scanner.cs "$work/"
-corc="${CORC_DLL:-$root/build/native-project-host/corc.dll}"
+corc="${CORC_DLL:-$root/compiler/bin/managed/Release/net10.0/corc.dll}"
 dotnet "$corc" project "$work/Slots.csproj" --jobs 4 > "$work/build.log" 2>&1 || { cat "$work/build.log"; exit 1; }
 status=0; "$work/bin/cor-c/Release/net10.0/Slots" || status=$?
 test "$status" = 41 || { echo "FAIL: exit $status, want 41"; exit 1; }

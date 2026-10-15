@@ -47,7 +47,8 @@ fi
 export SEPARATE_CORC="$corc" SEPARATE_INDEX="$work/library.idx" SEPARATE_LIB_OBJ="$work/library.o"
 failed=()
 for name in "${tests[@]}"; do
-    CORC="$root/tests/integration/separate/corc-unit" CORC_LIBS="$(tr '\n' ' ' < "$work/libs.txt")" \
+    # Its work under this run's own directory, never the system's /tmp.
+    TMPDIR="$work" CORC="$root/tests/integration/separate/corc-unit" CORC_LIBS="$(tr '\n' ' ' < "$work/libs.txt")" \
         bash tests/language/run.sh ${name:+"$name"} > "$work/run-${name:-all}.log" 2>&1 || failed+=("${name:-all}")
 done
 [ ${#failed[@]} = 0 ] || { grep -h '^FAIL' "$work"/run-*.log >&2; fail "separate units: ${failed[*]}"; }

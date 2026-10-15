@@ -16,15 +16,10 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-# The compiler run.sh uses: CORC, else the newest build's corc.dll.
-if [ -n "${CORC:-}" ]
-then
-    corc="$CORC"
-else
-    dll="$(ls -1t "$root"/compiler/bin/Release/net*/corc.dll 2>/dev/null | head -1)"
-    corc="dotnet $dll"
-fi
-work="${WORK:-$(mktemp -d)}"
+# The compiler run.sh uses: CORC, else the build's own.
+corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
+mkdir -p "$root/build"
+work="${WORK:-$(mktemp -d "$root/build/asm-movzx.XXXXXX")}"
 
 failures=0
 

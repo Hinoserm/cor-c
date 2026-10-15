@@ -2,9 +2,9 @@
 #
 # An assembled object links into a COR-C# program.
 #
-#     tests/lang/260_asm_object.sh
+#     tests/language/260_asm_object.sh
 #
-# `corc build --obj` turns assembly into a relocatable i386 object -- sections,
+# `corc asm --obj` turns assembly into a relocatable i386 object -- sections,
 # a symbol for every .global label, a relocation for every reference the linker
 # has to finish -- and `corc compile --with` links such objects in. That is what
 # lets the x86 kernel have a real entry stub and real interrupt vectors instead
@@ -20,9 +20,11 @@ set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-corc="$root/compiler/bin/managed/Release/net10.0/corc"
-work="${WORK:-$(mktemp -d)}"
-libs="stdlib/src/System/Core.cor runtime/src/core/runtime.cor runtime/src/core/gc.cor lib/threading.cor lib/threading-linux.cor runtime/src/platforms/linux/system.cor lib/io.cor lib/console.cor lib/environment.cor lib/net.cor lib/security.cor lib/signals.cor lib/process.cor"
+# The compiler run.sh uses: CORC, else the build's own. The library is the
+# one the compiler names (library-sources), as for every program.
+corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
+mkdir -p "$root/build"
+work="${WORK:-$(mktemp -d "$root/build/asm-object.XXXXXX")}"
 
 failures=0
 
@@ -102,8 +104,8 @@ static class Program
 }
 COR
 
-"$corc" asm --target x86-32 "$work/parts.asm" --obj -o "$work/parts.o" 2>"$work/build.err"
-check $? "corc build --obj assembles to an object"
+$corc asm --target x86-32 "$work/parts.asm" --obj -o "$work/parts.o" 2>"$work/build.err"
+check $? "corc asm --obj assembles to an object"
 if [ -s "$work/build.err" ]
 then
     sed 's/^/    /' "$work/build.err"
@@ -123,9 +125,12 @@ wants "it has a .rodata section"         "$headers" ".rodata"
 wants "it has a .data section"           "$headers" ".data"
 wants "it has a NOBITS .bss section"     "$headers" "NOBITS"
 
+# Defined in .text, by that section's number: the object's first section is
+# the CPU requirement note (.corsac.cpu), not .text.
+text="$(readelf -SW "$work/parts.o" | sed -n 's/^ *\[ *\([0-9]*\)\] \.text .*/\1/p')"
 symbols="$(readelf -sW "$work/parts.o" 2>&1)"
-wants ".global exports _start"               "$symbols" "GLOBAL DEFAULT .*1 _start"
-wants ".global exports helper"               "$symbols" "GLOBAL DEFAULT .*1 helper"
+wants ".global exports _start"               "$symbols" "GLOBAL DEFAULT *$text _start"
+wants ".global exports helper"               "$symbols" "GLOBAL DEFAULT *$text helper"
 wants ".extern leaves corc_start undefined"  "$symbols" "UND corc_start"
 wants "the COR-C# static is undefined too"   "$symbols" "UND s_Marker_Value"
 
@@ -140,13 +145,7 @@ check $? "objdump disassembles the object"
 wants "the same-section call needs no relocation" \
       "$(printf '%s' "$code" | grep -A1 'call')" "call"
 
-sources=""
-for lib in $libs
-do
-    sources="$sources $root/$lib"
-done
-
-"$corc" compile $sources "$work/marker.cor" --with "$work/parts.o" \
+$corc compile "$work/marker.cor" --with "$work/parts.o" \
     --asm-entry corc_start --entry _start -o "$work/marker" 2>"$work/link.err"
 check $? "corc compile --with links the object in"
 if [ -s "$work/link.err" ]
@@ -180,6 +179,7 @@ fi
 if [ "$failures" = 0 ]
 then
     echo "260_asm_object: all checks passed"
+    [ -z "${WORK:-}" ] && rm -rf "$work"
     exit 0
 fi
 
