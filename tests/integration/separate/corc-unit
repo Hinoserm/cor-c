@@ -25,7 +25,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 real+=("${global[@]}")
-case " $* " in *" --obj "*|*" --freestanding "*) exec "${real[@]}" "$@" ;; esac
+# A compile of its own, and one in the kernels' store scheme (--store-sequences),
+# which the library object compiled once was not built in, go to the compiler
+# whole.
+case " $* " in *" --obj "*|*" --freestanding "*|*" --store-sequences "*) exec "${real[@]}" "$@" ;; esac
 [ "${1:-}" = compile ] || exec "${real[@]}" "$@"
 shift
 # THE LIBRARY AS THIS COMPILE SEES IT: run.sh compiles from its own copy of

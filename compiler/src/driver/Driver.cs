@@ -303,6 +303,9 @@ public static class Driver
               --ring1-syscalls   with --freestanding: Sys.Syscall traps to 0x83, the
                                  CORSAC ring-1 kernels' gate for Linux's file
                                  calls, instead of 0x80
+              --store-sequences  every reference store one sequence no thread is
+                                 stopped inside, as a kernel's images are built;
+                                 a ring-1 kernel's always are
               --base <addr>      load or link address, hexadecimal (0x10000)
               --load <addr>      where a loader puts the image, when that is
                                  not where it is linked to run: the ELF's
@@ -647,13 +650,17 @@ public static class Driver
         // a ring-1 kernel's, sent to its handshake from wherever a trap finds
         // it (--ring1-syscalls), and ring 0's kernel and its modules, whose
         // processors answer their collector from a Kick's interrupt -- the
-        // image build asks with --store-sequences, which a freestanding test
-        // run as a process may ask too. The card mark before a store stays
-        // only for a store that cannot be made one (Lowering.CardMarkBefore),
-        // in the same images: one scheme an image.
-        Corsac.Lang.Lower.Lowering.StoreSequences = freestanding && (Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences"));
+        // image build asks with --store-sequences. ANY COMPILE MAY ASK: the
+        // core runtime has every routine the stubs call, and a program run on
+        // Linux compiled so is the kernels' scheme tested across the whole
+        // class library (1453-1456, which the flag did nothing for while it
+        // was a freestanding compile's alone). The card mark before a store
+        // stays only for a store that cannot be made one
+        // (Lowering.CardMarkBefore), in the same images: one scheme an image.
+        // A thread block is a processor's in a ring-0 image only.
+        Corsac.Lang.Lower.Lowering.StoreSequences = Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences");
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
-        Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && !Corsac.Lang.Lower.Lowering.Ring1Syscalls;
+        Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding && !Corsac.Lang.Lower.Lowering.Ring1Syscalls;
 
         // --asm-entry: an assembled object supplies `_start`, and this is the
         // name it calls once it has a stack and a cleared .bss.
@@ -1005,7 +1012,7 @@ public static class Driver
             // a program linked against libcorsacrt carried a piece of Gc.
             if (module.Entry is not null)
             {
-                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, Corsac.Lang.Opt.Inline.AddressTaken(module));
+                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, new HashSet<string>(StringComparer.Ordinal));
             }
             HashSet<string> defined = new(
                 module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)),

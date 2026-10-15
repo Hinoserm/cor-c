@@ -1758,18 +1758,25 @@ continue;
             if (st.Operands[0] is not RegOperand baseReg || Origin(Defs(f), baseReg.Reg) is not Instr madeOwner
                 || !PrivateOwner(f, madeOwner, summaries, privateOwner)) continue;
             int at = b.Instrs.IndexOf(st);
-            List<Instr> made = new();
+            // THE OLD VALUE READ BEFORE THE STORE AND FREED AFTER IT: the
+            // store stays where its barrier left it, in the block a store
+            // sequence is made of (CardMarks.FuseStores) -- freed first and
+            // inlined there, the free split the block between the two and the
+            // store could not be made one -- and the field never names a
+            // freed object, which a concurrent mark could otherwise report.
             VReg old = f.NewReg(IrTypes.Word);
             Instr load = new() { Op = Opcode.Load, Dest = old, Offset = st.Offset, Size = st.Size, Line = st.Line };
             load.Operands.Add(st.Operands[0]);
-            made.Add(load);
+            List<Instr> after = new();
             // Both machine words, as the runtime's frees take on every target.
             Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = st.Line };
-            free.Operands.Add(Word(f, made, RegOperand.Of(old), st.Line));
-            free.Operands.Add(Word(f, made, st.Operands[1], st.Line));
-            made.Add(free);
-            b.Instrs.InsertRange(at, made);
-            _bookkeeping.UnionWith(made);
+            free.Operands.Add(Word(f, after, RegOperand.Of(old), st.Line));
+            free.Operands.Add(Word(f, after, st.Operands[1], st.Line));
+            after.Add(free);
+            b.Instrs.InsertRange(at + 1, after);
+            b.Instrs.Insert(at, load);
+            _bookkeeping.Add(load);
+            _bookkeeping.UnionWith(after);
         }
 
         // What calls replace in each function's own objects (FreeReplacedAcrossCalls).
