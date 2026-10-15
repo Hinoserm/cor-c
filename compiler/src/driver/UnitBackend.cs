@@ -101,12 +101,16 @@ public sealed class UnitBackend : IUnitBackend
                 RegionPointsTo.MarkLoops(module, regions);
             }
             module.LinkEscapes = facts?.Escapes;
+            // The image's answer on a collector (Lto.HeapDecision).
+            module.LinkHeap = facts?.Heap;
             foreach (Function function in module.Functions)
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);
             Pipeline late = Pipeline.Default(optimizeSize: read.Settings!.OptimizeSize, experimentalBatch: read.Settings.ExperimentalBatch);
             late.Workers = Workers;
             late.RunLate(module);
+            // What that run found of the unit's own functions, for each one's rules as it is loaded (Escape.LinkFacts.Unit).
+            link?.Unit(module);
             AsyncTransform.Run(module, Target.Current.WordSize);
             LandingPadHomes.Run(module);
             // Only a collector reads stack maps, and a unit the late passes
@@ -187,6 +191,10 @@ public sealed class UnitBackend : IUnitBackend
             {
                 Function body = IrFunctionCodec.Read(import.Body, new IrReadBudget(import.DecodeBytes));
                 if (body.Name != import.Symbol) throw new InvalidDataException("Conflicting IR import identity");
+                // Without a collector, its questions of the collector answered and
+                // its notes to it dropped before any inliner here takes a body in
+                // -- Runtime.CollectorLinked()'s own `return true` among them.
+                if (module.LinkHeap == false) Escape.WithoutCollectorNotes(body);
                 if (import.RegionBoundary) body.NoInlining = true;
                 // A body that reads a field elements are owned through comes
                 // as its unit archived it, before the reads were kept alive
@@ -270,6 +278,11 @@ public sealed class UnitBackend : IUnitBackend
                     cleanup.Run(local);
                 }
             }
+            // A PROGRAM WITHOUT A COLLECTOR (Module.LinkHeap): what came in
+            // with the bodies brought from other units -- their allocations,
+            // their questions of the collector -- made as the unit's own were
+            // (Escape.WithoutCollector), before any allocation is put in place.
+            if (module.LinkHeap == false && Escape.WithoutCollector(function)) cleanup.Run(local);
             // THE LINK'S REGION SITES, what is left of them now its lifetime
             // rules are done (RegionPointsTo.ApplyFacts): an object they placed
             // in the frame or freed where it dies was never the region's.
@@ -359,6 +372,8 @@ public sealed class UnitBackend : IUnitBackend
             copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);
         }
         DefinitionSemantics.Attach(result, semantics);
+        // The unit's records as this making left it, for the link's decision on a collector.
+        if (preLate && module.HeapRecords is { } heap) heap.Attach(result);
         if (preLate && module.LifetimeHints is { FieldSites.Count: > 0 } named)
         {
             LifetimeHints sites = new();

@@ -67,6 +67,20 @@ public sealed class Module
     public Corsac.Lang.Lto.LifetimeHints? LifetimeHints { get; set; }
 
     /// <summary>
+    /// What a unit leaves to the collector, for the link to say whether the
+    /// program needs one (Lto.HeapRecords, Escape.HeapRecordsOf).
+    /// </summary>
+    public Corsac.Lang.Lto.HeapRecords? HeapRecords { get; set; }
+
+    /// <summary>
+    /// The link's answer, for a unit of a closed image it makes again: false
+    /// when the program needs no collector (Lto.HeapDecision), and every
+    /// allocation goes to the manual heap as a whole program's would (Escape);
+    /// null when it has not decided.
+    /// </summary>
+    public bool? LinkHeap { get; set; }
+
+    /// <summary>
     /// Whether the object this module becomes carries link-time hints: the
     /// driver says so before optimising. Without them nothing may call a
     /// symbol only the link defines, and there is nothing to leave hints for.
@@ -137,6 +151,22 @@ public sealed class Module
     /// the unit's own answers alone.
     /// </summary>
     public Dictionary<string, bool[]>? LinkEscapes { get; set; }
+
+    /// <summary>
+    /// WHAT THE LINK'S OWN RUN OF A UNIT'S LIFETIME PASS FOUND OF ITS
+    /// FUNCTIONS, for the per-function rules that run after it (Escape.
+    /// RunAtLink, LinkFacts.Unit): those that hand back their first argument
+    /// (ReturnsFirst), those whose bodies it had (a call to anything else is
+    /// unknown), those that hand back a copy of their argument's words, as
+    /// (descriptor, base) stamps, and the unit's own descriptors. Without
+    /// them each of those questions was answered by whatever the last run
+    /// on the same thread had left -- or by nothing, and an iterator's
+    /// GetEnumerator held the list it walks (1210's where-tolist).
+    /// </summary>
+    public HashSet<string>? LinkReturnsFirst { get; set; }
+    public HashSet<string>? LinkBodies { get; set; }
+    public Dictionary<string, (string Descriptor, long Base)[]>? LinkCopies { get; set; }
+    public Dictionary<string, DataItem>? LinkTypeItems { get; set; }
 
     /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet

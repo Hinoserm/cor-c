@@ -12,8 +12,12 @@ public static class IrLinkOptimizer
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
         string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
-        IEnumerable<string>? keep = null, bool moduleOfKernel = false)
+        IEnumerable<string>? keep = null, bool moduleOfKernel = false, IReadOnlyList<HeapRecords?>? withoutCollector = null)
     {
+        // THE SECOND MAKING OF A PROGRAM THAT NEEDS NO COLLECTOR (below,
+        // HeapDecision): `withoutCollector` holds each input's records as
+        // the first making left them, for the edges its reachability drops.
+        bool noCollector = withoutCollector is not null;
         if (importBytes < 0 || bodyLimit < 0) throw new ArgumentOutOfRangeException(nameof(importBytes));
         TargetContract.Validate(inputs); ManagedLayoutContract.Validate(inputs);
         DefinitionCoalescer.Run(inputs, validateOnly: true);
@@ -40,6 +44,8 @@ public static class IrLinkOptimizer
                 owners.TryAdd(symbol.Name, input.Object);
         }
         LinkTimings.Phase("archives and hints");
+        // The objects as they came, for a second making (below).
+        ObjectFile[] originals = inputs.Select(input => input.Object).ToArray();
         // Every unit's lifetime summaries, solved together (LifetimeSolver).
         // Virtual calls, each by the overrides the whole image holds for it
         // (VirtualTargets), from the descriptors in the objects themselves.
@@ -52,7 +58,7 @@ public static class IrLinkOptimizer
         // makes: only kept code makes them (VirtualTargets.MadeTypes), and the
         // lifetime solve below is the first to ask. Nothing here needs its
         // answers -- the roots are the hints' helpers and the runtime's own.
-        bool regionsPossible = enabled && hints.Count > 0 && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
+        bool regionsPossible = enabled && !noCollector && hints.Count > 0 && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
             && archives.Keys.All(regionHints.Contains)
             && new[] { RuntimeAbi.RegionEnter, RuntimeAbi.RegionLeave, RuntimeAbi.AllocRegion, RuntimeAbi.RegionCatch }.All(owners.ContainsKey);
         // A closed image keeps only what is reached, and reaching is judged
@@ -75,20 +81,25 @@ public static class IrLinkOptimizer
         // writes after the IR was archived: the archive never shows it, and a
         // closed image without lifetime hints dropped the helper and failed
         // to link ("undefined symbol m_Runtime_CardMarkObject").
-        linkRoots.Add(RuntimeAbi.CardMarkObject);
-        linkRoots.Add(RuntimeAbi.ShadeObject);
+        if (!noCollector)
+        {
+            linkRoots.Add(RuntimeAbi.CardMarkObject);
+            linkRoots.Add(RuntimeAbi.ShadeObject);
+        }
         // And the allocation every `new` becomes as each unit is regenerated
         // (AllocatorFastPaths), with its long way: nothing calls either in
         // the IR the units archived.
-        if (owners.ContainsKey(RuntimeAbi.AllocFastSized)) linkRoots.Add(RuntimeAbi.AllocFastSized);
+        if (!noCollector && owners.ContainsKey(RuntimeAbi.AllocFastSized)) linkRoots.Add(RuntimeAbi.AllocFastSized);
         if (regionsPossible && owners.ContainsKey(RuntimeAbi.AllocRegionSized)) linkRoots.Add(RuntimeAbi.AllocRegionSized);
-        if (owners.ContainsKey(RuntimeAbi.AllocFast)) linkRoots.Add(RuntimeAbi.AllocFast);
-        if (owners.ContainsKey(RuntimeAbi.AllocMissed)) linkRoots.Add(RuntimeAbi.AllocMissed);
+        if (!noCollector && owners.ContainsKey(RuntimeAbi.AllocFast)) linkRoots.Add(RuntimeAbi.AllocFast);
+        if (!noCollector && owners.ContainsKey(RuntimeAbi.AllocMissed)) linkRoots.Add(RuntimeAbi.AllocMissed);
+        // Without a collector, the manual heap every allocation and free becomes (Escape.WithoutCollector).
+        if (noCollector) linkRoots.UnionWith(ManualHeap);
         // And the barrier on a replaced object's value, which ScalarObjects
         // writes where the unit defines it: a regenerated unit's late passes
         // see the whole unit, what the image keeps of it or not (UnitBackend),
         // and the one holding the runtime called it unkept.
-        linkRoots.Add(RuntimeAbi.WriteBarrierValues);
+        if (!noCollector) linkRoots.Add(RuntimeAbi.WriteBarrierValues);
         // And the store sequences' barriers, where the image has the stubs
         // (the runtime's unit defines __corsac_refstore): only those stubs,
         // which the backend writes, call them, and no unit's IR names them.
@@ -106,7 +117,9 @@ public static class IrLinkOptimizer
         if (keep is not null) linkRoots.UnionWith(keep);
         string? reachEntry = closedImageEntry ?? reachableFrom;
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && reachEntry is not null
-            ? IrReachability.Find(inputs, archives, owners, reachEntry, linkRoots) : null;
+            ? IrReachability.Find(inputs, archives, owners, reachEntry, linkRoots,
+                noCollector ? HeapDecision.GoneEdges(inputs.Select((input, index) => (input.Object, withoutCollector![index]))
+                    .Where(unit => unit.Item2 is not null).Select(unit => (unit.Object, unit.Item2!)).ToList()) : null) : null;
         LinkTimings.Phase("reachability");
         // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
         // call's targets on a type nothing stamps an object with run on no
@@ -234,6 +247,19 @@ public static class IrLinkOptimizer
         if (regionsPossible) GC.Collect(2, GCCollectionMode.Aggressive, true);
         LinkTimings.Phase("regions");
         int lifetimeUnits = 0;
+        // A PROGRAM THAT MAY NEED NO COLLECTOR (HeapDecision): a closed image
+        // whose every unit with IR left its records and its lifetime hints,
+        // whose code without IR names nothing of the collector's, and that
+        // holds the manual heap. Its first making is the usual one; what it
+        // leaves decides whether there is a second, without a collector.
+        Dictionary<ObjectFile, HeapRecords> heapRecords = new(ReferenceEqualityComparer.Instance);
+        if (enabled && !noCollector && lifetimes is not null && closedImageEntry is not null && keep is null && !moduleOfKernel && !openTypes)
+            foreach (ObjectFile obj in archives.Keys)
+                if (HeapRecords.Read(obj) is HeapRecords records) heapRecords[obj] = records;
+        bool heapPossible = heapRecords.Count > 0 && archives.Keys.All(heapRecords.ContainsKey) && archives.Keys.All(hints.ContainsKey)
+            && !foreign.Contains("*") && !foreign.Any(CollectorName) && ManualHeap.All(owners.ContainsKey)
+            // Not where stores go through the store-sequence stubs, which call the barriers whatever the program needs.
+            && !owners.ContainsKey(RuntimeAbi.RefStore);
         List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained)> plans = new();
         if (enabled)
             for (int index = 0; index < inputs.Count; index++)
@@ -247,8 +273,9 @@ public static class IrLinkOptimizer
                 // of what another unit does, which the whole program now says.
                 // Every unit of a closed image the whole program has answers for
                 // gains by them (its catches), whatever its pending conditions.
+                // And every unit of a program made again without a collector.
                 bool gains = lifetimes is not null && hints.TryGetValue(obj, out LifetimeHints? unitHints)
-                    && (programFacts || ownedFields is not null || regionFacts is not null && regionFacts.ContainsKey(obj) || unitHints.Pending.Any(lifetimes.Holds));
+                    && (noCollector || programFacts || ownedFields is not null || regionFacts is not null && regionFacts.ContainsKey(obj) || unitHints.Pending.Any(lifetimes.Holds));
                 if (gains) lifetimeUnits++;
                 List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> imports = new(); int used = 0;
                 // The runtime's frees are calls such a unit is about to make.
@@ -268,6 +295,11 @@ public static class IrLinkOptimizer
                     if (defined.Contains(call) || !owners.TryGetValue(call, out ObjectFile? owner) || !archives.TryGetValue(owner, out IrArchive? provider)
                         || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body) || !body.Importable
                         || body.Instructions > 160) continue;
+                    // NOTHING THAT ALLOCATES INTO A PROGRAM WITHOUT A COLLECTOR:
+                    // what its own unit freed or kept in the frame, brought into
+                    // another and not freed there, would be the manual heap's
+                    // for good -- where the collector would have taken it.
+                    if (noCollector && body.Calls.Any(callee => callee is RuntimeAbi.Alloc or RuntimeAbi.AllocLeaf or RuntimeAbi.AllocObject)) continue;
                     candidates.Add((call, provider, body));
                 }
                 int counted = 0;
@@ -286,7 +318,7 @@ public static class IrLinkOptimizer
                 // again anyway: one taken as its compile left it keeps its
                 // calls, and is right with them.
                 foreach (string placed in new[] { RuntimeAbi.AllocFastSized, RuntimeAbi.AllocFast })
-                    if (planned && !defined.Contains(placed) && imports.All(import => import.Symbol != placed)
+                    if (planned && !noCollector && !defined.Contains(placed) && imports.All(import => import.Symbol != placed)
                         && owners.TryGetValue(placed, out ObjectFile? allocOwner) && archives.TryGetValue(allocOwner, out IrArchive? allocArchive)
                         && allocArchive.Entries.TryGetValue("F:" + placed, out IrArchiveEntry? allocBody) && allocBody.Importable)
                         imports.Add((placed, allocArchive, allocBody));
@@ -321,6 +353,7 @@ public static class IrLinkOptimizer
                     .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal));
             facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
             facts.Regions = regionFacts?.GetValueOrDefault(original);
+            if (noCollector) facts.Heap = false;
             return facts;
         }
         LinkTimings.Phase("plans");
@@ -390,7 +423,8 @@ public static class IrLinkOptimizer
                     // What is still asked of it is its identity (owners, the
                     // region and hint maps) and its archive, which is read
                     // from its file.
-                    if (!ReferenceEquals(replacement, original))
+                    // Kept where a second making may want it and there is no file to read it from again.
+                    if (!ReferenceEquals(replacement, original) && (noCollector || !heapPossible || original.SourcePath is not null))
                     {
                         original.Sections.Clear(); original.Sections.TrimExcess();
                         original.Symbols.Clear(); original.Symbols.TrimExcess();
@@ -429,6 +463,65 @@ public static class IrLinkOptimizer
         LinkTimings.Phase("units regenerated (" + plans.Count + ", " + workerCount + " backends)");
         foreach (var replacement in replacements)
             inputs[replacement.Index] = (inputs[replacement.Index].Name, replacement.Object);
+
+        // WHETHER THE PROGRAM NEEDS A COLLECTOR, from the records every unit
+        // left as this making made it -- a unit made again, the new object's;
+        // one taken as its compile left it, the compile's (HeapDecision).
+        // None needed: every unit with IR made again from its archive with
+        // the manual heap in the collector's place, and only what that
+        // program reaches kept -- the collector, and what only it used, gone.
+        if (heapPossible)
+        {
+            HeapRecords?[] now = new HeapRecords?[inputs.Count];
+            List<(ObjectFile Object, HeapRecords Records)> units = new();
+            bool complete = true;
+            for (int index = 0; index < inputs.Count && complete; index++)
+            {
+                if (!archives.ContainsKey(originals[index])) continue;
+                ObjectFile current = inputs[index].Object;
+                now[index] = ReferenceEquals(current, originals[index]) ? heapRecords[originals[index]] : HeapRecords.Read(current);
+                if (now[index] is HeapRecords records) units.Add((current, records)); else complete = false;
+            }
+            if (complete)
+            {
+                Dictionary<string, string[]> targets = VirtualTargets.Resolve(inputs, units.SelectMany(unit => unit.Records.Functions)
+                    .SelectMany(function => function.Events).Where(e => e.Kind == HeapEventKind.Virtual && e.Name != "*")
+                    .SelectMany(e => e.Name.Contains('@') ? new[] { e.Name, VirtualTargets.Plain(e.Name) } : new[] { e.Name }), made?.Again());
+                string[]? TargetsOf(string name) => targets.TryGetValue(name, out string[]? found) ? found
+                    : name.Contains('@') && targets.TryGetValue(VirtualTargets.Plain(name), out found) ? found : null;
+                HeapDecision.Answer answer = HeapDecision.Decide(inputs, units, closedImageEntry!, TargetsOf, types => VirtualTargets.Ancestry(inputs, types),
+                    ownedFields?.Fields.Keys.ToHashSet(StringComparer.Ordinal));
+                Console.Error.WriteLine("LTO heap: " + (answer.NeedsHeap ? "a collector, " + (answer.Because ?? answer.Sites.Count + " allocations left to it") : "no collector"));
+                if (Switches.AllocReport) Console.Error.WriteLine("alloc report: link catches keeping: " + answer.Catches);
+                if (Switches.AllocReport)
+                    foreach (string site in answer.Excused.Where(site => Switches.AllocReportOnly is not { } which || site.Contains(which, StringComparison.Ordinal)))
+                        Console.Error.WriteLine("alloc report: link excused " + site);
+                if (Switches.AllocReport)
+                    foreach (string site in answer.Sites.Where(site => Switches.AllocReportOnly is not { } which || site.Contains(which, StringComparison.Ordinal)))
+                        Console.Error.WriteLine("alloc report: link site " + site);
+                if (!answer.NeedsHeap)
+                    foreach (string site in answer.Sites) Console.Error.WriteLine("note: --no-collector: an allocation in " + site + " is never given back");
+                LinkTimings.Phase("heap decision");
+                if (!answer.NeedsHeap)
+                {
+                    // Each unit as it came: read again where its first making let it go.
+                    List<(string Name, ObjectFile Object)> again = new();
+                    for (int index = 0; index < inputs.Count; index++)
+                    {
+                        ObjectFile original = originals[index];
+                        if (archives.ContainsKey(original) && original.Sections.Count == 0)
+                            original = ElfReader.ReadObjectFile(original.SourcePath ?? throw new ElfFormatException("A unit to make again has no file"));
+                        again.Add((inputs[index].Name, archives.ContainsKey(originals[index]) ? original : inputs[index].Object));
+                    }
+                    // The compile's records: their edges are the archive's (HeapRecords.Gone).
+                    HeapRecords?[] compiled = originals.Select(original => heapRecords.GetValueOrDefault(original)).ToArray();
+                    int made2 = Run(again, backend, enabled, importBytes, bodyLimit, closedImageEntry, parallelBackends, regionReport,
+                        madeOnly, openTypes, reachableFrom, keep, moduleOfKernel, compiled);
+                    for (int index = 0; index < inputs.Count; index++) inputs[index] = again[index];
+                    return made2;
+                }
+            }
+        }
         // Final images do not carry compiler IR or stale native integrity hashes.
         // The sites a regenerated unit's own late passes named, with the
         // compile's: each object's records define its symbols.
@@ -438,13 +531,30 @@ public static class IrLinkOptimizer
         (int sites, int sitesFreed) = DefineFieldSites(inputs, siteOrder, lifetimes, moduleOfKernel);
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName
-                || section.Name == RegionHints.SectionName);
+                || section.Name == RegionHints.SectionName || section.Name == HeapRecords.SectionName);
         LinkTimings.Phase("field sites");
         if (lifetimes is not null || sites > 0)
             Console.Error.WriteLine("LTO lifetimes: units with hints=" + hints.Count + ", units gaining=" + lifetimeUnits
                 + ", field sites=" + sites + " freed=" + sitesFreed);
         return replacements.Count;
     }
+
+    /// <summary>The manual heap: what a program without a collector allocates and frees with.</summary>
+    private static readonly string[] ManualHeap = { RuntimeAbi.AllocManual, RuntimeAbi.AllocManualObject, RuntimeAbi.FreeManual, RuntimeAbi.ManualObject };
+
+    /// <summary>
+    /// A name of the collector's, or a collecting allocator: code without IR
+    /// that names one keeps the program's collector, as nothing here can
+    /// make it again without.
+    /// </summary>
+    private static bool CollectorName(string name)
+        => name.StartsWith("m_Gc_", StringComparison.Ordinal) || name.StartsWith("m_GcThreads_", StringComparison.Ordinal)
+           || name.StartsWith("m_GcLock_", StringComparison.Ordinal) || name.StartsWith("m_GcRoots_", StringComparison.Ordinal)
+           || name.StartsWith("m_HeapChunks_", StringComparison.Ordinal) || name.StartsWith("__corsac_stackmaps", StringComparison.Ordinal)
+           || name is RuntimeAbi.Alloc or RuntimeAbi.AllocLeaf or RuntimeAbi.AllocObject or RuntimeAbi.AllocFast or RuntimeAbi.AllocFastSized
+               or RuntimeAbi.AllocMissed or RuntimeAbi.AllocNear or RuntimeAbi.AllocRegion or RuntimeAbi.AllocRegionSized
+               or RuntimeAbi.RegionEnter or RuntimeAbi.RegionLeave or RuntimeAbi.RegionLoop or RuntimeAbi.RegionCatch
+               or RuntimeAbi.WriteBarrier or RuntimeAbi.WriteBarrierValues or RuntimeAbi.CardMark or RuntimeAbi.CardMarkObject or RuntimeAbi.ShadeObject;
 
     /// <summary>
     /// WHAT A CATCH MAY BE HANDED THAT WAS NOT JUST MADE, over every unit

@@ -28,6 +28,9 @@ public static class RuntimeAbi
     public const string AllocMissed = "m_Runtime_AllocMissed_2_" + Word + "_" + Word;
     public const string AllocManual = "m_Runtime_AllocManual_1_" + Word;
     public const string AllocManualObject = "m_Runtime_AllocManualObject_1_" + Word;
+    /// <summary>The manual heap's free and its liveness test (Escape's ManualFreer, ManualLive).</summary>
+    public const string FreeManual = "m_Runtime_FreeManual_1_V$I64";
+    public const string ManualObject = "m_Runtime_ManualObject_1_V$I64";
     public const string Free = "m_Runtime_Free_1_" + Word;
     public const string FreeReplaced = "m_Runtime_FreeReplaced_2_" + Word + "_" + Word;
     public const string FreeOwnedReplaced = "m_Runtime_FreeOwnedReplaced_2_" + Word + "_" + Word;

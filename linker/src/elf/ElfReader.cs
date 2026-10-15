@@ -189,7 +189,7 @@ public static class ElfReader
     /// notes, half of what its objects took, from the first phase to the last.
     /// </summary>
     internal static bool LeftInFile(string name)
-        => name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName
+        => name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName or Corsac.Lang.Lto.HeapRecords.SectionName
             or Corsac.Lang.Lto.RegionHints.SectionName or ManagedLayoutContract.SectionName
             or Corsac.Lang.Lto.CoalescingContract.SectionName;
 

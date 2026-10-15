@@ -100,6 +100,8 @@ public static class BackendProtocol
                 writer.Write(regions.LoopBytes.Count);
                 foreach (((string function, int header), long bytes) in regions.LoopBytes) { WriteText(writer, function); writer.Write(header); writer.Write(bytes); }
             }
+            // Whether the image needs a collector: 2 undecided, 1 yes, 0 no.
+            writer.Write(facts.Heap switch { null => (byte)2, true => (byte)1, false => (byte)0 });
         }
         writer.Flush();
     }
@@ -273,6 +275,11 @@ public static class BackendProtocol
                 }
                 facts.Regions = regions;
             }
+            facts.Heap = reader.ReadByte() switch
+            {
+                2 => null, 1 => true, 0 => false,
+                _ => throw new InvalidDataException("Invalid backend heap fact"),
+            };
         }
         return new(input, output, imports, retained, facts);
     }

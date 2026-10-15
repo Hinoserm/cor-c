@@ -198,6 +198,15 @@ public sealed partial class Escape : IModulePass
                 foreach (Function f in cycle) _paramFields[f.Name] = ParameterFields(f, summaries);
         }
 
+        // The link's own run: what the per-function rules after it ask (Module.LinkReturnsFirst).
+        if (m.AtLink)
+        {
+            m.LinkReturnsFirst = new(_returnsFirst!, StringComparer.Ordinal);
+            m.LinkBodies = new(_defined, StringComparer.Ordinal);
+            m.LinkCopies = _copies!.ToDictionary(item => item.Key, item => item.Value.Select(stamp => (stamp.Descriptor, stamp.Base)).ToArray(), StringComparer.Ordinal);
+            m.LinkTypeItems = new(_typeItems!, StringComparer.Ordinal);
+        }
+
         // What is thrown that was not just made, now that the functions
         // handing back fresh objects are known.
         _foreignTypes = !m.PreserveExports && m.Entry is not null ? ForeignThrows(m, summaries) : new HashSet<string>(StringComparer.Ordinal) { "*" };
@@ -245,7 +254,11 @@ public sealed partial class Escape : IModulePass
         if (canFree) OwnedFieldsInUnit(m, byName, summaries);
         MarkElementsThroughFields();
         ElementSites();
-        m.NeedsHeap = AnyAllocationReachable(m, byName);
+        // A unit's side of the link's decision on a collector, its lifetimes now all decided.
+        if (_hinting && m.PreserveExports) m.HeapRecords = HeapRecordsOf(m, summaries);
+        // The link's answer for a unit it makes again: no collector.
+        bool linkedWithout = m.AtLink && m.LinkHeap == false;
+        m.NeedsHeap = !linkedWithout && AnyAllocationReachable(m, byName);
         // A PROGRAM THAT SAID IT RUNS WITHOUT A COLLECTOR gets none: what is
         // left is named, one note each, and is never given back.
         if (m.NeedsHeap && m.NoCollector && !m.PreserveExports && m.Entry is not null && byName.TryGetValue(m.Entry, out Function? main))
@@ -260,32 +273,8 @@ public sealed partial class Escape : IModulePass
         // THE PROGRAM'S ANSWER TO Runtime.CollectorLinked(), now that it is
         // known: a constant, which the passes after this fold, taking what
         // only a collector would do or say out with the branch it was under.
-        if (!m.PreserveExports && m.Entry is not null)
-        {
-            foreach (Function f in m.Functions)
-            {
-                bool answered = false;
-                foreach (Block b in f.Blocks)
-                    for (int k = 0; k < b.Instrs.Count; k++)
-                        if (b.Instrs[k] is { Op: Opcode.Call, Callee: CollectorQuery, Dest: { } answer } asked)
-                        {
-                            b.Instrs[k] = new Instr
-                            {
-                                Op = Opcode.Copy, Dest = answer, Line = asked.Line,
-                                Operands = { new ImmOperand(m.NeedsHeap ? 1 : 0, answer.Type) },
-                            };
-                            f.Edited();
-                            answered = true;
-                        }
-                // FOLDED NOW, and not by the passes after: the inliner that
-                // follows drops what nothing calls, and a call under a branch
-                // never taken -- AtExit's report of the collector's counts --
-                // was a caller still, and kept the collector it called.
-                if (answered && !m.NeedsHeap)
-                    foreach (IPass cleanup in new IPass[] { new ConstantAndCopyPropagation(), new ConstantFold(), new BranchSimplify(), new DeadCodeElimination() })
-                        cleanup.Run(f);
-            }
-        }
+        if (!m.PreserveExports && m.Entry is not null || linkedWithout)
+            foreach (Function f in m.Functions) AnswerCollectorQuery(f, m.NeedsHeap);
 
         // A PROGRAM THAT NEEDS NO COLLECTOR STILL ALLOCATES AND FREES: what
         // the compiler owns is given back where it dies, and what lives to
@@ -296,58 +285,112 @@ public sealed partial class Escape : IModulePass
         // own frees reach -- become the manual heap's; then nothing calls
         // into the collector, and it goes the way of every unreachable
         // function, its stack maps with it (the driver asks NeedsHeap).
-        if (!m.NeedsHeap && byName.ContainsKey(ManualAllocator) && byName.ContainsKey(ManualObjectAllocator)
-            && byName.ContainsKey(ManualFreer) && byName.ContainsKey(ManualLive))
-        {
-            foreach (Function f in m.Functions)
-            {
-                foreach (Block b in f.Blocks)
-                {
-                    for (int k = 0; k < b.Instrs.Count; k++)
-                    {
-                        Instr i = b.Instrs[k];
-                        if (i.Op != Opcode.Call)
-                        {
-                            continue;
-                        }
-                        // Bookkeeping for a collector there will not be: a
-                        // barrier, a card mark, a mark, a thread's word that
-                        // it is blocking or at a safepoint. None has any other
-                        // effect, and each would keep the collector linked.
-                        if (i.Dest is null && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister))
-                        {
-                            b.Instrs.RemoveAt(k);
-                            f.Edited();
-                            k--;
-                            continue;
-                        }
-                        string? to = i.Callee switch
-                        {
-                            Allocator or LeafAllocator => ManualAllocator,
-                            ObjectAllocator => ManualObjectAllocator,
-                            CollectorFreer => ManualFreer,
-                            CollectorLive => ManualLive,
-                            _ => null,
-                        };
-                        if (to is null)
-                        {
-                            continue;
-                        }
+        // At the link the image holds the manual heap: it decided only where it does.
+        if (!m.NeedsHeap && (linkedWithout || byName.ContainsKey(ManualAllocator) && byName.ContainsKey(ManualObjectAllocator)
+            && byName.ContainsKey(ManualFreer) && byName.ContainsKey(ManualLive)))
+            foreach (Function f in m.Functions) ToManualHeap(f);
+    }
 
-                        // The manual heap's allocator in the collector's
-                        // place: the call's marks are the allocation's.
-                        Instr retargeted = new()
-                        {
-                            Op = Opcode.Call, Dest = i.Dest, Callee = to, Line = i.Line,
-                            Field = i.Field, RegionSite = i.RegionSite, DispatchType = i.DispatchType,
-                        };
-                        retargeted.Operands.AddRange(i.Operands);
-                        b.Instrs[k] = retargeted;
-                        f.Edited();
-                    }
+    /// <summary>
+    /// Runtime.CollectorLinked() answered in `f`, a constant, and -- where
+    /// the answer is no -- the branches under it folded away now: the inliner
+    /// that follows drops what nothing calls, and a call under a branch never
+    /// taken -- AtExit's report of the collector's counts -- was a caller
+    /// still, and kept the collector it called.
+    /// </summary>
+    public static bool AnswerCollectorQuery(Function f, bool heap)
+    {
+        bool answered = false;
+        foreach (Block b in f.Blocks)
+            for (int k = 0; k < b.Instrs.Count; k++)
+                if (b.Instrs[k] is { Op: Opcode.Call, Callee: CollectorQuery, Dest: { } answer } asked)
+                {
+                    b.Instrs[k] = new Instr
+                    {
+                        Op = Opcode.Copy, Dest = answer, Line = asked.Line,
+                        Operands = { new ImmOperand(heap ? 1 : 0, answer.Type) },
+                    };
+                    f.Edited();
+                    answered = true;
                 }
+        if (answered && !heap)
+            foreach (IPass cleanup in new IPass[] { new ConstantAndCopyPropagation(), new ConstantFold(), new BranchSimplify(), new DeadCodeElimination() })
+                cleanup.Run(f);
+        return answered;
+    }
+
+    /// <summary>
+    /// `f` made for the manual heap: every allocation the collector's
+    /// allocators made, its free and its liveness test, the manual heap's,
+    /// and the bookkeeping for a collector there will not be -- a barrier, a
+    /// card mark, a mark, a thread's word that it is blocking or at a
+    /// safepoint -- gone, none of which has any other effect. And the
+    /// question whether there is a collector answered no. Whether anything changed.
+    /// </summary>
+    public static bool WithoutCollector(Function f) => AnswerCollectorQuery(f, heap: false) | ToManualHeap(f);
+
+    /// <summary>
+    /// The question answered no and the notes dropped, the allocations left
+    /// as they are -- for a body another unit's code is about to take in,
+    /// whose allocations the lifetime rules still know by their names.
+    /// </summary>
+    public static bool WithoutCollectorNotes(Function f)
+    {
+        bool changed = AnswerCollectorQuery(f, heap: false);
+        foreach (Block b in f.Blocks)
+            changed |= b.Instrs.RemoveAll(i => i.Op == Opcode.Call && i.Dest is null
+                && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister)) > 0;
+        if (changed) f.Edited();
+        return changed;
+    }
+
+    private static bool ToManualHeap(Function f)
+    {
+        bool changed = false;
+        foreach (Block b in f.Blocks)
+        {
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                Instr i = b.Instrs[k];
+                if (i.Op != Opcode.Call)
+                {
+                    continue;
+                }
+                if (i.Dest is null && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister))
+                {
+                    b.Instrs.RemoveAt(k);
+                    f.Edited();
+                    changed = true;
+                    k--;
+                    continue;
+                }
+                string? to = i.Callee switch
+                {
+                    Allocator or LeafAllocator => ManualAllocator,
+                    ObjectAllocator => ManualObjectAllocator,
+                    CollectorFreer => ManualFreer,
+                    CollectorLive => ManualLive,
+                    _ => null,
+                };
+                if (to is null)
+                {
+                    continue;
+                }
+
+                // The manual heap's allocator in the collector's
+                // place: the call's marks are the allocation's.
+                Instr retargeted = new()
+                {
+                    Op = Opcode.Call, Dest = i.Dest, Callee = to, Line = i.Line,
+                    Field = i.Field, RegionSite = i.RegionSite, DispatchType = i.DispatchType,
+                };
+                retargeted.Operands.AddRange(i.Operands);
+                b.Instrs[k] = retargeted;
+                f.Edited();
+                changed = true;
             }
         }
+        return changed;
     }
 
     /// <summary>The heap of a program that needs no collector: malloc, for a block and for an object.</summary>
@@ -355,8 +398,8 @@ public sealed partial class Escape : IModulePass
     public const string ManualObjectAllocator = Corsac.Lang.Lto.RuntimeAbi.AllocManualObject;
 
     /// <summary>Its free, and whether a pointer is a live object of it (what Gc.Free and Gc.LiveObject become).</summary>
-    public const string ManualFreer = "m_Runtime_FreeManual_1_V$I64";
-    public const string ManualLive = "m_Runtime_ManualObject_1_V$I64";
+    public const string ManualFreer = Corsac.Lang.Lto.RuntimeAbi.FreeManual;
+    public const string ManualLive = Corsac.Lang.Lto.RuntimeAbi.ManualObject;
 
     /// <summary>The collector's own free and liveness test, which the runtime's frees call.</summary>
     public const string CollectorFreer = "m_Gc_Free_1_V$I64";
@@ -509,6 +552,8 @@ public sealed partial class Escape : IModulePass
         if (_reachedFunctions is not null && !_reachedFunctions.Contains(f.Name)) return;
         if (_unresolvedWhy is not null) _unresolvedWhy.Add($"catch keeping {end.DispatchType ?? "everything"} in {f.Name}:{end.Line}{(why.Length > 0 ? " (" + why + ")" : "")}");
         KeepCatch(end);
+        if (!_keptCatchesIn.TryGetValue(f.Name, out HashSet<string>? kept)) _keptCatchesIn[f.Name] = kept = new(StringComparer.Ordinal);
+        kept.Add(end.DispatchType ?? "*");
     }
 
     /// <summary>What the entry reaches, in a closed program; null where anything may be called.</summary>
@@ -6053,11 +6098,19 @@ continue;
             _freshOrigins.TryGetValue(f.Name, out HashSet<Instr>? origins);
             foreach (Block b in f.Blocks)
             {
-                if (b.Terminator is { Op: Opcode.Unreachable }) continue;
-                foreach (Instr i in b.Instrs)
+                // A BLOCK THAT ENDS IN A TRAP is the program dying: what it
+                // allocates on the way decides nothing, nor does the call
+                // that never comes back (its last). What it calls before
+                // that comes back, and goes on: the entry stub's Main, which
+                // its Runtime.Exit follows. Skipped whole, a stub whose Exit
+                // was not inlined reached nothing at all.
+                bool trapping = b.Terminator is { Op: Opcode.Unreachable };
+                int dying = trapping ? DyingFrom(b) : b.Instrs.Count;
+                for (int at = 0; at < b.Instrs.Count && at < dying; at++)
                 {
+                    Instr i = b.Instrs[at];
                     bool origin = origins is not null && origins.Contains(i);
-                    if (i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i) && !_fieldOwned.Contains(i)
+                    if (!trapping && i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i) && !_fieldOwned.Contains(i)
                         && !ThrownCovered(i, items) && !once.RunsOnce(f, b)
                         && (!origin || unowned) && counted.Add(i))
                     {
@@ -6095,6 +6148,19 @@ continue;
             while (reachedFrom.TryGetValue(chain[^1], out string? up) && chain.Count < 8 && !chain.Contains(up)) chain.Add(up);
             return string.Join(" <- ", chain);
         }
+    }
+
+    /// <summary>
+    /// Where a block that ends in a trap starts dying: its last call, the one
+    /// that never comes back (a [DoesNotReturn] call ends its block); the
+    /// block's length where it calls nothing, or ends otherwise.
+    /// </summary>
+    internal static int DyingFrom(Block b)
+    {
+        if (b.Terminator is not { Op: Opcode.Unreachable }) return b.Instrs.Count;
+        for (int at = b.Instrs.Count - 1; at >= 0; at--)
+            if (b.Instrs[at].Op is Opcode.Call or Opcode.CallIndirect) return at;
+        return 0;
     }
 
     /// <summary>
@@ -6215,7 +6281,20 @@ continue;
         {
             if (_latched.TryGetValue(f, out HashSet<Block>? known)) return known;
             HashSet<Block> found = new(ReferenceEqualityComparer.Instance);
+            foreach ((Block b, HashSet<string> flags) in LatchedBy(f))
+                if (flags.Any(flag => _latchOnly.GetValueOrDefault(flag))) found.Add(b);
             _latched[f] = found;
+            return found;
+        }
+
+        /// <summary>
+        /// Each block a latch would let through once, with the flags whose
+        /// latch would (LatchedBlocks): a flag counts only where nothing
+        /// anywhere sets it but to true, which the whole program says.
+        /// </summary>
+        internal static Dictionary<Block, HashSet<string>> LatchedBy(Function f)
+        {
+            Dictionary<Block, HashSet<string>> found = new(ReferenceEqualityComparer.Instance);
             if (f.Async is not null) return found;
             Dictionary<VReg, Instr> defs = new();
             foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Dest is not null) defs[i.Dest] = i;
@@ -6230,8 +6309,7 @@ continue;
                     clear = branch.Targets[0];
                     if (!defs.TryGetValue(inner, out read)) continue;
                 }
-                if (read is not { Op: Opcode.Load, Operands: [SymOperand { Name: var flag } at] } || !_latchOnly.GetValueOrDefault(flag)
-                    || ReferenceEquals(clear, test)) continue;
+                if (read is not { Op: Opcode.Load, Operands: [SymOperand { Name: var flag } at] } || ReferenceEquals(clear, test)) continue;
                 cfg ??= new Cfg(f);
                 if (cfg.Preds(clear).Count != 1 || cfg.IsRoot(clear)) continue;
                 bool sets = false;
@@ -6244,8 +6322,12 @@ continue;
                 if (!sets) continue;
                 foreach (Block b in f.Blocks)
                 {
-                    if (!cfg.Dominates(clear, b) || found.Contains(b)) continue;
-                    if (ReferenceEquals(b, clear) || !ComesRound(cfg, b, clear)) found.Add(b);
+                    if (!cfg.Dominates(clear, b)) continue;
+                    if (ReferenceEquals(b, clear) || !ComesRound(cfg, b, clear))
+                    {
+                        if (!found.TryGetValue(b, out HashSet<string>? flags)) found[b] = flags = new(StringComparer.Ordinal);
+                        flags.Add(flag);
+                    }
                 }
             }
             return found;

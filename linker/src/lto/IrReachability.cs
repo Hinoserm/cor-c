@@ -7,8 +7,11 @@ public static class IrReachability
 {
     public static Dictionary<ObjectFile, HashSet<string>> Find(IReadOnlyList<(string Name, ObjectFile Object)> inputs,
         IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<string, ObjectFile> owners, string entry,
-        IEnumerable<string>? roots = null)
+        IEnumerable<string>? roots = null, Func<ObjectFile, string, string, bool>? gone = null)
     {
+        // `gone`: an edge from a unit's function to a name it no longer
+        // refers to as the link will make it (HeapDecision.GoneEdges).
+        bool Kept(ObjectFile obj, string from, string to) => gone is null || !gone(obj, from, to);
         Dictionary<ObjectFile, HashSet<string>> retained = archives.Keys.ToDictionary(obj => obj, _ => new HashSet<string>(StringComparer.Ordinal));
         Dictionary<ObjectFile, HashSet<string>> locals = inputs.ToDictionary(input => input.Object,
             input => input.Object.Symbols.Where(symbol => symbol.IsDefined && !symbol.Global).Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal));
@@ -56,12 +59,14 @@ public static class IrReachability
                 && archives.TryGetValue(reference.Origin, out IrArchive? own) && copies[reference.Origin].Add(reference.Symbol)
                 && (own.Entries.TryGetValue("F:" + reference.Symbol, out IrArchiveEntry? copy)
                     || own.Entries.TryGetValue("D:" + reference.Symbol, out copy)))
-                foreach (string dependency in copy.References) pending.Push((reference.Origin, dependency));
+                foreach (string dependency in copy.References)
+                    if (Kept(reference.Origin, reference.Symbol, dependency)) pending.Push((reference.Origin, dependency));
             if (owner is null || !archives.TryGetValue(owner, out IrArchive? archive)) continue;
             string key = "F:" + reference.Symbol;
             if (!archive.Entries.ContainsKey(key)) key = "D:" + reference.Symbol;
             if (!archive.Entries.TryGetValue(key, out IrArchiveEntry? definition) || !retained[owner].Add(key)) continue;
-            foreach (string dependency in definition.References) pending.Push((owner, dependency));
+            foreach (string dependency in definition.References)
+                if (Kept(owner, reference.Symbol, dependency)) pending.Push((owner, dependency));
         }
         return retained;
     }

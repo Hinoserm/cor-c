@@ -34,6 +34,12 @@ public sealed class LifetimeFacts
     /// (RegionSolver) -- boundaries to open, sites to make in one. Null: none.
     /// </summary>
     public RegionFacts? Regions { get; set; }
+    /// <summary>
+    /// For a unit of a closed image: false when the program needs no
+    /// collector (HeapDecision), the unit made again with the manual heap in
+    /// its place (Module.LinkHeap). Null: not decided.
+    /// </summary>
+    public bool? Heap { get; set; }
 }
 
 /// <summary>What the whole program does to one object's fields: the owned field rules' summary, solved.</summary>

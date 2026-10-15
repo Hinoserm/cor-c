@@ -46,7 +46,13 @@ public sealed class CardMarks : IModulePass
             DropFrameNotes(f);
             if (sequences) FuseStores(f);
             else DropNullCards(f);
-            Expand(f);
+            // AT THE LINK, LEFT AS CALLS to the per-function rules that run
+            // after the unit's late passes (Escape.RunAtLink), which know a
+            // card mark by name as a call that keeps nothing; written out,
+            // its `shru` of a holder's field address was an escape there
+            // (1210). The backend writes them out after those rules
+            // (UnitBackend.Load's CardMarks).
+            if (!m.AtLink) Expand(f);
         }
     }
 

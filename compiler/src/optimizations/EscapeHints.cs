@@ -277,6 +277,20 @@ public sealed partial class Escape
         internal Dictionary<string, FieldSummary> FreshFields { get; } = new(StringComparer.Ordinal);
         /// <summary>The fields the whole program found own what they hold, and who hands one back (OwnedFieldSolver).</summary>
         internal OwnedFieldFacts? OwnedFields { get; }
+        /// <summary>The unit's own answers from the link's run of its lifetime pass (Unit; Module.LinkReturnsFirst): null before it.</summary>
+        internal HashSet<string>? ReturnsFirst { get; private set; }
+        internal HashSet<string>? Bodies { get; private set; }
+        internal Dictionary<string, Stamp[]>? Copies { get; private set; }
+        internal Dictionary<string, DataItem>? TypeItems { get; private set; }
+
+        /// <summary>What the link's run of the unit's late passes found of its own functions, for every function's rules after.</summary>
+        internal void Unit(Module m)
+        {
+            ReturnsFirst = m.LinkReturnsFirst;
+            Bodies = m.LinkBodies;
+            Copies = m.LinkCopies?.ToDictionary(item => item.Key, item => item.Value.Select(stamp => new Stamp(stamp.Descriptor, stamp.Base)).ToArray(), StringComparer.Ordinal);
+            TypeItems = m.LinkTypeItems;
+        }
 
         public LinkFacts(LifetimeFacts facts)
         {
@@ -326,6 +340,12 @@ public sealed partial class Escape
         // Its virtual calls, each as every override the image has for it,
         // wherever the link could say (VirtualCallees; Lto.VirtualTargets).
         _indirect = VirtualCallees(new[] { f }, summaries.ContainsKey);
+        // THE UNIT'S OWN ANSWERS, never another run's: these are thread
+        // statics the unit's whole run leaves set, and what a backend worker
+        // read here depended on which unit that thread had run last (LinkFacts.Unit).
+        HashSet<string>? returnsFirstBefore = _returnsFirst, bodiesBefore = _bodies;
+        _returnsFirst = facts.ReturnsFirst; _bodies = facts.Bodies;
+        _copies = facts.Copies; _typeItems = facts.TypeItems;
         try
         {
             // What it calls, by the body the unit archived or the link brought
@@ -336,7 +356,11 @@ public sealed partial class Escape
             if (canFree && facts.Helpers.Contains(ReplacedFreer)) pass.OwnVariables(f, summaries);
             if (canFree && facts.Helpers.Contains(FieldFreer)) pass.OwnFields(f, summaries);
         }
-        finally { _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _stampItems = null; }
+        finally
+        {
+            _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _stampItems = null;
+            _returnsFirst = returnsFirstBefore; _bodies = bodiesBefore;
+        }
         // A READ OF AN OWNED FIELD was judged, by the unit and then the link,
         // among the frees the function had then: a free placed now, while
         // what was read is live, could free the field's owner under it. The

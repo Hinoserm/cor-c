@@ -51,10 +51,11 @@ public static class AsyncTransform
                 // THE FRAME IS SAVED WITHOUT A BARRIER, word by word into the
                 // machine at each suspension; its cards are marked there, when
                 // the runtime has a card table to mark (Gc, generations).
-                string? cards = m.RuntimeHelpers.Contains(CardMarkObject) ? CardMarkObject : null;
+                // Neither where the program has no collector (Module.NeedsHeap).
+                string? cards = m.NeedsHeap && m.RuntimeHelpers.Contains(CardMarkObject) ? CardMarkObject : null;
                 // AND WHAT IT HELD IS REPORTED FIRST, while a collection marks
                 // (Runtime.ShadeObject): the save overwrites it with no barrier.
-                string? shade = m.RuntimeHelpers.Contains(ShadeObject) ? ShadeObject : null;
+                string? shade = m.NeedsHeap && m.RuntimeHelpers.Contains(ShadeObject) ? ShadeObject : null;
                 int size = Transform(f, frame, wordSize, cards, shade, out bool stays);
                 if (!stays && frame.StackSymbol is string stack
                     && m.Data.FirstOrDefault(d => d.Name == stack) is DataItem allowed)

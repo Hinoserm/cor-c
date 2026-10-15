@@ -914,7 +914,8 @@ public static class Driver
         // late passes and all of code generation, the unit's largest phases.
         // The bytes are what the object gets either way; held as bytes, they
         // are a fraction of the objects.
-        byte[]? regionHintBytes = null, lifetimeHintBytes = null;
+        byte[]? regionHintBytes = null, lifetimeHintBytes = null, heapRecordBytes = null;
+        Dictionary<string, string[]>? archivedGone = null;
         module.NoCollector = args.Contains("--no-collector");
         bool moduleUnit = kernel is not null && args.Contains("--obj");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
@@ -938,6 +939,8 @@ public static class Driver
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 regionHintBytes = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
+                // And the archive's edges a program without a collector lacks (HeapRecords.Gone).
+                archivedGone = Corsac.Lang.Opt.Escape.GoneOf(m);
                 if (Switches.ReportPhases)
                     Console.Error.WriteLine("phase snapshot: " + linkRecords.Count + " records, " + (linkRecords.Sum(r => (long)r.BodyLength) >> 10)
                         + " KiB of bodies held in " + (linkRecords.Sum(r => (long)r.Payload.Length) >> 10) + " KiB, region hints " + ((regionHintBytes?.Length ?? 0) >> 10) + " KiB");
@@ -952,6 +955,12 @@ public static class Driver
             // hints were, and the hints themselves let go.
             if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) lifetimeHintBytes = hints.Write();
             module.LifetimeHints = null;
+            if (module.LeavesLinkHints && module.HeapRecords is { } heap)
+            {
+                foreach ((string function, string[] gone) in archivedGone ?? new()) heap.Gone[function] = gone;
+                heapRecordBytes = heap.Write();
+            }
+            module.HeapRecords = null;
             if (Switches.ReportPhases) Console.Error.WriteLine("phase lifetime hints " + ((lifetimeHintBytes?.Length ?? 0) >> 10) + " KiB");
             Phase("hints");
             // What the lifetime pass kept of each function between questions
@@ -1220,6 +1229,7 @@ public static class Driver
                 // The lifetime hints first: the IR archive's integrity hash
                 // covers every other section, these included.
                 if (lifetimeHintBytes is not null) Corsac.Lang.Lto.LifetimeHints.Attach(obj, lifetimeHintBytes);
+                if (heapRecordBytes is not null) Corsac.Lang.Lto.HeapRecords.Attach(obj, heapRecordBytes);
                 if (linkRecords is not null && regionHintBytes is not null) Corsac.Lang.Lto.RegionHints.Attach(obj, regionHintBytes);
                 // Each body let go as it is copied: nothing reads the records after.
                 if (linkRecords is not null) Corsac.Lang.Lto.IrArchive.AttachConsuming(obj, linkRecords);

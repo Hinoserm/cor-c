@@ -239,7 +239,8 @@ public sealed class RegionPointsTo : IModulePass
             ApplyFacts(m, facts, Report is not null);
             return;
         }
-        if (m.Entry is null) return;
+        // No regions without a collector: the arena is its (Module.NeedsHeap).
+        if (m.Entry is null || !m.NeedsHeap) return;
         if (new[] { Enter, Leave, InRegion, Near, Catch }.Where(h => !m.Functions.Any(f => f.Name == h)).ToList() is { Count: > 0 } missing)
         {
             if (Report is not null) Console.Error.WriteLine("regions: no " + string.Join(", ", missing) + " in this program; nothing made a region");
