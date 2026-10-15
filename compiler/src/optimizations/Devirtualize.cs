@@ -67,6 +67,64 @@ public sealed class Devirtualize : IModulePass
     private Func<string, Function?>? _callees;
     private Dictionary<(string, int), bool>? _guards;
 
+    /// <summary>
+    /// The argument checks a function's null tests may rely on, worked out
+    /// beforehand (PrecomputeGuards) for a pass that runs functions side by
+    /// side: a guard is then only read, never worked out from a function
+    /// another worker may be rewriting.
+    /// </summary>
+    internal void UseGuards(Dictionary<(string, int), bool> guards)
+    {
+        _guards = guards;
+        _guardsFixed = true;
+        _callees = static _ => null;
+    }
+
+    private bool _guardsFixed;
+
+    /// <summary>
+    /// For every call some function makes of one of its class parameters
+    /// (Function.ParamClasses), whether the callee returns only when that
+    /// argument is not null (ReturnsOnlyIfNotNull), one function after
+    /// another: what LateCleanup's workers then read.
+    /// </summary>
+    internal static Dictionary<(string, int), bool> PrecomputeGuards(Module m)
+    {
+        Dictionary<string, Function> byName = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions) byName.TryAdd(g.Name, g);
+        Dictionary<(string, int), bool> guards = new();
+        foreach (Function f in m.Functions)
+        {
+            if (f.ParamClasses is not { Count: > 0 } classes) continue;
+            Dictionary<VReg, Instr?> single = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d) single[d] = single.ContainsKey(d) ? null : i;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Call || i.Callee is not { } name) continue;
+                    for (int k = 0; k < i.Operands.Count; k++)
+                        if (ParamThrough(i.Operands[k], classes, single) is not null)
+                            ReturnsOnlyIfNotNull(name, k, n => byName.GetValueOrDefault(n), guards, false);
+                }
+        }
+        return guards;
+    }
+
+    /// <summary>The class parameter a register is, through copies; null when it is not one.</summary>
+    private static VReg? ParamThrough(Operand o, IReadOnlyDictionary<VReg, string[]> held, Dictionary<VReg, Instr?> single)
+    {
+        for (int depth = 0; depth < 8; depth++)
+        {
+            if (o is not RegOperand { Reg: var r }) return null;
+            if (held.ContainsKey(r)) return r;
+            if (!single.TryGetValue(r, out Instr? d) || d is not { Op: Opcode.Copy, Operands.Count: 1 }) return null;
+            o = d.Operands[0];
+        }
+        return null;
+    }
+
     internal void Run(Function f, Dictionary<string, DataItem> items)
     {
         bool any = false;
@@ -120,7 +178,7 @@ public sealed class Devirtualize : IModulePass
         //     next, below: found again after a fold and then once more,
         //     with nothing changed between, the first was never read.
         FoldTypeTests(f, items);
-        FoldParamClassTests(f, items, _callees, _guards);
+        FoldParamClassTests(f, items, _callees, _guards, _guardsFixed);
         if (!any) return;
         // Fresh: the one before is the pipeline's, kept for other passes.
         defs = new(f, buildCfg: false);
@@ -572,7 +630,7 @@ public sealed class Devirtualize : IModulePass
     /// says, and is left.
     /// </summary>
     private static bool FoldParamClassTests(Function f, Dictionary<string, DataItem> items,
-        Func<string, Function?>? callees, Dictionary<(string, int), bool>? guards)
+        Func<string, Function?>? callees, Dictionary<(string, int), bool>? guards, bool guardsFixed)
     {
         if (f.ParamClasses is not { Count: > 0 } classes) return false;
         int word = IrTypes.Word.Bytes();
@@ -586,7 +644,7 @@ public sealed class Devirtualize : IModulePass
         foreach (VReg p in f.Params)
             if (classes.TryGetValue(p, out string[]? chain) && !single.ContainsKey(p)) held[p] = chain;
         if (held.Count == 0) return false;
-        bool folded = callees is not null && guards is not null && FoldCheckedNulls(f, held, single, callees, guards);
+        bool folded = callees is not null && guards is not null && FoldCheckedNulls(f, held, single, callees, guards, guardsFixed);
 
         // What a register is, read from a parameter: the object itself, an
         // address `At` bytes into its descriptor, its display, its depth, or
@@ -698,7 +756,7 @@ public sealed class Devirtualize : IModulePass
     /// or in a block only the call's block leads into (dominated by it).
     /// </summary>
     private static bool FoldCheckedNulls(Function f, Dictionary<VReg, string[]> held, Dictionary<VReg, Instr?> single,
-        Func<string, Function?> callees, Dictionary<(string, int), bool> guards)
+        Func<string, Function?> callees, Dictionary<(string, int), bool> guards, bool guardsFixed)
     {
         // The parameter a register is, through copies.
         VReg? ParamOf(Operand o)
@@ -717,7 +775,7 @@ public sealed class Devirtualize : IModulePass
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Call && i.Callee is { } name)
                     for (int k = 0; k < i.Operands.Count; k++)
-                        if (ParamOf(i.Operands[k]) is { } p && ReturnsOnlyIfNotNull(name, k, callees, guards))
+                        if (ParamOf(i.Operands[k]) is { } p && ReturnsOnlyIfNotNull(name, k, callees, guards, guardsFixed))
                             (checks ??= new()).Add((b, p));
         if (checks is null) return false;
         Cfg cfg = new(f);
@@ -748,9 +806,12 @@ public sealed class Devirtualize : IModulePass
     /// it is not null. An exception's landing pad is a way in of its own, so
     /// a return after a catch is not one of them.
     /// </summary>
-    private static bool ReturnsOnlyIfNotNull(string name, int k, Func<string, Function?> callees, Dictionary<(string, int), bool> guards)
+    private static bool ReturnsOnlyIfNotNull(string name, int k, Func<string, Function?> callees, Dictionary<(string, int), bool> guards, bool guardsFixed)
     {
         if (guards.TryGetValue((name, k), out bool known)) return known;
+        // Worked out beforehand, or not at all: another worker may be
+        // rewriting the callee (UseGuards).
+        if (guardsFixed) return false;
         guards[(name, k)] = false;
         if (callees(name) is not { } g || k >= g.Params.Count || g.Async is not null) return false;
         VReg p = g.Params[k];
@@ -1137,6 +1198,13 @@ public sealed class LateCleanup : IParallelModulePass
     {
         Dictionary<string, DataItem> items = Devirtualize.ReadOnlyItems(m);
         IPass[] after = { new ConstantAndCopyPropagation(), new ConstantFold { AcrossFunction = true }, new BranchSimplify(), new DeadCodeElimination() };
+        // THE ARGUMENT CHECKS, WORKED OUT BEFORE THE WORKERS START: what the
+        // late inliner brought in -- `source is List<T>` of a parameter after
+        // LINQ's NotNull -- is folded here or nowhere, and a guard read from
+        // a callee another worker is rewriting is no answer (Devirtualize.UseGuards).
+        // Without them the null side of that test stayed, and its general
+        // walk kept every caller's List for all the lifetime rules knew (1311).
+        Dictionary<(string, int), bool> guards = Devirtualize.PrecomputeGuards(m);
         FunctionWorkers.Run(m, Workers, (f, index) =>
         {
             // The function's graph and definitions kept from one walk to the
@@ -1150,6 +1218,7 @@ public sealed class LateCleanup : IParallelModulePass
         {
             // One of its own a function: it counts what it resolves.
             Devirtualize devirtualize = new();
+            devirtualize.UseGuards(guards);
             // Twice round: a test folded to a constant is a register until it
             // is propagated into the branch that reads it, and the branch gone,
             // the enumerator is the one object, whose vtable can then be read.
