@@ -11,7 +11,8 @@ public static class SyntaxTokenCacheTests
         CompilationUnit first = cache.Parse(nested, "nested.cor");
         first.Types.Clear();
         CompilationUnit second = cache.Parse(nested, "nested.cor");
-        Require(second.Types.Count == 2 && cache.Hits == 1 && cache.Misses == 1, "parser token splitting or AST mutation contaminated cache");
+        // The cache keeps nothing (98ab016e): every parse is a fresh one.
+        Require(second.Types.Count == 2 && cache.Hits == 0 && cache.Misses == 2, "parser token splitting or AST mutation contaminated cache");
         const string conditional = "#if ENABLED\nclass Enabled {}\n#else\nclass Disabled {}\n#endif\n";
         Require(cache.Parse(conditional, "conditional.cor", new[] { "ENABLED" }).Types[0].Name == "Enabled", "enabled preprocessor branch");
         Require(cache.Parse(conditional, "conditional.cor").Types[0].Name == "Disabled", "symbols were omitted from cache identity");

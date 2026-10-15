@@ -222,7 +222,10 @@ internal static class Program
         Check(deadLoad.Split("[counter]").Length == 2, "a load overwritten before use is dropped");
         string addAsm = FunctionAsm(asm, "add");
         Check(!addAsm.Contains("sub esp") && !addAsm.Contains("push ebx"), "a leaf with no locals has a minimal prologue");
-        Check(!System.Text.RegularExpressions.Regex.IsMatch(FunctionAsm(asm, "sum"), @"j\w+ \.\w+\n\s+jmp"), "conditional jump around a jump is inverted");
+        // AROUND a jump: the conditional's target is the label right after
+        // the jump. A jump to the next block the encoder drops, and --asm
+        // still lists, is not one.
+        Check(!System.Text.RegularExpressions.Regex.IsMatch(FunctionAsm(asm, "sum"), @"j\w+ (\.[\w-]+)\n\s+jmp \.[\w-]+\n\1:"), "conditional jump around a jump is inverted");
 
         Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"\n\s+mov e\w\w, 0\n"), "zeroing a register uses xor");
         string remat = FunctionAsm(asm, "remat");
@@ -283,11 +286,14 @@ internal static class Program
             "rep insw", "rep outsw",
             "cli", "sti", "hlt",
             "lgdt [", "lidt [", "invlpg [",
-            "mov eax, cr0", "mov cr3,", "mov ds, ax", "mov ss, ax",
+            "mov cr3,", "mov ds, ax", "mov ss, ax",
         })
         {
             Check(ports.Contains(line), $"--asm prints '{line}'");
         }
+        // A control register is read into whichever register the allocator
+        // gives it: eax holds the other instructions' operands here.
+        Check(System.Text.RegularExpressions.Regex.IsMatch(ports, @"mov e\w\w, cr0"), "--asm prints a read of cr0");
         // The narrow reads zero the whole of EAX first, because IN AL leaves
         // the other three bytes as they were and the language promises a
         // canonical unsigned byte.
@@ -315,13 +321,13 @@ internal static class Program
             ("0f 01 10", "lgdt [eax]"),
             ("0f 01 18", "lidt [eax]"),
             ("0f 01 38", "invlpg [eax]"),
-            ("0f 20 c0", "mov eax,cr0"),
             ("0f 22 d8", "mov cr3,eax"),
             ("8e d8", "mov ds,ax"),
         })
         {
             Check(portBytes.Contains("\t" + bytes + " "), $"encoding of {what} is {bytes}");
         }
+        Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"\t0f 20 c[0-7] "), "encoding of a cr0 read is 0f 20 /r");
         // objdump has to agree about what the bytes mean, not just that they
         // are there: a wrong prefix would still be bytes.
         CheckDump(portBytes, "in     al,dx", "objdump reads the byte port read");
@@ -332,7 +338,7 @@ internal static class Program
         CheckDump(portBytes, "rep outs dx,WORD PTR", "objdump reads rep outsw");
         CheckDump(portBytes, "cli", "objdump reads cli");
         CheckDump(portBytes, "hlt", "objdump reads hlt");
-        CheckDump(portBytes, "mov    eax,cr0", "objdump reads a control-register read");
+        Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"mov\s+e\w\w,cr0"), "objdump reads a control-register read");
         CheckDump(portBytes, "mov    cr3,eax", "objdump reads a control-register write");
 
         Flat();

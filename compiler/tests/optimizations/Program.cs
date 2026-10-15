@@ -675,7 +675,10 @@ public static partial class Program
         facts.Helpers.Add(Escape.Freer); facts.Helpers.Add(Escape.ReplacedFreer);
         Assert(Escape.RunAtLink(f, new Escape.LinkFacts(facts)) >= 1, "owned once the link answers");
         Verifier.Check(f, "waiting variable at link");
-        Assert(f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Callee == Escape.ReplacedFreer), "the previous value is given back at each assignment");
+        // Given back after each call, by the fresh result's own free (Freer,
+        // OwnFreshResults) where the result is owned first, or at the
+        // variable's next assignment (ReplacedFreer).
+        Assert(f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Callee is Escape.ReplacedFreer or Escape.Freer), "the previous value is given back at each assignment");
     }
 
     private static void FreshReturnOwnership()
@@ -882,7 +885,7 @@ public static partial class Program
             VReg second = b.Call("mix", type, RegOperand.Of(y), RegOperand.Of(x))!;
             b.Ret(RegOperand.Of(b.Binary(Opcode.Add, first, second)));
             module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
-            new Inline { SmallBody = 1, ArgumentWordCredit = credit, GrowthLimit = limit }.Run(module);
+            new Inline { SmallBody = 1, TinyBody = 0, ArgumentWordCredit = credit, GrowthLimit = limit }.Run(module);
             Verifier.Check(caller, "argument cost inline");
             bool expanded = type == IrType.I64 && credit == 3 && limit == 100;
             Assert(caller.Blocks.SelectMany(x => x.Instrs).Count(i => i.Op == Opcode.Call && i.Callee == "mix")
@@ -938,7 +941,7 @@ public static partial class Program
             VReg second = b.Call("initialize", IrType.I64, RegOperand.Of(owner))!;
             b.Ret(RegOperand.Of(b.Binary(Opcode.Add, first, second)));
             module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
-            new Inline { SmallBody = 1, FreshOwnerBody = bodyLimit, GrowthLimit = limit,
+            new Inline { SmallBody = 1, TinyBody = 0, FreshResultBody = 0, FreshOwnerBody = bodyLimit, GrowthLimit = limit,
                 FreshOwnerGrowthLimit = freshLimit }.Run(module);
             Verifier.Check(caller, "fresh-owner inline");
             bool expanded = fresh && (limit == 100 || freshLimit == 100) && bodyLimit == 100;
@@ -967,7 +970,7 @@ public static partial class Program
             VReg second = b.Call("choose", IrType.I32, arg)!;
             b.Ret(RegOperand.Of(b.Binary(Opcode.Add, first, second)));
             module.Functions.Add(caller); module.Functions.Add(callee); module.Entry = "main";
-            new Inline { SmallBody = 1, ConstantBranchBody = 100, GrowthLimit = limit }.Run(module);
+            new Inline { SmallBody = 1, TinyBody = 0, ConstantBranchBody = 100, GrowthLimit = limit }.Run(module);
             Verifier.Check(caller, "constant branch inline");
             bool expanded = constant && limit == 100;
             Assert(caller.Blocks.SelectMany(x => x.Instrs).Count(i => i.Op == Opcode.Call) == (expanded ? 0 : 2),
@@ -1055,6 +1058,12 @@ public static partial class Program
     /// <summary>A store to a symbol, so a value stays alive without a register holding the address.</summary>
     private static void Sink(Builder b, VReg v) => b.Store(new SymOperand("sink"), RegOperand.Of(v));
 
+    /// <summary>
+    /// A store to a symbol of its own (sinkN): stores to one symbol, each
+    /// overwriting the last, are dead but the last (DeadStoreElimination).
+    /// </summary>
+    private static void Sink(Builder b, VReg v, int n) => b.Store(new SymOperand("sink" + n), RegOperand.Of(v));
+
     private static void Assert(bool cond, string what)
     {
         if (!cond)
@@ -1133,39 +1142,40 @@ public static partial class Program
         VReg sext = b.Unary(Opcode.SExt8, b.Const(0x80, IrType.I32));
         VReg trunc = b.Unary(Opcode.Trunc64, b.Const(0x1_0000_0005, IrType.I64));
         VReg zext = b.Unary(Opcode.ZExt32, b.Const(-1, IrType.I32));
-        // Keep every result alive through a store so DCE cannot remove it.
-        foreach (VReg r in new[] { wrapped, shifted, ltu, lts, shru, sext, trunc, notWrapped, zext })
+        // Keep every result alive through a store of its own so DCE cannot remove it.
+        VReg[] results = { wrapped, shifted, ltu, lts, shru, sext, trunc, notWrapped, zext };
+        for (int n = 0; n < results.Length; n++)
         {
-            Sink(b, r);
+            Sink(b, results[n], n);
         }
         b.Ret();
         RunAll(f);
-        ExpectContains(f, "store.u4 @sink -2147483648");
-        ExpectContains(f, "store.u4 @sink 2");
-        ExpectContains(f, "store.u4 @sink 0");
-        ExpectContains(f, "store.u4 @sink 1");
-        ExpectContains(f, "store.u4 @sink 15");
-        ExpectContains(f, "store.u4 @sink -128");
-        ExpectContains(f, "store.u4 @sink 5");
-        ExpectContains(f, "store.u8 @sink 2147483648");
-        ExpectContains(f, "store.u8 @sink 4294967295");
+        ExpectContains(f, "store.u4 @sink0 -2147483648");
+        ExpectContains(f, "store.u4 @sink1 2");
+        ExpectContains(f, "store.u4 @sink2 0");
+        ExpectContains(f, "store.u4 @sink3 1");
+        ExpectContains(f, "store.u4 @sink4 15");
+        ExpectContains(f, "store.u4 @sink5 -128");
+        ExpectContains(f, "store.u4 @sink6 5");
+        ExpectContains(f, "store.u8 @sink7 2147483648");
+        ExpectContains(f, "store.u8 @sink8 4294967295");
     }
 
     private static void FoldDivision()
     {
         (Function f, Builder b) = Fn(IrType.Void);
-        Sink(b, b.Binary(Opcode.DivS, b.Const(7, IrType.I32), 0));
-        Sink(b, b.Binary(Opcode.RemU, b.Const(7, IrType.I32), 0));
-        Sink(b, b.Binary(Opcode.DivS, b.Const(int.MinValue, IrType.I32), -1));
-        Sink(b, b.Binary(Opcode.DivS, b.Const(-7, IrType.I32), 2));
-        Sink(b, b.Binary(Opcode.DivU, b.Const(-7, IrType.I32), 2));
+        Sink(b, b.Binary(Opcode.DivS, b.Const(7, IrType.I32), 0), 0);
+        Sink(b, b.Binary(Opcode.RemU, b.Const(7, IrType.I32), 0), 1);
+        Sink(b, b.Binary(Opcode.DivS, b.Const(int.MinValue, IrType.I32), -1), 2);
+        Sink(b, b.Binary(Opcode.DivS, b.Const(-7, IrType.I32), 2), 3);
+        Sink(b, b.Binary(Opcode.DivU, b.Const(-7, IrType.I32), 2), 4);
         b.Ret();
         RunAll(f);
         ExpectContains(f, "%1 = divs 7 0");
         ExpectContains(f, "%3 = remu 7 0");
         ExpectContains(f, "%5 = divs -2147483648 -1");
-        ExpectContains(f, "store.u4 @sink -3");
-        ExpectContains(f, "store.u4 @sink 2147483644");
+        ExpectContains(f, "store.u4 @sink3 -3");
+        ExpectContains(f, "store.u4 @sink4 2147483644");
     }
 
     private static void FoldFloatsStay()
@@ -1529,24 +1539,24 @@ public static partial class Program
         VReg p = f.Params[0];
         VReg q = f.Params[1];
         VReg lt = b.Binary(Opcode.LtS, p, q);
-        Sink(b, b.Binary(Opcode.Ne, lt, 0));                     // -> lt itself
-        Sink(b, b.Binary(Opcode.Eq, lt, 0));                     // -> ges p q
-        Sink(b, b.Binary(Opcode.Eq, new ImmOperand(0, IrType.I32), RegOperand.Of(lt), IrType.I32));
+        Sink(b, b.Binary(Opcode.Ne, lt, 0), 0);                  // -> lt itself
+        Sink(b, b.Binary(Opcode.Eq, lt, 0), 1);                  // -> ges p q
+        Sink(b, b.Binary(Opcode.Eq, new ImmOperand(0, IrType.I32), RegOperand.Of(lt), IrType.I32), 2);
         VReg flt = b.Binary(Opcode.FLt, f.Params[2], f.Params[2]);
-        Sink(b, b.Binary(Opcode.Eq, flt, 0));                    // -> xor flt 1, never fge
+        Sink(b, b.Binary(Opcode.Eq, flt, 0), 3);                 // -> xor flt 1, never fge
         b.Ret();
         // Inspect both operand-order rewrites before later CSE merges their
         // identical results. Keep the original peephole assertions intact.
         Run(f, new Peephole(), new ConstantAndCopyPropagation(), new DeadCodeElimination());
         ExpectContains(f, "%3 = lts %0.p0 %1.p1");
-        ExpectContains(f, "store.u4 @sink %3");
+        ExpectContains(f, "store.u4 @sink0 %3");
         ExpectContains(f, "%5 = ges %0.p0 %1.p1");
         ExpectContains(f, "%6 = ges %0.p0 %1.p1");
         ExpectContains(f, "%7 = flt %2.p2 %2.p2");
         ExpectContains(f, "%8 = xor %7 1");
         RunAll(f);
         ExpectMissing(f, "%6 = ges");
-        Assert(Body(f).Split('\n').Count(line => line == "store.u4 @sink %5") == 2,
+        Assert(Body(f).Split('\n').Count(line => line is "store.u4 @sink1 %5" or "store.u4 @sink2 %5") == 2,
             "full pipeline reuses the inverse comparison for both sinks");
     }
 
