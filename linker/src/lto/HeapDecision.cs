@@ -76,44 +76,8 @@ public static class HeapDecision
         // static initialiser's failure path and XML's ToString from there: a
         // whole program's module holds only what its entry reaches, and its
         // virtual calls run on that.
-        List<string> virtualNames = units.SelectMany(unit => unit.Records.Functions).SelectMany(function => function.Events)
-            .Where(e => (e.Kind == HeapEventKind.Virtual || e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) && e.Name != "*")
-            .SelectMany(e => e.Name.Contains('@') ? new[] { e.Name, VirtualTargets.Plain(e.Name) } : new[] { e.Name })
-            .Distinct(StringComparer.Ordinal).ToList();
-        VirtualTargets.Made made = new();
-        Dictionary<string, string[]> resolved = new(StringComparer.Ordinal);
-        string[]? virtuals(string name) => resolved.TryGetValue(name, out string[]? found) ? found
-            : name.Contains('@') && resolved.TryGetValue(VirtualTargets.Plain(name), out found) ? found : null;
         List<Node> entryRoots = world.Roots(entry, initialisers: false).ToList();
-        bool everyMethod = false;
-        HashSet<Node> reached;
-        HashSet<string> addressed;
-        while (true)
-        {
-            resolved = VirtualTargets.Resolve(inputs, virtualNames, made);
-            bool unresolved = false;
-            HashSet<string> named = new(StringComparer.Ordinal);
-            addressed = new(StringComparer.Ordinal);
-            reached = world.Walk(entryRoots, everyMethod, addressed, (node, record) =>
-            {
-                List<string> next = new();
-                foreach (HeapEvent e in record.Events)
-                    switch (e.Kind)
-                    {
-                        case HeapEventKind.Call or HeapEventKind.Named or HeapEventKind.Target when !e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal):
-                            if (e.Kind == HeapEventKind.Named && World.IsDescriptor(e.Name)) named.Add(e.Name);
-                            next.Add(e.Name); break;
-                        case HeapEventKind.Virtual or HeapEventKind.Target:
-                            if (virtuals(e.Name) is string[] targets) next.AddRange(targets); else unresolved = true;
-                            break;
-                    }
-                return next;
-            }, named);
-            if (unresolved && !everyMethod) { everyMethod = true; continue; }
-            int before = made.Descriptors.Count;
-            made.Descriptors.UnionWith(named);
-            if (made.Descriptors.Count == before) break;
-        }
+        (HashSet<Node> reached, HashSet<string> addressed, Func<string, string[]?> virtuals, bool everyMethod) = ReachFrom(world, inputs, units, entryRoots, Array.Empty<string>());
         bool keptCatchAll = false;
         HashSet<string> keptCatches = new(StringComparer.Ordinal);
         foreach (Node node in reached)
@@ -219,6 +183,72 @@ public static class HeapDecision
     }
 
     /// <summary>
+    /// What the program reaches (Decide's REACHED): from `roots`, and the
+    /// names `rootNames` -- functions or data -- over calls, names, data and
+    /// virtual calls resolved by the types what is reached makes, grown
+    /// until it holds still; every method of a reached type wherever a
+    /// virtual call cannot be resolved.
+    /// </summary>
+    private static (HashSet<Node> Reached, HashSet<string> Addressed, Func<string, string[]?> Virtuals, bool EveryMethod) ReachFrom(
+        World world, List<(string Name, ObjectFile Object)> inputs, List<(ObjectFile Object, HeapRecords Records)> units,
+        List<Node> roots, IReadOnlyCollection<string> rootNames)
+    {
+        List<string> virtualNames = units.SelectMany(unit => unit.Records.Functions).SelectMany(function => function.Events)
+            .Where(e => (e.Kind == HeapEventKind.Virtual || e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) && e.Name != "*")
+            .SelectMany(e => e.Name.Contains('@') ? new[] { e.Name, VirtualTargets.Plain(e.Name) } : new[] { e.Name })
+            .Distinct(StringComparer.Ordinal).ToList();
+        VirtualTargets.Made made = new();
+        Dictionary<string, string[]> resolved = new(StringComparer.Ordinal);
+        string[]? virtuals(string name) => resolved.TryGetValue(name, out string[]? found) ? found
+            : name.Contains('@') && resolved.TryGetValue(VirtualTargets.Plain(name), out found) ? found : null;
+        bool everyMethod = false;
+        HashSet<Node> reached;
+        HashSet<string> addressed;
+        while (true)
+        {
+            resolved = VirtualTargets.Resolve(inputs, virtualNames, made);
+            bool unresolved = false;
+            HashSet<string> named = new(StringComparer.Ordinal);
+            addressed = new(StringComparer.Ordinal);
+            reached = world.Walk(roots, everyMethod, addressed, (node, record) =>
+            {
+                List<string> next = new();
+                foreach (HeapEvent e in record.Events)
+                    switch (e.Kind)
+                    {
+                        case HeapEventKind.Call or HeapEventKind.Named or HeapEventKind.Target when !e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal):
+                            if (e.Kind == HeapEventKind.Named && World.IsDescriptor(e.Name)) named.Add(e.Name);
+                            next.Add(e.Name); break;
+                        case HeapEventKind.Virtual or HeapEventKind.Target:
+                            if (virtuals(e.Name) is string[] targets) next.AddRange(targets); else unresolved = true;
+                            break;
+                    }
+                return next;
+            }, named, rootNames);
+            if (unresolved && !everyMethod) { everyMethod = true; continue; }
+            int before = made.Descriptors.Count;
+            made.Descriptors.UnionWith(named);
+            foreach (string name in rootNames) if (World.IsDescriptor(name)) made.Descriptors.Add(name);
+            if (made.Descriptors.Count == before) break;
+        }
+        return (reached, addressed, virtuals, everyMethod);
+    }
+
+    /// <summary>
+    /// The functions a closed image reaches, each by the object whose records
+    /// hold it, from its entry and the names `roots` (what the link itself
+    /// calls, what code without IR names): the reach the whole program's
+    /// ForeignThrows judges throws over (IrLinkOptimizer.ForeignCatchable).
+    /// </summary>
+    public static HashSet<(ObjectFile Object, string Function)> Reach(List<(string Name, ObjectFile Object)> inputs,
+        List<(ObjectFile Object, HeapRecords Records)> units, string entry, IReadOnlyCollection<string> roots)
+    {
+        World world = new(inputs, units);
+        var (reached, _, _, _) = ReachFrom(world, inputs, units, world.Roots(entry, initialisers: false).ToList(), roots);
+        return reached.Select(node => (world.UnitObject(node.Unit), node.Name)).ToHashSet();
+    }
+
+    /// <summary>
     /// The edges a program without a collector does not have, for the
     /// link's reachability of its second making (IrReachability): from a
     /// function whose compile's records say it no longer refers to a name (HeapRecords.Gone).
@@ -268,6 +298,8 @@ public static class HeapDecision
         }
 
         public HeapFunction Record(Node node) => _functions[node.Unit][node.Name];
+
+        public ObjectFile UnitObject(int unit) => _units[unit].Object;
 
         /// <summary>The entry, and with `initialisers` every static initialiser of every unit (OnceRun, Reached).</summary>
         public IEnumerable<Node> Roots(string entry, bool initialisers)
@@ -366,13 +398,14 @@ public static class HeapDecision
         /// (a descriptor's only with `everyMethod`).
         /// </summary>
         public HashSet<Node> Walk(IEnumerable<Node> roots, bool everyMethod, HashSet<string>? addressed, Func<Node, HeapFunction, IEnumerable<string>> next,
-            HashSet<string>? types = null)
+            HashSet<string>? types = null, IEnumerable<string>? rootNames = null)
         {
             HashSet<Node> reached = new();
             Stack<Node> work = new();
             HashSet<(ObjectFile, string)> seen = new();
             void Add(Node? node) { if (node is Node n && reached.Add(n)) work.Push(n); }
             foreach (Node root in roots) Add(root);
+            foreach (string name in rootNames ?? Enumerable.Empty<string>()) Add(Resolve(-1, name, Add, everyMethod, seen, addressed, types));
             while (work.TryPop(out Node node))
                 foreach (string name in next(node, Record(node)))
                     Add(Resolve(node.Unit, name, Add, everyMethod, seen, addressed, types));

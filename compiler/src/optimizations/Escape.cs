@@ -237,10 +237,13 @@ public sealed partial class Escape : IModulePass
             : _hinting ? ElementMode.Hints : ElementMode.Off;
         _arrayFreer = canFree && Provided(OwnedElements.ArrayFreer);
         if (canFree) ConfirmOwnedElements(m, summaries);
+        // The catches judged with the whole program's escapes where the link
+        // has them, as the owned elements are (OwnedElements.WithLinkEscapes).
+        Dictionary<string, bool[]> catchSummaries = m.AtLink ? WithLinkEscapes(summaries, m.LinkEscapes) : summaries;
         foreach (Function f in m.Functions)
         {
             PromoteIn(f, summaries, canFree, fields);
-            if (canFree) OwnCaught(f, summaries);
+            if (canFree) OwnCaught(f, catchSummaries);
             ThrownIn(f, summaries);
             if (canFree && Provided(ReplacedFreer)) OwnVariables(f, summaries);
             if (canFreeFields) OwnFields(f, summaries);
@@ -610,7 +613,8 @@ public sealed partial class Escape : IModulePass
                 {
                     if (i.Op != Opcode.Unwind || i.Operands.Count < 2) continue;
                     scope ??= new ThrowScope(f);
-                    if (ThrowVerdict(scope, i, summaries) is not var (type, _)) continue;
+                    if (ThrowVerdict(scope, i, summaries) is not { } verdict) continue;
+                    string type = verdict.Type;
                     if (!type.StartsWith("s:", StringComparison.Ordinal))
                     {
                         types.Add(type);
@@ -780,15 +784,9 @@ public sealed partial class Escape : IModulePass
         foreach (Function f in m.Functions)
         {
             bool initialiser = IsStaticInitialiser(f.Name);
-            RegisterWrites writes = new(f);
-            HashSet<FrameSlot> caughtSlots = new();
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
-                        && i.Operands[1] is RegOperand { Reg: var v } && writes.TryGetValue(v, out WriteList vw)
-                        && vw.Count == 1 && vw[0] is { Op: Opcode.Call, Callee: "__exception" })
-                        caughtSlots.Add(slot);
                     if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SymOperand { Name: var into })
                     {
                         if (!initialiser) hints.StaticWrites.Add(into);
@@ -797,29 +795,15 @@ public sealed partial class Escape : IModulePass
                         hints.StaticStores.Add((into, type ?? "*"));
                     }
                 }
-            // Made here, handed on from a landing pad, or else what the link must judge.
-            string? Verdict(Operand o)
-            {
-                for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
-                {
-                    if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return "*";
-                    Instr d = ws[0];
-                    if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee))) return null;
-                    if (d.Op == Opcode.Call && d.Callee == "__exception") return null;
-                    if (d.Op == Opcode.Call && d.Callee is not null && !IsIntrinsic(d.Callee)) return "f:" + d.Callee;
-                    if (d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from)) return null;
-                    if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) return "s:" + named;
-                    if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands.Count != 1) return "*";
-                    o = d.Operands[0];
-                }
-                return "*";
-            }
+            // Each throw as a whole program judges it (ThrowVerdict), what it
+            // rests on of other units the condition for the link.
+            ThrowScope? scope = null;
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    Operand? thrown = i.Op == Opcode.Unwind && i.Operands.Count >= 2 ? i.Operands[1]
-                        : i.Op == Opcode.Call && i.Callee == Unhandled && i.Operands.Count == 1 ? i.Operands[0] : null;
-                    if (thrown is not null && Verdict(thrown) is string verdict) hints.Throws.Add(verdict);
+                    if (i.Op != Opcode.Unwind || i.Operands.Count < 2) continue;
+                    scope ??= new ThrowScope(f);
+                    if (ThrowVerdict(scope, i, _summaries ?? new()) is { } verdict) hints.Throws.Add(new(f.Name, verdict.Type, verdict.Unless));
                 }
         }
     }
@@ -939,6 +923,18 @@ public sealed partial class Escape : IModulePass
                     }
                 }
             Flow flow = Analyse(f, roots, summaries, null, stores, handOff: true);
+            // KEPT ONLY FOR WANT OF WHAT ANOTHER UNIT DOES -- the caught
+            // object's Message read through a virtual call another unit
+            // answers: the condition under which it is freed, for the link,
+            // which runs this again with the whole program's escapes.
+            if (_hinting && !_module!.AtLink && flow.Escapes && roots.Count > 0)
+            {
+                Needs needs = new(this);
+                Flow wanting = Analyse(f, roots, summaries, null, stores, handOff: true, needs: needs);
+                if (!wanting.Escapes && !needs.Condition.IsTrue
+                    && !UsedAfterEnd(f, keep, wanting, list, catchLiveness ??= AnalysisCache.LivenessOf(f)))
+                    AddPending(needs.Condition);
+            }
             bool keptAnyway = flow.Escapes || list.Any(e => CatchesForeign(e.End));
             if (!keptAnyway) catchLiveness ??= AnalysisCache.LivenessOf(f);
             if (keptAnyway || UsedAfterEnd(f, keep, flow, list, catchLiveness!))

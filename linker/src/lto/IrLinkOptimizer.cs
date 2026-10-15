@@ -154,8 +154,23 @@ public static class IrLinkOptimizer
         // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's
         // consumers could throw anything -- and only where every unit with
         // IR said what it throws.
-        string[]? catchable = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
-            ? ForeignCatchable(inputs, hintOrder, lifetimes) : null;
+        // Each unit's records of what its functions call (HeapRecords): the
+        // reach the catches are judged over, and the heap decision's below.
+        Dictionary<ObjectFile, HeapRecords> heapRecords = new(ReferenceEqualityComparer.Instance);
+        if (enabled && lifetimes is not null && closedImageEntry is not null)
+            foreach (ObjectFile obj in archives.Keys)
+                if (HeapRecords.Read(obj) is HeapRecords records) heapRecords[obj] = records;
+        // Only what the program can reach throws anything (Escape.ForeignThrows):
+        // a throw in code the program never runs made every catch keep.
+        string[]? catchable = null;
+        if (lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey) && archives.Keys.All(heapRecords.ContainsKey)
+            && !foreign.Contains("*"))
+        {
+            List<(ObjectFile Object, HeapRecords Records)> recorded = inputs.Where(input => archives.ContainsKey(input.Object))
+                .Select(input => (input.Object, heapRecords[input.Object])).ToList();
+            HashSet<(ObjectFile Object, string Function)> throwing = HeapDecision.Reach(inputs, recorded, closedImageEntry, linkRoots.Concat(foreign).ToList());
+            catchable = ForeignCatchable(inputs, hintOrder, hints, throwing, lifetimes);
+        }
         bool programFacts = catchable is not null;
         if (programFacts) Console.Error.WriteLine("LTO catches: " + (catchable!.Length == 0 ? "every catch frees what it caught" : catchable.Length + " types keep what they catch"));
         // FIELDS THAT OWN WHAT THEY HOLD, judged over every unit's hints as a
@@ -253,11 +268,7 @@ public static class IrLinkOptimizer
         // whose code without IR names nothing of the collector's, and that
         // holds the manual heap. Its first making is the usual one; what it
         // leaves decides whether there is a second, without a collector.
-        Dictionary<ObjectFile, HeapRecords> heapRecords = new(ReferenceEqualityComparer.Instance);
-        if (enabled && !noCollector && lifetimes is not null && closedImageEntry is not null && keep is null && !moduleOfKernel && !openTypes)
-            foreach (ObjectFile obj in archives.Keys)
-                if (HeapRecords.Read(obj) is HeapRecords records) heapRecords[obj] = records;
-        bool heapPossible = heapRecords.Count > 0 && archives.Keys.All(heapRecords.ContainsKey) && archives.Keys.All(hints.ContainsKey)
+        bool heapPossible = !noCollector && keep is null && !moduleOfKernel && !openTypes && heapRecords.Count > 0 && archives.Keys.All(heapRecords.ContainsKey) && archives.Keys.All(hints.ContainsKey)
             && !foreign.Contains("*") && !foreign.Any(CollectorName) && ManualHeap.All(owners.ContainsKey)
             // Not where stores go through the store-sequence stubs, which call the barriers whatever the program needs.
             && !owners.ContainsKey(RuntimeAbi.RefStore);
@@ -553,14 +564,15 @@ public static class IrLinkOptimizer
                or RuntimeAbi.WriteBarrier or RuntimeAbi.WriteBarrierValues or RuntimeAbi.CardMark or RuntimeAbi.CardMarkObject or RuntimeAbi.ShadeObject;
 
     /// <summary>
-    /// WHAT A CATCH MAY BE HANDED THAT WAS NOT JUST MADE, over every unit
-    /// (Escape.ForeignThrows, as a flat compile judges it): a throw of
-    /// something unnamed makes it anything; one of another function's result,
-    /// nothing if the whole program finds that function fresh; one read from
-    /// a static, whatever any unit stores there. Every such type and its
-    /// ancestors, or null when it could be anything.
+    /// WHAT A CATCH MAY BE HANDED THAT WAS NOT JUST MADE, over the throws
+    /// of every function the program reaches (Escape.ForeignThrows, as a
+    /// flat compile judges it): each as its unit judged it (LifetimeThrow),
+    /// nothing where the condition it rests on holds; one read from a static,
+    /// whatever any unit stores there. Every such type and its ancestors, or
+    /// null when it could be anything.
     /// </summary>
-    private static string[]? ForeignCatchable(List<(string Name, ObjectFile Object)> inputs, List<LifetimeHints> units, LifetimeSolver solver)
+    private static string[]? ForeignCatchable(List<(string Name, ObjectFile Object)> inputs, List<LifetimeHints> units,
+        Dictionary<ObjectFile, LifetimeHints> hints, HashSet<(ObjectFile Object, string Function)> reached, LifetimeSolver solver)
     {
         Dictionary<string, List<string>> stored = new(StringComparer.Ordinal);
         foreach (LifetimeHints unit in units)
@@ -570,17 +582,23 @@ public static class IrLinkOptimizer
                 list.Add(type);
             }
         SortedSet<string> types = new(StringComparer.Ordinal);
-        foreach (LifetimeHints unit in units)
-            foreach (string thrown in unit.Throws)
+        foreach ((ObjectFile obj, string function) in reached)
+        {
+            if (!hints.TryGetValue(obj, out LifetimeHints? unit)) continue;
+            foreach (LifetimeThrow thrown in unit.ThrowsOf(function))
             {
-                if (thrown.StartsWith("f:", StringComparison.Ordinal) && solver.IsFresh(thrown[2..])) continue;
-                if (!thrown.StartsWith("s:", StringComparison.Ordinal)) return null;
-                foreach (string type in stored.GetValueOrDefault(thrown[2..]) ?? new List<string>())
+                // Not foreign after all where what it rests on of other units holds.
+                if (thrown.Unless is not null && solver.Holds(thrown.Unless)) continue;
+                if (Switches.AllocReport) Console.Error.WriteLine("alloc report: link throws " + thrown.Type + " in " + function);
+                if (thrown.Type == "*") return null;
+                if (!thrown.Type.StartsWith("s:", StringComparison.Ordinal)) { types.Add(thrown.Type); continue; }
+                foreach (string type in stored.GetValueOrDefault(thrown.Type[2..]) ?? new List<string>())
                 {
                     if (type == "*") return null;
                     types.Add(type);
                 }
             }
+        }
         return VirtualTargets.Ancestry(inputs, types).Order(StringComparer.Ordinal).ToArray();
     }
 

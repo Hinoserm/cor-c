@@ -169,12 +169,20 @@ public sealed class LifetimeHints
     /// <summary>
     /// WHAT THE UNIT THROWS THAT IT DID NOT JUST MAKE, for the link to judge
     /// which catches may free what they caught (Escape.ForeignThrows over the
-    /// whole program): "*" for something it cannot name, "s:" and a static
-    /// field it read the exception from, "f:" and another unit's function
-    /// whose result it threw -- nothing, if the whole program finds that
-    /// function hands over a fresh object.
+    /// whole program), each throw by its function, so that only what the
+    /// program reaches counts (Escape.ThrowVerdict): the type it may be ("*"
+    /// for any, "s:" and a static it was read from), and the condition on
+    /// other units under which it is not foreign after all.
     /// </summary>
-    public SortedSet<string> Throws { get; } = new(StringComparer.Ordinal);
+    public List<LifetimeThrow> Throws { get; } = new();
+
+    /// <summary>The throws of one function (Throws).</summary>
+    public IReadOnlyList<LifetimeThrow> ThrowsOf(string function)
+    {
+        _throwsOf ??= Throws.GroupBy(t => t.Function, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+        return _throwsOf.TryGetValue(function, out List<LifetimeThrow>? found) ? found : Array.Empty<LifetimeThrow>();
+    }
+    private Dictionary<string, List<LifetimeThrow>>? _throwsOf;
     /// <summary>What the unit stores into static fields: the field and the stamped type, "*" where it cannot say.</summary>
     public SortedSet<(string Field, string Type)> StaticStores { get; } = new(PairOrder.Instance);
     /// <summary>The static fields the unit stores to outside a static initialiser (Escape.PermanentStatics).</summary>
@@ -212,6 +220,7 @@ public sealed class LifetimeHints
         }
         foreach (LifetimeCondition condition in Pending) foreach (var named in Of(condition)) yield return named;
         foreach (var site in FieldSites) foreach (var named in OfFields(site.Fields)) yield return named;
+        foreach (LifetimeThrow thrown in Throws) foreach (var named in Of(thrown.Unless)) yield return named;
     }
 
     public void Attach(ObjectFile obj) => Attach(obj, Write());
@@ -244,6 +253,7 @@ public sealed class LifetimeHints
             foreach (LifetimeHeld? held in function.Held ?? Array.Empty<LifetimeHeld?>()) Names(held?.Condition);
         }
         foreach (LifetimeCondition condition in Pending) Names(condition);
+        foreach (LifetimeThrow thrown in Throws) Names(thrown.Unless);
         foreach ((LifetimeFields fields, List<(string Symbol, long Offset)> sites) in FieldSites)
         {
             FieldNames(fields);
@@ -308,8 +318,11 @@ public sealed class LifetimeHints
             writer.Write(sites.Count);
             foreach ((string symbol, long offset) in sites) { writer.Write(index[symbol]); writer.Write(offset); }
         }
-        writer.Write(Throws.Count);
-        foreach (string thrown in Throws) Text(thrown);
+        // Each throw once, by function and type, in that order.
+        List<LifetimeThrow> throws = Throws.Distinct().OrderBy(t => t.Function, StringComparer.Ordinal).ThenBy(t => t.Type, StringComparer.Ordinal)
+            .ThenBy(t => t.Unless is null ? 0 : 1).ToList();
+        writer.Write(throws.Count);
+        foreach (LifetimeThrow thrown in throws) { Text(thrown.Function); Text(thrown.Type); Condition(thrown.Unless); }
         writer.Write(StaticStores.Count);
         foreach ((string field, string type) in StaticStores) { Text(field); Text(type); }
         writer.Write(StaticWrites.Count);
@@ -504,7 +517,7 @@ public sealed class LifetimeHints
                 if (text.Contains('\0')) throw new ElfFormatException("Invalid lifetime hint text");
                 return text;
             }
-            for (int i = Count(5); i > 0; i--) hints.Throws.Add(Text());
+            for (int i = Count(14); i > 0; i--) { string function = Text(); string type = Text(); hints.Throws.Add(new(function, type, Condition())); }
             for (int i = Count(10); i > 0; i--) { string field = Text(); hints.StaticStores.Add((field, Text())); }
             for (int i = Count(5); i > 0; i--) hints.StaticWrites.Add(Text());
             if (reader.ReadBoolean()) hints.Owned = OwnedFieldHints.Read(reader, total);
@@ -575,3 +588,11 @@ public sealed class LifetimeHintPool
         }
     }
 }
+
+/// <summary>
+/// One throw of a unit's function, as the link judges it (LifetimeHints.Throws):
+/// the type it may hand a catch that is not freshly made ("*", a descriptor,
+/// or "s:" and a static it was read from), and the condition on other units
+/// under which it is freshly made after all (null: never).
+/// </summary>
+public sealed record LifetimeThrow(string Function, string Type, LifetimeCondition? Unless);
