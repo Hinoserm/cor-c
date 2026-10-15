@@ -10765,6 +10765,9 @@ public sealed partial class Binder
 
     private TypeSymbol ArrayView(Type element, TypeSymbol face)
     {
+        // Its items as the view is named: a reference element's `?` is the
+        // use's, as a specialisation's argument's is (Unmarked).
+        element = Unmarked(element);
         string name = $"ArrayView${face.Name}";
 
         if (_r.Types.TryGetValue(name, out TypeSymbol? already))
@@ -10864,8 +10867,13 @@ public sealed partial class Binder
 
         foreach (string sequence in new[] { "IEnumerable", "IReadOnlyCollection", "IReadOnlyList" })
         {
+            // SPELLED AS SPECIALISATIONS ARE NAMED (SpecialisationKey): a
+            // reference element's `?` is no part of the name, so `string?[]`
+            // viewed as a sequence is IReadOnlyList$string's too. Kept, the
+            // lookups missed, the view was IEnumerable alone, and a unit's
+            // view of string arrays was laid out apart from the library's.
             if (RefOf(element) is TypeRef written
-                && _r.Types.TryGetValue(Monomorphiser.MangledName(sequence, new List<TypeRef> { written }),
+                && _r.Types.TryGetValue(Monomorphiser.MangledName(sequence, new List<TypeRef> { SpecialisationKey(written, element) }),
                                         out TypeSymbol? also)
                 && !faces.Contains(also))
             {
