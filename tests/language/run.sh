@@ -261,29 +261,44 @@ fi
 #
 # SEVERAL TESTS RUN SEVERAL AT A TIME: each is this script again, on that test
 # alone, in its own work directory, JOBS of them at once (thirty, or as many
-# as there are processors less two where there are fewer). Their reports are
-# printed in the tests' order, as one run prints them. JOBS=1 runs them here,
-# one after another.
+# as there are processors less two where there are fewer). JOBS=1 runs them
+# here, one after another.
+#
+# EACH RESULT IS SAID THE MOMENT ITS TEST ENDS, in the order they end: the
+# test's PASS or FAIL line as one run prints it, the failure's report under
+# it, and every twenty-fifth a line of how far the run is. A suite of nine
+# hundred tests said nothing for twenty minutes and then everything at once.
+# The counts and the failed tests' names close the run.
 jobs="${JOBS:-$(( $(nproc) - 2 > 30 ? 30 : ( $(nproc) - 2 < 1 ? 1 : $(nproc) - 2 ) ))}"
 if [ -z "${CORC_TEST_ONE:-}" ] && [ "${#tests[@]}" -gt 1 ] && [ "$jobs" -gt 1 ]; then
     mkdir -p "$work/parallel"
-    export CORC RUN_SELF="$0" RUN_REPORTS="$work/parallel" RUN_FLAGS="${passthrough[*]:-}"
+    export CORC RUN_SELF="$0" RUN_REPORTS="$work/parallel" RUN_FLAGS="${passthrough[*]:-}" RUN_TOTAL="${#tests[@]}"
     for f in "${tests[@]}"; do basename "$f" .cor; done \
-        | xargs -P "$jobs" -I{} bash -c 'CORC_TEST_ONE="$1" bash "$RUN_SELF" $RUN_FLAGS "$1" > "$RUN_REPORTS/$1.log" 2>&1' _ {} || true
+        | xargs -P "$jobs" -I{} bash -c '
+            CORC_TEST_ONE="$1" bash "$RUN_SELF" $RUN_FLAGS "$1" > "$RUN_REPORTS/$1.log" 2>&1
+            if grep -q "^PASS $1\$" "$RUN_REPORTS/$1.log"; then
+                : > "$RUN_REPORTS/$1.passed"
+                echo "PASS $1"
+            else
+                : > "$RUN_REPORTS/$1.failed"
+                if [ -s "$RUN_REPORTS/$1.log" ]; then
+                    sed -n "/^\(PASS\|FAIL\) /,/^\$/p" "$RUN_REPORTS/$1.log" | sed "/^\$/d"
+                else
+                    echo "FAIL $1 (no report)"
+                fi
+            fi
+            ended=$(find "$RUN_REPORTS" -maxdepth 1 \( -name "*.passed" -o -name "*.failed" \) | wc -l)
+            if [ $((ended % 25)) -eq 0 ] && [ "$ended" -lt "$RUN_TOTAL" ]; then
+                echo "-- $ended of $RUN_TOTAL ended, $(find "$RUN_REPORTS" -maxdepth 1 -name "*.failed" | wc -l) failed"
+            fi' _ {} || true
     for f in "${tests[@]}"; do
         name="$(basename "$f" .cor)"
         report="$work/parallel/$name.log"
         if [ -s "$report" ] && grep -q "^PASS $name\$" "$report"; then
             passed=$((passed + 1))
-            echo "PASS $name"
         else
             failed=$((failed + 1))
             failed_names="$failed_names $name"
-            if [ -s "$report" ]; then
-                sed -n '/^\(PASS\|FAIL\) /,/^$/p' "$report" | sed '/^$/d'
-            else
-                echo "FAIL $name (no report)"
-            fi
         fi
     done
     echo
