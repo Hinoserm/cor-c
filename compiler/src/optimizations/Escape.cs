@@ -255,7 +255,7 @@ public sealed partial class Escape : IModulePass
             m.NeedsHeap = false;
         }
         if (Switches.AllocReport) AllocationReport(m, byName);
-        LastRun = (Promoted, Owned, OwnedReturns, _fresh.Count, FieldsOwned, VariablesOwned);
+        LastRun = (Promoted, Owned, OwnedReturns, FreshFunctions, FieldsOwned, VariablesOwned);
 
         // THE PROGRAM'S ANSWER TO Runtime.CollectorLinked(), now that it is
         // known: a constant, which the passes after this fold, taking what
@@ -2637,8 +2637,12 @@ continue;
     /// <summary>The last run's counts, for --stats: frame slots, owned allocations, of those fresh results, fresh functions.</summary>
     public static (int Promoted, int Owned, int OwnedReturns, int Fresh, int Fields, int Variables) LastRun { get; private set; }
 
-    /// <summary>How many functions were found to return a fresh object.</summary>
-    public int FreshFunctions => _fresh.Count;
+    /// <summary>
+    /// How many of this unit's functions were found to return a fresh object
+    /// -- not the library's routines taken as fresh without their bodies here
+    /// (AlwaysFresh), which the set holds too.
+    /// </summary>
+    public int FreshFunctions => _fresh.Count(_defined.Contains);
 
     /// <summary>Whether a call's result is an object its callee hands over.</summary>
     public bool IsFreshCall(Instr i) => i.Op == Opcode.Call && i.Callee is not null && _fresh.Contains(i.Callee) || i.ReturnsFreshStruct || FreshOverrides(i);

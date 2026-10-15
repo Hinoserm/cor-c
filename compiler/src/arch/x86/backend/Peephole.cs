@@ -41,6 +41,9 @@ internal static class Peephole
             ForwardSpillLoads(block.Instrs);
             DeadDefs(block.Instrs, liveOut[b], Jumped);
             RepeatedStores(block.Instrs, liveOut[b], Usable(m), Jumped);
+            // Again: a run of stores of one constant now stores a register,
+            // and a load of the slot just stored can read the register.
+            ForwardStoreLoad(block.Instrs);
             MergePops(block.Instrs);
             RedundantTests(block.Instrs);
             ZeroWithXor(block.Instrs);

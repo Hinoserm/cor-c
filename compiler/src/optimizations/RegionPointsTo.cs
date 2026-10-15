@@ -1263,8 +1263,11 @@ public sealed class RegionPointsTo : IModulePass
             for (int k = last + 1; k < ret; k++)
                 if (b.Instrs[k] is { Op: Opcode.Call, Callee: Leave } leave) leaves.Add(leave);
             if (leaves.Count == 0) continue;
-            List<Instr> rest = b.Instrs.GetRange(last + 1, ret - last - 1).Where(i => !leaves.Contains(i)).ToList();
-            if (rest.Count == 0) continue;
+            List<Instr> stretch = b.Instrs.GetRange(last + 1, ret - last - 1);
+            List<Instr> rest = stretch.Where(i => !leaves.Contains(i)).ToList();
+            // Nothing to move where the leaves already come last: counted as
+            // moved, a block in order said it was not.
+            if (rest.Count == 0 || stretch.SequenceEqual(rest.Concat(leaves), ReferenceEqualityComparer.Instance)) continue;
             b.Instrs.RemoveRange(last + 1, ret - last - 1);
             b.Instrs.InsertRange(last + 1, rest.Concat(leaves));
             moved += leaves.Count;
