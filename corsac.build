@@ -3,6 +3,7 @@
     <Configuration>Release</Configuration>
     <Compiler>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Compiler>
     <Linker>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Linker>
+    <CompilerDll>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc.dll</CompilerDll>
   </PropertyGroup>
   <Components>
     <Project Name="compiler" Path="compiler/corc.csproj" />
@@ -34,32 +35,51 @@
     </Target>
   </Target>
 
-  <Target Name="test" Steps="unit;smoke;lto;indexed;ir-lto;managed">
+  <!-- EVERY TEST THE TREE HAS, in order of how long each takes: what is not
+       a step here is not run by anything. test/corsac-boot is the one left
+       out; it boots the OS, from its own repository. -->
+  <Target Name="test" Steps="unit;smoke;lto;indexed;ir-lto;managed;checked-frees;lifetimes;separate-dynamic;unused-report;modules;projects;language-scripts;separate-units;shared;language">
     <Target Name="managed" DependsOnTargets="/compiler">
       <Test Name="managed-units" Executable="bash" Workers="auto" Timeout="00:10:00">
         <Argument Value="tests/integration/managed-units.sh" />
       </Test>
     </Target>
-    <Target Name="unit" Steps="build-tool;optimizer;x86;linker;metadata">
+    <Target Name="unit" Steps="build-tool;optimizer;x86;linker;metadata;project-evaluator">
+      <Target Name="project-evaluator">
+        <Compile Project="compiler/tests/projects/ProjectTests.csproj" Toolchain="managed" />
+        <Test Name="project-evaluator" Executable="compiler/tests/projects/bin/managed/$(Configuration)/net10.0/ProjectTests" Timeout="00:03:00">
+          <Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+        </Test>
+      </Target>
       <Target Name="metadata">
         <Compile Project="compiler/tests/metadata/MetadataTests.csproj" Toolchain="managed" />
-        <Test Name="metadata" Executable="compiler/tests/metadata/bin/managed/$(Configuration)/net10.0/MetadataTests" Timeout="00:03:00" />
+        <Test Name="metadata" Executable="compiler/tests/metadata/bin/managed/$(Configuration)/net10.0/MetadataTests" Timeout="00:03:00">
+          <Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+        </Test>
       </Target>
       <Target Name="build-tool">
         <Compile Project="tools/build/tests/BuildTests.csproj" Toolchain="managed" />
-        <Test Name="build-runner" Executable="tools/build/tests/bin/managed/$(Configuration)/net10.0/BuildTests" Timeout="00:03:00" />
+        <Test Name="build-runner" Executable="tools/build/tests/bin/managed/$(Configuration)/net10.0/BuildTests" Timeout="00:03:00">
+          <Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+        </Test>
       </Target>
       <Target Name="optimizer">
         <Compile Project="compiler/tests/optimizations/OptTests.csproj" Toolchain="managed" />
-        <Test Name="optimizer" Executable="compiler/tests/optimizations/bin/managed/$(Configuration)/net10.0/OptTests" Timeout="00:03:00" />
+        <Test Name="optimizer" Executable="compiler/tests/optimizations/bin/managed/$(Configuration)/net10.0/OptTests" Timeout="00:03:00">
+          <Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+        </Test>
       </Target>
       <Target Name="x86">
         <Compile Project="compiler/tests/arch/x86/x86tests.csproj" Toolchain="managed" />
-        <Test Name="x86" Executable="compiler/tests/arch/x86/bin/managed/$(Configuration)/net10.0/x86tests" Timeout="00:03:00" />
+        <Test Name="x86" Executable="compiler/tests/arch/x86/bin/managed/$(Configuration)/net10.0/x86tests" Timeout="00:03:00">
+          <Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+        </Test>
       </Target>
       <Target Name="linker">
         <Compile Project="linker/tests/ElfTests.csproj" Toolchain="managed" />
-        <Test Name="linker" Executable="linker/tests/bin/managed/$(Configuration)/net10.0/ElfTests" Timeout="00:03:00" />
+        <Test Name="linker" Executable="linker/tests/bin/managed/$(Configuration)/net10.0/ElfTests" Timeout="00:03:00">
+          <Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+        </Test>
       </Target>
     </Target>
     <Target Name="smoke" DependsOnTargets="/compiler">
@@ -99,7 +119,71 @@
     <Target Name="language" DependsOnTargets="/compiler">
       <Test Name="language" Executable="bash" Timeout="01:00:00">
         <Argument Value="tests/language/run.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+      </Test>
+    </Target>
+    <Target Name="language-link" DependsOnTargets="/compiler" Description="Every language test compiled to an object and linked: the link-time optimiser, its region solver and the regions headers">
+      <Test Name="language-through-link" Executable="bash" Timeout="02:00:00">
+        <Argument Value="tests/language/run.sh" /><Argument Value="--through-link" />
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="TMPDIR" Value="$(OutputDirectory)" />
+      </Test>
+    </Target>
+    <Target Name="language-scripts" DependsOnTargets="/compiler">
+      <Test Name="asm-object" Executable="bash" Timeout="00:05:00">
+        <Argument Value="tests/language/260_asm_object.sh" />
         <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+      <Test Name="asm-movzx" Executable="bash" Timeout="00:02:00">
+        <Argument Value="tests/language/262_asm_movzx.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+      <Test Name="config-dead-branch" Executable="bash" Timeout="00:05:00">
+        <Argument Value="tests/language/202_config_dead_branch.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+    </Target>
+    <Target Name="separate-units" DependsOnTargets="/compiler" Description="Every language test compiled alone against the library's declarations and linked with the library's object">
+      <Test Name="separate-units" Executable="bash" Timeout="02:00:00">
+        <Argument Value="tests/integration/separate-units.sh" /><Argument Value="all" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+    </Target>
+    <Target Name="checked-frees" DependsOnTargets="/compiler">
+      <Test Name="checked-frees" Executable="bash" Timeout="00:05:00">
+        <Argument Value="tests/integration/checked-frees.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+    </Target>
+    <Target Name="lifetimes" DependsOnTargets="/compiler">
+      <Test Name="lifetimes-across-units" Executable="bash" Timeout="00:10:00">
+        <Argument Value="tests/integration/lifetimes.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
+      </Test>
+    </Target>
+    <Target Name="separate-dynamic" DependsOnTargets="/compiler">
+      <Test Name="separate-dynamic-linking" Executable="sh" Timeout="00:05:00">
+        <Argument Value="tests/integration/separate-dynamic.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
+      </Test>
+    </Target>
+    <Target Name="unused-report" DependsOnTargets="/compiler">
+      <Test Name="unused-report" Executable="sh" Timeout="00:05:00">
+        <Argument Value="tests/integration/unused-report.sh" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
+    </Target>
+    <Target Name="projects" DependsOnTargets="/compiler" Description="corc project: the pipeline, a declaration changed between builds, and the slot table">
+      <Test Name="project-pipeline" Executable="bash" Timeout="00:15:00">
+        <Argument Value="tests/integration/project-pipeline.sh" />
+        <Environment Name="CORC_DLL" Value="$(CompilerDll)" />
+      </Test>
+      <Test Name="project-declaration-change" Executable="bash" Timeout="00:15:00">
+        <Argument Value="tests/integration/project-declaration-change.sh" />
+        <Environment Name="CORC_DLL" Value="$(CompilerDll)" />
+      </Test>
+      <Test Name="project-slots" Executable="bash" Timeout="00:15:00">
+        <Argument Value="tests/integration/project-slots.sh" />
+        <Environment Name="CORC_DLL" Value="$(CompilerDll)" />
       </Test>
     </Target>
     <Target Name="shared" DependsOnTargets="/libraries">

@@ -17,6 +17,9 @@ public static partial class Program
 {
     private static int _failures;
     private static int _passes;
+    // A test that needs gcc -m32 where there is none: said in the count, not
+    // left out of it as though it had never been written.
+    private static int _skips;
     private static string _dir = "";
 
     public static int Main(string[] args)
@@ -66,7 +69,7 @@ public static partial class Program
         Try("32-bit and 64-bit objects do not link together", LongModeMixture);
         Try("x86-64 shared object and dynamic program run under ld-linux-x86-64", LongModeDynamic);
 
-        Console.WriteLine($"{_passes} passed, {_failures} failed");
+        Console.WriteLine($"{_passes} passed, {_failures} failed" + (_skips > 0 ? $", {_skips} skipped" : ""));
         return _failures == 0 ? 0 : 1;
     }
 
@@ -201,6 +204,7 @@ public static partial class Program
         if (code != 0)
         {
             Console.WriteLine($"  skipped: gcc -m32 is not usable here:\n{output}");
+            _skips++;
             return null;
         }
         _gccObject = obj;
@@ -626,6 +630,7 @@ public static partial class Program
         if (code != 0)
         {
             Console.WriteLine($"  skip  gcc -m32 cannot link against our library here: {output.Split('\n')[0]}");
+            _skips++;
             return;
         }
         Check(true, "gcc -m32 links a C program against our shared object");

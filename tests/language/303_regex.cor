@@ -1,7 +1,10 @@
+// test: regex
+// expect-exit: 0
+// expect-output:
+// ok
+//
 // System.Text.RegularExpressions: the surface grep and sed are written
 // against, and the parts of .NET's pattern language they translate into.
-//
-// expect: ok
 
 class Program
 {

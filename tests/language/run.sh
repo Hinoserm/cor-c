@@ -92,6 +92,10 @@ done
 
 # ---- find or build the compiler --------------------------------------------
 
+# The build's own (corc build compiler), else the newest MSBuild one.
+if [ -z "${CORC:-}" ] && [ -x "$root/compiler/bin/managed/Release/net10.0/corc" ]; then
+    CORC="$root/compiler/bin/managed/Release/net10.0/corc"
+fi
 if [ -z "${CORC:-}" ]; then
     dll="$(ls -1t "$root"/compiler/bin/Release/net*/corc.dll 2>/dev/null | head -1 || true)"
     if [ -z "$dll" ]; then
@@ -160,6 +164,11 @@ if [ ! -e "$root/.run-snapshot" ]; then
         exit $?
     fi
 fi
+
+# FROM THE ROOT, the copy's when the run made one: a test's "// flags:" may
+# name a file as the compiler would from there (1480's @response file), and
+# it is the copy's file that is read, as every other source is.
+cd "$root" || exit 2
 
 if [ "$engine_next" = 1 ]; then
     echo "--region-engine needs an engine: escape or andersen" >&2
@@ -324,6 +333,17 @@ for f in "${tests[@]}"; do
         exit 2
     fi
     exe="$work/$name"
+    # A HEADER NOTHING READS IS A CHECK NOTHING MAKES: an "// expect...:" key
+    # this runner does not know fails its test, rather than passing it with
+    # the check unmade (303's "// expect: ok" was compared with nothing).
+    unknown="$(sed -n 's|^// \(expect[a-z-]*\):.*|\1|p' "$f" \
+        | grep -vxE 'expect-exit|expect-output|expect-compile-error|expect-(no-)?compile-warning' | head -1)"
+    if [ -n "$unknown" ]; then
+        echo "FAIL $name (unknown header // $unknown:)"
+        failed=$((failed + 1))
+        failed_names="$failed_names $name"
+        continue
+    fi
     want_exit="$(header_value "$f" expect-exit)"
     [ -n "$want_exit" ] || want_exit=0
 
@@ -355,6 +375,13 @@ for f in "${tests[@]}"; do
     for src in $(header_value "$f" units); do
         unit_sources="$unit_sources $root/$src"
     done
+    # WHAT REGIONS TOOK, on every run: a link says it in its summary line
+    # whether asked or not; a single compile says it when asked.
+    want_regions="$(header_value "$f" regions)"
+    region_flags=()
+    if [ -n "$want_regions" ] && [ "$through_link" != 1 ] && [ -z "$unit_sources" ]; then
+        region_flags=(--region-report +none)
+    fi
     if [ -n "$unit_sources" ]; then
         # shellcheck disable=SC2086
         {
@@ -381,7 +408,7 @@ for f in "${tests[@]}"; do
         cc_status=$?
     else
     # shellcheck disable=SC2086
-    $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
+    $CORC compile -Wno-error "${compiler_flags[@]}" "${region_flags[@]}" $own_flags $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
     cc_status=$?
     fi
     if [ "$verbose" = 1 ] && [ -s "$work/$name.compile" ]; then
@@ -433,19 +460,18 @@ for f in "${tests[@]}"; do
         continue
     fi
 
-    # WHAT THE LINK'S REGIONS TOOK, through the link only: "// regions:
-    # taken" wants sites made in a region (the link's summary, "regions: N
-    # boundaries, L loops, S sites in the innermost region"), "// regions:
-    # none" wants none. A test whose output cannot tell regions from the
-    # heap says so here.
-    want_regions="$(header_value "$f" regions)"
-    if [ "$through_link" = 1 ] && [ -n "$want_regions" ]; then
+    # WHAT REGIONS TOOK: "// regions: taken" wants sites made in a region
+    # (the summary, "regions: N boundaries, L loops, S sites ..." -- the
+    # link's, or the compile's when there is no link), "// regions: none"
+    # wants none. A test whose output cannot tell regions from the heap says
+    # so here.
+    if [ -n "$want_regions" ]; then
         summary="$(grep -o 'regions: [0-9]* boundaries, [0-9]* loops, [0-9]* sites' "$work/$name.compile" | tail -1)"
         sites="$(printf '%s' "$summary" | sed -n 's/.* loops, \([0-9]*\) sites$/\1/p')"
         regions_miss=""
         case "$want_regions" in
-            taken) [ -n "$sites" ] && [ "$sites" -gt 0 ] || regions_miss="expected sites taken into a region, the link said: ${summary:-nothing}" ;;
-            none) [ -z "$sites" ] || [ "$sites" -eq 0 ] || regions_miss="expected no site taken into a region, the link said: $summary" ;;
+            taken) [ -n "$sites" ] && [ "$sites" -gt 0 ] || regions_miss="expected sites taken into a region, the compiler said: ${summary:-nothing}" ;;
+            none) [ -z "$sites" ] || [ "$sites" -eq 0 ] || regions_miss="expected no site taken into a region, the compiler said: $summary" ;;
             *) regions_miss="unknown // regions: $want_regions (taken or none)" ;;
         esac
         if [ -n "$regions_miss" ]; then

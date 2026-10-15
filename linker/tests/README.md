@@ -5,7 +5,8 @@ ELF objects, static/dynamic linking, relocations, shared libraries, and C intero
 `--escape` runs only the region hints and the escape engine's own tests
 (RegionTests, RegionEscapeTests), which need none of the tools:
 
-    dotnet run --project linker/tests/ElfTests.csproj -- --escape
+    corc build test/unit/linker
+    linker/tests/bin/managed/Release/net10.0/ElfTests --escape
 
 Each of RegionEscapeTests states a few functions as their region
 constraints, solves them (RegionEscape, through the linker's internals) and
