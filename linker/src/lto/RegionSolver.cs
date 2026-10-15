@@ -3278,9 +3278,15 @@ public static class RegionSolver
         // region of its own (or none beneath it that takes them), and whose
         // laps are not bounded, piles one more into the region every lap: a
         // pass over ten thousand instructions held ten thousand laps of
-        // garbage until the pass returned. Such a site goes to the heap. What a
-        // lap carries on, or what outlives the call, is held as long by the
-        // collector, and stays in the region.
+        // garbage until the pass returned. Such a site goes to the heap. So
+        // does one whose objects a lap carries into the next only through
+        // what the loop itself writes, as a loop's own region sends them
+        // there (SelectLoops, "carried and dropped"): a chain each lap adds
+        // to and lets go of now and then held every lap's link to the end
+        // of the call, where the collector takes each once it is let go
+        // (1070's Carried). What outlives the call, or what the loop keeps
+        // in what it never writes, is held as long by the collector, and
+        // stays in the region.
         //
         // Measured on the compiler's own build (two units): peak live heap 434
         // MB with regions empty, 2410 MB with 27099 sites taken, 762 MB of
@@ -3338,11 +3344,15 @@ public static class RegionSolver
                         ulong[] lapLive = _escape is not null
                             ? GraphHeld(_escape.LoopHeld[f]?[loopIndex].LapLive)
                             : HeldBy(c, loop.Live, Enumerable.Range(0, function.Slots));
+                        ulong[] kept = _escape is not null ? GraphHeld(_escape.LoopHeld[f]?[loopIndex].Kept)
+                            : HeldBy(c, loop.Invariant, loop.KeptSlots);
                         ulong[]? escaping = EscapingBits(c);
-                        // Dead in the lap that made it: not live where a lap
-                        // ends, and not outliving the call. An object the
-                        // escape graphs never followed is held as live.
-                        bool DiesInLap(int o) => !Has(lapLive, o) && !Outlives(o, c, escaping);
+                        // Dead in the lap that made it, or carried into the
+                        // next only through what the loop writes: not
+                        // outliving the call, and not live where a lap ends
+                        // but by that. An object the escape graphs never
+                        // followed is held as live.
+                        bool DiesInLap(int o) => !Outlives(o, c, escaping) && (!Has(lapLive, o) || !Has(kept, o));
                         bool InnerRegion(int o) => inner.Any(r => Array.BinarySearch(r.Shape.Sites, _objectSite[o]) >= 0);
                         if (_madeAt[c] is { } made)
                             foreach (int o in made)

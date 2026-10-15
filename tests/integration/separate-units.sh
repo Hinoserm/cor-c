@@ -40,6 +40,9 @@ if [ ${#tests[@]} = 0 ]; then
         608_overload_by_word
         # lifetimes across units
         670_fresh_return 671_owned_fields 674_owned_variables
+        # regions, which only a closed link finds: a loop's region left on
+        # every way out, and a lap's carried chain on the heap
+        1070_region_loop_laps
     )
 fi
 [ "${tests[*]}" = all ] && tests=("")

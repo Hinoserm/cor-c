@@ -1268,6 +1268,25 @@ public sealed class RegionPointsTo : IModulePass
             // Nothing to move where the leaves already come last: counted as
             // moved, a block in order said it was not.
             if (rest.Count == 0 || stretch.SequenceEqual(rest.Concat(leaves), ReferenceEqualityComparer.Instance)) continue;
+            // WHAT EACH LEAVE IS HANDED, AS IT WAS WHERE IT STOOD: a loop's
+            // leave is followed by its handle set back to -1 (OpenLoops), and
+            // moved past that it was handed the -1 -- the loop's region never
+            // closed, and what the function's caller made next at the same
+            // depth went into it, given back under the caller by the next
+            // catch (1070). A handle written after the leave is copied where
+            // the leave was, and the leave takes the copy.
+            for (int k = 0; k < stretch.Count; k++)
+            {
+                if (stretch[k] is not { Op: Opcode.Call, Callee: Leave, Operands: [RegOperand { Reg: var handle }] } leave) continue;
+                bool written = false;
+                for (int later = k + 1; later < stretch.Count && !written; later++)
+                    written = stretch[later].Dest == handle;
+                if (!written) continue;
+                VReg held = f.NewReg(handle.Type, handle.Name);
+                Instr copy = new() { Op = Opcode.Copy, Dest = held, Operands = { RegOperand.Of(handle) }, Line = leave.Line };
+                leave.Operands[0] = RegOperand.Of(held);
+                rest.Insert(rest.Count(i => stretch.IndexOf(i) < k), copy);
+            }
             b.Instrs.RemoveRange(last + 1, ret - last - 1);
             b.Instrs.InsertRange(last + 1, rest.Concat(leaves));
             moved += leaves.Count;
