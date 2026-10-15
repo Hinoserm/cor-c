@@ -14385,9 +14385,13 @@ public sealed partial class Binder
                 // it (C# 12.9.7): `(Action)(() => { })` says what the lambda
                 // is, which nothing else around it may. Checked as wanted by
                 // the type, and then converted as an assignment converts it.
-                // A BARE `default` the same: `((int, string))default` is the
-                // type's zero, its type the cast's.
-                if (cast.Operand is LambdaExpr || IsFunctionSource(cast.Operand) || cast.Operand is DefaultExpr { Type.Name.Length: 0 })
+                // A BARE `default` and a `new()` the same, `!` or not:
+                // `((int, string))default` is the type's zero and `(Foo)new()`
+                // a Foo, their type the cast's -- not whatever waits for the
+                // cast, which made `object o = (Foo)new()` an object.
+                if (cast.Operand is LambdaExpr || IsFunctionSource(cast.Operand)
+                    || (cast.Operand is SuppressExpr suppressed ? suppressed.Operand : cast.Operand)
+                        is DefaultExpr { Type.Name.Length: 0 } or NewExpr { Type.Name.Length: 0, Elements: null })
                 {
                     Type target = Resolve(cast.Type, _thisType);
                     Type? outerWanted = _wanted;

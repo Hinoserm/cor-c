@@ -4,11 +4,16 @@
 // pair 0 []
 // nullable False
 // point 0,0
+// suppressed 0,0
+// boxed 0
+// made 7
 // awaited 7
 //
 // What may follow a cast's ')' (C# 12.9.7): any keyword but `as` and `is`.
 // `default` after a tuple type, a nullable tuple type and an ordinary type
-// name, and `await`, were read as a bracketed group and then refused.
+// name, and `await`, were read as a bracketed group and then refused. And a
+// cast says what its `default` (`!` or not) and its `new()` are, not what
+// waits for the cast.
 
 using System;
 using System.Threading.Tasks;
@@ -16,6 +21,11 @@ using System.Threading.Tasks;
 struct Point
 {
     public int X, Y;
+}
+
+class Foo
+{
+    public int V = 7;
 }
 
 static class P
@@ -36,6 +46,12 @@ static class P
         Console.WriteLine("nullable " + none.HasValue);
         Point p = (Point)default;
         Console.WriteLine("point " + p.X + "," + p.Y);
+        var q = (Point)default!;
+        Console.WriteLine("suppressed " + q.X + "," + q.Y);
+        object o = (Point)default!;
+        Console.WriteLine("boxed " + ((Point)o).X);
+        object made = (Foo)new();
+        Console.WriteLine("made " + ((Foo)made).V);
         Console.WriteLine("awaited " + Widened().Result);
     }
 }
