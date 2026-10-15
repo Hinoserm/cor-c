@@ -4,6 +4,11 @@
     <Compiler>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Compiler>
     <Linker>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Linker>
     <CompilerDll>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc.dll</CompilerDll>
+    <!-- The OS test/corsac-boot builds and boots: its checkout, the revision
+         read from it, and the Windows 2000 media its image carries. -->
+    <CorsacRoot>$(WorkspaceDirectory)/../corsac86-gui</CorsacRoot>
+    <CorsacRevision>HEAD</CorsacRevision>
+    <CorsacWin2k>$(WorkspaceDirectory)/../../src/win2k</CorsacWin2k>
   </PropertyGroup>
   <Components>
     <Project Name="compiler" Path="compiler/corc.csproj" />
@@ -36,8 +41,9 @@
   </Target>
 
   <!-- EVERY TEST THE TREE HAS, in order of how long each takes: what is not
-       a step here is not run by anything. test/corsac-boot is the one left
-       out; it boots the OS, from its own repository. -->
+       a step here is not run by anything. Left out and run by name:
+       test/corsac-boot, which boots the OS in QEMU and needs permission each
+       time, and test/language-link, the whole suite through the link. -->
   <Target Name="test" Steps="unit;smoke;lto;indexed;ir-lto;managed;checked-frees;lifetimes;separate-dynamic;unused-report;modules;projects;language-scripts;separate-units;shared;language">
     <Target Name="managed" DependsOnTargets="/compiler">
       <Test Name="managed-units" Executable="bash" Workers="auto" Timeout="00:10:00">
@@ -111,10 +117,14 @@
         <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
       </Test>
     </Target>
-    <Target Name="corsac-boot" DependsOnTargets="/compiler" Description="Boot an actual CORSAC source snapshot with separately linked stage2 and kernel">
-      <Script Interpreter="bash" File="tests/integration/corsac-boot.sh" Workers="auto" Timeout="00:20:00">
-        <Environment Name="CORC" Value="$(Compiler)" /><Environment Name="CORLINK" Value="$(Linker)" />
-      </Script>
+    <Target Name="corsac-boot" DependsOnTargets="/compiler" Description="The OS at CorsacRevision built by this compiler through its own corsac.build and booted by its own boot-test: boots QEMU, run by name with permission">
+      <Test Name="corsac-boot" Executable="bash" Workers="auto" Timeout="01:00:00">
+        <Argument Value="tests/integration/corsac-boot.sh" />
+        <Argument Value="--os" /><Argument Value="$(CorsacRoot)" />
+        <Argument Value="--revision" /><Argument Value="$(CorsacRevision)" />
+        <Argument Value="--win2k" /><Argument Value="$(CorsacWin2k)" />
+        <Environment Name="CORC" Value="$(Compiler)" />
+      </Test>
     </Target>
     <Target Name="language" DependsOnTargets="/compiler">
       <Test Name="language" Executable="bash" Timeout="01:00:00">

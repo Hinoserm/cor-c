@@ -1,3 +1,0 @@
-id:3:initdefault:
-::sysinit:/bin/mount -a
-ca::ctrlaltdel:/bin/reboot

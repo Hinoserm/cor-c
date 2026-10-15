@@ -1,58 +1,81 @@
 #!/usr/bin/env bash
+#
+# The OS built by this checkout's compiler, and booted.
+#
+#     tests/integration/corsac-boot.sh [--os DIR] [--revision REV] [--win2k DIR] [--jobs N]
+#
+# A snapshot of the OS repository at REV (default HEAD of DIR, default the
+# sibling corsac86-gui) -- read with git archive, so the checkout is never
+# touched -- built through the OS's own corsac.build with this checkout as
+# its compiler, and handed to the OS's own boot-test: QEMU boots the image,
+# logs in, mounts, runs nano, iperf3 and a Windows process, and reboots.
+# One way of building and booting the OS, the OS's; this only says which
+# compiler and which revision.
+#
+# IT BOOTS A VIRTUAL MACHINE, and is no step of `corc build test`: it is run
+# by name (test/corsac-boot), with permission each time. It needs Windows 2000
+# media (--win2k, default ~/src/win2k), qemu-system-i386, e2fsprogs, binutils,
+# nasm, a C toolchain and network access the first time (the OS's Linux tools).
+# Everything it makes is under build/corsac-boot/ in this tree: one folder per
+# OS revision (about 4 GB at its peak), and the Linux tools' cache shared.
 set -euo pipefail
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-os="${CORSAC_ROOT:-$root/../corsac86-integration}"
-corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
-corlink() { "${CORLINK:-$corc}" link "$@"; }
-export CORC="$corc"
-jobs="${CORSAC_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}"
-mkdir -p "$root/build"
-work="$(mktemp -d "$root/build/corsac-boot.XXXXXX")"
-echo "CORSAC split-toolchain acceptance: $work"
-trap 'echo "Build/boot failed; complete diagnostics: $work" >&2' ERR
-revision="$(git -C "$os" rev-parse HEAD)"
-mkdir -p "$work/source" "$work/root/boot" "$work/root/bin" "$work/root/etc" "$work/root/dev" "$work/root/proc" "$work/root/tmp" "$work/root/root"
-# A fixed tracked-source snapshot does not race another kernel developer or
-# alter their generated configuration, user binaries, or saved boot images.
-git -C "$os" archive "$revision" | tar -x -C "$work/source"
-snapshot="$work/source"
-printf 'CORSAC commit: %s\nprofile: x86-486-isa\n' "$revision" > "$work/provenance.txt"
-sha256sum "$corc" "$(dirname "$corc")/corc.dll" "$(dirname "$corc")/corlink.dll" >> "$work/provenance.txt"
-bash "$snapshot/tools/kconfig" --root "$snapshot/os/kernel" --out "$work/config" x86-486-isa > "$work/config.log"
-sources=()
-while IFS= read -r line; do
-    case "$line" in ''|'#'*) continue ;; esac
-    sources+=("$line")
-done < "$work/config/sources.list"
-"$corc" asm --target x86-32 "$snapshot/os/kernel/arch/x86/entry.asm" --obj -o "$work/entry.o" > "$work/entry.log" 2>&1
-"$corc" compile "${sources[@]}" --jobs "$jobs" --freestanding --obj \
-    --asm-entry corc_start --tls-gs --cpu 486 --tag 'CORSAC/OS split-toolchain acceptance' \
-    --stats -o "$work/kernel.o" > "$work/kernel.compile.log" 2>&1
-corlink "$work/entry.o" "$work/kernel.o" --entry _start --base 0xc0100000 --paddr 0x100000 \
-    -o "$work/root/boot/kernel" > "$work/kernel.link.log" 2>&1
-nm -n "$work/root/boot/kernel" > "$work/kernel.symbols"
-readelf -lW "$work/root/boot/kernel" > "$work/kernel.segments"
-"$corc" asm --target x86-16 "$snapshot/os/boot/x86/stage1/stage1.asm" -o "$work/stage1.bin" > "$work/stage1.log" 2>&1
-s2="$snapshot/os/boot/x86/stage2"
-"$corc" compile "$s2/uart8250.cor" "$s2/vga.cor" "$s2/console.cor" "$s2/kbd8042.cor" "$s2/ide.cor" \
-    "$snapshot/os/kernel/fs/block.cor" "$snapshot/os/kernel/fs/minixformat.cor" \
-    "$snapshot/os/kernel/fs/minixread.cor" "$snapshot/os/kernel/fs/ext3.cor" "$s2/bootfs.cor" "$s2/stage2.cor" \
-    --jobs "$jobs" --freestanding --flat --obj --cpu 486 --stats -o "$work/stage2.o" > "$work/stage2.compile.log" 2>&1
-corlink "$work/stage2.o" --flat --base 0x10000 -o "$work/stage2.bin" > "$work/stage2.link.log" 2>&1
-# The boot gap on disk is larger than conventional RAM. Never attempt to
-# execute an image that overlaps the VGA aperture/firmware region.
-stage2_memory="$(sed -n 's/.* memory=\([0-9]*\).*/\1/p' "$work/stage2.link.log")"
-test -n "$stage2_memory" && test "$stage2_memory" -le $((0x90000 - 0x10000))
-for program in init mount agetty login sh reboot cat ps tty; do
-    extra=()
-    if [ "$program" = sh ]; then extra=("$snapshot/os/lib/shell.cor" "$snapshot/os/bin/edit.cor"); fi
-    "$corc" compile "${extra[@]}" "$snapshot/os/bin/$program.cor" --jobs "$jobs" \
-        -o "$work/root/bin/$program" > "$work/$program.compile.log" 2>&1
+os="$root/../corsac86-gui"
+revision=HEAD
+win2k="$HOME/src/win2k"
+jobs=8
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --os) os=$2; shift 2 ;;
+        --revision) revision=$2; shift 2 ;;
+        --win2k) win2k=$2; shift 2 ;;
+        --jobs) jobs=$2; shift 2 ;;
+        *) echo "corsac-boot.sh: unknown argument '$1'" >&2; exit 2 ;;
+    esac
 done
-cp "$root/tests/integration/boot-root/etc/"* "$work/root/etc/"
-cp "$root/tests/integration/boot-root/boot.lst" "$work/root/boot/boot.lst"
-bash "$snapshot/tools/mkdisc.sh" "$work/disc.img" --size 32M --root "$work/root" \
-    --boot-sector "$work/stage1.bin" --stage2 "$work/stage2.bin" > "$work/mkdisc.log" 2>&1
-test "$(stat -c %s "$work/disc.img")" = 33554432
-dotnet run --project "$root/tests/integration/boot/BootTests.csproj" -c Release -- "$work"
-printf 'PASS actual stage2/kernel separate linking and 486 ISA boot: %s\n' "$work"
+corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
+
+fail() { echo "corsac-boot: $1" >&2; exit 1; }
+git -C "$os" rev-parse --git-dir > /dev/null 2>&1 || fail "no OS repository at $os (--os DIR)"
+commit="$(git -C "$os" rev-parse --verify "$revision^{commit}")" || fail "no revision $revision in $os"
+[ -f "$win2k/i386/txtsetup.sif" ] && [ -d "$win2k/installed" ] || fail "no Windows 2000 media at $win2k (--win2k DIR)"
+for tool in qemu-system-i386 mke2fs e2fsck debugfs objcopy nasm curl make cc tar sha256sum; do
+    command -v "$tool" > /dev/null || fail "$tool is needed and not found"
+done
+[ -d /usr/share/zoneinfo ] || fail "/usr/share/zoneinfo is needed and not found"
+[ -x "$corc" ] || fail "no compiler at $corc"
+
+base="$root/build/corsac-boot"
+dir="$base/os-${commit:0:12}"
+mkdir -p "$dir/tmp"
+# Only this revision's folder is kept: the one the last run named, if it was
+# another, goes.
+previous="$(cat "$base/revision" 2>/dev/null || true)"
+if [ -n "$previous" ] && [ "$previous" != "${commit:0:12}" ]; then rm -rf "$base/os-$previous"; fi
+echo "${commit:0:12}" > "$base/revision"
+# Its compilers and tools write their temporary files here, not in /tmp.
+export TMPDIR="$dir/tmp"
+trap 'echo "corsac-boot: failed; the build logs are in $dir/source/build/logs, the boot logs in $dir/pc/boot-test-*" >&2' ERR
+
+# The snapshot, once a revision: its documents and art the build never reads
+# are left out (a gigabyte of PDFs).
+if [ ! -f "$dir/source/corsac.build" ]; then
+    mkdir -p "$dir/source"
+    git -C "$os" archive "$commit" -- . ':(exclude)docs' ':(exclude)art/net' ':(exclude)art/vs97' | tar -x -C "$dir/source"
+fi
+
+{
+    printf 'OS revision: %s\n' "$commit"
+    printf 'cor-c revision: %s%s\n' "$(git -C "$root" rev-parse HEAD)" "$(git -C "$root" diff --quiet || echo ' (modified)')"
+    printf 'profile: x86-486-isa\nWindows media: %s\n' "$win2k"
+    sha256sum "$corc" "$(dirname "$corc")"/*.dll
+} > "$dir/provenance.txt"
+
+"$corc" build --file "$dir/source/corsac.build" --jobs "$jobs" boot-test \
+    CorC="$root" Compiler="$corc" profile=x86-486-isa \
+    work="$dir/pc" disk="$dir/disc.img" size=1G fresh=true \
+    linux_cache="$base/linuxbin" win2k="$win2k"
+
+rm -f "$dir/disc.img"
+printf 'PASS the OS at %s, built by this compiler, booted: %s\n' "${commit:0:12}" "$dir"
