@@ -86,16 +86,19 @@ public sealed partial class Lowering
             return sym;
         }
 
+        // EIGHT BYTES A MEMBER, a long each, whatever the enum is made of: a
+        // `long` enum's Huge = 0xF000000000000000 kept four was 0, and (Wide)0
+        // printed as Huge. The runtime reads them as long[] (Runtime.EnumName).
         List<KeyValuePair<string, long>> members = EnumMembers(e);
-        byte[] block = new byte[_t.ArrayHeaderBytes + members.Count * 4];
+        byte[] block = new byte[_t.ArrayHeaderBytes + members.Count * 8];
         WriteWord(block, _t.ArrayCountOffset, members.Count);
 
         for (int i = 0; i < members.Count; i++)
         {
-            int at = _t.ArrayHeaderBytes + i * 4;
+            int at = _t.ArrayHeaderBytes + i * 8;
             long value = members[i].Value;
 
-            for (int b = 0; b < 4; b++)
+            for (int b = 0; b < 8; b++)
             {
                 block[at + b] = (byte)(value >> (8 * b));
             }
@@ -106,9 +109,21 @@ public sealed partial class Lowering
 
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(0, SequenceDescriptor("int", 4, isString: false), _t.DescriptorBytes));
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor("long", 8, isString: false), _t.DescriptorBytes));
         return sym;
     }
+
+    /// <summary>An enum's values as what they are made of: its underlying number type.</summary>
+    private static Type EnumNumber(TypeSymbol e) => new() { Prim = e.EnumUnderlying };
+
+    /// <summary>How many bytes an enum's values take.</summary>
+    private static int EnumBytes(TypeSymbol e) => e.EnumUnderlying switch
+    {
+        Prim.I8 or Prim.U8 => 1,
+        Prim.I16 or Prim.U16 or Prim.Char => 2,
+        Prim.I64 or Prim.U64 => 8,
+        _ => 4,
+    };
 
     /// <summary>
     /// An enum value as text: the member's name, the members a `[Flags]`
@@ -129,7 +144,9 @@ public sealed partial class Lowering
 
         VReg names = _e.Address(EnumNamesTable(e));
         VReg values = _e.Address(EnumValuesTable(e));
-        VReg number = Convert(at, value, Type.I32, render.Params[3].Type);
+        // As the long the table holds, from the number the enum is made of:
+        // a long enum's whole value, an unsigned one's widened unsigned.
+        VReg number = Convert(at, value, EnumNumber(e), render.Params[3].Type);
 
         return _e.Call(CallLabel(render), IrTypes.Word,
                        R(names), R(values), Imm(e.IsFlags ? 1 : 0, IrType.I32), R(number));
@@ -177,15 +194,17 @@ public sealed partial class Lowering
         VReg names = _e.Address(EnumNamesTable(e));
         VReg values = _e.Address(EnumValuesTable(e));
 
+        Type number = EnumNumber(e);
+
         if (name == "IsDefined")
         {
-            VReg one = Convert(call, EvalAs(rest[0], Type.I32), Type.I32, run.Params[1].Type);
+            VReg one = Convert(call, EvalAs(rest[0], number), number, run.Params[1].Type);
             return _e.Call(CallLabel(run), IrType.I32, R(values), R(one))!;
         }
 
         if (name == "GetName")
         {
-            VReg one = Convert(call, EvalAs(rest[0], Type.I32), Type.I32, run.Params[2].Type);
+            VReg one = Convert(call, EvalAs(rest[0], number), number, run.Params[2].Type);
             return _e.Call(CallLabel(run), IrTypes.Word, R(names), R(values), R(one))!;
         }
 
@@ -198,10 +217,18 @@ public sealed partial class Lowering
 
         if (!tries)
         {
-            return _e.Call(CallLabel(run), IrType.I32, R(names), R(values), R(text), R(fold))!;
+            VReg parsed = _e.Call(CallLabel(run), IrType.I64, R(names), R(values), R(text), R(fold))!;
+            return Convert(call, parsed, Type.I64, number);
         }
 
-        VReg into = EvalAs(rest[^1], Type.Plain(e, Prim.I32), byRef: true);
-        return _e.Call(CallLabel(run), IrType.I32, R(names), R(values), R(text), R(fold), R(into))!;
+        // THE LONG THE RUNTIME WRITES, into a long of the frame's, and from
+        // there the enum's own width into the variable: written straight
+        // through, four bytes of an int enum's variable were one long's.
+        VReg into = EvalAs(rest[^1], Type.Plain(e, e.EnumUnderlying), byRef: true);
+        FrameSlot wide = _f.NewSlot(8, _t.Align64, "parsed");
+        VReg ok = _e.Call(CallLabel(run), IrType.I32, R(names), R(values), R(text), R(fold), R(_e.SlotAddress(wide)))!;
+        VReg got = Convert(call, _e.Load(IrType.I64, _e.SlotAddress(wide)), Type.I64, number);
+        _e.Store(into, got, 0, EnumBytes(e));
+        return ok;
     }
 }

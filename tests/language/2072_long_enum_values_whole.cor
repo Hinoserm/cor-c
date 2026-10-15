@@ -1,0 +1,38 @@
+// test: long_enum_values_whole
+// expect-exit: 0
+// expect-output:
+// 0 Huge Small
+// Huge True False
+// Huge -1152921504606846976
+// Mid True
+// Low 7
+//
+// A `long` ENUM'S VALUES ARE LONGS, the whole of each: Huge = 0xF000...0
+// kept as four bytes was 0, and (Wide)0 printed as Huge; Enum.GetName,
+// IsDefined and Parse read the same table. TryParse into a byte enum writes
+// that enum's one byte, not the long the runtime parses into: the field
+// beside it keeps its 7.
+
+using System;
+
+enum Wide : long { Small = 1, Huge = unchecked((long)0xF000000000000000) }
+enum Tiny : byte { Low = 1, Mid = 2 }
+
+struct Pair { public Tiny T; public byte Next; }
+
+static class P
+{
+    static void Main()
+    {
+        Wide zero = (Wide)0;
+        Console.WriteLine(zero + " " + Wide.Huge + " " + (Wide)1);
+        Console.WriteLine(Enum.GetName(Wide.Huge) + " " + Enum.IsDefined(Wide.Huge) + " " + Enum.IsDefined((Wide)0));
+        Wide parsed = Enum.Parse<Wide>("Huge");
+        Console.WriteLine(parsed + " " + (long)parsed);
+        Pair p = new Pair { T = Tiny.Low, Next = 7 };
+        bool ok = Enum.TryParse<Tiny>("Mid", out p.T);
+        Console.WriteLine(p.T + " " + ok);
+        p.T = Tiny.Low;
+        Console.WriteLine(p.T + " " + p.Next);
+    }
+}

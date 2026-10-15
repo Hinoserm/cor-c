@@ -3108,7 +3108,7 @@ static class Runtime
 
     /// AN ENUM VALUE AS TEXT, in .NET's words: the member's name, the members
     /// a set of bits is made of, and otherwise the number.
-    public static string EnumName(string[] names, int[] values, bool flags, int value)
+    public static string EnumName(string[] names, long[] values, bool flags, long value)
     {
         for (int i = 0; i < values.Length; i++)
         {
@@ -3122,12 +3122,12 @@ static class Runtime
         // leaving them to be named again, and it is the order .NET takes them
         // in. Each is put in front of what is already there, so the answer
         // comes out in value order.
-        int left = value;
+        long left = value;
         string said = "";
 
         for (int i = values.Length - 1; i >= 0; i--)
         {
-            int bit = values[i];
+            long bit = values[i];
 
             if (bit == 0 || (left & bit) != bit) { continue; }
 
@@ -3144,7 +3144,7 @@ static class Runtime
     /// THE NAME OF A MEMBER WITH EXACTLY THIS VALUE, or null. .NET's
     /// Enum.GetName, which -- unlike ToString -- never takes a set of bits
     /// apart and never answers a number.
-    public static string? EnumLabel(string[] names, int[] values, int value)
+    public static string? EnumLabel(string[] names, long[] values, long value)
     {
         for (int i = 0; i < values.Length; i++)
         {
@@ -3155,7 +3155,7 @@ static class Runtime
 
     /// Whether a member has exactly this value: .NET's Enum.IsDefined, which
     /// says no to a combination of flags no single member spells.
-    public static bool EnumDefined(int[] values, int value)
+    public static bool EnumDefined(long[] values, long value)
     {
         for (int i = 0; i < values.Length; i++)
         {
@@ -3168,14 +3168,14 @@ static class Runtime
     /// comma-separated list of them -- for any enum, not only a `[Flags]` one
     /// -- or a plain decimal number, which it accepts even when no member has
     /// it. Spaces around the commas are allowed and an empty string is not.
-    public static bool EnumTryParse(string[] names, int[] values, string text, bool ignoreCase, out int value)
+    public static bool EnumTryParse(string[] names, long[] values, string text, bool ignoreCase, out long value)
     {
         value = 0;
 
         if (text == null) { return false; }
 
         int at = 0;
-        int total = 0;
+        long total = 0;
         bool any = false;
 
         while (at <= text.Length)
@@ -3190,7 +3190,7 @@ static class Runtime
 
             if (part.Length == 0) { return false; }
 
-            int one = 0;
+            long one = 0;
 
             if (!EnumOne(names, values, part, ignoreCase, out one)) { return false; }
 
@@ -3207,7 +3207,7 @@ static class Runtime
     }
 
     /// One name, or one number, out of the list.
-    static bool EnumOne(string[] names, int[] values, string part, bool ignoreCase, out int value)
+    static bool EnumOne(string[] names, long[] values, string part, bool ignoreCase, out long value)
     {
         value = 0;
 
@@ -3227,18 +3227,18 @@ static class Runtime
 
         if (first != '-' && first != '+' && (first < '0' || first > '9')) { return false; }
 
-        int parsed = 0;
+        long parsed = 0;
 
-        if (!int.TryParse(part, out parsed)) { return false; }
+        if (!long.TryParse(part, out parsed)) { return false; }
 
         value = parsed;
         return true;
     }
 
     /// The same, throwing what .NET throws when the text names nothing.
-    public static int EnumParse(string[] names, int[] values, string text, bool ignoreCase)
+    public static long EnumParse(string[] names, long[] values, string text, bool ignoreCase)
     {
-        int value = 0;
+        long value = 0;
 
         if (EnumTryParse(names, values, text, ignoreCase, out value)) { return value; }
 
