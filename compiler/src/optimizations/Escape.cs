@@ -2862,6 +2862,16 @@ continue;
         /// <summary>Whether every block returned holding it owns no field (a box, an iterator's machine), and what each is, where all are known.</summary>
         public bool HeldOwnsNothing { get; set; }
         public Stamp[]? HeldStamps { get; set; }
+        /// <summary>
+        /// WHERE IT IS PUT INTO MEMORY MADE HERE AND READ BACK OUT (HolderUse):
+        /// each store that writes it into a holder, with the word; each
+        /// instruction that reads a held word -- a load of it, the holder's
+        /// bytes copied, the holder handed to a call or handed back -- with the
+        /// word, or -1 for any word of that holder. What HeldAtSelf asks
+        /// whether the last lap's object is still read after this lap's is made.
+        /// </summary>
+        public List<(Instr At, object Root, long Offset)>? HeldWrites { get; set; }
+        public List<(Instr At, object Root, long Offset)>? HeldReads { get; set; }
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
@@ -2919,6 +2929,8 @@ continue;
         HashSet<VReg>? bases = null;
         // Words of a frame block holding the block's own address (HolderUse).
         HashSet<(object Root, long Offset)>? selfRefs = null;
+        // The holders' writes and reads, for Flow.HeldWrites and HeldReads.
+        HashSet<(Instr At, object Root, long Offset)>? heldWrites = null, heldReads = null;
         bool changed = true;
         while (changed && !flow.Escapes)
         {
@@ -3056,7 +3068,11 @@ continue;
                                 // Not a borrow into frame memory: what is loaded
                                 // back out is taken for the object itself.
                                 if (i.Op == Opcode.Store && !flow.Borrowed.Contains(v.Reg)
-                                    && HolderAt(i.Operands[0], 0) is var (root, delta)) Hold(root, delta + i.Offset);
+                                    && HolderAt(i.Operands[0], 0) is var (root, delta))
+                                {
+                                    Hold(root, delta + i.Offset);
+                                    (heldWrites ??= new()).Add((i, root, delta + i.Offset));
+                                }
                                 else flow.Escapes = true;
                             }
                             break;
@@ -3401,6 +3417,10 @@ continue;
             }
             flow.HeldStamps = stamps?.ToArray();
         }
+        // By the holders as they stand at the end: slots merged since a write
+        // or read was seen are one holder (MergeFrameWrites).
+        if (heldWrites is not null) flow.HeldWrites = heldWrites.Select(w => (w.At, Canon(w.Root), w.Offset)).Distinct().ToList();
+        if (heldReads is not null) flow.HeldReads = heldReads.Select(r => (r.At, Canon(r.Root), r.Offset)).Distinct().ToList();
         return flow;
 
         bool TouchesHolder(Instr i)
@@ -3548,7 +3568,7 @@ continue;
                 case Opcode.Load:
                     // What was stored at this offset is what is read back.
                     if (Holding(i.Operands[0]) is not var (r3, d3)) { flow.Escapes = true; return; }
-                    if (Holds(r3, d3 + i.Offset)) Derive(i.Dest);
+                    if (Holds(r3, d3 + i.Offset)) { Derive(i.Dest); (heldReads ??= new()).Add((i, r3, d3 + i.Offset)); }
                     // Its own address, read back from a word of it (below):
                     // the holder again.
                     else if (i.Dest is not null && selfRefs is not null && selfRefs.Contains((Canon(r3), d3 + i.Offset))) HolderAlias(i.Dest, r3, 0);
@@ -3577,6 +3597,7 @@ continue;
                     // more frame memory, at the same distance.
                     if (Holding(i.Operands[1]) is var (from, fromDelta) && held!.TryGetValue(from, out HashSet<long>? offsets))
                     {
+                        (heldReads ??= new()).Add((i, from, -1));
                         long count = i.Operands.Count > 2 && i.Operands[2] is ImmOperand n ? n.Value : long.MaxValue;
                         List<long> moved = new();
                         foreach (long o in offsets) if (o >= fromDelta && o - fromDelta < count) moved.Add(o - fromDelta);
@@ -3602,19 +3623,29 @@ continue;
                     // what it holds goes with it to the caller and nowhere
                     // else, and the caller takes the result for a holder.
                     if (!(flow.HeldRoots ??= new()).Contains(returned)) flow.HeldRoots.Add(returned);
+                    (heldReads ??= new()).Add((i, returned, -1));
                     return;
                 // Frame memory holding it handed to a call that takes what it
                 // holds over (OwnedElements: a tuple put into a stash), as a
                 // consumer takes the object itself.
                 case Opcode.Call when holderConsumers?.Contains(i) == true:
+                    HeldBy(i);
                     return;
                 case Opcode.Call or Opcode.CallIndirect when !IsCollectorNote(i.Callee) && i.Callee != Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
                     if (!HolderCall(i)) flow.Escapes = true;
+                    else HeldBy(i);
                     return;
                 default:
                     flow.Escapes = true;
                     return;
             }
+        }
+
+        // A call handed a holder may read any word of it.
+        void HeldBy(Instr i)
+        {
+            foreach (Operand o in i.Operands)
+                if (Holding(o) is var (root, _)) (heldReads ??= new()).Add((i, root, -1));
         }
 
         void HolderAlias(VReg d, object root, long delta)
@@ -4736,7 +4767,7 @@ continue;
                     if (ReferenceEquals(selfDerived, flow.Derived)) selfDerived = new HashSet<VReg>(selfDerived);
                     foreach (VReg alias in OwnedFieldEscape.Addresses(f, parent.Aliases).Keys) if (liveness.Tracks(alias)) selfDerived.Add(alias);
                 }
-                if (LiveAtSelf(liveness, pads, b, i, selfDerived))
+                if (LiveAtSelf(liveness, pads, b, i, selfDerived) || HeldAtSelf(f, liveness, b, i, flow))
                 {
                     if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} live at its own making");
                     continue;
@@ -5191,7 +5222,7 @@ continue;
             }
             liveness ??= AnalysisCache.LivenessOf(f);
             pads ??= PadLive(liveness);
-            if (LiveAtSelf(liveness, pads, b, call, flow.Derived))
+            if (LiveAtSelf(liveness, pads, b, call, flow.Derived) || HeldAtSelf(f, liveness, b, call, flow))
             {
                 if (tracing) Console.Error.WriteLine($"fresh {f.Name}: {call} live at its own making");
                 continue;
@@ -5621,6 +5652,81 @@ continue;
 
     internal static bool LiveAtSelf(Liveness liveness, Block b, Instr alloc, HashSet<VReg> derived)
         => LiveAtSelf(liveness, PadLive(liveness), b, alloc, derived);
+
+    /// <summary>
+    /// WHETHER THE LAST LAP'S OBJECT IS STILL READ, out of memory, after this
+    /// lap's is made: LiveAtSelf asks of registers, and an object put into a
+    /// holder made here (Analyse: a struct, a frame slot, an object of this
+    /// function) is alive in that word, not in any register, until this
+    /// lap's replaces it there. A stack's growth -- `items` freed before the
+    /// bigger array is made, then copied out of -- read a freed array: the
+    /// words that may still hold an earlier object, walked forward from the
+    /// allocation; a store of this lap's object clears its word, and a read
+    /// of a word still so held, before the walk comes round to the allocation
+    /// again, is the old object read.
+    /// </summary>
+    internal static bool HeldAtSelf(Function f, Liveness liveness, Block b, Instr alloc, Flow flow)
+    {
+        if (flow.HeldWrites is not { Count: > 0 } writes || flow.HeldReads is not { Count: > 0 } reads || alloc.Dest is null) return false;
+        if (!Repeating(f).Contains(b)) return false;
+        RegisterWrites all = AnalysisCache.WritesOf(f);
+        // This lap's object: the allocation's result, through single copies.
+        bool ThisLap(Operand o)
+        {
+            for (int depth = 0; depth < 8 && o is RegOperand { Reg: var r }; depth++)
+            {
+                if (r == alloc.Dest) return true;
+                if (!all.TryGetValue(r, out WriteList ws) || ws.Count != 1
+                    || ws[0] is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 } copy) return false;
+                o = copy.Operands[0];
+            }
+            return false;
+        }
+        Dictionary<Instr, List<(object Root, long Offset)>> wrote = new(ReferenceEqualityComparer.Instance), read = new(ReferenceEqualityComparer.Instance);
+        foreach ((Instr at, object root, long offset) in writes)
+            (wrote.TryGetValue(at, out var list) ? list : wrote[at] = new()).Add((root, offset));
+        foreach ((Instr at, object root, long offset) in reads)
+            (read.TryGetValue(at, out var list) ? list : read[at] = new()).Add((root, offset));
+        // A landing pad is entered from where its handler went in (RepeatingBlocks).
+        Dictionary<Block, List<Block>>? pads = null;
+        foreach (Block x in f.Blocks)
+            foreach (Instr i in x.Instrs)
+                if (i.Op == Opcode.LabelAddr)
+                    foreach (Block pad in i.Targets) ((pads ??= new(ReferenceEqualityComparer.Instance)).TryGetValue(x, out var to) ? to : pads[x] = new()).Add(pad);
+        Dictionary<Block, HashSet<(object, long)>> entry = new(ReferenceEqualityComparer.Instance);
+        Queue<(Block Block, int From, HashSet<(object, long)> Held)> work = new();
+        work.Enqueue((b, b.Instrs.IndexOf(alloc) + 1, writes.Select(w => (w.Root, w.Offset)).ToHashSet()));
+        while (work.Count > 0)
+        {
+            (Block at, int from, HashSet<(object, long)> state) = work.Dequeue();
+            bool round = false;
+            for (int k = from; k < at.Instrs.Count && state.Count > 0; k++)
+            {
+                Instr i = at.Instrs[k];
+                if (ReferenceEquals(i, alloc)) { round = true; break; }
+                if (read.TryGetValue(i, out var reading))
+                    foreach ((object root, long offset) in reading)
+                        if (offset < 0 ? state.Any(word => Equals(word.Item1, root)) : state.Contains((root, offset))) return true;
+                if (wrote.TryGetValue(i, out var writing) && i.Operands.Count > 1 && ThisLap(i.Operands[1]))
+                    foreach ((object root, long offset) in writing) state.Remove((root, offset));
+            }
+            if (round || state.Count == 0) continue;
+            List<Block> next = new();
+            foreach (Block s in liveness.Cfg.Succs(at)) next.Add(s);
+            if (pads is not null && pads.TryGetValue(at, out List<Block>? entered)) next.AddRange(entered);
+            foreach (Block s in next)
+            {
+                if (!entry.TryGetValue(s, out var known)) { entry[s] = known = new(state); work.Enqueue((s, 0, new(known))); }
+                else
+                {
+                    int before = known.Count;
+                    known.UnionWith(state);
+                    if (known.Count != before) work.Enqueue((s, 0, new(known)));
+                }
+            }
+        }
+        return false;
+    }
 
     /// <summary>
     /// WHERE EACH LANDING PAD CAN BE ENTERED FROM: the blocks between the

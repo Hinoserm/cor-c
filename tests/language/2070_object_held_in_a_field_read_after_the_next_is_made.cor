@@ -1,0 +1,67 @@
+// test: object_held_in_a_field_read_after_the_next_is_made
+// expect-exit: 0
+// expect-output:
+// chain 4
+// stack 38654705664 9 top
+//
+// AN OBJECT HELD IN A FIELD OF AN OBJECT MADE HERE is alive in that field,
+// not in any register, until the next one is stored there -- and is read
+// out of it after the next one is made: `b[0] = h.a[0] + 1` reads the last
+// lap's array once this lap's exists, and a stack's growth copies the old
+// array into the bigger one it has just made. The lifetime pass asked only
+// whether a register still held the last object where the next was made,
+// freed it there, and the reads found it freed: a length of 0 and an index
+// out of range, or a chain that never counted past 1. The holder here is
+// too big to be taken apart into registers (ScalarObjects), as a stack
+// compiled apart from the library's barrier is.
+
+class Holder
+{
+    public long[] a;
+    long p0; long p1; long p2; long p3; long p4; long p5; long p6; long p7; long p8; long p9; long p10; long p11; long p12; long p13; long p14; long p15; long p16; long p17; long p18; long p19; long p20; long p21; long p22; long p23; long p24; long p25; long p26; long p27; long p28; long p29; long p30; long p31; long p32; long p33; long p34; long p35; long p36; long p37; long p38; long p39; long p40; long p41; long p42; long p43; long p44; long p45; long p46; long p47; long p48; long p49; long p50; long p51; long p52; long p53; long p54; long p55; long p56; long p57; long p58; long p59; long p60; long p61; long p62; long p63; long p64; long p65; long p66; long p67; long p68; long p69; long p70; long p71; long p72; long p73; long p74; long p75; long p76; long p77; long p78; long p79; long p80; long p81; long p82; long p83; long p84; long p85; long p86; long p87; long p88; long p89; long p90; long p91; long p92; long p93; long p94; long p95; long p96; long p97; long p98; long p99; long p100; long p101; long p102; long p103; long p104; long p105; long p106; long p107; long p108; long p109; long p110; long p111; long p112; long p113; long p114; long p115; long p116; long p117; long p118; long p119; long p120; long p121; long p122; long p123; long p124; long p125; long p126; long p127; long p128; long p129; long p130; long p131; long p132; long p133; long p134; long p135; long p136; long p137; long p138; long p139;
+}
+
+class Stack2<T>
+{
+    T[] items = new T[4];
+    int n;
+    public int Count => n;
+    public void Push(T x)
+    {
+        if (n == items.Length)
+        {
+            T[] bigger = new T[items.Length * 2];
+            for (int i = 0; i < n; i++) bigger[i] = items[i];
+            items = bigger;
+        }
+        items[n] = x;
+        n = n + 1;
+    }
+    public T Pop()
+    {
+        n = n - 1;
+        return items[n];
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Holder h = new Holder();
+        h.a = new long[2];
+        h.a[0] = 1;
+        for (int k = 0; k < 3; k++)
+        {
+            long[] b = new long[2];
+            b[0] = h.a[0] + 1;
+            h.a = b;
+        }
+        System.Console.WriteLine("chain " + h.a[0]);
+        Stack2<long> st = new Stack2<long>();
+        for (long i = 0; i < 10; i++) st.Push(i << 32);
+        long top = st.Pop();
+        System.Console.WriteLine("stack " + top + " " + st.Count + " top");
+        return 0;
+    }
+}

@@ -214,7 +214,7 @@ public sealed partial class Escape
         bool tracing = PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal);
         if (tracing) Console.Error.WriteLine($"pending {f.Name}: {made} escapes={flow.Escapes} via {flow.Why} needs={needs.Condition}");
         if (flow.Escapes || needs.Condition.IsTrue) return;
-        if (!liveness.Tracks(made.Dest) || LiveAtSelf(liveness, pads, b, made, flow.Derived))
+        if (!liveness.Tracks(made.Dest) || LiveAtSelf(liveness, pads, b, made, flow.Derived) || HeldAtSelf(f, liveness, b, made, flow))
         {
             if (tracing) Console.Error.WriteLine($"pending {f.Name}: {made} live at its own making");
             return;
