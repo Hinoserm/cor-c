@@ -5258,9 +5258,50 @@ continue;
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);
         }
+        ReleaseAtThrows(f, slot, alloc, record);
 
         Record(f, record);
         return true;
+    }
+
+    /// <summary>
+    /// AND BEFORE EVERY THROW: a block that ends in a trap never reaches a
+    /// return, so what the slot holds there -- a message's number, made on
+    /// the way to the throw and read by a string's concatenation inlined
+    /// round a loop -- was given back only at the slot's renewal or a return,
+    /// and a throw per lap left one each time. The object does not escape and
+    /// no handler reads it (it would not be owned), so it is dead at the
+    /// block's last call -- unless that call is handed it, a [DoesNotReturn]
+    /// helper reading what it was given, where it stays. The slot is emptied
+    /// after: a catch round a loop in this function comes back to the
+    /// renewal, which then finds nothing to give back again.
+    /// </summary>
+    private void ReleaseAtThrows(Function f, FrameSlot slot, Instr made, OwnedRecord record)
+    {
+        HashSet<VReg> derived = Derivations(f, new[] { made.Dest! });
+        int word = IrTypes.Word.Bytes();
+        foreach (Block b in f.Blocks)
+        {
+            // A trap after a call that never comes back, or the throw's own
+            // unwind (an inlined Runtime.Throw): before either.
+            int last = b.Terminator is { Op: Opcode.Unwind } ? b.Instrs.Count - 1
+                : b.Terminator is { Op: Opcode.Unreachable } ? b.Instrs.FindLastIndex(x => x.Op is Opcode.Call or Opcode.CallIndirect) : -1;
+            if (last < 0 || ReferenceEquals(b.Instrs[last], made)) continue;
+            if (b.Instrs[last].Operands.Any(o => o is RegOperand { Reg: var r } && derived.Contains(r))) continue;
+            int line = b.Instrs[last].Line;
+            VReg a = f.NewReg(IrTypes.Word, "ownedp");
+            VReg p = f.NewReg(IrTypes.Word, "owned");
+            List<Instr> release = new()
+            {
+                new Instr { Op = Opcode.Copy, Dest = a, Operands = { new SlotOperand(slot) }, Line = line },
+                new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { RegOperand.Of(a) }, Line = line },
+            };
+            AppendElementFree(f, release, made, p, line);
+            record.Frees.Add((b, AppendFree(f, release, p, line), p));
+            release.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(a), new ImmOperand(0, IrTypes.Word) }, Line = line });
+            b.Instrs.InsertRange(last, release);
+            _bookkeeping.UnionWith(release);
+        }
     }
 
     /// <summary>
@@ -5524,6 +5565,7 @@ continue;
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);
         }
+        ReleaseAtThrows(f, slot, call, record);
         Record(f, record);
         return true;
     }
