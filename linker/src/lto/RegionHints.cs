@@ -25,23 +25,19 @@ public sealed class RegionHints
     public const string SectionName = ".corsac.regions";
     public const int MaximumBytes = 64 * 1024 * 1024;
     private const uint Magic = 0x47455243; // "CREG"
-    // 6: a function's number parameters (NumberParams) and how often each
-    // of its sites and calls runs, with the unit's word size (Repeats).
-    // 7: the symbols whose addresses its code takes (Symbols), after its
-    // sites, and the Symbol constraint naming them.
-    // 8: an async or iterator body states its state machine's stores
-    // (what its registers and slots hold across a suspension), rather
-    // than leaking every one: the same bytes, another meaning.
-    // 9: the field a load or a store names (RegionConstraint.Family), by the
-    // function's Families, after its symbols; each Load and Store states it.
-    // 10: the functions only a descriptor's method slots name (MethodsTaken),
-    // apart from every other address taken, and whether the unit calls a
-    // method it read from a descriptor as no named call (CallsThroughMethods),
-    // after the addresses taken.
-    // 11: the slots each such function reads its method at (BlindSlots),
-    // after its families, so the link calls blind only the methods some
-    // descriptor holds at one of them.
-    private const int Version = 11;
+    // One layout, 0, until a release. Besides the sites, calls and
+    // constraints: a function's number parameters (NumberParams) and how
+    // often each of its sites and calls runs, with the unit's word size
+    // (Repeats); the symbols whose addresses its code takes (Symbols) and
+    // the Symbol constraint naming them; an async or iterator body's state
+    // machine stores (what its registers and slots hold across a suspension);
+    // the field a load or a store names (RegionConstraint.Family, by the
+    // function's Families); the functions only a descriptor's method slots
+    // name (MethodsTaken), apart from every other address taken, whether the
+    // unit calls a method it read from a descriptor as no named call
+    // (CallsThroughMethods), and the slots each such function reads its
+    // method at (BlindSlots).
+    private const int Version = 0;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
     public List<RegionFunction> Functions { get; } = new();

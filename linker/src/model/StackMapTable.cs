@@ -7,10 +7,10 @@ namespace Corsac.Lang.Ir;
 /// the two writers, so they cannot disagree; the runtime's reader is the third
 /// copy of the layout and must change with this one.
 ///
-/// VERSION 6: VARINTS, DELTAS AND SHARED BITMAPS. Version 5 gave every function
-/// sixteen bytes and every call site eight, and the bitmaps of large frames a
-/// pooled copy each: about half a megabyte in ring 0, which is resident for
-/// as long as the machine runs. Here a call site is two varints -- its return
+/// VARINTS, DELTAS AND SHARED BITMAPS (version 0, one layout until a release).
+/// Sixteen bytes a function and eight a call site, with the bitmaps of large
+/// frames a pooled copy each, were about half a megabyte in ring 0, resident
+/// for as long as the machine runs. Here a call site is two varints -- its return
 /// address from the one before it, and its registers and bitmap in one -- and
 /// a bitmap of up to sixteen words lives inside that varint. A larger one is
 /// written once in the table's pool and named by its offset there, the most
@@ -19,7 +19,7 @@ namespace Corsac.Lang.Ir;
 /// All little-endian; offsets are from the table's first byte.
 ///
 ///   header, 36 bytes:
-///     +0  'CSM1'            +4  6 (the version)
+///     +0  'CSM1'            +4  0 (the version)
 ///     +8  function count    +12 call-site count
 ///     +16 the BASE, relocated: the address code offsets count from
 ///     +20 checkpoint count  +24 the span: code bytes from the base the
@@ -61,7 +61,7 @@ namespace Corsac.Lang.Ir;
 public static class StackMapTable
 {
     public const uint Magic = 0x314d5343;           // 'CSM1'
-    public const uint Version = 6;
+    public const uint Version = 0;
     public const int HeaderBytes = 36;
     public const int BaseOffset = 16;
     public const int CheckpointBytes = 12;

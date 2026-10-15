@@ -17,7 +17,7 @@ namespace Corsac.Lang.Lto;
 public static class UsesNotes
 {
     public const string SectionName = ".corsac.uses";
-    const int Version = 1;
+    const int Version = 0;
 
     public enum Kind : byte { Function = 1, Data = 2 }
 

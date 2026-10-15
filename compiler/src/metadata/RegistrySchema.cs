@@ -67,7 +67,7 @@ public sealed class RegistryEnumMember
 public sealed class RegistrySchema
 {
     public const uint Magic = 0x53475243;          // "CRGS", little-endian
-    public const ushort Version = 1;
+    public const ushort Version = 0;
     public const int HeaderBytes = 64;
     public const int EntryBytes = 32;
     public const int EnumBytes = 16;

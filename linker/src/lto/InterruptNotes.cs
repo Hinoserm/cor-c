@@ -20,9 +20,9 @@ namespace Corsac.Lang.Lto;
 public static class InterruptNotes
 {
     public const string SectionName = ".corsac.irq";
-    // 2: the handlers counted in the header, so a link with none reads no
+    // The handlers are counted in the header, so a link with none reads no
     // more of the facts than that.
-    const int Version = 2;
+    const int Version = 0;
 
     /// <summary>
     /// One method: its symbol, its name as written, whether it is an

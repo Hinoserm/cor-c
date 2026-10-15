@@ -8,21 +8,19 @@ namespace Corsac.Lang.Metadata;
 public static class IrFunctionCodec
 {
     /// <summary>
-    /// The record's version. 6: WHAT THE ANALYSES MARK ON THE IR, carried.
-    /// A load's or a copy's Number (never an address), a parameter's Number,
-    /// a site the link chose for a region (RegionSite), a loop header it gave
-    /// one (RegionLoop, RegionLoopBytes): written by none before, so whatever
-    /// the link rebuilt from archived IR -- its late passes, its lifetime runs
-    /// and the copy a refused run is taken back from (UnitBackend) -- read a
-    /// number as an address again, and lost the regions it had just marked.
-    /// Names (a register's, a slot's) are for the dump alone and stay out.
-    /// 7: and the field a load or a store names (Instr.Family), after the
-    /// marks when FamilyMark says there is one: so the link can summarise a
-    /// unit's archived IR again with the fields kept apart.
-    /// 8: and the bytes a stdcall function pops (CalleePops), and an async
-    /// frame's MayMove and StackSymbol.
+    /// The record's version: one layout, 0, until a release. It carries what
+    /// the analyses mark on the IR -- a load's or a copy's Number (never an
+    /// address), a parameter's Number, a site the link chose for a region
+    /// (RegionSite), a loop header it gave one (RegionLoop, RegionLoopBytes),
+    /// the field a load or a store names (Instr.Family) -- so that whatever
+    /// the link rebuilds from archived IR (its late passes, its lifetime runs,
+    /// the copy a refused run is taken back from, UnitBackend) reads them as
+    /// the compile left them; and the bytes a stdcall function pops
+    /// (CalleePops), an async frame's MayMove and StackSymbol, and each class
+    /// parameter's chain and interfaces. Names (a register's, a slot's) are
+    /// for the dump alone and stay out.
     /// </summary>
-    private const int Version = 8;
+    private const int Version = 0;
 
     // An instruction's marks (Instr): one byte.
     private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4;
@@ -173,8 +171,8 @@ public static class IrFunctionCodec
             writer.Write(frame.Lowered);
             writer.Write(frame.SuspendResult is ImmOperand);
             if (frame.SuspendResult is ImmOperand result) { writer.Write(result.Value); writer.Write((byte)result.Type); }
-            // Version 7: an `async ValueTask` machine that may move, and the
-            // word its kickoff reads (AsyncFrame.MayMove).
+            // An `async ValueTask` machine that may move, and the word its
+            // kickoff reads (AsyncFrame.MayMove).
             writer.Write(frame.MayMove);
             IrBinary.Text(writer, frame.StackSymbol);
         }

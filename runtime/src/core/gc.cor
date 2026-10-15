@@ -1173,7 +1173,7 @@ static class Gc
     // saved copy, and nothing else.
 #if !TARGET_64BIT
     const long MapMagic = 0x314D5343;       // 'CSM1'
-    const long MapVersion = 6;
+    const long MapVersion = 0;
     const long MapHeader = 36;
     const long MapCheckpoint = 12;
     const long UnknownFrame = 0x80000000;
@@ -1183,7 +1183,7 @@ static class Gc
     // it covers, the table), sorted -- not one a call site: the compiler's
     // 234,000 sites were 2.8 MB of index. A return address finds its table
     // here by binary search, and its site in the table from the checkpoint
-    // before it (version 6, below).
+    // before it (the table's layout, below).
     static long _maps;
     const long MapRecord = 3 * WordSize.Bytes;
     static long _mapCount;
@@ -1276,8 +1276,8 @@ static class Gc
         SortMaps();
     }
 
-    // VERSION 6 (StackMapTable in the linker's object model, where the layout
-    // is written down in full). After a 36-byte header -- 'CSM1', 6, the
+    // THE TABLE (StackMapTable in the linker's object model, where the layout
+    // is written down in full). After a 36-byte header -- 'CSM1', 0, the
     // function and site counts, the base at +16, the checkpoint count at
     // +20, the span at +24, the stream's offset at +28 and the bitmap
     // pool's at +32 -- come the checkpoints, 12 bytes every thirty-second

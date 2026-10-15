@@ -8,7 +8,7 @@ public static class IrDataCodec
     {
         if (item.Zero && item.Bytes.Any(value => value != 0)) throw new InvalidDataException("Nonzero bytes in zero-filled IR data");
         BinaryWriter writer = IrBinary.Writer();
-        writer.Write(2); IrBinary.Text(writer, item.Name); writer.Write(item.Align);
+        writer.Write(0); IrBinary.Text(writer, item.Name); writer.Write(item.Align);
         writer.Write(item.ReadOnly); writer.Write(item.Zero); writer.Write(item.Exported);
         writer.Write(item.FromLibrary); writer.Write(item.Coalescible); writer.Write(item.NoReferences);
         writer.Write(item.SharedCopies?.Length ?? 0);
@@ -29,7 +29,7 @@ public static class IrDataCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            if (reader.ReadInt32() != 2) throw new InvalidDataException("Unknown IR data record");
+            if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported IR data version");
             string name = IrBinary.Name(reader, budget); int align = reader.ReadInt32();
             bool readOnly = IrBinary.Flag(reader), zero = IrBinary.Flag(reader), exported = IrBinary.Flag(reader);
             bool library = IrBinary.Flag(reader), coalescible = IrBinary.Flag(reader);

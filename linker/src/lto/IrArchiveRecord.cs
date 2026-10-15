@@ -42,7 +42,7 @@ public sealed record IrArchiveRecord(string Key, bool Importable, int Instructio
     /// <summary>The body's length as the archive records it.</summary>
     public int BodyLength => Unpacked != 0 ? Unpacked : Payload.Length;
 
-    /// <summary>The body's hash as the archive's directory records it (FastHash, archive version 4).</summary>
+    /// <summary>The body's hash as the archive's directory records it (FastHash).</summary>
     public byte[] BodyHash() => UnpackedHash ?? FastHash.Of(Payload);
 
     /// <summary>

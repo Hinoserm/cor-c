@@ -55,10 +55,11 @@ public sealed class UnitBackend : IUnitBackend
         archive ??= IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
         var visibility = original.Symbols.Where(symbol => symbol.IsDefined && symbol.IsFunction)
             .ToDictionary(symbol => symbol.Name, symbol => symbol.Global, StringComparer.Ordinal);
-        // A VERSION 2 ARCHIVE holds the IR from before the late passes, and
-        // they run here, over the whole program's answers where the link has
-        // them. What they leave is what a version 1 archive held, and the
-        // per-function steps below go on from there as before.
+        // AN ARCHIVE TAKEN BEFORE THE LATE PASSES (one with settings) holds
+        // the IR from before them, and they run here, over the whole
+        // program's answers where the link has them. What they leave is what
+        // an archive taken after them holds, and the per-function steps below
+        // go on from there.
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
         // A kernel module's unit is part of a shared object, and is made again as one.
         bool positionIndependent = IrUnitCodec.ReadSettings(archive).Settings is { PositionIndependent: true };
@@ -158,7 +159,7 @@ public sealed class UnitBackend : IUnitBackend
         // the link handed over to import. Decoded fresh for each asker, as
         // every worker loads its own, and never written; a body past the
         // bound is not looked into, and what reaches it stays refused.
-        // A version 2 archive holds the body from before the late passes,
+        // An archive taken before the late passes holds the body from then,
         // which add only what the callee makes and frees of its own.
         const long CalleeDecodeLimit = 4L * 1024 * 1024;
         Function? Callee(string name)

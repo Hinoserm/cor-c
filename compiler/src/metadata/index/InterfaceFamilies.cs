@@ -17,7 +17,7 @@ public static class InterfaceFamilies
         using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
         string name = type.Outer is null ? type.Name : type.Outer + "." + type.Name;
         byte[] encoded = DeclarationIndex.Utf8.GetBytes(name);
-        writer.Write(2); writer.Write(encoded.Length); writer.Write(encoded);
+        writer.Write(0); writer.Write(encoded.Length); writer.Write(encoded);
         writer.Write(type.TypeParams.Count);
         writer.Write(type.Members.Sum(member => member is MethodDecl ? 1 : member is PropertyDecl property ? 1 + (property.HasSetter ? 1 : 0) : 0));
         writer.Write(library);
@@ -32,7 +32,7 @@ public static class InterfaceFamilies
         {
             using MemoryStream stream = new(record.Payload, writable: false);
             using BinaryReader reader = new(stream, DeclarationIndex.Utf8);
-            if (reader.ReadInt32() != 2) throw new InvalidDataException("Unknown interface family record");
+            if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported interface family record");
             int length = reader.ReadInt32();
             string name = DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, length));
             int arity = reader.ReadInt32(); reader.ReadInt32();
@@ -73,7 +73,7 @@ public static class InterfaceFamilies
             using BinaryReader reader = new(stream, DeclarationIndex.Utf8);
             try
             {
-                if (reader.ReadInt32() != 2) throw new InvalidDataException("Unknown interface family record");
+                if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported interface family record");
                 int length = reader.ReadInt32();
                 if (length < 1 || length > record.Payload.Length - 16) throw new InvalidDataException("Invalid interface family name");
                 string name = DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, length));

@@ -6,7 +6,7 @@ using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.Lto;
 
-/// <summary>Versioned per-definition IR locations. The linker never interprets compiler payloads.</summary>
+/// <summary>Per-definition IR locations. The linker never interprets compiler payloads.</summary>
 public sealed class IrArchive
 {
     public const string SectionName = ".corsac.ir";
@@ -84,11 +84,11 @@ public sealed class IrArchive
         Section section = new(SectionName, SectionKind.Note);
         byte[] header = new byte[20];
         BinaryPrimitives.WriteUInt32LittleEndian(header, 0x52494343u);
-        // VERSION 4: the records, the directory and the native object are
-        // checked by FastHash, where version 3 used SHA-256 -- a fifth of a
-        // native unit compile, and every link and backend read verified them
-        // again. An archive of either version is refused by the other.
-        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(4), 4);
+        // Version 0, one layout until a release. The records, the directory
+        // and the native object are checked by FastHash: SHA-256 was a fifth
+        // of a native unit compile, and every link and backend read verified
+        // them again.
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(4), 0);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8), records.Count);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(12), index.Count);
         BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(16), total);
@@ -145,7 +145,7 @@ public sealed class IrArchive
         int bytesCount = size;
         try
         {
-            if (reader.ReadUInt32() != 0x52494343 || reader.ReadInt32() != 4) throw new ElfFormatException("Unsupported IR archive");
+            if (reader.ReadUInt32() != 0x52494343 || reader.ReadInt32() != 0) throw new ElfFormatException("Unsupported IR archive");
             int count = reader.ReadInt32(), directoryBytes = reader.ReadInt32(), total = reader.ReadInt32();
             byte[] native = reader.ReadBytes(32);
             byte[] directoryHash = reader.ReadBytes(32);

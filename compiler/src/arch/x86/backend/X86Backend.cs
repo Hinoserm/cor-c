@@ -909,7 +909,7 @@ public sealed class X86Backend : IBackend
     /// at each call a frame is stopped in, which of its words and saved
     /// registers hold live references.
     ///
-    /// VERSION 6, VARINTS AND SHARED BITMAPS: the layout is StackMapTable's,
+    /// VARINTS AND SHARED BITMAPS: the layout is StackMapTable's,
     /// in the linker's object model, where it is written down in full; the
     /// link decodes and re-encodes it with the same code when it cuts
     /// duplicate bodies, and runtime/src/core/gc.cor (MapSite) reads it. In

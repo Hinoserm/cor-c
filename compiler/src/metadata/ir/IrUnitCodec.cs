@@ -10,9 +10,8 @@ public static class IrUnitCodec
 {
     /// <summary>
     /// What a unit was compiled with that the late passes read: the link runs
-    /// them again over the unit's archived IR, which then holds the IR from
-    /// before them (IrUnitCodec.Snapshot, the record's shape 3; a snapshot
-    /// taken after them carries no settings, shape 1).
+    /// them again over the unit's archived IR (an archive taken before them
+    /// holds the IR from before them, IrUnitCodec.Snapshot).
     /// PositionIndependent: the unit is part of a shared object -- a kernel
     /// module's -- and its regenerated code must be too.
     /// Regions: whether its late passes may give objects to regions
@@ -28,19 +27,14 @@ public static class IrUnitCodec
     public sealed record Settings(bool PreLate, bool NoCollector, bool CallsCollector, bool LeavesLinkHints,
         bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers, bool PositionIndependent = false, bool Regions = true, bool Polls = false);
 
-    /// The unit record's two shapes: a snapshot taken after the late passes,
-    /// with nothing for the link to run them again by, and one taken before
-    /// them with the settings they read.
-    const int WithoutSettings = 1;
-    const int WithSettings = 3;
-
     public static void Attach(ObjectFile obj, Module module, bool stackMaps)
         => IrArchive.Attach(obj, Snapshot(module, stackMaps, null));
 
     /// <summary>
     /// The unit's records as the module stands now. Taken before the late
     /// passes (settings non-null), the link can run them over the whole
-    /// program's answers; taken after them (no settings), it cannot.
+    /// program's answers; taken after them, it cannot. One layout (0): the
+    /// settings follow the imports where a flag says they do.
     /// </summary>
     public static List<IrArchiveRecord> Snapshot(Module module, bool stackMaps, Settings? settings)
     {
@@ -48,10 +42,11 @@ public static class IrUnitCodec
         using MemoryStream stream = new();
         using (BinaryWriter writer = new(stream, IrBinary.Utf8, leaveOpen: true))
         {
-            writer.Write(settings is null ? WithoutSettings : WithSettings); IrBinary.Text(writer, module.Name); IrBinary.Text(writer, module.Entry);
+            writer.Write(0); IrBinary.Text(writer, module.Name); IrBinary.Text(writer, module.Entry);
             writer.Write(module.NeedsHeap); writer.Write(module.PreserveExports); writer.Write(stackMaps);
             writer.Write(module.Imports.Count);
             foreach (string import in module.Imports.Order(StringComparer.Ordinal)) IrBinary.Text(writer, import);
+            writer.Write(settings is not null);
             if (settings is not null)
             {
                 writer.Write(settings.NoCollector); writer.Write(settings.CallsCollector); writer.Write(settings.LeavesLinkHints);
@@ -144,14 +139,13 @@ public static class IrUnitCodec
         using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         IrReadBudget budget = new(1024 * 1024);
-        int shape = reader.ReadInt32();
-        if (shape is not (WithoutSettings or WithSettings)) throw new InvalidDataException("Unknown IR unit record");
+        if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported IR unit version");
         IrBinary.Name(reader, budget); IrBinary.Text(reader, budget);
         IrBinary.Flag(reader); IrBinary.Flag(reader);
         bool stackMaps = IrBinary.Flag(reader);
         int imports = IrBinary.Count(reader);
         for (int i = 0; i < imports; i++) IrBinary.Name(reader, budget);
-        return (shape == WithSettings ? ReadSettingsTail(reader, budget) : null, stackMaps);
+        return (IrBinary.Flag(reader) ? ReadSettingsTail(reader, budget) : null, stackMaps);
     }
 
     private static Settings ReadSettingsTail(BinaryReader reader, IrReadBudget budget)
@@ -175,7 +169,7 @@ public static class IrUnitCodec
         return (module, stackMaps, used);
     }
 
-    /// <summary>The unit and, for a snapshot taken before the late passes, what it was compiled with (applied to the module too).</summary>
+    /// <summary>The unit and, for one taken before the late passes, what it was compiled with (applied to the module too).</summary>
     public static (Module Module, bool StackMaps, long AccountedBytes, Settings? Settings) ReadWithSettings(IrArchive archive,
         long memoryBudget = 64L * 1024 * 1024, IReadOnlySet<string>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
     {
@@ -184,8 +178,7 @@ public static class IrUnitCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            int shape = reader.ReadInt32();
-            if (shape is not (WithoutSettings or WithSettings)) throw new InvalidDataException("Unknown IR unit record");
+            if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported IR unit version");
             budget.Charge(1024, 1, "unit settings");
             Module module = new(IrBinary.Name(reader, budget))
             { Entry = IrBinary.Text(reader, budget), NeedsHeap = IrBinary.Flag(reader), PreserveExports = IrBinary.Flag(reader) };
@@ -194,7 +187,7 @@ public static class IrUnitCodec
             budget.Charge(imports, 64, "import table");
             for (int i = 0; i < imports; i++)
                 if (!module.Imports.Add(IrBinary.Name(reader, budget))) throw new InvalidDataException("Duplicate IR import");
-            Settings? settings = shape == WithSettings ? ReadSettingsTail(reader, budget) : null;
+            Settings? settings = IrBinary.Flag(reader) ? ReadSettingsTail(reader, budget) : null;
             if (settings is not null)
             {
                 module.NoCollector = settings.NoCollector; module.CallsCollector = settings.CallsCollector;
