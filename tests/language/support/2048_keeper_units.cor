@@ -1,0 +1,48 @@
+// The other unit of 2048_linq_consumer_keeps_in_statics_across_units: LINQ
+// walks keeping, in statics of this unit, the list they are handed or
+// something holding it.
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+
+public static class Keepers
+{
+    public static List<int>? KeptList;
+    public static IEnumerable<int>? KeptLazy;
+    public static Func<int, bool>? KeptTest;
+    public static ReadOnlyCollection<int>? KeptView;
+
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+
+    public static int KeepList(List<int> l)
+    {
+        KeptList = l;
+        return l.Where(x => x > 0).Sum();
+    }
+
+    public static int KeepLazy(List<int> l)
+    {
+        IEnumerable<int> w = l.Where(x => x > 0);
+        KeptLazy = w;
+        return w.Count();
+    }
+
+    public static int KeepTest(List<int> l)
+    {
+        Func<int, bool> t = x => l.IndexOf(x + 1) >= 0;
+        KeptTest = t;
+        return l.Count(t);
+    }
+
+    public static int KeepView(List<int> l)
+    {
+        KeptView = l.AsReadOnly();
+        return l.Count(x => x != 100);
+    }
+}

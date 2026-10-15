@@ -1,0 +1,128 @@
+// test: linq_consumer_keeps_elements_across_units
+// units: tests/language/support/2058_element_units.cor
+// expect-exit: 0
+// expect-output:
+// control odd 100000 True
+// pick 4000 4
+// first 4000 4
+// deep 3000 30,31,32
+// evens 4000 -2,0,2,4
+//
+// Lists whose elements this unit made for them alone, handed to another
+// unit's LINQ, which lets the list go and keeps an element: one Where then
+// First finds, one First with a predicate reads out of the list's own array
+// (lending it), an inner list of a list of lists, the elements a ToList of
+// them holds. Whatever becomes of the list, its array and the elements not
+// kept, the kept ones stay whole.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    // What each call left to the collector, and whether the program gave
+    // memory back itself meanwhile: frees, or a region's end (1211's measure).
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string name, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(name + " " + total + " " + freed);
+    }
+
+    static List<int> MakeAt(int n, int at) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(at + i); return l; }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: lists of the kept ones' shape and
+    // arrays of their arrays' sizes, other numbers in them, made and held while
+    // the kept ones are read. Under verified frees such a block is poisoned
+    // instead, and a second free ends the run.
+    static readonly List<int>[] JunkLists = new List<int>[4096];
+    static readonly int[][] JunkArrays = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkLists.Length; k++)
+        {
+            JunkLists[k] = MakeAt(9, 100);
+            JunkArrays[k] = new int[k % 2 == 0 ? 16 : 9];
+            JunkArrays[k][0] = 100;
+        }
+        Gc.Collect();
+    }
+
+    // A thousand calls, their results added: the last call's object is the one read afterwards.
+    static long Rounds(Func<int, int> f) { long t = 0; for (int k = 0; k < 1000; k++) t += f(9); return t; }
+
+    static string Show(IEnumerable<int>? s) => s is null ? "null" : string.Join(",", s);
+
+    static string Rest(IEnumerator<int> e) { string s = ""; while (e.MoveNext()) s += (s.Length > 0 ? "," : "") + e.Current; return s; }
+
+    static List<Cell>? _evens;
+
+    static List<Cell> Cells(int n)
+    {
+        List<Cell> l = new();
+        for (int i = 0; i < n; i++) l.Add(new Cell(i - 3));
+        return l;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Odd(int n) => Picks.Odd(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Pick(int n) => Picks.Pick(Cells(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Found(int n) => Picks.Found(Cells(n));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Deep(int n)
+    {
+        List<List<int>> rows = new();
+        for (int i = 0; i < n; i++) rows.Add(MakeAt(i, 10 * i));
+        return Picks.Deep(rows);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Evens(int n)
+    {
+        _evens = Picks.Evens(Cells(n));
+        return _evens.Count;
+    }
+
+    static readonly object[] JunkElements = new object[4096];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ChurnElements()
+    {
+        for (int k = 0; k < JunkElements.Length; k++) JunkElements[k] = k % 2 == 0 ? (object)new Cell(100 + k) : MakeAt(3, 500);
+        Gc.Collect();
+    }
+
+    static void Main()
+    {
+        Say("control odd", Odd);
+        long pick = Rounds(Pick), found = Rounds(Found), deep = Rounds(Deep), evens = Rounds(Evens);
+        Churn();
+        ChurnElements();
+        Console.WriteLine("pick " + pick + " " + Picks.PickedCell!.V);
+        Console.WriteLine("first " + found + " " + Picks.FoundCell!.V);
+        Console.WriteLine("deep " + deep + " " + Show(Picks.Inner));
+        string vs = "";
+        foreach (Cell c in _evens!) vs += (vs.Length > 0 ? "," : "") + c.V;
+        Console.WriteLine("evens " + evens + " " + vs);
+    }
+}

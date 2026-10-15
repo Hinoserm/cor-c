@@ -1,0 +1,45 @@
+// The other unit of 2047_linq_consumer_list_used_after_across_units: walks
+// keeping nothing of the list they are handed, and makers of lists, one of
+// which keeps what it made.
+using System.Collections.Generic;
+using System.Linq;
+
+static class After
+{
+    static List<int>? _cached;
+
+    public static List<int>? Last => _cached;
+
+    public static List<int> Build(int n)
+    {
+        List<int> l = new();
+        for (int i = 0; i < n; i++) l.Add(i - 3);
+        return l;
+    }
+
+    // Made and kept here.
+    public static List<int> Cached(int n)
+    {
+        List<int> l = Build(n);
+        _cached = l;
+        return l;
+    }
+
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+
+    public static int Tripled(List<int> l) => l.Select(x => x * 3).Sum();
+
+    public static int Twice(List<int> l)
+    {
+        IEnumerable<int> w = l.Where(x => x > 0);
+        int a = 0, b = 0;
+        foreach (int x in w) a += x;
+        foreach (int x in w) b += x;
+        return a == b ? a : -1;
+    }
+}

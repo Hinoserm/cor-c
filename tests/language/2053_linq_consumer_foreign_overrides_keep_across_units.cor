@@ -1,0 +1,207 @@
+// test: linq_consumer_foreign_overrides_keep_across_units
+// units: tests/language/support/2053_overrides_units.cor
+// expect-exit: 0
+// expect-output:
+// hoard positive 15000 -3,-2,-1,0,1,2,3,4,5
+// hoard total 9000 -3,-2,-1,0,1,2,3,4,5
+// sum 9000 -3,-2,-1,0,1,2,3,4,5
+// folded 9000 -3,-2,-1,0,1,2,3,4,5
+// first 4000 -3,-2,-1,0,1,2,3,4,5
+// face 9000 -3,-2,-1,0,1,2,3,4,5
+// indexed 2000 -3,-2,-1,0,1,2,3,4,5
+// contains 1000 -3,-2,-1,0,1,2,3,4,5
+// shadowed 9000 -3,-2,-1,0,1,2,3,4,5
+// odd 5000
+//
+// Methods another unit's walk reaches, written in THIS unit, keeping what
+// they are asked of: an IEnumerable<int> of its own (Hoard), and Lists of its
+// own naming again an interface List<int> has already (C# 18.6.7; 2040's
+// KeepingList, but here, not in the walk's unit): IEnumerable<int> (Stash),
+// IReadOnlyList<int> (Peek, read by index or walked), ICollection<int>
+// (Made, made by nothing but a generic `new T()`, asked Contains or walked).
+// The walks take a List<int> parameter, an IEnumerable<int>, or are an
+// interface method's. And the other unit's class made and walked here,
+// whose GetEnumerator comes from a generic base this unit sees only in part
+// (shadowed). Where takes a Stash as a List and keeps none (odd).
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Hoard : IEnumerable<int>
+{
+    readonly int[] _items;
+
+    public Hoard(int n, int at)
+    {
+        _items = new int[n];
+        for (int i = 0; i < n; i++) _items[i] = at + i;
+    }
+
+    public IEnumerator<int> GetEnumerator()
+    {
+        Seen.Last = this;
+        return Walk(_items);
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    static IEnumerator<int> Walk(int[] items)
+    {
+        for (int i = 0; i < items.Length; i++) yield return items[i];
+    }
+
+    public override string ToString() => string.Join(",", _items);
+}
+
+class Stash : List<int>, IEnumerable<int>
+{
+    IEnumerator<int> IEnumerable<int>.GetEnumerator()
+    {
+        Seen.Last = this;
+        return GetEnumerator();
+    }
+}
+
+class Peek : List<int>, IReadOnlyList<int>, IEnumerable<int>
+{
+    int IReadOnlyList<int>.this[int index]
+    {
+        get
+        {
+            Seen.Last = this;
+            return this[index];
+        }
+    }
+
+    IEnumerator<int> IEnumerable<int>.GetEnumerator()
+    {
+        Seen.Last = this;
+        return GetEnumerator();
+    }
+}
+
+class Made : List<int>, ICollection<int>, IEnumerable<int>
+{
+    bool ICollection<int>.Contains(int item)
+    {
+        Seen.Last = this;
+        return Contains(item);
+    }
+
+    IEnumerator<int> IEnumerable<int>.GetEnumerator()
+    {
+        Seen.Last = this;
+        return GetEnumerator();
+    }
+}
+
+static class P
+{
+
+    static List<int> MakeAt(int n, int at) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(at + i); return l; }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: lists of the kept ones' shape and
+    // arrays of their arrays' sizes, other numbers in them, made and held while
+    // the kept ones are read. Under verified frees such a block is poisoned
+    // instead, and a second free ends the run.
+    static readonly List<int>[] JunkLists = new List<int>[4096];
+    static readonly int[][] JunkArrays = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkLists.Length; k++)
+        {
+            JunkLists[k] = MakeAt(9, 100);
+            JunkArrays[k] = new int[k % 2 == 0 ? 16 : 9];
+            JunkArrays[k][0] = 100;
+        }
+        Gc.Collect();
+    }
+
+    // A thousand calls, their results added: the last call's object is the one read afterwards.
+    static long Rounds(Func<int, int> f) { long t = 0; for (int k = 0; k < 1000; k++) t += f(9); return t; }
+
+    static string Show(IEnumerable<int>? s) => s is null ? "null" : string.Join(",", s);
+
+    static string Rest(IEnumerator<int> e) { string s = ""; while (e.MoveNext()) s += (s.Length > 0 ? "," : "") + e.Current; return s; }
+
+    static List<int> Fill(List<int> l, int n)
+    {
+        for (int i = 0; i < n; i++) l.Add(i - 3);
+        return l;
+    }
+
+    static T FillNew<T>(int n) where T : List<int>, new()
+    {
+        T l = new T();
+        Fill(l, n);
+        return l;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int HoardPositive(int n) => Over.Positive(new Hoard(n, -3));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int HoardTotal(int n) => Over.Total(new Hoard(n, -3));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Sum(int n) => Totals.Sum(Fill(new Stash(), n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Folded(int n) => Totals.Folded(Fill(new Stash(), n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int FirstAbove(int n) => Totals.FirstAbove(Fill(new Stash(), n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Face(int n) => Totals.Walker.Walk(Fill(new Stash(), n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Indexed(int n) => Totals.Above(Fill(new Peek(), n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Has(int n) => Totals.Has(FillNew<Made>(n));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Shadowed(int n)
+    {
+        IntTally t = new();
+        for (int i = 0; i < n; i++) t.Put(i - 3);
+        int s = 0;
+        foreach (int x in (IEnumerable<int>)t) s += x;
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Odd(int n) => Totals.Odd(Fill(new Stash(), n));
+
+    static string Kept()
+    {
+        Churn();
+        object? o = Seen.Last;
+        Seen.Last = null;
+        if (o is List<int> l)
+        {
+            string s = "";
+            for (int i = 0; i < l.Count; i++) s += (i > 0 ? "," : "") + l[i];
+            return s;
+        }
+        return o is null ? "none" : o.ToString()!;
+    }
+
+    static void Line(string name, Func<int, int> f)
+    {
+        long total = Rounds(f);
+        Console.WriteLine(name + " " + total + " " + Kept());
+    }
+
+    static void Main()
+    {
+        Line("hoard positive", HoardPositive);
+        Line("hoard total", HoardTotal);
+        Line("sum", Sum);
+        Line("folded", Folded);
+        Line("first", FirstAbove);
+        Line("face", Face);
+        Line("indexed", Indexed);
+        Line("contains", Has);
+        Line("shadowed", Shadowed);
+        Console.WriteLine("odd " + Rounds(Odd));
+    }
+}

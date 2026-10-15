@@ -1,0 +1,52 @@
+// The other unit of 2050_linq_consumer_list_outlives_the_call_across_units:
+// walks of the list run after the call that was handed it returned.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+public static class Later
+{
+    public static Func<int>? Pending;
+    static int _go;
+
+    public static void Hold() => Volatile.Write(ref _go, 0);
+
+    public static void Release() => Volatile.Write(ref _go, 1);
+
+    static void Wait()
+    {
+        while (Volatile.Read(ref _go) == 0) Thread.Sleep(1);
+    }
+
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+
+    public static int Defer(List<int> l)
+    {
+        Pending = () => l.Where(x => x > 0).Sum();
+        return l.Count;
+    }
+
+    public static Thread Spawn(List<int> l, int[] result)
+    {
+        Thread t = new Thread(() => { Wait(); result[0] = l.Where(x => x % 2 != 0).Sum(); });
+        t.Start();
+        return t;
+    }
+
+    public static Task<int> Run(List<int> l) => Task.Run(() => { Wait(); return l.Select(x => x * 3).Sum(); });
+
+    public static async Task<int> Async(List<int> l)
+    {
+        while (Volatile.Read(ref _go) == 0) await Task.Delay(1);
+        int t = 0;
+        foreach (int x in l.Where(x => x > 2)) t += x;
+        return t;
+    }
+}

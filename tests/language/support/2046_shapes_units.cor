@@ -1,0 +1,44 @@
+// The other unit of 2046_linq_consumer_more_shapes_across_units: LINQ walks
+// of a list the calling unit made, each keeping it nowhere.
+using System.Collections.Generic;
+using System.Linq;
+
+static class Shapes
+{
+    public static int WhereAny(List<int> l) => l.Where(x => x > 2).Any() ? 1 : 0;
+
+    public static int AnyMatch(List<int> l) => l.Any(x => x == 4) ? 1 : 0;
+
+    public static int WhereFirst(List<int> l) => l.Where(x => x > 3).First();
+
+    public static int SelectFirst(List<int> l) => l.Select(x => x * 3).First();
+
+    public static int ForeachSelect(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Select(x => x * 2)) t += x;
+        return t;
+    }
+
+    // Enumerable's, not List's own Contains.
+    public static int Has(List<int> l) => Enumerable.Contains(l, 4) ? 1 : 0;
+
+    public static int FirstAbove(List<int> l)
+    {
+        foreach (int x in l.Where(x => x > 0))
+            if (x > 2) return x;
+        return -1;
+    }
+
+    public static int Second(List<int> l)
+    {
+        using (IEnumerator<int> e = l.Select(x => x + 1).GetEnumerator())
+        {
+            e.MoveNext();
+            e.MoveNext();
+            return e.Current;
+        }
+    }
+
+    public static int None(List<int> l) => l.Where(x => x > 100).FirstOrDefault();
+}

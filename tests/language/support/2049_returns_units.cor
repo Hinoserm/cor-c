@@ -1,0 +1,27 @@
+// The other unit of 2049_linq_consumer_returns_what_holds_the_list_across_units:
+// walks handing back the list they are given, or what holds it.
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public static class Returns
+{
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+
+    public static IEnumerable<int> Tens(List<int> l) => l.Where(x => x > 0).Select(x => x * 10);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static IEnumerable<int> Same(List<int> l) => l.Cast<int>();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static IEnumerable<int> Plain(List<int> l) => l.AsEnumerable();
+
+    public static IEnumerator<int> Walker(List<int> l) => l.Select(x => x + 100).GetEnumerator();
+
+    public static List<int> Maybe(List<int> l) => l.Count > 5 ? l : l.Where(x => x > 0).ToList();
+}

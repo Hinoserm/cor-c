@@ -1,0 +1,115 @@
+// test: linq_consumer_exception_mid_walk_across_units
+// units: tests/language/support/2052_throwing_units.cor
+// expect-exit: 0
+// expect-output:
+// control odd 100000 True
+// divided -3,-2,-1,0,1,2,3,4,5
+// caught 1000
+// carried -3,-2,-1,0,1,2,3,4,5
+// kept on failure -1000 -3,-2,-1,0,1,2,3,4,5
+//
+// Another unit's walk thrown out of part-way: by its predicate, the list
+// used here again after the catch (2043's stop, in a function that made the
+// list, not Main); a thousand times, each list freed at most once on the way
+// out; by the walk itself, carrying the list out in its exception; and
+// caught there, where the list is kept only on the failing path.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    // What each call left to the collector, and whether the program gave
+    // memory back itself meanwhile: frees, or a region's end (1211's measure).
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string name, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(name + " " + total + " " + freed);
+    }
+
+    static List<int> MakeAt(int n, int at) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(at + i); return l; }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: lists of the kept ones' shape and
+    // arrays of their arrays' sizes, other numbers in them, made and held while
+    // the kept ones are read. Under verified frees such a block is poisoned
+    // instead, and a second free ends the run.
+    static readonly List<int>[] JunkLists = new List<int>[4096];
+    static readonly int[][] JunkArrays = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkLists.Length; k++)
+        {
+            JunkLists[k] = MakeAt(9, 100);
+            JunkArrays[k] = new int[k % 2 == 0 ? 16 : 9];
+            JunkArrays[k][0] = 100;
+        }
+        Gc.Collect();
+    }
+
+    // A thousand calls, their results added: the last call's object is the one read afterwards.
+    static long Rounds(Func<int, int> f) { long t = 0; for (int k = 0; k < 1000; k++) t += f(9); return t; }
+
+    static string Show(IEnumerable<int>? s) => s is null ? "null" : string.Join(",", s);
+
+    static string Rest(IEnumerator<int> e) { string s = ""; while (e.MoveNext()) s += (s.Length > 0 ? "," : "") + e.Current; return s; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Odd(int n) => Throwing.Odd(Make(n));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Divided()
+    {
+        List<int> l = Make(9);
+        string what;
+        try { what = "" + Throwing.Divide(l); }
+        catch (DivideByZeroException) { what = "divided"; }
+        Churn();
+        return what + " " + Show(l);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int DivideOnce(int n)
+    {
+        try { return Throwing.Divide(Make(n)); }
+        catch (DivideByZeroException) { return 1; }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Carried()
+    {
+        try { return "returned " + Throwing.Carry(Make(9)); }
+        catch (Carrier c) { Churn(); return "carried " + Show(c.Items); }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Failing(int n) => Throwing.KeepOnFailure(Make(n));
+
+    static void Main()
+    {
+        Say("control odd", Odd);
+        Console.WriteLine(Divided());
+        Console.WriteLine("caught " + Rounds(DivideOnce));
+        Console.WriteLine(Carried());
+        long failed = Rounds(Failing);
+        Churn();
+        Console.WriteLine("kept on failure " + failed + " " + Show(Throwing.Failed));
+    }
+}

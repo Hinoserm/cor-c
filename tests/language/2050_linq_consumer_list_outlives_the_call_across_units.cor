@@ -1,0 +1,126 @@
+// test: linq_consumer_list_outlives_the_call_across_units
+// units: tests/language/support/2050_later_units.cor
+// expect-exit: 0
+// expect-output:
+// control odd 100000 True
+// deferred 9 15
+// thread 5
+// task 27
+// async 12
+//
+// Another unit's walk of the list run after the call returns: a closure
+// over it kept in a static, a thread, a task, and an async method whose
+// machine keeps it across an await. Each waits until the function here that
+// made the list has made blocks of its shape again, then walks it.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    // What each call left to the collector, and whether the program gave
+    // memory back itself meanwhile: frees, or a region's end (1211's measure).
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string name, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(name + " " + total + " " + freed);
+    }
+
+    static List<int> MakeAt(int n, int at) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(at + i); return l; }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: lists of the kept ones' shape and
+    // arrays of their arrays' sizes, other numbers in them, made and held while
+    // the kept ones are read. Under verified frees such a block is poisoned
+    // instead, and a second free ends the run.
+    static readonly List<int>[] JunkLists = new List<int>[4096];
+    static readonly int[][] JunkArrays = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkLists.Length; k++)
+        {
+            JunkLists[k] = MakeAt(9, 100);
+            JunkArrays[k] = new int[k % 2 == 0 ? 16 : 9];
+            JunkArrays[k][0] = 100;
+        }
+        Gc.Collect();
+    }
+
+    // A thousand calls, their results added: the last call's object is the one read afterwards.
+    static long Rounds(Func<int, int> f) { long t = 0; for (int k = 0; k < 1000; k++) t += f(9); return t; }
+
+    static string Show(IEnumerable<int>? s) => s is null ? "null" : string.Join(",", s);
+
+    static string Rest(IEnumerator<int> e) { string s = ""; while (e.MoveNext()) s += (s.Length > 0 ? "," : "") + e.Current; return s; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Odd(int n) => Later.Odd(Make(n));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Deferred()
+    {
+        int n = Later.Defer(Make(9));
+        Churn();
+        return n + " " + Later.Pending!();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Spawned()
+    {
+        Later.Hold();
+        int[] result = new int[1];
+        Thread t = Later.Spawn(Make(9), result);
+        Churn();
+        Later.Release();
+        t.Join();
+        return "" + result[0];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Ran()
+    {
+        Later.Hold();
+        Task<int> t = Later.Run(Make(9));
+        Churn();
+        Later.Release();
+        return "" + t.Result;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Awaited()
+    {
+        Later.Hold();
+        Task<int> t = Later.Async(Make(9));
+        Churn();
+        Later.Release();
+        return "" + t.Result;
+    }
+
+    static void Main()
+    {
+        Say("control odd", Odd);
+        Console.WriteLine("deferred " + Deferred());
+        Console.WriteLine("thread " + Spawned());
+        Console.WriteLine("task " + Ran());
+        Console.WriteLine("async " + Awaited());
+    }
+}

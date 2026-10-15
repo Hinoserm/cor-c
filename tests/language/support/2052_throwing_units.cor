@@ -1,0 +1,45 @@
+// The other unit of 2052_linq_consumer_exception_mid_walk_across_units:
+// walks thrown out of part-way, one carrying the list out in its exception,
+// one keeping it only where it catches.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public sealed class Carrier : Exception
+{
+    public readonly List<int> Items;
+
+    public Carrier(List<int> items) : base("carried") { Items = items; }
+}
+
+public static class Throwing
+{
+    public static List<int>? Failed;
+
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+
+    // Throws at the list's 0.
+    public static int Divide(List<int> l) => l.Where(x => 10 / x > 1).Count();
+
+    public static int Carry(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x > 0))
+        {
+            if (x == 4) throw new Carrier(l);
+            t += x;
+        }
+        return t;
+    }
+
+    public static int KeepOnFailure(List<int> l)
+    {
+        try { return l.Where(x => 10 / x > 1).Count(); }
+        catch (DivideByZeroException) { Failed = l; return -1; }
+    }
+}

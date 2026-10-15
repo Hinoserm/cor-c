@@ -1,0 +1,16 @@
+// The other unit of 2055_linq_consumer_foreign_iterator_finally_keeps_its_source:
+// walks stopping early over a sequence the calling unit writes.
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public static class Over
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int AnyOf(IEnumerable<int> s) => s.Any() ? 1 : 0;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Head(IEnumerable<int> s) => s.First();
+
+    public static int FirstAbove(IEnumerable<int> s) => s.First(x => x > 3);
+}

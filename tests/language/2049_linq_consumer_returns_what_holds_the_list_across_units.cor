@@ -1,0 +1,98 @@
+// test: linq_consumer_returns_what_holds_the_list_across_units
+// units: tests/language/support/2049_returns_units.cor
+// expect-exit: 0
+// expect-output:
+// control odd 100000 True
+// tens 10,20,30,40,50
+// same -3,-2,-1,0,1,2,3,4,5
+// plain -3,-2,-1,0,1,2,3,4,5
+// walker 97,98,99,100,101,102,103,104,105
+// maybe -3,-2,-1,0,1,2,3,4,5
+//
+// Another unit's consumer handing back what holds the list, or the list
+// itself: an iterator holding an iterator holding it (2043 hands back one),
+// the list through Cast<int> (it is one already) and AsEnumerable, an
+// enumerator of a Select over it, the list or a copy as its length says.
+// The function here that made the list keeps the result past blocks of the
+// list's shape made again, then walks it.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    // What each call left to the collector, and whether the program gave
+    // memory back itself meanwhile: frees, or a region's end (1211's measure).
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string name, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(name + " " + total + " " + freed);
+    }
+
+    static List<int> MakeAt(int n, int at) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(at + i); return l; }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: lists of the kept ones' shape and
+    // arrays of their arrays' sizes, other numbers in them, made and held while
+    // the kept ones are read. Under verified frees such a block is poisoned
+    // instead, and a second free ends the run.
+    static readonly List<int>[] JunkLists = new List<int>[4096];
+    static readonly int[][] JunkArrays = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkLists.Length; k++)
+        {
+            JunkLists[k] = MakeAt(9, 100);
+            JunkArrays[k] = new int[k % 2 == 0 ? 16 : 9];
+            JunkArrays[k][0] = 100;
+        }
+        Gc.Collect();
+    }
+
+    // A thousand calls, their results added: the last call's object is the one read afterwards.
+    static long Rounds(Func<int, int> f) { long t = 0; for (int k = 0; k < 1000; k++) t += f(9); return t; }
+
+    static string Show(IEnumerable<int>? s) => s is null ? "null" : string.Join(",", s);
+
+    static string Rest(IEnumerator<int> e) { string s = ""; while (e.MoveNext()) s += (s.Length > 0 ? "," : "") + e.Current; return s; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Odd(int n) => Returns.Odd(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Tens() { IEnumerable<int> w = Returns.Tens(Make(9)); Churn(); return Show(w); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Same() { IEnumerable<int> w = Returns.Same(Make(9)); Churn(); return Show(w); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Plain() { IEnumerable<int> w = Returns.Plain(Make(9)); Churn(); return Show(w); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Walker() { IEnumerator<int> e = Returns.Walker(Make(9)); Churn(); return Rest(e); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Maybe() { List<int> r = Returns.Maybe(Make(9)); Churn(); return Show(r); }
+
+    static void Main()
+    {
+        Say("control odd", Odd);
+        Console.WriteLine("tens " + Tens());
+        Console.WriteLine("same " + Same());
+        Console.WriteLine("plain " + Plain());
+        Console.WriteLine("walker " + Walker());
+        Console.WriteLine("maybe " + Maybe());
+    }
+}

@@ -1,0 +1,47 @@
+// The other unit of 2058_linq_consumer_keeps_elements_across_units: walks
+// letting the list go and keeping one of its elements, or a list of them.
+using System.Collections.Generic;
+using System.Linq;
+
+public sealed class Cell
+{
+    public readonly int V;
+
+    public Cell(int v) { V = v; }
+}
+
+public static class Picks
+{
+    public static Cell? PickedCell, FoundCell;
+    public static List<int>? Inner;
+
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+
+    public static int Pick(List<Cell> cells)
+    {
+        Cell c = cells.Where(x => x.V > 3).First();
+        PickedCell = c;
+        return c.V;
+    }
+
+    public static int Found(List<Cell> cells)
+    {
+        Cell c = cells.First(x => x.V > 3);
+        FoundCell = c;
+        return c.V;
+    }
+
+    public static int Deep(List<List<int>> rows)
+    {
+        List<int> r = rows.Where(x => x.Count > 2).First();
+        Inner = r;
+        return r.Count;
+    }
+
+    public static List<Cell> Evens(List<Cell> cells) => cells.Where(x => x.V % 2 == 0).ToList();
+}

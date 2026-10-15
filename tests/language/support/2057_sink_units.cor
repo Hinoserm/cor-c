@@ -1,0 +1,49 @@
+// The other unit of 2057_linq_consumer_hands_walk_to_sinks_across_units:
+// walks handed on to what the calling unit gives them.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public interface ISink
+{
+    void Take(IEnumerable<int> walk);
+}
+
+public sealed class Box
+{
+    public IEnumerable<int>? Lazy;
+}
+
+public static class Sinks
+{
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+
+    public static int Feed(List<int> l, ISink sink)
+    {
+        sink.Take(l.Where(x => x > 0));
+        return l.Count;
+    }
+
+    public static int Call(List<int> l, Func<IEnumerable<int>, int> use) => use(l.Select(x => x * 2));
+
+    public static int Into(List<int> l, Box box)
+    {
+        box.Lazy = l.Where(x => x > 0);
+        return l.Count;
+    }
+
+    public static int Out(List<int> l, out IEnumerable<int> lazy)
+    {
+        lazy = l.Where(x => x > 0);
+        return l.Count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Total(IEnumerable<int> s) => s.Sum();
+}

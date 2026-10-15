@@ -1,0 +1,74 @@
+// The other unit of 2053_linq_consumer_foreign_overrides_keep_across_units:
+// walks of sequences and Lists whose overriding members the calling unit
+// writes, and a generic sequence whose GetEnumerator keeps it.
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public static class Seen
+{
+    public static object? Last;
+}
+
+public class Tally<T> : IEnumerable<T>
+{
+    readonly List<T> _items = new();
+
+    public void Put(T item) { _items.Add(item); }
+
+    public IEnumerator<T> GetEnumerator()
+    {
+        Seen.Last = this;
+        return _items.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public override string ToString() => string.Join(",", _items);
+}
+
+public sealed class IntTally : Tally<int> { }
+
+public interface IWalk
+{
+    int Walk(List<int> l);
+}
+
+public sealed class Summer : IWalk
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Walk(List<int> l) => l.Sum();
+}
+
+public static class Over
+{
+    public static int Positive(IEnumerable<int> s) => s.Where(x => x > 0).Sum();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Total(IEnumerable<int> s) => s.Sum();
+}
+
+public static class Totals
+{
+    public static readonly IWalk Walker = new Summer();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Sum(List<int> l) => l.Sum();
+
+    public static int Folded(List<int> l) => l.Aggregate(0, (a, x) => a + x);
+
+    public static int FirstAbove(List<int> l) => l.First(x => x > 3);
+
+    public static int Above(List<int> l) => l.Count(x => x > 3);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Has(List<int> l) => Enumerable.Contains(l, 4) ? 1 : 0;
+
+    public static int Odd(List<int> l)
+    {
+        int t = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) t += x;
+        return t;
+    }
+}

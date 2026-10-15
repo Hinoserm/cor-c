@@ -1,0 +1,83 @@
+// test: linq_consumer_more_shapes_across_units
+// units: tests/language/support/2046_shapes_units.cor
+// expect-exit: 0
+// expect-output:
+// where-any 20000 True
+// any 20000 True
+// where-first 80000 True
+// select-first -180000 True
+// foreach-select 360000 True
+// contains 20000 True
+// break 60000 True
+// enumerator -20000 True
+// none 0 True
+//
+// 1311's siblings: a list made here and handed to another unit's LINQ, which
+// keeps it nowhere -- Where then Any, First or FirstOrDefault; Any with a
+// predicate; Select then First; a foreach over Select; Contains (asked of
+// the list through ICollection); a foreach left by `return`; an enumerator
+// disposed after two steps. Each line: what the calls computed, and whether
+// each left at most a few bytes to the collector while the program gave
+// memory back itself.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    // What each call left to the collector, and whether the program gave
+    // memory back itself meanwhile: frees, or a region's end (1211's measure).
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string name, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(name + " " + total + " " + freed);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int WhereAny(int n) => Shapes.WhereAny(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int AnyMatch(int n) => Shapes.AnyMatch(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int WhereFirst(int n) => Shapes.WhereFirst(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SelectFirst(int n) => Shapes.SelectFirst(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ForeachSelect(int n) => Shapes.ForeachSelect(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Has(int n) => Shapes.Has(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Break(int n) => Shapes.FirstAbove(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Second(int n) => Shapes.Second(Make(n));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int None(int n) => Shapes.None(Make(n));
+
+    static void Main()
+    {
+        Say("where-any", WhereAny);
+        Say("any", AnyMatch);
+        Say("where-first", WhereFirst);
+        Say("select-first", SelectFirst);
+        Say("foreach-select", ForeachSelect);
+        Say("contains", Has);
+        Say("break", Break);
+        Say("enumerator", Second);
+        Say("none", None);
+    }
+}

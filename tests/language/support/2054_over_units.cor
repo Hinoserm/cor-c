@@ -1,0 +1,16 @@
+// The other unit of 2054_linq_consumer_foreign_iterator_keeps_its_source:
+// walks of a sequence the calling unit writes.
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public static class Over
+{
+    public static int Positive(IEnumerable<int> s) => s.Where(x => x > 0).Sum();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Total(IEnumerable<int> s) => s.Sum();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int AnyOf(IEnumerable<int> s) => s.Any() ? 1 : 0;
+}

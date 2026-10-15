@@ -1,0 +1,16 @@
+// The other unit of 2056_linq_consumer_foreign_struct_enumerator_keeps_its_owner:
+// walks of a sequence the calling unit writes.
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public static class Over
+{
+    public static int Positive(IEnumerable<int> s) => s.Where(x => x > 0).Sum();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Total(IEnumerable<int> s) => s.Sum();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Head(IEnumerable<int> s) => s.First();
+}

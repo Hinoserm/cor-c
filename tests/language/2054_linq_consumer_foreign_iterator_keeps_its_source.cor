@@ -1,0 +1,104 @@
+// test: linq_consumer_foreign_iterator_keeps_its_source
+// units: tests/language/support/2054_over_units.cor
+// expect-exit: 0
+// expect-output:
+// positive 15000 -3,-2,-1,0,1,2,3,4,5
+// total 9000 -3,-2,-1,0,1,2,3,4,5
+// any 1000 -3,-2,-1,0,1,2,3,4,5
+//
+// A sequence of this unit whose GetEnumerator is an iterator: it keeps the
+// sequence only in the machine it hands back -- held, as a List is in its
+// enumerator's box -- until the machine's first MoveNext, a call the other
+// unit's walk makes on that box, keeps it for good. Held is not enough:
+// every call made on the box must leave the word holding it alone. The only
+// keeper of its kind in the image.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Source : IEnumerable<int>
+{
+    public static Source? Seen;
+    readonly int[] _items;
+
+    public Source(int n, int at)
+    {
+        _items = new int[n];
+        for (int i = 0; i < n; i++) _items[i] = at + i;
+    }
+
+    public IEnumerator<int> GetEnumerator()
+    {
+        Seen = this;
+        for (int i = 0; i < _items.Length; i++) yield return _items[i];
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public override string ToString() => string.Join(",", _items);
+}
+
+static class P
+{
+
+    static List<int> MakeAt(int n, int at) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(at + i); return l; }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: lists of the kept ones' shape and
+    // arrays of their arrays' sizes, other numbers in them, made and held while
+    // the kept ones are read. Under verified frees such a block is poisoned
+    // instead, and a second free ends the run.
+    static readonly List<int>[] JunkLists = new List<int>[4096];
+    static readonly int[][] JunkArrays = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkLists.Length; k++)
+        {
+            JunkLists[k] = MakeAt(9, 100);
+            JunkArrays[k] = new int[k % 2 == 0 ? 16 : 9];
+            JunkArrays[k][0] = 100;
+        }
+        Gc.Collect();
+    }
+
+    // A thousand calls, their results added: the last call's object is the one read afterwards.
+    static long Rounds(Func<int, int> f) { long t = 0; for (int k = 0; k < 1000; k++) t += f(9); return t; }
+
+    static string Show(IEnumerable<int>? s) => s is null ? "null" : string.Join(",", s);
+
+    static string Rest(IEnumerator<int> e) { string s = ""; while (e.MoveNext()) s += (s.Length > 0 ? "," : "") + e.Current; return s; }
+
+    static readonly Source[] JunkSources = new Source[4096];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Positive(int n) => Over.Positive(new Source(n, -3));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Total(int n) => Over.Total(new Source(n, -3));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int AnyOf(int n) => Over.AnyOf(new Source(n, -3));
+
+    static string Kept()
+    {
+        for (int k = 0; k < JunkSources.Length; k++) JunkSources[k] = new Source(9, 100);
+        Churn();
+        Source? s = Source.Seen;
+        Source.Seen = null;
+        return s is null ? "none" : s.ToString();
+    }
+
+    static void Line(string name, Func<int, int> f)
+    {
+        long total = Rounds(f);
+        Console.WriteLine(name + " " + total + " " + Kept());
+    }
+
+    static void Main()
+    {
+        Line("positive", Positive);
+        Line("total", Total);
+        Line("any", AnyOf);
+    }
+}
