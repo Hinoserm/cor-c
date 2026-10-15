@@ -3,7 +3,8 @@ namespace Corsac.Lang;
 
 public sealed class Param : Node
 {
-    public required string Name { get; init; }
+    public required string Name { get => _name; init => _name = Interned.Name(value); }
+    private readonly string _name = "";
     public required TypeRef Type { get; init; }
 
     /// <summary>

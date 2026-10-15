@@ -23,7 +23,8 @@ public sealed class MemberExpr : Expr
     /// receiver and the arguments are untouched; only which member is being
     /// asked for changes.
     /// </summary>
-    public required string Name { get; set; }
+    public required string Name { get => _name; set => _name = Interned.Name(value); }
+    private string _name = "";
     // To read: one shared empty list until written (WritableTypeArgs), never written through.
     public List<TypeRef> TypeArgs => _typeArgs ?? NoTypeArgs;
     /// <summary>To write: made on first use; almost every node has none.</summary>

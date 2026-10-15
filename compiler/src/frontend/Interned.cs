@@ -16,7 +16,9 @@ namespace Corsac.Lang;
 public static class Interned
 {
     [ThreadStatic] private static Dictionary<string, string>? _names;
-    private const int MostNames = 1 << 17;
+    // The names a large unit's world spells -- its declarations, their
+    // copies, the bodies it checks -- are some two hundred thousand.
+    private const int MostNames = 1 << 18;
 
     public static string Name(string value)
     {

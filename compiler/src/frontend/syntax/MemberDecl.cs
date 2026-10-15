@@ -39,7 +39,7 @@ public abstract class MemberDecl : Node
     public FileScope? Scope { get; set; }
 
     /// <summary>The file it was written in (Node.File): a declaration's is its own field.</summary>
-    public override string File { get => _file; set => _file = value; }
+    public override string File { get => _file; set => _file = Interned.Name(value); }
     private string _file = "";
 
     /// <summary>The namespace this member was written in.</summary>
