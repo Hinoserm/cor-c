@@ -3311,6 +3311,20 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>Whether every type a method's signature names resolves here, asked quietly.</summary>
+    private bool SignatureResolves(MethodDecl md, TypeSymbol owner)
+    {
+        _quiet++;
+        try
+        {
+            if (!md.IsCtor && Resolve(md.Returns!, owner).IsError) return false;
+            foreach (Param p in md.Params)
+                if (Resolve(p.Type, owner).IsError) return false;
+            return true;
+        }
+        finally { _quiet--; }
+    }
+
     /// <summary>What MayCollide found, a canonical copy at a time.</summary>
     private readonly Dictionary<TypeSymbol, bool> _mayCollide = new(ReferenceEqualityComparer.Instance);
 
@@ -4157,6 +4171,18 @@ public sealed partial class Binder
                     // ever written reported that 'T' is not a known type, and
                     // the feature read as absent when it was only unreachable.
                     _signature = md.TypeParams;
+
+                    // THE PRELUDE BINDS WITHOUT ANY LIBRARY: a method of it that
+                    // names a library type (Sys.Print of a ReadOnlySpan<byte>)
+                    // is left out of a compilation that has no such type -- a
+                    // --nostdlib program, a fixture of its own sources -- which
+                    // can name that overload nowhere either. Asked with the
+                    // method's own type parameters in scope.
+                    if (d.File == "<prelude>" && !SignatureResolves(md, sym))
+                    {
+                        _signature = null;
+                        break;
+                    }
 
                     MethodSymbol ms = new()
                     {
@@ -5392,6 +5418,9 @@ public sealed partial class Binder
                 continue;
             }
 
+            // A prelude method left out (its signature names a library type
+            // this compilation has none of) has no body to check either.
+            if (d.File == "<prelude>" && !_r.Methods.ContainsKey(md)) continue;
             _method = _r.Methods[md];
             // ITS FRAME USES ITS SIGNATURE'S TYPES, which no expression need
             // name: a struct parameter held in line is laid out with the
