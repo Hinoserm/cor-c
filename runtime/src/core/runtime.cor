@@ -3715,7 +3715,7 @@ static class Runtime
         if (Sys.PeekWord(metadata) == TableMagic || Sys.PeekWord(metadata) == PooledMagic) {
             return LookupIn(metadata, address, out name, out file, out pool, out line, out offset, lines);
         }
-        if (Sys.PeekWord(metadata) != DirectoryMagic || Sys.PeekWord(metadata + 4) != 1 || Sys.PeekWord(metadata + 12) != 16) { return false; }
+        if (Sys.PeekWord(metadata) != DirectoryMagic || Sys.PeekWord(metadata + 4) != 0 || Sys.PeekWord(metadata + 12) != 16) { return false; }
         long count = Sys.PeekWord(metadata + 8);
         if (count > 100000) { return false; }
         for (long i = 0; i < count; i++) {

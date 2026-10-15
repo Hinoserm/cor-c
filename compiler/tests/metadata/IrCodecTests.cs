@@ -63,7 +63,7 @@ public static class IrCodecTests
         Check(bytes.SequenceEqual(IrFunctionCodec.Write(kept, new HashSet<Instr>(keptBack, ReferenceEqualityComparer.Instance))), "Kept calls reserialization differs");
         damaged = (byte[])bytes.Clone(); damaged[^4] = 2;
         Reject(() => IrFunctionCodec.Read(damaged));
-        // EVERY MARK THE ANALYSES PUT ON THE IR goes with it (version 7): a
+        // EVERY MARK THE ANALYSES PUT ON THE IR goes with it: a
         // parameter's Number, a load's and a character copy's Number, a site
         // the link chose for a region, a loop header given one and its lap's
         // bytes, a virtual call's declaring type, a field and a fresh struct's
@@ -105,6 +105,26 @@ public static class IrCodecTests
         bytes = IrDataCodec.Write(bss);
         Check(bytes.Length < 100 && IrDataCodec.Read(bytes).Bytes.Length == 4096, "BSS encoding is not compact");
         Reject(() => IrDataCodec.Read(bytes, maximumBytes: 4095));
-        Console.WriteLine("IR codecs: complete function/data round trips, async frames, analysis marks, corruption and allocation budgets passed");
+        // THE UNIT RECORD: what the unit was compiled with follows its imports
+        // where a flag says it does (an archive taken before the late passes),
+        // and reads back as written; one taken after them has none.
+        Module unit = new("unit") { Entry = "Main", NeedsHeap = false };
+        unit.Imports.Add("imported");
+        IrUnitCodec.Settings settings = new(true, false, true, true, false, true, new[] { "Helper" }, PositionIndependent: true);
+        foreach (IrUnitCodec.Settings? taken in new[] { settings, null })
+        {
+            ObjectFile obj = new();
+            Corsac.Lang.Lto.IrArchive.Attach(obj, IrUnitCodec.Snapshot(unit, true, taken));
+            Corsac.Lang.Lto.IrArchive archive = Corsac.Lang.Lto.IrArchive.Read(obj)!;
+            (IrUnitCodec.Settings? alone, bool maps) = IrUnitCodec.ReadSettings(archive);
+            (Module module, bool mapsToo, _, IrUnitCodec.Settings? withModule) = IrUnitCodec.ReadWithSettings(archive);
+            bool Same(IrUnitCodec.Settings? read) => taken is null ? read is null
+                : read is { PreLate: true, NoCollector: false, CallsCollector: true, LeavesLinkHints: true, OptimizeSize: false,
+                    ExperimentalBatch: true, PositionIndependent: true } && read.RuntimeHelpers.SequenceEqual(new[] { "Helper" });
+            Check(maps && mapsToo && Same(alone) && Same(withModule), "Unit settings lost in the archive (" + (taken is null ? "none" : "taken") + ")");
+            Check(module is { Name: "unit", Entry: "Main", NeedsHeap: false } && module.Imports.SetEquals(new[] { "imported" })
+                && module.CallsCollector == (taken is not null) && module.RuntimeHelpers.Contains("Helper") == (taken is not null), "Unit record lost in the archive");
+        }
+        Console.WriteLine("IR codecs: complete function/data/unit round trips, async frames, analysis marks, corruption and allocation budgets passed");
     }
 }

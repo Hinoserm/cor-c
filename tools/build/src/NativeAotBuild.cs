@@ -101,7 +101,7 @@ public static class NativeAotBuild
         link.AddRange(["-Wl,--end-group", "-ldl", "-lrt", "-lm", "-pthread", "-pie", "-Wl,-z,relro,-z,now", "-Wl,--eh-frame-hdr", "-Wl,--gc-sections"]);
         string cc = Environment.GetEnvironmentVariable("CC") ?? "cc";
         string Identity(string path) => ProjectStateIdentity(path);
-        string signature = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("native-aot-v1\n" + project.Evaluation
+        string signature = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("native-aot-v0\n" + project.Evaluation
             + string.Join('\n', args.Concat(link).Append(cc)) + "\n"
             + string.Join('\n', references.Concat(archives).Append(dll).Append(ilc).Select(Identity)))));
         if (File.Exists(output) && File.Exists(state) && File.ReadAllText(state) == signature + "\n" + Identity(output))

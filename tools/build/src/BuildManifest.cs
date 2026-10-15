@@ -32,7 +32,7 @@ public sealed class BuildManifest
         XElement root = XDocument.Load(reader, LoadOptions.SetLineInfo).Root
             ?? throw new BuildException("Empty build manifest");
         Check(root, "Build", "FormatVersion", "DefaultTargets", "StrictProperties");
-        if ((string?)root.Attribute("FormatVersion") != "1") Fail(root, "FormatVersion must be 1");
+        if ((string?)root.Attribute("FormatVersion") != "0") Fail(root, "FormatVersion must be 0");
         string strict = (string?)root.Attribute("StrictProperties") ?? "false";
         if (strict is not ("true" or "false")) Fail(root, "StrictProperties must be true or false");
         if (strict == "true")

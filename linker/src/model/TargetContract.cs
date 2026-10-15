@@ -52,7 +52,7 @@ public sealed class TargetContract
         if (obj.Sections.Any(s => s.Name == SectionName)) throw new ElfFormatException("duplicate target contract");
         byte[] bytes = new byte[Size];
         "CABI"u8.CopyTo(bytes);
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 3);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 0);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(8), LongMode ? 8u : 4u); // Pointer bytes.
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12), LongMode ? Amd64Machine : I386Machine);
         // i386 cdecl with x87 floating results, or System V AMD64 with SSE ones.
@@ -97,7 +97,7 @@ public sealed class TargetContract
             if (contracts.Length != 1) throw new ElfFormatException(input.Name + ": duplicate target contract");
             byte[] bytes = contracts[0].Bytes.ToArray();
             if (bytes.Length != Size || !bytes.AsSpan(0, 4).SequenceEqual("CABI"u8)
-                || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4)) != 3)
+                || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4)) != 0)
                 throw new ElfFormatException(input.Name + ": unsupported native ABI contract");
             uint bytesPerPointer = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(8));
             uint machine = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(12));

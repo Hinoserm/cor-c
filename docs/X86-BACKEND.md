@@ -1055,13 +1055,13 @@ image-wide precise collector must enumerate every table through a linker-built
 directory or explicit registration; choosing one object's table is incorrect.
 Nothing executes this data, and a program without a collector pays only its bytes.
 
-The layout is version 6, written by `StackMapTable` in the linker's object
+The layout is version 0, written by `StackMapTable` in the linker's object
 model (linker/src/model/StackMapTable.cs, which has it in full), shared by
 the code generator and by the link when it cuts duplicate bodies, and read
 by the collector (`Gc.MapSite`). All little-endian, offsets from the table:
 
     header, 36 bytes
-      +0   magic 'CSM1' (0x314d5343)        +4   version, 6
+      +0   magic 'CSM1' (0x314d5343)        +4   version, 0
       +8   function count                   +12  call-site count
       +16  the BASE: the address of the first function in this object
            that has a call site -- the table's one relocation
@@ -1090,8 +1090,7 @@ A bitmap reference is odd for a bitmap held inline (ref >> 1, bit b the
 word at [EBP - 4*(b + 1)], up to sixteen words) and even for one in the
 pool (ref >> 1 its offset there); pooled bitmaps are stored once and
 placed most used first, so the common references are the short ones.
-Version 5 spent sixteen bytes a function and eight a call site; this is
-about two bytes a site and five a function.
+This is about two bytes a site and five a function.
 
 A return address is looked up by a binary search of the checkpoints for
 the last anchor below it, then a forward read of at most thirty-two sites

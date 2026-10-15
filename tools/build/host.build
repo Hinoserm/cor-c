@@ -1,4 +1,4 @@
-<Build FormatVersion="1" DefaultTargets="host">
+<Build FormatVersion="0" DefaultTargets="host">
   <Target Name="host" Description="Rebuild the one toolchain executable using the owned project evaluator">
     <Compile Project="../../compiler/corc.csproj" Toolchain="managed" />
   </Target>

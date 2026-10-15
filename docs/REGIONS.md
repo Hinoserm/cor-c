@@ -190,7 +190,7 @@ back from the top); 1304 (grown in place).
 ## The unit's hints
 
 `compiler/src/optimizations/RegionSummary.cs`, format in
-`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 11).
+`linker/src/lto/RegionHints.cs` (section `.corsac.regions`, version 0).
 
 A unit compile states, function by function, the pointer constraints of the
 IR the link will regenerate the unit from:
@@ -205,8 +205,8 @@ IR the link will regenerate the unit from:
   - `Copy` (with a byte shift, any offset, or an index scaled by 2^k and the
     address it moves);
   - `Load`, `Store`, `MemCopy`; a `Load` or `Store` may name the field it
-    reads or writes (`Family`, an index into the function's `Families`,
-    since version 9): an instance field of a class, accessed at its own
+    reads or writes (`Family`, an index into the function's `Families`):
+    an instance field of a class, accessed at its own
     offset from the start of an object of that class, as C# compiles `o.f`
     (`Lowering.FieldFamily`, `Instr.Family`). Named by its declaring class
     and name, a generic class's specialisations by its template and arity.
@@ -230,7 +230,7 @@ IR the link will regenerate the unit from:
     object any cast handed it went to the unknown object. Test 1299.
 - **Async and iterator bodies**: what the body holds across a suspension is
   stated as stores into its state machine (`this`), not as a leak of
-  everything it touched. Since version 8. Test 1298. Each saved register,
+  everything it touched. Test 1298. Each saved register,
   and each frame slot's contents, is stored at a field of its own, eight
   bytes apart from offset 2048 (`SavedFieldsStart`), past any declared field;
   past 4088, from 2048 again (two values in one field; at any offset, every
@@ -249,15 +249,15 @@ IR the link will regenerate the unit from:
   the order the `Symbol` constraints number them.
 - **Addresses taken** (per unit): every symbol the unit names as a value, in
   code or in data -- a function among them may be called from where nobody
-  follows, with anything, and is rooted. Since version 10, those only a
-  descriptor's method slots name are apart (`MethodsTaken`), with whether
+  follows, with anything, and is rooted. Those only a descriptor's method
+  slots name are apart (`MethodsTaken`), with whether
   some function of the unit calls a method it read out of a descriptor by a
   call naming no virtual target (`CallsThroughMethods`,
   `RegionSummary.MethodRead`). A virtual call the link follows reaches its
   overrides with its own arguments; the method-slot functions are rooted
   only when some unit calls one blind or a virtual call is left unresolved
-  (`RegionSolver.Addressed`; a `--region-report` says which). Since version
-  11, a function that calls a method read out of a descriptor says at which
+  (`RegionSolver.Addressed`; a `--region-report` says which). A function
+  that calls a method read out of a descriptor says at which
   offsets of the method table it reads it (`BlindSlots`; any offset where the
   table was moved or the read is past knowing), and only a method some
   descriptor holds at one of them is rooted for it (`VirtualTargets.SlotsOf`):
@@ -786,17 +786,14 @@ laps kept in a list, number parameters, a size check's exception); 1264,
 
 **The marks survive the archive.** The link rebuilds a unit's functions from
 its archived IR more than once: its late passes, each lifetime run, and the
-copy a refused run is taken back from (`UnitBackend`). Since IR function
-record version 6 (`IrFunctionCodec`), the record carries every mark these
-analyses rely on:
+copy a refused run is taken back from (`UnitBackend`). The IR function
+record (`IrFunctionCodec`) carries every mark these analyses rely on:
 - an instruction's `Number` and `RegionSite`;
 - a parameter's `Number`;
 - a block's `RegionLoop` and `RegionLoopBytes`.
 
-Before that, a function taken back after a refused run read its numbers as
-addresses again and lost the regions it had just been given. An archive
-written by an older corc is refused ("Unsupported IR function version"), so
-units are rebuilt.
+Without them, a function taken back after a refused run read its numbers as
+addresses again and lost the regions it had just been given.
 
 **Owned storage beside its owner.** A collection's storage (a List's array,
 a Dictionary's keys, values and tables) is an owned field that the

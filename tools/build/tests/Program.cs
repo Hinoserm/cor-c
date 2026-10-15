@@ -81,7 +81,7 @@ public static class Program
         Check("strict manifests reject misspelled command-line properties", () =>
         {
             string path = Path.Combine(Work, "strict.build");
-            File.WriteAllText(path, "<Build FormatVersion='1' StrictProperties='true'><PropertyGroup><Smp>1</Smp></PropertyGroup><Target Name='all' AllowEmpty='true'/></Build>");
+            File.WriteAllText(path, "<Build FormatVersion='0' StrictProperties='true'><PropertyGroup><Smp>1</Smp></PropertyGroup><Target Name='all' AllowEmpty='true'/></Build>");
             Require(BuildManifest.Load(path, BuildOptions.Parse(["smp=0"])).Properties["Smp"] == "0");
             ExpectError(() => BuildManifest.Load(path, BuildOptions.Parse(["smpp=0"])), "Unknown build property");
         });
@@ -270,7 +270,7 @@ public static class Program
         string directory = Path.Combine(Work, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, "corsac.build");
-        File.WriteAllText(path, "<Build FormatVersion='1' DefaultTargets='all'>" + body + "</Build>");
+        File.WriteAllText(path, "<Build FormatVersion='0' DefaultTargets='all'>" + body + "</Build>");
         return BuildManifest.Load(path, BuildOptions.Parse(options));
     }
     private static void Require(bool condition) { if (!condition) throw new Exception("assertion failed"); }

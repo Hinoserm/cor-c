@@ -81,7 +81,7 @@ Unknown options and unresolved target paths fail before actions start.
 ## XML envelope and naming
 
 ```xml
-<Build FormatVersion="1" DefaultTargets="all">
+<Build FormatVersion="0" DefaultTargets="all">
   <PropertyGroup>
     <Configuration>Release</Configuration>
   </PropertyGroup>

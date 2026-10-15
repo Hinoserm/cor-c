@@ -3,10 +3,10 @@
 Every compiler object owns a local `__corsac_frames` table and, when enabled,
 a local `__corsac_stackmaps` table. Final static, flat and shared links construct
 one image-local `__corsac_units` directory covering all contributing units.
-Native ABI contract version 3 requires the new image-registration convention;
-older contracts are rejected, not translated.
+The native ABI contract requires this image-registration convention; any other
+contract is rejected, not translated.
 
-The little-endian directory has a 16-byte header: `CMDR` magic, version 1,
+The little-endian directory has a 16-byte header: `CMDR` magic, version 0,
 record count, and record stride 16. Each record holds four uint32 fields:
 frame-table address, frame-table byte size, stack-map address and stack-map byte
 size. An absent table has a zero address and size. Link-time validation rejects
@@ -25,7 +25,7 @@ still supplies the current compilation unit's table for low-level inspection.
 The tables' own layouts live in the linker's object model, shared by the code
 generator and the link: `FrameTableFormat` (`'CFR5'` per object, `'CFR6'` once
 the link has moved its names and shared line programs into the image's
-`__corsac_frame_pool`, `'CFP2'`) and `StackMapTable` (`'CSM1'` version 6,
+`__corsac_frame_pool`, `'CFP2'`) and `StackMapTable` (`'CSM1'` version 0,
 varint call sites with checkpoints for a logarithmic lookup). The runtime's
 readers (`Runtime.LookupIn` and `Runtime.LineIn`, `Gc.MapSite`) are the third
 copy and change with them; they accept only these magics.
@@ -67,6 +67,6 @@ loading remains a separate open task.
 
 The accepted milestone also runs the standard stack-trace language fixture with
 the runtime in a shared library. Its ELF checks reject text/copy relocations and
-verify loader metadata. An isolated real-OS build with ABI-v3 objects boots on
+verify loader metadata. An isolated real-OS build with these objects boots on
 an ISA 486 and reaches login, shell execution and reboot. These acceptance gates
 do not claim native self-hosting or complete runtime type loading.

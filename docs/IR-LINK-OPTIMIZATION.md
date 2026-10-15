@@ -19,7 +19,7 @@ The `corc link` convenience command supplies the same backend in-process.
 ## Container
 
 The archive is a non-loadable ELF note. Integers are little-endian. Its 84-byte
-header contains magic `CCIR`, version 3, record count, directory byte count,
+header contains magic `CCIR`, version 0, record count, directory byte count,
 total archive size, a 32-byte native-object digest and a 32-byte directory digest.
 Native-object hashing uses canonical ELF serialization with the archive omitted.
 
@@ -27,9 +27,9 @@ Each directory record contains a length-prefixed UTF-8 key, a one-byte importabl
 flag, instruction count, direct-call count and length-prefixed call names,
 then a reference count and length-prefixed code/data reference names, followed
 by a 64-bit decoded-node accounting cost, body-relative offset, byte length
-and a 32-byte SHA-256 payload digest. Backend request protocol version 4 carries
+and a 32-byte payload digest. The backend request protocol (version 0) carries
 the same cost for each imported body, and the unit's lifetime facts (below).
-Earlier versions are rejected.
+Every format here has one layout, version 0; any other is rejected.
 Names have a 16 KiB ceiling. Records cover consecutive, nonoverlapping payload
 ranges exactly. Invalid versions, flags, lengths, hashes, duplicate keys and
 unclaimed bytes are errors. Payload integrity is checked when that body is read.
@@ -42,7 +42,7 @@ claim of a fully streaming native linker.
 
 ## Compiler payloads
 
-Version-1 function payloads retain return/parameter/register types, export and
+Function payloads retain return/parameter/register types, export and
 specialization provenance, source diagnostics, frame slots, basic blocks,
 landing-pad markers and every instruction field. References use checked table
 indices. The reader runs the structural IR verifier before optimization.
@@ -136,7 +136,7 @@ link-time optimizer on and against no shared library -- the objects whose link
 runs this step. A shared library's position-independent objects, and a program
 compiled and linked in one step, get neither hints nor field sites.
 
-Magic `CLIF`, version 2, total length; a sorted name table; the runtime frees the
+Magic `CLIF`, version 0, total length; a sorted name table; the runtime frees the
 unit may call; function records (name index, global flag, parameter conditions,
 fresh condition); pending conditions. A condition is a stays count (-1 for never)
 with name/argument pairs, then a fresh count with names.
@@ -176,9 +176,9 @@ unit frees each field it cannot yet call clean through a symbol of its own
 summary. The link defines every such symbol, with LTO on or off, as an alias of
 `Runtime.FreeField` where the solved summary leaves the field clean and of
 `Runtime.KeepField`, which does nothing, everywhere else; no code is
-regenerated for them. Version 2 of the section adds the field summaries after
-each function's conditions and the field sites after the pending conditions;
-conditions gain a third requirement list, argument field summaries that must not
+regenerated for them. The section carries the field summaries after each
+function's conditions and the field sites after the pending conditions;
+conditions carry a third requirement list, argument field summaries that must not
 be opaque, used by pending triggers.
 
 The log reports `LTO lifetimes: units with hints=N, units gaining=M, field

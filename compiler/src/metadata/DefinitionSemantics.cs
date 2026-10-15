@@ -107,7 +107,7 @@ public static class DefinitionSemantics
                 }
                 active.Remove(symbol);
             }
-            writer.Write(2); writer.Write(Target.Current.Name); writer.Write(Target.Current.WordSize);
+            writer.Write(0); writer.Write(Target.Current.Name); writer.Write(Target.Current.WordSize);
             Definition(name);
             writer.Flush();
             if (tracing) File.WriteAllBytes(Switches.TraceSemanticsOut!, copy.ToArray());

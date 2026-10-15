@@ -49,7 +49,7 @@ public static class DeclarationStamp
     {
         using DeclarationIndex index = new(indexPath);
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        hash.AppendData("CORSAC build stamp 1\n"u8);
+        hash.AppendData("CORSAC build stamp 0\n"u8);
         foreach (DeclarationRecord record in index.WithPrefix(""))
         {
             byte[] key = Encoding.UTF8.GetBytes(record.Key);

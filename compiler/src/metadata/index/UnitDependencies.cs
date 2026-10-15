@@ -61,7 +61,7 @@ public static class UnitDependencies
         using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
         using BinaryWriter writer = new(stream, Encoding.UTF8);
         string[] ordered = keys.Order(StringComparer.Ordinal).ToArray();
-        writer.Write(0x50454443u); writer.Write(3); writer.Write(ordered.Length);
+        writer.Write(0x50454443u); writer.Write(0); writer.Write(ordered.Length);
         foreach (string key in ordered)
         {
             using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing dependency " + key);
@@ -101,7 +101,7 @@ public static class UnitDependencies
             using DeclarationCatalog catalog = new(index);
             using FileStream stream = File.OpenRead(path);
             using BinaryReader reader = new(stream, Encoding.UTF8);
-            if (reader.ReadUInt32() != 0x50454443u || reader.ReadInt32() != 3) return unreadable;
+            if (reader.ReadUInt32() != 0x50454443u || reader.ReadInt32() != 0) return unreadable;
             int count = reader.ReadInt32();
             if (count < 0 || count > 100000) return unreadable;
             for (int i = 0; i < count; i++)

@@ -33,7 +33,7 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
         Validate();
         if (obj.Sections.Any(section => section.Name == SectionName)) throw new ElfFormatException("duplicate x86 code-generation contract");
         Section section = new(SectionName, SectionKind.Note);
-        section.Bytes.AddRange(Encoding.ASCII.GetBytes(string.Join('\n', "CCPU2", Cpu, Tune, Fpu,
+        section.Bytes.AddRange(Encoding.ASCII.GetBytes(string.Join('\n', "CCPU0", Cpu, Tune, Fpu,
             ((ushort)Features).ToString("x4"), AutomaticPacked ? "1" : "0")));
         obj.Sections.Add(section);
     }
@@ -45,7 +45,7 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
         if (sections.Length != 1 || sections[0].Bytes.Count > 128 || sections[0].Relocs.Count != 0)
             throw new ElfFormatException("invalid x86 code-generation contract section");
         string[] fields = Encoding.ASCII.GetString(sections[0].Bytes.ToArray()).Split('\n');
-        if (fields.Length != 6 || fields[0] != "CCPU2" || fields[4].Length != 4 || !fields[4].All(Uri.IsHexDigit)
+        if (fields.Length != 6 || fields[0] != "CCPU0" || fields[4].Length != 4 || !fields[4].All(Uri.IsHexDigit)
             || fields[5] is not ("0" or "1"))
             throw new ElfFormatException("unsupported x86 code-generation contract");
         var contract = new X86CodeGenerationContract(fields[1], fields[2], fields[3],

@@ -1,4 +1,4 @@
-<Build FormatVersion="1" DefaultTargets="all">
+<Build FormatVersion="0" DefaultTargets="all">
   <PropertyGroup>
     <Configuration>Release</Configuration>
     <Compiler>$(WorkspaceDirectory)/compiler/bin/managed/$(Configuration)/net10.0/corc</Compiler>

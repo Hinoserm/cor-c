@@ -1,4 +1,4 @@
-<Build FormatVersion="1" DefaultTargets="test">
+<Build FormatVersion="0" DefaultTargets="test">
   <Target Name="compile"><Compile Project="BuildTests.csproj" Toolchain="managed" /></Target>
   <Target Name="test" DependsOnTargets="compile">
     <Test Name="native-build-tool" Executable="bin/managed/$(Configuration)/net10.0/BuildTests" Timeout="00:05:00" />

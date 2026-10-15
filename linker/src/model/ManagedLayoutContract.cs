@@ -16,7 +16,7 @@ public static class ManagedLayoutContract
             throw new ElfFormatException("Duplicate managed layout type");
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, Utf8, leaveOpen: true);
-        writer.Write(0x594c4d43u); writer.Write(1); writer.Write(records.Length); // CMLY
+        writer.Write(0x594c4d43u); writer.Write(0); writer.Write(records.Length); // CMLY
         foreach (ManagedTypeLayout type in records)
         {
             byte[] name = Utf8.GetBytes(type.Name);
@@ -40,7 +40,7 @@ public static class ManagedLayoutContract
             using BinaryReader reader = new(stream, Utf8);
             try
             {
-                if (reader.ReadUInt32() != 0x594c4d43 || reader.ReadInt32() != 1)
+                if (reader.ReadUInt32() != 0x594c4d43 || reader.ReadInt32() != 0)
                     throw new ElfFormatException(input.Name + ": unsupported managed layout contract");
                 int count = reader.ReadInt32();
                 if (count < 0 || count > (stream.Length - stream.Position) / 37)

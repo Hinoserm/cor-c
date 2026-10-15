@@ -1,4 +1,4 @@
-<Build FormatVersion="1" DefaultTargets="test">
+<Build FormatVersion="0" DefaultTargets="test">
   <Target Name="test">
     <Compile Project="x86tests.csproj" Toolchain="managed" />
     <Test Name="backend-default-486" Executable="bin/managed/$(Configuration)/net10.0/x86tests">

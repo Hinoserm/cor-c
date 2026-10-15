@@ -27,37 +27,13 @@ namespace Corsac.Lang;
 /// the two disagree about where a field is -- so field layout RULES, vtable
 /// slots and the static-slot count travel with the tree.
 ///
-/// The format is little-endian and self-describing, and it begins with a
-/// version. An older reader refuses a newer major rather than guessing.
+/// The format is little-endian and self-describing, and it begins with its
+/// version, 0. A reader refuses any other rather than guessing.
 /// </summary>
 public static class Gir
 {
-    /// <summary>Bumped when the shape of a record changes and old readers must refuse.</summary>
-    // Bumped when constructor calls learned to carry argument names: an old
-    // reader would take the name count for the argument count.
-    //
-    // 6: a record whose declaration has NO type parameters is a members-only
-    // carrier -- the generic METHODS of a non-generic type, bodies intact,
-    // to be merged into the consumer's view of that type rather than declared
-    // as a type of its own. The bytes did not change; the meaning did, and an
-    // old reader would declare the carrier as a duplicate type.
-    //
-    // 7: a declaration carries the names of its attributes. `[Flags]` decides
-    // what an enum prints, so dropping it on the way through here would make a
-    // template's enum print differently from the same enum compiled directly.
-    // 9: throw statements preserve explicit throw versus bare rethrow.
-    // 10: `new` keeps its array elements (`new[] { a, b }` lost them), and
-    // collection expressions and their spreads are marked; a block carries
-    // its generic local functions.
-    // 11: a method carries its attributes' targets and names, for
-    // [DoesNotReturn], which the checker reads off the declaration.
-    // 12: members carry their explicit interface.
-    // 13: a type parameter carries whether it is `where T : struct`, which
-    // decides whether `T?` is Nullable<T> or an annotation (TypeParam.Struct).
-    public const ushort Major = 13;
-
-    /// <summary>Bumped when something is APPENDED that an old reader can ignore.</summary>
-    public const ushort Minor = 0;
+    /// <summary>The one layout there is. A reader refuses any other.</summary>
+    public const int Version = 0;
 
     private static ReadOnlySpan<byte> Magic => "GIR0"u8;
 
@@ -98,8 +74,7 @@ public static class Gir
         Writer w = new();
 
         w.Bytes(Magic);
-        w.U16(Major);
-        w.U16(Minor);
+        w.I32(Version);
         w.I32(templates.Count);
 
         foreach (Template t in templates)
@@ -139,15 +114,14 @@ public static class Gir
             throw new InvalidDataException($"{from}: not a generic-template section");
         }
 
-        ushort major = BinaryPrimitives.ReadUInt16LittleEndian(bytes[4..]);
+        int version = BinaryPrimitives.ReadInt32LittleEndian(bytes[4..]);
 
-        // RULE 1 OF THE COMPATIBILITY RULES, applied here as well as to the
-        // image: a major this reader does not know is refused rather than
-        // guessed at. A tree misread is a program that compiles and is wrong.
-        if (major != Major)
+        // A version this reader does not know is refused rather than guessed
+        // at. A tree misread is a program that compiles and is wrong.
+        if (version != Version)
         {
             throw new InvalidDataException(
-                $"{from}: generic templates are format {major}, and this compiler reads {Major}");
+                $"{from}: generic templates are format {version}, and this compiler reads {Version}");
         }
 
         Reader r = new(bytes.ToArray(), 8, from);

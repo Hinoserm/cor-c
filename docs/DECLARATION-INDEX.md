@@ -7,19 +7,17 @@ indexed units, including scoped extension discovery. Automatic project-wide
 coordination, complete C# lookup and default-library demand loading remain
 separate requirements; a passing indexed-unit fixture does not establish them.
 
-## Storage version 3
+## Storage
 
-Version 3 requires extension discovery records. Keys of the form
+The index requires extension discovery records. Keys of the form
 `E:<assembly>\n<namespace>\n<method>` point to declaring type-family keys.
 The binder consults the current namespace and its scoped imports, loading
-candidate declaring types before overload resolution. Older indexes must be
-regenerated: silently accepting them would hide otherwise valid extensions.
-Full `using static`, global-using and overload/accessibility coverage remain
+candidate declaring types before overload resolution. Full `using static`, global-using and overload/accessibility coverage remain
 separate completion requirements. A `using` directive does not unconditionally
 include every declaration in its namespace.
 
 All integers are little-endian. The 32-byte header contains uint32 magic CDIX,
-uint32 version 3, int64 record count, int64 offset-directory position and int64
+uint32 version 0, int64 record count, int64 offset-directory position and int64
 total file length. The directory consists of one int64 offset per record and
 ends exactly at EOF. Readers binary-search directory entries on disk rather
 than reading the directory into an in-memory collection.
@@ -31,7 +29,7 @@ binary-search decisions without reading unrelated declaration payloads.
 Keys use strict UTF-8 without NUL, up to 4096 bytes. Payloads are at most 1 MiB.
 Record boundaries must exactly match adjacent offsets. Unknown versions, bad
 lengths and invalid directory ranges fail; payload reads verify their digest.
-Version 1 indexes are rejected and must be regenerated.
+There is one layout, version 0; an index written any other way is refused.
 
 Records sort by ordinal key, then payload bytes. Equal keys retain every
 fragment: partial declarations must be merged semantically, not silently dropped
@@ -105,7 +103,7 @@ each key it loaded with what of it the unit depends on
 whole file's text, where the unit copied one of the key's bodies; or the
 declaration and the template shape.
 
-The CDEC payload starts with uint32 magic CDEC and version 2. Four int32-length
+The CDEC payload starts with uint32 magic CDEC and version 0. Four int32-length
 strict UTF-8 strings follow: source path, declaration spelling, namespace and
 outer type path. Next are four int32 fields (source start, end, line, column),
 32-byte source, declaration and template-shape SHA-256 fingerprints, an int32
@@ -161,7 +159,7 @@ until library indexes and implicit runtime dependencies are integrated. This
 path is not yet a complete project compiler.
 
 I: records reserve interface families without loading their declaration trees.
-Their payload is int32 version 1, int32 UTF-8 family-name byte length, name bytes,
+Their payload is int32 version 0, int32 UTF-8 family-name byte length, name bytes,
 int32 generic arity and int32 method count (including accessor methods). Partial
 fragments contribute counts to the same family. The binder combines these
 project reservations with its implicit runtime families before allocating

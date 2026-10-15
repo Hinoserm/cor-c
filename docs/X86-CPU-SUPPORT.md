@@ -158,13 +158,13 @@ line selections override them. The standard .NET toolchain ignores these
 native-only properties. Runtime/source units use the same selection, which
 also participates in incremental cache identities.
 
-`.corsac.cpu` records the `CCPU2` code-generation contract: the CPU, tuning and
+`.corsac.cpu` records the `CCPU0` code-generation contract: the CPU, tuning and
 FPU names, the feature set as four hex digits, and whether automatic packed
 operations are allowed by the execution environment. A contract is valid only
 when its features are what `--cpu`, `--fpu` and the switches give: the
 dependencies hold, and an extension no switch grants stays with its model.
 Owned managed objects require this metadata through their ABI contract. LTO
-restores each unit's selection and rejects changed permissions. Rebuild older IR units without this contract before using LTO.
+restores each unit's selection and rejects changed permissions.
 `corc link --cpu=...` checks declared input requirements against explicit output
 permissions, before and after LTO: each unit's features must be a subset of
 the target's, code for an x87 needs one, and a long-mode unit a long-mode

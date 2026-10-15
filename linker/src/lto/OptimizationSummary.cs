@@ -50,7 +50,7 @@ public sealed class OptimizationSummary
             data.AddRange(bytes);
         }
         data.AddRange("CLTO"u8.ToArray());
-        Word(3);
+        Word(0);
         Word(0); // Filled with total byte length below.
         Word((uint)Returns.Count);
         Word((uint)Calls.Count);
@@ -86,7 +86,6 @@ public sealed class OptimizationSummary
     /// code, made at its compile and again when the link read the summary,
     /// was a large part of the hashing a native unit compile did. (A
     /// function's own CodeHash stays SHA-256, as a summary's maker writes it.)
-    /// Version 3 of the summary; version 1 held SHA-256 here.
     /// </summary>
     public static byte[] TextCheck(Section text)
     {
@@ -155,7 +154,7 @@ public sealed class OptimizationSummary
         if (bytes.Count < 52 || !bytes.Slice(0, 4).AsSpan().SequenceEqual("CLTO"u8))
             throw new ElfFormatException("invalid LTO header");
         at = 4;
-        if (Word() != 3) throw new ElfFormatException("unsupported LTO version");
+        if (Word() != 0) throw new ElfFormatException("unsupported LTO version");
         if (Word() != bytes.Count) throw new ElfFormatException("invalid LTO byte length");
         uint returns = Word();
         uint calls = Word();

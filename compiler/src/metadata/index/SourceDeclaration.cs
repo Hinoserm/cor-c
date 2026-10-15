@@ -62,7 +62,7 @@ public sealed class SourceDeclaration
             byte[] bytes = DeclarationIndex.Utf8.GetBytes(value);
             writer.Write(bytes.Length); writer.Write(bytes);
         }
-        writer.Write(0x43454443u); writer.Write(2u); // CDEC
+        writer.Write(0x43454443u); writer.Write(0u); // CDEC
         String(Path); String(Text); String(Namespace); String(Outer);
         writer.Write(From); writer.Write(To); writer.Write(Line); writer.Write(Column);
         if (SourceHash.Length != 32 || DeclarationHash.Length != 32 || TemplateHash.Length != 32) throw new InvalidDataException("Invalid declaration fingerprint");
@@ -90,7 +90,7 @@ public sealed class SourceDeclaration
         string Shared() => DeclarationIndex.Shared(String());
         try
         {
-            if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 2)
+            if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 0)
                 throw new InvalidDataException("Unsupported source declaration");
             // ONE COPY OF WHAT DECLARATIONS SHARE: a file's path, its namespace,
             // its usings and the project's symbols were decoded afresh for every

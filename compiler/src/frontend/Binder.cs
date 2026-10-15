@@ -3261,7 +3261,7 @@ public sealed partial class Binder
         // reads exactly that word. Still two loads and an AND, still no walk of
         // the hierarchy, still no worst case. What it costs is mask words in
         // front of each vtable, which is per TYPE and not per object.
-        // DEPTH IN THE CHAIN, which is what format v6 tests against and what
+        // DEPTH IN THE CHAIN, which is what a type test checks against and what
         // replaces the bit below, is derived by TypeSymbol.Depth from the
         // type's own bases, so nothing here assigns it.
 

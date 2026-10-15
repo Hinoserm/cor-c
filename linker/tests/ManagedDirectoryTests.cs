@@ -50,7 +50,7 @@ public static class ManagedDirectoryTests
         var flat = Linker.LinkFlat(inputs, "_start", 0x10000);
         uint Word(byte[] bytes, int offset) => BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(offset));
         int directory = checked((int)(Word(flat.Bytes, 0) - flat.Base));
-        Check(Word(flat.Bytes, directory) == ManagedDirectory.Magic && Word(flat.Bytes, directory + 4) == 1, "Directory header");
+        Check(Word(flat.Bytes, directory) == ManagedDirectory.Magic && Word(flat.Bytes, directory + 4) == ManagedDirectory.Version, "Directory header");
         Check(Word(flat.Bytes, directory + 8) == 2 && Word(flat.Bytes, directory + 12) == 16, "Directory unit count/stride");
         for (int i = 0; i < 2; i++)
         {

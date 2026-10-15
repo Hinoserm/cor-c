@@ -523,7 +523,7 @@ internal static class Program
         uint W(int at) => (uint)(b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24));
 
         Check(W(0) == StackMapTable.Magic, "stack maps begin with the CSM1 magic");
-        Check(W(4) == StackMapTable.Version, "stack maps are version 6");
+        Check(W(4) == StackMapTable.Version, "stack maps are version 0");
         List<StackMapTable.Function>? functions = StackMapTable.Decode(b);
         Check(functions is not null && functions.Count > 0, "the table decodes to its end");
         functions ??= new();

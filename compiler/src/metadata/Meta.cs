@@ -24,11 +24,8 @@ namespace Corsac.Lang;
 /// </summary>
 public static class Meta
 {
-    /// <summary>Bumped when a row changes shape and old readers must refuse.</summary>
-    public const ushort Major = 1;
-
-    /// <summary>Bumped when a field is APPENDED that an old reader can ignore.</summary>
-    public const ushort Minor = 0;
+    /// <summary>The one layout there is. A reader refuses any other.</summary>
+    public const int Version = 0;
 
     private static ReadOnlySpan<byte> Magic => "META"u8;
 
@@ -59,8 +56,7 @@ public static class Meta
         Span<byte> s = to;
 
         Magic.CopyTo(s);
-        BinaryPrimitives.WriteUInt16LittleEndian(s[4..], Major);
-        BinaryPrimitives.WriteUInt16LittleEndian(s[6..], Minor);
+        BinaryPrimitives.WriteInt32LittleEndian(s[4..], Version);
         BinaryPrimitives.WriteInt32LittleEndian(s[8..], rows.Count);
         BinaryPrimitives.WriteInt32LittleEndian(s[12..], HeaderBytes + rows.Count * RowBytes);
 
@@ -92,12 +88,12 @@ public static class Meta
             throw new InvalidDataException($"{from}: not a type table");
         }
 
-        ushort major = BinaryPrimitives.ReadUInt16LittleEndian(bytes[4..]);
+        int version = BinaryPrimitives.ReadInt32LittleEndian(bytes[4..]);
 
-        if (major != Major)
+        if (version != Version)
         {
             throw new InvalidDataException(
-                $"{from}: the type table is format {major}, and this toolchain reads {Major}");
+                $"{from}: the type table is format {version}, and this toolchain reads {Version}");
         }
 
         int count = BinaryPrimitives.ReadInt32LittleEndian(bytes[8..]);

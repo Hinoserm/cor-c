@@ -131,7 +131,7 @@ public static class ProjectCompile
             // And a module's kernel: a unit is compiled against what it exports.
             if (args[i] is "--ref" or "--kernel") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
         }
-        string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
+        string optionsText = "0\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
         // HASHED ONCE, an entry unit's options and a library unit's: the text
         // names every library by path, time and length, and was encoded
         // afresh for every stamp of every unit.

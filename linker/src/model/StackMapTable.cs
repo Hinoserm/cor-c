@@ -207,8 +207,8 @@ public static class StackMapTable
     }
 
     /// <summary>
-    /// The functions of a version-6 table, or null when the bytes are not
-    /// one: another version, or a table this cannot read to its end.
+    /// The functions of a table, or null when the bytes are not one: another
+    /// magic or version, or a table this cannot read to its end.
     /// </summary>
     public static List<Function>? Decode(IReadOnlyList<byte> b)
     {

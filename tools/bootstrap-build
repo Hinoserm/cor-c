@@ -17,12 +17,17 @@ done
 # asked to rebuild itself. Seed it instead.
 merged=1
 if [ -f "$tool" ]; then "$tool" help 2>/dev/null | grep -q 'corc build \[' || merged=0; fi
-if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ] || [ "$have_packs" = 0 ] || [ "$merged" = 0 ]; then
+seed() {
     seed="$root/compiler/bin/native-seed"
     dotnet publish "$root/compiler/corc.csproj" -c Release -r linux-x64 \
         -p:PublishAot=true -o "$seed" --nologo -v quiet >&2
     "$seed/corc" build --file "$root/tools/build/host.build" >&2
-else
-    "$tool" build --file "$root/tools/build/host.build" >&2
+}
+# A toolchain that cannot read this tree's manifests (one built before a
+# change to their format) cannot rebuild itself either: seed it too.
+if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ] || [ "$have_packs" = 0 ] || [ "$merged" = 0 ]; then
+    seed
+elif ! "$tool" build --file "$root/tools/build/host.build" >&2; then
+    seed
 fi
 exec "$tool" build "$@"

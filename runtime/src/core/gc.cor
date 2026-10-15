@@ -1223,7 +1223,7 @@ static class Gc
             {
                 long directory = Runtime.Metadata(m);
                 m = m + 1;
-                if (directory == 0 || Sys.PeekWord(directory) != DirectoryMagic || Sys.PeekWord(directory + 4) != 1
+                if (directory == 0 || Sys.PeekWord(directory) != DirectoryMagic || Sys.PeekWord(directory + 4) != 0
                     || Sys.PeekWord(directory + 12) != 16)
                 {
                     continue;

@@ -17,7 +17,7 @@ public static class CoalescingContract
         using MemoryStream stream = new();
         using BinaryWriter writer = new(stream, Utf8, leaveOpen: true);
         DefinitionIndex index = new(obj);
-        writer.Write(0x4c414f43u); writer.Write(1); writer.Write(semantics.Count); // COAL
+        writer.Write(0x4c414f43u); writer.Write(0); writer.Write(semantics.Count); // COAL
         foreach (var record in semantics.OrderBy(record => record.Key, StringComparer.Ordinal))
         {
             IReadOnlyList<Symbol> symbols = index.Globals(record.Key);
@@ -41,7 +41,7 @@ public static class CoalescingContract
         using BinaryReader reader = new(stream, Utf8);
         try
         {
-            if (reader.ReadUInt32() != 0x4c414f43 || reader.ReadInt32() != 1) throw new ElfFormatException("Unsupported coalescing contract");
+            if (reader.ReadUInt32() != 0x4c414f43 || reader.ReadInt32() != 0) throw new ElfFormatException("Unsupported coalescing contract");
             int count = reader.ReadInt32();
             if (count < 0 || count > (stream.Length - stream.Position) / 69) throw new ElfFormatException("Invalid coalescing record count");
             HashSet<string> seen = new(StringComparer.Ordinal);

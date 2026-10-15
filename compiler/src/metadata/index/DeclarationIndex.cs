@@ -39,7 +39,7 @@ public sealed class DeclarationIndex : IDisposable
         reader = new BinaryReader(stream, Utf8, leaveOpen: true);
         try
         {
-            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 4)
+            if (stream.Length < HeaderSize || reader.ReadUInt32() != 0x58494443 || reader.ReadUInt32() != 0)
                 throw new InvalidDataException("Unsupported declaration index");
             Count = reader.ReadInt64();
             table = reader.ReadInt64();
@@ -217,11 +217,11 @@ public sealed class DeclarationIndex : IDisposable
     }
 
     /// <summary>
-    /// A record's check: FastHash of its key and payload (version 4 of the
-    /// index; SHA-256 before). Every record a unit compile reads is checked
-    /// once in its process, and the declarations a unit reads from the
-    /// library -- whole types' text -- made that megabytes of SHA-256 a unit.
-    /// It only tells a reader the file is not what was written.
+    /// A record's check: FastHash of its key and payload. Every record a unit
+    /// compile reads is checked once in its process, and the declarations a
+    /// unit reads from the library -- whole types' text -- are megabytes a
+    /// unit, so the check is a fast one, not a cryptographic one. It only
+    /// tells a reader the file is not what was written.
     /// </summary>
     internal static byte[] Digest(byte[] key, byte[] payload)
     {

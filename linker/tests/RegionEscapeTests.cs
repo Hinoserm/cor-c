@@ -41,7 +41,7 @@ public static class RegionEscapeTests
         ("a parameter passed nothing is the unknown object", Unpassed),
         ("a function called from where nobody follows", Rooted),
         ("copies of one body in several units are solved once, answered alike", Copies),
-        ("region hints round trip at the current version", HintsRoundTrip),
+        ("region hints round trip at the format's version", HintsRoundTrip),
         ("backend facts round trip: region sizes and owned-field flags", BackendRoundTrip),
         ("a virtual call runs nothing on a type the image never makes", MadeTypes),
         ("a virtual call runs only what its receiver's types run", ReceiverTypes),
@@ -954,7 +954,7 @@ public static class RegionEscapeTests
 
     /// <summary>
     /// Every field the hints carry, written, read back and written again:
-    /// the same bytes, at the format's version 11, and each field as it was.
+    /// the same bytes, at the format's version 0, and each field as it was.
     /// </summary>
     private static void HintsRoundTrip()
     {
@@ -990,7 +990,7 @@ public static class RegionEscapeTests
         hints.Functions.Add(main);
 
         byte[] bytes = hints.Write();
-        Check(BitConverter.ToInt32(bytes, 4) == 11, "the hints are written at version 11");
+        Check(BitConverter.ToInt32(bytes, 4) == 0, "the hints are written at version 0");
         RegionHints again = RegionHints.Read(bytes);
         Check(again.Write().AsSpan().SequenceEqual(bytes), "read back, the hints write the same bytes");
         RegionFunction w = again.Functions.Single(x => x.Name == "Work");

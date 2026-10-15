@@ -45,7 +45,7 @@ public static partial class Linker
     {
         public const uint Console = 0, Graphical = 1, Service = 2;
         public uint Subsystem { get; set; } = Console;
-        public uint InterfaceMajor { get; set; } = 1;
+        public uint InterfaceMajor { get; set; } = 0;
         public uint InterfaceMinor { get; set; } = 0;
         public uint Flags { get; set; }
         public uint IconResource { get; set; }
@@ -524,7 +524,7 @@ public static partial class Linker
         byte[] name = System.Text.Encoding.ASCII.GetBytes("CORSAC\0");
         byte[] desc = new byte[32];
         void U32(int at, uint v) { desc[at] = (byte)v; desc[at + 1] = (byte)(v >> 8); desc[at + 2] = (byte)(v >> 16); desc[at + 3] = (byte)(v >> 24); }
-        U32(0, 1); U32(4, info.Subsystem); U32(8, info.InterfaceMajor); U32(12, info.InterfaceMinor);
+        U32(0, 0); U32(4, info.Subsystem); U32(8, info.InterfaceMajor); U32(12, info.InterfaceMinor);
         U32(16, resourcesAddr); U32(20, resourcesSize); U32(24, info.Flags); U32(28, info.IconResource);
         byte[] note = new byte[12 + 8 + 32];
         void H(int at, uint v) { note[at] = (byte)v; note[at + 1] = (byte)(v >> 8); note[at + 2] = (byte)(v >> 16); note[at + 3] = (byte)(v >> 24); }

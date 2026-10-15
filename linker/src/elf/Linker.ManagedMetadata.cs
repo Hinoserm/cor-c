@@ -23,7 +23,7 @@ public static partial class Linker
         Section data = new(".data.rel.ro.corsac.units", SectionKind.Data) { Align = 4 };
         byte[] bytes = new byte[checked(ManagedDirectory.HeaderBytes + units.Count * ManagedDirectory.RecordBytes)];
         BinaryPrimitives.WriteUInt32LittleEndian(bytes, ManagedDirectory.Magic);
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), ManagedDirectory.Version);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(8), (uint)units.Count);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12), ManagedDirectory.RecordBytes);
         for (int i = 0; i < units.Count; i++)

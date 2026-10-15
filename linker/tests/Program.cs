@@ -58,6 +58,7 @@ public static partial class Program
         Try("link-time region hints", () => { RegionTests.Run(); Check(true, "region hints"); });
         EscapeEngine();
         Try("image-wide managed metadata", () => { ManagedDirectoryTests.Run(); Check(true, "unit metadata directory"); });
+        Try("duplicate code cut under its stack maps", () => { DuplicateCutterTests.Run(); Check(true, "duplicate cutter"); });
         Try("linked with gcc object", LinkWithGcc);
         Try("shared object structure", SharedObjectStructure);
         Try("relocated constants stay outside mutable static roots", RelocatedConstantRoots);

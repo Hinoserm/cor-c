@@ -30,13 +30,7 @@ public static class InterfaceFamilies
         HashSet<(string, int)> result = new();
         foreach (DeclarationRecord record in index.WithPrefix("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n"))
         {
-            using MemoryStream stream = new(record.Payload, writable: false);
-            using BinaryReader reader = new(stream, DeclarationIndex.Utf8);
-            if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported interface family record");
-            int length = reader.ReadInt32();
-            string name = DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, length));
-            int arity = reader.ReadInt32(); reader.ReadInt32();
-            bool library = reader.ReadBoolean();
+            (string name, int arity, _, bool library) = Parse(record);
             if (library) result.Add((name, arity));
         }
         return result;
@@ -69,21 +63,29 @@ public static class InterfaceFamilies
         Dictionary<(string, int), int> result = new();
         foreach (DeclarationRecord record in index.WithPrefix("I:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n"))
         {
-            using MemoryStream stream = new(record.Payload, writable: false);
-            using BinaryReader reader = new(stream, DeclarationIndex.Utf8);
-            try
-            {
-                if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported interface family record");
-                int length = reader.ReadInt32();
-                if (length < 1 || length > record.Payload.Length - 16) throw new InvalidDataException("Invalid interface family name");
-                string name = DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, length));
-                int arity = reader.ReadInt32(), methods = reader.ReadInt32();
-                reader.ReadBoolean();
-                if (arity < 0 || methods < 0 || stream.Position != stream.Length) throw new InvalidDataException("Invalid interface family counts");
-                result[(name, arity)] = checked(result.GetValueOrDefault((name, arity)) + methods);
-            }
-            catch (EndOfStreamException error) { throw new InvalidDataException("Truncated interface family record", error); }
+            (string name, int arity, int methods, _) = Parse(record);
+            result[(name, arity)] = checked(result.GetValueOrDefault((name, arity)) + methods);
         }
         return result;
+    }
+
+    /// <summary>One record as Record wrote it: version 0, the name, its arity, its methods, whether it is library ABI.</summary>
+    static (string Name, int Arity, int Methods, bool Library) Parse(DeclarationRecord record)
+    {
+        using MemoryStream stream = new(record.Payload, writable: false);
+        using BinaryReader reader = new(stream, DeclarationIndex.Utf8);
+        try
+        {
+            if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported interface family record");
+            int length = reader.ReadInt32();
+            // Version, length, arity and methods are four words, the library flag one byte.
+            if (length < 1 || length > record.Payload.Length - 17) throw new InvalidDataException("Invalid interface family name");
+            string name = DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, length));
+            int arity = reader.ReadInt32(), methods = reader.ReadInt32();
+            byte library = reader.ReadByte();
+            if (arity < 0 || methods < 0 || library > 1 || stream.Position != stream.Length) throw new InvalidDataException("Invalid interface family counts");
+            return (name, arity, methods, library == 1);
+        }
+        catch (EndOfStreamException error) { throw new InvalidDataException("Truncated interface family record", error); }
     }
 }

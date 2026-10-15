@@ -36,32 +36,32 @@ relocation forms which have no ELF encoding must be resolved or rejected by
 the writer rather than serialized as invented standard relocation numbers.
 
 Metadata travels in named non-loadable sections where supported. A binary
-metadata format must have a version and bounds checks; readers reject unknown
-versions and truncated records. Generic templates and declaration metadata
+metadata format has one layout, version 0, and bounds checks; readers reject
+any other version and truncated records. Until a release nothing reads an
+older layout: objects, indexes and images from an older toolchain are rebuilt. Generic templates and declaration metadata
 already have compiler-specific representations, but their presence in every
 ordinary object and independent-unit compatibility are not yet guaranteed.
 
 ## Separate-compilation extension work
 
-### Native ABI contract, version 3
+### Native ABI contract
 
 .corsac.abi is a 28-byte non-loadable section: four magic bytes CABI followed
-by six little-endian uint32 values: version 3, pointer size 4, baseline CPU 486,
+by six little-endian uint32 values: version 0, pointer size 4, baseline CPU 486,
 calling convention 1 (i386 cdecl with x87 floating returns), and TLS/platform
 model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS), and required
 metadata flags. Flag 1 requires `.corsac.layout`; all other bits are rejected.
-Compiler-produced objects set flag 1. Version 1 and 2 objects must be rebuilt;
-version 3 registers an image-wide unit metadata directory rather than a single
-unit's frame table. An older linker cannot silently ignore this contract. The linker
+Compiler-produced objects set flag 1. Images register an image-wide unit
+metadata directory rather than a single unit's frame table. The linker
 rejects incompatible models and unknown contracts before LTO or output creation.
 Native assembly/C objects may omit this managed-compiler contract; omission is
 not permission to invent managed type identity. Assembly/type metadata remains
 the separately specified .corsac.unit/.corsac.types work.
 
-### Managed layout assumptions, version 1
+### Managed layout assumptions
 
 The non-loadable `.corsac.layout` section begins with uint32 magic CMLY,
-int32 version 1 and int32 record count. Each record is an int32 UTF-8 name byte
+int32 version 0 and int32 record count. Each record is an int32 UTF-8 name byte
 length, name bytes and 32-byte SHA-256 compiler fingerprint. Names are nonempty,
 NUL-free and at most 4096 bytes. Duplicates, bad versions/lengths, truncated data
 and trailing bytes fail. The linker compares overlapping assumptions before LTO
@@ -86,10 +86,10 @@ kernel's link wrote (`corc link --exports`), which records them itself, never
 from the kernel image. One copy per input in an image would be no contract,
 and the managed layouts alone were most of a small program's file.
 
-### LTO summary encoding, version 1
+### LTO summary encoding
 
 The non-loadable .corsac.lto section begins with the four bytes `CLTO`, followed
-by little-endian uint32 version (1), total section length, constant-return count
+by little-endian uint32 version (0), total section length, constant-return count
 and call-site count, then a 32-byte SHA-256 hash of canonical .text bytes. The
 header is 52 bytes. Canonical code replaces every four-byte relocation field
 with zeros: ELF REL serializes addends in those fields, so hashing their raw
@@ -111,11 +111,10 @@ relocation; original function bodies remain. Dynamic/PIC objects do not publish
 these closed-world summaries. --no-lto disables transformations but retains
 metadata validation.
 
-Generic template serialization is now GIR major version 9: throw records retain
-the bare-rethrow flag so specialization preserves exception traces. Block records carry
-a checked/unchecked/inherited arithmetic-context byte. Older versions are
-rejected rather than interpreted with missing overflow semantics. This is
-compiler metadata versioning; ordinary ELF machine-object encoding is unchanged.
+Generic template serialization (GIR, version 0): throw records retain the
+bare-rethrow flag so specialization preserves exception traces. Block records carry
+a checked/unchecked/inherited arithmetic-context byte. Any other version is
+rejected rather than interpreted with missing overflow semantics.
 
 The following remain required before file-by-file managed compilation is
 accepted. Existing ELF objects alone do not establish these properties:
@@ -130,8 +129,8 @@ accepted. Existing ELF objects alone do not establish these properties:
 - Dependency fingerprints which distinguish declaration/layout changes from
   implementation changes and drive correct incremental invalidation.
 - Optional compact optimization summaries. LTO must not reconstruct the full
-  program AST and IR merely to link independently compiled objects. Version 1
-  now implements constant-return summaries and certified direct call sites;
+  program AST and IR merely to link independently compiled objects. The summary
+  implements constant-return summaries and certified direct call sites;
   general IR importing and cross-unit inlining remain outstanding.
 
 Source headers currently generated by the compiler are derived artifacts, not
