@@ -62,6 +62,16 @@ public static class DuplicateCutterTests
             left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
             Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map table of another magic or version cut");
         }
+        // A section too short for a header, and a count whose entries would
+        // run past any table: unknown, the code left, nothing read past it.
+        (obj, text, maps, middle) = Make(0x584d5343, 0);
+        maps.Bytes.Clear(); maps.Bytes.AddRange(new byte[] { 0x43, 0x53, 0x4d });
+        left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
+        Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map section shorter than its header cut");
+        (obj, text, maps, middle) = Make(0x584d5343, 0);
+        maps.Bytes.WriteInt32(8, 0x10000000);
+        left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
+        Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map table counting past its end cut");
         Console.WriteLine("  duplicate cutter: 'CSMX' sites and bitmaps follow the cut; any other table leaves the code");
     }
 }

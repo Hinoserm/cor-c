@@ -90,6 +90,33 @@ public static class Program
             Invalid(() => { using DeclarationIndex index = new(path); _ = index.Find("Value").ToArray(); });
             DeclarationIndexWriter.Write(path, Array.Empty<DeclarationRecord>());
             using (DeclarationIndex index = new(path)) Check(index.Count == 0 && !index.WithPrefix("").Any(), "empty index");
+            // INTERFACE FAMILY RECORDS read as written (InterfaceFamilies), and
+            // refused where the library flag is not a 0 or a 1, the name runs
+            // past the record's fixed fields, or something follows them.
+            string families = SourceIndexBuilder.AssemblyIdentity("Families");
+            byte[] Family(byte library, int nameLength = -1, bool trailing = false)
+            {
+                using MemoryStream stream = new();
+                using BinaryWriter writer = new(stream);
+                byte[] encoded = System.Text.Encoding.UTF8.GetBytes("IShape");
+                writer.Write(0); writer.Write(nameLength < 0 ? encoded.Length : nameLength); writer.Write(encoded);
+                writer.Write(0); writer.Write(3); writer.Write(library);
+                if (trailing) writer.Write((byte)0);
+                writer.Flush();
+                return stream.ToArray();
+            }
+            DeclarationRecord FamilyRecord(byte[] payload) => new("I:" + families + "\nIShape", payload);
+            DeclarationIndexWriter.Write(path, new[] { FamilyRecord(Family(1)) });
+            using (DeclarationIndex index = new(path))
+                Check(InterfaceFamilies.Read(index, "Families")[("IShape", 0)] == 3 && InterfaceFamilies.ReadLibrary(index, "Families").Contains(("IShape", 0)),
+                    "interface family round trip");
+            foreach (byte[] bad in new[] { Family(2), Family(1, trailing: true), Family(1, nameLength: 100) })
+            {
+                DeclarationIndexWriter.Write(path, new[] { FamilyRecord(bad) });
+                using DeclarationIndex index = new(path);
+                Invalid(() => InterfaceFamilies.Read(index, "Families"));
+                Invalid(() => InterfaceFamilies.ReadLibrary(index, "Families"));
+            }
             Console.WriteLine($"metadata: {passed} checks passed");
             return 0;
         }
