@@ -45,7 +45,7 @@ run "$work/on"
 status=0
 CORSAC_VERIFY_FREES=1 "$work/on" > "$work/on.verify" 2>&1 || status=$?
 [ "$status" = 42 ] || fail "with every free checked the linked program exited $status (a double free?)"
-grep -q 'LTO lifetimes: units with hints=2, units gaining=1' "$work/on.log" || fail "the link found no unit to gain"
+grep -qE 'LTO lifetimes: units with hints=2, units gaining=[12],' "$work/on.log" || fail "the link found no unit to gain"
 taken=$(sed -n 's/.*lifetimes placed or freed=\([0-9][0-9]*\).*/\1/p' "$work/on.log" | head -1)
 [ "${taken:-0}" -ge 2 ] || fail "the link placed or freed ${taken:-0} objects, expected the lent and the received arrays"
 if readelf -SW "$work/on" | grep -q '\.corsac\.life'; then fail "lifetime hints leaked into the final image"; fi

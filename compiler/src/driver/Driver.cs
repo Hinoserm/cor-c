@@ -229,7 +229,7 @@ public static class Driver
               corc asm --target x86-32 <file.asm> --obj -o <output.o>
 
             options:
-              --target <name>    x86 (default) or corsac
+              --target <name>    x86 (default) or x86-64
               --lib              build a library rather than a program
               --shared           build an ELF shared object (implies --lib and --pic)
               --ref <file.cor>   compile this source for its declarations only:

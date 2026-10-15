@@ -40,7 +40,7 @@
         <Argument Value="tests/integration/managed-units.sh" />
       </Test>
     </Target>
-    <Target Name="unit" Steps="build-tool;optimizer;assembler;x86;linker;metadata">
+    <Target Name="unit" Steps="build-tool;optimizer;x86;linker;metadata">
       <Target Name="metadata">
         <Compile Project="compiler/tests/metadata/MetadataTests.csproj" Toolchain="managed" />
         <Test Name="metadata" Executable="compiler/tests/metadata/bin/managed/$(Configuration)/net10.0/MetadataTests" Timeout="00:03:00" />
@@ -52,10 +52,6 @@
       <Target Name="optimizer">
         <Compile Project="compiler/tests/optimizations/OptTests.csproj" Toolchain="managed" />
         <Test Name="optimizer" Executable="compiler/tests/optimizations/bin/managed/$(Configuration)/net10.0/OptTests" Timeout="00:03:00" />
-      </Target>
-      <Target Name="assembler">
-        <Compile Project="compiler/tests/arch/corsac/asmtests.csproj" Toolchain="managed" />
-        <Test Name="assembler" Executable="compiler/tests/arch/corsac/bin/managed/$(Configuration)/net10.0/asmtests" Timeout="00:03:00" />
       </Target>
       <Target Name="x86">
         <Compile Project="compiler/tests/arch/x86/x86tests.csproj" Toolchain="managed" />
