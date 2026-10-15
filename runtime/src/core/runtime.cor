@@ -686,7 +686,36 @@ static class Runtime
         if (array == null) return;
         long at = Sys.Word(array);
         if ((Sys.Peek(at) & WordSize.AddressMask) == 0) return;
-        Gc.FreeReferenceElements(at);
+        FreeReferenceElements(at);
+    }
+
+    /// Every element of the array at `payload` freed and its slot cleared
+    /// (FreeArrayElements, the owned fields): only for an array whose
+    /// elements are references a word each, read off its descriptor as the
+    /// mark reads it; anything else is left alone. The runtime's and not the
+    /// collector's: a program with no collector frees an array's elements
+    /// into the manual heap the same way.
+    public static void FreeReferenceElements(long payload)
+    {
+        long w = WordSize.Bytes;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        if (vt == 0 || CollectorLinked() && Gc.InQuarantine(vt)) return;
+        long desc = vt - Gc.DescWords * w;
+        if ((Sys.Peek(desc + Gc.DescSelfWord * w) & WordSize.AddressMask) != desc) return;
+        long flags = Sys.Peek(desc + Gc.DescFlagsWord * w);
+        if ((flags & Gc.SequenceFlag) == 0 || (flags & Gc.StringFlag) != 0) return;
+        if ((Sys.Peek(desc + Gc.DescGcFlagsWord * w) & Gc.ElementsAreReferences) == 0) return;
+        if (Sys.Peek(desc + Gc.DescSizeWord * w) != w) return;
+        long count = Sys.Peek(payload + Gc.ArrayCountAt) & 0x7FFFFFFF;
+        long first = payload + Sys.Peek(desc + Gc.DescPayloadWord * w);
+        for (long i = 0; i < count; i++)
+        {
+            long cell = first + i * w;
+            long element = Sys.Peek(cell) & WordSize.AddressMask;
+            if (element == 0) continue;
+            Sys.Poke(cell, 0);
+            Free(element);
+        }
     }
 
     /// A collection whose elements the compiler proved are the collection's
@@ -1816,8 +1845,8 @@ static class Runtime
             return;
         }
         // In a region: given back with it, and not a block LiveObject's lock
-        // need be taken to ask about.
-        if (Gc.InOwnRegion(at)) return;
+        // need be taken to ask about. Only a collector's heap has regions.
+        if (CollectorLinked() && Gc.InOwnRegion(at)) return;
         // A collection's storage before its owned fields: a collection that
         // owns its elements (IOwnsElements.OwnElements) reads them out of
         // its arrays as it gives them back, and an array that is an owned
@@ -1884,7 +1913,7 @@ static class Runtime
             {
                 Sys.Poke(field, 0);
                 if (elementsAt != 0 && ((Sys.PeekWord(elementsAt + (word / 32) * WordSize.Bytes) & 0xFFFFFFFF) & (1L << (int)(word % 32))) != 0)
-                    Gc.FreeReferenceElements(held);
+                    FreeReferenceElements(held);
                 FreeHeld(held);
             }
         }
@@ -1945,7 +1974,7 @@ static class Runtime
             }
             // An array field whose arrays own their collections (the map's
             // element bits): those first.
-            if (OwnsArrayElements(at, offset)) Gc.FreeReferenceElements(held);
+            if (OwnsArrayElements(at, offset)) FreeReferenceElements(held);
             // As any object proved dead is given back (Free): with its own
             // owned fields, and a collection with its storage -- and its
             // elements, where the compiler marked them its own
@@ -1990,7 +2019,7 @@ static class Runtime
     /// filling up and sending such cells to the heap.
     static void FreeHeld(long held)
     {
-        if (Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
+        if (CollectorLinked() && Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
         {
             if (Gc.RegionObject(held))
             {
@@ -2012,7 +2041,7 @@ static class Runtime
     public static bool GrowInPlace(nint array, nint length)
     {
         long at = (long)(nuint)array;
-        if (at == 0 || !Gc.InOwnRegion(at)) return false;
+        if (at == 0 || !CollectorLinked() || !Gc.InOwnRegion(at)) return false;
         return Gc.RegionGrow(at, (long)length);
     }
 
@@ -2773,8 +2802,13 @@ static class Runtime
     /// road out of every program.
     public static void AtExit()
     {
-        AllocSamples.Dump();
-        Gc.SayStats();
+        // What the collector counted, and what it sampled: nothing to say
+        // where there is none.
+        if (CollectorLinked())
+        {
+            AllocSamples.Dump();
+            Gc.SayStats();
+        }
         long f = _atExit;
 
         if (f != 0)

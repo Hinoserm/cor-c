@@ -213,7 +213,9 @@ public sealed class Inline : IParallelModulePass
         // THE ALLOCATION PUT IN PLACE AFTER EVERY INLINER (AllocatorFastPaths),
         // which nothing calls until then: kept by every one, and given to none.
         if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.Sized);
-        if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.RegionSized);
+        // Not a region's where there is no collector (Escape's NeedsHeap): only
+        // the collector's heap has regions, and kept, it kept the collector.
+        if (!PlacesAllocations && m.NeedsHeap) pinned.Add(AllocatorFastPaths.RegionSized);
         if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.Fast);
         addressTaken.UnionWith(pinned);
         _keepCalls = m.KeepCalls;
@@ -232,7 +234,7 @@ public sealed class Inline : IParallelModulePass
 #endif
         }
 
-        RemoveDeadFunctions(m, addressTaken);
+        RemoveDeadFunctions(m, pinned);
     }
 
     private HashSet<Instr> _keepCalls = new(ReferenceEqualityComparer.Instance);
@@ -1007,12 +1009,22 @@ public sealed class Inline : IParallelModulePass
     }
 
     /// <summary>
-    /// A function nothing calls or names any more is gone: inlining copied
-    /// it everywhere it was wanted. Exported symbols a library must keep
-    /// are not touched.
+    /// A function nothing live calls or names any more is gone: inlining
+    /// copied it everywhere it was wanted. REACHED, NOT MERELY NAMED: what
+    /// the entry, the names kept for later passes (<paramref name="pinned"/>),
+    /// the data and the exports lead to is kept, and nothing else -- a
+    /// function only a dead one called or took the address of goes with it,
+    /// and so does a cycle of them. Counted by callers, a program with no
+    /// collector kept the collector's worker thread, which only the dead code
+    /// starting it named, and with it a hundred of the collector's routines.
+    /// Exported symbols a library must keep are not touched.
     /// </summary>
-    internal static void RemoveDeadFunctions(Module m, HashSet<string> addressTaken)
+    internal static void RemoveDeadFunctions(Module m, IReadOnlySet<string> pinned)
     {
+        if (m.Entry is null)
+        {
+            return;     // a library: everything is an export
+        }
         // A COROUTINE'S CARD MARK IS CALLED FROM CODE NOT YET WRITTEN: the
         // suspensions become saves and calls after the optimiser has finished
         // (AsyncTransform), so while any function is one, its helper stays.
@@ -1041,28 +1053,41 @@ public sealed class Inline : IParallelModulePass
         // the link failed on the library's Interlocked ("undefined symbol
         // __corsac_refxchg").
         bool sequences = m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore);
-        bool changed = true;
-        while (changed)
+
+        Dictionary<string, Function> byName = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions) byName.TryAdd(f.Name, f);
+        HashSet<string> live = new(StringComparer.Ordinal);
+        Stack<Function> work = new();
+        void Reach(string name)
         {
-            changed = false;
-            Dictionary<string, int> callers = CountCallers(m);
-            for (int i = m.Functions.Count - 1; i >= 0; i--)
-            {
-                Function f = m.Functions[i];
-                if (f.Name == m.Entry || addressTaken.Contains(f.Name) || callers.GetValueOrDefault(f.Name) > 0
-                    || (coroutines && f.Name is AsyncTransform.CardMarkObject or AsyncTransform.ShadeObject) || forLink.Contains(f.Name)
-                    || (sequences && f.Name is Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore
-                        or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange))
-                {
-                    continue;
-                }
-                if (m.Entry is null || (m.PreserveExports && f.Exported))
-                {
-                    continue;       // a library: everything is an export
-                }
-                m.Functions.RemoveAt(i);
-                changed = true;
-            }
+            if (byName.TryGetValue(name, out Function? f) && live.Add(name)) work.Push(f);
         }
+        Reach(m.Entry);
+        foreach (string name in pinned) Reach(name);
+        foreach (string name in forLink) Reach(name);
+        if (coroutines) { Reach(AsyncTransform.CardMarkObject); Reach(AsyncTransform.ShadeObject); }
+        if (sequences)
+        {
+            Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrier);
+            Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore);
+            Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange);
+            Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange);
+        }
+        foreach (DataItem d in m.Data)
+            foreach (DataReloc r in d.Relocs) Reach(r.Symbol);
+        if (m.PreserveExports)
+            foreach (Function f in m.Functions)
+                if (f.Exported) Reach(f.Name);
+        while (work.Count > 0)
+        {
+            foreach (Block b in work.Pop().Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Callee is { } callee) Reach(callee);
+                    foreach (Operand o in i.Operands)
+                        if (o is SymOperand s) Reach(s.Name);
+                }
+        }
+        m.Functions.RemoveAll(f => !live.Contains(f.Name));
     }
 }

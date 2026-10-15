@@ -337,7 +337,7 @@ for f in "${tests[@]}"; do
     # this runner does not know fails its test, rather than passing it with
     # the check unmade (303's "// expect: ok" was compared with nothing).
     unknown="$(sed -n 's|^// \(expect[a-z-]*\):.*|\1|p' "$f" \
-        | grep -vxE 'expect-exit|expect-output|expect-compile-error|expect-(no-)?compile-warning' | head -1)"
+        | grep -vxE 'expect-exit|expect-output|expect-compile-error|expect-(no-)?compile-warning|expect-no-symbol' | head -1)"
     if [ -n "$unknown" ]; then
         echo "FAIL $name (unknown header // $unknown:)"
         failed=$((failed + 1))
@@ -480,6 +480,23 @@ for f in "${tests[@]}"; do
             failed_names="$failed_names $name"
             continue
         fi
+    fi
+
+    # WHAT THE IMAGE MUST NOT HOLD: "// expect-no-symbol: PREFIX" fails the
+    # test where a symbol whose name begins so is in the image -- a program
+    # that needs no collector links none of it (63).
+    unwanted=""
+    while IFS= read -r prefix; do
+        [ -n "$prefix" ] || continue
+        found="$(nm "$exe" 2>/dev/null | awk -v p="$prefix" 'index($3, p) == 1 { print $3 }' | head -3 | tr '\n' ' ')"
+        [ -n "$found" ] && unwanted="$unwanted
+    $prefix: $found"
+    done < <(sed -n 's|^// expect-no-symbol: ||p' "$f")
+    if [ -n "$unwanted" ]; then
+        echo "FAIL $name (symbols the image must not hold)$unwanted"
+        failed=$((failed + 1))
+        failed_names="$failed_names $name"
+        continue
     fi
 
     # "// args: WORDS" are the command line the program is run with.

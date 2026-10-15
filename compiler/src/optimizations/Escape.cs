@@ -263,6 +263,8 @@ public sealed partial class Escape : IModulePass
         if (!m.PreserveExports && m.Entry is not null)
         {
             foreach (Function f in m.Functions)
+            {
+                bool answered = false;
                 foreach (Block b in f.Blocks)
                     for (int k = 0; k < b.Instrs.Count; k++)
                         if (b.Instrs[k] is { Op: Opcode.Call, Callee: CollectorQuery, Dest: { } answer } asked)
@@ -273,7 +275,16 @@ public sealed partial class Escape : IModulePass
                                 Operands = { new ImmOperand(m.NeedsHeap ? 1 : 0, answer.Type) },
                             };
                             f.Edited();
+                            answered = true;
                         }
+                // FOLDED NOW, and not by the passes after: the inliner that
+                // follows drops what nothing calls, and a call under a branch
+                // never taken -- AtExit's report of the collector's counts --
+                // was a caller still, and kept the collector it called.
+                if (answered && !m.NeedsHeap)
+                    foreach (IPass cleanup in new IPass[] { new ConstantAndCopyPropagation(), new ConstantFold(), new BranchSimplify(), new DeadCodeElimination() })
+                        cleanup.Run(f);
+            }
         }
 
         // A PROGRAM THAT NEEDS NO COLLECTOR STILL ALLOCATES AND FREES: what

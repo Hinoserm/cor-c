@@ -144,19 +144,19 @@ static class Gc
 
     // THE DESCRIPTOR, as the compiler lays it (Lowering.cs, DescName...):
     // twelve words before the vtable an object's first word points at.
-    const long DescWords = 12;
-    const long DescSizeWord = 1;
-    const long DescSelfWord = 5;
-    const long DescFlagsWord = 6;
-    const long DescPayloadWord = 7;
+    public const long DescWords = 12;
+    public const long DescSizeWord = 1;
+    public const long DescSelfWord = 5;
+    public const long DescFlagsWord = 6;
+    public const long DescPayloadWord = 7;
     const long DescRefMapWord = 8;
-    const long DescGcFlagsWord = 9;
+    public const long DescGcFlagsWord = 9;
     const long DescDepthWord = 2;           // as Runtime's type tests read them
     const long DescDisplayWord = 3;
-    const long SequenceFlag = 1;         // DescFlags: an array or a string
-    const long StringFlag = 2;
-    const long ElementsAreReferences = 1; // DescGcFlags, on an array
-    const long ArrayCountAt = 2 * WordSize.Bytes;
+    public const long SequenceFlag = 1;         // DescFlags: an array or a string
+    public const long StringFlag = 2;
+    public const long ElementsAreReferences = 1; // DescGcFlags, on an array
+    public const long ArrayCountAt = 2 * WordSize.Bytes;
 
     // The smallest block that can describe itself while free: header, two
     // links, footer. A remainder below this cannot be a block, so a split
@@ -11433,33 +11433,6 @@ static class Gc
         // is a megabyte a program or the page cache does not have.
         long eighth = _liveBytes / 8;
         return eighth > MinThreshold ? eighth : MinThreshold;
-    }
-
-    /// Every element of the array at `payload` freed and its slot cleared
-    /// (Runtime.FreeArrayElements): only for an array whose elements are
-    /// references a word each, read off its descriptor as the mark reads
-    /// it; anything else is left alone.
-    public static void FreeReferenceElements(long payload)
-    {
-        long w = WordSize.Bytes;
-        long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (vt == 0 || InQuarantine(vt)) return;
-        long desc = vt - DescWords * w;
-        if ((Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) != desc) return;
-        long flags = Sys.Peek(desc + DescFlagsWord * w);
-        if ((flags & SequenceFlag) == 0 || (flags & StringFlag) != 0) return;
-        if ((Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0) return;
-        if (Sys.Peek(desc + DescSizeWord * w) != w) return;
-        long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
-        long first = payload + Sys.Peek(desc + DescPayloadWord * w);
-        for (long i = 0; i < count; i++)
-        {
-            long cell = first + i * w;
-            long element = Sys.Peek(cell) & WordSize.AddressMask;
-            if (element == 0) continue;
-            Sys.Poke(cell, 0);
-            Runtime.Free(element);
-        }
     }
 
     /// Collections given up half way -- a barrier report lost to a full
