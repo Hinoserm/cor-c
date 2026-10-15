@@ -100,8 +100,11 @@ public sealed partial class Escape
                 foreach (Operand o in i.Operands)
                     if (o is SymOperand sym) record.Events.Add(new(HeapEventKind.Named, sym.Name, block, latches, null, null));
                 if (i.Op != Opcode.CallIndirect) continue;
+                // A target the unit names by its virtual slot (VirtualCallees) is the link's to resolve.
                 if (_indirect is not null && _indirect.TryGetValue(i, out string[]? targets))
-                    foreach (string target in targets) record.Events.Add(new(HeapEventKind.Target, target, block, latches, null, null));
+                    foreach (string target in targets)
+                        record.Events.Add(new(target.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal) ? HeapEventKind.Virtual : HeapEventKind.Target,
+                            target, block, latches, null, null));
                 else if (i.DispatchType is not null)
                 {
                     virtuals ??= VirtualCallees(new[] { f });

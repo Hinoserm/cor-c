@@ -142,6 +142,16 @@ public sealed class Instr : OperandList
     /// <summary>An allocation of a List or Dictionary used only through the calls OwnedElements knows: a candidate.</summary>
     public const string OwnsCandidate = "\u0001owns-candidate";
 
+    /// <summary>
+    /// On an Unwind (as its DispatchType): what it throws is what a landing
+    /// pad received, untouched but by type tests -- a finally's rethrow, a
+    /// try's when none of its catches took it and none has a filter, an
+    /// iterator's onward. It hands on what it was handed; whoever threw it
+    /// said what it is (Escape.ThrowVerdict). Not an explicit `throw;`: the
+    /// catch it is in may have kept what it rethrows.
+    /// </summary>
+    public const string HandedOn = "\u0001handed-on";
+
     /// <summary>The same, proved: whatever frees the collection gives back its elements first (Runtime.FreeOwnedElements).</summary>
     public const string OwnsElements = "\u0001owns-elements";
 

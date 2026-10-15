@@ -63,6 +63,15 @@ public sealed class OwnedFieldFacts
     public bool Beside { get; set; }
     /// <summary>The fields some unit kept the reads of from the inliner for that rule: where not proved, its calls are the inliner's again.</summary>
     public HashSet<string> ElementKept { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Of the fields proved through their accessors (OwnedElementRecord.
+    /// Accessors, Fixed): the accessors, and the fields put back where they
+    /// came from. A body brought into another unit that calls one or touches
+    /// one is not inlined there: what keeps its reads alive was placed in its
+    /// own unit, and an archived body has none of it (UnitBackend).
+    /// </summary>
+    public HashSet<string> ElementAccessors { get; } = new(StringComparer.Ordinal);
+    public HashSet<string> ElementFixed { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Whether there is nothing here for a unit to apply.</summary>
     public bool IsEmpty => Fields.Count == 0 && Elements.Count == 0 && ElementKept.Count == 0;
@@ -89,7 +98,7 @@ public static class OwnedFieldSolver
     /// the image's entry, which no call reaches.
     /// </summary>
     public static OwnedFieldFacts? Solve(IReadOnlyList<LifetimeHints> units, LifetimeSolver solver,
-        IReadOnlyDictionary<string, string[]> virtuals, string entry, Action<string>? report = null)
+        IReadOnlyDictionary<string, string[]> virtuals, string entry, Action<string>? report = null, IReadOnlySet<string>? foreign = null)
     {
         if (units.Count == 0 || units.Any(unit => unit.Owned is null)) return null;
         List<OwnedFieldHints> all = units.Select(unit => unit.Owned!).ToList();
@@ -346,7 +355,7 @@ public static class OwnedFieldSolver
             { report?.Invoke(field + " elements refused: one is live across a store into " + into + ", which is owned"); continue; }
             facts.ArrayElements.Add(field);
         }
-        Elements(all, solver, facts, report);
+        Elements(all, solver, facts, report, directCallers, addressed, slotted, foreign);
         return facts;
 
         string Describe(LifetimeCondition c)
@@ -450,7 +459,8 @@ public static class OwnedFieldSolver
     /// field, or takes its address, proved every read it has of it as reads
     /// of that kind. A unit that reads it and judged nothing refuses it.
     /// </summary>
-    private static void Elements(List<OwnedFieldHints> all, LifetimeSolver solver, OwnedFieldFacts facts, Action<string>? report)
+    private static void Elements(List<OwnedFieldHints> all, LifetimeSolver solver, OwnedFieldFacts facts, Action<string>? report,
+        Dictionary<string, List<int>> directCallers, HashSet<string> addressed, HashSet<string> slotted, IReadOnlySet<string>? foreign)
     {
         // Each function's stored parameter, as every unit that defines it says.
         Dictionary<(string, int), string?> stored = new();
@@ -478,7 +488,33 @@ public static class OwnedFieldSolver
             if (all.FirstOrDefault(unit => unit.Loaded.Contains(field)
                     && !(unit.ElementReads.TryGetValue(field, out OwnedElementRecord? reads) && reads.Kind == kind && solver.Holds(reads.Needs))) is not null)
             { report?.Invoke(field + " elements refused: a unit reads it otherwise"); continue; }
+            // PROVED THROUGH ITS ACCESSORS somewhere: each accessor is a read of
+            // the field wherever it is called, so every unit that calls one
+            // must have proved it too, and none may reach one by its address
+            // or from code with no IR; and the fields the proof found go back
+            // where they came from must be stored into or read by no unit but
+            // one whose own proof put them back.
+            HashSet<string> accessors = new(StringComparer.Ordinal), fixedFields = new(StringComparer.Ordinal);
+            foreach (OwnedFieldHints unit in all)
+                if (unit.ElementReads.TryGetValue(field, out OwnedElementRecord? proof) && proof.Kind == kind)
+                { accessors.UnionWith(proof.Accessors); fixedFields.UnionWith(proof.Fixed); }
+            string? why = null;
+            foreach (string accessor in accessors.Order(StringComparer.Ordinal))
+            {
+                if (addressed.Contains(accessor) || slotted.Contains(accessor) || foreign?.Contains(accessor) == true) { why = accessor + " is reached by its address"; break; }
+                if (directCallers.GetValueOrDefault(accessor) is { } callers && callers.Any(u => !(all[u].ElementReads.TryGetValue(field, out OwnedElementRecord? own)
+                        && own.Kind == kind && own.Accessors.Contains(accessor))))
+                { why = "a unit calls " + accessor + " and did not prove it"; break; }
+            }
+            if (why is null)
+                foreach (string x in fixedFields.Order(StringComparer.Ordinal))
+                    if (all.FirstOrDefault(unit => (unit.Loaded.Contains(x) || unit.Fields.TryGetValue(x, out OwnedFieldRecord? record) && record.Stored)
+                            && !(unit.ElementReads.TryGetValue(field, out OwnedElementRecord? own) && own.Fixed.Contains(x))) is not null)
+                    { why = "another unit uses " + x + ", which the proof put back"; break; }
+            if (why is not null) { report?.Invoke(field + " elements refused: " + why); continue; }
             facts.Elements[field] = kind;
+            facts.ElementAccessors.UnionWith(accessors);
+            facts.ElementFixed.UnionWith(fixedFields);
         }
         foreach (((string callee, int argument), string? field) in stored)
             if (field is not null && facts.Elements.ContainsKey(field)) facts.ElementCallees[(callee, argument)] = field;

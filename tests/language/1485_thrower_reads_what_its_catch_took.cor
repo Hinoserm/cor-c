@@ -1,0 +1,29 @@
+// test: thrower_reads_what_its_catch_took
+// expect-exit: 0
+// expect-output:
+// 91225
+//
+// The thrower still holds what it threw: a catch in the same function
+// takes it, and the thrower reads it again after.
+static class Program
+{
+    static int Use(System.InvalidOperationException x) { return x.Message.Length; }
+
+    static int M(int k)
+    {
+        System.InvalidOperationException x = new System.InvalidOperationException("bad value " + k);
+        int t = 0;
+        try { if ((k & 1) == 0) throw x; }
+        catch (System.InvalidOperationException e) { t += e.Message.Length; }
+        string junk = "zzzzzzzzzzzzzzzzzzzzzz" + k;
+        return t + Use(x) + junk.Length;
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 2000; k++) total += M(k);
+        System.Console.WriteLine(total);
+        return 0;
+    }
+}

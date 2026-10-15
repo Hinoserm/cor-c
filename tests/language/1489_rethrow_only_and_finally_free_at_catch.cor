@@ -1,0 +1,44 @@
+// test: rethrow_only_and_finally_free_at_catch
+// expect-exit: 0
+// expect-output:
+// 1744445 0 True 100000
+//
+// A catch that only rethrows, and a finally, between the throw and the
+// catch that takes it: neither keeps it, and the catch frees it.
+static class Program
+{
+    static int s_count;
+
+    static int Check(int k)
+    {
+        if ((k & 1) == 0) throw new System.InvalidOperationException("bad value " + k);
+        return 20;
+    }
+
+    static int Middle(int k)
+    {
+        try { return Check(k); }
+        catch (System.Exception) { throw; }
+    }
+
+    static int Outer(int k)
+    {
+        try { return Middle(k); }
+        finally { s_count++; }
+    }
+
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { total += Outer(k); }
+            catch (System.InvalidOperationException e) { total += e.Message.Length; }
+        }
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536) + " " + s_count);
+        return 0;
+    }
+}

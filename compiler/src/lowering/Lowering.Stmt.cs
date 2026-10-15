@@ -1001,7 +1001,7 @@ public sealed partial class Lowering
         _e.Block.Instrs[^1].DispatchType = _catchTypes.GetValueOrDefault(keep);
     }
 
-    private void Rethrow(VReg obj, Node at)
+    private void Rethrow(VReg obj, Node at, bool handedOn = false)
     {
         int w = _t.WordSize;
         VReg head = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
@@ -1013,6 +1013,8 @@ public sealed partial class Lowering
         VReg prev = ChainRead(head, HandlerPrev / 4 * w);
         ChainWrite(ThreadBlockNow(), R(prev), TlsHandler / 4 * w);
         _e.Emit(Opcode.Unwind, null, RegOperand.Of(head), RegOperand.Of(obj));
+        // What a landing pad received, handed on untouched (Instr.HandedOn).
+        if (handedOn) _e.Block.Instrs[^1].DispatchType = Instr.HandedOn;
 
         _e.SetBlock(none);
         MethodSymbol? unhandled = RuntimeMethod("Unhandled", 1);
@@ -1093,7 +1095,7 @@ public sealed partial class Lowering
         if (!_e.Closed)
         {
             VReg again = _e.Load(IrTypes.Word, new SlotOperand(keep));
-            Rethrow(again, fin);
+            Rethrow(again, fin, handedOn: true);
         }
 
         _e.SetBlock(end);
@@ -1167,9 +1169,9 @@ public sealed partial class Lowering
             _e.SetBlock(next);
         }
 
-        // Nothing here wanted it.
+        // Nothing here wanted it: handed on as it came, unless a filter may have kept it.
         VReg leftover = _e.Load(IrTypes.Word, new SlotOperand(keep));
-        Rethrow(leftover, t);
+        Rethrow(leftover, t, handedOn: t.Catches.All(c => c.When is null));
         _e.SetBlock(end);
     }
 

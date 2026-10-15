@@ -80,6 +80,11 @@ public static class BackendProtocol
                 { WriteText(writer, callee); writer.Write(argument); WriteText(writer, field); }
                 writer.Write(owned.ElementKept.Count);
                 foreach (string field in owned.ElementKept.Order(StringComparer.Ordinal)) WriteText(writer, field);
+                // The accessors and the fields put back of those proved through their accessors.
+                writer.Write(owned.ElementAccessors.Count);
+                foreach (string name in owned.ElementAccessors.Order(StringComparer.Ordinal)) WriteText(writer, name);
+                writer.Write(owned.ElementFixed.Count);
+                foreach (string field in owned.ElementFixed.Order(StringComparer.Ordinal)) WriteText(writer, field);
                 // Whether storage is made beside its owner (OwnedFieldFacts.Beside).
                 writer.Write(owned.Beside);
             }
@@ -235,6 +240,12 @@ public static class BackendProtocol
                 int kept = reader.ReadInt32();
                 if (kept < 0 || kept > 1000000) throw new InvalidDataException("Invalid backend owned-elements fact");
                 for (int i = 0; i < kept; i++) fields.ElementKept.Add(ReadText(reader));
+                int accessors = reader.ReadInt32();
+                if (accessors < 0 || accessors > 1000000) throw new InvalidDataException("Invalid backend owned-elements fact");
+                for (int i = 0; i < accessors; i++) fields.ElementAccessors.Add(ReadText(reader));
+                int fixedFields = reader.ReadInt32();
+                if (fixedFields < 0 || fixedFields > 1000000) throw new InvalidDataException("Invalid backend owned-elements fact");
+                for (int i = 0; i < fixedFields; i++) fields.ElementFixed.Add(ReadText(reader));
                 fields.Beside = reader.ReadBoolean();
                 facts.OwnedFields = fields;
             }

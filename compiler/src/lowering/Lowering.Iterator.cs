@@ -429,7 +429,7 @@ public sealed partial class Lowering
             _e.Ret(Imm(0, IrType.I32));
             _e.SetBlock(onward);
         }
-        Rethrow(exception, decl);
+        Rethrow(exception, decl, handedOn: true);
 
         _m.Functions.Add(_f);
         _stateMachine = null;

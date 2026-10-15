@@ -48,7 +48,7 @@ public static class HeapDecision
     /// the fields the whole program found own what they hold (OwnedFieldSolver).
     /// </summary>
     public static Answer Decide(List<(string Name, ObjectFile Object)> inputs, List<(ObjectFile Object, HeapRecords Records)> units,
-        string entry, Func<string, string[]?> virtuals, Func<IEnumerable<string>, HashSet<string>> ancestry, IReadOnlySet<string>? ownedFields = null)
+        string entry, Func<IEnumerable<string>, HashSet<string>> ancestry, IReadOnlySet<string>? ownedFields = null)
     {
         // A fresh object stored into a field the whole program found owns
         // what it holds is the field's owner's to free (HeapEvent.Held).
@@ -61,33 +61,58 @@ public static class HeapDecision
         HashSet<string> writtenElsewhere = new(StringComparer.Ordinal);
         foreach ((ObjectFile _, HeapRecords records) in units) writtenElsewhere.UnionWith(records.StaticWrites);
 
-        // REACHED, as Escape.Reached: from the entry and every static
-        // initialiser, over calls, names, resolved targets and data -- a
-        // descriptor's methods only through calls when every virtual call
-        // reached is resolved. The catches that keep what they caught are
-        // those of what is reached.
+        // REACHED, as Escape.Reached: from the entry, over calls, names,
+        // resolved targets and data -- a descriptor's methods only through
+        // calls when every virtual call reached is resolved. A static
+        // initialiser is reached by the guard that calls it. The catches that
+        // keep what they caught are those of what is reached.
+        //
+        // AND ONLY THE TYPES IT MAKES (rapid type analysis, VirtualTargets.Made):
+        // a virtual call runs the overrides of the types something reached
+        // names -- a `new` stamps its object with its descriptor, data that
+        // holds a type names it -- grown with the walk until it holds still.
+        // Every override of every type the units define, as their IR named
+        // them before the late passes, reached an exception's Message from a
+        // static initialiser's failure path and XML's ToString from there: a
+        // whole program's module holds only what its entry reaches, and its
+        // virtual calls run on that.
+        List<string> virtualNames = units.SelectMany(unit => unit.Records.Functions).SelectMany(function => function.Events)
+            .Where(e => (e.Kind == HeapEventKind.Virtual || e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) && e.Name != "*")
+            .SelectMany(e => e.Name.Contains('@') ? new[] { e.Name, VirtualTargets.Plain(e.Name) } : new[] { e.Name })
+            .Distinct(StringComparer.Ordinal).ToList();
+        VirtualTargets.Made made = new();
+        Dictionary<string, string[]> resolved = new(StringComparer.Ordinal);
+        string[]? virtuals(string name) => resolved.TryGetValue(name, out string[]? found) ? found
+            : name.Contains('@') && resolved.TryGetValue(VirtualTargets.Plain(name), out found) ? found : null;
+        List<Node> entryRoots = world.Roots(entry, initialisers: false).ToList();
         bool everyMethod = false;
         HashSet<Node> reached;
         HashSet<string> addressed;
         while (true)
         {
+            resolved = VirtualTargets.Resolve(inputs, virtualNames, made);
             bool unresolved = false;
+            HashSet<string> named = new(StringComparer.Ordinal);
             addressed = new(StringComparer.Ordinal);
-            reached = world.Walk(world.Roots(entry, initialisers: true), everyMethod, addressed, (node, record) =>
+            reached = world.Walk(entryRoots, everyMethod, addressed, (node, record) =>
             {
                 List<string> next = new();
                 foreach (HeapEvent e in record.Events)
                     switch (e.Kind)
                     {
-                        case HeapEventKind.Call or HeapEventKind.Named or HeapEventKind.Target: next.Add(e.Name); break;
-                        case HeapEventKind.Virtual:
+                        case HeapEventKind.Call or HeapEventKind.Named or HeapEventKind.Target when !e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal):
+                            if (e.Kind == HeapEventKind.Named && World.IsDescriptor(e.Name)) named.Add(e.Name);
+                            next.Add(e.Name); break;
+                        case HeapEventKind.Virtual or HeapEventKind.Target:
                             if (virtuals(e.Name) is string[] targets) next.AddRange(targets); else unresolved = true;
                             break;
                     }
                 return next;
-            });
-            if (!unresolved || everyMethod) break;
-            everyMethod = true;
+            }, named);
+            if (unresolved && !everyMethod) { everyMethod = true; continue; }
+            int before = made.Descriptors.Count;
+            made.Descriptors.UnionWith(named);
+            if (made.Descriptors.Count == before) break;
         }
         bool keptCatchAll = false;
         HashSet<string> keptCatches = new(StringComparer.Ordinal);
@@ -163,10 +188,10 @@ public static class HeapDecision
                             Reach(world.Resolve(node.Unit, e.Name, f => Reach(f, true), everyMethod, dataSeen),
                                 (e.Flags & HeapFlags.OwnedResult) != 0 || Held(e) ? false : origin ? unowned : true);
                         break;
-                    case HeapEventKind.Named or HeapEventKind.Target:
+                    case HeapEventKind.Named or HeapEventKind.Target when !e.Name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal):
                         Reach(world.Resolve(node.Unit, e.Name, f => Reach(f, true), everyMethod, dataSeen), true);
                         break;
-                    case HeapEventKind.Virtual:
+                    case HeapEventKind.Virtual or HeapEventKind.Target:
                         if (virtuals(e.Name) is string[] targets)
                             foreach (string t in targets) Reach(world.Resolve(node.Unit, t, f => Reach(f, true), everyMethod, dataSeen), true);
                         break;
@@ -270,7 +295,8 @@ public static class HeapDecision
         /// here, every function it names handed to `function` -- a
         /// descriptor's methods only with `everyMethod` (their calls reach them).
         /// </summary>
-        public Node? Resolve(int unit, string name, Action<Node?> function, bool everyMethod, HashSet<(ObjectFile, string)> seen, HashSet<string>? addressed = null)
+        public Node? Resolve(int unit, string name, Action<Node?> function, bool everyMethod, HashSet<(ObjectFile, string)> seen, HashSet<string>? addressed = null,
+            HashSet<string>? types = null)
         {
             if (Resolve(unit, name) is Node node) return node;
             ObjectFile? from = unit >= 0 ? _units[unit].Object : null;
@@ -285,6 +311,9 @@ public static class HeapDecision
                 {
                     // Every address the data the program reaches holds (OnceRun's addressed).
                     addressed?.Add(target);
+                    // A type data holds, but a descriptor's own words (its
+                    // ancestors, its display): an object may be made of it.
+                    if (!descriptor && IsDescriptor(target)) types?.Add(target);
                     if (Resolve(at, target) is Node method)
                     {
                         if (everyMethod || !descriptor) function(method);
@@ -336,7 +365,8 @@ public static class HeapDecision
         /// function reached; data is walked into, its functions reached
         /// (a descriptor's only with `everyMethod`).
         /// </summary>
-        public HashSet<Node> Walk(IEnumerable<Node> roots, bool everyMethod, HashSet<string>? addressed, Func<Node, HeapFunction, IEnumerable<string>> next)
+        public HashSet<Node> Walk(IEnumerable<Node> roots, bool everyMethod, HashSet<string>? addressed, Func<Node, HeapFunction, IEnumerable<string>> next,
+            HashSet<string>? types = null)
         {
             HashSet<Node> reached = new();
             Stack<Node> work = new();
@@ -345,7 +375,7 @@ public static class HeapDecision
             foreach (Node root in roots) Add(root);
             while (work.TryPop(out Node node))
                 foreach (string name in next(node, Record(node)))
-                    Add(Resolve(node.Unit, name, Add, everyMethod, seen, addressed));
+                    Add(Resolve(node.Unit, name, Add, everyMethod, seen, addressed, types));
             return reached;
         }
 
@@ -355,7 +385,7 @@ public static class HeapDecision
                 foreach (string name in _functions[u].Keys) yield return new Node(u, name);
         }
 
-        private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
+        public static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
     }
 
     /// <summary>

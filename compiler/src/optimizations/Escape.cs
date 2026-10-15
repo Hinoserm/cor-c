@@ -599,122 +599,32 @@ public sealed partial class Escape : IModulePass
                         if (!staticStores.TryGetValue(into, out var list)) staticStores[into] = list = new();
                         list.Add((f, i));
                     }
-        // Only what the program can reach throws anything.
+        // Only what the program can reach throws anything. Each throw judged
+        // by what it throws (ThrowVerdict).
         HashSet<string> reached = Reached(m);
         foreach (Function f in m.Functions.Where(g => reached.Contains(g.Name)))
         {
-            RegisterWrites writes = new(f);
-            // Registers holding what a landing pad received: `throw;` hands it on.
-            HashSet<FrameSlot> caughtSlots = new();
-            // What a landing pad received, through the copies that may carry
-            // it to where the catch variable is stored.
-            bool Received(VReg v)
-            {
-                for (int hop = 0; hop < 8; hop++)
-                {
-                    if (!writes.TryGetValue(v, out WriteList vw) || vw.Count != 1) return false;
-                    if (vw[0] is { Op: Opcode.Call, Callee: "__exception" }) return true;
-                    if (vw[0] is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Operands: [RegOperand from] }) return false;
-                    v = from.Reg;
-                }
-                return false;
-            }
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
-                        && i.Operands[1] is RegOperand { Reg: var v } && Received(v))
-                        caughtSlots.Add(slot);
-            // WHAT A CATCH HERE KEEPS, handed on by `throw;`, is still held by
-            // whatever kept it: a catch further out may not free it. Kept =
-            // anything received from a landing pad escapes this function.
-            bool? onlyExceptions = null;
-            bool OnlyExceptionCatches()
-            {
-                if (onlyExceptions is bool known) return known;
-                bool any = false, all = true;
-                foreach (Block cb in f.Blocks)
-                    foreach (Instr ci in cb.Instrs)
-                        if (ci.Op == Opcode.Call && IsCatchEnd(ci.Callee))
-                        {
-                            any = true;
-                            if (ci.DispatchType != "t_Exception") all = false;
-                        }
-                return (onlyExceptions = any && all).Value;
-            }
-            bool? caughtKept = null;
-            bool CaughtKept()
-            {
-                if (caughtKept is bool known) return known;
-                HashSet<VReg> roots = new();
-                // Into the catch variable's own slot is no escape: its loads
-                // are roots here too.
-                HashSet<Instr> intoCatch = new(ReferenceEqualityComparer.Instance);
-                foreach (Block cb in f.Blocks)
-                    foreach (Instr ci in cb.Instrs)
-                    {
-                        if (ci.Dest is not null && (ci.Op == Opcode.Call && ci.Callee == "__exception"
-                            || ci.Op == Opcode.Load && ci.Operands is [SlotOperand { Slot: var s }] && caughtSlots.Contains(s)))
-                            roots.Add(ci.Dest);
-                        if (ci.Op == Opcode.Store && ci.Operands is [SlotOperand { Slot: var into }, _] && caughtSlots.Contains(into))
-                            intoCatch.Add(ci);
-                    }
-                Flow received = Analyse(f, roots, summaries, null, intoCatch, handOff: true);
-                if (received.Escapes && roots.Count > 0) _unresolvedWhy?.Add($"received kept in {f.Name} via {received.Why?.Op} {received.Why?.Callee} {string.Join(" ", received.Why?.Operands.Select(o => o.ToString()) ?? Array.Empty<string>())}");
-                return (caughtKept = roots.Count > 0 && received.Escapes).Value;
-            }
-            // Fresh, handed on, or read from a static (whose name is answered).
-            // FRESH AND STILL ONLY THE THROW'S: an object made here but kept
-            // somewhere before it was thrown (a log, a static) is not the
-            // catch's to free -- its type is foreign.
-            bool Fresh(Operand o, out string? fromStatic)
-            {
-                fromStatic = null;
-                for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
-                {
-                    if (!writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return false;
-                    Instr d = ws[0];
-                    if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || d.Callee is not null && _fresh.Contains(d.Callee)))
-                    {
-                        if (d.Dest is not null && Analyse(f, new[] { d.Dest }, summaries, d, handOff: true) is { Escapes: true } kept)
-                        {
-                            types.Add(StampedType(f, d.Dest) ?? "*");
-                            _unresolvedWhy?.Add($"thrown foreign {StampedType(f, d.Dest) ?? "*"} in {f.Name}:{d.Line} (kept via {kept.Why?.Op} {kept.Why?.Callee})");
-                        }
-                        return true;
-                    }
-                    if (d.Op == Opcode.Call && d.Callee == "__exception" || d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && caughtSlots.Contains(from))
-                    {
-                        // Behind catches of Exception alone, what is handed on
-                        // was caught by none of them -- and everything C#
-                        // throws is an Exception: nothing is ever handed on.
-                        // The static initialisers wrap what they catch and
-                        // keep it; counted, every catch in every program kept.
-                        if (!OnlyExceptionCatches() && CaughtKept())
-                        {
-                            types.Add("*");
-                            _unresolvedWhy?.Add($"thrown foreign * in {f.Name}:{d.Line} (what a catch here received, and kept)");
-                        }
-                        return true;
-                    }
-                    if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) { fromStatic = named; return false; }
-                    if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands.Count != 1) return false;
-                    o = d.Operands[0];
-                }
-                return false;
-            }
+            ThrowScope? scope = null;
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    Operand? thrown = i.Op == Opcode.Unwind && i.Operands.Count >= 2 ? i.Operands[1]
-                        : i.Op == Opcode.Call && i.Callee == Unhandled && i.Operands.Count == 1 ? i.Operands[0] : null;
-                    if (thrown is null || Fresh(thrown, out string? stat)) continue;
-                    bool known = stat is not null && staticStores.TryGetValue(stat, out var into) && into.All(w =>
+                    if (i.Op != Opcode.Unwind || i.Operands.Count < 2) continue;
+                    scope ??= new ThrowScope(f);
+                    if (ThrowVerdict(scope, i, summaries) is not var (type, _)) continue;
+                    if (!type.StartsWith("s:", StringComparison.Ordinal))
+                    {
+                        types.Add(type);
+                        _unresolvedWhy?.Add($"thrown foreign {type} in {f.Name}:{i.Line}");
+                        continue;
+                    }
+                    string stat = type[2..];
+                    bool known = staticStores.TryGetValue(stat, out var into) && into.All(w =>
                     {
                         if (w.Store.Operands[1] is ImmOperand { Value: 0 }) return true;
                         if (w.Store.Operands[1] is not RegOperand { Reg: var put }) return false;
-                        string? type = StampedType(w.F, put);
-                        if (type is null) return false;
-                        types.Add(type);
+                        string? stamped = StampedType(w.F, put);
+                        if (stamped is null) return false;
+                        types.Add(stamped);
                         return true;
                     });
                     if (!known) types.Add("*");
@@ -723,6 +633,127 @@ public sealed partial class Escape : IModulePass
                 }
         }
         return types;
+    }
+
+    /// <summary>
+    /// One function's throws, judged together: the slots its catches keep
+    /// what they received in, and its liveness, made when first asked.
+    /// </summary>
+    private sealed class ThrowScope
+    {
+        public ThrowScope(Function f)
+        {
+            F = f;
+            Writes = new RegisterWrites(f);
+            foreach (Block b in f.Blocks)
+            {
+                HasPads |= b.IsLandingPad;
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Operands.Count == 2 && i.Operands[0] is SlotOperand { Slot: var slot }
+                        && i.Operands[1] is RegOperand { Reg: var v } && Received(v))
+                        CaughtSlots.Add(slot);
+            }
+        }
+        public Function F { get; }
+        public RegisterWrites Writes { get; }
+        /// <summary>The slots what a landing pad received is kept in: a catch's variable.</summary>
+        public HashSet<FrameSlot> CaughtSlots { get; } = new();
+        public bool HasPads { get; }
+        public Liveness? Live { get; set; }
+        public HashSet<VReg>? PadLive { get; set; }
+        public bool ReceivedJudged { get; set; }
+        public (string Type, LifetimeCondition? Unless)? ReceivedAnswer { get; set; }
+
+        /// <summary>What a landing pad received, through the copies that may carry it to the catch variable's store.</summary>
+        public bool Received(VReg v)
+        {
+            for (int hop = 0; hop < 8; hop++)
+            {
+                if (!Writes.TryGetValue(v, out WriteList vw) || vw.Count != 1) return false;
+                if (vw[0] is { Op: Opcode.Call, Callee: "__exception" }) return true;
+                if (vw[0] is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Operands: [RegOperand from] }) return false;
+                v = from.Reg;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// WHAT ONE THROW HANDS A CATCH THAT IT DID NOT JUST MAKE: null when
+    /// nothing -- an object made for the throw and let go of by it, or what a
+    /// landing pad received handed on untouched (Instr.HandedOn); otherwise
+    /// the type it may be ("*" for any, "s:" and a static it was read from),
+    /// and, in a unit, the condition on other units under which it is not
+    /// foreign after all. An object made here but kept somewhere before the
+    /// throw, or still held here when a catch of this function takes it, is
+    /// not the catch's to free (the thrower reads it again after); nor is
+    /// what a catch here received and kept, rethrown (`throw;`) or let
+    /// through by a filter that kept it.
+    /// </summary>
+    private (string Type, LifetimeCondition? Unless)? ThrowVerdict(ThrowScope s, Instr site, Dictionary<string, bool[]> summaries)
+    {
+        Operand o = site.Operands[1];
+        for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
+        {
+            if (!s.Writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return ("*", null);
+            Instr d = ws[0];
+            if (d is { Op: Opcode.Call, Callee: "__exception" } || d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && s.CaughtSlots.Contains(from))
+                return site.DispatchType == Instr.HandedOn ? null : ReceivedVerdict(s, summaries);
+            if (d is { Op: Opcode.Call, Dest: { } made, Callee: { } callee } && (IsAllocator(callee) || _fresh.Contains(callee) || _hinting && !IsIntrinsic(callee)))
+            {
+                Needs? needs = _hinting ? new(this) : null;
+                if (!IsAllocator(callee) && !_fresh.Contains(callee) && !needs!.AllowFresh(callee)) return ("*", null);
+                Flow kept = Analyse(s.F, new[] { made }, summaries, d, handOff: true, needs: needs);
+                string type = StampedType(s.F, made) ?? "*";
+                if (kept.Escapes || HeldPastThrow(s, kept)) return (type, null);
+                return needs is { Condition.IsTrue: false } ? (type, needs.Condition) : null;
+            }
+            if (d.Op == Opcode.Load && d.Operands is [SymOperand { Name: var named }]) return ("s:" + named, null);
+            if (d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands.Count != 1) return ("*", null);
+            o = d.Operands[0];
+        }
+        return ("*", null);
+    }
+
+    /// <summary>
+    /// What every landing pad of the function received, judged once: kept
+    /// anywhere, or still held where a catch here takes it again, it is no
+    /// later catch's to free.
+    /// </summary>
+    private (string Type, LifetimeCondition? Unless)? ReceivedVerdict(ThrowScope s, Dictionary<string, bool[]> summaries)
+    {
+        if (s.ReceivedJudged) return s.ReceivedAnswer;
+        s.ReceivedJudged = true;
+        HashSet<VReg> roots = new();
+        // Into the catch variable's own slot is no escape: its loads are roots too.
+        HashSet<Instr> intoCatch = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in s.F.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is not null && (i is { Op: Opcode.Call, Callee: "__exception" }
+                    || i.Op == Opcode.Load && i.Operands is [SlotOperand { Slot: var from }] && s.CaughtSlots.Contains(from)))
+                    roots.Add(i.Dest);
+                if (i.Op == Opcode.Store && i.Operands is [SlotOperand { Slot: var into }, _] && s.CaughtSlots.Contains(into)) intoCatch.Add(i);
+            }
+        if (roots.Count == 0) return s.ReceivedAnswer = ("*", null);
+        Needs? needs = _hinting ? new(this) : null;
+        Flow received = Analyse(s.F, roots, summaries, null, intoCatch, handOff: true, needs: needs);
+        if (received.Escapes || HeldPastThrow(s, received))
+        {
+            _unresolvedWhy?.Add($"received kept in {s.F.Name} via {received.Why?.Op} {received.Why?.Callee}");
+            return s.ReceivedAnswer = ("*", null);
+        }
+        return s.ReceivedAnswer = needs is { Condition.IsTrue: false } ? ("*", needs.Condition) : null;
+    }
+
+    /// <summary>Whether what a throw hands on is still held here where a catch of this function takes it.</summary>
+    private static bool HeldPastThrow(ThrowScope s, Flow kept)
+    {
+        if (!s.HasPads) return false;
+        if (kept.HeldWrites is { Count: > 0 }) return true;
+        s.Live ??= AnalysisCache.LivenessOf(s.F);
+        s.PadLive ??= PadLive(s.Live);
+        return kept.Derived.Any(r => !s.Live.Tracks(r) || s.PadLive.Contains(r));
     }
 
     /// <summary>

@@ -1,0 +1,35 @@
+// test: static_initialiser_failure_thrown_again
+// expect-exit: 0
+// expect-output:
+// 12 boom 4
+//
+// A type initialiser that fails throws the same TypeInitializationException
+// at every later touch: each catch that takes it must keep it.
+static class Bad
+{
+    public static int X = Fail();
+    static int Fail() { throw new System.InvalidOperationException("boom"); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int n = 0;
+        System.Exception? first = null;
+        for (int i = 0; i < 3; i++)
+        {
+            try { n += Bad.X; }
+            catch (System.TypeInitializationException e)
+            {
+                if (first == null) first = e;
+                else if (!ReferenceEquals(first, e)) n += 1000;
+                n += e.InnerException!.Message.Length;
+            }
+        }
+        string junk = "";
+        for (int k = 0; k < 100; k++) junk = "zz" + k;
+        System.Console.WriteLine(n + " " + first!.InnerException!.Message + " " + junk.Length);
+        return 0;
+    }
+}

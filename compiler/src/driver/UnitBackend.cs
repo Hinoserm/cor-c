@@ -418,7 +418,11 @@ public sealed class UnitBackend : IUnitBackend
     {
         foreach (Corsac.Lang.Ir.Block b in body.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Field is { } field && i.Op != Opcode.Store && owned.Elements.ContainsKey(field)) return true;
+            {
+                if (i.Field is { } field && i.Op != Opcode.Store && (owned.Elements.ContainsKey(field) || owned.ElementFixed.Contains(field))) return true;
+                // A call of an accessor of a field proved through them is a read of it.
+                if (i.Op == Opcode.Call && i.Callee is { } callee && owned.ElementAccessors.Contains(callee)) return true;
+            }
         return false;
     }
 

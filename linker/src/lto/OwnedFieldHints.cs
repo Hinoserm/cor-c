@@ -129,9 +129,10 @@ public sealed class OwnedFieldHints
         foreach ((string callee, int _) in Kept) names.Add(callee);
         names.UnionWith(Addressed); names.UnionWith(CodeNamed); names.UnionWith(Slotted);
         names.UnionWith(Loaded); names.UnionWith(ElementKept);
-        foreach ((string field, OwnedElementRecord record) in ElementReads) { names.Add(field); names.Add(record.Kind); Condition(record.Needs); }
-        foreach ((string field, OwnedElementRecord record) in ElementHandOffs) { names.Add(field); names.Add(record.Kind); Condition(record.Needs); }
-        foreach (((string callee, int _), OwnedElementRecord record) in ElementCalls) { names.Add(callee); names.Add(record.Kind); Condition(record.Needs); }
+        foreach ((string field, OwnedElementRecord record) in ElementReads) { names.Add(field); ElementNames(record); }
+        foreach ((string field, OwnedElementRecord record) in ElementHandOffs) { names.Add(field); ElementNames(record); }
+        foreach (((string callee, int _), OwnedElementRecord record) in ElementCalls) { names.Add(callee); ElementNames(record); }
+        void ElementNames(OwnedElementRecord record) { names.Add(record.Kind); Condition(record.Needs); names.UnionWith(record.Accessors); names.UnionWith(record.Fixed); }
         foreach (((string callee, int _), string field) in StoredParameters) { names.Add(callee); names.Add(field); }
         Dictionary<string, int> index = new(StringComparer.Ordinal);
         writer.Write(names.Count);
@@ -182,10 +183,15 @@ public sealed class OwnedFieldHints
         Names(Addressed, Addressed.Count); Names(CodeNamed, CodeNamed.Count); Names(Slotted, Slotted.Count);
         writer.Write(UnresolvedVirtual);
         Names(Loaded, Loaded.Count); Names(ElementKept, ElementKept.Count);
+        void Element(OwnedElementRecord value)
+        {
+            writer.Write(index[value.Kind]); Needs(value.Needs);
+            Names(value.Accessors, value.Accessors.Count); Names(value.Fixed, value.Fixed.Count);
+        }
         void Map(SortedDictionary<string, OwnedElementRecord> map)
-        { writer.Write(map.Count); foreach ((string key, OwnedElementRecord value) in map) { writer.Write(index[key]); writer.Write(index[value.Kind]); Needs(value.Needs); } }
+        { writer.Write(map.Count); foreach ((string key, OwnedElementRecord value) in map) { writer.Write(index[key]); Element(value); } }
         void PairMap(SortedDictionary<(string, int), OwnedElementRecord> map)
-        { writer.Write(map.Count); foreach (((string callee, int argument), OwnedElementRecord value) in map) { writer.Write(index[callee]); writer.Write(argument); writer.Write(index[value.Kind]); Needs(value.Needs); } }
+        { writer.Write(map.Count); foreach (((string callee, int argument), OwnedElementRecord value) in map) { writer.Write(index[callee]); writer.Write(argument); Element(value); } }
         Map(ElementReads); Map(ElementHandOffs); PairMap(ElementCalls);
         writer.Write(StoredParameters.Count);
         foreach (((string callee, int argument), string field) in StoredParameters) { writer.Write(index[callee]); writer.Write(argument); writer.Write(index[field]); }
@@ -276,16 +282,17 @@ public sealed class OwnedFieldHints
         {
             OwnedElementRecord record = new(Name());
             record.Needs.Add(Needs());
+            NameSet(record.Accessors); NameSet(record.Fixed);
             return record;
         }
         void Map(SortedDictionary<string, OwnedElementRecord> into)
         {
-            for (int i = Count(20); i > 0; i--)
+            for (int i = Count(28); i > 0; i--)
                 if (!into.TryAdd(Name(), Element())) throw new ElfFormatException("Duplicate owned-elements hint");
         }
         void PairMap(SortedDictionary<(string, int), OwnedElementRecord> into)
         {
-            for (int i = Count(24); i > 0; i--)
+            for (int i = Count(32); i > 0; i--)
             {
                 string callee = Name(); int argument = reader.ReadInt32();
                 if (argument < 0 || !into.TryAdd((callee, argument), Element())) throw new ElfFormatException("Invalid owned-elements hint");
@@ -380,6 +387,16 @@ public sealed class OwnedElementRecord
     public OwnedElementRecord(string kind) { Kind = kind; }
     public string Kind { get; }
     public LifetimeCondition Needs { get; } = new();
+    /// <summary>
+    /// Where the unit proved its reads through the field's accessors (Opt.
+    /// OwnedElements.AccessorsProved): the functions that are its reads --
+    /// the list's getters, the element getters, the adders, a stash's getters
+    /// -- each a read in any unit that calls it, which that unit must have
+    /// proved too; and the fields the proof found go back where they came
+    /// from, which no other unit may store into or read.
+    /// </summary>
+    public SortedSet<string> Accessors { get; } = new(StringComparer.Ordinal);
+    public SortedSet<string> Fixed { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>An argument every call of one unit hands over, if what it names holds.</summary>

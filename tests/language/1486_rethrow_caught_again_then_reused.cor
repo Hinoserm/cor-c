@@ -1,0 +1,31 @@
+// test: rethrow_caught_again_then_reused
+// expect-exit: 0
+// expect-output:
+// 52335
+//
+// A catch rethrows what it caught into a catch of its own, then reads it
+// again: the inner catch must not free it.
+static class Program
+{
+    static int M(int k)
+    {
+        int t = 0;
+        try { if ((k & 1) == 0) throw new System.InvalidOperationException("bad value " + k); }
+        catch (System.InvalidOperationException e)
+        {
+            try { throw; }
+            catch (System.InvalidOperationException e2) { t += e2.Message.Length; }
+            string junk = "zzzzzzzzzzzzzzzzzzzzzz" + k;
+            t += e.Message.Length + junk.Length;
+        }
+        return t;
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 2000; k++) total += M(k);
+        System.Console.WriteLine(total);
+        return 0;
+    }
+}

@@ -979,14 +979,11 @@ public sealed class MarkOwnedElements : IModulePass
             addressed ??= OwnedElements.AddressTaken(m);
             if (!readsOf.TryGetValue(field, out var reads))
             {
-                // In a unit, plain reads alone: what the field's accessors do
-                // in other units is no hint's to say (FieldElementsProved).
-                if (unit) readsOf[field] = reads = OwnedElements.FieldReads(m, field, kind)?.Select(r => (r.F, r.Calls)).ToList();
-                else
-                {
-                    readsOf[field] = reads = OwnedElements.FieldUses(m, field, kind, addressed);
-                    if (reads is not null && kind == "List") KeepStashes(m, field, reads, addressed);
-                }
+                // Every use, the accessors' too: in a unit, what other units'
+                // calls of the accessors do is the link's to check, from the
+                // accessors the unit names (FieldElementsProved, OwnedFieldSolver).
+                readsOf[field] = reads = OwnedElements.FieldUses(m, field, kind, addressed);
+                if (reads is not null && kind == "List") KeepStashes(m, field, reads, addressed);
             }
             if (reads is null) return false;
             foreach (var read in reads) foreach (var c in read.Calls) m.KeepCalls.Add(c.Call);
@@ -1055,9 +1052,11 @@ public sealed class MarkOwnedElements : IModulePass
         foreach ((string _, int _, string field) in OwnedElements.StoredParametersOf(m, exportedOnly: false))
             if (!readsOf.ContainsKey(field)) parameterFields.Add(field);
         if (parameterFields.Count == 0) return;
+        addressed ??= OwnedElements.AddressTaken(m);
         foreach ((string field, string kind) in OwnedElements.CollectionFields(m, parameterFields).OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
-            if (OwnedElements.FieldReads(m, field, kind) is not { } reads) continue;
+            if (OwnedElements.FieldUses(m, field, kind, addressed) is not { } reads) continue;
+            if (kind == "List") KeepStashes(m, field, reads, addressed);
             foreach (var read in reads) foreach (var c in read.Calls) m.KeepCalls.Add(c.Call);
             m.ElementFields.TryAdd(field, kind);
         }
@@ -1353,7 +1352,9 @@ public sealed partial class Escape
     {
         if (!hints.TryGetValue(key, out Corsac.Lang.Lto.OwnedElementRecord? known)) { hints[key] = record; return; }
         if (known is null) return;
-        if (known.Kind != record.Kind || !known.Needs.Add(record.Needs)) hints[key] = null;
+        if (known.Kind != record.Kind || !known.Needs.Add(record.Needs)) { hints[key] = null; return; }
+        known.Accessors.UnionWith(record.Accessors); known.Fixed.UnionWith(record.Fixed);
+        if (known.Accessors.Count + known.Fixed.Count > Corsac.Lang.Lto.OwnedFieldHints.Limit) hints[key] = null;
     }
 
     /// <summary>The link's answer, in its run of a unit's late passes.</summary>
@@ -1429,16 +1430,24 @@ public sealed partial class Escape
         Needs? needs = _elementNeeds = _elementMode == ElementMode.Hints ? new(this) : null;
         bool proved = reads is not null && ReadsProved(field, reads, summaries, keeps);
         _elementNeeds = outer;
-        // Or through the field's accessors (AccessorsProved), a list's only --
-        // in a whole program alone. A unit sees its own getters and setters,
-        // not the calls of them other units make, each of which is a read of
-        // the field there: it hints plain reads only, and the link proves no
-        // field another way, so its answer is never one the accessors made.
+        // Or through the field's accessors (AccessorsProved), a list's only.
+        // A unit sees its own getters and setters, not the calls of them
+        // other units make, each a read of the field there: it names the
+        // accessors and the fields the proof fixed, and the link refuses the
+        // field where another unit calls an accessor it did not prove, takes
+        // one's address, or touches a fixed field (OwnedFieldSolver.Elements).
         HashSet<Instr> kept = new(ReferenceEqualityComparer.Instance);
-        if (!proved && kind == "List" && _elementMode == ElementMode.Whole)
+        ElementAccess? access = null;
+        if (!proved && kind == "List" && _elementMode is ElementMode.Whole or ElementMode.Hints or ElementMode.Linked)
         {
             keeps.Clear();
-            proved = AccessorsProved(field, summaries, keeps, kept);
+            access = _elementMode == ElementMode.Hints ? new() : null;
+            Needs? before = _elementNeeds;
+            needs = _elementNeeds = _elementMode == ElementMode.Hints ? new(this) : null;
+            proved = AccessorsProved(field, summaries, keeps, kept, access);
+            _elementNeeds = before;
+            if (proved && access is not null && access.Accessors.Count + access.Fixed.Count > Corsac.Lang.Lto.OwnedFieldHints.Limit) proved = false;
+            if (!proved) access = null;
         }
         if (!proved)
         {
@@ -1454,11 +1463,13 @@ public sealed partial class Escape
             // In a unit's compile the reads' calls are the late inliner's
             // again: what is kept from it is the archive's, for the link's run
             // of these passes. Nothing is kept alive here.
-            foreach (var read in reads!) foreach (var c in read.Calls) _module?.KeepCalls.Remove(c.Call);
-            if (reads.Count > 0)
+            if (reads is not null) foreach (var read in reads) foreach (var c in read.Calls) _module?.KeepCalls.Remove(c.Call);
+            foreach (Instr c in kept) _module?.KeepCalls.Remove(c);
+            if (access is not null || reads is { Count: > 0 })
             {
                 Corsac.Lang.Lto.OwnedElementRecord record = new(kind);
                 record.Needs.Add(needs!.Condition);
+                if (access is not null) { record.Accessors.UnionWith(access.Accessors); record.Fixed.UnionWith(access.Fixed); }
                 Hint(_elementReadHints, field, record);
             }
             return _fieldElements[field] = true;
@@ -2046,6 +2057,18 @@ public sealed partial class Escape
     /// <summary>An element read: a collection call's answer, or an element getter's; with the path of the list it is read from.</summary>
     private readonly record struct ElementSource(Instr At, VReg Dest, VReg? Container, ListPath? Path);
 
+    /// <summary>
+    /// What a unit's proof through a field's accessors rests on that another
+    /// unit could break (AccessorsProved): the accessors, each a read of the
+    /// field wherever it is called; and the fields put back where they came
+    /// from, which nothing else may store into or read.
+    /// </summary>
+    private sealed class ElementAccess
+    {
+        public SortedSet<string> Accessors { get; } = new(StringComparer.Ordinal);
+        public SortedSet<string> Fixed { get; } = new(StringComparer.Ordinal);
+    }
+
     /// <summary>An element parked in a stash: where, the stash's path and the element's list's.</summary>
     private readonly record struct Parking(Function F, Instr Add, string Stash, ListPath StashPath, ListPath ListPath, HashSet<VReg> Derived);
 
@@ -2056,10 +2079,11 @@ public sealed partial class Escape
     /// (handed back by a getter, put back into the list, put into a stash),
     /// every add an object made for it, a setter's parameter or an element
     /// put back. The KeepAlives each needs are added to `keeps`; the calls
-    /// kept from the inliner that nothing needs if it fails, to `kept`.
+    /// kept from the inliner that nothing needs if it fails, to `kept`. In a
+    /// unit, what the proof rests on that other units could break, to `access`.
     /// </summary>
     private bool AccessorsProved(string field, Dictionary<string, bool[]> summaries, List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps,
-        HashSet<Instr> kept)
+        HashSet<Instr> kept, ElementAccess? access = null)
     {
         Module m = _module!;
         HashSet<string> addressed = OwnedElements.AddressTaken(m);
@@ -2443,6 +2467,14 @@ public sealed partial class Escape
         if (stashes.Count > 0 && !StashProved(field, stashes, parked, scans, addressed, fixedFields, kept, CollectionPath)) return false;
         if (putBack && !FieldsFixed(fixedFields, field, scans, addressed)) return false;
         OwnedElements.Say(scans.Values.First().F, $"through accessors of {field}: proved{(putBack ? ", put back" : "")}");
+        if (access is not null)
+        {
+            access.Accessors.UnionWith(collectionGetters);
+            access.Accessors.UnionWith(elementGetters.Keys);
+            access.Accessors.UnionWith(adders.Keys);
+            foreach (string stash in stashes) access.Accessors.UnionWith(OwnedElements.CollectionGetters(m, stash, addressed));
+            if (putBack) access.Fixed.UnionWith(fixedFields);
+        }
         return true;
     }
 
@@ -3102,6 +3134,15 @@ public sealed partial class Escape
                         list.Add((g, b, k));
                     }
         HashSet<string> made = new(StringComparer.Ordinal);
+        // A CLASS'S CONSTRUCTOR runs on nothing but an object just made --
+        // `new`, a derived class's `: base`, a record's clone -- in any unit:
+        // one whose every call here was inlined, kept for other units to
+        // call, has no call to judge it by, and its own stores were taken
+        // for stores after the object was made (1180 as separate units).
+        // Not a struct's, which runs on whatever storage it is handed.
+        HashSet<string> classes = new(m.Data.Where(d => d.Name.StartsWith("t_", StringComparison.Ordinal)).Select(d => d.Name[2..]), StringComparer.Ordinal);
+        foreach (Function g in m.Functions)
+            if (g.Params.Count > 0 && !addressed.Contains(g.Name) && ConstructorOf(g.Name) is { } owner && classes.Contains(owner)) made.Add(g.Name);
         bool FreshFirst(Function g, Block at, int index)
         {
             if (at.Instrs[index].Operands is not [RegOperand r, ..]) return false;
@@ -3137,6 +3178,24 @@ public sealed partial class Escape
             }
         }
         return made;
+    }
+
+    /// <summary>
+    /// The class a function constructs, by its name: `m_X_X_<arity>...`, a
+    /// method named as its own type, which only a constructor can be (C#
+    /// allows no member so named). Null for any other.
+    /// </summary>
+    internal static string? ConstructorOf(string name)
+    {
+        if (!name.StartsWith("m_", StringComparison.Ordinal)) return null;
+        for (int cut = name.IndexOf('_', 2); cut > 2; cut = name.IndexOf('_', cut + 1))
+        {
+            string owner = name[2..cut];
+            int rest = cut + 1 + owner.Length;
+            if (rest + 1 < name.Length && string.CompareOrdinal(name, cut + 1, owner, 0, owner.Length) == 0 && name[rest] == '_' && char.IsAsciiDigit(name[rest + 1]))
+                return owner;
+        }
+        return null;
     }
 
     /// <summary>The call that gives back an owning collection's elements, before whatever frees the collection.</summary>

@@ -1,0 +1,42 @@
+// test: thrown_after_kept_in_static_or_list
+// expect-exit: 0
+// expect-output:
+// 33445 500 0 True
+//
+// An exception made fresh is kept in a static and a list before it is
+// thrown: the catch further out must not free it.
+using System.Collections.Generic;
+
+static class Program
+{
+    static System.Exception last;
+    static List<System.Exception> all = new List<System.Exception>();
+
+    static int Check(int k)
+    {
+        if ((k & 1) == 0)
+        {
+            System.InvalidOperationException x = new System.InvalidOperationException("bad value " + k);
+            if ((k & 2) == 0) last = x; else all.Add(x);
+            throw x;
+        }
+        return 20;
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        for (int k = 0; k < 2000; k++)
+        {
+            try { total += Check(k); }
+            catch (System.InvalidOperationException e) { total += e.Message.Length; }
+        }
+        long sum = 0;
+        for (int k = 0; k < 4000; k++) { string s = "zzzz" + k + "qqqqqqqqqqqq"; sum += s.Length; }
+        int bad = 0;
+        for (int i = 0; i < all.Count; i++) if (!all[i].Message.StartsWith("bad value ")) bad++;
+        if (!last.Message.StartsWith("bad value ")) bad++;
+        System.Console.WriteLine(total + " " + all.Count + " " + bad + " " + (sum > 0));
+        return 0;
+    }
+}

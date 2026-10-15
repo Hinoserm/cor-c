@@ -173,7 +173,8 @@ public static class IrLinkOptimizer
         OwnedFieldFacts? ownedFields = lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey)
             ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
                 Switches.AllocReport
-                    ? line => { if (Switches.AllocReportOnly is not { } which || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null) : null;
+                    ? line => { if (Switches.AllocReportOnly is not { } which || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null,
+                foreign) : null;
         if (ownedFields is { IsEmpty: true }) ownedFields = null;
         if (ownedFields is not null)
             Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "
@@ -484,12 +485,7 @@ public static class IrLinkOptimizer
             }
             if (complete)
             {
-                Dictionary<string, string[]> targets = VirtualTargets.Resolve(inputs, units.SelectMany(unit => unit.Records.Functions)
-                    .SelectMany(function => function.Events).Where(e => e.Kind == HeapEventKind.Virtual && e.Name != "*")
-                    .SelectMany(e => e.Name.Contains('@') ? new[] { e.Name, VirtualTargets.Plain(e.Name) } : new[] { e.Name }), made?.Again());
-                string[]? TargetsOf(string name) => targets.TryGetValue(name, out string[]? found) ? found
-                    : name.Contains('@') && targets.TryGetValue(VirtualTargets.Plain(name), out found) ? found : null;
-                HeapDecision.Answer answer = HeapDecision.Decide(inputs, units, closedImageEntry!, TargetsOf, types => VirtualTargets.Ancestry(inputs, types),
+                HeapDecision.Answer answer = HeapDecision.Decide(inputs, units, closedImageEntry!, types => VirtualTargets.Ancestry(inputs, types),
                     ownedFields?.Fields.Keys.ToHashSet(StringComparer.Ordinal));
                 Console.Error.WriteLine("LTO heap: " + (answer.NeedsHeap ? "a collector, " + (answer.Because ?? answer.Sites.Count + " allocations left to it") : "no collector"));
                 if (Switches.AllocReport) Console.Error.WriteLine("alloc report: link catches keeping: " + answer.Catches);
