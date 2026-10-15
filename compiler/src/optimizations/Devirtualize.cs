@@ -378,7 +378,9 @@ public sealed class Devirtualize : IModulePass
                     || slotLoad.Operands[0] is not RegOperand vt
                     || writes.Single(vt.Reg) is not { Op: Opcode.Load, Offset: 0 } vtLoad || vtLoad.Operands[0] is not RegOperand recv) continue;
                 List<Instr> origins = new();
-                if (!Origins(recv.Reg, origins, new HashSet<VReg>(), 0) || origins.Count < 2) continue;
+                // One origin as well as several: the `as` a cast made, written
+                // with the object and with null, has one.
+                if (!Origins(recv.Reg, origins, new HashSet<VReg>(), 0) || origins.Count == 0) continue;
                 // Each type's method in the slot read. A type with nothing
                 // there cannot be the receiver -- the call would fault -- as
                 // when a cast to an interface it lacks guards the call.
@@ -388,9 +390,16 @@ public sealed class Devirtualize : IModulePass
                 {
                     if (!stamped.TryGetValue(origin, out SymOperand? table) || !items.TryGetValue(table.Name, out DataItem? item)) { known = false; break; }
                     long at = table.Offset + slotLoad.Offset;
-                    if (at >= item.Bytes.Length || at < 0) { known = false; break; }
-                    int found = item.Relocs.FindIndex(rel => rel.Offset == at);
-                    if (found < 0) continue;
+                    if (at < 0) { known = false; break; }
+                    // NOTHING THERE IN A WHOLE DESCRIPTOR -- one this unit wrote,
+                    // naming itself -- is a method its objects lack; in another
+                    // unit's class as this one shadows it (ShadowDescriptor),
+                    // which lists only some of its methods, it is not known.
+                    // Interface slots are numbered over the whole program and
+                    // may lie past a table's end.
+                    bool whole = item.Relocs.Any(rel => rel.Offset == 5 * word && rel.Symbol == table.Name);
+                    int found = at < item.Bytes.Length ? item.Relocs.FindIndex(rel => rel.Offset == at) : -1;
+                    if (found < 0) { if (whole) continue; known = false; break; }
                     DataReloc there = item.Relocs[found];
                     if (there.Symbol is not { } target || there.Addend != 0 || !target.StartsWith("m_", StringComparison.Ordinal)) { known = false; break; }
                     if (!cases.Any(c => c.Vtable.Name == table.Name && c.Vtable.Offset == table.Offset)) cases.Add((table, target));
