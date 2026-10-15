@@ -4122,6 +4122,14 @@ continue;
     public static string VirtualCallee(string declaring, long slot) => VirtualPrefix + declaring + "+" + slot;
 
     /// <summary>
+    /// The same, on a receiver known to be of class <paramref name="within"/>
+    /// or one derived from it (`@` and its descriptor): a parameter declared
+    /// as that class (Function.ParamClasses), which the link answers from
+    /// that class's descriptors alone (Lto.VirtualTargets.Parse).
+    /// </summary>
+    public static string VirtualCallee(string declaring, string within, long slot) => VirtualPrefix + declaring + "@" + within + "+" + slot;
+
+    /// <summary>
     /// The call's declaring type and slot, when it has the shape of a virtual
     /// call: the method loaded from the object's own descriptor, the object
     /// passed first. <paramref name="single"/> maps each register written once
@@ -4171,7 +4179,11 @@ continue;
                         Console.Error.WriteLine($"virtual {f.Name}: {i} dispatch={i.DispatchType} slot={VirtualSlot(i, single, many)}");
                     if (i.Op == Opcode.CallIndirect && VirtualSlot(i, single, many) is var (declaring, slot))
                     {
-                        string name = VirtualCallee(declaring, slot);
+                        // ON A CLASS PARAMETER NOTHING HERE WRITES: what the
+                        // caller passed, of that class or one derived from
+                        // it, whatever overrides the rest of the program has.
+                        string name = ReceiverClass(f, i, single, many) is string within
+                            ? VirtualCallee(declaring, within, slot) : VirtualCallee(declaring, slot);
                         if (known is null || known(name)) result[i] = new[] { name };
                     }
                 }
@@ -4180,6 +4192,25 @@ continue;
     }
 
     internal static Dictionary<Instr, string[]>? IndirectTargetsOf(Module m, Dictionary<string, Function> byName) => IndirectTargets(m, byName);
+
+    /// <summary>
+    /// The class a virtual call's receiver is declared as, where it is a
+    /// class parameter of `f` nothing in it writes (Function.ParamClasses),
+    /// through the copies an inlined body makes of it; null otherwise.
+    /// </summary>
+    private static string? ReceiverClass(Function f, Instr call, Dictionary<VReg, Instr> single, HashSet<VReg> many)
+    {
+        if (f.ParamClasses is not { Count: > 0 } classes || call.Operands.Count < 2 || call.Operands[1] is not RegOperand { Reg: var r }) return null;
+        for (int hops = 0; hops < 8; hops++)
+        {
+            if (classes.TryGetValue(r, out string[]? chain))
+                return single.ContainsKey(r) || many.Contains(r) ? null : chain[^1];
+            if (many.Contains(r) || !single.TryGetValue(r, out Instr? d)
+                || d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand { Reg: var next }]) return null;
+            r = next;
+        }
+        return null;
+    }
 
     private static Dictionary<Instr, string[]>? IndirectTargets(Module m, Dictionary<string, Function> byName)
     {

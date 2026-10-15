@@ -24,6 +24,22 @@ public static class VirtualTargets
 {
     public const string Prefix = "__virtual:";
 
+    /// <summary>
+    /// A virtual symbol's parts: the declaring type, the class every receiver
+    /// is known to be or derive from where the unit could say so (`@` and its
+    /// descriptor: a call on a parameter declared as that class, Escape.
+    /// VirtualCallee), and the slot. Null for a name that is not one.
+    /// </summary>
+    public static (string Declaring, string? Within, long Slot)? Parse(string name)
+    {
+        if (!name.StartsWith(Prefix, StringComparison.Ordinal)) return null;
+        int plus = name.LastIndexOf('+');
+        if (plus <= Prefix.Length || !long.TryParse(name.AsSpan(plus + 1), out long slot)) return null;
+        string type = name[Prefix.Length..plus];
+        int at = type.IndexOf('@');
+        return at < 0 ? (type, null, slot) : (type[..at], type[(at + 1)..], slot);
+    }
+
     /// <summary>A descriptor's display and interface list, in words (Escape.DescriptorDisplay, DescriptorInterfaces).</summary>
     private const int Display = 3, Interfaces = 4;
     /// <summary>A descriptor's own words (Lowering's Desc*), and how many there are before its method table (Target.DescriptorBytes).</summary>
@@ -82,11 +98,9 @@ public static class VirtualTargets
         Index? index = null;
         foreach (string name in wanted.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
         {
-            if (!name.StartsWith(Prefix, StringComparison.Ordinal)) continue;
-            int plus = name.LastIndexOf('+');
-            if (plus <= Prefix.Length || !long.TryParse(name.AsSpan(plus + 1), out long slot)) continue;
+            if (Parse(name) is not var (declaring, within, slot)) continue;
             index ??= IndexOf(inputs);
-            string[]? reached = index.Targets(name[Prefix.Length..plus], slot, made);
+            string[]? reached = index.Targets(declaring, slot, made, within);
             if (reached is string[] targets) answers[name] = targets;
             if (Switches.TraceVirtuals)
                 Console.Error.WriteLine("virtual " + name + " slot " + slot + " -> " + (reached is null ? "unresolved" : "[" + string.Join(",", reached) + "]"));
@@ -667,7 +681,7 @@ public static class VirtualTargets
         /// program's type safety. Left unresolved, one such call made every
         /// method a descriptor names a root (RegionSolver.Addressed).
         /// </summary>
-        public string[]? Targets(string declaring, long slot, Made? made = null)
+        public string[]? Targets(string declaring, long slot, Made? made = null, string? within = null)
         {
             if (_derived is null)
             {
@@ -685,6 +699,17 @@ public static class VirtualTargets
             // And every box and the string, for an interface (MayAnswer).
             if (!everyType && IsBoxedFace(declaring))
                 reaching = reaching.Union(Enumerable.Range(0, _descriptors.Count).Where(d => MayAnswer(_descriptors[d].Name, declaring)));
+            // ONLY THE RECEIVER'S OWN CLASS AND WHAT DERIVES FROM IT, where the
+            // unit knew it (a parameter declared as a class, Escape.VirtualCallee):
+            // a List's GetEnumerator through IEnumerable is the List's, not
+            // every iterator's in the program. A class no descriptor is or
+            // derives from has no objects, and the call reaches nothing.
+            if (within is not null)
+            {
+                HashSet<int> below = _derived.TryGetValue(within, out List<int>? under) ? new(under) : new();
+                reaching = reaching.Where(below.Contains);
+                everyType = false;
+            }
             HashSet<string> targets = new(StringComparer.Ordinal);
             bool any = everyType, resolved = true;
             // What every descriptor would give, for the report: the targets

@@ -822,8 +822,8 @@ public static class RegionSolver
         private int[]? RunsOn(int f, int k, int[] those, string table, long at)
         {
             string callee = _functions[f].Calls[k].Callee!;
-            int plus = callee.LastIndexOf('+');
-            if (plus > VirtualTargets.Prefix.Length && IsA?.Invoke(table, callee[VirtualTargets.Prefix.Length..plus]) == false) return Array.Empty<int>();
+            if (VirtualTargets.Parse(callee) is var (declaring, within, _)
+                && (IsA?.Invoke(table, declaring) == false || within is not null && IsA?.Invoke(table, within) == false)) return Array.Empty<int>();
             if (SlotOf(callee) is long slot && _methodAt(table, at + slot) is { } method
                 && _virtuals.TryGetValue(callee, out string[]? overrides) && overrides.Contains(method, StringComparer.Ordinal)
                 && ResolveOverride(_unitOf[f], method) is { } resolved)
