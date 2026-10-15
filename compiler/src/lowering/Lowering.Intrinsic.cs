@@ -789,7 +789,7 @@ public sealed partial class Lowering
     /// <summary>
     /// Anything without instructions here becomes a call to a runtime routine
     /// of the same name and shape. Print, the string routines, the bit tricks
-    /// and the checksum all live in lib/sys as ordinary source.
+    /// and the checksum all live in the runtime (runtime/src/core) as ordinary source.
     /// </summary>
     private VReg RuntimeFallback(CallExpr call, MethodSymbol target)
     {

@@ -28,10 +28,11 @@
 // preprocessor (docs/software/X86-KERNEL.md, "Configuration"). This test is
 // the proof that the generator and the language agree about what that means.
 //
-// Everything between the BEGIN and END markers below is tools/kconfig.py's
-// output for tests/lang/200_kconfig_test.conf, copied in verbatim;
-// tests/lang/202_kconfig_tool.sh regenerates it and fails if it has drifted,
-// so this file cannot quietly stop testing what the tool actually writes.
+// Everything between the BEGIN and END markers below is the kernel
+// configuration tool's output for tests/language/200_kconfig_test.conf,
+// copied in verbatim. The tool lives with the kernel, in the OS repository,
+// and is tested there; this is a frozen copy of what it wrote, kept to prove
+// the language half: that the compiler folds what the generator emits.
 //
 // What it proves: an enum key becomes a long constant in a named group, so
 // Config.Cpu >= CpuKind.Pentium is a comparison the compiler folds; a bool

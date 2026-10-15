@@ -15,12 +15,13 @@
 // false constant does not execute, and the probe count is the number of
 // drivers the configuration turned on. The other half -- that the dropped
 // function is not merely unexecuted but ABSENT from the executable -- cannot
-// be seen from inside the program, so tests/lang/202_kconfig_tool.sh
-// compiles this same file and checks with nm that the symbol
-// m_FloppyDriver_Probe_0 is not in it while m_IdeDriver_Probe_0 is.
+// be seen from inside the program, so tests/language/202_config_dead_branch.sh
+// builds this same file twice, as written and with DriverFloppy turned on,
+// and checks that the build as written is the smaller and probes one driver
+// fewer.
 //
-// The Config block is tools/kconfig.py's output for
-// tests/lang/200_kconfig_test.conf, which is the configuration that turns
+// The Config block is the kernel configuration tool's output for
+// tests/language/200_kconfig_test.conf, which is the configuration that turns
 // DriverFloppy off and DriverIde on.
 
 // BEGIN GENERATED Config.cor
@@ -172,7 +173,7 @@ static class FloppyDriver
 {
     // Nothing else in this program calls this. If the compiler kept the
     // `if (Config.DriverFloppy)` body this would be reachable and the two
-    // builds 202_kconfig_tool.sh makes would be the same size, which is the
+    // builds 202_config_dead_branch.sh makes would be the same size, which is the
     // only way from outside to tell "dropped" from "not executed".
     public static bool Probe()
     {

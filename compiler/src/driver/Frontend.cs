@@ -63,7 +63,7 @@ public static class Frontend
 
         // WHICH SOURCES ARE THE CLASS LIBRARY. Told by the driver, which is
         // the only part that knows what it links by default; matched on the
-        // full path so that naming lib/collections.cor on the command line --
+        // full path so that naming stdlib/src/System/Core.cor on the command line --
         // as the test runner does -- does not turn it into program code.
         HashSet<string> fromLibrary = new(StringComparer.Ordinal);
         foreach (string lib in libraryPaths ?? Array.Empty<string>())

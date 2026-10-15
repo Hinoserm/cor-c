@@ -751,7 +751,7 @@ public static class Driver
         // The default library set, so `corc compile hello.cor` is a complete
         // command and memory management is nobody's business but the
         // library's. Found relative to the compiler's own location, which is
-        // where the repository keeps lib/.
+        // where the repository keeps stdlib/ and runtime/.
         List<string> classLibrary = DefaultLibraries(target, freestanding);
         if (!args.Contains("--nostdlib") && classLibrary.Count > 0)
         {

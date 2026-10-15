@@ -708,7 +708,7 @@ public sealed partial class Lowering
             Require(found);
             return found;
         }
-        Error(at, $"async needs AsyncRuntime.{name} with {arity} parameter(s), which no compiled source provides; compile with lib/threading.cor");
+        Error(at, $"async needs AsyncRuntime.{name} with {arity} parameter(s), which no compiled source provides; compile with runtime/src/core/threading.cor");
         return null;
     }
 
