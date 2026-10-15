@@ -681,6 +681,17 @@ public sealed partial class Escape : IModulePass
     }
 
     /// <summary>
+    /// A type's static initialisation, run once under its guard: the guarded
+    /// StaticInit$, and what it runs -- StaticInitBody$, where the field
+    /// initialisers are, and StaticConstructorBody$, the `static T()` body. A
+    /// static only these write is written once; matched on StaticInit$ alone,
+    /// every initialiser's store was taken for a write after it.
+    /// </summary>
+    internal static bool IsStaticInitialiser(string name)
+        => name.Contains("_StaticInit$", StringComparison.Ordinal) || name.Contains("_StaticInitBody$", StringComparison.Ordinal)
+           || name.Contains("_StaticConstructorBody$", StringComparison.Ordinal);
+
+    /// <summary>
     /// ForeignThrows for a unit that is not the whole program: each throw of
     /// something not made here, said so the link can judge it with every
     /// unit's (LifetimeHints.Throws): unknown, read from a static, or the
@@ -692,7 +703,7 @@ public sealed partial class Escape : IModulePass
     {
         foreach (Function f in m.Functions)
         {
-            bool initialiser = f.Name.Contains("_StaticInit$", StringComparison.Ordinal);
+            bool initialiser = IsStaticInitialiser(f.Name);
             RegisterWrites writes = new(f);
             HashSet<FrameSlot> caughtSlots = new();
             foreach (Block b in f.Blocks)
@@ -2619,7 +2630,7 @@ continue;
     private void PermanentStatics(Module m)
     {
         if (m.PreserveExports || m.Entry is null) return;
-        static bool IsStaticInit(Function f) => f.Name.Contains("_StaticInit$", StringComparison.Ordinal);
+        static bool IsStaticInit(Function f) => IsStaticInitialiser(f.Name);
         Dictionary<string, bool> onlyInitialisers = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions)
             foreach (Block b in f.Blocks)
@@ -6146,7 +6157,7 @@ continue;
                     }
             _once.Add(entry.Name);
             foreach (Function f in m.Functions)
-                if (f.Name.Contains("StaticInit$", StringComparison.Ordinal) && f.Async is null) _once.Add(f.Name);
+                if (IsStaticInitialiser(f.Name) && f.Async is null) _once.Add(f.Name);
 
             // A LATCHED FUNCTION RUNS ONCE HOWEVER OFTEN IT IS CALLED: it
             // begins `if (done) return; done = true;` on a static nothing

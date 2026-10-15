@@ -12,10 +12,18 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
     private readonly BinaryReader reader;
     private readonly string work;
     private int sequence;
-    private const long UnitTimeoutMs = 5 * 60 * 1000;
-    // When the request in flight runs out of time (0: none in flight), and
-    // whether the watchdog killed the process for it.
-    private long deadline;
+    // A REQUEST IS ENDED WHEN IT STOPS WORKING, not when the clock says so:
+    // when the backend's processor time has not moved for StallMs, or has
+    // passed MostProcessorTime in all. Timed by the wall, a link on a busy
+    // machine -- thirty compiles at once -- ended a backend still compiling
+    // a program's one large Main (1321: 68 s idle, 226 s at a load of forty).
+    private const long StallMs = 5 * 60 * 1000;
+    private static readonly TimeSpan MostProcessorTime = TimeSpan.FromHours(1);
+    // Whether a request is in flight (1), when its processor time last moved,
+    // that time then, and at the request's start; why the watchdog killed it.
+    private long inFlight, movedAt;
+    private TimeSpan lastProcessor, startProcessor;
+    private string? killedFor;
     private bool timedOut, disposed;
     private readonly Thread watchdog;
 
@@ -42,20 +50,42 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         watchdog.Start();
     }
 
-    /// Kills the process when a request outlives its time: the read waiting
-    /// on it then ends.
+    /// Kills the process when a request stops working (StallMs) or works past
+    /// MostProcessorTime: the read waiting on it then ends.
     private void Watch()
     {
         while (!Volatile.Read(ref disposed))
         {
             Thread.Sleep(1000);
-            long due = Interlocked.Read(ref deadline);
-            if (due != 0 && Environment.TickCount64 > due)
+            if (Interlocked.Read(ref inFlight) == 0) continue;
+            TimeSpan used;
+            try { process.Refresh(); used = process.TotalProcessorTime; }
+            catch (InvalidOperationException) { return; }
+            long now = Environment.TickCount64;
+            lock (process)
             {
-                Volatile.Write(ref timedOut, true);
-                try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-                return;
+                if (Interlocked.Read(ref inFlight) == 0) continue;
+                if (used > lastProcessor) { lastProcessor = used; movedAt = now; }
+                if (now - movedAt > StallMs) killedFor = "used no processor time for five minutes";
+                else if (used - startProcessor > MostProcessorTime) killedFor = "used an hour of processor time";
+                else continue;
             }
+            Volatile.Write(ref timedOut, true);
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            return;
+        }
+    }
+
+    private void Begin()
+    {
+        TimeSpan now;
+        try { process.Refresh(); now = process.TotalProcessorTime; }
+        catch (InvalidOperationException) { now = TimeSpan.Zero; }
+        lock (process)
+        {
+            startProcessor = lastProcessor = now;
+            movedAt = Environment.TickCount64;
+            Interlocked.Exchange(ref inFlight, 1);
         }
     }
 
@@ -70,16 +100,16 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         {
             if (!own) ElfWriter.WriteObjectFile(original, input);
             BackendProtocol.WriteRequest(writer, new(input, output, imports, retained, facts));
-            // READ HERE, ON THIS THREAD, with a watchdog for the time limit:
+            // READ HERE, ON THIS THREAD, with a watchdog for a stalled backend:
             // the read once ran as a task waited on with a timeout, and the
             // link's workers shared one task queue -- a worker ran another's
             // blocking read, and a response that had come was waited on to
             // the timeout. The watchdog's kill ends the read.
-            Interlocked.Exchange(ref deadline, Environment.TickCount64 + UnitTimeoutMs);
+            Begin();
             try { BackendProtocol.ReadResponse(reader); }
             catch (Exception) when (Volatile.Read(ref timedOut))
-            { throw new IOException("Compiler backend exceeded five-minute unit timeout"); }
-            finally { Interlocked.Exchange(ref deadline, 0); }
+            { throw new IOException("Compiler backend stopped on " + (original.SourcePath ?? input) + ": it " + killedFor); }
+            finally { Interlocked.Exchange(ref inFlight, 0); }
             if (!File.Exists(output)) throw new IOException("Compiler backend reported success without an object");
             return ElfReader.ReadObjectFile(output, leaveInFile: false);
         }

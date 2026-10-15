@@ -164,6 +164,15 @@ public sealed partial class Lowering
     public static bool PartOfALibrary { get; set; }
 
     /// <summary>
+    /// String literals named by their text and shared across objects
+    /// (InternString): in a compile to an object a link puts together with
+    /// others, not position-independent. C# interns a literal process-wide:
+    /// `""` made by the library and `""` written in a program are one object,
+    /// and per object they were two (725).
+    /// </summary>
+    public static bool SharedLiterals { get; set; }
+
+    /// <summary>
     /// The name of the entry stub, and whether it has to clear .bss itself.
     /// Both change when an assembled object owns `_start`: the stub becomes
     /// something that object calls, and the .bss clear belongs to whatever
@@ -1537,9 +1546,14 @@ public sealed partial class Lowering
 
         // Named and registered BEFORE the descriptor is asked for, because the
         // descriptor's own name is a string and asking for it comes back here.
-        sym = $"str_{_strings.Count}";
+        // ONE OBJECT A TEXT ACROSS OBJECTS (SharedLiterals): named by the text,
+        // and certified and coalesced at the link like every other shared
+        // definition -- two texts can never be taken for one, their
+        // certificates differing. Per object, by order.
+        sym = SharedLiterals ? "str_" + System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(block.AsSpan(_t.ArrayHeaderBytes)))[..32]
+            : $"str_{_strings.Count}";
         _strings[text] = sym;
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = false };
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, Exported = SharedLiterals, Coalescible = SharedLiterals };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(0, StringDescriptor(), _t.DescriptorBytes));
         return sym;

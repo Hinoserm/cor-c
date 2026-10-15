@@ -161,7 +161,9 @@ public sealed class KernelExports
     private static bool PerImage(string name)
         => name.StartsWith("__corsac_unit", StringComparison.Ordinal) || name.StartsWith("__corsac_frame", StringComparison.Ordinal)
         || name.StartsWith("__corsac_stackmaps", StringComparison.Ordinal) || name.StartsWith("__corsac_init", StringComparison.Ordinal)
-        || name == Linker.ModuleInitName;
+        || name == Linker.ModuleInitName
+        // A string literal is every image's own, named by its text (Lowering.SharedLiterals).
+        || name.StartsWith("str_", StringComparison.Ordinal);
 
     // ---- writing -------------------------------------------------------------
 

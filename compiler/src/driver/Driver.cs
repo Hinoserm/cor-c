@@ -797,6 +797,11 @@ public static class Driver
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
         Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj");
+        // Literals shared across the objects a link puts together, except in
+        // position-independent code, where a global one is reached through the
+        // GOT (Lowering.SharedLiterals).
+        Corsac.Lang.Lower.Lowering.SharedLiterals = (Corsac.Lang.Lower.Lowering.PartOfALibrary || library)
+            && !shared && !args.Contains("--pic") && !(sharedLibs.Count > 0 && args.Contains("--obj"));
         // A unit linked with others keeps its interrupt facts for the link's
         // check of handlers across units (InterruptNotes).
         Binder.CollectInterruptFacts = args.Contains("--obj") || library;
