@@ -1,0 +1,58 @@
+// test: consumer_keeps_what_it_walks_across_units
+// units: tests/language/support/2043_consumer_keeps_units.cor
+// expect-exit: 0
+// expect-output:
+// odd 25 25
+// start 0 4
+// stop 5 45
+// twice 29
+// through 8
+//
+// A list handed to another unit's LINQ is the caller's to free only when the
+// walk keeps nothing of it (1311). Here each walk does keep it, or may: the
+// iterator over it handed back and walked after the call; its enumerator
+// kept in a static and moved on later; a walk thrown out of, the list used
+// again after; a list walked twice and through nested Where; and a list
+// passed as the interface. Each must stay whole however much is allocated
+// and collected in between.
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i); return l; }
+
+    static void Churn()
+    {
+        for (int k = 0; k < 3000; k++) { List<int> junk = Make(40); junk.Add(k); }
+        GC.Collect();
+    }
+
+    static void Main()
+    {
+        IEnumerable<int> odd = Keepers.Odd(Make(10));
+        Churn();
+        int first = 0, second = 0;
+        foreach (int x in odd) first += x;
+        Churn();
+        foreach (int x in odd) second += x;
+        Console.WriteLine("odd " + first + " " + second);
+
+        int at = Keepers.Start(Make(10));
+        Churn();
+        Keepers.Walking!.MoveNext();
+        Keepers.Walking.MoveNext();
+        Console.WriteLine("start " + at + " " + Keepers.Walking.Current);
+
+        List<int> kept = Make(10);
+        try { Keepers.Until(kept, 5); }
+        catch (InvalidOperationException e) { Console.Write(e.Message + " "); }
+        Churn();
+        int sum = 0;
+        foreach (int x in kept) sum += x;
+        Console.WriteLine(sum);
+
+        Console.WriteLine("twice " + Keepers.Twice(Make(10)));
+        Console.WriteLine("through " + Keepers.Through(Make(10)));
+    }
+}

@@ -1,0 +1,30 @@
+// The other unit of 2043_consumer_keeps_what_it_walks_across_units: LINQ over
+// a List parameter whose iterator or enumerator outlives the call.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public static class Keepers
+{
+    public static IEnumerator<int>? Walking;
+
+    // The iterator holding the list, handed back.
+    public static IEnumerable<int> Odd(List<int> l) => l.Where(x => x % 2 != 0);
+
+    // The list's enumerator, kept in a static, one step taken.
+    public static int Start(List<int> l)
+    {
+        Walking = l.Select(x => x * 2).GetEnumerator();
+        Walking.MoveNext();
+        return Walking.Current;
+    }
+
+    // A walk the predicate throws out of.
+    public static int Until(List<int> l, int stop) => l.Count(x => x < stop ? true : throw new InvalidOperationException("stop " + x));
+
+    // Walked twice, and through one Where over another.
+    public static int Twice(List<int> l) => l.Where(x => x > 2).Where(x => x < 8).Sum() + l.Count(x => x > 5);
+
+    // Through the interface, as LINQ's own callers pass it.
+    public static int Through(IEnumerable<int> source) => source.Where(x => x > 1).Count();
+}
