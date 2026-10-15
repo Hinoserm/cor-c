@@ -143,6 +143,7 @@ public static partial class Program
         Try("marks: frame address folding keeps a load's field", MarksFrameAddressFold);
         Try("marks: a constant's copy keeps the call's marks", MarksConstantSpecialize);
         Try("marks: a call made direct keeps a fresh struct, not a delegate's invoke", MarksDevirtualize);
+        Try("parameter classes: an interface the class lists answered, one it does not left; a depth its class answers", () => { ParamClassTests.InterfaceScan(); ParamClassTests.DepthTest(); });
         Try("marks: a body copied for a region keeps its sites and loops", MarksRegionClone);
         Try("marks: an inlined loop keeps its region", MarksInlineLoop);
         Try("marks: tails marked apart are not shared", MarksCommonTailMerge);

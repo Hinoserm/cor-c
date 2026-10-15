@@ -1,0 +1,26 @@
+// The other unit of 2064_object_argument_class_made_by_shared_code: a generic
+// class keeping itself in a static, a shared maker of it, and calls on a
+// parameter declared as its object and tuple copies.
+public class Keeper<T>
+{
+    public static object? Last;
+    public int V = 42;
+
+    public virtual int Keep()
+    {
+        Last = this;
+        return 1;
+    }
+}
+
+public static class Make
+{
+    public static Keeper<T> New<T>() => new Keeper<T>();
+}
+
+public static class Use
+{
+    public static int Run(Keeper<object> k) => k.Keep();
+
+    public static int RunPair(Keeper<(object, int)> k) => k.Keep();
+}

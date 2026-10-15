@@ -85,5 +85,7 @@
   <ItemGroup>
     <!-- The backend's tests (tests/arch/x86) drive the allocator and the region passes directly. -->
     <InternalsVisibleTo Include="x86tests" />
+    <!-- The optimizer's tests set a function's parameter classes as lowering would (ParamClassTests). -->
+    <InternalsVisibleTo Include="OptTests" />
   </ItemGroup>
 </Project>

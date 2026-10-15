@@ -1,0 +1,46 @@
+// test: object_argument_class_made_by_shared_code
+// units: tests/language/support/2064_keeper_units.cor
+// expect-exit: 0
+// expect-output:
+// object 42 1000
+// pair 42 1000
+//
+// A parameter declared as a generic class over object or a tuple holding
+// one is a class shared code makes too: Make.New<T> stamps what it
+// makes with the shared copy's descriptor. Taken as the class it names
+// (Lowering.ParamClass), the virtual call on it reached no override of the
+// shared copy's, and the object it keeps -- in a static of its own class --
+// looked free to free. Kept, it is read whole after blocks of its shape
+// were made again.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static readonly List<object> Junk = new();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        Junk.Clear();
+        for (int k = 0; k < 4096; k++) Junk.Add(new Keeper<string>());
+        GC.Collect();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Objects() => Use.Run(Make.New<object>());
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Pairs() => Use.RunPair(Make.New<(object, int)>());
+
+    static void Main()
+    {
+        int a = 0, c = 0;
+        for (int k = 0; k < 1000; k++) { a += Objects(); c += Pairs(); }
+        Churn();
+        Console.WriteLine("object " + ((Keeper<object>)Keeper<object>.Last!).V + " " + a);
+        Console.WriteLine("pair " + ((Keeper<(object, int)>)Keeper<(object, int)>.Last!).V + " " + c);
+    }
+}

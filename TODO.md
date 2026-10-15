@@ -403,6 +403,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   - generic bodies bound against the template's parameters.
   Until then such a copy only named in a body is declared while binding, so the
   refusal stays a message (Binder.MayCollide).
+- [ ] `dynamic` and `object` as type arguments are one type (C# 10.2.2's
+  identity conversion): Keeper<dynamic> is Keeper<object>, both at run time
+  and for conversions. The compiler makes them two copies and refuses
+  `Use.Run(Keeper<dynamic>)` handed `Make.New<dynamic>()`.
 
 ## Project compilation and source organization
 
