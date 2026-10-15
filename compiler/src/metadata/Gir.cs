@@ -8,7 +8,7 @@ namespace Corsac.Lang;
 /// GENERIC INTERMEDIATE REPRESENTATION: a generic template, in a library, in a
 /// form a consumer can instantiate.
 ///
-/// The problem it solves is stated in docs/image-format.md. A library's
+/// The problem it solves is stated in docs/SEPARATE-COMPILATION.md. A library's
 /// header carries declarations with the bodies stripped, and a template with no
 /// body cannot be instantiated -- so `List` was simply not a known type to
 /// anything that linked the standard library as a binary.

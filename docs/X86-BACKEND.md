@@ -44,8 +44,8 @@ and frames with those numbers and nothing else; lowering uses them to
 compute offsets; the IR itself carries only sizes, never register names.
 
 `Lang.Backend` is the other half: it takes an IR module and produces an
-object file. The x86 backend is the first. A CORSAC backend, an ARM
-backend or anything else implements the same interface, and `corc
+object file. The x86 backend is the first and the x86-64 one the second;
+an ARM backend or anything else implements the same interface, and `corc
 --target arm` selects it. Nothing in the parser, the binder, the
 monomorphiser or lowering changes for a new target, and a new target's
 work is instruction selection, register allocation for its register file,
@@ -1258,7 +1258,7 @@ at another tree and `--no-default-libs` turns the set off.
   files, directories, pipes, fork and exec, sockets, time, memory mapping,
   the environment -- as negative-errno results. The bare-metal variant
   replaces it with serial-port and firmware calls; nothing above it
-  changes. The CORSAC variant is the kernel's system-call table.
+  changes.
 
 All of these are destined for `libcorsacrt.so`; see "Shared libraries".
 
@@ -1430,7 +1430,7 @@ What that means in practice:
 - We never invent our own API where .NET has one. A class that is not a
   .NET class is rewritten to the .NET one, not wrapped by it.
 - Programs make no operating-system calls of their own. The `Os` class in
-  `lib/sys/linux.cor` (and its CORSAC twin) is the platform layer the
+  `runtime/src/platforms/linux/system.cor` is the platform layer the
   library is built on, not something a program touches.
 - The compiler is never changed to suit a library or a program; the
   library or program is rewritten to what C# would be.

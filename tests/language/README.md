@@ -6,10 +6,7 @@ filter, such as `bash tests/language/run.sh strings`.
 
 Executable fixtures default to a ten-second timeout. A `// timeout: 300`
 header gives an integration fixture its own positive timeout in seconds;
-an explicit `TIMEOUT` environment setting overrides the header. The kernel
-fixture uses a committed snapshot from `CORSAC_ROOT` (defaulting to the sibling
-`corsac86-integration` checkout), requires zero compilation errors, and retains
-diagnostics under `build/kernel-binds.*` without modifying that checkout.
+an explicit `TIMEOUT` environment setting overrides the header.
 
 `bash tests/language/run.sh --through-link [--region-engine escape|andersen]`
 builds every test through the link-time optimiser and its region solver

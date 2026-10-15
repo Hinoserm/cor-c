@@ -208,12 +208,12 @@ tasks below track that work; moving files alone does not reduce the working set.
   conflict on `ThreadStart` (slot 56 in the library unit, 44 in the caller).
   Not a numbering fault: the two sides were given different library sources.
   The library unit compiled the default set, which gained Drawing and Forms;
-  the caller's `--ref` list in `tests/integration/managed-runtime.sources`
-  had not, so it declared eight fewer interface families and every slot after
-  them moved by twelve. Interface slots ARE numbered over the declarations
-  (see Binder), which is exactly why the lists must be the same. The list is
-  brought up to date and `RuntimeSourceListTests` pins it to
-  `Driver.DefaultLibraries` so it cannot drift again. `CORC_DUMP_FAMILIES`
+  the caller's `--ref` list in a checked-in sources file had not, so it
+  declared eight fewer interface families and every slot after them moved by
+  twelve. Interface slots ARE numbered over the declarations (see Binder),
+  which is exactly why the lists must be the same. There is no checked-in
+  list now: every side asks the compiler (`corc library-sources`,
+  `Driver.DefaultLibraries`), so it cannot drift again. `CORC_DUMP_FAMILIES`
   prints the family table a unit numbered, which is how the difference was
   found; diff it between the two sides of a conflicting link.
 - [x] Follow the types an imported template body names, so they are loaded in

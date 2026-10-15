@@ -6,17 +6,13 @@ using Corsac.Lang.Ir;
 namespace Corsac.Asm;
 
 /// <summary>
-/// The 16-bit x86 real-mode assembler.
+/// The x86 assembler: real mode, 32-bit flat and relocatable.
 ///
-/// It exists because the CORSAC assembler cannot be retargeted: that one lays
-/// out fixed-width 64-bit words and the constant pool that goes with them, and
 /// x86 is a byte stream whose instructions are one to a dozen bytes long and
-/// whose length depends on values that are not known until the labels are. So
-/// this is a second assembler, and what is deliberately shared with the first
-/// is everything a person types: the <c>.base</c>/<c>.entry</c>/<c>.equ</c>/
-/// <c>.include</c> directives, the label syntax, the expression grammar and the
-/// <c>file(line): message</c> error format. Assembly for the two machines
-/// should read as though one person wrote it, because one person did.
+/// whose length depends on values that are not known until the labels are.
+/// What a person types is the <c>.base</c>/<c>.entry</c>/<c>.equ</c>/
+/// <c>.include</c> directives, the label syntax, the expression grammar
+/// (Expr) and the <c>file(line): message</c> error format.
 ///
 /// TWO PASSES, and the second one is not allowed to change its mind. Pass one
 /// lays out addresses and records, for every encoding choice it makes, which

@@ -198,8 +198,7 @@ descriptor word 10 holds a real address, and descriptors are relocated today. Th
 turns an offset into an address with one add (`Sys.SelfRelative(address)`, an intrinsic).
 
 This is also why the design needs nothing of the kernel: the tables are read-only data in
-an ordinary loadable segment (ELF) or in the image's existing read-only section (the
-CORSAC sectioned format), with no new section, relocation kind or loader duty. The
+an ordinary loadable segment, with no new section, relocation kind or loader duty. The
 descriptor flags change does mean the kernel, the ring-1 images and every program are
 rebuilt together, as any ABI change in a sealed system does.
 

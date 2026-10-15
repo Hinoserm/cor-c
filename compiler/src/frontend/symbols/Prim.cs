@@ -53,7 +53,7 @@ public enum Prim : byte
     /// A primitive rather than a class in the standard library because the
     /// descriptor is emitted by the code generator, and a class whose layout
     /// had to agree with the code generator by hand is a layout that disagrees
-    /// eventually. See docs/image-format.md.
+    /// eventually. See docs/REFLECTION.md.
     /// </summary>
     Type,
 

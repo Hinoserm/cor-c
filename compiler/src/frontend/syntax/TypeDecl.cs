@@ -344,7 +344,7 @@ public sealed class TypeDecl : Node
     /// exactly the split .NET makes between what the verifier sees and what the
     /// JIT emits.
     ///
-    /// See docs/image-format.md.
+    /// See docs/SEPARATE-COMPILATION.md.
     /// </summary>
     public string? Canon { get; set; }
 

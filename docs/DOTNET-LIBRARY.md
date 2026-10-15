@@ -16,7 +16,7 @@ and runs, unchanged, on Linux or on CORSAC/OS. Consequences:
 - We never invent an API where .NET has one. A class that is not a
   .NET class is rewritten to the .NET one, not wrapped by it.
 - Programs make no operating-system calls of their own. `Os` in
-  `lib/sys/linux.cor` (and its CORSAC twin) is the platform seam the
+  `runtime/src/platforms/linux/system.cor` is the platform seam the
   library is built on; a program that names `Os`, `Fd`, `O`, `Stat`,
   `Errno` or `Args` is wrong.
 - The compiler is never changed to suit a library or a program. When it

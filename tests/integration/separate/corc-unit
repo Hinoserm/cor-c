@@ -9,8 +9,8 @@
 #   SEPARATE_INDEX    declaration index of the library
 #   SEPARATE_LIB_OBJ  the library object
 #
-# Anything else -- and a compile a test runs itself (280 builds the kernel
-# with --freestanding --obj) -- goes to the real compiler unchanged.
+# Anything else -- and a compile a test runs itself -- goes to the real
+# compiler unchanged.
 set -euo pipefail
 read -r -a real <<< "$SEPARATE_CORC"
 case " $* " in *" --obj "*|*" --freestanding "*) exec "${real[@]}" "$@" ;; esac

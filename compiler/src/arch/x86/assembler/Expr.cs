@@ -30,9 +30,8 @@ internal interface ISymbols
 }
 
 /// <summary>
-/// The expression evaluator, kept deliberately the same shape as the CORSAC
-/// assembler's so that hand-written assembly reads the same on both targets:
-/// C's operators and precedence, hex/binary/decimal/character literals, and
+/// The expression evaluator: C's operators and precedence,
+/// hex/binary/decimal/character literals, and
 /// names that are labels or equates.
 ///
 /// It is a plain recursive descent over the operand text rather than a token

@@ -7,7 +7,7 @@ namespace Corsac.Lang;
 /// the code generator puts immediately in front of T's vtable -- so this is a
 /// constant, and comparing two of them is comparing two addresses.
 ///
-/// See docs/image-format.md.
+/// See docs/REFLECTION.md.
 public sealed class TypeOfExpr : Expr, ICanonSlot
 {
     /// <summary>The descriptor entry a shared copy reads for its type argument (ICanonSlot), or -1.</summary>

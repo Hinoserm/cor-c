@@ -7,7 +7,7 @@ namespace Corsac.Lang;
 /// <summary>
 /// The type table: what types an image contains.
 ///
-/// REFLECTION TIER 1 (see docs/image-format.md, section 7). Asking an
+/// REFLECTION TIER 1 (see docs/REFLECTION.md, "The three tiers"). Asking an
 /// OBJECT what type it is needs none of this -- every object carries its vtable
 /// pointer at offset 0 and the descriptor sits immediately in front of the
 /// vtable, so GetType() is two instructions. What this adds is the other
