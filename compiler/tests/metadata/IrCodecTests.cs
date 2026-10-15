@@ -28,13 +28,18 @@ public static class IrCodecTests
         Reject(() => IrFunctionCodec.Read(damaged));
         Reject(() => IrFunctionCodec.Read(bytes[..^1]));
         Reject(() => IrFunctionCodec.Read(bytes.Concat(new byte[] { 0 }).ToArray()));
-        // A lowered async body keeps its frame record through the archive; one
-        // still carrying its suspension markers is refused.
+        // An async body keeps its frame record through the archive, lowered or
+        // not: a unit's IR for the link is taken before the late passes and
+        // the async transform, which read whether it ran and what a
+        // suspension hands back. One handing back what is not a constant is
+        // refused.
         Function stepped = new("stepped", IrType.I32);
         VReg machine = stepped.NewReg(IrType.I32); stepped.Params.Add(machine);
         new Builder(stepped, stepped.NewBlock()).Ret(RegOperand.Of(machine));
+        stepped.Async = new AsyncFrame { StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size", SuspendResult = RegOperand.Of(machine) };
+        Check(Throws(() => IrFunctionCodec.Write(stepped)), "An async body handing back a register at a suspension was archived");
         stepped.Async = new AsyncFrame { StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size" };
-        Check(Throws(() => IrFunctionCodec.Write(stepped)), "An unlowered async body was archived");
+        Check(IrFunctionCodec.Read(IrFunctionCodec.Write(stepped)).Async is { Lowered: false, StateOffset: 8 }, "An unlowered async body lost its frame in the archive");
         stepped.Async.Lowered = true;
         bytes = IrFunctionCodec.Write(stepped);
         budget = new(65536);
