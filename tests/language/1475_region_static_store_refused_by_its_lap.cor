@@ -1,0 +1,81 @@
+// test: region_static_store_refused_by_its_lap
+// expect-exit: 0
+// expect-output:
+// collect 79968000 kept 1000 9966000
+// churn ok 1000 9966000
+//
+// Collect's loop makes a scratch array every lap, dead by the lap's end,
+// and a Tok, kept in a static list every eighth lap. A lap's region gives
+// back what the lap made; what the lap puts where the unknown object
+// reaches outlives the lap, as what Collect hands back outlives Collect:
+// Collect's own answer says so, and the lap's region must not take the
+// Tok. The kept Toks are read back after thousands of regions made and
+// given back over the same memory.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Tok
+{
+    public int A;
+    public string Text;
+    public Tok(int a, string text) { A = a; Text = text; }
+}
+
+public static class Keep
+{
+    public static List<Tok> All = new();
+}
+
+public static class W
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Collect(int k)
+    {
+        long s = 0;
+        for (int i = 0; i < 40; i++)
+        {
+            int[] scratch = new int[8];
+            for (int j = 0; j < 8; j++) scratch[j] = i + j;
+            Tok t = new Tok(k * 100 + i, "c");
+            if (i % 8 == 0) Keep.All.Add(t);
+            s += scratch[7] + t.A;
+        }
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Churn(int k)
+    {
+        long s = 0;
+        for (int i = 0; i < 40; i++)
+        {
+            Tok t = new Tok(-1 - i, "junk");
+            int[] scratch = new int[8];
+            scratch[0] = t.A;
+            s += i + (scratch[0] == -1 - i ? 0 : 1000000);
+        }
+        return s;
+    }
+}
+
+static class P
+{
+    static long Sum()
+    {
+        long s = 0;
+        for (int i = 0; i < Keep.All.Count; i++) s += Keep.All[i].A;
+        return s;
+    }
+
+    static void Main()
+    {
+        long collect = 0;
+        for (int k = 0; k < 200; k++) collect += W.Collect(k);
+        Console.WriteLine("collect " + collect + " kept " + Keep.All.Count + " " + Sum());
+        long churn = 0;
+        for (int k = 0; k < 3000; k++) churn += W.Churn(k);
+        Console.WriteLine("churn " + (churn == 3000L * 780 ? "ok" : "bad " + churn) + " " + Keep.All.Count + " " + Sum());
+    }
+}

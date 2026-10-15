@@ -1,0 +1,358 @@
+// test: region_unified_ring_static_stays_refused
+// expect-exit: 0
+// expect-output:
+// read 7000 kept 7 churn 1000
+//
+// A ring of 301 calls, past the cycle the escape engine solves by
+// inclusion, is solved by unification. R0, at the bottom of each walk
+// round the ring, makes a Node, keeps it in a static and hands it back:
+// the Node is the ring's unknown object, and every member's summary
+// hands it back as the unknown object, with no site. Read, outside the
+// ring, reads it and drops it: nothing Read's own escape answer names
+// outlives it. Made in Read's region, the kept Node would be given back
+// with it and Churn's Nodes made over it. What a unified cycle's unknown
+// object holds outlives every boundary.
+
+using System;
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public long V; public long W; }
+public static class Kept { public static Node? Last; }
+
+public static class Ring
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static Node R0(int d)
+    {
+        if (d <= 0) { Node n = new(); n.V = 7; Kept.Last = n; return n; }
+        return R1(d - 1);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R1(int d) => R2(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R2(int d) => R3(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R3(int d) => R4(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R4(int d) => R5(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R5(int d) => R6(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R6(int d) => R7(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R7(int d) => R8(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R8(int d) => R9(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R9(int d) => R10(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R10(int d) => R11(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R11(int d) => R12(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R12(int d) => R13(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R13(int d) => R14(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R14(int d) => R15(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R15(int d) => R16(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R16(int d) => R17(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R17(int d) => R18(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R18(int d) => R19(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R19(int d) => R20(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R20(int d) => R21(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R21(int d) => R22(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R22(int d) => R23(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R23(int d) => R24(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R24(int d) => R25(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R25(int d) => R26(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R26(int d) => R27(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R27(int d) => R28(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R28(int d) => R29(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R29(int d) => R30(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R30(int d) => R31(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R31(int d) => R32(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R32(int d) => R33(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R33(int d) => R34(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R34(int d) => R35(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R35(int d) => R36(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R36(int d) => R37(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R37(int d) => R38(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R38(int d) => R39(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R39(int d) => R40(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R40(int d) => R41(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R41(int d) => R42(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R42(int d) => R43(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R43(int d) => R44(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R44(int d) => R45(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R45(int d) => R46(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R46(int d) => R47(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R47(int d) => R48(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R48(int d) => R49(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R49(int d) => R50(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R50(int d) => R51(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R51(int d) => R52(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R52(int d) => R53(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R53(int d) => R54(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R54(int d) => R55(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R55(int d) => R56(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R56(int d) => R57(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R57(int d) => R58(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R58(int d) => R59(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R59(int d) => R60(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R60(int d) => R61(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R61(int d) => R62(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R62(int d) => R63(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R63(int d) => R64(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R64(int d) => R65(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R65(int d) => R66(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R66(int d) => R67(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R67(int d) => R68(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R68(int d) => R69(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R69(int d) => R70(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R70(int d) => R71(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R71(int d) => R72(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R72(int d) => R73(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R73(int d) => R74(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R74(int d) => R75(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R75(int d) => R76(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R76(int d) => R77(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R77(int d) => R78(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R78(int d) => R79(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R79(int d) => R80(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R80(int d) => R81(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R81(int d) => R82(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R82(int d) => R83(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R83(int d) => R84(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R84(int d) => R85(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R85(int d) => R86(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R86(int d) => R87(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R87(int d) => R88(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R88(int d) => R89(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R89(int d) => R90(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R90(int d) => R91(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R91(int d) => R92(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R92(int d) => R93(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R93(int d) => R94(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R94(int d) => R95(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R95(int d) => R96(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R96(int d) => R97(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R97(int d) => R98(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R98(int d) => R99(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R99(int d) => R100(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R100(int d) => R101(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R101(int d) => R102(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R102(int d) => R103(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R103(int d) => R104(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R104(int d) => R105(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R105(int d) => R106(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R106(int d) => R107(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R107(int d) => R108(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R108(int d) => R109(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R109(int d) => R110(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R110(int d) => R111(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R111(int d) => R112(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R112(int d) => R113(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R113(int d) => R114(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R114(int d) => R115(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R115(int d) => R116(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R116(int d) => R117(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R117(int d) => R118(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R118(int d) => R119(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R119(int d) => R120(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R120(int d) => R121(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R121(int d) => R122(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R122(int d) => R123(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R123(int d) => R124(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R124(int d) => R125(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R125(int d) => R126(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R126(int d) => R127(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R127(int d) => R128(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R128(int d) => R129(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R129(int d) => R130(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R130(int d) => R131(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R131(int d) => R132(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R132(int d) => R133(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R133(int d) => R134(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R134(int d) => R135(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R135(int d) => R136(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R136(int d) => R137(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R137(int d) => R138(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R138(int d) => R139(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R139(int d) => R140(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R140(int d) => R141(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R141(int d) => R142(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R142(int d) => R143(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R143(int d) => R144(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R144(int d) => R145(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R145(int d) => R146(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R146(int d) => R147(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R147(int d) => R148(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R148(int d) => R149(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R149(int d) => R150(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R150(int d) => R151(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R151(int d) => R152(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R152(int d) => R153(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R153(int d) => R154(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R154(int d) => R155(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R155(int d) => R156(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R156(int d) => R157(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R157(int d) => R158(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R158(int d) => R159(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R159(int d) => R160(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R160(int d) => R161(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R161(int d) => R162(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R162(int d) => R163(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R163(int d) => R164(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R164(int d) => R165(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R165(int d) => R166(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R166(int d) => R167(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R167(int d) => R168(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R168(int d) => R169(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R169(int d) => R170(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R170(int d) => R171(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R171(int d) => R172(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R172(int d) => R173(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R173(int d) => R174(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R174(int d) => R175(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R175(int d) => R176(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R176(int d) => R177(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R177(int d) => R178(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R178(int d) => R179(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R179(int d) => R180(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R180(int d) => R181(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R181(int d) => R182(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R182(int d) => R183(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R183(int d) => R184(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R184(int d) => R185(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R185(int d) => R186(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R186(int d) => R187(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R187(int d) => R188(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R188(int d) => R189(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R189(int d) => R190(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R190(int d) => R191(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R191(int d) => R192(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R192(int d) => R193(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R193(int d) => R194(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R194(int d) => R195(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R195(int d) => R196(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R196(int d) => R197(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R197(int d) => R198(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R198(int d) => R199(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R199(int d) => R200(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R200(int d) => R201(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R201(int d) => R202(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R202(int d) => R203(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R203(int d) => R204(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R204(int d) => R205(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R205(int d) => R206(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R206(int d) => R207(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R207(int d) => R208(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R208(int d) => R209(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R209(int d) => R210(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R210(int d) => R211(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R211(int d) => R212(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R212(int d) => R213(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R213(int d) => R214(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R214(int d) => R215(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R215(int d) => R216(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R216(int d) => R217(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R217(int d) => R218(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R218(int d) => R219(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R219(int d) => R220(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R220(int d) => R221(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R221(int d) => R222(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R222(int d) => R223(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R223(int d) => R224(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R224(int d) => R225(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R225(int d) => R226(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R226(int d) => R227(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R227(int d) => R228(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R228(int d) => R229(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R229(int d) => R230(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R230(int d) => R231(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R231(int d) => R232(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R232(int d) => R233(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R233(int d) => R234(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R234(int d) => R235(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R235(int d) => R236(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R236(int d) => R237(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R237(int d) => R238(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R238(int d) => R239(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R239(int d) => R240(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R240(int d) => R241(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R241(int d) => R242(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R242(int d) => R243(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R243(int d) => R244(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R244(int d) => R245(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R245(int d) => R246(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R246(int d) => R247(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R247(int d) => R248(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R248(int d) => R249(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R249(int d) => R250(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R250(int d) => R251(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R251(int d) => R252(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R252(int d) => R253(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R253(int d) => R254(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R254(int d) => R255(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R255(int d) => R256(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R256(int d) => R257(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R257(int d) => R258(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R258(int d) => R259(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R259(int d) => R260(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R260(int d) => R261(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R261(int d) => R262(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R262(int d) => R263(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R263(int d) => R264(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R264(int d) => R265(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R265(int d) => R266(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R266(int d) => R267(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R267(int d) => R268(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R268(int d) => R269(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R269(int d) => R270(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R270(int d) => R271(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R271(int d) => R272(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R272(int d) => R273(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R273(int d) => R274(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R274(int d) => R275(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R275(int d) => R276(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R276(int d) => R277(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R277(int d) => R278(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R278(int d) => R279(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R279(int d) => R280(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R280(int d) => R281(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R281(int d) => R282(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R282(int d) => R283(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R283(int d) => R284(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R284(int d) => R285(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R285(int d) => R286(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R286(int d) => R287(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R287(int d) => R288(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R288(int d) => R289(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R289(int d) => R290(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R290(int d) => R291(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R291(int d) => R292(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R292(int d) => R293(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R293(int d) => R294(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R294(int d) => R295(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R295(int d) => R296(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R296(int d) => R297(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R297(int d) => R298(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R298(int d) => R299(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R299(int d) => R300(d - 1);
+    [MethodImpl(MethodImplOptions.NoInlining)] public static Node R300(int d) => R0(d - 1);
+}
+
+public static class B
+{
+    // The boundary outside the ring: the Node it is handed back is dropped.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Read() => Ring.R0(3).V;
+
+    // Nodes made and dropped, in a region of their own, over the memory a
+    // region of Read's gave back.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Churn(int k)
+    {
+        long s = 0;
+        for (int i = 0; i < 8; i++) { Node junk = new(); junk.V = 1000 + k; junk.W = i; s += junk.W; }
+        return s == 28 ? 1 : 0;
+    }
+}
+
+static class P
+{
+    static void Main()
+    {
+        long read = 0, churn = 0;
+        for (int k = 0; k < 1000; k++) read += B.Read();
+        for (int k = 0; k < 1000; k++) churn += B.Churn(k);
+        Console.WriteLine("read " + read + " kept " + Kept.Last!.V + " churn " + churn);
+    }
+}

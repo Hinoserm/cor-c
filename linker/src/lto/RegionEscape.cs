@@ -80,6 +80,11 @@ internal sealed class RegionEscape
     private readonly int[] _siteBase;
     private readonly bool[] _wanted;
     private readonly bool[] _rooted;
+    // The roots as the caller said them, and per body: rooted, but not only
+    // as the image's entry that runs once (RunsOnce) -- what such a root
+    // hands back or writes is unseen (Unseen).
+    private readonly bool[] _rootedIn;
+    private bool[] _unseenRoot = Array.Empty<bool>();
     private readonly Summary?[] _summaries;
 
     /// <summary>Counts for a report: locations carried, summaries applied, functions not followed, the largest cycle.</summary>
@@ -133,9 +138,10 @@ internal sealed class RegionEscape
     public RegionEscape(IReadOnlyList<RegionFunction> functions, int[]?[][] targets, string?[][] keys, int[] siteBase, int sites, bool[] wanted, bool[] rooted)
     {
         _functions = functions; _keys = keys; _siteBase = siteBase;
-        _wanted = (bool[])wanted.Clone(); _rooted = (bool[])rooted.Clone();
+        _wanted = (bool[])wanted.Clone(); _rooted = (bool[])rooted.Clone(); _rootedIn = (bool[])rooted.Clone();
         Escaping = new int[]?[functions.Count];
         Global = new bool[sites];
+        Unseen = new bool[sites];
         LoopHeld = new (int[], int[])[]?[functions.Count];
         _summaries = new Summary?[functions.Count];
         _changedAt = new long[functions.Count];
@@ -392,6 +398,13 @@ internal sealed class RegionEscape
     // For a report: what only the rule for functions called from where nobody follows made global.
     private HashSet<int> _rootedRefs = new();
     public int GlobalByUnknown, GlobalByRoots;
+    // What no caller's escape answer can name (Unseen): the origins a
+    // unification keeps only in its global class, and what roots hand back
+    // or write -- each component's own, as the global refs are.
+    private HashSet<int> _unseenRefs = new(), _unseenRootRefs = new();
+    public int UnseenBySummaries, UnseenByRoots;
+    /// <summary>Unknown summaries applied (none expected: every body is solved before it is asked of).</summary>
+    public long UnknownApplied;
 
     /// <summary>A summary's objects named for what is made from them: under its holder.</summary>
     private void Register(Summary s, int holder)
@@ -417,8 +430,17 @@ internal sealed class RegionEscape
 
     /// <summary>Per function asked about: the origins of the objects made beneath it that outlive its return (sorted).</summary>
     public readonly int[]?[] Escaping;
-    /// <summary>Per site: an object of it is reached from the unknown object, or outlives a call nobody follows.</summary>
+    /// <summary>Per site: an object of it is reached from the unknown object, or outlives a call nobody follows (a report's).</summary>
     public readonly bool[] Global;
+    /// <summary>
+    /// Per site: an object of it no caller's escape answer can name -- kept
+    /// only in a unified component's global class, outliving a call nobody
+    /// follows (but the image's entry, run once with no region open), or
+    /// beneath an unknown summary. Refused by every boundary. What the
+    /// unknown object reaches in a function's own graph is in that
+    /// function's answer (Escaping), and refused by the boundaries above it.
+    /// </summary>
+    public readonly bool[] Unseen;
     /// <summary>Per function, per loop: the origins what is live where a lap ends reaches, and what the loop keeps reaches.</summary>
     public readonly (int[] LapLive, int[] Kept)[]?[] LoopHeld;
 
@@ -562,6 +584,12 @@ internal sealed class RegionEscape
 
     /// <summary>A diagnostic only, never for an image: leave out what roots hand back.</summary>
     public bool NoRoots;
+    /// <summary>
+    /// Whether a rooted function is rooted only as the image's entry, which
+    /// runs once before any region is open: what it hands back or writes is
+    /// no unseen caller's (its own regions are judged by its answer).
+    /// </summary>
+    public Func<int, bool>? RunsOnce;
     /// <summary>A diagnostic: the sites to explain the global reach of.</summary>
     public Func<int, bool>? Why;
     public Func<int, bool>? WhyFunction;
@@ -574,12 +602,20 @@ internal sealed class RegionEscape
     {
         _globalRefs = new();
         _rootedRefs = new();
+        _unseenRefs = new();
+        _unseenRootRefs = new();
         foreach (int[]? each in _globalOf) if (each is not null) _globalRefs.UnionWith(each);
         foreach (int[]? each in _rootedOf) if (each is not null) _rootedRefs.UnionWith(each);
-        Mark(_globalRefs);
+        foreach (int[]? each in _unseenOf) if (each is not null) _unseenRefs.UnionWith(each);
+        foreach (int[]? each in _unseenRootOf) if (each is not null) _unseenRootRefs.UnionWith(each);
+        Mark(_globalRefs, Global);
         GlobalByUnknown = Global.Count(g => g);
-        if (!NoRoots) Mark(_rootedRefs);
+        if (!NoRoots) Mark(_rootedRefs, Global);
         GlobalByRoots = Global.Count(g => g) - GlobalByUnknown;
+        Mark(_unseenRefs, Unseen);
+        UnseenBySummaries = Unseen.Count(u => u);
+        if (!NoRoots) Mark(_unseenRootRefs, Unseen);
+        UnseenByRoots = Unseen.Count(u => u) - UnseenBySummaries;
         // Each copy answered as its body (Bodies).
         for (int f = 0; f < _functions.Count; f++)
         {
@@ -592,7 +628,7 @@ internal sealed class RegionEscape
         if (Copies > 0) Progress?.Invoke($"escape graphs: {_functions.Count} functions, {_functions.Count - Copies} bodies: {Copies} solved as another copy of their body, {_copiesOf.Count} bodies of more than one");
     }
 
-    private void Mark(IEnumerable<int> refs)
+    private void Mark(IEnumerable<int> refs, bool[] into)
     {
         Stack<int> next = new();
         HashSet<int> seen = new();
@@ -601,8 +637,8 @@ internal sealed class RegionEscape
         {
             if (r < 0)
             {
-                Global[-r - 1] = true;
-                if (_siteCopies[-r - 1] is { } copies) foreach (int copy in copies) Global[copy] = true;
+                into[-r - 1] = true;
+                if (_siteCopies[-r - 1] is { } copies) foreach (int copy in copies) into[copy] = true;
                 continue;
             }
             if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
@@ -949,6 +985,10 @@ internal sealed class RegionEscape
 
     public void Run()
     {
+        // The bodies rooted otherwise than as the entry that runs once.
+        _unseenRoot = new bool[_functions.Count];
+        for (int f = 0; f < _functions.Count; f++)
+            if (_rootedIn[f] && RunsOnce?.Invoke(f) != true) _unseenRoot[_body[f]] = true;
         if (WideTargets > 0)
         {
             _assumed = new(TargetsComparer.Instance);
@@ -1236,8 +1276,22 @@ internal sealed class RegionEscape
             a.ChangedAt = 0;
         }
         _applying?.Add(a);
-        if (_standIns.TryGetValue(targets, out Summary? known)) return known;
-        return Built(a);
+        if (_standIns.TryGetValue(targets, out Summary? known)) return Noted(targets, known);
+        return Noted(targets, Built(a));
+    }
+
+    /// <summary>
+    /// A summary as it is applied: an unknown one names nothing of what is
+    /// made beneath its targets, which no caller's answer can then say --
+    /// unseen, and global for the report. Never expected: every body is
+    /// solved before a call of it is.
+    /// </summary>
+    private Summary Noted(int[] targets, Summary s)
+    {
+        if (!s.IsUnknown) return s;
+        UnknownApplied++;
+        foreach (int site in Beneath(targets)) { _unseenRefs.Add(Leaf(site)); _globalRefs.Add(Leaf(site)); }
+        return s;
     }
 
     // A stand-in built as it stands, under its own holder.
@@ -1454,13 +1508,16 @@ internal sealed class RegionEscape
         _holders.Clear();
         _globalRefs.Clear();
         _rootedRefs.Clear();
+        _unseenRefs.Clear();
+        _unseenRootRefs.Clear();
+        UnknownApplied = 0;
         _merged.Clear();
         _standIns.Clear();
         _standInsOf.Clear();
         _escapingBits = null;
         _holderFirst = null;
         _bitsByOrigins.Clear();
-        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _shapeGeneration++;
+        _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _unseenOf.Clear(); _unseenRootOf.Clear(); _shapeGeneration++;
         _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
         _originsAt.Clear();
         _componentOf = null; _callees = null;
@@ -1509,7 +1566,7 @@ internal sealed class RegionEscape
     private readonly List<int[]> _components = new();
     // (Kept as arrays: a set a component, for all of them at once, was a
     // set's buckets and entries for every origin each made global.)
-    private readonly List<int[]?> _globalOf = new(), _rootedOf = new();
+    private readonly List<int[]?> _globalOf = new(), _rootedOf = new(), _unseenOf = new(), _unseenRootOf = new();
     // Per component: the tick it was solved at, the stand-ins it applied, the
     // holders it read sites through (null: more than MostRead, so any).
     private readonly List<long> _solvedAt = new();
@@ -1578,8 +1635,8 @@ internal sealed class RegionEscape
     {
         int[] members = _components[c];
         foreach (int f in members) { Escaping[f] = null; LoopHeld[f] = null; }
-        HashSet<int> global = _globalRefs, rooted = _rootedRefs;
-        _globalRefs = new(); _rootedRefs = new();
+        HashSet<int> global = _globalRefs, rooted = _rootedRefs, unseen = _unseenRefs, unseenRoots = _unseenRootRefs;
+        _globalRefs = new(); _rootedRefs = new(); _unseenRefs = new(); _unseenRootRefs = new();
         // Solved at one tick; whatever it changes, at the next: a change it
         // makes to what it read itself -- a stand-in it applied, grown by its
         // own member's summary -- is newer than its solve.
@@ -1593,7 +1650,9 @@ internal sealed class RegionEscape
         _applying = null; _reading = null;
         _globalOf[c] = _globalRefs.Count == 0 ? Array.Empty<int>() : _globalRefs.ToArray();
         _rootedOf[c] = _rootedRefs.Count == 0 ? Array.Empty<int>() : _rootedRefs.ToArray();
-        _globalRefs = global; _rootedRefs = rooted;
+        _unseenOf[c] = _unseenRefs.Count == 0 ? Array.Empty<int>() : _unseenRefs.ToArray();
+        _unseenRootOf[c] = _unseenRootRefs.Count == 0 ? Array.Empty<int>() : _unseenRootRefs.ToArray();
+        _globalRefs = global; _rootedRefs = rooted; _unseenRefs = unseen; _unseenRootRefs = unseenRoots;
     }
 
     /// <summary>
@@ -1701,7 +1760,7 @@ internal sealed class RegionEscape
                     List<int> component = new();
                     int w;
                     do { w = stack.Pop(); onStack[w] = false; component.Add(w); } while (w != v);
-                    _components.Add(component.ToArray()); _globalOf.Add(null); _rootedOf.Add(null);
+                    _components.Add(component.ToArray()); _globalOf.Add(null); _rootedOf.Add(null); _unseenOf.Add(null); _unseenRootOf.Add(null);
                     _solvedAt.Add(0); _appliedOf.Add(Array.Empty<Assumed>()); _sitesReadOf.Add(Array.Empty<int>());
                     SolveComponent(_components.Count - 1);
                 }
@@ -1796,15 +1855,15 @@ internal sealed class RegionEscape
     /// </summary>
     private Summary MergedFor(int[] targets)
     {
-        if (targets.Length == 1) return _summaries[targets[0]] ?? Summary.Unknown;
+        if (targets.Length == 1) return Noted(targets, _summaries[targets[0]] ?? Summary.Unknown);
         int[] from = new int[targets.Length];
         for (int k = 0; k < targets.Length; k++) from[k] = _summaries[targets[k]] is { } s ? s.Holder : -2;
-        if (_merged.TryGetValue(targets, out var done) && done.From.AsSpan().SequenceEqual(from)) return done.Merged;
+        if (_merged.TryGetValue(targets, out var done) && done.From.AsSpan().SequenceEqual(from)) return Noted(targets, done.Merged);
         Summary merged = Summary.Merge(targets.Select(t => _summaries[t] ?? Summary.Unknown));
         merged.Compact();
         if (!merged.IsUnknown) Register(merged, NewHolder());
         _merged[targets] = (merged, from);
-        return merged;
+        return Noted(targets, merged);
     }
 
     // ---- a summary --------------------------------------------------------
@@ -4577,22 +4636,25 @@ internal sealed class RegionEscape
                 // NOT FOLLOWED: its own sites and every object its callees'
                 // summaries make are everyone's; nothing is asked of it.
                 _owner.Unfollowed++;
-                for (int site = 0; site < function.Sites.Length; site++) _owner._globalRefs.Add(Leaf(_owner._siteBase[f] + site));
+                for (int site = 0; site < function.Sites.Length; site++) { _owner._globalRefs.Add(Leaf(_owner._siteBase[f] + site)); _owner._unseenRefs.Add(Leaf(_owner._siteBase[f] + site)); }
                 for (int k = 0; k < function.Calls.Count; k++)
                 {
                     if (_owner._targets[f][k] is not { } targets) continue;
                     if (_owner.IsWide(targets))
                     {
                         if (_owner.StandIn(targets) is { Holder: >= 0 } standIn)
-                            for (int i = 0; i < standIn.Objects.Count; i++) if (standIn.Objects[i].Kind == Kind.Made) _owner._globalRefs.Add(Ref(standIn.Holder, i));
+                            for (int i = 0; i < standIn.Objects.Count; i++) if (standIn.Objects[i].Kind == Kind.Made) { _owner._globalRefs.Add(Ref(standIn.Holder, i)); _owner._unseenRefs.Add(Ref(standIn.Holder, i)); }
                         continue;
                     }
                     foreach (int g in targets)
                         if (!_memberSet.Contains(g) && _owner._summaries[g] is { Holder: >= 0 } s)
-                            for (int i = 0; i < s.Objects.Count; i++) if (s.Objects[i].Kind == Kind.Made) _owner._globalRefs.Add(Ref(s.Holder, i));
+                            for (int i = 0; i < s.Objects.Count; i++) if (s.Objects[i].Kind == Kind.Made) { _owner._globalRefs.Add(Ref(s.Holder, i)); _owner._unseenRefs.Add(Ref(s.Holder, i)); }
                 }
                 return;
             }
+            // What the unknown object reaches in this graph: global for the
+            // report; for the judge, in this function's answer, so refused by
+            // the boundaries above it alone (Unseen).
             if (m == 0) foreach (int o in Reached(new[] { 0 })) _owner._globalRefs.UnionWith(_origins[o]);
             if (m == 0 && _owner.Why is { } why)
             {
@@ -4696,6 +4758,7 @@ internal sealed class RegionEscape
                 // CALLED WITH ANYTHING, from where nobody follows: what it
                 // hands back and writes into what it was handed is everyone's.
                 if (rooted) _owner._rootedRefs.UnionWith(escaping);
+                if (_owner._unseenRoot[f]) _owner._unseenRootRefs.UnionWith(escaping);
                 if (_owner._wanted[f]) _owner.Escaping[f] = escaping.ToArray();
                 if (_owner.Why is { } asked && _owner.WhyFunction?.Invoke(f) == true) WhyOutlives(m, asked);
             }
@@ -5493,6 +5556,8 @@ internal sealed class RegionEscape
             if (m == 0)
             {
                 _owner._globalRefs.UnionWith(Info(_global).All);
+                // Kept only in the global class: no caller's answer names it.
+                _owner._unseenRefs.UnionWith(Info(_global).All);
                 _owner.Progress?.Invoke($"escape graphs: unified global class reaches {Info(_global).All.Length} origins ({_owner.SitesOf(Info(_global).All).Length} sites); {_globalClasses!.Count} of {_parent.Count} classes");
             }
             bool rooted = _owner._rooted[f];
@@ -5502,6 +5567,7 @@ internal sealed class RegionEscape
                 for (int k = 0; k <= function.Parameters; k++) if (_pointee[Node(m, k)] >= 0) parts.Add(Info(Pointee(Node(m, k))).All);
                 int[] escaping = MergeSorted(parts);
                 if (rooted) _owner._rootedRefs.UnionWith(escaping);
+                if (_owner._unseenRoot[f]) _owner._unseenRootRefs.UnionWith(escaping);
                 if (_owner._wanted[f]) _owner.Escaping[f] = escaping;
             }
             // A diagnostic (+why on the function): what it hands the unknown

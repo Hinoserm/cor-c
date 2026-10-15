@@ -47,6 +47,11 @@ public static class RegionSummary
             Builder built = new(f, f.Name == m.Main, items);
             hints.Functions.Add(built.Build());
             if (built.CallsThroughMethod) hints.CallsThroughMethods = true;
+            // WHAT IT CALLS THAT NO CALL HERE SAYS (RegionPointsTo.Harmless):
+            // run from where the link follows nothing, as an address taken is.
+            // A failed cast's message, made there and thrown, was no object
+            // of any boundary's answer.
+            hints.AddressTaken.UnionWith(built.Unrecorded);
         }
         // A data item's name is never a function's.
         hints.AddressTaken.RemoveWhere(data.Contains);
@@ -68,6 +73,9 @@ public static class RegionSummary
 
     private sealed class Builder
     {
+        /// <summary>The callees whose calls are not recorded (RegionPointsTo.Harmless): roots at the link.</summary>
+        public HashSet<string> Unrecorded { get; } = new(StringComparer.Ordinal);
+
         private readonly Function _f;
         private readonly int _params;
         private int _next;
@@ -502,8 +510,9 @@ public static class RegionSummary
                 if (dest >= 0) _constraints.Add(new(RegionConstraintKind.Site, dest, site, 0));
                 return;
             }
-            // The collector's notes and the runtime's frees keep no pointer.
-            if (RegionPointsTo.Harmless(callee)) return;
+            // The collector's notes and the runtime's frees keep no pointer:
+            // no call here, and the callee a root (Unrecorded).
+            if (RegionPointsTo.Harmless(callee)) { Unrecorded.Add(callee); return; }
             // An instruction the backend makes of a call -- the thread's block,
             // the exception being caught -- calls no code: what it answers is
             // unknown, what it is handed goes where nobody follows.

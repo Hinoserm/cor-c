@@ -601,14 +601,14 @@ public static class RegionSolver
             // CALLED FROM WHERE NOBODY FOLLOWS, with anything: the entry,
             // what code outside the IR names, every function whose address
             // is taken.
-            bool[] rooted = new bool[count];
+            bool[] rooted = new bool[count], addressedAt = new bool[count];
             bool anyStart = false;
             for (int f = 0; f < count; f++)
                 if (_functions[f].Name == _entry || _foreign.Contains(_functions[f].Name)) { rooted[f] = true; anyStart = true; }
             if (!anyStart) return GiveUp("no entry " + _entry);
             for (int u = 0; u < _units.Count; u++)
                 foreach (string name in Addressed(u))
-                    if (Resolve(u, name) is { } those) foreach (int f in those) rooted[f] = true;
+                    if (Resolve(u, name) is { } those) foreach (int f in those) { rooted[f] = true; addressedAt[f] = true; }
             // A ROOT CALLED ONLY BLIND, AS A METHOD A DESCRIPTOR HOLDS: its
             // `this` an object of a type that holds it, for RegionTypes. Not
             // the entry, nor what code outside the IR names, nor a function
@@ -668,6 +668,8 @@ public static class RegionSolver
             _escape = new RegionEscape(_functions, targets, keys, siteBase, sites, wanted, rooted)
             {
                 Progress = _report is null ? null : Log, NoRoots = _report?.Contains("+noroots") == true,
+                // The entry, run once before any region is open: rooted for nothing else.
+                RunsOnce = f => _functions[f].Name == _entry && !_foreign.Contains(_entry) && !addressedAt[f],
                 NoReference = _report?.Contains("+norefoff") == true ? null : (site, at) => SiteHoldsNoReference(siteFunction[site], site - siteBase[siteFunction[site]], at),
                 TargetsOn = _report?.Contains("+classoff") == true ? null : TargetsOnSite(targets, unpruned, keys, siteFunction, siteBase),
             };
@@ -706,7 +708,7 @@ public static class RegionSolver
             if (_report is not null && _report.Contains("+cycles")) foreach (int most in new[] { 256, 64, 16, 4 }) _escape.ReportCycles(most);
             _escape.Run();
             Log($"escape graphs: {count} functions, {sites} sites, {_escape.Applied} summaries applied, largest cycle {_escape.LargestCycle}, "
-                + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.PoolComponents} past it given {_escape.PoolDrawn} more from the pool ({_escape.InclusionPool} left of the last round's), {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, {_clock.ElapsedMilliseconds} ms");
+                + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.PoolComponents} past it given {_escape.PoolDrawn} more from the pool ({_escape.InclusionPool} left of the last round's), {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, unseen {_escape.UnseenBySummaries} by summaries + {_escape.UnseenByRoots} by roots ({_escape.UnknownApplied} unknown summaries applied), {_clock.ElapsedMilliseconds} ms");
             return Judge();
         }
 
@@ -1988,7 +1990,7 @@ public static class RegionSolver
             {
                 _globalReach.Add(Global);
                 for (int o = 1; o < _objectFunction.Count; o++)
-                    if (IsSite(o) && _escape.Global[_siteNumber[o]]) _globalReach.Add(o);
+                    if (IsSite(o) && _escape.Unseen[_siteNumber[o]]) _globalReach.Add(o);
             }
             else Reach(new[] { Global }, _globalReach, null);
             _isGlobal = new bool[_objectFunction.Count];
@@ -2949,7 +2951,7 @@ public static class RegionSolver
         {
             if (_siteObjectOf is null)
             {
-                _siteObjectOf = new int[_escape!.Global.Length];
+                _siteObjectOf = new int[_escape!.Unseen.Length];
                 for (int o = 1; o < _siteNumber.Count; o++) if (_siteNumber[o] >= 0) _siteObjectOf[_siteNumber[o]] = o;
             }
             return _siteObjectOf[site];

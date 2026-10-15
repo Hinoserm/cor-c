@@ -1,0 +1,85 @@
+// test: region_static_store_refused_by_its_boundary
+// expect-exit: 0
+// expect-output:
+// kept 1000 49969500 0 99939
+// work 1638000
+// churn ok 1000 49969500
+//
+// Make's Toks are made beneath two boundaries. Remember keeps one of them
+// in a static list and drops the rest with the list; Work drops them all.
+// What a boundary puts where the unknown object reaches outlives it, as what
+// it hands back does: Remember's own answer says so, so no Tok is made in
+// a region while Remember is open above it -- whatever another boundary
+// over the same site says, and whatever the site's other objects do. The
+// kept Toks are read back after thousands of regions made and given back
+// over the same memory.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Tok
+{
+    public int A;
+    public string Text;
+    public Tok(int a, string text) { A = a; Text = text; }
+}
+
+public static class Keep
+{
+    public static List<Tok> All = new();
+}
+
+public static class W
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static List<Tok> Make(int n, int k)
+    {
+        List<Tok> l = new();
+        for (int i = 0; i < n; i++) l.Add(new Tok(k * 100 + i, "t"));
+        return l;
+    }
+
+    // A boundary that keeps one Tok of each list where the unknown object
+    // reaches, and drops the list.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Remember(int k)
+    {
+        List<Tok> l = Make(40, k);
+        Keep.All.Add(l[k % 40]);
+        return l.Count;
+    }
+
+    // A boundary that drops them all.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Work(int k)
+    {
+        List<Tok> l = Make(40, k);
+        long s = 0;
+        for (int i = 0; i < l.Count; i++) s += l[i].A - k * 100;
+        return s;
+    }
+}
+
+static class P
+{
+    static long Sum()
+    {
+        long s = 0;
+        for (int i = 0; i < Keep.All.Count; i++) s += Keep.All[i].A;
+        return s;
+    }
+
+    static void Main()
+    {
+        int made = 0;
+        for (int k = 0; k < 1000; k++) made += W.Remember(k);
+        Console.WriteLine("kept " + Keep.All.Count + " " + Sum() + " " + Keep.All[0].A + " " + Keep.All[999].A);
+        long work = 0;
+        for (int k = 0; k < 2100; k++) work += W.Work(k);
+        Console.WriteLine("work " + work);
+        long churn = 0;
+        for (int k = 0; k < 2000; k++) churn += W.Work(k + 5000);
+        Console.WriteLine("churn " + (churn == 2000L * 780 ? "ok" : "bad " + churn) + " " + Keep.All.Count + " " + Sum());
+    }
+}
