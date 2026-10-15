@@ -2467,13 +2467,13 @@ static class Runtime
 
     /// The address of an array's first element, or zero for null: what C's
     /// pointer to it is.
-    public static long NativeData(object? array)
+    public static nint NativeData(object? array)
     {
         if (array == null)
         {
             return 0;
         }
-        return Sys.ArrayData(array);
+        return (nint)Sys.ArrayData(array);
     }
 
     /// errno, as a SetLastError import left it, for Marshal.GetLastPInvokeError.

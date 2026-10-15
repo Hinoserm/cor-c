@@ -31,6 +31,44 @@ public sealed class Verifier : IPass
 
     public void Run(Function f) => Check(f, "verify");
 
+    /// <summary>
+    /// EVERY CALL OF A FUNCTION THE MODULE DEFINES AS THAT FUNCTION TAKES IT:
+    /// as many operands as it has parameters, each of its parameter's IR type
+    /// exactly, and a result only of the type it returns. No equivalences: on
+    /// i386 an I32 pushed for an I64 shifts every later parameter, and inlined,
+    /// a 32-bit value copied into a 64-bit parameter has no top half. The
+    /// entry stub called Runtime.StartC with three words for its three longs,
+    /// hidden while StartC was inlined into it, and every program with a
+    /// [DllImport] crashed where it was not (a unit linked with the runtime's
+    /// object). Asked of the module as lowering made it, every compile.
+    /// </summary>
+    public static void CheckCalls(Module m, string when)
+    {
+        Dictionary<string, Function> defined = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+            if (f.Blocks.Count > 0) defined.TryAdd(f.Name, f);
+        List<string>? faults = null;
+        foreach (Function f in m.Functions)
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Call || i.Callee is null || !defined.TryGetValue(i.Callee, out Function? callee)) continue;
+                    string? fault = null;
+                    if (i.Operands.Count != callee.Params.Count)
+                        fault = $"{i.Operands.Count} operand(s) for {callee.Params.Count} parameter(s)";
+                    else
+                    {
+                        for (int k = 0; k < i.Operands.Count && fault is null; k++)
+                            if (i.Operands[k].Type != callee.Params[k].Type)
+                                fault = $"operand {k} is {i.Operands[k].Type}, the parameter {callee.Params[k].Type}";
+                    }
+                    if (fault is null && i.Dest is not null && (callee.Returns == IrType.Void || i.Dest.Type != callee.Returns))
+                        fault = $"its result is {i.Dest.Type}, the function returns {callee.Returns}";
+                    if (fault is not null) (faults ??= new()).Add($"{f.Name} ({when}): block {b.Label}: {i}: {fault}");
+                }
+        if (faults is not null) throw new IrVerifyException(string.Join("\n", faults.Take(20)) + (faults.Count > 20 ? $"\n... and {faults.Count - 20} more" : ""));
+    }
+
     public static void Check(Function f, string when)
     {
         if (f.Blocks.Count == 0)

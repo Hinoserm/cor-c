@@ -592,7 +592,11 @@ public sealed partial class Lowering
         List<VReg> args = new();
         foreach (ParamSymbol p in m.Params)
         {
-            VReg a = f.NewReg(IrTypes.Of(p.Type), p.Name);
+            // A ref, out or in parameter is the word its address is, as the
+            // method itself takes it (Lowering.Method): typed by its value, a
+            // by-reference float came in an FPU register and an int lost the
+            // top of a 64-bit address.
+            VReg a = f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             f.Params.Add(a);
             args.Add(a);
         }

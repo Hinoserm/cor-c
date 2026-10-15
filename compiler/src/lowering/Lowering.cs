@@ -2822,7 +2822,7 @@ public sealed partial class Lowering
         Function f = new(Label(m), IrTypes.Of(m.Returns)) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
-        foreach (ParamSymbol p in m.Params) f.Params.Add(f.NewReg(IrTypes.Of(p.Type), p.Name));
+        foreach (ParamSymbol p in m.Params) f.Params.Add(f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name));
         Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         Builder e = _e;
@@ -2935,7 +2935,7 @@ public sealed partial class Lowering
         f.Params.Add(self);
         foreach (ParamSymbol p in m.Params)
         {
-            f.Params.Add(f.NewReg(IrTypes.Of(p.Type), p.Name));
+            f.Params.Add(f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name));
         }
         // A struct element is written to its caller's buffer (Buffered).
         VReg? buffer = null;

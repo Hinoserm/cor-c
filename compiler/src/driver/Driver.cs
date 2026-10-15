@@ -540,6 +540,14 @@ public static class Driver
             }
             return null;
         }
+        // Every call lowering made, as its callee takes it (Verifier.CheckCalls):
+        // a fault there is the compiler's own, refused before it is code.
+        try { Corsac.Lang.Opt.Verifier.CheckCalls(module, "lowered"); }
+        catch (Corsac.Lang.Opt.IrVerifyException fault)
+        {
+            Console.Error.WriteLine("corc: internal error, a call made not as its callee takes it:\n" + fault.Message);
+            return null;
+        }
 
         Dictionary<string, byte[]> definitionSemantics = DefinitionSemantics.Capture(module);
 

@@ -341,7 +341,7 @@ public sealed partial class Lowering
         List<VReg> args = new();
         foreach (ParamSymbol p in m.Params)
         {
-            VReg r = _f.NewReg(IrTypes.Of(p.Type), p.Name);
+            VReg r = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _f.Params.Add(r);
             args.Add(r);
         }
