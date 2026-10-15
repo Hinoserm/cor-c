@@ -1,10 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Compiles the backend's sources directly rather than referencing
-    corc.csproj, so the backend can be tested while other parts of the
-    compiler are mid-change. Everything the IR needs (Types, Target) comes
-    along; the front end, the optimiser and the driver do not.
+    The backend's tests, against the compiler as it is built (corc.csproj):
+    a project that compiled a chosen set of the compiler's sources itself
+    fell behind them, every file it named needing more it did not.
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -20,16 +19,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="PackedMemoryBenchmarks.cs" />
-    <Compile Include="../../../src/ir/*.cs" />
-    <Compile Include="../../../src/optimizations/LinkSummary.cs" />
-    <Compile Include="../../../src/arch/x86/backend/*.cs" />
-    <ProjectReference Include="../../../../linker/linker.csproj" />
-    <Compile Include="../../../src/frontend/symbols/*.cs" />
-    <Compile Include="../../../src/frontend/syntax/*.cs" />
-    <Compile Include="../../../src/frontend/Token.cs" />
-    <Compile Include="../../../src/arch/x86/MachineAbi.cs" />
-    <!-- A compilation unit keeps the registry schemas its sources declare. -->
-    <Compile Include="../../../src/metadata/RegistrySchema.cs" />
+    <ProjectReference Include="../../../corc.csproj" />
   </ItemGroup>
 
 </Project>

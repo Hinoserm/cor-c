@@ -82,4 +82,8 @@
     <ProjectReference Include="../tools/build/build.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The backend's tests (tests/arch/x86) drive the allocator and the region passes directly. -->
+    <InternalsVisibleTo Include="x86tests" />
+  </ItemGroup>
 </Project>

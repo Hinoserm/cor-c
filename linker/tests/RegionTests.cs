@@ -142,7 +142,7 @@ public static class RegionTests
             many.Functions.Add(begin);
             RegionFunction top = new("Main", true, false, false, 0, 1, 0, Array.Empty<RegionSite>()) { Main = true };
             many.Functions.Add(top);
-            RegionFunction add = new("Add", true, true, true, 2, 2, 0, Array.Empty<RegionSite>());
+            RegionFunction add = new("Add", true, true, true, 2, 3, 0, Array.Empty<RegionSite>());   // two parameters, then what it returns
             add.Constraints.Add(new(RegionConstraintKind.Store, 0, 1, 8));
             many.Functions.Add(add);
             for (int k = 0; k < Callers; k++)
