@@ -1,0 +1,10 @@
+// The other unit of 2060_lent_list_array_outlives_the_list: a List's array
+// lent out as a span.
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class Views
+{
+    public static Span<int> Of(List<int> l) => CollectionsMarshal.AsSpan(l);
+}
