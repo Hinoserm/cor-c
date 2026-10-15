@@ -28,7 +28,7 @@ semantic claim but verifies its association with intact object contents.
 ## Object encoding
 
 All integers are little-endian. The non-loadable note contains `COAL`, a 32-bit
-version (1), a 32-bit record count, followed by records sorted by ordinal name.
+version (0), a 32-bit record count, followed by records sorted by ordinal name.
 Each record contains a 32-bit UTF-8 name length, the name, a 32-byte semantic hash,
 and a 32-byte native integrity hash. Names are 1–4096 bytes without NUL. Unknown
 versions, duplicate records, invalid encoding, truncated records and trailing

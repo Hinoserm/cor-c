@@ -102,7 +102,7 @@ hand-maintained header is introduced.
 | .corsac.roots | Explicit retention and deferred-resolution contracts | Specified, pending |
 
 GIR is the existing generic syntax representation, not serialized optimization
-IR. Its major version is 9. The generic index must identify GIR version per
+IR. Its version is 0. The generic index must identify GIR version per
 template payload and reject incompatible input rather than reinterpret it.
 
 All new indexed sections use little-endian fixed-width integers, section-relative
@@ -268,7 +268,7 @@ and its LTO importers, not unrelated declaration users.
 The declarations and general IR sections above are architectural contracts,
 not a claim of an implemented binary ABI. Their first implementation must freeze
 record tags/widths and add reader/writer round-trip and corruption tests before
-publishing artifacts. Only the `.corsac.abi` and `.corsac.lto` version-1 wire
+publishing artifacts. Only the `.corsac.abi` and `.corsac.lto` version-0 wire
 encodings in OBJECT-FORMAT.md are currently accepted by the new linker path.
 
 ## Bare-metal bootloader and kernel

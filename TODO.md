@@ -374,7 +374,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   and preserve inherited interface mappings through overrides/reimplementation.
 - [x] Distinguish stack-trace reset for `throw exception;` from preservation for
   bare `throw;` and exception-dispatch/task propagation. The current checkpoint
-  retains rethrow identity through GIR v9, implements ExceptionDispatchInfo,
+  retains rethrow identity through GIR, implements ExceptionDispatchInfo,
   and routes task propagation through it. exception_dispatch and
   514_stack_traces passed; GIR round-trip coverage passed. Broader runtime
   exception/async compatibility remains subject to the complete suite.
@@ -424,7 +424,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   in the declaration cache accounting.
 
 - [x] Verify indexed extension-method discovery and namespace-scoped candidate
-  lookup (CDIX v3), including rejection of candidates in unimported namespaces.
+  lookup (CDIX), including rejection of candidates in unimported namespaces.
   Metadata checks and indexed, IR-LTO and managed-unit integrations passed at
   f185352 using an isolated host toolchain (build/milestone2-*.log).
 - [x] Verify non-copying LTO archive views and their allocation bound. The linker
@@ -438,7 +438,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   Evidence: build/logs/20260918-174943-54378661ac3147a2bb18222cbcb3fcf8/ and
   build/milestone3-language-focused.log. IR summary-open allocation measured
   5,728 bytes for a 4 MiB payload in the linker unit test.
-- [x] Rebuild the shared runtime/standard libraries for GIR v9 and verify
+- [x] Rebuild the shared runtime/standard libraries for GIR and verify
   dynamic execution after the combined compatibility changes: 37/37 shared
   checks passed (build/milestone3-libraries.log and build/milestone3-shared.log).
 - [ ] After the project path works, reorganize the compiler toward one top-level
@@ -465,7 +465,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   groups passed; shared-library acceptance passed 35 checks; the dynamic-runtime
   stack-trace fixture additionally passed nine checks. The full language run
   remained 266 passed / 6 known failures / 272 total, with no new failure names.
-  The rebuilt ABI-v3 stage2/kernel passed actual ISA-486 login/shell/reboot
+  The rebuilt stage2/kernel passed actual ISA-486 login/shell/reboot
   acceptance from an isolated OS snapshot. Evidence:
   build/logs/20260918-164246-f81e24b123d046b18e01d614842a2bdf/,
   build/logs/20260918-164348-a011860f583c450787f831f7af127618/,
@@ -473,7 +473,7 @@ tasks below track that work; moving files alone does not reduce the working set.
   build/shared.zf5qEQ/ and build/corsac-boot.Rfs3bV/.
 
 - [x] Add a linker-created image directory for every unit's frame/stack-map
-  tables, with reserved-name/bounds validation and ABI version 3 rejection of
+  tables, with reserved-name/bounds validation and rejection of another ABI version in
   stale objects. Fix cross-unit line-table lookup and preserve the throwing
   source site when runtime helpers are inlined. Executable exact-line checks
   passed with and without LTO; caller object bytes matched at one/two workers.
