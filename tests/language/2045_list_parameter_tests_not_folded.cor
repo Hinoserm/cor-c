@@ -1,0 +1,64 @@
+// test: list_parameter_tests_not_folded
+// expect-exit: 0
+// expect-output:
+// caught null
+// rewritten null
+// lenient null
+// cmp list
+// leaf True
+// fault NullReferenceException
+//
+// What a parameter's declared class and LINQ's argument checks may answer
+// (Devirtualize.FoldParamClassTests, FoldCheckedNulls), and what they must
+// leave to the object. A "check" that catches its own exception, writes its
+// parameter, or is lenient returns with the argument null, so the null test
+// after it stands. An interface only a subclass adds is asked of the
+// object. An exact type is the object's. And a type asked of null still
+// faults.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+class CmpList : List<int>, IComparable { public int CompareTo(object? o) => 0; }
+class Leaf : List<int> { }
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Catching(List<int>? l) { try { if (l == null) throw new ArgumentNullException("l"); } catch (ArgumentNullException) { } }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Rewriting(List<int>? l) { if (l == null) l = new List<int>(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Lenient(List<int>? l, bool strict) { if (strict && l == null) throw new ArgumentNullException("l"); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Caught(List<int>? l) { Catching(l); return l is List<int> ? "list" : "null"; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Rewritten(List<int>? l) { Rewriting(l); return l is List<int> ? "list" : "null"; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Lax(List<int>? l) { Lenient(l, false); return l is List<int> ? "list" : "null"; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Kind(List<int> l) => (l is IComparable ? "cmp" : "list") + " " + (l is IReadOnlyList<int> ? "list" : "none");
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool IsLeaf(List<int> l) => l.GetType() == typeof(Leaf);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool IsArray(List<int> l) => l.GetType() == typeof(int[]);
+
+    static void Main()
+    {
+        Console.WriteLine("caught " + Caught(null));
+        Console.WriteLine("rewritten " + Rewritten(null));
+        Console.WriteLine("lenient " + Lax(null));
+        Console.WriteLine(Kind(new CmpList()));
+        Console.WriteLine("leaf " + IsLeaf(new Leaf()));
+        try { IsArray(null!); Console.WriteLine("fault none"); }
+        catch (NullReferenceException e) { Console.WriteLine("fault " + e.GetType().Name); }
+    }
+}
