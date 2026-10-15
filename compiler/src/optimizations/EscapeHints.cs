@@ -440,7 +440,9 @@ public sealed partial class Escape
                     || read.Op == Opcode.Call && read.Callee is not null && owned.Borrowers.Contains(read.Callee)
                     || read.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0
                        && (!virtuals.TryGetValue(read, out string[]? targets) || targets.Any(owned.Borrows));
-                if (!reads) continue;
+                // A NUMBER IS NO OBJECT: a borrower's count, read through an
+                // interface (`.num`), holds nothing a free can take from under it.
+                if (!reads || read.Op is Opcode.Call or Opcode.CallIndirect && read.Number) continue;
                 // AN OWNER THE FUNCTION WAS HANDED -- a parameter, a static, or
                 // what is read from one -- no free placed here can reach:
                 // each frees only an object the function made or was handed
@@ -467,7 +469,7 @@ public sealed partial class Escape
                                     || elements && i.Op == Opcode.Load && i.Operands.Count > 0 && i.Operands[0] is RegOperand arrayAt && derived.Contains(arrayAt.Reg)))
                             { derived.Add(i.Dest); grew = true; }
                 }
-                if (derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) return true;
+                if (derived.Any(r => !liveness.Tracks(r) || pads.Contains(r))) { OwnedElements.Say(f, $"taken back: {read} read where a handler or an unknown register holds it"); return true; }
                 bool Uses(Instr i) => i.Operands.Any(o => o is RegOperand r && derived.Contains(r.Reg));
                 // A store's object is the field's only from the store on: the
                 // blocks after it, its own block again only round a loop.
@@ -498,7 +500,11 @@ public sealed partial class Escape
                         for (int k = from; k < x.Instrs.Count; k++) if (Uses(x.Instrs[k])) to = k;
                     }
                     for (int k = from; k < to; k++)
-                        if (placed.Contains(x.Instrs[k]) && x.Instrs[k].Op == Opcode.Call && IsFreeCall(x.Instrs[k].Callee)) return true;
+                        if (placed.Contains(x.Instrs[k]) && x.Instrs[k].Op == Opcode.Call && IsFreeCall(x.Instrs[k].Callee))
+                        {
+                            OwnedElements.Say(f, $"taken back: {x.Instrs[k]} placed while {read} is live");
+                            return true;
+                        }
                 }
             }
         return false;
