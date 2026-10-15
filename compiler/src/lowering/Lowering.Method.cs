@@ -217,12 +217,17 @@ public sealed partial class Lowering
         return names;
     }
 
-    /// <summary>Whether a class's type arguments, at any depth, name a reference type.</summary>
+    /// <summary>
+    /// Whether a class's type arguments, at any depth, name a reference type
+    /// -- `object` and `dynamic` among them, which are the machine word
+    /// (Prim.Any) rather than a class, and run shared code as any class does.
+    /// </summary>
     private static bool MentionsReference(TypeSymbol c, int depth)
     {
         if (depth > 8) return true;
         foreach (Type argument in c.TemplateArgTypes)
-            if (argument.IsReference || argument.Symbol is { } inner && MentionsReference(inner, depth + 1)) return true;
+            if (argument.IsReference || argument.Prim == Prim.Any || argument.Dynamic
+                || argument.Symbol is { } inner && MentionsReference(inner, depth + 1)) return true;
         return false;
     }
 

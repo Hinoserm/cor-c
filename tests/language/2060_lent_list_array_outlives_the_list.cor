@@ -5,6 +5,7 @@
 // made 9 -3,-2,-1,0,1,2,3,4,5
 // local 9 -3,-2,-1,0,1,2,3,4,5
 // viewed 9 -3,-2,-1,0,1,2,3,4,5
+// returned 3 1,2,3
 // walked 9000
 //
 // A List's array lent out (CollectionsMarshal.AsSpan: List.Backing) and read
@@ -12,8 +13,9 @@
 // whatever gives the list back -- a free placed after its last use, its
 // storage given back, the free of its owned array field -- must leave the
 // array to the span. The list made by a call and dropped; a local list;
-// the span made by another unit; and a thousand walks of such a span beside
-// another list made after it.
+// the span made by another unit; a span handed back by the function whose
+// local the list was; and a thousand walks of such a span beside another
+// list made after it.
 
 using System;
 using System.Collections.Generic;
@@ -73,6 +75,21 @@ static class P
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
+    static Span<int> Lend()
+    {
+        List<int> l = new() { 1, 2, 3 };
+        return CollectionsMarshal.AsSpan(l);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Returned()
+    {
+        Span<int> s = Lend();
+        Churn();
+        return Show(s);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static int Walk(int n)
     {
         Span<int> s = CollectionsMarshal.AsSpan(Make(n));
@@ -87,6 +104,7 @@ static class P
         Console.WriteLine("made " + Made());
         Console.WriteLine("local " + Local());
         Console.WriteLine("viewed " + Viewed());
+        Console.WriteLine("returned " + Returned());
         long walked = 0;
         for (int k = 0; k < 1000; k++) walked += Walk(9);
         Console.WriteLine("walked " + walked);

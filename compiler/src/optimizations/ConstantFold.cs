@@ -114,7 +114,9 @@ public sealed class ConstantFold : IPass
                 at = b.Instrs.IndexOf(test);
                 if (at < 0) continue;
                 bool rewritten = false;
-                for (int later = at + 1; later < b.Instrs.Count && !rewritten; later++) rewritten = ReferenceEquals(b.Instrs[later].Dest, tested);
+                // From the compare itself: one that writes what it reads
+                // (`c = c == K`) holds the answer, not the value compared.
+                for (int later = at; later < b.Instrs.Count && !rewritten; later++) rewritten = ReferenceEquals(b.Instrs[later].Dest, tested);
                 if (rewritten) continue;
                 x = tested; k = imm.Value;
                 where = test.Op == Opcode.Eq ? branch.Targets[0] : branch.Targets[1];
