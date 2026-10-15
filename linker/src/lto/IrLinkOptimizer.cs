@@ -522,7 +522,7 @@ public static class IrLinkOptimizer
             if (complete)
             {
                 HeapDecision.Answer answer = HeapDecision.Decide(inputs, units, closedImageEntry!, types => VirtualTargets.Ancestry(inputs, types),
-                    ownedFields?.Fields.Keys.ToHashSet(StringComparer.Ordinal));
+                    ownedFields?.Fields.Keys.ToHashSet(StringComparer.Ordinal), foreign);
                 Console.Error.WriteLine("LTO heap: " + (answer.NeedsHeap ? "a collector, " + (answer.Because ?? answer.Sites.Count + " allocations left to it") : "no collector"));
                 if (Switches.AllocReport) Console.Error.WriteLine("alloc report: link catches keeping: " + answer.Catches);
                 if (Switches.AllocReport)

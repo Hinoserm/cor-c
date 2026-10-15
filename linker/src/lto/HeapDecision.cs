@@ -48,8 +48,12 @@ public static class HeapDecision
     /// the fields the whole program found own what they hold (OwnedFieldSolver).
     /// </summary>
     public static Answer Decide(List<(string Name, ObjectFile Object)> inputs, List<(ObjectFile Object, HeapRecords Records)> units,
-        string entry, Func<IEnumerable<string>, HashSet<string>> ancestry, IReadOnlySet<string>? ownedFields = null)
+        string entry, Func<IEnumerable<string>, HashSet<string>> ancestry, IReadOnlySet<string>? ownedFields = null,
+        IReadOnlyCollection<string>? foreign = null)
     {
+        // What code without IR names: run from where nothing here follows,
+        // with anything, as often as it likes -- roots, and taken addresses.
+        IReadOnlyCollection<string> outside = foreign ?? Array.Empty<string>();
         // A fresh object stored into a field the whole program found owns
         // what it holds is the field's owner's to free (HeapEvent.Held).
         bool Held(HeapEvent e) => e.Held is string field && ownedFields?.Contains(field) == true;
@@ -77,7 +81,8 @@ public static class HeapDecision
         // whole program's module holds only what its entry reaches, and its
         // virtual calls run on that.
         List<Node> entryRoots = world.Roots(entry, initialisers: false).ToList();
-        (HashSet<Node> reached, HashSet<string> addressed, Func<string, string[]?> virtuals, bool everyMethod) = ReachFrom(world, inputs, units, entryRoots, Array.Empty<string>());
+        (HashSet<Node> reached, HashSet<string> addressed, Func<string, string[]?> virtuals, bool everyMethod) = ReachFrom(world, inputs, units, entryRoots, outside);
+        addressed.UnionWith(outside);
         bool keptCatchAll = false;
         HashSet<string> keptCatches = new(StringComparer.Ordinal);
         foreach (Node node in reached)
@@ -119,8 +124,9 @@ public static class HeapDecision
         // An entry without records -- code with no IR -- could call anything.
         List<Node> roots = world.Roots(entry, initialisers: false).ToList();
         if (roots.Count == 0) return new Answer { NeedsHeap = true, Because = "the entry " + entry + " has no records" };
-        foreach (Node root in roots) Reach(root, true);
         HashSet<(ObjectFile, string)> dataSeen = new();
+        foreach (Node root in roots) Reach(root, true);
+        foreach (string name in outside) Reach(world.Resolve(-1, name, f => Reach(f, true), everyMethod, dataSeen), true);
         while (work.Count > 0)
         {
             (Node node, bool unowned) = work.Pop();
@@ -317,8 +323,14 @@ public static class HeapDecision
         /// </summary>
         public Node? Resolve(int unit, string name)
         {
-            if (unit >= 0 && _functions[unit].ContainsKey(name)) return new Node(unit, name);
+            // A unit's own local first; a global, as the copy the link keeps --
+            // the first definer's (DefinitionCoalescer) -- whose record may say
+            // other than a coalesced copy's; a unit's own copy the link took out
+            // of its object, as its archive still holds it.
+            if (unit >= 0 && _locals.TryGetValue(_units[unit].Object, out var locals) && locals.ContainsKey(name) && _functions[unit].ContainsKey(name))
+                return new Node(unit, name);
             if (_owners.TryGetValue(name, out ObjectFile? owner) && _unitOf.TryGetValue(owner, out int u) && _functions[u].ContainsKey(name)) return new Node(u, name);
+            if (unit >= 0 && _functions[unit].ContainsKey(name)) return new Node(unit, name);
             return null;
         }
 
