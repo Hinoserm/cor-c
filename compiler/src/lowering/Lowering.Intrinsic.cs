@@ -61,12 +61,15 @@ public sealed partial class Lowering
                 // back a register of the old width, and its copy into a word
                 // was IR of two widths that only the folding kept from being
                 // compiled. Narrowed or widened as a word is (ToWord).
+                // A FLOAT'S BITS, AS THEY ARE, the same way: a double read as a
+                // string in a table keyed by double came back the double's own
+                // register, a call handed it for a string parameter -- IR of two
+                // types the call check refuses (Verifier.CheckCalls), however
+                // the copy's IsString folds the path away after. Reinterpreted
+                // (Bits) and narrowed or widened as integers are.
                 VReg value = Arg(call, target, 0);
                 IrType wanted = IrTypes.Of(_b.TypeOf(call));
-                if (value.Type == wanted || value.Type is IrType.F32 or IrType.F64 || wanted is IrType.F32 or IrType.F64) return value;
-                if (value.Type == IrType.I64 && wanted == IrType.I32) return _e.Unary(Opcode.Trunc64, value);
-                if (value.Type == IrType.I32 && wanted == IrType.I64) return _e.Unary(Opcode.ZExt32, R(value), IrType.I64);
-                return value;
+                return AsBits(value, wanted);
             }
             case "Rethrow":
                 Rethrow(Arg(call, target, 0), call);
@@ -981,5 +984,25 @@ public sealed partial class Lowering
     private VReg ToI32(VReg v) => v.Type == IrType.I64 ? _e.Unary(Opcode.Trunc64, v) : v;
 
     /// <summary>A machine word as the long the language hands back: zero-extended, an address is never negative.</summary>
+    /// <summary>
+    /// A value's bits at another IR type, with no conversion (Sys.As): a float
+    /// reinterpreted as the integer of its width (Bits), integers narrowed or
+    /// widened as words are, and an integer read back as a float the same way.
+    /// </summary>
+    private VReg AsBits(VReg value, IrType wanted)
+    {
+        if (value.Type == wanted) return value;
+        VReg bits = value.Type switch
+        {
+            IrType.F32 => _e.Unary(Opcode.Bits, R(value), IrType.I32),
+            IrType.F64 => _e.Unary(Opcode.Bits, R(value), IrType.I64),
+            _ => value,
+        };
+        IrType integer = wanted switch { IrType.F32 => IrType.I32, IrType.F64 => IrType.I64, _ => wanted };
+        if (bits.Type == IrType.I64 && integer == IrType.I32) bits = _e.Unary(Opcode.Trunc64, bits);
+        else if (bits.Type == IrType.I32 && integer == IrType.I64) bits = _e.Unary(Opcode.ZExt32, R(bits), IrType.I64);
+        return wanted is IrType.F32 or IrType.F64 ? _e.Unary(Opcode.Bits, R(bits), wanted) : bits;
+    }
+
     private VReg Widen(VReg v) => v.Type == IrType.I32 ? _e.Unary(Opcode.ZExt32, v) : v;
 }
