@@ -35,6 +35,18 @@ public static class IrFunctionCodec
         Text(function.Name); Text(function.SourceFile); Text(function.Display);
         // A lowered async body's record (Write): its size symbol and the frame.
         if (function.Async is AsyncFrame frame) { bytes = checked(bytes + 128); Text(frame.SizeSymbol); Text(frame.StackSymbol); }
+        // Each class parameter's chain and interfaces (Write), as Read charges them.
+        if (function.ParamClasses is { } classes)
+            foreach ((VReg parameter, string[] chain) in classes)
+            {
+                bytes = checked(bytes + 64 + 32L * chain.Length);
+                foreach (string name in chain) Text(name);
+                if (function.ParamInterfaces?.GetValueOrDefault(parameter) is { } faces)
+                {
+                    bytes = checked(bytes + 32L * faces.Count);
+                    foreach (string name in faces) Text(name);
+                }
+            }
         // WALKED WITHOUT A QUERY: a SelectMany over the blocks and an OfType
         // over every instruction's operands were an iterator, a closure and a
         // boxed enumerator an instruction, for every function archived.
