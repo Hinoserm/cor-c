@@ -26,9 +26,11 @@ public static class RegionSummary
     {
         RegionHints hints = new() { WordSize = Target.Current.WordSize };
         HashSet<string> data = new(StringComparer.Ordinal);
+        Dictionary<string, DataItem> items = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data)
         {
             data.Add(d.Name);
+            items.TryAdd(d.Name, d);
             // A DESCRIPTOR'S METHOD SLOTS name what its objects' virtual
             // calls run, which the link follows: apart from every other
             // address taken (RegionHints.MethodsTaken).
@@ -42,7 +44,7 @@ public static class RegionSummary
                 foreach (Instr i in b.Instrs)
                     foreach (Operand o in i.Operands)
                         if (o is SymOperand { Name: var n }) hints.AddressTaken.Add(n);
-            Builder built = new(f, f.Name == m.Main);
+            Builder built = new(f, f.Name == m.Main, items);
             hints.Functions.Add(built.Build());
             if (built.CallsThroughMethod) hints.CallsThroughMethods = true;
         }
@@ -92,11 +94,15 @@ public static class RegionSummary
         private readonly HashSet<int> _forced = new();
 
         private readonly bool _main;
+        /// <summary>The unit's data by name: the descriptors a call names outright (ConstantTable).</summary>
+        private readonly IReadOnlyDictionary<string, DataItem> _data;
+        private Dictionary<VReg, Instr?>? _singles;
 
-        public Builder(Function f, bool main)
+        public Builder(Function f, bool main, IReadOnlyDictionary<string, DataItem> data)
         {
             _f = f;
             _main = main;
+            _data = data;
             _params = f.Params.Count;
             for (int k = 0; k < _params; k++) _regs.TryAdd(f.Params[k], k);
             _next = _params + 1;
@@ -163,6 +169,31 @@ public static class RegionSummary
         private void Leak(int value)
         {
             if (value >= 0) _constraints.Add(new(RegionConstraintKind.Leak, value, 0, 0));
+        }
+
+        // The descriptor a call's method is read from when it is named outright,
+        // and the offset in it the method is read at; null when it is read
+        // through the receiver or any other way (RegionPointsTo.ConstantTable).
+        private (string Table, long At)? ConstantTable(Instr i)
+        {
+            if (i.Operands.Count < 2 || i.Operands[0] is not RegOperand { Reg: var target }) return null;
+            if (Single(target) is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } method) return null;
+            if (Single(table) is not { Op: Opcode.Copy, Operands: [SymOperand { Name: var name, Offset: var at }] }) return null;
+            if (!(name.StartsWith("t_", StringComparison.Ordinal) || name.StartsWith("b_", StringComparison.Ordinal))) return null;
+            return (name, at + method.Offset);
+        }
+
+        // The one instruction that writes `r`, or null.
+        private Instr? Single(VReg r)
+        {
+            if (_singles is null)
+            {
+                _singles = new();
+                foreach (Block b in _f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d) _singles[d] = _singles.ContainsKey(d) ? null : i;
+            }
+            return _singles.TryGetValue(r, out Instr? only) ? only : null;
         }
 
         public RegionFunction Build()
@@ -387,6 +418,27 @@ public static class RegionSummary
 
                 case Opcode.CallIndirect:
                 {
+                    // THROUGH A TABLE NAMED OUTRIGHT -- the method read from a
+                    // descriptor of this unit's that the devirtualiser put in
+                    // place of the receiver's first word (`%t = copy @t_T+48;
+                    // %m = load %t +108`): the one method in that slot, or, with
+                    // none there, no call at all (RegionPointsTo's rule, which
+                    // the compile follows and the link did not: a view's Count
+                    // was a call naming nothing, and handed the view, and the
+                    // list's new array with it, to the unknown object).
+                    if (ConstantTable(i) is var (table, slotAt) && _data.TryGetValue(table, out DataItem? descriptor))
+                    {
+                        string? method = null;
+                        foreach (DataReloc rel in descriptor.Relocs)
+                            if (rel.Offset == slotAt && rel.Addend == 0) { method = rel.Symbol; break; }
+                        if (method is null && !descriptor.Relocs.Any(rel => rel.Offset == slotAt)) return;
+                        if (method is not null)
+                        {
+                            _callOf[i] = _calls.Count;
+                            _calls.Add(new(method, i.Number ? -1 : dest, Arguments(i, 1)));
+                            return;
+                        }
+                    }
                     // A virtual call: every override the link finds for its
                     // declaring type and slot. Any other: nobody can say.
                     string? callee = _virtuals!.TryGetValue(i, out string[]? named) && named.Length == 1 ? named[0] : null;
