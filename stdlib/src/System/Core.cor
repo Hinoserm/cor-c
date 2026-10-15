@@ -9482,8 +9482,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
             if (items != null) { OwnedElements.ReleaseDistinct(items, count); }
             count = 0;
         }
-        if (!lent) { OutgrownStorage.Release(items); }
-        items = null!;
+        // A LENT ARRAY IS LEFT WHERE IT IS (Backing): someone may still be
+        // walking it, so it is not given back here -- but the field still
+        // names it, for the free the compiler places on the field where it
+        // proved the field's array dead with the list (EscapeFields). Cleared
+        // here, that free gave back null, and a list Count walked by index
+        // left its array to the collector every call (1311).
+        if (!lent) { OutgrownStorage.Release(items); items = null!; }
         count = 0;
     }
     // ---- the rest of .NET's List<T> ---------------------------------------

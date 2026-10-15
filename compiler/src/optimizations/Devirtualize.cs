@@ -635,6 +635,7 @@ public sealed class Devirtualize : IModulePass
         if (f.ParamClasses is not { Count: > 0 } classes) return false;
         int word = IrTypes.Word.Bytes();
         int depthAt = Lower.Lowering.DescriptorDepthWord * word, displayAt = Lower.Lowering.DescriptorDisplayWord * word;
+        int interfacesAt = Lower.Lowering.DescriptorInterfacesWord * word;
         Dictionary<VReg, Instr?> single = new();
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -649,10 +650,10 @@ public sealed class Devirtualize : IModulePass
         // What a register is, read from a parameter: the object itself, an
         // address `At` bytes into its descriptor, its display, its depth, or
         // the descriptor its display names at an index C's covers.
-        (Kind Kind, string[] Chain, long At)? Read(Operand o, int depth)
+        (Kind Kind, VReg Param, string[] Chain, long At)? Read(Operand o, int depth)
         {
             if (depth > 12 || o is not RegOperand { Reg: var r }) return null;
-            if (held.TryGetValue(r, out string[]? chain)) return (Kind.Object, chain, 0);
+            if (held.TryGetValue(r, out string[]? chain)) return (Kind.Object, r, chain, 0);
             if (!single.TryGetValue(r, out Instr? d) || d is null) return null;
             switch (d.Op)
             {
@@ -660,18 +661,20 @@ public sealed class Devirtualize : IModulePass
                     return Read(d.Operands[0], depth + 1);
                 case Opcode.Add or Opcode.Sub when d.Operands.Count == 2 && d.Operands[1] is ImmOperand plus:
                     return Read(d.Operands[0], depth + 1) is { Kind: Kind.Descriptor } inner
-                        ? (Kind.Descriptor, inner.Chain, d.Op == Opcode.Add ? inner.At + plus.Value : inner.At - plus.Value) : null;
+                        ? (Kind.Descriptor, inner.Param, inner.Chain, d.Op == Opcode.Add ? inner.At + plus.Value : inner.At - plus.Value) : null;
                 case Opcode.Load when d.Operands.Count == 1:
                 {
                     if (Read(d.Operands[0], depth + 1) is not { } from) return null;
                     if (from.Kind == Kind.Object && d.Offset == 0 && d.Size == word)
-                        return (Kind.Descriptor, from.Chain, Target.Current.DescriptorBytes);
+                        return (Kind.Descriptor, from.Param, from.Chain, Target.Current.DescriptorBytes);
                     if (from.Kind == Kind.Descriptor && from.At + d.Offset == depthAt && d.Size == 4)
-                        return (Kind.Depth, from.Chain, 0);
+                        return (Kind.Depth, from.Param, from.Chain, 0);
                     if (from.Kind == Kind.Descriptor && from.At + d.Offset == displayAt && d.Size == word)
-                        return (Kind.Display, from.Chain, 0);
+                        return (Kind.Display, from.Param, from.Chain, 0);
+                    if (from.Kind == Kind.Descriptor && from.At + d.Offset == interfacesAt && d.Size == word)
+                        return (Kind.Interfaces, from.Param, from.Chain, 0);
                     if (from.Kind == Kind.Display && d.Size == word && d.Offset % word == 0 && d.Offset >= 0 && d.Offset / word < from.Chain.Length)
-                        return (Kind.Named, from.Chain, d.Offset / word);
+                        return (Kind.Named, from.Param, from.Chain, d.Offset / word);
                     return null;
                 }
                 default:
@@ -740,10 +743,37 @@ public sealed class Devirtualize : IModulePass
                 b.Instrs[k] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Line = i.Line, Operands = { new ImmOperand(known ? 1 : 0, i.Dest.Type) } };
                 folded = true;
             }
+
+        // THE INTERFACE SCAN (Lowering's TypeTest of an interface): a block
+        // that copies the parameter's descriptor's interface list into a
+        // cursor and jumps to the loop that reads it -- an entry, null ends
+        // it; compared with the interface wanted, equal is yes. Where the
+        // parameter's class lists that interface (Function.ParamInterfaces),
+        // every object it can hold does, and the scan is its yes from the
+        // start. Only ever yes: a class derived from it may list more.
+        if (f.ParamInterfaces is { Count: > 0 } faces)
+            foreach (Block pre in f.Blocks)
+            {
+                if (pre.Terminator is not { Op: Opcode.Jump, Targets: [Block loop] } jump || ReferenceEquals(loop, pre)) continue;
+                if (loop.Instrs is not [{ Op: Opcode.Load, Offset: 0, Operands: [RegOperand { Reg: var cursor }], Dest: { } entry },
+                        { Op: Opcode.Branch, Targets: [Block more, _], Operands: [RegOperand { Reg: var tested }] }]
+                    || !ReferenceEquals(tested, entry)) continue;
+                if (more.Instrs is not [{ Op: Opcode.Eq, Operands: [RegOperand { Reg: var compared }, var wantedAt], Dest: { } hit },
+                        { Op: Opcode.Branch, Targets: [Block yes, _], Operands: [RegOperand { Reg: var taken }] }]
+                    || !ReferenceEquals(compared, entry) || !ReferenceEquals(taken, hit)) continue;
+                Instr? start = null;
+                for (int k = pre.Instrs.Count - 2; k >= 0 && start is null; k--)
+                    if (ReferenceEquals(pre.Instrs[k].Dest, cursor)) start = pre.Instrs[k];
+                if (start is not { Op: Opcode.Copy, Operands: [var list] } || Read(list, 0) is not { Kind: Kind.Interfaces } of
+                    || !faces.TryGetValue(of.Param, out HashSet<string>? listed)
+                    || Symbol(wantedAt, 0) is not { Offset: 0 } wanted || !listed.Contains(wanted.Name)) continue;
+                pre.Instrs[^1] = new Instr { Op = Opcode.Jump, InitialTargets = new[] { yes }, Line = jump.Line };
+                folded = true;
+            }
         return folded;
     }
 
-    private enum Kind { Object, Descriptor, Depth, Display, Named }
+    private enum Kind { Object, Descriptor, Depth, Display, Named, Interfaces }
 
     /// <summary>
     /// A NULL TEST OF A PARAMETER AFTER A CALL THAT WOULD NOT HAVE RETURNED

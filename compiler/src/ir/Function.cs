@@ -120,6 +120,15 @@ public sealed class Function
     /// </summary>
     internal Dictionary<VReg, string[]>? ParamClasses { get; set; }
 
+    /// <summary>
+    /// AND THE INTERFACES THAT CLASS IMPLEMENTS, itself or through an
+    /// ancestor, by their descriptors' names (Lowering.ParamInterfaces): every
+    /// object a register here holds lists them, a class derived from it no
+    /// fewer. `source is IReadOnlyList<T>` of a List parameter is true once it
+    /// is not null (Devirtualize.FoldParamClassTests).
+    /// </summary>
+    internal Dictionary<VReg, HashSet<string>>? ParamInterfaces { get; set; }
+
     public Function(string name, IrType returns)
     {
         Name = name;

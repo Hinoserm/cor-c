@@ -195,6 +195,22 @@ public sealed partial class Lowering
         return chain.Count == c.Depth + 1 ? chain.ToArray() : null;
     }
 
+    /// <summary>
+    /// The interfaces the class a parameter is declared as implements, by the
+    /// names their descriptors have (InterfaceDescriptor's), as its own
+    /// descriptor lists them (ClassDescriptor: the closure of every one its
+    /// chain names) -- named, not made, as ParamClass's chain is.
+    /// </summary>
+    private HashSet<string> ParamInterfaces(TypeSymbol c)
+    {
+        List<TypeSymbol> faces = new();
+        for (TypeSymbol? s = c; s is not null; s = s.Base)
+            foreach (TypeSymbol i in s.Interfaces) AddInterfaceClosure(i, faces);
+        HashSet<string> names = new(StringComparer.Ordinal);
+        foreach (TypeSymbol face in faces) names.Add("i_" + TypeKey(face));
+        return names;
+    }
+
     private void EmitMethod(MethodSymbol m, MethodDecl decl)
     {
         ResetMethodState();
@@ -260,7 +276,11 @@ public sealed partial class Lowering
             _params[i] = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _params[i].Number = !p.ByRef && NeverAddress(p.Type);
             _f.Params.Add(_params[i]);
-            if (!p.ByRef && ParamClass(m, p.Type) is string[] classOf) (_f.ParamClasses ??= new())[_params[i]] = classOf;
+            if (!p.ByRef && ParamClass(m, p.Type) is string[] classOf)
+            {
+                (_f.ParamClasses ??= new())[_params[i]] = classOf;
+                (_f.ParamInterfaces ??= new())[_params[i]] = ParamInterfaces(p.Type.Symbol!);
+            }
         }
 
         if (Buffered(m))
