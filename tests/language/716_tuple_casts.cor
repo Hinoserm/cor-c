@@ -1,0 +1,21 @@
+// test: tuple_casts
+// expect-exit: 0
+// expect-output:
+// (1, a) (4, 5) 3 2.5 7 
+//
+// Casts to tuple types: unboxing one, a nullable tuple, and a cast to a shape
+// with wider elements, which builds the new tuple. Expected output is real
+// .NET's.
+
+using System;
+static class Program
+{
+    static void Main()
+    {
+        object o = (1, "a");
+        var t = ((int, string))o;
+        (int, int)? n = ((int, int)?)(4, 5);
+        var m = ((long Wide, double Real))(3, 2.5f);
+        Console.WriteLine(t + " " + n + " " + m.Wide + " " + m.Real + " " + ((int?)7) + " " + ((int, int)?)null);
+    }
+}
