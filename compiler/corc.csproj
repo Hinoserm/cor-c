@@ -78,6 +78,10 @@
 
   <ItemGroup>
     <Compile Include="src/**/*.cs" />
+    <!-- The project evaluator is the build utility's (build.csproj compiles
+         these six), and corc uses that one: compiled into both, a program
+         referencing corc saw every one of its types twice (ProjectTests). -->
+    <Compile Remove="src/projects/EvaluatedProject.cs;src/projects/ProjectEvaluator.cs;src/projects/ProjectGraph.cs;src/projects/ProjectCondition.cs;src/projects/ProjectGlob.cs;src/projects/ProjectItem.cs" />
     <ProjectReference Include="../linker/linker.csproj" />
     <ProjectReference Include="../tools/build/build.csproj" />
   </ItemGroup>
