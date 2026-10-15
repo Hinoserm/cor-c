@@ -2888,11 +2888,16 @@ continue;
             return false;
         }
 
+        int counted = 0;
         while (work.TryPop(out VReg? reg))
         {
             if (!chain.Add(reg)) continue;
-            if (chain.Count > 64) return false;
             if (f.Params.Contains(reg) || !defs.TryGetValue(reg, out List<Instr>? writers)) return false;
+            // A TABLE OF MESSAGES -- a register written only with a string
+            // literal, one for each `return "..."` -- counts nothing against
+            // the bound, as Sources counts static data once however often.
+            if (!writers.All(d => d.Op == Opcode.Copy && d.Operands is [SymOperand { Name: var lit }] && lit.StartsWith("str_", StringComparison.Ordinal))
+                && ++counted > 64) return false;
             foreach (Instr d in writers)
             {
                 if (d.Op == Opcode.Call && (IsAllocator(d.Callee) || (d.Callee is not null && fresh.Contains(d.Callee))))
@@ -5997,6 +6002,12 @@ continue;
         {
             if (padsHere.Contains(r) || !liveness.Tracks(r)) return true;
         }
+        // NOT ROUND A LOOP, what a register holds before the allocation is no
+        // earlier lap's object of its own: a replaced object's field, its
+        // barrier reading the old value up to the store (ScalarObjects), is
+        // live from the entry and held only null there, and the message a
+        // dropped exception was made with was never given back.
+        if (!Repeating(liveness.Cfg.Function).Contains(b)) return false;
         foreach ((Instr i, ulong[] liveAfter) in liveness.WalkBackwards(b, skipNewer: true))
         {
             if (!ReferenceEquals(i, alloc))

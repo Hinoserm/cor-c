@@ -1,0 +1,33 @@
+// test: gcless_dropped_exception_message_across_units
+// expect-exit: 0
+// expect-output:
+// 100000 0 True
+//
+// An exception made and never thrown, dropped where it was made, is freed
+// there, and with it the message made for it: the field holding the message
+// owns it even when the program is a unit linked with a library whose other
+// exception constructors -- ones this program never reaches -- store
+// messages their callers keep.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Make(int k)
+    {
+        System.Exception e = new System.InvalidOperationException("bad value " + k);
+        return e.HResult + 1;
+    }
+
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++) total += Make(k);
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}

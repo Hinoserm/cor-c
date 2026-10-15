@@ -53,8 +53,11 @@ public sealed class OwnedFieldHints
     public SortedSet<string> CodeNamed { get; } = new(StringComparer.Ordinal);
     /// <summary>Functions a descriptor of the unit's holds in a slot.</summary>
     public SortedSet<string> Slotted { get; } = new(StringComparer.Ordinal);
-    /// <summary>A virtual call the unit could not name by declaring type and slot.</summary>
-    public bool UnresolvedVirtual { get; set; }
+    /// <summary>
+    /// The functions with a virtual call the unit could not name by declaring
+    /// type and slot: one the program runs could call any slotted function.
+    /// </summary>
+    public SortedSet<string> UnresolvedIn { get; } = new(StringComparer.Ordinal);
 
     // ---- elements owned through a field (Opt.OwnedElements) ----
 
@@ -106,7 +109,7 @@ public sealed class OwnedFieldHints
         void Condition(LifetimeCondition c) { foreach (var s in c.Stays) names.Add(s.Callee); names.UnionWith(c.Fresh); foreach (var s in c.Fields) names.Add(s.Callee); }
         foreach ((string field, OwnedFieldRecord record) in Fields)
         {
-            names.Add(field); Condition(record.Needs);
+            names.Add(field); Condition(record.Needs); names.UnionWith(record.RefusedBy);
             foreach (var sink in record.Sinks) names.Add(sink.Callee);
             names.UnionWith(record.Danger); names.UnionWith(record.Kinds); names.UnionWith(record.Assumes);
             Condition(record.ElementNeeds); names.UnionWith(record.ElementDanger); names.UnionWith(record.ElementDangerFields);
@@ -118,7 +121,7 @@ public sealed class OwnedFieldHints
         }
         foreach ((string callee, OwnedCallRead read) in CallReads)
         {
-            names.Add(callee); Condition(read.Needs); names.UnionWith(read.Danger); names.UnionWith(read.DangerFields); names.UnionWith(read.ReturnedBy);
+            names.Add(callee); Condition(read.Needs); names.UnionWith(read.RefusedBy); names.UnionWith(read.Danger); names.UnionWith(read.DangerFields); names.UnionWith(read.ReturnedBy);
         }
         foreach ((string callee, SortedSet<string> callers) in FreshFirst) { names.Add(callee); names.UnionWith(callers); }
         foreach (((string callee, int _), OwnedSink sink) in Sinks)
@@ -127,7 +130,7 @@ public sealed class OwnedFieldHints
             foreach (var inner in sink.Sinks) names.Add(inner.Callee);
         }
         foreach ((string callee, int _) in Kept) names.Add(callee);
-        names.UnionWith(Addressed); names.UnionWith(CodeNamed); names.UnionWith(Slotted);
+        names.UnionWith(Addressed); names.UnionWith(CodeNamed); names.UnionWith(Slotted); names.UnionWith(UnresolvedIn);
         names.UnionWith(Loaded); names.UnionWith(ElementKept);
         foreach ((string field, OwnedElementRecord record) in ElementReads) { names.Add(field); ElementNames(record); }
         foreach ((string field, OwnedElementRecord record) in ElementHandOffs) { names.Add(field); ElementNames(record); }
@@ -154,7 +157,7 @@ public sealed class OwnedFieldHints
         foreach ((string field, OwnedFieldRecord record) in Fields)
         {
             writer.Write(index[field]); writer.Write(record.Offset); writer.Write(record.Refused); writer.Write(record.Stored); writer.Write(record.SelfFreed);
-            Needs(record.Needs); Pairs(record.Sinks); Names(record.Danger, record.Danger.Count);
+            Names(record.RefusedBy, record.RefusedBy.Count); Needs(record.Needs); Pairs(record.Sinks); Names(record.Danger, record.Danger.Count);
             Names(record.Kinds, record.Kinds.Count); Names(record.Assumes, record.Assumes.Count);
             writer.Write(record.ElementsRefused); writer.Write(record.ElementArrays); Needs(record.ElementNeeds);
             Names(record.ElementDanger, record.ElementDanger.Count); Names(record.ElementDangerFields, record.ElementDangerFields.Count);
@@ -169,7 +172,7 @@ public sealed class OwnedFieldHints
         writer.Write(CallReads.Count);
         foreach ((string callee, OwnedCallRead read) in CallReads)
         {
-            writer.Write(index[callee]); writer.Write(read.Refused); Needs(read.Needs);
+            writer.Write(index[callee]); writer.Write(read.Refused); Names(read.RefusedBy, read.RefusedBy.Count); Needs(read.Needs);
             Names(read.Danger, read.Danger.Count); Names(read.DangerFields, read.DangerFields.Count); Names(read.ReturnedBy, read.ReturnedBy.Count);
         }
         writer.Write(FreshFirst.Count);
@@ -181,7 +184,7 @@ public sealed class OwnedFieldHints
         }
         Pairs(Kept);
         Names(Addressed, Addressed.Count); Names(CodeNamed, CodeNamed.Count); Names(Slotted, Slotted.Count);
-        writer.Write(UnresolvedVirtual);
+        Names(UnresolvedIn, UnresolvedIn.Count);
         Names(Loaded, Loaded.Count); Names(ElementKept, ElementKept.Count);
         void Element(OwnedElementRecord value)
         {
@@ -242,7 +245,7 @@ public sealed class OwnedFieldHints
         {
             string field = Name();
             OwnedFieldRecord record = new() { Offset = reader.ReadInt64(), Refused = reader.ReadBoolean(), Stored = reader.ReadBoolean(), SelfFreed = reader.ReadBoolean() };
-            record.Needs.Add(Needs()); Pairs(record.Sinks); NameSet(record.Danger); NameSet(record.Kinds); NameSet(record.Assumes);
+            NameSet(record.RefusedBy); record.Needs.Add(Needs()); Pairs(record.Sinks); NameSet(record.Danger); NameSet(record.Kinds); NameSet(record.Assumes);
             record.ElementsRefused = reader.ReadBoolean(); record.ElementArrays = reader.ReadBoolean();
             record.ElementNeeds.Add(Needs()); NameSet(record.ElementDanger); NameSet(record.ElementDangerFields);
             if (!hints.Fields.TryAdd(field, record)) throw new ElfFormatException("Duplicate owned-field record");
@@ -257,7 +260,7 @@ public sealed class OwnedFieldHints
         {
             string callee = Name();
             OwnedCallRead read = new() { Refused = reader.ReadBoolean() };
-            read.Needs.Add(Needs()); NameSet(read.Danger); NameSet(read.DangerFields); NameSet(read.ReturnedBy);
+            NameSet(read.RefusedBy); read.Needs.Add(Needs()); NameSet(read.Danger); NameSet(read.DangerFields); NameSet(read.ReturnedBy);
             if (!hints.CallReads.TryAdd(callee, read)) throw new ElfFormatException("Duplicate owned-field call read");
         }
         for (int i = Count(8); i > 0; i--)
@@ -276,7 +279,7 @@ public sealed class OwnedFieldHints
         }
         Pairs(hints.Kept);
         NameSet(hints.Addressed); NameSet(hints.CodeNamed); NameSet(hints.Slotted);
-        hints.UnresolvedVirtual = reader.ReadBoolean();
+        NameSet(hints.UnresolvedIn);
         NameSet(hints.Loaded); NameSet(hints.ElementKept);
         OwnedElementRecord Element()
         {
@@ -315,6 +318,12 @@ public sealed class OwnedFieldRecord
     public long Offset { get; set; }
     /// <summary>A store or read here settles it: not owned, whatever the other units do.</summary>
     public bool Refused { get; set; }
+    /// <summary>
+    /// The functions a store or read of which here settles it: not owned if
+    /// the program runs any of them. Every other store and read here is
+    /// judged all the same, for when it runs none.
+    /// </summary>
+    public SortedSet<string> RefusedBy { get; } = new(StringComparer.Ordinal);
     /// <summary>Stored into here.</summary>
     public bool Stored { get; set; }
     /// <summary>
@@ -372,6 +381,8 @@ public sealed class OwnedCallRead
 {
     /// <summary>Some read lets it go, or lives across a free: no field the callee hands back is owned.</summary>
     public bool Refused { get; set; }
+    /// <summary>The functions whose read lets it go, or lives across a free: as Refused, if the program runs any of them.</summary>
+    public SortedSet<string> RefusedBy { get; } = new(StringComparer.Ordinal);
     public LifetimeCondition Needs { get; } = new();
     /// <summary>The calls a read is live across.</summary>
     public SortedSet<string> Danger { get; } = new(StringComparer.Ordinal);

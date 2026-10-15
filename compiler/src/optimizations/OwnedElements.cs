@@ -3726,7 +3726,7 @@ public sealed partial class Escape
         foreach (var ld in loads) if (ld.I.Field is not null) Of(ld.I.Field).Loads.Add(ld);
         foreach ((string field, Corsac.Lang.Lto.OwnedFieldRecord record) in hints.Fields)
         {
-            if (record.Refused || !canFree) { record.ElementsRefused = true; continue; }
+            if (record.Refused || record.RefusedBy.Count > 0 || !canFree) { record.ElementsRefused = true; continue; }
             var (ownStores, ownLoads) = Of(field);
             Needs needs = new(this);
             Dictionary<Function, HashSet<VReg>>? heldIn = ArrayFieldHeld(field, ownStores, ownLoads, refusedStores, DefsOf, summaries, needs, out bool anyArray);

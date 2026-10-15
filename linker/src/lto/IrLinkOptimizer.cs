@@ -163,12 +163,25 @@ public static class IrLinkOptimizer
         // Only what the program can reach throws anything (Escape.ForeignThrows):
         // a throw in code the program never runs made every catch keep.
         string[]? catchable = null;
+        // The names of what the program runs, over the same reach: a function
+        // a unit refused a field in counts only there (OwnedFieldSolver).
+        HashSet<string>? runs = null;
         if (lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey) && archives.Keys.All(heapRecords.ContainsKey)
             && !foreign.Contains("*"))
         {
             List<(ObjectFile Object, HeapRecords Records)> recorded = inputs.Where(input => archives.ContainsKey(input.Object))
                 .Select(input => (input.Object, heapRecords[input.Object])).ToList();
             HashSet<(ObjectFile Object, string Function)> throwing = HeapDecision.Reach(inputs, recorded, closedImageEntry, linkRoots.Concat(foreign).ToList());
+            // BY NAME, every unit's copy of it: one a unit keeps of what another
+            // unit owns may be inlined into a caller there (IrReachability).
+            runs = throwing.Select(reached => reached.Function).ToHashSet(StringComparer.Ordinal);
+            // And a name a unit refused something in that no records hold: no
+            // walk says it does not run.
+            HashSet<string> recordedNames = recorded.SelectMany(unit => unit.Records.Functions).Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
+            foreach (LifetimeHints unit in hintOrder)
+                if (unit.Owned is { } owned)
+                    runs.UnionWith(owned.Fields.Values.SelectMany(record => record.RefusedBy).Concat(owned.CallReads.Values.SelectMany(read => read.RefusedBy))
+                        .Concat(owned.UnresolvedIn).Where(name => !recordedNames.Contains(name)));
             catchable = ForeignCatchable(inputs, hintOrder, hints, throwing, lifetimes);
         }
         bool programFacts = catchable is not null;
@@ -189,7 +202,7 @@ public static class IrLinkOptimizer
             ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
                 Switches.AllocReport
                     ? line => { if (Switches.AllocReportOnly is not { } which || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null,
-                foreign) : null;
+                foreign, runs) : null;
         if (ownedFields is { IsEmpty: true }) ownedFields = null;
         if (ownedFields is not null)
             Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "

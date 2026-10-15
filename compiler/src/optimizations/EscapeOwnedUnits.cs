@@ -547,8 +547,9 @@ public sealed partial class Escape
         foreach (Function f in m.Functions) foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs)
             foreach (Operand o in i.Operands)
                 if (o is SymOperand sym && Named(sym.Name)) { hints.Addressed.Add(sym.Name); hints.CodeNamed.Add(sym.Name); }
-        hints.UnresolvedVirtual = m.Functions.Any(g => g.Blocks.Any(bb => bb.Instrs.Any(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null
-            && (_indirect is null || !_indirect.ContainsKey(i)))));
+        foreach (Function g in m.Functions)
+            if (g.Blocks.Any(bb => bb.Instrs.Any(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i)))))
+                hints.UnresolvedIn.Add(g.Name);
 
         OwnedFieldRecord Record(string field, long offset)
         {
@@ -557,7 +558,17 @@ public sealed partial class Escape
             return record;
         }
         bool reporting = Switches.AllocReport;
+        // REFUSED WHERE IT IS: a store or read of one function settles the
+        // field only where the program runs that function (OwnedFieldRecord.
+        // RefusedBy), and every other store and read is judged all the same.
         void Refuse(OwnedFieldRecord record, string field, string why, Function f, Instr at)
+        {
+            if (record.Refused || !record.RefusedBy.Add(f.Name)) return;
+            if (reporting) _fieldReport.Add($"{field} refused in this unit: {why} in {f.Name}:{at.Line}");
+            if (record.RefusedBy.Count > OwnedFieldHints.Limit) record.Refused = true;
+        }
+        // Past a bound the unit keeps over all its functions: refused outright.
+        void RefuseAll(OwnedFieldRecord record, string field, string why, Function f, Instr at)
         {
             if (!record.Refused && reporting) _fieldReport.Add($"{field} refused in this unit: {why} in {f.Name}:{at.Line}");
             record.Refused = true;
@@ -819,14 +830,19 @@ public sealed partial class Escape
             // What it puts there, by type, for a read judged as of one type.
             if (!(st.Operands.Count >= 2 && st.Operands[1] is ImmOperand { Value: 0 }))
                 record.Kinds.Add(StoredStamp(f, Defs(f), st) is { } kind ? Kind(kind) : OwnedFieldRecord.UnknownKind);
-            if (record.Refused) continue;
+            if (record.Refused || record.RefusedBy.Contains(f.Name)) continue;
             // Judged as any other's (Escape.OwnedFields says why).
             if (st.Operands.Count < 2) { Refuse(record, field, "odd store", f, st); continue; }
             if (st.Operands[1] is ImmOperand { Value: 0 } or SymOperand) continue;
             if (st.Operands[1] is not RegOperand v) { Refuse(record, field, "stores an odd operand", f, st); continue; }
             if (fills.TryGetValue(st, out Fill? filling))
             {
-                if (FillRefused(f, b, st, filling) is string refused) Refuse(record, field, refused, f, st);
+                // Its calls past the bound the unit keeps over every function: refused outright.
+                if (FillRefused(f, b, st, filling) is string refused)
+                {
+                    if (record.Danger.Count > OwnedFieldHints.Limit) { RefuseAll(record, field, refused, f, st); record.Danger.Clear(); }
+                    else Refuse(record, field, refused, f, st);
+                }
                 continue;
             }
             if (OriginOf(Defs(f), v.Reg) is Instr made && made.Dest is not null && FreshCondition(made) is LifetimeCondition madeFresh)
@@ -865,9 +881,11 @@ public sealed partial class Escape
                 if (src.Kind != SourceKind.Parameter) continue;
                 Needs needs = new(this);
                 if (Analyse(f, new[] { f.Params[src.Index] }, summaries, null, only, needs: needs).Escapes) { ok = false; break; }
+                // A list the link answers, bounded as a danger set is: past
+                // the bound, this store is refused where it is.
+                if (!record.Sinks.Contains((f.Name, src.Index)) && record.Sinks.Count >= OwnedFieldHints.Limit) { ok = false; break; }
                 Need(record, needs.Condition);
                 record.Sinks.Add((f.Name, src.Index));
-                if (record.Sinks.Count > LifetimeCondition.Limit) { ok = false; break; }
             }
             if (!ok) Refuse(record, field, $"stores {v}, which a caller may not hand over", f, st);
         }
@@ -1026,7 +1044,7 @@ public sealed partial class Escape
                     }
                     // Not a field this unit refused: no store into it frees
                     // anything; nor a self-replacing free's store.
-                    else if (i.Op == Opcode.Store && i.Field is not null && !(hints.Fields.TryGetValue(i.Field, out OwnedFieldRecord? into) && into.Refused)
+                    else if (i.Op == Opcode.Store && i.Field is not null && !(hints.Fields.TryGetValue(i.Field, out OwnedFieldRecord? into) && (into.Refused || into.RefusedBy.Contains(f.Name)))
                         && !fills.ContainsKey(i) && !StoreIntoRead(i, inside) && !FirstOf(f).Fills(x, k) && !mine.Stores.Contains(i)) judged.DangerFields.Add(i.Field);
                 }
             }
@@ -1108,7 +1126,7 @@ public sealed partial class Escape
         {
             (Function f, Block b, Instr ld, string field) = reads[n];
             OwnedFieldRecord record = hints.Fields[field];
-            if (record.Refused) continue;
+            if (record.Refused || record.RefusedBy.Contains(f.Name)) continue;
             // AS OF ONE TYPE, if not otherwise: what every store here puts in
             // the field (FieldStamps), the link holding the other units to it.
             // Judged so first: a virtual call the type answers here is
@@ -1129,7 +1147,7 @@ public sealed partial class Escape
             if (judged.DangerFields.Count > 0) { Refuse(record, field, "read live across a store into a field", f, ld); continue; }
             Need(record, judged.Needs);
             record.Danger.UnionWith(judged.Danger);
-            if (record.Danger.Count > OwnedFieldHints.Limit) { Refuse(record, field, "read live across too many calls", f, ld); record.Danger.Clear(); continue; }
+            if (record.Danger.Count > OwnedFieldHints.Limit) { RefuseAll(record, field, "read live across too many calls", f, ld); record.Danger.Clear(); continue; }
             if (!judged.HandedBack) continue;
             // Handed back: every call of this function reads the field -- the
             // ones here now, the other units' at the link.
@@ -1162,9 +1180,11 @@ public sealed partial class Escape
                     {
                         if (call.Dest!.Type != IrTypes.Word || !judgedCalls.Add(call)) continue;
                         if (!hints.CallReads.TryGetValue(key, out OwnedCallRead? read)) hints.CallReads[key] = read = new();
-                        if (read.Refused) continue;
-                        if (Judge(g, cb, call, out _) is not ReadJudgement judged
-                            || !read.Needs.Add(judged.Needs))
+                        if (read.Refused || read.RefusedBy.Contains(g.Name)) continue;
+                        ReadJudgement? judged = Judge(g, cb, call, out _);
+                        // Refused where it is, as a field's own read is (Refuse).
+                        if (judged is null && read.RefusedBy.Count < OwnedFieldHints.Limit) { read.RefusedBy.Add(g.Name); continue; }
+                        if (judged is null || !read.Needs.Add(judged.Needs))
                         {
                             read.Refused = true; read.Danger.Clear(); read.DangerFields.Clear(); read.ReturnedBy.Clear();
                             read.Needs.Stays.Clear(); read.Needs.Fresh.Clear(); read.Needs.Fields.Clear();
@@ -1180,6 +1200,7 @@ public sealed partial class Escape
                         { read.Refused = true; read.Danger.Clear(); read.DangerFields.Clear(); read.ReturnedBy.Clear(); }
                     }
         }
+        foreach (OwnedCallRead read in hints.CallReads.Values) if (read.Refused) read.RefusedBy.Clear();
         // A refused read made its caller relay nothing it knows of; the
         // callers already queued stay (more reads judged, never fewer).
 
@@ -1193,7 +1214,7 @@ public sealed partial class Escape
                 hints.Functions[name] = new OwnedFunctionRecord(record.Calls.ToArray(), record.Writes.ToArray(), record.InitWrites.ToArray(), record.Borrows.ToArray());
         foreach (OwnedFieldRecord record in hints.Fields.Values)
         {
-            if (record.Refused) { record.Danger.Clear(); record.Sinks.Clear(); record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
+            if (record.Refused) { record.RefusedBy.Clear(); record.Danger.Clear(); record.Sinks.Clear(); record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
             if (record.Refused || record.ElementsRefused)
             {
                 record.ElementsRefused = true; record.ElementArrays = false; record.ElementDanger.Clear(); record.ElementDangerFields.Clear();

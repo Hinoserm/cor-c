@@ -1,0 +1,39 @@
+// test: exception_message_from_a_files_path_stays_the_files
+// expect-exit: 0
+// expect-output:
+// missing-3.txt 100
+//
+// THE LIBRARY'S OWN THROW WITH A MESSAGE IT KEEPS: FileInfo.Length on a file
+// that is not there throws with the FileInfo's own path, which the FileInfo
+// still holds. Each exception is caught and freed where its catch ends, and
+// the FileInfo still says its name: the link keeps Length, so what the
+// library's unit refused in it stands.
+
+using System;
+using System.IO;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static readonly int[][] Junk = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < Junk.Length; k++) { Junk[k] = new int[k % 2 == 0 ? 16 : 9]; Junk[k][0] = 100; }
+        Gc.Collect();
+    }
+
+    static void Main()
+    {
+        FileInfo info = new FileInfo("/nonexistent-corsac-test-dir/missing-" + 3 + ".txt");
+        int caught = 0;
+        for (int k = 0; k < 100; k++)
+        {
+            try { long length = info.Length; if (length < 0) caught--; }
+            catch (FileNotFoundException) { caught++; }
+            Churn();
+        }
+        Console.WriteLine(info.Name + " " + caught);
+    }
+}

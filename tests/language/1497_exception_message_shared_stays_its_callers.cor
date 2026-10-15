@@ -1,0 +1,48 @@
+// test: exception_message_shared_stays_its_callers
+// expect-exit: 0
+// expect-output:
+// b: shared message 7
+// kept: shared message 7
+//
+// ONE MESSAGE IN MANY EXCEPTIONS, and kept by the function that made it: no
+// exception owns it. A hundred are made with it and dropped, each freed
+// where it is dropped; one more still says it, as does the variable it came
+// from.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static readonly int[][] Junk = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < Junk.Length; k++) { Junk[k] = new int[k % 2 == 0 ? 16 : 9]; Junk[k][0] = 100; }
+        Gc.Collect();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Exception MakeA(string text) => new InvalidOperationException(text);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Exception MakeB(string text) => new NotSupportedException(text);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Shared(int n)
+    {
+        string text = "shared message " + n;
+        Exception b = MakeB(text);
+        for (int k = 0; k < 100; k++)
+        {
+            Exception a = MakeA(text);
+            if (a.InnerException != null) return "inner";
+            try { throw MakeA(text); } catch (InvalidOperationException) { }
+        }
+        Churn();
+        return "b: " + b.Message + "\nkept: " + text;
+    }
+
+    static void Main() { Console.WriteLine(Shared(7)); }
+}

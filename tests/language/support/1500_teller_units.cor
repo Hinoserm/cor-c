@@ -1,0 +1,25 @@
+// The other unit of exception_message_kept_through_a_virtual_call_across_units:
+// a teller that keeps what it was told and makes an exception saying it.
+
+using System;
+
+abstract class Teller
+{
+    public abstract Exception Tell(string text);
+}
+
+sealed class KeepingTeller : Teller
+{
+    public string Said = "";
+
+    public override Exception Tell(string text)
+    {
+        Said = text;
+        return new InvalidOperationException(text);
+    }
+}
+
+sealed class PlainTeller : Teller
+{
+    public override Exception Tell(string text) => new InvalidOperationException(text);
+}

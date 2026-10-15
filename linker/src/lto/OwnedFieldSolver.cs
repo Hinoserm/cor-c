@@ -98,8 +98,11 @@ public static class OwnedFieldSolver
     /// the image's entry, which no call reaches.
     /// </summary>
     public static OwnedFieldFacts? Solve(IReadOnlyList<LifetimeHints> units, LifetimeSolver solver,
-        IReadOnlyDictionary<string, string[]> virtuals, string entry, Action<string>? report = null, IReadOnlySet<string>? foreign = null)
+        IReadOnlyDictionary<string, string[]> virtuals, string entry, Action<string>? report = null, IReadOnlySet<string>? foreign = null,
+        IReadOnlySet<string>? runs = null)
     {
+        // Whether the program runs a function a unit refused a field in (RefusedBy): with no answer, every one.
+        bool Runs(string function) => runs?.Contains(function) != false;
         if (units.Count == 0 || units.Any(unit => unit.Owned is null)) return null;
         List<OwnedFieldHints> all = units.Select(unit => unit.Owned!).ToList();
 
@@ -110,7 +113,7 @@ public static class OwnedFieldSolver
             addressed.UnionWith(unit.Addressed); codeNamed.UnionWith(unit.CodeNamed); slotted.UnionWith(unit.Slotted);
             // And an `@` name whose plain one the link could not resolve: a
             // call renamed where it is inlined is judged by its plain name.
-            unresolvedVirtual |= unit.UnresolvedVirtual || unit.VirtualNames().Any(name => !virtuals.ContainsKey(name)
+            unresolvedVirtual |= unit.UnresolvedIn.Any(Runs) || unit.VirtualNames().Any(name => !virtuals.ContainsKey(name)
                 || name.Contains('@') && !virtuals.ContainsKey(VirtualTargets.Plain(name)));
         }
         bool IsVirtualTarget(string name) => slotted.Contains(name) && !codeNamed.Contains(name) && !unresolvedVirtual;
@@ -253,6 +256,7 @@ public static class OwnedFieldSolver
                 if (record.Stored) stored.Add(field);
                 if (record.SelfFreed) selfFreed.Add(field);
                 if (record.Refused) Refuse(field, "a unit refused it");
+                else if (record.RefusedBy.FirstOrDefault(Runs) is string by) Refuse(field, "a unit refused it in " + by + ", which the program runs");
                 else if (!solver.Holds(record.Needs)) Refuse(field, "needs " + Describe(record.Needs));
                 else if (record.Sinks.FirstOrDefault(sink => !sinks.Contains(sink)) is { Callee: not null } lost)
                     Refuse(field, "stored from " + lost.Callee + " argument " + lost.Argument + ", which a caller does not hand over");
@@ -307,6 +311,7 @@ public static class OwnedFieldSolver
                 foreach (string field in borrows.GetValueOrDefault(target) ?? new SortedSet<string>(StringComparer.Ordinal))
                 {
                     if (read.Refused) Refuse(field, "a read of " + callee + " lets it go");
+                    else if (read.RefusedBy.FirstOrDefault(Runs) is string by) Refuse(field, "a read of " + callee + " in " + by + ", which the program runs, lets it go");
                     else if (!solver.Holds(read.Needs)) Refuse(field, "a read of " + callee + " needs " + Describe(read.Needs));
                     // Any field's store, not only this one's: replacing a field
                     // frees the old value's own owned fields too.

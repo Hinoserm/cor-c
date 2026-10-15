@@ -1,0 +1,45 @@
+// test: exception_message_kept_in_a_static_stays_its_owners
+// expect-exit: 0
+// expect-output:
+// kept 999 1000 1000
+//
+// A MESSAGE A STATIC KEEPS TOO is no exception's: each exception made with
+// it is thrown and caught, or made and dropped, and freed where it ends, and
+// the static still says the last message.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static string Last = "";
+    static readonly int[][] Junk = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < Junk.Length; k++) { Junk[k] = new int[k % 2 == 0 ? 16 : 9]; Junk[k][0] = 100; }
+        Gc.Collect();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Exception Make(int k)
+    {
+        string m = "kept " + k;
+        Last = m;
+        return new InvalidOperationException(m);
+    }
+
+    static void Main()
+    {
+        int caught = 0, dropped = 0;
+        for (int k = 0; k < 1000; k++)
+        {
+            try { throw Make(k); } catch (InvalidOperationException) { caught++; }
+            Exception e = Make(k);
+            if (e.InnerException == null) dropped++;
+        }
+        Churn();
+        Console.WriteLine(Last + " " + caught + " " + dropped);
+    }
+}

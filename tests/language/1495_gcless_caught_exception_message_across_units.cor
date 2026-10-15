@@ -1,0 +1,34 @@
+// test: gcless_caught_exception_message_across_units
+// expect-exit: 0
+// expect-output:
+// 100000 0 True
+//
+// A caught exception its catch keeps nowhere is freed when the catch ends,
+// and with it the message made for it at the throw: the field holding the
+// message is owned even when the program is a unit linked with a library
+// whose other exception constructors -- ones this program never reaches --
+// store messages their callers keep.
+
+static class Program
+{
+    static int Check(int k)
+    {
+        if ((k & 1) == 0) throw new System.InvalidOperationException("bad value " + k);
+        return 1;
+    }
+
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { total += Check(k); }
+            catch (System.InvalidOperationException) { total += 1; }
+        }
+        long grown = GC.GetTotalMemory(false) - before;
+        System.Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}

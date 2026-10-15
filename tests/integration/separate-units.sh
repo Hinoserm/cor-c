@@ -51,7 +51,10 @@ if [ ${#tests[@]} = 0 ]; then
         63_no_heap 762_gcless_static_tables 767_gcless_run_once 768_gcless_latched_once
         # what a catch may free, over the throws of what the program reaches
         1483_catch_keeps_and_rethrows 1484_filter_keeps_and_declines 1485_thrower_reads_what_its_catch_took
-        1486_rethrow_caught_again_then_reused
+        1486_rethrow_caught_again_then_reused 1489_rethrow_only_and_finally_free_at_catch
+        # a field a library function refuses, owned where the program never runs it
+        764_gcless_caught_exceptions 1495_gcless_caught_exception_message_across_units
+        1496_gcless_dropped_exception_message_across_units 1500_exception_message_kept_through_a_virtual_call_across_units
     )
 fi
 [ "${tests[*]}" = all ] && tests=("")

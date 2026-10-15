@@ -1,0 +1,42 @@
+// test: exception_message_kept_through_a_virtual_call_across_units
+// units: tests/language/support/1500_teller_units.cor
+// expect-exit: 0
+// expect-output:
+// told 999 1000
+//
+// A MESSAGE KEPT BY THE ONLY METHOD THAT STORES IT -- another unit's
+// override, reached through its virtual slot alone -- is no exception's:
+// every exception it makes is dropped and freed, and the teller still says
+// the last thing it was told. The link keeps that override, so what its unit
+// refused in it stands.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static readonly int[][] Junk = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < Junk.Length; k++) { Junk[k] = new int[k % 2 == 0 ? 16 : 9]; Junk[k][0] = 100; }
+        Gc.Collect();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Teller Pick(int which) => which == 0 ? new KeepingTeller() : new PlainTeller();
+
+    static void Main()
+    {
+        Teller t = Pick(0);
+        int dropped = 0;
+        for (int k = 0; k < 1000; k++)
+        {
+            Exception e = t.Tell("told " + k);
+            if (e.InnerException == null) dropped++;
+        }
+        Churn();
+        Console.WriteLine(((KeepingTeller)t).Said + " " + dropped);
+    }
+}

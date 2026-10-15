@@ -1,0 +1,46 @@
+// test: exception_message_handed_to_another_stays_its_readers
+// expect-exit: 0
+// expect-output:
+// second says first 5
+// third says first 5
+//
+// A MESSAGE READ FROM ONE EXCEPTION AND GIVEN TO ANOTHER -- the second made
+// to replace the first, as a wrapper that rewords nothing does -- is owned by
+// neither: the first is caught and freed where its catch hands the message
+// on, and the second, and a third made from it in turn, still say it.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static readonly int[][] Junk = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < Junk.Length; k++) { Junk[k] = new int[k % 2 == 0 ? 16 : 9]; Junk[k][0] = 100; }
+        Gc.Collect();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string MessageOf(int n)
+    {
+        try { throw new NotSupportedException("first " + n); }
+        catch (NotSupportedException e) { return e.Message; }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Exception Replace(string message) => new InvalidOperationException(message);
+
+    static void Main()
+    {
+        Exception second = Replace(MessageOf(5));
+        Churn();
+        Exception third;
+        try { throw Replace(second.Message); } catch (InvalidOperationException e) { third = e; }
+        Churn();
+        Console.WriteLine("second says " + second.Message);
+        Console.WriteLine("third says " + third.Message);
+    }
+}

@@ -1,0 +1,43 @@
+// test: exception_message_kept_through_a_delegate
+// expect-exit: 0
+// expect-output:
+// made 999 1000
+//
+// A MESSAGE KEPT BY A FUNCTION REACHED ONLY THROUGH ITS ADDRESS -- a
+// delegate over it -- is no exception's: every exception it makes is dropped
+// and freed, and the static still says the last message.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static string Last = "";
+    static readonly int[][] Junk = new int[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < Junk.Length; k++) { Junk[k] = new int[k % 2 == 0 ? 16 : 9]; Junk[k][0] = 100; }
+        Gc.Collect();
+    }
+
+    static Exception Keeping(string m)
+    {
+        Last = m;
+        return new InvalidOperationException(m);
+    }
+
+    static void Main()
+    {
+        Func<string, Exception> make = Keeping;
+        int dropped = 0;
+        for (int k = 0; k < 1000; k++)
+        {
+            Exception e = make("made " + k);
+            if (e.InnerException == null) dropped++;
+        }
+        Churn();
+        Console.WriteLine(Last + " " + dropped);
+    }
+}
