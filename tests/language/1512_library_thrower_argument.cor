@@ -1,12 +1,15 @@
 // test: library_thrower_argument
 // expect-exit: 0
 // expect-output:
-// 100000 True
+// 100000 bad 0 collections 0
 //
 // A dictionary's indexer throws through ThrowHelper.KeyNotFound, which never
-// returns, handed the key's text made for it; a catch round a loop frees the
-// exception, but what was made on the way to the call is never given back
-// without a collector.
+// returns, handed the key's text made for it; KeyNotFound makes the message
+// of what it throws from that text. The catch round the loop keeps the
+// program a collector -- its unwinds are unbounded -- but nothing made on the
+// way to the throw is left to it: the key's text and the message's pieces
+// are given back before the unwind leaves their frames, and every message
+// caught still says its key after memory is made and dropped again.
 
 using System.Collections.Generic;
 
@@ -17,15 +20,22 @@ static class Program
         var d = new Dictionary<int, int>();
         d[1] = 1;
         long total = 0;
+        int bad = 0;
+        int collections = System.GC.CollectionCount(0);
         for (int k = 0; k < 100000; k++)
         {
-            try { total += d[(k & 1) + 1]; }
-            catch (KeyNotFoundException) { total++; }
+            int key = (k & 1) + 1 + (k & 1) * k;
+            try { total += d[key]; }
+            catch (KeyNotFoundException e)
+            {
+                int[] churn = new int[8];
+                churn[0] = k;
+                string want = "The given key '" + key + "' was not present in the dictionary.";
+                if (e.Message != want) bad++;
+                total += churn[0] & 1;
+            }
         }
-        Sys.PrintInt(total);
-        Sys.Print(" ");
-        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
-        Sys.PrintLine();
+        System.Console.WriteLine(total + " bad " + bad + " collections " + (System.GC.CollectionCount(0) - collections));
         return 0;
     }
 }

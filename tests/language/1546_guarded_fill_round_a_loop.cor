@@ -1,0 +1,41 @@
+// test: guarded_fill_round_a_loop
+// expect-exit: 0
+// expect-output:
+// 9600000 True
+//
+// A FILL BEHIND A TEST THAT FOUND THE FIELD EMPTY, but round a loop under that
+// test: the second lap's store replaces the first lap's object, which nothing
+// frees. Not a fill that replaces nothing: the field holds nothing the
+// collector is spared for, and the program keeps one, and collects.
+
+sealed class Item { public int[] Pad = new int[64]; }
+sealed class Holder { public Item? F; }
+
+static class Program
+{
+    static Holder s_h = new Holder();
+
+    static long Fill(Holder h, int n)
+    {
+        long sum = 0;
+        if (h.F == null)
+        {
+            for (int k = 0; k < n; k++)
+            {
+                h.F = new Item();
+                if ((k & 1) == 0) sum += h.F.Pad.Length;
+            }
+        }
+        return sum;
+    }
+
+    static int Main()
+    {
+        long t = Fill(s_h, 300000);
+        Sys.PrintInt(t);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

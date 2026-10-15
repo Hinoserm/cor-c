@@ -99,10 +99,12 @@ public static class OwnedFieldSolver
     /// </summary>
     public static OwnedFieldFacts? Solve(IReadOnlyList<LifetimeHints> units, LifetimeSolver solver,
         IReadOnlyDictionary<string, string[]> virtuals, string entry, Action<string>? report = null, IReadOnlySet<string>? foreign = null,
-        IReadOnlySet<string>? runs = null)
+        IReadOnlySet<string>? neverRun = null)
     {
-        // Whether the program runs a function a unit refused a field in (RefusedBy): with no answer, every one.
-        bool Runs(string function) => runs?.Contains(function) != false;
+        // Whether the program may run a function a unit said something of a
+        // field in (RefusedBy, Sites, KeptIn, a sink's caller): with no answer, every one.
+        bool Runs(string function) => neverRun?.Contains(function) != true;
+        IEnumerable<OwnedSite> Running(SortedDictionary<string, OwnedSite> sites) => sites.Where(pair => Runs(pair.Key)).Select(pair => pair.Value);
         if (units.Count == 0 || units.Any(unit => unit.Owned is null)) return null;
         List<OwnedFieldHints> all = units.Select(unit => unit.Owned!).ToList();
 
@@ -166,9 +168,12 @@ public static class OwnedFieldSolver
                 // its store judged where it was taken (`new Parser(tokens)`).
                 if (sinks.Contains((callee, argument)) || addressed.Contains(callee) || callee == entry) continue;
                 List<int> callers = directCallers.GetValueOrDefault(callee) ?? new List<int>();
+                // A call the program never runs hands over nothing and keeps nothing.
                 if (callers.All(u => !all[u].Kept.Contains((callee, argument))
+                        && !(all[u].KeptIn.TryGetValue((callee, argument), out SortedSet<string>? keptBy) && keptBy.Any(Runs))
                         && (!all[u].Sinks.TryGetValue((callee, argument), out OwnedSink? sink)
-                            || solver.Holds(sink.Needs) && sink.Sinks.All(sinks.Contains))))
+                            || sink.NeedsIn.All(pair => !Runs(pair.Key) || solver.Holds(pair.Value))
+                                && sink.Sinks.All(inner => !Runs(inner.Callee) || sinks.Contains(inner)))))
                 { sinks.Add((callee, argument)); grew = true; }
             }
             if (!grew) break;
@@ -257,17 +262,19 @@ public static class OwnedFieldSolver
                 if (record.SelfFreed) selfFreed.Add(field);
                 if (record.Refused) Refuse(field, "a unit refused it");
                 else if (record.RefusedBy.FirstOrDefault(Runs) is string by) Refuse(field, "a unit refused it in " + by + ", which the program runs");
-                else if (!solver.Holds(record.Needs)) Refuse(field, "needs " + Describe(record.Needs));
-                else if (record.Sinks.FirstOrDefault(sink => !sinks.Contains(sink)) is { Callee: not null } lost)
+                else if (Running(record.Sites).FirstOrDefault(site => !solver.Holds(site.Needs)) is OwnedSite needing) Refuse(field, "needs " + Describe(needing.Needs));
+                // A sink is the storing function's own parameter: none where it never runs.
+                else if (record.Sinks.FirstOrDefault(sink => Runs(sink.Callee) && !sinks.Contains(sink)) is { Callee: not null } lost)
                     Refuse(field, "stored from " + lost.Callee + " argument " + lost.Argument + ", which a caller does not hand over");
                 if (!danger.TryGetValue(field, out HashSet<string>? set)) danger[field] = set = new(StringComparer.Ordinal);
-                set.UnionWith(record.Danger);
                 if (!kinds.TryGetValue(field, out SortedSet<string>? stamps)) kinds[field] = stamps = new(StringComparer.Ordinal);
-                stamps.UnionWith(record.Kinds);
-                if (record.Assumes.Count > 0)
+                foreach (OwnedSite site in Running(record.Sites))
                 {
+                    set.UnionWith(site.Danger);
+                    stamps.UnionWith(site.Kinds);
+                    if (site.Assumes.Count == 0) continue;
                     if (!assumed.TryGetValue(field, out SortedSet<string>? taken)) assumed[field] = taken = new(StringComparer.Ordinal);
-                    taken.UnionWith(record.Assumes);
+                    taken.UnionWith(site.Assumes);
                 }
             }
         // A READ JUDGED AS OF ONE TYPE (a virtual call on it reaching that
@@ -312,12 +319,12 @@ public static class OwnedFieldSolver
                 {
                     if (read.Refused) Refuse(field, "a read of " + callee + " lets it go");
                     else if (read.RefusedBy.FirstOrDefault(Runs) is string by) Refuse(field, "a read of " + callee + " in " + by + ", which the program runs, lets it go");
-                    else if (!solver.Holds(read.Needs)) Refuse(field, "a read of " + callee + " needs " + Describe(read.Needs));
+                    else if (Running(read.Sites).FirstOrDefault(site => !solver.Holds(site.Needs)) is OwnedSite needing) Refuse(field, "a read of " + callee + " needs " + Describe(needing.Needs));
                     // Any field's store, not only this one's: replacing a field
                     // frees the old value's own owned fields too.
-                    else if (read.DangerFields.Count > 0) Refuse(field, "a read of " + callee + " is live across a store into a field");
+                    else if (Running(read.Sites).Any(site => site.DangerFields.Count > 0)) Refuse(field, "a read of " + callee + " is live across a store into a field");
                     if (!danger.TryGetValue(field, out HashSet<string>? set)) danger[field] = set = new(StringComparer.Ordinal);
-                    set.UnionWith(read.Danger);
+                    foreach (OwnedSite site in Running(read.Sites)) set.UnionWith(site.Danger);
                 }
 
         OwnedFieldFacts facts = new();

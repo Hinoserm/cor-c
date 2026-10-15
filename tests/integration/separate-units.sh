@@ -47,6 +47,18 @@ if [ ${#tests[@]} = 0 ]; then
         # regions, which only a closed link finds: a loop's region left on
         # every way out, and a lap's carried chain on the heap
         1070_region_loop_laps
+        # owned-field facts per function: refused only where the program runs them
+        1529_owned_field_kept_only_where_never_run 1530_owned_field_kept_where_run 1531_owned_field_needs_only_where_never_run
+        1532_owned_field_needs_where_run 1533_owned_field_danger_only_where_never_run 1534_owned_field_danger_where_run
+        1557_owned_field_refused_in_a_thread_body
+        # the throw budget's holes, and what other units' code runs
+        1545_exception_made_every_lap_thrown_on_some 1546_guarded_fill_round_a_loop 1547_latch_read_before_its_loop
+        1548_object_made_round_a_loop_then_held 1559_lambda_of_another_unit_throws_a_shared_exception
+        1560_delegate_of_another_unit_keeps_a_collector
+        # shared copies: one field name, objects judged by the instantiation they are
+        1549_shared_copy_field_one_name_with_its_instantiation 1550_shared_base_field_filled_by_a_derived_class
+        1551_shared_copy_object_through_a_concrete_face 1552_library_shared_copy_list_through_a_concrete_face
+        1558_shared_copy_object_stored_by_another_unit
         # a shared generic's face (Func<__canon>, IMaker<__canon>) reaches every instantiation's methods
         1518_shared_generic_lazy_factory_keeps_what_it_stores 1519_shared_generic_maker_variants_keep_what_they_make
         1520_shared_generic_func_keeps_what_it_makes 1521_shared_generic_action_keeps_what_it_is_handed
@@ -56,6 +68,8 @@ if [ ${#tests[@]} = 0 ]; then
         1514_lap_region_frame_list_freed_where_the_lap_ends 1515_lap_region_frame_fields_freed_where_the_lap_ends
         1516_lap_region_frame_builder_freed_where_the_lap_ends 1517_lap_region_frame_freed_on_every_way_out
         1527_lap_region_frame_freed_where_the_loop_ends 1528_lap_region_frame_freed_where_a_break_leaves
+        1553_lap_region_frame_read_carried_round_the_loop 1554_lap_region_frame_fields_carried_by_kind
+        1555_lap_region_frame_field_summed_round_the_loop 1556_lap_region_frame_left_from_the_header
         # no collector, which only a closed link can say of units (HeapDecision)
         63_no_heap 762_gcless_static_tables 767_gcless_run_once 768_gcless_latched_once
         # a collector where unwinds are unbounded or a held field leaks, none where neither

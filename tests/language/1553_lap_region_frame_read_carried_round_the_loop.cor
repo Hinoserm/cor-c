@@ -1,0 +1,76 @@
+// test: lap_region_frame_read_carried_round_the_loop
+// expect-exit: 0
+// expect-output:
+// carried 1506997 bad 0
+// somepaths 1506998 bad 0
+//
+// a reference read from the frame object kept across the back edge
+// (a loop-carried `last`): PlaceLapFrees finds it live into the header and
+// leaves the frees at the renewal, after RegionLoop gave the lap back.
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class BoxA { public int[]? A; public int Tag; public string Name = "n"; }
+
+static class P
+{
+    static string[] names = { "even", "odd" };
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k) return 1;
+        return 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carried(int laps, int m, int n)
+    {
+        long sum = 0; int bad = 0; string last = "";
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe(lap, m);
+            BoxA b = new BoxA();
+            b.A = MakeArr(lap, n);
+            b.Tag = lap;
+            b.Name = names[lap & 1];
+            sum += UseA(b) + last.Length;
+            last = b.Name;
+            if (probe != null) bad += Check(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long SomePaths(int laps, int m, int n)
+    {
+        long sum = 0; int bad = 0; string last = "";
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe(lap, m);
+            BoxA b = new BoxA();
+            b.A = MakeArr(lap, n);
+            b.Tag = lap;
+            b.Name = names[lap & 1];
+            sum += UseA(b) + last.Length;
+            if (lap % 3 == 0) last = b.Name;
+            if (probe != null) bad += Check(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+
+    static void Main()
+    {
+        long r = Carried(1000, 6, 6);
+        Console.WriteLine("carried " + (r / 1000) + " bad " + (r % 1000));
+        r = SomePaths(1000, 6, 6);
+        Console.WriteLine("somepaths " + (r / 1000) + " bad " + (r % 1000));
+    }
+}

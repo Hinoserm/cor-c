@@ -108,10 +108,27 @@ public sealed partial class Binder
     /// </summary>
     private readonly List<HashSet<LocalSym>?> _breaks = new();
 
-    private void EnterBreakable()
+    /// <summary>
+    /// How many finally clauses enclose the statement being checked, counted
+    /// from the body of the method, lambda or local function it is in: a
+    /// return, or a jump to a target fewer finally clauses deep, leaves one
+    /// (C# CS0157).
+    /// </summary>
+    private int _finallyDepth;
+
+    /// <summary>
+    /// What a break or continue may land on, innermost last, beside
+    /// <see cref="_breaks"/>: whether it is a loop (a continue's target) or a
+    /// switch section (a break's, and a goto case's), and the finally depth
+    /// it was entered at.
+    /// </summary>
+    private readonly List<(bool Loop, int Finally)> _jumpTargets = new();
+
+    private void EnterBreakable(bool loop = true)
     {
         _loopDepth++;
         _breaks.Add(null);
+        _jumpTargets.Add((loop, _finallyDepth));
     }
 
     private HashSet<LocalSym>? LeaveBreakable()
@@ -119,7 +136,41 @@ public sealed partial class Binder
         _loopDepth--;
         HashSet<LocalSym>? broke = _breaks[^1];
         _breaks.RemoveAt(_breaks.Count - 1);
+        _jumpTargets.RemoveAt(_jumpTargets.Count - 1);
         return broke;
+    }
+
+    /// <summary>
+    /// CONTROL CANNOT LEAVE A FINALLY CLAUSE BUT BY ITS END OR A THROW (C#
+    /// CS0157): a jump whose target is fewer finally clauses deep than the
+    /// jump would abandon the exception the finally may be running for.
+    /// </summary>
+    private void JumpOutOfFinally(Stmt jump, int targetDepth)
+    {
+        if (_finallyDepth > targetDepth)
+        {
+            Error(jump, "CS0157: Control cannot leave the body of a finally clause");
+        }
+    }
+
+    /// <summary>The finally depth of the innermost loop, or switch section too for a break or goto case; -1 when there is none.</summary>
+    private int JumpTargetDepth(bool loopOnly)
+    {
+        for (int k = _jumpTargets.Count - 1; k >= 0; k--)
+        {
+            if (!loopOnly || _jumpTargets[k].Loop) return _jumpTargets[k].Finally;
+        }
+        return -1;
+    }
+
+    /// <summary>The finally depth of the innermost switch section; -1 when there is none.</summary>
+    private int SwitchTargetDepth()
+    {
+        for (int k = _jumpTargets.Count - 1; k >= 0; k--)
+        {
+            if (!_jumpTargets[k].Loop) return _jumpTargets[k].Finally;
+        }
+        return -1;
     }
 
     /// <summary>After a loop that only a break leaves: what every break had assigned.</summary>
@@ -5522,7 +5573,13 @@ public sealed partial class Binder
                 }
             }
 
+            // ITS OWN JUMPS ONLY: a body checked while another method's
+            // finally is open (a generic copy made from inside one) starts
+            // outside every finally.
+            int wasFinally = _finallyDepth;
+            _finallyDepth = 0;
             CheckBlock(md.Body);
+            _finallyDepth = wasFinally;
             PopScope();
             SettleGenericCaptures();
             SettleCapturedCells();
@@ -5754,20 +5811,28 @@ public sealed partial class Binder
                 labels[l.Label] = l;
             }
         if (labels is null) return false;
-        _labels.Add((_method, _thisType, labels));
+        _labels.Add((_method, _thisType, labels, _finallyDepth));
         return true;
     }
 
-    private readonly List<(MethodSymbol? Method, TypeSymbol? Type, Dictionary<string, LabeledStmt> Labels)> _labels = new();
+    private readonly List<(MethodSymbol? Method, TypeSymbol? Type, Dictionary<string, LabeledStmt> Labels, int Finally)> _labels = new();
 
-    private LabeledStmt? VisibleLabel(string name)
+    private LabeledStmt? VisibleLabel(string name) => VisibleLabel(name, out _);
+
+    /// <summary>The label a goto names, and how many finally clauses deep its block is.</summary>
+    private LabeledStmt? VisibleLabel(string name, out int finallyDepth)
     {
         for (int k = _labels.Count - 1; k >= 0; k--)
         {
-            var (method, type, labels) = _labels[k];
+            var (method, type, labels, depth) = _labels[k];
             if (!ReferenceEquals(method, _method) || !ReferenceEquals(type, _thisType)) break;
-            if (labels.TryGetValue(name, out LabeledStmt? found)) return found;
+            if (labels.TryGetValue(name, out LabeledStmt? found))
+            {
+                finallyDepth = depth;
+                return found;
+            }
         }
+        finallyDepth = 0;
         return null;
     }
 
@@ -6282,6 +6347,8 @@ public sealed partial class Binder
                     break;
                 }
 
+                JumpOutOfFinally(r, 0);
+
                 Type want = _method is { Async: true } running ? AsyncResult(running, r) : _method?.Returns ?? Type.Void;
 
                 // AN ITERATOR RETURNS NOTHING: what it produces is what it
@@ -6331,7 +6398,11 @@ public sealed partial class Binder
             }
 
             case GotoStmt jump:
-                if (VisibleLabel(jump.Label) is { } labeled) _r.Gotos[jump] = labeled;
+                if (VisibleLabel(jump.Label, out int labelDepth) is { } labeled)
+                {
+                    _r.Gotos[jump] = labeled;
+                    JumpOutOfFinally(jump, labelDepth);
+                }
                 else Error(jump, $"no label '{jump.Label}' within the scope of the goto statement");
                 break;
 
@@ -6348,11 +6419,16 @@ public sealed partial class Binder
                 {
                     Error(s, $"'{(s is BreakStmt ? "break" : "continue")}' is only valid inside a loop");
                 }
-                else if (s is BreakStmt && _breaks.Count > 0)
+                else
                 {
-                    HashSet<LocalSym>? broke = _breaks[^1];
-                    if (broke is null) _breaks[^1] = new HashSet<LocalSym>(_assigned, ReferenceEqualityComparer.Instance);
-                    else broke.IntersectWith(_assigned);
+                    int jumpDepth = JumpTargetDepth(loopOnly: s is ContinueStmt);
+                    if (jumpDepth >= 0) JumpOutOfFinally(s, jumpDepth);
+                    if (s is BreakStmt && _breaks.Count > 0)
+                    {
+                        HashSet<LocalSym>? broke = _breaks[^1];
+                        if (broke is null) _breaks[^1] = new HashSet<LocalSym>(_assigned, ReferenceEqualityComparer.Instance);
+                        else broke.IntersectWith(_assigned);
+                    }
                 }
                 break;
 
@@ -6393,6 +6469,8 @@ public sealed partial class Binder
                 else
                 {
                     _r.GotoCases[jump] = target;
+                    int switchDepth = SwitchTargetDepth();
+                    if (switchDepth >= 0) JumpOutOfFinally(jump, switchDepth);
                 }
                 break;
             }
@@ -6452,7 +6530,7 @@ public sealed partial class Binder
                     _assigned.Clear();
                     _assigned.UnionWith(beforeSwitch);
                     PushScope();
-                    EnterBreakable();
+                    EnterBreakable(loop: false);
 
                     // A LABEL IS A CONDITION, checked as one. Any binding in it
                     // declares into the scope just pushed and so is visible in
@@ -6594,7 +6672,9 @@ public sealed partial class Binder
 
                 if (tr.Finally != null)
                 {
+                    _finallyDepth++;
                     CheckBlock(tr.Finally);
+                    _finallyDepth--;
                 }
                 break;
             }
@@ -7988,8 +8068,10 @@ public sealed partial class Binder
         }
 
         _lambdaDepth++;
+        int wasFinally = _finallyDepth;
+        _finallyDepth = 0;
         try { Look(lam, ContextualMemberResult(wanted, invoke)); }
-        finally { _lambdaDepth--; }
+        finally { _lambdaDepth--; _finallyDepth = wasFinally; }
         PopScope();
         _quiet--;
         RefuseCapturedRefLocals(lam, captured.Keys);
@@ -8378,8 +8460,10 @@ public sealed partial class Binder
         }
 
         _lambdaDepth++;
+        int wasFinallyDepth = _finallyDepth;
+        _finallyDepth = 0;
         try { Look(lam, closureReturns, final: true); }
-        finally { _lambdaDepth--; }
+        finally { _lambdaDepth--; _finallyDepth = wasFinallyDepth; }
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();

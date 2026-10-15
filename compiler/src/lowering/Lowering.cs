@@ -293,10 +293,13 @@ public sealed partial class Lowering
 
     private static string TypeKey(TypeSymbol t) => t.TypeKeyMade ??= MakeTypeKey(t);
 
-    private static string MakeTypeKey(TypeSymbol t)
+    private static string MakeTypeKey(TypeSymbol t) => Escaped(t.Key);
+
+    /// <summary>A type's key as a symbol may spell it: every character but a letter, a digit or `_` as `$` and its four hex digits.</summary>
+    private static string Escaped(string key)
     {
         StringBuilder sb = new();
-        foreach (char c in t.Key)
+        foreach (char c in key)
         {
             if (c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '_')
                 sb.Append(c);

@@ -163,25 +163,29 @@ public static class IrLinkOptimizer
         // Only what the program can reach throws anything (Escape.ForeignThrows):
         // a throw in code the program never runs made every catch keep.
         string[]? catchable = null;
-        // The names of what the program runs, over the same reach: a function
-        // a unit refused a field in counts only there (OwnedFieldSolver).
-        HashSet<string>? runs = null;
+        // The names of what the program never runs, over the same reach: what
+        // a unit said of a field in such a function counts nowhere (OwnedFieldSolver).
+        HashSet<string>? neverRun = null;
         if (lifetimes is not null && closedImageEntry is not null && archives.Keys.All(hints.ContainsKey) && archives.Keys.All(heapRecords.ContainsKey)
             && !foreign.Contains("*"))
         {
             List<(ObjectFile Object, HeapRecords Records)> recorded = inputs.Where(input => archives.ContainsKey(input.Object))
                 .Select(input => (input.Object, heapRecords[input.Object])).ToList();
             HashSet<(ObjectFile Object, string Function)> throwing = HeapDecision.Reach(inputs, recorded, closedImageEntry, linkRoots.Concat(foreign).ToList());
-            // BY NAME, every unit's copy of it: one a unit keeps of what another
-            // unit owns may be inlined into a caller there (IrReachability).
-            runs = throwing.Select(reached => reached.Function).ToHashSet(StringComparer.Ordinal);
-            // And a name a unit refused something in that no records hold: no
-            // walk says it does not run.
-            HashSet<string> recordedNames = recorded.SelectMany(unit => unit.Records.Functions).Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
-            foreach (LifetimeHints unit in hintOrder)
-                if (unit.Owned is { } owned)
-                    runs.UnionWith(owned.Fields.Values.SelectMany(record => record.RefusedBy).Concat(owned.CallReads.Values.SelectMany(read => read.RefusedBy))
-                        .Concat(owned.UnresolvedIn).Where(name => !recordedNames.Contains(name)));
+            // NEVER RUN: a name some unit's records hold that the walk reached
+            // in no unit. BY NAME, every unit's copy of it: one a unit keeps of
+            // what another unit owns may be inlined into a caller there
+            // (IrReachability). A name no records hold, or a virtual call's
+            // symbol, may run.
+            HashSet<string> reachedNames = throwing.Select(reached => reached.Function).ToHashSet(StringComparer.Ordinal);
+            // AND NOTHING THE IMAGE KEEPS (IrReachability): the records are
+            // taken after a unit's late inliner, the bodies the link imports
+            // before it -- List.Insert's, imported, still calls the
+            // ArgumentException constructor the library's record had inlined
+            // away -- so what the archives' references keep may run too.
+            if (reachability is not null) foreach (HashSet<string> kept in reachability.Values) reachedNames.UnionWith(kept);
+            neverRun = recorded.SelectMany(unit => unit.Records.Functions).Select(function => function.Name)
+                .Where(name => !reachedNames.Contains(name)).ToHashSet(StringComparer.Ordinal);
             catchable = ForeignCatchable(inputs, hintOrder, hints, throwing, lifetimes);
         }
         bool programFacts = catchable is not null;
@@ -202,7 +206,7 @@ public static class IrLinkOptimizer
             ? OwnedFieldSolver.Solve(hintOrder, lifetimes, virtuals, closedImageEntry,
                 Switches.AllocReport
                     ? line => { if (Switches.AllocReportOnly is not { } which || line.Contains(which, StringComparison.Ordinal)) Console.Error.WriteLine("alloc report: field " + line); } : null,
-                foreign, runs) : null;
+                foreign, neverRun) : null;
         if (ownedFields is { IsEmpty: true }) ownedFields = null;
         if (ownedFields is not null)
             Console.Error.WriteLine("LTO owned fields: " + ownedFields.Fields.Count + " of "

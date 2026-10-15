@@ -90,13 +90,31 @@ public sealed partial class Escape
             Instr renew = mine[0].Renew;
             if (f.Blocks.FirstOrDefault(b => b.Instrs.Contains(renew)) is not Block renewBlock) continue;
             FrameSlot slot = bySlot.Key;
-            // What holds the object, and what was read of it by reference.
+            // What holds the object, and what was read of it by reference. A
+            // slot whose frees are its owned fields' alone: only what is read
+            // of those fields (or through an address inside the object, whose
+            // field is not known) -- a clean owned field's object is reached
+            // only through it, and a name or a long total carried round the
+            // loop from another field holds nothing these frees give back.
             HashSet<VReg> names = Derivations(f, mine.SelectMany(r => r.Roots));
+            bool typed = mine.Any(r => r.ElementFreer is not null || r.Storage);
+            HashSet<long> freedAt = mine.SelectMany(r => r.FieldFrees).Select(p => p.Offset).ToHashSet();
+            HashSet<VReg> exact = new(mine.SelectMany(r => r.Roots));
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        if (i.Dest is { } d && !exact.Contains(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
+                            && i.Operands is [RegOperand { Reg: var from }] && exact.Contains(from))
+                        { exact.Add(d); grew = true; }
+            }
             List<VReg> values = new();
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Load && i.Dest is not null && !i.Number
-                        && (i.Operands[0] is RegOperand { Reg: var a } && names.Contains(a) || i.Operands[0] is SlotOperand { Slot: var s } && s == slot))
+                        && (i.Operands[0] is RegOperand { Reg: var a } && names.Contains(a) && (typed || !exact.Contains(a) || freedAt.Contains(i.Offset))
+                            || i.Operands[0] is SlotOperand { Slot: var s } && s == slot && (typed || freedAt.Contains(i.Offset))))
                         values.Add(i.Dest);
             HashSet<VReg> held = Derivations(f, names.Concat(values));
             bool Dead(Block at) => !held.Any(r => !liveness.Tracks(r) || liveness.IsLiveIn(at, r));
@@ -112,8 +130,11 @@ public sealed partial class Escape
                 int back = 0, outward = 0;
                 if (Dead(header))
                     foreach (Block latch in latches) { PutOnEdge(f, latch, header, LapFrees(f, mine, slot, renew.Line), placed, splits); back++; }
+                // From the header too where the slot is made again there: this
+                // lap's object is alive where it leaves, the back edge's free
+                // not yet run.
                 foreach (Block x in body.ToList())
-                    if (!ReferenceEquals(x, header))
+                    if (!ReferenceEquals(x, header) || ReferenceEquals(renewBlock, header))
                         foreach (Block to in cfg.Succs(x).ToArray())
                             if (!body.Contains(to) && Dead(to) && Returns(to))
                             { PutOnEdge(f, x, to, LapFrees(f, mine, slot, renew.Line), placed, splits); outward++; }

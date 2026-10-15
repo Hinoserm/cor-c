@@ -1,0 +1,53 @@
+// test: owned_field_needs_where_run
+// expect-exit: 0
+// expect-output:
+// names 200 1490 name 0 name 199
+//
+// A STORE THAT NEEDS WHAT DOES NOT HOLD, IN A FUNCTION THE PROGRAM RUNS,
+// refuses the field: Wrap stores into the exception it throws what
+// another unit's string.Intern hands back -- the string the intern table
+// holds for the life of the process, as the caller's table does. Were the
+// field owned, each catch would free a string both tables hold, the churn
+// would take its memory, and the tables would say what the churn made.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Carrier : Exception
+{
+    public string Text = "";
+}
+
+static class P
+{
+    static readonly string[] Names = new string[200];
+    static readonly string[] Junk = new string[4096];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k)
+    {
+        for (int j = 0; j < Junk.Length; j++) Junk[j] = "junk " + (j + k);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Wrap(string name)
+    {
+        try
+        {
+            Carrier c = new Carrier();
+            c.Text = string.Intern(name);
+            throw c;
+        }
+        catch (Carrier c) { return c.Text.Length; }
+    }
+
+    static void Main()
+    {
+        for (int k = 0; k < 200; k++) Names[k] = string.Intern("name " + k);
+        int total = 0;
+        for (int k = 0; k < 200; k++) { total += Wrap(Names[k]); Churn(k); }
+        int same = 0;
+        for (int k = 0; k < 200; k++) if (Names[k] == "name " + k && (object)string.Intern("name " + k) == (object)Names[k]) same++;
+        Console.WriteLine("names " + same + " " + total + " " + Names[0] + " " + Names[199]);
+    }
+}

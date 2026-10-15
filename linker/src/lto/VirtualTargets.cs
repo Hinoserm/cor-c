@@ -651,6 +651,12 @@ public static class VirtualTargets
             // (Targets): a Func<string> lambda is a Func<__canon> to the one
             // body Lazy<T> shares, which calls its factory through that face.
             if (SharedFace(type) is string generic && Ancestors(d).Any(up => up.StartsWith(generic, StringComparison.Ordinal))) return true;
+            // And the other way: an object a shared copy made is stamped with
+            // that copy's descriptor -- `t_List$0024__canon` for FindAll's new
+            // list -- and may be any instantiation the copy stands for, so a
+            // concrete face of the same generic (ICollection<Node>) may be one
+            // of its: not known, never no.
+            if (Ancestors(d).Prepend(descriptor).Any(up => SharedFace(up) is string shared && type.StartsWith(shared, StringComparison.Ordinal))) return null;
             // A box's or a string's system interfaces are in no table of it.
             return MayAnswer(descriptor, type) ? null : false;
         }

@@ -1,0 +1,90 @@
+// test: lap_region_frame_field_summed_round_the_loop
+// expect-exit: 0
+// expect-output:
+// acclong 1503500 bad 0
+// accnullable 1502501 bad 0
+//
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class BoxA { public int[]? A; public int Tag; public string Name = "n"; }
+sealed class Out { public int[]? Res; }
+sealed class BoxW { public int[]? A; public long Big; public int? Maybe; }
+
+static class P
+{
+    static string[] names = { "even", "odd" };
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr_AccLong(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe_AccLong(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k + 77; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA_AccLong(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill_AccLong(BoxA b, int v, int n) { b.A = MakeArr_AccLong(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check_AccLong(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k + 77) return 1;
+        return 0;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long AccLong(int laps, int m)
+    {
+        long total = 0; int bad = 0;
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe_AccLong(lap, m);
+            BoxW b = new BoxW();
+            b.A = MakeArr_AccLong(lap, m);
+            b.Big = lap;
+            total += b.Big + UseW_AccLong(b);
+            if (probe != null) bad += Check_AccLong(probe, lap);
+        }
+        return total * 1000 + bad;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseW_AccLong(BoxW b) => b.A![0] + b.A[b.A.Length - 1];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr_AccNullable(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe_AccNullable(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k + 77; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA_AccNullable(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill_AccNullable(BoxA b, int v, int n) { b.A = MakeArr_AccNullable(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check_AccNullable(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k + 77) return 1;
+        return 0;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long AccNullable(int laps, int m)
+    {
+        long total = 0; int bad = 0; int? last = null;
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe_AccNullable(lap, m);
+            BoxW b = new BoxW();
+            b.A = MakeArr_AccNullable(lap, m);
+            b.Maybe = lap;
+            total += UseW_AccNullable(b) + (last ?? 0);
+            last = b.Maybe;
+            if (probe != null) bad += Check_AccNullable(probe, lap);
+        }
+        return total * 1000 + bad;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseW_AccNullable(BoxW b) => b.A![0] + b.A[b.A.Length - 1];
+
+    static void Main()
+    {
+        { long r = AccLong(1000, 6); Console.WriteLine("acclong " + (r / 1000) + " bad " + (r % 1000)); }
+        { long r = AccNullable(1000, 6); Console.WriteLine("accnullable " + (r / 1000) + " bad " + (r % 1000)); }
+    }
+}

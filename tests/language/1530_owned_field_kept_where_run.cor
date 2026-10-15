@@ -1,0 +1,60 @@
+// test: owned_field_kept_where_run
+// expect-exit: 0
+// expect-output:
+// kept 200 kept 0 kept 199
+//
+// A CALL THAT KEEPS WHAT IT HANDS TO A FIELD'S STORE, IN A FUNCTION THE
+// PROGRAM RUNS, refuses the field: Keep hands Tagged.Of a string, throws
+// and catches the exception made with it, and returns the string. Were the
+// tag owned, the catch would free the string with the exception, the churn
+// would take its memory, and the strings Keep returned would say what the
+// churn made.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Tagged : Exception
+{
+    private string _tag = "";
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static Tagged Of(string tag) { Tagged t = new Tagged(); t._tag = tag; return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int TagLength() => _tag.Length;
+}
+
+static class P
+{
+    static readonly string[] Junk = new string[4096];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k)
+    {
+        for (int j = 0; j < Junk.Length; j++) Junk[j] = "junk " + (j + k);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Keep(int k)
+    {
+        string s = "kept " + k;
+        try { throw Tagged.Of(s); }
+        catch (Tagged t) { if (t.TagLength() == 0) return ""; }
+        return s;
+    }
+
+    static void Main()
+    {
+        int same = 0;
+        string first = "", last = "";
+        for (int k = 0; k < 200; k++)
+        {
+            string s = Keep(k);
+            Churn(k);
+            if (s == "kept " + k) same++;
+            if (k == 0) first = s;
+            last = s;
+        }
+        Console.WriteLine("kept " + same + " " + first + " " + last);
+    }
+}

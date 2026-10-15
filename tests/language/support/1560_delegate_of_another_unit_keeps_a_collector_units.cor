@@ -1,0 +1,12 @@
+// The other unit of delegate_of_another_unit_keeps_a_collector: a lambda
+// that makes an array every call and keeps only the last in a static.
+
+public static class Lib
+{
+    public static int[]? s_keep;
+
+    public static System.Func<int, long> Make()
+    {
+        return k => { int[] a = new int[64]; a[1] = k; s_keep = a; return a.Length; };
+    }
+}

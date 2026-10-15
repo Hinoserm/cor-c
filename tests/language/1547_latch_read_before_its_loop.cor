@@ -1,0 +1,44 @@
+// test: latch_read_before_its_loop
+// expect-exit: 0
+// expect-output:
+// 19200000 True
+//
+// A RUN-ONCE FLAG READ INTO A LOCAL BEFORE THE LOOP that tests it: setting the
+// flag inside does not change the local, so the "first time" block runs every
+// lap, making an object each time and dropping the last one's. Not a latch:
+// the program keeps a collector, and collects.
+
+sealed class Item { public int[] Pad = new int[64]; }
+
+static class Program
+{
+    static bool s_done;
+    static Item? s_keep;
+
+    static long Work(int n)
+    {
+        long sum = 0;
+        bool done = s_done;
+        for (int i = 0; i < n; i++)
+        {
+            if (!done)
+            {
+                s_done = true;
+                Item x = new Item();
+                s_keep = x;
+                sum += x.Pad.Length;
+            }
+        }
+        return sum;
+    }
+
+    static int Main()
+    {
+        long t = Work(300000);
+        Sys.PrintInt(t);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

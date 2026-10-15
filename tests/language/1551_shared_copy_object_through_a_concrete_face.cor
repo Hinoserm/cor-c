@@ -1,0 +1,51 @@
+// test: shared_copy_object_through_a_concrete_face
+// expect-exit: 0
+// expect-output:
+// kept 40 first 900 bad 0 4400
+//
+// an object shared code makes (judged by the canonical copy's descriptor),
+// called through a concrete instantiation's face
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public struct V { public int A; public V(int a) { A = a; } }
+public static class Keep { public static List<V>? Kept; }
+public abstract class HolderBase<T> where T : class { public abstract void Put(List<V> l); }
+public sealed class Holder<T> : HolderBase<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public override void Put(List<V> l) { Keep.Kept = l; }
+}
+public sealed class Maker<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public HolderBase<T> Make() { return new Holder<T>(); }
+}
+
+public static class R
+{
+    public static Maker<string> M = new Maker<string>();
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Fill(List<V> l, int b) { for (int i = 0; i < 40; i++) l.Add(new V(b + i)); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B(int k)
+    {
+        List<V> l = new(); Fill(l, k * 100);
+        HolderBase<string> h = M.Make();
+        h.Put(l);
+        return l.Count;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Churn(int k) { List<V> l = new(); for (int i = 0; i < 40; i++) l.Add(new V(-1)); return l.Count; }
+}
+
+static class P
+{
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 10; k++) t += R.B(k);
+        for (int k = 0; k < 100; k++) t += R.Churn(k);
+        List<V> kept = Keep.Kept!;
+        int bad = 0; for (int i = 0; i < kept.Count; i++) if (kept[i].A != 900 + i) bad++;
+        Console.WriteLine("kept " + kept.Count + " first " + kept[0].A + " bad " + bad + " " + t);
+    }
+}

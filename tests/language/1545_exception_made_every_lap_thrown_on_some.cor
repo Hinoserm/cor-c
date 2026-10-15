@@ -1,0 +1,37 @@
+// test: exception_made_every_lap_thrown_on_some
+// expect-exit: 0
+// expect-output:
+// 21726555 True
+//
+// AN EXCEPTION MADE EVERY LAP AND THROWN ON NONE of them here: its only way
+// out is the throw, but the throw is conditional, and every lap that does not
+// throw drops it. Made on the way to no unwind, it is not one of boundedly
+// many (the throw budget): the program keeps a collector, and collects.
+
+sealed class Boom : System.Exception { public int[] Pad; public Boom(int k) { Pad = new int[64 + (k & 7)]; } }
+
+static class Program
+{
+    static long Run(int n)
+    {
+        long total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Boom b = new Boom(i);
+            if (i == n + 5) throw b;
+            total += b.Pad.Length;
+        }
+        return total;
+    }
+
+    static int Main()
+    {
+        long t = 0;
+        try { t = Run(321875); } catch (Boom) { t = -1; }
+        Sys.PrintInt(t);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

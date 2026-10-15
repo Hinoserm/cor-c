@@ -1,0 +1,37 @@
+// test: object_made_round_a_loop_then_held
+// expect-exit: 0
+// expect-output:
+// 600000 64 True
+//
+// AN OBJECT MADE ROUND A LOOP INTO A LOCAL, only the last one stored into a
+// field that owns what it holds: every earlier one is dropped where the next
+// replaces it in the local, and no owner frees it. Not held by the field: the
+// program keeps a collector, and collects.
+
+sealed class Item { public int[] Pad = new int[64]; }
+sealed class Holder { public Item? F; }
+
+static class Program
+{
+    static Holder s_h = new Holder();
+
+    static long Run(Holder h, int n)
+    {
+        Item? x = null;
+        for (int i = 0; i < n; i++) { if ((i & 1) == 0) x = new Item(); }
+        h.F = x;
+        return n;
+    }
+
+    static int Main()
+    {
+        long t = Run(s_h, 600000);
+        Sys.PrintInt(t);
+        Sys.Print(" ");
+        Sys.PrintInt(s_h.F!.Pad.Length);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

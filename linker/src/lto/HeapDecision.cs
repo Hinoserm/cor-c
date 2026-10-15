@@ -177,7 +177,12 @@ public static class HeapDecision
                         break;
                     case HeapEventKind.Virtual or HeapEventKind.Target:
                         if (virtuals(e.Name) is string[] targets)
-                            foreach (string t in targets) Reach(world.Resolve(node.Unit, t, f => Reach(f, true), everyMethod, dataSeen), true);
+                            foreach (string t in targets)
+                            {
+                                Node? found = world.Resolve(node.Unit, t, f => Reach(f, true), everyMethod, dataSeen);
+                                Reach(found, true);
+                                if (found is null || world.IsLocal(found.Value)) foreach (Node there in world.Elsewhere(t)) Reach(there, true);
+                            }
                         break;
                 }
             }
@@ -431,8 +436,27 @@ public static class HeapDecision
             foreach (string name in rootNames ?? Enumerable.Empty<string>()) Add(Resolve(-1, name, Add, everyMethod, seen, addressed, types));
             while (work.TryPop(out Node node))
                 foreach (string name in next(node, Record(node)))
-                    Add(Resolve(node.Unit, name, Add, everyMethod, seen, addressed, types));
+                {
+                    Node? found = Resolve(node.Unit, name, Add, everyMethod, seen, addressed, types);
+                    Add(found);
+                    if (found is null || IsLocal(found.Value)) foreach (Node there in Elsewhere(name)) Add(there);
+                }
             return reached;
+        }
+
+        /// <summary>
+        /// A function of that name in any unit: a virtual call's target named
+        /// by the slot of a descriptor another unit made -- a lambda's Invoke,
+        /// a method group's -- is a local symbol of that unit, which the
+        /// caller's unit does not hold, and the call reached nothing.
+        /// </summary>
+        /// <summary>Whether a node is a local symbol of its unit: a name another unit's local may share.</summary>
+        public bool IsLocal(Node node) => _locals.TryGetValue(_units[node.Unit].Object, out var locals) && locals.ContainsKey(node.Name);
+
+        public IEnumerable<Node> Elsewhere(string name)
+        {
+            for (int u = 0; u < _functions.Count; u++)
+                if (_functions[u].ContainsKey(name)) yield return new Node(u, name);
         }
 
         public IEnumerable<Node> AllFunctions()

@@ -1,0 +1,41 @@
+// test: shared_copy_field_one_name_with_its_instantiation
+// expect-exit: 0
+// expect-output:
+// kept 100 107 8
+//
+// a field a concrete Box<string> owns, read by the shared copy's getter
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Box<T> where T : class
+{
+    public List<int>? Items;
+    public T? Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public List<int>? Get() { return Items; }
+}
+
+static class P
+{
+    static List<int>? Kept;
+    static List<int>[] Hold = new List<int>[64];
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<int> Make(int k) { List<int> l = new List<int>(); for (int i = 0; i < 8; i++) l.Add(k + i); return l; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Once(int k)
+    {
+        Box<string> b = new Box<string>();
+        b.Items = Make(k);
+        Kept = b.Get();
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k) { List<int> x = new List<int>(); for (int i = 0; i < 8; i++) x.Add(-7); Hold[k & 63] = x; }
+    static void Main()
+    {
+        Once(100);
+        for (int k = 0; k < 200; k++) Churn(k);
+        Gc.Collect();
+        Console.WriteLine("kept " + Kept![0] + " " + Kept[7] + " " + Kept.Count);
+    }
+}

@@ -1,0 +1,53 @@
+// test: owned_field_refused_in_a_thread_body
+// expect-exit: 0
+// expect-output:
+// kept 200 item 199
+//
+// A read of a field's value that outlives a store replacing it, in a
+// function only a thread runs: the ThreadStart's Invoke is a local function
+// of this unit, called by the library's Thread.Body.
+using System;
+using System.Threading;
+using System.Runtime.CompilerServices;
+
+sealed class Box
+{
+    public string Text;
+    public Box(string text) { Text = text; }
+}
+
+static class P
+{
+    static readonly string[] Junk = new string[4096];
+    static string s_kept = "";
+    static int s_same;
+    static string s_last = "";
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k)
+    {
+        for (int j = 0; j < Junk.Length; j++) Junk[j] = "junk " + (j + k);
+    }
+
+    static void Work()
+    {
+        for (int k = 0; k < 200; k++)
+        {
+            Box b = new Box("item " + k);
+            string first = b.Text;
+            b.Text = "other " + k;
+            s_kept = first;
+            Churn(k);
+            if (s_kept == "item " + k) s_same++;
+            s_last = s_kept;
+        }
+    }
+
+    static void Main()
+    {
+        Thread t = new Thread(Work);
+        t.Start();
+        t.Join();
+        Console.WriteLine("kept " + s_same + " " + s_last);
+    }
+}

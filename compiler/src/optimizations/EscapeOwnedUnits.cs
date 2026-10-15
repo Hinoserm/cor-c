@@ -564,6 +564,8 @@ public sealed partial class Escape
         void Refuse(OwnedFieldRecord record, string field, string why, Function f, Instr at)
         {
             if (record.Refused || !record.RefusedBy.Add(f.Name)) return;
+            // What its other sites here said goes with it: refused where it runs.
+            record.Sites.Remove(f.Name);
             if (reporting) _fieldReport.Add($"{field} refused in this unit: {why} in {f.Name}:{at.Line}");
             if (record.RefusedBy.Count > OwnedFieldHints.Limit) record.Refused = true;
         }
@@ -573,9 +575,12 @@ public sealed partial class Escape
             if (!record.Refused && reporting) _fieldReport.Add($"{field} refused in this unit: {why} in {f.Name}:{at.Line}");
             record.Refused = true;
         }
-        void Need(OwnedFieldRecord record, LifetimeCondition condition)
+        // What a store or read of f needs, said for f (OwnedFieldRecord.Sites);
+        // the bound is kept on the sum over the unit.
+        void Need(OwnedFieldRecord record, LifetimeCondition condition, Function f)
         {
             if (!record.Needs.Add(condition)) { record.Refused = true; record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
+            else if (!condition.IsTrue) record.Site(f.Name).Needs.Add(condition);
         }
 
         // WHAT EACH FUNCTION CALLS AND STORES: the call graph the link finds
@@ -633,6 +638,9 @@ public sealed partial class Escape
                         if (SelfOf(f).Stores.Contains(i)) Record(i.Field, i.Offset).SelfFreed = true;
                         if (i.Operands[0] is not RegOperand baseReg) record.Writes.Add(i.Field);
                         else if (OriginOf(Defs(f), baseReg.Reg) is { Op: Opcode.Call } made && IsAllocator(made.Callee)) { }
+                        // What the throw writes into what is thrown is its
+                        // making, as OwnedFields has it: no write at all.
+                        else if (IntoThrown(f, baseReg.Reg)) { }
                         else if (f.Params.Count > 0 && baseReg.Reg == f.Params[0]) record.InitWrites.Add(i.Field);
                         else record.Writes.Add(i.Field);
                     }
@@ -767,7 +775,18 @@ public sealed partial class Escape
 
         // SINKS: each direct call's arguments, handed over or not.
         HashSet<(string, int)> kept = new();
+        // KEPT WHERE IT IS: by the functions whose call does not hand the
+        // argument over, kept only where the program runs one of them
+        // (OwnedFieldHints.KeptIn); past the bound, kept outright.
+        Dictionary<(string, int), SortedSet<string>> keptIn = new();
         Dictionary<(string, int), OwnedSink> sinks = new();
+        void Keep((string, int) key, Function g)
+        {
+            if (kept.Contains(key)) return;
+            if (!keptIn.TryGetValue(key, out SortedSet<string>? by)) keptIn[key] = by = new(StringComparer.Ordinal);
+            by.Add(g.Name);
+            if (by.Count > OwnedFieldHints.Limit) { kept.Add(key); keptIn.Remove(key); sinks.Remove(key); }
+        }
         foreach (Function g in m.Functions)
         {
             int judged = 0;
@@ -777,7 +796,7 @@ public sealed partial class Escape
                     if (b.Instrs[k] is not { Op: Opcode.Call, Callee: string callee } c || IsIntrinsic(callee) || IsAllocator(callee) || IsFreeCall(callee)) continue;
                     for (int index = 0; index < c.Operands.Count; index++)
                     {
-                        if (kept.Contains((callee, index))) continue;
+                        if (kept.Contains((callee, index)) || keptIn.TryGetValue((callee, index), out SortedSet<string>? keptBy) && keptBy.Contains(g.Name)) continue;
                         Operand arg = c.Operands[index];
                         if (arg is ImmOperand { Value: 0 } or SymOperand) continue;
                         LifetimeCondition needs = new();
@@ -807,16 +826,23 @@ public sealed partial class Escape
                                     if (b.Instrs[after].Operands.Any(o => o is RegOperand r && flow.Derived.Contains(r.Reg))) ok = false;
                                 if (!ok) break;
                             }
-                        if (!ok) { kept.Add((callee, index)); sinks.Remove((callee, index)); continue; }
+                        if (!ok) { Keep((callee, index), g); continue; }
                         if (needs.IsTrue && inner.Count == 0) continue;
                         if (!sinks.TryGetValue((callee, index), out OwnedSink? sink)) sinks[(callee, index)] = sink = new();
-                        if (!sink.Needs.Add(needs) || sink.Sinks.Count + inner.Count > LifetimeCondition.Limit) { kept.Add((callee, index)); sinks.Remove((callee, index)); continue; }
+                        if (!sink.Needs.Add(needs) || sink.Sinks.Count + inner.Count > LifetimeCondition.Limit)
+                        { kept.Add((callee, index)); keptIn.Remove((callee, index)); sinks.Remove((callee, index)); continue; }
                         sink.Sinks.UnionWith(inner);
+                        if (!needs.IsTrue)
+                        {
+                            if (!sink.NeedsIn.TryGetValue(g.Name, out LifetimeCondition? byCaller)) sink.NeedsIn[g.Name] = byCaller = new();
+                            byCaller.Add(needs);
+                        }
                     }
                 }
         }
         foreach (((string, int) key, OwnedSink sink) in sinks) hints.Sinks[key] = sink;
         foreach ((string, int) key in kept) hints.Kept.Add(key);
+        foreach (((string, int) key, SortedSet<string> by) in keptIn) hints.KeptIn[key] = by;
 
         // HANDED OVER AT THE STORE (OwnedFields' HandedOver).
         bool HandedOver(Function f, Block b, Instr st, HashSet<VReg> derived)
@@ -829,7 +855,11 @@ public sealed partial class Escape
             OwnedFieldRecord record = Record(field, st.Offset);
             // What it puts there, by type, for a read judged as of one type.
             if (!(st.Operands.Count >= 2 && st.Operands[1] is ImmOperand { Value: 0 }))
-                record.Kinds.Add(StoredStamp(f, Defs(f), st) is { } kind ? Kind(kind) : OwnedFieldRecord.UnknownKind);
+            {
+                string stamped = StoredStamp(f, Defs(f), st) is { } kind ? Kind(kind) : OwnedFieldRecord.UnknownKind;
+                record.Kinds.Add(stamped);
+                if (!record.RefusedBy.Contains(f.Name)) record.Site(f.Name).Kinds.Add(stamped);
+            }
             if (record.Refused || record.RefusedBy.Contains(f.Name)) continue;
             // Judged as any other's (Escape.OwnedFields says why).
             if (st.Operands.Count < 2) { Refuse(record, field, "odd store", f, st); continue; }
@@ -852,7 +882,7 @@ public sealed partial class Escape
                 if (!alone.Escapes)
                 {
                     if (!HandedOver(f, b, st, alone.Derived)) forwarded[st] = made.Dest;
-                    Need(record, madeFresh); Need(record, needs.Condition);
+                    Need(record, madeFresh, f); Need(record, needs.Condition, f);
                     continue;
                 }
             }
@@ -873,8 +903,8 @@ public sealed partial class Escape
                 Needs needs = new(this);
                 Flow together = Analyse(f, fresh.Select(x => x.Dest!).ToList(), summaries, fresh.Count == 1 ? fresh[0] : null, only, needs: needs);
                 ok = !together.Escapes && HandedOver(f, b, st, together.Derived);
-                if (ok) Need(record, needs.Condition);
-                foreach (Instr x in fresh) if (ok && FreshCondition(x) is LifetimeCondition c) Need(record, c);
+                if (ok) Need(record, needs.Condition, f);
+                foreach (Instr x in fresh) if (ok && FreshCondition(x) is LifetimeCondition c) Need(record, c, f);
             }
             foreach (Source src in ok ? sources : new List<Source>())
             {
@@ -884,7 +914,7 @@ public sealed partial class Escape
                 // A list the link answers, bounded as a danger set is: past
                 // the bound, this store is refused where it is.
                 if (!record.Sinks.Contains((f.Name, src.Index)) && record.Sinks.Count >= OwnedFieldHints.Limit) { ok = false; break; }
-                Need(record, needs.Condition);
+                Need(record, needs.Condition, f);
                 record.Sinks.Add((f.Name, src.Index));
             }
             if (!ok) Refuse(record, field, $"stores {v}, which a caller may not hand over", f, st);
@@ -934,8 +964,8 @@ public sealed partial class Escape
                     && (!live.Tracks(r) || live.IsLiveOut(b, r) || b.Instrs.Skip(stAt + 1).Any(i => i.Operands.Any(o => o is RegOperand q && q.Reg == r)))))
                     return "??= stores what is used after it is stored";
                 foreach (Instr x in fill.Made)
-                    if (FreshCondition(x) is LifetimeCondition c) Need(record, c); else return "??= stores what is not made fresh";
-                Need(record, needs.Condition);
+                    if (FreshCondition(x) is LifetimeCondition c) Need(record, c, f); else return "??= stores what is not made fresh";
+                Need(record, needs.Condition, f);
             }
             // NOTHING BETWEEN THE READ AND THE STORE MAY STORE INTO THE FIELD,
             // another `??=` included (FillWindow): this unit's stores refuse it
@@ -947,9 +977,10 @@ public sealed partial class Escape
                 if (i.Op == Opcode.CallIndirect)
                 {
                     if (_indirect is null || !_indirect.TryGetValue(i, out string[]? t)) return "??= may meet an unresolved indirect call";
-                    record.Danger.UnionWith(t);
+                    record.Danger.UnionWith(t); record.Site(f.Name).Danger.UnionWith(t);
                 }
-                else if (i.Op == Opcode.Call && i.Callee is { } callee && !IsAllocator(callee) && !NeverWritesFields(callee)) record.Danger.Add(callee);
+                else if (i.Op == Opcode.Call && i.Callee is { } callee && !IsAllocator(callee) && !NeverWritesFields(callee))
+                { record.Danger.Add(callee); record.Site(f.Name).Danger.Add(callee); }
             }
             if (record.Danger.Count > OwnedFieldHints.Limit) return "??= meets too many calls";
             return null;
@@ -1137,7 +1168,7 @@ public sealed partial class Escape
                 && Judge(f, b, ld, out why, stamp) is ReadJudgement typed)
             {
                 judged = typed;
-                record.Assumes.Add(Kind(stamp));
+                record.Assumes.Add(Kind(stamp)); record.Site(f.Name).Assumes.Add(Kind(stamp));
             }
             judged ??= Judge(f, b, ld, out why);
             if (judged is null) { Refuse(record, field, why, f, ld); continue; }
@@ -1145,8 +1176,9 @@ public sealed partial class Escape
             // o.A's own owned fields (Runtime.FreeOwnedFields), so a read of
             // o.A.B is endangered by a store into o.A -- as OwnedFields has it.
             if (judged.DangerFields.Count > 0) { Refuse(record, field, "read live across a store into a field", f, ld); continue; }
-            Need(record, judged.Needs);
+            Need(record, judged.Needs, f);
             record.Danger.UnionWith(judged.Danger);
+            if (judged.Danger.Count > 0) record.Site(f.Name).Danger.UnionWith(judged.Danger);
             if (record.Danger.Count > OwnedFieldHints.Limit) { RefuseAll(record, field, "read live across too many calls", f, ld); record.Danger.Clear(); continue; }
             if (!judged.HandedBack) continue;
             // Handed back: every call of this function reads the field -- the
@@ -1183,7 +1215,7 @@ public sealed partial class Escape
                         if (read.Refused || read.RefusedBy.Contains(g.Name)) continue;
                         ReadJudgement? judged = Judge(g, cb, call, out _);
                         // Refused where it is, as a field's own read is (Refuse).
-                        if (judged is null && read.RefusedBy.Count < OwnedFieldHints.Limit) { read.RefusedBy.Add(g.Name); continue; }
+                        if (judged is null && read.RefusedBy.Count < OwnedFieldHints.Limit) { read.RefusedBy.Add(g.Name); read.Sites.Remove(g.Name); continue; }
                         if (judged is null || !read.Needs.Add(judged.Needs))
                         {
                             read.Refused = true; read.Danger.Clear(); read.DangerFields.Clear(); read.ReturnedBy.Clear();
@@ -1191,6 +1223,12 @@ public sealed partial class Escape
                             continue;
                         }
                         read.Danger.UnionWith(judged.Danger); read.DangerFields.UnionWith(judged.DangerFields);
+                        // Said for g, counted where the program runs g (OwnedCallRead.Sites).
+                        if (judged.Needs.Count + judged.Danger.Count + judged.DangerFields.Count > 0)
+                        {
+                            OwnedSite site = read.Site(g.Name);
+                            site.Needs.Add(judged.Needs); site.Danger.UnionWith(judged.Danger); site.DangerFields.UnionWith(judged.DangerFields);
+                        }
                         if (judged.HandedBack)
                         {
                             read.ReturnedBy.Add(g.Name);
@@ -1200,7 +1238,7 @@ public sealed partial class Escape
                         { read.Refused = true; read.Danger.Clear(); read.DangerFields.Clear(); read.ReturnedBy.Clear(); }
                     }
         }
-        foreach (OwnedCallRead read in hints.CallReads.Values) if (read.Refused) read.RefusedBy.Clear();
+        foreach (OwnedCallRead read in hints.CallReads.Values) if (read.Refused) { read.RefusedBy.Clear(); read.Sites.Clear(); }
         // A refused read made its caller relay nothing it knows of; the
         // callers already queued stay (more reads judged, never fewer).
 
@@ -1214,7 +1252,7 @@ public sealed partial class Escape
                 hints.Functions[name] = new OwnedFunctionRecord(record.Calls.ToArray(), record.Writes.ToArray(), record.InitWrites.ToArray(), record.Borrows.ToArray());
         foreach (OwnedFieldRecord record in hints.Fields.Values)
         {
-            if (record.Refused) { record.RefusedBy.Clear(); record.Danger.Clear(); record.Sinks.Clear(); record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
+            if (record.Refused) { record.RefusedBy.Clear(); record.Sites.Clear(); record.Danger.Clear(); record.Sinks.Clear(); record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
             if (record.Refused || record.ElementsRefused)
             {
                 record.ElementsRefused = true; record.ElementArrays = false; record.ElementDanger.Clear(); record.ElementDangerFields.Clear();

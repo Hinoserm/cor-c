@@ -1,0 +1,46 @@
+// test: owned_field_kept_only_where_never_run
+// expect-exit: 0
+// expect-output:
+// named 988890 0 True
+//
+// A CALL THAT KEEPS WHAT IT HANDS TO A FIELD'S STORE, IN A FUNCTION THE
+// PROGRAM NEVER RUNS, refuses nothing: Keep hands Named.Of a string and
+// returns it after, but nothing calls Keep. Every Named the loop makes and
+// drops frees the name it was given, and a hundred thousand run no
+// collection.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Named
+{
+    private string _name = "";
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static Named Of(string name) { Named n = new Named(); n._name = name; return n; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Length() => _name.Length;
+}
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Keep(int k)
+    {
+        string s = "kept " + k;
+        Named n = Named.Of(s);
+        return n.Length() > 0 ? s : "";
+    }
+
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++) { Named n = Named.Of("made " + k); total += n.Length(); }
+        long grown = GC.GetTotalMemory(false) - before;
+        Console.WriteLine("named " + total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}

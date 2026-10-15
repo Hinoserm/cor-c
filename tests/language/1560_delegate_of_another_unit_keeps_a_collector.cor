@@ -1,0 +1,31 @@
+// test: delegate_of_another_unit_keeps_a_collector
+// units: tests/language/support/1560_delegate_of_another_unit_keeps_a_collector_units.cor
+// expect-exit: 0
+// expect-output:
+// 19200000 True
+//
+// A LAMBDA ANOTHER UNIT MADE, RUN FROM THIS ONE: its Invoke is a local
+// symbol of that unit, named here only by the delegate's slot. Reached all
+// the same, what it makes every call and drops is the collector's, and the
+// program keeps one, and collects.
+
+static class Program
+{
+    static long Run(System.Func<int, long> f, int n)
+    {
+        long sum = 0;
+        for (int i = 0; i < n; i++) sum += f(i);
+        return sum;
+    }
+
+    static int Main()
+    {
+        System.Func<int, long> f = Lib.Make();
+        long t = Run(f, 300000);
+        Sys.PrintInt(t);
+        Sys.Print(" ");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

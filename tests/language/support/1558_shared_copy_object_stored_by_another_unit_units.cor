@@ -1,0 +1,20 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public class Holder<T> where T : class
+{
+    public int[] Pad;
+    public int Tag;
+    public Holder() { Pad = new int[6]; }
+}
+public static class Sink
+{
+    public static object? Kept;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Take(object o)
+    {
+        if (o is Holder<string> hs) { Kept = hs; return 1; }
+        return 0;
+    }
+}

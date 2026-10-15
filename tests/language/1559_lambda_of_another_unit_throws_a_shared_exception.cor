@@ -1,0 +1,34 @@
+// test: lambda_of_another_unit_throws_a_shared_exception
+// units: tests/language/support/1559_lambda_of_another_unit_throws_a_shared_exception_units.cor
+// expect-exit: 0
+// expect-output:
+// caught 200 shared
+//
+// A lambda of this unit, run only by another unit's Runner.Run, throws an
+// exception object a static field holds; Main catches it every lap.
+using System;
+
+static class P
+{
+    static readonly InvalidOperationException s_ex = new InvalidOperationException("shared");
+    static readonly InvalidOperationException[] Junk = new InvalidOperationException[256];
+
+    static void Churn(int k)
+    {
+        for (int j = 0; j < Junk.Length; j++) Junk[j] = new InvalidOperationException("junk " + k);
+    }
+
+    static int Main()
+    {
+        int ok = 0;
+        string last = "";
+        for (int k = 0; k < 200; k++)
+        {
+            try { Runner.Run(i => { if (i >= 0) throw s_ex; return i; }, 1); }
+            catch (InvalidOperationException e) { if (e.Message == "shared") ok++; last = e.Message; }
+            Churn(k);
+        }
+        Console.WriteLine("caught " + ok + " " + last);
+        return 0;
+    }
+}

@@ -899,8 +899,17 @@ public sealed partial class Lowering
     /// </summary>
     private sealed record MemPlace(Operand Address, long Offset, Type Type, bool Volatile = false, bool Inline = false, VReg? CovariantArray = null, FieldSymbol? Field = null) : Place(Type);
 
-    /// <summary>A field's name as the IR carries it on the loads and stores of it (Instr.Field).</summary>
-    private static string FieldKey(FieldSymbol f) => f.KeyMade ??= TypeKey(f.Owner) + "::" + f.Name;
+    /// <summary>
+    /// A field's name as the IR carries it on the loads and stores of it
+    /// (Instr.Field): ONE NAME FOR EVERY INSTANTIATION THAT SHARES A COPY --
+    /// `Box<string>.Items` stored by a program's own code and read by the
+    /// shared getter `Box<__canon>.Get` are one field of one layout, and named
+    /// two ways the owned-field rules judged the getter's read against
+    /// another field: the store's was owned, and freed a list the getter had
+    /// handed out. Named by the copy the instantiation shares (Decl.Canon).
+    /// </summary>
+    private static string FieldKey(FieldSymbol f)
+        => f.KeyMade ??= (f.Owner.Decl is { Canon: string canon } ? Escaped(canon) : TypeKey(f.Owner)) + "::" + f.Name;
 
     /// <summary>
     /// WHICH FIELD A LOAD OR STORE IS, for region inference (Instr.Family):

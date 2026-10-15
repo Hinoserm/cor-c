@@ -1,0 +1,83 @@
+// test: lap_region_frame_left_from_the_header
+// expect-exit: 0
+// expect-output:
+// for-break bad 0
+// do-while bad 0
+//
+// the break leaves from the loop's header block itself (nothing in the
+// lap branches before it: the owned field is filled by a callee, so no
+// barrier test splits the block). PlaceLapFrees skips exits from the header;
+// the slot's last occupant is freed by the return, after RegionLeave.
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class BoxA { public int[]? A; public int Tag; }
+sealed class Out { public int[]? Res; }
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill(BoxA b, int v, int n) { b.A = MakeArr(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Out ForBreak(int laps, int m)
+    {
+        int sum = 0;
+        for (int lap = 0; ; lap++)
+        {
+            BoxA b = new BoxA();
+            Fill(b, lap, m);
+            sum += UseA(b);
+            if (lap == laps - 1) break;
+        }
+        Out o = new Out();
+        int[] res = new int[m];
+        for (int k = 0; k < m; k++) res[k] = sum + k;
+        o.Res = res;
+        return o;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Out DoWhile(int laps, int m)
+    {
+        int sum = 0;
+        int lap = 0;
+        do
+        {
+            BoxA b = new BoxA();
+            Fill(b, lap, m);
+            sum += UseA(b);
+            lap++;
+        } while (lap < laps);
+        Out o = new Out();
+        int[] res = new int[m];
+        for (int k = 0; k < m; k++) res[k] = sum + k;
+        o.Res = res;
+        return o;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int G(int laps, int m, bool dw)
+    {
+        Out o = dw ? DoWhile(laps, m) : ForBreak(laps, m);
+        int want = 0;
+        for (int lap = 0; lap < laps; lap++) want += 2 * lap + m - 1 + lap;
+        int bad = 0;
+        for (int k = 0; k < m; k++) if (o.Res![k] != want + k) bad++;
+        return bad;
+    }
+
+    static void Main()
+    {
+        int bad = 0;
+        for (int r = 0; r < 300; r++) bad += G(10 + r % 50, 6, false) > 0 ? 1 : 0;
+        Console.WriteLine("for-break bad " + bad);
+        bad = 0;
+        for (int r = 0; r < 300; r++) bad += G(10 + r % 50, 6, true) > 0 ? 1 : 0;
+        Console.WriteLine("do-while bad " + bad);
+    }
+}

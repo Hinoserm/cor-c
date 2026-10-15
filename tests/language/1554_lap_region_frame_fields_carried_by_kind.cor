@@ -1,0 +1,204 @@
+// test: lap_region_frame_fields_carried_by_kind
+// expect-exit: 0
+// expect-output:
+// carry int 1004998 bad 0
+// carry long 1004998 bad 0
+// carry bool 1004499 bad 0
+// carry char 1004999 bad 0
+// carry double 1004998 bad 0
+//
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class BoxA { public int[]? A; public int Tag; public string Name = "n"; }
+sealed class Out { public int[]? Res; }
+sealed class BoxV { public int[]? A; public int V_int; public long V_long; public bool V_bool; public char V_char; public double V_double; }
+
+static class P
+{
+    static string[] names = { "even", "odd" };
+    static int Conv_int(int l) => l;
+    static long Conv_long(int l) => l * 3L;
+    static bool Conv_bool(int l) => (l & 1) == 1;
+    static char Conv_char(int l) => (char)('a' + l % 26);
+    static double Conv_double(int l) => l * 0.5;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr_Carry_int(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe_Carry_int(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k + 77; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA_Carry_int(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill_Carry_int(BoxA b, int v, int n) { b.A = MakeArr_Carry_int(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check_Carry_int(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k + 77) return 1;
+        return 0;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carry_int(int laps, int m)
+    {
+        long sum = 0; int bad = 0; int last = default(int);
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe_Carry_int(lap, m);
+            BoxV b = new BoxV();
+            b.A = MakeArr_Carry_int(lap, m);
+            b.V_int = Conv_int(lap);
+            sum += UseV_Carry_int(b) + (last.Equals(default(int)) ? 0 : 1);
+            last = b.V_int;
+            if (probe != null) bad += Check_Carry_int(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseV_Carry_int(BoxV b) => b.A![0] + b.A[b.A.Length - 1];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr_Carry_long(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe_Carry_long(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k + 77; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA_Carry_long(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill_Carry_long(BoxA b, int v, int n) { b.A = MakeArr_Carry_long(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check_Carry_long(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k + 77) return 1;
+        return 0;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carry_long(int laps, int m)
+    {
+        long sum = 0; int bad = 0; long last = default(long);
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe_Carry_long(lap, m);
+            BoxV b = new BoxV();
+            b.A = MakeArr_Carry_long(lap, m);
+            b.V_long = Conv_long(lap);
+            sum += UseV_Carry_long(b) + (last.Equals(default(long)) ? 0 : 1);
+            last = b.V_long;
+            if (probe != null) bad += Check_Carry_long(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseV_Carry_long(BoxV b) => b.A![0] + b.A[b.A.Length - 1];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr_Carry_bool(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe_Carry_bool(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k + 77; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA_Carry_bool(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill_Carry_bool(BoxA b, int v, int n) { b.A = MakeArr_Carry_bool(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check_Carry_bool(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k + 77) return 1;
+        return 0;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carry_bool(int laps, int m)
+    {
+        long sum = 0; int bad = 0; bool last = default(bool);
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe_Carry_bool(lap, m);
+            BoxV b = new BoxV();
+            b.A = MakeArr_Carry_bool(lap, m);
+            b.V_bool = Conv_bool(lap);
+            sum += UseV_Carry_bool(b) + (last.Equals(default(bool)) ? 0 : 1);
+            last = b.V_bool;
+            if (probe != null) bad += Check_Carry_bool(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseV_Carry_bool(BoxV b) => b.A![0] + b.A[b.A.Length - 1];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr_Carry_char(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe_Carry_char(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k + 77; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA_Carry_char(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill_Carry_char(BoxA b, int v, int n) { b.A = MakeArr_Carry_char(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check_Carry_char(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k + 77) return 1;
+        return 0;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carry_char(int laps, int m)
+    {
+        long sum = 0; int bad = 0; char last = default(char);
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe_Carry_char(lap, m);
+            BoxV b = new BoxV();
+            b.A = MakeArr_Carry_char(lap, m);
+            b.V_char = Conv_char(lap);
+            sum += UseV_Carry_char(b) + (last.Equals(default(char)) ? 0 : 1);
+            last = b.V_char;
+            if (probe != null) bad += Check_Carry_char(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseV_Carry_char(BoxV b) => b.A![0] + b.A[b.A.Length - 1];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] MakeArr_Carry_double(int v, int n) { int[] a = new int[n]; for (int k = 0; k < n; k++) a[k] = v + k; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] Probe_Carry_double(int lap, int m) { int[] a = new int[m]; for (int k = 0; k < m; k++) a[k] = lap * 100 + k + 77; return a; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseA_Carry_double(BoxA b) => b.A![0] + b.A[b.A.Length - 1] + b.Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill_Carry_double(BoxA b, int v, int n) { b.A = MakeArr_Carry_double(v, n); b.Tag = v; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check_Carry_double(int[] l, int lap)
+    {
+        for (int k = 0; k < l.Length; k++) if (l[k] != lap * 100 + k + 77) return 1;
+        return 0;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Carry_double(int laps, int m)
+    {
+        long sum = 0; int bad = 0; double last = default(double);
+        for (int lap = 0; lap < laps; lap++)
+        {
+            int[]? probe = null;
+            if ((lap & 1) == 1) probe = Probe_Carry_double(lap, m);
+            BoxV b = new BoxV();
+            b.A = MakeArr_Carry_double(lap, m);
+            b.V_double = Conv_double(lap);
+            sum += UseV_Carry_double(b) + (last.Equals(default(double)) ? 0 : 1);
+            last = b.V_double;
+            if (probe != null) bad += Check_Carry_double(probe, lap);
+        }
+        return sum * 1000 + bad;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int UseV_Carry_double(BoxV b) => b.A![0] + b.A[b.A.Length - 1];
+
+    static void Main()
+    {
+        { long r = Carry_int(1000, 6); Console.WriteLine("carry int " + (r / 1000) + " bad " + (r % 1000)); }
+        { long r = Carry_long(1000, 6); Console.WriteLine("carry long " + (r / 1000) + " bad " + (r % 1000)); }
+        { long r = Carry_bool(1000, 6); Console.WriteLine("carry bool " + (r / 1000) + " bad " + (r % 1000)); }
+        { long r = Carry_char(1000, 6); Console.WriteLine("carry char " + (r / 1000) + " bad " + (r % 1000)); }
+        { long r = Carry_double(1000, 6); Console.WriteLine("carry double " + (r / 1000) + " bad " + (r % 1000)); }
+    }
+}

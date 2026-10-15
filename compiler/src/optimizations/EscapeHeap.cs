@@ -63,6 +63,49 @@ public sealed partial class Escape
         }
     }
 
+    private readonly Dictionary<Function, HashSet<Block>> _returning = new();
+
+    /// <summary>
+    /// WHETHER WHAT A BLOCK MAKES IS MADE ON THE WAY TO AN UNWIND: on no cycle,
+    /// and no return reachable from it -- every run through it ends in a
+    /// throw, a trap or the program's end. An exception made every lap and
+    /// thrown on some (`b = new Boom(i); if (i == n) throw b;`) is thrown,
+    /// and dropped on every other lap: only where the block is doomed is it
+    /// one of boundedly many unwinds' (the throw budget).
+    /// </summary>
+    private bool Doomed(Function f, Block b)
+    {
+        if (Repeating(f).Contains(b)) return false;
+        if (!_returning.TryGetValue(f, out HashSet<Block>? returning))
+        {
+            returning = new(ReferenceEqualityComparer.Instance);
+            Cfg cfg = new(f);
+            Stack<Block> work = new(f.Blocks.Where(x => x.Terminator is { Op: Opcode.Ret }));
+            while (work.TryPop(out Block? x))
+                if (returning.Add(x)) foreach (Block p in cfg.Preds(x)) work.Push(p);
+            _returning[f] = returning;
+        }
+        return !returning.Contains(b);
+    }
+
+    /// <summary>
+    /// Whether an object made in `f` can be made again before it reaches the
+    /// store that hands it to a field -- `x = null; for (..) if (..) x = new
+    /// Item(); h.F = x;` -- dropping the earlier one, which no owner frees.
+    /// </summary>
+    private static bool MadeAgainBeforeStored(Function f, Instr made, Instr st)
+    {
+        Block? madeIn = null, storedIn = null;
+        foreach (Block x in f.Blocks)
+        {
+            if (madeIn is null && x.Instrs.Contains(made)) madeIn = x;
+            if (storedIn is null && x.Instrs.Contains(st)) storedIn = x;
+        }
+        if (madeIn is null || storedIn is null) return true;
+        if (ReferenceEquals(madeIn, storedIn)) return madeIn.Instrs.IndexOf(made) > madeIn.Instrs.IndexOf(st);
+        return ReachesAvoiding(new Cfg(f), madeIn, madeIn, storedIn);
+    }
+
     /// <summary>Why unwinds are unbounded: each reached catch that can run more than once, and each reached async body. Empty: bounded.</summary>
     private List<string> RepeatingCatches(Module m, OnceRun once)
     {
@@ -196,7 +239,8 @@ public sealed partial class Escape
             }
             bool loops = false;
             foreach (Block n in cfg.Succs(b)) if (forward.Contains(n) && backward.Contains(n) || ReferenceEquals(n, b)) loops = true;
-            if (loops) continue;
+            // Nor round a loop the store is in, back to it without the test.
+            if (loops || ReachesAvoiding(cfg, b, b, p)) continue;
             bool ok = true;
             for (int k = from + 1; k < p.Instrs.Count && ok; k++) ok = Harmless(p.Instrs[k]);
             foreach (Block x in backward)
@@ -327,7 +371,7 @@ public sealed partial class Escape
                     if (site) call |= HeapFlags.Site;
                     record.Events.Add(new(HeapEventKind.Call, i.Callee, call, latches,
                         site ? permanent.GetValueOrDefault(i) : null,
-                        site && _thrown.Contains(i) ? _thrownType.GetValueOrDefault(i) ?? "*" : null) { Held = held.GetValueOrDefault(i) });
+                        site && _thrown.Contains(i) && Doomed(f, b) ? _thrownType.GetValueOrDefault(i) ?? "*" : null) { Held = held.GetValueOrDefault(i) });
                 }
                 foreach (Operand o in i.Operands)
                     if (o is SymOperand sym) record.Events.Add(new(HeapEventKind.Named, sym.Name, block, latches, null, null));
@@ -415,6 +459,7 @@ public sealed partial class Escape
                 if (other || made is not { Dest: { } dest } || held.ContainsKey(made)) continue;
                 if (Analyse(f, new[] { dest }, summaries, made, new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st },
                     joinable: joins.Count > 0 ? joins : null).Escapes) continue;
+                if (MadeAgainBeforeStored(f, made, st)) continue;
                 held[made] = field;
             }
         return held;

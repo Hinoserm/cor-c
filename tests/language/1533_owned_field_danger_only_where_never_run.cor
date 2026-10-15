@@ -1,0 +1,53 @@
+// test: owned_field_danger_only_where_never_run
+// expect-exit: 0
+// expect-output:
+// swapped 988890 0 True
+//
+// A READ LIVE ACROSS A CALL THAT REPLACES THE FIELD, IN A FUNCTION THE
+// PROGRAM NEVER RUNS, refuses nothing: Holder.Risky holds what _box held
+// across Swap, which replaces it, but nothing calls Risky. Every Swap frees
+// the box it replaces, and a hundred thousand run no collection.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Box
+{
+    public string Text;
+    public Box(string text) { Text = text; }
+}
+
+sealed class Holder
+{
+    private Box _box;
+    public Holder() { _box = new Box("first"); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Swap(int n) { _box = new Box("next " + n); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Length() => _box.Text.Length;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public string Risky(int n)
+    {
+        Box b = _box;
+        Swap(n);
+        return b.Text;
+    }
+}
+
+static class P
+{
+    static int Main()
+    {
+        Holder h = new Holder();
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++) { h.Swap(k); total += h.Length(); }
+        long grown = GC.GetTotalMemory(false) - before;
+        Console.WriteLine("swapped " + total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}

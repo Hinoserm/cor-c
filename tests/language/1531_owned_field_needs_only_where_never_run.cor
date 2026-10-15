@@ -1,0 +1,57 @@
+// test: owned_field_needs_only_where_never_run
+// expect-exit: 0
+// expect-output:
+// carried 988890 0 True
+//
+// A STORE THAT NEEDS WHAT DOES NOT HOLD, IN A FUNCTION THE PROGRAM NEVER
+// RUNS, refuses nothing: Wrap stores what another unit's string.Intern hands
+// back, the string the intern table holds, but nothing calls Wrap. Every
+// Carrier the loop throws and catches frees the text made for it, and a
+// hundred thousand run no collection.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Carrier : Exception
+{
+    public string Text = "";
+}
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Wrap(string name)
+    {
+        try
+        {
+            Carrier c = new Carrier();
+            c.Text = string.Intern(name);
+            throw c;
+        }
+        catch (Carrier c) { return c.Text.Length; }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Made(int k)
+    {
+        try
+        {
+            Carrier c = new Carrier();
+            c.Text = "made " + k;
+            throw c;
+        }
+        catch (Carrier c) { return c.Text.Length; }
+    }
+
+    static int Main()
+    {
+        Made(0);
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++) total += Made(k);
+        long grown = GC.GetTotalMemory(false) - before;
+        Console.WriteLine("carried " + total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+        return 0;
+    }
+}

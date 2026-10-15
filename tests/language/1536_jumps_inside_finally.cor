@@ -1,0 +1,139 @@
+// test: jumps_inside_finally
+// expect-exit: 0
+// expect-output:
+// 115
+// 33
+// from finally
+// 1131
+// 50 33
+// 14
+// dt
+//
+// WHAT A FINALLY CLAUSE MAY DO (the other side of C# CS0157): a break,
+// continue or goto that lands inside the same finally, a goto case to a
+// switch inside it, a return from a lambda, anonymous method or local
+// function declared in it, and a throw. A generic type first used inside one
+// has its own returns checked as its own.
+
+using System;
+using System.Collections.Generic;
+
+sealed class FreshThing { public int V; public FreshThing(int v) { V = v; } }
+
+static class P
+{
+    static string log = "";
+    static int nested;
+
+    static int LoopInFinally()
+    {
+        int sum = 0;
+        try { sum = 1; }
+        finally
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                if (i == 2) continue;
+                if (i == 5) break;
+                sum += i;
+            }
+            int k = 0;
+            while (true) { if (++k == 3) break; }
+            do { k++; if (k < 6) continue; } while (k < 6);
+            foreach (int x in new List<int> { 100, 200 }) { if (x == 200) break; sum += x; }
+            sum += k;
+        }
+        return sum;
+    }
+
+    static int FunctionsInFinally()
+    {
+        int r = 0;
+        try { r = 1; }
+        finally
+        {
+            Func<int, int> twice = x => { if (x < 0) return 0; return x * 2; };
+            int Thrice(int x) { if (x < 0) return 0; return x * 3; }
+            T Same<T>(T v) { return v; }
+            Action a = delegate { log += "d"; return; };
+            a();
+            r += twice(5) + Thrice(5) + Same(7);
+        }
+        return r;
+    }
+
+    static string ThrowFromFinally()
+    {
+        try
+        {
+            try { log += "t"; }
+            finally { throw new InvalidOperationException("from finally"); }
+        }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int JumpsInsideFinally(int k)
+    {
+        int n = 0;
+        try { n = 1; }
+        finally
+        {
+            int j = 0;
+        again:
+            n += 10;
+            if (++j < 3) goto again;
+            switch (k)
+            {
+                case 1: n += 100; goto case 2;
+                case 2: n += 1000; break;
+                default: break;
+            }
+        }
+        return n;
+    }
+
+    static int NestedTry()
+    {
+        nested = 0;
+        try
+        {
+            try { return 50; }
+            finally { nested++; }
+        }
+        finally
+        {
+            for (int i = 0; i < 5; i++)
+            {
+                try { if (i == 2) break; nested++; }
+                finally { nested += 10; }
+            }
+        }
+    }
+
+    static int GenericFirstUsedInFinally()
+    {
+        int c = 0;
+        try { c = 1; }
+        finally
+        {
+            Dictionary<string, FreshThing> d = new();
+            d["a"] = new FreshThing(4);
+            if (d.TryGetValue("a", out FreshThing? f)) c += f.V;
+            List<FreshThing> l = new() { new FreshThing(9) };
+            c += l.Find(t => t.V == 9)!.V;
+        }
+        return c;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(LoopInFinally());
+        Console.WriteLine(FunctionsInFinally());
+        Console.WriteLine(ThrowFromFinally());
+        Console.WriteLine(JumpsInsideFinally(1));
+        int got = NestedTry();
+        Console.WriteLine(got + " " + nested);
+        Console.WriteLine(GenericFirstUsedInFinally());
+        Console.WriteLine(log);
+    }
+}

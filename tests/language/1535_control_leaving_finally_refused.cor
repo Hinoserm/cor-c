@@ -1,0 +1,28 @@
+// test: control_leaving_finally_refused
+// expect-compile-error: CS0157: Control cannot leave the body of a finally clause
+//
+// CONTROL LEAVES A FINALLY CLAUSE ONLY BY ITS END OR BY A THROW (C#
+// CS0157). A `continue` here would drop the exception the finally is running
+// for and go round the loop as though nothing had been thrown; a return,
+// break, goto or goto case out of one does the same.
+
+using System;
+
+static class P
+{
+    static int Count(int n)
+    {
+        int seen = 0;
+        for (int i = 0; i < n; i++)
+        {
+            try { if (i == 1) throw new InvalidOperationException("lost"); }
+            finally { seen++; continue; }
+        }
+        return seen;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Count(3));
+    }
+}

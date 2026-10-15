@@ -1,0 +1,36 @@
+// test: shared_copy_object_stored_by_another_unit
+// units: tests/language/support/1558_shared_copy_object_stored_by_another_unit_units.cor
+// expect-exit: 0
+// expect-output:
+// took 1 kept 100 100 105
+//
+// an object shared code makes, handed to another unit's function that tests it for a concrete instantiation
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Maker<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Make(int k)
+    {
+        Holder<T> h = new Holder<T>();
+        h.Tag = k;
+        for (int i = 0; i < 6; i++) h.Pad[i] = k + i;
+        return Sink.Take(h);
+    }
+}
+static class P
+{
+    static Holder<string>[] Hold = new Holder<string>[64];
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k) { Holder<string> x = new Holder<string>(); x.Tag = -7; for (int i = 0; i < 6; i++) x.Pad[i] = -7; Hold[k & 63] = x; }
+    static void Main()
+    {
+        int took = new Maker<string>().Make(100);
+        for (int k = 0; k < 200; k++) Churn(k);
+        Gc.Collect();
+        Holder<string> h = (Holder<string>)Sink.Kept!;
+        Console.WriteLine("took " + took + " kept " + h.Tag + " " + h.Pad[0] + " " + h.Pad[5]);
+    }
+}

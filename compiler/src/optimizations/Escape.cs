@@ -127,7 +127,7 @@ public sealed partial class Escape : IModulePass
         _unresolvedWhy = Switches.AllocReport ? new() : null;
         _module = m;
         _fieldElements.Clear();
-        _replacing.Clear(); _heldBy.Clear(); _heldCalls.Clear();
+        _replacing.Clear(); _heldBy.Clear(); _heldCalls.Clear(); _returning.Clear();
         _elementReadHints.Clear(); _elementHandOffHints.Clear(); _elementCallHints.Clear();
         _storedParameters = null;
         _items = null;
@@ -1834,9 +1834,15 @@ continue;
                 if (f.Async is null) FreeReplacedAcrossCalls(f, summaries, privateOwner, OwnedOf, handers.Contains);
         }
 
+        // NOT AN OBJECT MADE AGAIN BEFORE IT IS STORED: round a loop into a
+        // local that only the last one reaches the field from, the earlier
+        // ones are dropped and no owner frees them (MadeAgainBeforeStored).
+        Dictionary<Instr, Function> storedIn = new(ReferenceEqualityComparer.Instance);
+        foreach ((Function f, Block _, Instr st) in stores) storedIn[st] = f;
         foreach ((Instr made, Instr st) in held)
         {
             if (!owned.Contains(st.Field!)) continue;
+            if (!storedIn.TryGetValue(st, out Function? holder) || MadeAgainBeforeStored(holder, made, st)) continue;
             _heldBy[made] = st.Field!;
             if (IsAllocator(made.Callee)) _fieldOwned.Add(made);
             else { if (!_ownedCalls.Contains(made)) _heldCalls.Add(made); _ownedCalls.Add(made); }
@@ -2534,7 +2540,12 @@ continue;
         }
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
+                // NOT A SHARED COPY'S HEADER (Builder.StoreDescribed): what it
+                // names is the copy's own descriptor, and the object is of the
+                // instantiation read at run time -- `o is Holder<string>` was
+                // folded false on the copy's own type, and a store of it into a
+                // static judged a store of something else.
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count == 2 && i.Operands[1] is SymOperand { Name: var t, Offset: var at }
                     && IsDescriptor(t) && i.Operands[0] is RegOperand { Reg: var into })
                 {
                     Stamp stamp = new(t, at);
@@ -5265,19 +5276,25 @@ continue;
     }
 
     /// <summary>
-    /// AND BEFORE EVERY THROW: a block that ends in a trap never reaches a
-    /// return, so what the slot holds there -- a message's number, made on
-    /// the way to the throw and read by a string's concatenation inlined
-    /// round a loop -- was given back only at the slot's renewal or a return,
-    /// and a throw per lap left one each time. The object does not escape and
-    /// no handler reads it (it would not be owned), so it is dead at the
+    /// AND BEFORE EVERY THROW that leaves the function: a block that ends in a
+    /// trap never reaches a return, so what the slot holds there -- a
+    /// message's number, made on the way to the throw and read by a string's
+    /// concatenation inlined round a loop -- was given back only at the slot's
+    /// renewal or a return, and a throw per lap left one each time. The
+    /// object does not escape, so with the frame gone it is dead at the
     /// block's last call -- unless that call is handed it, a [DoesNotReturn]
     /// helper reading what it was given, where it stays. The slot is emptied
-    /// after: a catch round a loop in this function comes back to the
-    /// renewal, which then finds nothing to give back again.
+    /// after, as a return's free leaves nothing behind either.
     /// </summary>
     private void ReleaseAtThrows(Function f, FrameSlot slot, Instr made, OwnedRecord record)
     {
+        // NOT WHERE THE UNWIND MAY STAY IN THE FUNCTION: a throw inside a try
+        // here lands in its handler, and what runs after the catch may read
+        // the object -- owned where it was made, before the try, where no
+        // handler could be entered, and given back under the code after the
+        // catch. Only an unwind that leaves the frame takes the object's
+        // last use with it.
+        if (f.Blocks.Any(b => b.IsLandingPad)) return;
         HashSet<VReg> derived = Derivations(f, new[] { made.Dest! });
         int word = IrTypes.Word.Bytes();
         foreach (Block b in f.Blocks)
@@ -6209,7 +6226,7 @@ continue;
                     Instr i = b.Instrs[at];
                     bool origin = origins is not null && origins.Contains(i);
                     if (!(trapping && at < lastCall) && i.Callee is not null && IsAllocator(i.Callee) && !_owned.Contains(i) && !_permanent.Contains(i)
-                        && !(_fieldOwned.Contains(i) && !Leaky(i)) && !_thrown.Contains(i) && !once.RunsOnce(f, b)
+                        && !(_fieldOwned.Contains(i) && !Leaky(i)) && !(_thrown.Contains(i) && Doomed(f, b)) && !once.RunsOnce(f, b)
                         && (!origin || unowned) && counted.Add(i))
                     {
                         // AND WHY: the instruction the object escapes through,
@@ -6397,20 +6414,25 @@ continue;
         {
             Dictionary<Block, HashSet<string>> found = new(ReferenceEqualityComparer.Instance);
             if (f.Async is not null) return found;
+            // Each register written once: a flag read into a local before a
+            // loop, tested in it, was the flag's old value lap after lap.
             Dictionary<VReg, Instr> defs = new();
-            foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Dest is not null) defs[i.Dest] = i;
+            HashSet<VReg> many = new();
+            foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs) if (i.Dest is not null && !defs.TryAdd(i.Dest, i)) many.Add(i.Dest);
             Cfg? cfg = null;
             foreach (Block test in f.Blocks)
             {
                 if (test.Terminator is not { Op: Opcode.Branch, Operands: [RegOperand { Reg: var cond }] } branch || branch.Targets.Count != 2
-                    || !defs.TryGetValue(cond, out Instr? read)) continue;
+                    || many.Contains(cond) || !defs.TryGetValue(cond, out Instr? read)) continue;
                 Block clear = branch.Targets[1];
                 if (read is { Op: Opcode.Eq, Operands: [RegOperand { Reg: var inner }, ImmOperand { Value: 0 }] })
                 {
                     clear = branch.Targets[0];
-                    if (!defs.TryGetValue(inner, out read)) continue;
+                    if (many.Contains(inner) || !defs.TryGetValue(inner, out read)) continue;
                 }
-                if (read is not { Op: Opcode.Load, Operands: [SymOperand { Name: var flag } at] } || ReferenceEquals(clear, test)) continue;
+                // THE FLAG READ IN THE TEST'S OWN BLOCK, where it is tested: the
+                // value as it is when the latch decides.
+                if (read is not { Op: Opcode.Load, Operands: [SymOperand { Name: var flag } at] } || ReferenceEquals(clear, test) || !test.Instrs.Contains(read)) continue;
                 cfg ??= new Cfg(f);
                 if (cfg.Preds(clear).Count != 1 || cfg.IsRoot(clear)) continue;
                 bool sets = false;

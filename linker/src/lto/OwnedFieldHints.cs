@@ -45,8 +45,13 @@ public sealed class OwnedFieldHints
     /// used again) is in neither this nor <see cref="Kept"/>.
     /// </summary>
     public SortedDictionary<(string Callee, int Argument), OwnedSink> Sinks { get; } = new(PairOrder.Instance);
-    /// <summary>Arguments some direct call here does not hand over.</summary>
+    /// <summary>Arguments some direct call here does not hand over, past the bound on <see cref="KeptIn"/>: every program's.</summary>
     public SortedSet<(string Callee, int Argument)> Kept { get; } = new(PairOrder.Instance);
+    /// <summary>
+    /// Arguments a direct call here does not hand over, by the functions
+    /// making such a call: kept only in a program that runs one of them.
+    /// </summary>
+    public SortedDictionary<(string Callee, int Argument), SortedSet<string>> KeptIn { get; } = new(PairOrder.Instance);
     /// <summary>Functions whose address the unit takes, in code or in data other than a descriptor's.</summary>
     public SortedSet<string> Addressed { get; } = new(StringComparer.Ordinal);
     /// <summary>Functions whose address the unit's code takes.</summary>
@@ -109,9 +114,8 @@ public sealed class OwnedFieldHints
         void Condition(LifetimeCondition c) { foreach (var s in c.Stays) names.Add(s.Callee); names.UnionWith(c.Fresh); foreach (var s in c.Fields) names.Add(s.Callee); }
         foreach ((string field, OwnedFieldRecord record) in Fields)
         {
-            names.Add(field); Condition(record.Needs); names.UnionWith(record.RefusedBy);
+            names.Add(field); Sites(record.Sites); names.UnionWith(record.RefusedBy);
             foreach (var sink in record.Sinks) names.Add(sink.Callee);
-            names.UnionWith(record.Danger); names.UnionWith(record.Kinds); names.UnionWith(record.Assumes);
             Condition(record.ElementNeeds); names.UnionWith(record.ElementDanger); names.UnionWith(record.ElementDangerFields);
         }
         foreach ((string name, OwnedFunctionRecord record) in Functions)
@@ -121,15 +125,25 @@ public sealed class OwnedFieldHints
         }
         foreach ((string callee, OwnedCallRead read) in CallReads)
         {
-            names.Add(callee); Condition(read.Needs); names.UnionWith(read.RefusedBy); names.UnionWith(read.Danger); names.UnionWith(read.DangerFields); names.UnionWith(read.ReturnedBy);
+            names.Add(callee); Sites(read.Sites); names.UnionWith(read.RefusedBy); names.UnionWith(read.ReturnedBy);
         }
         foreach ((string callee, SortedSet<string> callers) in FreshFirst) { names.Add(callee); names.UnionWith(callers); }
         foreach (((string callee, int _), OwnedSink sink) in Sinks)
         {
-            names.Add(callee); Condition(sink.Needs);
+            names.Add(callee);
+            foreach ((string caller, LifetimeCondition needs) in sink.NeedsIn) { names.Add(caller); Condition(needs); }
             foreach (var inner in sink.Sinks) names.Add(inner.Callee);
         }
         foreach ((string callee, int _) in Kept) names.Add(callee);
+        foreach (((string callee, int _), SortedSet<string> callers) in KeptIn) { names.Add(callee); names.UnionWith(callers); }
+        void Sites(SortedDictionary<string, OwnedSite> sites)
+        {
+            foreach ((string function, OwnedSite site) in sites)
+            {
+                names.Add(function); Condition(site.Needs); names.UnionWith(site.Danger); names.UnionWith(site.DangerFields);
+                names.UnionWith(site.Kinds); names.UnionWith(site.Assumes);
+            }
+        }
         names.UnionWith(Addressed); names.UnionWith(CodeNamed); names.UnionWith(Slotted); names.UnionWith(UnresolvedIn);
         names.UnionWith(Loaded); names.UnionWith(ElementKept);
         foreach ((string field, OwnedElementRecord record) in ElementReads) { names.Add(field); ElementNames(record); }
@@ -157,10 +171,18 @@ public sealed class OwnedFieldHints
         foreach ((string field, OwnedFieldRecord record) in Fields)
         {
             writer.Write(index[field]); writer.Write(record.Offset); writer.Write(record.Refused); writer.Write(record.Stored); writer.Write(record.SelfFreed);
-            Names(record.RefusedBy, record.RefusedBy.Count); Needs(record.Needs); Pairs(record.Sinks); Names(record.Danger, record.Danger.Count);
-            Names(record.Kinds, record.Kinds.Count); Names(record.Assumes, record.Assumes.Count);
+            Names(record.RefusedBy, record.RefusedBy.Count); WriteSites(record.Sites); Pairs(record.Sinks);
             writer.Write(record.ElementsRefused); writer.Write(record.ElementArrays); Needs(record.ElementNeeds);
             Names(record.ElementDanger, record.ElementDanger.Count); Names(record.ElementDangerFields, record.ElementDangerFields.Count);
+        }
+        void WriteSites(SortedDictionary<string, OwnedSite> sites)
+        {
+            writer.Write(sites.Count);
+            foreach ((string function, OwnedSite site) in sites)
+            {
+                writer.Write(index[function]); Needs(site.Needs); Names(site.Danger, site.Danger.Count); Names(site.DangerFields, site.DangerFields.Count);
+                Names(site.Kinds, site.Kinds.Count); Names(site.Assumes, site.Assumes.Count);
+            }
         }
         writer.Write(Functions.Count);
         foreach ((string name, OwnedFunctionRecord record) in Functions)
@@ -172,17 +194,22 @@ public sealed class OwnedFieldHints
         writer.Write(CallReads.Count);
         foreach ((string callee, OwnedCallRead read) in CallReads)
         {
-            writer.Write(index[callee]); writer.Write(read.Refused); Names(read.RefusedBy, read.RefusedBy.Count); Needs(read.Needs);
-            Names(read.Danger, read.Danger.Count); Names(read.DangerFields, read.DangerFields.Count); Names(read.ReturnedBy, read.ReturnedBy.Count);
+            writer.Write(index[callee]); writer.Write(read.Refused); Names(read.RefusedBy, read.RefusedBy.Count); WriteSites(read.Sites);
+            Names(read.ReturnedBy, read.ReturnedBy.Count);
         }
         writer.Write(FreshFirst.Count);
         foreach ((string callee, SortedSet<string> callers) in FreshFirst) { writer.Write(index[callee]); Names(callers, callers.Count); }
         writer.Write(Sinks.Count);
         foreach (((string callee, int argument), OwnedSink sink) in Sinks)
         {
-            writer.Write(index[callee]); writer.Write(argument); Needs(sink.Needs); Pairs(sink.Sinks);
+            writer.Write(index[callee]); writer.Write(argument);
+            writer.Write(sink.NeedsIn.Count);
+            foreach ((string caller, LifetimeCondition needs) in sink.NeedsIn) { writer.Write(index[caller]); Needs(needs); }
+            Pairs(sink.Sinks);
         }
         Pairs(Kept);
+        writer.Write(KeptIn.Count);
+        foreach (((string callee, int argument), SortedSet<string> callers) in KeptIn) { writer.Write(index[callee]); writer.Write(argument); Names(callers, callers.Count); }
         Names(Addressed, Addressed.Count); Names(CodeNamed, CodeNamed.Count); Names(Slotted, Slotted.Count);
         Names(UnresolvedIn, UnresolvedIn.Count);
         Names(Loaded, Loaded.Count); Names(ElementKept, ElementKept.Count);
@@ -240,12 +267,27 @@ public sealed class OwnedFieldHints
             if (c.Count > LifetimeCondition.Limit) throw new ElfFormatException("Owned-field condition exceeds its bound");
             return c;
         }
+        // Each function's site, and the unit's sums of them, which its own
+        // bounds were kept on (OwnedFieldRecord.Needs and the rest).
+        void ReadSites(SortedDictionary<string, OwnedSite> into, LifetimeCondition needs, SortedSet<string> danger, SortedSet<string>? dangerFields,
+            SortedSet<string>? kinds, SortedSet<string>? assumes)
+        {
+            for (int k = Count(24); k > 0; k--)
+            {
+                string function = Name();
+                OwnedSite site = new();
+                site.Needs.Add(Needs()); NameSet(site.Danger); NameSet(site.DangerFields); NameSet(site.Kinds); NameSet(site.Assumes);
+                if (!into.TryAdd(function, site)) throw new ElfFormatException("Duplicate owned-field site");
+                needs.Add(site.Needs); danger.UnionWith(site.Danger); dangerFields?.UnionWith(site.DangerFields);
+                kinds?.UnionWith(site.Kinds); assumes?.UnionWith(site.Assumes);
+            }
+        }
         OwnedFieldHints hints = new();
         for (int i = Count(32); i > 0; i--)
         {
             string field = Name();
             OwnedFieldRecord record = new() { Offset = reader.ReadInt64(), Refused = reader.ReadBoolean(), Stored = reader.ReadBoolean(), SelfFreed = reader.ReadBoolean() };
-            NameSet(record.RefusedBy); record.Needs.Add(Needs()); Pairs(record.Sinks); NameSet(record.Danger); NameSet(record.Kinds); NameSet(record.Assumes);
+            NameSet(record.RefusedBy); ReadSites(record.Sites, record.Needs, record.Danger, null, record.Kinds, record.Assumes); Pairs(record.Sinks);
             record.ElementsRefused = reader.ReadBoolean(); record.ElementArrays = reader.ReadBoolean();
             record.ElementNeeds.Add(Needs()); NameSet(record.ElementDanger); NameSet(record.ElementDangerFields);
             if (!hints.Fields.TryAdd(field, record)) throw new ElfFormatException("Duplicate owned-field record");
@@ -260,7 +302,7 @@ public sealed class OwnedFieldHints
         {
             string callee = Name();
             OwnedCallRead read = new() { Refused = reader.ReadBoolean() };
-            NameSet(read.RefusedBy); read.Needs.Add(Needs()); NameSet(read.Danger); NameSet(read.DangerFields); NameSet(read.ReturnedBy);
+            NameSet(read.RefusedBy); ReadSites(read.Sites, read.Needs, read.Danger, read.DangerFields, null, null); NameSet(read.ReturnedBy);
             if (!hints.CallReads.TryAdd(callee, read)) throw new ElfFormatException("Duplicate owned-field call read");
         }
         for (int i = Count(8); i > 0; i--)
@@ -274,10 +316,24 @@ public sealed class OwnedFieldHints
         {
             string callee = Name(); int argument = reader.ReadInt32();
             OwnedSink sink = new();
-            sink.Needs.Add(Needs()); Pairs(sink.Sinks);
+            for (int k = Count(4); k > 0; k--)
+            {
+                string caller = Name();
+                LifetimeCondition needs = Needs();
+                if (!sink.NeedsIn.TryAdd(caller, needs)) throw new ElfFormatException("Duplicate owned-field sink caller");
+                sink.Needs.Add(needs);
+            }
+            Pairs(sink.Sinks);
             if (argument < 0 || !hints.Sinks.TryAdd((callee, argument), sink)) throw new ElfFormatException("Invalid owned-field sink");
         }
         Pairs(hints.Kept);
+        for (int i = Count(12); i > 0; i--)
+        {
+            string callee = Name(); int argument = reader.ReadInt32();
+            SortedSet<string> callers = new(StringComparer.Ordinal);
+            NameSet(callers);
+            if (argument < 0 || !hints.KeptIn.TryAdd((callee, argument), callers)) throw new ElfFormatException("Invalid owned-field kept argument");
+        }
         NameSet(hints.Addressed); NameSet(hints.CodeNamed); NameSet(hints.Slotted);
         NameSet(hints.UnresolvedIn);
         NameSet(hints.Loaded); NameSet(hints.ElementKept);
@@ -332,11 +388,14 @@ public sealed class OwnedFieldRecord
     /// for replacing it.
     /// </summary>
     public bool SelfFreed { get; set; }
-    /// <summary>What its stores and reads need of other units' functions.</summary>
+    /// <summary>
+    /// What its stores and reads need of other units' functions -- the sum of
+    /// its sites', on which the unit keeps its bound; not written (Sites).
+    /// </summary>
     public LifetimeCondition Needs { get; } = new();
     /// <summary>Parameters it is stored from, which every caller must hand over.</summary>
     public SortedSet<(string Callee, int Argument)> Sinks { get; } = new(OwnedFieldHints.PairOrder.Instance);
-    /// <summary>The calls a read of it is live across: none may replace it.</summary>
+    /// <summary>The calls a read of it is live across: none may replace it. The sum of its sites', as Needs is.</summary>
     public SortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
     /// <summary>
     /// What the unit's stores put in it, by the stamp of the object each
@@ -366,6 +425,31 @@ public sealed class OwnedFieldRecord
 
     /// <summary>A store of something whose type the unit cannot name.</summary>
     public const string UnknownKind = "?";
+
+    /// <summary>
+    /// SITES: the needs, dangers, kinds and assumptions above by the function
+    /// whose stores and reads have them. The link counts a function's only
+    /// where the program runs it -- a store that never runs stores nothing,
+    /// a read that never runs holds nothing across anything -- as it does
+    /// RefusedBy.
+    /// </summary>
+    public SortedDictionary<string, OwnedSite> Sites { get; } = new(StringComparer.Ordinal);
+    public OwnedSite Site(string function) => Sites.TryGetValue(function, out OwnedSite? site) ? site : Sites[function] = new OwnedSite();
+}
+
+/// <summary>
+/// What one function's stores and reads of a field say, or its reads of
+/// what one callee returns: what they need of other units' functions, the
+/// calls a read is live across, the fields stored into meanwhile (a call's
+/// reads), the stamps stored (Kinds) and assumed (Assumes).
+/// </summary>
+public sealed class OwnedSite
+{
+    public LifetimeCondition Needs { get; } = new();
+    public SortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
+    public SortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
+    public SortedSet<string> Kinds { get; } = new(StringComparer.Ordinal);
+    public SortedSet<string> Assumes { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -390,6 +474,9 @@ public sealed class OwnedCallRead
     public SortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
     /// <summary>The functions that hand it back again: they hand back whatever the callee does.</summary>
     public SortedSet<string> ReturnedBy { get; } = new(StringComparer.Ordinal);
+    /// <summary>Needs, Danger and DangerFields by the calling function (OwnedFieldRecord.Sites); those three are their sum.</summary>
+    public SortedDictionary<string, OwnedSite> Sites { get; } = new(StringComparer.Ordinal);
+    public OwnedSite Site(string function) => Sites.TryGetValue(function, out OwnedSite? site) ? site : Sites[function] = new OwnedSite();
 }
 
 /// <summary>A collection's kind, as a unit found it of a field (OwnedFieldHints.ElementReads and the rest), and what that needs of other units.</summary>
@@ -413,7 +500,10 @@ public sealed class OwnedElementRecord
 /// <summary>An argument every call of one unit hands over, if what it names holds.</summary>
 public sealed class OwnedSink
 {
+    /// <summary>The sum of NeedsIn, on which the unit keeps its bound.</summary>
     public LifetimeCondition Needs { get; } = new();
+    /// <summary>What each calling function's calls need: counted where the program runs it.</summary>
+    public SortedDictionary<string, LifetimeCondition> NeedsIn { get; } = new(StringComparer.Ordinal);
     /// <summary>The callers' own parameters it passes on, each of which must be a sink too.</summary>
     public SortedSet<(string Callee, int Argument)> Sinks { get; } = new(OwnedFieldHints.PairOrder.Instance);
 }

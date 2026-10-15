@@ -1,0 +1,55 @@
+// test: owned_field_danger_where_run
+// expect-exit: 0
+// expect-output:
+// held 200 0 199
+//
+// A READ LIVE ACROSS A CALL THAT REPLACES THE FIELD, IN A FUNCTION THE
+// PROGRAM RUNS, refuses it: Main makes a Holder, holds the array its field
+// holds across Swap, which replaces it, and reads the array after. Were the
+// field owned, the array would be freed as Swap returned (the Holder is
+// Main's own), the churn would take its memory, and Main would read what
+// the churn wrote.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Holder
+{
+    public long[] Held;
+    public Holder(int n) { Held = Fill(n); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Swap(int n) { Held = Fill(n + 1000); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long[] Fill(int n) { long[] a = new long[4096]; a[0] = n; a[4095] = n; return a; }
+}
+
+static class P
+{
+    static readonly long[][] Junk = new long[64][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k)
+    {
+        for (int j = 0; j < Junk.Length; j++) { long[] a = new long[4096]; a[0] = -1 - k; a[4095] = -1 - k; Junk[j] = a; }
+    }
+
+    static void Main()
+    {
+        int same = 0;
+        long first = 0, last = 0;
+        for (int k = 0; k < 200; k++)
+        {
+            Holder h = new Holder(k);
+            long[] b = h.Held;
+            h.Swap(k);
+            Churn(k);
+            long got = b[0] == b[4095] ? b[0] : -99;
+            if (got == k) same++;
+            if (k == 0) first = got;
+            last = got;
+        }
+        Console.WriteLine("held " + same + " " + first + " " + last);
+    }
+}
