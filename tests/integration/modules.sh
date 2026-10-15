@@ -32,6 +32,9 @@ kernel() {
     done
     "$corc" compile-project --units "$out/units.tsv" --nostdlib --obj --freestanding --ring 0 \
         --decl-index "$out/kernel.idx" --assembly Kernel 2> "$out/units.log" || { cat "$out/units.log"; fail "kernel units"; }
+    # Its own: the several-file module's units, listed before kernel b is
+    # made, are what kernel b's wrong link is handed.
+    local objects
     objects=$(cut -f2 "$out/units.tsv" | tr '\n' ' ')
     # shellcheck disable=SC2086
     "$corc" link $objects -o "$out/kernel" --exports "$out/kernel.exports" --decl-index "$out/kernel.idx" 2> "$out/link.log" \

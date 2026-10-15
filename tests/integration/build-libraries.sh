@@ -76,19 +76,22 @@ SOURCES="$("$corc" library-sources | sed "s|^$root/||" | tr '\n' ' ')"
 LIBRARIES="
 libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/unicode.cor runtime/src/core/gc.cor stdlib/src/System/GC.cor runtime/src/core/threading.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/signals.cor stdlib/src/System/Threading/interlocked.cor
 libSystem.Runtime.InteropServices.so|stdlib/src/System/interop.cor
-libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/Security/Cryptography/Hashing.cor
 libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor stdlib/src/System/Reflection/Assembly.cor
 libSystem.Runtime.Numerics.so|stdlib/src/System/numerics.cor
 libSystem.Collections.so|stdlib/src/System/Collections/Collections.cor
 libSystem.Text.RegularExpressions.so|stdlib/src/System/Text/RegularExpressions.cor
-libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/timezone.cor
+libSystem.IO.so|stdlib/src/System/IO/io.cor stdlib/src/System/IO/io-streams.cor stdlib/src/System/IO/timezone.cor stdlib/src/System/IO/watcher.cor
+libSystem.Security.Cryptography.so|stdlib/src/System/Security/Cryptography/Cryptography.cor stdlib/src/System/Security/Cryptography/Hashing.cor
 libSystem.IO.Compression.so|stdlib/src/System/IO/compression.cor
 libSystem.Formats.Tar.so|stdlib/src/System/IO/tar.cor
 libSystem.Console.so|stdlib/src/System/console.cor
 libSystem.Net.so|stdlib/src/System/Net/Net.cor
 libMono.Posix.so|stdlib/src/System/unix.cor stdlib/src/System/power.cor
 libSystem.Diagnostics.Process.so|stdlib/src/System/process.cor
+libSystem.ServiceProcess.so|stdlib/src/System/ServiceProcess/ServiceWire.cor stdlib/src/System/ServiceProcess/ServiceProcess.cor
+libSystem.Security.Cryptography.ProtectedData.so|stdlib/src/System/Security/Cryptography/ProtectedData.cor
 libSystem.Xml.so|stdlib/src/System/Xml/Xml.cor
+libSystem.Text.Json.so|stdlib/src/System/Text/Json/Json.cor
 libMicrosoft.Win32.Registry.so|stdlib/src/Microsoft/Win32/Registry.cor
 libSystem.Runtime.InteropServices.Com.so|stdlib/src/System/Runtime/InteropServices/ComInterop.cor stdlib/src/System/Runtime/InteropServices/ComNdr.cor stdlib/src/System/Runtime/InteropServices/ComRemote.cor stdlib/src/System/Runtime/InteropServices/ComOle.cor
 libMicrosoft.CSharp.so|stdlib/src/System/Dynamic/Dynamic.cor
