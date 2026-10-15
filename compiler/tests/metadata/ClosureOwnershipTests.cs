@@ -13,10 +13,14 @@ public static class ClosureOwnershipTests
         File.WriteAllText(a, "public static partial class Factory { public static Mapper First(int offset) => value => value + offset; }");
         File.WriteAllText(b, "public static partial class Factory { public static Mapper Second(int offset) => value => value - offset; }");
         SourceIndexBuilder.Write(index, new[] { a, b, mapper }, "Closures");
+        // A delegate is a class deriving from System.Delegate, the class
+        // library's: compiled against it, read from elsewhere.
+        string[] runtime = RuntimeDeclarations.Sources();
         HashSet<string> Read(string[] paths)
         {
             using IndexedDeclarations declarations = new(index, "Closures", paths);
-            var front = Frontend.Compile(paths, "closures", true, declarations: declarations) ?? throw new Exception("Closure ownership binding failed");
+            var front = Frontend.Compile(paths.Concat(runtime).ToArray(), "closures", true, libraryPaths: runtime, elsewherePaths: runtime,
+                declarations: declarations) ?? throw new Exception("Closure ownership binding failed");
             TypeSymbol[] closures = front.Bound.Types.Values.Where(type => type.Name.StartsWith("Lambda$", StringComparison.Ordinal)).Distinct().ToArray();
             if (closures.Any(type => type.Decl?.LocalOnly != true)) throw new Exception("Closure descriptor is not implementation-private");
             return closures.Select(type => type.Key).ToHashSet(StringComparer.Ordinal);
