@@ -65,7 +65,9 @@ public static partial class Linker
             Section? contract = obj.Sections.FirstOrDefault(section => section.Name == TargetContract.SectionName);
             if (contract is null || kernel.Abi is null) continue;
             byte[] mine = contract.Content(), theirs = kernel.Abi;
-            if (mine.Length != TargetContract.Size || theirs.Length != TargetContract.Size) throw new ElfFormatException(name + ": unsupported native ABI contract");
+            if (mine.Length != TargetContract.Size || theirs.Length != TargetContract.Size || !theirs.AsSpan(0, 4).SequenceEqual("CABI"u8)
+                || BinaryPrimitives.ReadUInt32LittleEndian(theirs.AsSpan(4)) != 0)
+                throw new ElfFormatException(name + ": unsupported native ABI contract");
             if (!mine.AsSpan(8, 12).SequenceEqual(theirs.AsSpan(8, 12)))
                 errors.Add(name + ": not built for the kernel's machine (" + kernel.Name + ")");
             uint tls = BinaryPrimitives.ReadUInt32LittleEndian(mine.AsSpan(20)), kernelTls = BinaryPrimitives.ReadUInt32LittleEndian(theirs.AsSpan(20));

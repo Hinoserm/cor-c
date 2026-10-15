@@ -18,16 +18,21 @@ done
 merged=1
 if [ -f "$tool" ]; then "$tool" help 2>/dev/null | grep -q 'corc build \[' || merged=0; fi
 seed() {
-    seed="$root/compiler/bin/native-seed"
+    local seed="$root/compiler/bin/native-seed"
+    echo "bootstrap: seeding the toolchain from the .NET SDK" >&2
     dotnet publish "$root/compiler/corc.csproj" -c Release -r linux-x64 \
         -p:PublishAot=true -o "$seed" --nologo -v quiet >&2
     "$seed/corc" build --file "$root/tools/build/host.build" >&2
 }
 # A toolchain that cannot read this tree's manifests (one built before a
-# change to their format) cannot rebuild itself either: seed it too.
-if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ] || [ "$have_packs" = 0 ] || [ "$merged" = 0 ]; then
+# change to their format) cannot rebuild itself either: seed it too. Asked
+# with --list, which reads the manifest and builds nothing, so a build that
+# fails for any other reason -- an error in the sources, an interrupt --
+# stops here as it would have.
+if [ ! -f "$tool" ] || [ "$(head -c 2 "$tool")" = '#!' ] || [ "$have_packs" = 0 ] || [ "$merged" = 0 ] \
+   || ! "$tool" build --file "$root/tools/build/host.build" --list >/dev/null 2>&1; then
     seed
-elif ! "$tool" build --file "$root/tools/build/host.build" >&2; then
-    seed
+else
+    "$tool" build --file "$root/tools/build/host.build" >&2
 fi
 exec "$tool" build "$@"
