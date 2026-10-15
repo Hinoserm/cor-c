@@ -3326,6 +3326,16 @@ public sealed partial class Binder
     {
         if (canonical.MembersPending) return true;
         if (_mayCollide.TryGetValue(canonical, out bool known)) return known;
+        // A CONSTRAINED PARAMETER STANDS ON ITS CONSTRAINT in the canonical
+        // copy, unmarked: `Add(T)` under `where T : Shape` reads Add(Shape)
+        // beside an Add(Circle) that Bag<Circle> makes alike. Taken as one
+        // that may, and so is one whose parameters are not known here (a
+        // declaration read from a header carries none).
+        if (canonical.Decl?.TemplateParams is not { } parameters || parameters.Any(p => p.Constraints.Count > 0))
+        {
+            _mayCollide[canonical] = true;
+            return true;
+        }
         List<MethodSymbol> methods = canonical.Methods.Where(m => m.Decl is not null).ToList();
         bool found = false;
         for (int a = 0; a < methods.Count && !found; a++)
@@ -3345,9 +3355,15 @@ public sealed partial class Binder
         return found;
     }
 
-    /// <summary>Whether a canonical copy's type is written over its template's parameters: a __canon in it anywhere.</summary>
+    /// <summary>
+    /// Whether a canonical copy's type is written over its template's
+    /// parameters: a __canon in it anywhere, its arguments' too, which the
+    /// monomorphiser moves into UseArgs (`List<T>` reads List$__canon).
+    /// </summary>
     private static bool OverTemplateParameters(TypeRef t)
-        => t.Name == Monomorphiser.CanonName || t.CanonIndex >= 0 || t.Args.Any(OverTemplateParameters);
+        => t.Name == Monomorphiser.CanonName || t.CanonIndex >= 0 || t.Args.Any(OverTemplateParameters)
+        || t.UseArgs is { } used && used.Any(OverTemplateParameters)
+        || t.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal);
 
     /// <summary>The body work is listed (CheckBodies' list, at the end of Run): a type declared from now on joins it.</summary>
     private bool _bodiesListed;
@@ -4865,16 +4881,15 @@ public sealed partial class Binder
                 {
                     if (canonical.MembersPending && canonical.Decl is { Canon: null } shared && !_declaredLater.Contains(shared))
                         canonical.EnsureMembers();
-                    // BUT ONE THAT COULD BE REFUSED is declared now, while a
-                    // refusal is still something to say: a copy whose arguments
-                    // could make two of the template's methods alike (`M(T)`
-                    // and `M(string)` as P<string>, MayCollide). After binding
-                    // the same refusal is a compiler fault (DeclareMembersNow).
-                    // And the copies made per argument that its shared code
-                    // makes, whose bodies binding must check (ForceContext).
-                    if (named.MembersPending && MayCollide(canonical)) named.EnsureMembers();
-                    foreach (TypeSymbol? made in named.CanonMadeTypes)
-                        if (made is { MembersPending: true, Decl: { Canon: null } perArgument } && !_declaredLater.Contains(perArgument)) made.EnsureMembers();
+                    // BUT ONE THAT COULD BE REFUSED, OR MAKES ANYTHING, is
+                    // declared now, while binding can still say so: a copy
+                    // whose arguments could make two of the template's methods
+                    // alike (`M(T)` and `M(string)` as P<string>, MayCollide),
+                    // and one whose shared code makes types for it, whose own
+                    // copies' bodies -- at any depth -- binding must check
+                    // (ForceContext, CheckLate). After binding either is a
+                    // compiler fault (DeclareMembersNow), not a message.
+                    if (named.MembersPending && (named.CanonMadeTypes.Count > 0 || MayCollide(canonical))) named.EnsureMembers();
                 }
                 else
                 {
