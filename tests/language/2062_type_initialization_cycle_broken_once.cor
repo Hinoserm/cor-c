@@ -1,0 +1,90 @@
+// test: type_initialization_cycle_broken_once
+// expect-exit: 0
+// expect-output:
+// cycles broken once: 8 of 8
+//
+// Two threads each start one of two types whose initialisers read each
+// other's static (C# 15.12 and .NET: a deadlock between type initialisers
+// is broken by exactly one of them, which reads the other's static still
+// zero). Here both are released at once and meet inside the initialisers
+// without sleeping, eight cycles over, so both reach the wait graph
+// together: breaking one cycle twice (both reading zero, 1 + 1) was what
+// optimizer_static_initialization_threads saw once under load. Each cycle
+// must come out as 1 and 2.
+static class Control
+{
+    public static AtomicCell[] Go = Cells();
+    public static AtomicCell[] Met = Cells();
+
+    static AtomicCell[] Cells()
+    {
+        AtomicCell[] cells = new AtomicCell[8];
+        for (int i = 0; i < cells.Length; i++) cells[i] = new AtomicCell();
+        return cells;
+    }
+
+    // Both initialisers of a cycle running before either reads the other's static.
+    public static void Meet(int pair)
+    {
+        Met[pair].Add(1);
+        while (Met[pair].Read() < 2) Thread.Yield();
+    }
+}
+static class A0 { public static int Value = Build(); static int Build() { Control.Meet(0); return 1 + B0.Value; } }
+static class B0 { public static int Value = Build(); static int Build() { Control.Meet(0); return 1 + A0.Value; } }
+static class A1 { public static int Value = Build(); static int Build() { Control.Meet(1); return 1 + B1.Value; } }
+static class B1 { public static int Value = Build(); static int Build() { Control.Meet(1); return 1 + A1.Value; } }
+static class A2 { public static int Value = Build(); static int Build() { Control.Meet(2); return 1 + B2.Value; } }
+static class B2 { public static int Value = Build(); static int Build() { Control.Meet(2); return 1 + A2.Value; } }
+static class A3 { public static int Value = Build(); static int Build() { Control.Meet(3); return 1 + B3.Value; } }
+static class B3 { public static int Value = Build(); static int Build() { Control.Meet(3); return 1 + A3.Value; } }
+static class A4 { public static int Value = Build(); static int Build() { Control.Meet(4); return 1 + B4.Value; } }
+static class B4 { public static int Value = Build(); static int Build() { Control.Meet(4); return 1 + A4.Value; } }
+static class A5 { public static int Value = Build(); static int Build() { Control.Meet(5); return 1 + B5.Value; } }
+static class B5 { public static int Value = Build(); static int Build() { Control.Meet(5); return 1 + A5.Value; } }
+static class A6 { public static int Value = Build(); static int Build() { Control.Meet(6); return 1 + B6.Value; } }
+static class B6 { public static int Value = Build(); static int Build() { Control.Meet(6); return 1 + A6.Value; } }
+static class A7 { public static int Value = Build(); static int Build() { Control.Meet(7); return 1 + B7.Value; } }
+static class B7 { public static int Value = Build(); static int Build() { Control.Meet(7); return 1 + A7.Value; } }
+class CycleReader : Action
+{
+    public int Pair;
+    public bool First;
+    public int Seen;
+
+    public void Invoke()
+    {
+        while (Control.Go[Pair].Read() == 0) Thread.Yield();
+        switch (Pair)
+        {
+            case 0: Seen = First ? A0.Value : B0.Value; break;
+            case 1: Seen = First ? A1.Value : B1.Value; break;
+            case 2: Seen = First ? A2.Value : B2.Value; break;
+            case 3: Seen = First ? A3.Value : B3.Value; break;
+            case 4: Seen = First ? A4.Value : B4.Value; break;
+            case 5: Seen = First ? A5.Value : B5.Value; break;
+            case 6: Seen = First ? A6.Value : B6.Value; break;
+            case 7: Seen = First ? A7.Value : B7.Value; break;
+        }
+    }
+}
+static class Program
+{
+    static int Main()
+    {
+        int broken = 0;
+        for (int pair = 0; pair < 8; pair++)
+        {
+            CycleReader a = new() { Pair = pair, First = true };
+            CycleReader b = new() { Pair = pair };
+            Thread ta = Thread.Start(a);
+            Thread tb = Thread.Start(b);
+            Control.Go[pair].Add(1);
+            ta.Join(); tb.Join();
+            if (a.Seen >= 1 && b.Seen >= 1 && a.Seen + b.Seen == 3) broken++;
+            else Sys.Print("cycle " + pair + ": " + a.Seen + " and " + b.Seen + "\n");
+        }
+        Sys.Print("cycles broken once: " + broken + " of 8\n");
+        return broken == 8 ? 0 : 1;
+    }
+}

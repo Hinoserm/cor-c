@@ -869,6 +869,16 @@ static class Runtime
     // No allocation is allowed in this protocol. Current thread control
     // blocks live until process exit; stack reclamation must preserve that
     // lifetime while initialization wait-graph readers can observe them.
+    // THE WAIT GRAPH, ONE WALKER AT A TIME: publishing a waiter's edge and
+    // walking the graph from the owner are one step under this word, as the
+    // CLR takes one lock for its class-constructor deadlocks. Two threads
+    // closing one cycle at the same moment each saw the other's edge, and
+    // both took the cycle for theirs to break -- each read the other's
+    // static half made (optimizer_static_initialization_threads, exit 7).
+    // Now the last to close a cycle sees it, once. Nothing in the step
+    // allocates, waits or reaches a safepoint.
+    static long _typeInitGraph;
+
     public static int EnterTypeInitialization(long state)
     {
         // THE OWNER IS THE RUNNING CODE, not always its thread block: a
@@ -889,6 +899,13 @@ static class Runtime
                 if (Sys.Cas(state, 0, self) == 0) return 1;
                 continue;
             }
+            long graph = Sys.AddressOf(ref _typeInitGraph);
+            while (Sys.Cas(graph, 0, 1) != 0) Sys.Pause();
+            if (Sys.Peek(state) != owner)
+            {
+                Sys.AtomicSwap(graph, 0);
+                continue;
+            }
             Sys.AtomicSwap(self + Tls.TypeInitWait, state);
             long peer = owner;
             bool cycle = false;
@@ -899,11 +916,9 @@ static class Runtime
                 if (waits == 0) break;
                 peer = Sys.Peek(waits);
             }
-            if (cycle)
-            {
-                Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
-                return 0;
-            }
+            if (cycle) Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
+            Sys.AtomicSwap(graph, 0);
+            if (cycle) return 0;
             // A CALL THAT CAN PARK WAITS PARKED (Platform.TypeInitWaitHook):
             // the owner may itself be parked, and resumed only where this
             // would spin. Otherwise a waiter exposes its roots before
