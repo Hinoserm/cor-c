@@ -2926,7 +2926,7 @@ public sealed partial class Binder
                 Expr = new AssignExpr
                 {
                     Target = new NameExpr { Name = field, Line = m.Line, Col = m.Col },
-                    Value = InitializerMethods.Value(m, type, Retarget(initial, type), initializerMethods),
+                    Value = InitializerMethods.Value(d, m, type, Retarget(initial, type), initializerMethods),
                     Line = m.Line, Col = m.Col,
                 },
                 Line = m.Line, Col = m.Col,
@@ -3035,7 +3035,7 @@ public sealed partial class Binder
                         Target = new ThisExpr { Line = m.Line, Col = m.Col },
                         Name = field, Line = m.Line, Col = m.Col,
                     },
-                    Value = InitializerMethods.Value(m, declared, Retarget(init, declared), initializerMethods),
+                    Value = InitializerMethods.Value(d, m, declared, Retarget(init, declared), initializerMethods),
                     Line = m.Line, Col = m.Col,
                 },
                 Line = m.Line, Col = m.Col,

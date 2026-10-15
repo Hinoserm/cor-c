@@ -3,7 +3,7 @@ namespace Corsac.Lang;
 /// <summary>Keep indexed initializer expressions in the lexical scope and source unit that owns them.</summary>
 internal static class InitializerMethods
 {
-    public static Expr Value(MemberDecl member, TypeRef returns, Expr expression, List<MethodDecl> helpers)
+    public static Expr Value(TypeDecl owner, MemberDecl member, TypeRef returns, Expr expression, List<MethodDecl> helpers)
     {
         // A CONSTANT HAS NO SCOPE TO KEEP. `items = null!`, `count = 0`: the
         // value is the same wherever it is written, so it is written in place
@@ -12,7 +12,15 @@ internal static class InitializerMethods
         // compiled in two units differed before optimisation -- a call in one,
         // the constant in the other -- and the link refused to share it
         // (DefinitionSemantics certifies the pre-optimisation form).
-        if (member.OwnedImplementation is null || IsConstant(expression)) return expression;
+        //
+        // AND A GENERIC TYPE'S IS A HELPER IN EVERY COMPILE. Its
+        // specialisations are certified and shared between units, and a whole
+        // compile -- the library object's -- wrote the value in place where a
+        // unit compiling against that library called the helper: two bodies
+        // for Comparer<string>'s StaticInitBody$, and the link refused them.
+        // A type with no type parameters has one owner; its value stays put.
+        if (IsConstant(expression)) return expression;
+        if (member.OwnedImplementation is null && owner.TypeParams.Count == 0 && !owner.Specialised) return expression;
         string name = "FieldInit$" + member.Name;
         // An instance one where a shared generic copy reads its type
         // arguments through `this` in it; the constructor has one to give.
