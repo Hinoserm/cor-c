@@ -45,4 +45,8 @@ done
 for lib in "${!library[@]}"; do refs+=(--ref "$lib"); done
 "${real[@]}" compile --nostdlib "${refs[@]}" --decl-index "$SEPARATE_INDEX" --assembly Suite \
     "${flags[@]}" "${sources[@]}" --obj -o "$out.o"
-exec "${real[@]}" link "$out.o" "$SEPARATE_LIB_OBJ" -o "$out"
+# CLOSED, as the OS links a program (corc project): the whole program is
+# these two objects, and only then does the link decide what it proves of
+# one -- owned fields, element lists, regions, what is ever made. Linked
+# open, it decided none of it, and every lifetime test freed less.
+exec "${real[@]}" link --closed "$out.o" "$SEPARATE_LIB_OBJ" -o "$out"
