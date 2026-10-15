@@ -1,0 +1,41 @@
+// test: cast_operand_keywords
+// expect-exit: 0
+// expect-output:
+// pair 0 []
+// nullable False
+// point 0,0
+// awaited 7
+//
+// What may follow a cast's ')' (C# 12.9.7): any keyword but `as` and `is`.
+// `default` after a tuple type, a nullable tuple type and an ordinary type
+// name, and `await`, were read as a bracketed group and then refused.
+
+using System;
+using System.Threading.Tasks;
+
+struct Point
+{
+    public int X, Y;
+}
+
+static class P
+{
+    static async Task<int> Seven()
+    {
+        await Task.Delay(1);
+        return 7;
+    }
+
+    static async Task<long> Widened() => (long)await Seven();
+
+    static void Main()
+    {
+        var pair = ((int, string))default;
+        Console.WriteLine("pair " + pair.Item1 + " [" + pair.Item2 + "]");
+        (int, int)? none = ((int, int)?)default;
+        Console.WriteLine("nullable " + none.HasValue);
+        Point p = (Point)default;
+        Console.WriteLine("point " + p.X + "," + p.Y);
+        Console.WriteLine("awaited " + Widened().Result);
+    }
+}

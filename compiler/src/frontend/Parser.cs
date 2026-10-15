@@ -8052,11 +8052,15 @@ public sealed class Parser
     /// <summary>
     /// Whether a token could begin the operand of a cast. Without this,
     /// <c>(a) - b</c> reads as a cast of <c>-b</c> to type <c>a</c>.
+    /// C# 12.9.7: '~', '!', '(', an identifier, a literal or a keyword other
+    /// than `as` and `is` -- so `((int, string))default`, `(Point)default`
+    /// and `(long)await t` are casts.
     /// </summary>
     private static bool CastCanFollow(Tok k)
         => k is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.InterpStr or Tok.Char
              or Tok.LParen or Tok.KwThis or Tok.KwBase or Tok.KwNew
-             or Tok.KwTrue or Tok.KwFalse or Tok.KwNull or Tok.Bang or Tok.Tilde;
+             or Tok.KwTrue or Tok.KwFalse or Tok.KwNull or Tok.Bang or Tok.Tilde
+             or Tok.KwDefault or Tok.KwAwait;
 
     /// <summary>The names that can only ever be a type, never a variable.</summary>
     private static readonly HashSet<string> Predefined = new(StringComparer.Ordinal)
