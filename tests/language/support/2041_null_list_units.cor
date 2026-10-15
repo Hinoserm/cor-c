@@ -1,0 +1,16 @@
+// The other unit of 2041_null_list_to_linq_across_units: LINQ over a List
+// parameter the caller may pass as null.
+using System.Collections.Generic;
+using System.Linq;
+
+public static class NullWalks
+{
+    public static int Odd(List<int> l)
+    {
+        int total = 0;
+        foreach (int x in l.Where(x => x % 2 != 0)) total += x;
+        return total;
+    }
+
+    public static int Above(List<int> l, int floor) => l.Count(x => x > floor);
+}

@@ -1,0 +1,20 @@
+// The other unit of 2040_keeping_list_walked_across_units: a List subclass
+// whose walk keeps the list, and a LINQ total over a List parameter.
+using System.Collections.Generic;
+using System.Linq;
+
+public class KeepingList : List<int>, IEnumerable<int>
+{
+    public static List<int>? Last;
+
+    IEnumerator<int> IEnumerable<int>.GetEnumerator()
+    {
+        Last = this;
+        return GetEnumerator();
+    }
+}
+
+public static class Totals
+{
+    public static int Of(List<int> l) => l.Sum();
+}

@@ -1,0 +1,36 @@
+// test: list_parameter_type_tests
+// expect-exit: 0
+// expect-output:
+// list list list
+// sub sub list
+// null null null
+//
+// A parameter declared as a class holds that class, one derived from it, or
+// null (Devirtualize.FoldParamClassTests): a test of the class itself or of
+// one above it is answered by the declaration once the object is there,
+// and one of a class below it is asked of the object as before. Null
+// answers false to every test, and the tests must say so.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+class SubList : List<int> { }
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Kind(List<int> l)
+    {
+        string a = l is SubList ? "sub" : l is List<int> ? "list" : "null";
+        string b = l is SubList s ? "sub" : l is IEnumerable<int> ? "list" : "null";
+        string c = l is int[] ? "array" : l is object ? "list" : "null";
+        return a + " " + b + " " + c;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Kind(new List<int>()));
+        Console.WriteLine(Kind(new SubList()));
+        Console.WriteLine(Kind(null!));
+    }
+}

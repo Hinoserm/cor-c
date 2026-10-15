@@ -1,0 +1,41 @@
+// test: keeping_list_walked_across_units
+// units: tests/language/support/2040_keeping_list_units.cor
+// expect-exit: 0
+// expect-output:
+// plain 4500 4500
+// keeping 900 True
+// kept 900
+//
+// A virtual call on a parameter declared as a class reaches that class's
+// overrides and its subclasses' (Escape.VirtualCallee's `@`): a List handed
+// to another unit's Sum is walked by the List's own GetEnumerator, which
+// keeps nothing, and the caller may free it. A subclass that re-implements
+// IEnumerable<int> and keeps itself when walked is one of those
+// subclasses: handed over the same way, it must stay whole, and so must
+// what it holds.
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static List<int> Plain(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i * 10); return l; }
+
+    static void Main()
+    {
+        int total = 0;
+        for (int k = 0; k < 10; k++) total += Totals.Of(Plain(10));
+        Console.WriteLine("plain " + total + " " + Totals.Of(Plain(10)) * 10);
+
+        KeepingList keep = new();
+        for (int i = 0; i < 10; i++) keep.Add(i * 20);
+        int walked = Totals.Of(keep);
+        Console.WriteLine("keeping " + walked + " " + ReferenceEquals(KeepingList.Last, keep));
+
+        keep = null!;
+        for (int k = 0; k < 2000; k++) Totals.Of(Plain(50));
+        GC.Collect();
+        int sum = 0;
+        foreach (int x in KeepingList.Last!) sum += x;
+        Console.WriteLine("kept " + sum);
+    }
+}

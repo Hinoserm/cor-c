@@ -1,0 +1,30 @@
+// test: null_list_to_linq_across_units
+// units: tests/language/support/2041_null_list_units.cor
+// expect-exit: 0
+// expect-output:
+// odd 9
+// odd null source
+// above 2
+// above null source
+//
+// LINQ's argument check (Enumerable.NotNull) answers the null test the
+// walk makes of its source after it: folded away on the list's side, the
+// null side must still throw what .NET throws, naming the argument --
+// the folding is of a test the check has already answered, never of the
+// check itself.
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static void Main()
+    {
+        List<int> l = new() { 1, 2, 3, 4, 5 };
+        Console.WriteLine("odd " + NullWalks.Odd(l));
+        try { NullWalks.Odd(null!); Console.WriteLine("odd no exception"); }
+        catch (ArgumentNullException e) { Console.WriteLine("odd null " + e.ParamName); }
+        Console.WriteLine("above " + NullWalks.Above(l, 3));
+        try { NullWalks.Above(null!, 3); Console.WriteLine("above no exception"); }
+        catch (ArgumentNullException e) { Console.WriteLine("above null " + e.ParamName); }
+    }
+}
