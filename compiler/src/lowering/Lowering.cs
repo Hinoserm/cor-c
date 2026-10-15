@@ -526,7 +526,7 @@ public sealed partial class Lowering
             if (t.MembersPending) continue;
             foreach (MethodSymbol m in t.Methods)
             {
-                if (m.Name == "Main" && m.Static && Emits(m) && (StartupObject is null || t.Key == StartupObject))
+                if (m.Name == "Main" && m.Static && Emits(m) && (StartupObject is null || TypeDecl.Unaside(t.Key) == StartupObject))
                 {
                     entry = m;
                 }
@@ -1765,7 +1765,8 @@ public sealed partial class Lowering
     /// and then its name, a nested type after its outer ones with `+` --
     /// `System.IO.IOException`, `Corsac.Lang.Parser+State`. The library's
     /// global types are System's, as they are to the checker
-    /// (Binder.MoveToSystem): `System.NotSupportedException`. A
+    /// (Binder.LibraryGlobal): `System.NotSupportedException`; a program's
+    /// moved aside is named as written (TypeDecl.ProgramHome). A
     /// specialisation, a tuple or a closure keeps the name it was made with.
     /// Type.Name is the part after the last `.` or `+` (String.TypeName).
     /// </summary>
@@ -1784,9 +1785,10 @@ public sealed partial class Lowering
         {
             string bare = template.Contains('.') ? template[(template.LastIndexOf('.') + 1)..] : template;
             string home = made.Namespace.Length > 0 ? made.Namespace : SystemType(t) ? LibraryHome(bare) : "";
-            string within = made.Outer is { Length: > 0 } o && !(home.Length > 0 && (o == home || o.StartsWith(home + ".", StringComparison.Ordinal)))
+            string? madeOuter = made.Outer is null ? null : made.Outer == TypeDecl.ProgramHome ? null : TypeDecl.Unaside(made.Outer);
+            string within = madeOuter is { Length: > 0 } o && !(home.Length > 0 && (o == home || o.StartsWith(home + ".", StringComparison.Ordinal)))
                 ? o.Replace('.', '+') + "+" : "";
-            if (home.Length > 0 && made.Outer is { Length: > 0 } inside && inside.StartsWith(home + ".", StringComparison.Ordinal))
+            if (home.Length > 0 && madeOuter is { Length: > 0 } inside && inside.StartsWith(home + ".", StringComparison.Ordinal))
                 within = inside[(home.Length + 1)..].Replace('.', '+') + "+";
             string head = (home.Length > 0 ? home + "." : "") + within + bare + "`" + t.TemplateArgTypes.Count;
             return head + "[" + string.Join(",", t.TemplateArgTypes.Select(a => "[" + QualifiedName(a) + "]")) + "]";
@@ -1802,8 +1804,10 @@ public sealed partial class Lowering
         // every other unit, reading it from the index, plain X: List<X> was
         // two certificates, and the link refused the shared instance.
         string space = d.Namespace.Length > 0 ? d.Namespace : SystemType(t) ? LibraryHome(t.Name) : "";
-        // The outer types: the declaration's path less its namespace.
-        string outer = d.Outer ?? "";
+        // The outer types: the declaration's path less its namespace, and less
+        // the program's home, which no name shows (TypeDecl.ProgramHome).
+        string outer = TypeDecl.Unaside(d.Outer ?? "");
+        if (outer == TypeDecl.ProgramHome) outer = "";
         if (space.Length > 0 && (outer == space || outer.StartsWith(space + ".", StringComparison.Ordinal)))
         {
             outer = outer.Length == space.Length ? "" : outer[(space.Length + 1)..];
@@ -1884,7 +1888,7 @@ public sealed partial class Lowering
             "nint" => "System.IntPtr", "nuint" => "System.UIntPtr", "float" => "System.Single",
             "double" => "System.Double", "char" => "System.Char", "string" => "System.String",
             "object" => "System.Object",
-            _ => key,
+            _ => TypeDecl.Unaside(key),
         };
     }
 

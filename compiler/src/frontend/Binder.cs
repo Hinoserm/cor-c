@@ -224,48 +224,50 @@ public sealed partial class Binder
     /// and cannot be confused with a different `Inner` written somewhere else.
     /// </summary>
     /// <summary>
-    /// Where the library's global types live when a program's type takes
-    /// one's name: .NET's namespace for them (MoveToSystem).
+    /// The namespace .NET keeps the class library's global types in: `System.X`
+    /// written for one of them is the library's X, whatever the program's
+    /// own types are called.
     /// </summary>
     private const string LibraryHome = "System";
 
-    /// <summary>The keys of library types moved into System: old key to new.</summary>
-    private readonly Dictionary<string, string> _movedToSystem = new(StringComparer.Ordinal);
+    /// <summary>The keys of the program's types moved aside: old key to new (MoveAside).</summary>
+    private readonly Dictionary<string, string> _movedAside = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// A library type the program has taken the name of, moved into System
-    /// with every library type nested in it -- declared under its new key,
-    /// and the old key left to the program's.
+    /// A program's type that took a class-library type's name, moved aside
+    /// under TypeDecl.ProgramHome with every program type nested in it --
+    /// declared under its new key, the old key left to the library's, which
+    /// keeps it in every compile (Monomorphiser.MoveAside moves the most, before
+    /// binding; this, what binding meets still).
     /// </summary>
-    private void MoveToSystem(TypeDecl library)
+    private void MoveAside(TypeDecl program)
     {
-        string before = TypeKey(library);
-        library.MovedToSystem = true;
-        library.Outer = library.Outer is null ? LibraryHome : LibraryHome + "." + library.Outer;
-        if (library.Namespace.Length == 0) library.Namespace = LibraryHome;
-        string after = TypeKey(library);
-        _movedToSystem[before] = after;
+        string before = TypeKey(program);
+        program.MovedAside = true;
+        _movedAnyAside = true;
+        program.Outer = program.Outer is null ? TypeDecl.ProgramHome : TypeDecl.ProgramHome + "." + program.Outer;
+        string after = TypeKey(program);
+        _movedAside[before] = after;
 
-        if (_r.Types.TryGetValue(before, out TypeSymbol? held) && ReferenceEquals(held.Decl, library))
+        if (_r.Types.TryGetValue(before, out TypeSymbol? held) && ReferenceEquals(held.Decl, program))
         {
             _r.Types.Remove(before);
+            TypeSymbol moved = new() { Name = program.Name, Key = after, Kind = program.Kind, Decl = program };
+            if (program.TypeParams.Count > 0) AddNames(moved.WritableTypeParamNames, program.TypeParams);
+            _r.Types[after] = moved;
         }
-        TypeSymbol moved = new() { Name = library.Name, Key = after, Kind = library.Kind, Decl = library };
-        if (library.TypeParams.Count > 0) AddNames(moved.WritableTypeParamNames, library.TypeParams);
-        _r.Types[after] = moved;
 
         // Its nested types declared already go with it; the rest are moved as
         // they are met (MovedPath).
         foreach (string nested in _r.Types.Keys.Where(k => k.StartsWith(before + ".", StringComparison.Ordinal)).ToList())
         {
             TypeSymbol inner = _r.Types[nested];
-            if (inner.Decl is not { FromLibrary: true } innerDecl || innerDecl.Outer is null)
+            if (inner.Decl is not { FromLibrary: false } innerDecl || innerDecl.Outer is null)
             {
                 continue;
             }
             _r.Types.Remove(nested);
             innerDecl.Outer = MovedPath(innerDecl.Outer) ?? innerDecl.Outer;
-            if (innerDecl.Namespace.Length == 0) innerDecl.Namespace = LibraryHome;
             TypeSymbol movedInner = new() { Name = innerDecl.Name, Key = TypeKey(innerDecl), Kind = innerDecl.Kind, Decl = innerDecl };
             if (innerDecl.TypeParams.Count > 0) AddNames(movedInner.WritableTypeParamNames, innerDecl.TypeParams);
             _r.Types[movedInner.Key] = movedInner;
@@ -274,17 +276,34 @@ public sealed partial class Binder
 
     /// <summary>
     /// How the checker names a library type it makes something of -- `^1` is
-    /// System.Index, `a..b` System.Range -- whatever a program calls its own:
-    /// the moved key when the program has taken the name (MoveToSystem).
+    /// System.Index, `a..b` System.Range: under a home no program can write
+    /// (two underscores are the compiler's), which only ever means the
+    /// library's global type -- never the program's of that name, and never a
+    /// namespace, as `System.Runtime` in `System.Runtime.InteropServices` is.
     /// </summary>
-    private string LibraryType(string name)
-        => _r.Types.TryGetValue(LibraryHome + "." + name, out TypeSymbol? moved) && moved.Decl is { MovedToSystem: true }
-            ? LibraryHome + "." + name : name;
+    private static string LibraryType(string name) => LibrarySpelling + "." + name;
 
-    /// <summary>A path inside a type moved into System, rewritten to its new place; null if it is not.</summary>
+    private const string LibrarySpelling = "__library";
+
+    /// <summary>
+    /// `System.X`, however deep the qualifier, as the library's global X (a
+    /// global type of no namespace or System's); false where there is none.
+    /// </summary>
+    private bool LibraryGlobal(string name, out TypeSymbol? sym)
+    {
+        string bare = name[(name.LastIndexOf('.') + 1)..];
+        sym = _r.Types.TryGetValue(bare, out TypeSymbol? global) && global.Decl is { Outer: null } d
+              && (d.Namespace.Length == 0 || d.Namespace == LibraryHome) ? global : null;
+        return sym is not null;
+    }
+
+    /// <summary>Whether any program type of this unit has been moved aside: the program's rule in FindType asks only then.</summary>
+    private bool _movedAnyAside;
+
+    /// <summary>A path inside a program type moved aside, rewritten to its new place; null if it is not.</summary>
     private string? MovedPath(string path)
     {
-        foreach ((string before, string after) in _movedToSystem)
+        foreach ((string before, string after) in _movedAside)
         {
             if (path == before)
             {
@@ -370,6 +389,8 @@ public sealed partial class Binder
 
     private bool FindType(string name, out TypeSymbol? sym)
     {
+        // The checker's own name for one of the library's types (LibraryType).
+        if (name.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal)) return LibraryGlobal(name, out sym);
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
         FileScope? file = _member?.Scope ?? written?.Scope;
@@ -382,24 +403,6 @@ public sealed partial class Binder
         if (written is { Specialised: true, TemplateArgs.Count: > 0 } specialised && !name.Contains('.')
             && NamesTemplateArg(specialised, name) && TypeCandidate(name, out sym) && sym is not null)
         {
-            return true;
-        }
-
-        // THE LIBRARY'S GLOBAL CODE FINDS ITS OWN TYPE FIRST where a program's
-        // took the name and the library's was moved into System (MoveToSystem)
-        // -- judged by the declaration, which keeps the move after the pass
-        // that made it. Not in a specialisation, whose arguments were written
-        // where it was used.
-        // By its two parts where the name is simple (TryGetWithin): asked for
-        // every type name the library's global code mentions, the key spelt
-        // to be looked up was the binder's largest run of strings.
-        if (written is { FromLibrary: true, Specialised: false } && within.Length == 0
-            && (name.IndexOf('.') < 0 ? _r.Types.TryGetWithin(LibraryHome, name, out TypeSymbol? moved)
-                : _r.Types.TryGetValue(LibraryHome + "." + name, out moved))
-            && moved!.Decl is { MovedToSystem: true })
-        {
-            if (!BindingElsewhere && !_namingOnly) moved.Used = true;
-            sym = moved;
             return true;
         }
 
@@ -450,6 +453,19 @@ public sealed partial class Binder
         // -- name one another.
         bool libraryOwn = written is { FromLibrary: true, Specialised: false } && _member is not { LocalCopy: true }
                           && IsClassLibrary(written);
+        // THE PROGRAM'S OWN TYPE where it took a library type's name and was
+        // moved aside (MoveAside), judged by the declaration, which keeps the
+        // move after the pass that made it: found by the program's code, never
+        // by the library's. By its two parts (TryGetWithin): a key spelt only
+        // to be looked up for every name a body mentions is the binder's
+        // largest run of strings.
+        if (_movedAnyAside && written is not { FromLibrary: true } && name.IndexOf('.') < 0
+            && _r.Types.TryGetWithin(TypeDecl.ProgramHome, name, out TypeSymbol? mine) && mine.Decl is { MovedAside: true })
+        {
+            if (!BindingElsewhere && !_namingOnly) mine.Used = true;
+            sym = mine;
+            return true;
+        }
         if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { } candidate && IsProgramSource(candidate)))
         {
             return true;
@@ -2127,11 +2143,11 @@ public sealed partial class Binder
         // other in any order, then fill in members, then check bodies.
         foreach (TypeDecl d in unit.Types)
         {
-            // A LIBRARY TYPE NESTED IN ONE MOVED TO SYSTEM moves with it.
-            if (d.FromLibrary && d.Outer is not null && MovedPath(d.Outer) is string movedOuter)
+            if (d.MovedAside) _movedAnyAside = true;
+            // A PROGRAM TYPE NESTED IN ONE MOVED ASIDE moves with it.
+            if (!d.FromLibrary && d.Outer is not null && MovedPath(d.Outer) is string movedOuter)
             {
                 d.Outer = movedOuter;
-                if (d.Namespace.Length == 0) d.Namespace = LibraryHome;
             }
 
             // A TEMPLATE IS KEYED BY ITS NAME AND ARITY, never by its name
@@ -2182,25 +2198,29 @@ public sealed partial class Binder
                 // one for every unqualified mention IT makes, and the library's
                 // own code, which is in System, still gets System.Index.
                 //
-                // The library's global types are System's here, so the
-                // library's declaration is MOVED into System (MoveToSystem):
-                // it keeps its members, its bodies and its code under
-                // System.Index, and the library's code finds it there first
-                // (FindType). Dropping it, as this once did, bound every use
-                // the library itself made -- Range's, the indexers' -- to the
-                // program's class, and the library no longer compiled.
-                if (already.Decl is { FromLibrary: true } library && !d.FromLibrary)
+                // The program's declaration is MOVED ASIDE (MoveAside): the
+                // library's keeps its key in every compile, so a unit compiled
+                // against the library's declarations and the library's own
+                // object agree on every name and layout; the program's code
+                // finds its own first (FindType). Moving the library's, as this
+                // once did, gave a unit names for it the library's object did
+                // not define and a layout of the program's under the library's.
+                if (already.Decl is { FromLibrary: true } && !d.FromLibrary)
                 {
-                    MoveToSystem(library);
-                    TypeSymbol mine = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
+                    MoveAside(d);
+                    string aside = TypeKey(d);
+                    TypeSymbol mine = new() { Name = d.Name, Key = aside, Kind = d.Kind, Decl = d };
                     if (d.TypeParams.Count > 0) AddNames(mine.WritableTypeParamNames, d.TypeParams);
-                    RegisterType(key, mine);
+                    RegisterType(aside, mine);
                     continue;
                 }
 
-                if (d.FromLibrary && already.Decl?.FromLibrary == false)
+                if (d.FromLibrary && already.Decl is { FromLibrary: false } program)
                 {
-                    MoveToSystem(d);
+                    MoveAside(program);
+                    TypeSymbol theirs = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
+                    if (d.TypeParams.Count > 0) AddNames(theirs.WritableTypeParamNames, d.TypeParams);
+                    RegisterType(key, theirs);
                     continue;
                 }
 
@@ -3610,9 +3630,8 @@ public sealed partial class Binder
             return false;
         }
         string bare = b.Name[(dot + 1)..];
-        if (b.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal) && b.Name.IndexOf('.', LibraryHome.Length + 1) >= 0
-            && TypeCandidate(b.Args.Count > 0 ? Arity(LibraryHome + "." + bare, b.Args.Count) : LibraryHome + "." + bare, out based)
-            && based is not null)
+        if (b.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal)
+            && LibraryGlobal(b.Args.Count > 0 ? Arity(b.Name, b.Args.Count) : b.Name, out based))
         {
             return true;
         }
@@ -5166,29 +5185,17 @@ public sealed partial class Binder
         // this is where they get walked instead of trimmed.
         string bare = r.Name.Contains('.') ? r.Name[(r.Name.LastIndexOf('.') + 1)..] : r.Name;
 
-        // A NAME QUALIFIED BY A SYSTEM NAMESPACE is the library's, where a
-        // program has taken its simple name (MoveToSystem): `System.Index`
-        // beside a `class Index` of the program's.
-        if (r.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal) && r.Name.IndexOf('.', LibraryHome.Length + 1) >= 0
-            && TypeCandidate(r.Args.Count > 0 ? Arity(LibraryHome + "." + bare, r.Args.Count) : LibraryHome + "." + bare, out TypeSymbol? system)
-            && system is not null)
-        {
-            return NamedType(system, ResolveAll(r.Args, context), null);
-        }
-
         // `System.X` FOR ONE OF THE LIBRARY'S GLOBAL TYPES, which are System's:
-        // the library's, whatever the program's own namespace calls X. A
-        // program may declare a `Delegate` of its own beside its delegates,
-        // and `System.Delegate` -- which the multicast class the parser writes
-        // for each of them names (Parser.Multicast) -- is still the runtime's.
+        // the library's, whatever the program calls X. A program may declare
+        // a `Delegate` or an `Index` of its own, and `System.Delegate` -- which
+        // the multicast class the parser writes for each delegate names
+        // (Parser.Multicast) -- and `System.Index` are still the library's.
         // Read by its last part from where it was written, it was the
         // program's.
-        if (r.Name == LibraryHome + "." + bare
-            && _r.Types.TryGetValue(r.Args.Count > 0 ? Arity(bare, r.Args.Count) : bare, out TypeSymbol? systemGlobal)
-            && systemGlobal.Decl is { } systemDecl && systemDecl.Outer is null
-            && (systemDecl.Namespace.Length == 0 || systemDecl.Namespace == LibraryHome))
+        if ((r.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal) || r.Name.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal))
+            && LibraryGlobal(r.Args.Count > 0 ? Arity(r.Name, r.Args.Count) : r.Name, out TypeSymbol? systemGlobal))
         {
-            return NamedType(systemGlobal, ResolveAll(r.Args, context), null);
+            return NamedType(systemGlobal!, ResolveAll(r.Args, context), null);
         }
 
         // AN OPEN TEMPLATE APPLICATION -- `List<T>` where T is a method's own
@@ -7278,7 +7285,7 @@ public sealed partial class Binder
     {
         CallExpr call = new()
         {
-            Target = new MemberExpr { Target = Qualified(op.Owner.Key, value), Name = op.Name, Line = value.Line, Col = value.Col, File = value.File },
+            Target = new MemberExpr { Target = Qualified(op.Owner, value), Name = op.Name, Line = value.Line, Col = value.Col, File = value.File },
             Line = value.Line, Col = value.Col, File = value.File,
         };
         call.Args.Add(value);
@@ -8878,11 +8885,6 @@ public sealed partial class Binder
     /// </summary>
     private TypeSymbol? DelegateRoot()
     {
-        if (_r.Types.TryGetValue(LibraryHome + ".Delegate", out TypeSymbol? moved)
-            && moved.Decl is { MovedToSystem: true } && moved.Kind == TypeKind.Interface)
-        {
-            return moved;
-        }
         return _r.Types.TryGetValue("Delegate", out TypeSymbol? plain)
                && plain.Kind == TypeKind.Interface && plain.Decl is { IsDelegate: false } ? plain : null;
     }
@@ -14638,7 +14640,7 @@ public sealed partial class Binder
                 {
                     CallExpr call = new()
                     {
-                        Target = new MemberExpr { Target = Qualified(castOp.Owner.Key, cast), Name = castOp.Name, Line = cast.Line, Col = cast.Col, File = cast.File },
+                        Target = new MemberExpr { Target = Qualified(castOp.Owner, cast), Name = castOp.Name, Line = cast.Line, Col = cast.Col, File = cast.File },
                         Line = cast.Line, Col = cast.Col, File = cast.File,
                     };
                     call.Args.Add(cast.Operand);
@@ -20261,7 +20263,7 @@ public sealed partial class Binder
         // happened to be; a program's own struct is anywhere.
         CallExpr call = new()
         {
-            Target = new MemberExpr { Target = Qualified(found.Owner.Key, b), Name = name, Line = b.Line, Col = b.Col },
+            Target = new MemberExpr { Target = Qualified(found.Owner, b), Name = name, Line = b.Line, Col = b.Col },
             Line = b.Line, Col = b.Col,
         };
         call.Args.Add(b.Left);
@@ -20287,7 +20289,7 @@ public sealed partial class Binder
 
         CallExpr call = new()
         {
-            Target = new MemberExpr { Target = Qualified(op.Owner.Key, b), Name = name, Line = b.Line, Col = b.Col },
+            Target = new MemberExpr { Target = Qualified(op.Owner, b), Name = name, Line = b.Line, Col = b.Col },
             Line = b.Line, Col = b.Col,
         };
         call.Args.Add(Value(1, leftMay));
@@ -20354,7 +20356,7 @@ public sealed partial class Binder
         {
             CallExpr call = new()
             {
-                Target = new MemberExpr { Target = Qualified(found.Owner.Key, u), Name = name, Line = u.Line, Col = u.Col },
+                Target = new MemberExpr { Target = Qualified(found.Owner, u), Name = name, Line = u.Line, Col = u.Col },
                 Line = u.Line, Col = u.Col,
             };
             call.Args.Add(on);
@@ -20405,9 +20407,21 @@ public sealed partial class Binder
         return CheckExpr(made);
     }
 
-    /// <summary>A dotted type name as the member chain a program would write for it.</summary>
-    private static Expr Qualified(string dotted, Node at)
+    /// <summary>
+    /// A type as the member chain a program would write for it -- read back
+    /// from wherever the rewrite stands, so spelled to mean this type there:
+    /// one of the library's global types by the checker's own name for it
+    /// (LibraryType), which a program's type of that name cannot take; a
+    /// program's type moved aside by its one name, its home being no
+    /// namespace a chain could start from (TypeDecl.ProgramHome).
+    /// </summary>
+    private static Expr Qualified(TypeSymbol owner, Node at)
     {
+        string dotted = owner.Key;
+        if (dotted.StartsWith(TypeDecl.ProgramHome + ".", StringComparison.Ordinal))
+            return new NameExpr { Name = dotted, Line = at.Line, Col = at.Col };
+        if (dotted.IndexOf('.') < 0 && owner.Decl is { FromLibrary: true, Outer: null })
+            return new NameExpr { Name = LibraryType(dotted), Line = at.Line, Col = at.Col };
         string[] parts = dotted.Split('.');
         Expr chain = new NameExpr { Name = parts[0], Line = at.Line, Col = at.Col };
         for (int i = 1; i < parts.Length; i++)

@@ -390,11 +390,6 @@ public sealed class Monomorphiser
         // was written in -- the same walk the checker makes, and it has to be
         // the same or a type argument is mangled under one name and looked for
         // under another.
-        // The library's global code finds its own moved type first (MoveToSystem).
-        if (_libraryCode && _inNamespace.Length == 0 && _movedToSystem.ContainsKey(name))
-        {
-            return _movedToSystem[name];
-        }
         foreach (string from in new[] { _scope, _inNamespace })
         {
             for (string at = from; at.Length > 0; )
@@ -412,6 +407,14 @@ public sealed class Monomorphiser
                 int cut = at.LastIndexOf('.');
                 at = cut < 0 ? "" : at[..cut];
             }
+        }
+
+        // THE PROGRAM'S OWN TYPE where it took a library type's name and was
+        // moved aside (MoveAside): the program's code finds it; the library's
+        // code, and every copy spelled in it, the library's.
+        if (!_libraryCode && _movedAside.TryGetValue(name, out string? mine))
+        {
+            return mine;
         }
 
         if (_paths.Contains(name))
@@ -567,64 +570,47 @@ public sealed class Monomorphiser
         // of type arguments. The CLR does exactly this and calls them Func`2
         // and Func`3; the backtick is the only part not worth copying.
         // A PROGRAM'S TYPE AND THE LIBRARY'S OF ONE NAME, generic or not: the
-        // program's is the name's in the program, and the library's moves into
-        // System (MoveToSystem), where the library's code finds it first
-        // (Path, GenericPath) -- so that `IEquatable<Index>` written in the
-        // library's Index is IEquatable<System.Index>, a specialisation of its
-        // own, and never the program's. Moved here, before any path is known,
-        // so that every path is its moved one.
-        HashSet<string> programs = new(unit.Types.Where(t => !t.FromLibrary && t.Outer is null)
+        // library's keeps its name, in every compile -- a unit compiled
+        // against the library's declarations then calls, lays out and shares
+        // what the library's object defines -- and the program's moves aside
+        // (MoveAside), where the program's own code finds it first (Path,
+        // GenericPath) and the library's never does: `IEquatable<Index>`
+        // written in the library's Index is its own Index's. Moved here,
+        // before any path is known, so that every path is its moved one; and
+        // remembered from the declarations each round, which a round's own
+        // monomorphiser does not outlive.
+        HashSet<string> libraries = new(unit.Types.Where(t => t.FromLibrary && t.Outer is null && t.Namespace.Length == 0)
             .Select(t => Arity(t.Name, t.TypeParams.Count)), StringComparer.Ordinal);
-        // Never the prelude's: its Math is the intrinsic half of the library's
-        // Math, not a library type a program's could shadow (Binder's
-        // "EXTENDING A PRELUDE TYPE"). A unit bound from the declaration index
-        // has the library's Math as an imported header, which is not marked as
-        // the library's, and moving the prelude's aside for it put the
-        // intrinsics at System.Math -- where library code looks first -- so
-        // Math.Min(a, b) on two ints found only Min(double, double).
-        foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is null && t.Namespace.Length == 0
-                                                     && t.File != "<prelude>").ToList())
+        foreach (TypeDecl t in unit.Types.Where(t => !t.FromLibrary && !t.MovedAside && t.Outer is null && t.Namespace.Length == 0).ToList())
         {
-            if (programs.Contains(Arity(t.Name, t.TypeParams.Count))) MoveToSystem(t);
+            if (libraries.Contains(Arity(t.Name, t.TypeParams.Count))) MoveAside(t);
         }
-        if (_movedToSystem.Count > 0)
+        foreach (TypeDecl t in unit.Types)
         {
-            foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is not null))
+            if (t.MovedAside && t.Outer == TypeDecl.ProgramHome) _movedAside.TryAdd(t.Name, TypeDecl.ProgramHome + "." + t.Name);
+        }
+        if (_movedAside.Count > 0)
+        {
+            foreach (TypeDecl t in unit.Types.Where(t => !t.FromLibrary && t.Outer is not null))
             {
-                if (MovedPath(t.Outer!) is not string outer) continue;
-                t.Outer = outer;
-                if (t.Namespace.Length == 0) t.Namespace = "System";
+                if (MovedPath(t.Outer!) is string outer) t.Outer = outer;
             }
         }
 
         foreach (TypeDecl t in unit.Types.Where(t => t.TypeParams.Count > 0))
         {
             string key = Arity(TemplatePath(t), t.TypeParams.Count);
-            // A PROGRAM'S TEMPLATE AND THE LIBRARY'S OF ONE NAME: the program's
-            // is the name's in the program, and the library's moves into
-            // System, where the library's own code finds it first (GenericPath;
-            // Binder.MoveToSystem is the same for a type that is not generic).
+            // A PROGRAM'S TEMPLATE AND THE LIBRARY'S OF ONE NAME, met here
+            // still (one nested alike in both): the library's keeps the name
+            // and the program's moves aside, as above.
             if (_generic.TryGetValue(key, out TypeDecl? other) && other.FromLibrary != t.FromLibrary)
             {
-                TypeDecl library = other.FromLibrary ? other : t;
-                _generic[key] = other.FromLibrary ? t : other;
-                MoveToSystem(library);
+                TypeDecl program = other.FromLibrary ? t : other;
+                _generic[key] = other.FromLibrary ? other : t;
+                MoveAside(program);
                 continue;
             }
             _generic[key] = t;
-        }
-        // Templates nested in one moved go with it.
-        if (_movedToSystem.Count > 0)
-        {
-            foreach (TypeDecl t in unit.Types.Where(t => t.FromLibrary && t.Outer is not null && t.TypeParams.Count > 0).ToList())
-            {
-                if (MovedPath(t.Outer!) is not string moved) continue;
-                string was = Arity(TemplatePath(t), t.TypeParams.Count);
-                if (_generic.TryGetValue(was, out TypeDecl? held) && ReferenceEquals(held, t)) _generic.Remove(was);
-                t.Outer = moved;
-                if (t.Namespace.Length == 0) t.Namespace = "System";
-                _generic[Arity(TemplatePath(t), t.TypeParams.Count)] = t;
-            }
         }
 
         // Which simple names are declared twice, for ImportedLater.
@@ -862,7 +848,7 @@ public sealed class Monomorphiser
                 List<TypeRef> args = job.Args;
                 string name = job.Name;
                 // Where its names were read from, as they were read: a later
-                // round may move the template itself (MoveToSystem).
+                // round may move the template itself (MoveAside).
                 // And its members as they are now: binding adds to a template's
                 // own list (Binder.Initialisers, an implied constructor), and
                 // a copy is made of the list this rewrite read, as any copy
@@ -1631,25 +1617,25 @@ public sealed class Monomorphiser
         }
     }
 
-    /// <summary>Paths of library templates moved into System: old path to new.</summary>
-    private readonly Dictionary<string, string> _movedToSystem = new(StringComparer.Ordinal);
+    /// <summary>Paths of the program's types moved aside: old path to new (MoveAside).</summary>
+    private readonly Dictionary<string, string> _movedAside = new(StringComparer.Ordinal);
 
     /// <summary>Whether the declaration being rewritten is the library's.</summary>
     private bool _libraryCode;
 
-    private void MoveToSystem(TypeDecl library)
+    /// <summary>A program's type that took a library type's name, moved aside under TypeDecl.ProgramHome.</summary>
+    private void MoveAside(TypeDecl program)
     {
-        string before = TemplatePath(library);
-        library.MovedToSystem = true;
-        library.Outer = library.Outer is null ? "System" : "System." + library.Outer;
-        if (library.Namespace.Length == 0) library.Namespace = "System";
-        _movedToSystem[before] = TemplatePath(library);
-        if (library.TypeParams.Count > 0) _generic[Arity(TemplatePath(library), library.TypeParams.Count)] = library;
+        string before = TemplatePath(program);
+        program.MovedAside = true;
+        program.Outer = program.Outer is null ? TypeDecl.ProgramHome : TypeDecl.ProgramHome + "." + program.Outer;
+        _movedAside[before] = TemplatePath(program);
+        if (program.TypeParams.Count > 0) _generic[Arity(TemplatePath(program), program.TypeParams.Count)] = program;
     }
 
     private string? MovedPath(string path)
     {
-        foreach ((string before, string after) in _movedToSystem)
+        foreach ((string before, string after) in _movedAside)
         {
             if (path == before) return after;
             if (path.StartsWith(before + ".", StringComparison.Ordinal)) return after + path.Substring(before.Length);
@@ -1718,12 +1704,6 @@ public sealed class Monomorphiser
             }
             return found;
         }
-        // THE LIBRARY'S GLOBAL CODE IS SYSTEM'S, once a template of its has
-        // been moved there for a program's of the same name.
-        if (_libraryCode && _inNamespace.Length == 0 && _movedToSystem.ContainsKey(name) && Candidate(_movedToSystem[name]))
-        {
-            return _movedToSystem[name];
-        }
         foreach (string from in new[] { _scope, _inNamespace })
             for (string scope = from; scope.Length > 0; )
             {
@@ -1731,6 +1711,8 @@ public sealed class Monomorphiser
                 if (Imports(scope) is { } imported) return imported;
                 scope = Parent(scope);
             }
+        // The program's own template where it took a library one's name (MoveAside).
+        if (!_libraryCode && _movedAside.TryGetValue(name, out string? mine) && Candidate(mine)) return mine;
         if (Candidate(name)) return name;
         if (Imports("") is { } global) return global;
 
@@ -1740,12 +1722,12 @@ public sealed class Monomorphiser
         // namespaces are not a tree here and the qualifier has nothing to
         // select between.
         int cut = name.LastIndexOf('.');
-        // Qualified by a System namespace: the library's, where a program has
-        // taken the simple name (MoveToSystem).
+        // Qualified by a System namespace: the library's, which keeps its
+        // name whatever the program took (MoveAside).
         if (cut >= 0 && name.StartsWith("System.", StringComparison.Ordinal)
-            && _generic.ContainsKey(Arity("System." + name[(cut + 1)..], arity)))
+            && _generic.TryGetValue(Arity(name[(cut + 1)..], arity), out TypeDecl? system) && system.FromLibrary)
         {
-            return "System." + name[(cut + 1)..];
+            return name[(cut + 1)..];
         }
         return cut < 0 ? null : GenericPath(name[(cut + 1)..], arity, location);
     }
@@ -2364,7 +2346,7 @@ public sealed class Monomorphiser
             IsDelegate = d.IsDelegate,
             InitialisersPlaced = d.InitialisersPlaced,
             FromLibrary = d.FromLibrary,
-            MovedToSystem = d.MovedToSystem,
+            MovedAside = d.MovedAside,
             External = d.External && d.TypeParams.Count == 0,
 
             // A SPECIALISATION IS COMPILED WHERE IT IS ASKED FOR, for the

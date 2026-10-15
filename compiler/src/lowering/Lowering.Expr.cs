@@ -1194,7 +1194,7 @@ public sealed partial class Lowering
         Prim.Any => "System.Object",
         Prim.NInt => "System.IntPtr", Prim.NUInt => "System.UIntPtr",
         Prim.Void => "System.Void",
-        _ => t.Symbol?.Key ?? t.ToString(),
+        _ => t.Symbol is { } named ? TypeDecl.Unaside(named.Key) : t.ToString(),
     };
 
     /// <summary>`x?.Member`: the member when x is something, and null when it is not.</summary>

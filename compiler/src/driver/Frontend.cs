@@ -841,8 +841,12 @@ public static class Frontend
                 continue;
             }
 
+            // Never a program's part into the library's type, or the
+            // library's into the program's: the program's is its own, moved
+            // aside (TypeDecl.MovedAside), however it is declared.
             bool compatible = into.Mods.HasFlag(Lang.Mods.Partial)
                 && part.Mods.HasFlag(Lang.Mods.Partial)
+                && into.FromLibrary == part.FromLibrary
                 && into.Kind == part.Kind
                 && into.TypeParams.Count == part.TypeParams.Count
                 && into.TypeParams.Zip(part.TypeParams)

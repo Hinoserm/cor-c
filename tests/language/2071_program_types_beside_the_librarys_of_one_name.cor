@@ -1,0 +1,46 @@
+// test: program_types_beside_the_librarys_of_one_name
+// expect-exit: 0
+// expect-output:
+// Path a/b 2
+// Path Path[]
+// mine 3 theirs 2
+// List`1 List`1
+//
+// A PROGRAM'S TYPE OF A CLASS-LIBRARY TYPE'S NAME is the program's in its own
+// code, and the library's stays the library's: `Path` is this program's
+// record, `System.IO.Path.Combine` the library's, and each is named at run
+// time as it was written -- typeof(Path).FullName is Path, an array of them
+// Path[]. A program's own List<T> beside the library's, each used: the
+// program's where it says List<int>, the library's where it says
+// System.Collections.Generic.List<int>. Compiled as a unit against the
+// library's declarations, the library's types keep the names the library's
+// object gave them (the program's are the ones set aside).
+
+using System;
+
+readonly record struct Path(string Where, int Depth);
+
+class List<T>
+{
+    private T[] items = new T[4];
+    private int count;
+    public void Add(T item) { items[count] = item; count++; }
+    public int Count => count + 1;
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Path p = new Path(System.IO.Path.Combine("a", "b"), 2);
+        Console.WriteLine(typeof(Path).Name + " " + p.Where + " " + p.Depth);
+        Path[] many = new Path[1];
+        Console.WriteLine(typeof(Path).FullName + " " + many.GetType().Name);
+        List<int> mine = new List<int>();
+        mine.Add(1); mine.Add(2);
+        System.Collections.Generic.List<int> theirs = new System.Collections.Generic.List<int>();
+        theirs.Add(1); theirs.Add(2);
+        Console.WriteLine("mine " + mine.Count + " theirs " + theirs.Count);
+        Console.WriteLine(mine.GetType().Name + " " + theirs.GetType().Name);
+    }
+}

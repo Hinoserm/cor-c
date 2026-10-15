@@ -256,22 +256,35 @@ public sealed class TypeDecl : Node
     /// .NET puts its own List and Stack in System.Collections.Generic, so a
     /// program that declares a Stack of its own in the global namespace gets
     /// its own -- the one it wrote wins over the one it merely referenced --
-    /// in its own code, while the library's code keeps the library's. The
-    /// library's global types are System's here: one whose name a program's
-    /// takes is moved into System (Binder.MoveToSystem, and the monomorphiser
-    /// for a template), and the library's code looks there first. A source
+    /// in its own code, while the library's code keeps the library's: the
+    /// program's is moved aside (MovedAside), and the library's keeps its
+    /// name in every compile. A source
     /// the driver links by default is the library, and anything the
     /// programmer named is the program.
     /// </summary>
     public bool FromLibrary { get; set; }
 
     /// <summary>
-    /// A library type moved into System because a program's type took its
-    /// name (Binder.MoveToSystem, Monomorphiser.MoveToSystem). Kept on the
-    /// declaration, because the move outlives the pass that made it: the
-    /// library's own code finds exactly these in System first.
+    /// A PROGRAM'S TYPE MOVED ASIDE because it took a class-library type's
+    /// name (Monomorphiser.MoveAside, Binder.MoveAside): kept under
+    /// <see cref="ProgramHome"/>, where the program's own code finds it first.
+    /// The library's type keeps its name -- in every compile the same, so a
+    /// unit compiled against the library's declarations calls and lays out
+    /// what the library's object defines. Kept on the declaration, because the
+    /// move outlives the pass that made it.
     /// </summary>
-    public bool MovedToSystem { get; set; }
+    public bool MovedAside { get; set; }
+
+    /// <summary>
+    /// Where a program's types moved aside live: a name no C# program can
+    /// write (two underscores are the compiler's, as __canon is), and never
+    /// shown -- a moved type's runtime name is still the one written.
+    /// </summary>
+    public const string ProgramHome = "__program";
+
+    /// <summary>A type path or key with the program's home taken off, as a runtime name shows it.</summary>
+    public static string Unaside(string key)
+        => key.StartsWith(ProgramHome + ".", StringComparison.Ordinal) ? key[(ProgramHome.Length + 1)..] : key;
 
     /// <summary>
     /// Where this declaration began and ended in its file.
