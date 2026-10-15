@@ -2573,15 +2573,18 @@ public sealed partial class Escape
     /// <summary>
     /// The object an operand addresses, for telling two of its uses are of
     /// one object: its frame slot (an object promoted to the frame), or the
-    /// register its copies written once start from.
+    /// register its copies written once start from, itself written once (a
+    /// parameter never written again). Null for a variable written more than
+    /// once: `t = h.f; h = b; h.f = t` reads one object's field and stores
+    /// into another's through one register.
     /// </summary>
     internal static object? OwnerOf(Defs defs, Operand o)
     {
         for (int hops = 0; hops < 8; hops++)
         {
             if (o is SlotOperand { Slot: var slot }) return slot;
-            if (o is not RegOperand { Reg: var r }) return null;
-            if (!defs.IsSingle(r) || defs.Definition(r) is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 } d) return r;
+            if (o is not RegOperand { Reg: var r } || !defs.IsSingle(r)) return null;
+            if (defs.Definition(r) is not { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 } d) return r;
             o = d.Operands[0];
         }
         return null;
@@ -3033,6 +3036,71 @@ public sealed partial class Escape
             }
         }
         return fill.Restores.Count > 0 ? fill : null;
+    }
+
+    /// <summary>
+    /// The variables a `??=`'s read of the field reaches, through its copies:
+    /// the field's value after the store. A variable on the way that only
+    /// ever holds what was made is not -- what it holds is the made object's
+    /// own, judged as one, not as a read of the field.
+    /// </summary>
+    internal static HashSet<VReg> FillRestored(Function f, Fill fill)
+    {
+        HashSet<VReg> restored = new();
+        foreach (Instr read in fill.Restores) if (read.Dest is { } d) restored.Add(d);
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d && !restored.Contains(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi
+                        && i.Operands.Any(o => o is RegOperand { Reg: var from } && restored.Contains(from)))
+                    { restored.Add(d); grew = true; }
+        }
+        return restored;
+    }
+
+    /// <summary>
+    /// WHAT RUNS BETWEEN A `??=`'S READ OF THE FIELD AND ITS STORE: after each
+    /// read it puts back, on every way to the store that neither reads again
+    /// (which reads the field afresh) nor stores first, up to the store. A
+    /// store into the field there -- another `??=` too -- or a call that may
+    /// make one, is what the store would replace with what it read before.
+    /// </summary>
+    internal static List<Instr> FillWindow(Function f, Cfg cfg, Fill fill, Block at, Instr st)
+    {
+        List<Instr> window = new();
+        HashSet<Instr> seen = new(ReferenceEqualityComparer.Instance);
+        int stAt = at.Instrs.IndexOf(st);
+        void Take(Block x, int from, int to) { for (int k = from; k < to; k++) if (seen.Add(x.Instrs[k])) window.Add(x.Instrs[k]); }
+        // The blocks a walk from `start` meets, by `next`, never going on
+        // through the read's block or the store's.
+        HashSet<Block> Walk(Block start, Func<Block, Edges> next, Block rb)
+        {
+            HashSet<Block> met = new(ReferenceEqualityComparer.Instance);
+            Stack<Block> work = new();
+            foreach (Block s in next(start)) work.Push(s);
+            while (work.TryPop(out Block? x))
+            {
+                if (!met.Add(x) || ReferenceEquals(x, rb) || ReferenceEquals(x, at)) continue;
+                foreach (Block s in next(x)) work.Push(s);
+            }
+            return met;
+        }
+        foreach (Instr read in fill.Restores)
+        {
+            Block rb = f.Blocks.First(x => x.Instrs.Contains(read));
+            int readAt = rb.Instrs.IndexOf(read);
+            if (ReferenceEquals(rb, at) && readAt < stAt) { Take(at, readAt + 1, stAt); continue; }
+            HashSet<Block> forward = Walk(rb, cfg.Succs, rb);
+            if (!forward.Contains(at)) continue;
+            HashSet<Block> backward = Walk(at, cfg.Preds, rb);
+            Take(rb, readAt + 1, rb.Instrs.Count);
+            foreach (Block x in f.Blocks)
+                if (!ReferenceEquals(x, rb) && !ReferenceEquals(x, at) && forward.Contains(x) && backward.Contains(x)) Take(x, 0, x.Instrs.Count);
+            Take(at, 0, stAt);
+        }
+        return window;
     }
 
     /// <summary>A store into an object as it is made (FieldsFixed).</summary>

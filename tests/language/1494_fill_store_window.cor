@@ -1,0 +1,186 @@
+// test: fill_store_window
+// expect-exit: 0
+// expect-output:
+// handed 200 of 200
+// joined 200 of 200
+// across 200 of 200
+// stale 200 of 200
+// primed 200 of 200
+//
+// A `??=` of a field -- `t = o.f; if (t == null) t = new(); o.f = t` -- puts
+// back what it read or fills what was empty, so it replaces nothing, and a
+// field filled only so is still the owner of what it holds. Five ways the
+// shape is not that, each a field that must not be the owner of its list:
+// what it made handed back through a variable the read never reaches
+// (handed), or used through one after the field let it go (joined); the
+// read of one object and the store into another through one variable
+// (across); and a read from before another store of the field -- another
+// `??=` in the same function (stale) or in a callee (primed) -- put back
+// over what that store left there. Each round's list is checked after the
+// memory of anything wrongly given back has been used again.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Handed
+{
+    public List<int>? items;
+
+    // Fills the field and hands back what it made through a second variable.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public List<int> Get(bool flag)
+    {
+        var t = items;
+        if (t != null) throw new InvalidOperationException("full");
+        List<int> w;
+        if (flag) w = new List<int>(); else w = new List<int>(4);
+        t = w;
+        items = t;
+        return w;
+    }
+}
+
+public sealed class Joined { public List<int>? items; public int tag; }
+public sealed class Across { public List<int>? items; }
+public sealed class Stale { public List<int>? items; public int tag; }
+public sealed class Primed { public List<int>? items; public int tag; }
+
+static class P
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k)
+    {
+        for (int i = 0; i < 50; i++)
+        {
+            var x = new List<int>();
+            x.Add(k); x.Add(k); x.Add(k); x.Add(k); x.Add(k);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Touch(Joined o, int r) { o.tag = o.tag + r; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Touch(Stale o, int r) { o.tag = o.tag + r; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Touch(Primed o, int r) { o.tag = o.tag + r; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int HandedRound(int r)
+    {
+        Handed h = new Handed();
+        List<int> l = h.Get((r & 1) == 0);
+        l.Add(r);
+        h.items = new List<int>();
+        Churn(r + 3000);
+        l.Add(r + 1);
+        return l.Count == 2 && l[0] == r && l[1] == r + 1 ? 1 : 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int JoinedRound(int r)
+    {
+        Joined o = new Joined();
+        Touch(o, r);
+        var t = o.items;
+        if (t != null) throw new InvalidOperationException("full");
+        List<int> w;
+        if ((r & 1) == 0) w = new List<int>(); else w = new List<int>(4);
+        t = w;
+        o.items = t;
+        w.Add(r);
+        o.items = new List<int>();
+        Churn(r + 3000);
+        w.Add(r + 1);
+        return w.Count == 2 && w[0] == r && w[1] == r + 1 ? 1 : 0;
+    }
+
+    // Read of the object h held before the loop, store into the one it holds after.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void CopyAcross(Across a, Across b, int n)
+    {
+        Across h = a;
+        for (int i = 0; i < n; i++)
+        {
+            List<int>? t = h.items;
+            h = b;
+            h.items = t;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int AcrossRound(int r)
+    {
+        Across a = new Across();
+        a.items = new List<int>();
+        a.items.Add(r);
+        Across b = new Across();
+        b.items = new List<int>();
+        CopyAcross(a, b, 1);
+        a.items = new List<int>();
+        Churn(r + 7000);
+        b.items!.Add(r + 1);
+        return b.items.Count == 2 && b.items[0] == r && b.items[1] == r + 1 ? 1 : 0;
+    }
+
+    // The second fill's value was read before the first stored.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int StaleRound(int r)
+    {
+        Stale o = new Stale();
+        Touch(o, r);
+        List<int>? t0 = o.items;
+        List<int>? t = t0;
+        o.tag = r + 1;
+        List<int>? u = o.items;
+        if (u == null) u = new List<int>();
+        o.items = u;
+        u.Add(r);
+        if (t0 == null) t = new List<int>();
+        o.items = t;
+        Churn(r + 3000);
+        u.Add(r + 1);
+        return u.Count == 2 && u[0] == r && u[1] == r + 1 ? 1 : 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Prime(Primed o, int r) { (o.items ??= new List<int>()).Add(r); }
+
+    // The value read before Prime filled the field is found empty after it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int PrimedRound(int r)
+    {
+        Primed o = new Primed();
+        Touch(o, r);
+        List<int>? t0 = o.items;
+        List<int>? t = t0;
+        Prime(o, r);
+        List<int> u = o.items!;
+        if (t0 == null) t = new List<int>();
+        o.items = t;
+        Churn(r + 3000);
+        u.Add(r + 1);
+        return u.Count == 2 && u[0] == r && u[1] == r + 1 ? 1 : 0;
+    }
+
+    static void Main()
+    {
+        int ok = 0;
+        for (int r = 0; r < 200; r++) ok += HandedRound(r);
+        Console.WriteLine("handed " + ok + " of 200");
+        ok = 0;
+        for (int r = 0; r < 200; r++) ok += JoinedRound(r);
+        Console.WriteLine("joined " + ok + " of 200");
+        ok = 0;
+        for (int r = 0; r < 200; r++) ok += AcrossRound(r);
+        Console.WriteLine("across " + ok + " of 200");
+        ok = 0;
+        for (int r = 0; r < 200; r++) ok += StaleRound(r);
+        Console.WriteLine("stale " + ok + " of 200");
+        ok = 0;
+        for (int r = 0; r < 200; r++) ok += PrimedRound(r);
+        Console.WriteLine("primed " + ok + " of 200");
+    }
+}

@@ -40,6 +40,10 @@ if [ ${#tests[@]} = 0 ]; then
         608_overload_by_word
         # lifetimes across units
         670_fresh_return 671_owned_fields 674_owned_variables
+        # owned elements through accessors, a frame object's fields freed at
+        # the link, and `??=` fills that replace nothing
+        1180_owned_elements_through_accessors 1181_owned_elements_through_accessors_refused
+        1182_owned_field_filled_when_empty 1494_fill_store_window
         # regions, which only a closed link finds: a loop's region left on
         # every way out, and a lap's carried chain on the heap
         1070_region_loop_laps

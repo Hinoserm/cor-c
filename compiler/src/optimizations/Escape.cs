@@ -1186,18 +1186,23 @@ public sealed partial class Escape : IModulePass
         // below, once the call sites are known): it cannot touch an object
         // anyone else is reading.
         Func<Function, Instr, bool> initializing = (_, _) => false;
-        HashSet<string> MayWrite(string field)
+        Dictionary<string, HashSet<string>> mayFill = new(StringComparer.Ordinal);
+        // A `??=` is no writer to a read (it puts back what is there, or fills
+        // what was null), but is one to another `??=` whose read it follows:
+        // that one would put back the value from before it (FillsReplaceNothing).
+        HashSet<string> MayWrite(string field, bool fillsToo = false)
         {
-            if (mayWrite.TryGetValue(field, out HashSet<string>? known)) return known;
+            Dictionary<string, HashSet<string>> cache = fillsToo ? mayFill : mayWrite;
+            if (cache.TryGetValue(field, out HashSet<string>? known)) return known;
             HashSet<string> set = new(StringComparer.Ordinal);
-            Stack<string> work = new(stores.Where(s => s.I.Field == field && !initializing(s.F, s.I) && !fills.ContainsKey(s.I)).Select(s => s.F.Name));
+            Stack<string> work = new(stores.Where(s => s.I.Field == field && !initializing(s.F, s.I) && (fillsToo || !fills.ContainsKey(s.I))).Select(s => s.F.Name));
             while (work.Count > 0)
             {
                 string name = work.Pop();
                 if (!set.Add(name)) continue;
                 if (callers.TryGetValue(name, out List<Function>? up)) foreach (Function c in up) work.Push(c.Name);
             }
-            return mayWrite[field] = set;
+            return cache[field] = set;
         }
 
         // Functions whose address is taken -- named by code or by a descriptor
@@ -1496,18 +1501,10 @@ public sealed partial class Escape : IModulePass
                     // loop makes the next lap's object in the same registers.
                     Liveness fillLive = StoresLive(f);
                     int stAt = b.Instrs.IndexOf(st);
-                    // The variable and its copies are the field's value after
-                    // the store, judged as the read they hold (below).
-                    HashSet<VReg> fieldValue = new(filling.Joins);
-                    for (bool grew = true; grew;)
-                    {
-                        grew = false;
-                        foreach (Block x in f.Blocks)
-                            foreach (Instr i in x.Instrs)
-                                if (i.Dest is { } d && !fieldValue.Contains(d) && Defs(f).ContainsKey(d) && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32
-                                    && i.Operands[0] is RegOperand { Reg: var from } && fieldValue.Contains(from))
-                                { fieldValue.Add(d); grew = true; }
-                    }
+                    // The variable the read reaches and its copies are the
+                    // field's value after the store, judged as the read they
+                    // hold (below); one only what was made goes through is not.
+                    HashSet<VReg> fieldValue = FillRestored(f, filling);
                     bool usedAfter = alone.Derived.Any(r => !fieldValue.Contains(r)
                         && (!fillLive.Tracks(r) || fillLive.IsLiveOut(b, r)
                             || b.Instrs.Skip(stAt + 1).Any(i => i.Operands.Any(o => o is RegOperand q && q.Reg == r))));
@@ -1588,29 +1585,19 @@ continue;
             }
         }
 
-        // FILLS REPLACE NOTHING: between the test that found the field null
-        // and the store, nothing that may store into it -- else what it
-        // stored there would be replaced, and a fill no writer.
+        // FILLS REPLACE NOTHING: between each read the store puts back and
+        // the store, nothing that may store into the field, another `??=`
+        // included -- else the store would put back the value from before it,
+        // replacing what was stored there, and a fill no writer (FillWindow).
         foreach ((Instr st, Fill fill) in fills)
         {
-            if (fill.Made.Count == 0 || refused.Contains(st.Field!)) continue;
+            if (refused.Contains(st.Field!)) continue;
             (Function f, Block at, _) = stores.First(x => ReferenceEquals(x.I, st));
-            HashSet<string> writers = MayWrite(st.Field!);
-            Cfg cfg = new(f);
-            Instr? unsafeAt = null;
-            foreach (Block x in f.Blocks)
-            {
-                if (!fill.Guards.Any(g => cfg.Dominates(g, x)) || !ReferenceEquals(x, at) && !cfg.Reaches(x, at)) continue;
-                int end = ReferenceEquals(x, at) ? x.Instrs.IndexOf(st) : x.Instrs.Count;
-                for (int k = 0; k < end && unsafeAt is null; k++)
-                {
-                    Instr i = x.Instrs[k];
-                    if (i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out string[]? t) || t.Any(writers.Contains))
-                        || i.Op == Opcode.Call && i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee)
-                        || i.Op == Opcode.Store && i.Field == st.Field)
-                        unsafeAt = i;
-                }
-            }
+            HashSet<string> writers = MayWrite(st.Field!, fillsToo: true);
+            Instr? unsafeAt = FillWindow(f, new Cfg(f), fill, at, st).FirstOrDefault(i =>
+                i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out string[]? t) || t.Any(writers.Contains))
+                || i.Op == Opcode.Call && i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee)
+                || i.Op == Opcode.Store && i.Field == st.Field);
             if (unsafeAt is not null) Refuse(st.Field!, $"??= may meet another store at {unsafeAt.Op} {unsafeAt.Callee}", f, st);
         }
 
@@ -1820,7 +1807,7 @@ continue;
         // judged now, before the replacements' frees go in.
         HashSet<string> elementOwned = byName.ContainsKey(OwnedElements.ArrayFreer) || m.RuntimeHelpers.Contains(OwnedElements.ArrayFreer)
             ? ArrayFieldElements(owned, stores, loads, new HashSet<Instr>(fills.Keys.Concat(forwarded.Keys), ReferenceEqualityComparer.Instance),
-                new HashSet<string>(borrowing.Select(pair => pair.Field), StringComparer.Ordinal), MayWrite, livenessOf, padsOf, summaries)
+                new HashSet<string>(borrowing.Select(pair => pair.Field), StringComparer.Ordinal), field => MayWrite(field), livenessOf, padsOf, summaries)
             : new HashSet<string>(StringComparer.Ordinal);
         if (reporting) foreach (string field in elementOwned) _fieldReport.Add($"{field} owns its array's elements");
 
@@ -1950,7 +1937,7 @@ continue;
     /// fields are (SlotFieldFrees): before the slot is made again round a
     /// loop, and on every return. A field freed there already is found empty.
     /// </summary>
-    private void FreeFramedOwnedFields(Dictionary<string, DataItem> items, Dictionary<string, List<long>> offsets)
+    private void FreeFramedOwnedFields(Dictionary<string, DataItem> items, Dictionary<string, List<long>> offsets, bool linkRegions = false)
     {
         if (offsets.Count == 0) return;
         int word = IrTypes.Word.Bytes();
@@ -1958,6 +1945,11 @@ continue;
             foreach (OwnedRecord r in records)
             {
                 if (r.Slot is null || r.SlotAddress is null) continue;
+                // AT THE LINK, NOT ROUND A LOOP REGION IT MARKED: the link judged
+                // the object a heap or region allocation dead where a lap ends,
+                // and what its owned fields hold may be the lap's -- given back
+                // when the next lap begins, before the slot is made again.
+                if (linkRegions && f.Blocks.Any(b => b.RegionLoop)) { OwnedElements.Say(f, "frame object: owned fields left, a loop region the link marked"); continue; }
                 // Its type, by the descriptor stamped into it.
                 HashSet<VReg> names = Derivations(f, new[] { r.Root, r.SlotAddress });
                 string? type = null;

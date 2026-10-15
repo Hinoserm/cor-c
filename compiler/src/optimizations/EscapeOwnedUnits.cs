@@ -36,7 +36,7 @@ public sealed partial class Escape
         if (!m.PreserveExports || !byName.ContainsKey(OwnedReplacedFreer) && !m.RuntimeHelpers.Contains(OwnedReplacedFreer)) return;
         if (m.OwnedFields is OwnedFieldFacts decided)
         {
-            ApplyOwnedFields(m, decided, summaries);
+            ApplyOwnedFields(m, decided, summaries, byName);
             return;
         }
         if (_hinting && m.LifetimeHints is not null)
@@ -404,7 +404,7 @@ public sealed partial class Escape
     /// made right there; each type defined here that has owned fields, or
     /// whose ancestors do, carries the map of them in its descriptor.
     /// </summary>
-    private void ApplyOwnedFields(Module m, OwnedFieldFacts decided, Dictionary<string, bool[]> summaries)
+    private void ApplyOwnedFields(Module m, OwnedFieldFacts decided, Dictionary<string, bool[]> summaries, Dictionary<string, Function> byName)
     {
         if (decided.Fields.Count == 0) return;
         Dictionary<Instr, bool> privateOwner = new(ReferenceEqualityComparer.Instance);
@@ -509,6 +509,11 @@ public sealed partial class Escape
             m.Data.Add(new DataItem(sym, block) { ReadOnly = true, Exported = false, Align = w });
             d.Relocs.Add(new DataReloc(11 * w, sym, 0));
         }
+        // A FRAME OBJECT'S OWNED FIELDS GO WITH IT, as OwnedFields has them
+        // (FreeFramedOwnedFields): an object this run promoted to its frame
+        // is never handed to Runtime.Free, whose FreeOwnedFields reads the
+        // maps above, so what its owned fields hold is freed where it dies.
+        if (byName.ContainsKey(FieldFreer) || m.RuntimeHelpers.Contains(FieldFreer)) FreeFramedOwnedFields(items, offsets, m.RegionFacts is not null);
     }
 
     /// <summary>What a read of a value does while it is live, judged without knowing which field it is.</summary>
@@ -630,6 +635,30 @@ public sealed partial class Escape
                     // above, and proves nothing -- refused, as OwnedFields does.
                     else Refuse(Record(i.Field, i.Offset), i.Field, "its address is taken (ref, out)", f, i);
                 }
+        }
+
+        // A `??=` OF A FIELD (FillStoreShape), as OwnedFields has it: `o.f ??=
+        // new T()` stores back the value it read of o.f, or an object made
+        // where that read found it null. The object made is held by the field
+        // as any fresh object stored is; the value read, stored back and used
+        // after, is a read of the field, judged as one; and it replaces
+        // nothing if nothing that may store into the field runs between the
+        // test and the store -- which the link says of other units' calls
+        // there (the field's dangers). Refused here, a List a getter fills
+        // lazily was never the field's in a unit (1180).
+        Dictionary<Instr, Fill> fills = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Instr, (Instr Store, Fill Fill)> restoring = new(ReferenceEqualityComparer.Instance);
+        {
+            Dictionary<Function, (Defs, RegisterWrites)> shapes = new();
+            foreach ((Function f, Block _, Instr st) in stores)
+            {
+                if (st.Operands.Count < 2 || st.Operands[1] is not RegOperand) continue;
+                if (!loads.Any(l => ReferenceEquals(l.F, f) && l.I.Field == st.Field)) continue;
+                if (!shapes.TryGetValue(f, out var shape)) shapes[f] = shape = (new Defs(f), new RegisterWrites(f));
+                if (FillStoreShape(f, shape.Item1, shape.Item2, st) is not { } fill) continue;
+                fills[st] = fill;
+                foreach (Instr restore in fill.Restores) restoring[restore] = (st, fill);
+            }
         }
 
         // CONSTRUCTORS' OWN STORES (OwnedFields' freshThis): for each callee,
@@ -795,6 +824,11 @@ public sealed partial class Escape
             if (st.Operands.Count < 2) { Refuse(record, field, "odd store", f, st); continue; }
             if (st.Operands[1] is ImmOperand { Value: 0 } or SymOperand) continue;
             if (st.Operands[1] is not RegOperand v) { Refuse(record, field, "stores an odd operand", f, st); continue; }
+            if (fills.TryGetValue(st, out Fill? filling))
+            {
+                if (FillRefused(f, b, st, filling) is string refused) Refuse(record, field, refused, f, st);
+                continue;
+            }
             if (OriginOf(Defs(f), v.Reg) is Instr made && made.Dest is not null && FreshCondition(made) is LifetimeCondition madeFresh)
             {
                 Needs needs = new(this);
@@ -836,6 +870,71 @@ public sealed partial class Escape
                 if (record.Sinks.Count > LifetimeCondition.Limit) { ok = false; break; }
             }
             if (!ok) Refuse(record, field, $"stores {v}, which a caller may not hand over", f, st);
+        }
+
+        // A `??=`'s store judged (OwnedFields' held stores and FillsReplaceNothing):
+        // why it is refused, or null with what it needs and its dangers recorded.
+        string? FillRefused(Function f, Block b, Instr st, Fill fill)
+        {
+            OwnedFieldRecord record = Record(st.Field!, st.Offset);
+            if (fill.Made.Any(x => x.Dest is null)) return "odd ??=";
+            // The variables the read reaches: the field's value after the store.
+            HashSet<VReg> restored = FillRestored(f, fill);
+            if (fill.Made.Count > 0)
+            {
+                Needs needs = new(this);
+                // Handed back as the field's value -- a lazy getter, `Writable() =>
+                // mutable ??= new List<Token>(..)` -- it is a borrowed read of the
+                // field, every call of the getter judged as one (the reads below).
+                // A variable only what was made goes through is no read of it:
+                // what it hands back is the made object, and that escapes.
+                HashSet<VReg> handedBack = new();
+                {
+                    RegisterWrites writes = new(f);
+                    Stack<VReg> work = new();
+                    foreach (Block rb in f.Blocks)
+                        if (rb.Terminator is { Op: Opcode.Ret, Operands: [RegOperand returned] }) work.Push(returned.Reg);
+                    while (work.TryPop(out VReg? r))
+                    {
+                        if (!handedBack.Add(r) || !writes.TryGetValue(r, out WriteList ws)) continue;
+                        foreach (Instr i in ws)
+                            if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.Phi)
+                                foreach (Operand o in i.Operands) if (o is RegOperand from) work.Push(from.Reg);
+                    }
+                    handedBack.IntersectWith(restored);
+                }
+                Flow alone = Analyse(f, fill.Made.Select(x => x.Dest!).ToList(), summaries, fill.Made.Count == 1 ? fill.Made[0] : null,
+                    new HashSet<Instr>(ReferenceEqualityComparer.Instance) { st }, returnable: handedBack.Count > 0 ? handedBack : null,
+                    joinable: fill.Joins, needs: needs);
+                if (alone.Escapes) return $"??= stores what escapes via {alone.Why?.Op} {alone.Why?.Callee}";
+                // What the read reaches is judged as the read it holds; anything
+                // else the made object went through, used after, is the made
+                // object used after the field took it.
+                Liveness live = LivenessOf(f);
+                int stAt = b.Instrs.IndexOf(st);
+                if (alone.Derived.Any(r => !restored.Contains(r)
+                    && (!live.Tracks(r) || live.IsLiveOut(b, r) || b.Instrs.Skip(stAt + 1).Any(i => i.Operands.Any(o => o is RegOperand q && q.Reg == r)))))
+                    return "??= stores what is used after it is stored";
+                foreach (Instr x in fill.Made)
+                    if (FreshCondition(x) is LifetimeCondition c) Need(record, c); else return "??= stores what is not made fresh";
+                Need(record, needs.Condition);
+            }
+            // NOTHING BETWEEN THE READ AND THE STORE MAY STORE INTO THE FIELD,
+            // another `??=` included (FillWindow): this unit's stores refuse it
+            // here, other units' calls are the link's to judge as the field's
+            // dangers, where every store into it counts.
+            foreach (Instr i in FillWindow(f, new Cfg(f), fill, b, st))
+            {
+                if (i.Op == Opcode.Store && i.Field == st.Field) return $"??= may meet another store at {i.Line}";
+                if (i.Op == Opcode.CallIndirect)
+                {
+                    if (_indirect is null || !_indirect.TryGetValue(i, out string[]? t)) return "??= may meet an unresolved indirect call";
+                    record.Danger.UnionWith(t);
+                }
+                else if (i.Op == Opcode.Call && i.Callee is { } callee && !IsAllocator(callee) && !NeverWritesFields(callee)) record.Danger.Add(callee);
+            }
+            if (record.Danger.Count > OwnedFieldHints.Limit) return "??= meets too many calls";
+            return null;
         }
 
         // THE READS, each judged without knowing the field, then as a read of it.
@@ -884,8 +983,13 @@ public sealed partial class Escape
             Needs needs = new(this);
             // A self-replacing free of what was read takes it over (EscapeSelfFrees).
             SelfFrees mine = SelfOf(f);
-            Flow flow = Analyse(f, new[] { value }, summaries, ld, ld.Op == Opcode.Store ? new HashSet<Instr>(ReferenceEqualityComparer.Instance) { ld } : null,
-                returnable: back is { Count: > 0 } ? back : null, needs: needs, exact: exact, consumers: mine.Frees.Count > 0 ? mine.Frees : null);
+            // Stored back by a `??=`: through its variable, into the field it came from.
+            restoring.TryGetValue(ld, out var restored);
+            HashSet<Instr>? putBack = ld.Op == Opcode.Store || restored.Store is not null ? new(ReferenceEqualityComparer.Instance) : null;
+            if (ld.Op == Opcode.Store) putBack!.Add(ld);
+            if (restored.Store is not null) putBack!.Add(restored.Store);
+            Flow flow = Analyse(f, new[] { value }, summaries, ld, putBack, returnable: back is { Count: > 0 } ? back : null,
+                joinable: restored.Fill?.Joins, needs: needs, exact: exact, consumers: mine.Frees.Count > 0 ? mine.Frees : null);
             if (flow.Escapes) { why = $"read escapes via {flow.Why?.Op} {flow.Why?.Callee}"; return null; }
             ReadJudgement judged = new() { HandedBack = back is not null && flow.Derived.Overlaps(back) };
             judged.Needs.Add(needs.Condition);
@@ -923,7 +1027,7 @@ public sealed partial class Escape
                     // Not a field this unit refused: no store into it frees
                     // anything; nor a self-replacing free's store.
                     else if (i.Op == Opcode.Store && i.Field is not null && !(hints.Fields.TryGetValue(i.Field, out OwnedFieldRecord? into) && into.Refused)
-                        && !StoreIntoRead(i, inside) && !FirstOf(f).Fills(x, k) && !mine.Stores.Contains(i)) judged.DangerFields.Add(i.Field);
+                        && !fills.ContainsKey(i) && !StoreIntoRead(i, inside) && !FirstOf(f).Fills(x, k) && !mine.Stores.Contains(i)) judged.DangerFields.Add(i.Field);
                 }
             }
             if (judged.Danger.Count > OwnedFieldHints.Limit || judged.DangerFields.Count > OwnedFieldHints.Limit) { why = "read live across too much"; return null; }
@@ -1081,7 +1185,7 @@ public sealed partial class Escape
 
         // ITS ARRAYS' ELEMENTS (ArrayFieldElements), each field this unit
         // has not refused judged over its stores and reads here.
-        ArrayFieldElementHints(hints, stores, loads, new HashSet<Instr>(forwarded.Keys, ReferenceEqualityComparer.Instance), LivenessOf, PadsOf, summaries,
+        ArrayFieldElementHints(hints, stores, loads, new HashSet<Instr>(fills.Keys.Concat(forwarded.Keys), ReferenceEqualityComparer.Instance), LivenessOf, PadsOf, summaries,
             m.RuntimeHelpers.Contains(OwnedElements.ArrayFreer) || m.Functions.Any(g => g.Name == OwnedElements.ArrayFreer));
 
         foreach ((string name, var record) in functions)

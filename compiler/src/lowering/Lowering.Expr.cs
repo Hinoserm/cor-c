@@ -1850,7 +1850,7 @@ public sealed partial class Lowering
                     _e.Emit(Opcode.MemCopy, null, R(to), R(from), Imm(Math.Max(1, StructOf(f.Type).InstanceSize), IrTypes.Word));
                     continue;
                 }
-                VReg v = LoadPlace(new MemPlace(R(src), f.Offset, f.Type));
+                VReg v = LoadPlace(new MemPlace(R(src), f.Offset, f.Type, Field: f));
                 // A struct field is copied, not shared with the source.
                 if (!f.Boxed && IsStructValue(f.Type))
                 {
