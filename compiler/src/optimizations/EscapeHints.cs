@@ -395,7 +395,7 @@ public sealed partial class Escape
                 bool reads = read.Op is Opcode.Load or Opcode.Store && read.Field is not null && owned.Fields.ContainsKey(read.Field)
                     || read.Op == Opcode.Call && read.Callee is not null && owned.Borrowers.Contains(read.Callee)
                     || read.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0
-                       && (!virtuals.TryGetValue(read, out string[]? targets) || targets.Any(owned.Borrowers.Contains));
+                       && (!virtuals.TryGetValue(read, out string[]? targets) || targets.Any(owned.Borrows));
                 if (!reads) continue;
                 // AN OWNER THE FUNCTION WAS HANDED -- a parameter, a static, or
                 // what is read from one -- no free placed here can reach:
@@ -473,7 +473,7 @@ public sealed partial class Escape
                 if (i.Op == Opcode.CallIndirect && owned.Borrowers.Count > 0)
                 {
                     virtuals ??= VirtualCallees(new[] { f });
-                    if (!virtuals.TryGetValue(i, out string[]? targets) || targets.Any(owned.Borrowers.Contains)) return true;
+                    if (!virtuals.TryGetValue(i, out string[]? targets) || targets.Any(owned.Borrows)) return true;
                 }
             }
         return false;

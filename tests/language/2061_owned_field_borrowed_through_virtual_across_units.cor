@@ -1,0 +1,86 @@
+// test: owned_field_borrowed_through_virtual_across_units
+// units: tests/language/support/2061_borrow_units.cor
+// expect-exit: 0
+// expect-output:
+// read 9 1,2,3,4,5,6,7,8,9
+// big 9 10,11,12,13,14,15,16,17,18
+// rounds 45000
+//
+// An owned field read out through a virtual getter another unit calls on its
+// class parameter (Peek.ItemsOf: `b.Items` on a Box), the list handed back
+// and read after its owner's owner -- a Holder this unit made -- is dead. The
+// link may bring ItemsOf's body in here, where the call is no longer on a
+// parameter: it is named otherwise than the unit that wrote it named it, and
+// is still a read of the owned field, so neither Holder nor its Box is freed
+// while the list is read.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Holder
+{
+    public Box Inner;
+
+    public Holder(Box inner) { Inner = inner; }
+}
+
+static class P
+{
+    static readonly int[][] JunkArrays = new int[4096][];
+    static readonly List<int>[] JunkLists = new List<int>[4096];
+    static readonly Box[] JunkBoxes = new Box[4096];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkArrays.Length; k++)
+        {
+            JunkArrays[k] = new int[k % 2 == 0 ? 16 : 9];
+            JunkArrays[k][0] = 100;
+            JunkLists[k] = new List<int> { 100, 101, 102 };
+            JunkBoxes[k] = new Box(500);
+        }
+        Gc.Collect();
+    }
+
+    static string Show(List<int> l) => l.Count + " " + string.Join(",", l);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Read()
+    {
+        Holder h = new(new Box(1));
+        List<int> l = Peek.ItemsOf(h.Inner);
+        Churn();
+        return Show(l);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Big()
+    {
+        Holder h = new(new BigBox(10));
+        List<int> l = Peek.ItemsOf(h.Inner);
+        Churn();
+        return Show(l);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Round()
+    {
+        Holder h = new(new Box(1));
+        List<int> l = Peek.ItemsOf(h.Inner);
+        Holder other = new(new Box(1));
+        int t = 0;
+        foreach (int x in l) t += x + other.Inner.Items.Count - 9;
+        return t;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine("read " + Read());
+        Console.WriteLine("big " + Big());
+        long t = 0;
+        for (int k = 0; k < 1000; k++) t += Round();
+        Console.WriteLine("rounds " + t);
+    }
+}

@@ -40,6 +40,18 @@ public static class VirtualTargets
         return at < 0 ? (type, null, slot) : (type[..at], type[(at + 1)..], slot);
     }
 
+    /// <summary>
+    /// The name without its `@` class: every override of the slot, which is
+    /// every target the `@` name has and more. A call's `@` is its function's
+    /// class parameter, so the same call inlined into another function at the
+    /// link is named otherwise there; its plain name is the one they share.
+    /// </summary>
+    public static string Plain(string name)
+    {
+        int at = name.IndexOf('@'), plus = name.LastIndexOf('+');
+        return at < 0 || plus < at ? name : name[..at] + name[plus..];
+    }
+
     /// <summary>A descriptor's display and interface list, in words (Escape.DescriptorDisplay, DescriptorInterfaces).</summary>
     private const int Display = 3, Interfaces = 4;
     /// <summary>A descriptor's own words (Lowering's Desc*), and how many there are before its method table (Target.DescriptorBytes).</summary>

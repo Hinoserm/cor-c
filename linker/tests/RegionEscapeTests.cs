@@ -1122,6 +1122,17 @@ public static class RegionEscapeTests
         VirtualTargets.Made remade = VirtualTargets.MadeIn(again, again.Select(input => IrArchive.Read(input.Object)!));
         string[] still = VirtualTargets.Resolve(again, new[] { call }, remade)[call];
         Check(still.SequenceEqual(new[] { "m_Made_Run", "m_Never_Run", "m_Static_Run" }), "a type the unit's IR makes is made: " + string.Join(",", still));
+
+        // A CALL ON A PARAMETER DECLARED AS ONE CLASS (`@`, Escape.VirtualCallee):
+        // that class's override and its subclasses', never a sibling's; its
+        // plain name, every override, is the one all a call's names share.
+        string onStatic = VirtualTargets.Prefix + "t_Base@t_Static+0", onNever = VirtualTargets.Prefix + "t_Base@t_Never+0";
+        Check(VirtualTargets.Parse(onStatic) is ("t_Base", "t_Static", 0) && VirtualTargets.Parse(call) is ("t_Base", null, 0), "a virtual name's parts");
+        Check(VirtualTargets.Plain(onStatic) == call && VirtualTargets.Plain(call) == call && VirtualTargets.Plain("m_Made_Run") == "m_Made_Run", "a virtual name's plain name");
+        string[] statics = VirtualTargets.Resolve(inputs, new[] { onStatic })[onStatic];
+        Check(statics.SequenceEqual(new[] { "m_Static_Run" }), "a call on a Static runs Static's override alone: " + string.Join(",", statics));
+        Dictionary<string, string[]> nevers = VirtualTargets.Resolve(inputs, new[] { onNever }, made.Again());
+        Check(!nevers.TryGetValue(onNever, out string[]? none) || none.Length == 0, "a call on a type nothing makes runs nothing: " + string.Join(",", none ?? Array.Empty<string>()));
     }
 
     /// <summary>

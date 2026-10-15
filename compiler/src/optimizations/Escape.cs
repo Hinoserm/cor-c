@@ -4184,7 +4184,12 @@ continue;
                         // it, whatever overrides the rest of the program has.
                         string name = ReceiverClass(f, i, single, many) is string within
                             ? VirtualCallee(declaring, within, slot) : VirtualCallee(declaring, slot);
+                        // A NAME THE LINK DID NOT ANSWER, its plain one may be:
+                        // every override of the slot, more than the `@` name's
+                        // targets and so as sound (an inlined body's call, named
+                        // by the function it now sits in).
                         if (known is null || known(name)) result[i] = new[] { name };
+                        else if (VirtualTargets.Plain(name) is var plain && known(plain)) result[i] = new[] { plain };
                     }
                 }
         }

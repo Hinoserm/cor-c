@@ -127,7 +127,12 @@ public static class IrLinkOptimizer
         Dictionary<string, string[]> virtuals = enabled && hints.Count > 0 && !openTypes
             ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
                 .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
-                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)), lifetimeMade)
+                .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
+                // AND EACH `@` NAME'S PLAIN ONE: a unit's call inlined into
+                // another function is named by that function's class, or by
+                // none (Escape.VirtualCallees), and what it borrows is judged
+                // by the name all its forms share (EscapeHints).
+                .SelectMany(name => name.Contains('@') ? new[] { name, VirtualTargets.Plain(name) } : new[] { name }), lifetimeMade)
             : new(StringComparer.Ordinal);
         if (regionReport is not null) Console.Error.WriteLine("lifetimes: rta " + (lifetimeMade is null ? "off" : lifetimeMade.Summary()));
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;

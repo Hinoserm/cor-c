@@ -827,7 +827,13 @@ internal sealed class RegionEscape
         Dictionary<string, int> wide = new(StringComparer.Ordinal);
         for (int f = 0; f < count; f++)
             for (int k = 0; k < _targets[f].Length; k++)
-                if (_targets[f][k] is { } t && t.Length > most && _keys[f][k] is { } key) wide[key.Split('@')[0] + " (" + t.Length + ")"] = wide.GetValueOrDefault(key.Split('@')[0] + " (" + t.Length + ")") + 1;
+                if (_targets[f][k] is { } t && t.Length > most && _keys[f][k] is { } key)
+                {
+                    // The key is the callee and "@" its unit (RegionSolver); the
+                    // callee may carry an `@` class of its own.
+                    string wideKey = key[..key.LastIndexOf('@')] + " (" + t.Length + ")";
+                    wide[wideKey] = wide.GetValueOrDefault(wideKey) + 1;
+                }
         IEnumerable<int> Edges(int v)
         {
             for (int k = 0; k < _targets[v].Length; k++)

@@ -20,6 +20,14 @@ public sealed class OwnedFieldFacts
     /// an owned field holds: a call to one is a read of the field.
     /// </summary>
     public HashSet<string> Borrowers { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Whether a call of this name may hand back what an owned field holds:
+    /// a borrower, or a virtual name whose plain one is -- the `@` name a
+    /// call is given where it sits names fewer targets than the link judged
+    /// under another of its names, never more (VirtualTargets.Plain).
+    /// </summary>
+    public bool Borrows(string name) => Borrowers.Contains(name) || name.Contains('@') && Borrowers.Contains(VirtualTargets.Plain(name));
     /// <summary>
     /// The fields a collection handed to them gives its elements back
     /// through, by the collection's kind: every read of the field in the

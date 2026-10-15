@@ -1,0 +1,28 @@
+// The other unit of 2061_owned_field_borrowed_through_virtual_across_units:
+// a class owning its list, handed out through a virtual getter, and a walk
+// on a class parameter that asks for it.
+using System.Collections.Generic;
+
+public class Box
+{
+    internal List<int> items = new();
+
+    public Box(int at)
+    {
+        for (int i = 0; i < 9; i++) items.Add(at + i);
+    }
+
+    public virtual List<int> Items => items;
+}
+
+public sealed class BigBox : Box
+{
+    public BigBox(int at) : base(at) { }
+
+    public override List<int> Items => items;
+}
+
+public static class Peek
+{
+    public static List<int> ItemsOf(Box b) => b.Items;
+}
