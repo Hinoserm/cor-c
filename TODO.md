@@ -386,6 +386,23 @@ tasks below track that work; moving files alone does not reduce the working set.
   open defects, and add standard-behavior regression coverage. A feature
   with a known compatibility failure must not be marked complete merely
   because a custom workflow passes.
+- [ ] Anonymous methods (C# 12.21): `delegate { ... }` and
+  `delegate (int x) { ... }` are not parsed at all. The parameterless form
+  converts to a delegate of any parameter list. When they are, a cast may be
+  followed by `delegate` (Parser.CastCanFollow) like any keyword but `as` and
+  `is`.
+- [ ] Methods made alike by substitution: `class P<T> { M(T); M(string); }`
+  is valid C#, and so is P<string>. The compiler refuses the copy ("already
+  defines a member"). C# keeps both members. A call on P<string> picks M(string)
+  by the more-specific-parameter rule (12.6.4.3: a type parameter is less
+  specific). A call written in generic code binds in the generic definition,
+  so `Q<U>.Call(P<U> p, U u) => p.M(u)` is M(T) as Q<string>. Needed:
+  - both members kept in a copy;
+  - the tie-break by declared parameter types;
+  - distinct symbol names for a per-argument (value-type) copy's twins;
+  - generic bodies bound against the template's parameters.
+  Until then such a copy only named in a body is declared while binding, so the
+  refusal stays a message (Binder.MayCollide).
 
 ## Project compilation and source organization
 
