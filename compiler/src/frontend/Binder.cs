@@ -3311,6 +3311,44 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>What MayCollide found, a canonical copy at a time.</summary>
+    private readonly Dictionary<TypeSymbol, bool> _mayCollide = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Whether some arguments could make two of a canonical copy's methods
+    /// alike: the same name, parameter count and type parameters, and each
+    /// parameter the same type or, on one side at least, written over the
+    /// template's parameters (__canon here). Such a copy's own declaration may
+    /// be refused ("already defines a member"); one never declared, unknown,
+    /// counts as one that may.
+    /// </summary>
+    private bool MayCollide(TypeSymbol canonical)
+    {
+        if (canonical.MembersPending) return true;
+        if (_mayCollide.TryGetValue(canonical, out bool known)) return known;
+        List<MethodSymbol> methods = canonical.Methods.Where(m => m.Decl is not null).ToList();
+        bool found = false;
+        for (int a = 0; a < methods.Count && !found; a++)
+            for (int b = a + 1; b < methods.Count && !found; b++)
+            {
+                MethodSymbol x = methods[a], y = methods[b];
+                if (x.Name != y.Name || x.Params.Count != y.Params.Count || x.TypeParams.Count != y.TypeParams.Count) continue;
+                bool alike = true;
+                for (int i = 0; i < x.Params.Count && alike; i++)
+                    alike = x.Params[i].ByRef == y.Params[i].ByRef
+                        && (MethodSignatures.SameType(x.Params[i].Type, y.Params[i].Type)
+                            || i < x.Decl!.Params.Count && i < y.Decl!.Params.Count
+                               && (OverTemplateParameters(x.Decl.Params[i].Type) || OverTemplateParameters(y.Decl.Params[i].Type)));
+                found = alike;
+            }
+        _mayCollide[canonical] = found;
+        return found;
+    }
+
+    /// <summary>Whether a canonical copy's type is written over its template's parameters: a __canon in it anywhere.</summary>
+    private static bool OverTemplateParameters(TypeRef t)
+        => t.Name == Monomorphiser.CanonName || t.CanonIndex >= 0 || t.Args.Any(OverTemplateParameters);
+
     /// <summary>The body work is listed (CheckBodies' list, at the end of Run): a type declared from now on joins it.</summary>
     private bool _bodiesListed;
 
@@ -4816,7 +4854,33 @@ public sealed partial class Binder
         {
             Type of = resolved;
             while (of.IsArray && of.Element is Type element) of = element;
-            if (of.Symbol is { } named && !(named.Decl is { } waiting && _declaredLater.Contains(waiting))) named.EnsureMembers();
+            if (of.Symbol is { } named && !(named.Decl is { } waiting && _declaredLater.Contains(waiting)))
+            {
+                // A WORD-SHAPED COPY'S BODIES ARE ITS CANONICAL COPY'S: that
+                // one is declared and checked now, and the copy's own members
+                // wait for whatever asks for them -- lowering, laying its
+                // descriptor down, declares them then, as it may any member
+                // of a copy whose canonical copy was declared (DeclareMembersNow).
+                if (named.Decl is { Canon: string canon } && _r.Types.TryGetValue(canon, out TypeSymbol? canonical))
+                {
+                    if (canonical.MembersPending && canonical.Decl is { Canon: null } shared && !_declaredLater.Contains(shared))
+                        canonical.EnsureMembers();
+                    // BUT ONE THAT COULD BE REFUSED is declared now, while a
+                    // refusal is still something to say: a copy whose arguments
+                    // could make two of the template's methods alike (`M(T)`
+                    // and `M(string)` as P<string>, MayCollide). After binding
+                    // the same refusal is a compiler fault (DeclareMembersNow).
+                    // And the copies made per argument that its shared code
+                    // makes, whose bodies binding must check (ForceContext).
+                    if (named.MembersPending && MayCollide(canonical)) named.EnsureMembers();
+                    foreach (TypeSymbol? made in named.CanonMadeTypes)
+                        if (made is { MembersPending: true, Decl: { Canon: null } perArgument } && !_declaredLater.Contains(perArgument)) made.EnsureMembers();
+                }
+                else
+                {
+                    named.EnsureMembers();
+                }
+            }
             ForceBody(resolved);
         }
         return resolved;
