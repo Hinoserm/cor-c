@@ -37,6 +37,7 @@ public static class Program
             ExtensionLookupTests.Run(work);
             InitializerScopeTests.Run(work);
             StaticContextTests.Run(work);
+            NamedCopyTests.Run(work);
             ClosureOwnershipTests.Run(work);
             NestedGenericImportTests.Run(work);
             EntryArgsImportTests.Run(work);
