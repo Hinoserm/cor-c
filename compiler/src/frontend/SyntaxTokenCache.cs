@@ -25,8 +25,14 @@ public sealed class SyntaxTokenCache
         bool declarationsOnly = false, bool includeTemplateBodies = false)
     {
         Interlocked.Increment(ref misses);
-        Token[] snapshot = Lexer.Tokenize(text, file, 1, 1, symbols).ToArray();
-        return new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
+        // AND ITS #pragma warning TABLE, as Parser.ParseText keeps it: a unit
+        // compiled against a declaration index is parsed here, and without
+        // it every warning its pragmas disable was said all the same.
+        List<PragmaWarning> pragmas = new();
+        Token[] snapshot = Lexer.Tokenize(text, file, 1, 1, symbols, pragmas).ToArray();
+        CompilationUnit unit = new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
+        unit.Pragmas.AddRange(pragmas);
+        return unit;
     }
 
     /// <summary>
