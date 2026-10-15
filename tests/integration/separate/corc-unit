@@ -5,7 +5,6 @@
 # linked with the library object compiled once, apart.
 #
 #   SEPARATE_CORC     the real compiler command
-#   SEPARATE_LIBS     file of the library sources, one absolute path a line
 #   SEPARATE_INDEX    declaration index of the library
 #   SEPARATE_LIB_OBJ  the library object
 #
@@ -13,11 +12,27 @@
 # compiler unchanged.
 set -euo pipefail
 read -r -a real <<< "$SEPARATE_CORC"
+# The options before the command, which run.sh puts there (--lib-root of its
+# copy of the sources, --verify-analyses), go to every compile and link this
+# makes: read as the command, they sent every test to a plain whole-program
+# compile, and this script tested nothing it says.
+global=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --lib-root) global+=("$1" "$2"); shift 2 ;;
+        --*) global+=("$1"); shift ;;
+        *) break ;;
+    esac
+done
+real+=("${global[@]}")
 case " $* " in *" --obj "*|*" --freestanding "*) exec "${real[@]}" "$@" ;; esac
 [ "${1:-}" = compile ] || exec "${real[@]}" "$@"
 shift
+# THE LIBRARY AS THIS COMPILE SEES IT: run.sh compiles from its own copy of
+# the sources (--lib-root), so the library sources it names are that copy's,
+# not the ones the library object was made from.
 declare -A library=()
-while IFS= read -r lib; do library["$lib"]=1; done < "$SEPARATE_LIBS"
+while IFS= read -r lib; do library["$(realpath -m "$lib")"]=1; done < <("${real[@]}" library-sources)
 flags=() sources=() refs=() out=
 while [ $# -gt 0 ]; do
     case "$1" in

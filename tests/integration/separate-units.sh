@@ -44,7 +44,7 @@ if [ ${#tests[@]} = 0 ]; then
 fi
 [ "${tests[*]}" = all ] && tests=("")
 
-export SEPARATE_CORC="$corc" SEPARATE_LIBS="$work/libs.txt" SEPARATE_INDEX="$work/library.idx" SEPARATE_LIB_OBJ="$work/library.o"
+export SEPARATE_CORC="$corc" SEPARATE_INDEX="$work/library.idx" SEPARATE_LIB_OBJ="$work/library.o"
 failed=()
 for name in "${tests[@]}"; do
     CORC="$root/tests/integration/separate/corc-unit" CORC_LIBS="$(tr '\n' ' ' < "$work/libs.txt")" \
