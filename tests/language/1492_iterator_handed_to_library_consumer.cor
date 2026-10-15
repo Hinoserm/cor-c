@@ -1,0 +1,93 @@
+// test: iterator_handed_to_library_consumer
+// expect-exit: 0
+// expect-output:
+// select-sum 360000 True
+// select-max 300000 True
+// select-min -120000 True
+// select-average 60000 True
+// mutated 4 8 8
+// kept -30 -30
+//
+// An iterator made here and handed to a consumer another unit defines --
+// Sum, Max, Min, Average, each walking it through IEnumerable -- is read
+// at the link for the iterator's own type (Escape.LinkTyped): the
+// consumer's body, brought to the link to be read and never inlined,
+// asked what it does to an object of that type. Its virtual calls on the
+// iterator reach the iterator's own methods, GetEnumerator hands back the
+// iterator or a copy of its words (Copies), and the tests of the types it
+// is not (`is List<T>`, `is T[]`) are answered (DeadUnder). Kept by
+// nothing there and its source's word left clean, the iterator and the
+// list it holds die with the call. A list changed after Select and before
+// the walk is walked as changed, and read after it whole; an iterator
+// kept past the call keeps its list.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SelectSum(int n) { List<int> l = Make(n); return l.Select(x => x * 2).Sum(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SelectMax(int n) { List<int> l = Make(n); return l.Select(x => x * 3).Max(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SelectMin(int n) { List<int> l = Make(n); return l.Select(x => x * 2).Min(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SelectAverage(int n) { List<int> l = Make(n); return (int)l.Select(x => x + 2).Average(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int WhereSelectSum(int n) { List<int> l = Make(n); return l.Where(x => x > 0).Select(x => x * 3).Sum(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Mutated(int n)
+    {
+        List<int> l = Make(n);
+        IEnumerable<int> q = l.Select(x => x + 1);
+        l.Add(100);
+        int walked = q.Sum() - 100;
+        l.Add(3);
+        return walked + " " + l.Count + " " + q.Count();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static IEnumerable<int> Kept(int n, out int sum) { List<int> l = Make(n); IEnumerable<int> q = l.Select(x => x * 10); sum = q.Sum(); return q; }
+
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Main()
+    {
+        string freed = Measure(SelectSum, out long total);
+        Console.WriteLine("select-sum " + total + " " + freed);
+        freed = Measure(SelectMax, out total);
+        Console.WriteLine("select-max " + total + " " + freed);
+        freed = Measure(SelectMin, out total);
+        Console.WriteLine("select-min " + total + " " + freed);
+        freed = Measure(SelectAverage, out total);
+        Console.WriteLine("select-average " + total + " " + freed);
+        Console.WriteLine("mutated " + Mutated(6));
+
+        IEnumerable<int> later = Kept(6, out int first);
+        long churn = 0;
+        for (int k = 0; k < 20000; k++) churn += SelectSum(9) + WhereSelectSum(9);
+        Gc.Collect();
+        Console.WriteLine("kept " + first + " " + later.Sum());
+    }
+}

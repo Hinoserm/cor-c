@@ -1,0 +1,126 @@
+// test: iterator_kept_by_a_consumer_of_another_unit
+// units: tests/language/support/1493_consumer_units.cor
+// expect-exit: 0
+// expect-output:
+// total 360000 True
+// first -6 24
+// held 18
+// shared 15 15
+// leaked 9
+//
+// An iterator handed to another unit's function is that function's to
+// keep unless its body, read at the link for the iterator's type
+// (Escape.LinkTyped), follows every use of it to its end. A consumer that
+// walks it whole keeps nothing, and the iterator and its list die with
+// the call. One that keeps the enumerator it took, or the sequence itself,
+// in a static keeps the list too: walked again after the memory freed
+// meanwhile was made again, it is whole. So is a sequence of the
+// program's own whose GetEnumerator hands out one shared walker holding
+// it, and the list an iterator's own body puts in a static.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+sealed class Shared : IEnumerable<int>
+{
+    public static Walker? Last;
+    public readonly List<int> Items;
+    public Shared(List<int> items) { Items = items; }
+    public IEnumerator<int> GetEnumerator()
+    {
+        Last ??= new Walker();
+        Last.Owner = this;
+        Last.At = -1;
+        return Last;
+    }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+sealed class Walker : IEnumerator<int>
+{
+    public Shared? Owner;
+    public int At = -1;
+    public int Current => Owner!.Items[At];
+    object IEnumerator.Current => Current;
+    public bool MoveNext() => ++At < Owner!.Items.Count;
+    public void Reset() { At = -1; }
+    public void Dispose() { }
+}
+
+static class P
+{
+    static List<int>? Leaked;
+
+    static List<int> Make(int n) { List<int> l = new(); for (int i = 0; i < n; i++) l.Add(i - 3); return l; }
+
+    static IEnumerable<int> Leaky(List<int> l)
+    {
+        foreach (int x in l) { Leaked = l; yield return x * 2; }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Total(int n) { List<int> l = Make(n); return Consume.Total(l.Select(x => x * 2)); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int First(int n) { List<int> l = Make(n); return Consume.First(l.Select(x => x * 2)); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Held(int n) { List<int> l = Make(n); return Consume.Hold(l.Select(x => x + 1)); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int SharedSum(int n) { List<int> l = Make(n); return new Shared(l).Sum(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int LeakySum(int n) { List<int> l = Make(n); return Leaky(l).Sum(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Churn()
+    {
+        long made = 0;
+        for (int k = 0; k < 20000; k++) made += Total(9) + Make(9).Count + Make(6).Count;
+        Gc.Collect();
+        return made;
+    }
+
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
+        for (int k = 0; k < N; k++) total += f(9);
+        bool given = Gc.Frees - frees >= N || (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Main()
+    {
+        string freed = Measure(Total, out long total);
+        Console.WriteLine("total " + total + " " + freed);
+
+        int first = 0;
+        for (int k = 0; k < 100; k++) first = First(9);
+        Churn();
+        int rest = 0;
+        while (Consume.Last!.MoveNext()) rest += Consume.Last.Current;
+        Console.WriteLine("first " + first + " " + rest);
+
+        for (int k = 0; k < 100; k++) Held(9);
+        Churn();
+        Console.WriteLine("held " + Consume.Held!.Sum());
+
+        int shared = 0;
+        for (int k = 0; k < 100; k++) shared = SharedSum(9) + 6;
+        Churn();
+        Console.WriteLine("shared " + shared + " " + (Shared.Last!.Owner!.Items.Sum() + 6));
+
+        for (int k = 0; k < 100; k++) LeakySum(9);
+        Churn();
+        Console.WriteLine("leaked " + Leaked!.Sum());
+    }
+}

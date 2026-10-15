@@ -1,0 +1,34 @@
+// The other unit of 1493_iterator_kept_by_a_consumer_of_another_unit:
+// consumers of a sequence, one walking it whole and keeping nothing, one
+// keeping the enumerator it took, one keeping the sequence itself.
+
+using System.Collections.Generic;
+
+public static class Consume
+{
+    public static IEnumerator<int>? Last;
+    public static IEnumerable<int>? Held;
+
+    public static int Total(IEnumerable<int> s)
+    {
+        int t = 0;
+        foreach (int x in s) t += x;
+        return t;
+    }
+
+    public static int First(IEnumerable<int> s)
+    {
+        IEnumerator<int> e = s.GetEnumerator();
+        e.MoveNext();
+        Last = e;
+        return e.Current;
+    }
+
+    public static int Hold(IEnumerable<int> s)
+    {
+        Held = s;
+        int t = 0;
+        foreach (int x in s) t += x;
+        return t;
+    }
+}

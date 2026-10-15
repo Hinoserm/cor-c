@@ -167,6 +167,8 @@ public sealed class Module
     public HashSet<string>? LinkBodies { get; set; }
     public Dictionary<string, (string Descriptor, long Base)[]>? LinkCopies { get; set; }
     public Dictionary<string, DataItem>? LinkTypeItems { get; set; }
+    /// <summary>What each of those copying functions writes over in its argument: the words it is dirty at (Escape's copy fields).</summary>
+    public Dictionary<string, long[]>? LinkCopyDirty { get; set; }
 
     /// <summary>
     /// Call sites no inliner may fold away: the allocations the link may yet

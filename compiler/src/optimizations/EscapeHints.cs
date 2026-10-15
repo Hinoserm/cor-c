@@ -290,6 +290,18 @@ public sealed partial class Escape
             Bodies = m.LinkBodies;
             Copies = m.LinkCopies?.ToDictionary(item => item.Key, item => item.Value.Select(stamp => new Stamp(stamp.Descriptor, stamp.Base)).ToArray(), StringComparer.Ordinal);
             TypeItems = m.LinkTypeItems;
+            // WHAT A COPYING FUNCTION DOES TO ITS ARGUMENT'S FIELDS, as the
+            // unit's own summaries say it (ParameterFields' copy fields): the
+            // solve has none, the argument escaping into what it hands back.
+            if (m.LinkCopyDirty is { } copied)
+                foreach ((string name, long[] dirty) in copied)
+                {
+                    FieldSummary fields = new();
+                    fields.Dirty.UnionWith(dirty);
+                    FieldSummary?[] all = ParameterFields.TryGetValue(name, out FieldSummary?[]? had) && had.Length > 0 ? (FieldSummary?[])had.Clone() : new FieldSummary?[1];
+                    all[0] = fields;
+                    ParameterFields[name] = all;
+                }
         }
 
         public LinkFacts(LifetimeFacts facts)
@@ -346,6 +358,10 @@ public sealed partial class Escape
         HashSet<string>? returnsFirstBefore = _returnsFirst, bodiesBefore = _bodies;
         _returnsFirst = facts.ReturnsFirst; _bodies = facts.Bodies;
         _copies = facts.Copies; _typeItems = facts.TypeItems;
+        // ANOTHER UNIT'S FUNCTION, READ FOR THE TYPE OF WHAT THIS ONE HANDS IT (LinkTyped).
+        pass._linkCallees = callees; pass._linkOwn = facts.Bodies; pass._linkSummaries = summaries;
+        _typedFieldsOf = callees is null ? null : pass.LinkTyped;
+        _typedKeeps = callees is not null;
         try
         {
             // What it calls, by the body the unit archived or the link brought
@@ -360,6 +376,7 @@ public sealed partial class Escape
         {
             _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _stampItems = null;
             _returnsFirst = returnsFirstBefore; _bodies = bodiesBefore;
+            _typedFieldsOf = null; _typedKeeps = false;
         }
         // A READ OF AN OWNED FIELD was judged, by the unit and then the link,
         // among the frees the function had then: a free placed now, while

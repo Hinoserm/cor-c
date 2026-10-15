@@ -189,6 +189,9 @@ public sealed class UnitBackend : IUnitBackend
             bool importedSites = false;
             foreach (IrImport import in Selected(index))
             {
+                // A body brought in to be read only (IrImport.ReadOnly): the
+                // lifetime rules below ask it through Callee, and no inliner here takes it.
+                if (import.ReadOnly) continue;
                 Function body = IrFunctionCodec.Read(import.Body, new IrReadBudget(import.DecodeBytes));
                 if (body.Name != import.Symbol) throw new InvalidDataException("Conflicting IR import identity");
                 // Without a collector, its questions of the collector answered and

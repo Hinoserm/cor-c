@@ -43,6 +43,11 @@ if [ ${#tests[@]} = 0 ]; then
         # regions, which only a closed link finds: a loop's region left on
         # every way out, and a lap's carried chain on the heap
         1070_region_loop_laps
+        # no collector, which only a closed link can say of units (HeapDecision)
+        63_no_heap 762_gcless_static_tables 767_gcless_run_once 768_gcless_latched_once
+        # what a catch may free, over the throws of what the program reaches
+        1483_catch_keeps_and_rethrows 1484_filter_keeps_and_declines 1485_thrower_reads_what_its_catch_took
+        1486_rethrow_caught_again_then_reused
     )
 fi
 [ "${tests[*]}" = all ] && tests=("")

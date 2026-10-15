@@ -20,6 +20,7 @@ public static class BackendProtocol
             writer.Write(import.RegionSites?.Length ?? 0);
             foreach (int ordinal in import.RegionSites ?? Array.Empty<int>()) writer.Write(ordinal);
             writer.Write(import.RegionBoundary);
+            writer.Write(import.ReadOnly);
         }
         writer.Write(request.Retained?.Count ?? -1);
         if (request.Retained is not null)
@@ -131,7 +132,8 @@ public static class BackendProtocol
             int[] ordinals = new int[sites];
             for (int s = 0; s < sites; s++) ordinals[s] = reader.ReadInt32();
             bool boundary = reader.ReadBoolean();
-            imports.Add(new(symbol, body, decodeBytes, sites == 0 ? null : ordinals, boundary)); bytes += length;
+            bool readOnly = reader.ReadBoolean();
+            imports.Add(new(symbol, body, decodeBytes, sites == 0 ? null : ordinals, boundary, readOnly)); bytes += length;
         }
         int retainedCount = reader.ReadInt32();
         if (retainedCount < -1 || retainedCount > 100000) throw new InvalidDataException("Invalid backend retention count");

@@ -205,6 +205,7 @@ public sealed partial class Escape : IModulePass
             m.LinkBodies = new(_defined, StringComparer.Ordinal);
             m.LinkCopies = _copies!.ToDictionary(item => item.Key, item => item.Value.Select(stamp => (stamp.Descriptor, stamp.Base)).ToArray(), StringComparer.Ordinal);
             m.LinkTypeItems = new(_typeItems!, StringComparer.Ordinal);
+            m.LinkCopyDirty = _copyFields.ToDictionary(item => item.Key, item => item.Value.Dirty.Order().ToArray(), StringComparer.Ordinal);
         }
 
         // What is thrown that was not just made, now that the functions
@@ -2385,6 +2386,44 @@ continue;
     /// <summary>The run's TypedFields, for Analyse, which is static.</summary>
     [ThreadStatic] private static Func<string, int, Stamp[], FieldSummary?>? _typedFieldsOf;
 
+    /// <summary>
+    /// Whether a typed answer (_typedFieldsOf) that follows every use of
+    /// the argument also says it is kept by nothing: the link's (LinkTyped),
+    /// which reads the callee's body whatever its summary says. A unit's own
+    /// TypedFields answers only for a parameter that stays already.
+    /// </summary>
+    [ThreadStatic] private static bool _typedKeeps;
+
+    /// <summary>The link's bodies of what a function calls (RunAtLink's callees), and the unit's own functions, which LinkTyped leaves to the unit's run.</summary>
+    private Func<string, Function?>? _linkCallees;
+    private HashSet<string>? _linkOwn;
+    private Dictionary<string, bool[]>? _linkSummaries;
+
+    /// <summary>
+    /// ANOTHER UNIT'S FUNCTION READ AT THE LINK FOR THE TYPES OF WHAT IT IS
+    /// HANDED: its body, brought in to be read (IrLinkOptimizer's read
+    /// imports), asked what it does to parameter `p` when that is an object
+    /// of these types -- the virtual calls on it, and on the copies of its
+    /// words it is handed back (Copies), each type's own method; the tests
+    /// of a type it is not, answered (DeadUnder). Null unless every use of
+    /// the parameter is followed: then it is kept nowhere, and the summary
+    /// says what becomes of its words. Sum, handed Select's iterator, walks
+    /// it through IEnumerable and keeps neither it nor its source.
+    /// </summary>
+    private FieldSummary? LinkTyped(string callee, int p, Stamp[] kinds)
+    {
+        if (_linkCallees is null || _linkSummaries is null || _linkOwn is null || kinds.Length == 0 || _linkOwn.Contains(callee)) return null;
+        string key = "link#" + callee + "#" + p + "#" + string.Join(",", kinds.Select(k => k.Descriptor + "+" + k.Base).Order(StringComparer.Ordinal));
+        if (_typedFields.TryGetValue(key, out FieldSummary? known)) return known;
+        _typedFields[key] = null;
+        Function? g = _linkCallees(callee);
+        if (g is null || p >= g.Params.Count || g.Async is not null || g.Params[p].Type is not (IrType.I32 or IrType.I64)) return null;
+        FieldSummary fields = FieldUses(g, new[] { g.Params[p] }, _linkSummaries, null, null, kinds: kinds);
+        if (PromoteTrace is { } pt && callee.Contains(pt, StringComparison.Ordinal) || FieldTrace is { } ft && callee.Contains(ft, StringComparison.Ordinal))
+            Console.Error.WriteLine($"link typed {callee}:{p} as {string.Join(",", kinds.Select(k => k.Descriptor))}: {(fields.Opaque ? "opaque " + fields.Why : "dirty " + string.Join(",", fields.Dirty.Order()))}");
+        return _typedFields[key] = fields.Opaque ? null : fields;
+    }
+
     /// <summary>What a copying function's copies are stamped (Copies), or null where it is not one.</summary>
     private static Stamp[]? Copies(string callee) => _copies is not null && _copies.TryGetValue(callee, out Stamp[]? stamps) ? stamps : null;
 
@@ -3287,6 +3326,11 @@ continue;
                             {
                                 if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
                                 if (summary is not null && a < summary.Length && !summary[a]) continue;
+                                // THE OBJECT ITSELF, OF THE TYPE STAMPED INTO IT HERE,
+                                // handed to another unit's function the link read for
+                                // that type (LinkTyped): kept by nothing there.
+                                if (_typedKeeps && !borrowing && IsBase(arg.Reg) && RootKinds() is { } own
+                                    && _typedFieldsOf?.Invoke(i.Callee, a, own) is { Opaque: false }) continue;
                                 if (closure && _invokeOnly is not null && _invokeOnly.TryGetValue(i.Callee, out bool[]? only)
                                     && a < only.Length && only[a]) continue;
                                 // Asked for the link (EscapeHints): another
@@ -3775,6 +3819,20 @@ continue;
                 && StampOf(f, made) is Stamp stamp && stamp.Base == Target.Current.DescriptorBytes ? new[] { stamp } : null;
         }
 
+        // THE ONE TYPE EVERY ROOT IS, where each is a block made here and
+        // stamped with it (KindsOf); null otherwise.
+        Stamp[]? RootKinds()
+        {
+            Stamp[]? one = null;
+            foreach (VReg r in roots)
+            {
+                if (KindsOf(r) is not [Stamp stamp]) return null;
+                if (one is null) one = new[] { stamp };
+                else if (one[0] != stamp) return null;
+            }
+            return one;
+        }
+
         // Whether a root may be handed to a call as a box: a block that owns
         // none of its fields, made here (StampedBox) or handed back by a call
         // that holds the object in it (boxes), and every root taken with it.
@@ -4007,8 +4065,13 @@ continue;
                     // What it does to the box's words: for the box's own
                     // types where those are known (TypedFields), so a call
                     // on it inside reaches its type's method alone.
+                    FieldSummary? typedUses = boxKinds is { Length: > 0 } && (!keeps || _typedKeeps) ? _typedFieldsOf?.Invoke(t, p, boxKinds) : null;
+                    // KEPT BY NOTHING, FOR THE BOX'S OWN TYPES: another unit's
+                    // function the link read for them (LinkTyped), every use of
+                    // the box there followed -- none kept, returned or stored.
+                    if (keeps && _typedKeeps && typedUses is { Opaque: false }) keeps = false;
                     FieldSummary? uses = keeps ? null
-                        : boxKinds is { Length: > 0 } && _typedFieldsOf?.Invoke(t, p, boxKinds) is { } typedUses ? typedUses
+                        : typedUses is not null ? typedUses
                         : _fieldsOf is not null && _fieldsOf.TryGetValue(t, out FieldSummary?[]? fields) && p < fields.Length ? fields[p] : null;
                     if (keeps || uses is not { Opaque: false } || holds.Any(uses.Dirty.Contains))
                     {
