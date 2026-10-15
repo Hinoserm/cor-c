@@ -3877,10 +3877,23 @@ static class Runtime
         long vtable = Sys.Peek(value) & WordSize.AddressMask;
         if (vtable == 0 || !DescribedAs(vtable - DescWordsHere * w, element))
         {
-            Gc.SayFreed("array store: the value", value);
-            Gc.SayFreed("array store: the array", array);
-            throw new ArrayTypeMismatchException();
+            ArrayStoreRefused(array, value);
         }
+    }
+
+    /// The refusal, out of line and never inlined: what the free journal knows
+    /// of the value and the array, said, then the exception. THE CHECK IS
+    /// INLINED AT EVERY REFERENCE STORE INTO A SHARED ARRAY, and the analyses
+    /// know both routines by name to keep nothing and write no field
+    /// (Escape.KeepsNothing); with the report spliced into the check, every
+    /// value stored and every array stored into escaped through the report's
+    /// raw writes, and an iterator's sets went back to the collector (1080).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ArrayStoreRefused(long array, long value)
+    {
+        Gc.SayFreed("array store: the value", value);
+        Gc.SayFreed("array store: the array", array);
+        throw new ArrayTypeMismatchException();
     }
 
     /// Whether an object is an array whose elements are of `element` or

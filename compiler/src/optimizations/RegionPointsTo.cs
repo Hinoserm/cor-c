@@ -2660,6 +2660,7 @@ public sealed class RegionPointsTo : IModulePass
     private static readonly string[] TypeChecks =
     {
         "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64",
+        Opt.Escape.ArrayStoreRefused,
         "m_Runtime_ArrayOf_2_V$I64_V$I64",
         "m_Runtime_DescribedAs_2_V$I64_V$I64",
         "m_Runtime_ShapedAs_7_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64",

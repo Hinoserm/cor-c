@@ -136,6 +136,19 @@ public sealed partial class Escape
     /// </summary>
     private void SummariseCycle(List<Function> cycle, Dictionary<string, bool[]> summaries)
     {
+        // A RUNTIME ROUTINE KNOWN TO KEEP NOTHING (KeepsNothing) keeps nothing
+        // in the unit that holds its body too. Its body was read instead, and
+        // a refusal's report -- the free journal's word printed digit by digit
+        // through raw stores -- made every value an array store check refused
+        // escape: stored into an array, no List, Stack or Queue element was
+        // ever its collection's own (1080).
+        if (cycle.Count == 1 && KnownToKeepNothing(cycle[0].Name))
+        {
+            Function known = cycle[0];
+            _paramHints[known.Name] = known.Params.Select(_ => (LifetimeCondition?)new LifetimeCondition()).ToArray();
+            summaries[known.Name] = new bool[known.Params.Count];
+            return;
+        }
         if (cycle.Count == 1 && !CallsItself(cycle[0]))
         {
             LifetimeCondition?[] hints = ParameterHints(cycle[0], summaries);

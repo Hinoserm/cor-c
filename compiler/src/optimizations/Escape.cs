@@ -1967,6 +1967,8 @@ continue;
     private static readonly (string Name, int Params)[] KeepsNothing =
     {
         ("m_Runtime_ArrayStoreCheck_2_V$I64_V$I64", 2),
+        // Its refusal, out of line: says what the free journal knows and throws.
+        (ArrayStoreRefused, 2),
         // A failed cast's exception names the object's type; it keeps no reference.
         ("m_Runtime_InvalidCastTo_2_V$Any_V$String", 2),
         // The string routines that read their strings and keep none of them:
@@ -2491,6 +2493,13 @@ continue;
         foreach ((string name, int count) in KeepsNothing) summaries.TryAdd(name, new bool[count]);
     }
 
+    /// <summary>Whether `name` is one of the routines known to keep nothing it is handed (KeepsNothing).</summary>
+    internal static bool KnownToKeepNothing(string name)
+    {
+        foreach ((string known, int _) in KeepsNothing) if (known == name) return true;
+        return false;
+    }
+
     private void InvokeOnly(Function f, Dictionary<string, bool[]> summaries)
     {
         if (!summaries.TryGetValue(f.Name, out bool[]? escapes) || !escapes.Any(e => e)) return;
@@ -2533,7 +2542,10 @@ continue;
     }
 
     internal static bool NeverWritesFields(string callee) =>
-        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64";
+        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64" || callee == ArrayStoreRefused;
+
+    /// <summary>Runtime.ArrayStoreRefused(array, value): an array store check's refusal, kept out of line.</summary>
+    internal const string ArrayStoreRefused = "m_Runtime_ArrayStoreRefused_2_V$I64_V$I64";
 
     private enum SourceKind { Null, Static, Parameter, Fresh, Unknown }
     private readonly record struct Source(SourceKind Kind, int Index, Instr? Made);
