@@ -44,9 +44,22 @@ struct Guid {
 
     /// VERSION 4: sixteen random bytes with six bits spoken for -- four saying
     /// how it was made and two saying which variant it is. .NET generates the
-    /// same kind, from the same source of randomness the system offers.
+    /// same kind, from the same source of randomness the system offers --
+    /// taken from the system itself, as .NET's Guid takes it, not through the
+    /// cryptography library, which stands on the IO library this one is under.
     public static Guid NewGuid() {
-        byte[] bytes = RandomNumberGenerator.GetBytes(16);
+        byte[] bytes = new byte[16];
+        int done = 0;
+        while (done < bytes.Length) {
+            long n = Os.GetRandom(bytes, done, bytes.Length - done);
+            if (n == -Err.Intr) {
+                continue;
+            }
+            if (n <= 0) {
+                throw new IOException("the system has no randomness to give");
+            }
+            done = done + (int)n;
+        }
 
         bytes[7] = (byte)((bytes[7] & 0x0F) | 0x40);
         bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
