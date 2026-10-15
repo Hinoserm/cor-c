@@ -1,0 +1,17 @@
+// test: anonymous_method_parameter_type_refused
+// expect-compile-error: parameter 1 of the lambda is declared 'long', and the delegate's is 'int'
+//
+// An anonymous method's parameter types are the delegate's exactly (C# 12.19,
+// CS1678): `delegate (long x) { ... }` is no Func<int, int>, however an int
+// would convert to a long.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        Func<int, int> f = delegate (long x) { return 1; };
+        Console.WriteLine(f(1));
+    }
+}

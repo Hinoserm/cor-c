@@ -7861,6 +7861,32 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckLambda(LambdaExpr lam, Type wanted)
     {
+        // AN ANONYMOUS METHOD WITH NO PARAMETER LIST, `delegate { ... }`, is
+        // the delegate's parameters, whatever they are, and reads none of
+        // them: checked as the lambda with the delegate's list under names
+        // nothing can write (AnonymousFilled), which lowering builds in its
+        // place. Never a delegate with an `out` parameter, which it would
+        // have to assign (C# 12.19, CS1688), and with no type of its own.
+        if (lam.NoSignature)
+        {
+            if (NaturalTarget(wanted))
+            {
+                Error(lam, "an anonymous method with no parameter list has no type of its own: it needs a delegate type to be");
+                return Type.Error;
+            }
+            if (!(wanted.Symbol?.Decl?.TypeParams.Count > 0) && Invoked(wanted) is { Params.Count: > 0 } every)
+            {
+                if (HasOutParameter(every))
+                {
+                    Error(lam, $"an anonymous method with no parameter list cannot be '{wanted.Symbol!.Name}', which has an 'out' parameter it would have to assign");
+                    return Type.Error;
+                }
+                LambdaExpr filled = AnonymousFilled(lam, every);
+                _r.Rewrites[lam] = filled;
+                return CheckLambda(filled, wanted);
+            }
+        }
+
         // CONVERTED TO OBJECT, a lambda is its natural type (C# 10), and that
         // delegate is the object (Binder.NaturalTypes).
         if (NaturalTarget(wanted))
@@ -10391,8 +10417,14 @@ public sealed partial class Binder
     /// true. Nothing in C# source that this compiler has to read does that, and
     /// giving one out here would mean claiming a bit after they were numbered.
     /// </summary>
-    /// <summary>A reference without its `?`; anything else as it is.</summary>
-    private static Type Unmarked(Type e) => e.Nullable && e.IsReference && !e.IsPointer ? e.AsNonNullable() : e;
+    /// <summary>
+    /// A reference without its `?`, and `dynamic` as the object it is stored
+    /// as (one shape serves `(dynamic, int)` and `(object, int)`, whichever was
+    /// made first); anything else as it is.
+    /// </summary>
+    private static Type Unmarked(Type e)
+        => e.Dynamic && e.Prim == Prim.Any && !e.IsArray && !e.IsPointer ? Type.Any
+            : e.Nullable && e.IsReference && !e.IsPointer ? e.AsNonNullable() : e;
 
     /// <summary>
     /// Item <paramref name="which"/> of a tuple as THIS use wrote it: `(int,
@@ -11254,6 +11286,36 @@ public sealed partial class Binder
     private static MethodSymbol? Invoked(Type t)
         => t.Symbol?.FindMethods("Invoke").FirstOrDefault();
 
+    /// <summary>Whether a delegate's Invoke has an `out` parameter, as its declaration says.</summary>
+    private static bool HasOutParameter(MethodSymbol invoke)
+        => invoke.Decl is MethodDecl declared && declared.Params.Any(p => p.IsOut);
+
+    /// <summary>
+    /// `delegate { ... }` as the lambda it is for this delegate: the same
+    /// body, and the Invoke's parameters -- passed as it passes them -- under
+    /// names no source can spell. One per anonymous method and list shape, so
+    /// every binding round checks the same node.
+    /// </summary>
+    private LambdaExpr AnonymousFilled(LambdaExpr lam, MethodSymbol invoke)
+    {
+        string shape = string.Concat(invoke.Params.Select(p => p.ByRef ? p.ReadOnly ? 'i' : 'r' : p.ReadOnly ? 'i' : 'v'));
+        if (_anonymousFilled.TryGetValue((lam, shape), out LambdaExpr? made)) return made;
+        made = new LambdaExpr { BlockBody = lam.BlockBody, Async = lam.Async, Line = lam.Line, Col = lam.Col };
+        for (int i = 0; i < invoke.Params.Count; i++)
+        {
+            made.WritableParams.Add(new Param
+            {
+                Name = "<>a" + i, Type = new TypeRef { Name = "", Line = lam.Line, Col = lam.Col },
+                IsRef = invoke.Params[i].ByRef, IsReadOnlyRef = invoke.Params[i].ReadOnly,
+                Line = lam.Line, Col = lam.Col,
+            });
+        }
+        _anonymousFilled[(lam, shape)] = made;
+        return made;
+    }
+
+    private readonly Dictionary<(LambdaExpr, string), LambdaExpr> _anonymousFilled = new();
+
     /// <summary>
     /// What a lambda evaluates to, given what its parameters have turned out
     /// to be -- or null when they have not turned out to be anything yet.
@@ -11264,6 +11326,9 @@ public sealed partial class Binder
     /// </summary>
     private Type? Produces(MethodSymbol m, Type want, LambdaExpr lam, Dictionary<string, Type> bound)
     {
+        // `delegate { ... }` asked as the lambda it is for this delegate.
+        if (lam.NoSignature && Invoked(want) is { Params.Count: > 0 } every && !HasOutParameter(every))
+            lam = AnonymousFilled(lam, every);
         if (Invoked(want) is not { } invoke || invoke.Params.Count != lam.Params.Count
             || lam.Body is null && lam.BlockBody is null)
         {
@@ -19096,7 +19161,8 @@ public sealed partial class Binder
                 // Action -- `Describe((int y) => y * 10)` over Describe(object).)
                 if (c.Args[i] is LambdaExpr lam && m.Params[i].Type.ParamName is null
                     && !(lam.TypesWritten && (NaturalTarget(m.Params[i].Type) || ReferenceEquals(m.Params[i].Type.Symbol, DelegateRoot())))
-                    && !invokes.Any(v => v.Params.Count == lam.Params.Count
+                    && !invokes.Any(v => lam.NoSignature ? !HasOutParameter(v)
+                                      : v.Params.Count == lam.Params.Count
                                       && (!lam.TypesWritten
                                           || Enumerable.Range(0, lam.Params.Count)
                                                        .All(k => WrittenParameterMismatch(lam, k, m.Params[i].Type, v) is null))))

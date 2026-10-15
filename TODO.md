@@ -386,11 +386,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   open defects, and add standard-behavior regression coverage. A feature
   with a known compatibility failure must not be marked complete merely
   because a custom workflow passes.
-- [ ] Anonymous methods (C# 12.21): `delegate { ... }` and
-  `delegate (int x) { ... }` are not parsed at all. The parameterless form
-  converts to a delegate of any parameter list. When they are, a cast may be
-  followed by `delegate` (Parser.CastCanFollow) like any keyword but `as` and
-  `is`.
+- [x] Anonymous methods (C# 12.19): `delegate (int x) { ... }` is a block
+  lambda with its types written; `delegate { ... }` converts to a delegate of
+  any parameters but `out` ones and has no natural type; a cast may be
+  followed by `delegate` (2066-2069).
 - [ ] Methods made alike by substitution: `class P<T> { M(T); M(string); }`
   is valid C#, and so is P<string>. The compiler refuses the copy ("already
   defines a member"). C# keeps both members. A call on P<string> picks M(string)
@@ -403,10 +402,10 @@ tasks below track that work; moving files alone does not reduce the working set.
   - generic bodies bound against the template's parameters.
   Until then such a copy only named in a body is declared while binding, so the
   refusal stays a message (Binder.MayCollide).
-- [ ] `dynamic` and `object` as type arguments are one type (C# 10.2.2's
-  identity conversion): Keeper<dynamic> is Keeper<object>, both at run time
-  and for conversions. The compiler makes them two copies and refuses
-  `Use.Run(Keeper<dynamic>)` handed `Make.New<dynamic>()`.
+- [x] `dynamic` and `object` as type arguments are one type (C# 10.2.2's
+  identity conversion): Keeper<dynamic> is Keeper<object>, one copy with one
+  set of statics, and a member typed T read through a `dynamic` use is
+  dynamic (Monomorphiser.DynamicAsObject; 2065).
 
 ## Project compilation and source organization
 

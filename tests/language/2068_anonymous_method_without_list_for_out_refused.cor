@@ -1,0 +1,19 @@
+// test: anonymous_method_without_list_for_out_refused
+// expect-compile-error: an anonymous method with no parameter list cannot be 'TryIt', which has an 'out' parameter it would have to assign
+//
+// `delegate { ... }` converts to a delegate of any parameters but `out` ones
+// (C# 12.19, CS1688): it can name none of them, so an `out` one would be
+// left unassigned.
+
+using System;
+
+delegate bool TryIt(out int v);
+
+static class P
+{
+    static void Main()
+    {
+        TryIt t = delegate { return true; };
+        Console.WriteLine(t(out int v));
+    }
+}

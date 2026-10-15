@@ -1,0 +1,23 @@
+// The other unit of 2065_dynamic_and_object_one_type_argument: a generic
+// class with a static of its own, a generic method that makes one, and
+// methods written against Keeper<object> and Keeper<dynamic>.
+using System.Collections.Generic;
+
+public class Keeper<T>
+{
+    public static int Made;
+    public Keeper() { Made++; }
+    public virtual int Keep() => 1;
+}
+
+public static class Make
+{
+    public static Keeper<T> New<T>() => new Keeper<T>();
+}
+
+public static class Use
+{
+    public static int Run(Keeper<object> k) => k.Keep();
+    public static int RunDynamic(Keeper<dynamic> k) => k.Keep();
+    public static int Count(IEnumerable<dynamic> items) { int n = 0; foreach (var i in items) n++; return n; }
+}

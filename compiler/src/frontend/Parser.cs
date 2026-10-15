@@ -5340,7 +5340,7 @@ public sealed class Parser
     /// so the binder fills these in from the wanted type and nothing before
     /// the binder could.
     /// </summary>
-    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null, List<TypeRef?>? types = null)
+    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null, List<TypeRef?>? types = null, bool noSignature = false)
     {
         // A block lambda's `return default;` waits for the binder, which knows
         // what the lambda is converted to; the method's return type is not it.
@@ -5352,7 +5352,7 @@ public sealed class Parser
         // first gives the lambda a natural type.
         bool typed = types is { Count: > 0 } && types.All(t => t is not null);
         LambdaExpr done = At(Tok.LBrace)
-            ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed }
+            ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed, NoSignature = noSignature }
             : new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed };
         _returns = savedReturns;
 
@@ -7910,7 +7910,8 @@ public sealed class Parser
             case Tok.KwStatic
                 when Ahead().Kind == Tok.Ident && _t[_i + 2].Kind == Tok.FatArrow && _i + 2 != _armArrow
                   || Ahead().Kind == Tok.LParen && IsLambdaHeadAt(_i + 1)
-                  || Ahead().Kind == Tok.Ident && Ahead().Text == "async":
+                  || Ahead().Kind == Tok.Ident && Ahead().Text == "async"
+                  || Ahead().Kind == Tok.KwDelegate && _t[_i + 2].Kind is Tok.LParen or Tok.LBrace:
             {
                 _i++;
                 return ParseUnary();
@@ -7920,14 +7921,15 @@ public sealed class Parser
             // modifier here and nowhere else in an expression.
             case Tok.Ident when Cur.Text == "async"
                 && (Ahead().Kind == Tok.Ident && _t[_i + 2].Kind == Tok.FatArrow && _i + 2 != _armArrow
-                    || Ahead().Kind == Tok.LParen && IsLambdaHeadAt(_i + 1)):
+                    || Ahead().Kind == Tok.LParen && IsLambdaHeadAt(_i + 1)
+                    || Ahead().Kind == Tok.KwDelegate && _t[_i + 2].Kind is Tok.LParen or Tok.LBrace):
             {
                 _i++;
                 LambdaExpr inner = (LambdaExpr)ParseUnary();
                 LambdaExpr made = new()
                 {
                     Body = inner.Body, BlockBody = inner.BlockBody, Async = true, TypesWritten = inner.TypesWritten,
-                    Returns = inner.Returns, ReturnMods = inner.ReturnMods,
+                    NoSignature = inner.NoSignature, Returns = inner.Returns, ReturnMods = inner.ReturnMods,
                     Line = at.Line, Col = at.Col,
                 };
                 made.WritableAttributes.AddRange(inner.Attributes);
@@ -8015,6 +8017,33 @@ public sealed class Parser
             case Tok.LParen when StartsTypedLambda():
                 return TypedLambda(at);
 
+            // AN ANONYMOUS METHOD (C# 12.19): `delegate (int x) { return x *
+            // 2; }`, a block lambda with every parameter's type written, or
+            // `delegate { ... }` with no list at all (LambdaExpr.NoSignature).
+            // Never `delegate*`, a function pointer's type.
+            case Tok.KwDelegate when Ahead().Kind is Tok.LParen or Tok.LBrace:
+            {
+                _i++;
+                List<string> names = new();
+                List<Tok> modifiers = new();
+                List<TypeRef?> types = new();
+                bool listed = Take(Tok.LParen);
+                if (listed)
+                {
+                    while (!At(Tok.RParen))
+                    {
+                        Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) ? _t[_i++].Kind : Tok.End;
+                        types.Add(ParseTypeRef());
+                        names.Add(Expect(Tok.Ident, "an anonymous method's parameter name").Text);
+                        modifiers.Add(modifier);
+                        if (!Take(Tok.Comma)) break;
+                    }
+                    Expect(Tok.RParen, "')' after the anonymous method's parameters");
+                }
+                if (!At(Tok.LBrace)) Expect(Tok.LBrace, "a block, the anonymous method's body");
+                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers, types, noSignature: !listed);
+            }
+
             case Tok.LParen:
             {
                 // A cast and a parenthesised expression start identically.
@@ -8060,7 +8089,7 @@ public sealed class Parser
         => k is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.InterpStr or Tok.Char
              or Tok.LParen or Tok.KwThis or Tok.KwBase or Tok.KwNew
              or Tok.KwTrue or Tok.KwFalse or Tok.KwNull or Tok.Bang or Tok.Tilde
-             or Tok.KwDefault or Tok.KwAwait;
+             or Tok.KwDefault or Tok.KwAwait or Tok.KwDelegate;
 
     /// <summary>The names that can only ever be a type, never a variable.</summary>
     private static readonly HashSet<string> Predefined = new(StringComparer.Ordinal)

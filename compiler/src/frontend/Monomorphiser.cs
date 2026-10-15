@@ -1791,6 +1791,35 @@ public sealed class Monomorphiser
         };
     }
 
+    /// <summary>
+    /// A type argument's `dynamic` as the specialisation is named and made:
+    /// `object`, which is what it is at run time -- Keeper&lt;dynamic&gt; and
+    /// Keeper&lt;object&gt; are one class with one set of statics, in C# and
+    /// here -- and so too in an array's elements, a tuple's items and a
+    /// constructed argument's own arguments. Not where the program has a type
+    /// of its own called `dynamic`.
+    /// </summary>
+    private TypeRef DynamicAsObject(TypeRef a)
+    {
+        bool bare = a.Name == "dynamic" && a.Args.Count == 0 && a.PointerDepth == 0 && !_paths.Contains("dynamic");
+        List<TypeRef> args = a.Args;
+        for (int i = 0; i < a.Args.Count; i++)
+        {
+            TypeRef item = DynamicAsObject(a.Args[i]);
+            if (ReferenceEquals(item, a.Args[i])) continue;
+            if (ReferenceEquals(args, a.Args)) args = new List<TypeRef>(a.Args);
+            args[i] = item;
+        }
+        if (!bare && ReferenceEquals(args, a.Args)) return a;
+        return new TypeRef
+        {
+            Name = bare ? "object" : a.Name, Arguments = args, UseArgs = a.UseArgs, ArrayRank = a.ArrayRank,
+            Nullable = a.Nullable, ElementNullable = a.ElementNullable,
+            InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
+            Line = a.Line, Col = a.Col,
+        };
+    }
+
     /// <summary>Records that a specialisation is needed and returns its name.</summary>
     private string Instantiate(string name, List<TypeRef> args, Node at)
     {
@@ -1809,6 +1838,9 @@ public sealed class Monomorphiser
         // (Binder.ContextualResult). Spelled with the marks, they were two
         // specialisations the checker could not convert between.
         args = args.Select(WithoutReferenceMarks).ToList();
+        // AND A `dynamic` ARGUMENT IS `object`'S (DynamicAsObject): one
+        // specialisation, the use keeping its `dynamic` for the checker.
+        args = args.Select(DynamicAsObject).ToList();
 
         string writtenName = name;
         name = GenericPath(name, args.Count, at) ?? Path(name);
@@ -3351,7 +3383,7 @@ public sealed class Monomorphiser
                     BlockBody = lambda.BlockBody is null ? null : (Block)Rewrite(lambda.BlockBody, map),
                     Async = lambda.Async, Line = lambda.Line, Col = lambda.Col,
                     Returns = lambda.Returns is null ? null : Sub(lambda.Returns, map), ReturnMods = lambda.ReturnMods,
-                    TypesWritten = lambda.TypesWritten,
+                    TypesWritten = lambda.TypesWritten, NoSignature = lambda.NoSignature,
                 };
                 if (lambda.Attributes.Count > 0) made.WritableAttributes.AddRange(lambda.Attributes);
                 foreach (Param p in lambda.Params)

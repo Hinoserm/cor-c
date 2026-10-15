@@ -120,6 +120,11 @@ public sealed partial class Binder
     private TypeRef? NaturalLambda(LambdaExpr lam, out string? why)
     {
         why = null;
+        if (lam.NoSignature)
+        {
+            why = "an anonymous method with no parameter list has none";
+            return null;
+        }
         if (lam.Params.Count > 0 && !lam.TypesWritten)
         {
             why = "a lambda's parameter types must be written for it to have one";

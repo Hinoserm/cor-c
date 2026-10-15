@@ -175,16 +175,18 @@ public sealed partial class Binder
 
     /// <summary>
     /// WHETHER A USE SAYS MORE THAN ITS SPECIALISATION: tuple element names,
-    /// or a reference argument's `?` -- which names no specialisation of its
-    /// own (one List serves List&lt;JsonNode&gt; and List&lt;JsonNode?&gt;), so the
-    /// member types the checker sees at this use are worked out from it.
+    /// a reference argument's `?` -- which names no specialisation of its
+    /// own (one List serves List&lt;JsonNode&gt; and List&lt;JsonNode?&gt;) -- or a
+    /// `dynamic` argument, the same of object (one List serves List&lt;dynamic&gt;
+    /// and List&lt;object&gt;): the member types the checker sees at this use are
+    /// worked out from it.
     /// </summary>
     private static bool HasContextualUse(Type type) => HasTupleUse(type) || HasReferenceMark(type, 0);
 
     private static bool HasReferenceMark(Type type, int depth)
     {
         if (depth > 8) return false;
-        if (depth > 0 && type.Nullable && type.IsReference) return true;
+        if (depth > 0 && (type.Nullable && type.IsReference || type.Dynamic)) return true;
         if (type.Element is Type element && HasReferenceMark(element, depth + 1)) return true;
         if (type.UseArgs is not null)
             foreach (Type argument in type.UseArgs)

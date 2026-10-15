@@ -1,0 +1,44 @@
+// test: dynamic_and_object_one_type_argument
+// units: tests/language/support/2065_dynamic_keeper_units.cor
+// expect-exit: 0
+// expect-output:
+// 1 1
+// True True
+// 3 3
+// 3 5
+// object
+// 2
+//
+// `dynamic` AS A TYPE ARGUMENT IS `object`: Keeper<dynamic> and
+// Keeper<object> are one class, with one set of statics, and either converts
+// to the other where the two are written in different units -- what one
+// unit's generic method makes is what the other's parameter takes. A member
+// typed T, read through a use written with `dynamic`, is dynamic (a List of
+// dynamic's element has a Length nobody declared); a template's own code is
+// bound against T, so a call in it picks the overload for object.
+
+using System;
+using System.Collections.Generic;
+
+static class Over { public static string F(object o) => "object"; public static string F(string s) => "string"; }
+class Pick<T> { public string Which(T t) => Over.F(t); }
+
+static class P
+{
+    static void Main()
+    {
+        int a = Use.Run(Make.New<dynamic>());
+        int b = Use.RunDynamic(Make.New<object>());
+        Console.WriteLine(a + " " + b);
+        object k = new Keeper<dynamic>();
+        Console.WriteLine((typeof(Keeper<dynamic>) == typeof(Keeper<object>)) + " " + (k is Keeper<object>));
+        Console.WriteLine(Keeper<object>.Made + " " + Keeper<dynamic>.Made);
+        List<dynamic> words = new List<object> { "abc", "de" };
+        int total = 0;
+        foreach (var w in words) total += w.Length;
+        Console.WriteLine(words[0].Length + " " + total);
+        Console.WriteLine(new Pick<dynamic>().Which("x"));
+        IEnumerable<object> seq = words;
+        Console.WriteLine(Use.Count(seq));
+    }
+}

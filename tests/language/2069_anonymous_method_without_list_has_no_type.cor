@@ -1,0 +1,14 @@
+// test: anonymous_method_without_list_has_no_type
+// expect-compile-error: an anonymous method with no parameter list has none
+//
+// `delegate { ... }` has no natural type (C# 10, CS8917): with no list it
+// could be a delegate of any parameters, so `var` has nothing to be.
+
+static class P
+{
+    static void Main()
+    {
+        var d = delegate { };
+        d();
+    }
+}

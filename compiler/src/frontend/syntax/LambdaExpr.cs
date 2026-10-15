@@ -45,6 +45,14 @@ public sealed class LambdaExpr : Expr
     public bool TypesWritten { get; init; }
 
     /// <summary>
+    /// `delegate { ... }`: an anonymous method written with no parameter list
+    /// at all, which converts to a delegate of any parameters but `out` ones
+    /// and can read none of them (C# 12.19). `delegate () { ... }` has a list,
+    /// an empty one, and is not this.
+    /// </summary>
+    public bool NoSignature { get; init; }
+
+    /// <summary>
     /// `[A] (int x) => x`: the lambda's own attributes (C# 10), kept as
     /// written. Nothing here reads them; .NET shows them only to reflection.
     /// </summary>

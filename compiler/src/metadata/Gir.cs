@@ -976,6 +976,7 @@ public static class Gir
                     Type(la.Returns);
                     I32((int)la.ReturnMods);
                     Bool(la.TypesWritten);
+                    Bool(la.NoSignature);
                     break;
 
                 case SwitchExpr se:
@@ -1927,7 +1928,7 @@ public static class Gir
                     Block? blockBody = Stmt() as Block;
                     TypeRef? returns = TypeOrNull();
                     Mods returnMods = (Mods)I32();
-                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = blockBody, Returns = returns, ReturnMods = returnMods, TypesWritten = Bool() };
+                    LambdaExpr la = new() { Async = async, Body = body, BlockBody = blockBody, Returns = returns, ReturnMods = returnMods, TypesWritten = Bool(), NoSignature = Bool() };
 
                     la.WritableParams.AddRange(ps);
                     return la;
