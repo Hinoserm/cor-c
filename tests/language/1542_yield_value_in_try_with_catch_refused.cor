@@ -1,0 +1,24 @@
+// test: yield_value_in_try_with_catch_refused
+// expect-compile-error: CS1626: Cannot yield a value in the body of a try block with a catch clause
+//
+// AN ITERATOR YIELDS NO VALUE FROM A TRY BLOCK THAT HAS A CATCH (C# CS1626):
+// the caller resumes it from outside the handler, which an exception thrown
+// after the yield would never reach. A yield break may stand there, and a
+// try with only a finally may yield.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static IEnumerable<int> Numbers()
+    {
+        try { yield return 1; }
+        catch (InvalidOperationException) { Console.WriteLine("caught"); }
+    }
+
+    static void Main()
+    {
+        foreach (int n in Numbers()) Console.WriteLine(n);
+    }
+}

@@ -1,0 +1,21 @@
+// test: goto_case_without_its_label_refused
+// expect-compile-error: CS0159: No such label 'case 3:' within the scope of the goto statement
+//
+// A GOTO CASE NEEDS A LABEL OF ITS VALUE IN THE SWITCH (C# CS0159), and C#
+// names the one it looked for by that value: 'case 3:', or 'default:' for a
+// goto default in a switch with none.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        int k = 1;
+        switch (k)
+        {
+            case 1: Console.WriteLine("one"); goto case 3;
+            case 2: Console.WriteLine("two"); break;
+        }
+    }
+}

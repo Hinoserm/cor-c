@@ -30,6 +30,45 @@ public sealed partial class Binder
     private readonly Dictionary<LambdaExpr, LocalDecl> _localFunctionOf = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LocalDecl, HashSet<NameExpr>> _localFunctionRefs = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>The lambdas and local functions of a body being checked, put aside while another body is (DeclareMembersNow).</summary>
+    private sealed record SetAsideLambdas(int Depth, LambdaExpr[] Method, LambdaExpr[] Inner,
+        KeyValuePair<LambdaExpr, LocalDecl>[] Functions, KeyValuePair<LocalDecl, HashSet<NameExpr>>[] Refs);
+
+    /// <summary>
+    /// THE BODY BEING CHECKED KEEPS ITS OWN. Another checked in the middle of
+    /// it took the lambdas it had met for its own -- arranged them into its
+    /// environment -- and cleared them when it was done, so a local function
+    /// of the first was a lambda from then on (Binder.EnterFunctionBody) and
+    /// none of them was arranged. Null when there is nothing to put aside.
+    /// </summary>
+    private SetAsideLambdas? PutLambdasAside()
+    {
+        if (_lambdaDepth == 0 && _methodLambdas.Count == 0 && _innerLambdas.Count == 0
+            && _localFunctionOf.Count == 0 && _localFunctionRefs.Count == 0) return null;
+        SetAsideLambdas aside = new(_lambdaDepth, _methodLambdas.ToArray(), _innerLambdas.ToArray(),
+            _localFunctionOf.ToArray(), _localFunctionRefs.ToArray());
+        _lambdaDepth = 0;
+        _methodLambdas.Clear();
+        _innerLambdas.Clear();
+        _localFunctionOf.Clear();
+        _localFunctionRefs.Clear();
+        return aside;
+    }
+
+    private void TakeLambdasBack(SetAsideLambdas? aside)
+    {
+        if (aside is null) return;
+        _lambdaDepth = aside.Depth;
+        _methodLambdas.Clear();
+        _methodLambdas.UnionWith(aside.Method);
+        _innerLambdas.Clear();
+        _innerLambdas.UnionWith(aside.Inner);
+        _localFunctionOf.Clear();
+        foreach (KeyValuePair<LambdaExpr, LocalDecl> one in aside.Functions) _localFunctionOf[one.Key] = one.Value;
+        _localFunctionRefs.Clear();
+        foreach (KeyValuePair<LocalDecl, HashSet<NameExpr>> one in aside.Refs) _localFunctionRefs[one.Key] = one.Value;
+    }
+
     /// <summary>
     /// A CALL-ONLY LOCAL FUNCTION NEEDS NO HEAP. A local function lowered as a
     /// lambda made a cell on the heap for every variable it captured and a

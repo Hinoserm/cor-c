@@ -1,0 +1,27 @@
+// test: goto_case_out_of_lambda_refused
+// expect-compile-error: CS0159: No such label 'case 2:' within the scope of the goto statement
+//
+// A GOTO CASE IN A LAMBDA FINDS THE SWITCH IT IS WRITTEN IN, AND MAY NOT GO
+// THERE (C# CS0159): the lambda's body is another method, run whenever the
+// delegate is called. A local function's or an anonymous method's is the
+// same, and `goto default` names the label 'default'.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        int k = 1;
+        switch (k)
+        {
+            case 1:
+                Action next = () => { goto case 2; };
+                next();
+                break;
+            case 2:
+                Console.WriteLine("two");
+                break;
+        }
+    }
+}

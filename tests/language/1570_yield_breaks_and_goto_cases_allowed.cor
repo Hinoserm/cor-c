@@ -1,0 +1,105 @@
+// test: yield_breaks_and_goto_cases_allowed
+// expect-exit: 0
+// expect-output:
+// 0: 1
+// 1: 1
+// 2: 12
+// 36
+// abxydRB5612!
+//
+// WHAT STAYS LEGAL BESIDE C#'s CS1626, CS1631 AND CS0159: a yield break in a
+// try block with a catch and in a catch; an iterator local function declared
+// in either, whose yields are its own; goto case and goto default by a
+// string, a char, an enum and a long constant; and a switch inside a lambda,
+// whose goto case is its own.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    enum Color { Red, Green, Blue }
+
+    // yield break may stand in a try block with a catch and in a catch.
+    static IEnumerable<int> BreakInTryAndCatch(int k)
+    {
+        yield return 1;
+        try { if (k == 0) yield break; Fail(k); }
+        catch (InvalidOperationException) { if (k == 1) yield break; }
+        yield return 2;
+    }
+
+    static void Fail(int k) { if (k > 0) throw new InvalidOperationException("x"); }
+
+    // An iterator local function declared in a try block with a catch, and
+    // one in a catch: their yields are their own.
+    static int IteratorsInHandlers()
+    {
+        int total = 0;
+        try
+        {
+            IEnumerable<int> Up(int n) { for (int i = 1; i <= n; i++) yield return i; }
+            foreach (int v in Up(3)) total += v;
+            Fail(1);
+        }
+        catch (InvalidOperationException)
+        {
+            IEnumerable<int> Tens() { yield return 10; yield return 20; }
+            foreach (int v in Tens()) total += v;
+        }
+        return total;
+    }
+
+    // goto case and goto default by every kind of constant, and a switch
+    // inside a lambda whose goto case is its own.
+    static string Gotos(string s, char c, Color k, long w)
+    {
+        string log = "";
+        switch (s)
+        {
+            case "a": log += "a"; goto case "b";
+            case "b": log += "b"; break;
+        }
+        switch (c)
+        {
+            case 'x': log += "x"; goto case 'y';
+            case 'y': log += "y"; goto default;
+            default: log += "d"; break;
+        }
+        switch (k)
+        {
+            case Color.Red: log += "R"; goto case Color.Blue;
+            case Color.Blue: log += "B"; break;
+        }
+        switch (w)
+        {
+            case 5: log += "5"; goto case 6;
+            case 6: log += "6"; break;
+        }
+        Func<int, string> inner = n =>
+        {
+            string got = "";
+            switch (n)
+            {
+                case 1: got += "1"; goto case 2;
+                case 2: got += "2"; goto default;
+                default: got += "!"; break;
+            }
+            return got;
+        };
+        return log + inner(1);
+    }
+
+    static void Main()
+    {
+        foreach (int k in new[] { 0, 1, 2 })
+        {
+            string seen = "";
+            try { foreach (int x in BreakInTryAndCatch(k)) seen += x; }
+            catch (InvalidOperationException) { seen += "?"; }
+            Console.WriteLine(k + ": " + seen);
+        }
+        Console.WriteLine(IteratorsInHandlers());
+        Console.WriteLine(Gotos("a", 'x', Color.Red, 5));
+    }
+}

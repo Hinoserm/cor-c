@@ -1,0 +1,22 @@
+// test: yield_value_in_catch_refused
+// expect-compile-error: CS1631: Cannot yield a value in the body of a catch clause
+//
+// NOR FROM A CATCH CLAUSE (C# CS1631): the exception it caught would have to
+// live across the caller's loop. A yield break may stand there.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static IEnumerable<int> Numbers()
+    {
+        try { throw new InvalidOperationException("x"); }
+        catch (InvalidOperationException) { yield return 2; }
+    }
+
+    static void Main()
+    {
+        foreach (int n in Numbers()) Console.WriteLine(n);
+    }
+}

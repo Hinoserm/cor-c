@@ -115,6 +115,17 @@ public sealed partial class Binder
     /// </summary>
     private int _finallyDepth;
 
+    /// <summary>
+    /// How many try blocks with a catch clause, and how many catch clauses,
+    /// enclose the statement being checked, counted as <see
+    /// cref="_finallyDepth"/> is: a yield return in either is C#'s CS1626 or
+    /// CS1631.
+    /// </summary>
+    private int _tryCatchDepth, _catchDepth;
+
+    /// <summary>The three depths of each body outside the one being checked, innermost last.</summary>
+    private readonly Stack<(int Finally, int TryCatch, int Catch)> _outerDepths = new();
+
     /// <summary>What one entry of <see cref="_jumpTargets"/> is.</summary>
     private enum JumpTarget
     {
@@ -166,13 +177,27 @@ public sealed partial class Binder
     /// A BODY OF ITS OWN, which a break or continue does not see out of: a
     /// method's or local function's (<paramref name="lambda"/> false), whose
     /// body is a method's and finds no loop outside it, or a lambda's or
-    /// anonymous method's, which finds one and may not leave for it. Its
-    /// finally depth starts again at none.
+    /// anonymous method's, which finds one and may not leave for it. No
+    /// finally, try with a catch or catch clause is open in it to begin with:
+    /// those around it are the enclosing body's, not its own.
     /// </summary>
     private void EnterFunctionBody(bool lambda)
-        => _jumpTargets.Add((lambda ? JumpTarget.Lambda : JumpTarget.Function, 0));
+    {
+        _jumpTargets.Add((lambda ? JumpTarget.Lambda : JumpTarget.Function, 0));
+        _outerDepths.Push((_finallyDepth, _tryCatchDepth, _catchDepth));
+        _finallyDepth = 0;
+        _tryCatchDepth = 0;
+        _catchDepth = 0;
+    }
 
-    private void LeaveFunctionBody() => _jumpTargets.RemoveAt(_jumpTargets.Count - 1);
+    private void LeaveFunctionBody()
+    {
+        _jumpTargets.RemoveAt(_jumpTargets.Count - 1);
+        (int Finally, int TryCatch, int Catch) outer = _outerDepths.Pop();
+        _finallyDepth = outer.Finally;
+        _tryCatchDepth = outer.TryCatch;
+        _catchDepth = outer.Catch;
+    }
 
     /// <summary>
     /// The finally depth of what a break or continue lands on: the innermost
@@ -216,6 +241,31 @@ public sealed partial class Binder
             if (kind == JumpTarget.Switch) return depth;
         }
         return -1;
+    }
+
+    /// <summary>
+    /// A switch label as C# names it to a goto case that cannot reach it
+    /// (CS0159): `default`, or the case label as written -- spelt again here
+    /// from a literal, a negated one or a dotted name, and otherwise by the
+    /// value the goto asked for.
+    /// </summary>
+    private static string CaseLabelName(SwitchCase label, string byValue)
+    {
+        if (label.Pattern is null) return "default";
+        return label.Pattern is BinaryExpr { Op: BinOp.Eq, Right: { } right } && Written(right) is string written
+            ? "case " + written + ":"
+            : byValue;
+
+        static string? Written(Expr e) => e switch
+        {
+            LiteralExpr { Kind: Lit.Str } text => "\"" + text.Text + "\"",
+            LiteralExpr { Kind: Lit.Char } character => "'" + character.Text + "'",
+            LiteralExpr literal => literal.Text,
+            UnaryExpr { Op: UnOp.Neg, Operand: LiteralExpr negated } => "-" + negated.Text,
+            NameExpr name => name.Name,
+            MemberExpr { Target: { } on } member when Written(on) is string left => left + "." + member.Name,
+            _ => null,
+        };
     }
 
     /// <summary>After a loop that only a break leaves: what every break had assigned.</summary>
@@ -3341,6 +3391,10 @@ public sealed partial class Binder
         bool wasInBodies = _inBodies;
         int errors = _r.Errors.Count;
         bool demanded = _declarationBatch.Any;
+        // AND ITS LAMBDAS AND LOCAL FUNCTIONS: a body checked from here
+        // (BodiesNow) takes them for its own, arranges them, and clears them
+        // (ArrangeLocalFunctionEnvironment).
+        SetAsideLambdas? wasLambdas = PutLambdasAside();
 
         _inBodies = false;
         _scopes.Clear();
@@ -3413,6 +3467,7 @@ public sealed partial class Binder
             _capturedConstants = wasConstants;
             _scopes.Clear();
             if (wasScopes is not null) _scopes.AddRange(wasScopes);
+            TakeLambdasBack(wasLambdas);
         }
 
         // AFTER BINDING THERE IS NO ONE TO TELL. A mistake found now would be
@@ -5621,12 +5676,9 @@ public sealed partial class Binder
             // ITS OWN JUMPS ONLY: a body checked while another method's
             // finally is open (a generic copy made from inside one) starts
             // outside every finally.
-            int wasFinally = _finallyDepth;
-            _finallyDepth = 0;
             EnterFunctionBody(lambda: false);
             CheckBlock(md.Body);
             LeaveFunctionBody();
-            _finallyDepth = wasFinally;
             PopScope();
             SettleGenericCaptures();
             SettleCapturedCells();
@@ -6370,6 +6422,18 @@ public sealed partial class Binder
                 {
                     Error(y, "CS1625: Cannot yield in the body of a finally clause");
                 }
+                // NOR A VALUE FROM A TRY BLOCK WITH A CATCH, OR FROM A CATCH
+                // (C# CS1626, CS1631): the caller resumes the iterator from
+                // outside the handler, which an exception it then threw
+                // would not reach. A yield break may stand in either.
+                else if (y.Value is not null && _tryCatchDepth > 0)
+                {
+                    Error(y, "CS1626: Cannot yield a value in the body of a try block with a catch clause");
+                }
+                else if (y.Value is not null && _catchDepth > 0)
+                {
+                    Error(y, "CS1631: Cannot yield a value in the body of a catch clause");
+                }
 
                 Type sequence = _method?.Returns ?? Type.Void;
                 Type? element = IteratorElement(sequence);
@@ -6488,14 +6552,21 @@ public sealed partial class Binder
 
             case GotoCaseStmt jump:
             {
+                // THE INNERMOST SWITCH, AS C# FINDS IT: through the bodies of
+                // the lambdas, anonymous methods and local functions written
+                // in it, whose goto case finds its label there and may not
+                // jump to it (CS0159 below).
                 if (_switches.Count == 0)
                 {
-                    Error(jump, "'goto case' is only valid inside a switch");
+                    Error(jump, "CS0153: A goto case is only valid inside a switch statement");
+                    if (jump.Value is not null) CheckExpr(jump.Value);
                     break;
                 }
 
                 SwitchStmt owner = _switches[^1];
                 SwitchCase? target = null;
+                // The label as C# names it when none matches: by its value.
+                string named = "default:";
 
                 if (jump.IsDefault)
                 {
@@ -6503,28 +6574,46 @@ public sealed partial class Binder
                 }
                 else if (jump.Value is { } wanted)
                 {
-                    CheckExpr(wanted);
-                    long? value = ConstantValue(wanted, _thisType);
+                    Type given = CheckExpr(wanted);
 
-                    if (value is long constant)
+                    if (ConstantValue(wanted, _thisType) is long constant)
                     {
                         target = owner.Cases.FirstOrDefault(c =>
                             c.Pattern is BinaryExpr { Op: BinOp.Eq } equality
                             && ConstantValue(equality.Right, _thisType) == constant);
+                        named = "case " + (given.Prim == Prim.Char ? ((char)constant).ToString()
+                                         : given.Prim == Prim.Bool ? (constant != 0 ? "True" : "False")
+                                         : constant.ToString(System.Globalization.CultureInfo.InvariantCulture)) + ":";
+                    }
+                    // A STRING'S LABEL TOO, which C# goes to as it goes to a
+                    // number's: `goto case "b";` was refused as matching none.
+                    else if (ConstantText(wanted, _thisType!) is string text)
+                    {
+                        target = owner.Cases.FirstOrDefault(c =>
+                            c.Pattern is BinaryExpr { Op: BinOp.Eq } equality
+                            && ConstantText(equality.Right, _thisType!) == text);
+                        named = "case " + text + ":";
+                    }
+                    else
+                    {
+                        if (!given.IsError) Error(jump, "CS0150: A constant value is expected");
+                        break;
                     }
                 }
 
+                int switchDepth = SwitchTargetDepth();
                 if (target is null)
                 {
-                    Error(jump, jump.IsDefault
-                        ? "this switch has no default label"
-                        : "this switch has no matching constant case label");
+                    Error(jump, $"CS0159: No such label '{named}' within the scope of the goto statement");
+                }
+                else if (switchDepth < 0)
+                {
+                    Error(jump, $"CS0159: No such label '{CaseLabelName(target, named)}' within the scope of the goto statement");
                 }
                 else
                 {
                     _r.GotoCases[jump] = target;
-                    int switchDepth = SwitchTargetDepth();
-                    if (switchDepth >= 0) JumpOutOfFinally(jump, switchDepth);
+                    JumpOutOfFinally(jump, switchDepth);
                 }
                 break;
             }
@@ -6657,7 +6746,9 @@ public sealed partial class Binder
 
             case TryStmt tr:
             {
+                if (tr.Catches.Count > 0) _tryCatchDepth++;
                 CheckBlock(tr.Body);
+                if (tr.Catches.Count > 0) _tryCatchDepth--;
 
                 foreach (CatchClause c in tr.Catches)
                 {
@@ -6719,7 +6810,9 @@ public sealed partial class Binder
                         }
                     }
 
+                    _catchDepth++;
                     CheckBlock(c.Body);
+                    _catchDepth--;
                     Forget(filtered);
                     PopScope();
                 }
@@ -8122,11 +8215,9 @@ public sealed partial class Binder
         }
 
         _lambdaDepth++;
-        int wasFinally = _finallyDepth;
-        _finallyDepth = 0;
         EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
         try { Look(lam, ContextualMemberResult(wanted, invoke)); }
-        finally { _lambdaDepth--; _finallyDepth = wasFinally; LeaveFunctionBody(); }
+        finally { _lambdaDepth--; LeaveFunctionBody(); }
         PopScope();
         _quiet--;
         RefuseCapturedRefLocals(lam, captured.Keys);
@@ -8515,11 +8606,9 @@ public sealed partial class Binder
         }
 
         _lambdaDepth++;
-        int wasFinallyDepth = _finallyDepth;
-        _finallyDepth = 0;
         EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
         try { Look(lam, closureReturns, final: true); }
-        finally { _lambdaDepth--; _finallyDepth = wasFinallyDepth; LeaveFunctionBody(); }
+        finally { _lambdaDepth--; LeaveFunctionBody(); }
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();
