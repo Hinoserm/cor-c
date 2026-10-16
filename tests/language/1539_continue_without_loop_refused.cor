@@ -1,0 +1,23 @@
+// test: continue_without_loop_refused
+// expect-compile-error: CS0139: No enclosing loop out of which to break or continue
+//
+// A CONTINUE NEEDS A LOOP, and a switch is not one (C# CS0139): with no loop
+// round the switch it has nowhere to go, rather than leaving the switch as a
+// break would.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        int k = 1;
+        switch (k)
+        {
+            case 1:
+                Console.WriteLine("one");
+                continue;
+        }
+        Console.WriteLine("after");
+    }
+}

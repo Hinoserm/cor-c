@@ -1,0 +1,23 @@
+// test: yield_in_finally_refused
+// expect-compile-error: CS1625: Cannot yield in the body of a finally clause
+//
+// A FINALLY CLAUSE MAY NOT YIELD, a value or a stop (C# CS1625): an
+// iterator's finally runs from Dispose as often as from the end of the loop,
+// and nobody is there to take what it would yield.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static IEnumerable<int> Numbers()
+    {
+        try { yield return 1; }
+        finally { yield return 2; }
+    }
+
+    static void Main()
+    {
+        foreach (int n in Numbers()) Console.WriteLine(n);
+    }
+}

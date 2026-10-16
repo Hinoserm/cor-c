@@ -1,0 +1,21 @@
+// test: break_out_of_lambda_refused
+// expect-compile-error: CS1632: Control cannot leave the body of an anonymous method or lambda expression
+//
+// A BREAK IN A LAMBDA DOES NOT REACH THE LOOP IT IS WRITTEN IN (C# CS1632):
+// the lambda's body is another method, run whenever the delegate is called,
+// and the loop may be long gone by then. An anonymous method is the same.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            Action stop = () => { if (i == 1) break; };
+            stop();
+            Console.WriteLine(i);
+        }
+    }
+}

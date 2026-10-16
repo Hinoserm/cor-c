@@ -1,0 +1,21 @@
+// test: break_out_of_local_function_refused
+// expect-compile-error: CS0139: No enclosing loop out of which to break or continue
+//
+// A LOCAL FUNCTION'S BODY IS A METHOD'S (C# CS0139, not a lambda's CS1632):
+// it sees no loop outside itself, so a break in it written inside a loop has
+// no loop at all.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            void Stop() { if (i == 1) break; }
+            Stop();
+            Console.WriteLine(i);
+        }
+    }
+}

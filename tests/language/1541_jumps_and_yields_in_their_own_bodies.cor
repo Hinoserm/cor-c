@@ -1,0 +1,94 @@
+// test: jumps_and_yields_in_their_own_bodies
+// expect-exit: 0
+// expect-output:
+// 012F
+// 11
+// 1296
+//
+// WHAT IS LEFT LEGAL BESIDE C#'s CS1625, CS1632 AND CS0139: yield return and
+// yield break in the try of a try/finally; an iterator local function
+// declared in a finally, whose yields are its own; and loops and switches
+// inside lambdas, anonymous methods and local functions written inside an
+// outer loop, whose breaks and continues land on their own.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static string log = "";
+
+    // yield in the try of a try/finally, and yield break there: legal.
+    static IEnumerable<int> YieldInTry(int n)
+    {
+        try
+        {
+            for (int i = 0; i < n; i++)
+            {
+                if (i == 3) yield break;
+                yield return i;
+            }
+        }
+        finally { log += "F"; }
+    }
+
+    // An iterator local function declared in a finally: its yields are its
+    // own, not the finally's.
+    static int IteratorInFinally()
+    {
+        int total = 0;
+        try { total = 1; }
+        finally
+        {
+            IEnumerable<int> Up(int n)
+            {
+                for (int i = 1; i <= n; i++) yield return i;
+                yield break;
+            }
+            foreach (int v in Up(4)) total += v;
+        }
+        return total;
+    }
+
+    // Loops inside lambdas, anonymous methods and local functions, written
+    // inside an outer loop: their breaks and continues land on their own.
+    static int OwnLoops()
+    {
+        int sum = 0;
+        for (int round = 0; round < 2; round++)
+        {
+            Func<int, int> f = n =>
+            {
+                int s = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    if (i == 1) continue;
+                    if (i == 4) break;
+                    s += i;
+                }
+                switch (n) { case 5: s += 100; break; default: break; }
+                return s;
+            };
+            Action g = delegate { int k = 0; while (true) { if (++k == 3) break; } sum += k; };
+            int Local(int n)
+            {
+                int t = 0;
+                foreach (int x in new[] { 1, 2, 3, 4 }) { if (x == 2) continue; if (x == 4) break; t += x * n; }
+                return t;
+            }
+            g();
+            sum += f(5) + Local(10);
+            if (round == 0) continue;
+            sum += 1000;
+        }
+        return sum;
+    }
+
+    static void Main()
+    {
+        foreach (int x in YieldInTry(10)) log += x;
+        Console.WriteLine(log);
+        Console.WriteLine(IteratorInFinally());
+        Console.WriteLine(OwnLoops());
+    }
+}

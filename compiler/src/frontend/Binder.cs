@@ -97,7 +97,6 @@ public sealed partial class Binder
     private readonly HashSet<CallExpr> _receiverAdded = new(ReferenceEqualityComparer.Instance);
     private int _nextSlot;
     private int _maxSlot;
-    private int _loopDepth;
 
     /// <summary>
     /// What is definitely assigned at the breaks out of each loop or switch
@@ -116,24 +115,34 @@ public sealed partial class Binder
     /// </summary>
     private int _finallyDepth;
 
+    /// <summary>What one entry of <see cref="_jumpTargets"/> is.</summary>
+    private enum JumpTarget
+    {
+        /// <summary>A loop: what a continue lands on, and a break.</summary>
+        Loop,
+        /// <summary>A switch section: what a break lands on, and a goto case.</summary>
+        Switch,
+        /// <summary>A lambda's or anonymous method's body, which no break or continue leaves (C# CS1632).</summary>
+        Lambda,
+        /// <summary>A method's or local function's body: no loop outside it is in reach at all (C# CS0139).</summary>
+        Function,
+    }
+
     /// <summary>
     /// What a break or continue may land on, innermost last, beside
-    /// <see cref="_breaks"/>: whether it is a loop (a continue's target) or a
-    /// switch section (a break's, and a goto case's), and the finally depth
-    /// it was entered at.
+    /// <see cref="_breaks"/>, with the bodies of the functions they are in:
+    /// each with the finally depth it was entered at.
     /// </summary>
-    private readonly List<(bool Loop, int Finally)> _jumpTargets = new();
+    private readonly List<(JumpTarget Kind, int Finally)> _jumpTargets = new();
 
     private void EnterBreakable(bool loop = true)
     {
-        _loopDepth++;
         _breaks.Add(null);
-        _jumpTargets.Add((loop, _finallyDepth));
+        _jumpTargets.Add((loop ? JumpTarget.Loop : JumpTarget.Switch, _finallyDepth));
     }
 
     private HashSet<LocalSym>? LeaveBreakable()
     {
-        _loopDepth--;
         HashSet<LocalSym>? broke = _breaks[^1];
         _breaks.RemoveAt(_breaks.Count - 1);
         _jumpTargets.RemoveAt(_jumpTargets.Count - 1);
@@ -153,22 +162,58 @@ public sealed partial class Binder
         }
     }
 
-    /// <summary>The finally depth of the innermost loop, or switch section too for a break or goto case; -1 when there is none.</summary>
-    private int JumpTargetDepth(bool loopOnly)
+    /// <summary>
+    /// A BODY OF ITS OWN, which a break or continue does not see out of: a
+    /// method's or local function's (<paramref name="lambda"/> false), whose
+    /// body is a method's and finds no loop outside it, or a lambda's or
+    /// anonymous method's, which finds one and may not leave for it. Its
+    /// finally depth starts again at none.
+    /// </summary>
+    private void EnterFunctionBody(bool lambda)
+        => _jumpTargets.Add((lambda ? JumpTarget.Lambda : JumpTarget.Function, 0));
+
+    private void LeaveFunctionBody() => _jumpTargets.RemoveAt(_jumpTargets.Count - 1);
+
+    /// <summary>
+    /// The finally depth of what a break or continue lands on: the innermost
+    /// loop, or switch section too for a break. -1, the refusal reported,
+    /// when there is none it may reach: none at all, or none before the body
+    /// of the method or local function it is in (C# CS0139), or one beyond
+    /// the body of a lambda or anonymous method, which it cannot leave for
+    /// (C# CS1632).
+    /// </summary>
+    private int BreakTargetDepth(Stmt jump)
     {
+        bool lambda = false;
         for (int k = _jumpTargets.Count - 1; k >= 0; k--)
         {
-            if (!loopOnly || _jumpTargets[k].Loop) return _jumpTargets[k].Finally;
+            (JumpTarget kind, int depth) = _jumpTargets[k];
+            if (kind == JumpTarget.Function) break;
+            if (kind == JumpTarget.Lambda)
+            {
+                lambda = true;
+                continue;
+            }
+            if (jump is ContinueStmt && kind != JumpTarget.Loop) continue;
+            if (lambda)
+            {
+                Error(jump, "CS1632: Control cannot leave the body of an anonymous method or lambda expression");
+                return -1;
+            }
+            return depth;
         }
+        Error(jump, "CS0139: No enclosing loop out of which to break or continue");
         return -1;
     }
 
-    /// <summary>The finally depth of the innermost switch section; -1 when there is none.</summary>
+    /// <summary>The finally depth of the innermost switch section in this function's own body; -1 when there is none.</summary>
     private int SwitchTargetDepth()
     {
         for (int k = _jumpTargets.Count - 1; k >= 0; k--)
         {
-            if (!_jumpTargets[k].Loop) return _jumpTargets[k].Finally;
+            (JumpTarget kind, int depth) = _jumpTargets[k];
+            if (kind is JumpTarget.Lambda or JumpTarget.Function) break;
+            if (kind == JumpTarget.Switch) return depth;
         }
         return -1;
     }
@@ -5578,7 +5623,9 @@ public sealed partial class Binder
             // outside every finally.
             int wasFinally = _finallyDepth;
             _finallyDepth = 0;
+            EnterFunctionBody(lambda: false);
             CheckBlock(md.Body);
+            LeaveFunctionBody();
             _finallyDepth = wasFinally;
             PopScope();
             SettleGenericCaptures();
@@ -6315,6 +6362,15 @@ public sealed partial class Binder
 
             case YieldStmt y:
             {
+                // A FINALLY CLAUSE YIELDS NOTHING, by yield return or yield
+                // break (C# CS1625): the enumerator's Dispose runs it as often
+                // as the end of the loop does, and nobody is there to take a
+                // value or a stop.
+                if (_finallyDepth > 0)
+                {
+                    Error(y, "CS1625: Cannot yield in the body of a finally clause");
+                }
+
                 Type sequence = _method?.Returns ?? Type.Void;
                 Type? element = IteratorElement(sequence);
                 if (element is null)
@@ -6415,14 +6471,11 @@ public sealed partial class Binder
                 break;
 
             case BreakStmt or ContinueStmt:
-                if (_loopDepth == 0)
+            {
+                int jumpDepth = BreakTargetDepth(s);
+                if (jumpDepth >= 0)
                 {
-                    Error(s, $"'{(s is BreakStmt ? "break" : "continue")}' is only valid inside a loop");
-                }
-                else
-                {
-                    int jumpDepth = JumpTargetDepth(loopOnly: s is ContinueStmt);
-                    if (jumpDepth >= 0) JumpOutOfFinally(s, jumpDepth);
+                    JumpOutOfFinally(s, jumpDepth);
                     if (s is BreakStmt && _breaks.Count > 0)
                     {
                         HashSet<LocalSym>? broke = _breaks[^1];
@@ -6431,6 +6484,7 @@ public sealed partial class Binder
                     }
                 }
                 break;
+            }
 
             case GotoCaseStmt jump:
             {
@@ -8070,8 +8124,9 @@ public sealed partial class Binder
         _lambdaDepth++;
         int wasFinally = _finallyDepth;
         _finallyDepth = 0;
+        EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
         try { Look(lam, ContextualMemberResult(wanted, invoke)); }
-        finally { _lambdaDepth--; _finallyDepth = wasFinally; }
+        finally { _lambdaDepth--; _finallyDepth = wasFinally; LeaveFunctionBody(); }
         PopScope();
         _quiet--;
         RefuseCapturedRefLocals(lam, captured.Keys);
@@ -8462,8 +8517,9 @@ public sealed partial class Binder
         _lambdaDepth++;
         int wasFinallyDepth = _finallyDepth;
         _finallyDepth = 0;
+        EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
         try { Look(lam, closureReturns, final: true); }
-        finally { _lambdaDepth--; _finallyDepth = wasFinallyDepth; }
+        finally { _lambdaDepth--; _finallyDepth = wasFinallyDepth; LeaveFunctionBody(); }
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();
