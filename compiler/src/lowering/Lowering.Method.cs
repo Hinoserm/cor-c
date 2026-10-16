@@ -908,8 +908,16 @@ public sealed partial class Lowering
     /// another field: the store's was owned, and freed a list the getter had
     /// handed out. Named by the copy the instantiation shares (Decl.Canon).
     /// </summary>
-    private static string FieldKey(FieldSymbol f)
-        => f.KeyMade ??= (f.Owner.Decl is { Canon: string canon } ? Escaped(canon) : TypeKey(f.Owner)) + "::" + f.Name;
+    private static string FieldKey(FieldSymbol f) => f.KeyMade ??= FieldOwnerKey(f.Owner) + "::" + f.Name;
+
+    /// <summary>
+    /// The type a field key names as its owner (FieldKey): the copy a shared
+    /// instantiation shares (Decl.Canon), or the type itself. Its descriptor
+    /// symbol, "t_" and this, is what a class descriptor lists as a shared
+    /// copy of its chain (DataItem.SharedCopies), so the owned-field maps
+    /// find the fields keyed by it.
+    /// </summary>
+    private static string FieldOwnerKey(TypeSymbol t) => t.Decl is { Canon: string canon } ? Escaped(canon) : TypeKey(t);
 
     /// <summary>
     /// WHICH FIELD A LOAD OR STORE IS, for region inference (Instr.Family):

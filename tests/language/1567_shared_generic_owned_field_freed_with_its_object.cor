@@ -1,0 +1,118 @@
+// test: shared_generic_owned_field_freed_with_its_object
+// expect-exit: 0
+// expect-output:
+// carried string 20000 True
+// carried node 20000 True
+// carried int 20000 True
+// carried derived 20000 True
+// heap string 60000 True
+// heap node 60000 True
+// heap int 60000 True
+// heap derived 60000 True
+// kept 3 3
+//
+// A field of a shared generic copy is one field for every instantiation
+// that shares the copy: Box<string>'s and Box<Node>'s Items are
+// Box<__canon>'s (Lowering.FieldKey), stored here and handed out by the
+// shared getter. Each such instantiation's owned-field map names it
+// (DataItem.SharedCopies, Escape.FieldOwners), so a box given back with
+// Runtime.Free takes its list and the list's array with it. Box<int> has a
+// copy and a layout of its own; Names stands on Bag<__canon>. Each line:
+// what the calls computed, and whether each call left at most a few bytes
+// to the collector. Carried: the box a loop keeps to its end, freed where
+// the function returns. Heap: one box a lap, given back at the lap's end,
+// from a maker whose boxes the carrying loops keep too -- linked as units
+// no region takes them (a whole compile makes the maker a region copy for
+// this caller). A box kept in a static keeps its list.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public int V; }
+
+public sealed class Box<T>
+{
+    public List<T> Items;
+    public int Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)] public List<T> Get() { return Items; }
+}
+
+public class Bag<T>
+{
+    public List<T> Items;
+    public int Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)] public List<T> Get() { return Items; }
+}
+
+public sealed class Names : Bag<string> { public int Extra; }
+
+static class P
+{
+    static Node _node = new Node();
+    static Box<string>? _kept;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box<string> MakeS() { Box<string> b = new(); b.Items = new List<string>(); b.Get().Add("x"); return b; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box<Node> MakeO() { Box<Node> b = new(); b.Items = new List<Node>(); b.Get().Add(_node); return b; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box<int> MakeI() { Box<int> b = new(); b.Items = new List<int>(); b.Get().Add(1); return b; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Names MakeN() { Names b = new(); b.Items = new List<string>(); b.Get().Add("x"); return b; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedS(int n) { Box<string>? last = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeS(); if (last != null) t += last.Tag; last = b; } return t + last!.Get().Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedO(int n) { Box<Node>? last = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeO(); if (last != null) t += last.Tag; last = b; } return t + last!.Get().Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedI(int n) { Box<int>? last = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeI(); if (last != null) t += last.Tag; last = b; } return t + last!.Get().Count; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedN(int n) { Names? last = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeN(); if (last != null) t += last.Tag; last = b; } return t + last!.Get().Count; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int HeapS(int n) { int t = 0; for (int k = 0; k < n; k++) { var b = MakeS(); int c = b.Get().Count; t += c + b.Tag; } return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int HeapO(int n) { int t = 0; for (int k = 0; k < n; k++) { var b = MakeO(); int c = b.Get().Count; t += c + b.Tag; } return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int HeapI(int n) { int t = 0; for (int k = 0; k < n; k++) { var b = MakeI(); int c = b.Get().Count; t += c + b.Tag; } return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int HeapN(int n) { int t = 0; for (int k = 0; k < n; k++) { var b = MakeN(); int c = b.Get().Count; t += c + b.Tag; } return t; }
+
+    static string Measure(Func<int, int> f, int n, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(n);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string what, Func<int, int> f, int n)
+    {
+        string freed = Measure(f, n, out long total);
+        Console.WriteLine(what + " " + total + " " + freed);
+    }
+
+    static void Main()
+    {
+        Say("carried string", CarriedS, 1);
+        Say("carried node", CarriedO, 1);
+        Say("carried int", CarriedI, 1);
+        Say("carried derived", CarriedN, 1);
+        Say("heap string", HeapS, 3);
+        Say("heap node", HeapO, 3);
+        Say("heap int", HeapI, 3);
+        Say("heap derived", HeapN, 3);
+        // Kept in a static: the boxes freed meanwhile take only their own lists.
+        _kept = MakeS();
+        _kept.Get().Add("k"); _kept.Get().Add("k");
+        for (int k = 0; k < 1000; k++) { CarriedS(1); HeapS(3); }
+        Gc.Collect();
+        Console.WriteLine("kept " + _kept.Get().Count + " " + _kept.Items.Count);
+    }
+}

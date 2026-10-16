@@ -47,6 +47,17 @@ public sealed class DataItem
     public int Line { get; init; }
     public string? Display { get; init; }
 
+    /// <summary>
+    /// A class descriptor's: the descriptors of the shared copies its class
+    /// chain stands on (TypeDecl.Canon) -- `t_Box$0024__canon` for a
+    /// Box&lt;string&gt; or a class derived from one. A field of a shared
+    /// instantiation is keyed by its copy (Lowering.FieldKey), so these are
+    /// owners of the fields its objects hold, and its owned-field map counts
+    /// theirs (Escape.FieldOwners). Names only, not relocations: nothing at
+    /// the link needs the copy's descriptor to exist. Null for none.
+    /// </summary>
+    public string[]? SharedCopies { get; init; }
+
     public List<DataReloc> Relocs { get; } = new();
 
     public DataItem(string name, byte[] bytes)

@@ -1933,11 +1933,20 @@ static class Runtime
     /// `current` (Escape's owned variables): nothing when it is the same
     /// object, which a variable assigned twice from one register holds; a
     /// null or a string literal, which is no heap block, is ignored by Free.
+    ///
+    /// AS ITS LAST VALUE IS GIVEN BACK AT A RETURN (Runtime.Free): with its
+    /// storage and its owned fields, and what those own. The proof is the
+    /// same one -- the variable alone held it, and every read of an owned
+    /// field is dead before any free the compiler placed (Escape.OwnedFields
+    /// counts this one among them) -- and given back by Gc.Free alone, a
+    /// carried Box's list and a carried List's array went to the collector
+    /// every lap. One in this thread's region is nothing to do, as for Free:
+    /// read from the variable's shadow it may be memory a lap gave back.
     public static void FreeReplaced(nint old, nint current)
     {
         if (old != current && Gc.IgnoredFrees != 'r' && Gc.IgnoredFrees != 'v')
         {
-            Gc.Free((long)(nuint)old);
+            Free(old);
         }
     }
 

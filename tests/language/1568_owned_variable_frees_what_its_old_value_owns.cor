@@ -1,0 +1,134 @@
+// test: owned_variable_frees_what_its_old_value_owns
+// expect-exit: 0
+// expect-output:
+// carried box int 900000 True
+// carried box node 540000 True
+// carried plain 2340000 True
+// carried list 1260000 True
+// carried dictionary 1800000 True
+// read across 3627000
+// kept 2 16
+//
+// A variable that owns what it holds (Escape's owned variables) gives its
+// old value back at each assignment as it gives the last one back where the
+// function returns: with that object's storage and its owned fields, and
+// what those own. Freed as a bare block, a Box carried to the next lap left
+// its list and the list's array to the collector every lap, and a carried
+// List or Dictionary its arrays. A list read out of the old value and used
+// after the assignment stays whole -- its field is no owned one -- and a
+// value kept in a static is not given back at all.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Node { public int V; }
+
+public sealed class Box<T>
+{
+    public List<T> Items;
+    public int Tag;
+    [MethodImpl(MethodImplOptions.NoInlining)] public List<T> Get() { return Items; }
+}
+
+public sealed class Plain
+{
+    public List<int> Items;
+    [MethodImpl(MethodImplOptions.NoInlining)] public List<int> Get() { return Items; }
+}
+
+public sealed class Pair
+{
+    public List<int> Items;
+}
+
+static class P
+{
+    static Node _node = new Node { V = 2 };
+    static Plain? _last;
+    static long _sink;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box<int> MakeI(int k) { Box<int> b = new(); b.Items = new List<int>(); b.Get().Add(k); return b; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box<Node> MakeO() { Box<Node> b = new(); b.Items = new List<Node>(); b.Get().Add(_node); return b; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Plain MakeP(int k) { Plain b = new(); b.Items = new List<int>(); b.Get().Add(k); b.Get().Add(k + 7); return b; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<int> MakeL(int k) { List<int> l = new(); l.Add(k); l.Add(k + 1); return l; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Dictionary<int, int> MakeD(int k) { Dictionary<int, int> d = new(); d[k] = k * 2; d[k + 1] = k; return d; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Pair MakePair(int k) { Pair p = new(); p.Items = new List<int>(); p.Items.Add(k); p.Items.Add(k + 7); return p; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn() { for (int j = 0; j < 8; j++) { List<int> junk = new(); junk.Add(-1); junk.Add(-1); junk.Add(-1); _sink += junk[1]; int[] a = new int[6]; a[0] = -5; _sink += a[0]; } }
+
+    // Each lap's object carried to the next in a variable, then replaced.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedI(int n) { Box<int>? prev = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeI(k); if (prev != null) t += prev.Get()[0] + prev.Get().Count + prev.Tag; prev = b; } return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedO(int n) { Box<Node>? prev = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeO(); if (prev != null) t += prev.Get()[0].V + prev.Get().Count + prev.Tag; prev = b; } return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedP(int n) { Plain? prev = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeP(k); if (prev != null) t += prev.Get().Count + prev.Get()[1]; prev = b; } return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedL(int n) { List<int>? prev = null; int t = 0; for (int k = 0; k < n; k++) { var l = MakeL(k); if (prev != null) t += prev.Count + prev[1]; prev = l; } return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CarriedD(int n) { Dictionary<int, int>? prev = null; int t = 0; for (int k = 0; k < n; k++) { var d = MakeD(k); if (prev != null) t += prev[k - 1] + prev.Count; prev = d; } return t; }
+
+    // The old value's list read, the variable replaced, other lists made
+    // where the old one was, and the list read again.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long ReadAcross(int n)
+    {
+        Pair? prev = null; long t = 0;
+        for (int k = 0; k < n; k++)
+        {
+            var b = MakePair(k);
+            List<int>? l = prev != null ? prev.Items : null;
+            prev = b;
+            Churn();
+            if (l != null) t += l.Count * 1000 + l[0] + l[1];
+        }
+        return t;
+    }
+
+    // The last value kept in a static: nothing it held is given back.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Kept(int n) { Plain? prev = null; int t = 0; for (int k = 0; k < n; k++) { var b = MakeP(k); if (prev != null) t += prev.Get().Count; prev = b; } _last = prev; return t; }
+
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(10);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string what, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(what + " " + total + " " + freed);
+    }
+
+    static void Main()
+    {
+        Say("carried box int", CarriedI);
+        Say("carried box node", CarriedO);
+        Say("carried plain", CarriedP);
+        Say("carried list", CarriedL);
+        Say("carried dictionary", CarriedD);
+        long across = 0;
+        for (int r = 0; r < 200; r++) across += ReadAcross(10);
+        Console.WriteLine("read across " + across);
+        Kept(10);
+        for (int r = 0; r < 1000; r++) CarriedP(10);
+        Gc.Collect();
+        Console.WriteLine("kept " + _last!.Get().Count + " " + _last.Get()[1]);
+    }
+}

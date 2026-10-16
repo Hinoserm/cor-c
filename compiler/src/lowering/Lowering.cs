@@ -2619,8 +2619,18 @@ public sealed partial class Lowering
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
 
+        // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a
+        // field of one is keyed by the copy (FieldKey), and the owned-field
+        // maps of this class name it through them.
+        List<string>? shared = null;
+        foreach (TypeSymbol s in chain)
+        {
+            if (s.Decl is not { Canon: not null }) continue;
+            string copy = "t_" + FieldOwnerKey(s);
+            if (!(shared ??= new()).Contains(copy)) shared.Add(copy);
+        }
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
-            Exported = t.Decl?.LocalOnly != true };
+            Exported = t.Decl?.LocalOnly != true, SharedCopies = shared?.ToArray() };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));

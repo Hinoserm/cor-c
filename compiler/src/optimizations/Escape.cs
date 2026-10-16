@@ -1443,7 +1443,7 @@ public sealed partial class Escape : IModulePass
             Dictionary<string, DataItem> items = _items ??= m.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
             bool none = type.StartsWith("t_", StringComparison.Ordinal) && items.TryGetValue(type, out DataItem? item)
                 && item.Bytes.Length >= 10 * w && (item.Bytes[9 * w] & 2) == 0
-                && Ancestry(items, type).All(t => !fieldsOfType.TryGetValue(t, out List<string>? fields) || fields.All(refused.Contains));
+                && FieldOwners(items, type).All(t => !fieldsOfType.TryGetValue(t, out List<string>? fields) || fields.All(refused.Contains));
             if (none) ownsNothing.Add(type);
             return none;
         }
@@ -1826,7 +1826,7 @@ continue;
             List<long> OwnedOf(string descriptor)
             {
                 if (ofType.TryGetValue(descriptor, out List<long>? known)) return known;
-                HashSet<string> up = described.ContainsKey(descriptor) ? Ancestry(described, descriptor) : new HashSet<string>(StringComparer.Ordinal) { descriptor };
+                HashSet<string> up = described.ContainsKey(descriptor) ? FieldOwners(described, descriptor) : new HashSet<string>(StringComparer.Ordinal) { descriptor };
                 return ofType[descriptor] = up.Where(byOwner.ContainsKey).SelectMany(a => byOwner[a]).Distinct().Order().ToList();
             }
             HashSet<string> handers = new(borrowing.Where(pair => owned.Contains(pair.Field)).Select(pair => pair.Function), StringComparer.Ordinal);
@@ -1867,7 +1867,8 @@ continue;
         foreach (DataItem d in m.Data) items[d.Name] = d;
         foreach (DataItem d in m.Data.Where(d => d.Name.StartsWith("t_", StringComparison.Ordinal)).ToList())
         {
-            List<long> mine = Ancestry(items, d.Name).Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct().ToList();
+            HashSet<string> owners = FieldOwners(items, d.Name);
+            List<long> mine = owners.Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct().ToList();
             if (mine.Count == 0 || d.Bytes.Length < 12 * w || mine.Any(o => o % w != 0)) continue;
             int words = (int)(mine.Max() / w) + 1;
             uint[] bits = new uint[(words + 31) / 32];
@@ -1875,7 +1876,7 @@ continue;
             // THE ELEMENT BITS, after the field bits and as many words, where
             // a field of it owns its array's elements; the count says they
             // follow (ElementMapFlag, read by Runtime.FreeOwnedFields).
-            List<long> elementsMine = Ancestry(items, d.Name).Where(elementOffsets.ContainsKey).SelectMany(a => elementOffsets[a]).Distinct().Where(mine.Contains).ToList();
+            List<long> elementsMine = owners.Where(elementOffsets.ContainsKey).SelectMany(a => elementOffsets[a]).Distinct().Where(mine.Contains).ToList();
             uint[] elementBits = new uint[elementsMine.Count > 0 ? bits.Length : 0];
             foreach (long o in elementsMine) elementBits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
             byte[] block = new byte[(1 + bits.Length + elementBits.Length) * w];
@@ -1923,7 +1924,7 @@ continue;
                             else if (type != table) several = true;
                         }
                 if (type is null || several || !items.ContainsKey(type)) continue;
-                List<long> mine = Ancestry(items, type).Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct()
+                List<long> mine = FieldOwners(items, type).Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct()
                     .Where(o => o >= word && (r.Bytes < 0 || o + word <= r.Bytes)).OrderBy(o => o).ToList();
                 // Where it dies, nothing read from such a field or stored
                 // there still in use: round a loop, the next lap's object is
@@ -2658,6 +2659,25 @@ continue;
 
     /// <summary>An object's descriptor: a class's (t_), an array's or a string's (q_), a boxed primitive's (v_) or struct's (b_).</summary>
     private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
+
+    /// <summary>
+    /// THE OWNERS OF THE FIELDS AN OBJECT OF THIS TYPE HOLDS, as field keys
+    /// name them: its ancestry, and the shared copy each class of it stands
+    /// on (DataItem.SharedCopies) -- a Box&lt;string&gt;'s Items is keyed by
+    /// Box&lt;__canon&gt; (Lowering.FieldKey), whose descriptor its ancestry
+    /// never names. Only what shares a copy: Box&lt;int&gt; has a layout of its
+    /// own and keys its fields by itself. For the owned-field maps and what
+    /// must agree with them; a call's targets go by Ancestry alone.
+    /// </summary>
+    private static HashSet<string> FieldOwners(Dictionary<string, DataItem> items, string type)
+    {
+        HashSet<string> found = Ancestry(items, type);
+        List<string>? copies = null;
+        foreach (string t in found)
+            if (items.TryGetValue(t, out DataItem? d) && d.SharedCopies is { } shared) (copies ??= new()).AddRange(shared);
+        if (copies is not null) found.UnionWith(copies);
+        return found;
+    }
 
     private static HashSet<string> Ancestry(Dictionary<string, DataItem> items, string type)
     {

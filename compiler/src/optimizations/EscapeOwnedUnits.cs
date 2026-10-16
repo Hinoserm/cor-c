@@ -464,7 +464,7 @@ public sealed partial class Escape
             List<long> OwnedOf(string descriptor)
             {
                 if (ofType.TryGetValue(descriptor, out List<long>? known)) return known;
-                HashSet<string> up = described.ContainsKey(descriptor) ? Ancestry(described, descriptor) : new HashSet<string>(StringComparer.Ordinal) { descriptor };
+                HashSet<string> up = described.ContainsKey(descriptor) ? FieldOwners(described, descriptor) : new HashSet<string>(StringComparer.Ordinal) { descriptor };
                 return ofType[descriptor] = up.Where(byOwner.ContainsKey).SelectMany(a => byOwner[a]).Distinct().Order().ToList();
             }
             foreach (Function f in m.Functions)
@@ -490,14 +490,15 @@ public sealed partial class Escape
         foreach (DataItem d in m.Data) items[d.Name] = d;
         foreach (DataItem d in m.Data.Where(d => d.Name.StartsWith("t_", StringComparison.Ordinal)).ToList())
         {
-            List<long> mine = Ancestry(items, d.Name).Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct().Order().ToList();
+            HashSet<string> owners = FieldOwners(items, d.Name);
+            List<long> mine = owners.Where(offsets.ContainsKey).SelectMany(a => offsets[a]).Distinct().Order().ToList();
             if (mine.Count == 0 || d.Bytes.Length < 12 * w || mine.Any(o => o % w != 0) || d.Relocs.Any(r => r.Offset == 11 * w)) continue;
             int words = (int)(mine.Max() / w) + 1;
             uint[] bits = new uint[(words + 31) / 32];
             foreach (long o in mine) bits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
             // The element bits after the field bits, as many words, the
             // count word saying they follow (Escape.ElementMapFlag).
-            List<long> elementsMine = Ancestry(items, d.Name).Where(elementOffsets.ContainsKey).SelectMany(a => elementOffsets[a]).Distinct().Where(mine.Contains).ToList();
+            List<long> elementsMine = owners.Where(elementOffsets.ContainsKey).SelectMany(a => elementOffsets[a]).Distinct().Where(mine.Contains).ToList();
             uint[] elementBits = new uint[elementsMine.Count > 0 ? bits.Length : 0];
             foreach (long o in elementsMine) elementBits[(int)(o / w) / 32] |= 1u << (int)(o / w % 32);
             byte[] block = new byte[(1 + bits.Length + elementBits.Length) * w];
