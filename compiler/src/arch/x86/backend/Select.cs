@@ -63,7 +63,7 @@ internal sealed partial class Selector
     private Selector(Function f, List<string> errors, bool automaticPacked)
     {
         _f = f;
-        _m = new MFunction(f);
+        _m = new MFunction(f) { AutomaticPacked = automaticPacked };
         _lo = new ByRegister<MReg>(f.RegCount);
         _hi = new ByRegister<MReg>(f.RegCount);
         _useCount = new UseCounts(f.RegCount);
@@ -1478,6 +1478,8 @@ internal sealed partial class Selector
     /// sahf, CF is "below", ZF is "equal" and PF is "unordered", with all
     /// three set for unordered; every ordered relation is chosen so that
     /// pattern reads as false, and equality has to test parity separately.
+    /// The Pentium Pro's fucomip leaves exactly those three flags, so one
+    /// mapping serves both.
     /// </summary>
     private readonly record struct FloatCond(Cond Cond, bool ParityFalse, bool ParityTrue);
 
@@ -1489,9 +1491,20 @@ internal sealed partial class Selector
         bool aOnTop = i.Op is Opcode.FGt or Opcode.FGe or Opcode.FEq or Opcode.FNe;
         Fld(aOnTop ? b : a);
         Fld(aOnTop ? a : b);
-        Emit(MOp.Fucompp);
-        Emit(MOp.Fnstsw);
-        Emit(MOp.Sahf);
+        // WHERE THE FPU SETS EFLAGS ITSELF, from the Pentium Pro on, the
+        // comparison is one instruction and EAX stays free. fnstsw is slow
+        // on the P6 and the K7, and it writes AX, which the allocator must
+        // keep clear or spill around at every comparison.
+        if (Target.Current.X86Profile.FloatCmov)
+        {
+            Emit(MOp.Fucomipp);
+        }
+        else
+        {
+            Emit(MOp.Fucompp);
+            Emit(MOp.Fnstsw);
+            Emit(MOp.Sahf);
+        }
         return i.Op switch
         {
             Opcode.FEq => new FloatCond(Cond.E, true, false),
@@ -2225,7 +2238,7 @@ internal sealed partial class Selector
     /// </summary>
     private void ByteSwapWord(MReg value)
     {
-        if (Target.Current.X86Profile.Name != "386") { Emit(MOp.Bswap, value); return; }
+        if (Target.Current.X86Profile.Has(global::Corsac.Lang.X86.X86Feature.I486)) { Emit(MOp.Bswap, value); return; }
         // 386 has no BSWAP: exchange adjacent bytes, then exchange 16-bit halves.
         // General-register temporaries avoid constraining allocation to AL/AH.
         MReg other = Temp(); Mov(other, value);
@@ -2297,7 +2310,10 @@ internal sealed partial class Selector
                 MOp op = name == MachineIntrinsics.Lidt ? MOp.Lidt
                        : name == MachineIntrinsics.Lgdt ? MOp.Lgdt
                        : MOp.Invlpg;
-                Emit(op, new MMem(addr, 0));
+                // INVLPG is the 486's, and a kernel that also runs on a 386
+                // asks which it is on and reloads CR3 there instead: named
+                // by the source, it is Probed as the Pentium's four below.
+                Emit(new MInstr(op, new MMem(addr, 0)) { Probed = op == MOp.Invlpg });
                 return;
             }
             case MachineIntrinsics.ReadCr:
@@ -2385,16 +2401,20 @@ internal sealed partial class Selector
                     Emit(MOp.GsSelf, Lo(i.Dest));
                 }
                 return;
+            // THE PENTIUM'S FOUR, NAMED BY THE SOURCE: a kernel reaches each
+            // only after asking the processor (CPUID's own presence is the
+            // EFLAGS.ID test), so each is Probed and the emitted-code audit
+            // leaves it to that check rather than to --cpu.
             case MachineIntrinsics.ReadMsr:
             case MachineIntrinsics.ReadTsc:
                 if (name == MachineIntrinsics.ReadMsr)
                 {
                     Mov(Ecx, R(i.Operands[0]));
-                    Emit(MOp.Rdmsr);
+                    Emit(new MInstr(MOp.Rdmsr) { Probed = true });
                 }
                 else
                 {
-                    Emit(MOp.Rdtsc);
+                    Emit(new MInstr(MOp.Rdtsc) { Probed = true });
                 }
                 if (i.Dest is not null)
                 {
@@ -2409,7 +2429,7 @@ internal sealed partial class Selector
                 Mov(Eax, lo);
                 Mov(Edx, hi);
                 Mov(Ecx, msr);
-                Emit(MOp.Wrmsr);
+                Emit(new MInstr(MOp.Wrmsr) { Probed = true });
                 return;
             }
             case MachineIntrinsics.Cpuid:
@@ -2421,7 +2441,7 @@ internal sealed partial class Selector
                 Mov(keep, into);
                 Mov(Eax, leaf);
                 Mov(Ecx, subleaf);
-                Emit(MOp.Cpuid);
+                Emit(new MInstr(MOp.Cpuid) { Probed = true });
                 MReg a = _m.NewReg(), b = _m.NewReg(), c = _m.NewReg(), d = _m.NewReg();
                 Mov(a, Eax);
                 Mov(b, MReg.Of(Gpr.Ebx));

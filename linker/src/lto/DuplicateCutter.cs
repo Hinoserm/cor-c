@@ -22,7 +22,6 @@ internal static class DuplicateCutter
 {
     const string CodeBase = "__corsac_code_base";
     const string FramesBase = "__corsac_frames_base";
-    const uint StackMapMagic = 0x314d5343;      // 'CSM1'
     const uint FrameMagic = FrameTableFormat.Local;     // 'CFR5'
     const string FrameSymbol = "__corsac_frames";
     const string StackMapStart = "__corsac_stackmaps";
@@ -139,7 +138,7 @@ internal static class DuplicateCutter
                 };
                 ReplaceReloc(at, (int)frames.Symbol.Offset + 8, FramesBase);
             }
-            if (maps is not null) ReplaceReloc(maps.Section, 16, CodeBase);
+            if (maps is not null) ReplaceReloc(maps.Section, StackMapTable.BaseOffset, CodeBase);
         }
 
         foreach ((Section section, List<(long Start, long End)> list) in cuts) Splice(obj, section, list, cutSymbols);
@@ -249,56 +248,38 @@ internal static class DuplicateCutter
         return 0;
     }
 
-    /// The stack-map table: 'CSM1' and a version. Version 6 (StackMapTable,
-    /// the x86 code generator's) is decoded and encoded again; versions 3 and
-    /// 4 (the x86-64 generator's is 3) are fixed entries -- the count, the
-    /// entry size and the relocated base, entries whose first word is a
-    /// return address from the base, then the pool of bitmaps they point into.
+    /// The stack-map table (StackMapTable, the x86 code generator's): decoded,
+    /// and encoded again without what was cut. A table in any other format is
+    /// Unknown, and the code it describes is left as it is.
     sealed class StackMaps
     {
         public required Section Section;
         public bool Unknown;
         long _base;
-        int _entry, _count;
-        int[] _pointers = [];
+        List<StackMapTable.Function> _functions = new();
 
         public static StackMaps? Read(ObjectFile obj, Section code)
         {
             Section? s = obj.Sections.FirstOrDefault(s => s.Name.EndsWith(".corsac.stackmaps", StringComparison.Ordinal));
             if (s is null || s.Bytes.Count == 0) return null;
             StackMaps m = new() { Section = s };
-            ChunkedBytes b = s.Bytes;
-            if (b.Count < 20 || U32(b, 0) != StackMapMagic) { m.Unknown = true; return m; }
-            uint version = U32(b, 4);
-            if (version == StackMapTable.Version)
-            {
-                // Functions with their sites, as varints (StackMapTable).
-                m._functions = StackMapTable.Decode(b);
-                if (m._functions is null) { m.Unknown = true; return m; }
-                if (m._functions.Count == 0) return null;
-                m._base = BaseOffset(obj, s, StackMapTable.BaseOffset, code, out bool known6);
-                if (!known6) m.Unknown = true;
-                return m;
-            }
-            m._count = (int)U32(b, 8);
-            m._entry = (int)U32(b, 12);
-            m._pointers = (version, m._entry) switch { (4, 20) => [2, 4], (3, 16) => [2], _ => [] };
-            if (m._pointers.Length == 0 || b.Count < 20 + m._count * m._entry) { m.Unknown = true; return m; }
-            if (m._count == 0) return null;
-            m._base = BaseOffset(obj, s, 16, code, out bool known);
+            // Functions with their sites, as varints.
+            List<StackMapTable.Function>? functions = StackMapTable.Decode(s.Bytes);
+            if (functions is null) { m.Unknown = true; return m; }
+            if (functions.Count == 0) return null;
+            m._functions = functions;
+            m._base = BaseOffset(obj, s, StackMapTable.BaseOffset, code, out bool known);
             if (!known) m.Unknown = true;
             return m;
         }
 
-        List<StackMapTable.Function>? _functions;
-
-        /// Version 6: functions whose code was cut go with their sites; the
-        /// rest are measured from the code's first byte (the new base), their
-        /// sites unchanged, and the table is encoded again.
-        void WriteFunctions(List<(long Start, long End)> cuts)
+        /// Functions whose code was cut go with their sites; the rest are
+        /// measured from the code's first byte (the new base), their sites
+        /// unchanged, and the table is encoded again.
+        public void Write(List<(long Start, long End)> cuts)
         {
             List<StackMapTable.Function> kept = new();
-            foreach (StackMapTable.Function f in _functions!)
+            foreach (StackMapTable.Function f in _functions)
             {
                 long to = Map(cuts, _base + f.Start);
                 if (to < 0) continue;
@@ -308,42 +289,6 @@ internal static class DuplicateCutter
             ChunkedBytes b = Section.Bytes;
             b.Clear();
             b.AddRange(StackMapTable.Encode(kept));
-        }
-
-        public void Write(List<(long Start, long End)> cuts)
-        {
-            if (_functions is not null) { WriteFunctions(cuts); return; }
-            ChunkedBytes b = Section.Bytes;
-            List<byte[]> entries = new();
-            for (int i = 0; i < _count; i++)
-            {
-                int at = 20 + i * _entry;
-                // A return address can be the next function's first byte; the
-                // call before it is what places it.
-                long ret = _base + U32(b, at);
-                long to = Map(cuts, ret - 1);
-                if (to < 0) continue;
-                byte[] e = b.Slice(at, _entry);
-                BitConverter.TryWriteBytes(e.AsSpan(0, 4), (uint)(to + 1));
-                entries.Add(e);
-            }
-            int shift = (_count - entries.Count) * _entry;
-            ChunkedBytes table = new();
-            table.AddRange(b.Slice(0, 20));
-            table.WriteInt32(8, entries.Count);
-            foreach (byte[] e in entries)
-            {
-                foreach (int word in _pointers)
-                {
-                    uint p = BitConverter.ToUInt32(e, word * 4);
-                    if (p != 0) BitConverter.TryWriteBytes(e.AsSpan(word * 4, 4), (uint)(p - shift));
-                }
-                table.AddRange(e);
-            }
-            table.AddRange(b.Slice(20 + _count * _entry, b.Count - (20 + _count * _entry)));
-            b.Clear();
-            b.AddRange(table);
-            // The base word is relocated; its section offset has not moved.
         }
     }
 

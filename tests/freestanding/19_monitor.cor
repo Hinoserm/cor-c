@@ -1,0 +1,199 @@
+// test: Monitor on the bare-metal runtime -- `lock` reentrant and owned, Wait timing out and being pulsed, the owner a kernel names
+// expect-exit: 0
+// expect-output:
+// nested 1 held True
+// after False
+// tryenter True clock 0
+// exit unheld refused
+// wait unheld refused
+// pulse unheld refused
+// pulse alone True
+// wait False 10ms True
+// depth kept True False
+// pulsed True held True
+// parked other False False clock 0 refused
+// parked wait False 5ms True
+// parked own True after False
+//
+// What `lock` is in a kernel: .NET's Monitor, reentrant and owned, where it
+// had been a spin on the object's word with no owner -- a nested lock of the
+// same object spun for ever on itself, IsEntered answered whether anybody
+// held it, and an Exit by code that held nothing let it go. The owner is the
+// running code's block (Platform.MonitorOwner): the thread block, or the
+// block a kernel's TypeInitOwnerHook names for a call that parks and resumes
+// on another processor. A TryEnter takes a free lock, and refuses a held
+// one it may not wait for, without reading the clock; one that may wait
+// waits the whole of its timeout.
+//
+// Then Wait and Pulse, which bare metal had none of: a timed Wait gives the
+// lock up, times out by the clock and takes it back at the depth it had. The
+// pulse that ends a Wait comes from whoever runs while it waits -- another
+// processor, a ring-1 thread -- and here from the clock's own hook, called
+// by the waiting loop, which locks the object the Wait let go and pulses it.
+// Last, two owners from one hook: the lock taken as one parked call is not
+// the other's to see, to take or to give back.
+//
+// The time is the host's clock_gettime (Platform.NanosHook): the host has no
+// 8254 for Clock to read.
+
+using System;
+using System.Threading;
+
+static class G
+{
+    public static object Gate = new object();
+    public static int Count;
+}
+
+static class Program
+{
+    static bool _pulseFromClock;
+    static long _clockReads;
+    static long _owner;
+    static long[]? _callA, _callB;
+
+    /// Platform.NanosHook: CLOCK_MONOTONIC. Asked once to, it first pulses
+    /// the gate, as another processor would while a Wait sleeps.
+    static long Nanos(long a, long b, long c)
+    {
+        _clockReads++;
+        if (_pulseFromClock)
+        {
+            _pulseFromClock = false;
+            lock (G.Gate)
+            {
+                Monitor.Pulse(G.Gate);
+            }
+        }
+        long[] ts = new long[2];
+#if TARGET_64BIT
+        Sys.Syscall(228, 1, Sys.ArrayData(ts), 0);
+        return ts[0] * 1000000000 + ts[1];
+#else
+        Sys.Syscall(265, 1, Sys.ArrayData(ts), 0);
+        long w = ts[0];
+        return (w & 0xFFFFFFFF) * 1000000000 + (w >> 32);
+#endif
+    }
+
+    /// Platform.TypeInitOwnerHook: the parked call running now, or 0 for
+    /// the thread block.
+    static long Owner(long a, long b, long c)
+    {
+        return _owner;
+    }
+
+    static void Inner()
+    {
+        lock (G.Gate)
+        {
+            G.Count++;
+        }
+    }
+
+    static string Refused(Action action)
+    {
+        try
+        {
+            action();
+            return "allowed";
+        }
+        catch (SynchronizationLockException)
+        {
+            return "refused";
+        }
+    }
+
+    static int Main()
+    {
+        Host.Start(16 * 1024 * 1024);
+        Platform.NanosHook = Sys.AddressOf(Program.Nanos);
+
+        lock (G.Gate)
+        {
+            Inner();
+            Host.Line("nested " + G.Count + " held " + Monitor.IsEntered(G.Gate));
+        }
+        Host.Line("after " + Monitor.IsEntered(G.Gate));
+
+        // A free lock is taken without asking the time.
+        long reads = _clockReads;
+        bool got = Monitor.TryEnter(G.Gate);
+        Monitor.Exit(G.Gate);
+        Host.Line("tryenter " + got + " clock " + (_clockReads - reads));
+
+        Host.Line("exit unheld " + Refused(() => Monitor.Exit(new object())));
+        Host.Line("wait unheld " + Refused(() => Monitor.Wait(G.Gate, 0)));
+        Host.Line("pulse unheld " + Refused(() => Monitor.Pulse(G.Gate)));
+
+        lock (G.Gate)
+        {
+            Monitor.Pulse(G.Gate);
+            Monitor.PulseAll(G.Gate);
+            Host.Line("pulse alone " + Monitor.IsEntered(G.Gate));
+        }
+
+        bool waited;
+        long took;
+        lock (G.Gate)
+        {
+            long start = Clock.Now();
+            waited = Monitor.Wait(G.Gate, 10);
+            took = Clock.Now() - start;
+        }
+        Host.Line("wait " + waited + " 10ms " + (took >= 10000000));
+
+        bool kept;
+        lock (G.Gate)
+        {
+            lock (G.Gate)
+            {
+                Monitor.Wait(G.Gate, TimeSpan.FromMilliseconds(1));
+            }
+            kept = Monitor.IsEntered(G.Gate);
+        }
+        Host.Line("depth kept " + kept + " " + Monitor.IsEntered(G.Gate));
+
+        bool pulsed;
+        bool held;
+        lock (G.Gate)
+        {
+            _pulseFromClock = true;
+            pulsed = Monitor.Wait(G.Gate, 5000);
+            held = Monitor.IsEntered(G.Gate);
+        }
+        Host.Line("pulsed " + pulsed + " held " + held);
+
+        // Two parked calls of a kernel, as its TypeInitOwnerHook names them:
+        // a block each, as big as a thread block (a type initializer that
+        // runs as one waits through its Tls.TypeInitWait word).
+        _callA = new long[Tls.Bytes / 8 + 1];
+        _callB = new long[Tls.Bytes / 8 + 1];
+        Platform.TypeInitOwnerHook = Sys.AddressOf(Program.Owner);
+        _owner = Sys.ArrayData(_callA);
+        string other;
+        bool late = false;
+        bool waitedOut;
+        bool own;
+        lock (G.Gate)
+        {
+            _owner = Sys.ArrayData(_callB);
+            long before = _clockReads;
+            other = Monitor.IsEntered(G.Gate) + " " + Monitor.TryEnter(G.Gate) + " clock " + (_clockReads - before)
+                + " " + Refused(() => Monitor.Exit(G.Gate));
+            long start = Clock.Now();
+            Monitor.TryEnter(G.Gate, TimeSpan.FromMilliseconds(5), ref late);
+            waitedOut = Clock.Now() - start >= 5000000;
+            _owner = Sys.ArrayData(_callA);
+            own = Monitor.IsEntered(G.Gate);
+        }
+        bool after = Monitor.IsEntered(G.Gate);
+        Platform.TypeInitOwnerHook = 0;
+        Host.Line("parked other " + other);
+        Host.Line("parked wait " + late + " 5ms " + waitedOut);
+        Host.Line("parked own " + own + " after " + after);
+
+        Host.Done(0);
+        return 0;
+    }
+}

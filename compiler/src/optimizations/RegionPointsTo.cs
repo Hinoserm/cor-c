@@ -772,10 +772,11 @@ public sealed class RegionPointsTo : IModulePass
             if (helper == Near) near++; else inRegion++;
         }
 
-        List<Version> versions = Versions(chosen, Decide);
+        List<Version> versions = Versions(chosen, Decide, out int alike);
 
         // The versions' bodies, from the functions as they are before any
-        // is rewritten.
+        // is rewritten. A call of a version not made -- one alike its
+        // function as rewritten below -- runs the function itself.
         Dictionary<Version, (Function Body, Dictionary<Instr, Instr> From)> made = new();
         List<Function> originals = _m.Functions.ToList();
         foreach (Version v in versions)
@@ -812,7 +813,7 @@ public sealed class RegionPointsTo : IModulePass
         }
         if (opened.Count > 0 || loopRegions.Count > 0 || inRegion + near > 0) CatchUp(_m);
         if (Report is not null)
-            Console.Error.WriteLine($"regions: {opened.Count} boundaries, {loopRegions.Values.Sum(l => l.Count)} loops, {inRegion} sites in the innermost region, {near} beside their object, {versions.Count} versions making {versionSites} more, {churn.Count} objects loops drop");
+            Console.Error.WriteLine($"regions: {opened.Count} boundaries, {loopRegions.Values.Sum(l => l.Count)} loops, {inRegion} sites in the innermost region, {near} beside their object, {versions.Count} versions making {versionSites} more, {alike} not made (alike their function), {churn.Count} objects loops drop");
     }
 
     /// <summary>
@@ -861,7 +862,8 @@ public sealed class RegionPointsTo : IModulePass
         public readonly Dictionary<Instr, string?> Sites = new(ReferenceEqualityComparer.Instance);
         public readonly Dictionary<Instr, Version> Calls = new(ReferenceEqualityComparer.Instance);
         public bool Wanted;
-        // The version whose body this one runs: itself, or one alike.
+        // The version whose body this one runs: itself, or one alike -- its
+        // function's root (Versions) when that is the function's own body.
         public Version? Same;
     }
 
@@ -876,9 +878,11 @@ public sealed class RegionPointsTo : IModulePass
     /// <summary>
     /// The versions worth making: each a function reached, by the calls that
     /// reach it, in fewer copies than all of its own, where those copies
-    /// make some site differently or call a version that does.
+    /// make some site differently or call a version that does -- and whose
+    /// body would not be the function's own as Apply rewrites it. `alike`:
+    /// how many wanted versions were that, and are not made.
     /// </summary>
-    private List<Version> Versions(Dictionary<Instr, string> chosen, Func<Function, List<(int Object, int Copy)>, string?> decide)
+    private List<Version> Versions(Dictionary<Instr, string> chosen, Func<Function, List<(int Object, int Copy)>, string?> decide, out int alike)
     {
         Dictionary<Function, List<int>> copiesOf = new();
         for (int c = 0; c < _copies.Count; c++)
@@ -941,11 +945,39 @@ public sealed class RegionPointsTo : IModulePass
             foreach (Version v in known.Values)
                 if (!v.Wanted && v.Calls.Values.Any(to => to.Wanted)) { v.Wanted = true; grew = true; }
         }
+        // NO BODY FOR A VERSION ALIKE ITS FUNCTION. Apply rewrites the
+        // function itself too: its sites as every copy proves them (`chosen`)
+        // and its calls to the versions they reach (_roots). A version is
+        // wanted when it calls one that is, so most differ from that in
+        // nothing: the function makes the same sites the same way, and calls
+        // the same versions or ones alike them. Each function with a version
+        // wanted stands among its versions as itself, rewritten -- its root --
+        // and a version found alike its root runs the function instead.
+        Dictionary<Function, Version> roots = new();
+        foreach (Version v in known.Values)
+        {
+            if (!v.Wanted || roots.ContainsKey(v.F)) continue;
+            Version root = new() { F = v.F, Copies = copiesOf[v.F].ToArray(), Wanted = true };
+            foreach (Block b in v.F.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (IsRewritable(i.Callee)) root.Sites[i] = chosen.GetValueOrDefault(i);
+                    if (_roots.TryGetValue(i, out Version? to)) root.Calls[i] = to;
+                }
+            roots[v.F] = root;
+        }
+
         // ONE BODY FOR VERSIONS ALIKE: the same function making the same sites
         // the same way and calling versions alike -- found as a machine's
-        // states are merged, by splitting until no class splits further.
-        List<Version> wanted = known.Values.Where(v => v.Wanted).ToList();
+        // states are merged, by splitting until no class splits further. A
+        // call that reaches no version, or one not wanted, runs the function
+        // it names: it is alike a call of that function's root.
+        List<Version> wanted = roots.Values.Concat(known.Values.Where(v => v.Wanted)).ToList();
         Dictionary<Version, int> kind = new();
+        int Runs(Version v, Instr call) =>
+            v.Calls.TryGetValue(call, out Version? to) && to.Wanted ? kind.GetValueOrDefault(to)
+            : call.Callee is string name && _byName.TryGetValue(name, out Function? g) && roots.TryGetValue(g, out Version? root) ? kind.GetValueOrDefault(root)
+            : -1;
         for (int classes = -1; ;)
         {
             Dictionary<string, int> named = new(StringComparer.Ordinal);
@@ -958,7 +990,7 @@ public sealed class RegionPointsTo : IModulePass
                     foreach (Instr i in b.Instrs)
                     {
                         if (v.Sites.TryGetValue(i, out string? h)) key.Append(h == Near ? 'n' : h == InRegion ? 'r' : '-');
-                        else if (i.Op == Opcode.Call) key.Append(v.Calls.TryGetValue(i, out Version? to) && to.Wanted ? kind.GetValueOrDefault(to) : -1).Append(',');
+                        else if (i.Op == Opcode.Call) key.Append(Runs(v, i)).Append(',');
                     }
                 string k = key.ToString();
                 next2[v] = named.TryGetValue(k, out int id) ? id : named[k] = named.Count;
@@ -967,10 +999,13 @@ public sealed class RegionPointsTo : IModulePass
             if (named.Count == classes) break;
             classes = named.Count;
         }
+        // Each class's body: its root's when it holds one (the roots come
+        // first), which is the function itself and made by no version.
         Dictionary<int, Version> first = new();
         foreach (Version v in wanted)
             v.Same = first.TryGetValue(kind[v], out Version? one) ? one : first[kind[v]] = v;
-        return first.Values.ToList();
+        alike = known.Values.Count(v => v.Wanted && v.Same == roots[v.F]);
+        return first.Values.Where(v => v != roots[v.F]).ToList();
     }
 
     /// <summary>

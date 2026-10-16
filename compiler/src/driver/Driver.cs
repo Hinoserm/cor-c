@@ -227,6 +227,7 @@ public static class Driver
               corc build [target/path] [Name=Value ...] [--file corsac.build] [--jobs N]
               corc asm --target x86-16 <file.asm> -o <output.bin>
               corc asm --target x86-32 <file.asm> --obj -o <output.o>
+              corc asm --target x86-64 <file.asm> --obj -o <output.o>
 
             options:
               --target <name>    x86 (default) or x86-64
@@ -240,6 +241,11 @@ public static class Driver
               --main-type <name> select the class supplying the entry point
                                  May be repeated; how one library of several
                                  is built from sources they all have to see
+              --runtime-knob <name=value> a setting of the runtime's, baked into
+                                 the program as ILC's --runtimeknob bakes one:
+                                 System.GC.HeapHardLimit, System.GC.Gen0Size,
+                                 Corsac.GC.Stats and the collector's others, and
+                                 what AppContext answers. May be repeated
               --dynamic          link the runtime and the class library as the
                                  shared objects in build/lib rather than
                                  compiling them in. DT_NEEDED names only the
@@ -315,10 +321,19 @@ public static class Driver
               --asm-entry <sym>  an assembled object owns _start: name the
                                  COR-C# entry stub <sym>, and leave clearing
                                  .bss and setting the stack to that object
-              --cpu <name>       ISA profile: 486 (default), pentium, pentium-mmx, k6, k6-2, k6-3, k6-3+
+              --cpu <name>       ISA profile: 486 (default), pentium, pentium-mmx,
+                                 pentium-pro, pentium2, pentium3, pentium4, k6,
+                                 k6-2, k6-3, k6-2+, k6-3+, athlon, athlon-xp,
+                                 athlon64
               --tune <name>      optimization preferences without enabling additional instructions
-              --disable-mmx     exclude MMX and its dependent 3DNow! instruction families
-              --disable-3dnow   exclude 3DNow! while retaining MMX
+              --disable-mmx      exclude MMX and what needs it: 3DNow! and the
+                                 MMX extensions
+              --disable-3dnow    exclude 3DNow! while retaining MMX
+              --disable-cmov     exclude CMOV, and FCMOV/FCOMI with it
+              --disable-sse      exclude SSE and SSE2
+              --disable-sse2     exclude SSE2 while retaining SSE
+              --enable-<name>    the same five extensions granted beyond the
+                                 CPU's own: a promise the processor has them
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or
@@ -391,6 +406,21 @@ public static class Driver
     }
 
     /// <summary>
+    /// What is wrong with --cpu for the x86-64 target, or null: its one
+    /// processor is the K8, which --cpu may name (as k8 or x86-64) or leave
+    /// out. Both of X86Cpu.Parse's spellings are read, `--cpu NAME` and
+    /// `--cpu=NAME`, so neither slips a 32-bit profile past.
+    /// </summary>
+    private static string? LongModeCpuRefusal(string[] args)
+    {
+        IEnumerable<string> cpuNames = Values(args, "--cpu")
+            .Concat(args.Where(arg => arg.StartsWith("--cpu=")).Select(arg => arg["--cpu=".Length..]));
+        string? other = cpuNames.FirstOrDefault(name => name is not ("k8" or "x86-64"));
+        return other is null ? null
+            : $"--cpu {other}: the x86-64 target's processor is k8 (the first AMD64)";
+    }
+
+    /// <summary>
     /// `corc build --target x86-16 file.asm -o file.bin`: hand-written
     /// assembly to a flat binary. Separate from `compile` because there is no
     /// front end, no linker and no object file involved -- what comes out is
@@ -427,9 +457,24 @@ public static class Driver
         // source still overrides: x86-16 for a boot sector, x86-32 for the
         // kernel's own assembly, which has no real mode left to speak of.
         int bits = targetName == "x86-32" ? 32 : targetName is "x86-64" or "x86_64" ? 64 : 16;
+        // A long-mode assembly runs on a K8 or later, whatever mode each of
+        // its parts is in, and the assembler holds it to no profile; --cpu
+        // may name the K8, as for compile, and nothing else.
+        X86Cpu? cpu = null;
+        if (bits == 64)
+        {
+            if (LongModeCpuRefusal(args) is { } refusal)
+            {
+                return Fail(refusal);
+            }
+        }
+        else
+        {
+            cpu = X86Cpu.Parse(args);
+        }
         bool asObject = args.Contains("--obj");
         string output = Value(args, "-o") ?? Path.ChangeExtension(files[0], asObject ? ".o" : ".bin");
-        Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject, X86Cpu.Parse(args));
+        Corsac.Asm.X86Assembler.Result result = Corsac.Asm.X86Assembler.AssembleFile(files[0], bits, asObject, cpu);
         if (asObject)
         {
             ElfWriter.WriteObjectFile(result.Object!, output);
@@ -600,7 +645,7 @@ public static class Driver
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map"
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
-                    or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type"
+                    or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type" or "--runtime-knob"
                     or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index")
                 {
                     i++;
@@ -629,10 +674,9 @@ public static class Driver
         bool longMode = target == Target.X86_64;
         if (longMode)
         {
-            string? cpuName = Value(args, "--cpu");
-            if (cpuName is not null && cpuName is not ("k8" or "x86-64"))
+            if (LongModeCpuRefusal(args) is { } refusal)
             {
-                return Fail($"--cpu {cpuName}: the x86-64 target's processor is k8 (the first AMD64)");
+                return Fail(refusal);
             }
             target.Cpu = "k8";
         }
@@ -676,6 +720,21 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.EntryName = asmEntry ?? "_start";
         Corsac.Lang.Lower.Lowering.EntryClearsBss = asmEntry is null;
         Corsac.Lang.Lower.Lowering.StartupObject = Value(args, "--main-type");
+        // THE RUNTIME'S SETTINGS, BAKED INTO THE PROGRAM (Lowering.RuntimeKnobs):
+        // --runtime-knob NAME=VALUE, once for each, as ILC's --runtimeknob.
+        // The program's own and not a process flag (Switches): corc's
+        // --gc-stats has corc say its collector's counts, and
+        // --runtime-knob Corsac.GC.Stats=1 has the program it builds say its
+        // own. The last of a name given twice is the one.
+        List<string> knobs = new();
+        foreach (string knob in Values(args, "--runtime-knob"))
+        {
+            int equals = knob.IndexOf('=');
+            if (equals <= 0 || knob.Contains('\0')) return Fail($"--runtime-knob '{knob}': a knob is NAME=VALUE");
+            knobs.RemoveAll(earlier => earlier.StartsWith(knob[..(equals + 1)], StringComparison.Ordinal));
+            knobs.Add(knob);
+        }
+        Corsac.Lang.Lower.Lowering.RuntimeKnobs = knobs;
         // THE SYSTEM LIBRARY'S OWN SOURCES, whose types are .NET's own in
         // System.Private.CoreLib: not every library a compile is given.
         Corsac.Lang.Lower.Lowering.SystemSources = new HashSet<string>(
@@ -692,6 +751,13 @@ public static class Driver
             if (Address(baseText) is not { } parsed)
             {
                 return Fail($"--base '{baseText}' is not an address");
+            }
+            // An i386 image's addresses are 32 bits wide: one based past
+            // them is refused here, before the compile, by the flag that
+            // put it there (the link refuses an image that runs past them).
+            if (!longMode && parsed > uint.MaxValue)
+            {
+                return Fail($"--base {baseText} is above four gigabytes; an i386 image cannot be there");
             }
             loadBase = parsed;
         }
@@ -1075,7 +1141,6 @@ public static class Driver
             PositionIndependent = x86Backend.PositionIndependent,
             Workers = workers,
             EmitLinkSummary = x86Backend.EmitLinkSummary,
-            StackMaps = x86Backend.StackMaps,
         };
         foreach (string symbol in imported)
         {
@@ -1283,12 +1348,12 @@ public static class Driver
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
             // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
-            Linker.FlatImage image = Linker.LinkFlat(link, entry, checked((uint)(loadBase ?? 0x10000)), mapPath: Value(args, "--map"));
+            Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000, mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
             Console.Error.WriteLine(
                 $"{output}: flat image at 0x{image.Base:x}, {image.Bytes.Length} bytes "
                 + $"(text {image.TextSize}, rodata {image.ReadOnlySize}, data {image.DataSize}), "
-                + $"bss {image.BssSize} bytes to zero at 0x{image.Base + (uint)image.Bytes.Length:x}, "
+                + $"bss {image.BssSize} bytes to zero at 0x{image.Base + (ulong)image.Bytes.Length:x}, "
                 + $"{image.MemorySize} bytes of memory");
             return 0;
         }
@@ -1527,6 +1592,17 @@ public static class Driver
             // ring-1 kernels of CORSAC compile too (files.cor).
             libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "abi.cor"));
             libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "files.cor"));
+        }
+        if (freestanding)
+        {
+            // INTERLOCKED AND VOLATILE ON BARE METAL. The runtime never
+            // depends on them -- it has Sys's atomics -- but they are .NET's,
+            // and a kernel written in C# uses them as any C# program does.
+            // They need nothing but Sys and core's AtomicCell; an image that
+            // calls neither has every one of their functions removed as
+            // unreachable. The hosted set has them among the class library's
+            // sources below.
+            libs.Add(Path.Combine(root, "stdlib", "src", "System", "Threading", "interlocked.cor"));
         }
         if (!freestanding)
         {

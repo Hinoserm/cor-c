@@ -75,6 +75,17 @@ additional static helpers without falsely changing an object's instance layout.
 Generic identities/specializations and definition ownership are still separate
 work; this is a consistency guard, not a complete managed loader contract.
 
+### What a linked image keeps of the contracts
+
+`.corsac.abi`, `.corsac.cpu` and `.corsac.layout` are for the link alone
+(`Linker.ConsumedContract`). Every link checks them before it lays anything
+out, then passes over them: no executable, flat image, shared object or module
+carries them, and the objects keep theirs, fit to be checked and linked again.
+A module's link takes the kernel's contracts from the exports file the
+kernel's link wrote (`corc link --exports`), which records them itself, never
+from the kernel image. One copy per input in an image would be no contract,
+and the managed layouts alone were most of a small program's file.
+
 ### LTO summary encoding, version 1
 
 The non-loadable .corsac.lto section begins with the four bytes `CLTO`, followed

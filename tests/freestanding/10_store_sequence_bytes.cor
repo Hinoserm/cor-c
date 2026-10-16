@@ -1,5 +1,4 @@
 // test: the store sequences' bytes, which the kernels' handshakes rely on
-// sources: stdlib/src/System/Threading/interlocked.cor
 // flags-x86: --store-sequences
 // expect-bytes-x86: __corsac_refstore: 83 3d [s_Runtime_Marking] 00 74 11 51 52 50 52 50 e8 (m_Runtime_WriteBarrierStore_2_V$NInt_V$NInt) 83 c4 08 58 5a 59 c3 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3
 // expect-bytes-x86: __corsac_cardstore: 89 10 51 8b 0d [s_Runtime_Cards] 85 c9 74 09 50 c1 e8 0a c6 04 01 01 58 59 c3

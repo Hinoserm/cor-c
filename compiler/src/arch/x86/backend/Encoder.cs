@@ -60,6 +60,7 @@ internal sealed class Encoder
     /// <summary>Encode a function at the current end of the section; returns its size.</summary>
     public int Encode(MFunction m)
     {
+        Audit(m);
         _m = m;
         _funcStart = _out.Count;
         _long.Clear();
@@ -91,6 +92,37 @@ internal sealed class Encoder
         _text.Relocs.AddRange(_pending);
         return _out.Count - _funcStart;
     }
+
+    /// <summary>
+    /// THE EMITTED-CODE AUDIT: every instruction of the function against what
+    /// --cpu permits (Isa), once, before any byte of it is written. Whatever
+    /// chose an instruction -- selection, a later pass, a unit regenerated
+    /// for the link -- one the profile lacks stops the compile here, naming
+    /// the function, the instruction and what it needs; nothing a 486 cannot
+    /// run reaches a 486 image unless the source asked for it after its own
+    /// processor check (MInstr.Probed).
+    ///
+    /// The packed registers have a second rule: they are the x87's, and only
+    /// code selected with the hosted ABI's leave (MFunction.AutomaticPacked)
+    /// may use them, whatever the processor has.
+    /// </summary>
+    private static void Audit(MFunction m)
+    {
+        X86Cpu profile = Target.Current.X86Profile;
+        foreach (MBlock block in m.Blocks)
+        foreach (MInstr i in block.Instrs)
+        {
+            X86Feature missing = Isa.Requires(i.Op) & ~profile.Features;
+            if (missing != X86Feature.None && !i.Probed)
+                throw new InvalidOperationException(
+                    $"{m.Source.Name}: {i.Op}{At(i)} needs {Isa.Describe(missing)}, which --cpu={profile.Name} does not permit");
+            if (!m.AutomaticPacked && Isa.UsesPackedState(i.Op))
+                throw new InvalidOperationException(
+                    $"{m.Source.Name}: {i.Op}{At(i)} uses the MMX registers in code that does not own the x87 state");
+        }
+    }
+
+    private static string At(MInstr i) => i.Line > 0 ? $" (line {i.Line})" : "";
 
     private bool Pass()
     {
@@ -576,42 +608,35 @@ internal sealed class Encoder
                 break;
             case MOp.MmxLoad:
             case MOp.MmxStore:
-                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MMem)
-                    throw new InvalidOperationException("MMX memory move requires an enabled MMX profile and memory");
+                if (i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                    throw new InvalidOperationException("MMX memory move requires memory");
                 B(0x0f, i.Op == MOp.MmxLoad ? (byte)0x6f : (byte)0x7f); ModRM(0, i.Operands[0]);
                 break;
             case MOp.MmxLoadD:
-                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MMem)
-                    throw new InvalidOperationException("MOVD requires MMX and memory");
+                if (i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                    throw new InvalidOperationException("MOVD requires memory");
                 B(0x0f, 0x6e); ModRM(0, i.Operands[0]); break;
             case MOp.MmxDuplicateLowWords:
-                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0x61, 0xc0); break;
             case MOp.MmxWidenUnsignedWords:
-                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0xef, 0xc9, 0x0f, 0x61, 0xc1); break;
             case MOp.ThreeDNowIntToFloat: case MOp.ThreeDNowShortToFloat:
-                if (!Target.Current.X86Profile.ThreeDNow || (i.Op == MOp.ThreeDNowShortToFloat && !Target.Current.X86Profile.ThreeDNowExtended))
-                    throw new InvalidOperationException("Packed conversion requires the selected 3DNow extension");
                 B(0x0f, 0x0f, 0xc0, i.Op == MOp.ThreeDNowIntToFloat ? (byte)0x0d : (byte)0x0c); break;
             case MOp.MmxSaveToTwo:
-                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0x6f, 0xd0); break;
             case MOp.ThreeDNowAddFromTwo: case MOp.ThreeDNowSubFromTwo: case MOp.ThreeDNowMulFromTwo: case MOp.ThreeDNowFloatToInt:
-                if (!Target.Current.X86Profile.ThreeDNow) throw new InvalidOperationException("3DNow is disabled");
                 B(0x0f, 0x0f, i.Op == MOp.ThreeDNowFloatToInt ? (byte)0xc0 : (byte)0xc2,
                     i.Op switch { MOp.ThreeDNowAddFromTwo => (byte)0x9e, MOp.ThreeDNowSubFromTwo => (byte)0xaa,
                         MOp.ThreeDNowMulFromTwo => (byte)0xb4, _ => (byte)0x1d }); break;
             case MOp.MmxZero:
-                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0xef, 0xc0); break;
             case MOp.MmxAddB: case MOp.MmxAddW: case MOp.MmxAddD:
             case MOp.MmxEqualB: case MOp.MmxEqualW: case MOp.MmxEqualD:
             case MOp.MmxGreaterB: case MOp.MmxGreaterW: case MOp.MmxGreaterD:
             case MOp.MmxSubB: case MOp.MmxSubW: case MOp.MmxSubD:
             case MOp.MmxAnd: case MOp.MmxOr: case MOp.MmxXor: case MOp.MmxMulW: case MOp.MmxMulHighW: case MOp.MmxMultiplyAddW:
-                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MMem)
-                    throw new InvalidOperationException("Packed arithmetic requires an MMX profile and memory");
+                if (i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                    throw new InvalidOperationException("Packed arithmetic requires memory");
                 B(0x0f, i.Op switch {
                     MOp.MmxAddB => (byte)0xfc, MOp.MmxAddW => (byte)0xfd, MOp.MmxAddD => (byte)0xfe,
                     MOp.MmxEqualB => (byte)0x74, MOp.MmxEqualW => (byte)0x75, MOp.MmxEqualD => (byte)0x76,
@@ -621,20 +646,18 @@ internal sealed class Encoder
                     MOp.MmxMulHighW => (byte)0xe5, MOp.MmxMultiplyAddW => (byte)0xf5, _ => (byte)0xd5 });
                 ModRM(0, i.Operands[0]); break;
             case MOp.ThreeDNowAverageB: case MOp.ThreeDNowMulRoundW:
-                if (!Target.Current.X86Profile.ThreeDNow || i.Operands.Count != 1 || i.Operands[0] is not MMem)
-                    throw new InvalidOperationException("3DNow packed arithmetic requires an enabled profile and memory");
+                if (i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                    throw new InvalidOperationException("3DNow packed arithmetic requires memory");
                 B(0x0f, 0x0f); ModRM(0, i.Operands[0]); B(i.Op == MOp.ThreeDNowAverageB ? (byte)0xbf : (byte)0xb7); break;
             case MOp.MmxShlW: case MOp.MmxShlD: case MOp.MmxShrW: case MOp.MmxShrD: case MOp.MmxSarW: case MOp.MmxSarD:
-                if (!Target.Current.X86Profile.Mmx || i.Operands.Count != 1 || i.Operands[0] is not MImm { IsPlain: true, Value: >= 0 and <= 31 } shift)
-                    throw new InvalidOperationException("Packed shift requires MMX and a normalized C# shift count");
+                if (i.Operands.Count != 1 || i.Operands[0] is not MImm { IsPlain: true, Value: >= 0 and <= 31 } shift)
+                    throw new InvalidOperationException("Packed shift requires a normalized C# shift count");
                 B(0x0f, i.Op is MOp.MmxShlW or MOp.MmxShrW or MOp.MmxSarW ? (byte)0x71 : (byte)0x72);
                 B(i.Op is MOp.MmxShlW or MOp.MmxShlD ? (byte)0xf0 : i.Op is MOp.MmxShrW or MOp.MmxShrD ? (byte)0xd0 : (byte)0xe0);
                 B((byte)shift.Value); break;
             case MOp.Emms:
-                if (!Target.Current.X86Profile.Mmx) throw new InvalidOperationException("MMX is disabled");
                 B(0x0f, 0x77); break;
             case MOp.Femms:
-                if (!Target.Current.X86Profile.ThreeDNow) throw new InvalidOperationException("3DNow is disabled");
                 B(0x0f, 0x0e); break;
             case MOp.RepMovsd:
                 B(0xF3, 0xA5);
@@ -682,6 +705,10 @@ internal sealed class Encoder
                 break;
             case MOp.Fucompp:
                 B(0xDA, 0xE9);
+                break;
+            case MOp.Fucomipp:
+                if (!Target.Current.X86Profile.FloatCmov) throw new InvalidOperationException("FUCOMIP requires a Pentium Pro x87");
+                B(0xDF, 0xE9, 0xDD, 0xD8);
                 break;
             case MOp.Fnstsw:
                 B(0xDF, 0xE0);

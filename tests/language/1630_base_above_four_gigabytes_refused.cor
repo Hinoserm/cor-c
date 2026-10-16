@@ -1,0 +1,16 @@
+// test: an i386 image based above four gigabytes is refused
+// flags: --base 0x140000000
+// expect-compile-error: --base 0x140000000 is above four gigabytes; an i386 image cannot be there
+//
+// An i386 image's addresses are 32 bits wide, in its code and in its ELF32
+// headers. A --base past them is refused by the flag that gave it, as an
+// error the compiler says, rather than an overflow it crashes on in the
+// link; a long-mode image may be anywhere (Driver.Compile).
+
+static class Program
+{
+    static int Main()
+    {
+        return 0;
+    }
+}

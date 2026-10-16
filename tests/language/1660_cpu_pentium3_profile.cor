@@ -1,0 +1,46 @@
+// test: a program compiled for the Pentium III profile
+// flags: --cpu=pentium3
+// expect-exit: 0
+// expect-output:
+// 181138
+// 2.5
+// False
+// 5
+// 1984
+//
+// --cpu=pentium3 names a processor with CMOV, FCOMI, MMX, its extensions and
+// SSE (X86Cpu.Model): one the compiler knew nothing of while its profiles
+// were a line of generations that stopped at the Pentium Pro. Whatever the
+// profile lets the code generator use, the program answers as on any other:
+// integer and double comparisons, NaN's unordered compare, Math.Max and
+// Math.Min, and a byte array long enough for MMX's packed operations.
+
+using System;
+
+static class Program
+{
+    static int Max(int a, int b) => a > b ? a : b;
+    static int Clamp(int v) => v < 0 ? 0 : (v > 255 ? 255 : v);
+    static double Larger(double a, double b) => a > b ? a : b;
+    static bool Less(double a, double b) => a < b;
+    static int Select(int c, int x, int y) { int r = y; if (c != 0) r = x; return r; }
+    static int Abs(int x) => x < 0 ? -x : x;
+
+    static int Main()
+    {
+        int s = 0;
+        for (int i = -300; i < 300; i++) s += Clamp(i) + Max(i, 7) + Abs(i) + Select(i & 1, i, -i);
+        Console.WriteLine(s);
+        double low = 1.5, high = 2.5;
+        Console.WriteLine(Larger(low, high));
+        Console.WriteLine(Less(double.NaN, 1.0));
+        int three = 3, nine = 9, minusFour = -4, two = 2;
+        Console.WriteLine(Math.Max(three, nine) + Math.Min(minusFour, two));
+        byte[] a = new byte[64], b = new byte[64];
+        for (int i = 0; i < a.Length; i++) { a[i] = (byte)(i * 3); b[i] = (byte)(200 - i); }
+        int sum = 0;
+        for (int i = 0; i < a.Length; i++) sum += (byte)(a[i] + b[i]) & 63;
+        Console.WriteLine(sum);
+        return 0;
+    }
+}

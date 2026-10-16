@@ -21,8 +21,28 @@ public static class ManagedDirectoryTests
             byte[] header = new byte[20]; BinaryPrimitives.WriteUInt32LittleEndian(header, 0x4d524643);
             frames.Bytes.AddRange(header); obj.Sections.Add(frames);
             obj.Symbols.Add(new Symbol { Name = ManagedDirectory.FrameSymbol, Section = frames, Size = 20, Global = false });
-            new TargetContract(0).Attach(obj);
+            // Every contract a compiled unit carries, which the link checks
+            // and leaves behind (Linker.ConsumedContract).
+            new TargetContract(0, requiresManagedLayouts: true, requiresCodeGenerationContract: true).Attach(obj);
+            ManagedLayoutContract.Attach(obj, new[] { new ManagedTypeLayout("type:Example", new byte[32]) });
+            Corsac.Lang.X86.X86Cpu.Parse(["--cpu=486"]).Contract.Attach(obj);
             return obj;
+        }
+        // The names of a linked i386 image's sections, from its section
+        // headers, forty bytes each.
+        List<string> SectionNames(byte[] image)
+        {
+            const int header = 40;
+            int table = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(32)));
+            int count = BinaryPrimitives.ReadUInt16LittleEndian(image.AsSpan(48)), strings = BinaryPrimitives.ReadUInt16LittleEndian(image.AsSpan(50));
+            int names = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(table + strings * header + 16)));
+            List<string> list = new();
+            for (int i = 0; i < count; i++)
+            {
+                int at = names + (int)BinaryPrimitives.ReadUInt32LittleEndian(image.AsSpan(table + i * header));
+                list.Add(System.Text.Encoding.ASCII.GetString(image, at, Array.IndexOf(image, (byte)0, at) - at));
+            }
+            return list;
         }
         ObjectFile a = Unit("_start"), b = Unit("other");
         byte[] beforeA = ElfWriter.WriteObject(a), beforeB = ElfWriter.WriteObject(b);
@@ -40,9 +60,19 @@ public static class ManagedDirectoryTests
             Check(Word(flat.Bytes, record + 4) == 20 && Word(flat.Bytes, record + 8) == 0 && Word(flat.Bytes, record + 12) == 0, "Directory bounds/absent stack maps");
         }
         Check(flat.Bytes.SequenceEqual(Linker.LinkFlat(inputs, "_start", 0x10000).Bytes), "Repeated linking mutates inputs");
-        Check(Linker.Link(inputs, "_start").Length > 0, "Static metadata link");
+        byte[] image = Linker.Link(inputs, "_start");
+        Check(image.Length > 0, "Static metadata link");
         byte[] shared = Linker.LinkShared(inputs, "libmetadata.so");
         Check(shared.Length > 0, "Shared metadata link");
+        // NO CONTRACT THE LINK CHECKED REACHES THE IMAGE, static or shared,
+        // and the objects keep theirs: the shared link validates the objects
+        // the static one has just linked, and the comparison below with
+        // beforeA and beforeB finds them as they were. The three are named
+        // here, not asked of the predicate, so a name it lost is caught.
+        string[] contracts = { TargetContract.SectionName, X86CodeGenerationContract.SectionName, ManagedLayoutContract.SectionName };
+        Check(SectionNames(image).Contains(".text") && SectionNames(shared).Contains(".text"), "Image section names");
+        Check(!SectionNames(image).Intersect(contracts).Any(), "Static link carried its inputs' contracts into the image");
+        Check(!SectionNames(shared).Intersect(contracts).Any(), "Shared link carried its inputs' contracts into the image");
         Check(!ElfReader.ExportsOf(shared).Any(name => name == ManagedDirectory.Symbol || name.StartsWith("__corsac_unit_", StringComparison.Ordinal)),
             "Image-local metadata leaked into dynamically interposable exports");
         Check(beforeA.SequenceEqual(ElfWriter.WriteObject(a)) && beforeB.SequenceEqual(ElfWriter.WriteObject(b)), "Metadata synthesis changed original objects");
@@ -55,6 +85,6 @@ public static class ManagedDirectoryTests
         Reject(() => Linker.Link(new[] { ("bad", bad) }, "_start"));
         bad = Unit("_start"); bad.Sections.Single(s => s.Name == TargetContract.SectionName).Bytes[4] = 2;
         Reject(() => Linker.Link(new[] { ("old", bad) }, "_start"));
-        Console.WriteLine("  image metadata: every unit, bounds, flat/static/shared links, no input mutation and stale ABI rejection passed");
+        Console.WriteLine("  image metadata: every unit, bounds, flat/static/shared links, no input mutation, no consumed contract in an image and stale ABI rejection passed");
     }
 }

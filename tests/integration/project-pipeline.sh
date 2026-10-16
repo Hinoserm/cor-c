@@ -8,6 +8,7 @@ cp tests/integration/project/Basic.csproj tests/integration/project/Program.cs t
 corc="${CORC_DLL:-$root/compiler/bin/managed/Release/net10.0/corc.dll}"
 run_build() { dotnet "$corc" project "$work/Basic.csproj" --jobs 4; }
 run_build > "$work/first.log" 2>&1
+grep -q 'Answer.cs unit-allocated=[0-9]* rebuilt: first build$' "$work/first.log"
 program="$work/bin/cor-c/Release/net10.0/Basic"
 status=0; "$program" || status=$?
 test "$status" = 42
@@ -19,6 +20,8 @@ test "$(stat -c '%y' "$program")" = "$before"
 sed -i 's/=> 42;/=> 43;/' "$work/Answer.cs"
 run_build > "$work/body.log" 2>&1
 grep -q '1/2 source units rebuilt' "$work/body.log"
+# And the build says why it compiled the one it did.
+grep -q 'Answer.cs unit-allocated=[0-9]* rebuilt: source changed$' "$work/body.log"
 status=0; "$program" || status=$?
 test "$status" = 43
-echo "PASS native .csproj execution, unchanged outputs and selective body rebuild: $work"
+echo "PASS native .csproj execution, unchanged outputs and selective body rebuild with its reason: $work"

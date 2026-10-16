@@ -1,0 +1,105 @@
+// test: Interlocked and Volatile on bare metal, each at its own width -- an int's neighbour left alone, a long lock-free in long mode
+// expect-exit: 0
+// expect-output:
+// inc 1 A=1 B=5 C=6
+// dec 0 A=0 B=5 C=6
+// dec -1 A=-1 B=5 C=6
+// add -3 A=-3 B=5 C=6
+// xchg -3 A=-7 B=5 C=6
+// cas missed -7 A=-7 B=5 C=6
+// cas -7 A=9 B=5 C=6
+// middle 6 A=9 B=6 C=6
+// static 1 0 then 5
+// element 2 [10 20 30]
+// long add 5000000000 M=3
+// long inc 5000000001 M=3
+// long xchg 5000000001 L=-1 M=3
+// long cas -1 L=7 M=3
+// long cas missed 7 L=7 M=3
+// long read 7 dec 6 M=3
+// volatile 11 B=6 1099511627776 M=3
+//
+// No `// sources:` line: the freestanding set has interlocked.cor itself
+// (Driver.DefaultLibraries), as the hosted one does.
+//
+// AN INT IS FOUR BYTES. Interlocked's int forms were the word intrinsics,
+// which in long mode are eight: a Decrement of A from 0 borrowed from B, an
+// Exchange of -7 wrote its sign extension over B, and a CompareExchange
+// compared A and B together against one int's comparand. Each field here has
+// a neighbour after it holding something that is not zero, so a wide
+// operation shows: B=5 and C=6 must survive every operation on A and B, and
+// an array's 20 every operation on the element before it. A static int takes
+// the same forms.
+//
+// A LONG IS A WORD IN LONG MODE, and its forms are the processor's own
+// atomics there, lock-free as .NET's are; on i386 the shared lock still
+// makes them atomic with respect to each other. Either way the answers are
+// .NET's, and M, the long after L, is never touched.
+
+using System;
+using System.Threading;
+
+class Three
+{
+    public int A;
+    public int B;
+    public int C;
+}
+
+class Wide
+{
+    public long L;
+    public long M;
+}
+
+static class Program
+{
+    static int _first;
+    static int _second;
+
+    static string Ints(Three t) { return " A=" + t.A + " B=" + t.B + " C=" + t.C; }
+
+    static int Main()
+    {
+        Host.Start(8 * 1024 * 1024);
+
+        Three t = new Three();
+        t.B = 5;
+        t.C = 6;
+        int two = 2;
+        Host.Line("inc " + Interlocked.Increment(ref t.A) + Ints(t));
+        Host.Line("dec " + Interlocked.Decrement(ref t.A) + Ints(t));
+        Host.Line("dec " + Interlocked.Decrement(ref t.A) + Ints(t));
+        Host.Line("add " + Interlocked.Add(ref t.A, -two) + Ints(t));
+        Host.Line("xchg " + Interlocked.Exchange(ref t.A, -7) + Ints(t));
+        Host.Line("cas missed " + Interlocked.CompareExchange(ref t.A, 9, 5) + Ints(t));
+        Host.Line("cas " + Interlocked.CompareExchange(ref t.A, 9, -7) + Ints(t));
+        Host.Line("middle " + Interlocked.Increment(ref t.B) + Ints(t));
+
+        _second = 5;
+        int was = Interlocked.Exchange(ref _first, 1);
+        Host.Line("static " + Interlocked.CompareExchange(ref _first, 0, 1) + " " + was + " then " + _second);
+
+        int[] row = new int[] { 1, 20, 30 };
+        Interlocked.Increment(ref row[0]);
+        Host.Line("element " + Interlocked.Exchange(ref row[0], 10) + " [" + row[0] + " " + row[1] + " " + row[2] + "]");
+
+        Wide w = new Wide();
+        w.M = 3;
+        long five = 5000000000L;
+        Host.Line("long add " + Interlocked.Add(ref w.L, five) + " M=" + w.M);
+        Host.Line("long inc " + Interlocked.Increment(ref w.L) + " M=" + w.M);
+        Host.Line("long xchg " + Interlocked.Exchange(ref w.L, -1L) + " L=" + w.L + " M=" + w.M);
+        Host.Line("long cas " + Interlocked.CompareExchange(ref w.L, 7L, -1L) + " L=" + w.L + " M=" + w.M);
+        Host.Line("long cas missed " + Interlocked.CompareExchange(ref w.L, 8L, -1L) + " L=" + w.L + " M=" + w.M);
+        long read = Interlocked.Read(ref w.L);
+        Host.Line("long read " + read + " dec " + Interlocked.Decrement(ref w.L) + " M=" + w.M);
+
+        Volatile.Write(ref t.A, 11);
+        Volatile.Write(ref w.L, 1L << 40);
+        Host.Line("volatile " + Volatile.Read(ref t.A) + " B=" + t.B + " " + Volatile.Read(ref w.L) + " M=" + w.M);
+
+        Host.Done(0);
+        return 0;
+    }
+}

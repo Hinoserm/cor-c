@@ -3072,23 +3072,31 @@ static partial class Scheduler
 // with .NET's contract: REENTRANT -- a thread that holds an object's lock may
 // lock it again, and must exit as many times -- owned, so an Exit by a thread
 // that does not hold it throws SynchronizationLockException, and waitable
-// (Monitor.Wait/Pulse, in the platform's half of this class).
+// (Monitor.Wait/Pulse).
 //
 // THE OBJECT'S SYNC WORD SAYS WHO HOLDS IT: 0 free, otherwise the owner the
-// platform names (Platform.MonitorOwner -- a hosted thread's thread block),
+// platform names (Platform.MonitorOwner -- a hosted thread's thread block;
+// on bare metal the running code's, named as a type initializer's owner is),
 // bit 0 set while somebody may be asleep waiting for it. A thread that locks
 // again is counted in a side table, since recursion is the exception.
 //
-// A PLATFORM WITH NO IDENTITY TO GIVE -- the bare-metal kernel, where a
-// "thread" is a processor and a task holding a lock can resume on another
-// one -- answers 0, and the lock is what it always was there: a spin on the
-// word, held or not, with no owner to check and nobody asleep on it.
-static partial class Monitor
+// NO OWNER TO NAME -- MonitorOwner answering 0, with no thread block yet --
+// leaves the lock a spin on the word, held or not, with no owner to check
+// and nobody asleep on it.
+//
+// WAIT GIVES THE LOCK UP ENTIRELY -- every level of it -- sleeps until Pulse
+// picks it or the timeout passes, then takes the lock back at the depth it
+// had. A waiter is enrolled before the lock is let go, so a Pulse made the
+// moment after cannot miss it. Its sleep is the platform's (Native.Wait and
+// WaitFor): a futex under Linux, a look at the word between halts or yields
+// on bare metal, where whoever pulses is another processor or a ring-1
+// thread.
+static class Monitor
 {
     const long Held = 2;            // the owner written when there is no identity
     const long Asleep = 1;          // bit 0: someone may be waiting on the word
 
-    static int _depthGate;
+    static nint _depthGate;
     static Dictionary<long, int>? _depths;
 
     static long Owner()
@@ -3158,6 +3166,11 @@ static partial class Monitor
         return TryEnter(obj, Timeouts.Milliseconds(timeout, "timeout"));
     }
 
+    public static void TryEnter(object obj, TimeSpan timeout, ref bool lockTaken)
+    {
+        TryEnter(obj, Timeouts.Milliseconds(timeout, "timeout"), ref lockTaken);
+    }
+
     public static void TryEnter(object obj, int millisecondsTimeout, ref bool lockTaken)
     {
         if (lockTaken)
@@ -3187,7 +3200,14 @@ static partial class Monitor
         long word = Sys.SyncWord(obj);
         long me = Owner();
         long mark = me == 0 ? Held : me;
-        long deadline = Clock.NowMilliseconds() + millisecondsTimeout;
+        // THE CLOCK ONLY ONCE THERE IS SOMETHING TO TIME: a lock that is free,
+        // or already this thread's, is taken without asking the time -- on
+        // bare metal three port reads of the 8254, or a kernel's NanosHook --
+        // and a held one with no time to wait is refused without it. The
+        // deadline is in Clock's nanoseconds, as Wait's: one in whole
+        // milliseconds, taken late in a millisecond, would give up most of
+        // a millisecond early.
+        long deadline = -1;
 
         while (true)
         {
@@ -3202,7 +3222,16 @@ static partial class Monitor
                 Deepen(word, 1);
                 return true;
             }
-            if (Clock.NowMilliseconds() >= deadline)
+            if (millisecondsTimeout == 0)
+            {
+                return false;
+            }
+            long now = Clock.Now();
+            if (deadline < 0)
+            {
+                deadline = now + (long)millisecondsTimeout * 1000000;
+            }
+            if (now >= deadline)
             {
                 return false;
             }
@@ -3349,6 +3378,185 @@ static partial class Monitor
         {
             Deepen(word, depth);
         }
+    }
+
+    static nint _waitGate;
+    static List<MonitorWaiter>? _waiters;
+
+    public static bool Wait(object obj)
+    {
+        return Wait(obj, -1);
+    }
+
+    public static bool Wait(object obj, TimeSpan timeout)
+    {
+        return Wait(obj, Timeouts.Milliseconds(timeout, "timeout"));
+    }
+
+    public static bool Wait(object obj, int millisecondsTimeout, bool exitContext)
+    {
+        return Wait(obj, millisecondsTimeout);
+    }
+
+    public static bool Wait(object obj, TimeSpan timeout, bool exitContext)
+    {
+        return Wait(obj, timeout);
+    }
+
+    /// Answers whether it was pulsed; false when the timeout passed first.
+    public static bool Wait(object obj, int millisecondsTimeout)
+    {
+        if (obj == null)
+        {
+            throw new ArgumentNullException("obj");
+        }
+        if (millisecondsTimeout < -1)
+        {
+            throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        }
+        long word = Sys.SyncWord(obj);
+        long me = Owner();
+
+        if (me == 0 || (Sys.Peek(word) & ~Asleep) != me)
+        {
+            throw new SynchronizationLockException();
+        }
+
+        MonitorWaiter waiter = new MonitorWaiter(word);
+        EnterGate();
+        try
+        {
+            List<MonitorWaiter> waiters = _waiters ??= new List<MonitorWaiter>();
+            waiters.Add(waiter);
+        }
+        finally
+        {
+            ExitGate();
+        }
+
+        int depth = TakeDepth(word);
+        Release(word);
+
+        long flag = Atom.At(waiter, Atom.FirstWord);
+        long deadline = millisecondsTimeout < 0 ? -1 : Clock.Now() + (long)millisecondsTimeout * 1000000;
+
+        while (Sys.PeekWord(flag) == 0)
+        {
+            if (deadline < 0)
+            {
+                Native.Wait(flag, 0);
+                continue;
+            }
+            long left = deadline - Clock.Now();
+            if (left <= 0)
+            {
+                break;
+            }
+            Native.WaitFor(flag, 0, left);
+        }
+
+        bool pulsed;
+        EnterGate();
+        try
+        {
+            pulsed = Sys.PeekWord(flag) != 0;
+            _waiters!.Remove(waiter);
+        }
+        finally
+        {
+            ExitGate();
+        }
+
+        Enter(obj);
+        RestoreDepth(word, depth);
+        return pulsed;
+    }
+
+    /// Wakes the longest waiter on the object, if there is one.
+    public static void Pulse(object obj)
+    {
+        Signal(obj, all: false);
+    }
+
+    /// Wakes every waiter on the object.
+    public static void PulseAll(object obj)
+    {
+        Signal(obj, all: true);
+    }
+
+    static void Signal(object obj, bool all)
+    {
+        if (obj == null)
+        {
+            throw new ArgumentNullException("obj");
+        }
+        long word = Sys.SyncWord(obj);
+        long me = Owner();
+
+        if (me == 0 || (Sys.Peek(word) & ~Asleep) != me)
+        {
+            throw new SynchronizationLockException();
+        }
+
+        EnterGate();
+        try
+        {
+            List<MonitorWaiter>? waiters = _waiters;
+            if (waiters == null)
+            {
+                return;
+            }
+            for (int i = 0; i < waiters.Count; i++)
+            {
+                MonitorWaiter waiter = waiters[i];
+                long flag = Atom.At(waiter, Atom.FirstWord);
+                if (waiter.Word != word || Sys.PeekWord(flag) != 0)
+                {
+                    continue;
+                }
+                Sys.AtomicSwap(flag, 1);
+                Native.Wake(flag, 1);
+                if (!all)
+                {
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            ExitGate();
+        }
+    }
+
+    static void EnterGate()
+    {
+        long gate = Sys.AddressOf(ref _waitGate);
+        while (Sys.Cas(gate, 0, 1) != 0) { Sys.Pause(); }
+    }
+
+    static void ExitGate()
+    {
+        Sys.AtomicSwap(Sys.AddressOf(ref _waitGate), 0);
+    }
+}
+
+/// One thread in Monitor.Wait: the lock word it waits on, and the flag a Pulse
+/// sets -- the word it sleeps on (Native.Wait).
+class MonitorWaiter
+{
+    // LAYOUT: first instance field, at Atom.FirstWord (see Atom), and a
+    // WORD, as the other waiters' are.
+    nint _signalled;
+    int _pad;
+
+    public long Word;
+
+    public MonitorWaiter(long word)
+    {
+        _signalled = 0;
+        _pad = 0;
+        Word = word;
+        Atom.CheckLayout();
     }
 }
 

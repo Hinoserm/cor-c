@@ -69,6 +69,7 @@ internal static class Program
         if (args.Contains("--benchmark-packed")) return PackedMemoryBenchmarks.Run(args.FirstOrDefault(argument => argument.StartsWith("--benchmark-filter="))?.Substring(19));
         Target.Current = Target.X86;
         Target.X86.X86Profile = X86Cpu.Parse(args);
+        EmittedInstructionAudit.Run(Check);
         PruneArithmetic();
         RepeatingMemoryRegions();
         DeferredFunctions();
@@ -128,9 +129,12 @@ internal static class Program
 
         X86Backend backend = new() { AutomaticPacked = !args.Contains("--kernel-abi") };
         string asm = backend.Assembly(m);
-        bool usesBswap = Target.X86.X86Profile.Name != "386";
+        bool usesBswap = Target.X86.X86Profile.Has(X86Feature.I486);
         Check(FunctionAsm(asm, "bswap32").Contains("bswap ") == usesBswap, "byte-swap instruction respects CPU profile");
         Check(FunctionAsm(asm, "bswap64_inplace").Contains("bswap ") == usesBswap, "wide byte-swap instruction respects CPU profile");
+        bool floatCmov = Target.X86.X86Profile.FloatCmov;
+        Check(FunctionAsm(asm, "fma").Contains("fucomip ") == floatCmov && FunctionAsm(asm, "fma").Contains("fnstsw ") != floatCmov,
+            "float comparison sets EFLAGS with FUCOMIP exactly where the profile has it");
         bool packed = Target.X86.X86Profile.Mmx && backend.AutomaticPacked;
         Check(FunctionAsm(asm, "packed_frames").Contains("movq ") == packed, "packed frame operations respect MMX exclusion and ABI");
         Check(FunctionAsm(asm, "packed_frames").Contains("femms") == (packed && Target.X86.X86Profile.ThreeDNow), "packed frame exit respects 3DNow selection");
@@ -1705,8 +1709,23 @@ internal static class Program
         b.SetBlock(thr);
         b.Emit(Opcode.Unwind, null, R(recAddr), I(13));
         b.SetBlock(ok);
-        VReg old = b.Emit(Opcode.AtomicAdd, b.Reg(IrType.I32), new SymOperand("counter"), I(1)).Dest!;
-        VReg o2 = b.Emit(Opcode.AtomicOr, b.Reg(IrType.I32), new SymOperand("counter"), R(old)).Dest!;
+        VReg o2;
+        if ((Target.X86.X86Profile.Features & X86Feature.I486) != 0)
+        {
+            VReg old = b.Emit(Opcode.AtomicAdd, b.Reg(IrType.I32), new SymOperand("counter"), I(1)).Dest!;
+            o2 = b.Emit(Opcode.AtomicOr, b.Reg(IrType.I32), new SymOperand("counter"), R(old)).Dest!;
+        }
+        else
+        {
+            // A 386 HAS NEITHER XADD NOR CMPXCHG, and the emitted-code audit
+            // refuses both under --cpu=386 (EmittedInstructionAudit): there
+            // the counter is worked on in plain loads and stores, which this
+            // test's one thread cannot tell from the atomic ones.
+            VReg old = b.Load(IrType.I32, new SymOperand("counter"));
+            b.Store(new SymOperand("counter"), R(b.Binary(Opcode.Add, old, 1)));
+            o2 = b.Load(IrType.I32, new SymOperand("counter"));
+            b.Store(new SymOperand("counter"), R(b.Binary(Opcode.Or, o2, old)));
+        }
         b.Emit(Opcode.Fence, null);
         b.Ret(R(o2));
         b.SetBlock(pad);

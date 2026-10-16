@@ -1,0 +1,56 @@
+// test: runtime knobs baked into the image answer AppContext and cap the heap
+// flags: --runtime-knob Corsac.Test.Greeting=hello --runtime-knob Corsac.Test.On=True --runtime-knob Corsac.Test.Off=false --runtime-knob Corsac.Test.Number=1 --runtime-knob Corsac.Test.Empty= --runtime-knob Corsac.Test.Twice=first --runtime-knob Corsac.Test.Twice=second --runtime-knob System.GC.HeapHardLimit=33554432
+// expect-exit: 0
+// expect-output:
+// greeting hello
+// twice second
+// empty ''
+// missing null
+// same True
+// on True True
+// off True False
+// number False False
+// set data wins: mine
+// set switch wins: True False
+// heap limit 33554432
+//
+// A SETTING OF THE RUNTIME'S IS THE IMAGE'S, as .NET's Native AOT bakes
+// runtimeconfig.json's into its image (ILC's --runtimeknob): corc's
+// --runtime-knob NAME=VALUE, which a project's RuntimeHostConfigurationOption
+// becomes. AppContext.GetData answers each as a string, the same one each
+// time, and TryGetSwitch answers one whose text is a bool's -- "1" is not,
+// as bool.TryParse says. What the program sets itself comes first.
+// System.GC.HeapHardLimit is the collector's cap, which GCMemoryInfo reports
+// as the memory there is.
+
+using System;
+
+static class Program
+{
+    static string Shown(object? data) => data is string text ? text : data == null ? "null" : data.GetType().Name;
+
+    static int Main()
+    {
+        Console.WriteLine("greeting " + Shown(AppContext.GetData("Corsac.Test.Greeting")));
+        Console.WriteLine("twice " + Shown(AppContext.GetData("Corsac.Test.Twice")));
+        Console.WriteLine("empty '" + Shown(AppContext.GetData("Corsac.Test.Empty")) + "'");
+        Console.WriteLine("missing " + Shown(AppContext.GetData("Corsac.Test.Missing")));
+        Console.WriteLine("same " + ReferenceEquals(AppContext.GetData("Corsac.Test.Twice"), AppContext.GetData("Corsac.Test.Twice")));
+
+        bool found = AppContext.TryGetSwitch("Corsac.Test.On", out bool on);
+        Console.WriteLine("on " + found + " " + on);
+        found = AppContext.TryGetSwitch("Corsac.Test.Off", out bool off);
+        Console.WriteLine("off " + found + " " + off);
+        found = AppContext.TryGetSwitch("Corsac.Test.Number", out bool number);
+        Console.WriteLine("number " + found + " " + number);
+
+        AppContext.SetData("Corsac.Test.Greeting", "mine");
+        Console.WriteLine("set data wins: " + Shown(AppContext.GetData("Corsac.Test.Greeting")));
+        AppContext.SetSwitch("Corsac.Test.On", false);
+        found = AppContext.TryGetSwitch("Corsac.Test.On", out on);
+        Console.WriteLine("set switch wins: " + found + " " + on);
+
+        Console.WriteLine("heap limit " + GC.GetGCMemoryInfo().TotalAvailableMemoryBytes);
+        return 0;
+    }
+}

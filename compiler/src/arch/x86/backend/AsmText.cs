@@ -167,6 +167,10 @@ internal static class AsmText
             case MOp.Fnstsw:
                 yield return "fnstsw ax";
                 yield break;
+            case MOp.Fucomipp:
+                yield return "fucomip st0, st1";
+                yield return "fstp st0";
+                yield break;
             case MOp.Int:
                 yield return $"int {Op(i.Operands[0], 1, false)}";
                 yield break;

@@ -1,0 +1,17 @@
+// The other unit of runtime_knobs_reach_another_unit: what it reads of the
+// image's knobs, which only the entry unit was compiled with.
+
+using System;
+
+static class Settings
+{
+    public static string Where() => AppContext.GetData("Corsac.Test.Where") as string ?? "nowhere";
+
+    public static string Trace()
+    {
+        bool found = AppContext.TryGetSwitch("Corsac.Test.Trace", out bool on);
+        return found + " " + on;
+    }
+
+    public static long Limit() => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+}

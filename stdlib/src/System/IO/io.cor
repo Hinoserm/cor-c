@@ -2027,7 +2027,7 @@ static partial class Path
         return dir.EndsWith("/") ? dir : dir + "/";
     }
 
-    private static int _tempSerial;
+    private static nint _tempSerial;
 
     /// A new empty file under GetTempPath, made here and never one that
     /// already existed (O_EXCL), its full path returned.
@@ -3715,7 +3715,7 @@ static class TempNames
 
     public static void Fill(byte[] into)
     {
-        long got = Sys.Syscall(355, Sys.ArrayData(into), into.Length, 0);
+        long got = Sys.Syscall(Call.GetRandom, Sys.ArrayData(into), into.Length, 0);
         if (got == into.Length)
         {
             return;

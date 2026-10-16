@@ -347,7 +347,21 @@ public sealed class X86Backend : IBackend
             int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
             Encoder.Nops(text.Bytes, gap);
             int start = text.Bytes.Count;
-            int size = encoder.Encode(m);
+            int size;
+            // A function the encoder refuses -- the emitted-code audit's
+            // finding above all, an instruction --cpu does not permit -- is
+            // an error of this compile, reported as selection's are, and not
+            // a crash of the compiler.
+            try
+            {
+                size = encoder.Encode(m);
+            }
+            catch (InvalidOperationException e)
+            {
+                errors.Add(e.Message);
+                encoder.ReleaseFunction();
+                continue;
+            }
             if (EmitLinkSummary && !PositionIndependent)
             {
                 eligible.Clear();
@@ -644,6 +658,12 @@ public sealed class X86Backend : IBackend
             // WriteBarrierCompareExchange(slot, value, expected), ECX and EDX
             // saved round it.
             int compareExchange = text.Bytes.Count;
+            // These sequences are bytes, which the emitted-code audit never
+            // walks: their one instruction past the 386 is answered to the
+            // same table here.
+            X86Feature missing = Isa.Requires(MOp.Cmpxchg) & ~Target.X86Profile.Features;
+            if (missing != X86Feature.None)
+                errors.Add($"{RefCompareExchangeStub}: Cmpxchg needs {Isa.Describe(missing)}, which --cpu={Target.X86Profile.Name} does not permit");
             Marked([0x51, 0x52], [0x50, 0x52, 0x51], BarrierCompareExchangeRoutine, 0x0C, [0x5A, 0x59]);
             Bytes(0xF0, 0x0F, 0xB1, 0x11);                                                 // lock cmpxchg [ecx], edx
             Bytes(0x52, 0x8B, 0x15); Address(CardTable, RelocKind.Abs32, 0);               // push edx; mov edx, [Cards]

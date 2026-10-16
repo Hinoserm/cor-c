@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Corsac.Lang.Elf;
 using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
+using Corsac.Lang.X86;
 
 namespace Corsac.Tests.Elf;
 
@@ -124,18 +125,34 @@ public static class LtoTests
         new TargetContract(0, requiresManagedLayouts: true).Attach(missingLayout);
         Reject(() => TargetContract.Validate(new[] { ("missing", missingLayout) }));
         ObjectFile cpuA = Function(1), cpuB = Function(2);
-        var profile = new X86CodeGenerationContract("k6-3+", "k6-3+", "x87", true, true, true);
+        var profile = new X86CodeGenerationContract("k6-3+", "k6-3+", "x87", X86Cpu.Model("k6-3+"));
         profile.Attach(cpuA); profile.Attach(cpuB);
         Require(X86CodeGenerationContract.Read(ElfReader.ReadObject(ElfWriter.WriteObject(cpuA))) == profile,
             "CPU permissions did not survive object serialization");
         X86CodeGenerationContract.ValidateRegeneration(cpuA, cpuB);
         X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, profile);
-        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, Corsac.Lang.X86.X86Cpu.Parse(["--cpu=486"]).Contract));
-        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, Corsac.Lang.X86.X86Cpu.Parse(["--cpu=k6-3+", "--disable-mmx"]).Contract));
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, X86Cpu.Parse(["--cpu=486"]).Contract));
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("plus", cpuA) }, X86Cpu.Parse(["--cpu=k6-3+", "--disable-mmx"]).Contract));
         ObjectFile excluded = Function(3);
-        new X86CodeGenerationContract("k6-3+", "486", "x87", false, false, false).Attach(excluded);
+        new X86CodeGenerationContract("k6-3+", "486", "x87", X86Feature.I486 | X86Feature.Pentium).Attach(excluded);
         Reject(() => X86CodeGenerationContract.ValidateRegeneration(cpuA, excluded));
-        Reject(() => new X86CodeGenerationContract("486", "486", "none", true, false, false).Attach(Function(4)));
+        Reject(() => new X86CodeGenerationContract("486", "486", "none", X86Feature.I486 | X86Feature.Mmx).Attach(Function(4)));
+        // The five 3DNow! extensions are the model's, never a switch's; SSE2 needs SSE.
+        Reject(() => new X86CodeGenerationContract("k6-2", "k6-2", "x87", X86Cpu.Model("k6-2+")).Attach(Function(5)));
+        Reject(() => new X86CodeGenerationContract("pentium4", "pentium4", "x87", X86Cpu.Model("pentium4") & ~X86Feature.Sse).Attach(Function(6)));
+        // Processors are sets, not a line: an Athlon unit may use CMOV, which
+        // no K6 has, and a K6-2 unit nothing the Athlon lacks.
+        ObjectFile athlon = Function(7), pentiumPro = Function(8), pentiumProNoCmov = Function(9), k62 = Function(10);
+        X86Cpu.Parse(["--cpu=athlon"]).Contract.Attach(athlon);
+        X86Cpu.Parse(["--cpu=pentium-pro"]).Contract.Attach(pentiumPro);
+        X86Cpu.Parse(["--cpu=pentium-pro", "--disable-cmov"]).Contract.Attach(pentiumProNoCmov);
+        X86Cpu.Parse(["--cpu=k6-2"]).Contract.Attach(k62);
+        X86CodeGenerationContract k6 = X86Cpu.Parse(["--cpu=k6"]).Contract;
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("athlon", athlon) }, k6));
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("pentium-pro", pentiumPro) }, k6));
+        X86CodeGenerationContract.ValidateTarget(new[] { ("pentium-pro", pentiumProNoCmov) }, k6);
+        X86CodeGenerationContract.ValidateTarget(new[] { ("k6-2", k62) }, X86Cpu.Parse(["--cpu=athlon"]).Contract);
+        Reject(() => X86CodeGenerationContract.ValidateTarget(new[] { ("k6-2", k62) }, X86Cpu.Parse(["--cpu=pentium4"]).Contract));
         cpuB.Section(X86CodeGenerationContract.SectionName).Bytes[4] = (byte)'9';
         Reject(() => TargetContract.Validate(new[] { ("invalid-cpu", cpuB) }));
         Console.WriteLine("  LTO metadata, scope, rejection, static/flat/physical-link checks passed");

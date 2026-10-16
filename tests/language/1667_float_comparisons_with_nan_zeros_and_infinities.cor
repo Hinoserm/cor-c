@@ -1,0 +1,165 @@
+// test: float_comparisons_with_nan_zeros_and_infinities
+// flags: --cpu=pentium-pro
+// expect-exit: 0
+// expect-output:
+// double ==: FFFFFFFFF FTFFFFFFF FFTFFFFFF FFFTFFFFF FFFFTTFFF FFFFTTFFF FFFFFFTFF FFFFFFFTF FFFFFFFFT
+// double !=: TTTTTTTTT TFTTTTTTT TTFTTTTTT TTTFTTTTT TTTTFFTTT TTTTFFTTT TTTTTTFTT TTTTTTTFT TTTTTTTTF
+// double < : FFFFFFFFF FFTTTTTTT FFFTTTTTT FFFFTTTTT FFFFFFTTT FFFFFFTTT FFFFFFFTT FFFFFFFFT FFFFFFFFF
+// double <=: FFFFFFFFF FTTTTTTTT FFTTTTTTT FFFTTTTTT FFFFTTTTT FFFFTTTTT FFFFFFTTT FFFFFFFTT FFFFFFFFT
+// double > : FFFFFFFFF FFFFFFFFF FTFFFFFFF FTTFFFFFF FTTTFFFFF FTTTFFFFF FTTTTTFFF FTTTTTTFF FTTTTTTTF
+// double >=: FFFFFFFFF FTFFFFFFF FTTFFFFFF FTTTFFFFF FTTTTTFFF FTTTTTFFF FTTTTTTFF FTTTTTTTF FTTTTTTTT
+// float  ==: FFFFFFFFF FTFFFFFFF FFTFFFFFF FFFTFFFFF FFFFTTFFF FFFFTTFFF FFFFFFTFF FFFFFFFTF FFFFFFFFT
+// float  !=: TTTTTTTTT TFTTTTTTT TTFTTTTTT TTTFTTTTT TTTTFFTTT TTTTFFTTT TTTTTTFTT TTTTTTTFT TTTTTTTTF
+// float  < : FFFFFFFFF FFTTTTTTT FFFTTTTTT FFFFTTTTT FFFFFFTTT FFFFFFTTT FFFFFFFTT FFFFFFFFT FFFFFFFFF
+// float  <=: FFFFFFFFF FTTTTTTTT FFTTTTTTT FFFTTTTTT FFFFTTTTT FFFFTTTTT FFFFFFTTT FFFFFFFTT FFFFFFFFT
+// float  > : FFFFFFFFF FFFFFFFFF FTFFFFFFF FTTFFFFFF FTTTFFFFF FTTTFFFFF FTTTTTFFF FTTTTTTFF FTTTTTTTF
+// float  >=: FFFFFFFFF FTFFFFFFF FTTFFFFFF FTTTFFFFF FTTTTTFFF FTTTTTFFF FTTTTTTFF FTTTTTTTF FTTTTTTTT
+// branches that disagree: 0
+// double x ? 0, 0 ? x, x ? -0: FTFFFFFTFFFFFTFFFF FTTTFFFTFFTTFTTTFF FTTTFFFTFFTTFTTTFF FTTTFFFTFFTTFTTTFF TFFTFTTFFTFTTFFTFT TFFTFTTFFTFTTFFTFT FTFFTTFTTTFFFTFFTT FTFFTTFTTTFFFTFFTT FTFFTTFTTTFFFTFFTT
+// double x ? 1, 1 ? x: FTFFFFFTFFFF FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT TFFTFTTFFTFT FTFFTTFTTTFF
+// float  x ? 0, 0 ? x, x ? -0: FTFFFFFTFFFFFTFFFF FTTTFFFTFFTTFTTTFF FTTTFFFTFFTTFTTTFF FTTTFFFTFFTTFTTTFF TFFTFTTFFTFTTFFTFT TFFTFTTFFTFTTFFTFT FTFFTTFTTTFFFTFFTT FTFFTTFTTTFFFTFFTT FTFFTTFTTTFFFTFFTT
+// float  x ? 1, 1 ? x: FTFFFFFTFFFF FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT FTTTFFFTFFTT TFFTFTTFFTFT FTFFTTFTTTFF
+//
+// Every relation between NaN, the infinities, one, the smallest subnormal
+// and both zeros, for double and float, as a value, as a branch and as the
+// branch on its negation, and against constants on either side. NaN is
+// unordered with everything, itself included, so only != holds of it and
+// !(a < b) is not a >= b; -0 and 0 are equal. Compiled for the Pentium Pro,
+// whose fucomip leaves the comparison in ZF, PF and CF, where older
+// processors carry it there from the FPU's status word through AH. The
+// output is real .NET's.
+
+using System;
+
+static class Program
+{
+    static readonly string[] Ops = { "==", "!=", "<", "<=", ">", ">=" };
+    static int Hits;
+
+    static double[] Doubles() => new double[]
+        { double.NaN, double.NegativeInfinity, -1.0, -double.Epsilon, -0.0, 0.0, double.Epsilon, 1.0, double.PositiveInfinity };
+
+    static float[] Floats() => new float[]
+        { float.NaN, float.NegativeInfinity, -1f, -float.Epsilon, -0f, 0f, float.Epsilon, 1f, float.PositiveInfinity };
+
+    static bool Value(int op, double a, double b)
+    {
+        switch (op)
+        {
+            case 0: return a == b;
+            case 1: return a != b;
+            case 2: return a < b;
+            case 3: return a <= b;
+            case 4: return a > b;
+            default: return a >= b;
+        }
+    }
+
+    static bool Value(int op, float a, float b)
+    {
+        switch (op)
+        {
+            case 0: return a == b;
+            case 1: return a != b;
+            case 2: return a < b;
+            case 3: return a <= b;
+            case 4: return a > b;
+            default: return a >= b;
+        }
+    }
+
+    // Each relation as a branch and its negation as another: 1 where the
+    // relation holds, 2 where it does not, so 3 or 0 is a branch gone wrong.
+    static int Branch(int op, double a, double b)
+    {
+        Hits = 0;
+        switch (op)
+        {
+            case 0: if (a == b) Hits += 1; if (!(a == b)) Hits += 2; break;
+            case 1: if (a != b) Hits += 1; if (!(a != b)) Hits += 2; break;
+            case 2: if (a < b) Hits += 1; if (!(a < b)) Hits += 2; break;
+            case 3: if (a <= b) Hits += 1; if (!(a <= b)) Hits += 2; break;
+            case 4: if (a > b) Hits += 1; if (!(a > b)) Hits += 2; break;
+            default: if (a >= b) Hits += 1; if (!(a >= b)) Hits += 2; break;
+        }
+        return Hits;
+    }
+
+    static int Branch(int op, float a, float b)
+    {
+        Hits = 0;
+        switch (op)
+        {
+            case 0: if (a == b) Hits += 1; if (!(a == b)) Hits += 2; break;
+            case 1: if (a != b) Hits += 1; if (!(a != b)) Hits += 2; break;
+            case 2: if (a < b) Hits += 1; if (!(a < b)) Hits += 2; break;
+            case 3: if (a <= b) Hits += 1; if (!(a <= b)) Hits += 2; break;
+            case 4: if (a > b) Hits += 1; if (!(a > b)) Hits += 2; break;
+            default: if (a >= b) Hits += 1; if (!(a >= b)) Hits += 2; break;
+        }
+        return Hits;
+    }
+
+    static string Flag(bool b) => b ? "T" : "F";
+
+    static string Six(double x, double y) => Flag(x == y) + Flag(x != y) + Flag(x < y) + Flag(x <= y) + Flag(x > y) + Flag(x >= y);
+
+    static string Six(float x, float y) => Flag(x == y) + Flag(x != y) + Flag(x < y) + Flag(x <= y) + Flag(x > y) + Flag(x >= y);
+
+    static void Main()
+    {
+        double[] d = Doubles();
+        float[] f = Floats();
+        int wrong = 0;
+        for (int op = 0; op < Ops.Length; op++)
+        {
+            string line = "double " + (Ops[op].Length == 1 ? Ops[op] + " " : Ops[op]) + ":";
+            for (int i = 0; i < d.Length; i++)
+            {
+                line += " ";
+                for (int j = 0; j < d.Length; j++)
+                {
+                    bool v = Value(op, d[i], d[j]);
+                    line += Flag(v);
+                    if (Branch(op, d[i], d[j]) != (v ? 1 : 2)) wrong++;
+                }
+            }
+            Console.WriteLine(line);
+        }
+        for (int op = 0; op < Ops.Length; op++)
+        {
+            string line = "float  " + (Ops[op].Length == 1 ? Ops[op] + " " : Ops[op]) + ":";
+            for (int i = 0; i < f.Length; i++)
+            {
+                line += " ";
+                for (int j = 0; j < f.Length; j++)
+                {
+                    bool v = Value(op, f[i], f[j]);
+                    line += Flag(v);
+                    if (Branch(op, f[i], f[j]) != (v ? 1 : 2)) wrong++;
+                }
+            }
+            Console.WriteLine(line);
+        }
+        Console.WriteLine("branches that disagree: " + wrong);
+        // Against constants, on either side: zero, of either sign, and one.
+        string zeros = "x ? 0, 0 ? x, x ? -0:";
+        string ones = "x ? 1, 1 ? x:";
+        for (int i = 0; i < d.Length; i++)
+        {
+            zeros += " " + Six(d[i], 0.0) + Six(0.0, d[i]) + Six(d[i], -0.0);
+            ones += " " + Six(d[i], 1.0) + Six(1.0, d[i]);
+        }
+        Console.WriteLine("double " + zeros);
+        Console.WriteLine("double " + ones);
+        zeros = "x ? 0, 0 ? x, x ? -0:";
+        ones = "x ? 1, 1 ? x:";
+        for (int i = 0; i < f.Length; i++)
+        {
+            zeros += " " + Six(f[i], 0f) + Six(0f, f[i]) + Six(f[i], -0f);
+            ones += " " + Six(f[i], 1f) + Six(1f, f[i]);
+        }
+        Console.WriteLine("float  " + zeros);
+        Console.WriteLine("float  " + ones);
+    }
+}

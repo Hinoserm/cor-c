@@ -13,8 +13,9 @@ namespace Corsac.Lang.X64;
 /// Per function: instruction selection (Select.cs), register allocation
 /// (RegAlloc.cs), encoding (Encoder.cs). Data items go in .rodata, .data or
 /// .bss by their flags, holding 64-bit absolute relocations where they hold
-/// addresses; the frame table and the stack maps are the x86 formats, with
-/// frame slots counted in eight-byte words.
+/// addresses; the frame table is the x86 format. There are no stack maps:
+/// the long-mode collector reads every stack whole, word by word, so a table
+/// of where the references are at each call would have no reader.
 ///
 /// Static code in the small model: every symbol is within two gigabytes of
 /// every instruction, and every one is reached RIP-relative. That is also
@@ -27,8 +28,6 @@ public sealed class X64Backend : IBackend
 
     /// <summary>Alignment of each function's first byte: sixteen, a K8 fetch block.</summary>
     public int FunctionAlign { get; set; } = 16;
-
-    public bool StackMaps { get; set; } = true;
 
     /// <summary>
     /// Record what the link-time optimizer patches without the IR: direct
@@ -66,10 +65,6 @@ public sealed class X64Backend : IBackend
     public long PeakBatchBytes { get; private set; }
     public int PeakBatchFunctions { get; private set; }
 
-    public const string StackMapSection = ".corsac.stackmaps";
-    public const string StackMapStart = "__corsac_stackmaps";
-    public const string StackMapEnd = "__corsac_stackmaps_end";
-
     public List<(string Name, int Bytes)> FunctionSizes { get; } = new();
 
     public string Statistics()
@@ -88,7 +83,7 @@ public sealed class X64Backend : IBackend
     public ObjectFile Generate(Module module, List<string> errors)
     {
         ObjectFile obj = new();
-        new X86CodeGenerationContract("k8", "k8", "sse2", false, false, false, false).Attach(obj);
+        new X86CodeGenerationContract("k8", "k8", "sse2", Corsac.Lang.X86.X86Feature.None, false).Attach(obj);
         Section text = new(".text", SectionKind.Code) { Align = Math.Max(16, FunctionAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData) { Align = 8 };
         Section data = new(".data", SectionKind.Data) { Align = 8 };
@@ -112,8 +107,6 @@ public sealed class X64Backend : IBackend
         foreach (Function f in module.Functions) definedNames.Add(f.Name);
         foreach (DataItem d in module.Data) definedNames.Add(d.Name);
         definedNames.Add(Corsac.Lang.X86.FrameTable.Symbol);
-        definedNames.Add(StackMapStart);
-        definedNames.Add(StackMapEnd);
         Func<string, bool>? isExternal = PositionIndependent ? name => !definedNames.Contains(name)
             : Imported.Count > 0 ? name => Imported.Contains(name) && !definedNames.Contains(name)
             : null;
@@ -122,7 +115,6 @@ public sealed class X64Backend : IBackend
         HashSet<string> defined = new(StringComparer.Ordinal);
         Encoder encoder = new(text);
         List<Corsac.Lang.X86.FrameTable.Entry> frames = new();
-        List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps = new();
         FunctionSizes.Clear();
 
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
@@ -235,14 +227,6 @@ public sealed class X64Backend : IBackend
                 f.Name, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));
 
-            if (StackMaps)
-            {
-                foreach ((MInstr call, int ret) in encoder.CallSites)
-                {
-                    maps.Add((f.Name, ret, start + ret, m.Safepoints.GetValueOrDefault(call), m.Frame.Size));
-                }
-            }
-
             // Jump tables: eight-byte absolute addresses of the blocks, which
             // the loader relocates in a shared object.
             Section tables = PositionIndependent ? relocatedConstants : rodata;
@@ -308,11 +292,6 @@ public sealed class X64Backend : IBackend
             s.Align = Math.Max(s.Align, align);
             obj.Symbols.Add(new Symbol { Name = d.Name, Section = s, Offset = offset, Size = d.Bytes.Length, Global = d.Exported });
             defined.Add(d.Name);
-        }
-
-        if (StackMaps)
-        {
-            EmitStackMaps(obj, maps, defined);
         }
 
         HashSet<string> undefined = new(module.Imports, StringComparer.Ordinal);
@@ -414,94 +393,6 @@ public sealed class X64Backend : IBackend
             return null;
         }
         return m;
-    }
-
-    /// <summary>
-    /// The stack-map table: the x86 layout (docs/X86-BACKEND.md) at version
-    /// 3, whose bitmaps count eight-byte slots -- bit i of word k stands for
-    /// [RBP - 8*(32k + i + 1)] -- and whose register mask is by x86-64
-    /// hardware number.
-    /// </summary>
-    private static void EmitStackMaps(ObjectFile obj, List<(string Function, int Return, int At, Safepoint? Map, int FrameSize)> maps, HashSet<string> defined)
-    {
-        Section s = new(StackMapSection, SectionKind.ReadOnlyData) { Align = 8 };
-        obj.Sections.Add(s);
-
-        void Word(long v)
-        {
-            for (int i = 0; i < 4; i++)
-            {
-                s.Bytes.Add((byte)(v >> (8 * i)));
-            }
-        }
-
-        Word(0x314d5343);       // 'CSM1'
-        Word(3);
-        Word(maps.Count);
-        Word(16);
-        int baseAt = maps.Count > 0 ? maps[0].At - maps[0].Return : 0;
-        if (maps.Count > 0)
-        {
-            // Self-relative, as the frame table's base is.
-            s.Relocs.Add(new Relocation(s.Bytes.Count, maps[0].Function, 0, RelocKind.Rel32));
-        }
-        Word(0);
-
-        List<uint[]> pool = new();
-        Dictionary<string, int> shared = new(StringComparer.Ordinal);
-        int[] at = new int[maps.Count];
-        int poolStart = 20 + maps.Count * 16;
-        int poolWords = 0;
-        for (int i = 0; i < maps.Count; i++)
-        {
-            List<int> slots = maps[i].Map?.SlotOffsets ?? new List<int>();
-            if (slots.Count == 0)
-            {
-                continue;
-            }
-            int top = 0;
-            foreach (int off in slots)
-            {
-                top = Math.Max(top, -off / 8);
-            }
-            uint[] bits = new uint[(top + 31) / 32];
-            foreach (int off in slots)
-            {
-                int bit = -off / 8 - 1;
-                bits[bit / 32] |= 1u << (bit % 32);
-            }
-            string key = string.Join(',', bits);
-            if (shared.TryGetValue(key, out int existing))
-            {
-                at[i] = existing;
-                continue;
-            }
-            at[i] = poolStart + poolWords * 4;
-            shared.Add(key, at[i]);
-            poolWords += 1 + bits.Length;
-            pool.Add(bits);
-        }
-
-        for (int i = 0; i < maps.Count; i++)
-        {
-            Word(maps[i].At - baseAt);
-            Word(maps[i].Map?.Registers ?? 0);
-            Word(at[i]);
-            Word(maps[i].FrameSize);
-        }
-        foreach (uint[] bits in pool)
-        {
-            Word(bits.Length);
-            foreach (uint w in bits)
-            {
-                Word(w);
-            }
-        }
-
-        obj.Symbols.Add(new Symbol { Name = StackMapStart, Section = s, Offset = 0, Size = s.Bytes.Count, Global = false });
-        obj.Symbols.Add(new Symbol { Name = StackMapEnd, Section = s, Offset = s.Bytes.Count, Size = 0, Global = false });
-        defined.Add(StackMapStart);
-        defined.Add(StackMapEnd);
     }
 
     private static void Pad(Section s, int align, byte fill)

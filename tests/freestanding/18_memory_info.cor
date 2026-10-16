@@ -1,0 +1,56 @@
+// test: a freestanding image reports the memory it was given and the processors its kernel says it has
+// expect-exit: 0
+// expect-output:
+// total 8388608
+// threshold 7549740
+// load True
+// processors 1
+// processors 2
+// processors 1
+//
+// GC.GetGCMemoryInfo's total is, as .NET has it, the memory the collector
+// may use. An image alone on the machine has the region it was given
+// (Platform.SetHeap) and nothing else: that region is its total -- not a
+// 32-bit process's 2.5 GB of address space on x86, nor 0 on x86-64 -- and
+// what it has handed out of the region is its load. Its processors are one
+// until the kernel below says otherwise (Platform.ProcessorCountHook), as a
+// ring-1 kernel does with its kernel's count; a kernel that answers nothing
+// sensible still leaves one, as .NET's count never says fewer.
+
+using System;
+
+static class Program
+{
+    static long _processors;
+
+    /// Platform.ProcessorCountHook: the kernel's count.
+    static long Processors(long a, long b, long c)
+    {
+        return _processors;
+    }
+
+    static int Main()
+    {
+        Host.Start(8 * 1024 * 1024);
+
+        // Something on the heap, so that the load is more than nothing.
+        object[] keep = new object[64];
+        for (int i = 0; i < keep.Length; i++) keep[i] = new byte[1000];
+
+        GCMemoryInfo info = GC.GetGCMemoryInfo();
+        Host.Line("total " + info.TotalAvailableMemoryBytes);
+        Host.Line("threshold " + info.HighMemoryLoadThresholdBytes);
+        Host.Line("load " + (info.MemoryLoadBytes > 64000 && info.MemoryLoadBytes <= info.TotalAvailableMemoryBytes));
+
+        Host.Line("processors " + Os.ProcessorCount());
+        _processors = 2;
+        Platform.ProcessorCountHook = Sys.AddressOf(Program.Processors);
+        Host.Line("processors " + Os.ProcessorCount());
+        _processors = -1;
+        Host.Line("processors " + Os.ProcessorCount());
+
+        GC.KeepAlive(keep);
+        Host.Done(0);
+        return 0;
+    }
+}

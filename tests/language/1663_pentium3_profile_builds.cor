@@ -1,0 +1,39 @@
+// test: a sixth-generation --cpu builds and runs a program
+// flags: --cpu=pentium3
+// expect-exit: 0
+// expect-output:
+// -27200 -2000 1150
+// 1.798870
+// nan-unordered
+//
+// --cpu names the Pentium II, the Pentium III and the Athlon as well as the
+// Pentium Pro (X86Cpu.Parse): CMOV and the x87 flag compares on all four,
+// the streaming prefetches from the Pentium III and the Athlon. The profile
+// travels with the code it built (X86CodeGenerationContract), so the object
+// carrying it has to be one a link accepts; an unknown name is 1482's.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        short[] a = new short[64], b = new short[64];
+        for (int i = 0; i < 64; i++) { a[i] = (short)(i * 300 - 9000); b[i] = (short)(7000 - i * 250); }
+        long sum = 0;
+        int lo = int.MaxValue, hi = int.MinValue;
+        for (int i = 0; i < 64; i++)
+        {
+            int v = a[i] + b[i];
+            sum += v;
+            lo = Math.Min(lo, v);
+            hi = Math.Max(hi, v);
+        }
+        double x = 0.5, y = 0;
+        for (int i = 1; i <= 20; i++) y += x > 0.25 ? x / i : -x;
+        Console.WriteLine(sum + " " + lo + " " + hi);
+        Console.WriteLine(y.ToString("F6"));
+        Console.WriteLine(double.NaN < 1.0 ? "nan-less" : "nan-unordered");
+        return 0;
+    }
+}

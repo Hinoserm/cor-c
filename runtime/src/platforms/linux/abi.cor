@@ -27,6 +27,7 @@ static class Call
     public const long Close = 3;        // (fd) -> 0, or -errno
     public const long Getpid = 39;
     public const long Uname = 63;       // (utsname)
+    public const long Sysinfo = 99;     // (struct sysinfo)
     public const long Brk = 12;
     /// mmap(2): the offset is in BYTES here, where i386's mmap2 takes pages.
     public const long Mmap = 9;         // (addr, len, prot, flags, fd, offset) -> address
@@ -152,6 +153,7 @@ static class Call
     public const long Close = 6;        // (fd) -> 0, or -errno
     public const long Getpid = 20;      // () -> pid; the cheapest call there is
     public const long Uname = 122;      // (utsname)
+    public const long Sysinfo = 116;    // (struct sysinfo)
     public const long Brk = 45;         // (address) -> the break now; unused
     public const long Mmap2 = 192;      // (addr, len, prot, flags, fd, pgoff) -> address
     /// The one this library calls: mmap2, whose offset is in pages.

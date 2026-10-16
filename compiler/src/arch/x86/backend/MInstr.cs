@@ -41,6 +41,18 @@ public sealed class MInstr : MOperandList
     /// <summary>Whether a LOCK prefix goes in front (Xadd, Cmpxchg).</summary>
     public bool Lock { get; init; }
 
+    /// <summary>
+    /// The source named this instruction itself, after its own processor
+    /// check: a machine intrinsic (Sys.Cpuid, Sys.ReadTsc, Sys.ReadMsr,
+    /// Sys.WriteMsr, Sys.Invlpg) that a kernel calls only once it has asked
+    /// the processor what it is. The emitted-code audit lets such an
+    /// instruction through whatever --cpu says, the same promise `.runtime
+    /// mmx` makes in the assembler; everything the compiler chose by itself
+    /// is held to the profile. Carried by every pass that rebuilds an
+    /// instruction.
+    /// </summary>
+    public bool Probed { get; init; }
+
     /// <summary>For JmpTable: the table's cases, in index order.</summary>
     public List<MBlock>? Table { get; init; }
 

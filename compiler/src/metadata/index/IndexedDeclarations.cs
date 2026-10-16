@@ -165,12 +165,10 @@ public sealed class IndexedDeclarations : IDisposable
         "float", "double", "decimal", "char", "string", "object", "nint", "nuint", "var", "dynamic",
     };
 
-    private string? Speculate(string name, int arity)
+    private string? Speculate(string name, int arity, bool qualifies = false)
     {
         if (name.Length == 0 || name[0] == '_' || Builtin.Contains(name)) return null;
-        // A type parameter is a name with no declaration anywhere; they are
-        // numerous and every one of them would otherwise be a failed lookup.
-        if (arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
+        if (!qualifies && TypeParameterLike(name, arity)) return null;
         if (session is not null) { if (session.Speculated((name, arity), out string? shared)) return shared; }
         else if (speculated.TryGetValue((name, arity), out string? memo)) return memo;
         string simple = arity > 0 ? name + "`" + arity : name;
@@ -212,15 +210,15 @@ public sealed class IndexedDeclarations : IDisposable
     /// loads a declaration the unit did not need, and the binder still
     /// demands whatever this misses.
     /// </summary>
-    private string? SpeculateIn(string? space, FileScope? scope, string name, int arity)
+    private string? SpeculateIn(string? space, FileScope? scope, string name, int arity, bool qualifies = false)
     {
         if (name.Length == 0 || name[0] == '_' || Builtin.Contains(name)) return Speculate(name, arity);
         bool dotted = name.Contains('.');
-        if (!dotted && arity == 0 && name.Length <= 2 && char.IsUpper(name[0])) return null;
+        if (!dotted && !qualifies && TypeParameterLike(name, arity)) return null;
         if (scope is not null && !dotted)
         {
             foreach ((string _, string alias, string target) in scope.Aliases)
-                if (alias == name) return Speculate(target, arity);
+                if (alias == name) return Speculate(target, arity, qualifies);
         }
         // A NAME QUALIFIED FROM WHERE IT WAS WRITTEN -- `Metadata.RegistrySchema`
         // inside Corsac.Lang -- is looked up the same way: under the enclosing
@@ -235,8 +233,25 @@ public sealed class IndexedDeclarations : IDisposable
             foreach ((string _, string import) in scope.Imports)
                 if (Qualified(import + "." + simple) is string key) return key;
         }
-        return Speculate(name, arity);
+        return Speculate(name, arity, qualifies);
     }
+
+    /// <summary>
+    /// Whether a name written in a type position is most likely a type
+    /// parameter -- T, TK, T2 -- which is a name with no declaration anywhere:
+    /// they are numerous, and every one of them would otherwise be a failed
+    /// lookup.
+    ///
+    /// NOT ASKED OF A QUALIFIER. The left of a member access is a type or a
+    /// value, and a type parameter stands there only in generic arithmetic
+    /// (`T.Zero`), where a failed lookup is all a guess costs. Asked there
+    /// too, it kept the short names of real classes from ever being
+    /// prefetched: every unit that wrote `Os.Exit(code)` or `Be.Put16(...)`
+    /// threw a whole frontend pass away for the binder to demand Os or Be,
+    /// and every unit of the kernel threw one away for the runtime's Gc.
+    /// </summary>
+    private static bool TypeParameterLike(string name, int arity)
+        => arity == 0 && name.Length <= 2 && char.IsUpper(name[0]);
 
     /// <summary>
     /// What BodyTypeNames' qualifiers under one declaration come to, handed
@@ -250,7 +265,7 @@ public sealed class IndexedDeclarations : IDisposable
         return qualifier =>
         {
             string? key;
-            if (qualifier.IndexOf('.') < 0) key = SpeculateIn(type.Namespace, type.Scope, qualifier, 0);
+            if (qualifier.IndexOf('.') < 0) key = SpeculateIn(type.Namespace, type.Scope, qualifier, 0, qualifies: true);
             else
             {
                 paths ??= new(StringComparer.Ordinal);
@@ -414,13 +429,45 @@ public sealed class IndexedDeclarations : IDisposable
         resolvedOverrides.Add(query);
     }
 
+    /// <summary>
+    /// The declarations every unit reaches whatever its source says: named by
+    /// the language, the binder or the lowering rather than by the program,
+    /// so neither the unit's own names nor its headers' lead to them, and
+    /// discovery met each one only when a pass asked for it -- and a pass
+    /// that asks is thrown away whole and run again. The four after the
+    /// primitives cost every unit of the kernel a whole pass between them.
+    /// A name the index lacks is skipped: a program compiled without the
+    /// runtime has no __Delegates.
+    ///
+    /// THE NEXT NAME EVERY UNIT ASKS FOR BELONGS HERE -- and only such a
+    /// name, for each one is in every unit's receipt and a change to its
+    /// declaration rebuilds them all. A name some source writes, however
+    /// many units write it, is found where it is written.
+    /// </summary>
+    private static readonly string[] Implicit =
+    {
+        // What the language's own operations call: string concatenation and
+        // comparison, boxing, conversions and the primitive types' members
+        // behind the keywords.
+        "Runtime", "String", "Boolean", "Byte", "SByte", "Int16", "UInt16",
+        "Int32", "UInt32", "Int64", "UInt64", "Single", "Double", "Char",
+        // The faces every tuple shape takes, asked for by name in every unit
+        // so that every unit gives a shape the same ones (Binder.Run).
+        "IComparable", "System.Runtime.CompilerServices.ITuple",
+        // What a failed static initialiser throws, written into the guard of
+        // every type with one (Binder.StaticInitialization).
+        "TypeInitializationException",
+        // What `+=`, `-=` and `==` on delegates become, under a name no
+        // program writes (Binder.DelegatesHelper).
+        "__Delegates",
+    };
+
     public void AddHeaders(CompilationUnit unit)
     {
         // Language operations name these helpers implicitly, without a source
         // type reference to trigger ordinary declaration discovery. Load only
         // their headers, not the implementation bodies or entire library files.
-        foreach (string name in new[] { "Runtime", "String", "Boolean", "Byte", "SByte", "Int16", "UInt16",
-            "Int32", "UInt32", "Int64", "UInt64", "Single", "Double", "Char" })
+        foreach (string name in Implicit)
         {
             queries.Add(('B', name));
             string? key = catalog.BindingKey(assembly, name);

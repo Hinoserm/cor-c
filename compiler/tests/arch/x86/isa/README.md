@@ -1,10 +1,13 @@
 # CPU and instruction checks
 
 Checks profile defaults/exclusions and compares 16/32-bit MMX, 3DNow!, x87,
-386 bit operations, 486 atomics/cache and Pentium instruction bytes with GNU
+386 bit operations, 486 atomics/cache, Pentium, and Pentium Pro/III/Athlon
+(CMOVcc, FCMOVcc, FCOMI/FUCOMI, PREFETCHh, SFENCE) instruction bytes with GNU
 assembler output. Equivalent ordering of independent size/LOCK prefixes is
 normalized; opcodes, operands and immediate bytes must match. Rejects malformed
-operands, unavailable ISA features and invalid LOCK operations.
+operands, unavailable ISA features and invalid LOCK operations, checks the
+`.runtime` allowances, and checks that a link refuses an object whose profile
+the selected target lacks.
 
 A private boot sector assembled by COR-C# runs seven result checks under QEMU
 TCG, covering x87, MMX saturation/shifts, 3DNow conversion/arithmetic, lane swaps,

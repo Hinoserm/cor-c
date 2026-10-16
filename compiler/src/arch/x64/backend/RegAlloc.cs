@@ -305,7 +305,6 @@ internal sealed class Allocator
     private readonly HashSet<(int Instr, int Operand)> _folded = new();
     private readonly MImm?[] _remat;
     private readonly List<(int Slot, int FreeFrom)> _freeSlots = new();
-    private readonly Dictionary<int, List<int>> _liveAtCall = new();
     private readonly PriorityQueue<Interval, (int, int)> _unhandled = new();
     private readonly List<Interval> _active = new();
     private int _seq;
@@ -521,10 +520,6 @@ internal sealed class Allocator
             for (int i = first[b] + count[b] - 1; i >= first[b]; i--)
             {
                 int p = i * 4;
-                if (_lin[i].Op is MOp.Call or MOp.CallInd)
-                {
-                    _liveAtCall[i] = cur.Members().ToList();
-                }
                 foreach (int r in cur.Members())
                 {
                     Mark(r, p + 2);
@@ -1001,37 +996,6 @@ internal sealed class Allocator
         }
     }
 
-    /// <summary>
-    /// Where the words live across the call at an instruction are, once
-    /// placed: the x86 rule, every live integer that is not known to be a
-    /// plain number counted as a possible reference.
-    /// </summary>
-    private Safepoint MapOf(List<int> live, int index)
-    {
-        Safepoint map = new();
-        foreach (int v in live)
-        {
-            if (v < Physical || IsFloat(v) || _m.NotReferences.Contains(v) || _remat[v] is not null)
-            {
-                continue;
-            }
-            if (_spilledFrom[v] <= index || _assigned[v] < 0)
-            {
-                if (_slot[v] != 0)
-                {
-                    map.SlotOffsets.Add(_slot[v]);
-                }
-                continue;
-            }
-            if (Array.IndexOf(CalleeSaved, (Gpr)_assigned[v]) >= 0)
-            {
-                map.Registers |= 1u << _assigned[v];
-            }
-        }
-        map.SlotOffsets.Sort();
-        return map;
-    }
-
     private MReg PhysicalOf(int reg) => new(reg);
 
     private void RewriteInstr(MInstr i, int index, List<MInstr> outList, HashSet<int> saved)
@@ -1044,11 +1008,6 @@ internal sealed class Allocator
             Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = i.Table, TableSymbol = i.TableSymbol,
             Line = i.Line, IntArgs = i.IntArgs, FloatArgs = i.FloatArgs, NativeAl = i.NativeAl,
         };
-
-        if (_liveAtCall.TryGetValue(index, out List<int>? live))
-        {
-            _m.Safepoints[n] = MapOf(live, index);
-        }
 
         Dictionary<int, Roles.Role> roles = new();
         foreach ((MReg r, Roles.Role role, _, _) in RegsOf(i))

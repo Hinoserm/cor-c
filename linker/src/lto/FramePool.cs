@@ -29,10 +29,15 @@ public static class FramePool
     public const string PoolSymbol = "__corsac_frame_pool";
     private const string TableSymbol = "__corsac_frames";
 
-    public static void Run(List<(string Name, ObjectFile Object)> inputs)
+    /// <summary>
+    /// Pools the tables of <paramref name="inputs"/>. <paramref name="longMode"/>
+    /// is the image's, as the link read it before the target notes went:
+    /// they are gone by now, and a long-mode table's +12 is the distance to
+    /// the pool (Runtime.TableAddress), not its address.
+    /// </summary>
+    public static void Run(List<(string Name, ObjectFile Object)> inputs, bool longMode)
     {
         FrameTableFormat.NamePool pool = new();
-        bool longMode = inputs.Any(input => TargetContract.IsLongMode(input.Object));
 
         // FIRST EVERY NAME, then the pool, then the tables: a table's entries
         // hold where its names are in the pool, which is known only once the

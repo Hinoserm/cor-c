@@ -182,6 +182,15 @@ public sealed partial class Lowering
     public static bool EntryClearsBss { get; set; } = true;
     public static string? StartupObject { get; set; }
 
+    /// <summary>
+    /// The runtime's settings this program is built with, each `NAME=VALUE`
+    /// (--runtime-knob, a project's RuntimeHostConfigurationOption): what
+    /// .NET's Native AOT bakes into its image with ILC's --runtimeknob. The
+    /// entry stub hands them to Runtime.UseKnobs; nothing reads them from the
+    /// environment.
+    /// </summary>
+    public static IReadOnlyList<string> RuntimeKnobs { get; set; } = Array.Empty<string>();
+
     /// <summary>The program's assembly name, the same in every unit of it: what its own types are qualified with in a generic's full name.</summary>
     public static string AssemblyName { get; set; } = "program";
 
@@ -1132,6 +1141,17 @@ public sealed partial class Lowering
         if (entrySp is not null && initializedThreadBlock)
         {
             e.Store(ThreadBlockOf(e), entrySp, TlsStackBase / 4 * Target.Current.WordSize);
+        }
+
+        // THE IMAGE'S KNOBS, BEFORE ANYTHING ALLOCATES: the collector reads
+        // its settings as it starts, at the first allocation, and from here
+        // on any call may make one. One literal, every NAME=VALUE ended by a
+        // NUL, so handing it over allocates nothing, and a shared runtime
+        // takes it as a static one does.
+        if (RuntimeKnobs.Count > 0 && RuntimeMethod("UseKnobs", 1) is MethodSymbol knobs)
+        {
+            Require(knobs);
+            e.Call(CallLabel(knobs), IrType.Void, R(e.Address(InternString(string.Join('\0', RuntimeKnobs) + "\0"))));
         }
 
         // The collector cannot scan a stack it does not know about; the main

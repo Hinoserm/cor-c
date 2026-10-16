@@ -12,6 +12,8 @@ public sealed class EvaluatedProject
     public required string[] Defines { get; init; }
     /// <summary>The project's global usings: ImplicitUsings' and its &lt;Using&gt; items, `Name` or `Alias=Name`.</summary>
     public string[] Usings { get; init; } = Array.Empty<string>();
+    /// <summary>Its RuntimeHostConfigurationOption items, each `Name=Value`: the runtime settings its program is built with (--runtime-knob).</summary>
+    public string[] RuntimeKnobs { get; init; } = Array.Empty<string>();
     public required string Evaluation { get; init; }
     public bool WarningsAsErrors { get; init; }
     public IReadOnlyDictionary<string, string> Properties { get; init; } = new Dictionary<string, string>();

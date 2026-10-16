@@ -1,4 +1,5 @@
 // test: a block freed and merged with free neighbours on both sides leaves no header behind for the collector to find
+// flags: --runtime-knob Corsac.GC.FreePaths=p
 // expect-exit: 0
 // expect-output:
 // child exit 0
@@ -11,8 +12,9 @@
 // collection (Gc.RescanHeld) found that header where the held block had been
 // and scanned what lay behind it as the object's fields. Unpoisoned, that
 // only kept dead objects alive; with every freed block filled with the
-// checked pattern (CORSAC_FREE_PATHS=p) the pattern was read as a vtable and
-// the process faulted at 0xfeeefed2. The program runs itself as that child.
+// checked pattern (Corsac.GC.FreePaths=p, baked into the program) the
+// pattern was read as a vtable and the process faulted at 0xfeeefed2. The
+// program runs itself as that child.
 using System;
 using System.Diagnostics;
 
@@ -63,7 +65,6 @@ static class Program
         }
         ProcessStartInfo info = new ProcessStartInfo(Environment.ProcessPath!);
         info.ArgumentList.Add("child");
-        info.Environment["CORSAC_FREE_PATHS"] = "p";
         info.RedirectStandardOutput = true;
         Process child = Process.Start(info)!;
         string said = child.StandardOutput.ReadToEnd();

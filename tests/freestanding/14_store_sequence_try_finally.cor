@@ -1,5 +1,4 @@
 // test: a store after a try/finally and an early static store is one sequence
-// sources: stdlib/src/System/Threading/interlocked.cor
 // flags: --ring1-syscalls
 // run: no
 // expect-asm-x86: Probe: __corsac_refstore

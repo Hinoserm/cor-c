@@ -155,7 +155,7 @@ These remain unfinished. The default stays 486+x87.
   flags and cache identities retain CPU/FPU choices. Foreign objects without
   owned metadata cannot be certified by this contract.
 - [ ] Run encoding/correctness tests on Linux/QEMU and host-supported benchmarks.
-  CPU profiles and MMX/3DNow encodings are implemented; 627 encoding/profile
+  CPU profiles and MMX/3DNow encodings are implemented; 878 encoding/profile
   checks and seven QEMU TCG execution checks pass, including x87, MMX/3DNow,
   debug registers, 386 bit operations and 486 atomics/cache instructions.
   Nine backend configurations execute generated programs; native packed

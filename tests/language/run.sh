@@ -8,6 +8,10 @@
 #   tests/language/run.sh --target=x86-64   every test compiled for long mode
 #   tests/language/run.sh --opt-size  exercise size-oriented compilation
 #   tests/language/run.sh --experimental-batch  exercise the staged optimizer group
+#   tests/language/run.sh --runtime-knob=Corsac.GC.VerifyFrees=1
+#                                every test built with that runtime setting
+#                                baked in (corc's --runtime-knob); may be
+#                                repeated
 #   tests/language/run.sh --through-link [--region-engine escape|andersen]
 #                                every test compiled to an object and linked
 #                                (corc link --closed): through the link-time
@@ -78,6 +82,13 @@ for arg in "$@"; do
         --target=*)
             # Every test compiled for this target: x86 (the default) or x86-64.
             compiler_flags+=("--target" "${arg#--target=}")
+            passthrough+=("$arg")
+            ;;
+        --runtime-knob=*)
+            # Every test's program built with this setting of the runtime's:
+            # the collector's checked modes are asked for so, never through
+            # the environment.
+            compiler_flags+=("--runtime-knob" "${arg#--runtime-knob=}")
             passthrough+=("$arg")
             ;;
         -h|--help)

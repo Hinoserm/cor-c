@@ -1,0 +1,51 @@
+// test: short_class_names_across_units
+// units: tests/language/support/1615_short_names_units.cor
+// flags: --trace-demand
+// expect-exit: 0
+// expect-no-compile-warning: demanded
+// expect-output:
+// 18 52
+// 4660
+// 99
+// 5
+// 3
+//
+// Classes of two-letter names declared in another unit and reached only as
+// the left of a member access, Be.Put16 and Io.Length: found through the
+// other unit's declarations like any longer name, and in the unit's first
+// pass -- the trace names nothing demanded, where taking the two for type
+// parameters left the binder to demand them and threw that pass away. A
+// property and a local of the same names keep the meaning C#'s lookup gives
+// them, the property's string and the local's array, whatever the other
+// unit declares.
+
+using System;
+using WireUnits;
+
+sealed class Port
+{
+    public string Io { get; } = "ttyS0";
+
+    public int NameLength() { return Io.Length; }
+}
+
+static class P
+{
+    static int Count()
+    {
+        int[] Be = { 1, 2, 3 };
+        return Be.Length;
+    }
+
+    static int Main()
+    {
+        byte[] frame = new byte[4];
+        Be.Put16(frame, 0, 0x1234);
+        Console.WriteLine(frame[0] + " " + frame[1]);
+        Console.WriteLine(Be.Get16(frame, 0));
+        Console.WriteLine(Io.Length);
+        Console.WriteLine(new Port().NameLength());
+        Console.WriteLine(Count());
+        return 0;
+    }
+}

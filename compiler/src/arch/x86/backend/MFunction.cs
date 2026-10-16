@@ -33,6 +33,15 @@ public sealed class MFunction
     /// <summary>Whether a barrier's slow path calls the object's stub (X86Backend.BarrierStub).</summary>
     public bool UsesBarrierStub { get; set; }
 
+    /// <summary>
+    /// Whether this function was selected with the hosted ABI's leave to use
+    /// the MMX registers (X86Backend.AutomaticPacked). Recorded here because
+    /// the emitted-code audit refuses a packed instruction in a function
+    /// selected without it: freestanding code does not own the x87 state the
+    /// MMX registers alias.
+    /// </summary>
+    public bool AutomaticPacked { get; init; }
+
     /// <summary>Virtual registers that must land in a register with an 8-bit form (EAX..EBX).</summary>
     public HashSet<int> ByteRegs { get; } = new();
 

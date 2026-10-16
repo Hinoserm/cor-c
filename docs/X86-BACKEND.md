@@ -1213,7 +1213,7 @@ blocks.
   pages touched (`Platform.MapsCommitLazily`): Linux. Elsewhere -- the bare
   machine, long mode -- `Runtime.Cards` stays 0, every card mark is a load
   and a not-taken branch, and every collection is major.
-- *Checked on request.* `CORSAC_GC_VERIFY=1` makes every minor cycle, once
+- *Checked on request.* `--runtime-knob Corsac.GC.Verify=1` makes every minor cycle, once
   marked, walk every old block for a pointer to an unmarked young one and
   report it with its card (`Gc.VerifyMinor`). It reads each block by the
   marker's own rules (`Gc.MarkerReads`) -- an object by its reference map
@@ -1405,7 +1405,10 @@ array the caller may write to; `GetName`, `IsDefined`, `Parse` and
 - Optimisation beyond the cheap passes listed. No inlining, no loop
   optimisation, no scheduling. The design leaves room for them.
 - x87 register-stack allocation.
-- Anything Pentium or later. `cpuid`, `cmov`, `rdtsc` and MMX are refused.
+- Instructions beyond the selected `--cpu` profile (docs/X86-CPU-SUPPORT.md):
+  the assembler refuses them, and the code generator's BSWAP, MMX and 3DNow!
+  selection asks the profile first. CMOV, FCOMI and SSE are permitted by the
+  P6 and Athlon profiles but not yet selected.
 
 ## Core rule: programs are regular .NET C# programs
 

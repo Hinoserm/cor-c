@@ -113,11 +113,10 @@ The image is ELF64 throughout: RELA relocations with the addend in the
 entry, 24-byte symbols, 16-byte dynamic entries, eight-byte GOT slots; the
 SysV hash table keeps its 4-byte words.
 
-The frame table's base, the image directory's table addresses and the
-stack maps' base are 32-bit fields. In long mode they hold the distance
-from the field to what it names, so an image loaded anywhere in 64-bit space
-describes itself with no loader relocation; the runtime reads them back with
-`TableAddress`.
+The frame table's base and the image directory's table addresses are
+32-bit fields. In long mode they hold the distance from the field to what it
+names, so an image loaded anywhere in 64-bit space describes itself with no
+loader relocation; the runtime reads them back with `TableAddress`.
 
 ## The runtime
 
@@ -127,8 +126,17 @@ through `WordSize.Bytes` (runtime/src/core/runtime.cor), chosen by the
 target's conditional symbol. The driver defines .NET CoreLib's names:
 `TARGET_64BIT` and `TARGET_AMD64` for x86-64, `TARGET_32BIT` and
 `TARGET_X86` for i386. Fields that `Sys.Cas`, `Sys.AtomicSwap` and
-`Sys.AtomicAdd` work on are `nint`, since those are word operations. In long
-mode the collector's region filter is two-level over the 47-bit user space.
+`Sys.AtomicAdd` work on are `nint`, since those are word operations; an
+`int` takes `Sys.Cas32`, `Sys.AtomicSwap32` and `Sys.AtomicAdd32`, which are
+four bytes on either target (Interlocked's int forms). In long mode the
+collector's region filter is two-level over the 47-bit user space, and it
+reads every stack whole, each word a possible reference, so a long-mode
+object carries no stack maps (`.corsac.stackmaps`) at all.
+The heap's table of the chunk at every 4 KB (`HeapChunks.SlotTable`), which
+on i386 covers all four gigabytes, covers a 64 GiB window in long mode, placed
+by the first chunk the heap maps (`HeapChunks.SlotLow`); a free or a lookup
+outside it finds the chunk by the index instead. The marker uses the table on
+i386 only.
 
 The Linux layer (runtime/src/platforms/linux) names both ABIs under
 `#if TARGET_AMD64`: the x86-64 call numbers, `mmap` with a byte offset,
@@ -167,14 +175,22 @@ CR8 are whole), `LoadSegments` -- and what a long-mode kernel needs besides:
 `LoadCodeSegment` (a far return, `retfq`) and `SwapGs`.
 
 The linker's addresses are 64 bits, so a kernel may be linked in the top two
-gigabytes (`--base 0xffffffff80100000 --load 0x100000`): the code the
-compiler writes is RIP-relative, data holds eight-byte addresses, and the
-assembler's absolute 32-bit fields in long mode are `R_X86_64_32S`.
+gigabytes (`--base 0xffffffff80100000 --load 0x100000`, or the same `--base`
+for a `--flat` image): the code the compiler writes is RIP-relative, data
+holds eight-byte addresses, and the assembler's absolute 32-bit fields in
+long mode are `R_X86_64_32S`. An i386 image is refused a base, or an end,
+above four gigabytes.
 
 The assembler writes 64-bit code (`.bits 64`, `corc asm --target x86-64`):
 REX prefixes, r8-r15 in every width, RIP-relative `[rip + x]`, CR8, `movabs`,
 `dq`, and long mode's own instructions. An object with 64-bit code in it is
-a long-mode object; a boot stub that switches modes is one file.
+a long-mode object; a boot stub that switches modes is one file. Its 32-bit
+part runs on the same K8 or later, so no instruction in it is refused for
+the processor (`--cpu` names `k8` or nothing, as for `compile`), and its
+fields are relocated with their whole 64-bit addend, so `label - KERNEL`
+reaches a higher-half label's loaded address before paging is on.
+`tests/freestanding/15_long_mode_switch` is such a stub: CPUID, PAE,
+`EFER.LME`, paging and a far jump into the 64-bit part.
 
 `tests/freestanding/run.sh` runs bare-metal images as processes on both
 targets: `host.cor` hands each a heap, a write and an exit, and everything

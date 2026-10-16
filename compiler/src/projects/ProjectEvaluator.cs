@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
@@ -95,6 +96,7 @@ public sealed class ProjectEvaluator
             References = items.Where(item => item.Type == "ProjectReference").Select(item => item.Include).ToArray(),
             Defines = defines.Distinct(StringComparer.Ordinal).ToArray(), WarningsAsErrors = Get("TreatWarningsAsErrors") == "true",
             Usings = usings.ToArray(),
+            RuntimeKnobs = _knobItems.Select(knob => knob.Name + "=" + knob.Value).ToArray(),
             Properties = new Dictionary<string, string>(properties, StringComparer.OrdinalIgnoreCase),
             Evaluation = string.Join("\n", inputs.Select(path => path + ":" + File.GetLastWriteTimeUtc(path).Ticks)) };
     }
@@ -174,6 +176,8 @@ public sealed class ProjectEvaluator
     /// <summary>&lt;Using&gt; items as written: a namespace, or `Alias=Name`.</summary>
     private readonly List<string> _usingItems = new();
     private readonly List<string> _removedUsings = new();
+    /// <summary>&lt;RuntimeHostConfigurationOption&gt; items: a setting's name and its value, in order.</summary>
+    private readonly List<(string Name, string Value)> _knobItems = new();
 
     private void EvaluateItem(XElement node)
     {
@@ -192,14 +196,52 @@ public sealed class ProjectEvaluator
             foreach (string one in Split(Expand(name))) _usingItems.Add(alias is { Length: > 0 } ? alias + "=" + one : one);
             return;
         }
-        // RuntimeHostConfigurationOption is accepted for the SDK's sake and
-        // otherwise ignored: this build reads the collector settings from the
-        // properties the items are written in terms of. See corc.csproj.
+        // A RUNTIME SETTING IS A NAME AND A VALUE, NOT A PATH:
+        // `<RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit"
+        // Value="33554432" />`, which the SDK writes into runtimeconfig.json
+        // and this build bakes into the program (--runtime-knob). The value is
+        // what the program reads back under the SDK: a bool's text as "true"
+        // or "false", an int's as its number (" 007" is "7"), anything else as
+        // written, and the last <Value> of several. The last of a name given
+        // twice is the one, as the SDK's dictionary keeps it; Remove and
+        // Update find a name in any case, as MSBuild's items do.
+        if (type == "RuntimeHostConfigurationOption")
+        {
+            string? name = (string?)node.Attribute("Include");
+            string? gone = (string?)node.Attribute("Remove");
+            string? changed = (string?)node.Attribute("Update");
+            if ((name is null ? 0 : 1) + (gone is null ? 0 : 1) + (changed is null ? 0 : 1) != 1)
+                throw new InvalidDataException("A <RuntimeHostConfigurationOption> needs exactly one Include, Remove or Update");
+            if (gone is not null)
+            {
+                foreach (string one in Split(Expand(gone))) _knobItems.RemoveAll(knob => knob.Name.Equals(one, StringComparison.OrdinalIgnoreCase));
+                return;
+            }
+            string? written = (string?)node.Attribute("Value") ?? node.Elements().LastOrDefault(e => e.Name.LocalName == "Value" && Condition(e))?.Value;
+            string value = Expand(written ?? "");
+            if (bool.TryParse(value, out bool on)) value = on ? "true" : "false";
+            else if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int number)) value = number.ToString(CultureInfo.InvariantCulture);
+            if (changed is not null)
+            {
+                // An Update that names no value leaves the one there.
+                if (written is null) return;
+                foreach (string one in Split(Expand(changed)))
+                    for (int i = 0; i < _knobItems.Count; i++)
+                        if (_knobItems[i].Name.Equals(one, StringComparison.OrdinalIgnoreCase)) _knobItems[i] = (_knobItems[i].Name, value);
+                return;
+            }
+            foreach (string one in Split(Expand(name!)))
+            {
+                _knobItems.RemoveAll(knob => knob.Name == one);
+                _knobItems.Add((one, value));
+            }
+            return;
+        }
         // INTERNALS VISIBLE TO ANOTHER ASSEMBLY say nothing to a build that
         // makes one image of every project: a test project's access to the
         // linker's internals (linker.csproj) is the dotnet build's business.
         if (type == "InternalsVisibleTo") return;
-        if (type is not ("Compile" or "ProjectReference" or "None" or "Content" or "Using" or "PackageReference" or "Reference" or "Analyzer" or "EmbeddedResource" or "RuntimeHostConfigurationOption"))
+        if (type is not ("Compile" or "ProjectReference" or "None" or "Content" or "Using" or "PackageReference" or "Reference" or "Analyzer" or "EmbeddedResource"))
             throw new InvalidDataException("Unsupported active item type: " + type);
         string? include = (string?)node.Attribute("Include"), remove = (string?)node.Attribute("Remove"), update = (string?)node.Attribute("Update");
         if ((include is null ? 0 : 1) + (remove is null ? 0 : 1) + (update is null ? 0 : 1) != 1)

@@ -303,7 +303,7 @@ static class Gc
     /// Frees the program asked for and the collector was left with: while a
     /// mark or a sweep was under way, and on top of the allocator or the lock.
     public static long FreesDroppedMarking, FreesDropped;
-    /// Whether MarkCalls and the new-mark count are kept: CORSAC_GC_STATS, or a
+    /// Whether MarkCalls and the new-mark count are kept: Corsac.GC.Stats, or a
     /// program that reads them (the compiler's benchmark build) setting it.
     /// Every marking thread bumping the two shared words for every word it
     /// read passed their cache line between the cores for each one.
@@ -506,7 +506,7 @@ static class Gc
     static long _oldCardsReports;
     static long _aloneSaid;
 
-    /// CORSAC_GC_VERIFY: after a minor cycle has marked, every old block is
+    /// Corsac.GC.Verify: after a minor cycle has marked, every old block is
     /// read word by word, and a word that lands on a young block this cycle
     /// did not mark -- which the sweep is about to free -- is reported: the
     /// old block, the offset in it, and what it points at. A missing barrier
@@ -568,7 +568,7 @@ static class Gc
         }
     }
 
-    /// CORSAC_GC_VERIFY, after a MAJOR cycle has marked: every marked block
+    /// Corsac.GC.Verify, after a MAJOR cycle has marked: every marked block
     /// is read word by word, and a word that is the start of a block the
     /// sweep is about to free is reported -- the block, its vtable (for nm),
     /// the offset, and whether the marker reads that word. Read and still
@@ -705,7 +705,7 @@ static class Gc
         return said;
     }
 
-    /// CORSAC_GC_VERIFY (or VerifyMarks), after a concurrent cycle has
+    /// Corsac.GC.Verify (or VerifyMarks), after a concurrent cycle has
     /// marked: every NEWCOMER -- kept by the sweep because it is not in the
     /// snapshot, and never traced -- read word by word, and a word the marker
     /// would read that is the start of a block of the snapshot left unmarked
@@ -6783,7 +6783,7 @@ static class Gc
 
     /// The bytes of a chunk's blocks that are not free, by its chain of sizes.
     /// Every block of a chunk the program had not freed, charged to the
-    /// sampled entry that made it (CORSAC_ALLOC_SAMPLE): the collector's.
+    /// sampled entry that made it (Corsac.GC.AllocSample): the collector's.
     static void CollectedIn(long chunk)
     {
         long block = HeapChunks.First(chunk);
@@ -6815,11 +6815,11 @@ static class Gc
     }
 
     /// The collector's counts, pauses and sizes on standard error, when the
-    /// platform asks for them (CORSAC_GC_STATS=1 on Linux) or the program
-    /// does (StatsAsked, the AppContext switch "Corsac.GC.Stats": corc's
-    /// --gc-stats). Called at exit. A flag of its own, set by the switch:
-    /// asking AppContext here made every program carry its table and lock,
-    /// and none could run without the collector.
+    /// platform asks for them (the image's Corsac.GC.Stats knob, on Linux)
+    /// or the program does (StatsAsked, the AppContext switch of the same
+    /// name: corc's --gc-stats). Called at exit. A flag of its own, set by
+    /// the switch: asking AppContext here made every program carry its table
+    /// and lock, and none could run without the collector.
     public static void SayStats()
     {
         if (!_ready || !(StatsAsked || Platform.GcStats())) return;
@@ -7447,7 +7447,7 @@ static class Gc
             if (span >= Smallest && span < 0x1000000 && Sys.Peek(guarded + span - FooterBytes) == head) CheckGuard(guarded, "its free");
         }
 
-        // LOGGED (CORSAC_FREE_LOG), with the two calls it came through, for
+        // LOGGED (Corsac.GC.FreeLog), with the two calls it came through, for
         // the fault report to look through.
         if (Runtime.FreeLogRing != 0)
         {
@@ -7805,6 +7805,16 @@ static class Gc
         {
             return false;
         }
+#if TARGET_64BIT
+        // OUTSIDE THE TABLE'S WINDOW (HeapChunks.SlotLow) the table says
+        // nothing, and the rest of Free finds the block's chunk by the
+        // index. On i386 the window is every address, and the span a word
+        // cannot hold.
+        if (at - (nuint)HeapChunks.SlotLow >= (nuint)HeapChunks.SlotSpan)
+        {
+            return false;
+        }
+#endif
         long words = GcLock.Words();
         if (words != 0 && (nint)Sys.Peek(words + GcLock.Held) == tb)
         {
@@ -7866,7 +7876,7 @@ static class Gc
     public static long Frees;
 
     // CHECKED MODE FOR THE COMPILER'S FREES (Platform.VerifyFrees; on Linux,
-    // CORSAC_VERIFY_FREES=1 in the environment). A free is otherwise quiet
+    // the image's Corsac.GC.VerifyFrees knob). A free is otherwise quiet
     // about what it is handed and gives the bytes straight back, so a wrong
     // one -- an object still in use, one freed twice -- reads as a working
     // program until the bytes happen to be taken again. Checked, a freed
@@ -7878,24 +7888,21 @@ static class Gc
     // object at all -- static data a reassigned variable held -- is ignored,
     // as it always is.
     //
-    // ASKED ONCE, IN Start, ON THE MAIN THREAD. The environment is found
-    // through the loader's stack, and Sys.EntryStack is the stack of the
-    // thread asking: a child thread's first free, asking itself, read its
-    // own stack as if it were the environment and faulted. Start runs at
-    // the first allocation, before any thread can exist.
+    // ASKED ONCE, IN Start, at the first allocation: the image's knobs say
+    // the same for the whole run, and a free is no place to walk them.
     static bool _verify;
-    /// Which frees are ignored (CORSAC_IGNORE_FREES, Platform.IgnoreFrees): 0
+    /// Which frees are ignored (Corsac.GC.IgnoreFrees, Platform.IgnoreFrees): 0
     /// none; 'p', 'f' or 'r' one kind, which Runtime asks; anything else all.
     public static long IgnoredFrees;
 
-    /// The free paths skipped (CORSAC_FREE_PATHS, Platform.SkippedFreePaths): t 1, i 2, b 4, d 8, m 16;
+    /// The free paths skipped (Corsac.GC.FreePaths, Platform.SkippedFreePaths): t 1, i 2, b 4, d 8, m 16;
     /// p 32 poisons every block freed (and skips t and b).
     static long SkippedFreePaths;
 
     /// The same, set by a program after the heap has started -- a kernel from
     /// its command line (gc.freepaths=N) -- to find which path a fault needs.
     /// The compiler's frees of one kind left undone, as the Linux platform's
-    /// CORSAC_IGNORE_FREES letter says ('r' owned variables and outgrown
+    /// Corsac.GC.IgnoreFrees letter says ('r' owned variables and outgrown
     /// collection storage, 'f' field frees, 'p' the region paths), turned on
     /// by a program after the heap has started -- a kernel from its command
     /// line (gc.ignorefrees=r): the bisection of a block freed under a holder.
@@ -7915,7 +7922,7 @@ static class Gc
         GcLock.Exit();
     }
 
-    /// Released chunks guarded rather than unmapped (CORSAC_GUARD_RELEASES).
+    /// Released chunks guarded rather than unmapped (Corsac.GC.GuardReleases).
     public static bool GuardReleases;
     const long Poison = 0xFEEEFEEE;
 
@@ -8060,7 +8067,7 @@ static class Gc
         for (long k = 5; k < SiteWords; k++) { long back = Sys.Peek(entry + k * WordSize.Bytes); if (back != 0) Runtime.SayFrame(2, back); }
     }
 
-    /// CORSAC_VERIFY_FREES=f: only field frees are checked (Runtime.FreeField).
+    /// Corsac.GC.VerifyFrees=f: only field frees are checked (Runtime.FreeField).
     public static bool VerifyingFieldFrees;
 
     /// In the checked mode for field frees, an ordinary free of a block a
@@ -8222,7 +8229,7 @@ static class Gc
         Platform.Exit(98);
     }
 
-    // THE HEAP CHECKED (CORSAC_HEAP_CHECK): as every collection begins (0)
+    // THE HEAP CHECKED (Corsac.GC.HeapCheck): as every collection begins (0)
     // and ends (1), with the heap lock held. Every chunk's blocks walked from
     // its first to its end, stepping over the buffers threads are bumping in:
     // each a size that fits, a header its footer agrees with; each listed free
@@ -9054,7 +9061,7 @@ static class Gc
         }
     }
 
-    // THE CENSUS (CORSAC_GC_CENSUS): what a whole sweep found live, by what
+    // THE CENSUS (Corsac.GC.Census): what a whole sweep found live, by what
     // it is. An object with a descriptor is counted under its vtable; a leaf
     // (a string, an array of bytes or characters) under Leaf; a block no
     // descriptor describes -- a struct's, a cell, a frame -- under its size,
@@ -9068,15 +9075,15 @@ static class Gc
     const long CensusNoVtable = 2;
     const long CensusUntyped = 0x40000000;
     static bool _census;
-    static bool _deadCensus;        // CORSAC_GC_CENSUS=2: what sweeps found dead, by type, over the run
+    static bool _deadCensus;        // Corsac.GC.DeadCensus: what sweeps found dead, by type, over the run
     static long _deadAt;
-    static long _thresholdCap;      // CORSAC_GC_THRESHOLD, or 0
-    static long _nurseryFixed;      // CORSAC_GC_NURSERY, or 0
+    static long _thresholdCap;      // Corsac.GC.Threshold, or 0
+    static long _nurseryFixed;      // System.GC.Gen0Size, or 0
     static long _censusAt;
 
     /// The census asked for after start (AppContext.SetSwitch("Corsac.GC.Census", true):
     /// corc's --gc-census): every whole collection counts what it found live, as the
-    /// environment's CORSAC_GC_CENSUS=1 does from the first.
+    /// image's Corsac.GC.Census knob does from the first.
     public static void AskCensus()
     {
         _censusAsked = true;
@@ -9085,8 +9092,8 @@ static class Gc
 
     /// And what every sweep found dead, by type, over the run
     /// (AppContext.SetSwitch("Corsac.GC.DeadCensus", true): corc's
-    /// --gc-dead-census), as CORSAC_GC_CENSUS=2 does: what the collector, not
-    /// the program, gave back, and of which types.
+    /// --gc-dead-census), as the image's knob of the same name does: what
+    /// the collector, not the program, gave back, and of which types.
     public static void AskDeadCensus()
     {
         _deadCensusAsked = true;
@@ -9759,6 +9766,13 @@ static class Gc
         // at every free the compiler's lifetime rules make (Runtime.Free asks
         // this before it frees an object's owned fields).
         nuint slots = (nuint)HeapChunks.SlotTable;
+#if TARGET_64BIT
+        // Outside the table's window (FreeOwnBlock), the search below.
+        if ((nuint)block - (nuint)HeapChunks.SlotLow >= (nuint)HeapChunks.SlotSpan)
+        {
+            slots = 0;
+        }
+#endif
         if (slots != 0)
         {
             nuint page = PeekW(slots + ((nuint)block >> 12) * (nuint)WordSize.Bytes);
@@ -11559,7 +11573,7 @@ static class Gc
     }
 
     // WHERE A COLLECTION ALONE SPENDS ITS PAUSE: roots and cards, marking,
-    // and sweeping (CORSAC_GC_STATS).
+    // and sweeping (Corsac.GC.Stats).
     public static long SnapshotMicros;
     public static long RootMicros;
     public static long MarkMicros;
@@ -13237,11 +13251,22 @@ static class HeapChunks
     /// limit and class are, and where its first block is.
     public const long EndAt = ChunkEnd, LimitAt = ChunkLimit, ClassAt = ChunkClass, FirstAt = ChunkBytes, OwnerAt = ChunkOwner;
 
-    /// THE CHUNK OF EVERY 4 KB (Of's table), for the marker: 0 where there is
-    /// none -- not a platform that commits lazily, or above four gigabytes.
+    /// THE CHUNK OF EVERY 4 KB (Of's table), for the marker and the frees:
+    /// the word of an address `at` in the window (SlotLow, SlotSpan) is at
+    /// SlotTable + (at >> 12) words, the shift unsigned. 0 where there is
+    /// none -- not a platform that commits lazily.
     public static long SlotTable
     {
-        get { return _slots; }
+        get { return _slotBias; }
+    }
+
+    /// The first address the table covers: 0 on i386, where it covers all
+    /// four gigabytes; in long mode, the bottom of the window where the heap
+    /// is (SlotsSet). An address `at` is in the window when at - SlotLow,
+    /// unsigned, is below SlotSpan.
+    public static long SlotLow
+    {
+        get { return _slotLow; }
     }
     const long ChunkFree = 9 * WordSize.Bytes;
     const long ChunkPageNext = 10 * WordSize.Bytes;
@@ -13324,30 +13349,63 @@ static class HeapChunks
     // side.
     static long _index;
     static long _indexBase;
-    // THE CHUNK OF EVERY 4 KB OF THE LOW FOUR GIGABYTES, one word each (Of):
-    // a free's chunk found by one read where a binary search over the index
-    // took most of what a compiler's fifty million frees cost the thread
-    // making them. Mapped once, where a mapping costs only the pages touched
-    // (Platform.MapsCommitLazily): a page of the table covers a megabyte or
-    // more of heap. 0 where there is none; the index answers then, and
-    // above four gigabytes.
+    // THE CHUNK OF EVERY 4 KB OF A WINDOW OF THE ADDRESS SPACE, one word
+    // each (Of): a free's chunk found by one read where a binary search over
+    // the index took most of what a compiler's fifty million frees cost the
+    // thread making them. Mapped once, where a mapping costs only the pages
+    // touched (Platform.MapsCommitLazily): a page of the table covers a
+    // megabyte or more of heap. 0 where there is none; the index answers
+    // then, and outside the window.
+    //
+    // THE WINDOW IS WHERE THE HEAP IS. On i386 it is all four gigabytes, a
+    // table of 4 MiB. Long mode's 47 bits would want a table of 256 GiB,
+    // and Linux maps every chunk near the top of them, so there the window
+    // is 64 GiB placed by the first chunk (SlotsSet), a table of 128 MiB of
+    // address space, committed only where the heap is. _slotBias is the
+    // table less the window's first word, so that an address's word is
+    // _slotBias + (at >> 12) words, as on i386, where the two are the same.
     static long _slots;
+    static long _slotBias;
+    static long _slotLow;
     static bool _slotsTried;
     const long SlotShift = 12;
-    const long SlotSpan = 0x100000000;
+#if TARGET_64BIT
+    public const long SlotSpan = 0x1000000000;
+#else
+    public const long SlotSpan = 0x100000000;
+#endif
 
-    // Chunk `chunk`'s mapped range, every 4 KB of it below four gigabytes, set to `value`.
+    // Chunk `chunk`'s mapped range, every 4 KB of it inside the window, set
+    // to `value`. In unsigned longs, as the window is: an address of a
+    // kernel's heap in the top half of long mode is a negative long.
     static void SlotsSet(long chunk, long value)
     {
         if (!_slotsTried)
         {
             _slotsTried = true;
             if (Platform.MapsCommitLazily) _slots = Platform.Map((SlotSpan >> SlotShift) * WordSize.Bytes);
+#if TARGET_64BIT
+            // THE WINDOW BY THE FIRST CHUNK: the system hands mappings out
+            // top down, so the chunks after it land below it. Its top is
+            // an eighth of the span past the chunk's limit rounded up to an
+            // eighth, room for a heap that grows upward instead -- a
+            // kernel's. Never past the top of the address space (a kernel
+            // linked in the top two gigabytes), nor below its bottom.
+            ulong eighth = (ulong)(SlotSpan / 8);
+            ulong limit = (ulong)Sys.Peek(chunk + ChunkLimit);
+            ulong top = ((limit + eighth - 1) & ~(eighth - 1)) + eighth;
+            if (top < limit) _slotLow = -SlotSpan;
+            else if (top > (ulong)SlotSpan) _slotLow = (long)(top - (ulong)SlotSpan);
+#endif
+            if (_slots != 0) _slotBias = (long)((ulong)_slots - ((ulong)_slotLow >> (int)SlotShift) * (ulong)WordSize.Bytes);
         }
         if (_slots == 0) return;
-        long end = Sys.Peek(chunk + ChunkLimit);
-        for (long at = chunk & ~((1L << (int)SlotShift) - 1); at < end && at < SlotSpan; at = at + (1L << (int)SlotShift))
-            Sys.Poke(_slots + (at >> (int)SlotShift) * WordSize.Bytes, value);
+        ulong low = (ulong)_slotLow;
+        ulong end = (ulong)Sys.Peek(chunk + ChunkLimit);
+        ulong from = (ulong)chunk & ~(ulong)((1L << (int)SlotShift) - 1);
+        if (from < low) from = low;
+        for (ulong at = from; at < end && at - low < (ulong)SlotSpan; at = at + (ulong)(1L << (int)SlotShift))
+            Sys.Poke(_slots + (long)((at - low) >> (int)SlotShift) * WordSize.Bytes, value);
     }
     static long _indexCount;
     static long _indexCapacity;
@@ -14284,9 +14342,10 @@ static class HeapChunks
             return memo;
         }
 
-        if (_slots != 0 && at < SlotSpan)
+        // Inside the table's window the table is exact; outside it, the index.
+        if (_slots != 0 && (ulong)(at - _slotLow) < (ulong)SlotSpan)
         {
-            long slot = Sys.Peek(_slots + (at >> (int)SlotShift) * WordSize.Bytes);
+            long slot = Sys.Peek(_slots + ((at - _slotLow) >> (int)SlotShift) * WordSize.Bytes);
             if (slot != 0 && at >= slot + ChunkBytes && at < Sys.Peek(slot + ChunkEnd))
             {
                 _memo = slot;

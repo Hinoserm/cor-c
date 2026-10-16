@@ -23,7 +23,7 @@
 // read back: before its slot is reused, and the ring's last laps at the
 // end. Against the collector before the fix it failed a run in four with
 // the machine busy, and seldom with it idle: the thread has to lose the
-// heap lock to the next cycle's snapshot as it wakes. CORSAC_GC_VERIFY=1
+// heap lock to the next cycle's snapshot as it wakes. Corsac.GC.Verify
 // says each such hole the cycle it happens (Gc.VerifyNewcomers).
 //
 // The cap leaves room: at 16 MB, or with eight workers, some runs end

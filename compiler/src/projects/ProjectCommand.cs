@@ -58,10 +58,9 @@ public static class ProjectCommand
                 case "--timings": timings = true; break;
                 case "--cpu": case "--tune": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
-                case "--enable-mmx": case "--disable-mmx": case "--enable-3dnow": case "--disable-3dnow":
-                    profileArguments.Add(arguments[i]); break;
                 default:
-                    if (arguments[i].StartsWith("--cpu=") || arguments[i].StartsWith("--tune=") || arguments[i].StartsWith("--fpu="))
+                    if (arguments[i].StartsWith("--cpu=") || arguments[i].StartsWith("--tune=") || arguments[i].StartsWith("--fpu=")
+                        || global::Corsac.Lang.X86.X86Cpu.IsSwitch(arguments[i]))
                     { profileArguments.Add(arguments[i]); break; }
                     if (arguments[i].StartsWith('-') || path is not null) throw new ArgumentException("Unexpected project argument: " + arguments[i]);
                     path = arguments[i]; break;
@@ -85,7 +84,7 @@ public static class ProjectCommand
         // the K8 and the i386 profile options do not apply.
         string[] cpuArguments = target == Target.X86_64
             ? (profileArguments.Count == 0 ? new[] { "--target", "x86-64", "--cpu", "k8" }
-                : throw new ArgumentException("--cpu/--tune/--fpu and the MMX/3DNow! switches are for the i386 target"))
+                : throw new ArgumentException("--cpu/--tune/--fpu and the --enable-/--disable- extension switches are for the i386 target"))
             : global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
         // The link validates each object's CPU contract against the i386
         // profile; a long-mode object carries its own (k8/sse2).
@@ -189,6 +188,10 @@ public static class ProjectCommand
             options.AddRange(cpuArguments);
             if (unusedReport is not null) { options.Add("--unused-report"); options.Add("-"); }
             if (entry) { options.Add("--main-type"); options.Add(entries[0].Type); }
+            // The program's runtime settings go where its entry stub is made:
+            // the project's own, as only the program's runtimeconfig.json
+            // carries them under the SDK.
+            if (entry) foreach (string knob in project.RuntimeKnobs) { options.Add("--runtime-knob"); options.Add(knob); }
             if (!owner.WarningsAsErrors) options.Add("-Wno-error");
             foreach (string define in owner.Defines) { options.Add("--define"); options.Add(define); }
             foreach (string use in owner.Usings) { options.Add("--using"); options.Add(use); }

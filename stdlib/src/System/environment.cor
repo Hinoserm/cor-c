@@ -460,6 +460,12 @@ static class OperatingSystem
 /// System.AppContext -- where the program was loaded from, and the switches it
 /// was started with. BaseDirectory is the one this compiler uses to find the
 /// class library beside itself.
+///
+/// WHAT THE IMAGE WAS BUILT WITH IS DATA HERE TOO: corc's --runtime-knob
+/// NAME=VALUE (a project's RuntimeHostConfigurationOption) is answered by
+/// GetData as a string, and by TryGetSwitch when it reads as a bool, as
+/// .NET's AppContext answers runtimeconfig.json's configProperties. What the
+/// program sets itself comes first, as it does in .NET.
 static class AppContext
 {
     /// .NET's run-time switches: a name and whether it is on, set by the
@@ -494,6 +500,9 @@ static class AppContext
         {
             if (_switches is not null && _switches.TryGetValue(switchName, out bool on)) { isEnabled = on; return true; }
         }
+        // A switch nobody set is the data of the same name, when that is a
+        // bool's text: "true" or "false", in any case, and nothing else.
+        if (GetData(switchName) is string text && bool.TryParse(text, out isEnabled)) return true;
         isEnabled = false;
         return false;
     }
@@ -529,10 +538,33 @@ static class AppContext
         // .NET, which has neither.
         if (name == "Corsac.GC.FreedBytes") return Gc.FreedBytes;
         if (name == "Corsac.GC.CollectedBytes") return Gc.CollectedBytes;
+        // A KNOB READ ONCE IS KEPT AS DATA: .NET's data store holds each one
+        // from the start, so every GetData of it is the same string, and a
+        // SetData after replaces it as it would any other.
         lock (_switchLock)
         {
-            return _data is not null && _data.TryGetValue(name, out object? value) ? value : null;
+            if (_data is not null && _data.TryGetValue(name, out object? value)) return value;
+            string? knob = Knob(name);
+            if (knob is not null)
+            {
+                _data ??= new Dictionary<string, object?>();
+                _data[name] = knob;
+            }
+            return knob;
         }
+    }
+
+    /// The image's knob `name` as a string (Runtime.KnobValue), or null when
+    /// the image was built without it.
+    static string? Knob(string name)
+    {
+        long at = Runtime.KnobValue(name);
+        if (at == 0) return null;
+        int length = 0;
+        while (Sys.PeekHalf(at + length * 2) != 0) length = length + 1;
+        char[] units = new char[length];
+        for (int i = 0; i < length; i++) units[i] = (char)Sys.PeekHalf(at + i * 2);
+        return new string(units);
     }
 
     public static void SetData(string name, object? data)

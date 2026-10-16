@@ -1,5 +1,4 @@
 // test: reference stores made as sequences (--store-sequences) store, report and keep every register
-// sources: stdlib/src/System/Threading/interlocked.cor
 // flags-x86: --store-sequences
 // expect-asm-x86: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier

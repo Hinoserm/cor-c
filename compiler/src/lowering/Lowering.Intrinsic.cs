@@ -250,6 +250,24 @@ public sealed partial class Lowering
             case "AtomicSwap":
                 return Atomic(call, target, Opcode.AtomicSwap);
 
+            // AN INT'S FOUR BYTES, and no more: the same instructions at 32
+            // bits (the destination's type is what the selector sizes them
+            // by), so in long mode the field after the int is left alone. On
+            // i386 these are the word forms exactly.
+            case "Cas32":
+            {
+                VReg at = Address(call, target, 0);
+                VReg expect = ToI32(Arg(call, target, 1));
+                VReg value = ToI32(Arg(call, target, 2));
+                VReg old = _e.Reg(IrType.I32);
+                _e.Emit(Opcode.AtomicCas, old, R(at), R(expect), R(value));
+                return old;
+            }
+            case "AtomicAdd32":
+                return Atomic32(call, target, Opcode.AtomicAdd);
+            case "AtomicSwap32":
+                return Atomic32(call, target, Opcode.AtomicSwap);
+
             // A REFERENCE EXCHANGED, with what every reference store takes:
             // the snapshot barrier and the card (Interlocked's reference
             // exchanges). As the image's sequence where stores are
@@ -821,6 +839,16 @@ public sealed partial class Lowering
         VReg old = _e.Reg(IrTypes.Word);
         _e.Emit(op, old, R(at), R(value));
         return Widen(old);
+    }
+
+    /// <summary>An atomic on an int: four bytes at `at`, answering the int that was there.</summary>
+    private VReg Atomic32(CallExpr call, MethodSymbol target, Opcode op)
+    {
+        VReg at = Address(call, target, 0);
+        VReg value = ToI32(Arg(call, target, 1));
+        VReg old = _e.Reg(IrType.I32);
+        _e.Emit(op, old, R(at), R(value));
+        return old;
     }
 
     private VReg Void() => _e.Const(0, IrTypes.Word);

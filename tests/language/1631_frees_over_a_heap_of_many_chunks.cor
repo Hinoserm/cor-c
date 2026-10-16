@@ -1,0 +1,78 @@
+// test: frees_over_a_heap_of_many_chunks
+// expect-exit: 0
+// expect-output:
+// small 99900000
+// large 4398042316800
+// text 20000 90000
+// table 5000 12497500
+// threads 5000200004
+//
+// FREES OVER A HEAP OF MANY CHUNKS, small blocks on size-class pages and
+// arrays a chunk each, made and given back, on four threads besides. A free
+// finds its block's page by the heap's table of the chunk at every 4 KB
+// (HeapChunks.SlotTable). The table covered the low four gigabytes, and long
+// mode on Linux maps every chunk near the top of 47 bits: a free read the
+// table far past its end, and a long-mode program faulted at its first --
+// a list's growth, or Console's writer letting go of its buffer. It covers a
+// window where the heap is now, and a free outside it finds the chunk by the
+// index.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Threading;
+
+static class Program
+{
+    // A list grown one element at a time: every growth frees the array before.
+    static long Grow(int count)
+    {
+        var list = new List<long>();
+        for (int i = 0; i < count; i++) list.Add(i);
+        long sum = 0;
+        foreach (long v in list) sum += v;
+        return sum;
+    }
+
+    static int Main()
+    {
+        long small = 0;
+        for (int round = 0; round < 200; round++) small += Grow(1000);
+        Console.WriteLine("small " + small);
+
+        // Arrays of up to eight megabytes, each a chunk of its own.
+        long large = 0;
+        for (int round = 0; round < 8; round++) large += Grow(1 << 20);
+        Console.WriteLine("large " + large);
+
+        var sb = new StringBuilder();
+        long digits = 0;
+        for (int i = 0; i < 20000; i++)
+        {
+            string s = (i % 10).ToString();
+            sb.Append(s);
+            digits += s[0] - '0';
+        }
+        GC.Collect();
+        Console.WriteLine("text " + sb.Length + " " + digits);
+
+        var table = new Dictionary<int, string>();
+        for (int i = 0; i < 20000; i++) table[i] = "v" + i;
+        for (int i = 0; i < 20000; i++) if (i % 4 != 0) table.Remove(i);
+        long keys = 0;
+        foreach (var pair in table) keys += pair.Key / 4;
+        Console.WriteLine("table " + table.Count + " " + keys);
+
+        var threads = new Thread[4];
+        var sums = new long[4];
+        for (int t = 0; t < 4; t++)
+        {
+            int k = t;
+            threads[t] = new Thread(() => { sums[k] = Grow(50000 + k); });
+            threads[t].Start();
+        }
+        foreach (var thread in threads) thread.Join();
+        Console.WriteLine("threads " + (sums[0] + sums[1] + sums[2] + sums[3]));
+        return 0;
+    }
+}

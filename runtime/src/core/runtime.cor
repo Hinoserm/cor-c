@@ -264,7 +264,7 @@ static class Tls
     public const long Bytes = 47 * WordSize.Bytes;
 }
 
-/// WHERE THE ALLOCATIONS COME FROM (CORSAC_ALLOC_SAMPLE=1): every sixteenth
+/// WHERE THE ALLOCATIONS COME FROM (Corsac.GC.AllocSample): every sixteenth
 /// allocation (Runtime.AllocHook) is charged, bytes and count, to the return
 /// address of the call that made it and to that call's own caller, in a
 /// fixed table of the operating system's; the table is printed as the
@@ -294,7 +294,7 @@ static class AllocSamples
         Begin();
     }
 
-    /// Sampling from now on, however asked: the environment at start, or
+    /// Sampling from now on, however asked: the image's knob at start, or
     /// AppContext.SetSwitch("Corsac.GC.AllocSample", true) -- corc's
     /// --alloc-sample. Once.
     public static void Begin()
@@ -1009,6 +1009,59 @@ static class Runtime
     // by name on ONE class, so the split is by forwarding rather than by
     // declaring Runtime twice.)
 
+    // ---- what the image was built with ---------------------------------------
+    //
+    // THE RUNTIME'S SETTINGS ARE THE IMAGE'S, NEVER THE ENVIRONMENT'S: corc's
+    // --runtime-knob NAME=VALUE, or a project's RuntimeHostConfigurationOption,
+    // written into the program as .NET's Native AOT writes runtimeconfig.json's
+    // settings into its image (ILC's --runtimeknob). A setting that rode
+    // along unseen in the environment changed a run nobody could see the
+    // command for. The entry stub hands them over as one literal -- each
+    // NAME=VALUE ended by a NUL -- after the thread block exists and before
+    // the main thread is registered, so the collector has them before it
+    // starts. A program built with none never calls UseKnobs, and every
+    // knob reads as unset. AppContext answers them too, as .NET's answers
+    // runtimeconfig.json's.
+
+    /// Where the knobs' UTF-16 units begin and end; 0 for an image built with none.
+    static long _knobs;
+    static long _knobsEnd;
+
+    /// The knobs, from the entry stub. A literal the compiler laid out, in
+    /// the image for the life of the process: nothing is allocated, nothing
+    /// needs keeping, and every thread may read it at any time.
+    public static void UseKnobs(string block)
+    {
+        _knobs = Sys.StringData(block);
+        _knobsEnd = _knobs + block.Length * 2;
+    }
+
+    /// Where knob `name`'s value begins -- UTF-16 units, ended by a NUL --
+    /// or 0 when the image was not built with it. Allocates nothing: the
+    /// collector asks as it starts, holding its lock, and at collections.
+    public static long KnobValue(string name)
+    {
+        long at = _knobs;
+        while (at != 0 && at < _knobsEnd)
+        {
+            int i = 0;
+            while (i < name.Length && Sys.PeekHalf(at + i * 2) == name[i])
+            {
+                i = i + 1;
+            }
+            if (i == name.Length && Sys.PeekHalf(at + i * 2) == '=')
+            {
+                return at + i * 2 + 2;
+            }
+            while (Sys.PeekHalf(at) != 0)
+            {
+                at = at + 2;
+            }
+            at = at + 2;
+        }
+        return 0;
+    }
+
     // ---- what a thread is ---------------------------------------------------
     //
     // The compiler's entry stub calls the first two, in this order, before a
@@ -1607,7 +1660,7 @@ static class Runtime
     const long ManualMagic = 0x4D48434D;   // 'MCHM'
     const long ManualFree = 1;
     const long ManualObjectFlag = 2;
-    // FREED IN THE CHECKED MODE (Platform.VerifyFrees, CORSAC_VERIFY_FREES=1 on
+    // FREED IN THE CHECKED MODE (Platform.VerifyFrees, Corsac.GC.VerifyFrees on
     // Linux), as Gc.VerifyFree does for a collected heap: the payload filled
     // with ManualPoison and the block never handed out again, so a read
     // after the free finds the pattern and a second free is reported and
@@ -2054,7 +2107,7 @@ static class Runtime
         return Gc.RegionGrow(at, (long)length);
     }
 
-    // THE FIELD FREES, LOGGED (CORSAC_FREE_LOG). A ring of the last entries,
+    // THE FIELD FREES, LOGGED (Corsac.GC.FreeLog). A ring of the last entries,
     // four words each -- what was freed, whose field it was, the offset, and
     // the return address into the code that freed it -- whose first word
     // counts them. Nothing reads it here: a debugger or a scan of the process
@@ -3715,7 +3768,7 @@ static class Runtime
         }
         SayTrace(StdErr, frame);
         if (CollectorLinked()) Gc.SayState();
-        // AND WHETHER THE PROGRAM FREED IT (CORSAC_FREE_LOG): every register
+        // AND WHETHER THE PROGRAM FREED IT (Corsac.GC.FreeLog): every register
         // and the address itself looked for among the last frees, a block
         // freed at or just below it named with the frees that took it. A
         // fault through an object the program gave back is the compiler's;

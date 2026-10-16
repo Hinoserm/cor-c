@@ -1,0 +1,35 @@
+// test: the Athlon profile by its k7 name, 3DNow! switched off
+// flags: --cpu k7 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// 43860
+// 7.5
+// 1
+//
+// k7 is the Athlon's other name (X86Cpu.Normalize), and --disable-3dnow
+// takes 3DNow! and its five extensions away while MMX, its extensions, CMOV
+// and FCOMI stay, so the program runs on a processor without 3DNow! -- a
+// Pentium III or later, or an AMD one since Bulldozer. The unit's .corsac.cpu
+// contract is checked as it is written (X86CodeGenerationContract.Validate):
+// a 3DNow! extension left behind by the disable would be refused there.
+
+using System;
+
+static class Program
+{
+    static int Clamp(int v) => v < 0 ? 0 : (v > 255 ? 255 : v);
+
+    static int Main()
+    {
+        int s = 0;
+        for (int i = -300; i < 300; i++) s += Clamp(i);
+        Console.WriteLine(s);
+        float[] values = { 1.5f, 7.5f, -2f, 3.25f };
+        float largest = float.MinValue;
+        foreach (float value in values) if (value > largest) largest = value;
+        Console.WriteLine(largest);
+        double zero = 0.0;
+        Console.WriteLine(Math.Sign(1.0 / zero));
+        return 0;
+    }
+}

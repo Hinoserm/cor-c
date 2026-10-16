@@ -31,6 +31,29 @@ public static class Program
             Check(X86Cpu.Parse(["--cpu=k6-3+"]).ThreeDNowExtended, "plus extensions missing");
             Check(!X86Cpu.Parse(["--cpu=k6-3+", "--disable-mmx"]).ThreeDNow, "dependent disable");
             Check(!X86Cpu.Parse(["--cpu=486", "--tune=k6-3+"]).Mmx, "tuning enabled instructions");
+            foreach (var (alias, model) in new[] { ("i386", "386"), ("i486", "486"), ("586", "pentium"), ("i586", "pentium"),
+                ("pentium_mmx", "pentium-mmx"), ("686", "686"), ("i686", "686"), ("pentium-pro", "686"), ("pentium2", "pentium2"),
+                ("pentium-ii", "pentium2"), ("pentium3", "pentium3"), ("pentium-iii", "pentium3"), ("pentium4", "pentium4"),
+                ("k6-iii", "k6-3"), ("k6-2+", "k6-2+"), ("k6-iii+", "k6-3+"), ("athlon", "athlon"), ("k7", "athlon"),
+                ("athlon-tbird", "athlon"), ("athlon-xp", "athlon-xp"), ("athlon-4", "athlon-xp"), ("athlon-mp", "athlon-xp"),
+                ("athlon64", "athlon64") })
+            {
+                X86Cpu parsed = X86Cpu.Parse(["--cpu", alias]);
+                Check(parsed.Name == model && parsed.Features == X86Cpu.Model(model), alias + " is not " + model);
+                Check(X86Cpu.Parse(parsed.Contract.Arguments()).Features == parsed.Features, alias + " did not round-trip");
+            }
+            bool longModeRefused = false;
+            try { X86Cpu.Parse(["--cpu=k8"]); } catch (ArgumentException) { longModeRefused = true; }
+            Check(longModeRefused, "k8 parsed as a 32-bit profile");
+            X86Cpu pentiumPro = X86Cpu.Parse(["--cpu=pentium-pro"]), athlon = X86Cpu.Parse(["--cpu=athlon"]);
+            Check(pentiumPro.Has(X86Feature.Cmov | X86Feature.FloatCmov) && !pentiumPro.Mmx, "Pentium Pro feature matrix");
+            Check(athlon.Has(X86Feature.ThreeDNowExtended | X86Feature.MmxExtensions | X86Feature.Cmov) && !athlon.Has(X86Feature.Sse), "Athlon feature matrix");
+            Check(!X86Cpu.Parse(["--cpu=pentium4", "--disable-sse"]).Has(X86Feature.Sse2), "SSE2 outlived SSE");
+            Check(!X86Cpu.Parse(["--cpu=athlon", "--disable-cmov"]).Has(X86Feature.FloatCmov), "FCOMI outlived CMOV");
+            Check(!X86Cpu.Parse(["--cpu=athlon64", "--disable-mmx"]).Has(X86Feature.MmxExtensions), "MMX extensions outlived MMX");
+            Check(X86Cpu.Parse(["--cpu=pentium3", "--fpu=none"]).Features == (X86Feature.I486 | X86Feature.Pentium | X86Feature.Cmov), "no-FPU leaked x87 state");
+            Check(!X86Cpu.Parse(["--cpu=k6-2", "--tune=athlon64"]).Has(X86Feature.Cmov), "tuning enabled CMOV");
+            Check(X86Cpu.Parse(["--cpu=486", "--enable-sse2"]).Has(X86Feature.Sse | X86Feature.Sse2), "SSE2 enabled without SSE");
             string[] mmx = "packsswb packssdw packuswb paddb paddw paddd paddsb paddsw paddusb paddusw pand pandn por pxor pcmpeqb pcmpeqw pcmpeqd pcmpgtb pcmpgtw pcmpgtd pmaddwd pmulhw pmullw psllw pslld psllq psraw psrad psrlw psrld psrlq psubb psubw psubd psubsb psubsw psubusb psubusw punpckhbw punpckhwd punpckhdq punpcklbw punpcklwd punpckldq".Split(' ');
             string[] now = "pi2fd pf2id pfacc pfadd pfsub pfsubr pfmul pfcmpeq pfcmpge pfcmpgt pfmax pfmin pfrcp pfrcpit1 pfrcpit2 pfrsqrt pfrsqit1 pmulhrw pavgusb pf2iw pi2fw pfnacc pfpnacc pswapd".Split(' ');
             List<string> cases = ["emms", "femms", "cpuid", "rdtsc", "rdmsr", "wrmsr", "rsm", "cmpxchg8b qword ptr [ebx]", "prefetch [ebx]", "prefetchw [ebx]",
@@ -71,10 +94,28 @@ public static class Program
             foreach (string mnemonic in new[] { "bsf", "bsr" }) cases.Add(mnemonic + " eax, dword ptr [ebx]");
             foreach (string mnemonic in new[] { "shld", "shrd" })
             { cases.Add(mnemonic + " eax, ecx, 13"); cases.Add(mnemonic + " word ptr [ebx], cx, cl"); }
-            foreach (int bits in new[] { 16, 32 })
-            foreach (string instruction in cases)
+            // The sixth generation's additions, assembled for the Athlon, which
+            // has every one: CMOVcc under each spelling of each condition at
+            // both widths and from a SIB operand, the x87 moves and flag-setting
+            // compares in each of their operand forms, and the streaming
+            // prefetches and store fence.
+            List<string> sixth = ["sfence", "cmovne edi, dword ptr [esp+8]", "cmovl si, di", "prefetchnta [esi]"];
+            foreach (string condition in "o no b c nae ae nb nc e z ne nz be na a nbe s ns p pe np po l nge ge nl le ng g nle".Split(' '))
             {
-                byte[] actual = X86Assembler.Assemble(instruction + "\n", "case.asm", bits: bits, cpu: X86Cpu.Parse(["--cpu=k6-3+"])).Bytes;
+                sixth.Add("cmov" + condition + " eax, ecx");
+                sixth.Add("cmov" + condition + " ax, word ptr [ebx+ecx*4+16]");
+            }
+            foreach (string mnemonic in "fcmovb fcmovnae fcmove fcmovbe fcmovna fcmovu fcmovnb fcmovae fcmovne fcmovnbe fcmova fcmovnu".Split(' '))
+                sixth.Add(mnemonic + " st(0), st(3)");
+            sixth.Add("fcmovnu st, st(7)");
+            foreach (string mnemonic in "fcomi fcomip fucomi fucomip".Split(' '))
+            { sixth.Add(mnemonic + " st(0), st(3)"); sixth.Add(mnemonic + " st(5)"); sixth.Add(mnemonic); }
+            foreach (string mnemonic in "prefetchnta prefetcht0 prefetcht1 prefetcht2".Split(' '))
+                sixth.Add(mnemonic + " byte ptr [ebx+ecx*4+16]");
+            foreach (int bits in new[] { 16, 32 })
+            foreach ((string instruction, string profile) in cases.Select(c => (c, "k6-3+")).Concat(sixth.Select(c => (c, "athlon"))))
+            {
+                byte[] actual = X86Assembler.Assemble(instruction + "\n", "case.asm", bits: bits, cpu: X86Cpu.Parse(["--cpu=" + profile])).Bytes;
                 string source = Path.Combine(work, "case.s"), obj = Path.Combine(work, "case.o"), binary = Path.Combine(work, "case.bin");
                 File.WriteAllText(source, ".intel_syntax noprefix\n.code" + bits + "\n.text\n" + instruction + "\n");
                 Tool("as", "--32", "-o", obj, source); Tool("objcopy", "-O", "binary", "-j", ".text", obj, binary);
@@ -101,6 +142,15 @@ public static class Program
                 catch (Corsac.Asm.AsmException) { rejected = true; }
                 Check(rejected, "invalid operands accepted: " + invalid);
             }
+            foreach (string invalid in new[] { "cmove eax, 5", "cmove al, bl", "cmove eax, cx", "cmove ax, dword ptr [ebx]", "cmove dword ptr [ebx], eax",
+                "cmove eax", "fcomi eax", "fcomi st(1), st(2)", "fucomip qword ptr [ebx]", "fcmovb st(3)", "fcmovb st(1), st(0)", "fcmove eax, ebx",
+                "prefetchnta eax", "prefetcht0 mm0", "prefetcht2", "sfence eax" })
+            {
+                bool rejected = false;
+                try { X86Assembler.Assemble(invalid, "bad.asm", bits: 32, cpu: athlon); }
+                catch (Corsac.Asm.AsmException) { rejected = true; }
+                Check(rejected, "invalid operands accepted: " + invalid);
+            }
             bool excluded = false;
             try { X86Assembler.Assemble("paddd mm0, mm1", "bad.asm", bits: 32); }
             catch (Corsac.Asm.AsmException) { excluded = true; }
@@ -115,6 +165,22 @@ public static class Program
             try { X86Assembler.Assemble(".runtime mmx\n.runtime none\npaddsw mm0, mm1\n", "ended.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=pentium"])); }
             catch (Corsac.Asm.AsmException) { ended = true; }
             Check(ended, ".runtime none did not end the MMX allowance");
+            // `.runtime cmov` and `.runtime sse` do the same for a 486 or a
+            // Pentium build's checked routines, and a list names several.
+            byte[] moved = X86Assembler.Assemble(".runtime cmov\ncmovl eax, ebx\nfcomip st(1)\n.runtime sse\nprefetchnta [ebx]\nsfence\n.runtime none\n",
+                "moved.asm", bits: 32).Bytes;
+            Check(Convert.ToHexString(moved) == "0F4CC3DFF10F18030FAEF8", ".runtime cmov/sse: " + Convert.ToHexString(moved));
+            byte[] both = X86Assembler.Assemble(".runtime mmx, cmov\npaddsw mm0, mm1\ncmove eax, ecx\nemms\n", "both.asm",
+                bits: 32, cpu: X86Cpu.Parse(["--cpu=pentium"])).Bytes;
+            Check(Convert.ToHexString(both) == "0FEDC10F44C10F77", ".runtime mmx, cmov: " + Convert.ToHexString(both));
+            foreach (string replaced in new[] { ".runtime cmov\n.runtime mmx\ncmove eax, ecx\n", ".runtime sse\n.runtime none\nsfence\n",
+                ".runtime cmov\nprefetcht0 [ebx]\n", ".runtime avx\n", ".runtime none, cmov\n", ".runtime\n" })
+            {
+                bool refused = false;
+                try { X86Assembler.Assemble(replaced, "replaced.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=pentium"])); }
+                catch (Corsac.Asm.AsmException) { refused = true; }
+                Check(refused, ".runtime accepted " + replaced.Replace('\n', ';'));
+            }
             // IMUL's three shapes, hand-encoded: one operand (F7 /5), two
             // (0F AF /r), three with a byte or a dword immediate (6B, 69).
             byte[] imul = X86Assembler.Assemble("imul ecx\nimul edx, ecx\nimul eax, [esp + 20]\nimul eax, ebx, 10\nimul eax, 1000\n",
@@ -124,7 +190,10 @@ public static class Program
             foreach (var forbidden in new[] {
                 ("386", "bswap eax"), ("386", "xadd eax, ebx"), ("386", "invlpg [eax]"),
                 ("486", "rdtsc"), ("486", "cmpxchg8b qword [eax]"), ("pentium", "emms"),
-                ("k6", "femms"), ("k6-2", "pswapd mm0, mm1") })
+                ("k6", "femms"), ("k6-2", "pswapd mm0, mm1"), ("686", "emms"), ("pentium4", "femms"),
+                ("k6-2", "cmove eax, ecx"), ("k6-3+", "fcomi st(1)"), ("pentium-mmx", "fcmovb st(0), st(1)"), ("486", "cmovl eax, ebx"),
+                ("pentium2", "prefetchnta [ebx]"), ("pentium2", "sfence"), ("686", "prefetcht0 [ebx]"), ("k6-3+", "sfence"),
+                ("pentium2", "pswapd mm0, mm1"), ("pentium3", "femms") })
             {
                 bool rejected = false;
                 try { X86Assembler.Assemble(forbidden.Item2, "profile.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=" + forbidden.Item1])); }
@@ -137,6 +206,34 @@ public static class Program
                 try { X86Assembler.Assemble(forbidden, "no-fpu.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=k6-3+", "--fpu=none"])); }
                 catch (Corsac.Asm.AsmException) { rejected = true; }
                 Check(rejected, "no-FPU accepted " + forbidden);
+            }
+            foreach (string forbidden in new[] { "fcomi st(1)", "fcmovb st(0), st(1)", "prefetchnta [ebx]", "sfence" })
+            {
+                bool rejected = false;
+                try { X86Assembler.Assemble(forbidden, "no-fpu.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=athlon", "--fpu=none"])); }
+                catch (Corsac.Asm.AsmException) { rejected = true; }
+                Check(rejected, "no-FPU Athlon accepted " + forbidden);
+            }
+            Check(X86Assembler.Assemble("cmove eax, ecx", "no-fpu.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=athlon", "--fpu=none"])).Bytes.Length == 3,
+                "no-FPU Athlon refused CMOV");
+            foreach (var allowed in new[] { ("686", "fcmovu st(0), st(2)"), ("pentium2", "cmovg eax, ebx"), ("pentium2", "fucomi st(1)"),
+                ("pentium3", "prefetchnta [ebx]"), ("pentium3", "sfence") })
+                Check(X86Assembler.Assemble(allowed.Item2, "profile.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=" + allowed.Item1])).Bytes.Length > 0,
+                    allowed.Item1 + " refused " + allowed.Item2);
+            // An object carries its profile, and the link refuses one whose
+            // instructions the selected target lacks: the Pentium III's prefetch
+            // on a Pentium II, the Athlon's 3DNow! on a Pentium III, CMOV on a K6,
+            // FCOMI on a Pentium Pro given only a 387, the Pentium III's SSE on
+            // an Athlon that has none (the Athlon XP has it).
+            foreach (var (built, target, accepted) in new[] { ("pentium3", "pentium2", false), ("athlon", "pentium3", false), ("686", "k6-3+", false),
+                ("686", "686 --fpu=387", false), ("pentium3", "athlon", false), ("pentium3", "athlon-xp", true), ("k6-3+", "athlon", true), ("pentium2", "pentium3", true),
+                ("686 --fpu=387", "686", true) })
+            {
+                Corsac.Lang.Ir.ObjectFile carrier = X86Assembler.Assemble("nop", "carrier.asm", bits: 32, asObject: true, cpu: X86Cpu.Parse(("--cpu=" + built).Split(' '))).Object!;
+                bool linked = true;
+                try { Corsac.Lang.Ir.X86CodeGenerationContract.ValidateTarget([("carrier.o", carrier)], X86Cpu.Parse(("--cpu=" + target).Split(' ')).Contract); }
+                catch (Corsac.Lang.Elf.ElfFormatException) { linked = false; }
+                Check(linked == accepted, built + " object " + (accepted ? "refused by " : "accepted by ") + target);
             }
             Console.WriteLine(checks + " CPU/profile/encoding checks passed; " + work);
             ExecutionTests.Run(work);

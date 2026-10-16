@@ -6,26 +6,40 @@
 // stdlib/src/System/Core.cor, the program -- can tell which one is linked. Where system.cor
 // makes an `int 0x80`, this drives the hardware directly with the port I/O
 // intrinsics (docs/software/X86-BACKEND.md and X86-KERNEL.md, "Drivers: port
-// I/O").
+// I/O"), or calls the routine a kernel installed for it.
 //
 //   corc compile program.cor --freestanding --base 0x10000 --flat -o image.bin
 //
-// The driver links this file instead of linux.cor when --freestanding is
-// given, and drops lib/threading.cor: a scheduler wants timers, clone(2) and
-// futexes, and there is no kernel to ask.
+// The driver links this file instead of system.cor when --freestanding is
+// given, and leaves out the rest of the Linux platform (threading.cor,
+// abi.cor, files.cor) and the class library over it: a Thread wants clone(2)
+// and futexes, a file wants a kernel to keep it, and there is none to ask.
+// (CORSAC's ring-1 kernels have one, below them, and compile files.cor
+// beside this themselves: Os, below.) The scheduler
+// (runtime/src/core/threading.cor) stays, and asks Clock and Native, at the
+// end of this file, for what it needs of the machine.
 //
-// THE CONTRACT, the same one linux.cor's header states:
+// THE CONTRACT, the questions system.cor's Platform answers too:
 //
-//   Platform   what runtime/src/core/runtime.cor needs from a system: memory, exit,
-//              and writing bytes. The runtime calls nothing else here.
+//   Platform   what runtime/src/core/runtime.cor and gc.cor need from a system:
+//              memory, exit, writing bytes, a call that may wait, and the
+//              collector's questions (its checked modes, its pace, the
+//              machine's memory, the other threads).
 //                long Platform.Map(long bytes)  zeroed, aligned, or 0
 //                void Platform.Exit(int code)   does not return
 //                long Platform.WriteBytes(int fd, long at, long count)
+//                long Platform.Blocking(long n, long a, long b, long c, ...)
 //                void Platform.EnterCollection()
-//   Serial, Vga, Os
-//              what a bare-metal program has instead of an API: a console on
-//              the first serial port, the text-mode screen, and the handful
-//              of Os names that mean anything with no files and no processes.
+//              And the hooks: a kernel's routines (by Sys.AddressOf) for
+//              what the bare machine has no answer to -- memory page by
+//              page, a wait and a wake, the time, the async scheduler's
+//              loop, an exit -- installed by CORSAC's kernel for itself,
+//              and by its ring-1 kernels to ask the kernel BELOW them.
+//              With none installed, each answers with the machine alone.
+//   IConsole   where the bytes a program prints go: the console driver the
+//              program links and points Platform.Console at, or nowhere.
+//   Os         the handful of system.cor's Os names that mean anything with
+//              no files and no processes.
 //
 // THREE THINGS ARE DIFFERENT FROM LINUX, and every one of them is a fact
 // about the machine rather than a shortcut:
@@ -33,28 +47,27 @@
 //   - MEMORY IS NOT ASKED FOR, it is taken. There is no mmap and nothing that
 //     knows what is already in use, so the heap is one bump region whose
 //     bounds the image is given: Platform.SetHeap, called before anything
-//     allocates, or else everything from the end of the image to a default
-//     top. Nothing is ever returned, which the manual heap
-//     (Runtime.AllocManual) and Gc's chunk list both tolerate.
+//     allocates. Nobody can guess them, so an image that allocates with
+//     neither them nor a MapHook stops with "no heap" (Map). Nothing in the
+//     region is ever returned, which the manual heap (Runtime.AllocManual)
+//     and Gc's chunk list both tolerate; a kernel that keeps memory page by
+//     page installs MapHook and UnmapHook, and what is mapped through them
+//     goes back.
 //   - NOTHING ZEROES .bss. The flat image's loader is told how many bytes
 //     follow the image and has to clear them; a program that skipped that
 //     would find its statics full of whatever was in memory.
 //   - EXIT IS NOT A RETURN TO ANYTHING. There is nowhere to go, so the code
 //     goes out of QEMU's isa-debug-exit port when one is attached -- that
 //     machine exits with (code << 1) | 1 -- and then the processor is halted
-//     with interrupts off, forever.
+//     with interrupts off, forever. An image that installed ExitHook calls
+//     it first. A ring-1 kernel's ends the image through the kernel below
+//     and does not return; the kernel's own returns for anything but a
+//     module's unwind, and the machine then stops as above.
 
 /// The I/O ports this file drives, all of them fixed by forty years of PC
 /// hardware. A number here is a place on the machine, not a choice.
 static class Port
 {
-
-    /// FIFO control: writing here turns the buffers on and clears them.
-    /// Modem control: DTR, RTS and the loopback bit.
-    /// Line status: bit 5 is "the transmit register is empty".
-
-    /// The transmit holding register is empty and another byte may go in.
-
     /// QEMU's isa-debug-exit device, when the machine was started with
     /// `-device isa-debug-exit,iobase=0xf4,iosize=4`. Writing a byte ends the
     /// emulation with (byte << 1) | 1, so 3 becomes an exit status of 7 and
@@ -66,11 +79,6 @@ static class Port
     public const int SystemControlA = 0x92;
 }
 
-/// The first serial port, as a console.
-///
-/// A serial line is the one output a machine with no drivers always has, it
-/// needs no memory, and it works before anything else does -- which is why a
-/// kernel's first print goes here and not to the screen.
 /// Where the bytes a program prints go. The platform library knows no
 /// hardware: the program links the driver it wants (os/kernel/drivers/
 /// uart8250.cor, vga.cor) and points this at it before printing. Until
@@ -84,15 +92,29 @@ interface IConsole
 ///
 /// The heap is the caller of Map, so NOTHING in this class may allocate: no
 /// `new`, no arrays, no strings built at run time. A string LITERAL is data
-/// the compiler laid out, and is fine. That is linux.cor's rule and it is
+/// the compiler laid out, and is fine. That is system.cor's rule and it is
 /// the same rule here.
 static class Platform
 {
-    /// A call that may wait, as the Linux platform makes one: here there is
-    /// no kernel below to wait in, and the call is made as it stands.
+    /// A call that may wait, made as a blocking one to the collector, as the
+    /// Linux platform makes one. A ring-1 kernel has a kernel below it, and
+    /// System.IO's reads and writes come here (files.cor) on their way down
+    /// its gate, which parks the call for as long as a pipe's server or a
+    /// disc takes to answer. A thread parked there that the collector
+    /// counted as running would hold every collection another thread
+    /// started until the call came back. The stack is read where it stands
+    /// meanwhile; the words the call was handed are on it, and they keep
+    /// what they point into. Made by the collector, from inside the
+    /// allocator or a barrier, or with the heap lock held, the call is a
+    /// running thread's after all (GcThreads.BeginBlocking declines there);
+    /// with one thread there is nobody to wait for it, and the bracket is a
+    /// safepoint. Answers the kernel's raw number, as Sys.Syscall does.
     public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
     {
-        return Sys.Syscall(n, a, b, c, d, e, f);
+        Runtime.BeginBlocking();
+        long raw = Sys.Syscall(n, a, b, c, d, e, f);
+        Runtime.EndBlocking();
+        return raw;
     }
 
     /// The collector's checked mode for the compiler's frees (Gc.VerifyFree)
@@ -131,14 +153,14 @@ static class Platform
     {
     }
 
-    /// Where the bump region begins and ends. Zero means "not yet decided",
-    /// and the first call to Map decides it.
+    /// Where the bump region begins and ends. A limit of zero means nobody
+    /// has said (SetHeap), and Map stops the image rather than guess.
     private static long _at;
     private static long _limit;
 
-    /// A megabyte of heap above the image, when nobody said otherwise. Enough
-    /// for a driver and a console and small enough to fit under the 640K line
-    /// on a machine that has only conventional memory, if the image is low.
+    /// Where the region began, which _at has moved on from: with _limit, the
+    /// whole of the memory an image alone on the machine has (TotalMemory).
+    private static long _start;
 
     /// The loader's word on where memory is.
     ///
@@ -150,6 +172,7 @@ static class Platform
     public static void SetHeap(long start, long end)
     {
         _at = (start + 7) & (0 - 8);
+        _start = _at;
         _limit = end;
     }
 
@@ -165,12 +188,6 @@ static class Platform
         return at + SegmentBase;
     }
 
-    /// Fresh, zeroed, 8-aligned memory of `bytes`, or 0 when the region is
-    /// exhausted.
-    ///
-    /// A bump and nothing else. There is no operating system to take memory
-    /// back to, so nothing here ever frees; the manual heap and Gc's chunk
-    /// list both keep what they are given.
     /// Where memory comes from once there is an operating system in this
     /// image: the kernel installs the two routines (by Sys.AddressOf) that
     /// map and unmap kernel memory page by page, and from then on the bump
@@ -215,6 +232,13 @@ static class Platform
         return at;
     }
 
+    /// Fresh, zeroed, 8-aligned memory of `bytes`, or 0 when there is none:
+    /// the kernel's, once it has installed MapHook, and the bump region's
+    /// until then.
+    ///
+    /// The region is a bump and nothing else. There is no operating system
+    /// to take its memory back to, so nothing in it is ever freed; the
+    /// manual heap and Gc's chunk list both keep what they are given.
     public static long Map(long bytes)
     {
         if (MapHook != 0)
@@ -337,14 +361,20 @@ static class Platform
 
     public static long Nanos() => Clock.Now();
 
-    // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
+    /// THE PROCESSORS, from a kernel that knows how many there are: called
+    /// with no arguments and answering the count (Os.ProcessorCount, which
+    /// is what Environment.ProcessorCount asks). A ring-1 kernel installs it
+    /// as it starts, as it does its other hooks, with its kernel's answer
+    /// (Service.ProcessorCount); with none the image counts one.
+    public static long ProcessorCountHook;
 
     // ---- WHAT AN IMAGE ON TOP OF A KERNEL SAYS OF ITS MEMORY -------------------
     //
     // A freestanding image alone on the machine -- the kernel, a loader, a
     // boot test -- answers as it always has: its mappings are its own frames
     // taken whole, no card table, no region arena, every collection whole,
-    // nothing known of the machine's memory. An image with a kernel BELOW
+    // nothing known of the machine's memory but the region it was given
+    // (SetHeap), which is all it has. An image with a kernel BELOW
     // it -- CORSAC's ring-1 kernels -- has mappings that kernel commits page
     // by page when they are first touched (ring 0's MapChunk and ZeroIn),
     // threads of its own each with a thread block of its own, and a kernel
@@ -353,9 +383,9 @@ static class Platform
     // CORSAC's ring 1); the collector reads them as it starts (Gc.Start,
     // StartGenerations) and at its first region (RegionEnter).
 
-    /// The machine's memory, in bytes, as the kernel below says it; 0 for
-    /// unknown (alone on the machine: its own allocator owns it, and the
-    /// collector's heap is what it was given).
+    /// The machine's memory, in bytes, as the kernel below says it; 0 where
+    /// no kernel says (alone on the machine: its own allocator owns it, and
+    /// the collector's heap is the region it was given).
     public static long TotalMemoryBytes;
 
     /// Who says what is free, a kernel's routine (by Sys.AddressOf) called
@@ -363,13 +393,32 @@ static class Platform
     /// collector with its heap held, so it allocates nothing.
     public static long FreeMemoryHook;
 
+    /// THE MEMORY THE COLLECTOR MAY USE, which GC.GetGCMemoryInfo reports as
+    /// its total: what the kernel below says the machine has, when one said
+    /// (TotalMemoryBytes). Alone on the machine, the region the image was
+    /// given -- all the memory it has, and all its heap can ever be, where a
+    /// 32-bit process's address space would be a number nothing here has.
+    /// And 0, unknown, for an image whose memory a kernel maps (MapHook)
+    /// without saying how much there is: the bump region is then only what
+    /// was handed out before the hook.
     public static long TotalMemory()
     {
-        return TotalMemoryBytes;
+        if (TotalMemoryBytes != 0) return TotalMemoryBytes;
+        if (MapHook == 0) return _limit - _start;
+        return 0;
     }
 
+    /// What is free of it, from the same source as the total: alone on the
+    /// machine, where the total is the region, what the region has not
+    /// handed out yet; otherwise the kernel's figure (FreeMemoryHook), 0
+    /// where it does not say. Never one of each: a region's free against a
+    /// machine's total is a load (GC.GetGCMemoryInfo's, total less free)
+    /// of nothing real. The collector paces itself by FreeMemoryQuietly
+    /// instead, which asks only a kernel, so an image alone keeps the pace
+    /// it always had.
     public static long AvailableMemory()
     {
+        if (TotalMemoryBytes == 0 && MapHook == 0) return _limit - _at;
         return FreeMemoryQuietly();
     }
 
@@ -461,6 +510,7 @@ static class Platform
     /// TypeInitOwnerHook, called with nothing: the block that names the
     /// running code as a type initializer's owner -- a word at
     /// Tls.TypeInitWait says what it waits for -- or 0 for the thread block.
+    /// The same block names it as a Monitor's owner (MonitorOwner).
     public static long TypeInitOwnerHook;
 
     /// TypeInitWaitHook, called with the type's state word and the owner it
@@ -579,19 +629,45 @@ static class Platform
 
     // ---- what Monitor asks (core threading.cor) ----------------------------
 
-    /// No identity: a kernel's thread block is a processor's, and a task
-    /// holding a lock may resume on another. Monitor is then the spin lock it
-    /// always was here -- held or free, no owner, nobody asleep on it.
+    /// Who holds a lock: the running code, named as a type initializer's
+    /// owner is (Runtime.EnterTypeInitialization) -- the block the kernel's
+    /// TypeInitOwnerHook answers, or, where it answers 0 or there is none,
+    /// the thread block. Word-aligned either way, so bit 0 is free for
+    /// Monitor's "somebody is asleep" mark.
+    ///
+    /// THE CODE THAT TAKES A LOCK IS THE CODE THAT GIVES IT BACK: an await
+    /// is refused while a Monitor is held (CS1996, Binder.AwaitChecks), so a
+    /// lock never travels with a task to another processor. What may move is
+    /// a call that parks: in ring 0 it is named by its call's owner (the
+    /// process whose kernel stack it is on), which goes with it, and the
+    /// processor's own code -- its scheduler and the tasks it runs -- by the
+    /// processor's block. In ring 1 every thread has a block of its own.
+    ///
+    /// AN INTERRUPT HANDLER NEVER TAKES A MONITOR the code it interrupted
+    /// may hold: it runs as that code, on its stack and its block, so it
+    /// would be taken for the owner and walk into the middle of the lock.
+    /// What an interrupt shares is guarded by the kernels' IrqSpinLock.
     public static long MonitorOwner()
     {
-        return 0;
+        if (TypeInitOwnerHook != 0)
+        {
+            long owner = Sys.Call(TypeInitOwnerHook, 0, 0, 0);
+            if (owner != 0) return owner;
+        }
+        return Sys.ThreadBlock();
     }
 
+    /// Nobody to sleep on: a contended lock is waited for by looking again,
+    /// yielding between looks (YieldHook) and then pausing. Ring 1 may not
+    /// HLT, and its yield lets another thread run -- the holder among them;
+    /// ring 0's answers the TLB shootdown a holder may be waiting on.
     public static void MonitorBlock(long at, long value)
     {
+        Yield();
         Sys.Pause();
     }
 
+    /// Nobody asleep to wake: the waiter looks again (MonitorBlock).
     public static void MonitorWake(long at)
     {
     }
@@ -640,7 +716,7 @@ static class Platform
     /// exactly the callee-saved registers the allocator handed out -- so the
     /// job here is to need all three.
     ///
-    /// linux.cor gets that from a system call, whose arguments the backend
+    /// system.cor gets that from a system call, whose arguments the backend
     /// loads into EBX, ECX, EDX, ESI and EDI. There is no system call here,
     /// and `int 0x80` on a machine with no interrupt table is a triple fault,
     /// so the pressure is made honestly instead: six 32-bit halves live
@@ -666,6 +742,13 @@ static class Platform
 #endif
     }
 
+    /// An image that is not alone on the machine -- CORSAC's ring-1 kernels,
+    /// where a port write or a HLT is a fault -- installs this, and exiting
+    /// becomes a call to it, which does not return. CORSAC's kernel installs
+    /// one too, for an unwind that a module forced out began; for anything
+    /// else it returns, and the machine stops below as it always has.
+    public static long ExitHook;
+
     /// Ends the program. There is nothing to return to, so this stops.
     ///
     /// Under QEMU with `-device isa-debug-exit,iobase=0xf4,iosize=4` the
@@ -673,11 +756,6 @@ static class Platform
     /// which is how a test harness reads the result. On real hardware the
     /// port is nothing, the write goes nowhere, and the halt below is the
     /// whole of it.
-    /// An image that is not alone on the machine -- CORSAC's GUI kernel, in
-    /// ring 1, where a port write or a HLT is a fault -- installs this, and
-    /// exiting becomes a call to it. It does not return.
-    public static long ExitHook;
-
     public static void Exit(int code)
     {
         if (ExitHook != 0)
@@ -694,13 +772,13 @@ static class Platform
         }
     }
 
-    /// Where the runtime's output goes. Everything goes to the serial line:
-    /// there is one console, and fd 1 and fd 2 are both it.
-    ///
-    /// Returns the count, always: a serial port that is not there swallows
-    /// bytes rather than failing, and there is nowhere to report a failure to.
+    /// Where the runtime's output goes: the console the program pointed this
+    /// at, and nowhere until it did. There is one console, and fd 1 and fd 2
+    /// are both it.
     public static IConsole? Console;
 
+    /// Returns the count, always: a console that is not there swallows bytes
+    /// rather than failing, and there is nowhere to report a failure to.
     public static long WriteBytes(int fd, long address, long count)
     {
         if (Console != null)
@@ -711,7 +789,7 @@ static class Platform
     }
 }
 
-/// The parts of linux.cor's `Os` that mean anything with no kernel.
+/// The parts of system.cor's `Os` that mean anything with no kernel.
 ///
 /// Deliberately small. A name that cannot be honoured is worse than a name
 /// that is not there: a program that calls Os.Open on bare metal has a
@@ -721,8 +799,16 @@ static class Platform
 /// platform's files.cor beside this for them.
 static partial class Os
 {
-    /// One processor: a machine with no operating system runs one thread.
-    public static int ProcessorCount() { return 1; }
+    /// The processors the kernel below says this image runs on
+    /// (Platform.ProcessorCountHook), and never fewer than one, as .NET's
+    /// count never is. With no kernel to say, one: a machine with no
+    /// operating system runs one thread.
+    public static int ProcessorCount()
+    {
+        if (Platform.ProcessorCountHook == 0) return 1;
+        long count = Sys.Call(Platform.ProcessorCountHook, 0, 0, 0);
+        return count > 0 ? (int)count : 1;
+    }
 
     /// Everything written goes to the console whatever the descriptor, as
     /// the string's UTF-8; answers how many bytes that was.
@@ -819,11 +905,11 @@ static partial class Os
 
 // ---- what the scheduler asks of the machine -------------------------------
 //
-// lib/threading.cor runs tasks here exactly as it does under Linux; these
-// are the four things it asks for, answered with no kernel: the time, a
-// sleep until a deadline, a wait and a wake on a word. There are no
-// threads on bare metal until the kernel makes them, so a wait is a spin
-// on the clock and a wake is nothing.
+// The scheduler (runtime/src/core/threading.cor) runs tasks here exactly as
+// it does under Linux; these are the four things it asks for, answered with
+// no kernel: the time, a sleep until a deadline, a wait and a wake on a
+// word. There are no threads on bare metal until the kernel makes them, so
+// a wait is a spin on the clock and a wake is nothing.
 
 /// A monotonic nanosecond clock from the PIT, with no interrupts.
 ///
@@ -932,22 +1018,54 @@ static class Clock
 }
 
 /// Waiting and waking with no threads: a wait on a word returns when the
-/// word changes, which on bare metal can only be an interrupt handler's
-/// doing, so it is a bounded spin with the processor halted between looks
-/// when interrupts are on. The rest of the Linux Native surface --
-/// stacks, clone, thread ids -- has no meaning here and is not offered;
-/// a program that asks for a Thread on bare metal gets a compile error,
-/// which is the right answer until the kernel provides one.
+/// word changes, which on bare metal is an interrupt handler's doing,
+/// another processor's or, in ring 1, another thread's, so it is a bounded
+/// spin with the processor halted between looks when interrupts are on,
+/// and otherwise given to whatever else is ready (Platform.Yield: ring 1
+/// may not HLT).
+///
+/// The rest of the Linux Native surface -- stacks, clone, thread ids --
+/// has no meaning here and is not offered; a program that asks for a
+/// Thread on bare metal gets a compile error, which is the right answer
+/// until the kernel provides one.
 static class Native
 {
     public static void Wait(long at, long expect)
     {
         for (int i = 0; i < 1000000 && Sys.PeekWord(at) == expect; i++)
         {
-            if (Clock.InterruptsOn())
-            {
-                Sys.Hlt();
-            }
+            Idle();
+        }
+    }
+
+    /// As Wait, giving up once `nanoseconds` have passed by Clock (a
+    /// timed Monitor.Wait's). A return by timeout or by the word changing
+    /// looks the same; every caller re-reads its word and its clock.
+    public static void WaitFor(long at, long expect, long nanoseconds)
+    {
+        long deadline = Clock.Now() + nanoseconds;
+
+        while (Sys.PeekWord(at) == expect && Clock.Now() < deadline)
+        {
+            Idle();
+        }
+    }
+
+    /// One look's pause: a halt until the next interrupt when the clock
+    /// ticks; when it does not, the processor offered to others and a
+    /// spin's pause after, as a contended Monitor waits (Platform.
+    /// MonitorBlock): ring 0's yield only answers a TLB shootdown, and
+    /// returns at once.
+    static void Idle()
+    {
+        if (Clock.InterruptsOn())
+        {
+            Sys.Hlt();
+        }
+        else
+        {
+            Platform.Yield();
+            Sys.Pause();
         }
     }
 

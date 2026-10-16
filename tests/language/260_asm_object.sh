@@ -172,6 +172,15 @@ then
     else
         fail "--entry _start points the ELF at the assembly ($entry vs $start)"
     fi
+
+    # The contracts the link checked, the program's and the object's, stay
+    # in the objects: the image carries none of them (Linker.ConsumedContract).
+    if readelf -SW "$work/marker" | grep -q '\.corsac\.\(abi\|cpu\|layout\)'
+    then
+        fail "the image carries no contract its link checked"
+    else
+        pass "the image carries no contract its link checked"
+    fi
 else
     fail "the linked program exists"
 fi

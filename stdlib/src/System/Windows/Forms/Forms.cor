@@ -1109,20 +1109,21 @@ public class Control
 
     /// Paint this control and its children into the form's window, clipped
     /// to what is stale. The background first, then Paint, then children.
-    // A line per control painted, when CORSAC_GUI_TRACE is set in the
-    // environment. A window that comes up blank on one machine and right on
-    // another is not a thing to reason about from the outside.
+    // A line per control painted, when the switch Corsac.Forms.Trace is on:
+    // set by the program, or baked into the image with corc's --runtime-knob
+    // Corsac.Forms.Trace=true. A window that comes up blank on one machine
+    // and right on another is not a thing to reason about from the outside.
     static int _trace = -1;
 
-    /// Turn the trace on from the program itself: a shell that cannot put a
-    /// variable in front of a command can still pass an argument.
+    /// Turn the trace on from the program itself: an argument can ask for
+    /// it of an image built without the knob.
     public static void TracePainting(bool on) { _trace = on ? 1 : 0; }
 
     internal static bool Tracing
     {
         get
         {
-            if (_trace < 0) _trace = (Environment.GetEnvironmentVariable("CORSAC_GUI_TRACE") ?? "") == "" ? 0 : 1;
+            if (_trace < 0) _trace = AppContext.TryGetSwitch("Corsac.Forms.Trace", out bool on) && on ? 1 : 0;
             return _trace == 1;
         }
     }

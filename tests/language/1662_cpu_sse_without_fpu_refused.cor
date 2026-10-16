@@ -1,0 +1,16 @@
+// test: SSE2 asked for on a machine without an FPU is refused
+// flags: --cpu=pentium4 --fpu=none --enable-sse2
+// expect-compile-error: Explicit MMX/3DNow!/SSE enablement conflicts with --fpu=none
+//
+// --fpu=none takes away everything that lives in the x87's registers or is
+// saved with its state: MMX, 3DNow!, FCMOV/FCOMI and SSE (X86Cpu.Settled).
+// An explicit --enable-sse2 is a promise the processor has SSE2, which one
+// without an FPU cannot keep, so it is refused rather than quietly dropped.
+
+static class Program
+{
+    static int Main()
+    {
+        return 0;
+    }
+}

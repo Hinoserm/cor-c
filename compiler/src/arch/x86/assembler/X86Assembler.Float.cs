@@ -1,3 +1,5 @@
+using Corsac.Lang.X86;
+
 namespace Corsac.Asm;
 
 public sealed partial class X86Assembler
@@ -21,11 +23,44 @@ public sealed partial class X86Assembler
         "faddp", "fmulp", "fsubp", "fsubrp", "fdivp", "fdivrp", "fxch", "ffree",
         "fldcw", "fnstcw", "fstcw", "fnstsw", "fstsw", "fldenv", "fnstenv", "fstenv", "fnsave", "fsave", "frstor",
     };
+    /// <summary>
+    /// The Pentium Pro's x87 additions, which meet the integer side in EFLAGS:
+    /// the conditional moves into ST(0), which test CF, ZF and PF as an
+    /// unsigned jump does, and the compares that set those three flags
+    /// directly instead of going through FNSTSW and SAHF. The FCMOV names are
+    /// the Intel manual's eight and the four aliases GAS adds to them.
+    /// </summary>
+    private static readonly Dictionary<string, ushort> FloatFlagForms = new(StringComparer.Ordinal)
+    {
+        ["fcmovb"] = 0xdac0, ["fcmovnae"] = 0xdac0, ["fcmove"] = 0xdac8, ["fcmovbe"] = 0xdad0, ["fcmovna"] = 0xdad0,
+        ["fcmovu"] = 0xdad8, ["fcmovnb"] = 0xdbc0, ["fcmovae"] = 0xdbc0, ["fcmovne"] = 0xdbc8, ["fcmovnbe"] = 0xdbd0,
+        ["fcmova"] = 0xdbd0, ["fcmovnu"] = 0xdbd8,
+        ["fcomi"] = 0xdbf0, ["fcomip"] = 0xdff0, ["fucomi"] = 0xdbe8, ["fucomip"] = 0xdfe8,
+    };
 
     private bool FloatInstruction(string mnemonic, string[] args)
     {
-        if (!FloatBare.ContainsKey(mnemonic) && !FloatNames.Contains(mnemonic)) return false;
+        bool flagged = FloatFlagForms.TryGetValue(mnemonic, out ushort flagForm);
+        if (!flagged && !FloatBare.ContainsKey(mnemonic) && !FloatNames.Contains(mnemonic)) return false;
         Require(_cpu.Fpu != "none", mnemonic, "x87/387");
+        if (flagged)
+        {
+            Require(Allowed(X86Feature.FloatCmov), mnemonic, "FCMOV/FCOMI (Pentium Pro, Athlon)");
+            // ST(0) is always the destination, so it may go unsaid: a compare
+            // names only ST(i), or nothing for ST(1) as FXCH does. A move
+            // spells out both, as the Intel manual and GAS require.
+            bool compare = !mnemonic.StartsWith("fcmov");
+            if (compare && args.Length == 0) args = ["st1"];
+            Operand other;
+            if (compare && args.Length == 1) other = P(args[0]);
+            else
+            {
+                Need(args, 2, mnemonic); Operand top = P(args[0]); other = P(args[1]);
+                if (top.Kind != OperandKind.Float || top.Reg != 0) throw Error(mnemonic + " requires ST(0) as its first operand");
+            }
+            if (other.Kind != OperandKind.Float) throw Error(mnemonic + " requires an x87 register");
+            Emit((byte)(flagForm >> 8), (byte)((flagForm & 255) + other.Reg)); return true;
+        }
         if (mnemonic is "wait" or "fwait") { Need(args, 0, mnemonic); Emit(0x9b); return true; }
         string mn = mnemonic;
         if (mn is "finit" or "fclex" or "fstcw" or "fstsw" or "fstenv" or "fsave")

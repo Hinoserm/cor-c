@@ -141,7 +141,7 @@ public sealed partial class X86Assembler : ISymbols
             _sec = _sections[0];
             _decisionAt = 0;
             _bits = _defaultBits;
-            _runtimeMmx = false;
+            _runtime = Corsac.Lang.X86.X86Feature.None;
             _baseLocked = false;
             if (_pass == 1)
             {
@@ -161,6 +161,12 @@ public sealed partial class X86Assembler : ISymbols
 
             if (_pass == 1)
             {
+                // An instruction the CPU lacks, in a source that never
+                // reaches long mode (Require).
+                if (_cpuRefusal is not null && !_everLongMode)
+                {
+                    throw _cpuRefusal;
+                }
                 _passOneBase = _base;
                 _passOneSize = Total();
             }
@@ -219,7 +225,7 @@ public sealed partial class X86Assembler : ISymbols
         // which is what a boot stub that switches modes is made of.
         if (_everLongMode)
         {
-            new X86CodeGenerationContract("k8", "k8", "sse2", false, false, false, false).Attach(obj);
+            new X86CodeGenerationContract("k8", "k8", "sse2", Corsac.Lang.X86.X86Feature.None, false).Attach(obj);
             new TargetContract(TargetContract.NoTlsClaim, longMode: true).Attach(obj);
         }
         else
@@ -842,13 +848,33 @@ public sealed partial class X86Assembler : ISymbols
             // assembled whatever --cpu says; `.runtime none` ends that. The
             // check against --cpu stays for everything else, and a routine
             // under `.runtime` is the caller's promise, not the assembler's.
+            // `cmov` is CPUID's CMOV bit, which with an x87 present means
+            // FCMOV and FCOMI too; `sse` is the SSE bit or AMD's extended MMX
+            // bit, either of which brings the streaming prefetches and SFENCE.
+            // A list names everything checked for, and replaces the last one.
             case ".runtime":
-                if (ops.Length != 1 || (ops[0] != "mmx" && ops[0] != "none"))
+            {
+                if (ops.Length == 0)
                 {
-                    throw Error(".runtime takes mmx or none");
+                    throw Error(".runtime takes none, or any of mmx, cmov and sse");
                 }
-                _runtimeMmx = ops[0] == "mmx";
+                Corsac.Lang.X86.X86Feature promised = Corsac.Lang.X86.X86Feature.None;
+                if (ops is not ["none"])
+                {
+                    foreach (string op in ops)
+                    {
+                        promised |= op switch
+                        {
+                            "mmx" => Corsac.Lang.X86.X86Feature.Mmx,
+                            "cmov" => Corsac.Lang.X86.X86Feature.Cmov | Corsac.Lang.X86.X86Feature.FloatCmov,
+                            "sse" => Corsac.Lang.X86.X86Feature.MmxExtensions,
+                            _ => throw Error(".runtime takes none, or any of mmx, cmov and sse"),
+                        };
+                    }
+                }
+                _runtime = promised;
                 return;
+            }
 
             case ".bits":
                 if (ops.Length != 1)
@@ -1215,7 +1241,16 @@ public sealed partial class X86Assembler : ISymbols
         // Truncated to the field: the value here is a placeholder plus an
         // offset and may have wrapped, and what the linker adds is the
         // 32-bit addend the word can actually hold.
-        long addend = unchecked((int)(pcRelative ? value + _sec.Size : value));
+        // NOT IN A LONG-MODE OBJECT, whose relocations are RELA and carry all
+        // 64 bits of the addend: the 32-bit part of a stub that switches
+        // modes names `label - KERNEL` for a kernel linked at the top of the
+        // address space, and only the whole sum, label and all, comes back
+        // to the address below four gigabytes that was meant.
+        long addend = pcRelative ? value + _sec.Size : value;
+        if (!_everLongMode)
+        {
+            addend = unchecked((int)addend);
+        }
         _sec.Relocs.Add(new Relocation(_sec.Size, external ? name : section, addend,
                                        pcRelative ? RelocKind.Rel32 : _relocSigned ? RelocKind.Abs32S : RelocKind.Abs32));
     }
@@ -1547,8 +1582,11 @@ public sealed partial class X86Assembler : ISymbols
     private static bool IsMnemonic(string word)
         => Mnemonics.Contains(word) || MmxOpcodes.ContainsKey(word) || ThreeDNowOpcodes.ContainsKey(word)
             || FloatBare.ContainsKey(word) || FloatNames.Contains(word)
+            || FloatFlagForms.ContainsKey(word)
             || word is "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "rsm" or "cmpxchg8b" or "prefetch" or "prefetchw" or "emms" or "femms" or "movd" or "movq"
-            || (word.StartsWith('j') && word.Length > 1 && ConditionCode(word[1..]) >= 0);
+            || word is "prefetchnta" or "prefetcht0" or "prefetcht1" or "prefetcht2" or "sfence"
+            || (word.StartsWith('j') && word.Length > 1 && ConditionCode(word[1..]) >= 0)
+            || (word.StartsWith("cmov") && ConditionCode(word[4..]) >= 0);
 
     private void Instruction(string mn, string rest)
     {

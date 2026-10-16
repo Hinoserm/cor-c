@@ -44,6 +44,27 @@ public static class Program
             Check(ProjectCondition.Evaluate("('Release' != 'Debug') And !false", work), "Boolean conditions");
             Check(ProjectCondition.Evaluate("'10.0' >= '9.0' Or false", work), "Numeric condition comparison");
             Check(!ProjectCondition.Evaluate("Exists('absent')", work), "Exists condition");
+            // The runtime settings a program is built with (--runtime-knob):
+            // each value what the SDK's runtimeconfig.json gives the program.
+            File.WriteAllText(path, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><OutputType>Exe</OutputType><Limit>33554432</Limit></PropertyGroup>
+                  <ItemGroup>
+                    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="$(Limit)" />
+                    <RuntimeHostConfigurationOption Include="Knob.On" Value=" True " />
+                    <RuntimeHostConfigurationOption Include="Knob.Number" Value="007" />
+                    <RuntimeHostConfigurationOption Include="Knob.Hex" Value="0x10" />
+                    <RuntimeHostConfigurationOption Include="Knob.Twice;Knob.Updated;Knob.Gone;Knob.Kept" Value="first" />
+                    <RuntimeHostConfigurationOption Include="Knob.Twice"><Value>one</Value><Value>second</Value></RuntimeHostConfigurationOption>
+                    <RuntimeHostConfigurationOption Update="knob.updated" Value="after" />
+                    <RuntimeHostConfigurationOption Update="Knob.Kept" />
+                    <RuntimeHostConfigurationOption Remove="KNOB.GONE" />
+                  </ItemGroup>
+                </Project>
+                """);
+            project = ProjectEvaluator.Evaluate(path, "Release", null);
+            Check(project.RuntimeKnobs.SequenceEqual(new[] { "System.GC.HeapHardLimit=33554432", "Knob.On=true", "Knob.Number=7", "Knob.Hex=0x10",
+                "Knob.Updated=after", "Knob.Kept=first", "Knob.Twice=second" }), "Runtime settings as runtimeconfig.json has them: " + string.Join(" ", project.RuntimeKnobs));
             File.WriteAllText(path, "<Project Sdk='Microsoft.NET.Sdk'><ItemGroup><Compile Include='Program.cs'/></ItemGroup></Project>");
             Reject(() => ProjectEvaluator.Evaluate(path, "Release", null));
             File.WriteAllText(path, "<Project Sdk='Microsoft.NET.Sdk'><Unknown/></Project>");

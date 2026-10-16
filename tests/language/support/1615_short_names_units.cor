@@ -1,0 +1,19 @@
+// The other unit of 1615_short_class_names_across_units: classes whose names
+// are two letters long, which is also how a type parameter is spelled.
+namespace WireUnits;
+
+public static class Be
+{
+    public static void Put16(byte[] at, int offset, int value)
+    {
+        at[offset] = (byte)(value >> 8);
+        at[offset + 1] = (byte)value;
+    }
+
+    public static int Get16(byte[] at, int offset) { return at[offset] << 8 | at[offset + 1]; }
+}
+
+public static class Io
+{
+    public static int Length => 99;
+}

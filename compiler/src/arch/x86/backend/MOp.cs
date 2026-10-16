@@ -31,6 +31,13 @@ public enum MOp : byte
     Xadd, Cmpxchg, RepMovsb, RepMovsd, RepStosb, RepStosd, LockOrEsp,
     // x87: operand is a memory location whose width says single/double or dword/qword
     Fld, Fstp, Fild, Fistp, Fadd, Fsub, Fmul, Fdiv, Fchs, Fsqrt, Fucompp, Fnstsw, Sahf, Fnstcw, Fldcw,
+    /// <summary>
+    /// fucomip st(0), st(1); fstp st(0) -- Fucompp's comparison and its two
+    /// pops, with the answer straight in ZF, PF and CF where fnstsw and sahf
+    /// carried it through AH: the flags are the same, and EAX is untouched.
+    /// Pentium Pro and later only (X86Cpu.FloatCmov).
+    /// </summary>
+    Fucomipp,
     // odds and ends
     Int, Int3, Nop, Pause,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>

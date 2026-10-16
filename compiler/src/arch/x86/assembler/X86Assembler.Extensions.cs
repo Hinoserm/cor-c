@@ -1,3 +1,5 @@
+using Corsac.Lang.X86;
+
 namespace Corsac.Asm;
 
 public sealed partial class X86Assembler
@@ -32,14 +34,27 @@ public sealed partial class X86Assembler
         ["pfpnacc"] = 0x8e, ["pswapd"] = 0xbb,
     };
 
-    /// Set by `.runtime mmx`: MMX is allowed because the code is only
-    /// reached after a check of the processor, not because --cpu has it.
-    private bool _runtimeMmx;
+    /// Set by `.runtime`: the families allowed because the code is only
+    /// reached after a check of the processor, not because --cpu has them.
+    private X86Feature _runtime;
+
+    /// <summary>Whether --cpu, or the `.runtime` promise in force, allows every family in <paramref name="feature"/>.</summary>
+    private bool Allowed(X86Feature feature) => ((_cpu.Features | _runtime) & feature) == feature;
+
+    /// The first instruction the selected CPU lacks, kept until pass one has
+    /// read the whole source (Require).
+    private AsmException? _cpuRefusal;
 
     private void Require(bool available, string mnemonic, string feature)
     {
-        // Long mode is a K8 or later, which has every one of them.
-        if (!available && _bits != 64) throw Error(mnemonic + " requires " + feature + "; selected CPU is " + _cpu.Name);
+        // LONG MODE RUNS ON A K8 OR LATER, which has every one of them, and
+        // so does the 32-bit code of a source that switches into it -- the
+        // stub a multiboot loader enters in protected mode -- because it is
+        // the same processor. Whether a source reaches long mode is known
+        // only once pass one has read all of it, since its .bits 64 comes
+        // after the code that gets there; so the refusal is kept rather than
+        // thrown, and Run throws it at the end of the pass if none did.
+        if (!available && !_everLongMode) _cpuRefusal ??= Error(mnemonic + " requires " + feature + "; selected CPU is " + _cpu.Name);
     }
 
     private void MmxSource(Operand operand, int size, string mnemonic)
@@ -92,7 +107,7 @@ public sealed partial class X86Assembler
         }
         if (mn is "bswap" or "xadd" or "cmpxchg" or "invd" or "wbinvd" or "invlpg")
         {
-            Require(_cpu.Name != "386", mn, "486");
+            Require(_cpu.Has(Corsac.Lang.X86.X86Feature.I486), mn, "486");
             if (mn is "invd" or "wbinvd")
             { Need(a, 0, mn); Emit(0x0f, mn == "invd" ? (byte)0x08 : (byte)0x09); return true; }
             if (mn == "bswap")
@@ -130,6 +145,18 @@ public sealed partial class X86Assembler
                 throw Error("cmpxchg8b requires a 64-bit memory operand");
             Prefixes(0, memory); Emit(0x0f, 0xc7); EmitRM(1, memory); return true;
         }
+        // CMOVcc, 0F 40+cc /r: a load into a register that happens only when
+        // the condition holds, under every spelling a jump takes. There is no
+        // byte form, and the source may be memory but never an immediate.
+        if (mn.StartsWith("cmov") && ConditionCode(mn[4..]) is int condition and >= 0)
+        {
+            Require(Allowed(X86Feature.Cmov), mn, "CMOV (Pentium Pro, Athlon)"); Need(a, 2, mn);
+            Operand target = P(a[0]), value = P(a[1]);
+            if (target.Kind != OperandKind.Register || target.Size is not (2 or 4 or 8) || !value.IsRegOrMem
+                || ((value.Kind == OperandKind.Register || value.SizeGiven) && value.Size != target.Size))
+                throw Error(mn + " requires a 16-, 32- or 64-bit register and a register or memory operand of its size");
+            Prefixes(target.Size, MemOf(value)); Emit(0x0f, (byte)(0x40 + condition)); EmitRM(target.Reg, value); return true;
+        }
         if (mn is "prefetch" or "prefetchw")
         {
             Require(_cpu.ThreeDNow, mn, "3DNow!"); Need(a, 1, mn);
@@ -137,14 +164,30 @@ public sealed partial class X86Assembler
             if (memory.Kind != OperandKind.Memory) throw Error(mn + " requires memory");
             Prefixes(0, memory); Emit(0x0f, 0x0d); EmitRM(mn == "prefetch" ? 0 : 1, memory); return true;
         }
+        // The streaming prefetches (0F 18 /0../3) and the store fence: SSE on
+        // the Pentium III, extended MMX on the Athlon. Hints and an ordering
+        // point that touch no register, so they need no EMMS after them.
+        if (mn is "prefetchnta" or "prefetcht0" or "prefetcht1" or "prefetcht2")
+        {
+            Require(Allowed(X86Feature.MmxExtensions), mn, "SSE or extended MMX (Pentium III, Athlon)"); Need(a, 1, mn);
+            Operand memory = P(a[0]);
+            if (memory.Kind != OperandKind.Memory) throw Error(mn + " requires memory");
+            Prefixes(0, memory); Emit(0x0f, 0x18);
+            EmitRM(mn switch { "prefetchnta" => 0, "prefetcht0" => 1, "prefetcht1" => 2, _ => 3 }, memory); return true;
+        }
+        if (mn == "sfence")
+        {
+            Require(Allowed(X86Feature.MmxExtensions), mn, "SSE or extended MMX (Pentium III, Athlon)");
+            Need(a, 0, mn); Emit(0x0f, 0xae, 0xf8); return true;
+        }
         if (mn is "emms" or "femms")
         {
-            Require(mn == "emms" ? _cpu.Mmx || _runtimeMmx : _cpu.ThreeDNow, mn, mn == "emms" ? "MMX" : "3DNow!");
+            Require(mn == "emms" ? Allowed(X86Feature.Mmx) : _cpu.ThreeDNow, mn, mn == "emms" ? "MMX" : "3DNow!");
             Need(a, 0, mn); Emit(0x0f, mn == "emms" ? (byte)0x77 : (byte)0x0e); return true;
         }
         if (mn is "movd" or "movq")
         {
-            Require(_cpu.Mmx || _runtimeMmx, mn, "MMX"); Need(a, 2, mn);
+            Require(Allowed(X86Feature.Mmx), mn, "MMX"); Need(a, 2, mn);
             Operand d = P(a[0]), s = P(a[1]);
             bool load = d.Kind == OperandKind.Mmx;
             Operand mm = load ? d : s, other = load ? s : d;
@@ -161,9 +204,9 @@ public sealed partial class X86Assembler
         bool packed = MmxOpcodes.TryGetValue(mn, out byte opcode);
         bool now = ThreeDNowOpcodes.TryGetValue(mn, out byte suffix);
         if (!packed && !now) return false;
-        Require(now ? _cpu.ThreeDNow : _cpu.Mmx || _runtimeMmx, mn, now ? "3DNow!" : "MMX");
+        Require(now ? _cpu.ThreeDNow : Allowed(X86Feature.Mmx), mn, now ? "3DNow!" : "MMX");
         if (mn is "pf2iw" or "pi2fw" or "pfnacc" or "pfpnacc" or "pswapd")
-            Require(_cpu.ThreeDNowExtended, mn, "K6-2+/K6-III+ 3DNow! extensions");
+            Require(_cpu.ThreeDNowExtended, mn, "K6-2+/K6-III+/Athlon 3DNow! extensions");
         Need(a, 2, mn);
         Operand dest = P(a[0]), src = P(a[1]);
         if (dest.Kind != OperandKind.Mmx) throw Error(mn + " requires an MMX destination");

@@ -1,0 +1,28 @@
+// The unit 1664_pentium2_profile_across_units.cor calls, compiled on its own
+// under the same --cpu.
+
+using System;
+
+public static class Sums
+{
+    public static long Range(short[] a, short[] b, out int lo, out int hi)
+    {
+        long sum = 0;
+        lo = int.MaxValue; hi = int.MinValue;
+        for (int i = 0; i < a.Length; i++)
+        {
+            int v = a[i] + b[i];
+            sum += v;
+            lo = Math.Min(lo, v);
+            hi = Math.Max(hi, v);
+        }
+        return sum;
+    }
+
+    public static double Harmonic(double x, int n)
+    {
+        double y = 0;
+        for (int i = 1; i <= n; i++) y += x > 0.25 ? x / i : -x;
+        return y;
+    }
+}

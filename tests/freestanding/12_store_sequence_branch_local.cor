@@ -1,5 +1,4 @@
 // test: a store through a local assigned in both arms of an if is one sequence
-// sources: stdlib/src/System/Threading/interlocked.cor
 // flags: --ring1-syscalls
 // run: no
 // expect-asm-x86: Link: __corsac_refstore

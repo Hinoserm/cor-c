@@ -1,0 +1,54 @@
+// test: kernel_facts_by_target_number
+// expect-exit: 0
+// expect-output:
+// description True
+// os agrees True
+// machine True
+// memory True
+// random names True
+//
+// What the class library asks the kernel by call number: uname for
+// RuntimeInformation's OSDescription and OSArchitecture, sysinfo for the
+// machine's memory under GC.GetGCMemoryInfo, and getrandom for
+// Path.GetRandomFileName. i386 and x86-64 number their calls differently,
+// so each must come from the target's own table: on either one the system
+// has a description, a 64-bit process sees an X64 machine, and the machine
+// has some memory.
+
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine("description " + !string.IsNullOrWhiteSpace(RuntimeInformation.OSDescription));
+        Architecture os = RuntimeInformation.OSArchitecture;
+        Console.WriteLine("os agrees " + (Environment.Is64BitOperatingSystem == (os == Architecture.X64 || os == Architecture.Arm64)));
+        Console.WriteLine("machine " + (!Environment.Is64BitProcess || os == Architecture.X64));
+        Console.WriteLine("memory " + (GC.GetGCMemoryInfo().TotalAvailableMemoryBytes > 0));
+        string first = Path.GetRandomFileName();
+        string second = Path.GetRandomFileName();
+        Console.WriteLine("random names " + (EightDotThree(first) && EightDotThree(second) && first != second));
+    }
+
+    // Eight lower-case letters and digits, a dot, and three more: the shape
+    // of every name GetRandomFileName makes.
+    static bool EightDotThree(string name)
+    {
+        if (name.Length != 12 || name[8] != '.')
+        {
+            return false;
+        }
+        for (int i = 0; i < name.Length; i++)
+        {
+            char c = name[i];
+            if (i != 8 && !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9'))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+}

@@ -20,8 +20,8 @@
 #   // flags-<target>: ...       the same, for one target (instead of flags)
 #   // sources: a b              library sources compiled in as well, from
 #                                the repository's root: what a kernel lists
-#                                beside the runtime (Interlocked's, say),
-#                                which a freestanding compile leaves out
+#                                beside the runtime (System.Collections',
+#                                say), which a freestanding compile leaves out
 #   // expect-readelf-<target>: text
 #                                readelf -hl of the image shows this text
 #   // run: no                   compile and read, do not run

@@ -1,0 +1,108 @@
+// test: interlocked_int_neighbours
+// expect-exit: 0
+// expect-output:
+// fields 1 0 -1 -3 A=-3 B=5 C=6
+// exchange -3 A=-7 B=5 C=6
+// cas -7 -7 A=9 B=5 C=6
+// middle 6 A=9 B=6 C=6
+// elements 2 [10 20 30]
+// structs 1 Y=1 next X=4
+// statics 0 1 then 5
+// long 5000000001 -1 7 7 after=3
+// volatile 11 B=6 1099511627776 after=3
+// threads B=20000 C=6
+//
+// AN INT IS FOUR BYTES ON EVERY TARGET. Interlocked's and Volatile's int
+// forms change the int and nothing after it -- the field after it, the next
+// element of an array, the next struct's first field -- as .NET's do. Each
+// int here has a neighbour holding something that is not zero, so an
+// operation eight bytes wide (what the word forms are in long mode) shows: a
+// Decrement from 0 borrowing from B, an Exchange writing its sign extension
+// over B, a CompareExchange comparing B too and missing. A long's forms leave
+// the int after it alone. Two threads, one exchanging A and one incrementing
+// B beside it, lose none of B's increments. Output checked against .NET; the
+// defect showed with --target x86-64.
+
+using System;
+using System.Threading;
+
+class Three
+{
+    public int A;
+    public int B;
+    public int C;
+}
+
+class Wide
+{
+    public long L;
+    public int After;
+}
+
+struct Slot
+{
+    public int X;
+    public int Y;
+}
+
+static class Program
+{
+    static int _first;
+    static int _second;
+
+    static string Ints(Three t) => " A=" + t.A + " B=" + t.B + " C=" + t.C;
+
+    static int Main()
+    {
+        Three t = new Three();
+        t.B = 5;
+        t.C = 6;
+        int two = 2;
+        int up = Interlocked.Increment(ref t.A);
+        int down = Interlocked.Decrement(ref t.A);
+        int below = Interlocked.Decrement(ref t.A);
+        int added = Interlocked.Add(ref t.A, -two);
+        Console.WriteLine("fields " + up + " " + down + " " + below + " " + added + Ints(t));
+        Console.WriteLine("exchange " + Interlocked.Exchange(ref t.A, -7) + Ints(t));
+        int missed = Interlocked.CompareExchange(ref t.A, 9, 5);
+        int hit = Interlocked.CompareExchange(ref t.A, 9, -7);
+        Console.WriteLine("cas " + missed + " " + hit + Ints(t));
+        Console.WriteLine("middle " + Interlocked.Increment(ref t.B) + Ints(t));
+
+        int[] row = new int[] { 1, 20, 30 };
+        Interlocked.Increment(ref row[0]);
+        Console.WriteLine("elements " + Interlocked.Exchange(ref row[0], 10) + " [" + row[0] + " " + row[1] + " " + row[2] + "]");
+
+        Slot[] slots = new Slot[2];
+        slots[1].X = 4;
+        int slot = Interlocked.Increment(ref slots[0].Y);
+        Console.WriteLine("structs " + slot + " Y=" + slots[0].Y + " next X=" + slots[1].X);
+
+        _second = 5;
+        int before = Interlocked.Exchange(ref _first, 1);
+        Console.WriteLine("statics " + before + " " + Interlocked.CompareExchange(ref _first, 0, 1) + " then " + _second);
+
+        Wide w = new Wide();
+        w.After = 3;
+        long big = 5000000000L;
+        Interlocked.Add(ref w.L, big);
+        long grown = Interlocked.Increment(ref w.L);
+        Interlocked.Exchange(ref w.L, -1L);
+        long had = Interlocked.CompareExchange(ref w.L, 7L, -1L);
+        Console.WriteLine("long " + grown + " " + had + " " + w.L + " " + Interlocked.Read(ref w.L) + " after=" + w.After);
+
+        Volatile.Write(ref t.A, 11);
+        Volatile.Write(ref w.L, 1L << 40);
+        Console.WriteLine("volatile " + Volatile.Read(ref t.A) + " B=" + t.B + " " + Volatile.Read(ref w.L) + " after=" + w.After);
+
+        t.B = 0;
+        Thread exchanger = new Thread(() => { for (int i = 0; i < 20000; i++) Interlocked.Exchange(ref t.A, i); });
+        Thread counter = new Thread(() => { for (int i = 0; i < 20000; i++) Interlocked.Increment(ref t.B); });
+        exchanger.Start();
+        counter.Start();
+        exchanger.Join();
+        counter.Join();
+        Console.WriteLine("threads B=" + t.B + " C=" + t.C);
+        return 0;
+    }
+}

@@ -346,17 +346,9 @@ public sealed class MBlock
     }
 }
 
-/// <summary>What the collector must know at one call site; the x86 table's shape, 8-byte slots.</summary>
-public sealed class Safepoint
-{
-    public uint Registers { get; set; }
-    public List<int> SlotOffsets { get; } = new();
-}
-
 /// <summary>A function after selection: blocks, frame, and what the allocator decided.</summary>
 public sealed class MFunction
 {
-    public Dictionary<MInstr, Safepoint> Safepoints { get; } = new(ReferenceEqualityComparer.Instance);
     public Function Source { get; }
     public List<MBlock> Blocks { get; } = new();
     public Frame Frame { get; } = new();
@@ -364,9 +356,6 @@ public sealed class MFunction
 
     /// <summary>Which virtual registers are floating point, by id.</summary>
     public HashSet<int> FloatRegs { get; } = new();
-
-    /// <summary>Virtual registers holding plain integers (never references), for the stack maps.</summary>
-    public HashSet<int> NotReferences { get; } = new();
 
     /// <summary>Callee-saved registers the allocator handed out; the prologue saves exactly these.</summary>
     public List<Gpr> SavedRegs { get; } = new();

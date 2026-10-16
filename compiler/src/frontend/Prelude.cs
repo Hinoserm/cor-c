@@ -141,6 +141,9 @@ public static class Prelude
     public const string AtomicSwapAcquire = "AtomicSwapAcquire";
     public const string AtomicSwapRelease = "AtomicSwapRelease";
     public const string AtomicSwapSequential = "AtomicSwapSequential";
+    public const string Cas32 = "Cas32";
+    public const string AtomicAdd32 = "AtomicAdd32";
+    public const string AtomicSwap32 = "AtomicSwap32";
     public const string AtomicMin = "AtomicMin";
     public const string AtomicMinRelaxed = "AtomicMinRelaxed";
     public const string AtomicMinAcquire = "AtomicMinAcquire";
@@ -652,6 +655,14 @@ public static class Prelude
             public static long AtomicXorRelease(long at, long value) { return 0; }
             public static long AtomicXorSequential(long at, long value) { return 0; }
             public static long AtomicSwap(long at, long value) { return 0; }
+            // THE 32-BIT FORMS, for an int: Cas, AtomicAdd and AtomicSwap
+            // work on a machine word, which in long mode is the int and the
+            // four bytes after it -- a neighbouring field changed, and a
+            // compare that fails on what the neighbour holds. These touch
+            // four bytes on either target (on i386 they are the word forms).
+            public static int Cas32(long at, int expect, int value) { return 0; }
+            public static int AtomicAdd32(long at, int value) { return 0; }
+            public static int AtomicSwap32(long at, int value) { return 0; }
             // A reference exchanged at `at` with the write barrier and the card
             // mark every reference store takes (Interlocked's reference
             // exchanges): what was there; and the same only where it holds

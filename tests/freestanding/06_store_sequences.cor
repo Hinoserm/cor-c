@@ -1,5 +1,4 @@
 // test: --ring1-syscalls makes a reference store one sequence no thread is stopped inside
-// sources: stdlib/src/System/Threading/interlocked.cor
 // flags: --ring1-syscalls
 // run: no
 // expect-asm-x86: Store: __corsac_refstore

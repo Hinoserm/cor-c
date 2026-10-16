@@ -80,7 +80,7 @@ public static class ObjectLinkCommand
                 cpuArguments.Add(arg); cpuArguments.Add(args[i]); continue;
             }
             if (arg.StartsWith("--cpu=") || arg.StartsWith("--tune=") || arg.StartsWith("--fpu=")
-                || arg is "--enable-mmx" or "--disable-mmx" or "--enable-3dnow" or "--disable-3dnow")
+                || Lang.X86.X86Cpu.IsSwitch(arg))
             { cpuArguments.Add(arg); continue; }
             if (arg is "-o" or "--entry" or "--base" or "--paddr" or "--lto-backend" or "--lto-import-bytes")
             {
@@ -238,23 +238,22 @@ public static class ObjectLinkCommand
             inputs.Add(("the build stamp", KernelExports.StampObject(stamp!, loaded: true)));
         }
         if (kernel is not null) Linker.AgreeWithKernel(inputs, kernel);
-        // These contracts have been consumed by validation. Concatenating one
-        // copy per input into an executable is neither a valid contract nor
-        // runtime metadata, and can dwarf a small kernel's actual load image.
+        // These contracts have been consumed by validation, and the layout
+        // would pass them over (Linker.ConsumedContract). This command links
+        // its objects once, so it takes them out here: their memory goes
+        // before the image is laid out.
         foreach (var input in inputs)
-            input.Item2.Sections.RemoveAll(section => section.Name == TargetContract.SectionName
-                || section.Name == X86CodeGenerationContract.SectionName
-                || section.Name == ManagedLayoutContract.SectionName
+            input.Item2.Sections.RemoveAll(section => Linker.ConsumedContract(section.Name)
                 || section.Name == UsesNotes.SectionName
                 || section.Name == InterruptNotes.SectionName);
         // Every unit's frame table names from one pool (FramePool).
-        if (lto) FramePool.Run(inputs);
+        if (lto) FramePool.Run(inputs, longMode);
         LinkTimings.Phase("frame names");
         byte[] image;
         bool streamed = false;
         if (flat)
         {
-            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, checked((uint)(baseAddress ?? 0x10000)), longMode, map);
+            Linker.FlatImage linked = Linker.LinkFlat(inputs, entry, baseAddress ?? 0x10000, longMode, map);
             image = linked.Bytes;
             Console.Error.WriteLine($"flat: entry=0x{linked.Entry:x} base=0x{linked.Base:x} bss={linked.BssSize} memory={linked.MemorySize}");
         }

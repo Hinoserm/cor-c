@@ -1,0 +1,72 @@
+// test: region_version_alike_its_function_not_made
+// regions: taken
+// expect-no-symbol: m_Acc_Sum_1_V$I32$region$
+// expect-exit: 0
+// expect-output:
+// 580400 5 5
+//
+// A function some calls need made differently is made once more for them
+// (a region version), and a version is wanted when it calls one that is.
+// Each Acc runs Sum in a copy of its own, and each copy's call of Make has
+// a context of its own: Make's chain is made in Sum's region from both
+// copies, but on the heap from Outer, which keeps one in a static. So Make
+// gets a version, and a.Sum and b.Sum each reach a version of Sum calling
+// it -- one whose body is Sum's own, which calls Make's version already.
+// Sum is made once, as itself; only Make has a second body.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Node
+{
+    public Node Next;
+    public int Value;
+    public Node(int value, Node next) { Value = value; Next = next; }
+}
+
+sealed class Acc
+{
+    public int Seed;
+    public Acc(int seed) { Seed = seed; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum(int n)
+    {
+        int s = 0;
+        for (Node p = P.Make(n + Seed); p != null; p = p.Next) s += p.Value;
+        return s;
+    }
+}
+
+static class P
+{
+    static Node Kept;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static Node Make(int n)
+    {
+        Node head = null;
+        for (int i = 0; i < n; i++) head = new Node(i, head);
+        return head;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Outer(int n)
+    {
+        Node t = Make(n);
+        Kept = Make(n + 1);
+        int c = 0;
+        for (; t != null; t = t.Next) c++;
+        return c;
+    }
+
+    static int Main()
+    {
+        Acc a = new Acc(1), b = new Acc(2);
+        long total = 0;
+        for (int r = 0; r < 1000; r++) total += a.Sum(r % 50) + b.Sum(r % 30);
+        int o = Outer(5);
+        Console.WriteLine(total + " " + o + " " + Kept.Value);
+        return 0;
+    }
+}

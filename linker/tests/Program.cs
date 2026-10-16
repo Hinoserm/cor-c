@@ -382,6 +382,39 @@ public static partial class Program
         {
             Check(e.Errors.Any(m => m.Contains("entry symbol 'main'")), "missing entry names the symbol", e.Message);
         }
+
+        // AN I386 IMAGE IS BELOW FOUR GIGABYTES (Linker.BelowFourGigabytes):
+        // one based above them, or one that runs on past their top, is an
+        // error the link says, ELF or flat -- not an overflow it crashes on,
+        // nor a flat image whose .bss wraps round to the bottom of memory.
+        static ObjectFile Spanning()
+        {
+            ObjectFile o = Exit42();
+            o.Sections.Add(new Section(".bss", SectionKind.Uninitialised) { Align = 4, ZeroBytes = 0x3000 });
+            return o;
+        }
+        foreach ((string what, Action link, string error) in new (string, Action, string)[]
+        {
+            ("an i386 image based above four gigabytes",
+             () => Linker.Link(new[] { ("high", Exit42()) }, "_start", 0x140000000UL), "above four gigabytes"),
+            ("a flat i386 image based above four gigabytes",
+             () => Linker.LinkFlat(new[] { ("high", Exit42()) }, "_start", 0x140000000UL), "above four gigabytes"),
+            ("an i386 image running past four gigabytes",
+             () => Linker.Link(new[] { ("top", Spanning()) }, "_start", 0xfffff000), "past four gigabytes"),
+            ("a flat i386 image running past four gigabytes",
+             () => Linker.LinkFlat(new[] { ("top", Spanning()) }, "_start", 0xfffff000), "past four gigabytes"),
+        })
+        {
+            try
+            {
+                link();
+                Check(false, what + " is an error");
+            }
+            catch (LinkException e)
+            {
+                Check(e.Errors.Any(m => m.Contains(error)), what + " is refused", e.Message);
+            }
+        }
     }
 
     /// <summary>

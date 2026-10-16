@@ -158,6 +158,7 @@ public static partial class Linker
         Resolve(inputs, layout, errors);
         ResolveManagedMetadata(layout, errors);
         AssignAddresses(layout);
+        BelowFourGigabytes(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
 
@@ -189,8 +190,8 @@ public static partial class Linker
     /// </summary>
     public sealed record FlatImage(
         byte[] Bytes,
-        uint Base,
-        uint Entry,
+        ulong Base,
+        ulong Entry,
         uint TextSize,
         uint ReadOnlySize,
         uint DataSize,
@@ -217,7 +218,7 @@ public static partial class Linker
     /// binary is a thing the processor would try to execute. The driver puts
     /// the entry function first for this reason.
     /// </summary>
-    public static FlatImage LinkFlat(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, uint baseAddress, bool? longMode = null, string? mapPath = null)
+    public static FlatImage LinkFlat(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, ulong baseAddress, bool? longMode = null, string? mapPath = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(entrySymbol);
@@ -246,6 +247,7 @@ public static partial class Linker
         Resolve(inputs, layout, errors);
         ResolveManagedMetadata(layout, errors);
         AssignFlatAddresses(layout);
+        BelowFourGigabytes(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
 
@@ -297,8 +299,40 @@ public static partial class Linker
         // includes any alignment gap before the BSS section itself.
         uint zeroBytes = checked((uint)(layout.Bss.Size == 0 ? 0
             : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size)));
-        return new FlatImage(image, baseAddress, checked((uint)entry.Address),
+        return new FlatImage(image, baseAddress, entry.Address,
                              layout.Text.Size, layout.ReadOnlyData.Size, layout.Numbers.Size + layout.Data.Size, zeroBytes);
+    }
+
+    /// <summary>
+    /// AN I386 IMAGE IS BELOW FOUR GIGABYTES, all of it. Its addresses are 32
+    /// bits wide, in its code's absolute references and in ELF32's headers
+    /// alike, so an image its base puts above them, or one that runs past
+    /// their top, is refused as soon as its sections have addresses: before
+    /// a relocation wraps an address into its field, or a header's
+    /// narrowing overflows.
+    /// </summary>
+    private static void BelowFourGigabytes(Layout layout)
+    {
+        if (layout.LongMode)
+        {
+            return;
+        }
+        if (layout.LoadAddress > uint.MaxValue)
+        {
+            throw new LinkException(new[] { $"the base 0x{layout.LoadAddress:x} is above four gigabytes; an i386 image cannot be there" });
+        }
+        ulong end = layout.LoadAddress;
+        foreach (OutputSection s in layout.All())
+        {
+            if (s.IsAllocated && s.Size != 0)
+            {
+                end = Math.Max(end, s.Addr + s.Size);
+            }
+        }
+        if (end > 1UL << 32)
+        {
+            throw new LinkException(new[] { $"the image runs from 0x{layout.LoadAddress:x} to 0x{end:x}, past four gigabytes; an i386 image cannot be there" });
+        }
     }
 
     /// <summary>
@@ -616,6 +650,20 @@ public static partial class Linker
     // ---- Phase 1: merge sections ----------------------------------------
 
     /// <summary>
+    /// THE CONTRACTS A LINK CONSUMES: the native ABI, the code-generation
+    /// contract and the managed layouts, which say what an input was built
+    /// for so that the link can refuse a mixture (TargetContract.Validate,
+    /// ManagedLayoutContract.Validate, X86CodeGenerationContract.ValidateTarget).
+    /// Every link checks them before it lays anything out, and that is all
+    /// they are for: nothing reads them from a linked image -- a module's
+    /// link takes the kernel's from the exports file the kernel's link wrote
+    /// (KernelExports.Write) -- and one copy per input laid end to end is no
+    /// contract at all. The layouts alone were most of a small program's file.
+    /// </summary>
+    public static bool ConsumedContract(string sectionName)
+        => sectionName is TargetContract.SectionName or X86CodeGenerationContract.SectionName or ManagedLayoutContract.SectionName;
+
+    /// <summary>
     /// Allocated sections merge by kind, whatever they were called, so
     /// gcc's .text.startup and .rodata.str1.1 land where they belong. Notes
     /// merge by name: .corsac.meta must not be mixed with .comment.
@@ -626,6 +674,13 @@ public static partial class Linker
         {
             foreach (Section s in input.Object.Sections)
             {
+                // A CHECKED CONTRACT STAYS BEHIND (ConsumedContract): passed
+                // over, not taken out, so the input is as fit to be validated
+                // and linked again as it was before this link.
+                if (s.Kind == SectionKind.Note && ConsumedContract(s.Name))
+                {
+                    continue;
+                }
                 if (s.Align <= 0 || (s.Align & (s.Align - 1)) != 0)
                 {
                     errors.Add($"section '{s.Name}' in {input.Name} has alignment {s.Align}, which is not a power of two");

@@ -1,0 +1,29 @@
+// test: a sixth-generation --cpu carried by separately compiled units
+// flags: --cpu=pentium2
+// units: tests/language/support/1664_pentium2_units.cor
+// expect-exit: 0
+// expect-output:
+// -27200 -2000 1150
+// 1.798870
+// nan-unordered
+//
+// Each object records the profile it was built for (.corsac.cpu), and the
+// closed link regenerates the units from their IR under that record: a
+// Pentium II's has to read back as one, MMX and CMOV and no streaming
+// prefetch, for the link to go through. 1663 is the same program whole.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        short[] a = new short[64], b = new short[64];
+        for (int i = 0; i < 64; i++) { a[i] = (short)(i * 300 - 9000); b[i] = (short)(7000 - i * 250); }
+        long sum = Sums.Range(a, b, out int lo, out int hi);
+        Console.WriteLine(sum + " " + lo + " " + hi);
+        Console.WriteLine(Sums.Harmonic(0.5, 20).ToString("F6"));
+        Console.WriteLine(double.NaN < 1.0 ? "nan-less" : "nan-unordered");
+        return 0;
+    }
+}

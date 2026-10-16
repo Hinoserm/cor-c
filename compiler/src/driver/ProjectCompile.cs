@@ -134,32 +134,39 @@ public static class ProjectCompile
             if (args[i] is "--ref" or "--kernel") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
         }
         string optionsText = "3\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
-        // ENCODED ONCE, an entry unit's and a library unit's: the text names
-        // every library by path, time and length, and was encoded afresh for
-        // every stamp of every unit.
-        byte[] entryOptions = Encoding.UTF8.GetBytes(optionsText + "\tentry");
-        byte[] libraryOptions = Encoding.UTF8.GetBytes(optionsText + "\tlib");
-        string Stamp(Unit unit) => StampOf(unit, File.ReadAllBytes(unit.Source));
-        string StampOf(Unit unit, byte[] source)
-        {
-            using SHA256 sha = SHA256.Create();
-            byte[] options = unit.Entry ? entryOptions : libraryOptions;
-            sha.TransformBlock(source, 0, source.Length, null, 0);
-            sha.TransformFinalBlock(options, 0, options.Length);
-            return Convert.ToHexString(sha.Hash!);
-        }
+        // HASHED ONCE, an entry unit's options and a library unit's: the text
+        // names every library by path, time and length, and was encoded
+        // afresh for every stamp of every unit.
+        static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+        string entryOptions = Hash(Encoding.UTF8.GetBytes(optionsText + "\tentry"));
+        string libraryOptions = Hash(Encoding.UTF8.GetBytes(optionsText + "\tlib"));
+        string OptionsOf(Unit unit) => unit.Entry ? entryOptions : libraryOptions;
+        // THE STAMP IS TWO HASHES, the source's bytes and then the options',
+        // so that a unit rebuilt can say which of them moved: one hash of
+        // both made an edited source, a changed flag and a new compiler look
+        // the same in a build log.
+        string StampOf(Unit unit, byte[] source) => Hash(source) + " " + OptionsOf(unit);
         int skipped = 0;
-        bool Current(Unit unit)
+        // WHY A UNIT IS COMPILED, or null when what it made is current: the
+        // first of its stamp, its object and its receipt that says it is
+        // not, as one sentence for the unit's line in the build log.
+        string? Stale(Unit unit)
         {
-            if (!File.Exists(unit.Object) || !File.Exists(unit.Receipt)) return false;
             try
             {
                 string stampPath = unit.Receipt + ".stamp";
-                if (!File.Exists(stampPath) || File.ReadAllText(stampPath) != Stamp(unit)) return false;
-                return UnitDependencies.IsCurrent(unit.Receipt, sessionIndex);
+                // An object with no stamp is not a first build: it was made
+                // from a text that changed while it compiled (OneUnit takes
+                // the stamp away), or its stamp could not be written.
+                if (!File.Exists(stampPath)) return File.Exists(unit.Object) ? "no stamp" : "first build";
+                if (!File.Exists(unit.Object)) return "no object";
+                string[] stamp = File.ReadAllText(stampPath).Split(' ');
+                if (stamp.Length != 2) return "stamp unreadable";
+                if (stamp[0] != Hash(File.ReadAllBytes(unit.Source))) return "source changed";
+                if (stamp[1] != OptionsOf(unit)) return "options or compiler changed";
+                return UnitDependencies.Stale(unit.Receipt, sessionIndex);
             }
-            catch (IOException) { return false; }
-            catch (InvalidDataException) { return false; }
+            catch (IOException failure) { return failure.Message; }
         }
 
         // WHAT A UNIT LEFT ON ITS THREAD IS LET GO, before the next and again
@@ -186,7 +193,8 @@ public static class ProjectCompile
 
         int OneUnit(Unit unit)
         {
-            if (Current(unit))
+            string? reason = Stale(unit);
+            if (reason is null)
             {
                 lock (gate) { done++; skipped++; }
                 return 0;
@@ -284,8 +292,10 @@ public static class ProjectCompile
             lock (gate)
             {
                 done++;
+                // The reason last: it is a sentence, and whatever reads the
+                // line for its fields finds them before it.
                 Console.Error.WriteLine("unit " + done + "/" + units.Count + " " + Path.GetFileName(unit.Source)
-                    + " unit-allocated=" + (after - before) + live + (code == 0 ? "" : " FAILED"));
+                    + " unit-allocated=" + (after - before) + live + (code == 0 ? "" : " FAILED") + " rebuilt: " + reason);
             }
             return code;
         }

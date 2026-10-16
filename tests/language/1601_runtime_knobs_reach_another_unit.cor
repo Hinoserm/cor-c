@@ -1,0 +1,28 @@
+// test: runtime knobs the entry unit was built with are read in another unit
+// units: tests/language/support/1601_runtime_knobs_reach_another_unit_units.cor
+// flags: --runtime-knob Corsac.Test.Where=entry --runtime-knob Corsac.Test.Trace=true --runtime-knob System.GC.HeapHardLimit=0x3000000
+// expect-exit: 0
+// expect-output:
+// where entry
+// trace True True
+// heap limit 50331648
+//
+// THE KNOBS ARE THE PROGRAM'S, made by the unit that makes its entry stub
+// and handed to the runtime before anything else runs: a unit compiled
+// apart, the class library with it, reads them through AppContext as the
+// entry's own code would, and the collector has its cap from the first
+// allocation. A number is decimal, or hexadecimal after 0x, as .NET reads
+// System.GC.HeapHardLimit.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("where " + Settings.Where());
+        Console.WriteLine("trace " + Settings.Trace());
+        Console.WriteLine("heap limit " + Settings.Limit());
+        return 0;
+    }
+}

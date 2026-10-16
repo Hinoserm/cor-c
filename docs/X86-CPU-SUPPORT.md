@@ -6,36 +6,67 @@ The default remains `--cpu=486` with x87 floating point. `--cpu` selects allowed
 instructions; `--tune` selects a tuning model without granting new instructions.
 Tuning-specific cost models are not implemented yet.
 
-| CPU | Default floating point | Default extensions |
+A profile is a set of instruction features (`X86Feature`), not a place on
+one line of generations: the K6-2 has 3DNow! and no CMOV, the Pentium Pro
+CMOV and no MMX. Each model is its predecessor plus what it added:
+
+| CPU | Default floating point | Features |
 | --- | --- | --- |
 | 386 | None; optional `--fpu=387` | None |
-| 486 | x87 | None |
-| pentium | x87 | Pentium system instructions |
-| pentium-mmx | x87 | MMX |
-| k6 | x87 | MMX |
-| k6-2, k6-3 | x87 | MMX and base 3DNow! |
-| k6-2+, k6-3+ | x87 | MMX and extended 3DNow! |
+| 486 | x87 | 486 (BSWAP, XADD, CMPXCHG, INVLPG) |
+| pentium | x87 | + Pentium (CPUID, RDTSC, RDMSR/WRMSR, CMPXCHG8B) |
+| pentium-mmx | x87 | + MMX |
+| pentium-pro, 686 | x87 | pentium + CMOV, FCMOV/FCOMI/FUCOMI |
+| pentium2 | x87 | + MMX |
+| pentium3 | x87 | + MMX extensions, SSE |
+| pentium4 | x87 | + SSE2 |
+| k6 | x87 | pentium + MMX |
+| k6-2, k6-3 | x87 | + 3DNow! |
+| k6-2+, k6-3+ | x87 | + the five 3DNow! extensions |
+| athlon | x87 | k6-2+ + MMX extensions, CMOV, FCMOV/FCOMI/FUCOMI |
+| athlon-xp | x87 | + SSE |
+| athlon64 | x87 | + SSE2 |
 
-The parser also accepts `i386`, `i486`, `586`, `i586`, `pentium_mmx`,
-`k6-iii`, `k6-iii+`, and the `686`/`i686`/`pentium-pro` names. A parsed profile
-does not imply complete backend support for that processor.
+The MMX extensions are AMD's name for the integer half of SSE (PAVGB, PMINUB,
+PMAXSW, PSHUFW, PMOVMSKB, MOVNTQ, PREFETCHh, SFENCE), which the Athlon has
+without SSE itself. `athlon64` is a K8 running 32-bit code with an x87; the
+name `k8` belongs to the long-mode target, whose floating point is SSE2.
 
-`--disable-mmx` also disables dependent 3DNow! instructions.
-`--disable-3dnow` leaves MMX available. Explicit `--enable-mmx` and
-`--enable-3dnow` override the base CPU extension selection.
-`--fpu=none` disables x87/MMX/3DNow! and rejects an explicit conflicting
-extension enablement. Native compilation with this option remains blocked
-until software arithmetic, conversions, runtime code and ABI handling are ready.
-Native 386 compilation also remains blocked pending the complete instruction
-and runtime-atomic audit. These diagnostics must not be removed prematurely.
+The parser also accepts `i386`, `i486`, `586`, `i586`, `pentium_mmx`, `i686`,
+`pentium-ii`, `pentium-iii`, `k6-iii`, `k6-iii+`, `k7`, `athlon-tbird`,
+`athlon-4` and `athlon-mp`. A parsed profile does not imply complete backend
+support for that processor: the code generator does not yet select CMOV,
+FCOMI or SSE, which the profiles only permit.
+
+`--enable-` and `--disable-` take `mmx`, `3dnow`, `cmov`, `sse` and `sse2`.
+A disable takes what depends on it too: no MMX means no 3DNow!, 3DNow!
+extensions or MMX extensions; no 3DNow! no 3DNow! extensions; no CMOV no
+FCMOV/FCOMI; no SSE no SSE2. An enable brings what it needs: 3DNow! brings
+MMX, SSE2 brings SSE, and SSE its MMX extensions. A disable wins over an
+enable that would bring back what it took. An explicit enable extends
+permission beyond the model and is the caller's promise that the processor
+has the extension; the 3DNow! extensions have no switch and come only with a
+model. `--fpu=none` disables MMX, 3DNow!, the MMX extensions, FCMOV/FCOMI and
+SSE, keeps integer CMOV, and rejects an explicit conflicting enablement.
+Native compilation with this option remains blocked until software
+arithmetic, conversions, runtime code and ABI handling are ready. Native 386
+compilation also remains blocked pending the complete instruction and
+runtime-atomic audit. These diagnostics must not be removed prematurely.
 
 ## Implemented instruction work
 
 The assembler has base MMX and 3DNow! instruction families, plus the five
-extended 3DNow! operations selected by K6 plus profiles. It supports x87
-arithmetic, comparisons, constants, real/integer/BCD loads and stores, control
-and environment operations, and debug/test-register moves. Test-register
-access is restricted by CPU model.
+extended 3DNow! operations selected by K6 plus profiles and the Athlon. It
+supports x87 arithmetic, comparisons, constants, real/integer/BCD loads and
+stores, control and environment operations, and debug/test-register moves.
+Test-register access is restricted by CPU model.
+
+The sixth-generation additions are CMOVcc (every condition spelling, 16-, 32-
+and 64-bit), FCMOVcc, FCOMI/FCOMIP/FUCOMI/FUCOMIP, PREFETCHNTA/T0/T1/T2 and
+SFENCE, each refused unless the selected profile has it. `.runtime mmx`,
+`.runtime cmov` and `.runtime sse` (or a list of them, ended by
+`.runtime none`) allow those families in a routine reached only after the
+program has checked the processor itself.
 
 Additional integer support includes bit scans, bit-test/change instructions,
 double shifts, BSWAP, XADD, CMPXCHG, CMPXCHG8B, cache invalidation and INVLPG.
@@ -46,6 +77,26 @@ The compiler's byte-swap lowering uses BSWAP on 486 and newer CPUs. Under a
 386 profile it uses shifts, masks, OR and rotation, including in-place 64-bit
 byte swaps. This is one completed lowering change, not complete 386 support.
 
+Floating-point comparisons use FUCOMIP under every profile with FCOMI (the
+Pentium Pro and later, the Athlon), which leaves the result in EFLAGS and
+keeps EAX free; every other profile keeps FUCOMPP, FNSTSW AX and SAHF.
+
+## Emitted-code audit
+
+Every function the x86 backend encodes is first checked, instruction by
+instruction, against one requirement table (`compiler/src/arch/x86/backend/Isa.cs`):
+BSWAP, XADD, CMPXCHG and INVLPG need a 486; CPUID, RDTSC, RDMSR and WRMSR a
+Pentium; the MMX and 3DNow! families their extensions. An instruction the
+`--cpu` profile lacks stops the compile with an error naming the function, the
+instruction and what it needs, whichever pass chose it and whether the unit is
+compiled whole or regenerated at the link. Machine intrinsics a kernel names
+after its own processor check (`Sys.Cpuid`, `Sys.ReadTsc`, `Sys.ReadMsr`,
+`Sys.WriteMsr`, `Sys.Invlpg`) are let through, as code after `.runtime mmx` is
+in the assembler. MMX-register instructions are refused in code selected
+without the hosted ABI's x87-state ownership, whatever the processor. The
+CMPXCHG in the store sequences the backend writes as bytes
+(`--store-sequences`) is checked against the same table.
+
 ## Verification
 
 Automatic selection now includes bounded packed-memory operations, integer
@@ -55,20 +106,21 @@ range-proven 3DNow conversions/arithmetic. See
 profitability restrictions and measured outcomes. This does not imply every
 instruction is already selected automatically.
 
-- 627 encoding/profile checks compare with GNU assembler, including 16-bit
+- 878 encoding/profile checks compare with GNU assembler, including 16-bit
   and 32-bit encodings, malformed operands and feature exclusions.
 - Seven result checks execute COR-C#-assembled bytes under QEMU TCG with an
   Athlon model: x87 arithmetic, saturated MMX addition, packed shifts,
   EMMS/x87 transition, 3DNow! conversion/addition, lane swapping, and
   prefetch/FEMMS/x87 transition.
-- The backend suite runs nine configurations: default 486, 386+387 selection,
-  native MMX, explicitly excluded MMX, K6-2 TCG, K6-plus TCG, and kernel state
-  ownership, plain Pentium TCG, and Pentium-MMX TCG. The latter two use
-  `pentium` and `pentium,+mmx` respectively, since QEMU has no separate P55C
-  model. They execute generated code, including packed/x87 state transitions
-  where MMX is enabled. It includes byte swaps, buffer boundaries, wrapping arithmetic,
-  shift counts/sign extension, dot products, signed zero, and saturating casts.
-  These native-host checks do not prove an entire executable is 386-safe.
+- The backend suite runs ten configurations: default 486, 386+387 selection,
+  native MMX, explicitly excluded MMX, native Pentium Pro, K6-2 TCG, K6-plus
+  TCG, and kernel state ownership, plain Pentium TCG, and Pentium-MMX TCG.
+  The latter two use `pentium` and `pentium,+mmx` respectively, since QEMU has
+  no separate P55C model. They execute generated code, including packed/x87
+  state transitions where MMX is enabled. It includes byte swaps, buffer
+  boundaries, wrapping arithmetic, shift counts/sign extension, dot products,
+  signed zero, and saturating casts. These native-host checks do not prove an
+  entire executable is 386-safe.
 - `sh tests/integration/x86-packed-source.sh` compiles ordinary array source,
   verifies packed instruction selection/exclusion, and executes nine CPU
   profiles with a statically compiled runtime, including all five K6 profiles.
@@ -95,13 +147,18 @@ line selections override them. The standard .NET toolchain ignores these
 native-only properties. Runtime/source units use the same selection, which
 also participates in incremental cache identities.
 
-`.corsac.cpu` records the `CCPU2` code-generation contract, including explicit
-extension exclusions and whether automatic packed operations are allowed by
-the execution environment. Owned managed objects require this metadata through
-their ABI contract. LTO restores each unit's selection and rejects changed
-permissions. Rebuild older IR units without this contract before using LTO.
+`.corsac.cpu` records the `CCPU2` code-generation contract: the CPU, tuning and
+FPU names, the feature set as four hex digits, and whether automatic packed
+operations are allowed by the execution environment. A contract is valid only
+when its features are what `--cpu`, `--fpu` and the switches give: the
+dependencies hold, and an extension no switch grants stays with its model.
+Owned managed objects require this metadata through their ABI contract. LTO
+restores each unit's selection and rejects changed permissions. Rebuild older IR units without this contract before using LTO.
 `corc link --cpu=...` checks declared input requirements against explicit output
-permissions, before and after LTO. Foreign objects without metadata are not
+permissions, before and after LTO: each unit's features must be a subset of
+the target's, code for an x87 needs one, and a long-mode unit a long-mode
+target. A K6 link refuses an Athlon unit and a Pentium Pro one (CMOV); an
+Athlon link takes any K6 unit. Foreign objects without metadata are not
 certified by these checks.
 
 Freestanding builds do not implicitly borrow MMX/x87 state. Explicit assembly
@@ -109,7 +166,9 @@ remains the responsibility of code that establishes and preserves that state.
 
 ## Remaining work
 
-- Complete instruction/profile coverage and compiler-emitter auditing.
+- Complete instruction/profile coverage. Each instruction family the backend
+  newly selects (CMOV, FCOMI/FUCOMI, SSE) gets its row in the emitted-code
+  audit's table in the change that selects it.
 - Broaden profitable automatic selection and source-level recognition while
   preserving state transitions and language floating-point semantics.
 - Implement software floating point and complete the 386 runtime audit.

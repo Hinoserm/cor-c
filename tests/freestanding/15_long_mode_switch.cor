@@ -1,0 +1,29 @@
+// test: a kernel's way from a loader's protected mode into long mode is one assembly
+// with-asm: 15_long_mode_switch
+// flags-x86-64: --base 0xffffffff80100000 --load 0x100000 --asm-entry corc_start --entry _start
+// flags-x86: --base 0x100000 --asm-entry corc_start --entry _start
+// run: no
+// expect-readelf-x86-64: 0xffffffff80100000 0x0000000000100000
+// expect-readelf-x86: 0x00100000 0x00100000
+// expect-asm-x86-64: long: cpuid rdmsr wrmsr %cr4 %cr0
+//
+// A loader -- multiboot's, or a stage 2 that hands over the same way --
+// enters a kernel in 32-bit protected mode with paging off, so a long-mode
+// kernel's entry is both kinds of code in one long-mode assembly:
+// the 32-bit part checks the processor (CPUID), turns on PAE, EFER.LME
+// (RDMSR, WRMSR) and paging and far-jumps into the 64-bit part, which calls
+// COR-C#. Long mode is a K8 or later, which has every one of those, whatever
+// --cpu the 32-bit target defaults to; and the 32-bit part, run before
+// anything is mapped, names its labels less the higher half's base, which
+// only a 64-bit addend carries. The i386 kernel has no mode to switch to:
+// its stub sets up a stack and calls in. Not run: an image at these
+// addresses is a kernel's.
+
+static class Program
+{
+    static int Main()
+    {
+        string s = "long mode " + 64;
+        return s.Length;
+    }
+}

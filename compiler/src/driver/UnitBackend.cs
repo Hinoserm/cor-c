@@ -336,7 +336,7 @@ public sealed class UnitBackend : IUnitBackend
             Corsac.Lang.X64.X64Backend backend = new()
             {
                 PositionIndependent = positionIndependent,
-                StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
+                EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
             };
             result = backend.Generate(module, errors);

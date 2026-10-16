@@ -41,9 +41,14 @@ corlink "$work/caller.o" "$work/provider.o" -o "$work/on" > "$work/on.log" 2>&1
 run "$work/on"
 # The link reruns the pass over the unit's own frees: an object the unit
 # already frees (Held's holder, with its field site) must not be owned and
-# freed a second time. Every free checked, a double free exits 96 or 97.
+# freed a second time. Every free checked -- the entry unit built again with
+# Corsac.GC.VerifyFrees baked in, and linked the same way -- a double free
+# exits 96 or 97.
+"$corc" compile --nostdlib "${refs[@]}" --decl-index "$work/provider.idx" --assembly Lifetimes \
+    --runtime-knob Corsac.GC.VerifyFrees=1 "$caller" --obj -o "$work/caller.verify.o" > "$work/caller.verify.log" 2>&1
+corlink "$work/caller.verify.o" "$work/provider.o" -o "$work/on.verify" > "$work/on.verify.log" 2>&1
 status=0
-CORSAC_VERIFY_FREES=1 "$work/on" > "$work/on.verify" 2>&1 || status=$?
+"$work/on.verify" > "$work/on.verify.out" 2>&1 || status=$?
 [ "$status" = 42 ] || fail "with every free checked the linked program exited $status (a double free?)"
 grep -qE 'LTO lifetimes: units with hints=2, units gaining=[12],' "$work/on.log" || fail "the link found no unit to gain"
 taken=$(sed -n 's/.*lifetimes placed or freed=\([0-9][0-9]*\).*/\1/p' "$work/on.log" | head -1)
