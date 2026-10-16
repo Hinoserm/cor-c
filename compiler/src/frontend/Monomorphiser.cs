@@ -224,10 +224,15 @@ public sealed class Monomorphiser
             }
         }
 
+        if (m._shapeParams is not null) m._needs = new List<TypeRef>();
         MethodDecl made = (MethodDecl)m.RewriteMember(template, map, template.Name);
 
         made.WritableTypeParams.Clear();
         made.Name = name;
+        // ONE LIST FOR EVERY ROUND'S COPY OF IT, empty or not: the binder adds
+        // what the copy's own calls need (Binder.NoteCopyNeeds).
+        made.CopyNeeds = m._needs;
+        made.CopyParams = m._needs is null ? null : template.TypeParams.Select(p => p.Name).ToList();
 
         // A COPY IS NEVER VIRTUAL. A generic virtual method has no slot for its
         // copies to take (MethodSymbol.GenericVirtual): a call reaches them
@@ -256,8 +261,20 @@ public sealed class Monomorphiser
         };
         if (made.Attributes.Count > 0) plain.WritableAttributes.AddRange(made.Attributes);
         plain.WritableParams.AddRange(made.Params);
+        plain.CopyNeeds = made.CopyNeeds;
+        plain.CopyParams = made.CopyParams;
         return plain;
     }
+
+    /// <summary>
+    /// WHAT A SHARED METHOD COPY OF THIS TEMPLATE AT THESE ARGUMENTS MAKES OVER
+    /// THE ONES ONLY RUN TIME KNOWS (MethodDecl.CopyNeeds), as the template
+    /// writes them: the copy's dictionary, which a call from a shared class's
+    /// code fills from that class's type context (Binder, CallExpr.HiddenNeeds).
+    /// The same rewrite Specialise makes, so the same list in the same order.
+    /// </summary>
+    public static List<TypeRef> CopyNeedsOf(MethodDecl template, IReadOnlyList<TypeRef> args)
+        => Specialise(template, args, "<needs>").CopyNeeds ?? new List<TypeRef>();
 
     /// <summary>The name a specialised method gets, readable on purpose.</summary>
     public static string MethodName(string baseName, IReadOnlyList<TypeRef> args)
@@ -666,6 +683,7 @@ public sealed class Monomorphiser
             _made[t.Name] = t;
             if (t.Kind is TypeKind.Struct or TypeKind.Enum) _madeValue.Add(t.Name);
         }
+        PlaceNeeds(unit);
 
         if (_generic.Count == 0 && _requireDeclaration is null)
         {
@@ -1192,6 +1210,13 @@ public sealed class Monomorphiser
 
         if (_claimed.Add(name))
         {
+            // A WORD FROM THE MOMENT IT IS CLAIMED, as Instantiate's claim is
+            // (IsWord): claimed here first, `Wrap<__canon>` was no word to a
+            // later `Holder<Wrap<__canon>>` -- a copy of its own in a unit
+            // that met Wrap<string> first and the canonical copy's sharer in
+            // one that met Wrap<__canon> first.
+            _claimedByRef[name] = template.Kind is not (TypeKind.Struct or TypeKind.Enum);
+
             // A CONSTRAINED PARAMETER STANDS ON ITS CONSTRAINT IN THIS COPY.
             //
             // `class Bag<T> where T : IShape` calling `x.Area()` has to compile
@@ -1333,7 +1358,7 @@ public sealed class Monomorphiser
     /// copy's parameters: marked to take its descriptor from the object's
     /// type context, after the parameters' own entries (ICanonSlot).
     /// </summary>
-    private NewExpr CanonMadeObject(NewExpr made, NewExpr source)
+    private NewExpr CanonMadeObject(NewExpr made, NewExpr source, Dictionary<string, TypeRef> map)
     {
         if (source.CanonSlot >= 0)
         {
@@ -1344,8 +1369,7 @@ public sealed class Monomorphiser
         }
         TypeRef written = source.Type;
         if (!_canonSelf || _canonParams is null || _canonMade is null || written.Args.Count == 0
-            || written.ArrayRank != 0 || written.PointerDepth != 0
-            || !written.Args.All(a => a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0 && _canonParams.ContainsKey(a.Name)))
+            || written.ArrayRank != 0 || written.PointerDepth != 0 || !OverCanonParams(written))
         {
             return made;
         }
@@ -1354,6 +1378,17 @@ public sealed class Monomorphiser
             || template.Kind != TypeKind.Class || !Shareable(template) || template.TypeParams.Any(p => p.Struct))
         {
             return made;
+        }
+        // EVERY ARGUMENT A WORD, as this copy names it -- a parameter, an
+        // array, a class made over one (`Holder<Wrap<T>>`): then the type made
+        // shares the canonical copy for every argument this copy serves, and
+        // the object is that copy's in every way but its descriptor. One over
+        // a struct (`Holder<KeyValuePair<T, int>>`) is a copy of its own and
+        // stays the copy this code names.
+        foreach (TypeRef a in written.Args)
+        {
+            if (a.Args.Count == 0 && a.ArrayRank == 0 && _canonParams.ContainsKey(a.Name)) continue;
+            if (!IsWord(Sub(a, map))) return made;
         }
         string key = written.ToString();
         int at = _canonMade.FindIndex(t => t.ToString() == key);
@@ -1392,7 +1427,7 @@ public sealed class Monomorphiser
         // An array of one too (`is List<T>[]`): its entry is the array's
         // descriptor, which the Binder resolves by its element.
         if (!_canonSelf || _canonParams is null || _canonMade is null || written.ArrayRank > 1 || written.PointerDepth != 0
-            || !written.Args.All(a => a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0 && _canonParams.ContainsKey(a.Name)))
+            || !OverCanonParams(written))
         {
             return made;
         }
@@ -1415,8 +1450,144 @@ public sealed class Monomorphiser
         return made;
     }
 
+    /// <summary>
+    /// A SHARED METHOD COPY'S DICTIONARY IN THE TYPE CONTEXT OF THE CLASS WHOSE
+    /// CODE CALLS IT (CallExpr.HiddenNeeds): each call the binder found in a
+    /// canonical copy's code, its needs placed among what that copy makes
+    /// (CanonMadeWritten) as one run -- the run already there when the same
+    /// list is, at the end otherwise -- and each instantiation sharing the
+    /// copy given them over its own arguments (CanonMade), which makes them.
+    /// The binder resolves the new entries (CanonMadeTypes) and lowering lays
+    /// them in each instantiation's table (TypeContext).
+    /// </summary>
+    private void PlaceNeeds(CompilationUnit unit)
+    {
+        foreach (TypeDecl canonical in unit.Types)
+        {
+            if (canonical.NeedCalls is not { Count: > 0 } calls || canonical.CanonMadeWritten is not { } written) continue;
+            foreach (CallExpr call in calls)
+            {
+                if (call.HiddenNeedBase >= 0 || call.HiddenNeeds is not { Count: > 0 } needs) continue;
+                List<string> keys = needs.Select(n => n.ToString()).ToList();
+                int at = -1;
+                for (int start = 0; start + keys.Count <= written.Count && at < 0; start++)
+                {
+                    bool same = true;
+                    for (int k = 0; k < keys.Count && same; k++) same = written[start + k].ToString() == keys[k];
+                    if (same) at = start;
+                }
+                if (at < 0)
+                {
+                    at = written.Count;
+                    written.AddRange(needs);
+                }
+                call.HiddenNeedBase = at;
+            }
+            canonical.NeedCalls = null;
+        }
+        // EVERY INSTANTIATION SHARING A COPY makes what the copy's list now
+        // says, over its own arguments -- whatever placed it, and whenever:
+        // one this round made, or one a demand had the round begin again for.
+        Dictionary<string, TypeDecl> canonicals = new(StringComparer.Ordinal);
+        foreach (TypeDecl t in unit.Types)
+            if (t.CanonMadeWritten is not null) canonicals[t.Name] = t;
+        if (canonicals.Count == 0) return;
+        (string, string, FileScope?, bool) was = (_scope, _inNamespace, _usings, _libraryCode);
+        try
+        {
+            foreach (TypeDecl sharing in unit.Types)
+            {
+                if (sharing.Kind != TypeKind.Class) continue;
+                TypeDecl? canonical = sharing.CanonMadeWritten is not null ? sharing
+                    : sharing.Canon is string name && canonicals.TryGetValue(name, out TypeDecl? found) ? found : null;
+                if (canonical?.CanonMadeWritten is not { } written || (sharing.CanonMade?.Count ?? 0) >= written.Count
+                    || canonical.Template is not string path
+                    || !_generic.TryGetValue(Arity(path, canonical.TemplateArgs.Count), out TypeDecl? template))
+                {
+                    continue;
+                }
+                LeaveScope(ScopeOf(template));
+                Dictionary<string, TypeRef> map = JobMap(template, sharing.TemplateArgs);
+                List<TypeRef> made = sharing.CanonMade ??= new List<TypeRef>();
+                for (int k = made.Count; k < written.Count; k++) made.Add(Sub(written[k], map));
+            }
+        }
+        finally
+        {
+            LeaveScope(was);
+        }
+    }
+
+    /// <summary>
+    /// Whether a constructed type written in the canonical copy's instance
+    /// code is made over this copy's parameters: each one it mentions, at
+    /// any depth -- `Holder<T>`, `Holder<Wrap<T>>`, `Pair<T, string>` -- one
+    /// of this copy's (_canonParams), at least one, and no generic method's
+    /// own, which the copy of that method puts in later and no table entry
+    /// of this class can know.
+    /// </summary>
+    private bool OverCanonParams(TypeRef written)
+    {
+        bool any = false;
+        bool Over(TypeRef a)
+        {
+            if (a.PointerDepth != 0) return false;
+            if (a.Args.Count == 0)
+            {
+                if (_canonParams!.ContainsKey(a.Name)) { any = true; return true; }
+                return !_methodParams.Contains(a.Name);
+            }
+            foreach (TypeRef inner in a.Args) if (!Over(inner)) return false;
+            return true;
+        }
+        foreach (TypeRef a in written.Args) if (!Over(a)) return false;
+        return any;
+    }
+
     /// <summary>A shared method copy's type parameters that only run time knows, by name: their places (Specialise, Shaped).</summary>
     private Dictionary<string, int>? _shapeParams;
+
+    /// <summary>The shared method copy's dictionary as it is found (MethodDecl.CopyNeeds), or null outside one.</summary>
+    private List<TypeRef>? _needs;
+
+    /// <summary>
+    /// A TYPE A SHARED METHOD COPY MAKES OVER ITS OWN TYPE PARAMETERS THAT ONLY
+    /// RUN TIME KNOWS -- `new List<U>()`, `new U[n]`, `typeof(Box<U>)` --
+    /// given an entry of the copy's dictionary (NewExpr.NeedSlot): over object
+    /// it is List of object, which no caller meant. Each argument the
+    /// parameter itself or a type with no arguments of its own; one made over
+    /// U (`List<Wrap<U>>`) would have to be spelt where the caller can read
+    /// it, and stays the copy's own, as before. Written as the template writes
+    /// it; the same type twice is one entry.
+    /// </summary>
+    private int Need(TypeRef written, bool array)
+    {
+        if (_needs is null || _shapeParams is null || written.PointerDepth != 0 || written.ArrayRank != 0) return -1;
+        bool any = false;
+        if (written.Args.Count == 0)
+        {
+            if (!array || !_shapeParams.ContainsKey(written.Name)) return -1;
+            any = true;
+        }
+        foreach (TypeRef a in written.Args)
+        {
+            if (a.PointerDepth != 0 || a.ArrayRank != 0 || a.Args.Count != 0) return -1;
+            if (_shapeParams.ContainsKey(a.Name)) any = true;
+            else if (_methodParams.Contains(a.Name)) return -1;
+        }
+        if (!any) return -1;
+        TypeRef need = array
+            ? new TypeRef { Name = written.Name, Arguments = written.Args.ToList(), ArrayRank = 1, Line = written.Line, Col = written.Col }
+            : written;
+        string key = need.ToString();
+        int at = _needs.FindIndex(n => n.ToString() == key);
+        if (at < 0)
+        {
+            at = _needs.Count;
+            _needs.Add(need);
+        }
+        return at;
+    }
 
     /// <summary>
     /// A TEST OR A CAST TO A GENERIC INTERFACE OVER A SHARED METHOD COPY'S
@@ -1502,6 +1673,18 @@ public sealed class Monomorphiser
         // A test or a cast to a constructed type over the parameters reads
         // that type's own descriptor; a typeof or an array of one stays the
         // machine word's, as it was.
+        // AN ARRAY OF ONE MADE (`new Box<T>[n]`): the entry is that array's
+        // descriptor, as an array tested for is (`is Box<T>[]`), so the
+        // array is made with the element type it holds.
+        if (written.Args.Count != 0 && made is NewExpr && array)
+        {
+            return written.ArrayRank == 0 && written.PointerDepth == 0
+                ? CanonTested(made, source, new TypeRef
+                {
+                    Name = written.Name, Arguments = written.Args.ToList(), ArrayRank = 1, Line = written.Line, Col = written.Col,
+                })
+                : made;
+        }
         if (written.Args.Count != 0) return made is IsExpr or AsExpr or CastExpr or TypeOfExpr && !array ? CanonTested(made, source, written) : made;
         if (!_canonSelf || _canonParams is null || written.PointerDepth != 0
             || !_canonParams.TryGetValue(written.Name, out int place))
@@ -2744,6 +2927,8 @@ public sealed class Monomorphiser
                     VtableSlotHint = md.VtableSlotHint,
                     NotNullIfNotNull = md.NotNullIfNotNull,
                     ExplicitInterface = md.ExplicitInterface,
+                    // A shared method copy's dictionary, made again in a later round.
+                    CopyNeeds = md.CopyNeeds, CopyParams = md.CopyParams,
                     Line = md.Line, Col = md.Col,
                 };
 
@@ -3010,7 +3195,7 @@ public sealed class Monomorphiser
 
                 foreach (CatchClause c in tr.Catches)
                 {
-                    made.Catches.Add(new CatchClause
+                    CatchClause caught = new CatchClause
                     {
                         Type = c.Type is null ? null : Sub(c.Type, map), Name = c.Name,
 
@@ -3020,7 +3205,19 @@ public sealed class Monomorphiser
                         // one statement over.
                         When = c.When is null ? null : Rewrite(c.When, map),
                         Body = (Block)Rewrite(c.Body, map), Line = c.Line, Col = c.Col,
-                    });
+                    };
+                    // `catch (GenEx<T>)` IN A SHARED COPY is a test of the
+                    // object thrown, as `is GenEx<T>` is: of what that type is
+                    // for the object the copy runs for (CanonTested), or in a
+                    // shared method copy for what its type arguments are at
+                    // this call (Shaped). Over the machine word it is
+                    // GenEx<__canon>, which nothing thrown is.
+                    if (c.Type is { } written && (c.CanonSlot >= 0 || c.ShapeArgs is not null || written.Args.Count > 0))
+                    {
+                        Shaped(caught, c, written, map);
+                        CanonTested(caught, c, written);
+                    }
+                    made.Catches.Add(caught);
                 }
                 return made;
             }
@@ -3247,6 +3444,12 @@ public sealed class Monomorphiser
                 made.Spans = c.Spans;
                 made.Source = c.Source;
                 made.HiddenTypeArgs = c.HiddenTypeArgs;
+                made.HiddenNeeds = c.HiddenNeeds;
+                made.HiddenNeedBase = c.HiddenNeedBase;
+                made.CanonSelf = c.CanonSelf is null ? null : new ThisExpr { Line = c.Line, Col = c.Col };
+                made.HiddenNeedMap = c.HiddenNeedMap;
+                made.NeedClass = c.NeedClass;
+                made.NeedCopy = c.NeedCopy;
                 made.ResultTupleNames = c.ResultTupleNames is null ? null : new List<string>(c.ResultTupleNames);
                 made.ResultTypeUse = c.ResultTypeUse is null ? null : Sub(c.ResultTypeUse, map);
                 if (c.ArgumentTypeUses is not null)
@@ -3280,7 +3483,12 @@ public sealed class Monomorphiser
                 return new SizeOfExpr { Type = Sub(size.Type, map), Line = size.Line, Col = size.Col };
 
             case TypeOfExpr typeOf:
-                return Canon(new TypeOfExpr { Type = Sub(typeOf.Type, map), Line = typeOf.Line, Col = typeOf.Col }, typeOf, typeOf.Type, arrayToo: true);
+                return Canon(new TypeOfExpr
+                {
+                    Type = Sub(typeOf.Type, map), Line = typeOf.Line, Col = typeOf.Col,
+                    // IN A SHARED METHOD COPY, its dictionary's entry (Need).
+                    NeedSlot = typeOf.NeedSlot >= 0 ? typeOf.NeedSlot : typeOf.Type.Args.Count > 0 ? Need(typeOf.Type, array: false) : -1,
+                }, typeOf, typeOf.Type, arrayToo: true);
 
             case RefArgExpr reference:
                 return new RefArgExpr
@@ -3452,9 +3660,16 @@ public sealed class Monomorphiser
                 // failure: a `new List<int> { 1, 2 }` whose copy lost them is
                 // an empty list that compiled.
                 CopyInitBody(nw.Body, made.Body, map);
+                // IN A SHARED METHOD COPY, its dictionary's entry (Need).
+                if (nw.Utf8Bytes is null && !nw.Collection && (nw.ArraySize is not null || nw.Args.Count >= 0))
+                {
+                    made.NeedSlot = nw.NeedSlot >= 0 ? nw.NeedSlot
+                        : nw.ArraySize is not null ? Need(nw.Type, array: true)
+                        : nw.Elements is null && nw.Type.Args.Count > 0 ? Need(nw.Type, array: false) : -1;
+                }
                 // An array of a type parameter: its element, as written.
                 return nw.ArraySize is not null || nw.Elements is not null ? Canon(made, nw, nw.Type, arrayToo: false, array: true)
-                     : nw.Utf8Bytes is null && !nw.Collection ? CanonMadeObject(made, nw) : made;
+                     : nw.Utf8Bytes is null && !nw.Collection ? CanonMadeObject(made, nw, map) : made;
             }
 
             // The expressions added with tuples, ranges, throw expressions and

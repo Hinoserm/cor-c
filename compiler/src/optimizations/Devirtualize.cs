@@ -1044,13 +1044,22 @@ public sealed class Devirtualize : IModulePass
             // zeroed first): a load through it reads this object -- through
             // null it would not return -- though a store through it is still
             // a write where it happens, as for any alias.
-            HashSet<VReg> nullOrThis = new();
+            // UNLESS IT IS CARRIED PAST THE MAKING: read after the allocation
+            // before anything writes it again, round a loop that makes the
+            // object anew, it holds the one an earlier lap made (`prev = b`
+            // at the end of the lap, `prev.V` read in the next), whose words
+            // this lap's stores never wrote. Of that one only the vtable is
+            // known: the same for every object the one allocation makes.
+            HashSet<VReg> nullOrThis = new(), carried = new();
             foreach (VReg a in aliases)
             {
                 if (defs.IsSingle(a) || !writesOf.TryGetValue(a, out List<Instr>? ws)) continue;
                 if (ws.All(w => w.Op == Opcode.Copy && (w.Operands[0] is ImmOperand { Value: 0 }
                         || w.Operands[0] is RegOperand { Reg: var from } && derived.TryGetValue(from, out long o) && o == 0)))
+                {
                     nullOrThis.Add(a);
+                    if (ReadBeforeWritten(G(), a, madeAt[alloc].B, madeAt[alloc].I)) carried.Add(a);
+                }
                 else if (Trace is { } tt && f.Name.Contains(tt, StringComparison.Ordinal))
                     Console.Error.WriteLine($"forward {f.Name} alias {a}: writes {ws.Count}: {string.Join("; ", ws.Select(w => w.ToString()))}");
             }
@@ -1134,7 +1143,8 @@ public sealed class Devirtualize : IModulePass
                     Instr l = lb.Instrs[li];
                     if (l.Op != Opcode.Load || l.Dest is null || l.Dest.Type.IsFloat() || l.Operands[0] is not RegOperand lr) continue;
                     long lat;
-                    if (nullOrThis.Contains(lr.Reg)) lat = 0;
+                    bool earlier = false;
+                    if (nullOrThis.Contains(lr.Reg)) { lat = 0; earlier = carried.Contains(lr.Reg); }
                     else if (!derived.TryGetValue(lr.Reg, out lat) || lat < 0) continue;
                     long at = lat + l.Offset;
                     bool trace = Trace is { } t && f.Name.Contains(t, StringComparison.Ordinal);
@@ -1157,6 +1167,7 @@ public sealed class Devirtualize : IModulePass
                             continue;
                         }
                     }
+                    if (earlier) { if (trace) Console.Error.WriteLine($"forward {f.Name} {l}: {lr.Reg} may hold an earlier lap's"); continue; }
                     // Counted in a loop, to two: a lambda over `at` made a cell,
                     // an iterator and a list for every load in the function.
                     int touching = 0;
@@ -1203,6 +1214,32 @@ public sealed class Devirtualize : IModulePass
                     forwarded = true;
                 }
         }
+    }
+
+    // Whether `r` is read after the instruction at `at` before anything
+    // writes it again, on some path of the graph: whether what it held
+    // there is still wanted -- live just after that instruction.
+    private static bool ReadBeforeWritten(Cfg cfg, VReg r, Block block, int at)
+    {
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+        Stack<(Block B, int From)> work = new();
+        work.Push((block, at + 1));
+        while (work.Count > 0)
+        {
+            (Block b, int from) = work.Pop();
+            bool written = false;
+            for (int k = from; k < b.Instrs.Count && !written; k++)
+            {
+                Instr i = b.Instrs[k];
+                foreach (Operand o in i.Operands)
+                    if (o is RegOperand { Reg: var used } && ReferenceEquals(used, r)) return true;
+                written = ReferenceEquals(i.Dest, r);
+            }
+            if (written) continue;
+            foreach (Block n in cfg.Succs(b))
+                if (seen.Add(n)) work.Push((n, 0));
+        }
+        return false;
     }
 
     /// <summary>A call through a vtable no object this function made can be the receiver of (Guarded).</summary>

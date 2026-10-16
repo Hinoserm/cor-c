@@ -144,16 +144,47 @@ internal static class AnalysisCache
         public readonly object?[] Other = new object?[OtherKinds];
     }
 
-    /// <summary>The other kinds kept (Kept): the promotion order, the use index, the single definitions.</summary>
-    public const int PromotionOrder = 0, UseIndex = 1, SingleDefs = 2, OtherKinds = 3;
+    /// <summary>The other kinds kept (Kept): the promotion order, the use index, the single definitions, the address scan (OwnedFieldEscape).</summary>
+    public const int PromotionOrder = 0, UseIndex = 1, SingleDefs = 2, AddressScans = 3, OtherKinds = 4;
 
     private static readonly bool Verifying = Switches.VerifyAnalyses;
 
     [ThreadStatic] private static List<Entry>? _entries;
 
-    public static void Open() => _entries = new(KeptFunctions);
+    // A FUNCTION THIS LARGE KEEPS ITS ENTRY until it changes, whatever is asked
+    // of other functions between: one of 1321's, the dynamic dispatch of 372
+    // thousand instructions, asked about in turn with its callers and
+    // callees, was pushed out of the eight kept and its definitions,
+    // liveness and instruction order made again each time it came back.
+    private const int KeptWhole = 16384;
+    [ThreadStatic] private static Dictionary<Function, Entry>? _large;
 
-    public static void Close() => _entries = null;
+    // The blocks that read each register of a large function (BlockReaders),
+    // kept while the lifetime passes run and brought up to date as it changes.
+    [ThreadStatic] private static Dictionary<Function, BlockReaders>? _readers;
+
+    public static void Open() { _entries = new(KeptFunctions); _large = new(ReferenceEqualityComparer.Instance); _readers = new(ReferenceEqualityComparer.Instance); }
+
+    public static void Close() { _entries = null; _large = null; _readers = null; }
+
+    /// <summary>
+    /// The blocks reading each register of `f` as it stands now, for a
+    /// function of BlockReaders.Large instructions or more while the cache is
+    /// open; null for any other, which a question walks whole as it always did.
+    /// </summary>
+    public static BlockReaders? ReadersOf(Function f)
+    {
+        if (_readers is not { } all) return null;
+        if (all.TryGetValue(f, out BlockReaders? known))
+        {
+            known.Refresh(Verifying);
+            return known;
+        }
+        int instructions = 0;
+        foreach (Block b in f.Blocks) instructions += b.Instrs.Count;
+        if (instructions < BlockReaders.Large) return null;
+        return all[f] = new BlockReaders(f);
+    }
 
     /// <summary>
     /// What is kept of `f` in the state it is in now: its entry, moved to
@@ -164,6 +195,24 @@ internal static class AnalysisCache
     private static Entry Now(Function f, List<Entry> entries)
     {
         var key = KeyOf(f);
+        if (key.Item4 >= KeptWhole && _large is { } large)
+        {
+            if (!large.TryGetValue(f, out Entry? e))
+            {
+                large[f] = e = new() { F = f, Key = key, Proof = Verifying ? FunctionShape.Of(f) : null };
+                return e;
+            }
+            if (!e.Key.Equals(key))
+            {
+                e.Key = key;
+                e.Writes = null; e.Liveness = null; e.DefsWithCfg = null; e.DefsWithoutCfg = null; e.Cfg = null;
+                Array.Clear(e.Other);
+                if (Verifying) e.Proof = FunctionShape.Of(f);
+            }
+            else if (Verifying && !e.Proof!.Matches(f))
+                throw new InvalidOperationException("analysis cache: " + f.Name + " was edited in place without saying so (Function.Edited)");
+            return e;
+        }
         for (int k = 0; k < entries.Count; k++)
         {
             Entry e = entries[k];
@@ -191,7 +240,7 @@ internal static class AnalysisCache
     /// a removal changes a count whether or not its author said so; an
     /// instruction replaced by another is said (Edited).
     /// </summary>
-    private static (int, int, int, int) KeyOf(Function f)
+    internal static (int, int, int, int) KeyOf(Function f)
     {
         int instructions = 0;
         foreach (Block b in f.Blocks) instructions += b.Instrs.Count;
@@ -250,5 +299,156 @@ internal static class AnalysisCache
         if (_entries is not { } entries) return new Defs(f, buildCfg: buildCfg);
         Entry e = Now(f, entries);
         return buildCfg ? e.DefsWithCfg ??= new Defs(e.Cfg ??= new Cfg(f)) : e.DefsWithoutCfg ??= new Defs(f, buildCfg: false);
+    }
+}
+
+/// <summary>
+/// WHICH BLOCKS READ EACH REGISTER, AND WHICH WRITE IT, of one large function
+/// -- and which blocks name a frame slot, and which read a register of no
+/// number here -- by each block's place in the function's blocks. Made once,
+/// and brought up to date when the function has changed (Refresh): every
+/// block whose instructions are no longer the very ones it had is read
+/// again, and what it reads now added. A register a block no longer reads may
+/// stay listed for it: a list may name a block too many, never one too few,
+/// and every question that asks it looks at the block's instructions itself.
+/// The lifetime passes ask one question of a function for each of its
+/// allocations, each owned record, each field read; a question of an object
+/// bears only on the blocks that read what holds it, and the rest of a large
+/// function -- 1321's dynamic dispatch, 372 thousand instructions -- was
+/// walked for nothing, thousands of times.
+/// </summary>
+internal sealed class BlockReaders
+{
+    /// <summary>The fewest instructions a function has for its blocks to be indexed (AnalysisCache.ReadersOf).</summary>
+    public const int Large = 4096;
+
+    private readonly Function _f;
+    private (int, int, int, int) _key;
+    /// <summary>The function's blocks, in order, as they were when last brought up to date.</summary>
+    public Block[] Blocks = Array.Empty<Block>();
+    private List<Instr>[] _seen = Array.Empty<List<Instr>>();
+    private List<int>?[] _reads = Array.Empty<List<int>?>(), _writes = Array.Empty<List<int>?>();
+    /// <summary>The blocks that name a frame slot, and those that read a register of no number here.</summary>
+    public readonly List<int> Slots = new(), Odd = new();
+    private bool[] _slot = Array.Empty<bool>(), _odd = Array.Empty<bool>();
+
+    public BlockReaders(Function f)
+    {
+        _f = f;
+        Rebuild();
+    }
+
+    /// <summary>The blocks that read `r`, or null for none listed.</summary>
+    public List<int>? Readers(VReg r) => (uint)r.Id < (uint)_reads.Length ? _reads[r.Id] : null;
+
+    /// <summary>The blocks that write `r`, or null for none listed.</summary>
+    public List<int>? Writers(VReg r) => (uint)r.Id < (uint)_writes.Length ? _writes[r.Id] : null;
+
+    /// <summary>Up to date with the function: what changed read again (the whole function, if its blocks changed).</summary>
+    public void Refresh(bool always = false)
+    {
+        var key = AnalysisCache.KeyOf(_f);
+        if (!always && key.Equals(_key)) return;
+        _key = key;
+        List<Block> blocks = _f.Blocks;
+        bool same = blocks.Count == Blocks.Length;
+        for (int k = 0; same && k < Blocks.Length; k++) same = ReferenceEquals(blocks[k], Blocks[k]);
+        if (!same)
+        {
+            Rebuild();
+            return;
+        }
+        if (_f.RegCount > _reads.Length)
+        {
+            // Doubled: every change makes a few registers, and grown to fit
+            // each time the two tables were copied whole at every change.
+            int room = Math.Max(_f.RegCount, _reads.Length * 2);
+            Array.Resize(ref _reads, room);
+            Array.Resize(ref _writes, room);
+        }
+        for (int k = 0; k < Blocks.Length; k++)
+        {
+            List<Instr> now = Blocks[k].Instrs, was = _seen[k];
+            bool unchanged = now.Count == was.Count;
+            for (int j = 0; unchanged && j < was.Count; j++) unchanged = ReferenceEquals(now[j], was[j]);
+            if (!unchanged) Scan(k);
+        }
+    }
+
+    private void Rebuild()
+    {
+        _key = AnalysisCache.KeyOf(_f);
+        Blocks = _f.Blocks.ToArray();
+        _seen = new List<Instr>[Blocks.Length];
+        _reads = new List<int>?[_f.RegCount];
+        _writes = new List<int>?[_f.RegCount];
+        Slots.Clear();
+        Odd.Clear();
+        _slot = new bool[Blocks.Length];
+        _odd = new bool[Blocks.Length];
+        for (int k = 0; k < Blocks.Length; k++) Scan(k);
+    }
+
+    private void Scan(int k)
+    {
+        List<Instr> instrs = Blocks[k].Instrs;
+        // What the block is now, for the next look: its own list kept and
+        // filled again, not an array a look.
+        List<Instr> seen = _seen[k] ??= new List<Instr>(instrs.Count);
+        seen.Clear();
+        seen.AddRange(instrs);
+        foreach (Instr i in instrs)
+        {
+            foreach (Operand o in i.Operands)
+            {
+                if (o is SlotOperand)
+                {
+                    if (!_slot[k]) { _slot[k] = true; Slots.Add(k); }
+                }
+                else if (o is RegOperand { Reg: var r })
+                {
+                    if ((uint)r.Id < (uint)_reads.Length) Note(ref _reads[r.Id], k);
+                    else if (!_odd[k]) { _odd[k] = true; Odd.Add(k); }
+                }
+            }
+            if (i.Dest is { } d && (uint)d.Id < (uint)_writes.Length) Note(ref _writes[d.Id], k);
+        }
+    }
+
+    // A block listed for a register, once, the list in order: made in order
+    // of the blocks, a block read again is found where it stands and put in
+    // its place only when it is not there.
+    private static void Note(ref List<int>? list, int k)
+    {
+        list ??= new List<int>(2);
+        if (list.Count == 0 || list[^1] < k) { list.Add(k); return; }
+        if (list[^1] == k) return;
+        int at = list.BinarySearch(k);
+        if (at < 0) list.Insert(~at, k);
+    }
+
+    /// <summary>Marks in `bits` every block listed for `r` in `lists`.</summary>
+    public static void Mark(ulong[] bits, List<int>? blocks)
+    {
+        if (blocks is null) return;
+        foreach (int k in blocks) bits[k >> 6] |= 1UL << k;
+    }
+
+    /// <summary>A set of blocks, one bit each.</summary>
+    public ulong[] NewSet() => new ulong[(Blocks.Length + 63) / 64 + 1];
+
+    /// <summary>The first block at or after `from` in `bits`, or -1.</summary>
+    public int Next(ulong[] bits, int from)
+    {
+        if (from >= Blocks.Length) return -1;
+        int w = from >> 6;
+        ulong word = bits[w] & (~0UL << (from & 63));
+        while (word == 0)
+        {
+            if (++w >= bits.Length) return -1;
+            word = bits[w];
+        }
+        int at = (w << 6) + System.Numerics.BitOperations.TrailingZeroCount(word);
+        return at < Blocks.Length ? at : -1;
     }
 }

@@ -7,6 +7,12 @@ public sealed class NewExpr : Expr, ICanonSlot
     public int CanonSlot { get; set; } = -1;
     /// <summary>The `this` that entry is read through (ICanonSlot).</summary>
     public Expr? CanonSelf { get; set; }
+    /// <summary>
+    /// In a shared method copy, the entry of its dictionary (MethodDecl.CopyNeeds)
+    /// that holds the descriptor of the type this makes over the copy's own type
+    /// parameters -- `new List&lt;U&gt;()`, `new U[n]` -- or -1.
+    /// </summary>
+    public int NeedSlot { get; set; } = -1;
 
     public required TypeRef Type { get; init; }
     public List<Expr> Args { get; } = new();

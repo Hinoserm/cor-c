@@ -102,6 +102,36 @@ public sealed class CallExpr : Expr
     /// </summary>
     public int[]? HiddenTypeArgs { get; set; }
 
+    /// <summary>
+    /// WHAT THE SHARED METHOD COPY THIS CALLS MAKES OVER ITS TYPE ARGUMENTS
+    /// (MethodDecl.CopyNeeds), spelt over the calling shared class's own
+    /// parameters -- `Holder<T>` for Util.Make<T>() in Tester<T> -- as the
+    /// binder found them where it saw the generic method; the class's type
+    /// context holds them from HiddenNeedBase on (Monomorphiser.NeedCalls),
+    /// and the call hands the copy that part of its table as its dictionary.
+    /// </summary>
+    public List<TypeRef>? HiddenNeeds { get; set; }
+    /// <summary>Where HiddenNeeds begin among the calling class's CanonMadeWritten, or -1 while not placed.</summary>
+    public int HiddenNeedBase { get; set; } = -1;
+
+    /// <summary>
+    /// The shared class's `this` whose type context hands this call its hidden
+    /// type arguments and its dictionary (HiddenTypeArgs, HiddenNeeds) --
+    /// written in by the binder so that a lambda the call is in captures it,
+    /// as ICanonSlot's CanonSelf is; null where none is read.
+    /// </summary>
+    public Expr? CanonSelf { get; set; }
+
+    /// <summary>
+    /// What each type parameter of the shared method copy this calls is, spelt
+    /// where its dictionary is kept (Binder.NoteCopyNeeds): over the calling
+    /// class's parameters, or over the calling copy's own (MethodDecl.CopyParams).
+    /// </summary>
+    public Dictionary<string, TypeRef>? HiddenNeedMap { get; set; }
+    /// <summary>Where HiddenNeeds are kept: the calling canonical class's type context, or the calling copy's own dictionary.</summary>
+    public TypeDecl? NeedClass { get; set; }
+    public MethodDecl? NeedCopy { get; set; }
+
     // The method the checker bound this call to (BindResult.Calls), and which
     // binding bound it (NodeBinding): read back only by that binding.
     internal MethodSymbol? BoundCall;

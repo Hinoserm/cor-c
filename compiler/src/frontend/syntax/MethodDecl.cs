@@ -3,6 +3,15 @@ namespace Corsac.Lang;
 
 public sealed class MethodDecl : MemberDecl
 {
+    /// <summary>
+    /// A SHARED METHOD COPY'S DICTIONARY (Monomorphiser.Specialise): the types
+    /// its body makes or asks for over its own type parameters that only run
+    /// time knows, as its template writes them, one entry each in the
+    /// dictionary every call hands it (NewExpr.NeedSlot). Null for none.
+    /// </summary>
+    public List<TypeRef>? CopyNeeds { get; set; }
+    /// <summary>A shared method copy's template's type parameters, by place: what CopyNeeds are written over.</summary>
+    public List<string>? CopyParams { get; set; }
     /// <summary>Null for a constructor.</summary>
     public TypeRef? Returns { get; init; }
     /// <summary>

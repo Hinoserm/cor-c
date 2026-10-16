@@ -1,0 +1,30 @@
+// test: shared_copies_make_across_units
+// units: tests/language/support/1584_shared_makers_units.cor
+// expect-exit: 0
+// expect-output:
+// mine True True True False True
+// theirs True True True True
+//
+// 1580-1583 across two units. The other unit's generic class (Maker) calls
+// its generic methods with its T, which this unit instantiates with its own
+// Item: the shared method copies are handed Item's descriptor and a
+// dictionary from Maker<Item>'s type context, which only this unit lays
+// down -- with what Maker's shared code makes over T, found by binding it
+// here as there. The other unit's own Maker<string> answers alike.
+
+using System;
+using System.Collections.Generic;
+using MakerUnits;
+
+public sealed class Item { }
+
+static class P
+{
+    static void Main()
+    {
+        Maker<Item> m = new Maker<Item>();
+        Console.WriteLine("mine " + (m.One() is Holder<Item>) + " " + (m.Two() is List<Item>) + " " + m.Holds(new Holder<Item>())
+            + " " + m.Holds(new Holder<string>()) + " " + m.Catches());
+        Console.WriteLine("theirs " + Local.Both());
+    }
+}

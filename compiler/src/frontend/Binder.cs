@@ -2812,9 +2812,10 @@ public sealed partial class Binder
                 if (args.All(a => !Unresolved(a))) made.WritableTemplateArgTypes.AddRange(args);
             }
             // And what a shared copy's code makes for it (TypeDecl.CanonMade).
-            foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl?.CanonMade is { Count: > 0 } && t.CanonMadeTypes.Count == 0).ToList())
+            // AND WHAT A LATER ROUND ADDED (Monomorphiser.PlaceNeeds), after them.
+            foreach (TypeSymbol made in _r.Types.Values.Where(t => t.Decl?.CanonMade is { Count: > 0 } all && t.CanonMadeTypes.Count < all.Count).ToList())
             {
-                foreach (TypeRef each in made.Decl!.CanonMade!)
+                foreach (TypeRef each in made.Decl!.CanonMade!.Skip(made.CanonMadeTypes.Count).ToList())
                 {
                     Type resolved = Resolve(each, made);
                     // An array of one (Monomorphiser.CanonTested) by its element:
@@ -3577,7 +3578,17 @@ public sealed partial class Binder
             foreach (MemberDecl m in d.Members) m.Fresh = true;
         }
 
-        if (_bodiesChecked)
+        // NEVER IN THE MIDDLE OF ANOTHER BODY: a type first asked for while
+        // one is being checked late is checked once that one is done
+        // (DrainLateBodies), as WantBody queues a method. Checked there and
+        // then, it took the frame's slots, the closure count, what was
+        // assigned and proved and the open loops and switches of the body
+        // under way for its own.
+        if (_bodiesChecked && _checkingBodies > 0)
+        {
+            _lateWanted.Add((d, sym, null));
+        }
+        else if (_bodiesChecked)
         {
             CheckLate(d, sym);
         }
@@ -5422,6 +5433,12 @@ public sealed partial class Binder
     private bool LeaveUntilUsed(TypeDecl d, TypeSymbol sym, MethodDecl md)
     {
         if (Switches.EagerCopyBodies || d.Template is null || _freshOnly) return false;
+        // EVERY INSTANCE BODY OF A CANONICAL COPY, used here or not: what its
+        // calls of shared method copies need is held in the type context of
+        // each instantiation sharing it (NoteCopyNeeds), which every unit
+        // laying one down must spell alike -- one that bound only what it
+        // used laid down a table the link refused beside another unit's.
+        if (d.CanonMadeWritten is not null && !md.Mods.HasFlag(Mods.Static)) return false;
         if (_wantedUnlisted.Remove(md)) return false;
         if (!_r.Methods.TryGetValue(md, out MethodSymbol? m)) return false;
         if (m.Virtual || m.Override || m.Abstract || m.IsCtor || m.VtableSlot >= 0) return false;
@@ -5484,10 +5501,13 @@ public sealed partial class Binder
             return;
         }
         _lateWanted.Add((at.Decl, at.Symbol, md));
-        if (!_inBodies && _lateDraining == 0) DrainLateBodies();
+        // Not while a body is being checked, though DeclareMembersNow has
+        // said it is not in one while it declares a type that body asked for.
+        if (!_inBodies && _lateDraining == 0 && _checkingBodies == 0) DrainLateBodies();
     }
 
-    private readonly List<(TypeDecl Decl, TypeSymbol Symbol, MethodDecl Only)> _lateWanted = new();
+    /// <summary>The bodies wanted after the body work, whole types' (Only null) and single methods'.</summary>
+    private readonly List<(TypeDecl Decl, TypeSymbol Symbol, MethodDecl? Only)> _lateWanted = new();
     private int _lateDraining;
 
     /// <summary>The bodies wanted after the body work, each checked on its own, as many as checking them wants.</summary>
@@ -5526,7 +5546,27 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>
+    /// How many CheckBodies are under way: one at most. Everything a body's
+    /// check keeps -- the frame's slots, the closure count, what is assigned
+    /// and proved, the loops, switches, finally clauses and lambdas open --
+    /// is the one body's, and another checked in the middle of it would take
+    /// them for its own (BodiesNow, WantBody).
+    /// </summary>
+    private int _checkingBodies;
+
     private void CheckBodies(TypeDecl d, TypeSymbol sym, MethodDecl? only = null)
+    {
+        if (_checkingBodies > 0)
+        {
+            throw new InvalidOperationException($"the bodies of '{sym.Name}' were to be checked in the middle of another body's check");
+        }
+        _checkingBodies++;
+        try { CheckBodiesOf(d, sym, only); }
+        finally { _checkingBodies--; }
+    }
+
+    private void CheckBodiesOf(TypeDecl d, TypeSymbol sym, MethodDecl? only)
     {
         _thisType = sym;
         _member = null;
@@ -6766,6 +6806,10 @@ public sealed partial class Binder
                     if (c.Type != null)
                     {
                         caught = Resolve(c.Type, _thisType);
+                        // A shared copy's catch of a type over its parameters
+                        // reads that type through `this` (ICanonSlot), or asks
+                        // the thrown object in a shared method copy (NoteShape).
+                        if (c.CanonSelf is { } caughtSelf) CheckExpr(caughtSelf);
 
                         // A clause has to name a class: the test the machine
                         // does is against a type bit, and a primitive has none.
@@ -6774,6 +6818,7 @@ public sealed partial class Binder
                         if (caught.Symbol is TypeSymbol sym && sym.Kind == TypeKind.Class)
                         {
                             _r.CatchType[c] = sym;
+                            NoteShape(c, caught);
                         }
                         else if (!caught.IsError)
                         {
@@ -8216,8 +8261,9 @@ public sealed partial class Binder
 
         _lambdaDepth++;
         EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
+        HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
         try { Look(lam, ContextualMemberResult(wanted, invoke)); }
-        finally { _lambdaDepth--; LeaveFunctionBody(); }
+        finally { _lambdaDepth--; LeaveFunctionBody(); AssignedAfter(assignedBefore); }
         PopScope();
         _quiet--;
         RefuseCapturedRefLocals(lam, captured.Keys);
@@ -8607,8 +8653,9 @@ public sealed partial class Binder
 
         _lambdaDepth++;
         EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
+        HashSet<LocalSym>? assignedBeforeBody = AssignedBefore(lam);
         try { Look(lam, closureReturns, final: true); }
-        finally { _lambdaDepth--; LeaveFunctionBody(); }
+        finally { _lambdaDepth--; LeaveFunctionBody(); AssignedAfter(assignedBeforeBody); }
         _r.FrameSize[body] = _nextSlot;
         PopScope();
         PopScope();
@@ -11599,6 +11646,7 @@ public sealed partial class Binder
 
         _quiet++;
         PushScope(functionBoundary: true);
+        HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
 
         for (int i = 0; i < lam.Params.Count; i++)
         {
@@ -11631,6 +11679,7 @@ public sealed partial class Binder
             }
         }
 
+        AssignedAfter(assignedBefore);
         PopScope();
         _quiet--;
         return produced is null || produced.IsError ? null : produced;
@@ -13410,6 +13459,10 @@ public sealed partial class Binder
             }
 
             case CallExpr c:
+                // The shared class's `this` a call reads its hidden arguments
+                // through (CallExpr.CanonSelf), bound where the call is: in a
+                // lambda, captured.
+                if (c.CanonSelf is { } callSelf) CheckExpr(callSelf);
                 return CheckCall(c);
 
             // A SLICE OF A STRING: `s[1..4]`, `s[2..]`, `s[..3]`.
@@ -16172,6 +16225,27 @@ public sealed partial class Binder
     {
         set.Clear();
         _spareAssigned.Add(set);
+    }
+
+    /// <summary>
+    /// WHAT A LAMBDA'S BODY ASSIGNS IS NOT ASSIGNED WHERE THE LAMBDA IS WRITTEN
+    /// (C# CS0165): the body runs when the delegate is called, or never.
+    /// Every pass over it -- the capture discovery, the inference of its
+    /// result, the closure's own -- reads the enclosing locals, and its
+    /// assignments stayed: `int x; Action set = () => { x = 5; };
+    /// Console.WriteLine(x);` read x unassigned. What is assigned before the
+    /// pass, to put back after it; null for a local function's, whose
+    /// assignments C# counts at its calls, which this binder does not follow,
+    /// and which are left as they were.
+    /// </summary>
+    private HashSet<LocalSym>? AssignedBefore(LambdaExpr lam) => _localFunctionOf.ContainsKey(lam) ? null : AssignedCopy();
+
+    private void AssignedAfter(HashSet<LocalSym>? before)
+    {
+        if (before is null) return;
+        _assigned.Clear();
+        _assigned.UnionWith(before);
+        SpareAssigned(before);
     }
 
     /// <summary>
@@ -20058,6 +20132,21 @@ public sealed partial class Binder
             }
             // On the call, for the round that binds it to the copy (CallExpr.HiddenTypeArgs).
             c.HiddenTypeArgs = hidden;
+            if (hidden is not null)
+            {
+                int index = generic.TemplateIndex >= 0 ? generic.TemplateIndex : best.Owner.Decl?.Members.IndexOf(generic) ?? -1;
+                string copyName = Monomorphiser.CopyName(generic.Name, spelt, index);
+                NoteCopyNeeds(c, generic, spelt, hidden, best.Owner.Methods.FirstOrDefault(m => m.Name == copyName));
+            }
+            // A CLASS PARAMETER HANDED ON is read through the class's `this`
+            // (CallExpr.CanonSelf): in a lambda, a closure's own `this` has
+            // no type context, and the copy was handed 0.
+            if (hidden is not null && hidden.Any(k => k >= 0) && c.CanonSelf is null
+                && _member is MethodDecl { } instance && !instance.Mods.HasFlag(Mods.Static) && _thisType?.Decl is { CanonMadeWritten: not null })
+            {
+                c.CanonSelf = new ThisExpr { Line = c.Line, Col = c.Col };
+                CheckExpr(c.CanonSelf);
+            }
 
             // A GENERIC VIRTUAL METHOD IS DISPATCHED ON THE RECEIVER, except
             // through `base.`, which names one implementation and is an
@@ -20098,6 +20187,8 @@ public sealed partial class Binder
         }
 
         _r.Calls[c] = called;
+        // A SHARED METHOD COPY'S DICTIONARY grown since this call's was placed.
+        if (c.HiddenNeedMap is not null) CopyNeedsGrown(c, called);
 
         // A STRING IS IMMUTABLE, as C#'s is. Sys.NewChars, SetChar and the
         // string Copy are how String itself is built, and nothing outside the
@@ -20170,16 +20261,159 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// A CALL FROM A SHARED CLASS'S INSTANCE CODE OF A SHARED METHOD COPY THAT
+    /// MAKES TYPES OVER WHAT ONLY RUN TIME KNOWS (MethodDecl.CopyNeeds): each
+    /// such type spelt over the class's own parameters (CallExpr.HiddenNeeds)
+    /// -- Holder<U> of Util.Make<U>, called with Tester's T, is Holder<T> --
+    /// for the class's type context to hold for every instantiation of it
+    /// (Monomorphiser.PlaceNeeds), the round going again to place them. Only
+    /// where every hidden argument is the class's own parameter: a shared
+    /// method copy's own hidden argument handed on finds no dictionary here,
+    /// and its callee makes what it always made.
+    /// </summary>
+    private void NoteCopyNeeds(CallExpr c, MethodDecl generic, List<TypeRef> spelt, int[] hidden, MethodSymbol? existing)
+    {
+        if (c.HiddenNeedMap is not null || generic.Body is null) return;
+        if (_member is not MethodDecl { } caller) return;
+        TypeDecl? canonical = null;
+        List<string>? names = null;
+        // FROM A SHARED CLASS'S INSTANCE CODE: every hidden argument one of
+        // its parameters, the needs kept in its type context.
+        if (hidden.All(k => k >= -1) && !caller.Mods.HasFlag(Mods.Static)
+            && _thisType?.Decl is { CanonMadeWritten: not null, TemplateParams: { } classParams } home && hidden.All(k => k < classParams.Count))
+        {
+            canonical = home;
+            names = classParams.Select(p => p.Name).ToList();
+        }
+        // FROM A SHARED METHOD COPY: every hidden argument one of its own,
+        // the needs kept in its dictionary, which its own callers fill.
+        else if (hidden.All(k => k == -1 || k <= -2) && caller.CopyParams is { } own && caller.CopyNeeds is not null
+            && hidden.All(k => k == -1 || -2 - k < own.Count))
+        {
+            names = own;
+        }
+        else
+        {
+            return;
+        }
+        Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
+        for (int i = 0; i < generic.TypeParams.Count && i < spelt.Count; i++)
+        {
+            map[generic.TypeParams[i].Name] = hidden[i] == -1 ? spelt[i]
+                : new TypeRef { Name = names[hidden[i] >= 0 ? hidden[i] : -2 - hidden[i]], Line = c.Line, Col = c.Col };
+        }
+        c.HiddenNeedMap = map;
+        c.NeedClass = canonical;
+        c.NeedCopy = canonical is null ? caller : null;
+        // What the copy needs: its own list where it is made already -- what
+        // its calls added (below) with it -- or what its template makes.
+        List<TypeRef>? needs = existing?.Decl is MethodDecl { CopyNeeds: { } made } ? made : null;
+        if (needs is null)
+        {
+            string key = string.Join(",", hidden);
+            if (!_copyNeeds.TryGetValue((generic, key), out needs))
+            {
+                needs = Monomorphiser.CopyNeedsOf(generic, spelt);
+                _copyNeeds[(generic, key)] = needs;
+            }
+        }
+        PlaceCopyNeeds(c, needs);
+    }
+
+    /// <summary>
+    /// A call's dictionary placed where its caller keeps it (NoteCopyNeeds):
+    /// spelt over the caller's parameters (CallExpr.HiddenNeedMap), then in a
+    /// shared class's type context by the next expansion (Monomorphiser.
+    /// PlaceNeeds), or in the calling copy's own dictionary now, as one run --
+    /// the run already there, or at its end, which grows it and sends that
+    /// copy's own callers round again (CopyNeedsGrown).
+    /// </summary>
+    private void PlaceCopyNeeds(CallExpr c, List<TypeRef> needs)
+    {
+        if (c.HiddenNeedMap is not { } map) return;
+        if (needs.Count == 0)
+        {
+            c.HiddenNeeds = null;
+            c.HiddenNeedBase = -1;
+            return;
+        }
+        TypeRef Over(TypeRef t)
+        {
+            if (t.Args.Count == 0 && map.TryGetValue(t.Name, out TypeRef? to))
+                return t.ArrayRank == 0 ? to : new TypeRef { Name = to.Name, Arguments = to.Args.ToList(), ArrayRank = t.ArrayRank + to.ArrayRank, Line = t.Line, Col = t.Col };
+            if (t.Args.Count == 0) return t;
+            return new TypeRef { Name = t.Name, Arguments = t.Args.Select(Over).ToList(), ArrayRank = t.ArrayRank, Line = t.Line, Col = t.Col };
+        }
+        List<TypeRef> spelt = needs.Select(Over).ToList();
+        c.HiddenNeeds = spelt;
+        c.HiddenNeedBase = -1;
+        if (c.NeedClass is { } home)
+        {
+            (home.NeedCalls ??= new()).Add(c);
+            _r.Reexpand = true;
+        }
+        else if (c.NeedCopy?.CopyNeeds is { } dictionary)
+        {
+            List<string> keys = spelt.Select(n => n.ToString()).ToList();
+            int at = -1;
+            for (int start = 0; start + keys.Count <= dictionary.Count && at < 0; start++)
+            {
+                bool same = true;
+                for (int k = 0; k < keys.Count && same; k++) same = dictionary[start + k].ToString() == keys[k];
+                if (same) at = start;
+            }
+            if (at < 0)
+            {
+                at = dictionary.Count;
+                dictionary.AddRange(spelt);
+                // The copy asks for more: its callers hand it a longer run.
+                _r.Reexpand = true;
+            }
+            c.HiddenNeedBase = at;
+        }
+    }
+
+    /// <summary>
+    /// A call bound to a shared method copy whose dictionary has grown since
+    /// the call's was placed (a call in its body to another such copy,
+    /// NoteCopyNeeds): placed again, the whole of it.
+    /// </summary>
+    private void CopyNeedsGrown(CallExpr c, MethodSymbol called)
+    {
+        if (c.HiddenNeedMap is null || called.Decl is not MethodDecl { CopyNeeds: { } needs }) return;
+        // THE HOME AS IT IS NOW: a later round may have made the class's
+        // declaration again, and what is placed on the one it replaced is
+        // placed nowhere.
+        if (c.NeedClass is not null && _thisType?.Decl is { CanonMadeWritten: not null } now) c.NeedClass = now;
+        if (c.NeedCopy is not null && _member is MethodDecl { CopyNeeds: not null } caller) c.NeedCopy = caller;
+        if ((c.HiddenNeeds?.Count ?? 0) != needs.Count)
+        {
+            PlaceCopyNeeds(c, needs);
+            return;
+        }
+        // STILL TO BE PLACED in its class's type context, by a binding that
+        // asked for no more rounds: this one asks.
+        if (c.NeedClass is { } home && c.HiddenNeeds is { Count: > 0 } && c.HiddenNeedBase < 0)
+        {
+            if (home.NeedCalls?.Contains(c) != true) (home.NeedCalls ??= new()).Add(c);
+            _r.Reexpand = true;
+        }
+    }
+
+    /// <summary>A shared method copy's dictionary, by its template and which arguments are hidden (NoteCopyNeeds).</summary>
+    private readonly Dictionary<(MethodDecl, string), List<TypeRef>> _copyNeeds = new();
+
+    /// <summary>
     /// A shared method copy's test or cast to a generic interface over its
     /// own type parameters (ICanonShape, Monomorphiser.Shaped): the family
     /// and the arguments, resolved, for the lowering to ask the object
     /// (BindResult.Shapes). Only an interface made from a template, with as
     /// many arguments as were written, and no more than a record holds.
     /// </summary>
-    private void NoteShape<T>(T node, Type tested) where T : Expr, ICanonShape
+    private void NoteShape<T>(T node, Type tested) where T : Node, ICanonShape
     {
         if (node.ShapeArgs is not { Count: > 0 } written || tested.IsArray || tested.IsPointer
-            || tested.Symbol is not { Kind: TypeKind.Interface } face
+            || tested.Symbol is not { Kind: TypeKind.Interface or TypeKind.Class } face
             || face.Decl is not { Specialised: true, Template: not null } decl
             || decl.TemplateArgs.Count != written.Count || written.Count > CanonShape.MostArguments)
         {

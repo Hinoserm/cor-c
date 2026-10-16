@@ -2202,7 +2202,7 @@ public sealed partial class Lowering
     /// </summary>
     private string? TypeContext(TypeSymbol t, List<TypeSymbol> chain)
     {
-        if (!chain.Any(SharedCopy))
+        if (!chain.Any(SharedCopy) && !chain.Any(ClassIdentified))
         {
             return null;
         }
@@ -2210,16 +2210,32 @@ public sealed partial class Lowering
         DataItem context = new("tc_" + TypeKey(t), new byte[chain.Count * w]) { ReadOnly = true, Exported = false };
         for (int d = 0; d < chain.Count; d++)
         {
+            // AFTER THE ENTRIES, THE CLASS'S IDENTITY RECORD (ShapeRecord) at
+            // every depth that is a generic class over references: what a
+            // shared method copy's `x is Box<U>` asks of the ancestor at
+            // Box's depth when only the call knew U (Runtime.ShapedAs, its
+            // class form). A depth that is no shared copy has no entries.
+            // Named "k_", no descriptor's prefix: named "t_", the link indexed
+            // the record as one more class (VirtualTargets.IsDescriptor).
+            string? identity = ClassIdentified(chain[d]) ? ShapeRecord(chain[d], "k_" + ClassDescriptor(chain[d])[2..]) : null;
             if (!SharedCopy(chain[d]))
             {
+                if (identity is not null)
+                {
+                    DataItem bare = new("ta_" + TypeKey(t) + "$" + d, new byte[2 * w]) { ReadOnly = true, Exported = false };
+                    bare.Relocs.Add(new DataReloc(w, identity, 0));
+                    _m.Data.Add(bare);
+                    context.Relocs.Add(new DataReloc(d * w, bare.Name, 0));
+                }
                 continue;
             }
             List<Type> args = SharedArguments(chain[d]);
             List<TypeSymbol?> made = chain[d].CanonMadeTypes;
             int entries = 2 * args.Count + made.Count;
-            byte[] words = new byte[(1 + entries) * w];
+            byte[] words = new byte[(2 + entries) * w];
             WriteWord(words, 0, entries);
             DataItem table = new("ta_" + TypeKey(t) + "$" + d, words) { ReadOnly = true, Exported = false };
+            if (identity is not null) table.Relocs.Add(new DataReloc((1 + entries) * w, identity, 0));
             for (int i = 0; i < args.Count; i++)
             {
                 table.Relocs.Add(new DataReloc((1 + 2 * i) * w, ArgumentDescriptor(args[i]), 0));
@@ -2258,6 +2274,17 @@ public sealed partial class Lowering
         _m.Data.Add(context);
         return context.Name;
     }
+
+    /// <summary>
+    /// Whether a class has an identity record in its type context (TypeContext):
+    /// a generic class's instantiation over references only -- what a shared
+    /// method copy's type argument can be -- with no more arguments than a
+    /// record holds.
+    /// </summary>
+    private static bool ClassIdentified(TypeSymbol s)
+        => s.Kind == TypeKind.Class && s.Decl is { Specialised: true, Template: not null } d && d.TemplateArgs.Count > 0
+        && d.TemplateArgs.Count <= CanonShape.MostArguments && s.TemplateArgTypes.Count == d.TemplateArgs.Count
+        && s.TemplateArgTypes.All(ShapeIdentifiable) && CanonShape.FamilyOf(s) is not null;
 
     /// <summary>Whether a class runs a canonical copy's code: that copy, or an instantiation sharing it.</summary>
     private static bool SharedCopy(TypeSymbol s)
@@ -2397,6 +2424,17 @@ public sealed partial class Lowering
     /// descriptor is.
     /// </summary>
     private string? ShapeRecord(TypeSymbol t, string descriptor)
+    {
+        // ONCE A TYPE: a class's is named from every chain it is in (TypeContext).
+        if (_shapeRecords.TryGetValue(descriptor, out string? had)) return had;
+        string? made = MakeShapeRecord(t, descriptor);
+        _shapeRecords[descriptor] = made;
+        return made;
+    }
+
+    private readonly Dictionary<string, string?> _shapeRecords = new(StringComparer.Ordinal);
+
+    private string? MakeShapeRecord(TypeSymbol t, string descriptor)
     {
         if (CanonShape.FamilyOf(t) is not long family || t.Decl is not { } decl
             || t.TemplateArgTypes.Count != decl.TemplateArgs.Count || t.TemplateArgTypes.Count > CanonShape.MostArguments)

@@ -14,6 +14,8 @@ public sealed class TypeOfExpr : Expr, ICanonSlot
     public int CanonSlot { get; set; } = -1;
     /// <summary>The `this` that entry is read through (ICanonSlot).</summary>
     public Expr? CanonSelf { get; set; }
+    /// <summary>In a shared method copy, the dictionary entry of the constructed type asked for (NewExpr.NeedSlot), or -1.</summary>
+    public int NeedSlot { get; set; } = -1;
 
     public required TypeRef Type { get; init; }
 }

@@ -1134,7 +1134,14 @@ public sealed partial class Lowering
 
             if (_b.CatchType.TryGetValue(c, out TypeSymbol? want))
             {
-                VReg matched = TypeTest(obj, want);
+                // A shared copy's catch of a type over its parameters asks
+                // what that type is for the object at hand (CanonTest), or
+                // in a shared method copy at this call (ShapeTest), as `is`
+                // does: over the machine word it names a type nothing throws.
+                VReg matched = ShapeOf(c) is { } caughtShape
+                    ? ShapeTest(caughtShape, obj, () => TypeTest(obj, want))
+                    : c.CanonSlot >= 0 ? CanonTest(c, obj, () => TypeTest(obj, want))
+                    : TypeTest(obj, want);
                 _e.Branch(matched, body, next);
             }
             else
@@ -1157,7 +1164,13 @@ public sealed partial class Lowering
             }
 
             _openCatches.Add((_openHandlers.Count, keep, c));
-            _catchTypes[keep] = _b.CatchType.TryGetValue(c, out TypeSymbol? caught) ? DescriptorOf(caught) : null;
+            // What the escape pass judges the catch by (EndCatch): a shared
+            // copy's names its type over __canon, which Escape.CatchesForeign
+            // takes for every instantiation of it; a shared method copy's
+            // takes whatever its type arguments make it, everything to the
+            // escape pass.
+            _catchTypes[keep] = ShapeOf(c) is not null ? null
+                : _b.CatchType.TryGetValue(c, out TypeSymbol? caught) ? DescriptorOf(caught) : null;
             EmitStmt(c.Body);
             _openCatches.RemoveAt(_openCatches.Count - 1);
             if (!_e.Closed)

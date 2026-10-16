@@ -103,7 +103,8 @@ public sealed partial class Lowering
             List<Operand>? given = _pendingTypeArgs is { } pending && ReferenceEquals(pending.Method, m) ? pending.Args : null;
             _pendingTypeArgs = null;
             args = new List<Operand>(args);
-            for (int i = 0; i < hidden; i++)
+            // The type arguments, then the dictionary (HiddenTypeArguments).
+            for (int i = 0; i < hidden + 1; i++)
             {
                 args.Add(given is not null && i < given.Count ? given[i] : Imm(0, IrTypes.Word));
             }

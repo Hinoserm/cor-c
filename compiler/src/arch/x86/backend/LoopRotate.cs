@@ -104,15 +104,35 @@ internal static class LoopRotate
     }
 
     /// <summary>Whether `target` is reached from `from` (itself included) without passing `avoid`.</summary>
+    // WHICH BLOCKS ONE WALK HAS SEEN, by their place: a mark that is this
+    // walk's number. A set of its own for each walk was a set as large as the
+    // function for every jump back with a short test -- 1321's Main, fourteen
+    // thousand blocks and a thousand such jumps, made half a gigabyte of them.
+    [ThreadStatic] private static int[]? _seenAt;
+    [ThreadStatic] private static int _walk;
+    [ThreadStatic] private static Stack<MBlock>? _work;
+
     private static bool Reaches(MFunction m, Dictionary<MBlock, int> index, MBlock from, MBlock target, MBlock avoid)
     {
-        HashSet<MBlock> seen = new(ReferenceEqualityComparer.Instance);
-        Stack<MBlock> work = new();
+        int[] seenAt = _seenAt is { } kept && kept.Length >= m.Blocks.Count ? kept : _seenAt = new int[Math.Max(m.Blocks.Count, 64)];
+        if (++_walk == int.MaxValue) { Array.Clear(seenAt); _walk = 1; }
+        int walk = _walk;
+        Stack<MBlock> work = _work ??= new();
+        work.Clear();
+        HashSet<MBlock> strays = _strays ??= new(ReferenceEqualityComparer.Instance);
+        strays.Clear();
         work.Push(from);
         while (work.TryPop(out MBlock? b))
         {
             if (ReferenceEquals(b, target)) return true;
-            if (ReferenceEquals(b, avoid) || !seen.Add(b)) continue;
+            if (ReferenceEquals(b, avoid)) continue;
+            // A block not of the function (no place) is walked as the set did, once.
+            if (index.TryGetValue(b, out int place))
+            {
+                if (seenAt[place] == walk) continue;
+                seenAt[place] = walk;
+            }
+            else if (!strays.Add(b)) continue;
             foreach (MInstr i in b.Instrs)
             {
                 if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to }) work.Push(to);
@@ -122,6 +142,8 @@ internal static class LoopRotate
         }
         return false;
     }
+
+    [ThreadStatic] private static HashSet<MBlock>? _strays;
 
     private static MInstr Clone(MInstr i)
     {

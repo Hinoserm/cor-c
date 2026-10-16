@@ -208,6 +208,11 @@ internal sealed class Allocator
     [ThreadStatic] private static int[]? _keptOccFirst, _keptStart, _keptEnd, _keptAssigned, _keptSpilledFrom, _keptSlot, _keptRunS, _keptRunE;
     [ThreadStatic] private static MImm?[]? _keptRemat;
     [ThreadStatic] private static int[]? _keptFill, _keptFirst, _keptCount, _keptSuccStart, _keptSucc, _keptPreds, _keptOnlyPred, _keptRunHead, _keptBlockOfInstr, _keptCallsBefore;
+    [ThreadStatic] private static int[]? _keptPredStart, _keptPredAll, _keptPredFill, _keptWork, _keptLastDef, _keptGlobalOf;
+    [ThreadStatic] private static List<int>? _keptGlobals;
+    private int[] _globalOf = Array.Empty<int>();
+    private List<int> _globals = new();
+    [ThreadStatic] private static bool[]? _keptOwed;
     [ThreadStatic] private static Occurrence[]? _keptOccAll;
     [ThreadStatic] private static Dictionary<MBlock, int>? _keptIndex;
     [ThreadStatic] private static List<MBlock>? _keptSuccessors;
@@ -459,30 +464,59 @@ internal sealed class Allocator
             at += count[b];
         }
 
+        // ONLY A REGISTER READ IN SOME BLOCK BEFORE THAT BLOCK WRITES IT can
+        // be live into a block, or out of one: one every block writes before
+        // it reads is in no block's use set, so in no live-out set either, at
+        // any step of the solve. The blocks' sets are kept for those registers
+        // alone, numbered apart (_globalOf, _globals): 1321's Main has 34,761
+        // registers and 14 thousand blocks, and three tables a block wide for
+        // every register were 180 MB, solved over in full.
+        int[] lastDef = Table(ref _keptLastDef, _n, clear: false);
+        Array.Fill(lastDef, -1, 0, _n);
+        _globalOf = Table(ref _keptGlobalOf, _n, clear: false);
+        Array.Fill(_globalOf, -1, 0, _n);
+        List<int> globals = _globals = _keptGlobals ??= new();
+        globals.Clear();
+        for (int b = 0; b < nb; b++)
+        {
+            for (int i = first[b]; i < first[b] + count[b]; i++)
+            {
+                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
+                    if (Tracked(r) && (role & Role.Use) != 0 && lastDef[r.Id] != b && _globalOf[r.Id] < 0)
+                    {
+                        _globalOf[r.Id] = globals.Count;
+                        globals.Add(r.Id);
+                    }
+                foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
+                    if (Tracked(r) && (role & Role.Def) != 0) lastDef[r.Id] = b;
+            }
+        }
+        int g = globals.Count;
+
         // A BLOCK'S SETS AS ROWS of one table each, kept a thread (BitRows):
         // three sets and their arrays a block were the allocator's largest
         // leaving to the collector after its intervals.
-        BitRows use = BitRows.Kept(0, nb, _n), def = BitRows.Kept(1, nb, _n), live = BitRows.Kept(2, nb, _n);
+        BitRows use = BitRows.Kept(0, nb, g), def = BitRows.Kept(1, nb, g), live = BitRows.Kept(2, nb, g);
         for (int b = 0; b < nb; b++)
         {
             for (int i = first[b]; i < first[b] + count[b]; i++)
             {
                 foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
                 {
-                    if (!Tracked(r))
+                    if (!Tracked(r) || _globalOf[r.Id] is not (>= 0 and var at))
                     {
                         continue;
                     }
-                    if ((role & Role.Use) != 0 && !def.Get(b, r.Id))
+                    if ((role & Role.Use) != 0 && !def.Get(b, at))
                     {
-                        use.Set(b, r.Id);
+                        use.Set(b, at);
                     }
                 }
                 foreach ((MReg r, Role role, _, _) in RegsOf(_lin[i], _regsOf))
                 {
-                    if (Tracked(r) && (role & Role.Def) != 0)
+                    if (Tracked(r) && (role & Role.Def) != 0 && _globalOf[r.Id] is >= 0 and var at)
                     {
-                        def.Set(b, r.Id);
+                        def.Set(b, at);
                     }
                 }
             }
@@ -534,28 +568,48 @@ internal sealed class Allocator
         }
 
         // live-out(b) = union over successors s of use(s) | (live-out(s) & ~def(s));
-        // iterate backwards over the layout until nothing changes.
-        BitSet tmp = new(_n);
-        BitSet inS = new(_n);
-        bool changed = true;
-        while (changed)
+        // to the least fixed point, by a worklist: a block is worked out again
+        // only when a successor's live-out has changed, and then its
+        // predecessors are owed another look. Swept backwards over the layout
+        // until nothing changed instead, a chain of blocks each jumping to one
+        // laid out before it moved what is live one block a sweep -- 1321's
+        // Main, 14 thousand blocks, took 1077 sweeps of every block, the
+        // largest part of its compile. Any order reaches the same fixed point.
+        BitSet tmp = new(g);
+        BitSet inS = new(g);
+        int[] predStart = Table(ref _keptPredStart, nb + 1, clear: true);
+        for (int e = 0; e < edges; e++) predStart[succ[e] + 1]++;
+        for (int b = 0; b < nb; b++) predStart[b + 1] += predStart[b];
+        int[] predAll = Table(ref _keptPredAll, Math.Max(1, edges), clear: false, grow: true);
+        int[] predFill = Table(ref _keptPredFill, nb, clear: false);
+        Array.Copy(predStart, predFill, nb);
+        for (int b = 0; b < nb; b++)
+            for (int e = succStart[b]; e < succStart[b + 1]; e++) predAll[predFill[succ[e]]++] = b;
+        // Every block owed a first look, the last laid out first, as the sweep began.
+        int[] work = Table(ref _keptWork, nb, clear: false);
+        bool[] owed = _keptOwed is { } keptOwed && keptOwed.Length >= nb ? keptOwed : _keptOwed = new bool[Math.Max(nb, 16)];
+        int top = 0;
+        for (int b = 0; b < nb; b++) { work[top++] = b; owed[b] = true; }
+        while (top > 0)
         {
-            changed = false;
-            for (int b = nb - 1; b >= 0; b--)
+            int b = work[--top];
+            owed[b] = false;
+            tmp.Clear();
+            for (int e = succStart[b]; e < succStart[b + 1]; e++)
             {
-                tmp.Clear();
-                for (int e = succStart[b]; e < succStart[b + 1]; e++)
+                int s = succ[e];
+                inS.CopyFrom(live, s);
+                inS.AndNot(def, s);
+                inS.Or(use, s);
+                tmp.Or(inS);
+            }
+            if (!live.RowEquals(b, tmp))
+            {
+                live.CopyRow(b, tmp);
+                for (int e = predStart[b]; e < predStart[b + 1]; e++)
                 {
-                    int s = succ[e];
-                    inS.CopyFrom(live, s);
-                    inS.AndNot(def, s);
-                    inS.Or(use, s);
-                    tmp.Or(inS);
-                }
-                if (!live.RowEquals(b, tmp))
-                {
-                    live.CopyRow(b, tmp);
-                    changed = true;
+                    int p = predAll[e];
+                    if (!owed[p]) { owed[p] = true; work[top++] = p; }
                 }
             }
         }
@@ -576,7 +630,11 @@ internal sealed class Allocator
         BitSet cur = new(_n);
         for (int b = 0; b < nb; b++)
         {
-            cur.CopyFrom(live, b);
+            // The block's live-out, each register by its own number again.
+            cur.Clear();
+            for (int w = 0, at = b * live.Words; w < live.Words; w++)
+                for (ulong word = live.Bits[at + w]; word != 0; word &= word - 1)
+                    cur.Set(globals[(w << 6) + System.Numerics.BitOperations.TrailingZeroCount(word)]);
             for (int i = first[b] + count[b] - 1; i >= first[b]; i--)
             {
                 int p = i * 4;
@@ -1386,6 +1444,10 @@ internal sealed class Allocator
     /// is reached only by paths that stay before it, where the register it
     /// was given still holds it, and needs no reload from the slot.
     /// </summary>
+    // Whether a register is live into block `s`: one of those some block reads
+    // before it writes (_globalOf), and in the block's live-in row.
+    private bool LiveInto(int s, int vreg) => (uint)vreg < (uint)_n && _globalOf[vreg] is >= 0 and var at && _liveIn.Get(s, at);
+
     private bool NothingFlowsBack(int vreg, int from)
     {
         if (from >= _lin.Count)
@@ -1397,7 +1459,7 @@ internal sealed class Allocator
             for (int e = _succStart[b]; e < _succStart[b + 1]; e++)
             {
                 int s = _succAll[e];
-                if (_blockFirst[s] < from && _liveIn.Get(s, vreg))
+                if (_blockFirst[s] < from && LiveInto(s, vreg))
                 {
                     return false;
                 }

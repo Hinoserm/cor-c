@@ -4130,6 +4130,63 @@ static class Runtime
     const long DescShapeWord = 8;
     const long ShapeCountMask = 255;
     const long ShapeFaceOf = 256;
+    // A class, not an interface (Lowering.ShapeTest), its depth above ShapeDepthShift.
+    const long ShapeClass = 512;
+    // Which of an interface's arguments the caller found to be object, one bit each from here (Lowering.ShapeTest).
+    const long ShapeObjectShift = 24;
+    const long ShapeDepthShift = 16;
+    const long TypeValueFlag = 4;
+
+    /// Whether an interface of `record`'s identity and `variance`'s declared
+    /// variance converts to the one of its family over these arguments'
+    /// descriptors, as VariantFits says of two named ones: each argument the
+    /// same, or a reference type converting the way the template declares.
+    static bool ShapeVariantFits(long record, long variance, long count, long shape, long a0, long a1, long a2, long a3)
+    {
+        long w = WordSize.Bytes;
+        long mask = WordSize.AddressMask;
+        for (long i = 0; i < count; i++)
+        {
+            long theirs = (i == 0 ? a0 : i == 1 ? a1 : i == 2 ? a2 : a3) & mask;
+            long mine = Sys.Peek(record + (2 + i) * w) & mask;
+            if (mine == theirs) continue;
+            long kind = Sys.Peek(variance + (2 + 2 * i) * w);
+            if ((kind & 4) == 0 || mine == 0 || theirs == 0) return false;
+            if ((Sys.Peek(theirs + DescFlagsWordHere * w) & (TypeValueFlag | TypePrimitiveFlag | TypeEnumFlag)) != 0) return false;
+            // Object, either side: the caller says of its arguments (ShapeObjectShift),
+            // the variance record of the interface's (1).
+            bool theirsObject = ((shape >> (ShapeObjectShift + i)) & 1) != 0;
+            bool mineObject = (Sys.Peek(variance + (3 + 2 * i) * w) & mask) == 1;
+            long how = kind & 3;
+            if (how == 1)
+            {
+                if (!theirsObject && (mineObject || !DescribedAs(mine, theirs))) return false;
+            }
+            else if (how == 2)
+            {
+                if (!mineObject && (theirsObject || !DescribedAs(theirs, mine))) return false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Whether an identity record (Lowering.ShapeRecord) is the type of
+    /// `family` over these `count` arguments' descriptors.
+    static bool ShapeRecordIs(long record, long family, long count, long a0, long a1, long a2, long a3)
+    {
+        long w = WordSize.Bytes;
+        long mask = WordSize.AddressMask;
+        return (Sys.Peek(record) & mask) == (family & mask)
+            && (Sys.Peek(record + w) & mask) == count
+            && (Sys.Peek(record + 2 * w) & mask) == (a0 & mask)
+            && (count < 2 || (Sys.Peek(record + 3 * w) & mask) == (a1 & mask))
+            && (count < 3 || (Sys.Peek(record + 4 * w) & mask) == (a2 & mask))
+            && (count < 4 || (Sys.Peek(record + 5 * w) & mask) == (a3 & mask));
+    }
 
     /// Whether an object implements the generic interface of `family`
     /// (CanonShape.FamilyOf) over these type arguments' descriptors -- the
@@ -4154,6 +4211,23 @@ static class Runtime
         long w = WordSize.Bytes;
         long mask = WordSize.AddressMask;
         long desc = (Sys.Peek(obj) & mask) - DescWordsHere * w;
+        // A GENERIC CLASS (ShapeClass), at its depth in every chain it is in
+        // (shape's high bits): the ancestor at that depth is the class of that
+        // family over these arguments, by the identity record its type
+        // context holds there (Lowering.TypeContext). Classes vary in nothing.
+        if ((shape & ShapeClass) != 0)
+        {
+            long depth = shape >> ShapeDepthShift;
+            if ((Sys.Peek(desc + DescFlagsWordHere * w) & (1 | TypeStringFlag | TypeValueFlag | InterfaceFlag)) != 0) return false;
+            if ((long)(int)Sys.Peek(desc + DescDepthWord * w) < depth) return false;
+            long context = Sys.Peek(desc + DescElementWord * w) & mask;
+            if (context == 0) return false;
+            long table = Sys.Peek(context + depth * w) & mask;
+            if (table == 0) return false;
+            long entries = Sys.Peek(table) & mask;
+            long identity = Sys.Peek(table + (1 + entries) * w) & mask;
+            return identity != 0 && ShapeRecordIs(identity, family, count, a0, a1, a2, a3);
+        }
         long faces = Sys.Peek(desc + DescInterfacesWord * w) & mask;
         if (faces != 0)
         {
@@ -4162,14 +4236,17 @@ static class Runtime
                 long face = Sys.Peek(at) & mask;
                 if (face == 0) break;
                 long record = Sys.Peek(face + DescShapeWord * w) & mask;
-                if (record != 0 && (Sys.Peek(record) & mask) == (family & mask)
-                    && (Sys.Peek(record + w) & mask) == count
-                    && (Sys.Peek(record + 2 * w) & mask) == (a0 & mask)
-                    && (count < 2 || (Sys.Peek(record + 3 * w) & mask) == (a1 & mask))
-                    && (count < 3 || (Sys.Peek(record + 4 * w) & mask) == (a2 & mask))
-                    && (count < 4 || (Sys.Peek(record + 5 * w) & mask) == (a3 & mask)))
+                if (record != 0 && ShapeRecordIs(record, family, count, a0, a1, a2, a3))
                 {
                     return true;
+                }
+                // AND BY VARIANCE, as DescribedAs answers a named interface
+                // (VariantFits): a List<string> is an IEnumerable<object>
+                // where the copy's U is object.
+                if (record != 0 && (Sys.Peek(record) & mask) == (family & mask) && (Sys.Peek(record + w) & mask) == count)
+                {
+                    long variance = VarianceOf(face);
+                    if (variance != 0 && ShapeVariantFits(record, variance, count, shape, a0, a1, a2, a3)) return true;
                 }
             }
         }

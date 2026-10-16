@@ -1,0 +1,21 @@
+// test: lambda_assignment_not_assigned_outside_refused
+// expect-compile-error: 'x' is used before it is definitely assigned
+//
+// WHAT A LAMBDA ASSIGNS IS NOT ASSIGNED WHERE IT IS WRITTEN (C# CS0165): its
+// body runs when the delegate is called, or never. The binder's passes over
+// the body -- finding what it captures, then checking it as its closure's
+// method -- left x assigned behind it, and the read below took the zero the
+// frame happened to hold.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        int x;
+        Action set = () => { x = 5; };
+        Console.WriteLine(x);
+        set();
+    }
+}

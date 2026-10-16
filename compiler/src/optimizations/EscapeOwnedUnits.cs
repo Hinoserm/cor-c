@@ -168,6 +168,26 @@ public sealed partial class Escape
         HashSet<VReg> inside = new();
         if (!defs.ContainsKey(read) || f.Params.Contains(read)) return inside;
         inside.Add(read);
+        // THE SAME SET, in a large function (BlockReaders), from each register
+        // found to the instructions of the blocks that read it: the least set
+        // closed under the steps below, which the sweeps reach too.
+        if (AnalysisCache.ReadersOf(f) is { } index)
+        {
+            Stack<VReg> next = new();
+            next.Push(read);
+            while (next.TryPop(out VReg? x))
+                foreach (Block b in Listed(index, index.Readers(x)))
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Dest is not { } d || inside.Contains(d) || !defs.ContainsKey(d) || f.Params.Contains(d)
+                            || i.Operands.Count == 0 || i.Operands[0] is not RegOperand { Reg: var from } || !inside.Contains(from)) continue;
+                        bool same = i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Operands.Count == 1
+                            || i.Op is Opcode.Add or Opcode.Sub && i.Operands.Count == 2 && i.Operands[1] is ImmOperand { Value: var by }
+                               && by > -1048576 && by < 1048576;
+                        if (same) { inside.Add(d); next.Push(d); }
+                    }
+            return inside;
+        }
         for (bool grew = true; grew;)
         {
             grew = false;
@@ -243,6 +263,13 @@ public sealed partial class Escape
     // In loops, not queries: asked for every read in every block, the
     // lambdas, closures and boxed enumerators were 5.5% of what a unit
     // allocated.
+    /// <summary>Whether any of `derived` is live into block `x` (LiveStretch's own first question).</summary>
+    private static bool LiveInto(Liveness liveness, Block x, HashSet<VReg> derived)
+    {
+        foreach (VReg r in derived) if (liveness.IsLiveIn(x, r)) return true;
+        return false;
+    }
+
     private static (int From, int To) LiveStretch(Liveness liveness, Block x, int readAt, HashSet<VReg> derived)
     {
         bool liveIn = false, liveOut = false;

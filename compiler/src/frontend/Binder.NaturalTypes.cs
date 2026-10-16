@@ -192,6 +192,7 @@ public sealed partial class Binder
         List<Type>? wasInferred = _inferredReturns;
         Type? wasWanted = _wanted;
         int wasSlot = _nextSlot;
+        HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
         try
         {
             for (int i = 0; i < lam.Params.Count; i++)
@@ -221,6 +222,7 @@ public sealed partial class Binder
             _inferredReturns = wasInferred;
             _wanted = wasWanted;
             _nextSlot = wasSlot;
+            AssignedAfter(assignedBefore);
             PopScope();
             _quiet--;
         }

@@ -1,0 +1,98 @@
+// test: shared_method_copy_makes_its_callers_types
+// expect-exit: 0
+// expect-output:
+// kept 40 first 900 bad 0 4400
+// made True True True
+// linq True True 5
+// asked 11111
+//
+// A generic method called from shared class code with the class's T is one
+// shared copy for every T, handed T's descriptor -- and a dictionary: the
+// descriptors of what it makes over T (new Holder<U>(), new List<U>(),
+// new U[n], new Box<U>[n], typeof(List<U>)), held in the calling class's type
+// context for each instantiation (Monomorphiser.PlaceNeeds) and handed on
+// from copy to copy (Outer<U> calling Inner<U>), and from a lambda in the
+// class's code. Made over object, the Holder was no HolderBase<string> to the
+// analyses, and the list handed to its Put was given back under it; and
+// Items.ToList() in a Repo<string> was a List<object>.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
+public struct V { public int A; public V(int a) { A = a; } }
+public static class Keep { public static List<V>? Kept; }
+public class Box<T> where T : class { public T? V; }
+public abstract class HolderBase<T> where T : class { public abstract void Put(List<V> l); }
+public sealed class Holder<T> : HolderBase<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public override void Put(List<V> l) { Keep.Kept = l; }
+}
+public static class Util
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public static HolderBase<U> Make<U>() where U : class { return new Holder<U>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object MakeList<U>() where U : class { return new List<U>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object ArrU<U>() where U : class { return new U[2]; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object ArrBox<U>() where U : class { return new Box<U>[2]; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object TyList<U>() where U : class { return typeof(List<U>); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object Inner<U>() where U : class { return new List<U>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object Outer<U>() where U : class { return Inner<U>(); }
+}
+public sealed class Maker<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public HolderBase<T> Make() { return Util.Make<T>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public object MakeList() { return Util.MakeList<T>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public string Asked()
+    {
+        string s = "";
+        s += Util.ArrU<T>() is T[] ? "1" : "0";
+        s += Util.ArrBox<T>() is Box<T>[] ? "1" : "0";
+        s += Util.TyList<T>() == typeof(List<T>) ? "1" : "0";
+        s += Util.Outer<T>() is List<T> ? "1" : "0";
+        Func<object> f = () => Util.Inner<T>();
+        s += f() is List<T> ? "1" : "0";
+        return s;
+    }
+}
+public sealed class Repo<T> where T : class
+{
+    public List<T> Items = new List<T>();
+    [MethodImpl(MethodImplOptions.NoInlining)] public object AsList() { return Items.ToList(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public IEnumerable<T> Filtered() { return Items.ToList(); }
+}
+public static class R
+{
+    public static Maker<string> M = new Maker<string>();
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Fill(List<V> l, int b) { for (int i = 0; i < 40; i++) l.Add(new V(b + i)); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B(int k)
+    {
+        List<V> l = new(); Fill(l, k * 100);
+        HolderBase<string> h = M.Make();
+        h.Put(l);
+        return l.Count;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Churn(int k) { List<V> l = new(); for (int i = 0; i < 40; i++) l.Add(new V(-1)); return l.Count; }
+}
+static class P
+{
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 10; k++) t += R.B(k);
+        for (int k = 0; k < 100; k++) t += R.Churn(k);
+        List<V> kept = Keep.Kept!;
+        int bad = 0; for (int i = 0; i < kept.Count; i++) if (kept[i].A != 900 + i) bad++;
+        Console.WriteLine("kept " + kept.Count + " first " + kept[0].A + " bad " + bad + " " + t);
+        object h = R.M.Make(), l = R.M.MakeList();
+        Console.WriteLine("made " + (h is Holder<string>) + " " + (h is HolderBase<string>) + " " + (l is List<string>));
+        Repo<string> r = new Repo<string>();
+        r.Items.Add("ab"); r.Items.Add("cde");
+        object list = r.AsList();
+        int n = 0; foreach (string s in r.Filtered()) n += s.Length;
+        Console.WriteLine("linq " + (list is List<string>) + " " + (list.GetType() == typeof(List<string>)) + " " + n);
+        Console.WriteLine("asked " + R.M.Asked());
+    }
+}

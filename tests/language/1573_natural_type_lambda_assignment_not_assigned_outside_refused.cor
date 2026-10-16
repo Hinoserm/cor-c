@@ -1,0 +1,18 @@
+// test: natural_type_lambda_assignment_not_assigned_outside_refused
+// expect-compile-error: 'total' is used before it is definitely assigned
+//
+// THE SAME WHEN THE LAMBDA'S TYPE IS INFERRED (C# CS0165): working out what a
+// `var` lambda returns checks its body once more, and that pass too left what
+// the body assigned assigned outside it.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        int total;
+        var add = (int n) => { total = n; return n; };
+        Console.WriteLine(total + add(2));
+    }
+}

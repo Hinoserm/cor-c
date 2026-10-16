@@ -230,8 +230,19 @@ public sealed class RegionPointsTo : IModulePass
         i.Operands.Count == 2 && i.Operands.All(x => x is RegOperand) && o is RegOperand { Reg: var r }
         && Single(f, r) is { Op: Opcode.Shl, Operands: [RegOperand, ImmOperand { Value: > 0 and var k }] } ? (int)Math.Min(k, MostStrideShift + 1) : 0;
 
+    // THE SOLVE IN AN INSTANCE OF ITS OWN, let go when it returns: the
+    // pipeline keeps this pass in its list until the compile's optimiser is
+    // done, and with it every node, set and edge the solve made -- 1321's
+    // quarter of a gigabyte, held through the late passes after it.
+    private bool _solving;
+
     public void Run(Module m)
     {
+        if (!_solving)
+        {
+            new RegionPointsTo { Report = Report, _solving = true }.Run(m);
+            return;
+        }
         // A UNIT THE LINK REGENERATES with the whole program's answer
         // (Lto.RegionSolver): nothing to solve here, only to apply.
         if (m.RegionFacts is { } facts)
@@ -253,7 +264,12 @@ public sealed class RegionPointsTo : IModulePass
         _data = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data) _data[d.Name] = d;
 
-        _heapAtStart = GC.GetTotalMemory(false);
+        // WHAT THE COMPILE HOLDS, after a collection: counted without one, the
+        // garbage the passes before left uncollected was taken for the
+        // compile's own, and the budget below grew by it -- a few dozen
+        // megabytes alone, hundreds beside thirty other compiles, where 1321
+        // went on past its budget to the heap's hard limit and died.
+        _heapAtStart = GC.GetTotalMemory(true);
         NewObject(null, null, -1, null, 0);          // Global
 
         try

@@ -1,0 +1,47 @@
+// test: assignments_around_lambdas
+// expect-exit: 0
+// expect-output:
+// 7 7
+// 5
+// 12
+// 3 9
+//
+// WHAT STAYS LEGAL BESIDE CS0165 FOR LAMBDAS: a lambda may assign a variable
+// assigned before it, or one of its own; a local function called before a
+// read assigns what it assigns (C# counts it at the call); and a lambda in a
+// lambda leaves the outer lambda's own state as it found it.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        int a = 1;
+        Action set = () => { a = 7; };
+        set();
+        int b;
+        b = a;
+        Console.WriteLine(a + " " + b);
+
+        int x;
+        void Set() { x = 5; }
+        Set();
+        Console.WriteLine(x);
+
+        Func<int, int> twice = n =>
+        {
+            int doubled;
+            doubled = n * 2;
+            Action bump = () => { doubled += 0; };
+            bump();
+            return doubled;
+        };
+        Console.WriteLine(twice(6));
+
+        int seen = 0;
+        var count = (int n) => { int squared; squared = n * n; seen += 1; return squared; };
+        int nine = count(3);
+        Console.WriteLine(3 * seen + " " + nine);
+    }
+}

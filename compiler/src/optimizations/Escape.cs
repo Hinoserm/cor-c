@@ -880,12 +880,17 @@ public sealed partial class Escape : IModulePass
     private bool CatchesForeign(Instr end)
     {
         // The link's answer for a unit of a closed image (Module.ForeignCatchable).
+        // A SHARED COPY'S CATCH (`catch (GenEx<T>)`, Lowering.EmitCatching)
+        // names its type over __canon and takes every instantiation of it:
+        // any of them among what may arrive is one it can take
+        // (VirtualTargets.Answers).
         if (_module is { PreserveExports: true, ForeignCatchable: { } catchable })
-            return catchable.Count > 0 && (end.DispatchType is not string taken || catchable.Contains(taken));
+            return catchable.Count > 0 && (end.DispatchType is not string taken || catchable.Contains(taken)
+                || VirtualTargets.SharedFace(taken) is string family && catchable.Any(c => c.StartsWith(family, StringComparison.Ordinal)));
         if (_foreignTypes.Count == 0) return false;
         if (_foreignTypes.Contains("*") || end.DispatchType is not string caught) return true;
         Dictionary<string, DataItem> items = _items ??= _module!.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
-        return _foreignTypes.Any(t => Ancestry(items, t).Contains(caught));
+        return _foreignTypes.Any(t => VirtualTargets.Answers(Ancestry(items, t), caught));
     }
 
     private void OwnCaught(Function f, Dictionary<string, bool[]> summaries)
@@ -1711,8 +1716,24 @@ continue;
             HashSet<string> writers = MayWrite(field);
             Instr? unsafeAt = null;
             HashSet<VReg> inside = ReadInterior(f, Defs(f), value);
+            // A BLOCK WHERE NOTHING OF IT IS: not live into it, not made in it,
+            // not the read's own -- where LiveStretch finds nothing, and the
+            // walk below looks at none of its instructions unless the value
+            // goes into a handler. In a large function (BlockReaders) such a
+            // block is passed by without a walk of its instructions: each read
+            // walked every instruction of 1321's dynamic dispatch.
+            BlockReaders? liveIndex = intoPad || flow.Derived.Any(r => (uint)r.Id >= (uint)f.RegCount) ? null : AnalysisCache.ReadersOf(f);
+            ulong[]? making = null;
+            if (liveIndex is not null)
+            {
+                making = liveIndex.NewSet();
+                foreach (VReg r in flow.Derived) BlockReaders.Mark(making, liveIndex.Writers(r));
+            }
+            int xAt = -1;
             foreach (Block x in f.Blocks)
             {
+                xAt++;
+                if (making is not null && !ReferenceEquals(x, b) && (making[xAt >> 6] & (1UL << xAt)) == 0 && !LiveInto(liveness, x, flow.Derived)) continue;
                 (int from, int to) = LiveStretch(liveness, x, ReferenceEquals(x, b) ? b.Instrs.IndexOf(ld) : -1, flow.Derived);
                 for (int k = 0; k < x.Instrs.Count && unsafeAt is null; k++)
                 {
@@ -2624,11 +2645,29 @@ continue;
         if (made.Dest is null) return null;
         HashSet<VReg> same = new() { made.Dest };
         (string Name, long Offset)? found = null;
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
+        // ONE WALK, IN ORDER, OF THE BLOCKS THAT READ WHAT IT HAS FOUND
+        // (BlockReaders), in a large function: a copy of one found is found
+        // from there on, as the walk of the whole function finds it, and a
+        // block that reads it after the walk has passed is passed as before.
+        // Walked whole, twice for every allocation, it was a tenth of 1321's
+        // lifetime pass.
+        BlockReaders? index = AnalysisCache.ReadersOf(f);
+        ulong[]? bearing = index?.NewSet();
+        if (index is not null)
+        {
+            BlockReaders.Mark(bearing!, index.Odd);
+            BlockReaders.Mark(bearing!, index.Readers(made.Dest));
+        }
+        int blockCount = index?.Blocks.Length ?? f.Blocks.Count;
+        for (int place = index is null ? 0 : index.Next(bearing!, 0); place >= 0 && place < blockCount;
+             place = index is null ? place + 1 : index.Next(bearing!, place + 1))
+            foreach (Instr i in (index is null ? f.Blocks[place] : index.Blocks[place]).Instrs)
             {
                 if (i.Dest is not null && i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Operands[0] is RegOperand r && same.Contains(r.Reg))
+                {
                     same.Add(i.Dest);
+                    if (index is not null) BlockReaders.Mark(bearing!, index.Readers(i.Dest));
+                }
                 if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand bas && same.Contains(bas.Reg)
                     && i.Operands[1] is SymOperand vt && vt.Name.Contains("Lambda$", StringComparison.Ordinal))
                 {
@@ -2637,6 +2676,16 @@ continue;
                 }
             }
         return found;
+    }
+
+    /// <summary>The blocks of a large function listed (BlockReaders), in order, each once, with those that read what has no number.</summary>
+    internal static IEnumerable<Block> Listed(BlockReaders index, IEnumerable<int>? blocks, params IEnumerable<int>?[] more)
+    {
+        ulong[] set = index.NewSet();
+        BlockReaders.Mark(set, index.Odd);
+        if (blocks is not null) foreach (int k in blocks) set[k >> 6] |= 1UL << k;
+        foreach (IEnumerable<int>? other in more) if (other is not null) foreach (int k in other) set[k >> 6] |= 1UL << k;
+        for (int k = index.Next(set, 0); k >= 0; k = index.Next(set, k + 1)) yield return index.Blocks[k];
     }
 
     internal static bool NeverWritesFields(string callee) =>
@@ -2976,6 +3025,14 @@ continue;
         /// </summary>
         public List<(Instr At, object Root, long Offset)>? HeldWrites { get; set; }
         public List<(Instr At, object Root, long Offset)>? HeldReads { get; set; }
+        /// <summary>
+        /// THE REGISTERS THAT MAY HOLD AN EARLIER HOLDER: each written more
+        /// than once (HolderAlias: the holder or null), or copied from one,
+        /// with the blocks made here it may address. Round a loop that makes
+        /// such a block anew, one read before it is written again still
+        /// holds the block an earlier lap made (HeldAtSelf).
+        /// </summary>
+        public List<(VReg Register, VReg[] Blocks)>? HeldVariables { get; set; }
     }
 
     internal static Flow Analyse(Function f, IEnumerable<VReg> roots, Dictionary<string, bool[]> summaries, Instr? source,
@@ -2998,6 +3055,37 @@ continue;
         // pass's own largest allocation, a tenth of what the collector took
         // in a native compile (AnalysisCache, kept while the function stands).
         Defs defs = AnalysisCache.DefsOf(f, buildCfg: false);
+
+        // ONLY THE BLOCKS THAT CAN BEAR ON THE QUESTION, in order, in a large
+        // function (BlockReaders): those that read a register derived from the
+        // object or one holding frame memory that holds it, and -- once some
+        // frame memory does -- those that name a frame slot. A walk of the
+        // whole function passes every other instruction over without a look
+        // (`touches`, TouchesHolder; the source acts only on what is derived),
+        // so a walk of these blocks alone, round until nothing changes, is the
+        // same walk: the same answer, the same instruction blamed. A block
+        // that comes to bear after the walk has passed it is walked the next
+        // time round, as the whole walk would. Walked whole, the 3,313
+        // allocations of 1321's dynamic dispatch -- 372 thousand instructions
+        // -- were a billion looks, a third of the compile.
+        BlockReaders? index = AnalysisCache.ReadersOf(f);
+        ulong[]? bearing = index?.NewSet();
+        bool slotsBear = false;
+        void Bears(VReg r)
+        {
+            if (index is not null) BlockReaders.Mark(bearing!, index.Readers(r));
+        }
+        void SlotsBear()
+        {
+            if (index is null || slotsBear) return;
+            slotsBear = true;
+            BlockReaders.Mark(bearing!, index.Slots);
+        }
+        if (index is not null)
+        {
+            BlockReaders.Mark(bearing!, index.Odd);
+            foreach (VReg r in flow.Derived) Bears(r);
+        }
 
         HashSet<VReg>? pending = null;
         RegisterWrites? writes = null;
@@ -3035,12 +3123,17 @@ continue;
         HashSet<(object Root, long Offset)>? selfRefs = null;
         // The holders' writes and reads, for Flow.HeldWrites and HeldReads.
         HashSet<(Instr At, object Root, long Offset)>? heldWrites = null, heldReads = null;
+        // Holder registers written more than once, and their copies (Flow.HeldVariables).
+        HashSet<VReg>? holderVariables = null;
         bool changed = true;
+        int blockCount = index?.Blocks.Length ?? f.Blocks.Count;
         while (changed && !flow.Escapes)
         {
             changed = false;
-            foreach (Block b in f.Blocks)
+            for (int place = index is null ? 0 : index.Next(bearing!, 0); place >= 0 && place < blockCount;
+                 place = index is null ? place + 1 : index.Next(bearing!, place + 1))
             {
+                Block b = index is null ? f.Blocks[place] : index.Blocks[place];
                 foreach (Instr i in b.Instrs)
                 {
                     if (ReferenceEquals(i, source))
@@ -3436,6 +3529,7 @@ continue;
                     // register -- one that holds something else -- waits.
                     if (flow.Derived.Add(d))
                     {
+                        Bears(d);
                         resolved = true;
                         changed = true;
                     }
@@ -3473,7 +3567,7 @@ continue;
                     foreach (VReg d in group)
                     {
                         pending.Remove(d);
-                        if (flow.Derived.Add(d)) { resolved = true; changed = true; }
+                        if (flow.Derived.Add(d)) { Bears(d); resolved = true; changed = true; }
                     }
                 }
                 // Still some that can hold another value, and nothing more to
@@ -3492,6 +3586,7 @@ continue;
                     {
                         if (flow.Derived.Add(d))
                         {
+                            Bears(d);
                             flow.Borrowed.Add(d);
                             changed = true;
                         }
@@ -3530,6 +3625,20 @@ continue;
         // or read was seen are one holder (MergeFrameWrites).
         if (heldWrites is not null) flow.HeldWrites = heldWrites.Select(w => (w.At, Canon(w.Root), w.Offset)).Distinct().ToList();
         if (heldReads is not null) flow.HeldReads = heldReads.Select(r => (r.At, Canon(r.Root), r.Offset)).Distinct().ToList();
+        // And the blocks made here each variable may address: its holder's,
+        // or every one taken as one with it (MergeFrameWrites).
+        if (holderVariables is not null && holderRegs is not null)
+            foreach (VReg v in holderVariables)
+            {
+                if (!holderRegs.TryGetValue(v, out var at)) continue;
+                object one = Canon(at.Root);
+                List<VReg> blocks = new();
+                if (one is VReg made) blocks.Add(made);
+                if (sameSlot is not null)
+                    foreach ((object was, object into) in sameSlot)
+                        if (was is VReg member && Equals(Canon(into), one) && !blocks.Contains(member)) blocks.Add(member);
+                if (blocks.Count > 0) (flow.HeldVariables ??= new()).Add((v, blocks.ToArray()));
+            }
         return flow;
 
         bool TouchesHolder(Instr i)
@@ -3577,7 +3686,8 @@ continue;
             if (at is not null)
             {
                 holderRegs[r] = at.Value;
-                if (at.Value.Root is VReg made && made != r) holderRegs.TryAdd(made, (made, 0));
+                Bears(r);
+                if (at.Value.Root is VReg made && made != r && holderRegs.TryAdd(made, (made, 0))) Bears(made);
                 changed = true;
             }
             return at;
@@ -3650,6 +3760,7 @@ continue;
         {
             root = Canon(root);
             held ??= new();
+            SlotsBear();
             holderRegs ??= new();
             if (!held.TryGetValue(root, out HashSet<long>? offsets)) held[root] = offsets = new();
             if (offsets.Add(offset)) changed = true;
@@ -3667,12 +3778,12 @@ continue;
                 case Opcode.ZExt32:
                 case Opcode.SExt32:
                     if (i.Dest is null || Holding(i.Operands[0]) is not var (root, delta)) { flow.Escapes = true; return; }
-                    HolderAlias(i.Dest, root, delta);
+                    HolderAlias(i.Dest, root, delta, i.Operands[0]);
                     return;
                 case Opcode.Add:
                     if (i.Dest is null || i.Operands[1] is not ImmOperand plus || Holding(i.Operands[0]) is not var (r2, d2))
                     { flow.Escapes = true; return; }
-                    HolderAlias(i.Dest, r2, d2 + plus.Value);
+                    HolderAlias(i.Dest, r2, d2 + plus.Value, i.Operands[0]);
                     return;
                 case Opcode.Load:
                     // What was stored at this offset is what is read back.
@@ -3757,10 +3868,14 @@ continue;
                 if (Holding(o) is var (root, _)) (heldReads ??= new()).Add((i, root, -1));
         }
 
-        void HolderAlias(VReg d, object root, long delta)
+        void HolderAlias(VReg d, object root, long delta, Operand? from = null)
         {
             if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
                 Console.Error.WriteLine($"alias {f.Name}: {d} to {root} +{delta} defs {defs.Count(d)}");
+            // Written more than once, or copied from one that is: it may hold
+            // a block an earlier lap made (Flow.HeldVariables).
+            if (defs.Count(d) > 1 || from is RegOperand { Reg: var source } && holderVariables?.Contains(source) == true)
+                if ((holderVariables ??= new()).Add(d)) changed = true;
             if (defs.Count(d) > 1)
             {
                 // A VARIABLE THAT HOLDS THE HOLDER OR NULL -- an enumerator
@@ -3774,7 +3889,7 @@ continue;
                     root = Canon(root);
                 }
             }
-            if (holderRegs!.TryAdd(d, (root, delta))) changed = true;
+            if (holderRegs!.TryAdd(d, (root, delta))) { Bears(d); changed = true; }
         }
 
         // A CALL'S RESULT THAT HOLDS THE OBJECT (Held): a block made for the
@@ -4094,7 +4209,10 @@ continue;
         bool NumberOnly(VReg r, int depth)
         {
             if (depth > 4) return false;
-            foreach (Block nb in f.Blocks)
+            // Every reader, wherever it is: in a large function, only the
+            // blocks listed as reading it and those reading what has no number.
+            IEnumerable<Block> readersOf = index is null ? f.Blocks : Listed(index, index.Readers(r));
+            foreach (Block nb in readersOf)
                 foreach (Instr use in nb.Instrs)
                 {
                     bool reads = false;
@@ -4143,6 +4261,7 @@ continue;
             }
             if (flow.Derived.Add(d))
             {
+                Bears(d);
                 if (borrowed) flow.Borrowed.Add(d);
                 changed = true;
             }
@@ -4788,7 +4907,12 @@ continue;
                                 continue;
                             }
                             var addresses = OwnedFieldEscape.Addresses(f, owner.Aliases);
-                            foreach (var targetBlock in f.Blocks)
+                            // A store of something derived reads it: in a large
+                            // function, only the blocks that read what is derived.
+                            BlockReaders? storeIndex = AnalysisCache.ReadersOf(f);
+                            IEnumerable<Block> storeBlocks = storeIndex is null ? f.Blocks
+                                : Listed(storeIndex, null, flow.Derived.Select(storeIndex.Readers).Where(l => l is not null).SelectMany(l => l!).ToList());
+                            foreach (var targetBlock in storeBlocks)
                             foreach (Instr store in targetBlock.Instrs)
                             {
                                 if (store.Op != Opcode.Store || stores.Contains(store) || store.Size != IrTypes.Word.Bytes()
@@ -5852,6 +5976,36 @@ continue;
         if (flow.HeldWrites is not { Count: > 0 } writes || flow.HeldReads is not { Count: > 0 } reads || alloc.Dest is null) return false;
         if (!Repeating(f).Contains(b)) return false;
         RegisterWrites all = AnalysisCache.WritesOf(f);
+        // A HOLDER MADE ROUND A LOOP IS A BLOCK A LAP, and a word of one is not
+        // a word of another: this lap's store clears this lap's block's word,
+        // and the walk below takes every register for the one block. A
+        // variable that may hold a block an earlier lap made (Flow.HeldVariables:
+        // `prev = holder` at the end of the lap), live where this lap's object
+        // is made, still reaches the last lap's object in that block's word:
+        // read through it, the old object is read after the new one is made
+        // (`prev.Items[0]`, of a List made each lap in one frame slot, read
+        // the new lap's List).
+        if (flow.HeldVariables is { Count: > 0 } variables)
+        {
+            HashSet<Block> repeating = Repeating(f);
+            HashSet<VReg>? earlier = null;
+            foreach ((VReg variable, VReg[] blocks) in variables)
+                foreach (VReg block in blocks)
+                    if (!all.TryGetValue(block, out WriteList made) || made.Count != 1 || BlockOf(made[0]) is not { } where || repeating.Contains(where))
+                    {
+                        (earlier ??= new()).Add(variable);
+                        break;
+                    }
+            if (earlier is not null && reads.Any(r => r.At.Operands.Any(o => o is RegOperand { Reg: var through } && earlier.Contains(through)))
+                && LiveAtSelf(liveness, PadLive(liveness), b, alloc, earlier))
+                return true;
+        }
+        Block? BlockOf(Instr i)
+        {
+            foreach (Block x in f.Blocks)
+                if (x.Instrs.Contains(i)) return x;
+            return null;
+        }
         // This lap's object: the allocation's result, through single copies.
         bool ThisLap(Operand o)
         {

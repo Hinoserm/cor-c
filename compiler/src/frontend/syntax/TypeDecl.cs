@@ -369,6 +369,14 @@ public sealed class TypeDecl : Node
     public List<TypeRef>? CanonMadeWritten { get; set; }
 
     /// <summary>
+    /// Calls in this canonical copy's code of shared method copies whose
+    /// dictionaries its type context is to hold (CallExpr.HiddenNeeds), not yet
+    /// placed among CanonMadeWritten: the binder adds them, the next expansion
+    /// places them (Monomorphiser.PlaceNeeds).
+    /// </summary>
+    public List<CallExpr>? NeedCalls { get; set; }
+
+    /// <summary>
     /// Those classes for this copy's own arguments: what its objects' type
     /// context holds after the arguments' own entries (Lowering.TypeContext),
     /// so that the shared code makes a List&lt;string&gt; for a Box&lt;string&gt;.

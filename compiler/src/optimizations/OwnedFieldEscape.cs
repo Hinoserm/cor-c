@@ -109,9 +109,16 @@ internal sealed class OwnedFieldEscape
 
     internal static Dictionary<VReg, long> Addresses(Function f, IEnumerable<VReg> roots)
     {
-        AddressScan scan = ReferenceEquals(_cacheFor, f) ? _cached ??= new AddressScan(f) : new AddressScan(f);
+        AddressScan scan = ReferenceEquals(_cacheFor, f) ? _cached ??= ScanOf(f) : ScanOf(f);
         return scan.Find(roots);
     }
+
+    // THE SCAN OF THE FUNCTION AS IT STANDS, kept with its other analyses
+    // (AnalysisCache) while it stands: a question outside a scan's scope --
+    // every record OwnFields asks about, every field read OwnedFields judges --
+    // scanned the whole function again, and found its joined writes again
+    // (MultiWrites): a quarter of 1321's lifetime pass, after the walks.
+    private static AddressScan ScanOf(Function f) => AnalysisCache.Kept(f, AnalysisCache.AddressScans, g => new AddressScan(g));
 
     // ONE SCAN OF A FUNCTION WHILE NOTHING CHANGES IT (Escape.PromoteIn):
     // every allocation, every owner of it and every attempt asked for the
@@ -156,7 +163,7 @@ internal sealed class OwnedFieldEscape
     /// </summary>
     internal static Defs DefsOf(Function f)
     {
-        if (ReferenceEquals(_cacheFor, f) && _scanOwned) return (_cached ??= new AddressScan(f)).Defs;
+        if (ReferenceEquals(_cacheFor, f) && _scanOwned) return (_cached ??= ScanOf(f)).Defs;
         return new Defs(f, buildCfg: false);
     }
 

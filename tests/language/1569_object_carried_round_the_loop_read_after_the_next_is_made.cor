@@ -1,0 +1,68 @@
+// test: object_carried_round_the_loop_read_after_the_next_is_made
+// expect-exit: 0
+// expect-output:
+// cell 1496502
+// list 498501
+// made 507492
+// child 498501
+// array 503496
+// copied 498501
+// two back 497503
+//
+// AN OBJECT MADE EVERY LAP AND CARRIED TO THE NEXT in a variable (`prev =
+// b` at the end of the lap, `prev.Items[0]` read in the next) is the last
+// lap's object when it is read, not this lap's. Two passes took the
+// variable, written only with null and the object, for this lap's object:
+// the field forwarding (Devirtualize.ForwardFreshFields) read `prev.V` as
+// the value this lap stored into `b.V`, and the lifetime rules
+// (Escape.HeldAtSelf) put the List `b` holds in one frame slot made again
+// every lap, so `prev.Items` read the new lap's List. Each sum came out one
+// lap ahead. Read through a copy taken before the next is made, and two
+// laps back, the same.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class Cell { public int V; }
+public sealed class Plain { public List<int> Items; }
+public sealed class Inner { public int V; }
+public sealed class Outer { public Inner Child; }
+public sealed class Holder { public int[] Items; }
+
+static class P
+{
+    static Plain Make(int k) { Plain b = new(); b.Items = new List<int>(); b.Items.Add(k); b.Items.Add(k + 7); return b; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Cells(int n) { Cell? prev = null; long t = 0; for (int k = 0; k < n; k++) { Cell b = new(); b.V = k * 3 + 1; if (prev != null) t += prev.V; prev = b; } return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Lists(int n) { Plain? prev = null; long t = 0; for (int k = 0; k < n; k++) { Plain b = new(); b.Items = new List<int>(); b.Items.Add(k); if (prev != null) t += prev.Items[0]; prev = b; } return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Made(int n) { Plain? prev = null; long t = 0; for (int k = 0; k < n; k++) { var b = Make(k); if (prev != null) t += prev.Items[1] + prev.Items.Count; prev = b; } return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Children(int n) { Outer? prev = null; long t = 0; for (int k = 0; k < n; k++) { Outer b = new(); b.Child = new Inner(); b.Child.V = k; if (prev != null) t += prev.Child.V; prev = b; } return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Arrays(int n) { Holder? prev = null; long t = 0; for (int k = 0; k < n; k++) { Holder b = new(); b.Items = new int[2]; b.Items[1] = k + 5; if (prev != null) t += prev.Items[1]; prev = b; } return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Copied(int n) { Plain? prev = null; long t = 0; for (int k = 0; k < n; k++) { Plain? p = prev; Plain b = new(); b.Items = new List<int>(); b.Items.Add(k); if (p != null) t += p.Items[0]; prev = b; } return t; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long TwoBack(int n) { Plain? prev = null, prev2 = null; long t = 0; for (int k = 0; k < n; k++) { Plain b = new(); b.Items = new List<int>(); b.Items.Add(k); if (prev2 != null) t += prev2.Items[0]; prev2 = prev; prev = b; } return t; }
+
+    static int Main()
+    {
+        Console.WriteLine("cell " + Cells(1000));
+        Console.WriteLine("list " + Lists(1000));
+        Console.WriteLine("made " + Made(1000));
+        Console.WriteLine("child " + Children(1000));
+        Console.WriteLine("array " + Arrays(1000));
+        Console.WriteLine("copied " + Copied(1000));
+        Console.WriteLine("two back " + TwoBack(1000));
+        return 0;
+    }
+}

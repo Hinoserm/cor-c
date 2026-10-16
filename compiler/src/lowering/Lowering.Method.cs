@@ -104,6 +104,9 @@ public sealed partial class Lowering
     /// </summary>
     private VReg[]? _typeArgs;
 
+    /// <summary>A shared method copy's dictionary (MethodDecl.CopyNeeds), its last hidden argument; null outside one.</summary>
+    private VReg? _needDictionary;
+
     /// <summary>The hidden arguments the next direct call of this method passes (EmitCall, CallDirect).</summary>
     private (MethodSymbol Method, List<Operand> Args)? _pendingTypeArgs;
 
@@ -160,6 +163,7 @@ public sealed partial class Lowering
         _returnValue = null;
         _resultBuffer = null;
         _typeArgs = null;
+        _needDictionary = null;
         _pendingTypeArgs = null;
         _heapStructs.Clear();
         _returnType = null;
@@ -320,6 +324,12 @@ public sealed partial class Lowering
                 _typeArgs[i].Number = true;
                 _f.Params.Add(_typeArgs[i]);
             }
+            // AND ITS DICTIONARY (MethodDecl.CopyNeeds), after them: the
+            // descriptors of what it makes over them, 0 from a call that has
+            // none to hand it.
+            _needDictionary = _f.NewReg(IrTypes.Word, "tdict");
+            _needDictionary.Number = true;
+            _f.Params.Add(_needDictionary);
         }
 
         ScanAddressTaken(decl.Body!);

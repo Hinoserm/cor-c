@@ -1,8 +1,20 @@
 #nullable enable
 namespace Corsac.Lang;
 
-public sealed class CatchClause : Node
+public sealed class CatchClause : Node, ICanonSlot, ICanonShape
 {
+    /// <summary>
+    /// A CATCH OF A CONSTRUCTED TYPE OVER A SHARED COPY'S PARAMETERS --
+    /// `catch (GenEx<T>)` -- marked as `is GenEx<T>` is (Monomorphiser.
+    /// CanonTested): the entry its `this`'s type context holds for that
+    /// type, or -1.
+    /// </summary>
+    public int CanonSlot { get; set; } = -1;
+    /// <summary>The `this` that entry is read through (ICanonSlot).</summary>
+    public Expr? CanonSelf { get; set; }
+    /// <summary>The caught type's arguments as written, in a shared method copy (ICanonShape), or null.</summary>
+    public List<TypeRef>? ShapeArgs { get; set; }
+
     public TypeRef? Type { get; init; }
     public string? Name { get; init; }
 

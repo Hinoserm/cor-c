@@ -1,0 +1,99 @@
+// test: shared_method_copy_class_tests
+// expect-exit: 0
+// expect-output:
+// class copy: 11111111 1111
+// method copy: 111111
+// variance: 1111
+// direct 11
+//
+// Type tests in shared code over T, where only run time knows T. In a
+// shared class copy through the object's type context; in a shared method
+// copy -- Util.IsBox<T> called from Tester<T>'s shared code -- by the class's
+// identity record at its depth (a generic class's instantiation, Runtime.
+// ShapedAs's class form) or by the hidden type argument itself (`o is U`,
+// `o as U`, `(U)o`). With every argument known the runtime's answer is the
+// answer: the copy's own test, over object, said yes of a Box<object> and
+// of a List<object> as an IList<U> whatever U was. An interface converts by
+// its declared variance (List<Dog> is an IEnumerable<Animal>, Action<object>
+// an Action<Animal>); a class does not.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public class Box<T> where T : class { public T? V; }
+public interface IFace<T> where T : class { T? Get(); }
+public sealed class Impl<T> : IFace<T> where T : class { public T? Get() { return null; } }
+public class Animal { }
+public sealed class Dog : Animal { }
+public sealed class Car { }
+public static class Util
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsBox<T>(object o) where T : class { return o is Box<T>; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsFace<T>(object o) where T : class { return o is IFace<T>; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsFunc<T>(object o) where T : class { return o is Func<T>; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsList<T>(object o) where T : class { return o is List<T>; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsU<U>(object o) where U : class { return o is U; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool AsU<U>(object o) where U : class { return (o as U) != null; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool CastU<U>(object o) where U : class
+    {
+        try { U u = (U)o; return u != null; } catch (InvalidCastException) { return false; }
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsIList<U>(object o) where U : class { return o is IList<U>; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsSeq<U>(object o) where U : class { return o is IEnumerable<U>; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsAct<U>(object o) where U : class { return o is Action<U>; }
+}
+public sealed class Tester<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public string Run(object box, object face, object func, object list)
+    {
+        string s = "";
+        s += (box is Box<T>) ? "1" : "0";
+        s += (box is Box<T> b) ? "1" : "0";
+        s += (box as Box<T>) != null ? "1" : "0";
+        switch (box) { case Box<T> bb: s += "1"; break; default: s += "0"; break; }
+        s += (face is IFace<T>) ? "1" : "0";
+        s += (func is Func<T>) ? "1" : "0";
+        s += (list is List<T>) ? "1" : "0";
+        s += (new Box<object>() is Box<T>) ? "0" : "1";
+        s += " ";
+        s += Util.IsBox<T>(box) ? "1" : "0";
+        s += Util.IsFace<T>(face) ? "1" : "0";
+        s += Util.IsFunc<T>(func) ? "1" : "0";
+        s += Util.IsList<T>(list) ? "1" : "0";
+        return s;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)] public string Bare(object t, object other)
+    {
+        string s = "";
+        s += Util.IsU<T>(t) ? "1" : "0";
+        s += Util.IsU<T>(other) ? "0" : "1";
+        s += Util.AsU<T>(other) ? "0" : "1";
+        s += Util.CastU<T>(other) ? "0" : "1";
+        s += Util.IsBox<T>(new Box<object>()) ? "0" : "1";
+        s += Util.IsIList<T>(new List<object>()) ? "0" : "1";
+        return s;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)] public string Variance(object dogs, object cars, object act)
+    {
+        string s = "";
+        s += Util.IsSeq<T>(dogs) ? "1" : "0";
+        s += Util.IsSeq<T>(cars) ? "0" : "1";
+        s += Util.IsIList<T>(dogs) ? "0" : "1";
+        s += Util.IsAct<T>(act) ? "1" : "0";
+        return s;
+    }
+}
+static class P
+{
+    static void Main()
+    {
+        Func<string> f = () => "x";
+        Tester<string> t = new Tester<string>();
+        Console.WriteLine("class copy: " + t.Run(new Box<string>(), new Impl<string>(), f, new List<string>()));
+        Console.WriteLine("method copy: " + t.Bare("x", new object()));
+        Action<object> act = o => { };
+        Console.WriteLine("variance: " + new Tester<Animal>().Variance(new List<Dog>(), new List<Car>(), act));
+        Console.WriteLine("direct " + (Util.IsBox<string>(new Box<string>()) ? "1" : "0") + (Util.IsFunc<string>(f) ? "1" : "0"));
+    }
+}

@@ -1,0 +1,40 @@
+// The other unit of 1584_shared_copies_make_across_units: a generic class
+// whose shared code calls generic methods that make and test over its T, and
+// a generic method that catches over its own.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+namespace MakerUnits;
+
+public class Holder<T> where T : class { public T? V; }
+public sealed class GenEx<T> : Exception where T : class { public GenEx() : base("gen") { } }
+
+public static class Util
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object Make<U>() where U : class { return new Holder<U>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static object MakeList<U>() where U : class { return new List<U>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool IsHolder<U>(object o) where U : class { return o is Holder<U>; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public static bool Catch<U>() where U : class
+    {
+        try { throw new GenEx<U>(); } catch (GenEx<U>) { return true; } catch (Exception) { return false; }
+    }
+}
+
+public sealed class Maker<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public object One() { return Util.Make<T>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public object Two() { return Util.MakeList<T>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public bool Holds(object o) { return Util.IsHolder<T>(o); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public bool Catches() { return Util.Catch<T>(); }
+}
+
+public static class Local
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string Both()
+    {
+        Maker<string> m = new Maker<string>();
+        return (m.One() is Holder<string>) + " " + (m.Two() is List<string>) + " " + m.Holds(new Holder<string>()) + " " + m.Catches();
+    }
+}

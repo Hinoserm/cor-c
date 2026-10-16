@@ -77,7 +77,20 @@ public static class VirtualTargets
     /// a Func<string> lambda is the Func<__canon> Lazy<T>'s shared body calls.
     /// </summary>
     public static bool Answers(IReadOnlySet<string> ancestors, string declaring)
-        => ancestors.Contains(declaring) || SharedFace(declaring) is string generic && ancestors.Any(up => up.StartsWith(generic, StringComparison.Ordinal));
+        => ancestors.Contains(declaring) || SharedFace(declaring) is string generic && ancestors.Any(up => up.StartsWith(generic, StringComparison.Ordinal))
+        || OfSharedFace(ancestors, declaring);
+
+    /// <summary>
+    /// AN OBJECT SHARED CODE MADE, the other way round: stamped for every
+    /// analysis with the type the shared code names -- `t_Holder$0024__canon`
+    /// (Builder.StoreDescribed) -- and written with the instantiation its
+    /// type context or its caller's dictionary found, any of that generic's.
+    /// It is a HolderBase&lt;string&gt; to a call when one of its ancestors is
+    /// a shared face of HolderBase's: every instantiation runs that face's
+    /// code at each slot.
+    /// </summary>
+    public static bool OfSharedFace(IEnumerable<string> ancestors, string declaring)
+        => ancestors.Any(up => SharedFace(up) is string family && declaring.StartsWith(family, StringComparison.Ordinal));
 
     /// <summary>
     /// WHETHER AN OBJECT STAMPED WITH A DESCRIPTOR MAY ANSWER AN INTERFACE ITS
@@ -736,6 +749,26 @@ public static class VirtualTargets
             return _instantiations[generic] = found.Order().ToList();
         }
 
+        private Dictionary<string, List<int>>? _ofSharedFaces;
+
+        /// <summary>Every descriptor one of whose ancestors is a shared face of a generic `declaring` is an instantiation of.</summary>
+        private IEnumerable<int> OfSharedFaces(string declaring)
+        {
+            if (_ofSharedFaces is null)
+            {
+                _ofSharedFaces = new(StringComparer.Ordinal);
+                foreach ((string type, List<int> under) in _derived!)
+                    if (SharedFace(type) is string family)
+                    {
+                        if (!_ofSharedFaces.TryGetValue(family, out List<int>? list)) _ofSharedFaces[family] = list = new();
+                        list.AddRange(under);
+                    }
+            }
+            foreach ((string family, List<int> under) in _ofSharedFaces)
+                if (declaring.StartsWith(family, StringComparison.Ordinal))
+                    foreach (int d in under) yield return d;
+        }
+
         public string[]? Targets(string declaring, long slot, Made? made = null, string? within = null)
         {
             if (_derived is null)
@@ -763,6 +796,12 @@ public static class VirtualTargets
             // region was given back under it.
             if (!everyType && SharedFace(declaring) is string generic)
                 reaching = reaching.Union(Instantiations(generic));
+            // AND AN OBJECT SHARED CODE MADE (OfSharedFace): stamped with the
+            // shared face of a generic the declaring type is an instantiation
+            // of, it may be any of them -- Holder<__canon> made for a
+            // Holder<string> is called as a HolderBase<string>.
+            if (!everyType)
+                reaching = reaching.Union(OfSharedFaces(declaring));
             // ONLY THE RECEIVER'S OWN CLASS AND WHAT DERIVES FROM IT, where the
             // unit knew it (a parameter declared as a class, Escape.VirtualCallee):
             // a List's GetEnumerator through IEnumerable is the List's, not
@@ -771,6 +810,7 @@ public static class VirtualTargets
             if (within is not null)
             {
                 HashSet<int> below = _derived.TryGetValue(within, out List<int>? under) ? new(under) : new();
+                below.UnionWith(OfSharedFaces(within));
                 reaching = reaching.Where(below.Contains);
                 everyType = false;
             }

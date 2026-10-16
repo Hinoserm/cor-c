@@ -1,0 +1,75 @@
+// test: shared_generic_catch_over_its_parameter
+// expect-exit: 0
+// expect-output:
+// caught 8 saved gen 8 100
+// method copy: True True
+//
+// `catch (GenEx<T>)` in a shared class copy and in a shared method copy is
+// a test of the object thrown for what T is at run time, as `is GenEx<T>`
+// is: over the machine word it named GenEx<__canon> (or GenEx<object>),
+// which nothing throws, and the exception went unhandled. The exception
+// caught here was thrown from a static that keeps it: the catch must keep
+// it too (the escape pass takes a shared copy's catch for every
+// instantiation of its type), and after a collection it still reads.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public sealed class GenEx<T> : Exception where T : class
+{
+    public List<int> Items;
+    public GenEx(List<int> items) : base("gen") { Items = items; }
+}
+public static class Thrower
+{
+    public static GenEx<string>? Saved;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Throw(int k)
+    {
+        List<int> l = new List<int>(); for (int i = 0; i < 8; i++) l.Add(k + i);
+        GenEx<string> e = new GenEx<string>(l);
+        Saved = e;
+        throw e;
+    }
+}
+public static class Methods
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool Catch<U>() where U : class
+    {
+        try { throw new GenEx<U>(new List<int>()); } catch (GenEx<U>) { return true; } catch (Exception) { return false; }
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool CatchOther<U>() where U : class
+    {
+        try { throw new GenEx<object>(new List<int>()); } catch (GenEx<U>) { return false; } catch (Exception) { return true; }
+    }
+}
+public sealed class Catcher<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Run(int k)
+    {
+        try { Thrower.Throw(k); }
+        catch (GenEx<T> e) { return e.Items.Count; }
+        return -1;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)] public bool InCopy() { return Methods.Catch<T>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public bool OtherInCopy() { return Methods.CatchOther<T>(); }
+}
+static class P
+{
+    static GenEx<string>[] Hold = new GenEx<string>[64];
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn(int k) { List<int> l = new List<int>(); for (int i = 0; i < 8; i++) l.Add(-7); Hold[k & 63] = new GenEx<string>(l); }
+    static void Main()
+    {
+        int got = new Catcher<string>().Run(100);
+        for (int k = 0; k < 200; k++) Churn(k);
+        Gc.Collect();
+        GenEx<string> s = Thrower.Saved!;
+        Console.WriteLine("caught " + got + " saved " + s.Message + " " + s.Items.Count + " " + s.Items[0]);
+        Console.WriteLine("method copy: " + new Catcher<string>().InCopy() + " " + new Catcher<string>().OtherInCopy());
+    }
+}

@@ -1,0 +1,80 @@
+// test: shared_generic_makes_nested_instantiations
+// expect-exit: 0
+// expect-output:
+// kept 40 first 900 bad 0 4400 True True
+// tests 1111
+// arrays True True True True stored
+//
+// A shared class copy makes, tests for and casts to types built over its T
+// at any depth -- Holder<Wrap<T>>, List<List<T>>, IEnumerable<List<T>>,
+// Box<T>[], typeof(Box<List<T>>) -- and each is what T is for the object at
+// hand, read from its type context: over the machine word it was
+// Holder<Wrap<__canon>>, which no test for Holder<Wrap<string>> answers and
+// no analysis took for a HolderBase<Wrap<string>> -- the list handed to its
+// Put was given back under it. An array of one made there holds what it is
+// written to hold.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+public struct V { public int A; public V(int a) { A = a; } }
+public static class Keep { public static List<V>? Kept; }
+public sealed class Wrap<T> where T : class { public T? V; }
+public sealed class Box<T> where T : class { public T? V; }
+public abstract class HolderBase<T> where T : class { public abstract void Put(List<V> l); }
+public sealed class Holder<T> : HolderBase<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public override void Put(List<V> l) { Keep.Kept = l; }
+}
+public sealed class Maker<T> where T : class
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] public HolderBase<Wrap<T>> Make() { return new Holder<Wrap<T>>(); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public string Tests(object h, object l)
+    {
+        string s = "";
+        s += (h is Holder<Wrap<T>>) ? "1" : "0";
+        s += (l is List<List<T>>) ? "1" : "0";
+        s += (l is IEnumerable<List<T>>) ? "1" : "0";
+        try { Holder<Wrap<T>> c = (Holder<Wrap<T>>)h; s += c != null ? "1" : "0"; } catch (InvalidCastException) { s += "X"; }
+        return s;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)] public object Arr() { return new Box<T>[2]; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public object ArrL() { return new List<T>[2]; }
+    [MethodImpl(MethodImplOptions.NoInlining)] public object Ty() { return typeof(Box<T>); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public object TyN() { return typeof(Box<List<T>>); }
+}
+public static class R
+{
+    public static Maker<string> M = new Maker<string>();
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Fill(List<V> l, int b) { for (int i = 0; i < 40; i++) l.Add(new V(b + i)); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long B(int k)
+    {
+        List<V> l = new(); Fill(l, k * 100);
+        HolderBase<Wrap<string>> h = M.Make();
+        h.Put(l);
+        return l.Count;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Churn(int k) { List<V> l = new(); for (int i = 0; i < 40; i++) l.Add(new V(-1)); return l.Count; }
+}
+static class P
+{
+    static void Main()
+    {
+        long t = 0;
+        for (int k = 0; k < 10; k++) t += R.B(k);
+        for (int k = 0; k < 100; k++) t += R.Churn(k);
+        List<V> kept = Keep.Kept!;
+        int bad = 0; for (int i = 0; i < kept.Count; i++) if (kept[i].A != 900 + i) bad++;
+        object h = R.M.Make();
+        Console.WriteLine("kept " + kept.Count + " first " + kept[0].A + " bad " + bad + " " + t + " " + (h is Holder<Wrap<string>>) + " " + (h is HolderBase<Wrap<string>>));
+        List<List<string>> ll = new List<List<string>>();
+        Console.WriteLine("tests " + R.M.Tests(new Holder<Wrap<string>>(), ll));
+        object a = R.M.Arr(), b = R.M.ArrL();
+        string stored;
+        try { ((object[])a)[0] = new Box<string>(); stored = "stored"; } catch (ArrayTypeMismatchException) { stored = "mismatch"; }
+        Console.WriteLine("arrays " + (a is Box<string>[]) + " " + (b is List<string>[]) + " " + (R.M.Ty() == typeof(Box<string>)) + " " + (R.M.TyN() == typeof(Box<List<string>>)) + " " + stored);
+    }
+}

@@ -414,10 +414,13 @@ public sealed partial class Escape
         if (!framed)
         {
             List<VReg>? copies = null;
+            BlockReaders? copyIndex = AnalysisCache.ReadersOf(f);
             for (int round = 0; round < 4; round++)
             {
                 List<VReg>? more = null;
-                foreach (Block b in f.Blocks)
+                // A call on the object reads an address of it: in a large
+                // function, only the blocks that read one (BlockReaders).
+                foreach (Block b in copyIndex is null ? f.Blocks : Listed(copyIndex, null, addresses.Keys.Select(copyIndex.Readers).Where(l => l is not null).SelectMany(l => l!).ToList()))
                     foreach (Instr i in b.Instrs)
                     {
                         if (i.Dest is not { } d || addresses.ContainsKey(d) || i.Op is not (Opcode.Call or Opcode.CallIndirect)) continue;
@@ -469,7 +472,15 @@ public sealed partial class Escape
             return (known, null);
         }
 
-        foreach (Block b in f.Blocks)
+        // ONLY THE BLOCKS THAT READ AN ADDRESS OF THE OBJECT, in order, in a
+        // large function (BlockReaders): the walk of the whole function passes
+        // every other instruction over (`uses`), and the addresses do not
+        // change while it walks. Walked whole for every object owned, 1321's
+        // dynamic dispatch spent a quarter of its lifetime pass here.
+        BlockReaders? index = AnalysisCache.ReadersOf(f);
+        IEnumerable<Block> walked = index is null ? f.Blocks
+            : Listed(index, null, addresses.Keys.Select(index.Readers).Where(l => l is not null).SelectMany(l => l!).ToList());
+        foreach (Block b in walked)
         {
             if (dead is not null && dead.Contains(b)) continue;
             foreach (Instr i in b.Instrs)
@@ -1059,6 +1070,23 @@ public sealed partial class Escape
     private static HashSet<VReg> Derivations(Function f, IEnumerable<VReg> roots)
     {
         HashSet<VReg> set = new(roots);
+        // THE SAME SET, in a large function (BlockReaders), from each register
+        // found to the instructions of the blocks that read it: the least set
+        // closed under the steps below, which the sweeps reach too.
+        if (AnalysisCache.ReadersOf(f) is { } index)
+        {
+            Stack<VReg> next = new(set);
+            while (next.TryPop(out VReg? x))
+                foreach (Block b in Listed(index, index.Readers(x)))
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Dest is null || set.Contains(i.Dest)) continue;
+                        if (i.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 or Opcode.SExt32 or Opcode.Add or Opcode.Sub or Opcode.Phi)) continue;
+                        foreach (Operand uOperand in i.Operands)
+                            if (uOperand is RegOperand { Reg: var u } && set.Contains(u)) { set.Add(i.Dest); next.Push(i.Dest); break; }
+                    }
+            return set;
+        }
         bool changed = true;
         while (changed)
         {
