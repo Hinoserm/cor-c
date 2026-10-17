@@ -2688,11 +2688,21 @@ continue;
         for (int k = index.Next(set, 0); k >= 0; k = index.Next(set, k + 1)) yield return index.Blocks[k];
     }
 
+    // The routines that write no field (described above KeepsNothing), and
+    // THE STORE CHECK'S TYPE TEST (Runtime.DescribedAs) where the check is
+    // inlined: it and all it calls (BoxedFace, VariantFits) read type
+    // descriptors and write nothing at all. Taken for a call that might write
+    // anything, it stood between Grow's read of a List's array of references
+    // and its store of the bigger one, the List's own free of the old array
+    // was no self-replacing free (EscapeSelfFrees), and the field was refused.
     internal static bool NeverWritesFields(string callee) =>
-        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64" || callee == ArrayStoreRefused;
+        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64" || callee == ArrayStoreRefused || callee == DescribedAs;
 
     /// <summary>Runtime.ArrayStoreRefused(array, value): an array store check's refusal, kept out of line.</summary>
     internal const string ArrayStoreRefused = "m_Runtime_ArrayStoreRefused_2_V$I64_V$I64";
+
+    /// <summary>Runtime.DescribedAs(desc, want): whether a type is another or derives from it, read from their descriptors.</summary>
+    internal const string DescribedAs = "m_Runtime_DescribedAs_2_V$I64_V$I64";
 
     private enum SourceKind { Null, Static, Parameter, Fresh, Unknown }
     private readonly record struct Source(SourceKind Kind, int Index, Instr? Made);

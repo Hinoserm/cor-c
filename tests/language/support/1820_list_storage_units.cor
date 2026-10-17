@@ -1,0 +1,44 @@
+// The other unit of 1820_list_storage_of_references_given_back_across_units:
+// lists of references, a dictionary of them and a holder of one made here,
+// and a covariant store refused here.
+using System;
+using System.Collections.Generic;
+
+public sealed class Holder
+{
+    public List<string> Names = new();
+    public int Id;
+}
+
+public static class Shelf
+{
+    public static readonly string[] Words = { "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota" };
+
+    public static List<string> Make(int n)
+    {
+        List<string> l = new();
+        for (int i = 0; i < n; i++) l.Add(Words[i % Words.Length]);
+        return l;
+    }
+
+    public static Dictionary<int, List<string>> Table(int n)
+    {
+        Dictionary<int, List<string>> byLength = new();
+        for (int i = 0; i < n; i++) byLength[i] = Make(i % 4);
+        return byLength;
+    }
+
+    public static Holder Hold(int n)
+    {
+        Holder h = new() { Id = n };
+        for (int i = 0; i < n; i++) h.Names.Add(Words[i % Words.Length]);
+        return h;
+    }
+
+    public static bool Refuse(object[] a, object v)
+    {
+        try { a[0] = v; }
+        catch (ArrayTypeMismatchException) { return true; }
+        return false;
+    }
+}

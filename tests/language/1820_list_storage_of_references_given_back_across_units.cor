@@ -1,0 +1,113 @@
+// test: list_storage_of_references_given_back_across_units
+// units: tests/language/support/1820_list_storage_units.cor
+// expect-exit: 0
+// expect-output:
+// names 493000 True
+// table 810000 True
+// held 810000 True
+// refused 1000 1000 String[] 1 True
+// kept x,Object
+//
+// 1819 with the lists, the dictionary of them and the holder made by another
+// unit, the one that holds the library: there the array store check's
+// refusal is a member of the runtime's cycle of exceptions too, and the
+// unit refused every List's array of references as its owner's own for the
+// link. Their storage is given back; arrays a covariant store was refused
+// on, by this unit and by the other, caught, and read afterwards stay whole
+// across a collection and the churn of new ones.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+static class P
+{
+    // What each call left to the collector, and whether the program gave
+    // memory back itself meanwhile: frees, or a region's end (1211's measure).
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(k);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string name, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(name + " " + total + " " + freed);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Names(int k)
+    {
+        List<string> l = Shelf.Make(20);
+        return l.Count + l[k % 20].Length;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Table(int k)
+    {
+        Dictionary<int, List<string>> byLength = Shelf.Table(12);
+        return byLength.Count + byLength[k % 12].Count + byLength[3].Count * 9;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Held(int k)
+    {
+        Holder h = Shelf.Hold(20);
+        return h.Names.Count + h.Id + k % 2;
+    }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: arrays of strings and objects of
+    // the refused ones' shapes, made and held while those are read.
+    static readonly object[][] JunkArrays = new object[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkArrays.Length; k++)
+        {
+            JunkArrays[k] = k % 2 == 0 ? new string[] { "junk" } : new object[] { new object(), new object() };
+        }
+        Gc.Collect();
+    }
+
+    static object[]? _lastArray;
+    static object? _lastValue;
+
+    static void Main()
+    {
+        Say("names", Names);
+        Say("table", Table);
+        Say("held", Held);
+        int refused = 0, whole = 0;
+        for (int k = 0; k < 1000; k++)
+        {
+            object[] a = new string[1];
+            object v = new object();
+            bool caught = false;
+            try { a[0] = v; }
+            catch (ArrayTypeMismatchException) { caught = true; }
+            if (caught && Shelf.Refuse(a, v)) refused++;
+            // The array and the value the refusal was handed, read after it.
+            a[0] = "x" + (k % 10);
+            if (a[0] is string s && s.Length == 2 && v.GetType() == typeof(object)) whole++;
+            _lastArray = a;
+            _lastValue = v;
+        }
+        Churn();
+        Console.WriteLine("refused " + refused + " " + whole + " " + _lastArray!.GetType().Name + " " + _lastArray.Length + " " + ((string)_lastArray[0]! == "x9"));
+        object[] kept = new string[1];
+        object stray = new object();
+        Shelf.Refuse(kept, stray);
+        kept[0] = "x";
+        Churn();
+        Console.WriteLine("kept " + kept[0] + "," + stray.GetType().Name + (_lastValue!.GetType() == typeof(object) ? "" : " lost"));
+    }
+}

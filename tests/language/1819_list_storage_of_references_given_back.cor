@@ -1,0 +1,161 @@
+// test: list_storage_of_references_given_back
+// expect-exit: 0
+// expect-output:
+// names 493000 True
+// table 810000 True
+// held 810000 True
+// queue 135000 True
+// refused 1000 1000 String[] 1 True
+// kept x,Object,7
+//
+// The array store check's refusal (Runtime.ArrayStoreRefused) keeps nothing
+// it is handed, and is known to; its throw puts it in the runtime's cycle of
+// exceptions, where it was solved again, and from the second round on its
+// report of the free journal let both the array and the value escape: no
+// List's array of references, no Dictionary's table of them, and no Queue's
+// array where its Grow was inlined was its owner's own. Lists, a dictionary
+// of lists, a list in a field and a queue trimmed and read give their
+// storage back; and arrays a covariant store was refused on, caught, and
+// read afterwards -- the array and the value the refusal was handed -- stay
+// whole across a collection and the churn of new ones.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+class Holder
+{
+    public List<string> Names = new();
+    public int Id;
+}
+
+static class P
+{
+    // What each call left to the collector, and whether the program gave
+    // memory back itself meanwhile: frees, or a region's end (1211's measure).
+    static string Measure(Func<int, int> f, out long total)
+    {
+        const int N = 20000;
+        total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes, frees = Gc.Frees, region = Gc.RegionFreedBytes + Gc.RegionTopFreedBytes;
+        for (int k = 0; k < N; k++) total += f(k);
+        bool given = Gc.Frees - frees >= N || Gc.RegionFreedBytes + Gc.RegionTopFreedBytes - region >= N * 16;
+        Gc.Collect();
+        long left = (Gc.CollectedBytes - taken) / N;
+        return given && left <= 32 ? "True" : "False " + left;
+    }
+
+    static void Say(string name, Func<int, int> f)
+    {
+        string freed = Measure(f, out long total);
+        Console.WriteLine(name + " " + total + " " + freed);
+    }
+
+    static readonly string[] Words = { "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota" };
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static List<string> Make(int n)
+    {
+        List<string> l = new();
+        for (int i = 0; i < n; i++) l.Add(Words[i % Words.Length]);
+        return l;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Names(int k)
+    {
+        List<string> l = Make(20);
+        return l.Count + l[k % 20].Length;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Table(int k)
+    {
+        Dictionary<int, List<string>> byLength = new();
+        for (int i = 0; i < 12; i++) byLength[i] = Make(i % 4);
+        return byLength.Count + byLength[k % 12].Count + byLength[3].Count * 9;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Holder Hold(int n)
+    {
+        Holder h = new() { Id = n };
+        for (int i = 0; i < n; i++) h.Names.Add(Words[i % Words.Length]);
+        return h;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Held(int k)
+    {
+        Holder h = Hold(20);
+        return h.Names.Count + h.Id + k % 2;
+    }
+
+    // Trimmed, its array replaced by one of what is left, then read.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Trimmed(int k)
+    {
+        Queue<string> waiting = new();
+        for (int i = 0; i < 20; i++) waiting.Enqueue(Words[(i + k) % 8]);
+        while (waiting.Count > 2) waiting.Dequeue();
+        waiting.TrimExcess();
+        return waiting.Count + waiting.Peek().Length;
+    }
+
+    // WHAT A BLOCK FREED TOO SOON BECOMES: arrays of strings and objects of
+    // the refused ones' shapes, made and held while those are read.
+    static readonly object[][] JunkArrays = new object[4096][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int k = 0; k < JunkArrays.Length; k++)
+        {
+            JunkArrays[k] = k % 2 == 0 ? new string[] { "junk" } : new object[] { new object(), new object() };
+        }
+        Gc.Collect();
+    }
+
+    static object[]? _lastArray;
+    static object? _lastValue;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Refuse(object[] a, object v)
+    {
+        try { a[0] = v; }
+        catch (ArrayTypeMismatchException) { return true; }
+        return false;
+    }
+
+    static void Main()
+    {
+        Say("names", Names);
+        Say("table", Table);
+        Say("held", Held);
+        Say("queue", Trimmed);
+        int refused = 0, whole = 0;
+        for (int k = 0; k < 1000; k++)
+        {
+            object[] a = new string[1];
+            object v = new object();
+            bool caught = false;
+            try { a[0] = v; }
+            catch (ArrayTypeMismatchException) { caught = true; }
+            if (caught && Refuse(a, v)) refused++;
+            // The array and the value the refusal was handed, read after it.
+            a[0] = "x" + (k % 10);
+            if (a[0] is string s && s.Length == 2 && v.GetType() == typeof(object)) whole++;
+            _lastArray = a;
+            _lastValue = v;
+        }
+        Churn();
+        Console.WriteLine("refused " + refused + " " + whole + " " + _lastArray!.GetType().Name + " " + _lastArray.Length + " " + ((string)_lastArray[0]! == "x9"));
+        object[] kept = new string[1];
+        object stray = new object();
+        try { kept[0] = stray; } catch (ArrayTypeMismatchException) { }
+        kept[0] = "x";
+        Churn();
+        Console.WriteLine("kept " + kept[0] + "," + stray.GetType().Name + "," + (_lastValue!.GetHashCode() == _lastValue.GetHashCode() ? 7 : 0));
+    }
+}

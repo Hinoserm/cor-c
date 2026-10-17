@@ -132,7 +132,7 @@ public sealed partial class Escape
     /// keeping nothing, and each round asks again with what the others were
     /// found to need, until nothing changes. Conditions only grow, so it
     /// settles; if it does not within the bound, everything escapes, as it
-    /// always did.
+    /// always did. A member known to keep nothing is not solved at all.
     /// </summary>
     private void SummariseCycle(List<Function> cycle, Dictionary<string, bool[]> summaries)
     {
@@ -142,21 +142,41 @@ public sealed partial class Escape
         // through raw stores -- made every value an array store check refused
         // escape: stored into an array, no List, Stack or Queue element was
         // ever its collection's own (1080).
-        if (cycle.Count == 1 && KnownToKeepNothing(cycle[0].Name))
-        {
-            Function known = cycle[0];
-            _paramHints[known.Name] = known.Params.Select(_ => (LifetimeCondition?)new LifetimeCondition()).ToArray();
-            summaries[known.Name] = new bool[known.Params.Count];
-            return;
-        }
-        if (cycle.Count == 1 && !CallsItself(cycle[0]))
-        {
-            LifetimeCondition?[] hints = ParameterHints(cycle[0], summaries);
-            _paramHints[cycle[0].Name] = hints;
-            summaries[cycle[0].Name] = Pessimistic(hints);
-            return;
-        }
+        //
+        // WHEREVER IN A CYCLE IT LANDS. A member's own contract does not
+        // change because its callees call back into it, and the refusal's
+        // `throw new ArrayTypeMismatchException()` puts it in the runtime's
+        // cycle of exceptions, traces and symbol lookups. Solved as one of
+        // that cycle's members, it was read again from the second round on,
+        // the same report escaped the array and the value through the
+        // cycle's own answer for Gc.SayFreed, and no List's array of
+        // references, nor any Dictionary table of them, was its owner's own
+        // field (1819). So it is pinned before the solve and the others are
+        // solved without it, reading its fixed answer at their calls as
+        // callers outside the cycle do: what it answers never depended on the
+        // solve, and what they answer depends on it only through that answer.
+        List<Function> rest = new(cycle.Count);
         foreach (Function f in cycle)
+        {
+            if (!KnownToKeepNothing(f.Name))
+            {
+                rest.Add(f);
+                continue;
+            }
+            _paramHints[f.Name] = f.Params.Select(_ => (LifetimeCondition?)new LifetimeCondition()).ToArray();
+            summaries[f.Name] = new bool[f.Params.Count];
+        }
+        if (rest.Count == 0) return;
+        // One left that does not call itself: its callees are all answered
+        // now, the pinned ones included, so one look settles it.
+        if (rest.Count == 1 && !CallsItself(rest[0]))
+        {
+            LifetimeCondition?[] hints = ParameterHints(rest[0], summaries);
+            _paramHints[rest[0].Name] = hints;
+            summaries[rest[0].Name] = Pessimistic(hints);
+            return;
+        }
+        foreach (Function f in rest)
         {
             _paramHints[f.Name] = f.Params.Select(_ => (LifetimeCondition?)new LifetimeCondition()).ToArray();
             summaries[f.Name] = new bool[f.Params.Count];
@@ -164,7 +184,7 @@ public sealed partial class Escape
         for (int round = 0; round < CycleRounds; round++)
         {
             bool changed = false;
-            foreach (Function f in cycle)
+            foreach (Function f in rest)
             {
                 LifetimeCondition?[] again = ParameterHints(f, summaries);
                 LifetimeCondition?[] before = _paramHints[f.Name];
@@ -177,7 +197,9 @@ public sealed partial class Escape
             }
             if (!changed) return;
         }
-        foreach (Function f in cycle)
+        // Unsettled: the rest escape, as they always did; a pinned member
+        // keeps its answer, which no round of theirs went into.
+        foreach (Function f in rest)
         {
             _paramHints[f.Name] = new LifetimeCondition?[f.Params.Count];
             summaries[f.Name] = Enumerable.Repeat(true, f.Params.Count).ToArray();
