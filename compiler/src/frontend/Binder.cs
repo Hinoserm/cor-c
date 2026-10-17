@@ -19090,6 +19090,11 @@ public sealed partial class Binder
             // A DYNAMIC ARGUMENT converts to anything (C# 10.2.10), at run time.
             if (had.Dynamic && !want.IsPointer) return true;
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
+            // `null!` IS STILL THE NULL LITERAL to what it can be passed as:
+            // the `!` silences the warning, not the conversion, so
+            // `"abc".IndexOf(null!, 0, 0)` is IndexOf(string, int, int) and
+            // never a char overload unboxing a null.
+            if (written is SuppressExpr { Operand: LiteralExpr { Kind: Lit.Null } }) had = Type.Null;
             if (NullableIntoValue(had, want)) return false;
             if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want)
                 || LocalFunctionConverts(written, want))
@@ -19658,6 +19663,9 @@ public sealed partial class Binder
                 // A DYNAMIC ARGUMENT converts to anything, at run time.
                 if (args[i].Dynamic && !want.IsPointer) continue;
                 if (NullableIntoValue(args[i], want)) return false;
+                // `null!` is still the null literal, here as in WrittenFits.
+                if (i < c.Args.Count && c.Args[i] is SuppressExpr { Operand: LiteralExpr { Kind: Lit.Null } }
+                    && !Convertible(Type.Null, want) && !Unmade(want)) return false;
                 // AN OBJECT IS NO NARROWER TYPE without a cast (C# 10.2): the
                 // machine word goes anywhere here, but an overload that wants
                 // a LocalSym is not applicable to an object, and choosing it

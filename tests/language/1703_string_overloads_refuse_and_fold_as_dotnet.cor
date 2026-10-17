@@ -1,0 +1,78 @@
+// test: string_overloads_refuse_and_fold_as_dotnet
+// expect-exit: 0
+// expect-output:
+// opt1 ArgumentException: Value of flags is invalid. (Parameter 'options')
+// opt2 ArgumentException: Value of flags is invalid. (Parameter 'options')
+// opt3 ArgumentOutOfRangeException: count ('-1') must be a non-negative value. (Parameter 'count') / Actual value was -1.
+// opt4 ok 2 ArgumentException: Value of flags is invalid. (Parameter 'options')
+// null1 ArgumentNullException: Value cannot be null. (Parameter 'value')
+// null2 ArgumentNullException: Value cannot be null. (Parameter 'value')
+// null3 ArgumentNullException: Value cannot be null. (Parameter 'value')
+// null4 ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType')
+// null5 ArgumentNullException: Value cannot be null. (Parameter 'value') | ArgumentNullException: Value cannot be null. (Parameter 'value') | ArgumentNullException: Value cannot be null. (Parameter 'value')
+// eq True True False False False
+// kind1 ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType') | ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType')
+// kind2 ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType') | ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType')
+// fold1 232 300 8415 0
+// fold2 -1 1 0 True
+// fold3 -1 ax 1
+// range1 ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'startIndex') | ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'startIndex') | -1
+// range2 ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'startIndex') | 3 | ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'startIndex')
+// range3 ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'startIndex') | -1 | 0
+// range4 ArgumentOutOfRangeException: Count must be positive and count must refer to a location within the string/array/collection. (Parameter 'count') | 3 -1
+// last 3 0 3 0 4
+//
+// WHAT THE STRING OVERLOADS REFUSE, AND IN WHICH ORDER, as .NET 10 has it:
+// a StringSplitOptions with a bit no option names, after a negative count;
+// a null to look for before a comparison that names nothing, except in
+// Replace, which asks about the comparison first; a comparison that names
+// nothing even where a null or an empty prefix settles the answer. The
+// short forms of IndexOf and LastIndexOf check their start as the long
+// ones do. `null!` is still the null literal to overload resolution, so
+// IndexOf(null!, 0, 0) is IndexOf(string, int, int) and not a char form
+// unboxing a null; and string.Equals(string, object) is object.Equals, two
+// nulls equal. Ignoring case folds as OrdinalIgnoreCase folds: the dotless
+// i, the long s and the Kelvin sign keep their own case, and a surrogate
+// pair folds as its code point, so Deseret's two cases match.
+
+using System;
+using System.Globalization;
+
+static class Program
+{
+    static string Fails(Func<object> act)
+    {
+        try { object r = act(); return "ok " + r; }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace("\n", " / "); }
+    }
+
+    static void Main()
+    {
+        Console.WriteLine("opt1 " + Fails(() => "a,b".Split(',', (StringSplitOptions)4).Length));
+        Console.WriteLine("opt2 " + Fails(() => "a,b".Split(new[] { "," }, 2, (StringSplitOptions)8).Length));
+        Console.WriteLine("opt3 " + Fails(() => "a,b".Split(',', -1, (StringSplitOptions)4).Length));
+        Console.WriteLine("opt4 " + Fails(() => "a b".Split((char[]?)null, (StringSplitOptions)3).Length) + " " + Fails(() => "a,b".Split(",", (StringSplitOptions)16).Length));
+
+        Console.WriteLine("null1 " + Fails(() => "abc".IndexOf(null!, 0, 0)));
+        Console.WriteLine("null2 " + Fails(() => "abc".IndexOf((string)null!, 0, 0, (StringComparison)9)));
+        Console.WriteLine("null3 " + Fails(() => "abc".LastIndexOf((string)null!, 0, 0, (StringComparison)9)));
+        Console.WriteLine("null4 " + Fails(() => "abc".Replace((string)null!, "x", (StringComparison)9)));
+        Console.WriteLine("null5 " + Fails(() => "abc".IndexOf((string)null!)) + " | " + Fails(() => "abc".Contains((string)null!)) + " | " + Fails(() => "abc".LastIndexOf((string)null!)));
+
+        object? none = null;
+        Console.WriteLine("eq " + string.Equals((string?)null, none) + " " + string.Equals("a", (object)"a") + " " + string.Equals((string?)null, (object)"a") + " " + string.Equals("a", none) + " " + "a".Equals((object)5));
+
+        Console.WriteLine("kind1 " + Fails(() => string.Compare(null, null, (StringComparison)6)) + " | " + Fails(() => string.Equals("a", "a", (StringComparison)6)));
+        Console.WriteLine("kind2 " + Fails(() => "a".StartsWith("abc", (StringComparison)6)) + " | " + Fails(() => "a".EndsWith("", (StringComparison)6)));
+
+        Console.WriteLine("fold1 " + string.Compare("ı", "I", StringComparison.OrdinalIgnoreCase) + " " + string.Compare("ſ", "S", StringComparison.OrdinalIgnoreCase) + " " + string.Compare("K", "k", StringComparison.OrdinalIgnoreCase) + " " + string.Compare("ÿ", "Ÿ", StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine("fold2 " + "xıy".IndexOf("I", StringComparison.OrdinalIgnoreCase) + " " + "x𐐨y".IndexOf("𐐀", StringComparison.OrdinalIgnoreCase) + " " + string.Compare("𐐨", "𐐀", StringComparison.OrdinalIgnoreCase) + " " + "𐐨".StartsWith("𐐀", StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine("fold3 " + Math.Sign(string.Compare("𐐨a", "𐐁", StringComparison.OrdinalIgnoreCase)) + " " + "a𐐨".Replace("𐐀", "x", StringComparison.OrdinalIgnoreCase) + " " + "ABC".LastIndexOf("bc", StringComparison.OrdinalIgnoreCase));
+
+        Console.WriteLine("range1 " + Fails(() => "abc".IndexOf('a', 4)) + " | " + Fails(() => "abc".IndexOf('a', -1)) + " | " + "abc".IndexOf('c', 3));
+        Console.WriteLine("range2 " + Fails(() => "abc".IndexOf("a", 4)) + " | " + "abc".IndexOf("", 3) + " | " + Fails(() => "abc".IndexOf("a", -1)));
+        Console.WriteLine("range3 " + Fails(() => "abc".LastIndexOf('a', 3)) + " | " + "".LastIndexOf('a', 5) + " | " + "abcabc".LastIndexOf('a', 2));
+        Console.WriteLine("range4 " + Fails(() => "abc".IndexOf('a', 1, 3)) + " | " + "abcabc".IndexOf('a', 1, 3) + " " + "abcabc".IndexOf('a', 1, 2));
+        Console.WriteLine("last " + "abc".LastIndexOf("") + " " + "".LastIndexOf("") + " " + "abcab".LastIndexOf("AB", StringComparison.OrdinalIgnoreCase) + " " + "abc".IndexOf("", StringComparison.Ordinal) + " " + "abcabc".IndexOf("bc", 2, StringComparison.Ordinal));
+    }
+}

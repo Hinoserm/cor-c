@@ -528,6 +528,22 @@ static class String {
         return made;
     }
 
+    /// .NET's String.Create: a string of `length` characters, handed to the
+    /// action to fill as a span over the string's own units. The string is
+    /// new and nobody else holds it until it is returned, so writing into it
+    /// is building it, as SetChar does here, and no string anyone has seen
+    /// changes. What the action leaves unwritten is U+0000, as in .NET.
+    public static string Create<TState>(int length, TState state, SpanAction<char, TState> action) {
+        if (action == null) { throw new ArgumentNullException("action"); }
+        if (length <= 0) {
+            if (length == 0) { return ""; }
+            throw new ArgumentOutOfRangeException("length");
+        }
+        string made = Sys.NewChars(length);
+        action(new Span<char>(Sys.CharsOf(made), 0, length), state);
+        return made;
+    }
+
     // WHAT `new string(chars)` AND `new string(chars, start, length)` MEAN, for
     // the same reason Repeat exists: C# spells both as constructors and a
     // string here has no class to carry one, so the compiler turns the
@@ -605,14 +621,14 @@ static class String {
     // culture they are the invariant ones.
     public static string ToLower(string s) { return ToLowerInvariant(s); }
     public static string ToUpper(string s) { return ToUpperInvariant(s); }
+    public static string ToLower(string s, CultureInfo? culture) { return ToLowerInvariant(s); }
+    public static string ToUpper(string s, CultureInfo? culture) { return ToUpperInvariant(s); }
 
     public static bool Equals(string a, string b, StringComparison kind) {
         // IGNORING CASE IS COMPARING UPPER CASE, as .NET's OrdinalIgnoreCase
         // does it: the two differ for the few characters whose upper case is
         // shared and lower case is not (K and the Kelvin sign, s and long s).
-        if (kind == StringComparison.OrdinalIgnoreCase
-         || kind == StringComparison.InvariantCultureIgnoreCase
-         || kind == StringComparison.CurrentCultureIgnoreCase) {
+        if (IgnoresCase(kind)) {
             return StringComparer.OrdinalIgnoreCase.Equals(a, b);
         }
         return Compare(a, b) == 0;
@@ -678,23 +694,18 @@ static class String {
 
     public static bool StartsWith(string s, string prefix, StringComparison kind) {
         if (prefix == null) { throw new ArgumentNullException("value"); }
-        if (prefix.Length > s.Length) { return false; }
-        if (kind == StringComparison.Ordinal) {
-            return Sys.StringEqual(s, 0, prefix, 0, prefix.Length);
-        }
-        return Equals(Substring(s, 0, prefix.Length), prefix, kind);
+        bool fold = IgnoresCase(kind);
+        return prefix.Length <= s.Length && MatchAt(s, 0, prefix, fold);
     }
 
     public static bool EndsWith(string s, string suffix, StringComparison kind) {
         if (suffix == null) { throw new ArgumentNullException("value"); }
-        if (suffix.Length > s.Length) { return false; }
-        if (kind == StringComparison.Ordinal) {
-            return Sys.StringEqual(s, s.Length - suffix.Length, suffix, 0, suffix.Length);
-        }
-        return Equals(Substring(s, s.Length - suffix.Length, suffix.Length), suffix, kind);
+        bool fold = IgnoresCase(kind);
+        return suffix.Length <= s.Length && MatchAt(s, s.Length - suffix.Length, suffix, fold);
     }
 
     public static int IndexOf(string s, string what) {
+        if (what == null) { throw new ArgumentNullException("value"); }
         if (what.Length == 0) { return 0; }
 
         if (what.Length > s.Length) { return 0 - 1; }
@@ -783,9 +794,10 @@ static class String {
 
     public static string Trim(string s) { return TrimEnd(TrimStart(s)); }
 
-    // ONE SEPARATOR, which is what a compiler splitting a line on spaces or a
-    // path on slashes needs. .NET's overload taking several is not here yet and
-    // will be the day something wants it.
+    // ONE SEPARATOR AND NO OPTIONS, which is what a compiler splitting a line
+    // on spaces or a path on slashes needs: the pieces counted first and the
+    // array made once at its size, without the list the general splitter
+    // (Cut, below) builds for the forms that take options or a count.
     public static string[] Split(string s, char separator) {
         int parts = 1;
 
@@ -824,6 +836,21 @@ static class String {
 
     // .NET's Replace, over whole strings. Ordinal, like everything else here.
     public static string Replace(string s, string what, string? replacement) {
+        return Replaced(s, what, replacement, false);
+    }
+
+    /// Under a comparison: ignoring case finds either case of `what`, and the
+    /// text between the places found is copied as it was.
+    public static string Replace(string s, string what, string? replacement, StringComparison kind) {
+        return Replaced(s, what, replacement, IgnoresCase(kind));
+    }
+
+    /// The culture's comparison, which is the invariant one on this machine.
+    public static string Replace(string s, string what, string? replacement, bool ignoreCase, CultureInfo? culture) {
+        return Replaced(s, what, replacement, ignoreCase);
+    }
+
+    private static string Replaced(string s, string what, string? replacement, bool fold) {
         // .NET's refusals: nothing to look for is an error, not a no-op; a
         // null replacement removes what it finds.
         if (what == null) { throw new ArgumentNullException("oldValue"); }
@@ -840,7 +867,7 @@ static class String {
 
         while (at + what.Length <= s.Length) {
             if (at + what.Length <= s.Length
-             && Sys.StringEqual(s, at, what, 0, what.Length)) {
+             && (fold ? MatchAt(s, at, what, true) : Sys.StringEqual(s, at, what, 0, what.Length))) {
                 matches = matches + 1;
                 at = at + what.Length;
             } else {
@@ -862,7 +889,7 @@ static class String {
 
         while (at < s.Length) {
             if (at + what.Length <= s.Length
-             && Sys.StringEqual(s, at, what, 0, what.Length)) {
+             && (fold ? MatchAt(s, at, what, true) : Sys.StringEqual(s, at, what, 0, what.Length))) {
                 CopyRange(made, into, with, 0, with.Length);
                 into = into + with.Length;
                 at = at + what.Length;
@@ -873,6 +900,33 @@ static class String {
             }
         }
         return made;
+    }
+
+    /// EVERY LINE ENDING MADE ONE, as .NET's ReplaceLineEndings: CR, LF and
+    /// CRLF, NEL (U+0085), the line and paragraph separators (U+2028, U+2029)
+    /// and form feed -- Unicode's list less the vertical tab, which .NET
+    /// leaves alone -- each become the text given, or Environment.NewLine.
+    /// A string with none is handed back as it is.
+    public static string ReplaceLineEndings(string s) {
+        return ReplaceLineEndings(s, Environment.NewLine);
+    }
+
+    public static string ReplaceLineEndings(string s, string replacement) {
+        if (replacement == null) { throw new ArgumentNullException("replacementText"); }
+        StringBuilder? made = null;
+        int from = 0;
+
+        for (int i = 0; i < s.Length; i++) {
+            char c = Sys.GetChar(s, i);
+            if (c != '\r' && c != '\n' && c != '\f' && c != '\u0085' && c != '\u2028' && c != '\u2029') { continue; }
+            made ??= new StringBuilder(s.Length);
+            made.Append(s, from, i - from).Append(replacement);
+            if (c == '\r' && i + 1 < s.Length && Sys.GetChar(s, i + 1) == '\n') { i = i + 1; }
+            from = i + 1;
+        }
+        if (made == null) { return s; }
+        made.Append(s, from, s.Length - from);
+        return made.ToString();
     }
 
     /// `a.CompareTo(b)`, IComparable<string>'s: the order String.Compare
@@ -1065,68 +1119,37 @@ static class String {
     // ---- searching, from somewhere other than the start -------------------
 
     public static int IndexOf(string s, char ch, int start) {
-        for (int i = start < 0 ? 0 : start; i < s.Length; i++) {
-            if (Sys.GetChar(s, i) == (int)ch) { return i; }
-        }
-        return -1;
+        return IndexOf(s, ch, start, s.Length - start);
     }
 
     public static int IndexOf(string s, char ch, int start, int count) {
-        int end = start + count;
-        if (end > s.Length) { end = s.Length; }
-        for (int i = start < 0 ? 0 : start; i < end; i++) {
-            if (Sys.GetChar(s, i) == (int)ch) { return i; }
-        }
-        return -1;
+        if ((uint)start > (uint)s.Length) { throw new ArgumentOutOfRangeException("startIndex", IndexAtMost); }
+        if ((uint)count > (uint)(s.Length - start)) { throw new ArgumentOutOfRangeException("count", CountInside); }
+        return Sys.StringFind(s, start, (int)ch, count);
     }
 
     public static int IndexOf(string s, string what, int start) {
-        if (start < 0) { start = 0; }
-        if (what.Length == 0) { return start <= s.Length ? start : -1; }
-
-        for (int i = start; i + what.Length <= s.Length; i++) {
-            if (Sys.StringEqual(s, i, what, 0, what.Length)) { return i; }
-        }
-        return -1;
+        return IndexOf(s, what, start, s.Length - start, StringComparison.CurrentCulture);
     }
 
     public static int IndexOf(string s, string what, StringComparison kind) {
-        return IndexOf(s, what, 0, kind);
+        return IndexOf(s, what, 0, s.Length, kind);
     }
 
-    // CASE-FOLDING FOLDS BOTH SIDES ONCE, not once per position: the naive
-    // form lowers a slice of the haystack inside the loop and turns a search
-    // into an allocation per character.
     public static int IndexOf(string s, string what, int start, StringComparison kind) {
-        if (kind == StringComparison.Ordinal || kind == StringComparison.InvariantCulture
-         || kind == StringComparison.CurrentCulture) {
-            return IndexOf(s, what, start);
-        }
-        return IndexOf(ToUpperInvariant(s), ToUpperInvariant(what), start);
+        return IndexOf(s, what, start, s.Length - start, kind);
     }
 
     public static int LastIndexOf(string s, string what) {
-        if (what.Length == 0) { return s.Length; }
-
-        for (int i = s.Length - what.Length; i >= 0; i--) {
-            if (Sys.StringEqual(s, i, what, 0, what.Length)) { return i; }
-        }
-        return -1;
+        return LastIndexOf(s, what, s.Length - 1, s.Length, StringComparison.CurrentCulture);
     }
 
     public static int LastIndexOf(string s, string what, StringComparison kind) {
-        if (kind == StringComparison.Ordinal || kind == StringComparison.InvariantCulture
-         || kind == StringComparison.CurrentCulture) {
-            return LastIndexOf(s, what);
-        }
-        return LastIndexOf(ToUpperInvariant(s), ToUpperInvariant(what));
+        return LastIndexOf(s, what, s.Length - 1, s.Length, kind);
     }
 
     public static int LastIndexOf(string s, char ch, int start) {
-        for (int i = start >= s.Length ? s.Length - 1 : start; i >= 0; i--) {
-            if (Sys.GetChar(s, i) == (int)ch) { return i; }
-        }
-        return -1;
+        return LastIndexOf(s, ch, start, start + 1);
     }
 
     public static int LastIndexOfAny(string s, char[] any) {
@@ -1139,6 +1162,154 @@ static class String {
         return -1;
     }
 
+    // ---- searching a window, and under a comparison -----------------------
+    //
+    // .NET's ranged overloads: a start and a count that must lie inside the
+    // string, refused in .NET's words when they do not. Forwards from
+    // startIndex for IndexOf; BACKWARDS from it for LastIndexOf, whose
+    // startIndex is the last character looked at and whose count runs
+    // towards the front.
+
+    private const string IndexAtMost = "Index was out of range. Must be non-negative and less than or equal to the size of the collection.";
+    private const string IndexBelow = "Index was out of range. Must be non-negative and less than the size of the collection.";
+    private const string CountInside = "Count must be positive and count must refer to a location within the string/array/collection.";
+
+    /// WHETHER A COMPARISON IGNORES CASE. The culture kinds are the invariant
+    /// ones on a machine with one culture, as Equals(.., StringComparison)
+    /// has them; a value that names no comparison at all is refused, as .NET
+    /// refuses it.
+    private static bool IgnoresCase(StringComparison kind) {
+        if ((uint)kind > (uint)StringComparison.OrdinalIgnoreCase) {
+            throw new ArgumentException("The string comparison type passed in is currently not supported.", "comparisonType");
+        }
+        return kind == StringComparison.CurrentCultureIgnoreCase
+            || kind == StringComparison.InvariantCultureIgnoreCase
+            || kind == StringComparison.OrdinalIgnoreCase;
+    }
+
+    /// One unit folded as OrdinalFolded folds it -- to upper case, never
+    /// from beyond ASCII into it -- for the searches that walk a unit at a
+    /// time and make no upper-case copy.
+    private static int FoldedUnit(int c) {
+        if (c < 0x80) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+        int u = Char.ToUpperInvariantPoint(c);
+        return u < 0x80 ? c : u;
+    }
+
+    /// Whether `what` is at `at` in s, folded or not.
+    private static bool MatchAt(string s, int at, string what, bool fold) {
+        if (!fold) { return Sys.StringEqual(s, at, what, 0, what.Length); }
+        return CompareWindows(s, at, what.Length, what, 0, what.Length, true) == 0;
+    }
+
+    public static int IndexOf(string s, char ch, StringComparison kind) {
+        if (!IgnoresCase(kind)) { return IndexOf(s, (int)ch); }
+        int want = FoldedUnit(ch);
+        for (int i = 0; i < s.Length; i++) {
+            if (FoldedUnit(Sys.GetChar(s, i)) == want) { return i; }
+        }
+        return -1;
+    }
+
+    public static int IndexOf(string s, string what, int start, int count) {
+        return IndexOf(s, what, start, count, StringComparison.CurrentCulture);
+    }
+
+    /// Nothing looked for is found where the window begins.
+    public static int IndexOf(string s, string what, int start, int count, StringComparison kind) {
+        if (what == null) { throw new ArgumentNullException("value"); }
+        bool fold = IgnoresCase(kind);
+        if ((uint)start > (uint)s.Length) { throw new ArgumentOutOfRangeException("startIndex", IndexAtMost); }
+        if ((uint)count > (uint)(s.Length - start)) { throw new ArgumentOutOfRangeException("count", CountInside); }
+        if (!fold) { return Sys.StringSearch(s, start, what, 0, count); }
+
+        for (int i = start; i + what.Length <= start + count; i++) {
+            if (MatchAt(s, i, what, true)) { return i; }
+        }
+        return -1;
+    }
+
+    public static int IndexOfAny(string s, char[] any, int start) {
+        return IndexOfAny(s, any, start, s.Length - start);
+    }
+
+    public static int IndexOfAny(string s, char[] any, int start, int count) {
+        if (any == null) { throw new ArgumentNullException("anyOf"); }
+        if ((uint)start > (uint)s.Length) { throw new ArgumentOutOfRangeException("startIndex", IndexAtMost); }
+        if ((uint)count > (uint)(s.Length - start)) { throw new ArgumentOutOfRangeException("count", CountInside); }
+
+        for (int i = start; i < start + count; i++) {
+            if (IsIn(any, Sys.GetChar(s, i))) { return i; }
+        }
+        return -1;
+    }
+
+    /// An empty string has nowhere to look and answers -1 whatever it is
+    /// asked, as .NET's does; otherwise startIndex must be in the string.
+    public static int LastIndexOf(string s, char ch, int start, int count) {
+        if (s.Length == 0) { return -1; }
+        if ((uint)start >= (uint)s.Length) { throw new ArgumentOutOfRangeException("startIndex", IndexBelow); }
+        if ((uint)count > (uint)start + 1) { throw new ArgumentOutOfRangeException("count", CountInside); }
+        return Sys.StringFindReverse(s, start, (int)ch, count);
+    }
+
+    public static int LastIndexOfAny(string s, char[] any, int start) {
+        return LastIndexOfAny(s, any, start, start + 1);
+    }
+
+    public static int LastIndexOfAny(string s, char[] any, int start, int count) {
+        if (any == null) { throw new ArgumentNullException("anyOf"); }
+        if (s.Length == 0) { return -1; }
+        if ((uint)start >= (uint)s.Length) { throw new ArgumentOutOfRangeException("startIndex", IndexBelow); }
+        if (count < 0 || count - 1 > start) { throw new ArgumentOutOfRangeException("count", CountInside); }
+
+        for (int i = start; i > start - count; i--) {
+            if (IsIn(any, Sys.GetChar(s, i))) { return i; }
+        }
+        return -1;
+    }
+
+    public static int LastIndexOf(string s, string what, int start) {
+        return LastIndexOf(s, what, start, start + 1, StringComparison.CurrentCulture);
+    }
+
+    public static int LastIndexOf(string s, string what, int start, int count) {
+        return LastIndexOf(s, what, start, count, StringComparison.CurrentCulture);
+    }
+
+    public static int LastIndexOf(string s, string what, int start, StringComparison kind) {
+        return LastIndexOf(s, what, start, start + 1, kind);
+    }
+
+    /// THE WINDOW ENDS AT startIndex, and a match must lie wholly inside it.
+    /// .NET's allowances, kept for the same callers: startIndex one past the
+    /// end is taken as the end (one fewer counted), and an empty string may
+    /// be searched from -1. Nothing looked for is found at the window's end,
+    /// one past startIndex, which is where .NET has answered since 5.
+    public static int LastIndexOf(string s, string what, int start, int count, StringComparison kind) {
+        if (what == null) { throw new ArgumentNullException("value"); }
+        bool fold = IgnoresCase(kind);
+        if (start == s.Length) {
+            start = start - 1;
+            if (count > 0) { count = count - 1; }
+        }
+        if (start == -1 && s.Length == 0) {
+            count = 0;
+        } else if ((uint)start >= (uint)s.Length) {
+            throw new ArgumentOutOfRangeException("startIndex", IndexBelow);
+        }
+        int first = start - count + 1;
+        if ((uint)first > (uint)s.Length || (uint)count > (uint)(s.Length - first)) {
+            throw new ArgumentOutOfRangeException("count", CountInside);
+        }
+        if (what.Length == 0) { return first + count; }
+
+        for (int i = first + count - what.Length; i >= first; i--) {
+            if (MatchAt(s, i, what, fold)) { return i; }
+        }
+        return -1;
+    }
+
     public static bool Contains(string s, string what, StringComparison kind) {
         return IndexOf(s, what, 0, kind) >= 0;
     }
@@ -1146,18 +1317,17 @@ static class String {
     // ---- comparing, the overloads whose extra argument is the whole point --
 
     public static int Compare(string? a, string? b, bool ignoreCase) {
-        if (a == null || b == null) { return Compare(a, b); }
-        if (ignoreCase) { return Compare(ToUpperInvariant(a), ToUpperInvariant(b)); }
-        return Compare(a, b);
+        return Compare(a, b, ignoreCase ? StringComparison.CurrentCultureIgnoreCase : StringComparison.CurrentCulture);
     }
 
+    /// IGNORING CASE FOLDS AS OrdinalIgnoreCase FOLDS, a unit at a time and
+    /// never into ASCII from beyond it, which is not upper-casing both
+    /// strings: ToUpperInvariant makes the dotless i an I. A kind that names
+    /// no comparison is refused even when a null settles the answer.
     public static int Compare(string? a, string? b, StringComparison kind) {
+        bool fold = IgnoresCase(kind);
         if (a == null || b == null) { return Compare(a, b); }
-        if (kind == StringComparison.OrdinalIgnoreCase
-         || kind == StringComparison.InvariantCultureIgnoreCase
-         || kind == StringComparison.CurrentCultureIgnoreCase) {
-            return Compare(ToUpperInvariant(a), ToUpperInvariant(b));
-        }
+        if (fold) { return CompareWindows(a, 0, a.Length, b, 0, b.Length, true); }
         return Compare(a, b);
     }
 
@@ -1178,9 +1348,146 @@ static class String {
         return left - right;
     }
 
+    /// Two windows compared a unit at a time, as .NET's ordinal comparisons
+    /// answer: the difference of the first units that differ, folded to upper
+    /// case when case is ignored, and else the difference of the lengths.
+    /// FOLDED, A SURROGATE PAIR ON BOTH SIDES IS ONE CODE POINT, so the
+    /// letters beyond the first plane that have a case (Deseret, Osage, ...)
+    /// match their other case as .NET's OrdinalIgnoreCase matches them; a pair
+    /// cut by the window's end is two units like any others.
+    private static int CompareWindows(string a, int indexA, int lengthA, string b, int indexB, int lengthB, bool fold) {
+        int common = Math.Min(lengthA, lengthB);
+        int i = 0;
+        while (i < common) {
+            int x = Sys.GetChar(a, indexA + i);
+            int y = Sys.GetChar(b, indexB + i);
+            if (fold && i + 1 < common && x >= 0xD800 && x <= 0xDBFF && y >= 0xD800 && y <= 0xDBFF) {
+                int lowX = Sys.GetChar(a, indexA + i + 1);
+                int lowY = Sys.GetChar(b, indexB + i + 1);
+                if (lowX >= 0xDC00 && lowX <= 0xDFFF && lowY >= 0xDC00 && lowY <= 0xDFFF) {
+                    x = Char.ToUpperInvariantPoint(0x10000 + ((x - 0xD800) << 10) + (lowX - 0xDC00));
+                    y = Char.ToUpperInvariantPoint(0x10000 + ((y - 0xD800) << 10) + (lowY - 0xDC00));
+                    if (x != y) { return x - y; }
+                    i = i + 2;
+                    continue;
+                }
+            }
+            i = i + 1;
+            if (x == y) { continue; }
+            if (fold) {
+                x = FoldedUnit(x);
+                y = FoldedUnit(y);
+                if (x == y) { continue; }
+            }
+            return x - y;
+        }
+        return lengthA - lengthB;
+    }
+
+    /// Whether a window lies inside a string; a null string holds only the
+    /// empty window at 0.
+    private static bool Inside(string? s, int index, int length) {
+        if (s == null) { return index == 0 && length == 0; }
+        return (uint)index <= (uint)s.Length && (uint)length <= (uint)(s.Length - index);
+    }
+
+    public static int Compare(string? a, int indexA, string? b, int indexB, int length) {
+        return Compare(a, indexA, b, indexB, length, false);
+    }
+
+    /// THE LENGTH CUT TO WHAT EACH STRING HOLDS, and then checked, which is
+    /// .NET's order for this form and why its refusals name the culture
+    /// comparison's parameters (length1, offset1, string1) rather than this
+    /// method's. A null string's length is not cut, so a null compared over
+    /// any characters at all is refused.
+    public static int Compare(string? a, int indexA, string? b, int indexB, int length, bool ignoreCase) {
+        int lengthA = a == null ? length : Math.Min(length, a.Length - indexA);
+        int lengthB = b == null ? length : Math.Min(length, b.Length - indexB);
+
+        if (!Inside(a, indexA, lengthA) || !Inside(b, indexB, lengthB)) {
+            ArgumentOutOfRangeException.ThrowIfNegative(lengthA, "length1");
+            ArgumentOutOfRangeException.ThrowIfNegative(lengthB, "length2");
+            ArgumentOutOfRangeException.ThrowIfNegative(indexA, "offset1");
+            ArgumentOutOfRangeException.ThrowIfNegative(indexB, "offset2");
+            throw new ArgumentOutOfRangeException(Inside(a, indexA, lengthA) ? "string2" : "string1", "Offset and length must refer to a position in the string.");
+        }
+        if (a == null) { return b == null ? 0 : -1; }
+        if (b == null) { return 1; }
+        return CompareWindows(a, indexA, lengthA, b, indexB, lengthB, ignoreCase);
+    }
+
+    /// NULLS FIRST, BEFORE ANY CHECK, as .NET has this form: two nulls are
+    /// equal whatever indices came with them.
+    public static int Compare(string? a, int indexA, string? b, int indexB, int length, StringComparison kind) {
+        bool fold = IgnoresCase(kind);
+        if (a == null || b == null) {
+            if ((object?)a == (object?)b) { return 0; }
+            return a == null ? -1 : 1;
+        }
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfNegative(indexA);
+        ArgumentOutOfRangeException.ThrowIfNegative(indexB);
+        if (a.Length - indexA < 0 || b.Length - indexB < 0) {
+            throw new ArgumentOutOfRangeException(a.Length - indexA < 0 ? "indexA" : "indexB", IndexAtMost);
+        }
+        if (length == 0 || ((object)a == (object)b && indexA == indexB)) { return 0; }
+        return CompareWindows(a, indexA, Math.Min(length, a.Length - indexA), b, indexB, Math.Min(length, b.Length - indexB), fold);
+    }
+
+    public static int Compare(string? a, string? b, bool ignoreCase, CultureInfo? culture) {
+        return Compare(a, b, culture, ignoreCase ? CompareOptions.IgnoreCase : CompareOptions.None);
+    }
+
+    /// A CULTURE'S COMPARISON, which on this machine is the invariant one:
+    /// IgnoreCase and OrdinalIgnoreCase fold, and the other flags ask for
+    /// distinctions one culture does not draw. Ordinal and OrdinalIgnoreCase
+    /// stand alone, and a bit no option names is refused, as .NET refuses
+    /// both even when a null settles the answer.
+    public static int Compare(string? a, string? b, CultureInfo? culture, CompareOptions options) {
+        CompareOptions combinable = CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace | CompareOptions.IgnoreSymbols
+                                  | CompareOptions.IgnoreKanaType | CompareOptions.IgnoreWidth | CompareOptions.StringSort;
+        if ((options & ~combinable) != CompareOptions.None
+         && options != CompareOptions.Ordinal && options != CompareOptions.OrdinalIgnoreCase) {
+            throw new ArgumentException((options & CompareOptions.Ordinal) != CompareOptions.None
+                ? "CompareOption.Ordinal cannot be used with other options." : "Value of flags is invalid.", "options");
+        }
+        if (a == null || b == null) { return Compare(a, b); }
+        bool fold = (options & (CompareOptions.IgnoreCase | CompareOptions.OrdinalIgnoreCase)) != CompareOptions.None;
+        return CompareWindows(a, 0, a.Length, b, 0, b.Length, fold);
+    }
+
+    public static bool StartsWith(string s, string prefix, bool ignoreCase, CultureInfo? culture) {
+        return StartsWith(s, prefix, ignoreCase ? StringComparison.InvariantCultureIgnoreCase : StringComparison.InvariantCulture);
+    }
+
+    public static bool EndsWith(string s, string suffix, bool ignoreCase, CultureInfo? culture) {
+        return EndsWith(s, suffix, ignoreCase ? StringComparison.InvariantCultureIgnoreCase : StringComparison.InvariantCulture);
+    }
+
+    /// `s.Equals(o)` of any object: equal only to a string of the same text.
+    /// Written `string.Equals(a, o)` it is .NET's object.Equals(a, o), which
+    /// holds two nulls equal, so a null string is no fault here.
+    public static bool Equals(string? s, object? other) {
+        if ((object?)s == other) { return true; }
+        return s != null && other is string text && Equals(s, text);
+    }
+
     /// The same hash StringComparer.Ordinal gives, so a string and its
     /// comparer agree.
     public static int GetHashCode(string s) { return Runtime.StringHashCode(s); }
+
+    /// THE HASH A COMPARISON'S EQUALITY AGREES WITH: strings Equals calls
+    /// equal under `kind` hash alike, so ignoring case is the hash
+    /// StringComparer.OrdinalIgnoreCase gives, folded as its Equals folds.
+    public static int GetHashCode(string s, StringComparison kind) {
+        if (IgnoresCase(kind)) { return StringComparer.OrdinalIgnoreCase.GetHashCode(s); }
+        return Runtime.StringHashCode(s);
+    }
+
+    /// A span's characters hash as the string of them does.
+    public static int GetHashCode(ReadOnlySpan<char> value) { return Runtime.StringHashCode(FromChars(value)); }
+
+    public static int GetHashCode(ReadOnlySpan<char> value, StringComparison kind) { return GetHashCode(FromChars(value), kind); }
 
     // ---- cutting and splicing ---------------------------------------------
 
@@ -1215,6 +1522,27 @@ static class String {
             Sys.SetChar(made, i, c == (int)what ? (int)with : c);
         }
         return made;
+    }
+
+    /// THE TEXT AS RUNES, as .NET's EnumerateRunes: a surrogate pair is one
+    /// Rune, and a surrogate without its other half is U+FFFD, the
+    /// replacement character, where it stood.
+    public static IEnumerable<Rune> EnumerateRunes(string s) {
+        int i = 0;
+        while (i < s.Length) {
+            int c = Sys.GetChar(s, i);
+            i = i + 1;
+            if (c >= 0xD800 && c <= 0xDFFF) {
+                int low = i < s.Length ? Sys.GetChar(s, i) : 0;
+                if (c <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) {
+                    c = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
+                    i = i + 1;
+                } else {
+                    c = 0xFFFD;
+                }
+            }
+            yield return new Rune(c);
+        }
     }
 
     public static char[] ToCharArray(string s) {
@@ -1293,124 +1621,159 @@ static class String {
     // BUILT INTO A LIST AND THEN COPIED OUT, rather than counted first and
     // filled second: options that drop or trim entries make the count depend
     // on the pieces themselves, so counting would mean splitting twice.
+    //
+    // ONE BODY FOR EVERY KIND OF SEPARATOR (Cut): a set of characters, a set
+    // of strings, or neither for white space, with the most pieces wanted.
+    // Every overload .NET has is one call to it.
 
-    private static string[] Finish(List<string> parts, StringSplitOptions options) {
-        List<string> kept = new List<string>();
+    /// One piece, trimmed and then kept or dropped as the options say.
+    /// Answers whether it was kept, which is what counts towards `count`.
+    private static bool Finish(List<string> parts, string piece, StringSplitOptions options) {
+        if ((options & StringSplitOptions.TrimEntries) != StringSplitOptions.None) {
+            piece = Trim(piece);
+        }
+        if ((options & StringSplitOptions.RemoveEmptyEntries) != StringSplitOptions.None
+         && piece.Length == 0) {
+            return false;
+        }
+        parts.Add(piece);
+        return true;
+    }
 
-        for (int i = 0; i < parts.Count; i++) {
-            string one = parts[i];
-            if ((options & StringSplitOptions.TrimEntries) != StringSplitOptions.None) {
-                one = Trim(one);
+    /// How long the separator starting at `at` is, 0 when none does. Of
+    /// several strings the first that matches wins, as .NET tries them in
+    /// the order given, and an empty or null one matches nothing. No
+    /// characters at all -- null or empty -- splits at white space, which
+    /// is .NET's rule.
+    private static int SeparatorAt(string s, int at, char[]? chars, string?[]? strings) {
+        if (strings != null) {
+            for (int j = 0; j < strings.Length; j++) {
+                string? sep = strings[j];
+                if (sep != null && sep.Length > 0 && at + sep.Length <= s.Length
+                 && Sys.StringEqual(s, at, sep, 0, sep.Length)) {
+                    return sep.Length;
+                }
             }
-            if ((options & StringSplitOptions.RemoveEmptyEntries) != StringSplitOptions.None
-             && one.Length == 0) {
+            return 0;
+        }
+        char c = Sys.GetChar(s, at);
+        if (chars == null || chars.Length == 0) { return Char.IsWhiteSpace(c) ? 1 : 0; }
+        return IsIn(chars, c) ? 1 : 0;
+    }
+
+    /// AT MOST `count` PIECES, the last of them the rest of the string with
+    /// its separators in it: "a,b,c,d" in two is a and b,c,d. A piece the
+    /// options drop does not count. Under RemoveEmptyEntries the empty pieces
+    /// after the last cut are passed over before the rest begins, so "a,,b,c"
+    /// in two is a and b,c -- .NET's answer, and the reason the rest is not
+    /// simply everything after the last cut.
+    private static string[] Cut(string s, char[]? chars, string?[]? strings, int count, StringSplitOptions options) {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if ((options & ~(StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) != StringSplitOptions.None) {
+            throw new ArgumentException("Value of flags is invalid.", "options");
+        }
+        List<string> parts = new List<string>();
+
+        if (count == 0) { return parts.ToArray(); }
+
+        int from = 0;
+        int at = 0;
+        int kept = 0;
+
+        while (kept < count - 1 && at < s.Length) {
+            int width = SeparatorAt(s, at, chars, strings);
+            if (width == 0) {
+                at = at + 1;
                 continue;
             }
-            kept.Add(one);
+            if (Finish(parts, Substring(s, from, at - from), options)) { kept = kept + 1; }
+            at = at + width;
+            from = at;
         }
-        return kept.ToArray();
+
+        if (count > 1 && kept == count - 1
+         && (options & StringSplitOptions.RemoveEmptyEntries) != StringSplitOptions.None) {
+            bool trimming = (options & StringSplitOptions.TrimEntries) != StringSplitOptions.None;
+            while (at < s.Length) {
+                int width = SeparatorAt(s, at, chars, strings);
+                if (width == 0) {
+                    at = at + 1;
+                    continue;
+                }
+                string piece = Substring(s, from, at - from);
+                if ((trimming ? Trim(piece) : piece).Length > 0) { break; }
+                at = at + width;
+                from = at;
+            }
+        }
+        Finish(parts, Substring(s, from, s.Length - from), options);
+        return parts.ToArray();
     }
 
     public static string[] Split(string s, char separator, StringSplitOptions options) {
-        char[] one = new char[1];
-        one[0] = separator;
-        return Split(s, one, options);
+        return Cut(s, new char[] { separator }, null, int.MaxValue, options);
     }
 
-    public static string[] Split(string s, char[]? separators) {
-        return Split(s, separators, StringSplitOptions.None);
+    // TWO OVERLOADS WHERE .NET HAS ONE WITH A DEFAULT, here and for a string
+    // separator below: a parameter with a default is filled in only when no
+    // overload of the written arity takes the call, and (char,
+    // StringSplitOptions) takes `Split(',', 2)` by the int-to-enum conversion
+    // this compiler allows -- which split at every comma. An overload of the
+    // written arity that takes the int as an int is the exact one.
+    public static string[] Split(string s, char separator, int count) {
+        return Cut(s, new char[] { separator }, null, count, StringSplitOptions.None);
+    }
+
+    public static string[] Split(string s, char separator, int count, StringSplitOptions options) {
+        return Cut(s, new char[] { separator }, null, count, options);
+    }
+
+    // .NET's params form: `s.Split(',', ';')`, and `s.Split()` for white space.
+    public static string[] Split(string s, params char[]? separators) {
+        return Cut(s, separators, null, int.MaxValue, StringSplitOptions.None);
+    }
+
+    public static string[] Split(string s, char[]? separators, int count) {
+        return Cut(s, separators, null, count, StringSplitOptions.None);
     }
 
     public static string[] Split(string s, char[]? separators, StringSplitOptions options) {
-        List<string> parts = new List<string>();
-        int from = 0;
-        // .NET's rule: no separators at all -- null or empty -- splits at
-        // white space.
-        bool white = separators == null || separators.Length == 0;
-
-        for (int i = 0; i <= s.Length; i++) {
-            if (i == s.Length || (white ? Char.IsWhiteSpace(Sys.GetChar(s, i)) : IsIn(separators!, Sys.GetChar(s, i)))) {
-                parts.Add(Substring(s, from, i - from));
-                from = i + 1;
-            }
-        }
-        return Finish(parts, options);
+        return Cut(s, separators, null, int.MaxValue, options);
     }
 
-    public static string[] Split(string s, string separator) {
-        return Split(s, separator, StringSplitOptions.None);
+    public static string[] Split(string s, char[]? separators, int count, StringSplitOptions options) {
+        return Cut(s, separators, null, count, options);
     }
 
-    // A SEPARATOR OF NO CHARACTERS SPLITS NOTHING, which is .NET's answer:
-    // the whole string comes back as the only piece. Anything else would be
-    // an infinite loop dressed up as an empty-string rule.
-    public static string[] Split(string s, string separator, StringSplitOptions options) {
-        List<string> parts = new List<string>();
+    public static string[] Split(string s, string? separator) {
+        return Split(s, separator, int.MaxValue, StringSplitOptions.None);
+    }
 
-        if (separator.Length == 0) {
-            parts.Add(s);
-            return Finish(parts, options);
-        }
+    public static string[] Split(string s, string? separator, StringSplitOptions options) {
+        return Split(s, separator, int.MaxValue, options);
+    }
 
-        int from = 0;
-        int at = 0;
+    public static string[] Split(string s, string? separator, int count) {
+        return Split(s, separator, count, StringSplitOptions.None);
+    }
 
-        while (at + separator.Length <= s.Length) {
-            if (Sys.StringEqual(s, at, separator, 0, separator.Length)) {
-                parts.Add(Substring(s, from, at - from));
-                at = at + separator.Length;
-                from = at;
-            } else {
-                at = at + 1;
-            }
-        }
-        parts.Add(Substring(s, from, s.Length - from));
-        return Finish(parts, options);
+    // A SEPARATOR OF NO CHARACTERS SPLITS NOTHING, and neither does a null
+    // one, which is .NET's answer: the whole string comes back as the only
+    // piece. Anything else would be an infinite loop dressed up as an
+    // empty-string rule.
+    public static string[] Split(string s, string? separator, int count, StringSplitOptions options) {
+        return Cut(s, null, new string?[] { separator }, count, options);
     }
 
     public static string[] Split(string s, string[]? separators, StringSplitOptions options) {
-        // No separators at all -- null or empty -- splits at white space, as
-        // .NET's does; empty ones among them match nothing.
-        if (separators == null || separators.Length == 0) return Split(s, (char[]?)null, options);
-        List<string> parts = new List<string>();
-        int from = 0;
-        int at = 0;
-
-        while (at < s.Length) {
-            int hit = -1;
-
-            for (int j = 0; j < separators.Length; j++) {
-                string? sep = separators[j];
-                if (sep != null && sep.Length > 0 && at + sep.Length <= s.Length
-                 && Sys.StringEqual(s, at, sep, 0, sep.Length)) {
-                    hit = j;
-                    break;
-                }
-            }
-
-            if (hit < 0) {
-                at = at + 1;
-                continue;
-            }
-
-            parts.Add(Substring(s, from, at - from));
-            at = at + separators[hit].Length;
-            from = at;
-        }
-        parts.Add(Substring(s, from, s.Length - from));
-        return Finish(parts, options);
+        return Split(s, separators, int.MaxValue, options);
     }
 
-    // THE TEXT REVERSED. .NET spells it `new string(s.Reverse().ToArray())`,
-    // which is three allocations and a LINQ pipeline to turn a word round;
-    // the name is String.Reverse in every other library on earth.
-    public static string Reverse(string s) {
-        string made = Sys.NewChars(s.Length);
-
-        for (int i = 0; i < s.Length; i++) {
-            Sys.SetChar(made, i, Sys.GetChar(s, s.Length - 1 - i));
-        }
-        return made;
+    public static string[] Split(string s, string[]? separators, int count, StringSplitOptions options) {
+        // No separators at all -- null or empty -- splits at white space, as
+        // .NET's does; empty ones among them match nothing.
+        if (separators == null || separators.Length == 0) { return Cut(s, null, null, count, options); }
+        return Cut(s, null, separators, count, options);
     }
 }
 
@@ -4263,7 +4626,18 @@ static class PictureFormat {
             made.Append((char)(48 + (int)(left % 10)));
             left = left / 10;
         }
-        return String.Reverse(made.ToString());
+        return Reversed(made.ToString());
+    }
+
+    /// DIGITS GATHERED LOWEST FIRST, turned the right way round: both
+    /// writers here produce a number's digits from its low end.
+    private static string Reversed(string s) {
+        string made = Sys.NewChars(s.Length);
+
+        for (int i = 0; i < s.Length; i++) {
+            Sys.SetChar(made, i, Sys.GetChar(s, s.Length - 1 - i));
+        }
+        return made;
     }
 
     // ---- the picture, read ------------------------------------------------
@@ -4445,7 +4819,7 @@ static class PictureFormat {
                 at = at - 1;
             }
         }
-        return String.Reverse(reversed.ToString());
+        return Reversed(reversed.ToString());
     }
 
     /// The fraction, left to right, with the trailing digits the picture asked
@@ -17414,6 +17788,23 @@ namespace System.Collections.ObjectModel
 
 namespace System.Globalization
 {
+    /// HOW A CULTURE COMPARES TWO STRINGS, .NET's flags with .NET's values.
+    /// The Ignore- flags and StringSort combine; Ordinal and OrdinalIgnoreCase
+    /// stand alone.
+    [Flags]
+    public enum CompareOptions
+    {
+        None = 0,
+        IgnoreCase = 1,
+        IgnoreNonSpace = 2,
+        IgnoreSymbols = 4,
+        IgnoreKanaType = 8,
+        IgnoreWidth = 16,
+        OrdinalIgnoreCase = 0x10000000,
+        StringSort = 0x20000000,
+        Ordinal = 0x40000000,
+    }
+
     /// The Unicode general category of a character, numbered as .NET numbers
     /// it -- the runtime's UnicodeCategories table answers in these numbers.
     public enum UnicodeCategory
@@ -17453,6 +17844,10 @@ namespace System.Globalization
 
 namespace System.Buffers
 {
+    /// What String.Create hands the new string's characters to, with the
+    /// state it was given: .NET's delegate, for any span a method fills.
+    public delegate void SpanAction<T, in TArg>(Span<T> span, TArg arg);
+
     /// How a span-to-span transcoding or parse ended.
     public enum OperationStatus
     {

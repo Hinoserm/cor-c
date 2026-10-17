@@ -1,0 +1,137 @@
+// test: string_split_search_compare_overloads
+// expect-exit: 0
+// expect-output:
+// split1 4[The][quick][][brown] 3[a][b][c] 3[Hello][][hello]
+// split2 2[a][b,c,d] 0 1[,a]
+// split3 2[a][b,c] 2[a][b,c] 2[a][b , c]
+// split4 2[a][b  c] 2[a][b2c3] 2[a][b--c] 2[Hello][hello]
+// split5 0 1[x] 1[a] 2[a][b]
+// split6 2[a][b,c] 1[abc] 3[][a][b] 1[]
+// split7 ArgumentOutOfRangeException: count ('-1') must be a non-negative value. (Parameter 'count') / Actual value was -1.
+// find1 0 7 3 9 3 11
+// find2 2 3 3 10 10 10
+// find3 4 3 2 0 -1 -1 3 -1
+// find4 11 9 0 8 -1 -1
+// find5 ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'startIndex')
+// find6 ArgumentOutOfRangeException: Count must be positive and count must refer to a location within the string/array/collection. (Parameter 'count')
+// find7 ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'startIndex')
+// find8 ArgumentOutOfRangeException: Count must be positive and count must refer to a location within the string/array/collection. (Parameter 'count')
+// find9 ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'startIndex')
+// find10 ArgumentOutOfRangeException: Count must be positive and count must refer to a location within the string/array/collection. (Parameter 'count')
+// find11 ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType')
+// cmp1 0 0 0 -1 -1 -2 -25
+// cmp2 -1 -1 1 0 0
+// cmp3 ArgumentOutOfRangeException: Offset and length must refer to a position in the string. (Parameter 'string1')
+// cmp4 ArgumentOutOfRangeException: offset1 ('-1') must be a non-negative value. (Parameter 'offset1') / Actual value was -1.
+// cmp5 ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'indexA')
+// cmp6 ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') / Actual value was -1.
+// cmp7 ArgumentOutOfRangeException: length1 ('-1') must be a non-negative value. (Parameter 'length1') / Actual value was -1.
+// cmp8 0 -1 -1 0 -1 -1 536870929
+// cmp9 ArgumentException: CompareOption.Ordinal cannot be used with other options. (Parameter 'options')
+// cmp10 ArgumentException: Value of flags is invalid. (Parameter 'options')
+// eq True False False True False True True
+// hash True True True True False
+// case HELLO, HELLO àb X
+// repl1 bye bye Hello bye ab aXb- abc ba
+// repl2 ArgumentException: The value cannot be an empty string. (Parameter 'oldValue')
+// repl3 ArgumentException: The value cannot be an empty string. (Parameter 'oldValue')
+// repl4 ArgumentNullException: Value cannot be null. (Parameter 'oldValue')
+// lines a|b|c|d|e|f|g|h x<><>y 3 none abab
+// create abcde 0
+// create2 ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'length')
+// create3 ArgumentNullException: Value cannot be null. (Parameter 'action')
+// runes 61,1F600,62,FFFD,78,FFFD 12
+// reverse c,b,a dcba zyx
+// picture 1,234.50 18,446,744,073,709,551,615 -042 .25
+//
+// THE OVERLOADS OF System.String THAT .NET HAS, each bound where C# binds
+// it: Split with params separators and with a count, the ranged and
+// comparison forms of IndexOf, LastIndexOf, IndexOfAny and LastIndexOfAny,
+// Compare over windows and under a culture's options, Replace under a
+// comparison, ReplaceLineEndings, String.Create and EnumerateRunes. Four of
+// these calls once went to another overload through an integer-to-enum
+// conversion C# does not have, and answered wrongly: Split(',', 2) split at
+// every comma, LastIndexOf("l", 2) searched the whole string,
+// IndexOf('h', OrdinalIgnoreCase) took the comparison for a start index,
+// and Split(',', ' ') never split at the space. "abc".Reverse() is LINQ's
+// sequence, as in .NET, and no string. The refusals are .NET's, in its
+// words. A culture's comparisons are the invariant culture's here, so the
+// mixed-case orderings on which a culture and the ordinal order disagree
+// are left out.
+
+using System;
+using System.Globalization;
+using System.Linq;
+
+static class Program
+{
+    static string Show(string[] parts)
+    {
+        string shown = "" + parts.Length;
+        foreach (string p in parts) { shown = shown + "[" + p + "]"; }
+        return shown;
+    }
+
+    static int Sign(int n) { return n < 0 ? -1 : n > 0 ? 1 : 0; }
+
+    static string Fails(Action act)
+    {
+        try { act(); return "none"; }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace("\n", " / "); }
+    }
+
+    static void Main()
+    {
+        string s = "Hello, hello";
+
+        Console.WriteLine("split1 " + Show("The quick  brown".Split()) + " " + Show("a,b;c".Split(',', ';')) + " " + Show(s.Split(',', ' ')));
+        Console.WriteLine("split2 " + Show("a,b,c,d".Split(',', 2)) + " " + Show("a,b,c".Split(',', 0)) + " " + Show(",a".Split(',', 1, StringSplitOptions.RemoveEmptyEntries)));
+        Console.WriteLine("split3 " + Show("a,,b,c".Split(',', 2, StringSplitOptions.RemoveEmptyEntries)) + " " + Show(",,a,,b,c".Split(new[] { ',' }, 2, StringSplitOptions.RemoveEmptyEntries)) + " " + Show(" a , b , c ".Split(',', 2, StringSplitOptions.TrimEntries)));
+        Console.WriteLine("split4 " + Show("a b  c".Split((char[]?)null, 2)) + " " + Show("a1b2c3".Split(new[] { "1", "2" }, 2, StringSplitOptions.None)) + " " + Show("a--b--c".Split("--", 2)) + " " + Show(s.Split(", ", 2, StringSplitOptions.None)));
+        Console.WriteLine("split5 " + Show("  ".Split(',', 1, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) + " " + Show("x".Split((string?)null)) + " " + Show("a,,".Split(',', 2, StringSplitOptions.RemoveEmptyEntries)) + " " + Show("a, ,b".Split(',', 5, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+        Console.WriteLine("split6 " + Show("a b,c".Split(new string[0], 2, StringSplitOptions.None)) + " " + Show("abc".Split("", 3)) + " " + Show(" a  b ".Split((char[]?)null, 3, StringSplitOptions.TrimEntries)) + " " + Show("".Split(',', 3)));
+        Console.WriteLine("split7 " + Fails(() => "a".Split(',', -1)));
+
+        Console.WriteLine("find1 " + s.IndexOf('h', StringComparison.OrdinalIgnoreCase) + " " + s.IndexOf('h', StringComparison.Ordinal) + " " + s.IndexOf("l", 3, 4) + " " + s.IndexOf("L", 4, 6, StringComparison.OrdinalIgnoreCase) + " " + s.IndexOf("", 3, 2) + " " + s.IndexOf("o", 5, 7, StringComparison.CurrentCulture));
+        Console.WriteLine("find2 " + "hello".LastIndexOf("l", 2) + " " + s.LastIndexOf('l', 5, 3) + " " + s.LastIndexOf("lo", 8, 9) + " " + s.LastIndexOf("LO", 11, StringComparison.OrdinalIgnoreCase) + " " + s.LastIndexOf("LO", 11, 5, StringComparison.OrdinalIgnoreCase) + " " + s.LastIndexOf("l", 12));
+        Console.WriteLine("find3 " + s.LastIndexOf("", 3) + " " + "abc".LastIndexOf("", 3) + " " + "abc".LastIndexOf("", 1, 0) + " " + "".LastIndexOf("", 0) + " " + "".LastIndexOf("x", -1) + " " + s.LastIndexOf("lo", 3, 4) + " " + "abc".LastIndexOf("") + " " + "".LastIndexOf('a', 0, 0));
+        Console.WriteLine("find4 " + s.IndexOfAny(new[] { 'z', 'o' }, 5) + " " + s.IndexOfAny(new[] { 'l' }, 4, 6) + " " + s.LastIndexOfAny(new[] { 'H' }, 3) + " " + s.LastIndexOfAny(new[] { 'e', 'o' }, 10, 4) + " " + "".LastIndexOfAny(new[] { 'a' }, 0, 0) + " " + s.IndexOfAny(new[] { 'o' }, 12));
+        Console.WriteLine("find5 " + Fails(() => "abc".LastIndexOf('a', 3, 1)));
+        Console.WriteLine("find6 " + Fails(() => "abc".IndexOf("a", 2, 2)));
+        Console.WriteLine("find7 " + Fails(() => "abc".LastIndexOf("a", 4)));
+        Console.WriteLine("find8 " + Fails(() => "abc".LastIndexOf("a", 1, 3)));
+        Console.WriteLine("find9 " + Fails(() => "abc".IndexOfAny(new[] { 'a' }, 4)));
+        Console.WriteLine("find10 " + Fails(() => "abc".LastIndexOfAny(new[] { 'a' }, 1, 3)));
+        Console.WriteLine("find11 " + Fails(() => "abc".IndexOf('a', (StringComparison)9)));
+
+        Console.WriteLine("cmp1 " + string.Compare(s, 7, "xhello", 1, 5) + " " + string.Compare(s, 0, "HELLO", 0, 5, StringComparison.OrdinalIgnoreCase) + " " + string.Compare("abc", 1, "abd", 1, 1) + " " + string.Compare("abc", 1, "abd", 1, 2, StringComparison.Ordinal) + " " + Sign(string.Compare("abc", 1, "ABD", 1, 2, true)) + " " + string.Compare("a", 0, "abc", 0, 5, StringComparison.Ordinal) + " " + string.Compare("a", 0, "Z", 0, 1, StringComparison.OrdinalIgnoreCase));
+        Console.WriteLine("cmp2 " + string.Compare(null, 0, "a", 0, 0) + " " + string.Compare(null, 0, "a", 0, 1, StringComparison.Ordinal) + " " + string.Compare("x", 0, null, 0, 3, StringComparison.Ordinal) + " " + string.Compare(null, 0, null, 0, 0, true) + " " + string.Compare("abc", 3, "abd", 3, 4, StringComparison.Ordinal));
+        Console.WriteLine("cmp3 " + Fails(() => string.Compare(null, 0, null, 0, 5)));
+        Console.WriteLine("cmp4 " + Fails(() => string.Compare("abc", -1, "abc", 0, 1)));
+        Console.WriteLine("cmp5 " + Fails(() => string.Compare("abc", 4, "abc", 0, 1, StringComparison.Ordinal)));
+        Console.WriteLine("cmp6 " + Fails(() => string.Compare("abc", 0, "abc", 0, -1, StringComparison.Ordinal)));
+        Console.WriteLine("cmp7 " + Fails(() => string.Compare("abc", 4, "abc", 0, 1)));
+        Console.WriteLine("cmp8 " + string.Compare("abc", "ABC", true, CultureInfo.InvariantCulture) + " " + Sign(string.Compare("abc", "ABD", CultureInfo.InvariantCulture, CompareOptions.IgnoreCase)) + " " + Sign(string.Compare("abc", "abd", CultureInfo.InvariantCulture, CompareOptions.None)) + " " + string.Compare("abc", "ABC", null, CompareOptions.OrdinalIgnoreCase) + " " + Sign(string.Compare("a", "b", CultureInfo.CurrentCulture, CompareOptions.Ordinal)) + " " + string.Compare(null, "a", false, null) + " " + (int)(CompareOptions.IgnoreCase | CompareOptions.IgnoreWidth | CompareOptions.StringSort));
+        Console.WriteLine("cmp9 " + Fails(() => string.Compare("a", "b", null, CompareOptions.Ordinal | CompareOptions.IgnoreCase)));
+        Console.WriteLine("cmp10 " + Fails(() => string.Compare("a", "b", null, (CompareOptions)0x100)));
+
+        Console.WriteLine("eq " + s.Equals((object)"Hello, hello") + " " + "a".Equals((object)1) + " " + "a".Equals((object?)null) + " " + s.StartsWith("hello", true, null) + " " + s.EndsWith("LO", false, CultureInfo.InvariantCulture) + " " + s.EndsWith("LO", true, CultureInfo.InvariantCulture) + " " + s.StartsWith("", false, null));
+        Console.WriteLine("hash " + (s.GetHashCode(StringComparison.OrdinalIgnoreCase) == "HELLO, HELLO".GetHashCode(StringComparison.OrdinalIgnoreCase)) + " " + (s.GetHashCode(StringComparison.Ordinal) == s.GetHashCode()) + " " + (string.GetHashCode("abc".AsSpan()) == "abc".GetHashCode()) + " " + (string.GetHashCode("ABC".AsSpan(), StringComparison.InvariantCultureIgnoreCase) == "abc".GetHashCode(StringComparison.CurrentCultureIgnoreCase)) + " " + (s.GetHashCode(StringComparison.Ordinal) == "HELLO, HELLO".GetHashCode(StringComparison.Ordinal)));
+        Console.WriteLine("case " + s.ToUpper(CultureInfo.InvariantCulture) + " " + "ÀB".ToLower(CultureInfo.CurrentCulture) + " " + "x".ToUpper(null));
+
+        Console.WriteLine("repl1 " + "Hello hello".Replace("HELLO", "bye", StringComparison.OrdinalIgnoreCase) + " " + "Hello hello".Replace("hello", "bye", StringComparison.Ordinal) + " " + "aXbx".Replace("x", null, true, CultureInfo.InvariantCulture) + " " + "aXbx".Replace("x", "-", false, null) + " " + "abc".Replace("Z", "y", StringComparison.CurrentCultureIgnoreCase) + " " + "aaa".Replace("AA", "b", StringComparison.InvariantCultureIgnoreCase));
+        Console.WriteLine("repl2 " + Fails(() => "abc".Replace("", "x", StringComparison.Ordinal)));
+        Console.WriteLine("repl3 " + Fails(() => "abc".Replace("", "x", StringComparison.OrdinalIgnoreCase)));
+        Console.WriteLine("repl4 " + Fails(() => "abc".Replace(null!, "x", true, null)));
+        Console.WriteLine("lines " + "a\r\nb\rc\nd\u0085e\u2028f\u2029g\fh".ReplaceLineEndings("|") + " " + "x\r\r\ny".ReplaceLineEndings("<>") + " " + "p\r\nq".ReplaceLineEndings().Length + " " + "none".ReplaceLineEndings("|") + " " + "\n\n".ReplaceLineEndings("ab"));
+
+        string made = string.Create(5, 'a', (span, first) => { for (int i = 0; i < span.Length; i++) { span[i] = (char)(first + i); } });
+        Console.WriteLine("create " + made + " " + string.Create(0, 0, (span, x) => { }).Length);
+        Console.WriteLine("create2 " + Fails(() => string.Create(-1, 0, (span, x) => { })));
+        Console.WriteLine("create3 " + Fails(() => string.Create<int>(1, 0, null!)));
+        Console.WriteLine("runes " + string.Join(",", "a\U0001F600b\uD800x\uDC00".EnumerateRunes().Select(r => r.Value.ToString("X"))) + " " + s.EnumerateRunes().Count());
+
+        Console.WriteLine("reverse " + string.Join(",", "abc".Reverse()) + " " + new string("abcd".Reverse().ToArray()) + " " + string.Concat("xyz".Reverse()));
+        Console.WriteLine("picture " + 1234.5.ToString("#,##0.00") + " " + ulong.MaxValue.ToString("#,##0") + " " + (-42).ToString("000") + " " + 0.25.ToString("#.00"));
+    }
+}

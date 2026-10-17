@@ -26,6 +26,8 @@
 // without regard to case, trimming particular characters, cutting and
 // splicing, and the character predicates that go with them.
 
+using System.Linq;
+
 static class Program
 {
     static void Line(string s)
@@ -95,7 +97,7 @@ static class Program
         char[] cut = new char[] { '*', '#' };
         Line("trim2 [" + String.Trim("*#hi#*", cut) + "]");
 
-        Line("misc " + String.Reverse("abcd") + " " + String.Concat("a", "b", "c")
+        Line("misc " + new string("abcd".Reverse().ToArray()) + " " + String.Concat("a", "b", "c")
              + " " + String.Concat("a", "b", "c", "d") + " " + string.Empty.Length
              + " " + String.ToCharArray("abc").Length);
 

@@ -135,3 +135,12 @@ ones used in the reports.
 10. Testing or unboxing a boxed USER-DEFINED struct faults the machine:
     `object o = new Small(5); o is Small` segfaults, where `o is int` is fine.
     String.Format's date branch is what it bites.
+11. An int or a char converts implicitly to an enum, where C# converts only
+    the constant 0 (CS1503): `static void F(E e)` called as `F(2)` compiles
+    and prints the member numbered 2. With a default parameter filled in
+    only when no overload of the written arity fits, the enum overload takes
+    calls meant for another: `s.Split(',', 2)` went to
+    Split(char, StringSplitOptions) and split at every comma. String's
+    count forms of Split are therefore two overloads apiece, `(.., int
+    count)` and `(.., int count, StringSplitOptions)`, where .NET has one
+    with a default.
