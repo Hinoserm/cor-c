@@ -12,6 +12,9 @@ namespace Corsac.Lang.Ir;
 /// </summary>
 public sealed class AsyncFrame
 {
+    /// <summary>Which body this is: an async method's, or an iterator's MoveNext.</summary>
+    public required CoroutineKind Kind { get; init; }
+
     public required VReg StateMachine { get; init; }
     public required int StateOffset { get; init; }
     public required int FieldsStart { get; init; }
@@ -51,4 +54,17 @@ public sealed class AsyncFrame
     /// <summary>The markers lowering puts around the continuation registration.</summary>
     public const string Suspend = "__suspend";
     public const string Resume = "__resume";
+}
+
+/// <summary>
+/// The two bodies made resumable at their suspensions. They differ in what
+/// their own catch-all ends: an ASYNC body's takes every exception its body
+/// and its awaits throw and keeps it in the Task, as often as they throw; an
+/// ITERATOR's MoveNext ends only the stop signal Dispose resumes it with
+/// (Runtime.IteratorStop) and hands everything else on to its caller.
+/// </summary>
+public enum CoroutineKind : byte
+{
+    Async,
+    Iterator,
 }

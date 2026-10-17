@@ -1,0 +1,62 @@
+// test: iterator_stopped_early_needs_no_collector
+// expect-exit: 0
+// expect-output:
+// 20000100000 100000 heap 0
+//
+// ITERATORS STOPPED EARLY, ROUND A LOOP: a First() and a foreach left by
+// `break` dispose each one mid-way, which resumes it with the stop signal
+// its MoveNext's own handler takes. That handler ends nothing else -- any
+// other exception goes on to the caller -- and the signal is one object
+// made once, thrown where the iterator stopped, recording no trace: those
+// unwinds leave nothing behind, and the program needs no collector.
+
+using System.Collections.Generic;
+
+static class Program
+{
+    static int s_finallies;
+
+    static T First<T>(IEnumerable<T> source)
+    {
+        foreach (T item in source) return item;
+        throw new System.InvalidOperationException("Sequence contains no elements");
+    }
+
+    static IEnumerable<int> From(int start)
+    {
+        for (int i = start; ; i++) yield return i;
+    }
+
+    static IEnumerable<int> Guarded(int start)
+    {
+        try
+        {
+            for (int i = start; i < start + 10; i++) yield return i;
+        }
+        finally
+        {
+            s_finallies++;
+        }
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        for (int n = 0; n < 100000; n++)
+        {
+            total += First(From(n));
+            foreach (int x in Guarded(n))
+            {
+                total += x;
+                if (x >= n + 2) break;
+            }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.PrintInt(s_finallies);
+        Sys.Print(" heap ");
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}

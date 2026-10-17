@@ -523,6 +523,7 @@ public sealed partial class Lowering
         RequireCardMarkObject();
         _f.Async = new AsyncFrame
         {
+            Kind = CoroutineKind.Async,
             StateMachine = machine,
             StateOffset = StateField,
             FieldsStart = am.StateMachine.InstanceSize,

@@ -96,12 +96,13 @@ public static class HeapDecision
 
         // THE THROW BUDGET (Escape.RepeatingCatches): a reached catch that can
         // run more than once, or a reached async body, lets unwinds come round
-        // without bound, and what they leave behind with them.
+        // without bound, and what they leave behind with them. An iterator's
+        // MoveNext is not one: its handler ends only the stop signal.
         List<string> repeating = new();
         foreach (Node node in reached)
         {
             HeapFunction f = world.Record(node);
-            if (f.Async) repeating.Add(node.Name + ": an async body");
+            if (f.KeepsAwaited) repeating.Add(node.Name + ": an async body");
             foreach (HeapEvent e in f.Events)
                 if (e.Kind == HeapEventKind.Catch && !once.RunsOnce(node.Name, e)) repeating.Add(node.Name + ": a catch of " + e.Name + " that can run more than once");
         }

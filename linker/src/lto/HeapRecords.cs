@@ -90,7 +90,7 @@ public sealed class HeapRecords
         writer.Write(Functions.Count);
         foreach (HeapFunction function in Functions.OrderBy(f => f.Name, StringComparer.Ordinal))
         {
-            writer.Write(index[function.Name]); writer.Write(function.Async);
+            writer.Write(index[function.Name]); writer.Write(function.Async); writer.Write(function.KeepsAwaited);
             Names(function.LatchSets); Names(function.LatchBreaks);
             writer.Write(function.Events.Count);
             foreach (HeapEvent e in function.Events)
@@ -171,9 +171,9 @@ public sealed class HeapRecords
                 string function = Name();
                 if (!records.Gone.TryAdd(function, NameList())) throw new ElfFormatException("Duplicate heap record");
             }
-            for (int f = Count(13); f > 0; f--)
+            for (int f = Count(14); f > 0; f--)
             {
-                HeapFunction function = new(Name()) { Async = reader.ReadBoolean() };
+                HeapFunction function = new(Name()) { Async = reader.ReadBoolean(), KeepsAwaited = reader.ReadBoolean() };
                 function.LatchSets.AddRange(NameList()); function.LatchBreaks.AddRange(NameList());
                 for (int e = Count(23); e > 0; e--)
                 {
@@ -203,7 +203,17 @@ public sealed class HeapFunction
 {
     public HeapFunction(string name) => Name = name;
     public string Name { get; }
+
+    /// <summary>An async body or an iterator's MoveNext: run a step at a time, as often as it is resumed, so never just once.</summary>
     public bool Async { get; set; }
+
+    /// <summary>
+    /// An async body, whose catch-all keeps in its Task what its body and its
+    /// awaits throw, as often as they do: the throw budget's to count. An
+    /// iterator's handler ends only the stop signal, which leaves nothing
+    /// behind (Escape.RepeatingCatches).
+    /// </summary>
+    public bool KeepsAwaited { get; set; }
     public List<string> LatchSets { get; } = new();
     public List<string> LatchBreaks { get; } = new();
     public List<HeapEvent> Events { get; } = new();

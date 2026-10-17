@@ -1,0 +1,10 @@
+using System.Collections.Generic;
+
+public static class Sequences
+{
+    public static T First<T>(IEnumerable<T> source)
+    {
+        foreach (T item in source) return item;
+        throw new System.InvalidOperationException("Sequence contains no elements");
+    }
+}

@@ -33,7 +33,9 @@ public sealed partial class Escape
     // often as they do), every unwind ends at a catch that runs once or ends
     // the program -- boundedly many in a run -- and all it leaves behind is
     // bounded too: no collector is needed for any of it. Where a catch can
-    // run more than once, it is not (CollectorSites, HeapDecision).
+    // run more than once, it is not (CollectorSites, HeapDecision). An
+    // iterator's own handler, run as often as its iterators are disposed,
+    // ends only unwinds that leave nothing behind (RepeatingCatches).
     //
     // A FIELD A STORE CAN REPLACE WITHOUT FREEING, round and round, holds
     // nothing the collector can be spared for: a fresh object held by it
@@ -106,14 +108,30 @@ public sealed partial class Escape
         return ReachesAvoiding(new Cfg(f), madeIn, madeIn, storedIn);
     }
 
-    /// <summary>Why unwinds are unbounded: each reached catch that can run more than once, and each reached async body. Empty: bounded.</summary>
+    /// <summary>
+    /// Why unwinds are unbounded: each reached catch that can run more than
+    /// once, and each reached async body. Empty: bounded.
+    ///
+    /// AN ITERATOR'S OWN HANDLER IS NOT ONE (CoroutineKind): it ends only the
+    /// stop signal Dispose resumes it with, and that unwind leaves nothing
+    /// behind. The signal is one object, made once and thrown each time, and
+    /// Capture records no trace into it. It is thrown by IteratorStop, a leaf
+    /// with nothing to free, at the resumption it stops, in MoveNext's own
+    /// frame: nothing made since the resumption is live there, what was held
+    /// across the suspension is in a slot of its own that the handler's
+    /// return frees as every return does (Own), and the finally blocks the
+    /// signal runs on its way are that frame's own code. Every other
+    /// exception the handler hands on, untouched, to an outer catch, judged
+    /// here as its own, or to the program's end; so is a catch the iterator's
+    /// body writes itself.
+    /// </summary>
     private List<string> RepeatingCatches(Module m, OnceRun once)
     {
         List<string> found = new();
         foreach ((Function f, Block b, Instr end) in _catchEnds)
             if (!once.RunsOnce(f, b)) found.Add($"{f.Name}:{end.Line} a catch of {end.DispatchType ?? "everything"} that can run more than once");
         foreach (Function f in m.Functions)
-            if (f.Async is not null && (_reachedFunctions is null || _reachedFunctions.Contains(f.Name)))
+            if (f.Async is { Kind: CoroutineKind.Async } && (_reachedFunctions is null || _reachedFunctions.Contains(f.Name)))
                 found.Add($"{f.Name}: an async body, whose catch takes what its awaits throw");
         return found;
     }
@@ -303,7 +321,7 @@ public sealed partial class Escape
 
     private HeapFunction HeapFunctionOf(Function f, Dictionary<string, bool[]> summaries)
     {
-        HeapFunction record = new(f.Name) { Async = f.Async is not null };
+        HeapFunction record = new(f.Name) { Async = f.Async is not null, KeepsAwaited = f.Async is { Kind: CoroutineKind.Async } };
 
         // The latch flags, as OnceRun reads them over the whole program.
         SortedSet<string> sets = new(StringComparer.Ordinal), breaks = new(StringComparer.Ordinal);

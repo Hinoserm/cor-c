@@ -1,0 +1,55 @@
+// test: iterator_catch_keeping_what_it_caught_keeps_a_collector
+// expect-exit: 0
+// expect-output:
+// 240000 40000 True True
+//
+// A CATCH AN ITERATOR'S BODY WRITES ITSELF is a catch like any other, though
+// the handler MoveNext keeps for its stop signal is not counted: this one
+// runs every time a step throws, keeps what it caught in a static over the
+// last one, and so drops an exception and its trace each time. The program
+// keeps a collector, and collects.
+
+using System.Collections.Generic;
+
+sealed class Bad : System.Exception
+{
+    public int[] Pad;
+    public Bad(int k) : base("bad") { Pad = new int[256 + (k & 7)]; }
+}
+
+static class Program
+{
+    static System.Exception? s_last;
+    static int s_caught;
+
+    static int Check(int i)
+    {
+        if (i % 3 == 0) throw new Bad(i);
+        return i;
+    }
+
+    static IEnumerable<int> Checked(int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            int v;
+            try { v = Check(i); }
+            catch (Bad e) { s_last = e; s_caught++; v = 0; }
+            yield return v;
+        }
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        for (int n = 0; n < 20000; n++)
+            foreach (int v in Checked(6)) total += v;
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.PrintInt(s_caught);
+        Sys.Print(s_last is Bad ? " True" : " False");
+        Sys.Print(System.GC.CollectionCount(0) > 0 ? " True" : " False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

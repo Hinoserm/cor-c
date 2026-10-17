@@ -36,15 +36,17 @@ public static class IrCodecTests
         Function stepped = new("stepped", IrType.I32);
         VReg machine = stepped.NewReg(IrType.I32); stepped.Params.Add(machine);
         new Builder(stepped, stepped.NewBlock()).Ret(RegOperand.Of(machine));
-        stepped.Async = new AsyncFrame { StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size", SuspendResult = RegOperand.Of(machine) };
+        stepped.Async = new AsyncFrame { Kind = CoroutineKind.Iterator, StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size", SuspendResult = RegOperand.Of(machine) };
         Check(Throws(() => IrFunctionCodec.Write(stepped)), "An async body handing back a register at a suspension was archived");
-        stepped.Async = new AsyncFrame { StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size" };
-        Check(IrFunctionCodec.Read(IrFunctionCodec.Write(stepped)).Async is { Lowered: false, StateOffset: 8 }, "An unlowered async body lost its frame in the archive");
+        stepped.Async = new AsyncFrame { Kind = CoroutineKind.Iterator, StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size" };
+        Check(IrFunctionCodec.Read(IrFunctionCodec.Write(stepped)).Async is { Kind: CoroutineKind.Iterator, Lowered: false, StateOffset: 8 }, "An unlowered iterator body lost its frame or its kind in the archive");
+        stepped.Async = new AsyncFrame { Kind = CoroutineKind.Async, StateMachine = machine, StateOffset = 8, FieldsStart = 12, SizeSymbol = "stepped$size" };
+        Check(IrFunctionCodec.Read(IrFunctionCodec.Write(stepped)).Async is { Kind: CoroutineKind.Async, Lowered: false, StateOffset: 8 }, "An unlowered async body lost its frame or its kind in the archive");
         stepped.Async.Lowered = true;
         bytes = IrFunctionCodec.Write(stepped);
         budget = new(65536);
         Function resumed = IrFunctionCodec.Read(bytes, budget);
-        Check(resumed.Async is { Lowered: true, StateOffset: 8, FieldsStart: 12, SizeSymbol: "stepped$size" }
+        Check(resumed.Async is { Kind: CoroutineKind.Async, Lowered: true, StateOffset: 8, FieldsStart: 12, SizeSymbol: "stepped$size" }
               && resumed.Async.StateMachine == resumed.Params[0], "Async frame lost in the archive");
         Check(budget.Used == IrFunctionCodec.DecodeCost(stepped, bytes.Length), "Async decode cost differs from actual accounting");
         Check(bytes.SequenceEqual(IrFunctionCodec.Write(resumed)), "Async IR reserialization differs");

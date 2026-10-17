@@ -1,0 +1,56 @@
+// test: iterator_stopped_by_another_unit_needs_no_collector
+// units: tests/language/support/1823_iterator_stopped_by_another_unit_needs_no_collector_units.cor
+// expect-exit: 0
+// expect-output:
+// 20000100000 100000 heap 0
+//
+// THE SAME, THE STOPPING DONE BY ANOTHER UNIT: its First() disposes this
+// unit's iterator mid-way, and the stop signal is made and thrown by the
+// runtime that unit holds. The link reads each MoveNext's record as an
+// iterator's, whose handler takes only that signal, not an async body's:
+// unwinds stay bounded, and the program is linked without a collector.
+
+using System.Collections.Generic;
+
+static class Program
+{
+    static int s_finallies;
+
+    static IEnumerable<int> From(int start)
+    {
+        for (int i = start; ; i++) yield return i;
+    }
+
+    static IEnumerable<int> Guarded(int start)
+    {
+        try
+        {
+            for (int i = start; i < start + 10; i++) yield return i;
+        }
+        finally
+        {
+            s_finallies++;
+        }
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        for (int n = 0; n < 100000; n++)
+        {
+            total += Sequences.First(From(n));
+            foreach (int x in Guarded(n))
+            {
+                total += x;
+                if (x >= n + 2) break;
+            }
+        }
+        Sys.PrintInt(total);
+        Sys.Print(" ");
+        Sys.PrintInt(s_finallies);
+        Sys.Print(" heap ");
+        Sys.PrintInt(Gc.HeapBytes);
+        Sys.PrintLine();
+        return 0;
+    }
+}

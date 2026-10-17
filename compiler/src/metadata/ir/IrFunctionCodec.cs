@@ -128,10 +128,12 @@ public static class IrFunctionCodec
             writer.Write(ordered.Length);
             foreach (string name in ordered) IrBinary.Text(writer, name);
         }
-        // A lowered async body keeps the record that it was one (AsyncFrame).
+        // A lowered async body keeps the record that it was one, and which
+        // kind (AsyncFrame).
         writer.Write(function.Async is not null);
         if (function.Async is AsyncFrame frame)
         {
+            writer.Write((byte)frame.Kind);
             writer.Write(frame.StateMachine.Id); writer.Write(frame.StateOffset); writer.Write(frame.FieldsStart);
             IrBinary.Text(writer, frame.SizeSymbol);
             writer.Write(frame.Lowered);
@@ -246,6 +248,8 @@ public static class IrFunctionCodec
             if (IrBinary.Flag(reader))
             {
                 budget.Charge(1, 128, "async frame");
+                CoroutineKind kind = (CoroutineKind)reader.ReadByte();
+                if (!Enum.IsDefined(kind)) throw new InvalidDataException("Invalid async frame kind");
                 VReg machine = At(registers, reader.ReadInt32());
                 int stateOffset = reader.ReadInt32(), fieldsStart = reader.ReadInt32();
                 string sizeSymbol = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol");
@@ -255,6 +259,7 @@ public static class IrFunctionCodec
                 string? stackSymbol = IrBinary.Text(reader, budget);
                 function.Async = new AsyncFrame
                 {
+                    Kind = kind,
                     StateMachine = machine, StateOffset = stateOffset, FieldsStart = fieldsStart,
                     SizeSymbol = sizeSymbol,
                     Lowered = lowered,

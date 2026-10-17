@@ -67,6 +67,7 @@ public static class DefinitionSemantics
                     writer.Write(function.Async is not null);
                     if (function.Async is { } state)
                     {
+                        writer.Write((byte)state.Kind);
                         Register(state.StateMachine); writer.Write(state.StateOffset); writer.Write(state.FieldsStart);
                         Reference(state.SizeSymbol);
                     }

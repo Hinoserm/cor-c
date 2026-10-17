@@ -347,6 +347,7 @@ public sealed partial class Lowering
         RequireCardMarkObject();
         _f.Async = new AsyncFrame
         {
+            Kind = CoroutineKind.Iterator,
             StateMachine = machine,
             StateOffset = IterStateField,
             FieldsStart = it.Machine.InstanceSize,

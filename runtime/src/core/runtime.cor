@@ -500,6 +500,14 @@ static class AllocSamples
 /// seen outside MoveNext.
 sealed class IteratorStopSignal : Exception
 {
+    /// THE ONE SIGNAL (Runtime.IteratorStop), made by the type's initialiser
+    /// the first time an iterator is stopped: once in a run, which is what a
+    /// program's walk for allocations knows of an initialiser. Filled behind
+    /// a test of a field, it was made once all the same, but the walk could
+    /// not tell that from an allocation every stop makes, and every program
+    /// that stopped an iterator kept a collector for it.
+    internal static readonly IteratorStopSignal One = new IteratorStopSignal();
+
     public IteratorStopSignal() : base("The iterator was disposed.") { }
 }
 
@@ -4394,17 +4402,9 @@ static class Runtime
     /// walks for it, made that the most expensive thing the compiler did.
     /// Nothing ever sees it but the finally blocks it runs and MoveNext's
     /// own handler: C# allows no catch around a yield.
-    static IteratorStopSignal? _stopSignal;
-
     public static void IteratorStop()
     {
-        IteratorStopSignal? signal = _stopSignal;
-        if (signal is null)
-        {
-            signal = new IteratorStopSignal();
-            _stopSignal = signal;
-        }
-        throw signal;
+        throw IteratorStopSignal.One;
     }
 
     public static bool IteratorStopping(object thrown)

@@ -2580,8 +2580,7 @@ continue;
     }
 
     /// <summary>An iterator's MoveNext: a body run a step at a time in its machine (Lowering.Iterator), not an async method's.</summary>
-    internal static bool IteratorBody(Function f)
-        => f.Async is { SizeSymbol: var size } && size.StartsWith("itsize_", StringComparison.Ordinal) && f.Params.Count == 1;
+    internal static bool IteratorBody(Function f) => f.Async is { Kind: CoroutineKind.Iterator };
 
     /// <summary>A descriptor whose objects own no field: a box's, or a compiler-made iterator's (StampedBox).</summary>
     private static bool OwnsNoField(string? descriptor)
@@ -6347,8 +6346,14 @@ continue;
     /// through any path at all -- and a function's other allocations count
     /// wherever it is reached. Judging the returned object by the function
     /// alone made every program that called a fresh helper need a collector.
+    ///
+    /// PAST THE BUDGET, for the report alone: where unwinds are unbounded the
+    /// answer is the reasons, and nothing else is looked at; asked to go on,
+    /// it walks as if they were bounded and answers the sites that would be
+    /// left, which is the rest of what stands between the program and no
+    /// collector (AllocationReport).
     /// </summary>
-    private List<string> CollectorSites(Module m, Dictionary<string, Function> byName, Function entry, bool paths)
+    private List<string> CollectorSites(Module m, Dictionary<string, Function> byName, Function entry, bool paths, bool pastBudget = false)
     {
         Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data) data[d.Name] = d;
@@ -6385,7 +6390,7 @@ continue;
         // body, lets unwinds come round without bound, and what they leave
         // behind with them -- a collector, each the reason.
         List<string> repeating = RepeatingCatches(m, once);
-        if (repeating.Count > 0) return paths ? repeating.Select(r => r + "\n      what unwinds to it is unbounded").ToList() : repeating;
+        if (repeating.Count > 0 && !pastBudget) return paths ? repeating.Select(r => r + "\n      what unwinds to it is unbounded").ToList() : repeating;
         // A held object of a field that leaks is no owner's to free.
         HashSet<string> leaky = LeakyFields(once);
         bool Leaky(Instr i) => _heldBy.TryGetValue(i, out string? field) && leaky.Contains(field);
@@ -6690,14 +6695,14 @@ continue;
             Console.Error.WriteLine("alloc report: " + m.Name + " has no entry; compile the whole program to see it");
             return;
         }
-        List<string> sites = CollectorSites(m, byName, entry, paths: true);
+        // The throw budget and the fields that leak, as CollectorSites decides with them.
+        OnceRun budget = new(m, byName, entry);
+        List<string> repeating = RepeatingCatches(m, budget);
+        List<string> sites = CollectorSites(m, byName, entry, paths: true, pastBudget: true);
         foreach (string line in _fieldReport.Where(l => Switches.AllocReportOnly is not { } which || l.Contains(which, StringComparison.Ordinal)))
             Console.Error.WriteLine("alloc report: field " + line);
         Console.Error.WriteLine($"alloc report: owned fields {_fieldsJudged.Owned} of {_fieldsJudged.Judged}");
         Console.Error.WriteLine($"alloc report: thrown {_thrown.Count} ({_thrownType.Count} typed), catches keeping: {(_keptCatchAll ? "everything; " : "")}{string.Join(", ", _keptCatches.Take(12))}");
-        // The throw budget and the fields that leak, as CollectorSites decides with them.
-        OnceRun budget = new(m, byName, entry);
-        List<string> repeating = RepeatingCatches(m, budget);
         Console.Error.WriteLine($"alloc report: unwinds {(repeating.Count == 0 ? "bounded" : "unbounded: " + string.Join("; ", repeating.Take(6)))}");
         HashSet<string> leaking = LeakyFields(budget);
         if (leaking.Count > 0) Console.Error.WriteLine($"alloc report: fields a store may replace unfreed, more than once: {string.Join(", ", leaking.Order(StringComparer.Ordinal).Take(12))}");
@@ -6714,7 +6719,17 @@ continue;
             + string.Concat(m.Functions.SelectMany(f => f.Blocks.SelectMany(b => b.Instrs)).Where(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i))).Select(i => i.DispatchType).Distinct().Take(12).Select(t => "; unresolved " + t)));
         foreach (string why in _unresolvedWhy ?? new()) Console.Error.WriteLine("alloc report: unresolved " + why);
         Console.Error.WriteLine("alloc report: thrown not just made: " + string.Join(", ", (_foreignTypes ?? new HashSet<string>()).Order(StringComparer.Ordinal).Take(20)));
-        Console.Error.WriteLine($"alloc report: {sites.Count} allocation(s) still need a collector");
+        // UNBOUNDED UNWINDS ARE A COLLECTOR ON THEIR OWN, each the reason; the
+        // sites listed after them are those a walk as if the budget held
+        // finds, which the program would still need one for without them.
+        if (repeating.Count > 0)
+        {
+            Console.Error.WriteLine($"alloc report: {repeating.Count} unwind(s) without bound still need a collector");
+            foreach (string why in repeating.OrderBy(x => x, StringComparer.Ordinal)) Console.Error.WriteLine("  " + why + "\n      what unwinds to it is unbounded");
+            Console.Error.WriteLine($"alloc report: past the throw budget, as if unwinds were bounded: {sites.Count} allocation(s) still need a collector");
+        }
+        else
+            Console.Error.WriteLine($"alloc report: {sites.Count} allocation(s) still need a collector");
         foreach (string site in sites.OrderBy(x => x, StringComparer.Ordinal)) Console.Error.WriteLine("  " + site);
     }
 }
