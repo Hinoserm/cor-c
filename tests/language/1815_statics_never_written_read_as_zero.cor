@@ -1,0 +1,137 @@
+// test: statics_never_written_read_as_zero
+// expect-exit: 0
+// expect-output:
+// unwritten 0 False 0 0 none True 0
+// switch off 0
+// by ref 5 interlocked 2 volatile 3 out 12 ref return 9
+// lambda 4 virtual 6 generic 8 null
+// struct 3 0 cctor 11 double 2.5 0 thread 13 async 7
+//
+// In an image that is the whole program, a static nothing writes is zero, and
+// a load of it is the constant 0: the branch it decides goes, and so does the
+// code only that branch reaches (UnwrittenStatics). The first two lines are
+// statics of that kind -- never written, written only with 0, written only
+// with what they already hold -- and what they gate. The rest are statics
+// written other than by a plain store in Main, and each keeps what it was
+// given: through a ref, an Interlocked or a Volatile call, an out argument, a
+// ref return, a lambda, a virtual override, a generic copy, a field of a
+// struct, a static constructor, a [ThreadStatic], an async method after its
+// await.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+struct Point
+{
+    public int X;
+    public int Y;
+}
+
+class Holder<T>
+{
+    public static T? Value;
+}
+
+abstract class Setter
+{
+    public abstract void Set();
+}
+
+class SixSetter : Setter
+{
+    public override void Set() { Program.ByVirtual = 6; }
+}
+
+static class Configured
+{
+    public static int Value;
+
+    static Configured()
+    {
+        Value = 11;
+    }
+}
+
+static class Program
+{
+    static int _never;
+    static bool _flag;
+    static long _zeroed;
+    static double _nothing;
+    static string? _name;
+    static int[]? _table;
+    static bool _verify;
+    static long _hits;
+
+    static int _byRef;
+    static int _counter;
+    static int _volatile;
+    static int _parsed;
+    static long _slot;
+    static int _byLambda;
+    public static int ByVirtual;
+    static Point _point;
+    static Point _untouched;
+    static double _half;
+    [ThreadStatic] static int _perThread;
+    static int _byAsync;
+
+    // Never called: what it would set is never set.
+    public static void TurnOn()
+    {
+        _flag = true;
+        _verify = true;
+    }
+
+    static void Set(ref int target, int value) { target = value; }
+
+    static ref long Slot() => ref _slot;
+
+    static async Task SetLater()
+    {
+        await Task.Yield();
+        _byAsync = 7;
+    }
+
+    static void Expensive()
+    {
+        _hits++;
+        Console.WriteLine("checked " + _hits);
+    }
+
+    static int Main(string[] args)
+    {
+        _zeroed = 0;
+        _verify = _verify || false;
+        Console.WriteLine("unwritten " + _never + " " + _flag + " " + _zeroed + " " + _nothing + " "
+            + (_name ?? "none") + " " + (_table == null) + " " + _untouched.Y);
+        if (_flag || _verify) Expensive();
+        Console.WriteLine("switch off " + _hits);
+
+        Set(ref _byRef, 5);
+        Interlocked.Increment(ref _counter);
+        Interlocked.Increment(ref _counter);
+        Volatile.Write(ref _volatile, 3);
+        int.TryParse("12", out _parsed);
+        Slot() = 9;
+        Console.WriteLine("by ref " + _byRef + " interlocked " + _counter + " volatile " + Volatile.Read(ref _volatile)
+            + " out " + _parsed + " ref return " + _slot);
+
+        Action set = () => _byLambda = 4;
+        set();
+        Setter setter = new SixSetter();
+        setter.Set();
+        Holder<int>.Value = 8;
+        Console.WriteLine("lambda " + _byLambda + " virtual " + ByVirtual + " generic " + Holder<int>.Value + " "
+            + (Holder<string>.Value ?? "null"));
+
+        _point.X = 3;
+        _half = 2.5;
+        _perThread = 13;
+        SetLater().Wait();
+        Console.WriteLine("struct " + _point.X + " " + _point.Y + " cctor " + Configured.Value + " double " + _half + " "
+            + _nothing + " thread " + _perThread + " async " + _byAsync);
+        return 0;
+    }
+}

@@ -57,6 +57,16 @@ public sealed class Module
     public HashSet<string> ObjectNames { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// The module is the whole image: the driver links it itself into an
+    /// executable, with no shared object, kernel or separately compiled unit
+    /// beside it, so every instruction that can write one of its statics is
+    /// here, or in an object linked in with it whose names are
+    /// <see cref="ObjectNames"/>. What a static holds can then be answered
+    /// from this module alone (UnwrittenStatics).
+    /// </summary>
+    public bool ClosedImage { get; set; }
+
+    /// <summary>
     /// Runtime routines the program provides that the optimiser may add calls
     /// to -- the frees an owned object's lifetime ends in -- whether this
     /// module defines them or another unit of the program does. A source

@@ -339,7 +339,11 @@ public sealed class Pipeline
     /// code, and their messages. So, for a whole program, until nothing more
     /// goes: the stores to what nothing reads, the copies of what they stored,
     /// and what is then reached by nothing (Inline.RemoveDeadFunctions), with
-    /// the names the last inliner kept for the backend kept again.
+    /// the names the last inliner kept for the backend kept again. And in an
+    /// image that is the whole program (Module.ClosedImage), every static
+    /// nothing then writes is read as the zero it is (UnwrittenStatics), and
+    /// the functions that changed folded again -- which leaves more
+    /// unreached, and so more statics unwritten.
     /// Not at the link's run of a unit's late passes (Module.AtLink): the
     /// archived bodies it brings in after them may read what nothing here
     /// does.
@@ -349,12 +353,19 @@ public sealed class Pipeline
         if (m.Entry is null || m.AtLink) return;
         // None where no inliner ran (--skip-passes Inline): nothing was dropped.
         if (LatePasses.OfType<Inline>().LastOrDefault()?.Pinned is not { } pinned) return;
+        Pipeline fold = new() { Rounds = 2, Verify = Verify };
+        fold.Passes.Add(new ConstantAndCopyPropagation());
+        fold.Passes.Add(new ConstantFold());
+        fold.Passes.Add(new BranchSimplify());
+        fold.Passes.Add(new DeadCodeElimination());
         while (true)
         {
             List<Function> changed = DeadStatics.Sweep(m);
             foreach (Function f in changed) new DeadCodeElimination().Run(f);
+            List<Function> zeroed = UnwrittenStatics.Run(m);
+            foreach (Function f in zeroed) fold.Run(f);
             bool removed = Inline.RemoveDeadFunctions(m, pinned);
-            if (changed.Count == 0 && !removed) break;
+            if (changed.Count == 0 && zeroed.Count == 0 && !removed) break;
         }
         if (Verify)
             foreach (Function checkedFunction in m.Functions) Verifier.Check(checkedFunction, "after the late sweep");

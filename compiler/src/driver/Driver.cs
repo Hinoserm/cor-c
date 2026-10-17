@@ -1007,6 +1007,11 @@ public static class Driver
         foreach ((string _, ObjectFile with) in withObjects)
             foreach (Symbol symbol in with.Symbols)
                 if (!symbol.IsDefined) module.ObjectNames.Add(symbol.Name);
+        // A CLOSED IMAGE: an executable linked here, with no shared object
+        // beside it and nothing compiled apart that may call into it -- every
+        // write to a static of the program is in this module or in those
+        // objects (UnwrittenStatics).
+        module.ClosedImage = !args.Contains("--obj") && !library && kernel is null && sharedLibs.Count == 0 && !module.PreserveExports;
         module.NoCollector = args.Contains("--no-collector");
         bool moduleUnit = kernel is not null && args.Contains("--obj");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
