@@ -497,7 +497,7 @@ public static class RegistryDeclarations
     }
 
     /// <summary>`Units.Banana` as the number it is, for an enum-typed setting.</summary>
-    static long? Named(Expr e, Dictionary<string, long>? choices)
+    static (long Value, Prim Type)? Named(Expr e, Dictionary<string, long>? choices)
     {
         if (choices is null)
         {
@@ -511,7 +511,7 @@ public static class RegistryDeclarations
             _ => null,
         };
 
-        return member is not null && choices.TryGetValue(member, out long value) ? value : null;
+        return member is not null && choices.TryGetValue(member, out long value) ? (value, Prim.I64) : null;
     }
 
     /// <summary>

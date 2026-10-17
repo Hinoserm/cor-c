@@ -1,0 +1,90 @@
+// test: constant_expressions_at_their_types
+// expect-exit: 0
+// expect-output:
+// A -1073741824 -1073741824
+// B -1073741824 -1073741824
+// C 0 0
+// D 9223372036854775807 9223372036854775807
+// E 5 5
+// F True True
+// G -2147483648 -2147483648
+// H -2147483648 -2147483648
+// I -9223372036854775808 -9223372036854775808
+// J -2147483648 -2147483648
+// K 0 0
+// L 2147483647 2147483647
+// M True True
+// N 1152921504606846975 1152921504606846975
+// O 256 256
+// P 15 15
+// Q 6 6 R 4 4
+// S 4294967294 4294967294 T -6 -6
+// U -2147483648 -2147483648 V b b
+// W True True X 2 2
+// if ok
+// if2 ok
+//
+// A CONSTANT EXPRESSION IS WORKED OUT AT THE TYPES C# GIVES IT, step by
+// step: wrapped to each step's width, and divided, shifted and compared
+// unsigned where the type is unsigned. ulong.MaxValue / 2 is not 0 (a
+// signed -1 / 2), an int that wrapped is negative before it is halved or
+// compared, an int's shift count is taken mod 32, a uint plus an int
+// constant stays a uint, and unchecked MinValue / -1 is MinValue. Each
+// line has the const field and the same expression inline, which the
+// code generator folds on its own.
+
+using System;
+
+static class Program
+{
+    const int A = unchecked((int.MaxValue + 1) / 2);
+    const int B = unchecked((2147483647 + 1) >> 1);
+    const uint C = unchecked((0xFFFFFFFFu + 1u) / 2u);
+    const ulong D = 18446744073709551615UL / 2;
+    const ulong E = ulong.MaxValue % 10;
+    const bool F = ulong.MaxValue > 5;
+    const int G = unchecked((1 << 31) / -1);
+    const int H = unchecked(int.MinValue / (short)-1);
+    const long I = unchecked(long.MinValue / -1L);
+    const int J = unchecked(int.MinValue / -1);
+    const int K = unchecked(-2147483648 % -1);
+    const uint L = uint.MaxValue >> 1;
+    const bool M = unchecked(2147483647 + 1) < 0;
+    const ulong N = 0xFFFFFFFFFFFFFFF0UL >> 4;
+    const long O = 1 << 40;
+    const int P = -1 >>> 28;
+    const uint Q = 5u + 1;
+    const long R = 5u + -1;
+    const long S = unchecked((uint)-1 * 2u);
+    const int T = ~(byte)5;
+    const long U = -(2147483648);
+    const char V = (char)('a' + 1);
+    const bool W = (byte)200 > (sbyte)-1;
+    const ulong X = 1UL << 65;
+    static int Main()
+    {
+        Console.WriteLine("A " + A + " " + unchecked((int.MaxValue + 1) / 2));
+        Console.WriteLine("B " + B + " " + unchecked((2147483647 + 1) >> 1));
+        Console.WriteLine("C " + C + " " + unchecked((0xFFFFFFFFu + 1u) / 2u));
+        Console.WriteLine("D " + D + " " + (18446744073709551615UL / 2));
+        Console.WriteLine("E " + E + " " + (ulong.MaxValue % 10));
+        Console.WriteLine("F " + F + " " + (ulong.MaxValue > 5));
+        Console.WriteLine("G " + G + " " + unchecked((1 << 31) / -1));
+        Console.WriteLine("H " + H + " " + unchecked(int.MinValue / (short)-1));
+        Console.WriteLine("I " + I + " " + unchecked(long.MinValue / -1L));
+        Console.WriteLine("J " + J + " " + unchecked(int.MinValue / -1));
+        Console.WriteLine("K " + K + " " + unchecked(-2147483648 % -1));
+        Console.WriteLine("L " + L + " " + (uint.MaxValue >> 1));
+        Console.WriteLine("M " + M + " " + (unchecked(2147483647 + 1) < 0));
+        Console.WriteLine("N " + N + " " + (0xFFFFFFFFFFFFFFF0UL >> 4));
+        Console.WriteLine("O " + O + " " + (1 << 40));
+        Console.WriteLine("P " + P + " " + (-1 >>> 28));
+        Console.WriteLine("Q " + Q + " " + (5u + 1) + " R " + R + " " + (5u + -1));
+        Console.WriteLine("S " + S + " " + unchecked((uint)-1 * 2u) + " T " + T + " " + ~(byte)5);
+        Console.WriteLine("U " + U + " " + -(2147483648) + " V " + V + " " + (char)('a' + 1));
+        Console.WriteLine("W " + W + " " + ((byte)200 > (sbyte)-1) + " X " + X + " " + (1UL << 65));
+        if (18446744073709551615UL > 1UL) Console.WriteLine("if ok"); else Console.WriteLine("if wrong");
+        if (unchecked(2147483647 + 1) < 0) Console.WriteLine("if2 ok"); else Console.WriteLine("if2 wrong");
+        return 0;
+    }
+}

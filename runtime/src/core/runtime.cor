@@ -4704,16 +4704,11 @@ static class Runtime
         return (long)URem((ulong)a, (ulong)b);
     }
 
-    /// Signed quotient with C#'s semantics: truncated toward zero. The one
-    /// case that cannot be represented, long.MinValue / -1, answers
-    /// long.MinValue, which is what an unchecked C# context gives.
+    /// Signed quotient with C#'s semantics: truncated toward zero. A divisor
+    /// of -1 never arrives: the compiler takes it apart first, and throws
+    /// OverflowException for long.MinValue / -1 as .NET does.
     public static long DivS(long a, long b)
     {
-        if (b == -1)
-        {
-            return 0 - a;
-        }
-
         ulong q = UDiv(Magnitude(a), Magnitude(b));
 
         if ((a < 0) != (b < 0))
@@ -4724,14 +4719,10 @@ static class Runtime
     }
 
     /// Signed remainder: the sign of the DIVIDEND, as C# specifies, so that
-    /// a == (a / b) * b + a % b holds for every pair. long.MinValue % -1 is 0.
+    /// a == (a / b) * b + a % b holds for every pair. A divisor of -1 never
+    /// arrives here either; long.MinValue % -1 throws, as .NET's does.
     public static long RemS(long a, long b)
     {
-        if (b == -1)
-        {
-            return 0;
-        }
-
         ulong r = URem(Magnitude(a), Magnitude(b));
 
         if (a < 0)

@@ -3551,6 +3551,9 @@ public sealed partial class Lowering
         VReg l = Convert(at, left, leftType, promoted);
         VReg r = EvalAs(rightExpr, rightPromoted);
         VReg combined = Arith(at, op, l, r, promoted);
+        // `x op= y` is `x = (T)(x op y)`, and in a checked context that cast
+        // is checked: a byte that a compound add carries past 255 throws.
+        if (_checkedDepth > 0) CheckedNarrow(at, combined, ResultTypeOf(op, promoted), resultType);
         return Convert(at, combined, ResultTypeOf(op, promoted), resultType);
     }
 
@@ -3832,6 +3835,9 @@ public sealed partial class Lowering
                     VReg sum = _checkedDepth > 0
                         ? CheckedArith(u, inc ? BinOp.Add : BinOp.Sub, wide, one, promoted)
                         : _e.Binary(inc ? Opcode.Add : Opcode.Sub, wide, one);
+                    // C#'s ++ on a narrow type steps that type: checked,
+                    // sbyte.MaxValue + 1 throws rather than wrapping.
+                    if (_checkedDepth > 0) CheckedNarrow(u, sum, promoted, operand);
                     updated = Convert(u, sum, promoted, operand);
                 }
                 StorePlace(p, updated);
@@ -4152,7 +4158,11 @@ public sealed partial class Lowering
     {
         Type whole = _b.TypeOf(b);
 
-        if (_checkedDepth == 0 && Fold.TryConst(b, out long folded) && !whole.IsFloat && Fold.Fits(folded, whole))
+        // A CONSTANT EXPRESSION IS C#'S TO WORK OUT, named constants and all,
+        // at the types C# gives it: unchecked MinValue / -1 is MinValue and
+        // MinValue % -1 is 0 there, where the same division made at run time
+        // throws.
+        if (_checkedDepth == 0 && Fold.TryConst(b, out long folded, NamedConstant) && !whole.IsFloat && Fold.Fits(folded, whole))
         {
             return _e.Const(folded, IrTypes.Of(whole));
         }
@@ -4477,7 +4487,11 @@ public sealed partial class Lowering
         VReg rv = right.IsNullableValue ? NullableRead(r, right) : r;
         lv = Convert(b, lv, leftInner, promoted);
         rv = Convert(b, rv, rightInner, rightPromoted);
-        VReg value = Convert(b, Arith(b, op, lv, rv, promoted), ResultTypeOf(op, promoted), whole.Underlying);
+        VReg made = Arith(b, op, lv, rv, promoted);
+        // A compound assignment's cast back to a narrow cell is checked as
+        // Combine's is; an operator's own answer always fits and asks nothing.
+        if (_checkedDepth > 0) CheckedNarrow(b, made, ResultTypeOf(op, promoted), whole.Underlying);
+        VReg value = Convert(b, made, ResultTypeOf(op, promoted), whole.Underlying);
         _e.CopyTo(result, R(Box(b, value, whole)));
         _e.Jump(end);
         _e.SetBlock(end);
@@ -4639,8 +4653,6 @@ public sealed partial class Lowering
             return CheckedArith(at, op, l, r, operand);
         }
 
-        bool wide = l.Type == IrType.I64;
-
         switch (op)
         {
             case BinOp.Add: return Canonical(_e.Binary(Opcode.Add, l, r), operand);
@@ -4655,57 +4667,66 @@ public sealed partial class Lowering
 
             case BinOp.Div:
             case BinOp.Rem:
-            {
                 DivideByZeroCheck(at, r);
-                Opcode dop = op == BinOp.Div ? (un ? Opcode.DivU : Opcode.DivS) : (un ? Opcode.RemU : Opcode.RemS);
-                if (!un && op == BinOp.Div && _checkedDepth > 0)
-                    CheckedDivisionOverflow(l, r);
-                if (!un && op == BinOp.Rem)
-                {
-                    // IDIV traps on MinValue/-1, but the language remainder
-                    // is zero. Handle -1 before either machine or helper path.
-                    VReg answer = _f.NewReg(l.Type, "remainder");
-                    Block zero = _f.NewBlock("remone"), normal = _f.NewBlock("remnormal"), done = _f.NewBlock("remdone");
-                    _e.Branch(_e.Binary(Opcode.Eq, R(r), Imm(-1, r.Type), IrType.I32), zero, normal);
-                    _e.SetBlock(zero); _e.CopyTo(answer, Imm(0, l.Type)); _e.Jump(done);
-                    _e.SetBlock(normal); _e.CopyTo(answer, R(Divide())); _e.Jump(done);
-                    _e.SetBlock(done);
-                    return answer;
-                }
-                return Divide();
-
-                VReg Divide()
-                {
-                if (wide && !_t.NativeI64)
-                {
-                    string helper = dop switch
-                    {
-                        Opcode.DivS => "DivS", Opcode.DivU => "DivU", Opcode.RemS => "RemS", _ => "RemU",
-                    };
-                    MethodSymbol? h = RequireRuntime(at, helper, 2, "64-bit division");
-                    return h is null ? l : _e.Call(CallLabel(h), IrType.I64, R(l), R(r))!;
-                }
-                return Canonical(_e.Binary(dop, l, r), operand);
-                }
-            }
+                return Divide(at, op, l, r, operand);
 
             default:
                 return Fail(at, $"binary '{op}' is not implemented");
         }
     }
 
-    private void CheckedDivisionOverflow(VReg numerator, VReg divisor)
+    /// <summary>
+    /// Integer division or remainder by a divisor known not to be zero.
+    /// A SIGNED DIVISOR OF -1 NEVER REACHES THE DIVISION. .NET throws
+    /// OverflowException for MinValue / -1 and for MinValue % -1, checked or
+    /// unchecked, where IDIV traps on both; any other dividend divided by -1
+    /// is its negation and leaves no remainder. So neither the machine's
+    /// division nor the 64-bit helper ever sees -1, and a constant divisor
+    /// folds the test away to the plain division. The ordinary division's
+    /// block is made first, so that it is laid out straight after the test
+    /// and the common case takes no jump.
+    /// </summary>
+    private VReg Divide(Node at, BinOp op, VReg l, VReg r, Type operand)
     {
-        long minimum = numerator.Type == IrType.I64 ? long.MinValue : int.MinValue;
-        VReg atMinimum = _e.Binary(Opcode.Eq, R(numerator), Imm(minimum, numerator.Type), IrType.I32);
-        VReg minusOne = _e.Binary(Opcode.Eq, R(divisor), Imm(-1, divisor.Type), IrType.I32);
-        Block fail = _f.NewBlock("divoverflow"), fine = _f.NewBlock("divfits");
-        _e.Branch(_e.Binary(Opcode.And, atMinimum, minusOne), fail, fine);
+        bool un = operand.IsUnsigned;
+        Opcode dop = op == BinOp.Div ? (un ? Opcode.DivU : Opcode.DivS) : (un ? Opcode.RemU : Opcode.RemS);
+        if (un)
+            return MachineDivide(at, dop, l, r, operand);
+
+        VReg answer = _f.NewReg(l.Type, op == BinOp.Div ? "quotient" : "remainder");
+        Block normal = _f.NewBlock("divnormal"), minusOne = _f.NewBlock("divminusone");
+        Block fail = _f.NewBlock("divoverflow"), fits = _f.NewBlock("divfits"), done = _f.NewBlock("divdone");
+        _e.Branch(_e.Binary(Opcode.Ne, R(r), Imm(-1, r.Type), IrType.I32), normal, minusOne);
+        _e.SetBlock(normal);
+        _e.CopyTo(answer, R(MachineDivide(at, dop, l, r, operand)));
+        _e.Jump(done);
+        _e.SetBlock(minusOne);
+        long minimum = l.Type == IrType.I64 ? long.MinValue : int.MinValue;
+        _e.Branch(_e.Binary(Opcode.Eq, R(l), Imm(minimum, l.Type), IrType.I32), fail, fits);
         _e.SetBlock(fail);
         MethodSymbol? thrower = RuntimeMethod("Overflow", 0);
         if (thrower is not null) { Require(thrower); _e.Call(CallLabel(thrower), IrType.Void); }
         _e.Emit(Opcode.Trap, null); _e.Unreachable();
-        _e.SetBlock(fine);
+        _e.SetBlock(fits);
+        _e.CopyTo(answer, op == BinOp.Div ? R(Canonical(_e.Unary(Opcode.Neg, l), operand)) : Imm(0, l.Type));
+        _e.Jump(done);
+        _e.SetBlock(done);
+        return answer;
+    }
+
+    /// <summary>The division itself: the machine's, or on a 32-bit target a 64-bit one through the runtime's helper.</summary>
+    private VReg MachineDivide(Node at, Opcode dop, VReg l, VReg r, Type operand)
+    {
+        if (l.Type == IrType.I64 && !_t.NativeI64)
+        {
+            string helper = dop switch
+            {
+                Opcode.DivS => "DivS", Opcode.DivU => "DivU", Opcode.RemS => "RemS", _ => "RemU",
+            };
+            MethodSymbol? h = RequireRuntime(at, helper, 2, "64-bit division");
+            return h is null ? l : _e.Call(CallLabel(h), IrType.I64, R(l), R(r))!;
+        }
+        return Canonical(_e.Binary(dop, l, r), operand);
     }
 
     /// <summary>C# throws on integer division by zero; the machine would trap, but a trap is not an exception.</summary>
@@ -4797,8 +4818,7 @@ public sealed partial class Lowering
             {
                 result = _e.Binary(Opcode.Mul, l, r);
                 // If r is zero the product is zero and cannot overflow; otherwise
-                // dividing back must recover l exactly. The signed case also
-                // refuses MIN * -1, which the division would trap on.
+                // dividing back must recover l exactly.
                 VReg dest = _f.NewReg(IrType.I32, "ovf");
                 Block rz = _f.NewBlock("mulrz");
                 Block rn = _f.NewBlock("mulrn");
@@ -4808,28 +4828,11 @@ public sealed partial class Lowering
                 _e.CopyTo(dest, Imm(0, IrType.I32));
                 _e.Jump(end);
                 _e.SetBlock(rn);
-                // Check before the reverse division: an I32 IDIV would
-                // otherwise fault before the later overflow predicate runs.
-                if (!un) CheckedDivisionOverflow(result, r);
-                VReg back;
-                if (t == IrType.I64 && !_t.NativeI64)
-                {
-                    MethodSymbol? h = RequireRuntime(at, un ? "DivU" : "DivS", 2, "checked multiplication");
-                    back = h is null ? result : _e.Call(CallLabel(h), IrType.I64, R(result), R(r))!;
-                }
-                else
-                {
-                    back = _e.Binary(un ? Opcode.DivU : Opcode.DivS, result, r);
-                }
-                VReg bad = _e.Binary(Opcode.Ne, back, l);
-                if (!un)
-                {
-                    long min = t == IrType.I64 ? long.MinValue : int.MinValue;
-                    VReg lMin = _e.Binary(Opcode.Eq, R(l), Imm(min, t), IrType.I32);
-                    VReg rNeg = _e.Binary(Opcode.Eq, R(r), Imm(-1, t), IrType.I32);
-                    bad = _e.Binary(Opcode.Or, bad, _e.Binary(Opcode.And, lMin, rNeg));
-                }
-                _e.CopyTo(dest, R(bad));
+                // The division back is the language's own: MinValue * -1,
+                // the one signed product whose quotient by r overflows too,
+                // throws there before the machine's division could trap.
+                VReg back = Divide(at, BinOp.Div, result, r, operand);
+                _e.CopyTo(dest, R(_e.Binary(Opcode.Ne, back, l)));
                 _e.Jump(end);
                 _e.SetBlock(end);
                 overflow = dest;

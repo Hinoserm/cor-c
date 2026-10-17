@@ -878,10 +878,15 @@ public sealed partial class Lowering
     /// (n.Kind)`, every pass of the compiler's own -- never made its jump
     /// table, and ran a compare and a branch for every case above the one
     /// taken.
+    ///
+    /// With its type, which the folder works each step out at. nint.MinValue
+    /// and its kin are named as constants here but are not C#'s: they are
+    /// properties, so an expression made of them is worked out at run time.
     /// </summary>
-    private long? NamedConstant(Expr e)
+    private (long Value, Prim Type)? NamedConstant(Expr e)
         => e is MemberExpr or NameExpr && _b.Resolved.TryGetValue(e, out Sym? sym)
-            && sym is ConstSym { Text: null, Type.Prim: not (Prim.F32 or Prim.F64) } k ? k.Value : null;
+            && e is not MemberExpr { Target: NameExpr { Name: "nint" or "nuint" } }
+            && sym is ConstSym { Text: null, Type.Prim: not (Prim.F32 or Prim.F64) } k ? (k.Value, Fold.Whole(k.Type)) : null;
 
     // ---- exceptions ----------------------------------------------------------------
 

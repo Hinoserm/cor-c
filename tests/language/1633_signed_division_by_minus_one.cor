@@ -1,0 +1,67 @@
+// test: signed_division_by_minus_one
+// expect-exit: 0
+// expect-output:
+// int / -7 -2147483647 OverflowException
+// int % 0 0 OverflowException
+// long / -7 -9223372036854775807 OverflowException
+// long % 0 OverflowException
+// widened 2147483648 0
+// narrow 128 0
+// checked OverflowException OverflowException OverflowException
+// constant -7 OverflowException OverflowException 0
+// compound OverflowException OverflowException -128
+// nint OverflowException OverflowException -7
+// multiply OverflowException -7 OverflowException OverflowException -7
+// folded -2147483648 0 -9223372036854775808 0 -2147483648 0 -9223372036854775808 0
+//
+// MINVALUE / -1 AND MINVALUE % -1 THROW OverflowException, as .NET does,
+// checked or unchecked, for every signed width: the quotient does not fit
+// and the machine's division traps on both, so the compiler takes a -1
+// divisor apart before dividing. Any other dividend divided by -1 is its
+// negation and leaves no remainder; an int widened to long first does not
+// overflow, nor does a narrow type, which divides as the int it promotes
+// to. A checked multiply divides back the same way, so MinValue * -1 still
+// overflows and 7 * -1 does not. A constant expression is worked out while
+// compiling, where unchecked MinValue / -1 wraps to MinValue and
+// MinValue % -1 is 0, and neither throws.
+
+using System;
+
+static class Program
+{
+    static int minusOne = -1, intMin = int.MinValue, seven = 7;
+    static long minusOneL = -1, longMin = long.MinValue, sevenL = 7;
+    static nint minusOneN = -1, nintMin = nint.MinValue;
+    static sbyte sbyteMin = sbyte.MinValue;
+    static short shortMin = short.MinValue;
+    const int QuotientMin = unchecked(int.MinValue / -1), RemainderMin = unchecked(int.MinValue % -1);
+    const long QuotientMinL = unchecked(long.MinValue / -1L), RemainderMinL = unchecked(long.MinValue % -1L);
+
+    static string Try(Func<long> f)
+    {
+        try { return f().ToString(); }
+        catch (Exception e) { return e.GetType().Name; }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("int / " + Try(() => seven / minusOne) + " " + Try(() => int.MaxValue / minusOne) + " " + Try(() => intMin / minusOne));
+        Console.WriteLine("int % " + Try(() => seven % minusOne) + " " + Try(() => -seven % minusOne) + " " + Try(() => intMin % minusOne));
+        Console.WriteLine("long / " + Try(() => sevenL / minusOneL) + " " + Try(() => long.MaxValue / minusOneL) + " " + Try(() => longMin / minusOneL));
+        Console.WriteLine("long % " + Try(() => sevenL % minusOneL) + " " + Try(() => longMin % minusOneL));
+        Console.WriteLine("widened " + Try(() => (long)intMin / minusOneL) + " " + Try(() => (long)intMin % minusOneL));
+        Console.WriteLine("narrow " + Try(() => sbyteMin / minusOne) + " " + Try(() => shortMin % minusOne));
+        Console.WriteLine("checked " + Try(() => checked(intMin / minusOne)) + " " + Try(() => checked(longMin % minusOneL)) + " " + Try(() => unchecked(intMin / minusOne)));
+        Console.WriteLine("constant " + Try(() => seven / -1) + " " + Try(() => intMin / -1) + " " + Try(() => longMin % -1L) + " " + Try(() => sevenL % -1L));
+        Console.WriteLine("compound " + Try(() => { int x = intMin; x /= minusOne; return x; })
+            + " " + Try(() => { long x = longMin; x %= minusOneL; return x; })
+            + " " + Try(() => { sbyte x = sbyteMin; x /= (sbyte)minusOne; return x; }));
+        Console.WriteLine("nint " + Try(() => (long)(nintMin / minusOneN)) + " " + Try(() => (long)(nintMin % minusOneN)) + " " + Try(() => (long)((nint)7 / minusOneN)));
+        Console.WriteLine("multiply " + Try(() => checked(intMin * minusOne)) + " " + Try(() => checked(seven * minusOne))
+            + " " + Try(() => checked(longMin * minusOneL)) + " " + Try(() => checked(minusOneL * longMin)) + " " + Try(() => checked(sevenL * minusOneL)));
+        Console.WriteLine("folded " + QuotientMin + " " + RemainderMin + " " + QuotientMinL + " " + RemainderMinL
+            + " " + Try(() => unchecked(int.MinValue / -1)) + " " + Try(() => unchecked(-2147483648 % -1))
+            + " " + Try(() => unchecked(long.MinValue / -1L)) + " " + Try(() => unchecked(long.MinValue % -1)));
+        return 0;
+    }
+}

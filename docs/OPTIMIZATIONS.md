@@ -680,12 +680,15 @@ the zero-remainder corner have explicit requirements; these remain separate
 from the deliberately restricted optimization:
 https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/expressions
 
-Division correctness follow-up (not optimization credit): checked signed
-MinValue/-1 now calls the managed overflow path before machine/helper division.
-Signed remainder by -1 returns zero before IDIV can fault. Checked multiplication
-also guards its reverse-division overflow test before issuing that division.
-Both widths pass the new exception fixture, including divide-by-zero behavior.
-Unchecked quotient behavior is deliberately unchanged.
+Division correctness follow-up (not optimization credit): signed division and
+remainder take a -1 divisor apart before machine/helper division. MinValue/-1
+and MinValue%-1 call the managed overflow path, checked or unchecked, as .NET
+throws OverflowException for both (and C# has the remainder throw exactly when
+the quotient does); any other dividend answers its negation or zero. A constant
+divisor folds the test away, leaving the plain division. Checked multiplication
+divides back through the same path, so MinValue*-1 throws there before IDIV
+could fault. Both widths pass the exception fixture, including divide-by-zero
+behavior.
 
 The tenth optimizer run initially had three failures. One was a real missed
 fold: expanding a wholly constant division introduced a propagation chain

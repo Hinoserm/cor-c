@@ -1873,21 +1873,21 @@ public sealed partial class Binder
     /// Looking one up evaluates its dependencies and diagnoses actual cycles,
     /// rather than treating a forward reference as a cycle.
     /// </summary>
-    private long? Named(Expr e, TypeSymbol? owner)
+    private (long Value, Prim Type)? Named(Expr e, TypeSymbol? owner)
     {
         switch (e)
         {
             // A LOCAL const, which names a value exactly as a field's does.
             case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
-                return IsReal(named.Type) ? null : named.Value;
+                return IsReal(named.Type) ? null : (named.Value, Fold.Whole(named.Type));
 
             case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
-                return IsReal(here.Type) ? null : here.Value;
+                return IsReal(here.Type) ? null : (here.Value, Fold.Whole(here.Type));
 
             case MemberExpr { Target: NameExpr keyword } m
                 when !IsTypeName(keyword.Name)
-                  && Limit(keyword.Name, m.Name) is long edge:
-                return edge;
+                  && Limit(keyword.Name, m.Name) is long edge && Fold.Keyword(keyword.Name) is Prim limited:
+                return (edge, limited);
 
             case MemberExpr m:
             {
@@ -1895,12 +1895,12 @@ public sealed partial class Binder
                 {
                     if (named.EnumValues.TryGetValue(m.Name, out long member))
                     {
-                        return member;
+                        return (member, named.EnumUnderlying);
                     }
 
                     if (FindConstant(named, m.Name) is { } elsewhere)
                     {
-                        return IsReal(elsewhere.Type) ? null : elsewhere.Value;
+                        return IsReal(elsewhere.Type) ? null : (elsewhere.Value, Fold.Whole(elsewhere.Type));
                     }
                 }
                 return null;
@@ -2048,6 +2048,27 @@ public sealed partial class Binder
         double t = Math.Truncate(real);
         if (to.Prim == Prim.U64) return t >= 0 && t < 18446744073709551616.0;
         return t >= -9223372036854775808.0 && t < 9223372036854775808.0 && Fits((long)t, to);
+    }
+
+    /// <summary>
+    /// Whether a constant of one integral type is in another's range, for
+    /// CS0221. A ulong past long.MaxValue is the number it is, not the
+    /// negative one its bits spell. A native integer's range is the widest it
+    /// has on any machine: C# makes `(nint)0x100000000L` no constant rather
+    /// than an error, and it is worked out where it runs.
+    /// </summary>
+    private static bool ConstantFits(long value, Type from, Type to)
+    {
+        if (from.Prim is Prim.U64 or Prim.NUInt && value < 0)
+        {
+            return to.Prim is Prim.U64 or Prim.NUInt;
+        }
+        return to.Prim switch
+        {
+            Prim.NInt => true,
+            Prim.NUInt => value >= 0,
+            _ => Fits(value, to),
+        };
     }
 
     private static bool Fits(long value, Type to) => to.Prim switch
@@ -12510,7 +12531,7 @@ public sealed partial class Binder
     /// ulong past long.MaxValue arrives here NEGATIVE -- which is exactly the
     /// test for it.
     /// </summary>
-    private static Type IntLiteralType(LiteralExpr l)
+    internal static Type IntLiteralType(LiteralExpr l)
     {
         bool unsigned = false;
         bool wide = false;
@@ -14900,10 +14921,10 @@ public sealed partial class Binder
                 // written unchecked. `(short)100000` is an error in .NET, and a
                 // compiler that took it compiled what .NET's would not.
                 if (_uncheckedDepth == 0 && !operand.IsError && !wanted.IsError && wanted.Symbol is null && !wanted.Nullable
-                    && (wanted.IsInteger || wanted.Prim == Prim.Char) && operand.Symbol is null)
+                    && !wanted.IsPointer && !wanted.IsArray && (wanted.IsInteger || wanted.Prim == Prim.Char) && operand.Symbol is null)
                 {
-                    if (operand.IsInteger && ConstantValue(cast.Operand, _thisType) is long whole && !Binder.Fits(whole, wanted)
-                        && !(operand.Prim == Prim.U64 && wanted.Prim == Prim.U64))
+                    if (operand.IsInteger && !operand.IsPointer && ConstantValue(cast.Operand, _thisType) is long whole
+                        && !ConstantFits(whole, operand, wanted))
                     {
                         Error(cast, $"CS0221: constant value '{(operand.IsUnsigned ? ((ulong)whole).ToString() : whole.ToString())}' cannot be converted to a '{wanted}' (use 'unchecked' syntax to override)");
                     }

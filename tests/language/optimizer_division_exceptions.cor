@@ -3,8 +3,8 @@
 // expect-output:
 // q32 overflow -3 zero
 // q64 overflow -3 zero
-// r32 0 -1 zero
-// r64 0 -1 zero
+// r32 overflow -1 zero
+// r64 overflow -1 zero
 // m32 overflow overflow 14
 // m64 overflow overflow 14
 static class Program
@@ -24,11 +24,13 @@ static class Program
     static string R32(int a, int b)
     {
         try { return checked(a % b).ToString(); }
+        catch (OverflowException e) { return "overflow"; }
         catch (DivideByZeroException e) { return "zero"; }
     }
     static string R64(long a, long b)
     {
         try { return unchecked(a % b).ToString(); }
+        catch (OverflowException e) { return "overflow"; }
         catch (DivideByZeroException e) { return "zero"; }
     }
     static int Main()

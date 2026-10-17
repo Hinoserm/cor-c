@@ -1,0 +1,63 @@
+// test: checked_compound_assignment_narrows_checked
+// expect-exit: 0
+// expect-output:
+// div OverflowException
+// udiv -128
+// add OverflowException
+// uadd 44
+// inc OverflowException
+// dec OverflowException
+// uinc -128
+// char OverflowException
+// shl OverflowException
+// nullable OverflowException
+// nullinc OverflowException
+// nullnull True
+// prop OverflowException
+// propinc OverflowException
+// index OverflowException
+// fits 151
+// int OverflowException
+// long 15
+//
+// `x op= y` IS `x = (T)(x op y)`, AND IN A CHECKED CONTEXT THE CAST IS
+// CHECKED: a byte a compound add carries past 255, an sbyte stepped past
+// 127 and sbyte.MinValue divided by -1 all throw OverflowException, through
+// a local, a nullable, a property and an array element alike. Unchecked,
+// the same steps wrap; a step whose answer fits passes.
+
+using System;
+
+static class Program
+{
+    static int m1 = -1;
+    static byte Prop { get; set; } = 250;
+    static short[] cells = { short.MaxValue };
+    static string T(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name; }
+    }
+    static int Main()
+    {
+        Console.WriteLine("div " + T(() => { sbyte x = sbyte.MinValue; checked { x /= (sbyte)m1; } return x.ToString(); }));
+        Console.WriteLine("udiv " + T(() => { sbyte x = sbyte.MinValue; unchecked { x /= (sbyte)m1; } return x.ToString(); }));
+        Console.WriteLine("add " + T(() => { byte b = 200; checked { b += 100; } return b.ToString(); }));
+        Console.WriteLine("uadd " + T(() => { byte b = 200; b += 100; return b.ToString(); }));
+        Console.WriteLine("inc " + T(() => { sbyte s = sbyte.MaxValue; checked { s++; } return s.ToString(); }));
+        Console.WriteLine("dec " + T(() => { ushort s = 0; checked { --s; } return s.ToString(); }));
+        Console.WriteLine("uinc " + T(() => { sbyte s = sbyte.MaxValue; s++; return s.ToString(); }));
+        Console.WriteLine("char " + T(() => { char c = '￿'; checked { c += (char)1; } return ((int)c).ToString(); }));
+        Console.WriteLine("shl " + T(() => { byte b = 200; checked { b <<= 1; } return b.ToString(); }));
+        Console.WriteLine("nullable " + T(() => { byte? b = 200; checked { b += 100; } return b.ToString(); }));
+        Console.WriteLine("nullinc " + T(() => { sbyte? b = sbyte.MaxValue; checked { b++; } return b.ToString(); }));
+        Console.WriteLine("nullnull " + T(() => { byte? b = null; checked { b += 100; } return (b is null).ToString(); }));
+        Console.WriteLine("prop " + T(() => { checked { Prop += 10; } return Prop.ToString(); }));
+        Console.WriteLine("propinc " + T(() => { Prop = 255; checked { Prop++; } return Prop.ToString(); }));
+        Console.WriteLine("index " + T(() => { checked { cells[0] += 1; } return cells[0].ToString(); }));
+        Console.WriteLine("fits " + T(() => { byte b = 100; checked { b += 100; b -= 50; b++; } return b.ToString(); }));
+        Console.WriteLine("int " + T(() => { int i = int.MaxValue; checked { i += 1; } return i.ToString(); }));
+        Console.WriteLine("long " + T(() => { long i = 5; checked { i *= 3; } return i.ToString(); }));
+        return 0;
+    }
+}
