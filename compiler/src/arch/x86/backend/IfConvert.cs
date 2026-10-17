@@ -45,7 +45,8 @@ namespace Corsac.Lang.X86;
 /// An arm that computes, Abs's `-x`, keeps its branch. The moves become, in a
 /// diamond, `mov v, a` with one arm's value, and `cmovcc v, b` with the
 /// other's, a constant b first put in a fresh register, since a cmov has no
-/// immediate form; MOV leaves the flags alone, so the condition is still the
+/// immediate form -- before A's compare where it ends in one, after it
+/// otherwise; MOV leaves the flags alone, so the condition is still the
 /// compare's. The arms that moved are removed.
 /// </summary>
 internal static class IfConvert
@@ -130,6 +131,11 @@ internal static class IfConvert
             }
             int line = instrs[^2].Line;
             instrs.RemoveRange(instrs.Count - 2, 2);
+            // A CONSTANT A CMOV READS goes in its register before the compare
+            // where A ends in one: there the flags are not yet live, and the
+            // peephole may make a zero the two-byte `xor`.
+            int compare = instrs.Count - 1;
+            bool before = compare >= 0 && instrs[compare].Op is MOp.Cmp or MOp.Test;
             List<MInstr> cmovs = new();
             foreach (MInstr move in taken.Moves)
             {
@@ -150,7 +156,8 @@ internal static class IfConvert
                 if (b is MImm imm)
                 {
                     MReg t = m.NewReg();
-                    instrs.Add(new MInstr(MOp.Mov, t, imm) { Line = move.Line });
+                    MInstr load = new(MOp.Mov, t, imm) { Line = move.Line };
+                    if (before) instrs.Insert(compare++, load); else instrs.Add(load);
                     b = t;
                 }
                 cmovs.Add(new MInstr(MOp.Cmov, v, b) { Cond = cc, Line = move.Line });
