@@ -10,7 +10,8 @@ namespace Corsac.Lang.X64;
 /// long-mode Linux program on anything from the first AMD64 processor (K8)
 /// on.
 ///
-/// Per function: instruction selection (Select.cs), register allocation
+/// Per function: instruction selection (Select.cs), address arithmetic
+/// folded into the addressing modes (AddressFold.cs), register allocation
 /// (RegAlloc.cs), encoding (Encoder.cs). Data items go in .rodata, .data or
 /// .bss by their flags, holding 64-bit absolute relocations where they hold
 /// addresses; the frame table is the x86 format. There are no stack maps:
@@ -384,6 +385,7 @@ public sealed class X64Backend : IBackend
             || b.Instrs.Any(i => i.Op is MOp.Syscall or MOp.SoftInt));
         try
         {
+            AddressFold.Run(m);
             Allocator.Run(m);
             Peephole.Run(m);
         }

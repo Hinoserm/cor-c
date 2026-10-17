@@ -1661,7 +1661,7 @@ public sealed partial class Lowering
                 Type seq = _b.TypeOf(ix.Target);
                 Type element = _b.TypeOf(ix);
                 VReg basis = Eval(ix.Target);
-                VReg index = EvalAs(ix.Args[0], Type.I32);
+                VReg index = ElementIndex(ix.Args[0], seq);
                 return ElementPlace(basis, index, seq, element, ix);
             }
 
@@ -1689,14 +1689,12 @@ public sealed partial class Lowering
 
         if (sequence.IsPointer)
         {
-            VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
-            VReg addr = _e.Binary(Opcode.Add, basis, WordOf(scaled));
+            VReg addr = _e.Binary(Opcode.Add, basis, ElementOffset(index, stride));
             return new MemPlace(RegOperand.Of(addr), 0, stored);
         }
 
         BoundsCheck(basis, index, at, sequence.IsArray);
-        VReg scaled2 = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
-        VReg addr2 = _e.Binary(Opcode.Add, basis, WordOf(scaled2));
+        VReg addr2 = _e.Binary(Opcode.Add, basis, ElementOffset(index, stride));
         return new MemPlace(RegOperand.Of(addr2), _t.ArrayHeaderBytes, stored,
             Inline: sequence.Prim != Prim.String && InlineElement(stored),
             CovariantArray: sequence.IsArray && MayBeCovariant(stored) ? basis : null);
@@ -1735,6 +1733,101 @@ public sealed partial class Lowering
     {
         Type seq = Type.ArrayOf(element);
         return LoadPlace(ElementPlace(basis, index, seq, element, at));
+    }
+
+    /// <summary>
+    /// The byte offset of element `index`, `stride` bytes each, as a word.
+    /// THE INDEX IS WIDENED BEFORE IT IS SCALED, as C# works out a pointer's
+    /// element offset, in native int: scaled in 32 bits first, `&p[0x20000000]`
+    /// of an int* wrapped to two gigabytes below p in long mode. Widened
+    /// first, the scaling is also what an x86-64 addressing mode does, and
+    /// the backend folds the shift into [base + index*stride] (AddressFold).
+    /// On i386 the index is already the word's width and nothing changes.
+    /// </summary>
+    private VReg ElementOffset(VReg index, int stride)
+    {
+        VReg wide = WordOf(index);
+        return stride == 1 ? wide : _e.Binary(Opcode.Mul, wide, stride);
+    }
+
+    /// <summary>
+    /// An integer as a count of elements for pointer arithmetic, in the word.
+    /// C#'s `p + e`, `p[e]` and `p += e` take an int, uint, long or ulong e
+    /// (C# 23.6.7): an int is sign-extended, a uint zero-extended, and a long
+    /// or ulong cut to the word. Read as an int, each was cut to 32 bits and
+    /// sign-extended, so a long index lost its upper half and a uint past two
+    /// gigabytes went backwards.
+    /// </summary>
+    private VReg PointerCount(Expr e)
+    {
+        Type t = _b.TypeOf(e);
+        if (t.Prim is Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt && !t.IsPointer)
+        {
+            return WordOf(EvalAs(e, t));
+        }
+        if (t.Prim == Prim.U32 && !t.IsPointer)
+        {
+            VReg u = EvalAs(e, Type.U32);
+            return IrTypes.Word == IrType.I64 ? _e.Unary(Opcode.ZExt32, R(u), IrType.I64) : u;
+        }
+        return WordOf(EvalAs(e, Type.I32));
+    }
+
+    /// <summary>`p + n` or `p - n` for a pointer p and a count PointerCount made: n elements on, each the pointee's size.</summary>
+    private VReg PointerStep(VReg p, Type pointer, VReg count, bool add)
+        => _e.Binary(add ? Opcode.Add : Opcode.Sub, p, ElementOffset(count, Math.Max(1, pointer.Pointee?.Size ?? 1)));
+
+    /// <summary>
+    /// An element access's index: through a pointer the word PointerCount
+    /// makes, and into an array the int its bounds check takes. An array
+    /// takes a uint, long or ulong index too (C# 12.8.12.2), converted to the
+    /// native int as the CLI converts it -- a long or ulong the word cannot
+    /// hold throws OverflowException, as conv.ovf.i and conv.ovf.i.un do --
+    /// and one past int's range is past every array's end. Read as an int,
+    /// `a[0x100000001L]` was a[1].
+    /// </summary>
+    private VReg ElementIndex(Expr e, Type sequence)
+    {
+        if (sequence.IsPointer)
+        {
+            return PointerCount(e);
+        }
+        Type t = _b.TypeOf(e);
+        if (!sequence.IsArray || t.IsPointer || t.Prim is not (Prim.U32 or Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt))
+        {
+            return EvalAs(e, Type.I32);
+        }
+        VReg v = EvalAs(e, t);
+        // A uint, or a native integer of a 32-bit word: the bounds check
+        // compares unsigned, and every array ends below two gigabytes.
+        if (v.Type == IrType.I32)
+        {
+            return v;
+        }
+        VReg? overflows = (t.Prim, _t.WordSize) switch
+        {
+            (Prim.U64, 8) => _e.Binary(Opcode.LtS, R(v), Imm(0, IrType.I64), IrType.I32),
+            (Prim.U64, _) => _e.Binary(Opcode.GtU, R(v), Imm(int.MaxValue, IrType.I64), IrType.I32),
+            (Prim.I64, 4) => _e.Binary(Opcode.Or,
+                _e.Binary(Opcode.LtS, R(v), Imm(int.MinValue, IrType.I64), IrType.I32),
+                _e.Binary(Opcode.GtS, R(v), Imm(int.MaxValue, IrType.I64), IrType.I32)),
+            _ => null,
+        };
+        if (overflows is not null)
+        {
+            Block fail = _f.NewBlock("indexoverflow"), fits = _f.NewBlock("indexfits");
+            _e.Branch(overflows, fail, fits);
+            _e.SetBlock(fail);
+            MethodSymbol? thrower = RuntimeMethod("Overflow", 0);
+            if (thrower is not null) { Require(thrower); _e.Call(CallLabel(thrower), IrType.Void); }
+            _e.Emit(Opcode.Trap, null);
+            _e.Unreachable();
+            _e.SetBlock(fits);
+        }
+        Block inRange = _f.NewBlock("indexint");
+        _e.Branch(_e.Binary(Opcode.GtU, R(v), Imm(int.MaxValue, IrType.I64), IrType.I32), BoundsFail(), inRange);
+        _e.SetBlock(inRange);
+        return _e.Unary(Opcode.Trunc64, v);
     }
 
     /// <summary>An I32 index widened to the word, for address arithmetic.</summary>

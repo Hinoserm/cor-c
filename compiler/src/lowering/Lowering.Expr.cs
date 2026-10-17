@@ -1070,7 +1070,7 @@ public sealed partial class Lowering
                 Type seq = _b.TypeOf(ix.Target);
                 Type element = _b.TypeOf(ix);
                 VReg basis = Eval(ix.Target);
-                VReg index = EvalAs(ix.Args[0], Type.I32);
+                VReg index = ElementIndex(ix.Args[0], seq);
                 return LoadPlace(ElementPlace(basis, index, seq, element, ix));
             }
 
@@ -1612,7 +1612,7 @@ public sealed partial class Lowering
             _e.Branch(_e.Binary(Opcode.LtS, index, count), body, done);
             _e.SetBlock(body);
             VReg block = NewStruct(at, StructOf(element));
-            VReg slot = _e.Binary(Opcode.Add, array, WordOf(_e.Binary(Opcode.Mul, index, stride)));
+            VReg slot = _e.Binary(Opcode.Add, array, ElementOffset(index, stride));
             StoreNewReference(slot, block, _t.ArrayHeaderBytes);
             _e.CopyTo(index, R(_e.Binary(Opcode.Add, index, 1)));
             _e.Jump(top);
@@ -3536,6 +3536,12 @@ public sealed partial class Lowering
     /// </summary>
     private VReg Combine(Node at, BinOp op, VReg left, Type leftType, Expr rightExpr, Type rightType, Type resultType)
     {
+        // `p += n` steps n elements, as `p + n` does.
+        if (leftType.IsPointer && op is BinOp.Add or BinOp.Sub && rightType.IsInteger && !rightType.IsPointer)
+        {
+            return PointerStep(left, leftType, PointerCount(rightExpr), op == BinOp.Add);
+        }
+
         // LIFTED, as `a + b` is: `n += 1` for an `int? n` stays null when n
         // is, and adds to what is in the cell when it is not.
         if (leftType.IsNullableValue || rightType.IsNullableValue)
@@ -3952,7 +3958,7 @@ public sealed partial class Lowering
             Type sequence = _b.TypeOf(index.Target);
             Type element = _b.TypeOf(index);
             VReg basis = Eval(index.Target);
-            VReg i = EvalAs(index.Args[0], Type.I32);
+            VReg i = ElementIndex(index.Args[0], sequence);
             MemPlace p = ElementPlace(basis, i, sequence, element, at);
             return p.Offset == 0 ? RegOf(p.Address) : _e.Binary(Opcode.Add, RegOf(p.Address), p.Offset);
         }
@@ -4247,14 +4253,17 @@ public sealed partial class Lowering
             return StringBinary(b, b.Op, l, r);
         }
 
-        // Pointer arithmetic: an address plus a scaled count.
-        if (left.IsPointer && b.Op is BinOp.Add or BinOp.Sub && right.IsInteger)
+        // Pointer arithmetic: an address plus a scaled count, either way
+        // round for a sum (C# 23.6.7), each side evaluated where it is written.
+        if (left.IsPointer && b.Op is BinOp.Add or BinOp.Sub && right.IsInteger && !right.IsPointer)
         {
             VReg p = Eval(b.Left);
-            VReg n = WordOf(EvalAs(b.Right, Type.I32));
-            int stride = Math.Max(1, left.Pointee?.Size ?? 1);
-            VReg scaled = stride == 1 ? n : _e.Binary(Opcode.Mul, n, stride);
-            return _e.Binary(b.Op == BinOp.Add ? Opcode.Add : Opcode.Sub, p, scaled);
+            return PointerStep(p, left, PointerCount(b.Right), b.Op == BinOp.Add);
+        }
+        if (right.IsPointer && b.Op == BinOp.Add && left.IsInteger && !left.IsPointer)
+        {
+            VReg n = PointerCount(b.Left);
+            return PointerStep(Eval(b.Right), right, n, add: true);
         }
 
         // AND ARITHMETIC IS LIFTED: `a + b` over an `int?` is null when either

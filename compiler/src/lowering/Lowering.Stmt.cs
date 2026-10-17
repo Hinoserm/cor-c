@@ -555,8 +555,7 @@ public sealed partial class Lowering
         // No bounds check: the loop's own test is the bound.
         int stride = sequenceType.Prim == Prim.String ? 2 : ElementStride(element);
         Type stored = sequenceType.Prim == Prim.String ? Type.Char : element;
-        VReg scaled = stride == 1 ? index : _e.Binary(Opcode.Mul, index, stride);
-        VReg addr = _e.Binary(Opcode.Add, seq, WordOf(scaled));
+        VReg addr = _e.Binary(Opcode.Add, seq, ElementOffset(index, stride));
         bool inline = sequenceType.Prim != Prim.String && InlineElement(stored);
         VReg value = LoadPlace(new MemPlace(RegOperand.Of(addr), _t.ArrayHeaderBytes, stored, Inline: inline));
         // A CURSOR A LAMBDA CAPTURES is read through its cell, so the element

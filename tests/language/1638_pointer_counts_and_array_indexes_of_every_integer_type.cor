@@ -1,0 +1,81 @@
+// test: pointer_counts_and_array_indexes_of_every_integer_type
+// expect-exit: 0
+// expect-output:
+// small 12 12 12 3 12 12
+// neg 18446744073709551612 18446744073709551612 18446744073709551612
+// wide 17179869184 8589934592 17179869184 4294967297 8589934592 17179869184
+// arith 16 8 8
+// wide arith 25769803780 8589934592 8589934592
+// beyond IndexOutOfRangeException IndexOutOfRangeException IndexOutOfRangeException
+// array 3 2 IndexOutOfRangeException OverflowException 3 2 IndexOutOfRangeException
+// stores 11 30
+//
+// A POINTER'S COUNT AND AN ARRAY'S INDEX TAKE INT, UINT, LONG AND ULONG
+// (C# 23.6.7, 12.8.12.2), and each was read as an int: a long index lost
+// its upper half and a uint past two gigabytes went backwards, on x86-64
+// where the word holds them. `p += n` and `n + p` stepped n bytes, not n
+// elements. An array indexed by a long or ulong converts it to the native
+// int as the CLI does -- OverflowException where the word cannot hold it --
+// and one past int's range is past the end; `a[0x100000001L]` was a[1].
+// The far pointers are never read through, and on a 32-bit target the
+// lines that need a 64-bit word print what x86-64 prints.
+
+using System;
+
+static class Program
+{
+    static unsafe ulong Far(int* p, long i) => (ulong)(nuint)(&p[i]) - (ulong)(nuint)p;
+    static unsafe ulong FarU(int* p, uint i) => (ulong)(nuint)(&p[i]) - (ulong)(nuint)p;
+    static unsafe ulong FarN(int* p, nint i) => (ulong)(nuint)(&p[i]) - (ulong)(nuint)p;
+    static unsafe ulong FarUL(byte* p, ulong i) => (ulong)(nuint)(&p[i]) - (ulong)(nuint)p;
+    static unsafe ulong Add(int* p, uint i) => (ulong)(nuint)(p + i) - (ulong)(nuint)p;
+    static unsafe ulong AddL(int* p, long i) => (ulong)(nuint)(p + i) - (ulong)(nuint)p;
+    static unsafe ulong Compound(int* p, uint u, long l)
+    {
+        int* q = p;
+        q += u;
+        q -= l;
+        q++;
+        return (ulong)(nuint)q - (ulong)(nuint)p;
+    }
+    static unsafe ulong Left(int* p, uint u) => (ulong)(nuint)(u + p) - (ulong)(nuint)p;
+    static unsafe ulong Minus(int* p, uint u) => (ulong)(nuint)p - (ulong)(nuint)(p - u);
+    static string T(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name; }
+    }
+    static unsafe int Main()
+    {
+        int* ip = (int*)(nint)4096;
+        byte* bp = (byte*)(nint)4096;
+        Console.WriteLine("small " + Far(ip, 3) + " " + FarU(ip, 3) + " " + FarN(ip, 3) + " " + FarUL(bp, 3) + " " + Add(ip, 3) + " " + AddL(ip, 3));
+        Console.WriteLine("neg " + Far(ip, -1) + " " + FarN(ip, -1) + " " + AddL(ip, -1));
+        if (IntPtr.Size == 8)
+        {
+            Console.WriteLine("wide " + Far(ip, 0x100000000L) + " " + FarU(ip, 0x80000000u) + " " + FarN(ip, (nint)0x100000000L) + " " + FarUL(bp, 0x100000001UL) + " " + Add(ip, 0x80000000u) + " " + AddL(ip, 0x100000000L));
+        }
+        else
+        {
+            Console.WriteLine("wide 17179869184 8589934592 17179869184 4294967297 8589934592 17179869184");
+        }
+        Console.WriteLine("arith " + Compound(ip, 5, 2) + " " + Left(ip, 2) + " " + Minus(ip, 2));
+        if (IntPtr.Size == 8)
+            Console.WriteLine("wide arith " + Compound(ip, 0x80000000u, -0x100000000L) + " " + Left(ip, 0x80000000u) + " " + Minus(ip, 0x80000000u));
+        else
+            Console.WriteLine("wide arith 25769803780 8589934592 8589934592");
+        int[] a = { 1, 2, 3 };
+        long big = 0x100000001L;
+        // A 32-bit word cannot hold 0x100000001: there the conversion to the
+        // native int throws first, as conv.ovf.i does on a 32-bit CLI.
+        string beyond = T(() => a[big].ToString()) + " " + T(() => a[(ulong)big].ToString()) + " " + T(() => { a[big] = 5; return "stored"; });
+        Console.WriteLine("beyond " + (IntPtr.Size == 8 || beyond != "OverflowException OverflowException OverflowException"
+            ? beyond : "IndexOutOfRangeException IndexOutOfRangeException IndexOutOfRangeException"));
+        Console.WriteLine("array " + a[2L] + " " + a[(uint)1] + " " + T(() => a[-1L].ToString()) + " " + T(() => a[ulong.MaxValue].ToString()) + " " + T(() => a[(nint)2].ToString()) + " " + T(() => a[(nuint)1].ToString()) + " " + T(() => a[uint.MaxValue].ToString()));
+        long two = 2;
+        a[two] = 30;
+        a[(uint)0] += 10;
+        Console.WriteLine("stores " + a[0] + " " + a[2L]);
+        return 0;
+    }
+}
