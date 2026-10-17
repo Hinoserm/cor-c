@@ -119,6 +119,9 @@ internal sealed class Encoder
             if (!m.AutomaticPacked && Isa.UsesPackedState(i.Op))
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} uses the MMX registers in code that does not own the x87 state");
+            if (!m.AutomaticPacked && Isa.UsesSseState(i.Op))
+                throw new InvalidOperationException(
+                    $"{m.Source.Name}: {i.Op}{At(i)} uses SSE in code that runs without an operating system to enable it");
         }
     }
 
@@ -723,6 +726,17 @@ internal sealed class Encoder
             case MOp.Fldcw:
                 B(0xD9);
                 ModRM(5, i.Operands[0]);
+                break;
+            case MOp.Cvttss2si:
+            case MOp.Cvttsd2si:
+                // F3 0F 2C /r is cvttss2si, F2 0F 2C /r cvttsd2si; the audit
+                // has checked the profile has SSE or SSE2 (Isa). The source
+                // is memory: a register there would name an XMM register,
+                // which nothing here owns.
+                if (i.Operands.Count != 2 || i.Operands[0] is not MReg || i.Operands[1] is not MMem)
+                    throw new InvalidOperationException("Truncating conversion takes a register and memory");
+                B(i.Op == MOp.Cvttss2si ? (byte)0xF3 : (byte)0xF2, 0x0F, 0x2C);
+                ModRM(Reg(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.Int:
                 B(0xCD, (byte)((MImm)i.Operands[0]).Value);

@@ -8319,11 +8319,16 @@ public sealed class Parser
 
             case Tok.Real:
                 _i++;
+                // A FLOAT IS READ AS A FLOAT: the decimal rounded once, to
+                // single precision. Read as a double and rounded again, a
+                // literal just past a halfway point between two floats landed
+                // on the halfway point and then on the even neighbour.
                 return new LiteralExpr
                 {
                     Kind = Lit.Real, Text = at.Text,
-                    RealValue = double.Parse(RealDigits(at.Text).Replace("_", ""),
-                                             System.Globalization.CultureInfo.InvariantCulture),
+                    RealValue = at.Text[^1] is 'f' or 'F'
+                        ? float.Parse(RealDigits(at.Text).Replace("_", ""), System.Globalization.CultureInfo.InvariantCulture)
+                        : double.Parse(RealDigits(at.Text).Replace("_", ""), System.Globalization.CultureInfo.InvariantCulture),
                     Line = at.Line, Col = at.Col,
                 };
 

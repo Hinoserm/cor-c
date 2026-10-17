@@ -1879,10 +1879,10 @@ public sealed partial class Binder
         {
             // A LOCAL const, which names a value exactly as a field's does.
             case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
-                return IsReal(named.Type) ? null : (named.Value, Fold.Whole(named.Type));
+                return (named.Value, Fold.Whole(named.Type));
 
             case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
-                return IsReal(here.Type) ? null : (here.Value, Fold.Whole(here.Type));
+                return (here.Value, Fold.Whole(here.Type));
 
             case MemberExpr { Target: NameExpr keyword } m
                 when !IsTypeName(keyword.Name)
@@ -1900,7 +1900,7 @@ public sealed partial class Binder
 
                     if (FindConstant(named, m.Name) is { } elsewhere)
                     {
-                        return IsReal(elsewhere.Type) ? null : (elsewhere.Value, Fold.Whole(elsewhere.Type));
+                        return (elsewhere.Value, Fold.Whole(elsewhere.Type));
                     }
                 }
                 return null;

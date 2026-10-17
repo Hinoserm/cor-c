@@ -19,6 +19,7 @@ There is no enable switch per optimization. `--disable-mmx` and
 | Rounded signed high-word products | PMULHRW | Proven signed word inputs and exact rounding expression |
 | Word-to-float conversions | PUNPCKLWD, PI2FD, PI2FW | All 16-bit inputs are exactly representable; plus extension gated |
 | Floating arithmetic after word conversion | PFADD, PFSUBR, PFMUL, PF2ID | Proven finite ranges and matching signed-zero/rounding/conversion behavior |
+| Float or double cast to `int` | CVTTSS2SI (SSE), CVTTSD2SI (SSE2) | Hosted code only; the in-range finite operand only; `long` and `uint` keep the x87 |
 
 Packed regions close before subsequent calls or x87 operations. Freestanding
 code does not gain implicit packed-register use: an interrupted user context
@@ -44,6 +45,14 @@ Boundary testing also exposed the old scalar FISTP overflow behavior. Scalar
 conversion now maps NaN to zero and saturates signed/unsigned 32/64-bit results,
 including the upper half of UInt64, matching
 [current .NET conversion behavior](https://learn.microsoft.com/en-us/dotnet/core/compatibility/jit/9.0/fp-to-integer).
+Those cases are decided on the IEEE bits before any conversion runs, so the
+conversion itself only ever sees a finite value inside the destination's range.
+On SSE and SSE2 profiles a cast to `int` there is one truncating CVTTSS2SI or
+CVTTSD2SI from the float's frame home, in place of FNSTCW, FLDCW to chop, FISTP
+and FLDCW back; FLDCW is an expensive instruction on the P6 and the K7. On the
+benchmark host below, 41 million float and 41 million double casts to `int` in
+a loop took 206-242 ms at `--cpu=pentium4` against 359-435 ms at `--cpu=k6-2`
+(five runs each, the last three alternating, 2026-10-15).
 
 ## Native benchmark snapshot, 2026-09-18
 

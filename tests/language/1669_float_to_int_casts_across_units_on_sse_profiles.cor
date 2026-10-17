@@ -1,0 +1,32 @@
+// test: float_to_int_casts_across_units_on_sse_profiles
+// flags: --cpu=pentium4
+// units: tests/language/support/1669_float_casts_units.cor
+// expect-exit: 0
+// expect-output:
+// float 2 -2 0 2147483520 0 2147483647 -2147483648 2147483647
+// double 2 -2 2147483647 -2147483648 0 -2147483648
+// scaled 158
+//
+// 1668's casts in another unit, linked closed: the link regenerates each
+// unit from its IR under the CPU its object records, so a Pentium 4 unit's
+// casts are CVTTSS2SI and CVTTSD2SI there too, and the edges NaN, the
+// infinities and int's limits still go to their own blocks first.
+
+using System;
+using CastUnits;
+
+static class Program
+{
+    static void Main()
+    {
+        float[] floats = { 2.9f, -2.9f, -0.0f, 2147483520f, float.NaN, 3e9f, -3e9f, float.PositiveInfinity };
+        double[] doubles = { 2.9, -2.9, 2147483647.99, -2147483648.99, double.NaN, double.NegativeInfinity };
+        string line = "float";
+        foreach (float f in floats) line += " " + Casts.FromFloat(f);
+        Console.WriteLine(line);
+        line = "double";
+        foreach (double d in doubles) line += " " + Casts.FromDouble(d);
+        Console.WriteLine(line);
+        Console.WriteLine("scaled " + Casts.Scaled(new float[] { 1.1f, -2.7f, 100.33f, 7.9f }, 1.5f));
+    }
+}

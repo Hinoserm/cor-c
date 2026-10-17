@@ -20,6 +20,9 @@ internal static class Isa
     /// <summary>The features that live in the MMX registers: their state is the x87's, and the hosted ABI's to lend.</summary>
     private const X86Feature PackedState = X86Feature.Mmx | X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended;
 
+    /// <summary>SSE's: the operating system enables it (CR4.OSFXSR) and saves its state, so only hosted code has it.</summary>
+    private const X86Feature SseState = X86Feature.Sse | X86Feature.Sse2;
+
     /// <summary>What <paramref name="op"/> needs beyond the 386.</summary>
     public static X86Feature Requires(MOp op) => op switch
     {
@@ -38,6 +41,10 @@ internal static class Isa
             => X86Feature.ThreeDNow,
         // PI2FW: one of the five the K6-2+ and K6-III+ added to 3DNow!.
         MOp.ThreeDNowShortToFloat => X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended,
+        // FUCOMIP: the x87 half of what CPUID calls CMOV.
+        MOp.Fucomipp => X86Feature.FloatCmov,
+        MOp.Cvttss2si => X86Feature.Sse,
+        MOp.Cvttsd2si => X86Feature.Sse | X86Feature.Sse2,
         // PAUSE is F3 90, REP NOP: a plain no-op to anything before the
         // Pentium 4, and so needs nothing.
         _ => X86Feature.None,
@@ -51,6 +58,9 @@ internal static class Isa
     /// </summary>
     public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0;
 
+    /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code the hosted ABI selected may use (X86Backend.AutomaticPacked).</summary>
+    public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0;
+
     /// <summary>The features in <paramref name="features"/>, by the names a programmer knows them by.</summary>
     public static string Describe(X86Feature features)
     {
@@ -60,6 +70,11 @@ internal static class Isa
         if ((features & X86Feature.Mmx) != 0) names.Add("MMX");
         if ((features & X86Feature.ThreeDNow) != 0) names.Add("3DNow!");
         if ((features & X86Feature.ThreeDNowExtended) != 0) names.Add("the K6-2+/K6-III+ 3DNow! extensions");
+        if ((features & X86Feature.Cmov) != 0) names.Add("CMOV");
+        if ((features & X86Feature.FloatCmov) != 0) names.Add("FCMOV/FCOMI");
+        if ((features & X86Feature.MmxExtensions) != 0) names.Add("the MMX extensions");
+        if ((features & X86Feature.Sse) != 0) names.Add("SSE");
+        if ((features & X86Feature.Sse2) != 0) names.Add("SSE2");
         return string.Join(" and ", names);
     }
 }

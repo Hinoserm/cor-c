@@ -885,7 +885,7 @@ public sealed partial class Lowering
     private (long Value, Prim Type)? NamedConstant(Expr e)
         => e is MemberExpr or NameExpr && _b.Resolved.TryGetValue(e, out Sym? sym)
             && e is not MemberExpr { Target: NameExpr { Name: "nint" or "nuint" } }
-            && sym is ConstSym { Text: null, Type.Prim: not (Prim.F32 or Prim.F64) } k ? (k.Value, Fold.Whole(k.Type)) : null;
+            && sym is ConstSym { Text: null } k ? (k.Value, Fold.Whole(k.Type)) : null;
 
     // ---- exceptions ----------------------------------------------------------------
 

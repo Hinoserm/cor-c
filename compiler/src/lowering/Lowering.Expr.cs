@@ -785,6 +785,17 @@ public sealed partial class Lowering
             {
                 Type from = _b.TypeOf(cast.Operand);
                 Type to = _b.TypeOf(cast);
+
+                // A CONSTANT CAST TO A WHOLE TYPE IS C#'S TO WORK OUT, as a
+                // constant operator is (EmitBinary): `unchecked((int)3e9)` is 0
+                // as Roslyn folds it, where the conversion at run time
+                // saturates to int.MaxValue.
+                if ((to.IsInteger || to.Prim == Prim.Char) && !to.IsPointer && !to.IsNullableValue && to.Symbol is null
+                    && Fold.TryConst(cast, out long folded, NamedConstant) && Fold.Fits(folded, to))
+                {
+                    return _e.Const(folded, IrTypes.Of(to));
+                }
+
                 VReg v = Eval(cast.Operand);
 
                 // `(int?)5` PUTS THE FIVE IN A CELL, and the checker marked the

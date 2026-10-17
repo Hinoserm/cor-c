@@ -157,6 +157,11 @@ internal static class Program
         foreach (string mnemonic in new[] { "pfadd", "pfsubr", "pfmul", "pf2id" })
             Check(FunctionAsm(asm, "packed_float_math").Contains(mnemonic) == (packed && Target.X86.X86Profile.ThreeDNow), mnemonic + " selected only with proven floating range");
         Check(FunctionAsm(asm, "packed_dot").Contains("pmaddwd") == packed, "signed word dot products use PMADDWD");
+        string casts = FunctionAsm(asm, "saturating_float_casts");
+        Check(casts.Contains("cvttss2si") == (Target.X86.X86Profile.Has(X86Feature.Sse) && backend.AutomaticPacked),
+            "in-range float-to-int casts use CVTTSS2SI only with SSE and hosted state");
+        Check(casts.Contains("cvttsd2si") == (Target.X86.X86Profile.Has(X86Feature.Sse2) && backend.AutomaticPacked),
+            "in-range double-to-int casts use CVTTSD2SI only with SSE2 and hosted state");
         File.WriteAllText(Path.Combine(outDir, "tests.asm"), asm);
         Console.WriteLine(asm);
 

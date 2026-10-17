@@ -171,6 +171,12 @@ internal static class AsmText
                 yield return "fucomip st0, st1";
                 yield return "fstp st0";
                 yield break;
+            case MOp.Cvttss2si:
+                yield return $"cvttss2si {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, true)}";
+                yield break;
+            case MOp.Cvttsd2si:
+                yield return $"cvttsd2si {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 8, true)}";
+                yield break;
             case MOp.Int:
                 yield return $"int {Op(i.Operands[0], 1, false)}";
                 yield break;

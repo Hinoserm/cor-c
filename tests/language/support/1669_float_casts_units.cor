@@ -1,0 +1,16 @@
+// The other unit of 1669_float_to_int_casts_across_units_on_sse_profiles:
+// the casts themselves, compiled apart from the program that calls them.
+namespace CastUnits;
+
+public static class Casts
+{
+    public static int FromFloat(float f) => (int)f;
+    public static int FromDouble(double d) => (int)d;
+
+    public static int Scaled(float[] values, float scale)
+    {
+        int sum = 0;
+        foreach (float v in values) sum += (int)(v * scale);
+        return sum;
+    }
+}

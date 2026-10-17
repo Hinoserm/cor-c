@@ -16,7 +16,10 @@ namespace Corsac.Lang;
 ///     and the machine's own arithmetic unit have to agree bit for bit about
 ///     rounding, and if they ever disagree a program computes one answer when a
 ///     value is a constant and a different one when it is not. That is the kind
-///     of bug nobody finds.
+///     of bug nobody finds. A float or a double is worked out only on the way
+///     to an integer -- `(int)3.7`, `(int)(Scale * 0.5)` -- which C# makes a
+///     constant and Roslyn works out in .NET's own IEEE arithmetic, as this
+///     compiler, running on .NET, does.
 ///
 ///   * It refuses anything the machine would refuse. Division by zero is a trap
 ///     on this processor, and a compiler that quietly folded it would turn a
@@ -53,6 +56,13 @@ public static class Fold
         => TryConst(e, out value, out _, named);
 
     /// <summary>
+    /// The value of a constant expression of a whole type and the type C#
+    /// gives it; false for one whose answer is a float or a double.
+    /// </summary>
+    public static bool TryConst(Expr e, out long value, out Prim type, Func<Expr, (long Value, Prim Type)?>? named = null)
+        => Eval(e, out value, out type, named) && !IsReal(type);
+
+    /// <summary>
     /// The value of a constant expression and the type C# gives it.
     ///
     /// EVERY STEP AT ITS OWN TYPE, as C# works a constant out: the operands
@@ -62,15 +72,20 @@ public static class Fold
     /// is not 0, `unchecked(int.MaxValue + 1) &lt; 0` is true, and
     /// `1 &lt;&lt; 33` is 2 because an int's shift count is taken mod 32.
     /// The value comes back in the IR's spelling: sign-extended for a signed
-    /// type, zero-extended for uint, and the bits for a ulong.
+    /// type, zero-extended for uint, and the bits for a ulong. A float or a
+    /// double, on its way to a cast, is carried as the double's bits.
     /// </summary>
-    public static bool TryConst(Expr e, out long value, out Prim type, Func<Expr, (long Value, Prim Type)?>? named = null)
+    private static bool Eval(Expr e, out long value, out Prim type, Func<Expr, (long Value, Prim Type)?>? named)
     {
         value = 0;
         type = Prim.Void;
 
         if (named?.Invoke(e) is { } known)
         {
+            if (!IsNumber(known.Type) && known.Type != Prim.Bool)
+            {
+                return false;
+            }
             type = known.Type;
             value = Wrap(known.Value, known.Type);
             return true;
@@ -93,9 +108,15 @@ public static class Fold
                 value = l.IntValue != 0 ? 1 : 0;
                 return true;
 
+            // A decimal is no float: `1.5m` is left alone.
+            case LiteralExpr { Kind: Lit.Real } l when l.Text[^1] is not ('m' or 'M'):
+                type = l.Text[^1] is 'f' or 'F' ? Prim.F32 : Prim.F64;
+                value = Wrap(Bits(l.RealValue), type);
+                return true;
+
             case UnaryExpr u:
             {
-                if (!TryConst(u.Operand, out long v, out Prim operand, named))
+                if (!Eval(u.Operand, out long v, out Prim operand, named))
                 {
                     return false;
                 }
@@ -113,6 +134,17 @@ public static class Fold
                     value = v == 0 ? 1 : 0;
                     type = Prim.Bool;
                     return true;
+                }
+
+                if (IsReal(operand))
+                {
+                    type = operand;
+                    switch (u.Op)
+                    {
+                        case UnOp.Neg: value = Bits(-Real(v)); return true;
+                        case UnOp.Plus: value = v; return true;
+                        default: return false;
+                    }
                 }
 
                 if (!IsWhole(operand))
@@ -144,7 +176,7 @@ public static class Fold
             case CastExpr c:
             {
                 if (c.Type.PointerDepth > 0 || c.Type.ArrayRank > 0 || c.Type.Nullable
-                    || !TryConst(c.Operand, out long v, out Prim operand, named))
+                    || !Eval(c.Operand, out long v, out Prim operand, named))
                 {
                     return false;
                 }
@@ -153,11 +185,13 @@ public static class Fold
                 // machine word; their cast changes the static type, not these
                 // bits.
                 type = Keyword(c.Type.Name) ?? operand;
-                if (type != operand && (!IsWhole(operand) || !IsWhole(type)))
+                if (type != operand && (!IsNumber(operand) || !IsNumber(type)))
                 {
                     return false;
                 }
-                value = Wrap(v, type);
+                value = IsReal(operand) && !IsReal(type) ? Truncated(Real(v), type)
+                      : IsReal(type) ? AsReal(v, operand, type)
+                      : Wrap(v, type);
                 return true;
             }
 
@@ -167,7 +201,7 @@ public static class Fold
                 // legal only because both sides are constant, which means
                 // neither has a side effect to skip -- and both sides ARE
                 // required to be constant to get here.
-                if (!TryConst(b.Left, out long x, out Prim left, named) || !TryConst(b.Right, out long y, out Prim right, named))
+                if (!Eval(b.Left, out long x, out Prim left, named) || !Eval(b.Right, out long y, out Prim right, named))
                 {
                     return false;
                 }
@@ -196,6 +230,11 @@ public static class Fold
                 case BinOp.Eq: value = x ^ y ^ 1; return true;
                 default: return false;
             }
+        }
+
+        if (IsReal(left) || IsReal(right))
+        {
+            return Real(op, x, left, y, right, out value, out type);
         }
 
         if (!IsWhole(left) || !IsWhole(right))
@@ -293,11 +332,107 @@ public static class Fold
         "ulong" => Prim.U64,
         "nint" => Prim.NInt,
         "nuint" => Prim.NUInt,
+        "float" => Prim.F32,
+        "double" => Prim.F64,
         _ => null,
     };
 
     /// <summary>The type a constant of this type folds at: an enum's is the integer it is stored as.</summary>
     public static Prim Whole(Type t) => t.IsEnumValue && t.Symbol is { } e ? e.EnumUnderlying : t.Prim;
+
+    /// <summary>
+    /// A float or a double operator, at the wider of the two sides: an
+    /// integer side converted to it first, as C#'s overloads take it. The
+    /// float's arithmetic is the float's own, rounded at every step.
+    /// </summary>
+    private static bool Real(BinOp op, long x, Prim left, long y, Prim right, out long value, out Prim type)
+    {
+        value = 0;
+        type = left == Prim.F64 || right == Prim.F64 ? Prim.F64 : Prim.F32;
+        if (!IsNumber(left) || !IsNumber(right))
+        {
+            return false;
+        }
+        double a = Real(AsReal(x, left, type)), b = Real(AsReal(y, right, type));
+        double? answer = op switch
+        {
+            BinOp.Add => a + b,
+            BinOp.Sub => a - b,
+            BinOp.Mul => a * b,
+            BinOp.Div => a / b,
+            BinOp.Rem => a % b,
+            _ => null,
+        };
+        if (answer is double made)
+        {
+            value = Wrap(Bits(made), type);
+            return true;
+        }
+        type = Prim.Bool;
+        bool? holds = op switch
+        {
+            BinOp.Eq => a == b,
+            BinOp.Ne => a != b,
+            BinOp.Lt => a < b,
+            BinOp.Le => a <= b,
+            BinOp.Gt => a > b,
+            BinOp.Ge => a >= b,
+            _ => null,
+        };
+        value = holds == true ? 1 : 0;
+        return holds is not null;
+    }
+
+    /// <summary>A number of a whole or a real type as a float's or a double's bits, rounded once, straight to that type.</summary>
+    private static long AsReal(long v, Prim from, Prim to)
+    {
+        if (IsReal(from))
+        {
+            return Wrap(v, to);
+        }
+        bool unsigned = Unsigned(Promoted(from));
+        return to == Prim.F32 ? Bits(unsigned ? (float)(ulong)v : (float)v) : Bits(unsigned ? (double)(ulong)v : (double)v);
+    }
+
+    /// <summary>
+    /// A real cast to a whole type, as Roslyn works a constant one out:
+    /// truncated toward zero, and 0 where that is NaN or past the type's
+    /// range -- `unchecked((int)3e9)` and `unchecked((short)40000.0)` are 0 --
+    /// where the conversion at run time saturates instead. A checked one out
+    /// of range is refused before this (CS0221).
+    /// </summary>
+    private static long Truncated(double d, Prim p)
+    {
+        double t = Math.Truncate(d);
+        (double low, double high) = p switch
+        {
+            Prim.I8 => (sbyte.MinValue, sbyte.MaxValue),
+            Prim.U8 => (0, byte.MaxValue),
+            Prim.I16 => (short.MinValue, short.MaxValue),
+            Prim.U16 or Prim.Char => (0, ushort.MaxValue),
+            Prim.I32 => (int.MinValue, int.MaxValue),
+            Prim.U32 => (0, uint.MaxValue),
+            Prim.NInt when Target.Current.WordSize == 4 => (int.MinValue, int.MaxValue),
+            Prim.NUInt when Target.Current.WordSize == 4 => (0, uint.MaxValue),
+            // 2^63 and 2^64 are the first doubles past long's and ulong's ends.
+            Prim.I64 or Prim.NInt => (-9223372036854775808.0, 9223372036854775807.0),
+            _ => (0, 18446744073709551615.0),
+        };
+        bool wide = p is Prim.I64 or Prim.U64 || (p is Prim.NInt or Prim.NUInt && Target.Current.WordSize == 8);
+        if (double.IsNaN(t) || t < low || (wide ? t >= high : t > high))
+        {
+            return 0;
+        }
+        return Wrap(Unsigned(Promoted(p)) && t >= 9223372036854775808.0 ? (long)(ulong)t : (long)t, p);
+    }
+
+    private static long Bits(double d) => BitConverter.DoubleToInt64Bits(d);
+
+    private static double Real(long bits) => BitConverter.Int64BitsToDouble(bits);
+
+    private static bool IsReal(Prim p) => p is Prim.F32 or Prim.F64;
+
+    private static bool IsNumber(Prim p) => IsWhole(p) || IsReal(p);
 
     private static bool IsWhole(Prim p) => p is Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64
         or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.Char or Prim.NInt or Prim.NUInt;
@@ -321,6 +456,7 @@ public static class Fold
         Prim.NInt => Target.Current.WordSize == 4 ? unchecked((int)v) : v,
         Prim.NUInt => Target.Current.WordSize == 4 ? unchecked((uint)v) : v,
         Prim.Bool => v != 0 ? 1 : 0,
+        Prim.F32 => Bits((float)Real(v)),
         _ => v,
     };
 

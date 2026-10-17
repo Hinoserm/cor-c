@@ -1624,6 +1624,23 @@ internal sealed partial class Selector
     private void SelectFloatToIntCore(Instr i, bool unsignedHighHalf = false)
     {
         VReg d = i.Dest!;
+        // IN RANGE, SSE TRUNCATES AS C# DOES. SelectFloatToInt has sent NaN,
+        // overflow and the negative unsigned cases to blocks of their own, so
+        // the operand here is finite and inside the destination's range, where
+        // cvttss2si and cvttsd2si answer exactly what .NET does, and need no
+        // FNSTCW/FLDCW round trip: FLDCW is an expensive instruction on the P6
+        // and the K7. They read the float's home, so no XMM register is taken
+        // or kept live. Only hosted code: the operating system enables SSE
+        // (CR4.OSFXSR) and owns its state, as it owns the x87 and MMX state
+        // AutomaticPacked borrows. 32-bit SSE has no 64-bit integer result, so
+        // Int64, and the UInt32 that needs the 64-bit store, stay on the x87.
+        bool single = FWidth(i.Operands[0].Type) == 4;
+        if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && _automaticPacked
+            && Target.Current.X86Profile.Has(single ? X86Feature.Sse : X86Feature.Sse2))
+        {
+            Emit(single ? MOp.Cvttss2si : MOp.Cvttsd2si, Lo(d), FHome(i.Operands[0]));
+            return;
+        }
         int s = _m.Frame.Scratch;
         Fld(i.Operands[0]);
         if (unsignedHighHalf)

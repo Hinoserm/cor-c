@@ -1,0 +1,67 @@
+// test: float_to_int_casts_truncate_on_sse_profiles
+// flags: --cpu=pentium4
+// expect-exit: 0
+// expect-output:
+// float 2 -2 0 0 2147483647 -2147483648 2147483520 -2147483520 0 2147483647 -2147483648 0 2147483647 -2147483648 -8388607
+// double 2 -2 0 0 2147483647 -2147483648 2147483520 -2147483520 0 2147483647 -2147483648 0 2147483647 -2147483647 -2147483648 2147483647 -2147483648
+// narrow -25537 -2 233 4294967295 -3 3000000000 -1
+// loop 184350 -184350 73620
+//
+// A FLOAT OR DOUBLE CAST TO INT IS ONE TRUNCATING SSE CONVERSION where the
+// profile has it: cvttss2si for a float (SSE, the Pentium III on), cvttsd2si
+// for a double (SSE2, the Pentium 4), with no x87 control word saved, set to
+// chop and restored around a FISTP. Only the in-range finite operand reaches
+// it; NaN is zero and anything past int's range is int's nearest limit, as
+// .NET has it, decided before. Here every edge: fractions of either sign,
+// negative zero, the largest float under 2^31 and its negation, 2^31 itself
+// (a float's 2147483647.0f), the smallest subnormal, NaN, both infinities,
+// and doubles a hair inside and outside int's range. Long, uint and ulong,
+// with no 64-bit SSE result in 32-bit code, stay on the x87, and narrower
+// casts go through int; a loop casts on every pass, as fixed-point code
+// does. The same cases at --cpu=pentium3 and athlon-xp (float on SSE,
+// double on the x87) and at k6-2 (all x87) print the same.
+
+using System;
+
+static class Program
+{
+    static int FromFloat(float f) => (int)f;
+    static int FromDouble(double d) => (int)d;
+
+    static void Main()
+    {
+        float[] floats =
+        {
+            2.9f, -2.9f, 0.5f, -0.0f, 2147483647.0f, -2147483648.0f, 2147483520f, -2147483520f,
+            float.Epsilon, 3e9f, -3e9f, float.NaN, float.PositiveInfinity, float.NegativeInfinity, -8388607.5f,
+        };
+        double[] doubles =
+        {
+            2.9, -2.9, 0.5, -0.0, 2147483647.0, -2147483648.0, 2147483520.0, -2147483520.0,
+            double.Epsilon, 3e9, -3e9, double.NaN, 2147483647.99, -2147483647.99, -2147483648.99,
+            double.PositiveInfinity, double.NegativeInfinity,
+        };
+        string line = "float";
+        foreach (float f in floats) line += " " + FromFloat(f);
+        Console.WriteLine(line);
+        line = "double";
+        foreach (double d in doubles) line += " " + FromDouble(d);
+        Console.WriteLine(line);
+
+        float big = floats[0] * 13793.1f;
+        double negative = doubles[1];
+        Console.WriteLine("narrow " + (short)big + " " + (sbyte)negative + " " + (byte)(1000.7 + doubles[2])
+            + " " + (uint)4294967295.5 + " " + (long)(negative - 0.5) + " " + (ulong)3e9f + " " + (int)(long)-1.5);
+
+        int up = 0, down = 0, scaled = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            float x = i * 2.3125f;
+            double y = -i * 2.3125;
+            up += (int)x;
+            down += (int)y;
+            scaled += (int)(x * 0.4f);
+        }
+        Console.WriteLine("loop " + up + " " + down + " " + scaled);
+    }
+}

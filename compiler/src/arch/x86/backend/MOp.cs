@@ -38,6 +38,12 @@ public enum MOp : byte
     /// Pentium Pro and later only (X86Cpu.FloatCmov).
     /// </summary>
     Fucomipp,
+    /// <summary>
+    /// cvttss2si r32, m32 (SSE) and cvttsd2si r32, m64 (SSE2): a float or a
+    /// double in memory truncated into a general register. They chop
+    /// whatever the rounding mode, so no control word changes.
+    /// </summary>
+    Cvttss2si, Cvttsd2si,
     // odds and ends
     Int, Int3, Nop, Pause,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>
