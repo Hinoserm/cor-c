@@ -59,12 +59,22 @@ separate units do not change, only the final image does.
   side; the backend already returns with `ret n` for stdcall callees
   (`Function.CalleePops`, used by COM's wrappers).
 - STRINGS: the runtime's strings are UTF-16 already, which the W calls take
-  as they are. Windows 9x has only a few W calls, so each import with both
-  forms is bound at start to the W one on NT and to the A one on 9x, the
-  string converted to the ANSI code page (WideCharToMultiByte) on the way in
-  and back on the way out. Microsoft's own layer for this, the Microsoft
-  Layer for Unicode (unicows.dll), may be used instead where installed;
-  which one is an open decision.
+  as they are, and NT gets them. On 9x, where only a few W calls exist:
+  - THE MICROSOFT LAYER FOR UNICODE (unicows.dll) where it is installed:
+    each import with both forms is bound at start to unicows' W entry.
+  - BELOW IT, THE RUNTIME'S OWN, which is what unicows does inside: the A
+    call, the string converted to the system's ANSI code page
+    (WideCharToMultiByte) on the way in and back (MultiByteToWideChar) on the
+    way out, a character the code page cannot hold a `?` as it is there. The
+    W calls 9x does have (TextOutW, ExtTextOutW, GetTextExtentPoint32W,
+    MessageBoxW, lstrlenW and the few others) are called as they are, so
+    text drawn on 9x stays Unicode wherever the font has the glyph.
+  - WINDOW MESSAGES are the part that is more than a call: on 9x every
+    window is an ANSI one, so the messages that carry text are converted
+    both ways in the window procedure and in the send wrappers --
+    WM_SETTEXT, WM_GETTEXT, the EDIT, LISTBOX, COMBOBOX and comctl32 ones,
+    WM_CHAR (ANSI bytes, a DBCS pair for CJK, read with the keyboard
+    layout's code page) and WM_IME_CHAR.
 - CALLBACKS (a window procedure, an enumeration's callback) are
   `[UnmanagedCallersOnly]` stdcall functions, which exist. No exception
   ever unwinds through Windows' frames: the callback's stub catches it and
@@ -145,7 +155,8 @@ from there into .NET's events; `Handle`, `CreateParams`, `NativeWindow`,
 LOOKING RIGHT EVERYWHERE: the manifest gives XP and later their visual
 styles; owner-drawn parts draw through uxtheme when the window is themed and
 with DrawFrameControl and DrawEdge when it is not; fonts are the system's own
-(its non-client metrics and the dialog font each version uses), so a
+(its non-client metrics and the dialog font each version uses: that is
+Control.DefaultFont here, not .NET's fixed Microsoft Sans Serif), so a
 program looks like 95 on 95 and like 11 on 11; DPI is followed where the
 system has it (per monitor on 10, the system's below that, 96 on the
 floor), with layouts scaled as .NET's AutoScaleMode scales them.
@@ -163,7 +174,7 @@ everywhere. What GDI cannot do is taken from what the system has:
 | Float coordinates, transforms | rounded to device units; transforms applied to the points | SetWorldTransform (NT); GDI+ |
 | Antialiasing | drawn without, as programs of the time were | GDI+ |
 | Alpha, gradients | none | AlphaBlend, GradientFill (msimg32: 98, 2000); GDI+ |
-| Images | BMP, ICO, WMF, EMF from GDI and OLE (OleLoadPicture; JPEG and GIF where the system's OLE has them, to verify) | GDI+ codecs (PNG, JPEG, GIF, TIFF): XP on, and the redistributable on 98 through 2000 |
+| Images | BMP, ICO, WMF, EMF from GDI; PNG (every depth, Adam7), JPEG (baseline and progressive) and GIF (its frames) from the stdlib's own decoders, shared with CORSAC (stdlib/src/System/Drawing/Imaging.cor reads only icons' PNG today) | GDI+ codecs (PNG, JPEG, GIF, TIFF): XP on, and the redistributable on 98 through 2000 |
 
 GDI+ itself is optional everywhere: built into XP and later, a
 redistributable on 98, ME, NT 4 and 2000, absent on 95.
@@ -185,12 +196,12 @@ them.
 
 ## Open decisions
 
-- The Microsoft Layer for Unicode (unicows.dll) or the runtime's own A/W
-  binding on 9x.
-- What stands in for DateTimePicker and MonthCalendar on comctl32 4.00.
-- PNG and JPEG on a system with neither GDI+ nor an OLE that reads them.
-- The default font: .NET's Control.DefaultFont, or the system's own
-  dialog font (which is what looks right).
+- What stands in for DateTimePicker and MonthCalendar on comctl32 4.00
+  (Windows 95 without Internet Explorer 3).
+
+Decided: unicows.dll where installed and the runtime's own A/W layer below
+it; the system's font as the default; PNG, JPEG and GIF from our own
+decoders wherever GDI+ is absent.
 
 ## Order of work
 
