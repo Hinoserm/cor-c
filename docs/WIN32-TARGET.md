@@ -176,6 +176,21 @@ everywhere. What GDI cannot do is taken from what the system has:
 | Alpha, gradients | none | AlphaBlend, GradientFill (msimg32: 98, 2000); GDI+ |
 | Images | BMP, ICO, WMF, EMF from GDI; PNG (every depth, Adam7), JPEG (baseline and progressive) and GIF (its frames) from the stdlib's own decoders, shared with CORSAC (stdlib/src/System/Drawing/Imaging.cor reads only icons' PNG today) | GDI+ codecs (PNG, JPEG, GIF, TIFF): XP on, and the redistributable on 98 through 2000 |
 
+THE CODECS ARE .NET'S SHAPE, not a private one. Pictures are read and
+written through what .NET programs already call: `Image.FromFile`,
+`Image.FromStream`, `new Bitmap(stream)`, `Image.Save(stream, ImageFormat)`
+with `ImageFormat.Png`, `Jpeg`, `Gif`, `Bmp`, `Tiff`, `Icon`;
+`ImageCodecInfo.GetImageDecoders()` and `GetImageEncoders()` with their
+format ids, MIME types and extensions; `EncoderParameters` (JPEG quality,
+colour depth); `GetFrameCount(FrameDimension.Time)` and
+`SelectActiveFrame` for a GIF's frames; `PropertyItems` for what a file
+carries (EXIF orientation, a GIF's frame delays). WPF's
+`System.Windows.Media.Imaging` shape (`BitmapDecoder.Create`,
+`PngBitmapDecoder`, `JpegBitmapEncoder`, `BitmapFrame`) sits on the same
+codecs. Our decoders and encoders are what answers those calls wherever
+GDI+ is absent, and on CORSAC everywhere; a program cannot tell which one
+did.
+
 GDI+ itself is optional everywhere: built into XP and later, a
 redistributable on 98, ME, NT 4 and 2000, absent on 95.
 
