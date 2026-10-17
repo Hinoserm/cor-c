@@ -14705,34 +14705,58 @@ class StringBuilder : IOwnsStorage {
         used = 0;
     }
 
+    // SIXTEEN CHARACTERS TO START WITH, which is .NET's default capacity and
+    // so what Capacity and EnsureCapacity answer for a builder made empty.
+    private const int DefaultCapacity = 16;
+
+    // .NET's words for a place outside the text, or a range that runs past
+    // its end, which Insert, Replace, CopyTo and the partial Appends share.
+    private const string OutOfRange = "Index was out of range. Must be non-negative and less than or equal to the size of the collection.";
+
     public StringBuilder() {
-        buffer = Sys.NewChars(32);
+        buffer = Sys.NewChars(DefaultCapacity);
         used = 0;
     }
 
     // The capacity overload is used by the assembler whenever it knows the
-    // source slice it will rewrite.  It must establish the normal invariant
-    // before Reserve runs; otherwise a missing constructor leaves `buffer`
-    // null and the first append faults in Reserve.
-    public StringBuilder(int capacity) : this() {
-        if (capacity > 0) { Reserve(capacity); }
+    // source slice it will rewrite, so the buffer is made that long at once
+    // rather than grown to it. Zero is the default capacity, as in .NET.
+    public StringBuilder(int capacity) {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        buffer = Sys.NewChars(capacity == 0 ? DefaultCapacity : capacity);
+        used = 0;
     }
 
     /// The text it starts with, which is .NET's commonest constructor and the
     /// one a formatter reaches for.
-    public StringBuilder(string value) : this() {
-        Append(value);
+    public StringBuilder(string? value) : this(value, 0, value == null ? 0 : value.Length, DefaultCapacity) { }
+
+    public StringBuilder(string? value, int capacity) : this(value, 0, value == null ? 0 : value.Length, capacity) { }
+
+    /// PART OF A STRING TO START WITH, in a buffer at least as long as that
+    /// part: .NET's checks, in its order, and its capacity, which is the one
+    /// asked for (the default for zero) or the text's length if that is more.
+    public StringBuilder(string? value, int startIndex, int length, int capacity) {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        string text = value ?? "";
+        if (startIndex > text.Length - length) {
+            throw new ArgumentOutOfRangeException("length", "Index and length must refer to a location within the string.");
+        }
+
+        if (capacity == 0) { capacity = DefaultCapacity; }
+        buffer = Sys.NewChars(capacity > length ? capacity : length);
+        Sys.CopyNoOverlap(buffer, 0, text, startIndex, length);
+        used = length;
     }
 
-    public StringBuilder(string value, int capacity) : this() {
-        if (capacity > 0) { Reserve(capacity); }
-        Append(value);
-    }
-
+    /// PART OF WHAT WAS BUILT, THROWN AWAY -- which is what assigning to
+    /// Length means in .NET, and it can also grow: the new tail is nul bytes.
     public int Length {
         get { return used; }
         set {
-            if (value < 0) { throw new ArgumentOutOfRangeException("value"); }
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
 
             if (value > used) {
                 Reserve(value);
@@ -14800,18 +14824,102 @@ class StringBuilder : IOwnsStorage {
         return this;
     }
 
-    public StringBuilder AppendLine(string s) { return Append(s).Append('\n'); }
+    /// A null line is an empty one, as .NET's AppendLine(string?).
+    public StringBuilder AppendLine(string? value) { return Append(value).Append('\n'); }
 
     /// String.Format, appended -- which is the shape a report or a log line is
-    /// built in, and saves the intermediate string.
-    public StringBuilder AppendFormat(string format, params object[] args) {
+    /// built in, and saves the intermediate string. .NET's overloads, one to
+    /// three arguments and any number, each with or without the provider that
+    /// formats them, all of them String.Format's: its refusals are theirs.
+    public StringBuilder AppendFormat(string format, params object?[] args) {
         return Append(String.Format(format, args));
     }
 
-    public StringBuilder AppendJoin(string separator, params object[] values) {
+    public StringBuilder AppendFormat(string format, object? arg0) { return Append(String.Format(format, arg0)); }
+    public StringBuilder AppendFormat(string format, object? arg0, object? arg1) { return Append(String.Format(format, arg0, arg1)); }
+    public StringBuilder AppendFormat(string format, object? arg0, object? arg1, object? arg2) { return Append(String.Format(format, arg0, arg1, arg2)); }
+
+    public StringBuilder AppendFormat(IFormatProvider? provider, string format, params object?[] args) {
+        return Append(String.Format(provider, format, args));
+    }
+
+    public StringBuilder AppendFormat(IFormatProvider? provider, string format, object? arg0) {
+        return Append(String.Format(provider, format, arg0));
+    }
+
+    public StringBuilder AppendFormat(IFormatProvider? provider, string format, object? arg0, object? arg1) {
+        return Append(String.Format(provider, format, arg0, arg1));
+    }
+
+    public StringBuilder AppendFormat(IFormatProvider? provider, string format, object? arg0, object? arg1, object? arg2) {
+        return Append(String.Format(provider, format, arg0, arg1, arg2));
+    }
+
+    // THE VALUES WITH A SEPARATOR BETWEEN EVERY TWO, which is string.Join
+    // written into the builder: each value as Append(object) writes it, so a
+    // null is nothing and the separators around it stay. A separator is a
+    // string or a character, the values an array or any sequence, as .NET
+    // has them; no values at all is ArgumentNullException, by .NET's name.
+    public StringBuilder AppendJoin(string? separator, params object?[] values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+
         for (int i = 0; i < values.Length; i++) {
             if (i > 0) { Append(separator); }
-            Append("" + values[i]);
+            Append(values[i]);
+        }
+        return this;
+    }
+
+    public StringBuilder AppendJoin(string? separator, params string?[] values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+
+        for (int i = 0; i < values.Length; i++) {
+            if (i > 0) { Append(separator); }
+            Append(values[i]);
+        }
+        return this;
+    }
+
+    public StringBuilder AppendJoin<T>(string? separator, IEnumerable<T> values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+
+        bool first = true;
+        foreach (T value in values) {
+            if (!first) { Append(separator); }
+            first = false;
+            Append((object?)value);
+        }
+        return this;
+    }
+
+    public StringBuilder AppendJoin(char separator, params object?[] values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+
+        for (int i = 0; i < values.Length; i++) {
+            if (i > 0) { Append(separator); }
+            Append(values[i]);
+        }
+        return this;
+    }
+
+    public StringBuilder AppendJoin(char separator, params string?[] values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+
+        for (int i = 0; i < values.Length; i++) {
+            if (i > 0) { Append(separator); }
+            Append(values[i]);
+        }
+        return this;
+    }
+
+    public StringBuilder AppendJoin<T>(char separator, IEnumerable<T> values) {
+        if (values == null) { throw new ArgumentNullException("values"); }
+
+        bool first = true;
+        foreach (T value in values) {
+            if (!first) { Append(separator); }
+            first = false;
+            Append((object?)value);
         }
         return this;
     }
@@ -14833,6 +14941,47 @@ class StringBuilder : IOwnsStorage {
 
     public StringBuilder Append(double value) { return Append(String.FromDouble(value)); }
 
+    // A FLOAT AS A FLOAT: its own shortest digits, which is what .NET's
+    // Append(float) writes. Without this overload a float widened to double
+    // on the way in, and 0.1f was appended as 0.10000000149011612.
+    public StringBuilder Append(float value) { return Append(String.FromSingle(value)); }
+
+    // THE CHARACTERS OF AN ARRAY, not the array: without this overload a
+    // char[] reached Append(object) and was appended as "System.Char[]".
+    // A null array is nothing, as a null string is.
+    public StringBuilder Append(char[]? value) {
+        if (value == null) { return this; }
+        return Append(new ReadOnlySpan<char>(value));
+    }
+
+    /// Part of an array, with .NET's checks in its order: a negative place or
+    /// count, then a null array -- which is allowed for nothing at all --
+    /// then a count that runs past the end.
+    public StringBuilder Append(char[]? value, int startIndex, int charCount) {
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        ArgumentOutOfRangeException.ThrowIfNegative(charCount);
+        if (value == null) {
+            if (startIndex == 0 && charCount == 0) { return this; }
+            throw new ArgumentNullException("value");
+        }
+        if (charCount > value.Length - startIndex) { throw new ArgumentOutOfRangeException("charCount", OutOfRange); }
+
+        return Append(new ReadOnlySpan<char>(value, startIndex, charCount));
+    }
+
+    /// What a span or a memory of characters reads, copied in.
+    public StringBuilder Append(ReadOnlySpan<char> value) {
+        int n = value.Length;
+        Reserve(used + n);
+        for (int i = 0; i < n; i++) {
+            Sys.SetChar(buffer, used + i, (int)value[i]);
+        }
+        used = used + n;
+        return this;
+    }
+
+    public StringBuilder Append(ReadOnlyMemory<char> value) { return Append(value.Span); }
+
     /// THE SAME CHARACTER, THAT MANY TIMES, which .NET has because building a
     /// rule of dashes or an indent is the commonest thing a builder does that
     /// is not appending text.
@@ -14845,7 +14994,27 @@ class StringBuilder : IOwnsStorage {
         return this;
     }
 
-    public StringBuilder Append(StringBuilder other) { return Append(other.ToString()); }
+    /// Another builder's text, or nothing for null. Read through its
+    /// ToString, so a builder appended to itself appends what it held.
+    public StringBuilder Append(StringBuilder? other) {
+        if (other == null) { return this; }
+        return Append(other.ToString());
+    }
+
+    /// Part of another builder's text, with the checks Append(string, int,
+    /// int) makes, by the same names.
+    public StringBuilder Append(StringBuilder? value, int startIndex, int count) {
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (value == null) {
+            if (startIndex == 0 && count == 0) { return this; }
+            throw new ArgumentNullException("value");
+        }
+        if (count == 0) { return this; }
+        if (startIndex > value.Length - count) { throw new ArgumentOutOfRangeException("startIndex", OutOfRange); }
+
+        return Append(value.ToString(startIndex, count));
+    }
 
     /// ANYTHING AT ALL, which is .NET's Append(object?): what it says of
     /// itself, and nothing for a null. A machine word arrives boxed here, so
@@ -14863,26 +15032,36 @@ class StringBuilder : IOwnsStorage {
 
     /// PART of a string, which is what a scanner copying a token out of its
     /// input wants and which it should not have to allocate a Substring for.
-    public StringBuilder Append(string s, int start, int count) {
+    /// .NET's checks, in its order: a null string is allowed for nothing.
+    public StringBuilder Append(string? value, int startIndex, int count) {
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (value == null) {
+            if (startIndex == 0 && count == 0) { return this; }
+            throw new ArgumentNullException("value");
+        }
+        if (count == 0) { return this; }
+        if (startIndex > value.Length - count) { throw new ArgumentOutOfRangeException("startIndex", OutOfRange); }
+
         Reserve(used + count);
-        Sys.CopyNoOverlap(buffer, used, s, start, count);
+        Sys.CopyNoOverlap(buffer, used, value, startIndex, count);
         used = used + count;
         return this;
     }
 
     /// READ AND WRITTEN BY POSITION, which is .NET's `this[int]` on a builder
     /// and the reason a builder is not just a list of strings: text already
-    /// appended can be corrected without rebuilding what follows it.
+    /// appended can be corrected without rebuilding what follows it. A place
+    /// outside the text is refused as .NET refuses it, which differs between
+    /// the two: a read as an array's would be, a write as an argument.
     public char this[int index] {
         get {
-            if (index < 0 || index >= used) {
-                throw new IndexOutOfRangeException("index is outside the builder");
-            }
+            if ((uint)index >= (uint)used) { throw new IndexOutOfRangeException(); }
             return Sys.GetChar(buffer, index);
         }
         set {
-            if (index < 0 || index >= used) {
-                throw new IndexOutOfRangeException("index is outside the builder");
+            if ((uint)index >= (uint)used) {
+                throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection.");
             }
             Sys.SetChar(buffer, index, (int)value);
         }
@@ -14890,62 +15069,217 @@ class StringBuilder : IOwnsStorage {
 
     /// .NET's: a null string inserts nothing, and a place outside the text
     /// is refused by the name .NET gives it.
-    public StringBuilder Insert(int at, string? s) {
-        if (at < 0 || at > used) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
-        if (s == null) { return this; }
+    public StringBuilder Insert(int index, string? value) {
+        if ((uint)index > (uint)used) { throw new ArgumentOutOfRangeException("index", OutOfRange); }
+        if (value == null) { return this; }
 
-        Reserve(used + s.Length);
-
-        // BACKWARDS, because source and destination overlap: copying forwards
-        // would smear the first character over everything it had yet to read.
-        for (int i = used - 1; i >= at; i--) {
-            Sys.SetChar(buffer, i + s.Length, Sys.GetChar(buffer, i));
-        }
-        for (int i = 0; i < s.Length; i++) {
-            Sys.SetChar(buffer, at + i, Sys.GetChar(s, i));
-        }
-        used = used + s.Length;
+        Open(index, value.Length);
+        Sys.CopyNoOverlap(buffer, index, value, 0, value.Length);
         return this;
     }
 
-    public StringBuilder Insert(int at, char c) { return Insert(at, String.FromByte((long)c)); }
-    public StringBuilder Insert(int at, long value) { return Insert(at, String.FromInt(value)); }
+    /// The string `count` times over, with room made once for all of them.
+    /// The count is checked before the place, as .NET checks them.
+    public StringBuilder Insert(int index, string? value, int count) {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if ((uint)index > (uint)used) { throw new ArgumentOutOfRangeException("index", OutOfRange); }
+        if (value == null || value.Length == 0 || count == 0) { return this; }
+        if ((long)value.Length * count > (long)(int.MaxValue - used)) { throw new OutOfMemoryException(); }
 
-    public StringBuilder Remove(int at, int count) {
-        if (at < 0 || count < 0 || at + count > used) {
-            throw new ArgumentOutOfRangeException("at");
+        Open(index, value.Length * count);
+        for (int i = 0; i < count; i++) {
+            Sys.CopyNoOverlap(buffer, index + i * value.Length, value, 0, value.Length);
         }
+        return this;
+    }
 
-        for (int i = at + count; i < used; i++) {
-            Sys.SetChar(buffer, i - count, Sys.GetChar(buffer, i));
+    /// What a span of characters reads, inserted.
+    public StringBuilder Insert(int index, ReadOnlySpan<char> value) {
+        if ((uint)index > (uint)used) { throw new ArgumentOutOfRangeException("index", OutOfRange); }
+
+        int n = value.Length;
+        Open(index, n);
+        for (int i = 0; i < n; i++) {
+            Sys.SetChar(buffer, index + i, (int)value[i]);
         }
-        used = used - count;
+        return this;
+    }
+
+    /// An array's characters; a null array is nothing, at a place that must
+    /// still be inside the text.
+    public StringBuilder Insert(int index, char[]? value) {
+        if ((uint)index > (uint)used) { throw new ArgumentOutOfRangeException("index", OutOfRange); }
+        if (value == null) { return this; }
+        return Insert(index, new ReadOnlySpan<char>(value));
+    }
+
+    /// Part of an array, with .NET's checks in its order: the place, a null
+    /// array (allowed for nothing at all), then the part.
+    public StringBuilder Insert(int index, char[]? value, int startIndex, int charCount) {
+        if ((uint)index > (uint)used) { throw new ArgumentOutOfRangeException("index", OutOfRange); }
+        if (value == null) {
+            if (startIndex == 0 && charCount == 0) { return this; }
+            throw new ArgumentNullException("value");
+        }
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        ArgumentOutOfRangeException.ThrowIfNegative(charCount);
+        if (startIndex > value.Length - charCount) { throw new ArgumentOutOfRangeException("startIndex", OutOfRange); }
+
+        return Insert(index, new ReadOnlySpan<char>(value, startIndex, charCount));
+    }
+
+    // EVERY OTHER VALUE AS APPEND WRITES IT, inserted. .NET has one overload
+    // per primitive so that each is formatted as itself: a float through
+    // Insert(double) would be its widened digits, as Append's was.
+    public StringBuilder Insert(int index, char value) { return Insert(index, String.FromByte((long)value)); }
+    public StringBuilder Insert(int index, bool value) { return Insert(index, String.FromBool(value)); }
+    public StringBuilder Insert(int index, byte value) { return Insert(index, String.FromInt((long)value)); }
+    public StringBuilder Insert(int index, sbyte value) { return Insert(index, String.FromInt((long)value)); }
+    public StringBuilder Insert(int index, short value) { return Insert(index, String.FromInt((long)value)); }
+    public StringBuilder Insert(int index, ushort value) { return Insert(index, String.FromInt((long)value)); }
+    public StringBuilder Insert(int index, int value) { return Insert(index, String.FromInt((long)value)); }
+    public StringBuilder Insert(int index, uint value) { return Insert(index, String.FromInt((long)value)); }
+    public StringBuilder Insert(int index, long value) { return Insert(index, String.FromInt(value)); }
+    public StringBuilder Insert(int index, ulong value) { return Insert(index, NumberFormat.OfUnsigned(value, "")); }
+    public StringBuilder Insert(int index, float value) { return Insert(index, String.FromSingle(value)); }
+    public StringBuilder Insert(int index, double value) { return Insert(index, String.FromDouble(value)); }
+
+    /// Anything at all, as Append(object) writes it. A null is nothing and,
+    /// as in .NET, is not even checked for its place.
+    public StringBuilder Insert(int index, object? value) {
+        if (value == null) { return this; }
+        return Insert(index, "" + value);
+    }
+
+    // ROOM FOR `count` CHARACTERS AT `index`, the text after it moved up and
+    // the builder that much longer; the caller writes what goes in the gap.
+    // BACKWARDS, because source and destination overlap: copying forwards
+    // would smear the first character over everything it had yet to read.
+    private void Open(int index, int count) {
+        Reserve(used + count);
+        for (int i = used - 1; i >= index; i--) {
+            Sys.SetChar(buffer, i + count, Sys.GetChar(buffer, i));
+        }
+        used = used + count;
+    }
+
+    /// Part of the text taken out, with .NET's checks and names: a negative
+    /// length or place, then a part that runs past the end.
+    public StringBuilder Remove(int startIndex, int length) {
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        if (length > used - startIndex) { throw new ArgumentOutOfRangeException("length", OutOfRange); }
+
+        Move(startIndex + length, startIndex);
+        used = used - length;
         return this;
     }
 
     /// EVERY OCCURRENCE, IN PLACE. Going through ToString and String.Replace
     /// would be one line and would also throw away the buffer, which is the
     /// one thing a builder exists to keep.
-    public StringBuilder Replace(char what, char with) {
-        for (int i = 0; i < used; i++) {
-            if (Sys.GetChar(buffer, i) == (int)what) { Sys.SetChar(buffer, i, (int)with); }
+    public StringBuilder Replace(char oldChar, char newChar) { return Replace(oldChar, newChar, 0, used); }
+
+    /// Every occurrence inside `count` characters from `startIndex`, and
+    /// nothing outside them changed.
+    public StringBuilder Replace(char oldChar, char newChar, int startIndex, int count) {
+        CheckRange(startIndex, count);
+
+        for (int i = startIndex; i < startIndex + count; i++) {
+            if (Sys.GetChar(buffer, i) == (int)oldChar) { Sys.SetChar(buffer, i, (int)newChar); }
         }
         return this;
     }
 
-    public StringBuilder Replace(string what, string with) {
-        string made = String.Replace(ToString(), what, with);
-        used = 0;
-        return Append(made);
+    /// Every occurrence of a string, which must have something in it; a null
+    /// replacement removes what it finds. Ordinal, as .NET's is.
+    public StringBuilder Replace(string oldValue, string? newValue) { return Replace(oldValue, newValue, 0, used); }
+
+    /// Every occurrence that lies wholly inside `count` characters from
+    /// `startIndex`, found left to right without overlapping, as String's
+    /// Replace finds them. The string is checked before the range, as .NET
+    /// checks them.
+    public StringBuilder Replace(string oldValue, string? newValue, int startIndex, int count) {
+        ArgumentException.ThrowIfNullOrEmpty(oldValue);
+        CheckRange(startIndex, count);
+        string with = newValue ?? "";
+        int n = oldValue.Length;
+        int end = startIndex + count;
+
+        // COUNT FIRST, so the text after the range moves once, straight to
+        // where it ends up, and nothing is made when nothing is found.
+        int found = 0;
+        int at = startIndex;
+        while (at <= end - n) {
+            if (Sys.StringEqual(buffer, at, oldValue, 0, n)) {
+                found = found + 1;
+                at = at + n;
+            } else {
+                at = at + 1;
+            }
+        }
+        if (found == 0) { return this; }
+
+        long change = (long)found * (with.Length - n);
+        if (change > (long)(int.MaxValue - used)) { throw new OutOfMemoryException(); }
+        int grown = (int)change;
+
+        // THE RANGE IS REWRITTEN FROM A COPY OF ITSELF: written in place, a
+        // longer replacement would overwrite text not yet read, and a shorter
+        // one would leave the tail to be moved in pieces.
+        string range = String.Substring(buffer, startIndex, count);
+        Reserve(used + grown);
+        Move(end, end + grown);
+
+        int to = startIndex;
+        int from = 0;
+        while (from < count) {
+            if (from <= count - n && Sys.StringEqual(range, from, oldValue, 0, n)) {
+                Sys.CopyNoOverlap(buffer, to, with, 0, with.Length);
+                to = to + with.Length;
+                from = from + n;
+            } else {
+                Sys.SetChar(buffer, to, Sys.GetChar(range, from));
+                to = to + 1;
+                from = from + 1;
+            }
+        }
+        used = used + grown;
+        return this;
     }
 
-    public string ToString(int start, int count) {
-        return String.Substring(buffer, start, count);
+    // A RANGE OF THE TEXT, as Replace takes one: .NET's checks, the place
+    // and then the count, under its names.
+    private void CheckRange(int startIndex, int count) {
+        if ((uint)startIndex > (uint)used) { throw new ArgumentOutOfRangeException("startIndex", OutOfRange); }
+        if (count < 0 || startIndex > used - count) { throw new ArgumentOutOfRangeException("count", OutOfRange); }
     }
 
-    /// PART OF WHAT WAS BUILT, THROWN AWAY -- which is what assigning to
-    /// Length means in .NET, and it can also grow: the new tail is nul bytes.
-    public int Capacity => buffer.Length;
+    /// Part of the text as a string, checked against the text rather than
+    /// the buffer it lies in, which is longer: .NET's checks, in its order.
+    public string ToString(int startIndex, int length) {
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        if (startIndex > used) { throw new ArgumentOutOfRangeException("startIndex", "startIndex cannot be larger than length of string."); }
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        if (startIndex > used - length) { throw new ArgumentOutOfRangeException("length", "Index and length must refer to a location within the string."); }
+
+        return String.Substring(buffer, startIndex, length);
+    }
+
+    /// HOW MUCH IT CAN HOLD before it grows again, which is not how much it
+    /// holds. Setting it is .NET's way of reserving, or of giving back what a
+    /// builder no longer needs: the buffer is made exactly that long.
+    public int Capacity {
+        get { return buffer.Length; }
+        set {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            if (value < used) { throw new ArgumentOutOfRangeException("value", "capacity was less than the current size."); }
+            if (value != buffer.Length) { Resize(value); }
+        }
+    }
+
+    /// No builder here is limited short of the largest string there can be.
+    public int MaxCapacity => int.MaxValue;
 
     // THE ONLY PLACE A STRING IS MADE. Everything above writes into the buffer,
     // and the buffer is longer than the text in it -- so this cannot hand the
@@ -14961,19 +15295,103 @@ class StringBuilder : IOwnsStorage {
     }
 
     // The .NET spelling, and useful whenever allocation must happen before a
-    // timed or concurrent section rather than unpredictably inside it.
-    public void EnsureCapacity(int capacity) {
-        if (capacity > 0) { Reserve(capacity); }
+    // timed or concurrent section rather than unpredictably inside it. As
+    // .NET's, it makes the capacity exactly what was asked for when it was
+    // less, and answers the capacity it leaves.
+    public int EnsureCapacity(int capacity) {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        if (buffer.Length < capacity) { Resize(capacity); }
+        return buffer.Length;
+    }
+
+    /// `count` characters from `sourceIndex` into an array at a place in it:
+    /// .NET's checks of the array, then the span form's of the text.
+    public void CopyTo(int sourceIndex, char[] destination, int destinationIndex, int count) {
+        if (destination == null) { throw new ArgumentNullException("destination"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(destinationIndex);
+        if (destinationIndex > destination.Length - count) {
+            throw new ArgumentException("Either offset did not refer to a position in the string, or there is an insufficient length of destination character array.");
+        }
+
+        CopyTo(sourceIndex, new Span<char>(destination, destinationIndex, destination.Length - destinationIndex), count);
+    }
+
+    public void CopyTo(int sourceIndex, Span<char> destination, int count) {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if ((uint)sourceIndex > (uint)used) { throw new ArgumentOutOfRangeException("sourceIndex", OutOfRange); }
+        if (sourceIndex > used - count) { throw new ArgumentException("Source string was not long enough. Check sourceIndex and count."); }
+        if (count > destination.Length) { throw new ArgumentException("Destination is too short.", "destination"); }
+
+        for (int i = 0; i < count; i++) {
+            destination[i] = Sys.GetChar(buffer, sourceIndex + i);
+        }
+    }
+
+    /// THE SAME CHARACTERS, which is .NET's Equals between two builders; a
+    /// builder is still only itself to Equals(object), as in .NET.
+    public bool Equals(StringBuilder? sb) {
+        if (sb == null || sb.Length != used) { return false; }
+        if (sb == this) { return true; }
+
+        for (int i = 0; i < used; i++) {
+            if (Sys.GetChar(buffer, i) != sb[i]) { return false; }
+        }
+        return true;
+    }
+
+    public bool Equals(ReadOnlySpan<char> span) {
+        if (span.Length != used) { return false; }
+
+        for (int i = 0; i < used; i++) {
+            if (Sys.GetChar(buffer, i) != span[i]) { return false; }
+        }
+        return true;
+    }
+
+    // ONLY ITSELF TO Equals(object), as .NET's builder is, which overrides
+    // nothing. Written out because a class with a typed Equals and no
+    // Equals(object) is asked through the typed one (Lowering.EqualsGuard),
+    // and two builders holding the same text were equal to object.Equals.
+    public override bool Equals(object? obj) { return (object)this == obj; }
+
+    // THE TEXT FROM `from` ON, MOVED TO START AT `to`, which is how Insert
+    // makes room and Remove and Replace close or open a gap; the caller has
+    // reserved the room and sets the length. The two overlap, so a move up
+    // goes from the top down: forwards it would smear the first character
+    // over everything it had yet to read.
+    private void Move(int from, int to) {
+        int n = used - from;
+        if (to > from) {
+            for (int i = n - 1; i >= 0; i--) {
+                Sys.SetChar(buffer, to + i, Sys.GetChar(buffer, from + i));
+            }
+        } else if (to < from) {
+            for (int i = 0; i < n; i++) {
+                Sys.SetChar(buffer, to + i, Sys.GetChar(buffer, from + i));
+            }
+        }
     }
 
     // Doubling, so appending stays amortised constant rather than quadratic --
-    // which is the entire reason to prefer this over '+' in a loop.
+    // which is the entire reason to prefer this over '+' in a loop. Twice what
+    // it held or what is wanted, whichever is more, which is the capacity
+    // .NET's builder reaches by the same appends up to its largest block of
+    // 8000 characters. Past that .NET adds blocks of 8000 to a chain, where
+    // this one buffer, copied as it grows, keeps doubling.
     private void Reserve(int want) {
         int size = buffer.Length;
         if (want <= size) { return; }
 
-        while (size < want) { size = size * 2; }
+        // Past half of int.MaxValue, doubling wraps negative, and what is
+        // wanted is what is made.
+        size = size * 2;
+        if (size < want) { size = want; }
+        Resize(size);
+    }
 
+    // THE BUFFER MADE `size` LONG, which Reserve grows by and Capacity and
+    // EnsureCapacity set exactly. The text in it is kept.
+    private void Resize(int size) {
         // The buffer is the builder's alone -- ToString and ToString(start,
         // count) copy out of it, Append(StringBuilder) asks the other one's
         // ToString, and nothing hands it out -- so at its region's top it
@@ -14984,8 +15402,8 @@ class StringBuilder : IOwnsStorage {
         // self-freed owned field, made beside its builder and in a region
         // given back from the top. Left to the collector, every buffer a
         // builder outgrew stayed until a collection, and a builder's growth
-        // was never made in its region.
-        if (Runtime.GrowInPlace((nint)Sys.Word(buffer), size)) { return; }
+        // was never made in its region. One made smaller is always new.
+        if (size > buffer.Length && Runtime.GrowInPlace((nint)Sys.Word(buffer), size)) { return; }
         string bigger = Sys.NewChars(size);
         Sys.CopyNoOverlap(bigger, 0, buffer, 0, used);
         string outgrown = buffer;

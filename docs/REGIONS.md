@@ -815,7 +815,7 @@ allocation beside its owner (`MakeStorageBeside`) when all of these hold:
 The library frees the storage it outgrows or drops as an owned field's old
 value, `Runtime.FreeOwnedReplaced(v, 0)`. It does so in
 `OutgrownStorage.Release` (List, Queue, Stack, the tables, FloatBig's
-limbs), `StringBuilder.Reserve` and `FreeStorage`, and MemoryStream's
+limbs), `StringBuilder.Resize` and `FreeStorage`, and MemoryStream's
 buffer frees. Test 1312. On the heap that is `Runtime.Free`; in a region it gives the
 array back at once from the top (`FreeHeld`, `Gc.RegionFree`).
 

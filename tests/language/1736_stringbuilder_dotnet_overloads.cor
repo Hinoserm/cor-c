@@ -1,0 +1,159 @@
+// test: stringbuilder_dotnet_overloads
+// expect-exit: 0
+// expect-output:
+// 0.1|ab|yz|span|2
+// qTrue3.5 100
+// append 1.5 3.4028235E+38 -0 ell ild bc sp mm|xyxyyx
+// refused ArgumentNullException value, ArgumentOutOfRangeException charCount, ArgumentOutOfRangeException startIndex, ArgumentNullException value
+// message startIndex ('-1') must be a non-negative value. (Parameter 'startIndex')/Actual value was -1.
+// format 1[a,2]<x1.5True>1-2-3-4|3.14|12|123|1234|/x/end
+// join a, , c|1, , 2.5|1, 2, 3|x-y|1-c-True|10+20+30|pq|4, 5||s;;t
+// insert [ababab sp bc ch False 0.1 0.1 -9 18000000000000000000 4000000000 7 60000 -300 -5 200]
+// refused ArgumentOutOfRangeException index, ArgumentOutOfRangeException count, ArgumentOutOfRangeException startIndex, ok
+// replace aabb-bca [one  1 two] aaaa
+// refused ArgumentException oldValue, ArgumentNullException oldValue, ArgumentOutOfRangeException startIndex, ArgumentOutOfRangeException count
+// capacity 16 2147483647 16 40 40 20 32 64
+// sizes 100 16 16 40 50 ell 16
+// copy ..bcd. cdef
+// refused ArgumentException, ArgumentOutOfRangeException sourceIndex, ArgumentException, ArgumentException destination
+// equals True False False True False True False True
+// parts bc|adefabc 409 4five67894five67894five67894fi five6!4fiv|||e6!4five67894five
+// position IndexOutOfRangeException, ArgumentOutOfRangeException index, ArgumentOutOfRangeException value, a1 16
+//
+// StringBuilder's overload set as .NET has it, and the answers .NET gives:
+// a float appended as a float rather than widened to a double, a char[] as
+// its characters rather than "System.Char[]", parts of arrays, strings,
+// spans and other builders; AppendFormat with and without a format
+// provider, AppendLine of null, AppendJoin over arrays and sequences with a
+// string or a character between; Insert of every primitive, of a string
+// repeated, and of part of an array; Replace inside a range; the capacity
+// .NET reports, EnsureCapacity's answer, CopyTo, and Equals by content
+// between builders but by reference to object.Equals. Each refusal is the
+// exception .NET throws, under the parameter name it gives: a read past the
+// text as an array's, a write past it as an argument's.
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+
+static class Program
+{
+    static string Refused(Action a)
+    {
+        try { a(); return "ok"; }
+        catch (Exception e) { return e is ArgumentException { ParamName: string name } ? e.GetType().Name + " " + name : e.GetType().Name; }
+    }
+
+    static IEnumerable<int> Counted(int n)
+    {
+        for (int i = 1; i <= n; i++) yield return i * 10;
+    }
+
+    static void Main()
+    {
+        var sb = new StringBuilder();
+        sb.Append(0.1f).Append('|').Append(new[] { 'a', 'b' }).Append('|').Append(new[] { 'x', 'y', 'z' }, 1, 2).Append('|').Append("span".AsSpan()).Append('|').Append(12.5m == 0 ? 1 : 2);
+        Console.WriteLine(sb.ToString());
+        sb.Clear().Insert(0, 3.5).Insert(0, true).Insert(0, (object)'q');
+        Console.WriteLine(sb + " " + sb.EnsureCapacity(100));
+
+        // Append
+        char[]? none = null;
+        var a = new StringBuilder("append ");
+        a.Append(1.5f).Append(' ').Append(float.MaxValue).Append(' ').Append(-0.0f).Append(' ').Append(none).Append(none, 0, 0);
+        a.Append(new ReadOnlyMemory<char>("hello".ToCharArray(), 1, 3)).Append(' ').Append(new StringBuilder("builder"), 2, 3).Append(' ').Append((StringBuilder?)null).Append((StringBuilder?)null, 0, 0);
+        a.Append("abcdef", 1, 2).Append((string?)null, 0, 0).Append(' ').Append(new Span<char>(new[] { 's', 'p' })).Append(' ').Append((ReadOnlyMemory<char>)new[] { 'm', 'm' });
+        var self = new StringBuilder("xy");
+        self.Append(self).Append(self, 1, 2);
+        Console.WriteLine(a + "|" + self);
+        Console.WriteLine("refused " + Refused(() => new StringBuilder().Append(none, 0, 1)) + ", "
+            + Refused(() => new StringBuilder().Append(new[] { 'a' }, 1, 1)) + ", "
+            + Refused(() => new StringBuilder().Append("ab", 1, 2)) + ", "
+            + Refused(() => new StringBuilder().Append((StringBuilder?)null, 0, 1)));
+        try { new StringBuilder().Append("ab", -1, 1); }
+        catch (ArgumentOutOfRangeException e) { Console.WriteLine("message " + e.Message.Replace("\n", "/")); }
+
+        // AppendFormat and AppendLine
+        var f = new StringBuilder("format ");
+        f.AppendFormat("{0}", 1).AppendFormat("[{0},{1}]", "a", 2).AppendFormat("<{0}{1}{2}>", 'x', 1.5, true).AppendFormat("{0}-{1}-{2}-{3}", 1, 2, 3, 4);
+        f.AppendFormat(CultureInfo.InvariantCulture, "|{0:F2}", 3.14159).AppendFormat(CultureInfo.InvariantCulture, "|{0}{1}", 1, 2);
+        f.AppendFormat(null, "|{0}{1}{2}", 1, 2, 3).AppendFormat((IFormatProvider?)null, "|{0}{1}{2}{3}", 1, 2, 3, 4).AppendFormat("|{0}", (object?)null);
+        f.AppendLine((string?)null).AppendLine("x").Append("end");
+        Console.WriteLine(f.ToString().Replace("\n", "/"));
+
+        // AppendJoin
+        var j = new StringBuilder("join ");
+        j.AppendJoin(", ", "a", null, "c").Append('|').AppendJoin(", ", 1, null, 2.5).Append('|').AppendJoin(", ", new List<int> { 1, 2, 3 }).Append('|');
+        j.AppendJoin('-', "x", "y").Append('|').AppendJoin('-', 1, 'c', true).Append('|').AppendJoin('+', Counted(3)).Append('|').AppendJoin((string?)null, "p", "q").Append('|');
+        j.AppendJoin(", ", new int[] { 4, 5 }).Append('|').AppendJoin(", ", new string[0]).Append('|').AppendJoin(';', new List<string?> { "s", null, "t" });
+        Console.WriteLine(j.ToString());
+
+        // Insert
+        var i = new StringBuilder("[]");
+        i.Insert(1, (byte)200).Insert(1, ' ').Insert(1, (sbyte)-5).Insert(1, ' ').Insert(1, (short)-300).Insert(1, ' ').Insert(1, (ushort)60000);
+        i.Insert(1, ' ').Insert(1, 7).Insert(1, ' ').Insert(1, 4000000000u).Insert(1, ' ').Insert(1, 18000000000000000000ul).Insert(1, ' ').Insert(1, -9L);
+        i.Insert(1, ' ').Insert(1, 0.1f).Insert(1, ' ').Insert(1, 0.1).Insert(1, ' ').Insert(1, false).Insert(1, ' ').Insert(1, new[] { 'c', 'h' });
+        i.Insert(1, ' ').Insert(1, new[] { 'a', 'b', 'c', 'd' }, 1, 2).Insert(1, ' ').Insert(1, "sp".AsSpan()).Insert(1, ' ').Insert(1, "ab", 3).Insert(1, (object?)null).Insert(1, none).Insert(1, (string?)null, 5);
+        Console.WriteLine("insert " + i);
+        Console.WriteLine("refused " + Refused(() => new StringBuilder("ab").Insert(3, 1)) + ", "
+            + Refused(() => new StringBuilder("ab").Insert(0, "x", -1)) + ", "
+            + Refused(() => new StringBuilder("ab").Insert(0, new[] { 'a' }, 1, 1)) + ", "
+            + Refused(() => new StringBuilder("ab").Insert(9, (object?)null)));
+
+        // Replace
+        var r = new StringBuilder("aaaa-aaaa");
+        r.Replace('a', 'b', 2, 4).Replace("aa", "c", 5, 4).Replace("zz", null, 0, 2);
+        var r2 = new StringBuilder("one two one two");
+        r2.Replace("one", "1", 4, 11).Replace("two", "", 0, 7).Replace('o', 'O', 10, 0);
+        var r3 = new StringBuilder("abab");
+        r3.Replace("ab", "abab", 0, 4).Replace("b", null);
+        Console.WriteLine("replace " + r + " [" + r2 + "] " + r3);
+        Console.WriteLine("refused " + Refused(() => new StringBuilder("ab").Replace("", "x", 0, 1)) + ", "
+            + Refused(() => new StringBuilder("ab").Replace(null!, "x")) + ", "
+            + Refused(() => new StringBuilder("ab").Replace('a', 'x', 3, 0)) + ", "
+            + Refused(() => new StringBuilder("ab").Replace("a", "x", 1, 2)));
+
+        // Capacity, CopyTo, Equals
+        var c = new StringBuilder();
+        string reported = c.Capacity + " " + c.MaxCapacity + " " + c.EnsureCapacity(10) + " " + c.EnsureCapacity(40) + " " + c.Capacity;
+        c.Capacity = 20;
+        var g = new StringBuilder();
+        g.Append(new string('y', 17));
+        Console.WriteLine("capacity " + reported + " " + c.Capacity + " " + g.Capacity + " " + g.Append(new string('z', 40)).Capacity);
+        Console.WriteLine("sizes " + new StringBuilder(100).Capacity + " " + new StringBuilder(0).Capacity + " " + new StringBuilder("abc").Capacity + " "
+            + new StringBuilder(new string('x', 40)).Capacity + " " + new StringBuilder("ab", 50).Capacity + " "
+            + new StringBuilder("hello", 1, 3, 0) + " " + new StringBuilder("hello", 1, 3, 0).Capacity);
+
+        var src = new StringBuilder("abcdef");
+        char[] dest = new char[6];
+        for (int k = 0; k < dest.Length; k++) dest[k] = '.';
+        src.CopyTo(1, dest, 2, 3);
+        Span<char> span = new char[4];
+        src.CopyTo(2, span, 4);
+        Console.WriteLine("copy " + new string(dest) + " " + span.ToString());
+        Console.WriteLine("refused " + Refused(() => src.CopyTo(0, new char[2], 1, 2)) + ", "
+            + Refused(() => src.CopyTo(7, new char[2], 0, 0)) + ", "
+            + Refused(() => src.CopyTo(5, new char[2], 0, 2)) + ", "
+            + Refused(() => src.CopyTo(0, new Span<char>(new char[2]), 3)));
+
+        var e1 = new StringBuilder("same");
+        var e2 = new StringBuilder("sa").Append("me");
+        object o1 = e1;
+        Console.WriteLine("equals " + e1.Equals(e2) + " " + e1.Equals(new StringBuilder("Same")) + " " + e1.Equals((StringBuilder?)null) + " "
+            + e1.Equals("same".AsSpan()) + " " + e1.Equals("sam".AsSpan()) + " " + e1.Equals(e1) + " " + o1.Equals(e2) + " " + o1.Equals(e1));
+
+        var big = new StringBuilder();
+        for (int k = 0; k < 50; k++) big.Append("0123456789");
+        big.Replace("5", "five").Replace("0123", "").Replace("789", "!", 100, 200).Insert(250, "|", 3);
+        Console.WriteLine("parts " + new StringBuilder("abc").ToString(1, 2) + "|" + new StringBuilder("abcdef").Remove(1, 2) + new StringBuilder("abc").Remove(3, 0)
+            + " " + big.Length + " " + big.ToString(0, 30) + " " + big.ToString(240, 30));
+
+        var t = new StringBuilder("ab");
+        t.Length = 4;
+        t.Length = 1;
+        Console.WriteLine("position " + Refused(() => { char ch = new StringBuilder("ab")[2]; }) + ", "
+            + Refused(() => { var s = new StringBuilder("ab"); s[2] = 'x'; }) + ", "
+            + Refused(() => { var s = new StringBuilder("ab"); s.Length = -1; }) + ", " + t + t.Length + " " + t.Capacity);
+    }
+}
