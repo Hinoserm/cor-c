@@ -6195,7 +6195,13 @@ public sealed class Parser
            || (At(Tok.Ident) && Ahead().Kind == Tok.Dot && !QualifiedTypePattern())
            // `case unchecked((int)0x80000000):` is a constant, not a type
            // named `unchecked` -- nor is `checked(...)` or `nameof(...)`.
-           || (At(Tok.Ident) && Cur.Text is "unchecked" or "checked" or "nameof" && Ahead().Kind == Tok.LParen);
+           || (At(Tok.Ident) && Cur.Text is "unchecked" or "checked" or "nameof" && Ahead().Kind == Tok.LParen)
+           // A name an operator follows is the start of a constant written as
+           // arithmetic: `case Two * 2 + 1:` is no pointer type, and no
+           // pattern has an operator of its own after a name.
+           || (At(Tok.Ident) && Cur.Text is not ("not" or "and" or "or" or "var" or "_")
+               && Ahead().Kind is Tok.Plus or Tok.Minus or Tok.Star or Tok.Slash or Tok.Percent
+                   or Tok.Shl or Tok.Shr or Tok.UShr or Tok.Amp or Tok.Pipe or Tok.Caret);
 
     /// <summary>
     /// Whether a dotted name after `is` is a TYPE with a binding rather than a
@@ -6836,6 +6842,9 @@ public sealed class Parser
     }
 
     /// <summary>One alternative of a value pattern: `&lt; 0`, `&gt;= 10`, or `5`.</summary>
+    /// <summary>The loosest operator a bare constant pattern takes in: shift after `is`, `|` in a case label.</summary>
+    private int _constantPrecedence = Precedence(Tok.Shl);
+
     private Expr ParseOnePattern(Expr subject, Token at)
     {
         // A PARENTHESISED PATTERN, which is how alternatives are grouped:
@@ -6867,14 +6876,17 @@ public sealed class Parser
             _i++;
         }
 
-        // Unary, so that `or` and `and` bind looser than the operand does and
-        // an alternative cannot swallow the one after it. A RELATIONAL
-        // pattern's operand is a whole shift-level expression, as C#'s is:
-        // `is >= 1 and <= Reach + 1` -- a constant written as a sum stopped
-        // the parser at its `+`. `and` and `or` are no operators to it.
+        // A whole shift-level expression, as C#'s operand is, for a
+        // RELATIONAL pattern and a bare constant alike: `is >= 1 and <=
+        // Reach + 1`, and `x is Size / 2` -- a constant written as a sum or a
+        // quotient stopped the parser at its operator. `and` and `or` are no
+        // operators to it, so an alternative cannot swallow the one after it.
+        // A CASE LABEL'S CONSTANT IS ANY CONSTANT EXPRESSION, as it has been
+        // since C# 1: no `is` around it binds tighter than `|`, so `case
+        // Read | Write:` is the flags' union.
         return new BinaryExpr
         {
-            Op = op, Left = subject, Right = op == BinOp.Eq ? ParseUnary() : ParseBinary(9),
+            Op = op, Left = subject, Right = ParseBinary(op == BinOp.Eq ? _constantPrecedence : 9),
             PatternConstant = op == BinOp.Eq,
             Line = at.Line, Col = at.Col,
         };
@@ -6919,7 +6931,15 @@ public sealed class Parser
                 // every label reads the answer. The old code re-emitted the
                 // subject after each guard and each property load, which for a
                 // subject that DID something was three calls for one switch.
-                label = ParseIsPattern(new SubjectExpr { Line = caseAt.Line, Col = caseAt.Col }, caseAt);
+                _constantPrecedence = Precedence(Tok.Pipe);
+                try
+                {
+                    label = ParseIsPattern(new SubjectExpr { Line = caseAt.Line, Col = caseAt.Col }, caseAt);
+                }
+                finally
+                {
+                    _constantPrecedence = Precedence(Tok.Shl);
+                }
             }
             else if (!Take(Tok.KwDefault))
             {

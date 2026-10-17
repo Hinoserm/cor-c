@@ -1,0 +1,55 @@
+// test: constant_expression_case_labels
+// expect-exit: 0
+// expect-output:
+// case half
+// case three
+// case five
+// flags read
+// flags both
+// int six
+// True True True True
+//
+// A CONSTANT PATTERN IS A CONSTANT EXPRESSION, operators and all: `case
+// ulong.MaxValue / 2:`, `case Two * 2 + 1:` (a name, then an operator,
+// is no pointer type) and `x is 1 + 2` stopped the parser at the operator.
+// After `is` the constant is a shift-level expression, as C# reads it, so
+// `is` still binds tighter than `|`; a case label has no `is` around it and
+// takes `case Flags.Read | Flags.Write:` whole.
+
+using System;
+
+enum Flags : ulong { Read = 1, Write = 2 }
+
+static class Program
+{
+    const int Two = 2;
+    static string Name(ulong v) => v switch { 18446744073709551615UL / 2 => "half", 1 + 2 => "three", _ => "other" };
+    static int Main()
+    {
+        foreach (ulong v in new ulong[] { 9223372036854775807UL, 3, 5 })
+        {
+            switch (v)
+            {
+                case 18446744073709551615UL / 2: Console.WriteLine("case half"); break;
+                case Two * 2 + 1: Console.WriteLine("case five"); break;
+                default: Console.WriteLine("case " + Name(v)); break;
+            }
+        }
+        foreach (Flags f in new[] { Flags.Read, Flags.Read | Flags.Write })
+        {
+            switch (f)
+            {
+                case Flags.Read | Flags.Write: Console.WriteLine("flags both"); break;
+                case Flags.Read: Console.WriteLine("flags read"); break;
+            }
+        }
+        switch (6)
+        {
+            case 1 | 2 << 1: Console.WriteLine("int five"); break;
+            case 2 | 4: Console.WriteLine("int six"); break;
+        }
+        int x = 3;
+        Console.WriteLine((x is 1 + 2) + " " + (x is Two * 2 or 1 + 2) + " " + (x is > 1 + 1 and < Two << 2) + " " + (x is not (Two + 0)));
+        return 0;
+    }
+}
