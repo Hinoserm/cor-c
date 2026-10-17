@@ -1,0 +1,47 @@
+// test: numeric_picture_sections_quotes_and_rounding_to_nought
+// expect-exit: 0
+// expect-output:
+// 0;(0);zero [zero] [zero] [zero] [zero] [zero] [(7)] [1234567] [(1234568)] [1]
+// #,##0;(#,##0) [0] [-0] [0] [-0] [-0] [(7)] [1,234,567] [(1,234,568)] [1]
+// 0.0;-0.0;nil [nil] [nil] [0.3] [-0.3] [nil] [-7.0] [1234567.0] [-1234567.5] [0.5]
+// #,##0.00;(#,##0.00);'-' [-] [-] [0.25] [(0.25)] [(0.04)] [(7.00)] [1,234,567.00] [(1,234,567.50)] [0.50]
+// 0;;zero [zero] [zero] [zero] [zero] [zero] [-7] [1234567] [-1234568] [1]
+// ;(0) [] [] [] [] [] [(7)] [] [(1234568)] []
+// 0;(0); [0] [-0] [0] [-0] [-0] [(7)] [1234567] [(1234568)] [1]
+// '#'0 [#0] [-#0] [#0] [-#0] [-#0] [-#7] [#1234567] [-#1234568] [#1]
+// "x;y"0;(0) [x;y0] [-x;y0] [x;y0] [-x;y0] [-x;y0] [(7)] [x;y1234567] [(1234568)] [x;y1]
+// 0\;0 [0;0] [-0;0] [0;0] [-0;0] [-0;0] [-0;7] [123456;7] [-123456;8] [0;1]
+// 0'%' [0%] [-0%] [0%] [-0%] [-0%] [-7%] [1234567%] [-1234568%] [1%]
+// #,, [] [] [] [] [] [] [1] [-1] []
+// 0E+0E+0 [0E+0E+0] [-0E+0E+0] [3E-1E+0] [-3E-1E+0] [-4E-2E+0] [-7E+0E+0] [1E+6E+0] [-1E+6E+0] [5E-1E+0]
+// 0E+x0 [0E+x0] [-0E+x0] [0E+x0] [-0E+x0] [-0E+x0] [-0E+x7] [123456E+x7] [-123456E+x8] [0E+x1]
+// # [] [] [] [] [] [-7] [1234567] [-1234568] [1]
+// #.# [] [] [.3] [-.3] [] [-7] [1234567] [-1234567.5] [.5]
+//
+// WHICH SECTION OF A CUSTOM FORMAT WRITES A NUMBER, as .NET's
+// NumberToStringFormat chooses: the zero section for nought, and also for a
+// number that rounds to nought in the section its sign chose (-0.25 in
+// "0;(0);zero" is zero, -0.04 in "0.0;-0.0;nil" nil); an empty or missing
+// section is the first, which then writes the minus itself -- in front of
+// something only, for a number below one (-0.25 in "#" is nothing). A ';',
+// '#' or '%' inside quotes or after a backslash is text and neither divides
+// nor scales, an exponent's letter with no zero after it is text, and only
+// the first exponent is the number's.
+
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        string[] formats = { "0;(0);zero", "#,##0;(#,##0)", "0.0;-0.0;nil", "#,##0.00;(#,##0.00);'-'", "0;;zero", ";(0)", "0;(0);",
+                             "'#'0", "\"x;y\"0;(0)", @"0\;0", "0'%'", "#,,", "0E+0E+0", "0E+x0", "#", "#.#" };
+        object[] values = { 0, -0.0, 0.25, -0.25, -0.04, -7, 1234567, -1234567.5, 0.5f };
+        foreach (string f in formats)
+        {
+            Console.Write(f);
+            foreach (object v in values) Console.Write(" [" + string.Format("{0:" + f + "}", v) + "]");
+            Console.WriteLine();
+        }
+    }
+}

@@ -3689,34 +3689,15 @@ static class NumberFormat {
         ulong whole = (ulong)value;
         ulong bitsOf = bits == 64 ? whole : whole & (((ulong)1 << bits) - (ulong)1);
         bool negative = value < 0;
-        string plain = String.FromInt(negative ? -value : value);
 
         if (kind == 'x') { return Pad(Digits(bitsOf, 16, Lower), width); }
         if (kind == 'X') { return Pad(Digits(bitsOf, 16, Upper), width); }
         if (kind == 'b' || kind == 'B') { return Pad(Digits(bitsOf, 2, Lower), width); }
 
-        if (kind == 'd' || kind == 'D') {
-            return negative ? String.Concat("-", Pad(plain, width)) : Pad(plain, width);
-        }
-
-        if (kind == 'n' || kind == 'N') {
-            string body = Group(plain);
-            int places = width < 0 ? 2 : width;
-            if (places > 0) { body = String.Concat(body, String.Concat(".", String.Repeat('0', places))); }
-            return negative ? String.Concat("-", body) : body;
-        }
-
-        if (kind == 'f' || kind == 'F') {
-            int places = width < 0 ? 2 : width;
-            string body = places > 0
-                        ? String.Concat(plain, String.Concat(".", String.Repeat('0', places)))
-                        : plain;
-            return negative ? String.Concat("-", body) : body;
-        }
-
-        if (kind == 'g' || kind == 'G') { return String.FromInt(value); }
-
-        throw new FormatException("Format specifier was invalid.");
+        // The size as an unsigned number, which long.MinValue has and its
+        // own negation does not.
+        ulong size = negative ? (ulong)0 - whole : whole;
+        return Standard(kind, width, negative, String.FromUInt(size));
     }
 
     /// The UNSIGNED form, which cannot simply widen to long: a ulong above
@@ -3731,16 +3712,130 @@ static class NumberFormat {
         if (kind == 'x') { return Pad(Digits(value, 16, Lower), width); }
         if (kind == 'X') { return Pad(Digits(value, 16, Upper), width); }
         if (kind == 'b' || kind == 'B') { return Pad(Digits(value, 2, Lower), width); }
-        if (kind == 'd' || kind == 'D' || kind == 'g' || kind == 'G') {
-            return Pad(Digits(value, 10, Lower), width);
+        return Standard(kind, width, false, String.FromUInt(value));
+    }
+
+    /// THE DECIMAL SHAPES OF A WHOLE NUMBER, signed or not: `plain` is its
+    /// size in digits and `negative` its sign. "D" pads with zeros to the
+    /// width; "F", "N", "C" and "P" have a fraction of noughts to write and
+    /// nothing to round, since a whole number times a hundred is still one;
+    /// "E", and "G" and "R" with a precision, round the digits themselves --
+    /// never a double made of them, which would lose a long's last three --
+    /// half away from zero, as .NET rounds the digits of every integer.
+    static string Standard(char kind, int width, bool negative, string plain) {
+        // "G" and "R" without a precision are "D" without one: every digit.
+        bool general = kind == 'g' || kind == 'G' || kind == 'r' || kind == 'R';
+        if (kind == 'd' || kind == 'D' || (general && width < 1)) {
+            return negative ? String.Concat("-", Pad(plain, width)) : Pad(plain, width);
         }
-        if (kind == 'n' || kind == 'N') {
-            string body = Group(Digits(value, 10, Lower));
-            int places = width < 0 ? 2 : width;
-            if (places > 0) { body = String.Concat(body, String.Concat(".", String.Repeat('0', places))); }
-            return body;
+
+        if (kind == 'f' || kind == 'F' || kind == 'n' || kind == 'N' || kind == 'c' || kind == 'C') {
+            return Dress(kind, negative, plain, String.Repeat('0', width < 0 ? 2 : width));
         }
+
+        if (kind == 'p' || kind == 'P') {
+            string hundreds = plain == "0" ? plain : String.Concat(plain, "00");
+            return Dress(kind, negative, hundreds, String.Repeat('0', width < 0 ? 2 : width));
+        }
+
+        // Nought has no digits at all, as .NET keeps it: its exponent is 0
+        // and every place it is asked for is a zero.
+        string digits = plain == "0" ? "" : plain;
+        int point = digits.Length;
+
+        if (kind == 'e' || kind == 'E') {
+            int places = width < 0 ? 6 : width;
+            digits = Round(digits, places + 1, ref point);
+            return Scientific(negative, digits, digits.Length == 0 ? 0 : point - 1, places, kind);
+        }
+
+        if (general) {
+            if (digits.Length == 0) { return "0"; }
+            digits = Round(digits, width, ref point);
+            return DoubleFormat.Layout(digits, point, negative, width, kind == 'g' || kind == 'r' ? 'e' : 'E');
+        }
+
         throw new FormatException("Format specifier was invalid.");
+    }
+
+    /// .NET'S RoundNumber, ON THE DIGITS THEMSELVES: DIGITS are 0.DIGITS x
+    /// 10^point, and the first `count` of them are kept, the next one
+    /// rounding them half away from zero -- a carry out of the first digit
+    /// moves the point up one. Trailing zeros are dropped from what is
+    /// kept, so a caller pads to the places it writes, and when nothing is
+    /// left the number is nought and its point is 0. A count below nought
+    /// keeps nothing, and a count of nought keeps one unit of the next place
+    /// up when the first digit is five or more.
+    public static string Round(string digits, int count, ref int point) {
+        string made;
+        if (count >= 0 && count < digits.Length && Sys.GetChar(digits, count) >= (int)'5') {
+            int at = count - 1;
+            while (at >= 0 && Sys.GetChar(digits, at) == (int)'9') { at = at - 1; }
+            if (at < 0) {
+                made = "1";
+                point = point + 1;
+            } else {
+                char up = (char)(Sys.GetChar(digits, at) + 1);
+                made = String.Concat(String.Substring(digits, 0, at), String.FromChar(up));
+            }
+        } else {
+            int end = count < 0 ? 0 : (count < digits.Length ? count : digits.Length);
+            while (end > 0 && Sys.GetChar(digits, end - 1) == (int)'0') { end = end - 1; }
+            made = String.Substring(digits, 0, end);
+        }
+        if (made.Length == 0) { point = 0; }
+        return made;
+    }
+
+    /// A FIXED-POINT NUMBER IN THE DRESS ITS LETTER GIVES IT, on the
+    /// invariant culture: "F" plain, "N" with its thousands grouped, "C" with
+    /// the currency sign and a negative in parentheses -- (¤7.00) -- and "P"
+    /// with a space and the percent sign after it. `units` and `fraction`
+    /// are the digits either side of the point, the sign already taken off.
+    public static string Dress(char kind, bool negative, string units, string fraction) {
+        bool plain = kind == 'f' || kind == 'F';
+        StringBuilder made = new StringBuilder();
+
+        bool currency = kind == 'c' || kind == 'C';
+        if (negative) { made.Append(currency ? '(' : '-'); }
+        if (currency) { made.Append('¤'); }
+        made.Append(plain ? units : Group(units));
+        if (fraction.Length > 0) {
+            made.Append('.');
+            made.Append(fraction);
+        }
+        if (kind == 'p' || kind == 'P') { made.Append(" %"); }
+        if (currency && negative) { made.Append(')'); }
+        return made.ToString();
+    }
+
+    /// `d.ddd` and the exponent, which is "E" in full: `places` digits after
+    /// the point (none and no point at all for "E0"), the digits padded with
+    /// zeros past their end, and an exponent with its sign always written and
+    /// at least three digits -- 4.20E+001.
+    public static string Scientific(bool negative, string digits, int exponent, int places, char letter) {
+        StringBuilder made = new StringBuilder();
+        if (negative) { made.Append('-'); }
+        made.Append(digits.Length > 0 ? Sys.GetChar(digits, 0) : '0');
+        if (places > 0) {
+            made.Append('.');
+            for (int i = 1; i <= places; i++) { made.Append(i < digits.Length ? Sys.GetChar(digits, i) : '0'); }
+        }
+        Exponent(made, letter, exponent, 3, true);
+        return made.ToString();
+    }
+
+    /// AN EXPONENT AS .NET WRITES ONE, in every shape that has one: the
+    /// letter, a minus when it is negative and a plus only when `plus` asks
+    /// for it, and at least `least` digits.
+    public static void Exponent(StringBuilder made, char letter, int exponent, int least, bool plus) {
+        made.Append(letter);
+        if (exponent < 0) {
+            made.Append('-');
+        } else if (plus) {
+            made.Append('+');
+        }
+        made.Append(String.PadLeft(String.FromInt(exponent < 0 ? -exponent : exponent), least, '0'));
     }
 
     private static string Pad(string s, int width) {
@@ -3754,13 +3849,11 @@ static class NumberFormat {
 // to scale it to a long and print that. Every test of the maths above does
 // exactly that, and every one of them is checking a number it cannot read.
 //
-// WHAT IS HERE AND WHAT IS NOT. "F", "E", "G" and the default, which is what
-// numeric output is written in. The default takes fifteen significant digits
-// and trims what they do not need; .NET takes the SHORTEST run of digits that
-// reads back as the same double, which needs an exact big-decimal conversion
-// (Ryu, Grisu) that nothing here has yet. The two agree on every number whose
-// value needs fifteen digits or fewer -- which is every number a program
-// writes down -- and differ on the sixteenth-digit tail of a computed one.
+// WHAT IS HERE. Every standard letter a double has on the invariant culture:
+// "F", "N", "C" and "P" round the exact decimal expansion at a place, "E" and
+// "G" with a precision at a count of significant digits, and "R", "G" and the
+// default write the SHORTEST digits that read back as the same double, which
+// is what .NET has answered since Core 3.0 (FloatDecimal, below).
 static class DoubleFormat {
     /// NOT A NUMBER IS NOT EQUAL TO ITSELF, which is the only test for it that
     /// does not need a bit pattern.
@@ -3805,42 +3898,9 @@ static class DoubleFormat {
         return Compose(digits, point, negative, places);
     }
 
-    /// What a CUSTOM format ("0.0", "#,##0") rounds, which is not the exact
-    /// value: .NET takes its fifteen significant digits and rounds those half
-    /// away from zero at the last place asked for -- 1.25 to "0.0" is 1.3,
-    /// where "F1" says 1.2.
-    public static string FixedCustom(double value, int places) {
-        string? special = Special(value);
-        if (special != null) { return special; }
-
-        bool negative = Negative(value);
-        if (value == 0.0) { return Compose("", 0, negative, places); }
-        int point;
-        string fifteen = FloatDecimal.Digits(value, 15, true, out point);
-        int wanted = point + places;
-        if (wanted >= 15) { return Compose(fifteen, point, negative, places); }
-        if (wanted < 0) { return Compose("", 0, negative, places); }
-
-        char[] kept = new char[wanted];
-        for (int i = 0; i < wanted; i++) { kept[i] = Sys.GetChar(fifteen, i); }
-        if (Sys.GetChar(fifteen, wanted) >= 53) {
-            int at = wanted - 1;
-            while (at >= 0) {
-                if (kept[at] != '9') {
-                    kept[at] = (char)(kept[at] + 1);
-                    break;
-                }
-                kept[at] = '0';
-                at = at - 1;
-            }
-            if (at < 0) { return Compose(String.Concat("1", new string(kept)), point + 1, negative, places); }
-        }
-        return Compose(new string(kept), point, negative, places);
-    }
-
     /// 0.DIGITS x 10^point written with `places` after the point, what the
     /// digits do not reach being zeros.
-    static string Compose(string digits, int point, bool negative, int places) {
+    public static string Compose(string digits, int point, bool negative, int places) {
         StringBuilder made = new StringBuilder();
         if (negative) { made.Append('-'); }
         if (point <= 0) {
@@ -3883,64 +3943,55 @@ static class DoubleFormat {
         string? special = Special(value);
         if (special != null) { return special; }
 
-        bool negative = Negative(value);
         int exponent = 0;
         string digits = Significant(value, places + 1, out exponent);
-
-        StringBuilder made = new StringBuilder();
-        if (negative) { made.Append('-'); }
-        made.Append(Sys.GetChar(digits, 0));
-        if (places > 0) {
-            made.Append('.');
-            made.Append(String.Substring(digits, 1, places));
-        }
-        made.Append(letter);
-        made.Append(exponent < 0 ? '-' : '+');
-
-        string power = String.FromInt(exponent < 0 ? -exponent : exponent);
-        made.Append(String.PadLeft(power, 3, '0'));
-        return made.ToString();
+        return NumberFormat.Scientific(Negative(value), digits, exponent, places, letter);
     }
 
     /// .NET's "G" with a precision: that many significant digits, exactly
     /// rounded, trailing zeros dropped.
-    public static string General(double value, int significant) {
+    public static string General(double value, int significant, char letter) {
         string? special = Special(value);
         if (special != null) { return special; }
         if (value == 0.0) { return Negative(value) ? "-0" : "0"; }
 
         int exponent = 0;
         string digits = TrimZeros(Significant(value, significant, out exponent));
-        return Layout(digits, exponent + 1, Negative(value), significant);
+        return Layout(digits, exponent + 1, Negative(value), significant, letter);
     }
 
     /// What ToString(), "G" and "R" answer since .NET Core 3.0: the shortest
     /// digits that read back as the same double, written plainly unless the
     /// point is further out than 17 digits (or the digits' own count).
-    public static string Shortest(double value) {
+    public static string Shortest(double value) { return Shortest(value, 'E'); }
+
+    public static string Shortest(double value, char letter) {
         string? special = Special(value);
         if (special != null) { return special; }
         if (value == 0.0) { return Negative(value) ? "-0" : "0"; }
         int point;
         string digits = FloatDecimal.Shortest(value, out point);
-        return Layout(digits, point, Negative(value), digits.Length > 17 ? digits.Length : 17);
+        return Layout(digits, point, Negative(value), digits.Length > 17 ? digits.Length : 17, letter);
     }
 
     /// The same for a float, whose round trip is to a float: nine digits.
-    public static string ShortestSingle(float value) {
+    public static string ShortestSingle(float value) { return ShortestSingle(value, 'E'); }
+
+    public static string ShortestSingle(float value, char letter) {
         double wide = (double)value;
         string? special = Special(wide);
         if (special != null) { return special; }
         if (wide == 0.0) { return Negative(wide) ? "-0" : "0"; }
         int point;
         string digits = FloatDecimal.ShortestSingle(value, out point);
-        return Layout(digits, point, Negative(wide), digits.Length > 9 ? digits.Length : 9);
+        return Layout(digits, point, Negative(wide), digits.Length > 9 ? digits.Length : 9, letter);
     }
 
     /// 0.DIGITS x 10^point in .NET's general shape: plain digits while the
     /// point is within `most` digits and not four places below the units,
-    /// d.dddE+xx otherwise.
-    static string Layout(string digits, int point, bool negative, int most) {
+    /// d.dddE+xx otherwise -- d.ddde+xx for a "g" or "r", whose case the
+    /// exponent's letter takes.
+    public static string Layout(string digits, int point, bool negative, int most, char letter) {
         StringBuilder made = new StringBuilder();
         if (negative) { made.Append('-'); }
 
@@ -3951,9 +4002,7 @@ static class DoubleFormat {
                 made.Append('.');
                 made.Append(String.Substring(digits, 1, digits.Length - 1));
             }
-            made.Append('E');
-            made.Append(exponent < 0 ? '-' : '+');
-            made.Append(String.PadLeft(String.FromInt(exponent < 0 ? -exponent : exponent), 2, '0'));
+            NumberFormat.Exponent(made, letter, exponent, 2, true);
             return made.ToString();
         }
 
@@ -3977,18 +4026,37 @@ static class DoubleFormat {
     }
 
     /// A float's standard format: the shortest float digits for "", "G",
-    /// "G0" and "R", and the double's exact answer -- the same value -- for
-    /// the rest.
+    /// "G0" and "R" -- whatever precision an "R" names, which .NET ignores,
+    /// so 1.1f in "R5" is 1.1 -- and the double's exact answer, the same
+    /// value, for the rest. A picture reads a float to seven digits, not a
+    /// double's fifteen, so 16777216f in "0.00" is 16777220.00 as .NET
+    /// writes it.
     public static string OfSingle(float value, string format) {
-        if (format.Length == 0 || format == "G" || format == "g" || format == "G0" || format == "g0"
-            || format == "R" || format == "r") {
-            return ShortestSingle(value);
+        if (format.Length == 0) { return ShortestSingle(value, 'E'); }
+        if (PictureFormat.Is(format)) {
+            return Special((double)value) == null ? PictureFormat.OfSingle(value, format) : Of((double)value, format);
         }
+
+        char kind = Sys.GetChar(format, 0);
+        bool shortest = kind == 'r' || kind == 'R';
+        if (kind == 'g' || kind == 'G') {
+            shortest = true;
+            for (int i = 1; i < format.Length; i++) {
+                if (Sys.GetChar(format, i) != (int)'0') { shortest = false; }
+            }
+        }
+        if (shortest) { return ShortestSingle(value, kind == 'g' || kind == 'r' ? 'e' : 'E'); }
         return Of((double)value, format);
     }
 
     public static string Of(double value, string format) {
         if (format.Length == 0) { return Shortest(value); }
+
+        // NOT A NUMBER AND THE INFINITIES ARE WORDS whatever the format says:
+        // .NET answers them before it reads the format at all, so even "X",
+        // which no double may have, gives "NaN".
+        string? special = Special(value);
+        if (special != null) { return special; }
         if (PictureFormat.Is(format)) { return PictureFormat.Of(value, format); }
 
         char kind = Sys.GetChar(format, 0);
@@ -4005,27 +4073,41 @@ static class DoubleFormat {
         if (kind == 'f' || kind == 'F') { return Fixed(value, width < 0 ? 2 : width); }
         if (kind == 'e') { return Scientific(value, width < 0 ? 6 : width, 'e'); }
         if (kind == 'E') { return Scientific(value, width < 0 ? 6 : width, 'E'); }
-        if (kind == 'g' || kind == 'G') { return width <= 0 ? Shortest(value) : General(value, width); }
-        if (kind == 'r' || kind == 'R') { return Shortest(value); }
-        if (kind == 'n' || kind == 'N') {
-            string body = Fixed(value, width < 0 ? 2 : width);
-            bool negative = Sys.GetChar(body, 0) == 45;
-            if (negative) { body = String.Substring(body, 1, body.Length - 1); }
-
-            int point = String.IndexOf(body, '.');
-            string head = point < 0 ? body : String.Substring(body, 0, point);
-            string tail = point < 0 ? "" : String.Substring(body, point, body.Length - point);
-
-            StringBuilder grouped = new StringBuilder();
-            if (negative) { grouped.Append('-'); }
-            for (int i = 0; i < head.Length; i++) {
-                if (i > 0 && (head.Length - i) % 3 == 0) { grouped.Append(','); }
-                grouped.Append(Sys.GetChar(head, i));
-            }
-            grouped.Append(tail);
-            return grouped.ToString();
+        // The exponent of "g" and "r" is written "e+", of "G" and "R" "E+".
+        char letter = kind == 'g' || kind == 'r' ? 'e' : 'E';
+        if (kind == 'g' || kind == 'G') { return width <= 0 ? Shortest(value, letter) : General(value, width, letter); }
+        if (kind == 'r' || kind == 'R') { return Shortest(value, letter); }
+        if (kind == 'n' || kind == 'N' || kind == 'c' || kind == 'C') {
+            return Dressed(kind, Fixed(value, width < 0 ? 2 : width), 0);
+        }
+        if (kind == 'p' || kind == 'P') {
+            return Dressed(kind, Fixed(value, (width < 0 ? 2 : width) + 2), 2);
         }
         throw new FormatException("Format specifier was invalid.");
+    }
+
+    /// "N", "C" AND "P" ARE "F" IN OTHER CLOTHES: `body` is what Fixed wrote,
+    /// and `shift` moves its point that many places to the right. That is
+    /// how "P" multiplies by a hundred: Fixed took the exact digits two
+    /// places further out, and moving the point is exact where a product of
+    /// doubles rounds once more -- 0.005 is a little above it, so "P0" is
+    /// 1 %, but 0.005 * 100.0 is exactly 0.5 and would round to 0 %.
+    /// The sign stays even when every digit rounded to nought, as .NET keeps
+    /// it: -0.256 in "C0" is (¤0).
+    static string Dressed(char kind, string body, int shift) {
+        bool negative = Sys.GetChar(body, 0) == (int)'-';
+        if (negative) { body = String.Substring(body, 1, body.Length - 1); }
+
+        int point = String.IndexOf(body, '.');
+        string digits = point < 0 ? body : String.Concat(String.Substring(body, 0, point),
+                                                          String.Substring(body, point + 1, body.Length - point - 1));
+        int at = (point < 0 ? body.Length : point) + shift;
+
+        // The noughts the shift brought in front, all but the units.
+        int first = 0;
+        while (first < at - 1 && Sys.GetChar(digits, first) == (int)'0') { first = first + 1; }
+        return NumberFormat.Dress(kind, negative, String.Substring(digits, first, at - first),
+                                  String.Substring(digits, at, digits.Length - at));
     }
 }
 
@@ -4547,7 +4629,9 @@ static class FloatDecimal {
 //
 // The sections are split on `;`: positive, negative and zero, in that order.
 // A number that falls in a section is formatted by it WITHOUT its sign, which
-// is why the negative section has to write its own minus if it wants one.
+// is why the negative section has to write its own minus if it wants one; one
+// that rounds to nought there is written by the zero section instead. Text in
+// quotes or after a backslash is text, a ';' or a '0' in it included.
 static class PictureFormat {
     /// WHETHER A FORMAT IS A PICTURE at all, which is what decides between
     /// this file's two grammars. A standard format is a single letter and an
@@ -4566,52 +4650,38 @@ static class PictureFormat {
         return false;
     }
 
-    public static string Of(double value, string format) {
-        string picture = Section(format, value > 0.0 ? 1 : (value < 0.0 ? -1 : 0));
-        bool signed = value < 0.0 && Sections(format) < 2;
+    /// A DOUBLE IS READ TO FIFTEEN SIGNIFICANT DIGITS for a picture, and a
+    /// float to seven, which is not its exact value: those digits are what is
+    /// rounded, half away from zero at the last place asked for -- 1.25 to
+    /// "0.0" is 1.3, where "F1" says 1.2. Minus nought keeps its sign, as
+    /// .NET keeps it: (-0.0).ToString("0.00") is -0.00.
+    public static string Of(double value, string format) { return Real(value, format, 15); }
+
+    public static string OfSingle(float value, string format) { return Real((double)value, format, 7); }
+
+    private static string Real(double value, string format, int precision) {
         double size = value < 0.0 ? 0.0 - value : value;
+        int point = 0;
+        string digits = size == 0.0 ? "" : FloatDecimal.Digits(size, precision, true, out point);
 
-        if (Has(picture, '%')) { size = size * 100.0; }
-
-        int scale = Thousands(picture);
-        for (int i = 0; i < scale; i++) { size = size / 1000.0; }
-
-        int places = Decimals(picture);
-        string body = DoubleFormat.FixedCustom(size, places);
-        int point = String.IndexOf(body, '.');
-
-        string whole = point < 0 ? body : String.Substring(body, 0, point);
-        string fraction = point < 0 ? "" : String.Substring(body, point + 1, body.Length - point - 1);
-
-        return Render(picture, signed, whole, fraction);
+        return Written(format, BitConverter.DoubleToInt64Bits(value) < 0, true, digits, point);
     }
 
     /// The same for a whole number, which must not go through a double: a long
-    /// above 2^53 would lose its last digits on the way.
+    /// above 2^53 would lose its last digits on the way. Its digits are all
+    /// of it, and long.MinValue's size is taken unsigned, the one place its
+    /// negation fits.
     public static string Of(long value, string format) {
-        string picture = Section(format, value > 0 ? 1 : (value < 0 ? -1 : 0));
-        bool signed = value < 0 && Sections(format) < 2;
-        long size = value < 0 ? -value : value;
+        ulong size = value < 0 ? (ulong)0 - (ulong)value : (ulong)value;
+        string digits = value == 0 ? "" : Decimal(size);
 
-        if (Has(picture, '%')) { size = size * 100; }
-
-        int scale = Thousands(picture);
-        for (int i = 0; i < scale; i++) { size = (size + 500) / 1000; }
-
-        return Render(picture, signed, String.FromInt(size),
-                      String.Repeat('0', Decimals(picture)));
+        return Written(format, value < 0, false, digits, digits.Length);
     }
 
     public static string OfUnsigned(ulong value, string format) {
-        string picture = Section(format, value > 0 ? 1 : 0);
-        ulong size = value;
+        string digits = value == 0 ? "" : Decimal(value);
 
-        if (Has(picture, '%')) { size = size * 100; }
-
-        int scale = Thousands(picture);
-        for (int i = 0; i < scale; i++) { size = (size + 500) / 1000; }
-
-        return Render(picture, false, Decimal(size), String.Repeat('0', Decimals(picture)));
+        return Written(format, false, false, digits, digits.Length);
     }
 
     /// An unsigned number's digits, which String.FromInt cannot give: a ulong
@@ -4640,238 +4710,294 @@ static class PictureFormat {
         return made;
     }
 
-    // ---- the picture, read ------------------------------------------------
+    // ---- the picture, read and written ----------------------------------
+    //
+    // .NET's NumberToStringFormat, step for step, on the invariant culture:
+    // one pass reads the section to learn its shape, the number is rounded
+    // to it, and a second pass writes the section a character at a time.
 
-    /// How many sections the format has: positive, negative, zero.
-    private static int Sections(string format) {
-        int count = 1;
+    /// WHERE SECTION `which` STARTS -- 0 positive, 1 negative, 2 zero -- or
+    /// 0, the first, when the format has no such section or it is empty. A
+    /// ';' inside quotes or after a backslash divides nothing, and a NUL
+    /// ends the format, as .NET reads it.
+    private static int FindSection(string format, int which) {
+        if (which == 0) { return 0; }
+        int src = 0;
 
-        for (int i = 0; i < format.Length; i++) {
-            if (Sys.GetChar(format, i) == (int)';') { count = count + 1; }
-        }
-        return count;
-    }
+        while (src < format.Length) {
+            char ch = Sys.GetChar(format, src);
+            src = src + 1;
 
-    /// The section a number of this sign is written by. A missing negative
-    /// section means the positive one with a minus in front, and a missing zero
-    /// section means the positive one -- .NET's rules, and the reason the sign
-    /// is handled here rather than in the renderer.
-    private static string Section(string format, int sign) {
-        string[] parts = String.Split(format, ';');
-
-        if (sign < 0 && parts.Length >= 2) { return parts[1]; }
-        if (sign == 0 && parts.Length >= 3) { return parts[2]; }
-        return parts[0];
-    }
-
-    private static bool Has(string picture, char c) {
-        return String.IndexOf(picture, c) >= 0;
-    }
-
-    /// The digits after the point the picture asks for, which is how many the
-    /// number is rounded to.
-    private static int Decimals(string picture) {
-        int point = String.IndexOf(picture, '.');
-
-        if (point < 0) { return 0; }
-
-        int count = 0;
-
-        for (int i = point + 1; i < picture.Length; i++) {
-            int c = Sys.GetChar(picture, i);
-
-            if (c == (int)'0' || c == (int)'#') { count = count + 1; }
-        }
-        return count;
-    }
-
-    /// A COMMA WITH NOTHING BUT THE POINT AFTER IT DIVIDES BY A THOUSAND, and
-    /// two commas by a million. It is the one part of the grammar nobody
-    /// guesses, and it is how a report prints bytes as kilobytes.
-    private static int Thousands(string picture) {
-        int point = String.IndexOf(picture, '.');
-        int end = point < 0 ? picture.Length : point;
-        int count = 0;
-        int at = end - 1;
-
-        while (at >= 0 && Sys.GetChar(picture, at) == (int)',') {
-            count = count + 1;
-            at = at - 1;
-        }
-        return count;
-    }
-
-    /// A comma BETWEEN two digit placeholders asks for the thousands to be
-    /// separated -- which is a different job from the comma above, told apart
-    /// only by what surrounds it.
-    private static bool Grouped(string picture) {
-        int point = String.IndexOf(picture, '.');
-        int end = point < 0 ? picture.Length : point;
-
-        for (int i = 1; i < end - 1; i++) {
-            if (Sys.GetChar(picture, i) != (int)',') { continue; }
-            if (IsSlot(picture, i - 1) && IsSlot(picture, i + 1)) { return true; }
-        }
-        return false;
-    }
-
-    /// Whether the picture has any digit placeholder at all. One that has none
-    /// is pure literal text, and the number is not printed.
-    private static bool AnySlot(string picture) {
-        for (int i = 0; i < picture.Length; i++) {
-            if (IsSlot(picture, i)) { return true; }
-        }
-        return false;
-    }
-
-    private static bool IsSlot(string picture, int at) {
-        int c = Sys.GetChar(picture, at);
-
-        return c == (int)'0' || c == (int)'#';
-    }
-
-    // ---- the picture, written ---------------------------------------------
-
-    private static string Render(string picture, bool signed, string whole, string fraction) {
-        bool group = Grouped(picture);
-        int point = String.IndexOf(picture, '.');
-        string head = point < 0 ? picture : String.Substring(picture, 0, point);
-        string tail = point < 0 ? "" : String.Substring(picture, point + 1, picture.Length - point - 1);
-
-        StringBuilder made = new StringBuilder();
-
-        if (signed) { made.Append('-'); }
-        made.Append(Whole(head, whole, group, AnySlot(picture)));
-
-        string after = Fraction(tail, fraction);
-
-        if (after.Length > 0) {
-            made.Append('.');
-            made.Append(after);
-        }
-        return made.ToString();
-    }
-
-    /// The integer side, right to left: each placeholder takes the next digit
-    /// from the right, a `0` with nothing left to take writes a zero and a `#`
-    /// writes nothing, and anything that is not a placeholder is itself.
-    /// Digits the picture has no room for are not lost -- they go in front,
-    /// which is why "00" can still print a thousand.
-    private static string Whole(string head, string digits, bool group, bool anywhere) {
-        // A NUMBER WHOSE WHOLE PART IS NOUGHT DISAPPEARS when the picture asks
-        // for it with '#' alone: .NET prints "" for 0 through "#" and ".5" for
-        // a half through "#.##".
-        string left = digits;
-
-        if (String.Compare(left, "0") == 0 && String.IndexOf(head, '0') < 0) { left = ""; }
-
-        StringBuilder reversed = new StringBuilder();
-        int at = left.Length - 1;
-        int written = 0;
-        int leftmost = -1;
-
-        for (int i = 0; i < head.Length; i++) {
-            if (IsSlot(head, i)) { leftmost = i; break; }
-        }
-
-        for (int i = head.Length - 1; i >= 0; i--) {
-            char c = Sys.GetChar(head, i);
-
-            if (c == ',') { continue; }
-
-            if (c == '0' || c == '#') {
-                if (at >= 0) {
-                    if (group && written > 0 && written % 3 == 0) { reversed.Append(','); }
-                    reversed.Append(Sys.GetChar(left, at));
-                    written = written + 1;
-                    at = at - 1;
-                } else if (c == '0') {
-                    if (group && written > 0 && written % 3 == 0) { reversed.Append(','); }
-                    reversed.Append('0');
-                    written = written + 1;
+            if (ch == '\'' || ch == '"') {
+                while (src < format.Length && Sys.GetChar(format, src) != 0) {
+                    char was = Sys.GetChar(format, src);
+                    src = src + 1;
+                    if (was == ch) { break; }
                 }
+            } else if (ch == '\\') {
+                if (src < format.Length && Sys.GetChar(format, src) != 0) { src = src + 1; }
+            } else if (ch == ';') {
+                which = which - 1;
+                if (which != 0) { continue; }
+                if (src < format.Length && Sys.GetChar(format, src) != 0 && Sys.GetChar(format, src) != ';') { return src; }
+                return 0;
+            } else if (ch == 0) {
+                return 0;
+            }
+        }
+        return 0;
+    }
 
-                // MORE DIGITS THAN THE PICTURE HAS ROOM FOR go at the LEFTMOST
-                // placeholder, not at the front of the whole thing: "(0)" on a
-                // thousand is "(1234)" and not "123(4)". The picture says where
-                // the number sits among the literals, not how long it may be.
-                if (i == leftmost) {
-                    while (at >= 0) {
-                        if (group && written > 0 && written % 3 == 0) { reversed.Append(','); }
-                        reversed.Append(Sys.GetChar(left, at));
-                        written = written + 1;
-                        at = at - 1;
+    /// THE PICTURE FILLED IN, from any number's digits: 0.DIGITS x 10^scale,
+    /// the sign apart, nought having no digits at all. `real` says the number
+    /// was a double, whose sign survives a rounding to nought (-0.4 in "0" is
+    /// -0) where a whole number's does not (-4 in "0," is 0), because .NET has
+    /// a minus nought for doubles only. A number that rounds to nought in its
+    /// own section is written by the zero section, when there is one.
+    private static string Written(string format, bool negative, bool real, string digits, int scale) {
+        int section = FindSection(format, digits.Length == 0 ? 2 : negative ? 1 : 0);
+        int digitCount;
+        int decimalPos;
+        int firstDigit;
+        int lastDigit;
+        int thousandPos;
+        int thousandCount = 0;
+        bool scientific;
+        bool thousandSeps;
+
+        while (true) {
+            digitCount = 0;
+            decimalPos = -1;
+            firstDigit = int.MaxValue;
+            lastDigit = 0;
+            scientific = false;
+            thousandPos = -1;
+            thousandSeps = false;
+            int scaleAdjust = 0;
+            int src = section;
+
+            while (src < format.Length) {
+                char ch = Sys.GetChar(format, src);
+                src = src + 1;
+                if (ch == 0 || ch == ';') { break; }
+
+                if (ch == '#') {
+                    digitCount = digitCount + 1;
+                } else if (ch == '0') {
+                    if (firstDigit == int.MaxValue) { firstDigit = digitCount; }
+                    digitCount = digitCount + 1;
+                    lastDigit = digitCount;
+                } else if (ch == '.') {
+                    if (decimalPos < 0) { decimalPos = digitCount; }
+                } else if (ch == ',') {
+                    // A COMMA RIGHT AFTER A PLACEHOLDER, before the point: a
+                    // run of them at the point scales by a thousand each, one
+                    // anywhere else groups the thousands.
+                    if (digitCount > 0 && decimalPos < 0) {
+                        if (thousandPos >= 0) {
+                            if (thousandPos == digitCount) {
+                                thousandCount = thousandCount + 1;
+                                continue;
+                            }
+                            thousandSeps = true;
+                        }
+                        thousandPos = digitCount;
+                        thousandCount = 1;
+                    }
+                } else if (ch == '%') {
+                    scaleAdjust = scaleAdjust + 2;
+                } else if (ch == '\u2030') {
+                    scaleAdjust = scaleAdjust + 3;
+                } else if (ch == '\'' || ch == '"') {
+                    while (src < format.Length && Sys.GetChar(format, src) != 0) {
+                        char was = Sys.GetChar(format, src);
+                        src = src + 1;
+                        if (was == ch) { break; }
+                    }
+                } else if (ch == '\\') {
+                    if (src < format.Length && Sys.GetChar(format, src) != 0) { src = src + 1; }
+                } else if (ch == 'E' || ch == 'e') {
+                    if (ExponentFollows(format, src)) {
+                        src = src + 1;
+                        while (src < format.Length && Sys.GetChar(format, src) == '0') { src = src + 1; }
+                        scientific = true;
                     }
                 }
-                continue;
             }
-            reversed.Append(c);
-        }
 
-        // A PICTURE THAT PLACES ONLY THE FRACTION still prints the whole part:
-        // ".00" on one and a quarter is "1.25", because the placeholders after
-        // the point are what make it a number rather than a literal.
-        if (leftmost < 0 && anywhere) {
-            while (at >= 0) {
-                if (group && written > 0 && written % 3 == 0) { reversed.Append(','); }
-                reversed.Append(Sys.GetChar(left, at));
-                written = written + 1;
-                at = at - 1;
+            if (decimalPos < 0) { decimalPos = digitCount; }
+            if (thousandPos >= 0) {
+                if (thousandPos == decimalPos) {
+                    scaleAdjust = scaleAdjust - thousandCount * 3;
+                } else {
+                    thousandSeps = true;
+                }
             }
-        }
-        return Reversed(reversed.ToString());
-    }
 
-    /// The fraction, left to right, with the trailing digits the picture asked
-    /// for with '#' dropped when they are zeros -- which is the whole
-    /// difference between "0.00" and "0.##".
-    private static string Fraction(string tail, string digits) {
-        int keep = digits.Length;
-        int slot = 0;
-
-        // Where each placeholder is, so that a trailing zero can be dropped
-        // only if the placeholder above it was a '#'.
-        for (int i = tail.Length - 1; i >= 0; i--) {
-            char c = Sys.GetChar(tail, i);
-
-            if (c != '0' && c != '#') { continue; }
-
-            slot = Slots(tail, i);
-            if (c == '0') { break; }
-            if (slot <= keep && slot > 0 && Sys.GetChar(digits, slot - 1) == (int)'0') {
-                keep = slot - 1;
+            if (digits.Length > 0) {
+                // SCALING MOVES THE POINT, which is exact where multiplying
+                // is not and cannot overflow a long.
+                scale = scale + scaleAdjust;
+                digits = NumberFormat.Round(digits, scientific ? digitCount : scale + digitCount - decimalPos, ref scale);
+                if (digits.Length == 0) {
+                    if (!real) { negative = false; }
+                    int zero = FindSection(format, 2);
+                    if (zero != section) {
+                        section = zero;
+                        continue;
+                    }
+                }
             } else {
-                break;
+                if (!real) { negative = false; }
+                scale = 0;
             }
+            break;
+        }
+
+        firstDigit = firstDigit < decimalPos ? decimalPos - firstDigit : 0;
+        lastDigit = lastDigit > decimalPos ? decimalPos - lastDigit : 0;
+        int digPos;
+        int adjust;
+        if (scientific) {
+            digPos = decimalPos;
+            adjust = 0;
+        } else {
+            digPos = scale > decimalPos ? scale : decimalPos;
+            adjust = scale - decimalPos;
+        }
+
+        // WHERE THE GROUP SEPARATORS GO, counted in digits from the point:
+        // every third, as far as the whole part reaches.
+        int separators = 0;
+        if (thousandSeps) {
+            int totalDigits = digPos + (adjust < 0 ? adjust : 0);
+            int numDigits = firstDigit > totalDigits ? firstDigit : totalDigits;
+            if (numDigits > 3) { separators = (numDigits - 1) / 3; }
         }
 
         StringBuilder made = new StringBuilder();
-        int taken = 0;
+        if (negative && section == 0 && scale != 0) { made.Append('-'); }
 
-        for (int i = 0; i < tail.Length; i++) {
-            char c = Sys.GetChar(tail, i);
+        bool decimalWritten = false;
+        int cur = 0;
+        int at = section;
 
-            if (c == '0' || c == '#') {
-                if (taken >= keep) { break; }
-                made.Append(Sys.GetChar(digits, taken));
-                taken = taken + 1;
-                continue;
+        while (at < format.Length) {
+            char ch = Sys.GetChar(format, at);
+            at = at + 1;
+            if (ch == 0 || ch == ';') { break; }
+
+            // DIGITS THE PICTURE HAS NO PLACE FOR go in front of its first
+            // placeholder, or its point: "00" still prints a thousand.
+            if (adjust > 0 && (ch == '#' || ch == '0' || ch == '.')) {
+                while (adjust > 0) {
+                    made.Append(cur < digits.Length ? Sys.GetChar(digits, cur) : '0');
+                    if (cur < digits.Length) { cur = cur + 1; }
+                    separators = Separate(made, thousandSeps, digPos, separators);
+                    digPos = digPos - 1;
+                    adjust = adjust - 1;
+                }
             }
-            made.Append(c);
+
+            if (ch == '#' || ch == '0') {
+                int c;
+                if (adjust < 0) {
+                    adjust = adjust + 1;
+                    c = digPos <= firstDigit ? '0' : 0;
+                } else if (cur < digits.Length) {
+                    c = Sys.GetChar(digits, cur);
+                    cur = cur + 1;
+                } else {
+                    c = digPos > lastDigit ? '0' : 0;
+                }
+                if (c != 0) {
+                    made.Append((char)c);
+                    separators = Separate(made, thousandSeps, digPos, separators);
+                }
+                digPos = digPos - 1;
+            } else if (ch == '.') {
+                // One point at most, and only where a digit follows it or the
+                // picture asks for one with a '0'.
+                if (digPos != 0 || decimalWritten) { continue; }
+                if (lastDigit < 0 || (decimalPos < digitCount && cur < digits.Length)) {
+                    made.Append('.');
+                    decimalWritten = true;
+                }
+            } else if (ch == '\u2030' || ch == '%') {
+                made.Append(ch);
+            } else if (ch == ',') {
+                continue;
+            } else if (ch == '\'' || ch == '"') {
+                while (at < format.Length && Sys.GetChar(format, at) != 0 && Sys.GetChar(format, at) != ch) {
+                    made.Append(Sys.GetChar(format, at));
+                    at = at + 1;
+                }
+                if (at < format.Length && Sys.GetChar(format, at) != 0) { at = at + 1; }
+            } else if (ch == '\\') {
+                if (at < format.Length && Sys.GetChar(format, at) != 0) {
+                    made.Append(Sys.GetChar(format, at));
+                    at = at + 1;
+                }
+            } else if (ch == 'E' || ch == 'e') {
+                // THE FIRST EXPONENT IS THE NUMBER'S: a '+' writes its sign
+                // always, a '-' or nothing only when it is negative, and the
+                // zeros are its fewest digits, ten at most. Any later one, or
+                // one with no zero after it, is text.
+                if (scientific) {
+                    if (!ExponentFollows(format, at)) {
+                        made.Append(ch);
+                        continue;
+                    }
+                    char mark = Sys.GetChar(format, at);
+                    int least = mark == '0' ? 1 : 0;
+                    at = at + 1;
+                    while (at < format.Length && Sys.GetChar(format, at) == '0') {
+                        least = least + 1;
+                        at = at + 1;
+                    }
+                    NumberFormat.Exponent(made, ch, digits.Length == 0 ? 0 : scale - decimalPos, least > 10 ? 10 : least, mark == '+');
+                    scientific = false;
+                } else {
+                    made.Append(ch);
+                    if (at < format.Length && (Sys.GetChar(format, at) == '+' || Sys.GetChar(format, at) == '-')) {
+                        made.Append(Sys.GetChar(format, at));
+                        at = at + 1;
+                    }
+                    while (at < format.Length && Sys.GetChar(format, at) == '0') {
+                        made.Append('0');
+                        at = at + 1;
+                    }
+                }
+            } else {
+                made.Append(ch);
+            }
         }
+
+        // A MINUS ONLY IN FRONT OF SOMETHING when the number is below one:
+        // -0.2 in "#" is nothing at all, not a lone sign, where in "0" it
+        // is -0.
+        if (negative && section == 0 && scale == 0 && made.Length > 0) { made.Insert(0, '-'); }
         return made.ToString();
     }
 
-    /// How many placeholders there are up to and including this one.
-    private static int Slots(string tail, int at) {
-        int count = 0;
+    /// Whether an 'E' or 'e' whose next character is at `at` starts an
+    /// exponent: a '0' next, or a '+' or '-' and then a '0'.
+    private static bool ExponentFollows(string format, int at) {
+        if (at < format.Length && Sys.GetChar(format, at) == '0') { return true; }
+        return at + 1 < format.Length && (Sys.GetChar(format, at) == '+' || Sys.GetChar(format, at) == '-')
+            && Sys.GetChar(format, at + 1) == '0';
+    }
 
-        for (int i = 0; i <= at; i++) {
-            int c = Sys.GetChar(tail, i);
-
-            if (c == (int)'0' || c == (int)'#') { count = count + 1; }
+    /// A GROUP SEPARATOR AFTER THE DIGIT JUST WRITTEN when the digits left
+    /// to the point are a whole number of groups: `left` separators remain,
+    /// the next one after digit 3 x left + 1 counting down to the point.
+    /// Answers how many remain.
+    private static int Separate(StringBuilder made, bool grouping, int digPos, int left) {
+        if (grouping && digPos > 1 && left > 0 && digPos == 3 * left + 1) {
+            made.Append(',');
+            return left - 1;
         }
-        return count;
+        return left;
     }
 }
 
