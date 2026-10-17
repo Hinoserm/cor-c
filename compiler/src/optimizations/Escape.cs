@@ -5390,6 +5390,12 @@ continue;
             releasePrevious.Add(new Instr { Op = Opcode.Load, Size = word, Dest = prev, Operands = { RegOperand.Of(addr) }, Line = alloc.Line });
             AppendElementFree(f, releasePrevious, alloc, prev, alloc.Line);
             record.Frees.Add((block, AppendFree(f, releasePrevious, prev, alloc.Line), prev));
+            // AND THE SLOT EMPTIED: a call that throws never stores its
+            // result, and a handler in this function -- or in one this is
+            // inlined into -- goes on to the next lap's free or a return's
+            // with the slot still naming what was just given back. A loop
+            // whose call threw once freed the same object twice.
+            releasePrevious.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(addr), new ImmOperand(0, IrTypes.Word) }, Line = alloc.Line });
         }
         block.Instrs.InsertRange(at, releasePrevious);
         _bookkeeping.UnionWith(releasePrevious);

@@ -2474,15 +2474,21 @@ partial struct DateTime
 
 }
 
-/// The machine's zone, for what stdlib/src/System/Core.cor writes of a local
-/// reading's offset: TimeZoneInfo.Local, installed the first time anything
-/// there asks.
+/// The machine's zone and clock, for what stdlib/src/System/Core.cor writes of
+/// a local reading's offset and reads of a date with no day: TimeZoneInfo.Local
+/// and DateTime.UtcNow, installed the first time anything there asks.
 static partial class LocalZone
 {
     static LocalZone()
     {
         offsetAt = OffsetAt;
         offsetNow = OffsetNow;
+        clock = ReadClock;
+    }
+
+    static DateTime ReadClock()
+    {
+        return DateTime.UtcNow;
     }
 
     static TimeSpan OffsetAt(DateTime when)

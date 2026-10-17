@@ -1,0 +1,43 @@
+// test: owned_result_slot_emptied_when_its_call_throws
+// flags: --runtime-knob Corsac.GC.VerifyFrees=1
+// expect-exit: 0
+// expect-output:
+// a => [1:1]
+// K => bad
+// b => [1:1]
+// done
+//
+// A FRESH RESULT OWNED ROUND A LOOP gives back last lap's object before the
+// call that makes the next one, and the slot that names it was filled again
+// only once that call returned. Inlined into a try here, the call threw on
+// the second lap: the handler ran, the loop went round, and the third lap
+// gave back the second lap's object -- already given back -- a second time.
+// In a program the block went back on a free list while still named, and
+// a label made after it read as the empty string. The slot is emptied as
+// its object goes back; the checked collector refuses a block freed twice.
+
+using System;
+
+class Program
+{
+    static void T(string label, Func<string> f)
+    {
+        try { Console.WriteLine(label + " => [" + f() + "]"); }
+        catch (Exception e) { Console.WriteLine(label + " => " + e.Message); }
+    }
+
+    static string Do(string f, int k)
+    {
+        if (f == "K") throw new FormatException("bad");
+        return f.Length + ":" + k;
+    }
+
+    static void Main()
+    {
+        foreach (var f in new[] { "a", "K", "b" })
+        {
+            T(f, () => Do(f, 1));
+        }
+        Console.WriteLine("done");
+    }
+}

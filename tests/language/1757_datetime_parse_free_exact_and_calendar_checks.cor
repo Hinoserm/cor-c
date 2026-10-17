@@ -1,0 +1,256 @@
+// test: datetime_parse_free_exact_and_calendar_checks
+// expect-exit: 0
+// expect-output:
+// [Tuesday, 05 March 2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [March 5, 2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [5 March 2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [March 2024] 2024-03-01T00:00:00.0000000 Unspecified | 2024-03-01T00:00:00.0000000 Unspecified
+// [2024 March] 2024-03-01T00:00:00.0000000 Unspecified | 2024-03-01T00:00:00.0000000 Unspecified
+// [5 March] 2005-03-01T00:00:00.0000000 Unspecified | 2005-03-01T00:00:00.0000000 Unspecified
+// [Mar 5 2024 10:00 PM] 2024-03-05T22:00:00.0000000 Unspecified | 2024-03-05T22:00:00.0000000 Unspecified
+// [05-Mar-2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [5-Mar-24] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [Mar-05-2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [2024-Mar-05] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [05/Mar/2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [Tuesday March 5 2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [5 March 24] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [24 March 5] 2005-03-24T00:00:00.0000000 Unspecified | 2005-03-24T00:00:00.0000000 Unspecified
+// [September 5 2024] 2024-09-05T00:00:00.0000000 Unspecified | 2024-09-05T00:00:00.0000000 Unspecified
+// [sep 5 2024] 2024-09-05T00:00:00.0000000 Unspecified | 2024-09-05T00:00:00.0000000 Unspecified
+// [MARCH 5 2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [March, 5 2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [5 Mar 2024 2:07:09 PM] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Unspecified
+// [Mon Jan 1 2024] 2024-01-01T00:00:00.0000000 Unspecified | 2024-01-01T00:00:00.0000000 Unspecified
+// [1 Jan] 2001-01-01T00:00:00.0000000 Unspecified | 2001-01-01T00:00:00.0000000 Unspecified
+// [2024 5 Jan] 2024-01-05T00:00:00.0000000 Unspecified | 2024-01-05T00:00:00.0000000 Unspecified
+// [5 2024 Jan] 2024-01-05T00:00:00.0000000 Unspecified | 2024-01-05T00:00:00.0000000 Unspecified
+// [3/5/2024 2:07 PM] 2024-03-05T14:07:00.0000000 Unspecified | 2024-03-05T14:07:00.0000000 Unspecified
+// [2024/03/05] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [1/2/3] 2003-01-02T00:00:00.0000000 Unspecified | 2003-01-02T00:00:00.0000000 Unspecified
+// [2024-03-05T14:07:09] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Unspecified
+// [2024-03-05 14:07:09.5] 2024-03-05T14:07:09.5000000 Unspecified | 2024-03-05T14:07:09.5000000 Unspecified
+// [#3/5/2024#] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [2024年3月5日] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// [12:30:45.123 2024-03-05] 2024-03-05T12:30:45.1230000 Unspecified | 2024-03-05T12:30:45.1230000 Unspecified
+// [2024-03-05 12 PM] 2024-03-05T12:00:00.0000000 Unspecified | 2024-03-05T12:00:00.0000000 Unspecified
+// [2024-03-05T14] FormatException: String '2024-03-05T14' was not recognized as a valid DateTime. | FormatException: String '2024-03-05T14' was not recognized as a valid DateTime.
+// [2024-03-05T25:00:00] FormatException: The DateTime represented by the string '2024-03-05T25:00:00' is not supported in calendar 'System.Globalization.GregorianCalendar'. | FormatException: The DateTime represented by the string '2024-03-05T25:00:00' is not supported in calendar 'System.Globalization.GregorianCalendar'.
+// [Wednesday, 05 March 2024] FormatException: String 'Wednesday, 05 March 2024' was not recognized as a valid DateTime because the day of week was incorrect. | FormatException: String 'Wednesday, 05 March 2024' was not recognized as a valid DateTime because the day of week was incorrect.
+// [March 32, 2024] FormatException: String 'March 32, 2024' was not recognized as a valid DateTime. | FormatException: String 'March 32, 2024' was not recognized as a valid DateTime.
+// [Sept 5 2024] FormatException: The string 'Sept 5 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Sept 5 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// [Tues 5 March 2024] FormatException: The string 'Tues 5 March 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Tues 5 March 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// [March] FormatException: String 'March' was not recognized as a valid DateTime. | FormatException: String 'March' was not recognized as a valid DateTime.
+// [March 5th 2024] FormatException: The string 'March 5th 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '7'. | FormatException: The string 'March 5th 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '7'.
+// [Jan 5 2024 Jan] FormatException: String 'Jan 5 2024 Jan' was not recognized as a valid DateTime. | FormatException: String 'Jan 5 2024 Jan' was not recognized as a valid DateTime.
+// [13:00 AM 2024-03-05] FormatException: String '13:00 AM 2024-03-05' was not recognized as a valid DateTime. | FormatException: String '13:00 AM 2024-03-05' was not recognized as a valid DateTime.
+// [2024-03-05 10:00 +02:00 GMT] FormatException: String '2024-03-05 10:00 +02:00 GMT' was not recognized as a valid DateTime. | FormatException: String '2024-03-05 10:00 +02:00 GMT' was not recognized as a valid DateTime.
+// [] FormatException: String '' was not recognized as a valid DateTime. | FormatException: String '' was not recognized as a valid DateTime.
+// [   ] FormatException: String '   ' was not recognized as a valid DateTime. | FormatException: String '   ' was not recognized as a valid DateTime.
+// [12345678901] FormatException: String '12345678901' was not recognized as a valid DateTime. | FormatException: String '12345678901' was not recognized as a valid DateTime.
+// [Tue, 05 Mar 2024 14:07:09 GMT] 2024-03-05T14:07:09.0000000 Utc | Utc | 2024-03-05T14:07:09.0000000+00:00
+// [March 5 2024 GMT] 2024-03-05T00:00:00.0000000 Utc | Utc | 2024-03-05T00:00:00.0000000+00:00
+// [Mar 5 2024 +02:00] 2024-03-04T22:00:00.0000000 Utc | Local | 2024-03-05T00:00:00.0000000+02:00
+// [2024-03-05T14:07:09.1234567Z] 2024-03-05T14:07:09.1234567 Utc | Utc | 2024-03-05T14:07:09.1234567+00:00
+// [2024-03-05T14:07:09+05:30] 2024-03-05T08:37:09.0000000 Utc | Local | 2024-03-05T14:07:09.0000000+05:30
+// [2024-03-05 14:07:09.5-03:00] 2024-03-05T17:07:09.5000000 Utc | Local | 2024-03-05T14:07:09.5000000-03:00
+// [2024-03-05 10:00 +0530] 2024-03-05T04:30:00.0000000 Utc | Local | 2024-03-05T10:00:00.0000000+05:30
+// [2024-03-05 10:00 -5] 2024-03-05T15:00:00.0000000 Utc | Local | 2024-03-05T10:00:00.0000000-05:00
+// [2024-03-05 10:00 +15:00] FormatException: The time zone offset of string '2024-03-05 10:00 +15:00' must be within plus or minus 14 hours. | FormatException: The time zone offset of string '2024-03-05 10:00 +15:00' must be within plus or minus 14 hours. | FormatException: The time zone offset of string '2024-03-05 10:00 +15:00' must be within plus or minus 14 hours.
+// [2024-03-05 10:00 Z GMT] FormatException: String '2024-03-05 10:00 Z GMT' was not recognized as a valid DateTime. | FormatException: String '2024-03-05 10:00 Z GMT' was not recognized as a valid DateTime. | FormatException: String '2024-03-05 10:00 Z GMT' was not recognized as a valid DateTime.
+// [0001-01-01T00:00:00+05:00] 0001-01-01T19:00:00.0000000 Utc | Local | FormatException: The UTC representation of the date '0001-01-01T00:00:00+05:00' falls outside the year range 1-9999.
+// [10:00 2024-03-05Z] 2024-03-05T10:00:00.0000000 Utc | Utc | 2024-03-05T10:00:00.0000000+00:00
+// FormatException: The DateTime represented by the string '9999-12-31T23:59:59-05:00' is out of range.
+// 0001-01-01T10:30:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Utc | 2024-03-05T00:00:00.0000000 Local | 2024-03-05T00:00:00.0000000 Unspecified
+// ArgumentException: An undefined DateTimeStyles value is being used. (Parameter 'styles') | ArgumentException: The DateTimeStyles values AssumeLocal and AssumeUniversal cannot be used together. (Parameter 'styles') | ArgumentException: The DateTimeStyles value RoundtripKind cannot be used with the values AssumeLocal, AssumeUniversal or AdjustToUniversal. (Parameter 'style')
+// ArgumentException: The DateTimeStyles value 'NoCurrentDateDefault' is not allowed when parsing DateTimeOffset. (Parameter 'styles') | ArgumentException: The DateTimeStyles values AssumeLocal and AssumeUniversal cannot be used together. (Parameter 'styles') | FormatException: There must be at least a partial date with a year present in the input string 'March 5 +02:00'.
+// ArgumentNullException: Value cannot be null. (Parameter 's') | ArgumentNullException: String reference not set to an instance of a String. (Parameter 'formats') | FormatException: No format specifiers were provided. | FormatException: Format specifier '' was invalid.
+// o [2024-03-05T14:07:09.1230000Z] 2024-03-05T14:07:09.1230000 Utc | 2024-03-05T14:07:09.1230000 Utc
+// r [Tue, 05 Mar 2024 14:07:09 GMT] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Utc
+// s [2024-03-05T14:07:09] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Utc
+// u [2024-03-05 14:07:09Z] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Utc
+// d [03/05/2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Utc
+// D [Tuesday, 05 March 2024] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Utc
+// f [Tuesday, 05 March 2024 14:07] 2024-03-05T14:07:00.0000000 Unspecified | 2024-03-05T14:07:00.0000000 Utc
+// F [Tuesday, 05 March 2024 14:07:09] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Utc
+// g [03/05/2024 14:07] 2024-03-05T14:07:00.0000000 Unspecified | 2024-03-05T14:07:00.0000000 Utc
+// G [03/05/2024 14:07:09] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Utc
+// m [March 05] YEAR-03-05T00:00:00.0000000 Unspecified | YEAR-03-05T00:00:00.0000000 Utc
+// t [14:07] TODAYT14:07:00.0000000 Unspecified | TODAYT14:07:00.0000000 Utc
+// T [14:07:09] TODAYT14:07:09.0000000 Unspecified | TODAYT14:07:09.0000000 Utc
+// y [2024 March] 2024-03-01T00:00:00.0000000 Unspecified | 2024-03-01T00:00:00.0000000 Utc
+// o [2024-02-30T00:00:00.0000000] FormatException: The DateTime represented by the string '2024-02-30T00:00:00.0000000' is not supported in calendar 'System.Globalization.GregorianCalendar'. | FormatException: The DateTime represented by the string '2024-02-30T00:00:00.0000000' is not supported in calendar 'System.Globalization.GregorianCalendar'.
+// o [2024-03-05T14:07:09.1230000+5:30] 2024-03-05T08:37:09.1230000 Utc | 2024-03-05T08:37:09.1230000 Utc
+// r [Wed, 05 Mar 2024 14:07:09 GMT] FormatException: String 'Wed, 05 Mar 2024 14:07:09 GMT' was not recognized as a valid DateTime because the day of week was incorrect. | FormatException: String 'Wed, 05 Mar 2024 14:07:09 GMT' was not recognized as a valid DateTime because the day of week was incorrect.
+// r [tue, 05 mar 2024 14:07:09 GMT] 2024-03-05T14:07:09.0000000 Unspecified | 2024-03-05T14:07:09.0000000 Unspecified
+// r [Tue, 05 Mar 2024 14:07:09 gmt] FormatException: String 'Tue, 05 Mar 2024 14:07:09 gmt' was not recognized as a valid DateTime. | FormatException: String 'Tue, 05 Mar 2024 14:07:09 gmt' was not recognized as a valid DateTime.
+// dd.MM.yyyy HH:mm [05.03.2024 14:07] 2024-03-05T14:07:00.0000000 Unspecified | 2024-03-05T14:07:00.0000000 Unspecified
+// yyyyMMdd [20240305] 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// d/M/yy [5/3/49] 2049-03-05T00:00:00.0000000 Unspecified | 2049-03-05T00:00:00.0000000 Unspecified
+// d/M/yy [5/3/50] 1950-03-05T00:00:00.0000000 Unspecified | 1950-03-05T00:00:00.0000000 Unspecified
+// d/M/yy [5/3/2024] FormatException: String '5/3/2024' was not recognized as a valid DateTime. | FormatException: String '5/3/2024' was not recognized as a valid DateTime.
+// yyyy-M-d [2024-003-05] FormatException: String '2024-003-05' was not recognized as a valid DateTime. | FormatException: String '2024-003-05' was not recognized as a valid DateTime.
+// MMM dd yyyy [MARCH 05 2024] FormatException: String 'MARCH 05 2024' was not recognized as a valid DateTime. | FormatException: String 'MARCH 05 2024' was not recognized as a valid DateTime.
+// ddd dd MMM yyyy [Wed 05 Mar 2024] FormatException: String 'Wed 05 Mar 2024' was not recognized as a valid DateTime because the day of week was incorrect. | FormatException: String 'Wed 05 Mar 2024' was not recognized as a valid DateTime because the day of week was incorrect.
+// HH:mm tt [14:07 PM] TODAYT14:07:00.0000000 Unspecified | TODAYT14:07:00.0000000 Unspecified
+// h:mm tt [2:07 PM] TODAYT14:07:00.0000000 Unspecified | TODAYT14:07:00.0000000 Unspecified
+// hh:mm tt [12:07 AM] TODAYT00:07:00.0000000 Unspecified | TODAYT00:07:00.0000000 Unspecified
+// ss.FFF [09.5] TODAYT00:00:09.5000000 Unspecified | TODAYT00:00:09.5000000 Unspecified
+// ss.FFF [09] TODAYT00:00:09.0000000 Unspecified | TODAYT00:00:09.0000000 Unspecified
+// ss.F [09] FormatException: String '09' was not recognized as a valid DateTime. | FormatException: String '09' was not recognized as a valid DateTime.
+// 'abc [a] FormatException: Cannot find a matching quote character for the character '''. | FormatException: Cannot find a matching quote character for the character '''.
+// x [x] FormatException: Input string was not in a correct format. | FormatException: Input string was not in a correct format.
+// yyyy-MM-dd z [2024-03-05 +05] 2024-03-04T19:00:00.0000000 Utc | 2024-03-04T19:00:00.0000000 Utc
+// yyyy-MM-dd zzz zzz [2024-03-05 +05:30 +05:30] 2024-03-04T18:30:00.0000000 Utc | 2024-03-04T18:30:00.0000000 Utc
+// yyyy-MM-dd zzz zzz [2024-03-05 +05:30 +05:00] FormatException: DateTime pattern 'z' appears more than once with different values. | FormatException: DateTime pattern 'z' appears more than once with different values.
+// yyyy-MM-dd [  2024 - 03 - 05  ] FormatException: String '  2024 - 03 - 05  ' was not recognized as a valid DateTime. | 2024-03-05T00:00:00.0000000 Unspecified
+// g yyyy [A.D. 2024] 2024-01-01T00:00:00.0000000 Unspecified | 2024-01-01T00:00:00.0000000 Unspecified
+// True 2024-03-05T00:00:00.0000000 Unspecified | False 0001-01-01T00:00:00.0000000 Unspecified | True 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000
+// 03/05/2024 | Tuesday, 05 March 2024 | 14:07 | 14:07:09
+// ArgumentOutOfRangeException: Year, Month, and Day parameters describe an un-representable DateTime.
+// ArgumentOutOfRangeException: Hour, Minute, and Second parameters describe an un-representable DateTime.
+// ArgumentOutOfRangeException: Year, Month, and Day parameters describe an un-representable DateTime.
+// ArgumentException: Invalid DateTimeKind value. (Parameter 'kind')
+// ArgumentOutOfRangeException: Ticks must be between DateTime.MinValue.Ticks and DateTime.MaxValue.Ticks. (Parameter 'ticks') | ArgumentException: Invalid DateTimeKind value. (Parameter 'kind')
+// 2024-01-03T01:02:03.0040050 | 5 700
+// ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 'value') | ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 'value')
+// ArgumentOutOfRangeException: Value to add was out of range. (Parameter 'value') | ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 't')
+// ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 'value') | ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 'months')
+// ArgumentOutOfRangeException: Months value must be between +/-120000. (Parameter 'months') | ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 'value') | ArgumentOutOfRangeException: Years value must be between +/-10000. (Parameter 'value')
+// ArgumentOutOfRangeException: Month must be between one and twelve. (Parameter 'month')
+// Actual value was 13. | ArgumentOutOfRangeException: Year must be between 1 and 9999. (Parameter 'year') | ArgumentOutOfRangeException: Year must be between 1 and 9999. (Parameter 'year')
+// 2025-02-28T10:30:00 Local 2023-01-29T10:30:00 2024-02-29T00:00:00 638397590400000000 638396629200000000 638396640000005000 638396640000000025
+// 2024-03-05T14:07:10.5000000+02:00 2024-03-06T14:07:09.0000000+02:00 2024-03-04T14:07:09.0000000+02:00 01:00:00 ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 'value') | ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 't')
+//
+// DateTime's and DateTimeOffset's readers as .NET's. THE FREE READER is
+// .NET's own state machine: month and day names in any case and either
+// length, the invariant culture's orders (month before day, year before
+// month, month-day-year), two-digit years to 2049, AM and PM, 'T' times,
+// zones by Z, GMT or an offset, CJK suffixes, '#' literals, and .NET's
+// messages for an unknown word, a wrong day of the week, a date the calendar
+// lacks or one out of range. THE EXACT READER takes every standard format
+// and custom picture, with "o" and "r" read by .NET's quick readers. The
+// styles are checked, and applied, in .NET's order. The constructors and the
+// arithmetic refuse what the calendar cannot hold, in .NET's order and
+// words. Zones are read to UTC and today and this year are written as words,
+// so that no line depends on the machine's zone or the date; every line came
+// from the same program on .NET 10.
+
+using System;
+using System.Globalization;
+
+class Program
+{
+    // TODAY AND THIS YEAR, which a text with no date or no year takes, are
+    // written as words, so that the lines stay true.
+    static string Show(DateTime d)
+    {
+        string text = d.ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + " " + d.Kind;
+        DateTime now = DateTime.Now;
+        DateTime utc = DateTime.UtcNow;
+        return text.Replace(now.ToString("yyyy-MM-dd"), "TODAY").Replace(utc.ToString("yyyy-MM-dd"), "TODAY")
+            .Replace(now.ToString("yyyy"), "YEAR").Replace(utc.ToString("yyyy"), "YEAR");
+    }
+
+    static string Said(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+    }
+
+    static int Main()
+    {
+        CultureInfo inv = CultureInfo.InvariantCulture;
+        DateTimeStyles utc = DateTimeStyles.AdjustToUniversal;
+
+        // The free reader: names, orders, two-digit years, AM and PM, zones, CJK suffixes.
+        string[] free = {
+            "Tuesday, 05 March 2024", "March 5, 2024", "5 March 2024", "March 2024", "2024 March", "5 March", "Mar 5 2024 10:00 PM",
+            "05-Mar-2024", "5-Mar-24", "Mar-05-2024", "2024-Mar-05", "05/Mar/2024", "Tuesday March 5 2024", "5 March 24", "24 March 5",
+            "September 5 2024", "sep 5 2024", "MARCH 5 2024", "March, 5 2024", "5 Mar 2024 2:07:09 PM", "Mon Jan 1 2024", "1 Jan",
+            "2024 5 Jan", "5 2024 Jan", "3/5/2024 2:07 PM", "2024/03/05", "1/2/3", "2024-03-05T14:07:09", "2024-03-05 14:07:09.5",
+            "#3/5/2024#", "2024年3月5日", "12:30:45.123 2024-03-05", "2024-03-05 12 PM", "2024-03-05T14", "2024-03-05T25:00:00",
+            "Wednesday, 05 March 2024", "March 32, 2024", "Sept 5 2024", "Tues 5 March 2024", "March", "March 5th 2024", "Jan 5 2024 Jan",
+            "13:00 AM 2024-03-05", "2024-03-05 10:00 +02:00 GMT", "", "   ", "12345678901",
+        };
+        foreach (string s in free)
+        {
+            Console.WriteLine("[" + s + "] " + Said(() => Show(DateTime.Parse(s, inv))) + " | " + Said(() => Show(DateTime.Parse(s, inv, utc))));
+        }
+
+        // Zones, read to UTC so that the machine's own does not show.
+        string[] zoned = {
+            "Tue, 05 Mar 2024 14:07:09 GMT", "March 5 2024 GMT", "Mar 5 2024 +02:00", "2024-03-05T14:07:09.1234567Z",
+            "2024-03-05T14:07:09+05:30", "2024-03-05 14:07:09.5-03:00", "2024-03-05 10:00 +0530", "2024-03-05 10:00 -5",
+            "2024-03-05 10:00 +15:00", "2024-03-05 10:00 Z GMT", "0001-01-01T00:00:00+05:00", "10:00 2024-03-05Z",
+        };
+        foreach (string s in zoned)
+        {
+            Console.WriteLine("[" + s + "] " + Said(() => Show(DateTime.Parse(s, inv, utc))) + " | " + Said(() => DateTime.Parse(s, inv, DateTimeStyles.RoundtripKind).Kind.ToString())
+                + " | " + Said(() => DateTimeOffset.Parse(s, inv, DateTimeStyles.AssumeUniversal).ToString("o")));
+        }
+
+        Console.WriteLine(Said(() => Show(DateTime.Parse("9999-12-31T23:59:59-05:00", inv, utc))));
+
+        // The styles, and what a date with none becomes.
+        Console.WriteLine(Show(DateTime.Parse("10:30", inv, DateTimeStyles.NoCurrentDateDefault)) + " | " + Show(DateTime.Parse("2024-03-05", inv, DateTimeStyles.AssumeUniversal | utc))
+            + " | " + Show(DateTime.Parse("2024-03-05", inv, DateTimeStyles.AssumeLocal)) + " | " + Show(DateTime.Parse(" 2024-03-05 ", inv, DateTimeStyles.None)));
+        Console.WriteLine(Said(() => DateTime.Parse("x", inv, (DateTimeStyles)256).ToString()) + " | " + Said(() => DateTime.Parse("x", inv, DateTimeStyles.AssumeLocal | DateTimeStyles.AssumeUniversal).ToString())
+            + " | " + Said(() => DateTime.ParseExact("x", "d", inv, DateTimeStyles.RoundtripKind | utc).ToString()));
+        Console.WriteLine(Said(() => DateTimeOffset.Parse("x", inv, DateTimeStyles.NoCurrentDateDefault).ToString()) + " | "
+            + Said(() => DateTimeOffset.Parse("x", inv, DateTimeStyles.NoCurrentDateDefault | DateTimeStyles.AssumeLocal | DateTimeStyles.AssumeUniversal).ToString())
+            + " | " + Said(() => DateTimeOffset.Parse("March 5 +02:00", inv).ToString()));
+        Console.WriteLine(Said(() => DateTime.Parse(null!).ToString()) + " | " + Said(() => DateTime.ParseExact("x", (string[])null!, inv, DateTimeStyles.None).ToString())
+            + " | " + Said(() => DateTime.ParseExact("x", new string[0], inv, DateTimeStyles.None).ToString()) + " | " + Said(() => DateTime.ParseExact("x", "", inv).ToString()));
+
+        // The exact reader: standard formats both ways, pictures, and its refusals.
+        DateTime d = new DateTime(2024, 3, 5, 14, 7, 9, 123, DateTimeKind.Utc);
+        foreach (string f in new[] { "o", "r", "s", "u", "d", "D", "f", "F", "g", "G", "m", "t", "T", "y" })
+        {
+            string text = d.ToString(f, inv);
+            Console.WriteLine(f + " [" + text + "] " + Said(() => Show(DateTime.ParseExact(text, f, inv, utc))) + " | " + Said(() => Show(DateTimeOffset.ParseExact(text, f, inv, DateTimeStyles.AssumeUniversal).UtcDateTime)));
+        }
+        string[] exact = {
+            "2024-02-30T00:00:00.0000000", "o", "2024-03-05T14:07:09.1230000+5:30", "o", "Wed, 05 Mar 2024 14:07:09 GMT", "r",
+            "tue, 05 mar 2024 14:07:09 GMT", "r", "Tue, 05 Mar 2024 14:07:09 gmt", "r", "05.03.2024 14:07", "dd.MM.yyyy HH:mm",
+            "20240305", "yyyyMMdd", "5/3/49", "d/M/yy", "5/3/50", "d/M/yy", "5/3/2024", "d/M/yy", "2024-003-05", "yyyy-M-d",
+            "MARCH 05 2024", "MMM dd yyyy", "Wed 05 Mar 2024", "ddd dd MMM yyyy", "14:07 PM", "HH:mm tt", "2:07 PM", "h:mm tt",
+            "12:07 AM", "hh:mm tt", "09.5", "ss.FFF", "09", "ss.FFF", "09", "ss.F", "a", "'abc", "x", "x",
+            "2024-03-05 +05", "yyyy-MM-dd z", "2024-03-05 +05:30 +05:30", "yyyy-MM-dd zzz zzz", "2024-03-05 +05:30 +05:00", "yyyy-MM-dd zzz zzz",
+            "  2024 - 03 - 05  ", "yyyy-MM-dd", "A.D. 2024", "g yyyy",
+        };
+        for (int i = 0; i < exact.Length; i += 2)
+        {
+            string s = exact[i], f = exact[i + 1];
+            Console.WriteLine(f + " [" + s + "] " + Said(() => Show(DateTime.ParseExact(s, f, inv, utc))) + " | " + Said(() => Show(DateTime.ParseExact(s, f, inv, DateTimeStyles.AllowWhiteSpaces | utc))));
+        }
+        DateTime got;
+        Console.WriteLine(DateTime.TryParseExact("2024-03-05", new[] { "d", "yyyy-MM-dd" }, inv, DateTimeStyles.None, out got) + " " + Show(got) + " | "
+            + DateTime.TryParse("nope", out got) + " " + Show(got) + " | " + DateTime.TryParse("2024-03-05".AsSpan(), inv, out got) + " " + Show(got)
+            + " | " + DateTime.ParseExact("05/03/2024".AsSpan(), "dd/MM/yyyy".AsSpan(), inv).ToString("o"));
+
+        // Strings back: the short and long forms.
+        Console.WriteLine(d.ToShortDateString() + " | " + d.ToLongDateString() + " | " + d.ToShortTimeString() + " | " + d.ToLongTimeString());
+
+        // The calendar's checks, in .NET's order and words.
+        Console.WriteLine(Said(() => new DateTime(2024, 2, 30).ToString()));
+        Console.WriteLine(Said(() => new DateTime(2024, 2, 3, 24, 0, 0).ToString()));
+        Console.WriteLine(Said(() => new DateTime(2024, 13, 3, 25, 0, 0, 1000).ToString()));
+        Console.WriteLine(Said(() => new DateTime(2024, 1, 3, 0, 0, 0, (DateTimeKind)7).ToString()));
+        Console.WriteLine(Said(() => new DateTime(-1).ToString()) + " | " + Said(() => new DateTime(0, (DateTimeKind)3).ToString()));
+        Console.WriteLine(Said(() => new DateTime(2024, 1, 3, 1, 2, 3, 4, 5).ToString("o")) + " | " + new DateTime(2024, 1, 3, 1, 2, 3, 4, 5).Microsecond + " " + new DateTime(638000000000000007).Nanosecond);
+        Console.WriteLine(Said(() => DateTime.MaxValue.AddTicks(1).ToString()) + " | " + Said(() => DateTime.MinValue.AddDays(-1).ToString()));
+        Console.WriteLine(Said(() => DateTime.MaxValue.AddDays(4e6).ToString()) + " | " + Said(() => (DateTime.MaxValue + TimeSpan.FromDays(1)).ToString()));
+        Console.WriteLine(Said(() => DateTime.MinValue.Subtract(TimeSpan.FromDays(1)).ToString()) + " | " + Said(() => DateTime.MinValue.AddMonths(-1).ToString()));
+        Console.WriteLine(Said(() => DateTime.MinValue.AddMonths(120001).ToString()) + " | " + Said(() => DateTime.MaxValue.AddYears(1).ToString()) + " | " + Said(() => DateTime.MinValue.AddYears(10001).ToString()));
+        Console.WriteLine(Said(() => DateTime.DaysInMonth(2024, 13).ToString()) + " | " + Said(() => DateTime.DaysInMonth(10000, 1).ToString()) + " | " + Said(() => DateTime.IsLeapYear(0).ToString()));
+        DateTime leap = new DateTime(2024, 2, 29, 10, 30, 0, DateTimeKind.Local);
+        Console.WriteLine(leap.AddYears(1).ToString("s") + " " + leap.AddYears(1).Kind + " " + leap.AddMonths(-13).ToString("s") + " " + new DateTime(2024, 1, 31).AddMonths(1).ToString("s")
+            + " " + new DateTime(2024, 1, 1).AddDays(1.1).Ticks + " " + new DateTime(2024, 1, 1).AddHours(-0.3).Ticks + " " + new DateTime(2024, 1, 1).AddMilliseconds(0.5).Ticks
+            + " " + new DateTime(2024, 1, 1).AddMicroseconds(2.5).Ticks);
+        DateTimeOffset o = new DateTimeOffset(2024, 3, 5, 14, 7, 9, TimeSpan.FromHours(2));
+        Console.WriteLine(o.AddSeconds(1.5).ToString("o") + " " + (o + TimeSpan.FromDays(1)).ToString("o") + " " + (o - TimeSpan.FromDays(1)).ToString("o") + " " + o.Subtract(o.AddHours(-1))
+            + " " + Said(() => DateTimeOffset.MaxValue.AddSeconds(1).ToString()) + " | " + Said(() => (DateTimeOffset.MinValue - TimeSpan.FromTicks(1)).ToString()));
+        return 0;
+    }
+}
