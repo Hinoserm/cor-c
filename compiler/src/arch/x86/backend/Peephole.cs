@@ -334,7 +334,7 @@ internal static class Peephole
         or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor
         or MOp.Cmp or MOp.Test or MOp.Imul or MOp.Imul3 or MOp.Mul
         or MOp.Neg or MOp.Not or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Shld or MOp.Shrd
-        or MOp.Cdq or MOp.Setcc or MOp.Nop;
+        or MOp.Cdq or MOp.Setcc or MOp.Cmov or MOp.Nop;
 
     /// <summary>
     /// A side-effect-free instruction whose result register is overwritten
@@ -663,7 +663,7 @@ internal static class Peephole
     /// rule has it (IrInfo.IsPure). A frame's, a spill's or a static's is
     /// memory the program owns, and goes with the register it fills.
     private static bool Removable(MInstr i)
-        => i.Op is MOp.Mov or MOp.Lea or MOp.Movzx or MOp.Movsx
+        => i.Op is MOp.Mov or MOp.Lea or MOp.Movzx or MOp.Movsx or MOp.Cmov
            && i.Operands[0] is MReg { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) }
            && (i.Op == MOp.Lea || i.Operands.Count < 2 || i.Operands[1] is not MMem m || CannotFault(m));
 
@@ -728,7 +728,9 @@ internal static class Peephole
 
     // ---- mov r, 0 -> xor r, r ---------------------------------------------------------
 
-    private static bool ReadsFlags(MInstr i) => i.Op is MOp.Jcc or MOp.Setcc or MOp.Adc or MOp.Sbb;
+    // A conditional move reads them as a jump does: `mov t, 0` between the
+    // compare and the cmov it feeds (IfConvert) is never an `xor`.
+    private static bool ReadsFlags(MInstr i) => i.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov or MOp.Adc or MOp.Sbb;
 
     // ---- test after an instruction that set the flags --------------------------------
 
@@ -761,7 +763,7 @@ internal static class Peephole
             for (int j = k + 1; j < instrs.Count && safe; j++)
             {
                 MInstr after = instrs[j];
-                if (after.Op is MOp.Jcc or MOp.Setcc)
+                if (after.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov)
                 {
                     if (!logical && after.Cond is not (Cond.E or Cond.Ne or Cond.S or Cond.Ns or Cond.P or Cond.Np)) safe = false;
                     continue;

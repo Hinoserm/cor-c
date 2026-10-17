@@ -41,6 +41,7 @@ internal static class Isa
             => X86Feature.ThreeDNow,
         // PI2FW: one of the five the K6-2+ and K6-III+ added to 3DNow!.
         MOp.ThreeDNowShortToFloat => X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended,
+        MOp.Cmov => X86Feature.Cmov,
         // FUCOMIP: the x87 half of what CPUID calls CMOV.
         MOp.Fucomipp => X86Feature.FloatCmov,
         MOp.Cvttss2si => X86Feature.Sse,

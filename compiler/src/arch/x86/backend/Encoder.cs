@@ -548,6 +548,15 @@ internal sealed class Encoder
                 B(0x0F, (byte)(0x90 + (int)i.Cond));
                 ModRM(0, i.Operands[0]);
                 break;
+            case MOp.Cmov:
+                // An undefined opcode on a Pentium or a K6: the audit has
+                // refused it for a profile without CMOV (Isa), as MMX is for
+                // one without MMX.
+                if (i.Width != 4 || i.Operands[0] is not MReg)
+                    throw new InvalidOperationException("CMOV takes a register destination");
+                B(0x0F, (byte)(0x40 + (int)i.Cond));
+                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                break;
             case MOp.JmpTable:
             {
                 // jmp dword [index*4 + table]: SIB with no base, disp32 relocated to the table.

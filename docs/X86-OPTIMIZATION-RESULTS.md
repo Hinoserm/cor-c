@@ -4,8 +4,9 @@
 
 The optimizer selects these paths automatically when the CPU enables their
 instructions and the implementation proves its input/storage requirements.
-There is no enable switch per optimization. `--disable-mmx` and
-`--disable-3dnow` exclude the corresponding instruction families.
+There is no enable switch per optimization. `--disable-mmx`,
+`--disable-3dnow` and `--disable-cmov` exclude the corresponding instruction
+families.
 
 | Source/IR pattern | Selected instruction families | Important restrictions |
 | --- | --- | --- |
@@ -20,6 +21,7 @@ There is no enable switch per optimization. `--disable-mmx` and
 | Word-to-float conversions | PUNPCKLWD, PI2FD, PI2FW | All 16-bit inputs are exactly representable; plus extension gated |
 | Floating arithmetic after word conversion | PFADD, PFSUBR, PFMUL, PF2ID | Proven finite ranges and matching signed-zero/rounding/conversion behavior |
 | Float or double cast to `int` | CVTTSS2SI (SSE), CVTTSD2SI (SSE2) | Hosted code only; the in-range finite operand only; `long` and `uint` keep the x87 |
+| Ternaries, Math.Max/Min/Clamp, an `if` that only assigns (IfConvert) | CMOVcc | Arms of one or two whole-word moves into virtual registers, entered only from the test; sources a register, a constant or frame/static memory, never a load through a register; one non-parity conditional jump; a triangle's register already written on every way in |
 
 Packed regions close before subsequent calls or x87 operations. Freestanding
 code does not gain implicit packed-register use: an interrupted user context
@@ -80,6 +82,17 @@ Full initial data: [packed measurements](../tests/benchmarks/results/x86-packed-
 Some small dword-shift candidates were slightly slower with EMMS included;
 the selector now keeps groups below 64 bytes scalar on that transition path.
 Do not interpret instruction availability as a profitability guarantee.
+
+## Conditional moves, 2026-10-16
+
+Host: AMD Ryzen 9 9950X, Linux, `--cpu=pentium-pro` against the same with
+`--disable-cmov`: 98 million iterations of `Math.Max(v, 7)`, a nested-ternary
+clamp, a ternary and two running extremes over a 64 Ki-element array, five
+alternating processes each, the median taken. On data a linear-congruential
+generator makes random the conditional moves run 554 ms against 685 ms, a
+fifth faster; on the same array sorted, where every branch is predicted, 256 ms
+against 234 ms. An assignment the data decides is where a cmov pays; a branch
+that always goes one way costs nothing to predict.
 
 ## Real crypto checks
 

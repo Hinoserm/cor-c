@@ -89,6 +89,9 @@ internal static class AsmText
             case MOp.Setcc:
                 yield return $"set{i.Cond.Mnemonic()} {Op(i.Operands[0], 1, true)}";
                 yield break;
+            case MOp.Cmov:
+                yield return $"cmov{i.Cond.Mnemonic()} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, false)}";
+                yield break;
             case MOp.JmpTable:
                 yield return $"jmp dword [{Op(i.Operands[0], 4, false)}*4 + table({string.Join(",", i.Table!.Select(t => "." + t.Name))})]";
                 yield break;

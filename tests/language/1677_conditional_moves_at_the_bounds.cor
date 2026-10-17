@@ -1,0 +1,102 @@
+// test: conditional_moves_at_the_bounds
+// flags: --cpu pentium-pro
+// expect-exit: 0
+// expect-output:
+// max -2147483648 2147483647 2147483647 5 5
+// min -2147483648 -2147483648 2147483647 5 -5
+// clamp 0 0 255 255 0 255 128
+// abs 2147483647 -2147483648 0 7 7
+// math 2147483647 -2147483648 4294967295 0 -9223372036854775808 9223372036854775807
+// math clamp 0 4294967295 -1 1 -9223372036854775808 9223372036854775807
+// long clamp -1 0 4294967296 4294967296 -4294967296
+// best 2147483647 -2147483648 3 -1
+// pick 11 -22 11 -22
+// null -1 42
+// static 1000 7 1000
+// swap -2147483648 2147483647 3 3
+// unsigned 4294967295 0 4294967295
+//
+// A SMALL CHOICE COMPILES TO A CONDITIONAL MOVE on a processor that has one
+// (X86Feature.Cmov, IfConvert): a ternary, Math.Max, Min and Clamp, and an `if`
+// that only assigns, each at the edges of their types, where a condition
+// taken the wrong way round, or signed for unsigned, shows. A field read
+// behind a null check stays behind it -- the cmov's load happens either way --
+// and a swap, whose moves read each other's registers, is not one.
+
+using System;
+
+class Box
+{
+    public int Value;
+    public Box(int value) { Value = value; }
+}
+
+static class Program
+{
+    static int s_limit = 1000;
+
+    static int Max(int a, int b) => a > b ? a : b;
+    static int Min(int a, int b) => a < b ? a : b;
+    static int Clamp(int v) => v < 0 ? 0 : (v > 255 ? 255 : v);
+    static int Abs(int x) => x < 0 ? -x : x;
+    static long ClampLong(long v, long low, long high) => v < low ? low : v > high ? high : v;
+    static int Pick(bool c, int x, int y) { int r = y; if (c) r = x; return r; }
+    static int Field(Box? b) => b != null ? b.Value : -1;
+    static int Limited(int v) => v > s_limit ? s_limit : v;
+    static uint UMax(uint a, uint b) => a > b ? a : b;
+    static uint UMin(uint a, uint b) => a < b ? a : b;
+
+    static int Best(int[] values)
+    {
+        int best = int.MinValue;
+        foreach (int v in values)
+        {
+            if (v > best) best = v;
+        }
+        return best;
+    }
+
+    static int Worst(int[] values)
+    {
+        int worst = int.MaxValue;
+        foreach (int v in values)
+        {
+            if (!(v >= worst)) worst = v;
+        }
+        return worst;
+    }
+
+    static (int, int) Sorted(int x, int y)
+    {
+        if (x > y)
+        {
+            int t = x;
+            x = y;
+            y = t;
+        }
+        return (x, y);
+    }
+
+    static int Main()
+    {
+        Console.WriteLine($"max {Max(int.MinValue, int.MinValue)} {Max(int.MinValue, int.MaxValue)} {Max(int.MaxValue, int.MinValue)} {Max(5, 5)} {Max(-5, 5)}");
+        Console.WriteLine($"min {Min(int.MinValue, int.MaxValue)} {Min(int.MaxValue, int.MinValue)} {Min(int.MaxValue, int.MaxValue)} {Min(5, 5)} {Min(-5, 5)}");
+        Console.WriteLine($"clamp {Clamp(int.MinValue)} {Clamp(0)} {Clamp(255)} {Clamp(int.MaxValue)} {Clamp(-1)} {Clamp(256)} {Clamp(128)}");
+        Console.WriteLine($"abs {Abs(int.MaxValue)} {Abs(int.MinValue)} {Abs(0)} {Abs(-7)} {Abs(7)}");
+        Console.WriteLine($"math {Math.Max(int.MinValue, int.MaxValue)} {Math.Min(int.MinValue, int.MaxValue)} {Math.Max(0u, uint.MaxValue)} {Math.Min(0u, uint.MaxValue)} {Math.Min(long.MinValue, long.MaxValue)} {Math.Max(long.MinValue, long.MaxValue)}");
+        Console.WriteLine($"math clamp {Math.Clamp(int.MinValue, 0, 10)} {Math.Clamp(uint.MaxValue, 0u, uint.MaxValue)} {Math.Clamp(-1, -1, -1)} {Math.Clamp(int.MaxValue, -1, 1)} {Math.Clamp(long.MinValue, long.MinValue, 0L)} {Math.Clamp(long.MaxValue, 0L, long.MaxValue)}");
+        Console.WriteLine($"long clamp {ClampLong(-1, long.MinValue, 0)} {ClampLong(long.MinValue, 0, 1L << 32)} {ClampLong(long.MaxValue, 0, 1L << 32)} {ClampLong(1L << 32, 1L << 32, 1L << 32)} {ClampLong(-(1L << 32), long.MinValue, -(1L << 32))}");
+        int[] values = { 3, int.MaxValue, -1, int.MinValue, 0, 3 };
+        int[] small = { 3, 3, 3 };
+        int[] negative = { -1, -1 };
+        Console.WriteLine($"best {Best(values)} {Worst(values)} {Best(small)} {Best(negative)}");
+        Console.WriteLine($"pick {Pick(true, 11, -22)} {Pick(false, 11, -22)} {Pick(1 > 0, 11, -22)} {Pick(values[0] > values[1], 11, -22)}");
+        Console.WriteLine($"null {Field(null)} {Field(new Box(42))}");
+        Console.WriteLine($"static {Limited(int.MaxValue)} {Limited(7)} {Limited(1000)}");
+        (int a, int b) = Sorted(int.MaxValue, int.MinValue);
+        (int c, int d) = Sorted(3, 3);
+        Console.WriteLine($"swap {a} {b} {c} {d}");
+        Console.WriteLine($"unsigned {UMax(uint.MaxValue, 0u)} {UMin(uint.MaxValue, 0u)} {UMax(0x80000000u, uint.MaxValue)}");
+        return 0;
+    }
+}

@@ -60,6 +60,11 @@ public static class Roles
                 return operand == 0 ? Role.UseDef : Role.Use;
             case MOp.Xchg:
                 return Role.UseDef;
+            case MOp.Cmov:
+                // A CONDITIONAL WRITE READS WHAT IT MAY KEEP: where the
+                // condition fails the register's old value is the result, so
+                // that value is live into the instruction.
+                return operand == 0 ? Role.UseDef : Role.Use;
             case MOp.Xadd:
                 // [mem], reg: the register receives the old value.
                 return operand == 0 ? Role.Use : Role.UseDef;

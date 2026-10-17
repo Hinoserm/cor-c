@@ -25,6 +25,13 @@ public enum MOp : byte
     Shld, Shrd,     // dest, source, count
     Cdq,
     Setcc,
+    /// <summary>
+    /// cmovcc r32, r/m32, the P6's conditional move (X86Feature.Cmov): operand 0
+    /// takes operand 1 when Cond holds and keeps its own value when it does
+    /// not, so it is read as well as written. The load from a memory operand
+    /// happens either way, and faults either way (IfConvert).
+    /// </summary>
+    Cmov,
     // control
     Jmp, Jcc, JmpTable, JmpInd, Call, CallInd, Ret,
     // atomics and strings

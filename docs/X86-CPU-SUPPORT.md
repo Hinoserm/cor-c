@@ -36,9 +36,9 @@ The parser also accepts `i386`, `i486`, `586`, `i586`, `pentium_mmx`, `i686`,
 `pentium-ii`, `pentium-iii`, `k6-iii`, `k6-iii+`, `k7`, `athlon-tbird`,
 `athlon-4` and `athlon-mp`. A parsed profile does not imply complete backend
 support for that processor. The code generator selects FUCOMIP for float
-compares where the profile has FCMOV/FCOMI, and CVTTSS2SI (SSE) or CVTTSD2SI
-(SSE2) for an in-range float or double cast to `int`; it does not yet select
-CMOV.
+compares where the profile has FCMOV/FCOMI, CMOVcc for a small choice where
+it has CMOV (IfConvert), and CVTTSS2SI (SSE) or CVTTSD2SI (SSE2) for an
+in-range float or double cast to `int`.
 
 SSE's state is the operating system's to enable (CR4.OSFXSR) and save, so only
 hosted code uses it, and that code runs only under an operating system that

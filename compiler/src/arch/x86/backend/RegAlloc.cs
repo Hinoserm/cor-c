@@ -262,11 +262,16 @@ internal sealed class Allocator
                 {
                     MInstr i = block.Instrs[k];
                     if ((!flagsLive || i.Op == MOp.Not) && PureArithmetic(i)) deadFlags.Add(i);
+                    // A CONDITIONAL MOVE LEAVES NOTHING BUT ITS REGISTER: it sets
+                    // no flag, and its sources are registers or memory that
+                    // cannot fault (IfConvert). Read only by itself -- the half
+                    // of a long nothing reads, kept by cmov after cmov -- it goes.
+                    if (i.Op == MOp.Cmov && !i.Lock && i.Operands[0] is MReg { IsPhys: false }) deadFlags.Add(i);
                     // Fucomipp writes every status flag, as cmp does: ZF, PF and CF
                     // from the comparison, OF, SF and AF cleared.
                     if (i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or
                         or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg or MOp.Fucomipp) flagsLive = false;
-                    if (i.Op is MOp.Adc or MOp.Sbb or MOp.Jcc or MOp.Setcc) flagsLive = true;
+                    if (i.Op is MOp.Adc or MOp.Sbb or MOp.Jcc or MOp.Setcc or MOp.Cmov) flagsLive = true;
                     else if (!KnownFlagEffect(i.Op)) flagsLive = true;
                 }
             }
@@ -310,7 +315,7 @@ internal sealed class Allocator
         or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test
         or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg or MOp.Not or MOp.Bswap
         or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Cdq
-        or MOp.Setcc or MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Nop or MOp.Pause
+        or MOp.Setcc or MOp.Cmov or MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Nop or MOp.Pause
         or MOp.RepMovsb or MOp.RepMovsd or MOp.RepStosb or MOp.RepStosd or MOp.Fucomipp;
 
     // ---- occurrences ----------------------------------------------------------
@@ -1333,7 +1338,7 @@ internal sealed class Allocator
         MOp.Mov or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp => true,
         MOp.Push or MOp.Test or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg or MOp.Not
             or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Setcc or MOp.CallInd => operand == 0,
-        MOp.Imul or MOp.Imul3 or MOp.Movzx or MOp.Movsx => operand == 1,
+        MOp.Imul or MOp.Imul3 or MOp.Movzx or MOp.Movsx or MOp.Cmov => operand == 1,
         _ => false,
     };
 

@@ -107,6 +107,7 @@ internal static class Program
         Exit(m);
         UDiv64(m);
         CmpZero(m);
+        Choosers(m);
         ConstBranch(m);
         DeadLoad(m);
         Remat(m);
@@ -215,7 +216,13 @@ internal static class Program
         Check(obj.Symbols.Any(s => s.Name == "counter" && s.Section?.Name == ".bss"), "counter lands in .bss");
         Check(obj.Section(".data").Relocs.Count == 2, "data relocations converted");
         Check(obj.Section(".rodata").Relocs.Count >= 3, "jump table entries relocated");
-        Check(!asm.Contains("cmov") && !asm.Contains("cpuid"), "no post-486 instructions");
+        Check(!asm.Contains("cpuid"), "no post-486 instructions");
+        // CMOV only where the profile has it (IfConvert), and then in each
+        // shape it folds: a diamond, a long's two halves, a triangle.
+        foreach (string chooser in new[] { "maxof", "pick64", "clampneg" })
+            Check(FunctionAsm(asm, chooser).Contains("cmov") == Target.X86.X86Profile.Has(X86Feature.Cmov),
+                chooser + " uses CMOV exactly where the profile has it");
+        Check(asm.Contains("cmov") == Target.X86.X86Profile.Has(X86Feature.Cmov), "no CMOV without the profile's CMOV");
 
         // Code-quality checks on the assembly text, one per known bad pattern.
         string cmpZero = FunctionAsm(asm, "cmpzero");
@@ -237,7 +244,9 @@ internal static class Program
         // still lists, is not one.
         Check(!System.Text.RegularExpressions.Regex.IsMatch(FunctionAsm(asm, "sum"), @"j\w+ (\.[\w-]+)\n\s+jmp \.[\w-]+\n\1:"), "conditional jump around a jump is inverted");
 
-        Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"\n\s+mov e\w\w, 0\n"), "zeroing a register uses xor");
+        // But not between a compare and the cmov it feeds: an xor would
+        // write the flags the cmov reads (IfConvert).
+        Check(!System.Text.RegularExpressions.Regex.IsMatch(asm, @"\n\s+mov e\w\w, 0\n(?!\s+cmov)"), "zeroing a register uses xor");
         string remat = FunctionAsm(asm, "remat");
         Check(!System.Text.RegularExpressions.Regex.IsMatch(remat, @"mov (\w+), 77\n\s+mov \[ebp-\d+\], \1"), "a spilled constant is rematerialised, not stored");
         Check(remat.Contains(", 77"), "a rematerialised constant folds into its use");
@@ -1387,6 +1396,42 @@ internal static class Program
         b.Ret(I(3));
     }
 
+    /// <summary>
+    /// int maxof(int a, int b) => a > b ? a : b; long pick64(int c, long a,
+    /// long b) => c != 0 ? a : b; int clampneg(int x) { if (x &lt; 0) x = 0;
+    /// return x; } -- small choices, as the lowering leaves them.
+    /// </summary>
+    private static void Choosers(Module m)
+    {
+        {
+            (Function f, Builder b) = New(m, "maxof", IrType.I32, IrType.I32, IrType.I32);
+            VReg r = f.NewReg(IrType.I32, "r");
+            Block yes = f.NewBlock("yes"), no = f.NewBlock("no"), join = f.NewBlock("join");
+            b.Branch(b.Binary(Opcode.GtS, f.Params[0], f.Params[1]), yes, no);
+            b.SetBlock(yes); b.CopyTo(r, R(f.Params[0])); b.Jump(join);
+            b.SetBlock(no); b.CopyTo(r, R(f.Params[1])); b.Jump(join);
+            b.SetBlock(join); b.Ret(R(r));
+        }
+        {
+            (Function f, Builder b) = New(m, "pick64", IrType.I64, IrType.I32, IrType.I64, IrType.I64);
+            VReg r = f.NewReg(IrType.I64, "r");
+            Block yes = f.NewBlock("yes"), no = f.NewBlock("no"), join = f.NewBlock("join");
+            b.Branch(b.Binary(Opcode.Ne, f.Params[0], 0), yes, no);
+            b.SetBlock(yes); b.CopyTo(r, R(f.Params[1])); b.Jump(join);
+            b.SetBlock(no); b.CopyTo(r, R(f.Params[2])); b.Jump(join);
+            b.SetBlock(join); b.Ret(R(r));
+        }
+        {
+            (Function f, Builder b) = New(m, "clampneg", IrType.I32, IrType.I32);
+            VReg r = f.NewReg(IrType.I32, "r");
+            b.CopyTo(r, R(f.Params[0]));
+            Block neg = f.NewBlock("neg"), join = f.NewBlock("join");
+            b.Branch(b.Binary(Opcode.LtS, r, 0), neg, join);
+            b.SetBlock(neg); b.CopyTo(r, I(0)); b.Jump(join);
+            b.SetBlock(join); b.Ret(R(r));
+        }
+    }
+
     /// <summary>int constbranch() { bool c = false; if (c) return 1; return 7; } -- as the lowering leaves it.</summary>
     private static void ConstBranch(Module m)
     {
@@ -1654,6 +1699,13 @@ internal static class Program
         Expect(b.Call("cmpzero", IrType.I32, I(1L << 40, IrType.I64), I(0))!, I(2));
         Expect(b.Call("cmpzero", IrType.I32, I(1, IrType.I64), I(9))!, I(3));
         Expect(b.Call("constbranch", IrType.I32)!, I(7));
+        Expect(b.Call("maxof", IrType.I32, I(3), I(7))!, I(7));
+        Expect(b.Call("maxof", IrType.I32, I(-1), I(-5))!, I(-1));
+        Expect(b.Call("maxof", IrType.I32, I(int.MinValue), I(int.MaxValue))!, I(int.MaxValue));
+        Expect(b.Call("pick64", IrType.I64, I(1), I(1L << 40, IrType.I64), I(-1, IrType.I64))!, I(1L << 40, IrType.I64));
+        Expect(b.Call("pick64", IrType.I64, I(0), I(1L << 40, IrType.I64), I(-1, IrType.I64))!, I(-1, IrType.I64));
+        Expect(b.Call("clampneg", IrType.I32, I(-5))!, I(0));
+        Expect(b.Call("clampneg", IrType.I32, I(9))!, I(9));
         Expect(b.Call("deadload", IrType.I32)!, I(counter));
         Expect(b.Call("remat", IrType.I32, I(3))!, I(77 * 2 + 3 * Enumerable.Range(2, 8).Sum()));
         Expect(b.Call("byteword", IrType.I64, I(0x12), I(0xEF), I(0xCD), I(0xAB))!, I(0xABCDEF12L, IrType.I64));
