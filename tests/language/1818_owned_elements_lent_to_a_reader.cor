@@ -1,0 +1,214 @@
+// test: owned_elements_lent_to_a_reader
+// expect-exit: 0
+// expect-output:
+// summed 190000 True
+// lent on 380000 True
+// instance 190000 True
+// stored 190000 kept 7
+// first 0 kept 0
+// lent on to a keeper 210000 kept 7
+// added 21000 kept 77
+// virtual 190000 kept 7
+// intact ok
+//
+// A LIST LENT TO A FUNCTION THAT ONLY READS IT gives its elements back as
+// it dies (OwnedElements.Lenders): the list a function fills with objects it
+// makes, hands to a helper that walks it -- a summing helper, one that lends
+// it on to two more, an instance method of another object -- and drops.
+// Each round frees at least its elements.
+//
+// And what keeps a reader from being one: an element it reads stored into a
+// static, one it hands back (`p[0]`), a reader that lends the list on to
+// one of those, one that adds to the list, and a call that reaches the
+// reader through a virtual method, whose override keeps an element. What
+// was kept stays intact while the memory of what was freed is used again.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Part
+{
+    public int N;
+    public Part(int n) { N = n; }
+}
+
+sealed class Summer
+{
+    public int Bias;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Sum(List<Part> parts)
+    {
+        int s = Bias;
+        for (int i = 0; i < parts.Count; i++) s += parts[i].N;
+        return s;
+    }
+}
+
+class Reader
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public virtual int Read(List<Part> parts)
+    {
+        int s = 0;
+        foreach (Part p in parts) s += p.N;
+        return s;
+    }
+}
+
+sealed class KeepingReader : Reader
+{
+    public static Part? Kept;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public override int Read(List<Part> parts)
+    {
+        Kept = parts[7];
+        return base.Read(parts);
+    }
+}
+
+static class Program
+{
+    const int Count = 20, Rounds = 1000;
+
+    static Part? s_stored, s_first, s_shared;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Total(List<Part> parts)
+    {
+        int s = 0;
+        foreach (Part p in parts) s += p.N;
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Indexed(List<Part> parts)
+    {
+        int s = 0;
+        for (int i = 0; i < parts.Count; i++) s += parts[i].N;
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Both(List<Part> parts) => Total(parts) + Indexed(parts);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Storing(List<Part> parts)
+    {
+        int s = 0;
+        foreach (Part p in parts) { s += p.N; if (p.N == 7) s_stored = p; }
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Part First(List<Part> parts) => parts[0];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ToKeeper(List<Part> parts) => Storing(parts) + parts.Count;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Adding(List<Part> parts)
+    {
+        parts.Add(s_shared!);
+        return parts.Count;
+    }
+
+    // At least a free an element a round: the elements were given back.
+    static string Many(long before) => Gc.Frees - before >= (long)Rounds * Count ? "True" : "False " + (Gc.Frees - before);
+
+    static int Main()
+    {
+        // Each list made and dropped in a loop of this function: a region
+        // of a call that made it would give its elements back whoever owned
+        // them.
+        long before = Gc.Frees, sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            sum += Total(parts);
+        }
+        Console.WriteLine("summed " + sum + " " + Many(before));
+
+        before = Gc.Frees; sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            sum += Both(parts);
+        }
+        Console.WriteLine("lent on " + sum + " " + Many(before));
+
+        Summer summer = new();
+        before = Gc.Frees; sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            sum += summer.Sum(parts);
+        }
+        Console.WriteLine("instance " + sum + " " + Many(before));
+
+        sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            sum += Storing(parts);
+        }
+        Console.WriteLine("stored " + sum + " kept " + s_stored!.N);
+
+        sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            s_first = First(parts);
+            sum += s_first.N;
+        }
+        Console.WriteLine("first " + sum + " kept " + s_first!.N);
+
+        sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            sum += ToKeeper(parts);
+        }
+        Console.WriteLine("lent on to a keeper " + sum + " kept " + s_stored!.N);
+
+        s_shared = new Part(77);
+        sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            sum += Adding(parts);
+        }
+        Console.WriteLine("added " + sum + " kept " + s_shared.N);
+
+        Reader plain = new(), keeping = new KeepingReader();
+        sum = 0;
+        for (int r = 0; r < Rounds; r++)
+        {
+            var parts = new List<Part>();
+            for (int i = 0; i < Count; i++) parts.Add(new Part(i));
+            sum += (r % 2 == 0 ? plain : keeping).Read(parts);
+        }
+        Console.WriteLine("virtual " + sum + " kept " + KeepingReader.Kept!.N);
+
+        // The memory of whatever was given back, used again.
+        long churn = 0;
+        for (int r = 0; r < 4000; r++)
+        {
+            var junk = new List<Part>();
+            for (int i = 0; i < Count; i++) junk.Add(new Part(1000 + i));
+            churn += junk[r % Count].N;
+        }
+        bool intact = s_stored.N == 7 && s_first.N == 0 && s_shared.N == 77 && KeepingReader.Kept.N == 7 && churn > 0;
+        Console.WriteLine(intact ? "intact ok" : "intact bad " + s_stored.N + " " + s_first.N + " " + s_shared.N + " " + KeepingReader.Kept.N);
+        return 0;
+    }
+}

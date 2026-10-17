@@ -437,11 +437,13 @@ internal static class OwnedElements
     /// What a known call does with its operands: the adder's value operand,
     /// the out-slot operand, whether it answers an element, whether it makes
     /// an enumerator of the collection (a foreach) or a view of it (a
-    /// Dictionary's Values or Keys, walked by one), and whether a constructor
+    /// Dictionary's Values or Keys, walked by one), whether a constructor
     /// fills it with what another holds (Copies: a known call, whose
-    /// collection owns no element it was made with).
+    /// collection owns no element it was made with), and the operand a
+    /// call lends the collection to a reader at (Lent: Lenders).
     /// </summary>
-    internal readonly record struct Role(bool Known, int Adds = -1, int OutSlot = -1, bool Reads = false, bool Enumerates = false, bool Views = false, bool Copies = false);
+    internal readonly record struct Role(bool Known, int Adds = -1, int OutSlot = -1, bool Reads = false, bool Enumerates = false, bool Views = false, bool Copies = false,
+        int Lent = -1);
 
     /// <summary>
     /// The types declared inside List and Dictionary, whose names begin with
@@ -585,10 +587,12 @@ internal static class OwnedElements
     /// <summary>
     /// Whether every use of the collection is one this rule follows; the
     /// calls among them, with their roles. A return of it is one when the
-    /// function hands it back (`returned`), and then every return must be.
+    /// function hands it back (`returned`), and then every return must be;
+    /// a call lending it to a reader is one when `lenders` knows the callee
+    /// for one (Lenders).
     /// </summary>
     internal static List<(Block B, Instr Call, Role Role)>? Uses(Function f, Defs defs, string kind, HashSet<VReg> container, Instr? alloc, out bool returned,
-        HandOff? handOff = null, IReadOnlySet<Instr>? allowed = null, List<(Block B, Instr Call, Role Role)>? into = null)
+        HandOff? handOff = null, IReadOnlySet<Instr>? allowed = null, List<(Block B, Instr Call, Role Role)>? into = null, Lenders? lenders = null)
     {
         // The calls found are gathered in `into` when given, a refusal
         // included: what was kept of them can be let go (ReleaseFieldReads).
@@ -631,6 +635,8 @@ internal static class OwnedElements
                     case Opcode.Call when i.Callee is not null && at == 0 && count == 1:
                         if (i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive) continue;
                         Role role = RoleOf(kind, i.Callee);
+                        // Lent to a reader as its first argument: `Join(parts)`.
+                        if (!role.Known && lenders?.Lends(i, at, kind) is not null) { calls.Add((b, i, new(true, Lent: at))); continue; }
                         if (!role.Known) { Say(f, $"unknown call: {i.Callee}"); return null; }
                         if (role.Copies) { Say(f, $"made as a copy of another's elements: {i.Callee}"); return null; }
                         calls.Add((b, i, role));
@@ -652,6 +658,11 @@ internal static class OwnedElements
                         && handOff.Stores(i.Callee, at) is { } stored:
                         handOff.At = i; handOff.Field = stored; handOff.Operand = at;
                         continue;
+                    // LENT TO A READER (Lenders): passed to a function of the
+                    // module that only reads it, and keeps nothing of it.
+                    case Opcode.Call when lenders is not null && at > 0 && count == 1 && lenders.Lends(i, at, kind) is not null:
+                        calls.Add((b, i, new(true, Lent: at)));
+                        continue;
                     default:
                         if (IrInfo.IsIntCompare(i.Op)) continue;
                         Say(f, $"refused use: {i}");
@@ -665,6 +676,93 @@ internal static class OwnedElements
                 if (b.Terminator is { Op: Opcode.Ret } ret && (ret.Operands.Count != 1 || ret.Operands[0] is not RegOperand back || !container.Contains(back.Reg)))
                 { Say(f, $"returns something else: {ret}"); return null; }
         return calls;
+    }
+
+    /// <summary>
+    /// THE READERS A COLLECTION IS LENT TO: a function of the module, called
+    /// directly, that is handed the collection and only reads it -- a
+    /// printer, a joiner, a summing helper: `Join(parts)` walking the list
+    /// into a builder. Every use of its parameter is one Uses follows, none
+    /// of them adding to it, writing an out-slot or making a copy; the
+    /// parameter is never written again, stored, captured (a closure's
+    /// field is a store) or handed back; and a call lending it on is to a
+    /// reader in turn. Then the reader keeps neither the collection nor,
+    /// with what it reads going nowhere -- the lifetime pass's to judge
+    /// (Escape.ReaderProved), as only the calls are known before inlining --
+    /// any element, and its call is a use of the collection like an
+    /// indexer's. A Remove or a Clear there only drops an element, which
+    /// the collector has then, as it does in the caller. Not an async body,
+    /// whose parameters live in its machine; another unit's function is
+    /// none, its body not here to read. Answered once per callee, parameter
+    /// and kind; a cycle of readers lends nothing.
+    /// </summary>
+    internal sealed class Lenders
+    {
+        private readonly Func<string, Function?> _find;
+        private readonly Dictionary<(string Callee, int Parameter, string Kind), List<(Block B, Instr Call, Role Role)>?> _known = new();
+
+        public Lenders(Func<string, Function?> find) => _find = find;
+
+        /// <summary>The function a call lending the collection runs: its callee, its body here, taking each operand as a parameter.</summary>
+        public Function? Reader(Instr call)
+            => call.Op == Opcode.Call && call.Callee is { } callee && _find(callee) is { Blocks.Count: > 0 } g && g.Params.Count == call.Operands.Count ? g : null;
+
+        /// <summary>The reader's calls on the collection, when `call` lends it the operand at `at`; null when it is no reader.</summary>
+        public List<(Block B, Instr Call, Role Role)>? Lends(Instr call, int at, string kind)
+            => Reader(call) is { } g && at >= 0 && at < g.Params.Count ? Lends(g, at, kind) : null;
+
+        private List<(Block B, Instr Call, Role Role)>? Lends(Function g, int p, string kind)
+        {
+            (string, int, string) key = (g.Name, p, kind);
+            if (_known.TryGetValue(key, out List<(Block B, Instr Call, Role Role)>? known)) return known;
+            // None while it is judged: a cycle of readers lends nothing.
+            _known[key] = null;
+            if (g.Async is not null) return null;
+            Defs defs = new(g, buildCfg: false);
+            VReg parameter = g.Params[p];
+            if (!defs.IsSingle(parameter)) { Say(g, $"parameter {p}: written again"); return null; }
+            HashSet<VReg> container = Container(g, defs, parameter);
+            if (Uses(g, defs, kind, container, null, out bool returned, lenders: this) is not { } calls)
+            { Say(g, $"parameter {p}: not only read"); return null; }
+            if (returned || calls.Any(c => c.Role.Adds >= 0 || c.Role.OutSlot >= 0 || c.Role.Copies))
+            { Say(g, $"parameter {p}: handed back or added to"); return null; }
+            // NOTHING OF IT READ OR WRITTEN BUT THROUGH THOSE CALLS, which
+            // keep everything taking it from the inliner: a reader's own code
+            // has no field of the collection's to touch, and a word of it read
+            // raw -- runtime code taking an object's storage for a number --
+            // could be its array, and an element taken out of it unseen.
+            foreach (Block b in g.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op is Opcode.Load or Opcode.Store or Opcode.Add && i.Operands.Count > 0 && i.Operands[0] is RegOperand r && container.Contains(r.Reg)
+                        && !(i.Op == Opcode.Load && i.Offset == 0))
+                    { Say(g, $"parameter {p}: its words read or written: {i}"); return null; }
+            Say(g, $"parameter {p}: a reader");
+            return _known[key] = calls;
+        }
+
+        /// <summary>
+        /// Every call the collection meets in the reader `call` lends it to,
+        /// and in the readers that one lends it on to, into `keep`: kept from
+        /// the inliner with the caller's, so each is still a call when the
+        /// lifetime pass judges the reader -- or let go again (Escape.ReleaseReaders).
+        /// Readers lend only to readers judged before them, so this ends.
+        /// </summary>
+        public void Keep(Instr call, int at, string kind, HashSet<Instr> keep)
+        {
+            if (Lends(call, at, kind) is not { } calls) return;
+            foreach ((Block _, Instr c, Role role) in calls)
+            {
+                keep.Add(c);
+                if (role.Lent >= 0) Keep(c, role.Lent, kind, keep);
+            }
+        }
+
+        /// <summary>Every call of every reader found, each reader's once.</summary>
+        public IEnumerable<Instr> All()
+        {
+            foreach (List<(Block B, Instr Call, Role Role)>? calls in _known.Values)
+                if (calls is not null) foreach (var c in calls) yield return c.Call;
+        }
     }
 
     /// <summary>
@@ -945,10 +1043,12 @@ public sealed class MarkOwnedElements : IModulePass
         bool inner = false;
         Dictionary<string, List<(Function F, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)>?> readsOf = new(StringComparer.Ordinal);
         HashSet<string>? addressed = null;
+        Dictionary<string, Function> byName = new(StringComparer.Ordinal);
+        foreach (Function g in m.Functions) byName[g.Name] = g;
+        // The functions of the module a candidate is lent to, each read once (OwnedElements.Lenders).
+        OwnedElements.Lenders lenders = new(name => byName.GetValueOrDefault(name));
         if (whole || unit)
         {
-            Dictionary<string, Function> byName = new(StringComparer.Ordinal);
-            foreach (Function g in m.Functions) byName[g.Name] = g;
             Dictionary<string, Dictionary<int, string>> stored = new(StringComparer.Ordinal);
             stores = (callee, at) =>
             {
@@ -991,6 +1091,17 @@ public sealed class MarkOwnedElements : IModulePass
             OwnedElements.Say(f, $"handed to {field}, read {reads.Count} time(s)");
             return true;
         }
+        // A candidate's calls kept from the inliner, and those of each reader
+        // it is lent to: inlined, a reader's walk would read its elements
+        // unseen, and the call lending it would be gone.
+        void Keep(List<(Block B, Instr Call, OwnedElements.Role Role)> calls, string kind)
+        {
+            foreach (var c in calls)
+            {
+                m.KeepCalls.Add(c.Call);
+                if (c.Role.Lent >= 0) lenders.Keep(c.Call, c.Role.Lent, kind, m.KeepCalls);
+            }
+        }
         // What each function handing back a candidate hands back.
         Dictionary<string, string> handsBack = new(StringComparer.Ordinal);
 
@@ -1006,12 +1117,12 @@ public sealed class MarkOwnedElements : IModulePass
                     HashSet<VReg> container = OwnedElements.Container(f, defs, i);
                     if (OwnedElements.KindOf(f, i, container) is not { } kind) continue;
                     OwnedElements.HandOff? handOff = stores is null ? null : new() { Stores = stores };
-                    if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned, handOff) is not { } calls) { OwnedElements.Say(f, $"{kind} at {i.Line}: a use not followed"); continue; }
+                    if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned, handOff, lenders: lenders) is not { } calls) { OwnedElements.Say(f, $"{kind} at {i.Line}: a use not followed"); continue; }
                     if (!returned && !calls.Any(c => c.Role.Adds >= 0)) continue;
                     if (!ThroughField(f, handOff, kind, returned)) { OwnedElements.Say(f, $"{kind} at {i.Line}: handed to a field not followed"); continue; }
                     OwnedElements.Say(f, $"{kind} at {i.Line}: candidate{(returned ? ", handed back" : "")}");
                     i.Field = Instr.OwnsCandidate;
-                    foreach (var c in calls) m.KeepCalls.Add(c.Call);
+                    Keep(calls, kind);
                     if (returned) handsBack[f.Name] = kind;
                 }
         }
@@ -1032,11 +1143,11 @@ public sealed class MarkOwnedElements : IModulePass
                         defs ??= new Defs(f, buildCfg: false);
                         HashSet<VReg> container = OwnedElements.Container(f, defs, i);
                         OwnedElements.HandOff? handOff = stores is null ? null : new() { Stores = stores };
-                        if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned, handOff) is not { } calls) { OwnedElements.Say(f, $"{kind} from {i.Callee}: a use not followed"); continue; }
+                        if (OwnedElements.Uses(f, defs, kind, container, i, out bool returned, handOff, lenders: lenders) is not { } calls) { OwnedElements.Say(f, $"{kind} from {i.Callee}: a use not followed"); continue; }
                         if (!ThroughField(f, handOff, kind, returned)) { OwnedElements.Say(f, $"{kind} from {i.Callee}: handed to a field not followed"); continue; }
                         OwnedElements.Say(f, $"{kind} from {i.Callee}: candidate{(returned ? ", handed back" : "")}");
                         i.Field = Instr.OwnsCandidate;
-                        foreach (var c in calls) m.KeepCalls.Add(c.Call);
+                        Keep(calls, kind);
                         if (returned && handsBack.TryAdd(f.Name, kind)) grew = true;
                     }
             }
@@ -1149,6 +1260,9 @@ public sealed partial class Escape
         summaries = WithLinkEscapes(summaries, m.LinkEscapes);
         Dictionary<string, string> handedBack = new(StringComparer.Ordinal);
         _handedBackIf.Clear();
+        _lenders = new(name => _byName!.GetValueOrDefault(name));
+        _readers.Clear();
+        _lentHeld.Clear();
         foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries, handedBack, calls: false);
         for (int round = 0; round < 8; round++)
         {
@@ -1156,6 +1270,7 @@ public sealed partial class Escape
             foreach (Function f in m.Functions) ConfirmOwnedElements(f, summaries, handedBack, calls: true);
             if (handedBack.Count + _handedBackIf.Count == before) break;
         }
+        ReleaseReaders(m);
         // A call whose callee was never proved: nothing it was given is known.
         foreach (Function f in m.Functions)
             foreach (Block b in f.Blocks)
@@ -1216,7 +1331,7 @@ public sealed partial class Escape
             (string Kind, Corsac.Lang.Lto.LifetimeCondition Needs)? handedIf = calls && !handedBack.ContainsKey(made.Callee!) ? _handedBackIf[made.Callee!] : null;
             if ((calls ? handedIf?.Kind ?? handedBack[made.Callee!] : OwnedElements.KindOf(f, made, container)) is not { } kind) continue;
             OwnedElements.HandOff? handOff = _elementMode != ElementMode.Off ? new() { Stores = StoredParameter } : null;
-            if (OwnedElements.Uses(f, defs, kind, container, made, out bool returned, handOff) is not { } uses) continue;
+            if (OwnedElements.Uses(f, defs, kind, container, made, out bool returned, handOff, lenders: _lenders) is not { } uses) continue;
             bool throughField = handOff?.At is not null;
             List<HashSet<VReg>>? held = throughField ? new() : null;
             if (throughField && returned) _elementWhy = "handed to a field and back";
@@ -1231,7 +1346,7 @@ public sealed partial class Escape
             List<(Block B, Instr After)>? keepAlive = null;
             List<Instr> added = new();
             bool proved = !(throughField && returned)
-                && (keepAlive = ProveOwnedElements(f, defs, made, container, uses, summaries, filled: calls || returned, held)) is not null
+                && (keepAlive = ProveOwnedElements(f, defs, made, container, uses, summaries, kind, filled: calls || returned, held)) is not null
                 && (added = _lastAdded) is not null
                 && !(throughField && (HeldAcross(f, made, held!) && Why("rule 13") || !FieldElementsProved(handOff!.Field!, kind, summaries)));
             _elementNeeds = null;
@@ -1269,6 +1384,12 @@ public sealed partial class Escape
             }
             // The collection kept alive past every use of what it holds.
             KeepAlives(made.Dest, keepAlive);
+            // Its calls stay kept, and those of every reader it is lent to.
+            foreach (var use in uses)
+            {
+                _lentHeld.Add(use.Call);
+                if (use.Role.Lent >= 0) _lenders!.Keep(use.Call, use.Role.Lent, kind, _lentHeld);
+            }
             if (throughField)
             {
                 // Marked where it is handed over (MarkElementsThroughFields),
@@ -1309,6 +1430,74 @@ public sealed partial class Escape
             if (ReferenceEquals(after, b.Terminator)) b.Instrs.Insert(at, keep);
             else b.Instrs.Insert(at + 1, keep);
         }
+    }
+
+    // ---- elements lent to a reader ------------------------------------------------------
+    //
+    // A COLLECTION LENT TO A FUNCTION THAT ONLY READS IT -- `string s =
+    // Join(parts)`, Join walking the list into a builder -- owns its elements
+    // as one read where it was made does, when everything the reader reads
+    // of it goes nowhere (ReaderProved). The reader keeps neither the
+    // collection (OwnedElements.Lenders: every use of its parameter a read)
+    // nor any element, so once the call returns nothing holds an element
+    // but the collection; and the call, a use of the collection with a
+    // KeepAlive after it, comes before wherever the collection is freed and
+    // its elements with it.
+
+    /// <summary>The readers of this run, read over the bodies the lifetime pass judges (OwnedElements.Lenders).</summary>
+    private OwnedElements.Lenders? _lenders;
+
+    /// <summary>Each reader's verdict, by callee, parameter and kind (ReaderProved).</summary>
+    private readonly Dictionary<(string Callee, int Parameter, string Kind), bool> _readers = new();
+
+    /// <summary>The calls each proved collection keeps from the inliner, its readers' among them: what ReleaseReaders leaves kept.</summary>
+    private readonly HashSet<Instr> _lentHeld = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Whether what the reader `call` lends the collection to reads of it
+    /// goes nowhere: each value it reads back -- an indexer's answer, a
+    /// walk's Current, a pair's Value -- judged as the caller's own reads
+    /// are (rule 9), and so in each reader it lends the collection on to.
+    /// Judged once for every caller, and so on no condition on other units:
+    /// a unit's compile proves only what its own summaries show, and the
+    /// link's run of these passes, with every unit's answers, judges the
+    /// reader again.
+    /// </summary>
+    private bool ReaderProved(Instr call, int at, string kind, Dictionary<string, bool[]> summaries)
+    {
+        if (_lenders?.Reader(call) is not { } g || _lenders.Lends(call, at, kind) is not { } calls) return false;
+        (string, int, string) key = (g.Name, at, kind);
+        if (_readers.TryGetValue(key, out bool known)) return known;
+        // Unproved while it is judged, though a reader never lends to itself (Lenders).
+        _readers[key] = false;
+        foreach ((Block _, Instr c, OwnedElements.Role role) in calls)
+        {
+            if (role.Lent >= 0 && !ReaderProved(c, role.Lent, kind, summaries))
+            { OwnedElements.Say(g, $"parameter {at}: lent on to a reader not proved: {c}"); return false; }
+            if (!role.Reads || c.Dest is not { } got) continue;
+            Flow flow = Analyse(g, new[] { got }, summaries, null);
+            if (flow.Escapes) { OwnedElements.Say(g, $"parameter {at}: what it reads goes on: {flow.Why}"); return false; }
+        }
+        OwnedElements.Say(g, $"parameter {at}: a reader, proved");
+        return _readers[key] = true;
+    }
+
+    /// <summary>
+    /// The readers' calls no proved collection is lent through, the
+    /// inliner's again: kept before inlining for a candidate refused here,
+    /// or for one a unit's compile leaves to the link -- whose run of these
+    /// passes starts from the IR the compile wrote, its calls kept as they
+    /// were. A reader's call on its parameter is kept for nothing else: what
+    /// another rule keeps is a call on a collection of its own function's.
+    /// </summary>
+    private void ReleaseReaders(Module m)
+    {
+        if (_lenders is not null)
+            foreach (Instr c in _lenders.All())
+                if (!_lentHeld.Contains(c)) m.KeepCalls.Remove(c);
+        _lenders = null;
+        _readers.Clear();
+        _lentHeld.Clear();
     }
 
     // ---- elements owned through a field -------------------------------------------------
@@ -1428,7 +1617,7 @@ public sealed partial class Escape
         // In a unit's compile, on what other units' calls do: the link's to check.
         Needs? outer = _elementNeeds;
         Needs? needs = _elementNeeds = _elementMode == ElementMode.Hints ? new(this) : null;
-        bool proved = reads is not null && ReadsProved(field, reads, summaries, keeps);
+        bool proved = reads is not null && ReadsProved(field, kind, reads, summaries, keeps);
         _elementNeeds = outer;
         // Or through the field's accessors (AccessorsProved), a list's only.
         // A unit sees its own getters and setters, not the calls of them
@@ -1479,7 +1668,7 @@ public sealed partial class Escape
     }
 
     /// <summary>Every read of the field a load whose collection is used only here (FieldReads), each judged alone.</summary>
-    private bool ReadsProved(string field, List<(Function F, Instr Load, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)> reads,
+    private bool ReadsProved(string field, string kind, List<(Function F, Instr Load, List<(Block B, Instr Call, OwnedElements.Role Role)> Calls)> reads,
         Dictionary<string, bool[]> summaries, List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps)
     {
         foreach ((Function g, Instr load, var calls) in reads)
@@ -1487,7 +1676,7 @@ public sealed partial class Escape
             Defs defs = new(g);
             HashSet<VReg> container = OwnedElements.Container(g, defs, load);
             List<HashSet<VReg>> held = new();
-            if (!defs.IsSingle(load.Dest!) || ProveOwnedElements(g, defs, load, container, calls, summaries, filled: true, held) is not { } keep
+            if (!defs.IsSingle(load.Dest!) || ProveOwnedElements(g, defs, load, container, calls, summaries, kind, filled: true, held) is not { } keep
                 || HeldAcross(g, load, held) && Why("rule 13"))
             {
                 OwnedElements.Say(g, $"read of {field} at {load.Line}: not proved ({_elementWhy})");
@@ -1734,7 +1923,7 @@ public sealed partial class Escape
     }
 
     private List<(Block B, Instr After)>? ProveOwnedElements(Function f, Defs defs, Instr alloc, HashSet<VReg> container,
-        List<(Block B, Instr Call, OwnedElements.Role Role)> calls, Dictionary<string, bool[]> summaries, bool filled = false,
+        List<(Block B, Instr Call, OwnedElements.Role Role)> calls, Dictionary<string, bool[]> summaries, string kind, bool filled = false,
         List<HashSet<VReg>>? heldOut = null)
     {
         Cfg cfg = new(f);
@@ -1813,6 +2002,10 @@ public sealed partial class Escape
             if (flow.Escapes) { _elementWhy = "rule 10"; return null; }
             held.Add(flow.Derived);
         }
+        // AND THOSE A READER IT IS LENT TO READS (ReaderProved): going
+        // nowhere there, so none outlives the call.
+        foreach ((Block _, Instr call, OwnedElements.Role role) in calls)
+            if (role.Lent >= 0 && !ReaderProved(call, role.Lent, kind, summaries)) { _elementWhy = "rule 14"; return null; }
 
         // Every use of anything held keeps the collection alive: the
         // collection's register must reach each such use.
@@ -1830,10 +2023,12 @@ public sealed partial class Escape
                 keep.Add((b, i));
             }
         // And every move of an enumerator over it, which reads its storage
-        // through the struct rather than the collection's registers.
-        foreach ((Block b, Instr call, OwnedElements.Role _) in calls)
+        // through the struct rather than the collection's registers; and
+        // every call lending it to a reader, which reads its elements where
+        // no register of this function shows them.
+        foreach ((Block b, Instr call, OwnedElements.Role role) in calls)
         {
-            if (call.Operands.Count == 0 || call.Operands[0] is RegOperand r && container.Contains(r.Reg)) continue;
+            if (role.Lent < 0 && (call.Operands.Count == 0 || call.Operands[0] is RegOperand r && container.Contains(r.Reg))) continue;
             bool dominated = ReferenceEquals(b, allocBlock) ? b.Instrs.IndexOf(alloc) < b.Instrs.IndexOf(call) : cfg.Dominates(allocBlock, b);
             if (!dominated) { _elementWhy = "rule 12"; return null; }
             if (!keep.Any(k => ReferenceEquals(k.After, call))) keep.Add((b, call));
