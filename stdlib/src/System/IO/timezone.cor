@@ -46,6 +46,10 @@ sealed class TimeZoneInfo
     string[] _abbr = new string[0];
     PosixRule? _rule;
 
+    // THE BASE OFFSET IN SECONDS, whole minutes (Name), from which every
+    // offset of the table is reckoned in whole minutes too.
+    long _base;
+
     TimeZoneInfo(string id)
     {
         Id = id;
@@ -253,9 +257,19 @@ sealed class TimeZoneInfo
         if (HasIanaId) TryConvertIanaIdToWindowsId(Id, out windows);
         else windows = Id;
 
-        // The offset a zone is known by: its standard time now.
+        // THE OFFSET A ZONE IS KNOWN BY, as .NET reads it from the file: the
+        // standard time of the last change made so far, or of the first type
+        // when there are no changes -- CUT TO WHOLE MINUTES, as every offset
+        // .NET answers is, since a DateTimeOffset holds no seconds. Local
+        // mean time, -4:56:02 in New York, is base plus a whole-minute delta.
         long now = UnixSeconds(DateTime.UtcNow);
-        long standard = _rule != null ? _rule.Standard : StandardAt(now);
+        long standard = _at.Length == 0 && _offset.Length > 0 ? _offset[0] : 0;
+        for (int i = 0; i < _at.Length && _at[i] <= now; i++)
+        {
+            if (!_dst[_type[i]]) standard = _offset[_type[i]];
+        }
+        standard = standard - standard % 60;
+        _base = standard;
         BaseUtcOffset = new TimeSpan(standard * 10000000);
         SupportsDaylightSavingTime = (_rule != null && _rule.HasDaylight) || HasDst();
 
@@ -274,15 +288,6 @@ sealed class TimeZoneInfo
     {
         for (int i = 0; i < _dst.Length; i++) if (_dst[i]) return true;
         return false;
-    }
-
-    long StandardAt(long utc)
-    {
-        int i = Index(utc);
-        if (i >= 0 && !_dst[_type[i]]) return _offset[_type[i]];
-        for (int j = (i < 0 ? _at.Length : i) - 1; j >= 0; j--) if (!_dst[_type[j]]) return _offset[_type[j]];
-        for (int t = 0; t < _offset.Length; t++) if (!_dst[t]) return _offset[t];
-        return _offset.Length > 0 ? _offset[0] : 0;
     }
 
     string Abbreviation(long utc, bool dst)
@@ -306,9 +311,13 @@ sealed class TimeZoneInfo
 
     // ---- offsets ------------------------------------------------------------
 
+    /// The second since 1970 a reading falls in: before 1970 the one it is
+    /// part of, not the one after.
     static long UnixSeconds(DateTime when)
     {
-        return (when.Ticks - DateTime.UnixEpoch.Ticks) / 10000000;
+        long ticks = when.Ticks - DateTime.UnixEpoch.Ticks;
+        long seconds = ticks / 10000000;
+        return ticks % 10000000 < 0 ? seconds - 1 : seconds;
     }
 
     /// Seconds east of UTC, and whether it is daylight time, at `utc` seconds.
@@ -319,7 +328,7 @@ sealed class TimeZoneInfo
             if (_rule != null)
             {
                 dst = _rule.InDaylight(utc);
-                offset = dst ? _rule.Daylight : _rule.Standard;
+                offset = Minutes(dst ? _rule.Daylight : _rule.Standard);
                 return;
             }
         }
@@ -328,28 +337,42 @@ sealed class TimeZoneInfo
         {
             int t = 0;
             while (t < _dst.Length - 1 && _dst[t]) t++;
-            offset = _offset.Length > 0 ? _offset[t] : 0;
+            offset = _offset.Length > 0 ? Minutes(_offset[t]) : 0;
             dst = false;
             return;
         }
-        offset = _offset[_type[i]];
+        offset = Minutes(_offset[_type[i]]);
         dst = _dst[_type[i]];
+    }
+
+    /// An offset of the table as .NET answers it: the base, and its distance
+    /// from the base cut to whole minutes toward zero.
+    long Minutes(long offset)
+    {
+        long delta = offset - _base;
+        return _base + delta - delta % 60;
     }
 
     public TimeSpan GetUtcOffset(DateTime dateTime)
     {
-        long utc = dateTime.Kind == DateTimeKind.Utc ? UnixSeconds(dateTime) : UnixSeconds(LocalToUtcDateTime(dateTime));
         long offset; bool dst;
-        At(utc, out offset, out dst);
+        Of(dateTime, out offset, out dst);
         return new TimeSpan(offset * 10000000);
     }
 
     public bool IsDaylightSavingTime(DateTime dateTime)
     {
-        long utc = dateTime.Kind == DateTimeKind.Utc ? UnixSeconds(dateTime) : UnixSeconds(LocalToUtcDateTime(dateTime));
         long offset; bool dst;
-        At(utc, out offset, out dst);
+        Of(dateTime, out offset, out dst);
         return dst;
+    }
+
+    /// The offset in force at a UTC reading, or at a local reading of this
+    /// zone's for any other kind.
+    void Of(DateTime dateTime, out long offset, out bool dst)
+    {
+        if (dateTime.Kind == DateTimeKind.Utc) At(UnixSeconds(dateTime), out offset, out dst);
+        else LocalAt(UnixSeconds(dateTime), out offset, out dst);
     }
 
     /// A local reading two UTC times map onto: the hour repeated when daylight
@@ -386,28 +409,41 @@ sealed class TimeZoneInfo
         return found;
     }
 
-    /// The UTC time a local reading here stands for. An ambiguous reading is
-    /// taken as standard time and a skipped one moved forward by the gap, as
-    /// .NET's ConvertTimeToUtc takes them.
-    DateTime LocalToUtcDateTime(DateTime local)
+    /// THE OFFSET IN FORCE AT A LOCAL READING, `seconds` since 1970 as the
+    /// clock reads them. A reading the clock shows twice, as daylight time
+    /// ends, is taken as standard time; so is one it never shows, in the hour
+    /// skipped as daylight time starts -- .NET's answer for both, and so what
+    /// its ToUniversalTime does with them.
+    void LocalAt(long seconds, out long offset, out bool dst)
     {
-        long seconds = UnixSeconds(local);
         long before, after; bool db, da;
         At(seconds - 86400, out before, out db);
         At(seconds + 86400, out after, out da);
-        long chosen = before;
-        long offset; bool dst;
         // Standard time first, then the other, and the first that maps back.
         long standard = db ? after : before, other = db ? before : after;
         At(seconds - standard, out offset, out dst);
-        if (offset == standard) chosen = standard;
-        else
-        {
-            At(seconds - other, out offset, out dst);
-            chosen = offset == other ? other : Math.Min(standard, other);
-        }
-        long sub = local.Ticks % 10000000;
-        return new DateTime(DateTime.UnixEpoch.Ticks + (seconds - chosen) * 10000000 + sub, DateTimeKind.Utc);
+        if (offset == standard) return;
+        At(seconds - other, out offset, out dst);
+        if (offset == other) return;
+        offset = standard;
+        dst = false;
+    }
+
+    /// The UTC time a local reading here stands for (LocalAt).
+    DateTime LocalToUtcDateTime(DateTime local)
+    {
+        long offset; bool dst;
+        LocalAt(UnixSeconds(local), out offset, out dst);
+        return new DateTime(Clamped(local.Ticks - offset * 10000000), DateTimeKind.Utc);
+    }
+
+    /// A MOMENT CARRIED PAST EITHER END OF THE CALENDAR STOPS THERE, as .NET's
+    /// conversions stop it: MinValue in a zone east of UTC is still MinValue.
+    static long Clamped(long ticks)
+    {
+        if (ticks < 0) return 0;
+        if (ticks > DateTime.MaxValue.Ticks) return DateTime.MaxValue.Ticks;
+        return ticks;
     }
 
     // ---- conversions ----------------------------------------------------------
@@ -419,32 +455,51 @@ sealed class TimeZoneInfo
         destinationTimeZone.At(utc, out offset, out dst);
         DateTimeKind kind = destinationTimeZone == Local ? DateTimeKind.Local
                           : destinationTimeZone == Utc ? DateTimeKind.Utc : DateTimeKind.Unspecified;
-        return new DateTime(dateTime.Ticks + offset * 10000000, kind);
+        return new DateTime(Clamped(dateTime.Ticks + offset * 10000000), kind);
+    }
+
+    /// A LOCAL READING THE CLOCK NEVER SHOWS IS REFUSED by the conversions,
+    /// as .NET refuses it; DateTime.ToUniversalTime takes it as standard time
+    /// instead (LocalToUtc).
+    DateTime Converted(DateTime dateTime)
+    {
+        if (IsInvalidTime(dateTime))
+        {
+            throw new ArgumentException("The supplied DateTime represents an invalid time.  For example, when the clock "
+                + "is adjusted forward, any time in the period that is skipped is invalid.", "dateTime");
+        }
+        return LocalToUtcDateTime(dateTime);
+    }
+
+    /// The machine's local reading as UTC, never refused: DateTime's own.
+    internal static DateTime LocalToUtc(DateTime local)
+    {
+        return Local.LocalToUtcDateTime(local);
     }
 
     public static DateTime ConvertTimeToUtc(DateTime dateTime)
     {
         if (dateTime.Kind == DateTimeKind.Utc) return dateTime;
-        return Local.LocalToUtcDateTime(dateTime);
+        return Local.Converted(dateTime);
     }
 
     public static DateTime ConvertTimeToUtc(DateTime dateTime, TimeZoneInfo sourceTimeZone)
     {
         if (dateTime.Kind == DateTimeKind.Utc) return dateTime;
-        return sourceTimeZone.LocalToUtcDateTime(dateTime);
+        return sourceTimeZone.Converted(dateTime);
     }
 
     /// From whatever `dateTime` is (UTC, or local, by its Kind) to `destinationTimeZone`.
     public static DateTime ConvertTime(DateTime dateTime, TimeZoneInfo destinationTimeZone)
     {
-        DateTime utc = dateTime.Kind == DateTimeKind.Utc ? dateTime : Local.LocalToUtcDateTime(dateTime);
+        DateTime utc = dateTime.Kind == DateTimeKind.Utc ? dateTime : Local.Converted(dateTime);
         return ConvertTimeFromUtc(utc, destinationTimeZone);
     }
 
     public static DateTime ConvertTime(DateTime dateTime, TimeZoneInfo sourceTimeZone, TimeZoneInfo destinationTimeZone)
     {
         DateTime utc = sourceTimeZone == Utc ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
-                     : sourceTimeZone.LocalToUtcDateTime(dateTime);
+                     : sourceTimeZone.Converted(dateTime);
         return ConvertTimeFromUtc(utc, destinationTimeZone);
     }
 
@@ -454,7 +509,10 @@ sealed class TimeZoneInfo
         long offset; bool dst;
         destinationTimeZone.At(UnixSeconds(utc), out offset, out dst);
         TimeSpan span = new TimeSpan(offset * 10000000);
-        return new DateTimeOffset(utc.Ticks + span.Ticks, span);
+        long ticks = utc.Ticks + span.Ticks;
+        if (ticks > DateTime.MaxValue.Ticks) return DateTimeOffset.MaxValue;
+        if (ticks < 0) return DateTimeOffset.MinValue;
+        return new DateTimeOffset(ticks, span);
     }
 
     public static DateTime ConvertTimeBySystemTimeZoneId(DateTime dateTime, string destinationTimeZoneId)

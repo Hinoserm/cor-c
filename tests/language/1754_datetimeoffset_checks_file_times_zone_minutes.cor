@@ -1,0 +1,92 @@
+// test: datetimeoffset_checks_file_times_zone_minutes
+// expect-exit: 0
+// expect-output:
+// ArgumentException: The UTC Offset for Utc DateTime instances must be 0. (Parameter 'offset')|02/29/2024 13:45:30 +00:00|2024-02-29T13:45:30.0000000+03:00
+// ArgumentOutOfRangeException: Ticks must be between DateTime.MinValue.Ticks and DateTime.MaxValue.Ticks. (Parameter 'ticks')
+// ArgumentOutOfRangeException: Ticks must be between DateTime.MinValue.Ticks and DateTime.MaxValue.Ticks. (Parameter 'ticks')
+// ArgumentOutOfRangeException: The UTC time represented when the offset is applied must be between year 0 and 10,000. (Parameter 'offset')
+// 02/29/2024 13:45:30 +01:30|2022-09-28T22:13:20.0000000+00:00
+// -1 -500 -1000
+// 0001-01-01T00:00:00.0000000+00:00 9999-12-31T23:59:59.0000000+00:00 1969-12-31T23:59:59.9990000+00:00
+// ArgumentOutOfRangeException: Valid values are between -62135596800 and 253402300799, inclusive. (Parameter 'seconds')
+// Actual value was -62135596801.
+// ArgumentOutOfRangeException: Valid values are between -62135596800000 and 253402300799999, inclusive. (Parameter 'milliseconds')
+// Actual value was 253402300800000.
+// 2024-02-29 01:15 2024-02-29T13:45:30.0000000+00:00 02/29/2024 13:45:30
+// 2001-02-03T04:05:06.7890000Z 1999-12-31T23:59:59.9990000Z 1960-02-03T04:05:06.2500000Z
+// True
+// -05:00:00 -04:57:00 05:45:00 05:42:00 05:30:00
+// -05:00:00 -05:00:00 False False True True
+// ArgumentException: The supplied DateTime represents an invalid time.  For example, when the clock is adjusted forward, any time in the period that is skipped is invalid. (Parameter 'dateTime')
+// ArgumentException: The supplied DateTime represents an invalid time.  For example, when the clock is adjusted forward, any time in the period that is skipped is invalid. (Parameter 'dateTime')|2024-11-03T06:30:00.0000000Z
+// 0001-01-01T00:00:00.0000000+00:00 9999-12-31T23:59:59.9999999+00:00 0001-01-01T05:42:00.0000000+05:42
+// 0001-01-01T00:00:00.0000000 9999-12-31T23:59:59.9999999 0001-01-01T00:00:00.0000000Z
+//
+// DateTimeOffset's two older constructors with .NET's names and checks (a
+// UTC reading takes no offset, the ticks must be a date, the moment too), the
+// Unix conversions counting down a whole unit before 1970 and refusing what
+// is past either end, and string.Format handing a date or a span its format.
+// A FILE'S TIMES as .NET's *Utc calls read them: an unspecified reading is UTC,
+// a local one is converted, the fraction is kept, and 1970 is no floor.
+// ZONES as .NET answers them: every offset whole minutes, reckoned from the
+// base (New York's local mean time, -4:56:02, is -4:57), the skipped hour
+// and the repeated one taken as standard time, a skipped reading refused by
+// the conversions, and the ends of the calendar kept. Every line came from the
+// same program on .NET 10; none depends on the machine's own zone.
+
+using System;
+using System.IO;
+
+class Program
+{
+    static string Said(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+    }
+
+    static int Main()
+    {
+        DateTime u = new DateTime(2024, 2, 29, 13, 45, 30, DateTimeKind.Utc);
+        DateTime n = new DateTime(2024, 2, 29, 13, 45, 30);
+        Console.WriteLine(Said(() => new DateTimeOffset(u, TimeSpan.FromHours(1)).ToString()) + "|" + new DateTimeOffset(u, TimeSpan.Zero) + "|" + new DateTimeOffset(n, TimeSpan.FromHours(3)).ToString("o"));
+        Console.WriteLine(Said(() => new DateTimeOffset(-1, TimeSpan.Zero).ToString()));
+        Console.WriteLine(Said(() => new DateTimeOffset(DateTime.MaxValue.Ticks + 1, TimeSpan.Zero).ToString()));
+        Console.WriteLine(Said(() => new DateTimeOffset(5, TimeSpan.FromHours(1)).ToString()));
+        Console.WriteLine(new DateTimeOffset(dateTime: n, offset: TimeSpan.FromMinutes(90)) + "|" + new DateTimeOffset(ticks: 638000000000000000, offset: TimeSpan.Zero).ToString("o"));
+        DateTimeOffset before = new DateTimeOffset(1969, 12, 31, 23, 59, 59, 500, TimeSpan.Zero);
+        Console.WriteLine(before.ToUnixTimeSeconds() + " " + before.ToUnixTimeMilliseconds() + " " + new DateTimeOffset(1969, 12, 31, 23, 59, 59, TimeSpan.Zero).AddTicks(1).ToUnixTimeMilliseconds());
+        Console.WriteLine(DateTimeOffset.FromUnixTimeSeconds(-62135596800).ToString("o") + " " + DateTimeOffset.FromUnixTimeSeconds(253402300799).ToString("o") + " " + DateTimeOffset.FromUnixTimeMilliseconds(-1).ToString("o"));
+        Console.WriteLine(Said(() => DateTimeOffset.FromUnixTimeSeconds(-62135596801).ToString()));
+        Console.WriteLine(Said(() => DateTimeOffset.FromUnixTimeMilliseconds(253402300800000).ToString()));
+        Console.WriteLine(string.Format("{0:yyyy-MM-dd} {1:hh\\:mm} {2:o} {0}", n, TimeSpan.FromMinutes(75), new DateTimeOffset(u)));
+
+        // A file's times: an unspecified reading is UTC, the fraction is kept, and 1970 is no floor.
+        string path = Path.Combine(Path.GetTempPath(), "corc-1754-" + Environment.ProcessId + ".txt");
+        File.WriteAllText(path, "x");
+        File.SetLastWriteTimeUtc(path, new DateTime(2001, 2, 3, 4, 5, 6, 789, DateTimeKind.Unspecified));
+        Console.Write(File.GetLastWriteTimeUtc(path).ToString("o"));
+        File.SetLastWriteTimeUtc(path, new DateTime(1960, 2, 3, 4, 5, 6, 250, DateTimeKind.Utc));
+        File.SetLastAccessTimeUtc(path, new DateTime(1999, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc));
+        Console.WriteLine(" " + File.GetLastAccessTimeUtc(path).ToString("o") + " " + File.GetLastWriteTimeUtc(path).ToString("o"));
+        DateTime local = new DateTime(2010, 6, 7, 8, 9, 10, DateTimeKind.Local);
+        File.SetLastWriteTimeUtc(path, local);
+        Console.WriteLine(File.GetLastWriteTimeUtc(path) == local.ToUniversalTime());
+        File.Delete(path);
+
+        // Zones: whole-minute offsets reckoned from the base, the skipped and
+        // the repeated hour taken as standard time, ends of the calendar kept.
+        TimeZoneInfo york = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+        TimeZoneInfo kathmandu = TimeZoneInfo.FindSystemTimeZoneById("Asia/Kathmandu");
+        DateTime gap = new DateTime(2024, 3, 10, 2, 30, 0);
+        DateTime twice = new DateTime(2024, 11, 3, 1, 30, 0);
+        DateTime old = new DateTime(1800, 1, 1);
+        Console.WriteLine(york.BaseUtcOffset + " " + york.GetUtcOffset(old) + " " + kathmandu.BaseUtcOffset + " " + kathmandu.GetUtcOffset(old) + " " + kathmandu.GetUtcOffset(new DateTime(1950, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        Console.WriteLine(york.GetUtcOffset(gap) + " " + york.GetUtcOffset(twice) + " " + york.IsDaylightSavingTime(gap) + " " + york.IsDaylightSavingTime(twice) + " " + york.IsInvalidTime(gap) + " " + york.IsAmbiguousTime(twice));
+        Console.WriteLine(Said(() => TimeZoneInfo.ConvertTimeToUtc(gap, york).ToString("o")));
+        Console.WriteLine(Said(() => TimeZoneInfo.ConvertTime(gap, york, TimeZoneInfo.Utc).ToString("o")) + "|" + TimeZoneInfo.ConvertTimeToUtc(twice, york).ToString("o"));
+        Console.WriteLine(TimeZoneInfo.ConvertTime(DateTimeOffset.MinValue, york).ToString("o") + " " + TimeZoneInfo.ConvertTime(DateTimeOffset.MaxValue, kathmandu).ToString("o") + " " + TimeZoneInfo.ConvertTime(DateTimeOffset.MinValue, kathmandu).ToString("o"));
+        Console.WriteLine(TimeZoneInfo.ConvertTimeFromUtc(DateTime.MinValue, york).ToString("o") + " " + TimeZoneInfo.ConvertTimeFromUtc(DateTime.MaxValue, kathmandu).ToString("o") + " " + TimeZoneInfo.ConvertTime(DateTime.MinValue, kathmandu, TimeZoneInfo.Utc).ToString("o"));
+        return 0;
+    }
+}

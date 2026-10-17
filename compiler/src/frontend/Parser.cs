@@ -403,7 +403,11 @@ public sealed class Parser
                 throw Error("this interpolated string has a '{' with no '}'");
             }
 
-            string inner = raw[from..i].Trim();
+            // THE FORMAT KEEPS ITS SPACES, as C# keeps them -- `{x: 0}` asks
+            // for " 0" -- so it is cut from the hole as written, of which the
+            // trimmed text is a prefix once the leading spaces are gone.
+            string written = raw[from..i].TrimStart();
+            string inner = written.TrimEnd();
 
             i++;                                // past the '}'
 
@@ -441,7 +445,7 @@ public sealed class Parser
                     if (colon >= 0)
                     {
                         alignment = inner[(mark + 1)..(mark + 1 + colon)].Trim();
-                        format = inner[(mark + colon + 2)..].Trim();
+                        format = HoleFormat(written[(mark + colon + 2)..], at);
                     }
                     else
                     {
@@ -450,7 +454,7 @@ public sealed class Parser
                 }
                 else
                 {
-                    format = inner[(mark + 1)..].Trim();
+                    format = HoleFormat(written[(mark + 1)..], at);
                 }
             }
 
@@ -480,6 +484,48 @@ public sealed class Parser
 
         // `$""` is the empty string rather than nothing at all.
         return built ?? new LiteralExpr { Kind = Lit.Str, Text = "", Line = at.Line, Col = at.Col };
+    }
+
+    /// <summary>
+    /// A HOLE'S FORMAT WITH ITS ESCAPES READ, as the literal pieces' are:
+    /// `$"{t:hh\\:mm}"` hands ToString `hh\:mm`, the backslash that escapes
+    /// the colon, and not the two the source spells it with. A verbatim
+    /// string's backslashes reach here doubled (Lexer.InterpolatedLiteral), so
+    /// `$@"{t:hh\:mm}"` reads to the same one; its `""` is one quote, which
+    /// is how `$@"{d:""at"" HH}"` quotes text. Nothing else can hold two
+    /// quotes in a row there, since a lone one would have ended the string.
+    ///
+    /// A FORMAT MAY NOT END IN WHITESPACE: C# refuses `{x:N2 }` (CS8088)
+    /// rather than guess whether the space was meant.
+    /// </summary>
+    private string HoleFormat(string written, Token at)
+    {
+        if (written.Length > 0 && char.IsWhiteSpace(written[^1]))
+        {
+            throw Error("a format specifier may not contain trailing whitespace");
+        }
+
+        StringBuilder made = new();
+        int i = 0;
+
+        while (i < written.Length)
+        {
+            if (written[i] == '\\' && i + 1 < written.Length)
+            {
+                made.Append(EscapeAt(written, i, at, out int used));
+                i += used;
+                continue;
+            }
+            if (written[i] == '"' && i + 1 < written.Length && written[i + 1] == '"')
+            {
+                made.Append('"');
+                i += 2;
+                continue;
+            }
+            made.Append(written[i]);
+            i++;
+        }
+        return made.ToString();
     }
 
     /// <summary>

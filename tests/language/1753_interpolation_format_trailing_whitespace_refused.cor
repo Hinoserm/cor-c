@@ -1,0 +1,17 @@
+// test: interpolation_format_trailing_whitespace_refused
+// expect-compile-error: a format specifier may not contain trailing whitespace
+// A HOLE'S FORMAT ENDING IN A SPACE IS REFUSED, as C# refuses it (CS8088):
+// whether `{x:N2 }` meant the space as part of the format or as layout is a
+// guess, and C# will not make it. A space after the colon is the format's
+// own and is kept.
+
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        double x = 1.5;
+        Console.WriteLine($"{x:N2 }");
+    }
+}

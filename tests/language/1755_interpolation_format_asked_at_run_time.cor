@@ -1,0 +1,55 @@
+// test: interpolation_format_asked_at_run_time
+// expect-exit: 0
+// expect-output:
+// 2024|00ff|text||[abc]|plain|pt|3.50
+//       02|255   |    [z]
+// Format specifier was invalid. 0007 255.00| 255.0 s|     s 2.25|   2.2 <N2>|  <N1>
+// 1 2.5 1:30:00 <g> 
+//
+// AN INTERPOLATED HOLE'S FORMAT ASKED AT RUN TIME: a value whose static type
+// is object, an interface, a class something can derive from, or a type
+// parameter is an IFormattable or not only when the program runs, and C#
+// hands it the format then (`{o:yyyy}` on an object holding a DateTime is
+// its year); a struct that is no IFormattable, or a sealed class, ignores the
+// format. Every line came from the same program on .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Plain { public override string ToString() { return "plain"; } }
+class Shown : IFormattable
+{
+    public string ToString(string? format, IFormatProvider? provider) { return "<" + format + ">"; }
+    public override string ToString() { return "shown"; }
+}
+class Derived : Plain, IFormattable
+{
+    public string ToString(string? format, IFormatProvider? provider) { return "[" + format + "]"; }
+}
+interface IThing { }
+struct Pt : IThing { public override string ToString() { return "pt"; } }
+
+class Program
+{
+    static string Hole<T>(T value) { return $"{value:N2}|{value,6:N1}"; }
+    static string Bad<T>(T value) { try { return $"{value:x4}"; } catch (FormatException e) { return e.Message; } }
+
+    static int Main()
+    {
+        object d = new DateTime(2024, 2, 29, 13, 45, 30);
+        object i = 255;
+        object s = "text";
+        object? none = null;
+        Plain p = new Derived();
+        Plain q = new Plain();
+        IThing t = new Pt();
+        IComparable c = 3.5;
+        Console.WriteLine($"{d:yyyy}|{i:x4}|{s:x4}|{none:x4}|{p:abc}|{q:abc}|{t:abc}|{c:N2}");
+        Console.WriteLine($"{d,8:MM}|{i,-6:D3}|{p,7:z}");
+        Console.WriteLine(Bad<object>(2.5) + " " + Bad(7) + " " + Hole(255) + " " + Hole("s") + " " + Hole<object>(2.25) + " " + Hole(new Shown()));
+        List<object> all = new List<object> { 1, 2.5, TimeSpan.FromMinutes(90), new Shown() };
+        foreach (object o in all) Console.Write($"{o:g} ");
+        Console.WriteLine();
+        return 0;
+    }
+}

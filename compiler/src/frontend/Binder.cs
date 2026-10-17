@@ -18332,8 +18332,9 @@ public sealed partial class Binder
     /// the call kept where the value's type takes a format -- a number's
     /// ToString(format), a type's own ToString(string) -- or made
     /// ToString(format, null) on an IFormattable; for a `T?`, its value's,
-    /// and "" when there is none; and anything else as it is, the format
-    /// ignored. Null to keep the call as written.
+    /// and "" when there is none; for what may or may not be an IFormattable
+    /// at run time, the question asked then; and anything else as it is, the
+    /// format ignored. Null to keep the call as written.
     /// </summary>
     private Expr? FormatHole(CallExpr c, MemberExpr hole, Type value)
     {
@@ -18384,6 +18385,47 @@ public sealed partial class Binder
                 formattable.Args.Add(new LiteralExpr { Kind = Lit.Null, Text = "null", Line = line, Col = col });
                 return formattable;
             }
+        }
+
+        // A VALUE THAT IS AN IFormattable OR NOT ONLY WHEN THE PROGRAM RUNS --
+        // an object, an interface, a class something may derive from, a type
+        // parameter -- is asked then, as string.Format asks it: `{o:yyyy}` on
+        // an object holding a DateTime is its year. Its ToString(format, null)
+        // when it is one, and its own text when it is not.
+        if (value.ParamName is not null || (value.Prim == Prim.Any && !value.IsArray && !value.IsPointer)
+            || (!value.IsArray && value.Prim != Prim.String && value.Symbol is { Kind: TypeKind.Class or TypeKind.Interface } open
+                && open.Decl?.Mods.HasFlag(Mods.Sealed) != true))
+        {
+            TypeRef Formattable() => new() { Name = "IFormattable", Line = line, Col = col };
+            CallExpr asked = new()
+            {
+                Target = new MemberExpr
+                {
+                    Target = new CastExpr { Type = Formattable(), Operand = new SubjectExpr { Line = line, Col = col }, Line = line, Col = col },
+                    Name = "ToString", Line = line, Col = col,
+                },
+                Line = line, Col = col,
+            };
+            asked.Args.AddRange(c.Args);
+            asked.Args.Add(new LiteralExpr { Kind = Lit.Null, Text = "null", Line = line, Col = col });
+            return new PatternExpr
+            {
+                Subject = hole.Target,
+                Test = new ConditionalExpr
+                {
+                    Cond = new IsExpr { Operand = new SubjectExpr { Line = line, Col = col }, Type = Formattable(), Line = line, Col = col },
+                    Then = asked,
+                    Else = new BinaryExpr
+                    {
+                        Op = BinOp.Add,
+                        Left = new LiteralExpr { Kind = Lit.Str, Text = "", Line = line, Col = col },
+                        Right = new SubjectExpr { Line = line, Col = col },
+                        Line = line, Col = col,
+                    },
+                    Line = line, Col = col,
+                },
+                Line = line, Col = col,
+            };
         }
         return hole.Target;
     }

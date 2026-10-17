@@ -1,0 +1,168 @@
+// test: datetime_timespan_offset_formats
+// expect-exit: 0
+// expect-output:
+// 2024-02-29T13:45:30.1200000Z|2024-02-29T13:45:30.1200000|2024-02-29T13:45:30Z|13:45:30.12|29|at 1:45|2024/02/29|+00:00
+// Utc 1970-01-01T00:00:00.0000000Z 1970-01-01T00:00:00.0000000+00:00 2024-02-29 13:45 +00:00
+// True True True True True True True True True True True
+// +0 +00 +00:00 Z
+// 10:00:00|00 |00.12345|00.1234500|0.1|12|1
+// 1 13 2 24 45 30 P A.D.
+// Day 29 of February, 2024 A.D.|its 1 h|a'b c'd|A.D. 2024
+// FormatException FormatException FormatException FormatException FormatException FormatException FormatException FormatException FormatException
+// Cannot find a matching quote character for the character '''.|Cannot find a matching quote character for the character '"'.|Input string was not in a correct format.
+// 24 24 2024 2024 02024|5 05 005 0005|13 01 45 30|4 04 3 03 7 07 7 07 8 08 9 09 A AM
+// 02/29/2024 13:45:30|02/29/2024 13:45:30|Thu, 29 Feb 2024 13:45:30 GMT|2024-02-29 13:45:30Z|2024-02-29T13:45:30
+// 2024-05-06T07:08:09.0000000-05:00|2024-05-06T07:08:09.2500000+05:30|2024-05-06 07:08 -5 -05 -05:00 -05:00|+5|+05:30
+// Mon, 06 May 2024 12:08:09 GMT|2024-05-06 12:08:09Z|2024-05-06T07:08:09|05/06/2024 07:08:09 +05:30|05/06/2024 07:08:09 +05:30|07:08:09
+// FormatException|2024-02-29T13:45:30.1200000+00:00|00:00:00|638505760892500000 638505562892500000
+// ArgumentException: Offset must be specified in whole minutes. (Parameter 'offset')
+// ArgumentOutOfRangeException: Offset must be within plus or minus 14 hours. (Parameter 'offset')
+// 2024-01-01T00:00:00.0000000-14:00
+// ArgumentOutOfRangeException: The UTC time represented when the offset is applied must be between year 0 and 10,000. (Parameter 'offset')
+// 01:02:05.5000000 01:02:05.5000000 01:02:05.5000000 01:02:05.5000000 01:02:05.5000000 1:02:05.5 0:01:02:05.5000000
+// 1.02:03:04 1:2:03:04 1:02:03:04.0000000 -1:2:03:04 -0:01:02:05.5000000 -01:02:05.5000000 0:00:00 0:00:00:00.0000000
+// 10:20:30:40.05 0:00:00.001 0:00:00.0000123
+// 01:02:05|0.01:02:05.500|0|00000000 1:2:5 5|Elapsed: 02 min|x05|01:02|2|5|5000000
+// FormatException FormatException FormatException FormatException FormatException FormatException FormatException
+// 1.02:03:04.0050000 1.02:03:04.0050060 937840050060 -21:56:55.9950000
+// ArgumentOutOfRangeException: TimeSpan overflowed because the duration is too long.|ArgumentOutOfRangeException|ArgumentOutOfRangeException
+// 01:02:05.5000000 1:02:05.5 2024 -05:00 2024-02-29T13:45:30.1200000Z 0:01:02:05.5000000 01:02 2024-05-06T07:08:09.0000000-05:00
+// 01:02:05|2024-02| 13|at 13|01:02|at 13|2024-02
+// 5250134129728587904 Utc True True Unspecified
+// True True Local True
+// ArgumentException: The binary data must result in a DateTime with ticks between DateTime.MinValue.Ticks and DateTime.MaxValue.Ticks. (Parameter 'dateData')|0001-01-01T00:00:00.0000000Z
+// 45351.57326527778 45351.5732653125 0.25 0 -1.25 0
+// 2024-02-29T13:45:30.1230000 1899-12-29T06:00:00.0000000 1899-12-30T00:00:00.0000000 9999-12-31T23:59:59.9990000 0100-01-01T12:00:00.0000000
+// OverflowException: Not a legal OleAut date.|ArgumentException: Not a legal OleAut date.|ArgumentException|ArgumentException
+//
+// DateTime's and DateTimeOffset's pictures as .NET reads them: "o" with the
+// kind's K (Z for UTC, the machine's offset for a local reading, nothing for
+// neither), z/zz/zzz, F runs that drop their zeros and then their '.', '%'
+// before a lone letter, text in double quotes as well as single, the era,
+// fields of two digits never written wider, DateTimeOffset's "r" and "u"
+// moved to UTC first, and a DateTime's "U" stopped at the calendar's ends.
+// TimeSpan's "c", "g" and "G" and its custom pictures, which refuse what a
+// date's would copy through. The constructors .NET has and this library did
+// not, with .NET's checks and parameter names, and DateTime's binary and OLE
+// Automation forms. An interpolated hole's format reaches ToString as C#
+// reads it: escapes read (`hh\\:mm` is `hh\:mm`), a verbatim string's `""`
+// one quote, and a space after the colon kept. THE MACHINE'S ZONE IS
+// WHATEVER IT IS: every line that prints it is checked against TimeZoneInfo
+// instead, and prints True. Every line came from the same program run on
+// .NET against the invariant culture.
+
+using System;
+
+class Program
+{
+    static string Name(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name; }
+    }
+
+    static string Said(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+    }
+
+    static string Message(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.Message; }
+    }
+
+    // An offset as "z", "zz" or "zzz" writes it, worked out by hand.
+    static string Zone(TimeSpan off, int width)
+    {
+        long minutes = off.Ticks / 600000000;
+        string sign = minutes < 0 ? "-" : "+";
+        if (minutes < 0) minutes = -minutes;
+        if (width == 1) return sign + (minutes / 60);
+        string hours = sign + (minutes / 60).ToString().PadLeft(2, '0');
+        if (width == 2) return hours;
+        return hours + ":" + (minutes % 60).ToString().PadLeft(2, '0');
+    }
+
+    // "U" worked out by hand: the reading moved to UTC through the zone, and
+    // stopped at the calendar's ends rather than carried past them.
+    static string Universal(DateTime when)
+    {
+        long utc = when.Ticks - TimeZoneInfo.Local.GetUtcOffset(when).Ticks;
+        if (utc < 0) utc = 0;
+        if (utc > DateTime.MaxValue.Ticks) utc = DateTime.MaxValue.Ticks;
+        return new DateTime(utc).ToString("F");
+    }
+
+    static int Main()
+    {
+        DateTime u = new DateTime(2024, 2, 29, 13, 45, 30, 120, DateTimeKind.Utc);
+        DateTime n = new DateTime(2024, 2, 29, 13, 45, 30, 120);
+        DateTime l = new DateTime(2024, 2, 29, 13, 45, 30, 120, DateTimeKind.Local);
+
+        Console.WriteLine(u.ToString("O") + "|" + n.ToString("o") + "|" + u.ToString("yyyy-MM-ddTHH:mm:ssK") + "|" + n.ToString("HH:mm:ss.FFF") + "|" + u.ToString("%d") + "|" + u.ToString("\"at\" h:mm") + "|" + u.ToString("yyyy/MM/dd") + "|" + u.ToString("zzz"));
+        Console.WriteLine(DateTime.UnixEpoch.Kind + " " + DateTime.UnixEpoch.ToString("o") + " " + DateTimeOffset.UnixEpoch.ToString("o") + " " + new DateTimeOffset(u).ToString("yyyy-MM-dd HH:mm zzz"));
+
+        // The machine's zone, whatever it is, against what TimeZoneInfo says.
+        TimeSpan here = TimeZoneInfo.Local.GetUtcOffset(l);
+        TimeSpan now = TimeZoneInfo.Local.GetUtcOffset(DateTime.Now);
+        Console.WriteLine((l.ToString("%K") == Zone(here, 3)) + " " + (l.ToString("o") == l.ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + Zone(here, 3))
+            + " " + (n.ToString("%z") == Zone(here, 1)) + " " + (n.ToString("zz") == Zone(here, 2)) + " " + (l.ToString("zzz") == Zone(here, 3))
+            + " " + (n.ToString("[%K]") == "[]") + " " + (new DateTime(36000000000).ToString("HH zzz") == "01 " + Zone(now, 3))
+            + " " + (new DateTimeOffset(n).Offset == here) + " " + (n.ToString("U") == n.ToUniversalTime().ToString("F"))
+            + " " + (DateTime.MinValue.ToString("U") == Universal(DateTime.MinValue)) + " " + (DateTime.MaxValue.ToString("U") == Universal(DateTime.MaxValue)));
+        Console.WriteLine(u.ToString("%z") + " " + u.ToString("zz") + " " + u.ToString("zzzz") + " " + u.ToString("%K"));
+
+        // Fractions.
+        DateTime whole = new DateTime(2024, 1, 2, 10, 0, 0);
+        DateTime fine = whole.AddTicks(1234500);
+        Console.WriteLine(whole.ToString("HH:mm:ss.FFF") + "|" + whole.ToString("ss FF") + "|" + fine.ToString("ss.FFFFFFF") + "|" + fine.ToString("ss.fffffff") + "|" + fine.ToString("s.F") + "|" + fine.ToString("ff") + "|" + fine.ToString("%F"));
+
+        // Single letters, quotes, escapes, the era, and what is refused.
+        Console.WriteLine(u.ToString("%h") + " " + u.ToString("%H") + " " + u.ToString("%M") + " " + u.ToString("%y") + " " + u.ToString("%m") + " " + u.ToString("%s") + " " + u.ToString("%t") + " " + u.ToString("%g"));
+        Console.WriteLine(u.ToString("'Day' d 'of' MMMM, yyyy g") + "|" + u.ToString("'it''s' h \\h") + "|" + u.ToString("'a\\'b' \"c'd\"") + "|" + u.ToString("gg yyyy"));
+        Console.WriteLine(Name(() => fine.ToString("ss.ffffffff")) + " " + Name(() => fine.ToString("FFFFFFFF")) + " " + Name(() => u.ToString("%%")) + " " + Name(() => u.ToString("d%"))
+            + " " + Name(() => u.ToString("dd\\")) + " " + Name(() => u.ToString("K")) + " " + Name(() => u.ToString("z")) + " " + Name(() => u.ToString("%")) + " " + Name(() => u.ToString("h")));
+        Console.WriteLine(Message(() => u.ToString("'abc")) + "|" + Message(() => u.ToString("\"abc")) + "|" + Message(() => u.ToString("q")));
+
+        // Field widths, and the standard formats a picture now spells.
+        DateTime early = new DateTime(5, 3, 4, 7, 8, 9);
+        Console.WriteLine(u.ToString("y yy yyy yyyy yyyyy") + "|" + early.ToString("y yy yyy yyyy") + "|" + u.ToString("HHH hhh mmm sss") + "|" + early.ToString("d dd M MM H HH h hh m mm s ss t tt"));
+        Console.WriteLine(u.ToString("") + "|" + u.ToString((string?)null) + "|" + u.ToString("r") + "|" + u.ToString("u") + "|" + u.ToString("s"));
+
+        // DateTimeOffset: its own offset, and its new constructors.
+        DateTimeOffset o = new DateTimeOffset(2024, 5, 6, 7, 8, 9, offset: TimeSpan.FromHours(-5));
+        DateTimeOffset o2 = new DateTimeOffset(2024, 5, 6, 7, 8, 9, 250, new TimeSpan(5, 30, 0));
+        Console.WriteLine(o.ToString("o") + "|" + o2.ToString("O") + "|" + o.ToString("yyyy-MM-dd HH:mm z zz zzz K") + "|" + o2.ToString("%z") + "|" + o2.ToString("%K"));
+        Console.WriteLine(o.ToString("r") + "|" + o.ToString("u") + "|" + o.ToString("s") + "|" + o2.ToString() + "|" + o2.ToString("") + "|" + o.ToString("HH:mm:ss.FFF"));
+        Console.WriteLine(Name(() => o.ToString("U")) + "|" + new DateTimeOffset(dateTime: u).ToString("o") + "|" + new DateTimeOffset(u).Offset + "|" + o2.Ticks + " " + o2.UtcTicks);
+        Console.WriteLine(Said(() => new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.FromSeconds(30)).ToString()));
+        Console.WriteLine(Said(() => new DateTimeOffset(2024, 1, 1, 0, 0, 0, 0, TimeSpan.FromHours(15)).ToString()));
+        Console.WriteLine(Said(() => new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.FromHours(-14)).ToString("o")));
+        Console.WriteLine(Said(() => new DateTimeOffset(1, 1, 1, 0, 0, 0, TimeSpan.FromHours(1)).ToString("o")));
+
+        // TimeSpan.
+        TimeSpan ts = TimeSpan.FromSeconds(3725.5);
+        TimeSpan big = new TimeSpan(1, 2, 3, 4);
+        Console.WriteLine(ts.ToString("c") + " " + ts.ToString("t") + " " + ts.ToString("T") + " " + ts.ToString((string?)null) + " " + ts.ToString("") + " " + ts.ToString("g") + " " + ts.ToString("G"));
+        Console.WriteLine(big.ToString("c") + " " + big.ToString("g") + " " + big.ToString("G") + " " + big.Negate().ToString("g") + " " + ts.Negate().ToString("G") + " " + ts.Negate().ToString("c") + " " + TimeSpan.Zero.ToString("g") + " " + TimeSpan.Zero.ToString("G"));
+        Console.WriteLine(new TimeSpan(10, 20, 30, 40, 50).ToString("g") + " " + new TimeSpan(0, 0, 0, 0, 1).ToString("g") + " " + new TimeSpan(123).ToString("g"));
+        Console.WriteLine(ts.ToString(@"hh\:mm\:ss") + "|" + ts.ToString(@"d\.hh\:mm\:ss\.fff") + "|" + ts.ToString("%d") + "|" + ts.ToString(@"dddddddd\ h\:m\:s\ FFF") + "|" + ts.ToString("'Elapsed: 'mm' min'") + "|" + ts.ToString("\"x\"ss") + "|" + ts.Negate().ToString(@"hh\:mm") + "|" + big.ToString("%h") + "|" + ts.ToString("FFFFFFF") + "|" + ts.ToString("fffffff"));
+        Console.WriteLine(Name(() => ts.ToString("hhh")) + " " + Name(() => ts.ToString("x")) + " " + Name(() => ts.ToString("hh:mm")) + " " + Name(() => ts.ToString("ddddddddd")) + " " + Name(() => ts.ToString("ffffffff")) + " " + Name(() => ts.ToString("%%")) + " " + Name(() => ts.ToString("'a")));
+        Console.WriteLine(new TimeSpan(1, 2, 3, 4, 5) + " " + new TimeSpan(1, 2, 3, 4, 5, 6) + " " + new TimeSpan(1, 2, 3, 4, 5, 6).Ticks + " " + new TimeSpan(-1, 2, 3, 4, 5));
+        Console.WriteLine(Said(() => new TimeSpan(0, int.MaxValue, 0, 0, 0).ToString()) + "|" + Name(() => new TimeSpan(int.MaxValue, 0, 0).ToString()) + "|" + Name(() => new TimeSpan(0, int.MaxValue, 0, 0).ToString()));
+        Console.WriteLine($"{ts:c} {ts:g} {o:yyyy zzz} {u:o}" + " " + string.Format("{0:G} {1:hh\\:mm} {2:o}", ts, ts, o));
+        Console.WriteLine($"{ts:hh\\:mm\\:ss}|{u:yyyy\\-MM}|{u: HH}|{u:\"at\" H}|" + $@"{ts:hh\:mm}|{u:""at"" H}|{u:yyyy\-MM}");
+
+        // Binary and OLE Automation dates.
+        Console.WriteLine(u.ToBinary() + " " + DateTime.FromBinary(u.ToBinary()).Kind + " " + (DateTime.FromBinary(u.ToBinary()) == u) + " " + (n.ToBinary() == n.Ticks) + " " + DateTime.FromBinary(n.Ticks).Kind);
+        long lb = l.ToBinary();
+        Console.WriteLine((lb < 0) + " " + ((lb & 0x3FFFFFFFFFFFFFFF) == l.Ticks - here.Ticks) + " " + DateTime.FromBinary(lb).Kind + " " + (DateTime.FromBinary(lb) == l));
+        Console.WriteLine(Said(() => DateTime.FromBinary(0x3FFFFFFFFFFFFFFF).ToString()) + "|" + DateTime.FromBinary(0x4000000000000000).ToString("o"));
+        Console.WriteLine(u.ToOADate() + " " + new DateTime(2024, 2, 29, 13, 45, 30, 123).ToOADate() + " " + new DateTime(1, 1, 1, 6, 0, 0).ToOADate() + " " + new DateTime(0).ToOADate() + " " + new DateTime(1899, 12, 29, 6, 0, 0).ToOADate() + " " + new DateTime(1899, 12, 30).ToOADate());
+        Console.WriteLine(DateTime.FromOADate(45351.5732653125).ToString("o") + " " + DateTime.FromOADate(-1.25).ToString("o") + " " + DateTime.FromOADate(0).ToString("o") + " " + DateTime.FromOADate(2958465.99999999).ToString("o") + " " + DateTime.FromOADate(-657434.5).ToString("o"));
+        Console.WriteLine(Said(() => new DateTime(50, 1, 1).ToOADate().ToString()) + "|" + Said(() => DateTime.FromOADate(3e6).ToString()) + "|" + Name(() => DateTime.FromOADate(double.NaN).ToString()) + "|" + Name(() => DateTime.FromOADate(-657435.0).ToString()));
+        return 0;
+    }
+}

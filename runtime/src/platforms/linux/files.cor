@@ -432,16 +432,16 @@ static partial class Os
     }
 
     /// utimensat(2) on a path: access and modification times as seconds
-    /// and nanoseconds; a negative seconds value leaves that time alone.
+    /// and nanoseconds; negative nanoseconds leave that time alone.
     /// `follow` false changes a symbolic link itself.
     public static int Utimensat(string path, long atimeSeconds, long atimeNanos, long mtimeSeconds, long mtimeNanos, bool follow)
     {
         // Two timespecs, access then modification.
         byte[] times = new byte[2 * TimeSpec.Bytes];
         byte[] one = TimeSpec.Room();
-        TimeSpec.Set(one, atimeSeconds < 0 ? 0 : atimeSeconds, atimeSeconds < 0 ? 1073741822 : atimeNanos);   // UTIME_OMIT
+        TimeSpec.Set(one, atimeNanos < 0 ? 0 : atimeSeconds, atimeNanos < 0 ? 1073741822 : atimeNanos);   // UTIME_OMIT
         for (int i = 0; i < TimeSpec.Bytes; i++) times[i] = one[i];
-        TimeSpec.Set(one, mtimeSeconds < 0 ? 0 : mtimeSeconds, mtimeSeconds < 0 ? 1073741822 : mtimeNanos);
+        TimeSpec.Set(one, mtimeNanos < 0 ? 0 : mtimeSeconds, mtimeNanos < 0 ? 1073741822 : mtimeNanos);
         for (int i = 0; i < TimeSpec.Bytes; i++) times[TimeSpec.Bytes + i] = one[i];
         return (int)Err.Result(Sys.Syscall(Call.Utimensat, -100, Platform.Linear(Sys.ArrayData(CString(path))), Platform.Linear(Sys.ArrayData(times)), follow ? 0 : 0x100, 0, 0));
     }

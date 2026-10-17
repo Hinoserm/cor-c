@@ -440,7 +440,6 @@ static class String {
         if (value is ushort u16) { return u16.ToString(format); }
         if (value is byte u8) { return u8.ToString(format); }
         if (value is sbyte i8) { return i8.ToString(format); }
-        if (value is DateTime date) { return date.ToString(format); }
         if (value is IFormattable formattable) { return formattable.ToString(format, provider); }
         return "" + value;
     }
@@ -16904,18 +16903,44 @@ enum DayOfWeek {
 /// AN AMOUNT OF TIME, which is not a moment: the difference between two
 /// DateTimes, or how long to wait. Signed, because a difference can go either
 /// way and refusing that would make subtraction an error half the time.
-struct TimeSpan {
+struct TimeSpan : IFormattable {
     private long ticks;
 
     public TimeSpan(long inTicks) { ticks = inTicks; }
 
+    // A SPAN TOO LONG FOR ITS TICKS THROWS rather than wrapping into a short
+    // one, at .NET's bounds: whole seconds for the three-part constructor,
+    // microseconds for the longer ones -- a tenth of what a long holds, in
+    // either sign.
     public TimeSpan(int hours, int minutes, int seconds) {
-        ticks = ((long)hours * 3600 + (long)minutes * 60 + (long)seconds) * 10000000;
+        long total = (long)hours * 3600 + (long)minutes * 60 + (long)seconds;
+
+        if (total > 922337203685 || total < -922337203685) { throw TooLong(); }
+        ticks = total * 10000000;
     }
 
     public TimeSpan(int days, int hours, int minutes, int seconds) {
-        ticks = ((long)days * 86400 + (long)hours * 3600 + (long)minutes * 60 + (long)seconds)
-              * 10000000;
+        ticks = Micros(days, hours, minutes, seconds, 0, 0);
+    }
+
+    public TimeSpan(int days, int hours, int minutes, int seconds, int milliseconds) {
+        ticks = Micros(days, hours, minutes, seconds, milliseconds, 0);
+    }
+
+    public TimeSpan(int days, int hours, int minutes, int seconds, int milliseconds, int microseconds) {
+        ticks = Micros(days, hours, minutes, seconds, milliseconds, microseconds);
+    }
+
+    private static long Micros(int days, int hours, int minutes, int seconds, int milliseconds, int microseconds) {
+        long total = (long)days * 86400000000 + (long)hours * 3600000000 + (long)minutes * 60000000
+                   + (long)seconds * 1000000 + (long)milliseconds * 1000 + (long)microseconds;
+
+        if (total > 922337203685477580 || total < -922337203685477580) { throw TooLong(); }
+        return total * 10;
+    }
+
+    private static ArgumentOutOfRangeException TooLong() {
+        return new ArgumentOutOfRangeException(null, "TimeSpan overflowed because the duration is too long.");
     }
 
     public static long TicksPerMillisecond => 10000;
@@ -17071,30 +17096,120 @@ struct TimeSpan {
     /// `[-][d.]hh:mm:ss[.fffffff]`, which is .NET's constant ("c") format and
     /// its default: the day part appears only when there is one, and the
     /// fraction only when it is not zero.
-    public string ToString() {
-        long left = ticks < 0 ? -ticks : ticks;
+    public string ToString() { return Standard('c'); }
+
+    public string ToString(string? format) { return ToString(format, null); }
+
+    /// .NET'S THREE STANDARD FORMATS and its custom pictures. "c" (and "t",
+    /// "T", or no format at all) is the constant one above; "g" is the short
+    /// general one, `[-][d:]h:mm:ss[.FFFFFFF]`; "G" the long one,
+    /// `[-]d:hh:mm:ss.fffffff`. Any other single letter is refused, as .NET
+    /// refuses it. The invariant culture is the only one this machine has, so
+    /// the provider changes nothing.
+    public string ToString(string? format, IFormatProvider? formatProvider) {
+        if (format == null || format.Length == 0) { return Standard('c'); }
+        if (format.Length == 1) {
+            char standard = Sys.GetChar(format, 0);
+
+            if (standard == 'c' || standard == 't' || standard == 'T') { return Standard('c'); }
+            if (standard == 'g' || standard == 'G') { return Standard(standard); }
+            throw DateParts.BadFormat();
+        }
+
+        StringBuilder made = new StringBuilder();
+        Picture(format, made);
+        return made.ToString();
+    }
+
+    // THE FIELDS, SIGN APART: whole days, and the time within the last one.
+    // Divided before the sign is taken off, so that the most negative span
+    // has nothing to overflow when it is.
+    private long WholeDays => ticks < 0 ? -(ticks / 864000000000) : ticks / 864000000000;
+    private long DayTime => ticks < 0 ? -(ticks % 864000000000) : ticks % 864000000000;
+
+    private string Standard(char kind) {
+        long days = WholeDays;
+        long time = DayTime;
+        long hours = time / 36000000000;
+        long fraction = time % 10000000;
         StringBuilder made = new StringBuilder();
 
         if (ticks < 0) { made.Append('-'); }
 
-        long days = left / 864000000000;
-        if (days != 0) {
+        // THE DAYS: "c" writes them with a dot and "g" with a colon, each
+        // only when there are any; "G" always writes them, zero included.
+        if (days != 0 || kind == 'G') {
             made.Append(days);
-            made.Append('.');
+            made.Append(kind == 'c' ? '.' : ':');
         }
 
-        made.Append(String.PadLeft(String.FromInt(left / 36000000000 % 24), 2, '0'));
+        // "g" WRITES THE HOUR AS IT IS, one digit or two; the others pad it.
+        made.Append(kind == 'g' ? String.FromInt(hours) : DateParts.Digits(hours, 2));
         made.Append(':');
-        made.Append(String.PadLeft(String.FromInt(left / 600000000 % 60), 2, '0'));
+        made.Append(DateParts.Digits(time / 600000000 % 60, 2));
         made.Append(':');
-        made.Append(String.PadLeft(String.FromInt(left / 10000000 % 60), 2, '0'));
+        made.Append(DateParts.Digits(time / 10000000 % 60, 2));
 
-        long fraction = left % 10000000;
-        if (fraction != 0) {
+        // THE FRACTION: "G" writes all seven digits whatever they are; "c"
+        // all seven and "g" only the significant ones, and those two only
+        // when there is a fraction at all.
+        if (kind == 'G' || fraction != 0) {
+            int digits = 7;
+
+            if (kind == 'g') {
+                while (fraction % 10 == 0) {
+                    fraction = fraction / 10;
+                    digits = digits - 1;
+                }
+            }
             made.Append('.');
-            made.Append(String.PadLeft(String.FromInt(fraction), 7, '0'));
+            made.Append(DateParts.Digits(fraction, digits));
         }
         return made.ToString();
+    }
+
+    /// A CUSTOM PICTURE: d to dddddddd, h, hh, m, mm, s, ss, runs of f and
+    /// F, and literal text quoted or after a backslash. EVERYTHING ELSE IS
+    /// REFUSED, colons and dots included -- unlike a date's picture, which
+    /// copies what it does not know, a span's must say `hh\:mm`. No sign is
+    /// written: a picture writes the fields, and the fields are sizes.
+    private void Picture(string format, StringBuilder made) {
+        long time = DayTime;
+        int at = 0;
+
+        while (at < format.Length) {
+            char c = Sys.GetChar(format, at);
+
+            if (c == '\'' || c == '"') {
+                at = DateParts.Quoted(format, at, made);
+                continue;
+            }
+            if (c == '\\') {
+                if (at + 1 >= format.Length) { throw DateParts.BadFormat(); }
+                made.Append(Sys.GetChar(format, at + 1));
+                at = at + 2;
+                continue;
+            }
+            // A PERCENT SIGN makes the one letter after it a picture of its
+            // own: "%d" is the days, where "d" alone is no format at all.
+            if (c == '%') {
+                if (at + 1 >= format.Length || Sys.GetChar(format, at + 1) == '%') { throw DateParts.BadFormat(); }
+                Picture(String.Substring(format, at + 1, 1), made);
+                at = at + 2;
+                continue;
+            }
+
+            int run = DateParts.Run(format, at);
+
+            if (c == 'd' && run <= 8) { made.Append(DateParts.Digits(WholeDays, run)); }
+            else if (c == 'h' && run <= 2) { made.Append(DateParts.Digits(time / 36000000000 % 24, run)); }
+            else if (c == 'm' && run <= 2) { made.Append(DateParts.Digits(time / 600000000 % 60, run)); }
+            else if (c == 's' && run <= 2) { made.Append(DateParts.Digits(time / 10000000 % 60, run)); }
+            else if ((c == 'f' || c == 'F') && run <= 7) { DateParts.Fraction(time % 10000000, run, c == 'F', false, made); }
+            else { throw DateParts.BadFormat(); }
+
+            at = at + run;
+        }
     }
 }
 
@@ -17114,7 +17229,7 @@ enum DateTimeKind {
 /// the rule about centuries is applied to years long before anybody agreed to
 /// it, because a calendar that changes its rules partway is a calendar no
 /// arithmetic can be done on.
-partial struct DateTime {
+partial struct DateTime : IFormattable {
     private long ticks;
     private DateTimeKind kind;
 
@@ -17166,8 +17281,9 @@ partial struct DateTime {
     /// where a program's overflow checks are expected to fire.
     public static DateTime MaxValue => new DateTime(3155378975999999999);
 
-    /// The epoch every wire protocol counts from, expressed in this one.
-    public static DateTime UnixEpoch => new DateTime(621355968000000000);
+    /// The epoch every wire protocol counts from, expressed in this one --
+    /// and a UTC moment, as .NET's is: "o" writes it with its Z.
+    public static DateTime UnixEpoch => new DateTime(621355968000000000, DateTimeKind.Utc);
 
     /// Windows' file time: hundreds of nanoseconds since 1601-01-01 UTC,
     /// which is this type's ticks less the ticks up to 1601.
@@ -17181,6 +17297,94 @@ partial struct DateTime {
     public static DateTime FromFileTimeUtc(long fileTime) {
         if (fileTime < 0 || fileTime > 3155378975999999999 - FileTimeOffset) { throw new ArgumentOutOfRangeException("fileTime"); }
         return new DateTime(fileTime + FileTimeOffset, DateTimeKind.Utc);
+    }
+
+    /// THE KIND IN THE TOP TWO BITS, the ticks below them: .NET's encoding,
+    /// so that a value stored by one reads back on the other. A LOCAL READING
+    /// IS STORED AS ITS UTC MOMENT and flagged local, which is what lets it
+    /// read back as the same moment in another zone; one whose moment falls
+    /// before year 1 is kept just under the flags, where FromBinary looks.
+    public long ToBinary() {
+        if (kind == DateTimeKind.Local) {
+            long stored = ticks - LocalZone.At(this);
+
+            if (stored < 0) { stored = stored + 0x4000000000000000; }
+            return stored | ((long)1 << 63);
+        }
+        return ticks | ((long)kind << 62);
+    }
+
+    public static DateTime FromBinary(long dateData) {
+        if (dateData < 0) {
+            long stored = dateData & 0x3FFFFFFFFFFFFFFF;
+
+            if (stored > 0x4000000000000000 - 864000000000) { stored = stored - 0x4000000000000000; }
+
+            // THE OFFSET OF THE MOMENT, or of the nearest end of the range
+            // for one outside it, which is where Parse would have put it.
+            long zone = 0;
+
+            if (stored < 0) { zone = LocalZone.At(MinValue); }
+            else if (stored > 3155378975999999999) { zone = LocalZone.At(MaxValue); }
+            else { zone = LocalZone.At(new DateTime(stored, DateTimeKind.Utc)); }
+
+            // A time of day just before year 1 wraps round to the first day,
+            // so that it still compares as a time of day.
+            long local = stored + zone;
+
+            if (local < 0) { local = local + 864000000000; }
+            if (local < 0 || local > 3155378975999999999) { throw BadBinary(); }
+            return new DateTime(local, DateTimeKind.Local);
+        }
+        if ((dateData & 0x3FFFFFFFFFFFFFFF) > 3155378975999999999) { throw BadBinary(); }
+        return new DateTime(dateData & 0x3FFFFFFFFFFFFFFF, (DateTimeKind)(int)(dateData >> 62));
+    }
+
+    private static ArgumentException BadBinary() {
+        return new ArgumentException("The binary data must result in a DateTime with ticks between "
+            + "DateTime.MinValue.Ticks and DateTime.MaxValue.Ticks.", "dateData");
+    }
+
+    // OLE AUTOMATION'S DATE: days since 1899-12-30 as a double, the fraction
+    // the time of day, to the millisecond. BEFORE THAT EPOCH THE FRACTION
+    // STILL COUNTS FORWARD from the start of the day, so -1.25 is six in the
+    // morning of the 29th -- the whole part negative and the fraction not,
+    // which is why neither direction is a plain multiplication.
+    const long OADateEpoch = 599264352000000000;
+
+    public double ToOADate() {
+        long value = ticks;
+
+        if (value == 0) { return 0.0; }
+
+        // A READING ON THE FIRST DAY THERE IS is a time of day with no date,
+        // and is taken as one on the epoch's day -- .NET's rule, made for
+        // Visual Basic's times.
+        if (value < 864000000000) { value = value + OADateEpoch; }
+        if (value < 31241376000000000) { throw new OverflowException("Not a legal OleAut date."); }
+
+        long millis = (value - OADateEpoch) / 10000;
+
+        if (millis < 0) {
+            long part = millis % 86400000;
+
+            if (part != 0) { millis = millis - (86400000 + part) * 2; }
+        }
+        return (double)millis / 86400000.0;
+    }
+
+    public static DateTime FromOADate(double d) {
+        // Written so that NaN fails it too.
+        if (!(d < 2958466.0) || !(d > -657435.0)) { throw new ArgumentException("Not a legal OleAut date."); }
+
+        long millis = (long)(d * 86400000.0 + (d >= 0 ? 0.5 : -0.5));
+
+        if (millis < 0) { millis = millis - (millis % 86400000) * 2; }
+        millis = millis + OADateEpoch / 10000;
+        if (millis < 0 || millis >= 315537897600000) {
+            throw new ArgumentException("OleAut date did not convert to a DateTime correctly.");
+        }
+        return new DateTime(millis * 10000, DateTimeKind.Unspecified);
     }
 
     public long Ticks => ticks;
@@ -17348,108 +17552,47 @@ partial struct DateTime {
         return 31;
     }
 
-    /// The INVARIANT default, which is "MM/dd/yyyy HH:mm:ss" -- .NET's own,
-    /// and not a shape anybody would choose; it is here because that is what a
-    /// program that prints a date without saying how gets there.
-    public string ToString() { return ToString("MM/dd/yyyy HH:mm:ss"); }
+    /// The INVARIANT default, "G", which is "MM/dd/yyyy HH:mm:ss" -- .NET's
+    /// own, and not a shape anybody would choose; it is here because that is
+    /// what a program that prints a date without saying how gets there.
+    public string ToString() { return DateParts.Format(this, null, false, 0); }
 
-    /// A CUSTOM PICTURE: yyyy, yy, MM, M, dd, d, HH, H, mm, m, ss, s, fff, and
-    /// anything else copied through. .NET's standard single-letter formats
-    /// ("d", "G", "o") are not here -- a single letter in a picture means the
-    /// field, which is the ambiguity .NET resolves with a rule nobody
-    /// remembers.
-    /// A SINGLE LETTER IS A STANDARD FORMAT, not a one-letter picture, which is
-    /// .NET's rule: "d" is the short date and not the day of the month. The
-    /// pictures below need two characters or more, and every program that
-    /// writes `ToString("yyyy-MM-dd")` is already writing one.
-    ///
-    /// The shapes are the INVARIANT culture's, which is the only culture this
-    /// machine has.
-    private static string Standard(char kind) {
-        if (kind == 'd') { return "MM/dd/yyyy"; }
-        if (kind == 'D') { return "dddd, dd MMMM yyyy"; }
-        if (kind == 'f') { return "dddd, dd MMMM yyyy HH:mm"; }
-        if (kind == 'F') { return "dddd, dd MMMM yyyy HH:mm:ss"; }
-        if (kind == 'g') { return "MM/dd/yyyy HH:mm"; }
-        if (kind == 'G') { return "MM/dd/yyyy HH:mm:ss"; }
-        if (kind == 'm' || kind == 'M') { return "MMMM dd"; }
-        if (kind == 'o' || kind == 'O') { return "yyyy-MM-ddTHH:mm:ss.fffffff"; }
-        if (kind == 'r' || kind == 'R') { return "ddd, dd MMM yyyy HH:mm:ss 'GMT'"; }
-        if (kind == 's') { return "yyyy-MM-ddTHH:mm:ss"; }
-        if (kind == 't') { return "HH:mm"; }
-        if (kind == 'T') { return "HH:mm:ss"; }
-        // LOCAL TIME IS UTC on this machine, so "u" and "U" are the same
-        // moment written two ways rather than two moments.
-        if (kind == 'u') { return "yyyy-MM-dd HH:mm:ssZ"; }
-        if (kind == 'U') { return "dddd, dd MMMM yyyy HH:mm:ss"; }
-        if (kind == 'y' || kind == 'Y') { return "yyyy MMMM"; }
-        throw new FormatException("Input string was not in a correct format.");
+    /// A STANDARD FORMAT OR A CUSTOM PICTURE (DateParts.Format). The
+    /// invariant culture is the only one this machine has, so a provider
+    /// changes nothing.
+    public string ToString(string? format) { return DateParts.Format(this, format, false, 0); }
+
+    public string ToString(IFormatProvider? provider) { return DateParts.Format(this, null, false, 0); }
+
+    public string ToString(string? format, IFormatProvider? provider) {
+        return DateParts.Format(this, format, false, 0);
+    }
+}
+
+/// THE MACHINE'S ZONE, for whatever writes down a local reading's offset: the
+/// "z" and "K" of a picture, "o" on a local time, ToBinary, and the
+/// DateTimeOffset made from a DateTime. NOTHING HERE CAN READ A ZONE -- the tz
+/// database is the system library's, in IO/timezone.cor -- so that library's
+/// half of this class installs the two questions when the class is first
+/// touched. A build without it (the kernel) installs nothing, and there local
+/// time is UTC.
+static partial class LocalZone {
+    private static Func<DateTime, TimeSpan>? offsetAt;
+    private static Func<TimeSpan>? offsetNow;
+
+    /// Ticks east of UTC at `when`: at the moment, for a UTC reading, and
+    /// for any other at the local reading, as TimeZoneInfo.GetUtcOffset says.
+    public static long At(DateTime when) {
+        Func<DateTime, TimeSpan>? ask = offsetAt;
+
+        return ask == null ? 0 : ask(when).Ticks;
     }
 
-    public string ToString(string format) {
-        if (format.Length == 1) { return ToString(Standard(Sys.GetChar(format, 0))); }
+    /// Ticks east of UTC as the clock reads now.
+    public static long Now() {
+        Func<TimeSpan>? ask = offsetNow;
 
-        StringBuilder made = new StringBuilder();
-        int at = 0;
-
-        while (at < format.Length) {
-            char c = Sys.GetChar(format, at);
-
-            // QUOTED TEXT IS ITSELF, letters and all, which is how "GMT" gets
-            // into the R format without its M becoming a month. .NET's escape,
-            // and the single quote is the one that does it.
-            if (c == '\'') {
-                int close = String.IndexOf(format, '\'', at + 1);
-                int end = close < 0 ? format.Length : close;
-
-                made.Append(String.Substring(format, at + 1, end - at - 1));
-                at = end + 1;
-                continue;
-            }
-
-            if (c == '\\' && at + 1 < format.Length) {
-                made.Append(Sys.GetChar(format, at + 1));
-                at = at + 2;
-                continue;
-            }
-
-            int run = 1;
-
-            while (at + run < format.Length && Sys.GetChar(format, at + run) == (int)c) {
-                run = run + 1;
-            }
-
-            if (c == 'y') { made.Append(Field(run >= 4 ? Year : Year % 100, run)); }
-            else if (c == 'M' && run >= 4) { made.Append(DateParts.MonthName(Month)); }
-            else if (c == 'M' && run == 3) { made.Append(String.Substring(DateParts.MonthName(Month), 0, 3)); }
-            else if (c == 'M') { made.Append(Field(Month, run)); }
-            else if (c == 'd' && run >= 4) { made.Append(DateParts.DayName((int)DayOfWeek)); }
-            else if (c == 'd' && run == 3) { made.Append(String.Substring(DateParts.DayName((int)DayOfWeek), 0, 3)); }
-            else if (c == 'd') { made.Append(Field(Day, run)); }
-            else if (c == 'h') { made.Append(Field(Hour % 12 == 0 ? 12 : Hour % 12, run)); }
-            else if (c == 't' && run >= 2) { made.Append(Hour < 12 ? "AM" : "PM"); }
-            else if (c == 't') { made.Append(Hour < 12 ? "A" : "P"); }
-            else if (c == 'H') { made.Append(Field(Hour, run)); }
-            else if (c == 'm') { made.Append(Field(Minute, run)); }
-            else if (c == 's') { made.Append(Field(Second, run)); }
-            else if (c == 'f') {
-                // A RUN OF f's IS A FRACTION OF A SECOND, as many digits as
-                // there are letters: "fff" is milliseconds and "fffffff" is
-                // the whole tick, which is what "o" prints.
-                long fraction = ticks % 10000000;
-                string digits = String.PadLeft(String.FromInt(fraction), 7, '0');
-
-                made.Append(String.Substring(digits, 0, run > 7 ? 7 : run));
-            }
-            else { made.Append(c, run); }
-
-            at = at + run;
-        }
-        return made.ToString();
-    }
-
-    private static string Field(int value, int width) {
-        return String.PadLeft(String.FromInt(value), width, '0');
+        return ask == null ? 0 : ask().Ticks;
     }
 }
 
@@ -17469,18 +17612,75 @@ partial struct DateTime {
 /// Ticks is the LOCAL reading and UtcTicks is the moment: subtracting the
 /// offset is what turns one into the other, and .NET's members are named so
 /// that a caller has to say which they meant.
-partial struct DateTimeOffset {
+partial struct DateTimeOffset : IFormattable {
     private long ticks;    // the local reading
     private long offset;   // ticks east of UTC
 
-    public DateTimeOffset(DateTime when, TimeSpan from) {
-        ticks = when.Ticks;
-        offset = from.Ticks;
+    /// A READING AND ITS OFFSET, which must agree with the reading's kind: a
+    /// UTC one has none, and a local one the machine's zone's at that reading.
+    public DateTimeOffset(DateTime dateTime, TimeSpan offset) {
+        if (dateTime.Kind == DateTimeKind.Local && offset.Ticks != LocalZone.At(dateTime)) {
+            throw new ArgumentException("The UTC Offset of the local dateTime parameter does not match the offset argument.",
+                                        "offset");
+        }
+        if (dateTime.Kind == DateTimeKind.Utc && offset.Ticks != 0) {
+            throw new ArgumentException("The UTC Offset for Utc DateTime instances must be 0.", "offset");
+        }
+        this.offset = Valid(offset);
+        ticks = Within(dateTime.Ticks, this.offset);
     }
 
-    public DateTimeOffset(long inTicks, TimeSpan from) {
-        ticks = inTicks;
-        offset = from.Ticks;
+    public DateTimeOffset(long ticks, TimeSpan offset) {
+        this.offset = Valid(offset);
+        if (ticks < 0 || ticks > 3155378975999999999) {
+            throw new ArgumentOutOfRangeException("ticks",
+                "Ticks must be between DateTime.MinValue.Ticks and DateTime.MaxValue.Ticks.");
+        }
+        this.ticks = Within(ticks, this.offset);
+    }
+
+    /// THE OFFSET A DateTime's KIND IMPLIES: zero for UTC, and the machine's
+    /// zone at that reading for a local one -- and for an unspecified one,
+    /// which .NET takes as local here. The parameters keep .NET's names, so
+    /// that a call naming its arguments (`offset: TimeSpan.Zero`) compiles.
+    public DateTimeOffset(DateTime dateTime) {
+        offset = Valid(new TimeSpan(dateTime.Kind == DateTimeKind.Utc ? 0 : LocalZone.At(dateTime)));
+        ticks = Within(dateTime.Ticks, offset);
+    }
+
+    public DateTimeOffset(int year, int month, int day, int hour, int minute, int second, TimeSpan offset) {
+        this.offset = Valid(offset);
+        ticks = Within(new DateTime(year, month, day, hour, minute, second).Ticks, this.offset);
+    }
+
+    public DateTimeOffset(int year, int month, int day, int hour, int minute, int second, int millisecond,
+                          TimeSpan offset) {
+        this.offset = Valid(offset);
+        ticks = Within(new DateTime(year, month, day, hour, minute, second, millisecond).Ticks, this.offset);
+    }
+
+    // AN OFFSET IS WHOLE MINUTES, NO MORE THAN FOURTEEN HOURS from UTC, which
+    // is all .NET stores and so all it accepts.
+    private static long Valid(TimeSpan from) {
+        long size = from.Ticks;
+
+        if (size % 600000000 != 0) { throw new ArgumentException("Offset must be specified in whole minutes.", "offset"); }
+        if (size < -504000000000 || size > 504000000000) {
+            throw new ArgumentOutOfRangeException("offset", "Offset must be within plus or minus 14 hours.");
+        }
+        return size;
+    }
+
+    // THE MOMENT MUST BE A DATE AS WELL as the reading: near either end of
+    // the calendar an offset can carry the UTC side out of it.
+    private static long Within(long reading, long from) {
+        long utc = reading - from;
+
+        if (utc < 0 || utc > 3155378975999999999) {
+            throw new ArgumentOutOfRangeException("offset",
+                "The UTC time represented when the offset is applied must be between year 0 and 10,000.");
+        }
+        return reading;
     }
 
     // UtcNow and Now ARE NOT HERE. They read a clock, and a clock is the
@@ -17521,18 +17721,29 @@ partial struct DateTimeOffset {
 
     /// SECONDS SINCE 1970, which is what every wire protocol counts in. The
     /// UTC moment, not the local reading -- the whole point of the type.
-    public long ToUnixTimeSeconds() { return (UtcTicks - 621355968000000000) / 10000000; }
-    public long ToUnixTimeMilliseconds() { return (UtcTicks - 621355968000000000) / 10000; }
+    /// A MOMENT BEFORE 1970 COUNTS DOWN A WHOLE UNIT as soon as it is any
+    /// part of one before -- half a second before the epoch is second -1 --
+    /// which is .NET's floor and not the division's truncation.
+    public long ToUnixTimeSeconds() { return UtcTicks / 10000000 - 62135596800; }
+    public long ToUnixTimeMilliseconds() { return UtcTicks / 10000 - 62135596800000; }
 
     public static DateTimeOffset FromUnixTimeSeconds(long seconds) {
-        return new DateTimeOffset(new DateTime(621355968000000000 + seconds * 10000000), TimeSpan.Zero);
+        if (seconds < -62135596800 || seconds > 253402300799) {
+            throw new ArgumentOutOfRangeException("seconds", seconds,
+                "Valid values are between -62135596800 and 253402300799, inclusive.");
+        }
+        return new DateTimeOffset(621355968000000000 + seconds * 10000000, TimeSpan.Zero);
     }
 
     public static DateTimeOffset FromUnixTimeMilliseconds(long milliseconds) {
-        return new DateTimeOffset(new DateTime(621355968000000000 + milliseconds * 10000), TimeSpan.Zero);
+        if (milliseconds < -62135596800000 || milliseconds > 253402300799999) {
+            throw new ArgumentOutOfRangeException("milliseconds", milliseconds,
+                "Valid values are between -62135596800000 and 253402300799999, inclusive.");
+        }
+        return new DateTimeOffset(621355968000000000 + milliseconds * 10000, TimeSpan.Zero);
     }
 
-    public DateTimeOffset AddTicks(long value) { return new DateTimeOffset(ticks + value, Offset); }
+    public DateTimeOffset AddTicks(long value) { return new DateTimeOffset(DateTime.AddTicks(value), Offset); }
     public DateTimeOffset Add(TimeSpan span) { return AddTicks(span.Ticks); }
     public DateTimeOffset AddSeconds(double value) { return AddTicks((long)(value * 10000000.0)); }
     public DateTimeOffset AddMinutes(double value) { return AddTicks((long)(value * 600000000.0)); }
@@ -17568,26 +17779,16 @@ partial struct DateTimeOffset {
 
     /// "MM/dd/yyyy HH:mm:ss zzz", which is what .NET prints for one with no
     /// format asked for -- the offset is part of the value and so part of the
-    /// text.
-    public string ToString() { return String.Concat(DateTime.ToString("MM/dd/yyyy HH:mm:ss "), Zone()); }
+    /// text. A FORMAT IS A DateTime's, written with this value's own offset
+    /// where a DateTime would write the machine's zone or its kind.
+    public string ToString() { return DateParts.Format(DateTime, null, true, offset); }
 
-    public string ToString(string format) {
-        if (format.Length == 1 && (Sys.GetChar(format, 0) == 'o' || Sys.GetChar(format, 0) == 'O')) {
-            return String.Concat(DateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff"), Zone());
-        }
-        return DateTime.ToString(format);
-    }
+    public string ToString(string? format) { return DateParts.Format(DateTime, format, true, offset); }
 
-    /// The offset as +hh:mm or -hh:mm, which is the "zzz" of a picture.
-    private string Zone() {
-        long size = offset < 0 ? -offset : offset;
-        StringBuilder made = new StringBuilder();
+    public string ToString(IFormatProvider? formatProvider) { return DateParts.Format(DateTime, null, true, offset); }
 
-        made.Append(offset < 0 ? '-' : '+');
-        made.Append(String.PadLeft(String.FromInt(size / 36000000000), 2, '0'));
-        made.Append(':');
-        made.Append(String.PadLeft(String.FromInt(size / 600000000 % 60), 2, '0'));
-        return made.ToString();
+    public string ToString(string? format, IFormatProvider? formatProvider) {
+        return DateParts.Format(DateTime, format, true, offset);
     }
 }
 
@@ -17709,6 +17910,251 @@ static class DateParts {
         long day = 0;
         Civil(days, out month, out day);
         return (int)day;
+    }
+
+    // ---- a moment, written down ---------------------------------------------
+    //
+    // ONE WRITER FOR DateTime AND DateTimeOffset, since a DateTimeOffset's text
+    // is a DateTime's with an offset in it. `zoned` says which this is: for a
+    // DateTimeOffset, `offset` is its own, in ticks east of UTC, and it is what
+    // "z" and "K" print; a DateTime has none, and prints the machine's zone
+    // (LocalZone) or its kind instead.
+
+    /// A SINGLE LETTER IS A STANDARD FORMAT, not a one-letter picture, which
+    /// is .NET's rule: "d" is the short date and not the day of the month
+    /// ("%d" is that). Anything longer is a picture. No format at all is "G"
+    /// for a DateTime, and for a DateTimeOffset the same with its offset.
+    public static string Format(DateTime value, string? format, bool zoned, long offset) {
+        string picture = zoned ? "MM/dd/yyyy HH:mm:ss zzz" : "MM/dd/yyyy HH:mm:ss";
+
+        if (format != null && format.Length == 1) {
+            char standard = Sys.GetChar(format, 0);
+
+            // "r" AND "u" ARE UTC BY DEFINITION, so a DateTimeOffset is moved
+            // there before it is written. A DateTime is written as it reads,
+            // whatever its kind -- .NET's rule, and a trap it keeps.
+            if (zoned && (standard == 'r' || standard == 'R' || standard == 'u')) {
+                value = new DateTime(value.Ticks - offset);
+            }
+            // "U" CONVERTS: the universal time, written long. A local or
+            // unspecified reading is moved to UTC through the machine's zone,
+            // and a DateTimeOffset may not ask for it at all. A MOMENT PAST
+            // EITHER END OF THE CALENDAR STOPS AT THAT END, as .NET's
+            // conversion stops it: MinValue east of Greenwich is still
+            // MinValue, not a date before the first.
+            if (standard == 'U') {
+                if (zoned) { throw BadFormat(); }
+                if (value.Kind != DateTimeKind.Utc) {
+                    long utc = value.Ticks - LocalZone.At(value);
+
+                    if (utc < 0) { utc = 0; }
+                    if (utc > 3155378975999999999) { utc = 3155378975999999999; }
+                    value = new DateTime(utc, DateTimeKind.Utc);
+                }
+            }
+            picture = Standard(standard);
+        } else if (format != null && format.Length > 1) {
+            picture = format;
+        }
+
+        StringBuilder made = new StringBuilder();
+        Picture(value, picture, zoned, offset, made);
+        return made.ToString();
+    }
+
+    /// The standard formats as pictures, in the INVARIANT culture's shapes --
+    /// the only culture this machine has.
+    private static string Standard(char kind) {
+        if (kind == 'd') { return "MM/dd/yyyy"; }
+        if (kind == 'D') { return "dddd, dd MMMM yyyy"; }
+        if (kind == 'f') { return "dddd, dd MMMM yyyy HH:mm"; }
+        if (kind == 'F' || kind == 'U') { return "dddd, dd MMMM yyyy HH:mm:ss"; }
+        if (kind == 'g') { return "MM/dd/yyyy HH:mm"; }
+        if (kind == 'G') { return "MM/dd/yyyy HH:mm:ss"; }
+        if (kind == 'm' || kind == 'M') { return "MMMM dd"; }
+        if (kind == 'o' || kind == 'O') { return "yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fffffffK"; }
+        if (kind == 'r' || kind == 'R') { return "ddd, dd MMM yyyy HH':'mm':'ss 'GMT'"; }
+        if (kind == 's') { return "yyyy'-'MM'-'dd'T'HH':'mm':'ss"; }
+        if (kind == 't') { return "HH:mm"; }
+        if (kind == 'T') { return "HH:mm:ss"; }
+        if (kind == 'u') { return "yyyy'-'MM'-'dd HH':'mm':'ss'Z'"; }
+        if (kind == 'y' || kind == 'Y') { return "yyyy MMMM"; }
+        throw BadFormat();
+    }
+
+    /// A CUSTOM PICTURE, letter by letter as .NET reads one: y, M, d, h, H, m,
+    /// s, f and F, t, g (the era), z (the offset) and K (the kind, or the
+    /// offset); text between quotes or after a backslash as it is; '%' to make
+    /// one letter a picture of its own; and anything else copied through. A
+    /// field of two digits is never written wider, however many letters ask.
+    private static void Picture(DateTime value, string format, bool zoned, long offset, StringBuilder made) {
+        // A TIME OF DAY WITH NO DATE -- a reading on the first day there is,
+        // written by a picture that has shown no day, month or year so far --
+        // takes the offset the zone has now, which is .NET's answer for a
+        // DateTime used as a clock time.
+        bool timeOnly = true;
+        int at = 0;
+
+        while (at < format.Length) {
+            char c = Sys.GetChar(format, at);
+
+            // QUOTED TEXT IS ITSELF, letters and all, which is how "GMT" gets
+            // into the R format without its M becoming a month.
+            if (c == '\'' || c == '"') {
+                at = Quoted(format, at, made);
+                continue;
+            }
+            if (c == '\\') {
+                if (at + 1 >= format.Length) { throw BadFormat(); }
+                made.Append(Sys.GetChar(format, at + 1));
+                at = at + 2;
+                continue;
+            }
+            // A PERCENT SIGN makes the one letter after it a picture of its
+            // own, written into the same text: "%d" is the day of the month.
+            if (c == '%') {
+                if (at + 1 >= format.Length || Sys.GetChar(format, at + 1) == '%') { throw BadFormat(); }
+                Picture(value, String.Substring(format, at + 1, 1), zoned, offset, made);
+                at = at + 2;
+                continue;
+            }
+            // K IS ONE LETTER, however many follow it: each writes it again.
+            if (c == 'K') {
+                if (zoned) { Offset(offset, 3, made); }
+                else if (value.Kind == DateTimeKind.Local) { Offset(LocalZone.At(value), 3, made); }
+                else if (value.Kind == DateTimeKind.Utc) { made.Append('Z'); }
+                at = at + 1;
+                continue;
+            }
+
+            int run = Run(format, at);
+            int hour = value.Hour;
+
+            if (c == 'y') {
+                // TWO LETTERS OR FEWER are the year in its century; more are
+                // the whole year, padded to as many digits as letters.
+                made.Append(Digits(run <= 2 ? value.Year % 100 : value.Year, run));
+                timeOnly = false;
+            }
+            else if (c == 'M') {
+                if (run <= 2) { made.Append(Digits(value.Month, run)); }
+                else if (run == 3) { made.Append(String.Substring(MonthName(value.Month), 0, 3)); }
+                else { made.Append(MonthName(value.Month)); }
+                timeOnly = false;
+            }
+            else if (c == 'd') {
+                if (run <= 2) { made.Append(Digits(value.Day, run)); }
+                else if (run == 3) { made.Append(String.Substring(DayName((int)value.DayOfWeek), 0, 3)); }
+                else { made.Append(DayName((int)value.DayOfWeek)); }
+                timeOnly = false;
+            }
+            else if (c == 'h') { made.Append(Digits(hour % 12 == 0 ? 12 : hour % 12, run > 2 ? 2 : run)); }
+            else if (c == 'H') { made.Append(Digits(hour, run > 2 ? 2 : run)); }
+            else if (c == 'm') { made.Append(Digits(value.Minute, run > 2 ? 2 : run)); }
+            else if (c == 's') { made.Append(Digits(value.Second, run > 2 ? 2 : run)); }
+            else if (c == 'f' || c == 'F') {
+                if (run > 7) { throw BadFormat(); }
+                Fraction(value.Ticks % 10000000, run, c == 'F', true, made);
+            }
+            else if (c == 't' && run == 1) { made.Append(hour < 12 ? 'A' : 'P'); }
+            else if (c == 't') { made.Append(hour < 12 ? "AM" : "PM"); }
+            else if (c == 'g') { made.Append("A.D."); }
+            else if (c == 'z') {
+                long zone = offset;
+
+                if (!zoned) {
+                    if (timeOnly && value.Ticks < 864000000000) { zone = LocalZone.Now(); }
+                    else if (value.Kind == DateTimeKind.Utc) { zone = 0; }
+                    else { zone = LocalZone.At(value); }
+                }
+                Offset(zone, run, made);
+            }
+            else { made.Append(c, run); }
+
+            at = at + run;
+        }
+    }
+
+    /// An offset as "z" (+5), "zz" (+05) or "zzz" (+05:30) writes it.
+    private static void Offset(long zone, int width, StringBuilder made) {
+        long size = zone < 0 ? -zone : zone;
+
+        made.Append(zone < 0 ? '-' : '+');
+        if (width <= 1) {
+            made.Append(size / 36000000000);
+            return;
+        }
+        made.Append(Digits(size / 36000000000, 2));
+        if (width >= 3) {
+            made.Append(':');
+            made.Append(Digits(size / 600000000 % 60, 2));
+        }
+    }
+
+    // ---- what a date's picture and a span's share ---------------------------
+
+    public static FormatException BadFormat() {
+        return new FormatException("Input string was not in a correct format.");
+    }
+
+    /// How many times the letter at `at` repeats from there.
+    public static int Run(string format, int at) {
+        char c = Sys.GetChar(format, at);
+        int run = 1;
+
+        while (at + run < format.Length && Sys.GetChar(format, at + run) == c) { run = run + 1; }
+        return run;
+    }
+
+    /// A number padded with zeros to at least `width` digits.
+    public static string Digits(long value, int width) {
+        return String.PadLeft(String.FromInt(value), width, '0');
+    }
+
+    /// TEXT BETWEEN QUOTES, single or double, written as it is but for a
+    /// backslash, which writes the character after it -- a quote included.
+    /// Returns where the picture goes on, after the closing quote; there
+    /// must be one.
+    public static int Quoted(string format, int at, StringBuilder made) {
+        char quote = Sys.GetChar(format, at);
+        int next = at + 1;
+
+        while (next < format.Length) {
+            char c = Sys.GetChar(format, next);
+
+            next = next + 1;
+            if (c == quote) { return next; }
+            if (c == '\\') {
+                if (next >= format.Length) { throw BadFormat(); }
+                made.Append(Sys.GetChar(format, next));
+                next = next + 1;
+            } else {
+                made.Append(c);
+            }
+        }
+        throw new FormatException("Cannot find a matching quote character for the character '" + quote + "'.");
+    }
+
+    /// A RUN OF f's OR F's: the fraction of a second (`fraction`, in ticks)
+    /// to as many digits as letters, cut rather than rounded. An F run drops
+    /// the zeros at its end, and when that leaves nothing a date's picture
+    /// takes back the '.' written just before it -- "ss.FFF" on a whole
+    /// second is "05", not "05.". A span's picture leaves the '.' alone.
+    public static void Fraction(long fraction, int run, bool trim, bool takeDot, StringBuilder made) {
+        int digits = run;
+
+        for (int cut = run; cut < 7; cut++) { fraction = fraction / 10; }
+        if (trim) {
+            while (digits > 0 && fraction % 10 == 0) {
+                fraction = fraction / 10;
+                digits = digits - 1;
+            }
+        }
+        if (digits > 0) {
+            made.Append(Digits(fraction, digits));
+        } else if (takeDot && made.Length > 0 && made[made.Length - 1] == '.') {
+            made.Length = made.Length - 1;
+        }
     }
 }
 

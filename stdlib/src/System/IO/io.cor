@@ -2456,7 +2456,7 @@ partial struct DateTime
     public DateTime ToUniversalTime()
     {
         if (Kind == DateTimeKind.Utc) return this;
-        return TimeZoneInfo.ConvertTimeToUtc(SpecifyKind(this, DateTimeKind.Local));
+        return TimeZoneInfo.LocalToUtc(this);
     }
 
     public static DateTime FromUnixTimeSeconds(long seconds)
@@ -2472,6 +2472,31 @@ partial struct DateTime
         return new DateTime(UnixEpoch.Ticks + seconds * 10000000 + nsec / 100, DateTimeKind.Utc);
     }
 
+}
+
+/// The machine's zone, for what stdlib/src/System/Core.cor writes of a local
+/// reading's offset: TimeZoneInfo.Local, installed the first time anything
+/// there asks.
+static partial class LocalZone
+{
+    static LocalZone()
+    {
+        offsetAt = OffsetAt;
+        offsetNow = OffsetNow;
+    }
+
+    static TimeSpan OffsetAt(DateTime when)
+    {
+        return TimeZoneInfo.Local.GetUtcOffset(when);
+    }
+
+    /// Asked of the UTC clock, not the local one: in the hour repeated when
+    /// daylight time ends, the local reading alone cannot say which of the
+    /// two offsets is the one in force.
+    static TimeSpan OffsetNow()
+    {
+        return TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow);
+    }
 }
 
 /// A file or directory by its name, with what stat says about it, as .NET
@@ -3114,9 +3139,33 @@ partial static class File
         return GetCreationTimeUtc(path).ToLocalTime();
     }
 
-    static void SetTimes(string path, long atime, long mtime)
+    /// THE UTC MOMENT A FILE CALL'S TIME NAMES, as seconds since 1970 and
+    /// the nanoseconds after them -- before 1970 a negative second and a
+    /// fraction still counting forward, as utimensat takes them. An
+    /// unspecified reading is UTC already, as .NET's *Utc calls read one,
+    /// where ToUniversalTime would take it as local.
+    static long UnixTime(DateTime when, out long nanos)
     {
-        int r = Os.Utimensat(path, atime, 0, mtime, 0, true);
+        if (when.Kind == DateTimeKind.Unspecified) when = DateTime.SpecifyKind(when, DateTimeKind.Utc);
+        long ticks = when.ToUniversalTime().Ticks - DateTime.UnixEpoch.Ticks;
+        long seconds = ticks / 10000000;
+        long rest = ticks % 10000000;
+        if (rest < 0)
+        {
+            seconds--;
+            rest += 10000000;
+        }
+        nanos = rest * 100;
+        return seconds;
+    }
+
+    /// One of a file's two times, the other left as it is.
+    static void SetTime(string path, DateTime when, bool access, bool followLinks)
+    {
+        long nanos;
+        long seconds = UnixTime(when, out nanos);
+        int r = access ? Os.Utimensat(path, seconds, nanos, 0, -1, followLinks)
+                       : Os.Utimensat(path, 0, -1, seconds, nanos, followLinks);
         if (r < 0)
         {
             throw Interop.GetExceptionForIoErrno(r, path);
@@ -3125,7 +3174,7 @@ partial static class File
 
     public static void SetLastWriteTimeUtc(string path, DateTime when)
     {
-        SetTimes(path, -1, new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds());
+        SetTime(path, when, false, true);
     }
 
     public static void SetLastWriteTime(string path, DateTime when)
@@ -3135,7 +3184,7 @@ partial static class File
 
     public static void SetLastAccessTimeUtc(string path, DateTime when)
     {
-        SetTimes(path, new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds(), -1);
+        SetTime(path, when, true, true);
     }
 
     public static void SetLastAccessTime(string path, DateTime when)
@@ -3148,22 +3197,12 @@ partial static class File
     /// not of whatever it points at.
     public static void SetLastWriteTimeUtc(string path, DateTime when, bool followLinks)
     {
-        int r = Os.Utimensat(path, -1, 0,
-                             new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds(), 0, followLinks);
-        if (r < 0)
-        {
-            throw Interop.GetExceptionForIoErrno(r, path);
-        }
+        SetTime(path, when, false, followLinks);
     }
 
     public static void SetLastAccessTimeUtc(string path, DateTime when, bool followLinks)
     {
-        int r = Os.Utimensat(path, new DateTimeOffset(when, TimeSpan.Zero).ToUnixTimeSeconds(),
-                             0, -1, 0, followLinks);
-        if (r < 0)
-        {
-            throw Interop.GetExceptionForIoErrno(r, path);
-        }
+        SetTime(path, when, true, followLinks);
     }
 
     /// A HARD LINK: a second directory entry for a file that already exists.
