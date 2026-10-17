@@ -1,0 +1,118 @@
+// test: dropped_fresh_object_kept_or_thrown_past
+// expect-exit: 0
+// expect-output:
+// kept 1500000000 200 3 1
+// thrown 1333310004 -100015 -3011
+// passed 100000 5
+//
+// What a lap makes for a variable and drops is given back where it dies
+// only when nothing else can reach it. One put in a static on one path is
+// the static's from then on: read at the end, it is whole. One whose lap
+// throws between its making and its death goes with the throw -- never a
+// free under a reader -- and what the variable holds is read in the catch.
+// One handed to a call that keeps nothing, and read after, is read whole.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Big
+{
+    public long V;
+    public long A, B, C, D, E, F, G, H, I, J, K, L, M, N;
+
+    public Big(long v) { V = v; A = v + 1; N = v - 1; }
+
+    public Big Copy()
+    {
+        Big c = new Big(V);
+        c.A = A;
+        c.N = N;
+        return c;
+    }
+}
+
+static class Program
+{
+    static Big Kept;
+
+    // Stored on one path: the static's, never given back.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Keeps(long start, long limit, long mark)
+    {
+        Big r = new Big(start);
+        while (true)
+        {
+            Big t = r.Copy();
+            t.V = t.V * 10;
+            if (t.V == mark) Kept = t;
+            if (t.V >= limit) break;
+            r = t;
+        }
+        return r.V;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Check(Big b, long bad)
+    {
+        if (b.V == bad) throw new InvalidOperationException("at " + b.V);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Measure(Big b) => b.V + b.A;
+
+    // A throw between the making and the death.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Throws(long start, long limit, long bad)
+    {
+        Big r = new Big(start);
+        long laps = 0;
+        try
+        {
+            while (true)
+            {
+                Big t = r.Copy();
+                t.V = t.V * 10;
+                Check(t, bad);
+                if (t.V >= limit) break;
+                r = t;
+                laps++;
+            }
+        }
+        catch (InvalidOperationException e)
+        {
+            return -(r.V + laps) - e.Message.Length;
+        }
+        return r.V + laps;
+    }
+
+    // Handed to a call that keeps nothing, then read.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Passes(long start, long limit, out long laps)
+    {
+        Big r = new Big(start);
+        laps = 0;
+        while (true)
+        {
+            Big t = r.Copy();
+            t.V = t.V * 10;
+            long m = Measure(t);
+            if (m > limit) return r.V + (m - t.V - t.A);
+            r = t;
+            laps++;
+        }
+    }
+
+    static int Main()
+    {
+        long kept = 0;
+        for (int n = 0; n < 10000; n++) kept += Keeps(n % 2 + 1, 1000000, 200);
+        Console.WriteLine("kept " + kept + " " + Kept.V + " " + Kept.A + " " + Kept.N);
+        long thrown = 0;
+        for (int n = 0; n < 10000; n++) thrown += Throws(n % 3 + 1, 1000000, 20);
+        Console.WriteLine("thrown " + thrown + " " + Throws(1, 100000000, 1000000) + " " + Throws(3, 100000000, 30000));
+        long laps;
+        long passed = Passes(1, 1000000, out laps);
+        Console.WriteLine("passed " + passed + " " + laps);
+        return 0;
+    }
+}

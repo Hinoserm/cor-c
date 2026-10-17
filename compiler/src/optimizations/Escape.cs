@@ -5023,6 +5023,7 @@ continue;
                 if (LiveAtSelf(liveness, pads, b, i, selfDerived) || HeldAtSelf(f, liveness, b, i, flow))
                 {
                     if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} live at its own making");
+                    _liveAtMaking.Add(i);
                     continue;
                 }
                 // Held across a suspension, an object can only stay on the heap:
@@ -5530,6 +5531,7 @@ continue;
             if (LiveAtSelf(liveness, pads, b, call, flow.Derived) || HeldAtSelf(f, liveness, b, call, flow))
             {
                 if (tracing) Console.Error.WriteLine($"fresh {f.Name}: {call} live at its own making");
+                _liveAtMaking.Add(call);
                 continue;
             }
             // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT (see below).

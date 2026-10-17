@@ -1,0 +1,85 @@
+// test: dropped_fresh_object_freed_where_it_dies
+// expect-exit: 0
+// expect-output:
+// climb 79999400000999994
+// reads 729200000
+// collections 0
+//
+// A FRESH OBJECT A LAP MAKES FOR A VARIABLE AND DROPS -- FloatDecimal.Digits'
+// `tenfold = r.Copy(); ...; if (done) break; r = tenfold;`, behind every
+// double formatted with F, N or E -- was the collector's. The variable owned
+// what it was given, but the lap that breaks never gives it its object, and
+// the allocation itself was refused: the last lap's object, the variable's
+// now, is live where this lap's is made. Each is now given back where it
+// dies unless the variable took it, and the climbs below run no collection.
+// The object is read after the variable takes it, and on the way out beside
+// the variable; those reads find it whole.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Big
+{
+    public long V;
+    public long A, B, C, D, E, F, G, H, I, J, K, L, M, N;
+
+    public Big(long v) { V = v; A = v + 1; N = v - 1; }
+
+    public Big Copy()
+    {
+        Big c = new Big(V);
+        c.A = A;
+        c.N = N;
+        return c;
+    }
+}
+
+static class Program
+{
+    // The tenfold shape: made each lap, the variable's on one path, dropped at the break.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Climb(long start, long limit)
+    {
+        Big r = new Big(start);
+        while (true)
+        {
+            Big t = r.Copy();
+            t.V = t.V * 10;
+            if (t.V >= limit) break;
+            r = t;
+        }
+        return r.V + r.A;
+    }
+
+    // Read after the variable takes it, and read with the variable on the way out.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Reads(long start, long limit)
+    {
+        Big r = new Big(start);
+        long seen = 0;
+        while (true)
+        {
+            Big t = r.Copy();
+            t.V = t.V * 10;
+            if (t.V >= limit) return t.V + r.V + t.A + seen;
+            r = t;
+            seen += t.A + t.N + r.V;
+        }
+    }
+
+    static int Main()
+    {
+        long total = 0, reads = 0;
+        int collections = GC.CollectionCount(0);
+        for (int n = 0; n < 200000; n++)
+        {
+            total += Climb(n % 7 + 1, 1000000000000L);
+            reads += Reads(n % 5 + 1, 1000L);
+        }
+        int ran = GC.CollectionCount(0) - collections;
+        Console.WriteLine("climb " + total);
+        Console.WriteLine("reads " + reads);
+        Console.WriteLine("collections " + ran);
+        return 0;
+    }
+}

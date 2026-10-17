@@ -1995,6 +1995,10 @@ static class Runtime
     /// carried Box's list and a carried List's array went to the collector
     /// every lap. One in this thread's region is nothing to do, as for Free:
     /// read from the variable's shadow it may be memory a lap gave back.
+    ///
+    /// AND WHAT A LAP MADE FOR THE VARIABLE AND DROPPED, where it dies
+    /// (Escape.FreeDropped): `old` that object, `current` what the variable's
+    /// shadow names -- nothing to do when the variable took it.
     public static void FreeReplaced(nint old, nint current)
     {
         if (old != current && Gc.IgnoredFrees != 'r' && Gc.IgnoredFrees != 'v')
