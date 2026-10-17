@@ -124,6 +124,13 @@ public sealed class Inline : IParallelModulePass
 
     public int Workers { get; set; } = 1;
 
+    /// <summary>
+    /// The names the last run kept whether or not anything called them: what
+    /// the sweep after the late passes keeps as well (Pipeline.RunLate), the
+    /// allocators the backend puts in place among them.
+    /// </summary>
+    internal IReadOnlySet<string>? Pinned { get; private set; }
+
     public void Run(Module m)
     {
         // A body's stores as of this run: a round that inlined into it since
@@ -234,6 +241,7 @@ public sealed class Inline : IParallelModulePass
 #endif
         }
 
+        Pinned = pinned;
         RemoveDeadFunctions(m, pinned);
     }
 
@@ -1011,19 +1019,27 @@ public sealed class Inline : IParallelModulePass
     /// <summary>
     /// A function nothing live calls or names any more is gone: inlining
     /// copied it everywhere it was wanted. REACHED, NOT MERELY NAMED: what
-    /// the entry, the names kept for later passes (<paramref name="pinned"/>),
-    /// the data and the exports lead to is kept, and nothing else -- a
-    /// function only a dead one called or took the address of goes with it,
-    /// and so does a cycle of them. Counted by callers, a program with no
-    /// collector kept the collector's worker thread, which only the dead code
-    /// starting it named, and with it a hundred of the collector's routines.
-    /// Exported symbols a library must keep are not touched.
+    /// the entry, the names kept for later passes (<paramref name="pinned"/>)
+    /// and the exports lead to is kept, and nothing else -- a function only a
+    /// dead one called or took the address of goes with it, and so does a
+    /// cycle of them. Counted by callers, a program with no collector kept
+    /// the collector's worker thread, which only the dead code starting it
+    /// named, and with it a hundred of the collector's routines.
+    /// DATA THE SAME WAY: an item is reached when something live names it,
+    /// and only then do its relocations lead anywhere. Every item counted as
+    /// a root, hello world kept four hundred of the collector's messages that
+    /// only its dropped routines printed -- thirty kilobytes of its sixty-five
+    /// of read-only data -- and three hundred of its statics; and a program
+    /// kept the descriptor of a type only dead code made, with the methods
+    /// its vtable named (CancellationTokenSource's Dispose, in 764).
+    /// Exported symbols a library must keep are not touched. Answers whether
+    /// anything went.
     /// </summary>
-    internal static void RemoveDeadFunctions(Module m, IReadOnlySet<string> pinned)
+    internal static bool RemoveDeadFunctions(Module m, IReadOnlySet<string> pinned)
     {
         if (m.Entry is null)
         {
-            return;     // a library: everything is an export
+            return false;     // a library: everything is an export
         }
         // A COROUTINE'S CARD MARK IS CALLED FROM CODE NOT YET WRITTEN: the
         // suspensions become saves and calls after the optimiser has finished
@@ -1056,11 +1072,16 @@ public sealed class Inline : IParallelModulePass
 
         Dictionary<string, Function> byName = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions) byName.TryAdd(f.Name, f);
+        Dictionary<string, DataItem> dataByName = new(StringComparer.Ordinal);
+        foreach (DataItem d in m.Data) dataByName.TryAdd(d.Name, d);
         HashSet<string> live = new(StringComparer.Ordinal);
+        HashSet<string> liveData = new(StringComparer.Ordinal);
         Stack<Function> work = new();
+        Stack<DataItem> dataWork = new();
         void Reach(string name)
         {
             if (byName.TryGetValue(name, out Function? f) && live.Add(name)) work.Push(f);
+            if (dataByName.TryGetValue(name, out DataItem? d) && liveData.Add(name)) dataWork.Push(d);
         }
         Reach(m.Entry);
         foreach (string name in pinned) Reach(name);
@@ -1073,21 +1094,64 @@ public sealed class Inline : IParallelModulePass
             Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange);
             Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange);
         }
-        foreach (DataItem d in m.Data)
-            foreach (DataReloc r in d.Relocs) Reach(r.Symbol);
+        // WHAT CODE NOT IN THE IR NAMES: the backend's card stub and store
+        // sequences read the card table and the marking flag (X86Backend),
+        // and the main thread's block and the word that finds it are the
+        // runtime's, which the other objects of the program name
+        // (Lowering.ThreadBlock0, ThreadBlockSelf).
+        Reach(CardMarks.Cards);
+        Reach(Corsac.Lang.X86.X86Backend.MarkingFlag);
+        Reach(Corsac.Lang.Lower.Lowering.ThreadBlock0);
+        Reach(Corsac.Lang.Lower.Lowering.ThreadBlockSelf);
+        // And what the objects linked in beside this one name (--with): an
+        // entry stub's write to a static, its call into the program.
+        foreach (string name in m.ObjectNames) Reach(name);
+        // A coroutine's frame is laid out after the optimiser (AsyncTransform),
+        // and what it names then is not to be seen here: every item stays.
+        // So it does at the link's run of a unit's late passes (Module.AtLink):
+        // the bodies it brings in after them are the unit's archived ones
+        // (UnitBackend's Callee: the allocators, the region helpers), from
+        // before these passes, and may name what nothing here does. What the
+        // image does not keep goes after them, judged over those bodies
+        // (UnitBackend.PruneAfterLate).
+        if (coroutines || m.AtLink)
+            foreach (DataItem d in m.Data) Reach(d.Name);
         if (m.PreserveExports)
+        {
             foreach (Function f in m.Functions)
                 if (f.Exported) Reach(f.Name);
-        while (work.Count > 0)
+            foreach (DataItem d in m.Data)
+                if (d.Exported) Reach(d.Name);
+        }
+        while (work.Count > 0 || dataWork.Count > 0)
         {
+            if (dataWork.Count > 0)
+            {
+                foreach (DataReloc r in dataWork.Pop().Relocs) Reach(r.Symbol);
+                continue;
+            }
             foreach (Block b in work.Pop().Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    if (i.Callee is { } callee) Reach(callee);
+                    if (i.Callee is { } callee)
+                    {
+                        Reach(callee);
+                        // AND WHAT A MACHINE INTRINSIC BECOMES A CALL TO: the
+                        // snapshot barrier the card-mark pass writes out
+                        // (CardMarks.Expand) calls Runtime.WriteBarrier from
+                        // the backend's stub, and a position-independent card
+                        // mark calls Runtime.CardMark (the x86 backend's
+                        // SelectCall). Swept after that pass, the barrier went
+                        // and the stub called nothing.
+                        if (callee == Corsac.Lang.X86.MachineIntrinsics.Barrier) Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrier);
+                        else if (callee == Corsac.Lang.X86.MachineIntrinsics.CardMark) Reach(Corsac.Lang.Lto.RuntimeAbi.CardMark);
+                    }
                     foreach (Operand o in i.Operands)
                         if (o is SymOperand s) Reach(s.Name);
                 }
         }
-        m.Functions.RemoveAll(f => !live.Contains(f.Name));
+        int gone = m.Functions.RemoveAll(f => !live.Contains(f.Name));
+        gone += m.Data.RemoveAll(d => !liveData.Contains(d.Name));
+        return gone > 0;
     }
 }

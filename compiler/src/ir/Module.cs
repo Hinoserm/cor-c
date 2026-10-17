@@ -49,6 +49,14 @@ public sealed class Module
     public HashSet<string> Imports { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// What the objects linked in beside this module (--with) leave
+    /// undefined: assembly writes a static and calls a routine by its mangled
+    /// name, which nothing in the IR shows. Read and kept by the passes that
+    /// drop what nothing names (DeadStatics, Inline.RemoveDeadFunctions).
+    /// </summary>
+    public HashSet<string> ObjectNames { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Runtime routines the program provides that the optimiser may add calls
     /// to -- the frees an owned object's lifetime ends in -- whether this
     /// module defines them or another unit of the program does. A source

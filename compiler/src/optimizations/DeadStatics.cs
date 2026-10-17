@@ -19,21 +19,31 @@ using Block = Corsac.Lang.Ir.Block;
 /// Only symbols with no address taken: a store through a pointer someone
 /// computed from the symbol is a read this cannot see. A Copy of the
 /// SymOperand into a register is exactly that and disqualifies the symbol.
+///
+/// Run twice: in the module stage, and again after the late passes
+/// (Pipeline.RunLate), where a hook only the dropped collector read is
+/// written by code that stays -- and what was stored into it, kept.
 /// </summary>
 public sealed class DeadStatics : IModulePass
 {
     public string Name => "dead-statics";
 
-    public void Run(Module m)
+    public void Run(Module m) => Sweep(m);
+
+    /// <summary>The pass; answers the functions it took stores out of, none when it found nothing.</summary>
+    internal static List<Function> Sweep(Module m)
     {
+        List<Function> changed = new();
         if (m.Entry is null)
         {
-            return;     // a library: its statics belong to whoever links it
+            return changed;     // a library: its statics belong to whoever links it
         }
 
         HashSet<string> read = new(StringComparer.Ordinal);
         HashSet<string> written = new(StringComparer.Ordinal);
 
+        // What an object linked in beside this one names, it may read.
+        read.UnionWith(m.ObjectNames);
         foreach (DataItem d in m.Data)
         {
             if (m.PreserveExports && d.Exported) read.Add(d.Name);
@@ -82,19 +92,22 @@ public sealed class DeadStatics : IModulePass
 
         if (dead.Count == 0)
         {
-            return;
+            return changed;
         }
 
         foreach (Function f in m.Functions)
         {
+            int gone = 0;
             foreach (Block b in f.Blocks)
             {
-                b.Instrs.RemoveAll(i => i.Op == Opcode.Store
-                                     && i.Operands[0] is SymOperand s
-                                     && dead.Contains(s.Name));
+                gone += b.Instrs.RemoveAll(i => i.Op == Opcode.Store
+                                             && i.Operands[0] is SymOperand s
+                                             && dead.Contains(s.Name));
             }
+            if (gone > 0) changed.Add(f);
         }
 
         m.Data.RemoveAll(d => dead.Contains(d.Name));
+        return changed;
     }
 }

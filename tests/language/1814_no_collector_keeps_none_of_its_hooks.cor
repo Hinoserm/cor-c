@@ -1,0 +1,37 @@
+// test: no_collector_keeps_none_of_its_hooks
+// expect-exit: 0
+// expect-no-symbol: m_Platform_CollectorWorkers
+// expect-no-symbol: m_Platform_StartCollectorWorker
+// expect-no-symbol: m_Platform_QuietWorker
+// expect-no-symbol: m_Clock_NowMicroseconds
+// expect-no-symbol: s_Gc_ArenaUsedPeak
+// expect-no-symbol: s_AllocSamples_
+// expect-output:
+// no collector, and none of its hooks
+// sum 4950
+//
+// A program that needs no collector links none, and none of what only the
+// collector would have read. The thread setup stored the collector's hooks
+// -- its worker count, how to start a worker, how to quiet one, the clock it
+// times itself by -- into statics only the collector reads, and they stayed,
+// with the routines whose addresses they held, where no collector was left
+// to read them; and every message and static of the collector's stayed as
+// well, data being kept whether or not anything live named it. The hooks are
+// set only where there is a collector now, and data goes when nothing live
+// names it, with everything only it named: in one compile and at a closed
+// link alike.
+
+static class Program
+{
+    static int Main()
+    {
+        Sys.Print("no collector, and none of its hooks");
+        Sys.PrintLine();
+        long sum = 0;
+        for (int i = 0; i < 100; i++) sum += i;
+        Sys.Print("sum ");
+        Sys.PrintInt(sum);
+        Sys.PrintLine();
+        return 0;
+    }
+}

@@ -325,7 +325,39 @@ public sealed class Pipeline
                 new ConstantAndCopyPropagation().Run(f);
                 new DeadCodeElimination().Run(f);
             }
+            SweepLate(m);
         }
+    }
+
+    /// <summary>
+    /// WHAT THE LATE PASSES LEFT WRITE-ONLY GOES, AND WHAT ONLY IT NAMED. The
+    /// module stage judged the statics (DeadStatics) while the collector was
+    /// still there to read its hooks; the late inliner dropped it once the
+    /// program was found to need none, and the code filling the hooks stayed,
+    /// with every routine it took the address of: hello world kept the
+    /// collector's worker threads and the clock, a kilobyte and a half of
+    /// code, and their messages. So, for a whole program, until nothing more
+    /// goes: the stores to what nothing reads, the copies of what they stored,
+    /// and what is then reached by nothing (Inline.RemoveDeadFunctions), with
+    /// the names the last inliner kept for the backend kept again.
+    /// Not at the link's run of a unit's late passes (Module.AtLink): the
+    /// archived bodies it brings in after them may read what nothing here
+    /// does.
+    /// </summary>
+    private void SweepLate(Module m)
+    {
+        if (m.Entry is null || m.AtLink) return;
+        // None where no inliner ran (--skip-passes Inline): nothing was dropped.
+        if (LatePasses.OfType<Inline>().LastOrDefault()?.Pinned is not { } pinned) return;
+        while (true)
+        {
+            List<Function> changed = DeadStatics.Sweep(m);
+            foreach (Function f in changed) new DeadCodeElimination().Run(f);
+            bool removed = Inline.RemoveDeadFunctions(m, pinned);
+            if (changed.Count == 0 && !removed) break;
+        }
+        if (Verify)
+            foreach (Function checkedFunction in m.Functions) Verifier.Check(checkedFunction, "after the late sweep");
     }
 
     private void RunFunctions(Module module)

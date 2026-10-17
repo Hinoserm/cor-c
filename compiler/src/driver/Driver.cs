@@ -982,6 +982,31 @@ public static class Driver
         // are a fraction of the objects.
         byte[]? regionHintBytes = null, lifetimeHintBytes = null, heapRecordBytes = null;
         Dictionary<string, string[]>? archivedGone = null;
+        // --with: objects somebody else made. Assembly, in practice -- the
+        // kernel's entry stub and its interrupt vectors, which no language
+        // with functions in it can spell. Read before optimising, for what
+        // they name of the program's (Module.ObjectNames): a static only the
+        // stub read was one nothing read to DeadStatics, which took out its
+        // stores and its word, and the link stopped on an undefined symbol.
+        List<(string, ObjectFile)> withObjects = new();
+        foreach (string with in Values(args, "--with"))
+        {
+            if (!File.Exists(with))
+            {
+                return Fail($"--with '{with}' does not exist");
+            }
+            try
+            {
+                withObjects.Add((Path.GetFileName(with), ElfReader.ReadObjectFile(with, leaveInFile: false)));
+            }
+            catch (ElfFormatException e)
+            {
+                return Fail($"--with '{with}': {e.Message}");
+            }
+        }
+        foreach ((string _, ObjectFile with) in withObjects)
+            foreach (Symbol symbol in with.Symbols)
+                if (!symbol.IsDefined) module.ObjectNames.Add(symbol.Name);
         module.NoCollector = args.Contains("--no-collector");
         bool moduleUnit = kernel is not null && args.Contains("--obj");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
@@ -1308,25 +1333,8 @@ public static class Driver
 
         string entry = Value(args, "--entry") ?? module.Entry ?? "_start";
         List<(string, ObjectFile)> link = new() { (name, obj) };
-
-        // --with: objects somebody else made. Assembly, in practice -- the
-        // kernel's entry stub and its interrupt vectors, which no language
-        // with functions in it can spell.
-        foreach (string with in Values(args, "--with"))
-        {
-            if (!File.Exists(with))
-            {
-                return Fail($"--with '{with}' does not exist");
-            }
-            try
-            {
-                link.Add((Path.GetFileName(with), ElfReader.ReadObjectFile(with, leaveInFile: false)));
-            }
-            catch (ElfFormatException e)
-            {
-                return Fail($"--with '{with}': {e.Message}");
-            }
-        }
+        // And the objects --with named, read before optimising.
+        link.AddRange(withObjects);
         // The report before link-time optimisation; the notes out after it,
         // whose IR archives' integrity hash covers them.
         if (Value(args, "--unused-report") is string unusedReport) Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);
