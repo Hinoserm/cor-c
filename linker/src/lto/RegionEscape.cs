@@ -586,7 +586,11 @@ internal sealed class RegionEscape
             {
                 _holderSeen[holder] = _walk;
                 if (_reading is not null && !_readingAll && _reading.Add(holder) && _reading.Count > MostRead) _readingAll = true;
-                if (_shapeReading is not null && !_shapeReadingAll && _shapeReading.Add(holder) && _shapeReading.Count > MostRead) _shapeReadingAll = true;
+                if (_shapeReading is not null)
+                {
+                    if (_standInHolders.Contains(holder)) _shapeStandIns!.Add(holder);
+                    else if (!_shapeReadingAll && _shapeReading.Add(holder) && _shapeReading.Count > MostRead) _shapeReadingAll = true;
+                }
             }
             if (OriginsOf(r) is { } below) foreach (int c in below) if (FirstSeen(c)) next.Push(c);
         }
@@ -1368,7 +1372,11 @@ internal sealed class RegionEscape
         Summary s = a.Build();
         if (!s.IsUnknown)
         {
-            if (a.Holder < 0) a.Holder = NewHolder();
+            if (a.Holder < 0)
+            {
+                a.Holder = NewHolder();
+                _standInHolders.Add(a.Holder);
+            }
             Register(s, a.Holder);
         }
         return _standIns[a.Targets] = s;
@@ -1493,11 +1501,14 @@ internal sealed class RegionEscape
         HashSet<int>? reading = _reading;
         _reading = null;
         _shapeReading = new();
+        _shapeStandIns = new();
         _shapeReadingAll = false;
         int[] sites = origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray());
         int[] heldSites = heldOrigins.Count == 0 ? Array.Empty<int>() : SitesOf(heldOrigins.ToArray());
         _shapeRead = _shapeReadingAll ? null : _shapeReading.ToArray();
+        _shapeReadStandIns = _shapeStandIns.ToArray();
         _shapeReading = null;
+        _shapeStandIns = null;
         _reading = reading;
         return (bits, sites, heldSites);
     }
@@ -1508,6 +1519,14 @@ internal sealed class RegionEscape
     private HashSet<int>? _shapeReading;
     private bool _shapeReadingAll;
     private int[]? _shapeRead = Array.Empty<int>();
+    // Apart: the stand-ins' holders the walk read, every one of them kept
+    // (few, and the only holders that change while Check runs).
+    private HashSet<int>? _shapeStandIns;
+    private int[] _shapeReadStandIns = Array.Empty<int>();
+    // Every holder a stand-in was given: its own for good, through resets.
+    private readonly HashSet<int> _standInHolders = new();
+    // The tick a holder no stand-in's last changed in place at (Publish).
+    private long _lastInPlaceChange = -1;
 
     // BY THE SUMMARY ITSELF, while no holder's origins changed in place since
     // (OriginsAt): one a round kept (Publish) keeps its shape, and its sites
@@ -1523,18 +1542,21 @@ internal sealed class RegionEscape
         Shaped known = ShapedOf(s);
         if (known.Bits is not null && known.Sites is not null && Fresh(known)) return (known.Bits, known.Sites, known.HeldSites!);
         _shapeRead = Array.Empty<int>();
+        _shapeReadStandIns = Array.Empty<int>();
         var shape = Shape(s);
         known.Bits = shape.Bits; known.Sites = shape.Sites; known.HeldSites = shape.HeldSites; known.At = _tick;
         // ITS OWN HOLDER AMONG THEM: the summary's own origins are its
-        // holder's (Register), and changed in place (Publish) they are new
-        // sites no walk below them saw.
+        // holder's (Register), and changed in place (Publish, Cover) they
+        // are new sites no walk below them saw.
         int[]? read = _shapeRead;
-        if (read is not null && s.Holder >= 0 && Array.IndexOf(read, s.Holder) < 0)
+        int[] standIns = _shapeReadStandIns;
+        if (s.Holder >= 0)
         {
-            Array.Resize(ref read, read.Length + 1);
-            read[^1] = s.Holder;
+            if (_standInHolders.Contains(s.Holder)) { if (Array.IndexOf(standIns, s.Holder) < 0) standIns = [.. standIns, s.Holder]; }
+            else if (read is not null && Array.IndexOf(read, s.Holder) < 0) read = [.. read, s.Holder];
         }
         known.ReadHolders = read;
+        known.ReadStandIns = standIns;
         known.Version++;
         return shape;
     }
@@ -1545,12 +1567,22 @@ internal sealed class RegionEscape
     /// change so far is older than the tick (OriginsChanged moves it on), so
     /// the next ask is answered by the stamp alone.
     /// </summary>
+    //
+    // A STAND-IN'S HOLDER IS ASKED APART: only Cover changes one, Check
+    // grows them all the time, and they are few beneath any shape; every
+    // other holder changes only as Publish replaces a summary in place
+    // (_lastInPlaceChange), so while none did since, they are not asked.
     private bool Fresh(Shaped known)
     {
         if (known.At > _lastOriginsChange) return true;
-        if (known.ReadHolders is not { } read) return false;
-        foreach (int h in read)
-            if (_originsAt.TryGetValue(h, out long changed) && changed >= known.At) return false;
+        foreach (int h in known.ReadStandIns)
+            if (OriginsAt(h) >= known.At) return false;
+        if (known.At <= _lastInPlaceChange)
+        {
+            if (known.ReadHolders is not { } read) return false;
+            foreach (int h in read)
+                if (OriginsAt(h) >= known.At) return false;
+        }
         known.At = _tick;
         return true;
     }
@@ -1590,7 +1622,9 @@ internal sealed class RegionEscape
         public int[]? Sites, HeldSites;
         public long At;
         // The holders the sites were read from; null when too many to keep.
+        // The stand-ins' among them apart, every one.
         public int[]? ReadHolders;
+        public int[] ReadStandIns = Array.Empty<int>();
         // Moved on each time the sites are worked out again (Check's skip).
         public long Version;
     }
@@ -1675,7 +1709,7 @@ internal sealed class RegionEscape
         _bitsByOrigins.Clear();
         _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _unseenOf.Clear(); _unseenRootOf.Clear(); _shapeGeneration++;
         _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
-        _originsAt.Clear();
+        _originsAt = Array.Empty<long>();
         _componentOf = null; _callees = null;
         Work = Applied = Unfollowed = LargestCycle = 0;
     }
@@ -1731,7 +1765,11 @@ internal sealed class RegionEscape
     // Per function: the tick its summary last changed shape at. Per holder:
     // the tick its origins last changed in place at, and the latest of those.
     private readonly long[] _changedAt;
-    private readonly Dictionary<int, long> _originsAt = new();
+    // By holder, -1 where never: read for every holder of every shape's
+    // sites at each freshness check, where a dictionary's lookup was most
+    // of the link's Check.
+    private long[] _originsAt = Array.Empty<long>();
+    private long OriginsAt(int holder) => holder < _originsAt.Length ? _originsAt[holder] : -1;
     private long _lastOriginsChange = -1;
     private long _tick;
     // While a component is solved: what it applies and reads.
@@ -1777,7 +1815,7 @@ internal sealed class RegionEscape
             if (!again && _lastOriginsChange > at)
             {
                 if (_sitesReadOf[c] is not { } read) { again = true; AgainForSites++; }
-                else foreach (int h in read) if (_originsAt.TryGetValue(h, out long changed) && changed > at) { again = true; AgainForSites++; break; }
+                else foreach (int h in read) if (OriginsAt(h) > at) { again = true; AgainForSites++; break; }
             }
             if (!again) continue;
             solved++;
@@ -1864,8 +1902,15 @@ internal sealed class RegionEscape
     // worked out from every holder's forgotten.
     private void OriginsChanged(int holder)
     {
+        if (holder >= _originsAt.Length)
+        {
+            int had = _originsAt.Length;
+            Array.Resize(ref _originsAt, Math.Max(holder + 1, had * 2));
+            Array.Fill(_originsAt, -1, had, _originsAt.Length - had);
+        }
         _originsAt[holder] = _tick;
         _lastOriginsChange = _tick;
+        if (!_standInHolders.Contains(holder)) _lastInPlaceChange = _tick;
         _holderFirst = null;
         _escapingBits = null;
         if (_bitsByOrigins.Count > 0) _bitsByOrigins.Clear();
