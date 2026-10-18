@@ -50,23 +50,55 @@ public static class ManagedLayouts
         // of theirs, and its slots for them, numbered as a library unit
         // numbers its neighbours, were not the units': the compiler's own
         // project build stopped at the link on MemberDecl's layout.
+        // A SPECIALISATION IS NOT A DEFINITION: made here, of a template
+        // wherever it was written -- the runtime unit's ChunkedList<Relocation>
+        // carries the linker's file -- it says nothing of whose unit this is,
+        // and in the class library's it is the program's like its template.
         Func<string, bool>? classLibrary = Binder.LibrarySource;
-        bool classLibraryUnit = library && classLibrary is not null && bound.Types.Values.Any(type => type.Decl is { Elsewhere: false, SourcePath: string })
-            && bound.Types.Values.All(type => type.Decl is not { Elsewhere: false, SourcePath: string own } || classLibrary(own));
+        bool classLibraryUnit = library && classLibrary is not null
+            && bound.Types.Values.Any(type => type.Decl is { Elsewhere: false, Specialised: false, SourcePath: string })
+            && bound.Types.Values.All(type => type.Decl is not { Elsewhere: false, Specialised: false, SourcePath: string own } || classLibrary(own));
         bool ProgramsInLibrary(TypeSymbol type)
-            => classLibraryUnit && type.Decl is { Elsewhere: true, SourcePath: string path } && !classLibrary!(path);
+            => classLibraryUnit && type.Decl is { SourcePath: string path } && !classLibrary!(path);
         HashSet<TypeSymbol> described = new(ReferenceEqualityComparer.Instance);
         Queue<TypeSymbol> pending = new();
+        // --dump-layout NAME says too why this unit describes NAME: what
+        // seeded it, or which described type it is the base or an interface of.
+        Dictionary<TypeSymbol, string>? why = DumpLayout is null ? null : new(ReferenceEqualityComparer.Instance);
+        string Seed(TypeSymbol type) => "seeded: used=" + type.Used + " elsewhere=" + type.Decl?.Elsewhere + " from-library=" + type.Decl?.FromLibrary
+            + " source=" + (type.Decl?.SourcePath ?? "(none)") + " class-library-unit=" + classLibraryUnit;
         foreach (TypeSymbol type in bound.Types.Values.Distinct())
             if ((type.Used || type.Decl is { Elsewhere: false } && (library || !type.Decl.FromLibrary)) && !ProgramsInLibrary(type))
+            {
                 pending.Enqueue(type);
+                if (why is not null) why.TryAdd(type, Seed(type));
+            }
         while (pending.Count != 0)
         {
             TypeSymbol type = pending.Dequeue();
             if (!described.Add(type)) continue;
-            if (type.Base is TypeSymbol basis) pending.Enqueue(basis);
-            foreach (TypeSymbol face in type.Interfaces) pending.Enqueue(face);
+            if (type.Base is TypeSymbol basis)
+            {
+                pending.Enqueue(basis);
+                if (why is not null) why.TryAdd(basis, "the base of " + type.Key + " (" + why.GetValueOrDefault(type) + ")");
+            }
+            foreach (TypeSymbol face in type.Interfaces)
+            {
+                pending.Enqueue(face);
+                if (why is not null) why.TryAdd(face, "an interface of " + type.Key + " (" + why.GetValueOrDefault(type) + ")");
+            }
         }
+        if (why is not null && library && !classLibraryUnit && classLibrary is not null)
+            foreach (TypeSymbol type in bound.Types.Values)
+                if (type.Decl is { Elsewhere: false, SourcePath: string own } && !classLibrary(own))
+                {
+                    Console.Error.WriteLine("layout: not the class library's own unit, for " + type.Key + " of " + own
+                        + " specialised=" + type.Decl.Specialised + " from-library=" + type.Decl.FromLibrary);
+                    break;
+                }
+        if (why is not null)
+            foreach (TypeSymbol type in described)
+                if (type.Key == DumpLayout) Console.Error.WriteLine("layout " + type.Key + " described as " + why.GetValueOrDefault(type));
 
         IEnumerable<ManagedTypeLayout> Records()
         {
