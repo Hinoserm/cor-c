@@ -408,7 +408,7 @@ public sealed partial class Binder
         foreach (string nested in _r.Types.Keys.Where(k => k.StartsWith(before + ".", StringComparison.Ordinal)).ToList())
         {
             TypeSymbol inner = _r.Types[nested];
-            if (inner.Decl is not { FromLibrary: false } innerDecl || innerDecl.Outer is null)
+            if (inner.Decl is not { } innerDecl || ClassLibrarySide(innerDecl) || innerDecl.Outer is null)
             {
                 continue;
             }
@@ -605,7 +605,7 @@ public sealed partial class Binder
         // by the library's. By its two parts (TryGetWithin): a key spelt only
         // to be looked up for every name a body mentions is the binder's
         // largest run of strings.
-        if (_movedAnyAside && written is not { FromLibrary: true } && name.IndexOf('.') < 0
+        if (_movedAnyAside && (written is null || !ClassLibrarySide(written)) && name.IndexOf('.') < 0
             && _r.Types.TryGetWithin(TypeDecl.ProgramHome, name, out TypeSymbol? mine) && mine.Decl is { MovedAside: true })
         {
             if (!BindingElsewhere && !_namingOnly) mine.Used = true;
@@ -2312,7 +2312,7 @@ public sealed partial class Binder
         {
             if (d.MovedAside) _movedAnyAside = true;
             // A PROGRAM TYPE NESTED IN ONE MOVED ASIDE moves with it.
-            if (!d.FromLibrary && d.Outer is not null && MovedPath(d.Outer) is string movedOuter)
+            if (!ClassLibrarySide(d) && d.Outer is not null && MovedPath(d.Outer) is string movedOuter)
             {
                 d.Outer = movedOuter;
             }
@@ -2372,7 +2372,7 @@ public sealed partial class Binder
                 // finds its own first (FindType). Moving the library's, as this
                 // once did, gave a unit names for it the library's object did
                 // not define and a layout of the program's under the library's.
-                if (already.Decl is { FromLibrary: true } && !d.FromLibrary)
+                if (already.Decl is { } held && ClassLibrarySide(held) && !ClassLibrarySide(d))
                 {
                     MoveAside(d);
                     string aside = TypeKey(d);
@@ -2382,7 +2382,7 @@ public sealed partial class Binder
                     continue;
                 }
 
-                if (d.FromLibrary && already.Decl is { FromLibrary: false } program)
+                if (ClassLibrarySide(d) && already.Decl is { } program && !ClassLibrarySide(program))
                 {
                     MoveAside(program);
                     TypeSymbol theirs = new() { Name = d.Name, Key = key, Kind = d.Kind, Decl = d };
@@ -3771,6 +3771,21 @@ public sealed partial class Binder
 
     /// <summary>Whether a type was written in the program's own sources: a file, and not the class library's (the prelude's are neither).</summary>
     private static bool IsProgramSource(TypeDecl d) => d.SourcePath is string path && LibrarySource is { } isLibrary && !isLibrary(path);
+
+    /// <summary>
+    /// Whether a type is the class library's where a program's type of its
+    /// name is moved aside (MoveAside), and its code finds the library's
+    /// types rather than the program's moved ones: on the library's side, and
+    /// not written in one of the program's own sources. A unit of a program
+    /// compiled with --lib is on the library's side, its own files and its
+    /// neighbours' read out of the index alike (IndexedDeclarations.LibrarySide),
+    /// and is still the program's here: a program's `class Random` in its
+    /// entry unit, named in a signature another unit calls through, was a
+    /// second library Random in that unit -- "declared more than once" --
+    /// and a unit's own one was the same, where the whole program moves
+    /// either aside.
+    /// </summary>
+    internal static bool ClassLibrarySide(TypeDecl d) => d.FromLibrary && !IsProgramSource(d);
 
     /// <summary>Whether a field declaration carries [ThreadStatic], however it is spelt.</summary>
     internal static bool IsThreadStatic(FieldDecl f)

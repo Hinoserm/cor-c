@@ -1,0 +1,42 @@
+// test: program_types_named_like_library_types_in_separate_units
+// apart: tests/language/support/1604_library_named_unit.cor
+// expect-exit: 0
+// expect-output:
+// a 42
+// b 43
+// c 7 8
+// d 5
+//
+// A program's own types named as the class library's are -- Random, here in
+// the entry unit, Stopwatch and Lazy<T> in another -- each compiled as a
+// unit of its own against the others' declarations read out of the index, as
+// a project's units are. A unit compiled as a library took every type it read
+// out of the index, and its own, for the library's: the entry unit's Random,
+// named in a signature the other unit calls through, was a second library
+// Random there, "declared more than once", and the other unit's own
+// Stopwatch was the same. Each is the program's in every unit, moved aside
+// behind the library's alike, and the program finds its own.
+
+using System;
+
+class Random
+{
+    public int Next() { return 42; }
+}
+
+static class Helper
+{
+    public static Random Make() { return new Random(); }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine("a " + new Random().Next());
+        Console.WriteLine("b " + Other.Go());
+        Stopwatch watch = Other.Watch(7);
+        Console.WriteLine("c " + watch.Ticks + " " + watch.Elapsed());
+        Console.WriteLine("d " + new Lazy<int>(5).Value);
+    }
+}

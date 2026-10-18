@@ -1,0 +1,23 @@
+// A unit of 1604_program_types_named_like_library_types_in_separate_units:
+// the program's own Stopwatch and Lazy<T>, and a call through the entry
+// unit's Random.
+
+class Stopwatch
+{
+    public long Ticks;
+    public Stopwatch(long ticks) { Ticks = ticks; }
+    public long Elapsed() { return Ticks + 1; }
+}
+
+class Lazy<T>
+{
+    readonly T value;
+    public Lazy(T value) { this.value = value; }
+    public T Value { get { return value; } }
+}
+
+static class Other
+{
+    public static int Go() { Random r = Helper.Make(); return r.Next() + 1; }
+    public static Stopwatch Watch(long ticks) { return new Stopwatch(ticks); }
+}

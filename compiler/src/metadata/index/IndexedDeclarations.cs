@@ -38,6 +38,15 @@ public sealed class IndexedDeclarations : IDisposable
     public bool ModuleOfKernel { get; set; }
     public IReadOnlySet<(string Name, int Arity)>? KernelInterfaces => ModuleOfKernel ? catalog.KernelInterfaces(assembly) : null;
 
+    /// <summary>
+    /// Whether a source file, by full path, would be the class library's in
+    /// this compile had it been named on the command line (TypeDecl.FromLibrary):
+    /// the side every declaration read out of the index takes. Set by the
+    /// front end, which knows what this compile counts as library; null
+    /// reads every one as the program's.
+    /// </summary>
+    public Func<string, bool>? LibrarySide { get; set; }
+
     /// <summary>The stamp of the kernel's index this unit's index was made on (a module's), or null.</summary>
     public byte[]? UnderStamp => catalog.UnderStamp;
 
@@ -685,6 +694,19 @@ public sealed class IndexedDeclarations : IDisposable
                 root.SourceTo = source.To;
                 root.Elsewhere = true;
                 root.SignatureOnly = true;
+                // ON THE SIDE ITS FILE WOULD BE ON HAD IT BEEN NAMED HERE. A
+                // unit compiled with --lib is library code, its own files and
+                // all; its neighbours read out of the index are library like
+                // it, so their parts of a partial type merge with its own
+                // (Frontend.MergePartialTypes) and none of their types is
+                // moved aside behind a library one of the same name
+                // (Monomorphiser.MoveAside). Read as the program's, the
+                // kernel's KernX was two types in every unit but the entry,
+                // each part blind to the others' members, and Core.cor's Math
+                // was moved aside behind the prelude's, whose Min(double,
+                // double) then answered Math.Min(long, int). Every unit sees
+                // one type where the index keeps one key.
+                root.FromLibrary = LibrarySide?.Invoke(source.Path) ?? false;
                 Place(root.Members, source.Namespace, source.Scope, displayFile);
                 unit.Types.Add(root);
                 foreach ((string name, int arity) in SignatureNames(root))

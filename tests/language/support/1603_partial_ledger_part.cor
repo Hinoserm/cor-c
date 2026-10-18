@@ -1,0 +1,14 @@
+// A unit of 1603_partial_class_parts_in_separate_units: parts of Ledger and
+// Tally that call the entry unit's private members and the other unit's.
+
+static partial class Ledger
+{
+    public static string Opened() { return Lines() + " of " + Limit(); }
+    static long Twice(long x) { return x * 2 + opened; }
+    public static long Checked(long x) { return Twice(x) + Third(x); }
+}
+
+partial class Tally
+{
+    public string Say() { return first + " then " + last + " of " + count; }
+}

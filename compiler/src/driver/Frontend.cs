@@ -165,6 +165,13 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("merge-expand");
 #endif
+        // WHAT THE INDEX GIVES IS ON THE SIDE A NAMED FILE WOULD BE: the
+        // library's when this compile is one (--lib makes every file it is
+        // given the library's) or the file is a class library source, the
+        // program's otherwise -- the rule the loop above applied to the
+        // files this compile was given (IndexedDeclarations.LibrarySide).
+        if (declarations is not null)
+            declarations.LibrarySide = path => library || fromLibrary.Contains(Path.GetFullPath(path));
         declarations?.AddHeaders(unit);
         if (declarations is not null)
             unit.Types.Sort((left, right) =>
@@ -847,6 +854,7 @@ public static class Frontend
             bool compatible = into.Mods.HasFlag(Lang.Mods.Partial)
                 && part.Mods.HasFlag(Lang.Mods.Partial)
                 && into.FromLibrary == part.FromLibrary
+                && Lang.Binder.ClassLibrarySide(into) == Lang.Binder.ClassLibrarySide(part)
                 && into.Kind == part.Kind
                 && into.TypeParams.Count == part.TypeParams.Count
                 && into.TypeParams.Zip(part.TypeParams)

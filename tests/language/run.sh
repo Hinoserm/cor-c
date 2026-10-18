@@ -386,11 +386,23 @@ for f in "${tests[@]}"; do
     for src in $(header_value "$f" units); do
         unit_sources="$unit_sources $root/$src"
     done
+    # EACH A UNIT OF ITS OWN: "// apart: path ..." compiles every source it
+    # names as compile-project compiles a project's units -- each by itself
+    # with --lib, and the test, the entry unit, without -- against one
+    # declaration index of them all and of the runtime and the libraries,
+    # which are one more object; and links them all as the whole program.
+    # What a unit knows of its neighbours, and of the library, is then what
+    # it reads out of the index: another file's part of a partial type, the
+    # class library's Math.
+    apart_sources=""
+    for src in $(header_value "$f" apart); do
+        apart_sources="$apart_sources $root/$src"
+    done
     # WHAT REGIONS TOOK, on every run: a link says it in its summary line
     # whether asked or not; a single compile says it when asked.
     want_regions="$(header_value "$f" regions)"
     region_flags=()
-    if [ -n "$want_regions" ] && [ "$through_link" != 1 ] && [ -z "$unit_sources" ]; then
+    if [ -n "$want_regions" ] && [ "$through_link" != 1 ] && [ -z "$unit_sources$apart_sources" ]; then
         region_flags=(--region-report +none)
     fi
     if [ -n "$unit_sources" ]; then
@@ -405,6 +417,27 @@ for f in "${tests[@]}"; do
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib $refs --decl-index "$work/$name.idx" --assembly Units \
                 $extra "$f" --obj -o "$work/$name.o" \
             && $CORC link --closed "${link_flags[@]}" "$work/$name.o" "$work/$name.units.o" -o "$exe"
+        } >"$work/$name.compile" 2>&1
+        cc_status=$?
+    elif [ -n "$apart_sources" ]; then
+        libraries="${lib_paths:-$($CORC library-sources)}"
+        objects="$work/$name.o $work/$name.library.o"
+        for src in $apart_sources; do objects="$objects $work/$name.$(basename "$src" .cor).o"; done
+        # shellcheck disable=SC2086
+        compile_apart() {
+            for src in $apart_sources; do
+                $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --no-shared-init --nostdlib \
+                    --decl-index "$work/$name.idx" --assembly Units "$src" --obj -o "$work/$name.$(basename "$src" .cor).o" || return 1
+            done
+        }
+        # shellcheck disable=SC2086
+        {
+            $CORC index --assembly Units $extra "$f" $apart_sources $libraries -o "$work/$name.idx" \
+            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --assembly Units $libraries --obj -o "$work/$name.library.o" \
+            && compile_apart \
+            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib --decl-index "$work/$name.idx" --assembly Units \
+                $extra "$f" --obj -o "$work/$name.o" \
+            && $CORC link --closed "${link_flags[@]}" $objects -o "$exe"
         } >"$work/$name.compile" 2>&1
         cc_status=$?
     elif [ "$through_link" = 1 ]; then

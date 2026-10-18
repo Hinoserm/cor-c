@@ -1,0 +1,46 @@
+// test: partial_class_parts_in_separate_units
+// apart: tests/language/support/1603_partial_ledger_part.cor tests/language/support/1603_partial_tally_part.cor
+// expect-exit: 0
+// expect-output:
+// opened 3 of 4096 lines
+// piece 4098
+// checked 28
+// tally 4 then 9 of 2
+//
+// Two partial classes in three files, each file compiled as a unit of its
+// own against the others' declarations read out of the index, as a
+// project's units are. A unit compiled as a library took its own part as
+// the library's and its neighbours' as the program's, so the parts never
+// merged and each part was blind to the others' members, public and
+// private alike: Opened's Lines() and Limit() were "not declared". And
+// Core.cor's Math, read out of the index, was moved aside behind the
+// prelude's, so Math.Min(long, int) bound to Min(double, double) and the
+// long it was stored in refused the double. Tally's fields are split over
+// the units, and its constructor, here, runs the initialiser written in
+// another unit's part.
+
+using System;
+
+static partial class Ledger
+{
+    static long opened = 3;
+    static long Lines() { return opened; }
+    public static long Limit() { return 0x1000; }
+
+    static void Main()
+    {
+        long count = 70003, done = 3, first = 4, then = 9;
+        Console.WriteLine("opened " + Opened() + " lines");
+        Console.WriteLine("piece " + Piece(count, done));
+        Console.WriteLine("checked " + Checked(5));
+        Tally tally = new Tally(first);
+        tally.Add(then);
+        Console.WriteLine("tally " + tally.Say());
+    }
+}
+
+partial class Tally
+{
+    long first;
+    public Tally(long first) { this.first = first; }
+}

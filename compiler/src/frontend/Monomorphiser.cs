@@ -596,9 +596,9 @@ public sealed class Monomorphiser
         // before any path is known, so that every path is its moved one; and
         // remembered from the declarations each round, which a round's own
         // monomorphiser does not outlive.
-        HashSet<string> libraries = new(unit.Types.Where(t => t.FromLibrary && t.Outer is null && t.Namespace.Length == 0)
+        HashSet<string> libraries = new(unit.Types.Where(t => Binder.ClassLibrarySide(t) && t.Outer is null && t.Namespace.Length == 0)
             .Select(t => Arity(t.Name, t.TypeParams.Count)), StringComparer.Ordinal);
-        foreach (TypeDecl t in unit.Types.Where(t => !t.FromLibrary && !t.MovedAside && t.Outer is null && t.Namespace.Length == 0).ToList())
+        foreach (TypeDecl t in unit.Types.Where(t => !Binder.ClassLibrarySide(t) && !t.MovedAside && t.Outer is null && t.Namespace.Length == 0).ToList())
         {
             if (libraries.Contains(Arity(t.Name, t.TypeParams.Count))) MoveAside(t);
         }
@@ -608,7 +608,7 @@ public sealed class Monomorphiser
         }
         if (_movedAside.Count > 0)
         {
-            foreach (TypeDecl t in unit.Types.Where(t => !t.FromLibrary && t.Outer is not null))
+            foreach (TypeDecl t in unit.Types.Where(t => !Binder.ClassLibrarySide(t) && t.Outer is not null))
             {
                 if (MovedPath(t.Outer!) is string outer) t.Outer = outer;
             }
@@ -620,10 +620,10 @@ public sealed class Monomorphiser
             // A PROGRAM'S TEMPLATE AND THE LIBRARY'S OF ONE NAME, met here
             // still (one nested alike in both): the library's keeps the name
             // and the program's moves aside, as above.
-            if (_generic.TryGetValue(key, out TypeDecl? other) && other.FromLibrary != t.FromLibrary)
+            if (_generic.TryGetValue(key, out TypeDecl? other) && Binder.ClassLibrarySide(other) != Binder.ClassLibrarySide(t))
             {
-                TypeDecl program = other.FromLibrary ? t : other;
-                _generic[key] = other.FromLibrary ? other : t;
+                TypeDecl program = Binder.ClassLibrarySide(other) ? t : other;
+                _generic[key] = Binder.ClassLibrarySide(other) ? other : t;
                 MoveAside(program);
                 continue;
             }
@@ -1908,7 +1908,7 @@ public sealed class Monomorphiser
         // Qualified by a System namespace: the library's, which keeps its
         // name whatever the program took (MoveAside).
         if (cut >= 0 && name.StartsWith("System.", StringComparison.Ordinal)
-            && _generic.TryGetValue(Arity(name[(cut + 1)..], arity), out TypeDecl? system) && system.FromLibrary)
+            && _generic.TryGetValue(Arity(name[(cut + 1)..], arity), out TypeDecl? system) && Binder.ClassLibrarySide(system))
         {
             return name[(cut + 1)..];
         }
@@ -2492,7 +2492,7 @@ public sealed class Monomorphiser
 
     /// <summary>Where the names written in a declaration are read from.</summary>
     private static (string Scope, string Namespace, FileScope? Usings, bool Library) ScopeOf(TypeDecl d)
-        => (d.Outer is null ? d.Name : d.Outer + "." + d.Name, d.Namespace, d.Scope, d.FromLibrary);
+        => (d.Outer is null ? d.Name : d.Outer + "." + d.Name, d.Namespace, d.Scope, Binder.ClassLibrarySide(d));
 
     /// <summary>Reads names from where these say, again: the way out of EnterScope, and the way into a saved scope.</summary>
     private void LeaveScope((string Scope, string Namespace, FileScope? Usings, bool Library) was)
