@@ -1346,11 +1346,17 @@ static class Runtime
 
     /// A safepoint: the open round answered, if this thread owes it. What a
     /// loop's back edge calls when a round is open (BackEdgePolls), the word
-    /// it read read again here.
+    /// it read read again here. THROUGH THE HOOK A ROUND INSTALLS (PollHook,
+    /// GcThreads.Round): nothing of the collector's is reached from here, so
+    /// an image the link keeps it in for its loops is no image with a
+    /// collector it did not need.
+    public static long PollHook;
+
     public static void Poll()
     {
-        if (GcThreads.Asking == 0) return;
-        GcThreads.Park();
+        long hook = PollHook;
+        if (GcThreads.Asking == 0 || hook == 0) return;
+        Sys.Call(hook, 0, 0, 0);
     }
 
     /// Up to `budget` blocks of a mark under way scanned by this thread --

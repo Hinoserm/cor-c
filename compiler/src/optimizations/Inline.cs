@@ -942,9 +942,6 @@ public sealed class Inline : IParallelModulePass
     /// without bound (until the growth budget finally chokes it off). This
     /// is the set that must stay out of <see cref="Inlineable"/> instead.
     /// </summary>
-    /// <summary>What stays wherever a collection can run: Runtime.Poll is kept beside it (BackEdgePolls).</summary>
-    private const string PollsCollector = "m_Gc_CollectLocked_0";
-
     internal static HashSet<Function> RecursiveFunctions(Module m, Dictionary<string, Function> byName)
     {
         HashSet<Function> cyclic = new();
@@ -1267,10 +1264,9 @@ public sealed class Inline : IParallelModulePass
         }
         Close();
         // THE POLL A LOOP'S BACK EDGE CALLS (BackEdgePolls), which the backend
-        // writes after this: kept wherever the collector stays, and only there
-        // -- kept for its own sake it would keep the collector in an image
-        // that needs none.
-        if (m.SafepointPolls && byName.ContainsKey(BackEdgePolls.Poll) && !live.Contains(BackEdgePolls.Poll) && live.Contains(PollsCollector))
+        // writes after this. It reaches nothing of the collector's itself
+        // (Runtime.PollHook), so keeping it keeps no collector.
+        if (m.SafepointPolls && byName.ContainsKey(BackEdgePolls.Poll) && !live.Contains(BackEdgePolls.Poll))
         {
             Reach(BackEdgePolls.Poll);
             Close();

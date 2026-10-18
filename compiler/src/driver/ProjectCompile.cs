@@ -265,6 +265,19 @@ public static class ProjectCompile
                 }
                 return 1;
             }
+            // OUT OF MEMORY, SAID WITH ITS UNIT AND WHERE: unhandled on a
+            // worker, the runtime could not format it and printed "Out of
+            // memory." alone. A single request too big for any heap -- an
+            // array sized by a count gone wrong -- leaves plenty to say it.
+            catch (OutOfMemoryException failure)
+            {
+                lock (gate)
+                {
+                    done++;
+                    Console.Error.WriteLine("corc: out of memory compiling " + unit.Source + "\n" + failure.StackTrace);
+                }
+                return 1;
+            }
             long after = GC.GetTotalAllocatedBytes();
             string live = census ? " live-after=" + GC.GetTotalMemory(true) : "";
             if (code == 0)

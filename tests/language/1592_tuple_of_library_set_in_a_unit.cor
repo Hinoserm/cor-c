@@ -1,0 +1,25 @@
+// test: tuple_of_library_set_in_a_unit
+// apart: tests/language/support/1592_tuple_of_library_set_unit.cor
+// expect-exit: 0
+// expect-output:
+// 3 False True True 4 4 c
+//
+// A unit compiled by itself, as a project's are, whose method hands back a
+// tuple holding a library class: `(HashSet<int>?, bool)`, or a HashSet of a
+// record struct of its own. The tuple's hash asks each field through its
+// slot, and the call named the field's class as its dispatch, which made
+// that class's descriptor -- of a specialisation whose members the unit
+// never declared, declared then, in lowering, after binding: "the bodies of
+// 'HashSet$...', first asked for after binding, ..." stopped the compiler
+// building itself as a project. A type with no members declared here is
+// dispatched as object's.
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Graph.Walk(new[] { "a", "b", "a", "c" }));
+        return 0;
+    }
+}

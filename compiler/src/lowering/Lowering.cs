@@ -1135,9 +1135,12 @@ public sealed partial class Lowering
             // start-up's few collections happened to fall. Whatever called
             // this stub, its frame is above this one and holds nothing of
             // ours: the frame pointer plus the pushed word is the top.
+            // Under --tls-gs into the block GS names, which is the one the
+            // runtime registers (Sys.ThreadBlock): one the entry pointed
+            // somewhere else had its base left at zero.
             VReg top = e.Reg(IrTypes.Word, "fp");
             e.Emit(Opcode.FramePointer, top);
-            e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase / 4 * Target.Current.WordSize);
+            e.Store(TlsGs ? ThreadBlockOf(e) : only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase / 4 * Target.Current.WordSize);
         }
 
         // Linux: the block goes behind a GDT entry and GS names it. This is
@@ -1357,6 +1360,24 @@ public sealed partial class Lowering
         {
             Require(exit);
             e.Call(CallLabel(exit), IrType.Void, code);
+        }
+        else if (Ring1Syscalls)
+        {
+            // A ring-1 kernel's Linux calls go through its own gate.
+            e.Syscall(new ImmOperand(_t.ExitSyscall, IrTypes.Word), new[] { code }, 0x83);
+        }
+        else if (Freestanding)
+        {
+            // NO RUNTIME AND NO SYSTEM: nothing to hand the code to, and an
+            // `int 0x80` with no handler triple-faulted. The processor stops,
+            // interrupts off, as the bare-metal runtime's own Exit ends.
+            e.Call(Corsac.Lang.X86.MachineIntrinsics.Cli, IrType.Void);
+            Block halt = e.Function.NewBlock("halt");
+            e.Jump(halt);
+            e.SetBlock(halt);
+            e.Call(Corsac.Lang.X86.MachineIntrinsics.Hlt, IrType.Void);
+            e.Jump(halt);
+            return;
         }
         else
         {

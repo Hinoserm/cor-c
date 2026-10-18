@@ -94,7 +94,9 @@ public sealed class UnitBackend : IUnitBackend
             // The regions the whole program found: sites and loops marked on
             // this IR, which the compile numbered the same way, before any
             // pass moves them.
-            if (facts?.Regions is { IsEmpty: false } regions)
+            // NOT IN A UNIT COMPILED --no-regions (Settings.Regions): what the
+            // link found for its sites is left unused, as its compile asked.
+            if (facts?.Regions is { IsEmpty: false } regions && read.Settings?.Regions != false)
             {
                 module.RegionFacts = regions;
                 RegionPointsTo.MarkSites(module, regions);
@@ -291,14 +293,14 @@ public sealed class UnitBackend : IUnitBackend
             // rules are done (RegionPointsTo.ApplyFacts): an object they placed
             // in the frame or freed where it dies was never the region's.
             // And those of the bodies brought in that it inlined.
-            if (module.RegionFacts is not null || importedSites) RegionPointsTo.MakeSitesInRegion(function);
+            if (read.Settings?.Regions != false && (module.RegionFacts is not null || importedSites)) RegionPointsTo.MakeSitesInRegion(function);
             // A UNIT GIVEN NO REGION OF ITS OWN STILL CATCHES WHAT ANOTHER'S
             // BOUNDARY THREW (LifetimeFacts.ImageRegions): its pads close the
             // regions left open below them, as MakeSitesInRegion's do.
             else if (facts?.ImageRegions == true) RegionPointsTo.CatchUpPads(function);
             // And what is grown into a field the object frees itself, made
             // beside that object (RegionPointsTo.MakeStorageBeside).
-            if (facts?.OwnedFields is { Beside: true } beside) RegionPointsTo.MakeStorageBeside(function, beside);
+            if (facts?.OwnedFields is { Beside: true } beside && read.Settings?.Regions != false) RegionPointsTo.MakeStorageBeside(function, beside);
             // AND THE REGION HELPERS' FAST PATHS PUT IN PLACE (Runtime.AllocRegion,
             // RegionEnter, RegionLeave), as AllocFast's is at every `new` (below): the
             // passes above made the calls, after every inliner here, so they

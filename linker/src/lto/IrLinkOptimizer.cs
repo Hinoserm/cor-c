@@ -93,6 +93,11 @@ public static class IrLinkOptimizer
         if (regionsPossible && owners.ContainsKey(RuntimeAbi.AllocRegionSized)) linkRoots.Add(RuntimeAbi.AllocRegionSized);
         if (!noCollector && owners.ContainsKey(RuntimeAbi.AllocFast)) linkRoots.Add(RuntimeAbi.AllocFast);
         if (!noCollector && owners.ContainsKey(RuntimeAbi.AllocMissed)) linkRoots.Add(RuntimeAbi.AllocMissed);
+        // AND THE POLL A LOOP'S BACK EDGE CALLS (BackEdgePolls), which the
+        // backend writes after the IR this walks was archived: no unit's IR
+        // names it. It reaches nothing of the collector's (Runtime.Poll calls
+        // the hook a round installs), so keeping it decides nothing.
+        if (!noCollector && owners.ContainsKey(RuntimeAbi.Poll)) linkRoots.Add(RuntimeAbi.Poll);
         // Without a collector, the manual heap every allocation and free becomes (Escape.WithoutCollector).
         if (noCollector) linkRoots.UnionWith(ManualHeap);
         // And the barrier on a replaced object's value, which ScalarObjects

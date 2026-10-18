@@ -1,0 +1,33 @@
+// The unit of 1592: methods handing back tuples that hold a library class
+// this unit never makes, or makes of a record struct of its own.
+using System;
+using System.Collections.Generic;
+
+public static class Graph
+{
+    private readonly record struct Node(int Unit, string Name);
+
+    private static (HashSet<Node> Reached, bool Every) ReachFrom(string[] names)
+    {
+        HashSet<Node> reached = new();
+        for (int i = 0; i < names.Length; i++) reached.Add(new Node(i % 2, names[i]));
+        return (reached, false);
+    }
+
+    private static (HashSet<int>? Seen, bool Any) Nothing(string[] names) => (null, names.Length > 0);
+
+    private static (Stack<(Node Node, bool Unowned)> Work, int Count) Pending(string[] names)
+    {
+        Stack<(Node Node, bool Unowned)> work = new();
+        foreach (string name in names) work.Push((new Node(0, name), true));
+        return (work, work.Count);
+    }
+
+    public static string Walk(string[] names)
+    {
+        (HashSet<Node> reached, bool every) = ReachFrom(names);
+        (HashSet<int>? seen, bool any) = Nothing(names);
+        (Stack<(Node Node, bool Unowned)> work, int count) = Pending(names);
+        return reached.Count + " " + every + " " + (seen == null) + " " + any + " " + work.Count + " " + count + " " + work.Peek().Node.Name;
+    }
+}

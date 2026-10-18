@@ -347,9 +347,12 @@ public static partial class Linker
                 end = Math.Max(end, s.Addr + s.Size);
             }
         }
-        if (end > 1UL << 32)
+        // AT four gigabytes too: the end is a 32-bit address the image names
+        // (_end), and 2^32 is 0 there -- the stub's .bss length underflowed
+        // and its clear ran from __bss_start round through the wrap.
+        if (end >= 1UL << 32)
         {
-            throw new LinkException(new[] { $"the image runs from 0x{layout.LoadAddress:x} to 0x{end:x}, past four gigabytes; an i386 image cannot be there" });
+            throw new LinkException(new[] { $"the image runs from 0x{layout.LoadAddress:x} to 0x{end:x}, to four gigabytes or past; an i386 image cannot be there" });
         }
     }
 

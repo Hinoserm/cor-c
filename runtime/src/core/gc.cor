@@ -15521,6 +15521,8 @@ static class GcThreads
 
         Sys.AtomicSwap(ctl + GcLock.Request, request);
         Sys.AtomicSwap(ctl + GcLock.Pending, owed);
+        // The polls' way in (Runtime.Poll), and the word they read.
+        Runtime.PollHook = Sys.AddressOf(GcThreads.PollAnswer);
         Asking = 1;
         // Last: a thread that sees the new round sees what it asks and how
         // many owe it.
@@ -15967,6 +15969,14 @@ static class GcThreads
     public static void Park()
     {
         Platform.SafePoint(Running);
+    }
+
+    /// Park, as a hook is called (Runtime.PollHook): what a loop's poll
+    /// answers a round with.
+    public static long PollAnswer(long a, long b, long c)
+    {
+        Park();
+        return 0;
     }
 
     /// This thread is about to wait on something that only another thread can

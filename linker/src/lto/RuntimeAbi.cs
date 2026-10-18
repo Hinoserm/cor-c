@@ -36,6 +36,8 @@ public static class RuntimeAbi
     public const string AllocFastSized = "m_Runtime_AllocFastSized_4_" + Word + "_" + Word + "_" + Word + "_" + Word;
     public const string AllocFast = "m_Runtime_AllocFast_2_" + Word + "_" + Word;
     public const string AllocMissed = "m_Runtime_AllocMissed_2_" + Word + "_" + Word;
+    /// <summary>The safepoint a loop's back edge calls (BackEdgePolls), written by the backend after the IR is archived.</summary>
+    public const string Poll = "m_Runtime_Poll_0";
     public const string AllocManual = "m_Runtime_AllocManual_1_" + Word;
     public const string AllocManualObject = "m_Runtime_AllocManualObject_1_" + Word;
     /// <summary>The manual heap's free and its liveness test (Escape's ManualFreer, ManualLive).</summary>

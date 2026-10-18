@@ -31,7 +31,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// </summary>
 public static class BackEdgePolls
 {
-    public const string Poll = "m_Runtime_Poll_0";
+    public const string Poll = Corsac.Lang.Lto.RuntimeAbi.Poll;
     public const string Asking = "s_GcThreads_Asking";
 
     // The runtime's classes that hold the heap lock, answer rounds or are the

@@ -45,9 +45,20 @@ public static partial class Program
         // running. Reported at exit so it covers code generation and emission
         // too: an earlier mid-way figure made a whole-compile total look like
         // a regression against a frontend-only one.
-        if (!args.Contains("--report-alloc")) return Driver.Run(args);
-        try { return Driver.Run(args); }
-        finally { Console.Error.WriteLine("run-allocated=" + GC.GetTotalAllocatedBytes()); }
+        // OUT OF MEMORY, SAID WITH WHERE: unhandled, the runtime printed
+        // "Out of memory." alone, and a single request too big for any heap
+        // -- an array sized by a count gone wrong -- was nowhere to be found.
+        try
+        {
+            if (!args.Contains("--report-alloc")) return Driver.Run(args);
+            try { return Driver.Run(args); }
+            finally { Console.Error.WriteLine("run-allocated=" + GC.GetTotalAllocatedBytes()); }
+        }
+        catch (OutOfMemoryException failure)
+        {
+            Console.Error.WriteLine("corc: out of memory\n" + failure.StackTrace);
+            return 134;
+        }
 #endif
     }
 }

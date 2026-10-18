@@ -26,15 +26,17 @@
 // Where this differs:
 //   - Awaiters and awaitables are classes, not structs: a struct here is a
 //     heap block copied at every boundary, which buys nothing.
-//   - There is one scheduler, a single-threaded event loop, and it runs only
-//     inside Scheduler.RunUntil (Wait, Result, RunMain). Nothing runs "in the
-//     background" while the program is doing something else.
+//   - There is one scheduler and one run queue. Without workers it is a
+//     single-threaded event loop run inside Scheduler.RunUntil (Wait,
+//     Result, RunMain); with them (Scheduler.UseThreads, ThreadPool's
+//     minimum) pool threads pull from the same queue, and idle workers drive
+//     the timers.
 //
-// THREAD SAFETY IS BUILT IN FROM THE START. Every state transition on a task,
-// a cancellation source and the run queue goes through Sys.Cas / a spin lock
-// on a word inside the object, so a thread pool can later provide the same
-// Scheduler.Post over several threads without a change here or in compiled
-// code. See Atom for the one layout assumption that makes that possible.
+// THREAD SAFETY IS BUILT IN. Every state transition on a task, a
+// cancellation source and the run queue goes through Sys.Cas / a spin lock
+// on a word inside the object, so the workers post and run through the same
+// Scheduler.Post as the loop. See Atom for the one layout assumption that
+// makes that possible.
 //
 // ---- atomics on a word inside an object -------------------------------------
 
@@ -4743,8 +4745,6 @@ static partial class Scheduler
 }
 
 
-/// .NET's ThreadPool, as a facade over the scheduler. Work queued here runs
-/// on the event loop today and on pool threads when there are some.
 // ---- System.Threading.Monitor -------------------------------------------------
 //
 // What `lock (x) { ... }` expands to (Monitor.Enter, then Exit in a finally),
@@ -5306,6 +5306,8 @@ static class Timeouts
     }
 }
 
+/// .NET's ThreadPool, as a facade over the scheduler. Work queued here runs
+/// on the event loop, and on pool threads when there are some.
 static partial class ThreadPool
 {
     public static bool QueueUserWorkItem(Action callBack)

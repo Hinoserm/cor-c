@@ -1060,7 +1060,8 @@ public static class Driver
                         m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit, Regions: regions, Polls: m.SafepointPolls));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
-                regionHintBytes = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
+                // Nor under --no-regions: the link would place the unit's sites in regions all the same.
+                regionHintBytes = !regions ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
                 // And the archive's edges a program without a collector lacks (HeapRecords.Gone).
                 archivedGone = Corsac.Lang.Opt.Escape.GoneOf(m);
                 if (Switches.ReportPhases)

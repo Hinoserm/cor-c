@@ -165,9 +165,22 @@ public sealed partial class Lowering
     /// bodies, which the stubs for Equals and CompareTo look at (EqualsGuard,
     /// OwnCompare): those, and any other type, are asked through the slot.
     /// </summary>
+    /// <summary>
+    /// What a key stub's call through `narrow`'s slot names as its dispatch:
+    /// the type's descriptor, or object's for a type whose members this unit
+    /// never declared -- a library class no code here makes, a tuple's field
+    /// that is only ever null here (`(HashSet&lt;int&gt;?, bool)` handed back).
+    /// Its descriptor is made of its members, and making them during
+    /// lowering is what binding can no longer answer (Binder.CheckLate):
+    /// every unit returning such a tuple stopped there. Object's dispatch is
+    /// every target, which is sound.
+    /// </summary>
+    private string KeyDispatch(TypeSymbol? narrow) => narrow is null || narrow.MembersPending ? ObjectDispatch : DescriptorOf(narrow);
+
     private string? SealedTarget(TypeSymbol? t, int slot)
     {
-        if (t is not { Kind: TypeKind.Class, Decl: TypeDecl d } || !d.Mods.HasFlag(Mods.Sealed) || t.Structural || SharedCopy(t))
+        // Nor a shortcut through one whose members were never declared (KeyDispatch).
+        if (t is not { Kind: TypeKind.Class, Decl: TypeDecl d } || t.MembersPending || !d.Mods.HasFlag(Mods.Sealed) || t.Structural || SharedCopy(t))
         {
             return null;
         }
@@ -210,7 +223,7 @@ public sealed partial class Lowering
         }
         VReg fn = e.Load(IrTypes.Word, vt, (long)slot * _t.WordSize);
         VReg answered = e.CallIndirect(R(fn), returns, args)!;
-        e.Block.Instrs[^1].DispatchType = narrow is null ? ObjectDispatch : DescriptorOf(narrow);
+        e.Block.Instrs[^1].DispatchType = KeyDispatch(narrow);
         return answered;
     }
 
@@ -300,7 +313,7 @@ public sealed partial class Lowering
             // AN IEQUATABLE CLASS BY ITS TYPED Equals: known of a class whose
             // chain declares it, asked of the descriptor otherwise.
             Block typed = f.NewBlock("ketyped");
-            if (narrow is { Kind: TypeKind.Class } && TypedEquals(narrow) is not null)
+            if (narrow is { Kind: TypeKind.Class, MembersPending: false } && TypedEquals(narrow) is not null)
             {
                 e.Jump(typed);
             }
@@ -315,7 +328,7 @@ public sealed partial class Lowering
             e.SetBlock(typed);
             VReg fn = e.Load(IrTypes.Word, vt, (long)typedSlot * _t.WordSize);
             VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!;
-            e.Block.Instrs[^1].DispatchType = narrow is null ? ObjectDispatch : DescriptorOf(narrow);
+            e.Block.Instrs[^1].DispatchType = KeyDispatch(narrow);
             e.Ret(RegOperand.Of(answered));
         }
         else
@@ -524,7 +537,7 @@ public sealed partial class Lowering
                 e.Branch(e.Binary(Opcode.Eq, R(fn), R(e.Address(ObjectHashStub())), IrType.I32), word, call);
                 e.SetBlock(call);
                 VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a) })!;
-                e.Block.Instrs[^1].DispatchType = narrow is null ? ObjectDispatch : DescriptorOf(narrow);
+                e.Block.Instrs[^1].DispatchType = KeyDispatch(narrow);
                 e.Ret(RegOperand.Of(answered));
             }
         }
