@@ -2106,7 +2106,10 @@ public sealed partial class Binder
     // C# 10.2.11: an int constant into sbyte, byte, short, ushort, uint or
     // ulong when it fits -- never char, which no number becomes implicitly --
     // and a long constant into ulong when it is not negative.
-    private static bool ConstantConverts(Type from, long value, Type to) => to.Prim != Prim.Char && from.Prim switch
+    // AND THE CONSTANT NOUGHT, of any integral type, into every enum (10.2.4).
+    private static bool ConstantConverts(Type from, long value, Type to) => to.Symbol is { Kind: TypeKind.Enum }
+        ? value == 0 && from.IsInteger && from.Symbol is null && from.Prim != Prim.Char
+        : to.Prim != Prim.Char && from.Prim switch
     {
         Prim.I32 => to.Prim == Prim.U64 ? value >= 0 : Fits(value, to),
         Prim.I64 => to.Prim == Prim.U64 && value >= 0,
@@ -2128,7 +2131,7 @@ public sealed partial class Binder
             return false;
         }
         Type target = want.IsNullableValue ? want.Underlying : want;
-        if (target.IsInteger && target.Symbol is null && !target.Nullable && ConstantConverts(had, value, target)) return true;
+        if (target.IsInteger && (target.Symbol is null || target.Symbol.Kind == TypeKind.Enum) && !target.Nullable && ConstantConverts(had, value, target)) return true;
         return target.Symbol is not null && UserConversion(had, target, false, value) is not null;
     }
 
@@ -7800,6 +7803,15 @@ public sealed partial class Binder
             && (ReferenceEquals(fromEnum, toEnum) || fromEnum.Key == toEnum.Key))
         {
             return true;
+        }
+
+        // NOTHING ELSE BECOMES AN ENUM without a cast (C# 10.2.4): not an int,
+        // not a char, not another enum -- only the constant nought, which the
+        // constant conversion takes (ConstantConverts). `F(2)` for an F(E)
+        // was E's third member, where C# refuses it.
+        if (to.Symbol is { Kind: TypeKind.Enum })
+        {
+            return false;
         }
 
         // Widening only. A narrowing conversion loses information and must be
