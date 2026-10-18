@@ -1,0 +1,52 @@
+// test: default_argument_of_generic_method_and_nullable_by_reference
+// expect-exit: 0
+// expect-output:
+// 0 True 0 True
+// 7 0
+// 0 True True 0
+// 1 0
+// int 1 int? 2
+// long 11 T 10 12
+//
+// A BARE `default` PASSED TO A GENERIC METHOD is the zero of what its
+// parameter turns out to be, and says nothing of what that is (C# 12.6.3.2):
+// `Two(5, default)` is Two<int> and its zero an int, `Two(default, "x")`
+// Two<string>. It was given the parameter's type as written -- T -- and
+// refused against the T inferred, and in the first place it bound T to
+// nothing at all. A NULLABLE VALUE TYPE BY REFERENCE fits only its own
+// overload: an int? is a Nullable, laid out as no int is, and `ref maybe`
+// took Kind(ref int) -- and Interlocked.Exchange(ref maybe, 4) the
+// (ref int) Exchange, writing an int over the Nullable.
+
+using System;
+using System.Collections.Generic;
+
+struct Pair { public int A; public string? B; }
+
+static class Program
+{
+    static T Pick<T>(ref T location, T value, T other) { location = value; return other; }
+    static T Two<T>(T a, T b) { return b; }
+    static string Kind(ref int x) { x = 1; return "int"; }
+    static string Kind(ref int? x) { x = 2; return "int?"; }
+    static string Swap<T>(ref T x, T y) { T was = x; x = y; return "T " + was; }
+    static string Swap(ref long x, long y) { x = y; return "long"; }
+
+    static void Main()
+    {
+        Pair p = new Pair { A = 3, B = "b" };
+        Pair got = Pick(ref p, default, default);
+        Console.WriteLine(got.A + " " + (got.B == null) + " " + p.A + " " + (p.B == null));
+        int i = 4;
+        Console.WriteLine(Pick(ref i, default, 7) + " " + i);
+        Console.WriteLine(Two(5, default) + " " + (Two(default, "x") == "x") + " " + (Two("y", default) == null) + " " + Two(2.5, default));
+        Dictionary<string, int> d = new Dictionary<string, int> { ["a"] = 1 };
+        Console.WriteLine(d.GetValueOrDefault("a", default) + " " + d.GetValueOrDefault("z", default));
+        int plain = 0;
+        int? maybe = 5;
+        Console.WriteLine(Kind(ref plain) + " " + plain + " " + Kind(ref maybe) + " " + maybe);
+        long wide = 9;
+        long? wider = 10;
+        Console.WriteLine(Swap(ref wide, 11) + " " + wide + " " + Swap(ref wider, 12) + " " + wider);
+    }
+}

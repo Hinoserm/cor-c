@@ -1,0 +1,109 @@
+// test: interlocked_every_width
+// expect-exit: 0
+// expect-output:
+// 5 6 1099511627776 7 4000000000 8
+// 18000000000000000000 9 12345 10 54321 11
+// 1.5 3.5 2.25 4.5 x y
+// 9 7 99 11 13 11 1 13 13
+// -200 100 -300 65000 1 -5 -6
+// 6 60 7 7 8 80 9 90
+// 10 100 11 11 3.5 9 4.5 9
+// NaN 1 -0 -0
+// 81 89 80 88 88
+// 12 8 8 13 61680 61440 61440 61441
+// 4278255360 251662080 251662080 251662081 18446462603027742720 71776119077928960 71776119077928960 71776119077928962
+// A B X Y P Q
+// False True a z s t b True
+// 60 7 7 9 100
+// NotSupportedException: The specified type must be a reference type, a primitive type, or an enum type.
+// NotSupportedException: The specified type must be a reference type, a primitive type, or an enum type.
+// NotSupportedException: The specified type must be a reference type, a primitive type, or an enum type.
+// 1 7 80 88 5 11 9 1.25 99 -300 1 -6 True t
+// 41 42 43 44 45 46 4.75 4.875 48 49 50 51 False w 7 1 13 100
+// 80000 240000 32,32,32,32,0,0,0,0 19999,19999,19999,19999
+//
+// Interlocked and Volatile as .NET 10 has them: Add, And, Or, Increment,
+// Decrement and Read at 32 and 64 bits signed and unsigned (each answering
+// what .NET answers: the new value, or for And and Or the old one);
+// Exchange and CompareExchange of bytes, half words, ints, longs, machine
+// words, floats and doubles -- a narrow one changing only its own bytes of
+// the four it lies in, a real compared by its bits, so NaN matches NaN and
+// 0.0 does not match -0.0 -- of references, and of any T: an enum by the
+// form of its size, a Nullable, a struct or anything else that is neither a
+// reference, a primitive nor an enum refused as .NET refuses it. Four
+// threads then bump an int, a long, a byte each of one array and a half word
+// each of another, and nothing is lost.
+
+using System;
+using System.Threading;
+
+enum Small : byte { A = 1, B = 200 }
+enum Wide : long { X = 1, Y = -5000000000 }
+enum Half : short { P = 3, Q = -7 }
+
+class Box { public string Name = ""; }
+
+class Program
+{
+    static string Said(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+    }
+
+    struct Pair { public byte A, B; public int Pad; }
+    static byte b0 = 7, b1 = 9, b2 = 11, b3 = 13;
+    static short s0 = 100, s1 = -200;
+    static ushort u0 = 65000;
+    static sbyte sb = -5;
+
+    static void Main()
+    {
+        int i = 5; long l = 1L << 40; uint u = 4000000000; ulong ul = 18000000000000000000UL;
+        nint n = 12345; nuint nu = 54321; float f = 1.5f; double d = 2.25; object? o = "x";
+        Console.WriteLine(Interlocked.Exchange(ref i, 6) + " " + i + " " + Interlocked.Exchange(ref l, 7) + " " + l + " " + Interlocked.Exchange(ref u, 8u) + " " + u);
+        Console.WriteLine(Interlocked.Exchange(ref ul, 9UL) + " " + ul + " " + Interlocked.Exchange(ref n, (nint)10) + " " + n + " " + Interlocked.Exchange(ref nu, (nuint)11) + " " + nu);
+        Console.WriteLine(Interlocked.Exchange(ref f, 3.5f) + " " + f + " " + Interlocked.Exchange(ref d, 4.5) + " " + d + " " + Interlocked.Exchange(ref o, "y") + " " + o);
+        Console.WriteLine(Interlocked.Exchange(ref b1, (byte)99) + " " + b0 + " " + b1 + " " + b2 + " " + b3 + " " + Interlocked.CompareExchange(ref b2, (byte)1, (byte)11) + " " + b2 + " " + Interlocked.CompareExchange(ref b3, (byte)1, (byte)12) + " " + b3);
+        Console.WriteLine(Interlocked.Exchange(ref s1, (short)-300) + " " + s0 + " " + s1 + " " + Interlocked.CompareExchange(ref u0, (ushort)1, (ushort)65000) + " " + u0 + " " + Interlocked.Exchange(ref sb, (sbyte)-6) + " " + sb);
+        Console.WriteLine(Interlocked.CompareExchange(ref i, 60, 6) + " " + i + " " + Interlocked.CompareExchange(ref l, 70, 6) + " " + l + " " + Interlocked.CompareExchange(ref u, 80u, 8u) + " " + u + " " + Interlocked.CompareExchange(ref ul, 90UL, 9UL) + " " + ul);
+        Console.WriteLine(Interlocked.CompareExchange(ref n, (nint)100, (nint)10) + " " + n + " " + Interlocked.CompareExchange(ref nu, (nuint)110, (nuint)1) + " " + nu + " " + Interlocked.CompareExchange(ref f, 9f, 3.5f) + " " + f + " " + Interlocked.CompareExchange(ref d, 9.0, 4.5) + " " + d);
+        float nan = float.NaN; double negz = -0.0;
+        Console.WriteLine(Interlocked.CompareExchange(ref nan, 1f, float.NaN) + " " + nan + " " + Interlocked.CompareExchange(ref negz, 1.0, 0.0) + " " + negz);
+        Console.WriteLine(Interlocked.Increment(ref u) + " " + Interlocked.Decrement(ref ul) + " " + Interlocked.Add(ref u, 4294967295u) + " " + Interlocked.Add(ref ul, 18446744073709551615UL) + " " + Interlocked.Read(ref ul));
+        int ai = 0b1100; long al = 0xF0F0; uint au = 0xFF00FF00; ulong aul = 0xFFFF0000FFFF0000UL;
+        Console.WriteLine(Interlocked.And(ref ai, 0b1010) + " " + ai + " " + Interlocked.Or(ref ai, 0b0101) + " " + ai + " " + Interlocked.And(ref al, 0xFF00) + " " + al + " " + Interlocked.Or(ref al, 1) + " " + al);
+        Console.WriteLine(Interlocked.And(ref au, 0x0FF00FF0u) + " " + au + " " + Interlocked.Or(ref au, 1u) + " " + au + " " + Interlocked.And(ref aul, 0x00FFFF0000FFFF00UL) + " " + aul + " " + Interlocked.Or(ref aul, 2UL) + " " + aul);
+        Small sm = Small.A; Wide wd = Wide.X; Half hf = Half.P; bool flag = false; char ch = 'a'; string? s = "s"; Box? bx = new Box { Name = "b" };
+        Console.WriteLine(Interlocked.Exchange(ref sm, Small.B) + " " + sm + " " + Interlocked.CompareExchange(ref wd, Wide.Y, Wide.X) + " " + wd + " " + Interlocked.Exchange(ref hf, Half.Q) + " " + hf);
+        Console.WriteLine(Interlocked.Exchange(ref flag, true) + " " + flag + " " + Interlocked.CompareExchange(ref ch, 'z', 'a') + " " + ch + " " + Interlocked.Exchange(ref s, "t") + " " + s + " " + Interlocked.Exchange(ref bx, null)!.Name + " " + (bx == null));
+        Console.WriteLine(Interlocked.Exchange<int>(ref i, 1) + " " + Interlocked.CompareExchange<long>(ref l, 2, 70) + " " + l + " " + Interlocked.Exchange<double>(ref d, 1.25) + " " + Interlocked.Exchange<nint>(ref n, 5));
+        int? ni = 3; DateTime dt = DateTime.UnixEpoch; Pair pr = default;
+        Console.WriteLine(Said(() => Interlocked.Exchange(ref ni, 4).ToString()));
+        Console.WriteLine(Said(() => Interlocked.Exchange(ref dt, DateTime.MinValue).ToString("o")));
+        Console.WriteLine(Said(() => Interlocked.CompareExchange(ref pr, default, default).Pad.ToString()));
+        Console.WriteLine(Volatile.Read(ref i) + " " + Volatile.Read(ref l) + " " + Volatile.Read(ref u) + " " + Volatile.Read(ref ul) + " " + Volatile.Read(ref n) + " " + Volatile.Read(ref nu) + " " + Volatile.Read(ref f) + " " + Volatile.Read(ref d) + " " + Volatile.Read(ref b1) + " " + Volatile.Read(ref s1) + " " + Volatile.Read(ref u0) + " " + Volatile.Read(ref sb) + " " + Volatile.Read(ref flag) + " " + Volatile.Read(ref s));
+        Volatile.Write(ref i, 41); Volatile.Write(ref l, 42); Volatile.Write(ref u, 43u); Volatile.Write(ref ul, 44UL); Volatile.Write(ref n, (nint)45); Volatile.Write(ref nu, (nuint)46);
+        Volatile.Write(ref f, 4.75f); Volatile.Write(ref d, 4.875); Volatile.Write(ref b1, (byte)48); Volatile.Write(ref s1, (short)49); Volatile.Write(ref u0, (ushort)50); Volatile.Write(ref sb, (sbyte)51); Volatile.Write(ref flag, false); Volatile.Write(ref s, "w");
+        Console.WriteLine(i + " " + l + " " + u + " " + ul + " " + n + " " + nu + " " + f + " " + d + " " + b1 + " " + s1 + " " + u0 + " " + sb + " " + flag + " " + s + " " + b0 + " " + b2 + " " + b3 + " " + s0);
+        Volatile.ReadBarrier(); Volatile.WriteBarrier(); Interlocked.MemoryBarrier(); Interlocked.MemoryBarrierProcessWide();
+        int shared = 0; long wideShared = 0; byte[] bytes = new byte[8]; short[] halves = new short[4];
+        Thread[] ts = new Thread[4];
+        for (int k = 0; k < 4; k++)
+        {
+            int me = k;
+            ts[k] = new Thread(() =>
+            {
+                for (int r = 0; r < 20000; r++)
+                {
+                    Interlocked.Increment(ref shared); Interlocked.Add(ref wideShared, 3);
+                    byte seen; do { seen = bytes[me]; } while (Interlocked.CompareExchange(ref bytes[me], (byte)(seen + 1), seen) != seen);
+                    Interlocked.Exchange(ref halves[me], (short)r);
+                }
+            });
+            ts[k].Start();
+        }
+        foreach (Thread t in ts) t.Join();
+        Console.WriteLine(shared + " " + wideShared + " " + string.Join(",", bytes) + " " + string.Join(",", halves));
+    }
+}

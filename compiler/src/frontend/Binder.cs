@@ -9111,6 +9111,14 @@ public sealed partial class Binder
                 continue;
             }
 
+            // NOR DOES A BARE `default`, which is whatever its parameter turns
+            // out to be and so says nothing of what that is (C# 12.6.3.2):
+            // `Two(default, "x")` is Two<string>, its zero a null string.
+            if (i < written.Count && written[i] is DefaultExpr { Type.Name.Length: 0 })
+            {
+                continue;
+            }
+
             if (!Unify(m, m.Params[i].Type, args[i], bound))
             {
                 return false;
@@ -20137,8 +20145,13 @@ public sealed partial class Binder
                     // Nullability aside all the way down: `out C?[]?` is the
                     // `C[]` slot of a Dictionary of them, a class element's
                     // mark being no more part of the type than the array's.
-                    if (args[i].IsError || args[i].AsNonNullable().Equals(want.AsNonNullable())
-                        || MethodSignatures.SameType(args[i].AsNonNullable(), want.AsNonNullable())) continue;
+                    // A VALUE TYPE'S `?` IS PART OF IT: an int? is a Nullable,
+                    // laid out as no int is, and `Interlocked.Exchange(ref
+                    // maybe, 4)` took the (ref int) overload and wrote an int
+                    // over it.
+                    if (args[i].IsError || args[i].IsNullableValue == want.IsNullableValue
+                        && (args[i].AsNonNullable().Equals(want.AsNonNullable())
+                            || MethodSignatures.SameType(args[i].AsNonNullable(), want.AsNonNullable()))) continue;
                     return false;
                 }
 
@@ -20420,12 +20433,14 @@ public sealed partial class Binder
 
         // `out var x` AND A BARE `default` GET THEIR TYPE NOW, from the
         // parameter of the overload that was just chosen -- which is why they
-        // could not have one before.
+        // could not have one before -- AS IT IS FOR THIS CALL: a generic
+        // method's T is what was inferred, so `Two(5, default)` hands Two<int>
+        // a zero int, not a value of the type parameter's name.
         for (int i = 0; i < args.Count; i++)
         {
             if (i < best.Params.Count)
             {
-                args[i] = Settle(c.Args[i], best.Params[i].Type, args[i]);
+                args[i] = Settle(c.Args[i], Close(best.Params[i].Type, bound), args[i]);
             }
 
             if (c.Args[i] is RefArgExpr { Declare: null, Name: not null } inferred
@@ -20494,8 +20509,9 @@ public sealed partial class Binder
             // int and that they are the same thing.
             Type wantByRef = Close(best.Params[i].Type, bound);
 
-            if (passed && !args[i].AsNonNullable().Equals(wantByRef.AsNonNullable())
-                && !MethodSignatures.SameType(args[i].AsNonNullable(), wantByRef.AsNonNullable())
+            if (passed && (args[i].IsNullableValue != wantByRef.IsNullableValue
+                    || !args[i].AsNonNullable().Equals(wantByRef.AsNonNullable())
+                       && !MethodSignatures.SameType(args[i].AsNonNullable(), wantByRef.AsNonNullable()))
                 && !args[i].IsError)
             {
                 Error(c.Args[i],
