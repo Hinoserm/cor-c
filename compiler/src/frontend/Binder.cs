@@ -18267,7 +18267,12 @@ public sealed partial class Binder
         TypeSymbol? here = _thisType is not null && IsClosure(_thisType) ? _capturedThisType ?? _lexicalType : _thisType;
         if (here is null) return true;
         if (Inside(here, owner)) return true;
-        return (mods & Mods.Protected) != 0 && here.DerivesFrom(owner);
+        if ((mods & Mods.Protected) == 0 || !here.DerivesFrom(owner)) return false;
+        // PRIVATE PROTECTED is protected inside its own assembly only (C#
+        // 7.2): a program's class derived from the library's sees none of the
+        // library's -- Random(bool), Random.Shared's own constructor.
+        return (mods & Mods.Private) == 0 || owner.Decl is not { } ownerDecl || here.Decl is not { } hereDecl
+            || LibraryDecl(ownerDecl) == LibraryDecl(hereDecl);
 
         // Within: the type itself, or one written inside it, however deep.
         bool Inside(TypeSymbol t, TypeSymbol of)

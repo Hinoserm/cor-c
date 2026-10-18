@@ -1,0 +1,33 @@
+// test: private_protected_within_the_program
+// expect-exit: 0
+// expect-output:
+// 7 quiet
+//
+// PRIVATE PROTECTED IS PROTECTED INSIDE ITS ASSEMBLY (C# 7.2): a program's
+// own class derived from another of its own reaches such a method and such
+// a constructor.
+
+using System;
+
+class Base
+{
+    public string Mode = "loud";
+    private protected int Secret() => 7;
+    private protected Base(bool quiet) { Mode = quiet ? "quiet" : "loud"; }
+    public Base() { }
+}
+
+class Mine : Base
+{
+    public Mine() : base(true) { }
+    public int Peek() => Secret();
+}
+
+static class P
+{
+    static void Main()
+    {
+        Mine m = new Mine();
+        Console.WriteLine(m.Peek() + " " + m.Mode);
+    }
+}
