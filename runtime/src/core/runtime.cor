@@ -4765,8 +4765,7 @@ static class Runtime
 
     // 2^52: above this every double is already an integer (the mantissa has
     // no fraction bits left), and below it the value fits a long exactly.
-    // A method rather than a const, as std.cor's Math.Pi() is: the dialect
-    // has integer consts and this file stays inside what it has.
+    // A method rather than a const: this file keeps to integer constants.
     private static double IntegralAbove()
     {
         return 4503599627370496.0;

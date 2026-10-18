@@ -112,9 +112,7 @@ public static class ProjectCompile
         // options it was compiled with; either changing means compiling.
         // The unit's own role is part of it: the entry unit of a library is
         // compiled with the initialiser on and the rest with it off, and an
-        // object made the other way round is not current. "2" is the stamp's
-        // own version, so a stamp written before the role was included is
-        // never trusted.
+        // object made the other way round is not current.
         //
         // AND THE COMPILER THAT MADE IT. A fixed compiler with unchanged
         // sources otherwise keeps every object the broken one made: a

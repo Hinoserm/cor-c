@@ -433,8 +433,9 @@ public static class Prelude
             public static object? FromWord(long word) { return null; }
             // A STRING'S UNITS AS THE char[] THEY ARE LAID OUT AS: the same
             // object -- header, count, UTF-16 units -- typed so a span can
-            // view it (string.AsSpan) without a copy. Read only: nothing may
-            // write through it.
+            // view it (string.AsSpan) without a copy. Read only once anybody
+            // may hold the string: the one writer is String.Create, which
+            // hands a string still being made to the action that fills it.
             public static char[] CharsOf(string s) { return null!; }
 
             // THE BITS OF A REAL, and back again. A double lives in the other
