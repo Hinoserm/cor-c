@@ -908,7 +908,7 @@ public sealed class Devirtualize : IModulePass
     // stored after, and SystemArt.Icon indexed past its end.
     private static bool KeepsFields(string? callee) =>
         callee is not null && (Escape.IsAllocator(callee) || Escape.NeverWritesFields(callee) || Escape.IsCollectorNote(callee)
-            || callee == "m_Runtime_InvalidCastTo_2_V$Any_V$String"
+            || callee == "m_Runtime_InvalidCastTo_2_V$Any_V$String" || callee == "m_Runtime_InvalidCastOfType_2_V$Type_V$String"
             || callee.StartsWith("__x86.i.", StringComparison.Ordinal) && !StoreSequence(callee));
 
     private static bool StoreSequence(string callee) =>

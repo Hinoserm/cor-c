@@ -4722,6 +4722,16 @@ static class Runtime
         throw new InvalidCastException("Unable to cast object of type '" + String.TypeText(o.GetType().FullName) + "' to type '" + wanted + "'.");
     }
 
+    /// A FAILED CAST FROM THE OBJECT'S TYPE ALONE, read where the cast failed
+    /// (Lowering.CastFailed): .NET's message names that type and nothing else
+    /// of the object, and a loop region's way out leaves the region -- zeroing
+    /// what the lap made, the object among it -- after that read and before
+    /// this call (RegionPointsTo.OpenLoops).
+    public static void InvalidCastOfType(Type type, string wanted)
+    {
+        throw new InvalidCastException("Unable to cast object of type '" + String.TypeText(type.FullName) + "' to type '" + wanted + "'.");
+    }
+
     /// A NULL DEREFERENCE, thrown as .NET throws it. The fault handler
     /// (Platform.Fault) makes the faulting thread call this as if from the
     /// instruction that read or wrote the null page, with the frame it was in

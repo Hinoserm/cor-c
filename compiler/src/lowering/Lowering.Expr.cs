@@ -1025,6 +1025,28 @@ public sealed partial class Lowering
                     return v;
                 }
 
+                // `(string)o` ASKS TOO: a string has no TypeSymbol to test against,
+                // so the cast took no branch at all, and a boxed int handed to
+                // `(string)o` came back as a string of its bytes -- no
+                // InvalidCastException, the box read as text. The string bit
+                // in the descriptor answers it (StringTest), null passing.
+                if (to.Prim == Prim.String && !to.IsArray && !from.IsArray && from.Prim != Prim.String
+                    && (from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface }))
+                {
+                    Block strCheck = _f.NewBlock("scastck");
+                    Block strOk = _f.NewBlock("scastok");
+                    Block strBad = _f.NewBlock("scastbad");
+                    _e.Branch(v, strCheck, strOk);
+                    _e.SetBlock(strCheck);
+                    VReg strVt = _e.Load(IrTypes.Word, v, 0);
+                    VReg strFlags = Numbered(_e, _e.Load(IrType.I32, strVt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
+                    _e.Branch(_e.Binary(Opcode.And, strFlags, 2), strOk, strBad);
+                    _e.SetBlock(strBad);
+                    CastFailed(v, to);
+                    _e.SetBlock(strOk);
+                    return v;
+                }
+
                 // A DOWNCAST ASKS, from object as from any other reference:
                 // `(Cat)o` over an object holding a Dog is InvalidCastException,
                 // not a Dog read as a Cat. object is a word here, not IsReference,
@@ -2551,7 +2573,19 @@ public sealed partial class Lowering
     /// </summary>
     private void CastFailed(VReg obj, Type want)
     {
-        if (RuntimeMethod("InvalidCastTo", 2) is MethodSymbol named)
+        // THE TYPE READ FIRST, the descriptor before the vtable as GetType
+        // reads it, and the call handed that: a loop region's way out leaves
+        // the region after these two and before the call (RegionPointsTo.
+        // DescriptorReads), so the object is read before its lap's region is
+        // zeroed, and nothing of it is live where the lap ends.
+        if (RuntimeMethod("InvalidCastOfType", 2) is MethodSymbol typed)
+        {
+            Require(typed);
+            VReg vt = _e.Load(IrTypes.Word, obj, 0);
+            VReg descriptor = _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
+            _e.Call(CallLabel(typed), IrType.Void, R(descriptor), R(_e.Address(InternString(ShortTypeName(want)))));
+        }
+        else if (RuntimeMethod("InvalidCastTo", 2) is MethodSymbol named)
         {
             Require(named);
             _e.Call(CallLabel(named), IrType.Void, R(obj), R(_e.Address(InternString(ShortTypeName(want)))));

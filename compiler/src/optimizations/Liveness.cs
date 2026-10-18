@@ -262,6 +262,25 @@ public sealed class Liveness
         return into;
     }
 
+    /// <summary>The registers live just before the instruction at `index` of `b` (Count: live out).</summary>
+    public IEnumerable<VReg> LiveBefore(Block b, int index)
+    {
+        ulong[] live = new ulong[_words];
+        Array.Copy(_out, RowOf(b), live, 0, _words);
+        for (int k = b.Instrs.Count - 1; k >= index; k--) StepBackwards(b.Instrs[k], live, skipNewer: true);
+        VReg?[] regs = Registers();
+        for (int w = 0; w < _words; w++)
+        {
+            ulong bits = live[w];
+            while (bits != 0)
+            {
+                int bit = System.Numerics.BitOperations.TrailingZeroCount(bits);
+                bits &= bits - 1;
+                if ((w << 6) + bit < regs.Length && regs[(w << 6) + bit] is { } r) yield return r;
+            }
+        }
+    }
+
     /// <summary>From the registers live after an instruction to those live before it, in place.</summary>
     public void StepBackwards(Instr i, ulong[] live, bool skipNewer)
     {

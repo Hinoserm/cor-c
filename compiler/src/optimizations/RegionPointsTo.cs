@@ -1554,22 +1554,6 @@ public sealed class RegionPointsTo : IModulePass
         if (natural.Count == 0) return found;
         Liveness liveness = new(cfg);
         (HashSet<FrameSlot> aliased, Func<Instr, IEnumerable<FrameSlot>> writes) = SlotUses(f);
-        // THE BLOCKS A RETURN IS REACHED FROM (RegionSummary's `returns`); the
-        // rest only throw. A lap that leaves for one of those goes on to no
-        // code after the loop: what it keeps, it keeps through the calls it
-        // makes there, which the escape answers follow. Counted as a lap's
-        // end, a failed cast's path -- the object handed to InvalidCastTo --
-        // made every array a lap read live where the lap ended, and the loop's
-        // region refused it (1323). Only where nothing is caught here: a
-        // handler is joined to no call that unwinds to it.
-        bool[] returns = new bool[f.Blocks.Count];
-        bool caughtHere = cfg.Roots.Any(root => root != f.Entry);
-        Stack<Block> towards = new();
-        foreach (Block b in f.Blocks)
-            if (caughtHere || b.Terminator is { Op: Opcode.Ret }) { returns[b.Order] = true; towards.Push(b); }
-        while (towards.TryPop(out Block? b))
-            foreach (Block p in cfg.Preds(b))
-                if (!returns[p.Order]) { returns[p.Order] = true; towards.Push(p); }
         foreach ((Block header, HashSet<Block> body, List<Block> latches) in natural)
         {
             if (cfg.IsRoot(header)) continue;
@@ -1585,12 +1569,25 @@ public sealed class RegionPointsTo : IModulePass
                     if (i.Dest is { } d) written.Add(d);
                     if (i.Op is Opcode.Call or Opcode.CallIndirect) { calls.Add(i); if (everyLap) always.Add(i); }
                 }
-                // A lap ends going round again, or out: what is live into
-                // where it goes, and what that block's joins take from here.
+                // A lap ends going round again, or out: what is live where it
+                // leaves -- into the header, or where a way out leaves the
+                // region, after the reads of types it begins with (OpenLoops)
+                // -- and what that block's joins take from here. EVERY WAY
+                // OUT, one that only throws too: its leave zeroes the lap's
+                // objects, and a path that read one after it -- an argument
+                // exception's message, a value handed to the throw -- read
+                // zeroed memory. A failed cast reads only its object's type,
+                // before the leave (Lowering.CastFailed).
                 foreach (Block s in cfg.Succs(b))
-                    if (s == header || !body.Contains(s) && returns[s.Order])
+                    if (s == header || !body.Contains(s))
                     {
-                        foreach (VReg r in liveness.LiveIn(s)) live.Add(r);
+                        if (s == header) { foreach (VReg r in liveness.LiveIn(s)) live.Add(r); }
+                        else
+                        {
+                            int k0 = 0;
+                            while (k0 < s.Instrs.Count && s.Instrs[k0].Op == Opcode.Phi) k0++;
+                            foreach (VReg r in liveness.LiveBefore(s, k0 + DescriptorReads(s))) live.Add(r);
+                        }
                         foreach (Instr phi in s.Instrs)
                         {
                             if (phi.Op != Opcode.Phi) break;
@@ -1946,6 +1943,9 @@ public sealed class RegionPointsTo : IModulePass
             {
                 int k0 = 0;
                 while (k0 < b.Instrs.Count && b.Instrs[k0].Op == Opcode.Phi) k0++;
+                // A WAY OUT LEAVES AFTER ITS READS OF TYPES (DescriptorReads):
+                // a failed cast's, whose object the leave would zero first.
+                if (leaves.ContainsKey(b)) k0 += DescriptorReads(b);
                 b.Instrs.InsertRange(k0, put);
             }
             for (int k = 0; k < b.Instrs.Count; k++)
@@ -2750,6 +2750,28 @@ public sealed class RegionPointsTo : IModulePass
 
     /// <summary>Runtime.InvalidCastTo(object, string): a failed cast's throw.</summary>
     internal const string FailedCast = "m_Runtime_InvalidCastTo_2_V$Any_V$String";
+    /// <summary>Runtime.InvalidCastOfType(Type, string): a failed cast's throw from the type alone, as Lowering.CastFailed makes it.</summary>
+    internal const string FailedCastOfType = "m_Runtime_InvalidCastOfType_2_V$Type_V$String";
+
+    /// <summary>
+    /// How many instructions a block begins with, after its joins, that read
+    /// an object's type and nothing else of it: the load of its vtable word
+    /// and the step back to the descriptor before it (Lowering.CastFailed).
+    /// A loop region's way out leaves the region after them (OpenLoops), and
+    /// what they read is no object of the lap's where the lap ends (Shapes).
+    /// </summary>
+    internal static int DescriptorReads(Block b)
+    {
+        int k = 0;
+        while (k < b.Instrs.Count && b.Instrs[k].Op == Opcode.Phi) k++;
+        int start = k;
+        while (k + 1 < b.Instrs.Count
+               && b.Instrs[k] is { Op: Opcode.Load, Offset: 0, Dest: { } vt } load && load.Operands.Count == 1 && load.Operands[0] is RegOperand
+               && b.Instrs[k + 1] is { Op: Opcode.Sub, Dest: not null } step && step.Operands.Count == 2
+               && step.Operands[0] is RegOperand { Reg: var from } && from == vt && step.Operands[1] is ImmOperand)
+            k += 2;
+        return k - start;
+    }
 
     /// <summary>
     /// The runtime's type checks made with types known only at run time: a
@@ -2785,7 +2807,7 @@ public sealed class RegionPointsTo : IModulePass
         // unified there its parameter is one class with everything every
         // cast in that cycle hands it, the unknown object among them: every
         // object any boundary cast -- `(Leaf)r.Child` -- went to the heap.
-        || callee == FailedCast
+        || callee == FailedCast || callee == FailedCastOfType
         // NOR THE RUNTIME'S TYPE CHECKS (TypeChecks), for the same reason:
         // the store check every List of a reference type makes as it adds,
         // followed into the same cycle, handed every Row a sheet's list held

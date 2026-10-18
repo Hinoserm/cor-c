@@ -2100,6 +2100,8 @@ continue;
         (ArrayStoreRefused, 2),
         // A failed cast's exception names the object's type; it keeps no reference.
         ("m_Runtime_InvalidCastTo_2_V$Any_V$String", 2),
+        // And from the object's type alone (Lowering.CastFailed): the descriptor, no object.
+        ("m_Runtime_InvalidCastOfType_2_V$Type_V$String", 2),
         // The string routines that read their strings and keep none of them:
         // comparing, searching, hashing, and copying into a new one.
         ("m_String_Compare_2_V$String_V$String", 2),
