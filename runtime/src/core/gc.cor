@@ -3799,6 +3799,14 @@ static class Gc
         return Sys.Peek(at - HeaderBytes + KindAt) == KindObject;
     }
 
+    /// The same of any block the allocator made, the heap's or a region's,
+    /// which carry the kind in the same header word: a struct's block is no
+    /// object, its first word a field and no descriptor.
+    public static bool ObjectBlock(long at)
+    {
+        return at != 0 && (at & 7) == 0 && Sys.Peek(at - HeaderBytes + KindAt) == KindObject;
+    }
+
     /// Whether `at` is in the calling thread's arena.
     public static bool InOwnRegion(long at)
     {

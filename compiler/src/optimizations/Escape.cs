@@ -126,7 +126,6 @@ public sealed partial class Escape : IModulePass
         _inserted = _bookkeeping;
         _unresolvedWhy = Switches.AllocReport ? new() : null;
         _module = m;
-        _functionsByName = null;
         _fieldElements.Clear();
         _replacing.Clear(); _heldBy.Clear(); _heldCalls.Clear(); _returning.Clear();
         _elementReadHints.Clear(); _elementHandOffHints.Clear(); _elementCallHints.Clear();

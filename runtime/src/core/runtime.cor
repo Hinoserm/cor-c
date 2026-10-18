@@ -2047,8 +2047,12 @@ static class Runtime
                 return;
             }
             // An array field whose arrays own their collections (the map's
-            // element bits): those first.
-            if (OwnsArrayElements(at, offset)) FreeReferenceElements(held);
+            // element bits): those first. ONLY AN OBJECT HAS THE MAP, which
+            // its descriptor names: a frame object is handed here only with
+            // one in its first word (EscapeFields.HeaderlessSlot), and a
+            // block says by its kind -- a struct's block has none, and its
+            // first field read as a descriptor faulted.
+            if (Described(at) && OwnsArrayElements(at, offset)) FreeReferenceElements(held);
             // As any object proved dead is given back (Free): with its own
             // owned fields, and a collection with its storage -- and its
             // elements, where the compiler marked them its own
@@ -2064,6 +2068,16 @@ static class Runtime
     /// Whether the field at `offset` of the object at `at` owns its array's
     /// elements: the element bit of its type's owned-field map
     /// (Escape.ArrayFieldElements), which only a whole program's proof sets.
+    /// Whether an owned field's owner starts with its descriptor: one in this
+    /// thread's frames does, or it would not be here; anywhere else, its
+    /// block says (Gc.ObjectBlock).
+    static bool Described(long at)
+    {
+        long tb = Sys.ThreadBlock();
+        if (tb != 0 && at > Sys.FramePointer() && at < Sys.Peek(tb + Tls.StackBase)) return true;
+        return Gc.ObjectBlock(at);
+    }
+
     static bool OwnsArrayElements(long at, long offset)
     {
         long vtable = Sys.Peek(at) & WordSize.AddressMask;
