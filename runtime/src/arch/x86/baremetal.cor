@@ -45,14 +45,14 @@
 // about the machine rather than a shortcut:
 //
 //   - MEMORY IS NOT ASKED FOR, it is taken. There is no mmap and nothing that
-//     knows what is already in use, so the heap is one bump region whose
-//     bounds the image is given: Platform.SetHeap, called before anything
+//     knows what is already in use, so the heap is one region whose bounds
+//     the image is given: Platform.SetHeap, called before anything
 //     allocates. Nobody can guess them, so an image that allocates with
-//     neither them nor a MapHook stops with "no heap" (Map). Nothing in the
-//     region is ever returned, which the manual heap (Runtime.AllocManual)
-//     and Gc's chunk list both tolerate; a kernel that keeps memory page by
-//     page installs MapHook and UnmapHook, and what is mapped through them
-//     goes back.
+//     neither them nor a MapHook stops with "no heap" (Map). The region is
+//     handed out in pages, as mmap hands memory out, and what is given back
+//     (Unmap) is handed out again; a kernel that keeps memory page by page
+//     installs MapHook and UnmapHook, and what is mapped through them goes
+//     back to it.
 //   - NOTHING ZEROES .bss. The flat image's loader is told how many bytes
 //     follow the image and has to clear them; a program that skipped that
 //     would find its statics full of whatever was in memory.
@@ -154,6 +154,31 @@ static class Platform
     private static long _at;
     private static long _limit;
 
+    /// THE REGION IS HANDED OUT IN PAGES, aligned and whole, as the contract
+    /// every platform keeps says (runtime.cor, "Platform.Map"): the
+    /// collector's table of the chunk at every 4 KB (HeapChunks.SlotsSet)
+    /// holds one chunk a page, and two chunks sharing a page -- the bump's
+    /// 8-byte steps after an odd-sized table -- left the one that lost the
+    /// entry unfound there, its live objects no heap's to the marker.
+    const long RegionPage = 4096;
+
+    /// The region's bookkeeping -- the bump, the free ranges -- taken by
+    /// XCHG round every change. Map and Unmap are called with the heap's lock
+    /// held and without it (Marshal.AllocHGlobal), and on a kernel's
+    /// processors at once. Never from an interrupt handler, which allocates
+    /// nothing, so nothing here turns interrupts off.
+    private static nint _regionLock;
+
+    static void LockRegion()
+    {
+        while (Sys.AtomicSwap(Sys.AddressOf(ref _regionLock), 1) != 0) Sys.Pause();
+    }
+
+    static void UnlockRegion()
+    {
+        Sys.AtomicSwap(Sys.AddressOf(ref _regionLock), 0);
+    }
+
     /// Where the region began, which _at has moved on from: with _limit, the
     /// whole of the memory an image alone on the machine has (TotalMemory).
     private static long _start;
@@ -167,9 +192,11 @@ static class Platform
     /// code runs.
     public static void SetHeap(long start, long end)
     {
-        _at = (start + 7) & (0 - 8);
+        LockRegion();
+        _at = (start + RegionPage - 1) & -RegionPage;
         _start = _at;
-        _limit = end;
+        _limit = end & -RegionPage;
+        UnlockRegion();
     }
 
     /// Where this image's data segment starts in the linear space: 0 for a
@@ -205,7 +232,9 @@ static class Platform
     {
         if (_limit != 0 && at >= _start && at < _limit)
         {
-            Release(at, (bytes + 7) & (0 - 8));
+            LockRegion();
+            Release(at, (bytes + RegionPage - 1) & -RegionPage);
+            UnlockRegion();
             return;
         }
         if (UnmapHook != 0)
@@ -308,7 +337,9 @@ static class Platform
     /// A file mapped read-only by the hook -- a ring-1 kernel's, whose pages
     /// are the file cache's own (Service.MapFileBytes) -- called with the
     /// path's UTF-8 bytes, as every path is, their count and where to write
-    /// the length. No hook: 0, and the caller reads the file instead.
+    /// the length. No hook: 0, and the caller reads the file instead. The
+    /// one member here that allocates (the path's bytes): System.IO's, never
+    /// the heap's, so the heap never comes back into it.
     public static long MapFileHook;
 
     public static long MapReadOnly(string path, out long length)
@@ -322,20 +353,19 @@ static class Platform
         return at;
     }
 
-    /// Fresh, zeroed, 8-aligned memory of `bytes`, or 0 when there is none:
-    /// the kernel's, once it has installed MapHook, and the bump region's
-    /// until then.
-    ///
-    /// The region is a bump and nothing else. There is no operating system
-    /// to take its memory back to, so nothing in it is ever freed; the
-    /// manual heap and Gc's chunk list both keep what they are given.
+    /// Fresh, zeroed, page-aligned memory of `bytes`, or 0 when there is
+    /// none: the region's given back (Unmap) first, then the kernel's once
+    /// it has installed MapHook, and the bump region's until then -- every
+    /// piece of the region whole pages (RegionPage).
     public static long Map(long bytes)
     {
         // The region's own given back first (Unmap), whoever maps the rest.
         if (_freeRanges != 0 && bytes > 0)
         {
-            long want = (bytes + 7) & (0 - 8);
+            long want = (bytes + RegionPage - 1) & -RegionPage;
+            LockRegion();
             long reused = TakeRange(want);
+            UnlockRegion();
             if (reused != 0)
             {
                 Zero(reused, want);
@@ -362,15 +392,18 @@ static class Platform
             Exit(137);
         }
 
-        long need = (bytes + 7) & (0 - 8);
+        if (bytes <= 0 || bytes > _limit - _start) return 0;
+        long need = (bytes + RegionPage - 1) & -RegionPage;
 
-        if (need <= 0 || _at + need > _limit)
+        LockRegion();
+        if (need > _limit - _at)
         {
+            UnlockRegion();
             return 0;
         }
-
         long got = _at;
         _at = _at + need;
+        UnlockRegion();
         Zero(got, need);
         return got;
     }
@@ -381,18 +414,7 @@ static class Platform
     /// hand an object a vtable pointer made of stale bytes.
     private static void Zero(long at, long count)
     {
-        long i = 0;
-
-        while (i + 4 <= count)
-        {
-            Sys.PokeWord(at + i, 0);
-            i = i + 4;
-        }
-        while (i < count)
-        {
-            Sys.PokeByte(at + i, 0);
-            i = i + 1;
-        }
+        Sys.MemorySet(at, 0, count);
     }
 
     /// Where EnterCollection's spill values are kept between calls, so that
@@ -885,6 +907,8 @@ static class Platform
 
     /// Returns the count, always: a console that is not there swallows bytes
     /// rather than failing, and there is nowhere to report a failure to.
+    /// The heap's own reports come here -- out of memory among them -- so a
+    /// console driver's Write may not allocate either.
     public static long WriteBytes(int fd, long address, long count)
     {
         if (Console != null)
@@ -897,7 +921,11 @@ static class Platform
     /// THE 386'S ATOMICS WITH INTERRUPTS OFF (Runtime.AtomicAdd386 and its
     /// kin): the 386 has no XADD and no CMPXCHG, and on its one processor
     /// nothing else runs while interrupts are off -- a handler's atomic
-    /// included, which a lock would have deadlocked. Where this code may turn
+    /// included, which a lock would have deadlocked. ONE PROCESSOR IS THE
+    /// PROFILE'S PREMISE: interrupts off on one processor are nothing to
+    /// another, so an image that starts a second one is a 486's or later
+    /// (--cpu=486), never a 386's; the backend's 386 compare-exchange
+    /// sequence (X86Backend's __corsac_refcas) rests on the same. Where this code may turn
     /// them off: its privilege level (CS's low bits) at most EFLAGS.IOPL, a
     /// kernel's ring 0 or a ring-1 service with IOPL 1. Anywhere else -- the
     /// bare-metal runtime run as a process, as its tests run it -- under one
@@ -1071,9 +1099,31 @@ static class Clock
     static long _reload = 65536;         // what channel 0 reloads to
     static long _last = -1;              // the count last seen
     static long _elapsedTicks;           // PIT ticks accumulated across wraps
-    static long _tickNanos;              // added per interrupt when the kernel drives it
-    static long _tickedNanos;
+    static long _tickedTicks;            // PIT ticks of the periods the kernel's interrupts counted
+    static long _latest;                 // the last time answered: never less again
     static bool _interrupts;
+
+    /// The 8254 is one device and its latch-then-two-reads one operation:
+    /// an interrupt handler or another processor reading between them reads
+    /// the other half of someone else's count. Taken by XCHG, with interrupts
+    /// off where this code may turn them off (its ring at most EFLAGS.IOPL);
+    /// a kernel with a clock of its own (NanosHook) never comes here.
+    static nint _pitLock;
+
+    static long Enter()
+    {
+        long flags = Sys.ReadFlags();
+        bool may = (Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3);
+        if (may) Sys.Cli();
+        while (Sys.AtomicSwap(Sys.AddressOf(ref _pitLock), 1) != 0) Sys.Pause();
+        return may ? flags : 0;
+    }
+
+    static void Leave(long flags)
+    {
+        Sys.AtomicSwap(Sys.AddressOf(ref _pitLock), 0);
+        if ((flags & 0x200) != 0) Sys.Sti();
+    }
 
     /// The count now, latched so both bytes belong to one instant.
     static long Count()
@@ -1084,32 +1134,51 @@ static class Clock
         return lo | (hi << 8);
     }
 
+    /// PIT ticks as nanoseconds, in two steps so that no product overflows:
+    /// ticks times a billion passes a long's range after two hours.
+    static long NanosOf(long ticks)
+    {
+        long seconds = ticks / Hz;
+        return seconds * NanosPerSecond + (ticks - seconds * Hz) * NanosPerSecond / Hz;
+    }
+
     public static long Now()
     {
         if (Platform.NanosHook != 0) return Sys.Call(Platform.NanosHook, 0, 0, 0);
+        long flags = Enter();
+        long ticks;
         if (_interrupts)
         {
             // The interrupt counts whole periods; the counter says how far
-            // into the current one.
-            long into = _reload - Count();
-            return _tickedNanos + into * NanosPerSecond / Hz;
+            // into the current one. A reload the interrupt has not yet been
+            // answered for reads as a period gone backwards, which the
+            // floor below holds at the last answer until it is.
+            ticks = _tickedTicks + (_reload - Count());
         }
-        long c = Count();
-        if (_last < 0)
+        else
         {
+            long c = Count();
+            if (_last < 0)
+            {
+                _last = c;
+            }
+            // The counter counts DOWN, so what elapsed is last minus now; a
+            // negative answer means it reloaded in between, and the period
+            // that reload stands for is added back.
+            long delta = _last - c;
+            if (delta < 0)
+            {
+                delta = delta + _reload;
+            }
+            _elapsedTicks = _elapsedTicks + delta;
             _last = c;
+            ticks = _elapsedTicks;
         }
-        // The counter counts DOWN, so what elapsed is last minus now; a
-        // negative answer means it reloaded in between, and the period
-        // that reload stands for is added back.
-        long delta = _last - c;
-        if (delta < 0)
-        {
-            delta = delta + _reload;
-        }
-        _elapsedTicks = _elapsedTicks + delta;
-        _last = c;
-        return _elapsedTicks * NanosPerSecond / Hz;
+        long now = NanosOf(ticks);
+        if (now < _latest) now = _latest;
+        _latest = now;
+        Leave(flags);
+        return now;
     }
 
     public static long NowMilliseconds()
@@ -1119,25 +1188,37 @@ static class Clock
 
     /// Programs channel 0 for a periodic interrupt at `hz` (mode 2) and
     /// switches Now() to counting the kernel's ticks. The kernel's timer
-    /// handler calls OnTick each period.
+    /// handler calls OnTick each period. A period is counted as the PIT
+    /// ticks it really is (the reload), not as a second over `hz`, which the
+    /// reload only approximates: 11931 ticks at 100 Hz is 9.99914 ms, and
+    /// counting 10 gained seven seconds a day.
     public static void StartClock(long hz)
     {
         if (hz < 19)
         {
             hz = 19;
         }
+        long flags = Enter();
+        long before = _interrupts ? _tickedTicks + (_reload - Count()) : _elapsedTicks;
         _reload = Hz / hz;
-        _tickNanos = NanosPerSecond / hz;
         Sys.PortOut8(Control, 0x34);    // channel 0, lo/hi, mode 2, binary
         Sys.PortOut8(Channel0, (int)(_reload & 0xFF));
         Sys.PortOut8(Channel0, (int)((_reload >> 8) & 0xFF));
-        _tickedNanos = 0;
+        // On from the time already counted, so that Now() goes on rising.
+        _tickedTicks = before;
         _interrupts = true;
+        Leave(flags);
     }
 
+    /// The kernel's timer handler, once each period, with interrupts off:
+    /// under the clock's lock too, so that another processor's Now() never
+    /// reads the count half written. No deadlock with this processor's own
+    /// Now(), which holds the lock only with interrupts off.
     public static void OnTick()
     {
-        _tickedNanos = _tickedNanos + _tickNanos;
+        long flags = Enter();
+        _tickedTicks = _tickedTicks + _reload;
+        Leave(flags);
     }
 
     public static bool InterruptsOn()
@@ -1146,7 +1227,9 @@ static class Clock
     }
 
     /// Waits for the clock to reach `deadline`: a halt per tick when the
-    /// kernel drives interrupts, a spin on the counter otherwise.
+    /// kernel drives interrupts, a spin on the counter otherwise -- offered
+    /// to whatever else is ready and paused between looks, as Native's
+    /// waits are.
     public static void SleepUntil(long deadline)
     {
         while (Now() < deadline)
@@ -1154,6 +1237,11 @@ static class Clock
             if (_interrupts)
             {
                 Sys.Hlt();
+            }
+            else
+            {
+                Platform.Yield();
+                Sys.Pause();
             }
         }
     }

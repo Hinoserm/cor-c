@@ -3,7 +3,7 @@
 // expect-exit: 0
 // expect-output:
 // total 4194304
-// threshold 3774870
+// threshold 7549740
 // limit 4194304 pace 65536 nursery 0
 // verify True stats False census False dead False
 // kernel census True pace kept 65536
@@ -14,7 +14,9 @@
 // whole region it was given, and a kernel could set only what its own
 // statics covered. Numbers are read decimal or 0x hexadecimal, flags as
 // bool.Parse reads them; System.GC.HeapHardLimit caps the heap within the
-// region (GC.GetGCMemoryInfo's total), and a kernel's own word -- its
+// region (GC.GetGCMemoryInfo's total) while the load past which memory is
+// high is nine tenths of the machine -- the region, alone on it -- as .NET
+// reports it of the machine and not of the cap, and a kernel's own word -- its
 // census asked for on its command line -- still counts beside the knobs,
 // while a knob's pace comes before the kernel's share of the machine.
 

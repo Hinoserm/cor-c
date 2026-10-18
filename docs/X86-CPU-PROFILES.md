@@ -49,6 +49,9 @@ support are required before no-FPU native compilation can be accepted.
   (`Sys.ReadCodeSegment`), else, and in a process, under one lock taken by
   XCHG (`Runtime.Atomics386`). The store-sequence compare-exchange stub
   (`__corsac_refcas`) makes the same choice itself and takes the same lock.
+  Interrupts off answer for one processor only, which is the 386 profile's
+  premise: an image that starts a second processor is built for the 486 or
+  later.
   BSWAP has its 386 form; INVLPG and the control-register moves
   are the source's own, made after its own processor check (Probed). The
   emitted-code audit refuses any other 486 instruction under 386, and knows a

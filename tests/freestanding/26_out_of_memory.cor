@@ -2,7 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // oom OutOfMemoryException True
-// message Exception of type 'System.OutOfMemoryException' was thrown.
+// message Insufficient memory to continue the execution of the program.
 // traced True
 // again 40 True
 //
