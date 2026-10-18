@@ -9106,6 +9106,17 @@ public sealed partial class Binder
             // ordinary LINQ call before the receiver has had a chance to bind
             // T. The second pass below checks the lambda once those input
             // bindings are known and uses its result to infer R.
+            // A LAMBDA OF ANOTHER ARITY IS NO ARGUMENT FOR THE PARAMETER at
+            // all, and the method no candidate: `t => 1` beside
+            // ContinueWith(Func<Task, TResult>, options) and ContinueWith(
+            // Func<Task, object?, TResult>, object? state) is the first,
+            // whatever the second argument converts to.
+            if (i < written.Count && written[i] is LambdaExpr { NoSignature: false } counted && Invoked(m.Params[i].Type) is { } invoke
+                && invoke.Params.Count != counted.Params.Count)
+            {
+                return false;
+            }
+
             if (i < written.Count && IsFunctionSource(written[i]))
             {
                 continue;
@@ -20031,6 +20042,16 @@ public sealed partial class Binder
         MethodSymbol? BetterMember(List<MethodSymbol> applicable)
         {
             if (applicable.Count <= 1) return applicable.FirstOrDefault();
+            // C# 12.8.10.2: OF THE APPLICABLE METHODS, THOSE OF THE MOST
+            // DERIVED TYPES. One declared in a base of another applicable
+            // one's type drops out, however well its parameters fit:
+            // Task<int>'s ContinueWith(Action<Task<int>>) is the one for a
+            // lambda that reads x.Result, not Task's ContinueWith(Action<Task>).
+            if (applicable.Any(m => applicable.Any(o => Hides(o, m))))
+            {
+                applicable = applicable.Where(m => !applicable.Any(o => Hides(o, m))).ToList();
+                if (applicable.Count == 1) return applicable[0];
+            }
             foreach (MethodSymbol one in applicable)
             {
                 if (applicable.All(other => ReferenceEquals(other, one) || BetterThan(one, other))) return one;
@@ -20056,6 +20077,11 @@ public sealed partial class Binder
 
             static string Spelt(MethodSymbol m) => m.Owner.Name + "." + m.Name + "(" + string.Join(", ", m.Params.Select(p => p.Type.ToString())) + ")";
         }
+
+        // Whether `derived` is declared in a type derived from the one `based`
+        // is declared in, and so leaves it no candidate (BetterMember).
+        static bool Hides(MethodSymbol derived, MethodSymbol based)
+            => !ReferenceEquals(derived.Owner, based.Owner) && derived.Owner.DerivesFrom(based.Owner);
 
         bool BetterThan(MethodSymbol one, MethodSymbol other)
         {
@@ -20292,6 +20318,21 @@ public sealed partial class Binder
 
         bool anyGeneric = false;
         foreach (MethodSymbol m in byArity) anyGeneric |= m.TypeParams.Count > 0;
+        MethodSymbol? firstWritten = null;
+        Dictionary<string, Type>? firstTold = null;
+        bool WrittenArgumentsFit(MethodSymbol candidate, Dictionary<string, Type> told)
+        {
+            for (int i = 0; i < args.Count && i < candidate.Params.Count; i++)
+            {
+                if (args[i].IsError || i < c.Args.Count && (IsFunctionSource(c.Args[i]) || HoldsLambda(c.Args[i]) || Typeless(c.Args[i])))
+                {
+                    continue;
+                }
+                Type want = Close(candidate.Params[i].Type, told);
+                if (!Unmade(want) && !WrittenFits(args[i], want, c.Args[i])) return false;
+            }
+            return true;
+        }
         if (anyGeneric)
         {
             foreach (MethodSymbol candidate in byArity)
@@ -20316,9 +20357,25 @@ public sealed partial class Binder
                         told[candidate.TypeParams[i]] = Resolve(written[i], _thisType);
                     }
 
-                    best = candidate;
-                    bound = told;
-                    break;
+                    // THE ONE THE ARGUMENTS FIT, of those the written type
+                    // arguments name: `Task.Run<T>(function)` with a
+                    // Func<Task<T>> is Run<T>(Func<Task<T>>), not the
+                    // Run<T>(Func<T>) declared first. A lambda or a method
+                    // group is shaped by the parameter, so it fits any; and
+                    // when none fits, the first is still the one whose error
+                    // is reported.
+                    if (WrittenArgumentsFit(candidate, told))
+                    {
+                        best = candidate;
+                        bound = told;
+                        break;
+                    }
+                    if (firstWritten is null)
+                    {
+                        firstWritten = candidate;
+                        firstTold = told;
+                    }
+                    continue;
                 }
 
                 if (Infer(candidate, args, c.Args, out Dictionary<string, Type> got))
@@ -20343,7 +20400,10 @@ public sealed partial class Binder
                                  ? int.MaxValue
                                  : best.TypeParams.Count(t => bound?.ContainsKey(t) != true);
 
-                    if (best is null || openNow < openBest
+                    // A BASE TYPE'S METHOD IS NO CANDIDATE beside a derived
+                    // type's that applies too (BetterMember's rule).
+                    if (best is not null && Hides(best, candidate)) continue;
+                    if (best is null || Hides(candidate, best) || openNow < openBest
                         || (openNow == openBest && Specificity(candidate) > Specificity(best))
                         || (openNow == openBest && Specificity(candidate) == Specificity(best)
                             && BetterLambdas(candidate, got, best, bound ?? new(), c.Args)))
@@ -20355,6 +20415,12 @@ public sealed partial class Binder
             }
         }
 
+        if (best is null && firstWritten is not null)
+        {
+            best = firstWritten;
+            bound = firstTold;
+        }
+
         // TYPE ARGUMENTS WRITTEN AT THE CALL name a generic method; an
         // ordinary one is no candidate at all then.
         bool typeArgsWritten = c.Target switch
@@ -20364,7 +20430,8 @@ public sealed partial class Binder
             _ => false,
         };
 
-        if (plain is not null && (best is null || (!typeArgsWritten && !GenericBetter(best, bound, plain))))
+        if (plain is not null && (best is null || Hides(plain, best)
+                                  || (!Hides(best, plain) && !typeArgsWritten && !GenericBetter(best, bound, plain))))
         {
             best = plain;
             bound = fromReceiver;

@@ -1745,6 +1745,13 @@ public sealed class Monomorphiser
     /// A type's text from <paramref name="start"/> on, mangled in place as a
     /// specialisation's name spells it: `<` as `_`, `>` dropped, `, ` as `_`
     /// and `.` as `$` -- the chain of Replaces this does in one walk.
+    ///
+    /// AN ARGUMENT THAT IS A SPECIALISATION ALREADY keeps its own `$`s as
+    /// `_`, the spelling its written form has: `Func<Task<int>>`, its
+    /// argument made `Task$int` first, was `Func$Task$int` -- the very name
+    /// of `Func<Task, int>` -- and a program with both had one class for two
+    /// delegates, the second's Invoke missing. Spelled `Func$Task_int`, a `$`
+    /// is only ever a separator between arguments (or a nested type's dot).
     /// </summary>
     internal static void Mangle(System.Text.StringBuilder b, int start)
     {
@@ -1753,7 +1760,7 @@ public sealed class Monomorphiser
         {
             char c = b[from];
             if (c == '>') continue;
-            if (c == '<') c = '_';
+            if (c == '<' || c == '$') c = '_';
             // A NESTED ARGUMENT KEEPS ITS OUTER, spelled with the separator
             // this name already uses: the dot is how a nested type is KEYED,
             // and a specialisation is not one.
@@ -1989,6 +1996,25 @@ public sealed class Monomorphiser
         };
     }
 
+    /// <summary>
+    /// A type argument as the specialisation it names, when it is a
+    /// constructed type with nothing open in it: the reference to the copy,
+    /// its arguments carried in the name as every rewritten reference carries
+    /// them. A tuple, a type parameter's use and anything else as it was.
+    /// </summary>
+    private TypeRef Constructed(TypeRef a, Node at)
+    {
+        if (a.Args.Count == 0 || a.Name == TypeRef.Tuple || AnyMentionsMethodParameter(a.Args)) return a;
+        string name = Instantiate(a.Name, a.Args, at);
+        if (name == a.Name) return a;
+        return new TypeRef
+        {
+            Name = name, ArrayRank = a.ArrayRank, Nullable = a.Nullable, UseArgs = QualifyAll(a.Args),
+            ElementNullable = a.ElementNullable, InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth,
+            Line = a.Line, Col = a.Col,
+        };
+    }
+
     /// <summary>Records that a specialisation is needed and returns its name.</summary>
     private string Instantiate(string name, List<TypeRef> args, Node at)
     {
@@ -2000,6 +2026,13 @@ public sealed class Monomorphiser
         // importantly, mangles to a different specialisation from a list of
         // Assembler.Section.
         args = args.Select(Qualify).ToList();
+        // AN ARGUMENT THAT IS ITSELF CONSTRUCTED IS ITS OWN SPECIALISATION
+        // FIRST, so that the argument a copy is made with is the one every
+        // other way to name it ends with: an array's IEnumerable asked of
+        // `KeyValuePair<string, byte[]>` as written (ArrayIsASequence) and a
+        // List's base list over the KeyValuePair already made are one
+        // interface, with one T.
+        args = args.Select(a => Constructed(a, at)).ToList();
         // ONE SPECIALISATION PER TYPE, AS C# HAS IT: a reference argument's `?`
         // is an annotation, not part of the type. List<(int, Box?)> and
         // List<(int, Box)> are one class at run time and one here; the marks

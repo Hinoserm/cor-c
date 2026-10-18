@@ -1,0 +1,65 @@
+// test: constructed_arguments_named_apart_and_derived_overloads_first
+// expect-exit: 0
+// expect-output:
+// 4 5
+// heard h
+// told t
+// derived func 10
+// saw 5
+// derived action
+// base func 1 base action
+// func opt 1 | func state 2 | action opt | action state
+//
+// A CONSTRUCTED TYPE ARGUMENT IS NAMED APART from a list of arguments:
+// Func<Task<int>> was the specialisation Func$Task$int, which is also
+// Func<Task, int>'s name, and a program with both had one class for two
+// delegates (the second refused: no Invoke of one argument) -- Task.Run's
+// Func<Task<T>> overload and a ContinueWith(t => 1) were enough. An
+// argument made a specialisation first keeps its own `$`s as `_`. OF THE
+// APPLICABLE METHODS, THOSE OF THE MOST DERIVED TYPE (C# 12.8.10.2): a
+// lambda that reads x.Value takes Derived<int>'s Go, not Base's. A LAMBDA
+// OF ANOTHER ARITY makes a generic method no candidate: `x => 1` with an
+// enum is On<R>(Func<Base, R>, Opt), not On<R>(Func<Base, object?, R>,
+// object?) with the enum boxed as the state.
+
+using System;
+using System.Threading.Tasks;
+
+enum Opt { None = 0, Some = 1 }
+
+class Base
+{
+    public string Go(Action<Base> a) { a(this); return "base action"; }
+    public string Go<R>(Func<Base, R> f) { return "base func " + f(this); }
+    public string On(Action<Base> a, Opt o) { return "action opt"; }
+    public string On(Action<Base, object?> a, object? state) { return "action state"; }
+    public string On<R>(Func<Base, R> f, Opt o) { return "func opt " + f(this); }
+    public string On<R>(Func<Base, object?, R> f, object? state) { return "func state " + f(this, state); }
+}
+
+class Derived<T> : Base
+{
+    public T Value = default!;
+    public string Go(Action<Derived<T>> a) { a(this); return "derived action"; }
+    public string Go<R>(Func<Derived<T>, R> f) { return "derived func " + f(this); }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Func<Task<int>> made = () => Task.FromResult(4);
+        Func<Task, int> read = t => 5;
+        Action<Task<string>> heard = t => Console.WriteLine("heard " + t.Result);
+        Action<Task, string> told = (t, s) => Console.WriteLine("told " + s);
+        Console.WriteLine(made().Result + " " + read(Task.CompletedTask));
+        heard(Task.FromResult("h"));
+        told(Task.CompletedTask, "t");
+        Derived<int> d = new Derived<int> { Value = 5 };
+        Console.WriteLine(d.Go(x => x.Value * 2));
+        Console.WriteLine(d.Go(x => Console.WriteLine("saw " + x.Value)));
+        Base b = d;
+        Console.WriteLine(b.Go(x => 1) + " " + b.Go(x => { }));
+        Console.WriteLine(b.On(x => 1, Opt.Some) + " | " + b.On((x, s) => 2, "st") + " | " + b.On(x => { }, Opt.Some) + " | " + b.On((x, s) => { }, "st"));
+    }
+}
