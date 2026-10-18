@@ -20609,6 +20609,13 @@ public sealed partial class Binder
         }
 
         _r.Calls[c] = called;
+        // A PARTIAL METHOD NOBODY IMPLEMENTED is no call (C# 15.6.9): neither
+        // it nor its arguments run.
+        if (called.Decl is { PartialWithoutBody: true })
+        {
+            _r.Rewrites[c] = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = c.Line, Col = c.Col };
+            CheckExpr(_r.Rewrites[c]);
+        }
         // A SHARED METHOD COPY'S DICTIONARY grown since this call's was placed.
         if (c.HiddenNeedMap is not null) CopyNeedsGrown(c, called);
 

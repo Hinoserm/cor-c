@@ -50,7 +50,12 @@ public sealed class MethodDecl : MemberDecl
     internal void AdoptParams(List<Param>? read) { if (read is { Count: > 0 }) { if (_params is null) _params = read; else _params.AddRange(read); } }
     // Never written through: every writer goes by WritableParams.
     private static readonly List<Param> NoParams = new();
-    public Block? Body { get; init; }
+    public Block? Body { get; set; }
+    /// <summary>
+    /// A partial method declared and never given a body (C# 15.6.9): calls
+    /// of it are no calls, arguments and all (Binder), and its body is empty.
+    /// </summary>
+    public bool PartialWithoutBody { get; set; }
     /// <summary>The <c>: base(...)</c> or <c>: this(...)</c> a constructor chains to.</summary>
     // This and every field below live in MemberRare: few methods set any.
     public CtorInit? Init { get => _rare?.Init; init { if (value is not null) Rare.Init = value; } }

@@ -1,0 +1,48 @@
+// test: partial_methods_declared_implemented_and_left_out
+// expect-exit: 0
+// expect-output:
+// 40 w40 3
+// went
+//
+// A PARTIAL METHOD IS ONE METHOD (C# 15.6.9): its declaration and its
+// implementation in two parts of the type, a void one and one with a value
+// and an access modifier (C# 9) alike; and a partial void method nobody
+// implements is no call at all -- its arguments are not evaluated.
+
+using System;
+
+partial class Widget
+{
+    partial void OnMade(int n);
+    partial void Unused(string s);
+    private partial string Named(int n);
+    partial void Counted(ref int seen);
+    public int Count;
+    public Widget(int n) { Count = n; OnMade(n); Unused(Say("evaluated")); }
+    public string Describe() { int seen = 2; Counted(ref seen); return Named(Count) + " " + seen; }
+    static string Say(string s) { Console.WriteLine(s); return s; }
+}
+
+partial class Widget
+{
+    partial void OnMade(int n) { Count = Count * 10; }
+    private partial string Named(int n) { return "w" + n; }
+    partial void Counted(ref int seen) { seen++; }
+}
+
+partial class Quiet
+{
+    partial void Never(int n);
+    public void Go() { Never(Loud()); Console.WriteLine("went"); }
+    static int Loud() { Console.WriteLine("loud"); return 1; }
+}
+
+static class P
+{
+    static void Main()
+    {
+        Widget w = new Widget(4);
+        Console.WriteLine(w.Count + " " + w.Describe());
+        new Quiet().Go();
+    }
+}

@@ -935,6 +935,51 @@ public static class Frontend
 
         unit.Types.Clear();
         unit.Types.AddRange(merged);
+        foreach (Lang.TypeDecl type in merged) MergePartialMethods(type);
+    }
+
+    /// <summary>
+    /// A PARTIAL METHOD IS ONE METHOD (C# 15.6.9): its declaration and its
+    /// implementation, met as two members once the type's parts are one,
+    /// become the implementation; a declaration with no implementation
+    /// anywhere is a method that does nothing, and calls of it are dropped
+    /// (MethodDecl.PartialWithoutBody). Two of them made two methods of one
+    /// signature, and one of them had no body to emit.
+    /// </summary>
+    private static void MergePartialMethods(Lang.TypeDecl type)
+    {
+        Dictionary<string, Lang.MethodDecl>? seen = null;
+        List<Lang.MemberDecl>? dropped = null;
+        foreach (Lang.MemberDecl member in type.Members)
+        {
+            if (member is not Lang.MethodDecl method || !method.Mods.HasFlag(Lang.Mods.Partial)) continue;
+            string key = method.Name + "`" + method.TypeParams.Count + "(" + string.Join(",", method.Params.Select(p =>
+                (p.IsOut ? "out " : p.IsRef ? "ref " : p.IsReadOnlyRef ? "in " : "") + p.Type)) + ")";
+            seen ??= new Dictionary<string, Lang.MethodDecl>(StringComparer.Ordinal);
+            if (!seen.TryGetValue(key, out Lang.MethodDecl? other))
+            {
+                seen[key] = method;
+                continue;
+            }
+            // The one with the body; else another unit's (read from the
+            // index, its body there), which may well have one.
+            Lang.MethodDecl implementation = method.Body is not null ? method
+                : other.Body is not null ? other
+                : method.OwnedImplementation == false ? method : other;
+            Lang.MethodDecl declaration = ReferenceEquals(implementation, method) ? other : method;
+            (dropped ??= new()).Add(declaration);
+            seen[key] = implementation;
+        }
+        if (seen is null) return;
+        if (dropped is not null) type.Members.RemoveAll(m => dropped.Contains(m));
+        foreach (Lang.MethodDecl lone in seen.Values)
+        {
+            if (lone.Body is null && lone.OwnedImplementation != false && type.Kind != Lang.TypeKind.Interface)
+            {
+                lone.Body = new Lang.Block { Line = lone.Line, Col = lone.Col };
+                lone.PartialWithoutBody = true;
+            }
+        }
     }
 }
 
