@@ -549,21 +549,86 @@ internal sealed class RegionEscape
         return $"{kind} {k} of {holder}" + (depth <= 0 ? "" : " < " + string.Join(" | ", below.Take(3).Select(x => Lineage(x, depth - 1))));
     }
 
-    /// <summary>The sites the given origins may be.</summary>
+    /// <summary>
+    /// The sites the given origins may be. WALKED BY STAMPS, NOT SETS: each
+    /// walk numbered, a site, an object of a holder and a holder seen by it
+    /// marked with its number, and the sites it found sorted once -- where
+    /// every call made two hash sets and a stack and sorted through LINQ,
+    /// and the compiler's own link spent most of its time here. The same
+    /// walk, in the same order, to the same answer.
+    /// </summary>
     public int[] SitesOf(int[] origins)
     {
-        HashSet<int> seen = new(), sites = new();
-        Stack<int> next = new();
-        foreach (int r in origins) if (seen.Add(r)) next.Push(r);
+        if (++_walk == int.MaxValue)
+        {
+            Array.Clear(_siteSeen);
+            Array.Clear(_holderSeen);
+            foreach (int[]? seen in _refSeen) if (seen is not null) Array.Clear(seen);
+            _walk = 1;
+        }
+        if (_siteSeen.Length < Global.Length) _siteSeen = new int[Global.Length];
+        if (_holderSeen.Length < _holders.Count)
+        {
+            Array.Resize(ref _holderSeen, _holders.Count);
+            Array.Resize(ref _refSeen, _holders.Count);
+        }
+        Stack<int> next = _walkNext;
+        List<int> sites = _walkSites;
+        next.Clear();
+        sites.Clear();
+        foreach (int r in origins) if (FirstSeen(r)) next.Push(r);
         while (next.TryPop(out int r))
         {
             if (r < 0) { sites.Add(-r - 1); continue; }
             // Read by the component being solved: solved again if it changes (Again).
-            if (_reading is not null && !_readingAll && _reading.Add(r >> IndexBits) && _reading.Count > MostRead) _readingAll = true;
-            if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
+            int holder = r >> IndexBits;
+            if (holder < _holderSeen.Length && _holderSeen[holder] != _walk)
+            {
+                _holderSeen[holder] = _walk;
+                if (_reading is not null && !_readingAll && _reading.Add(holder) && _reading.Count > MostRead) _readingAll = true;
+                if (_shapeReading is not null && !_shapeReadingAll && _shapeReading.Add(holder) && _shapeReading.Count > MostRead) _shapeReadingAll = true;
+            }
+            if (OriginsOf(r) is { } below) foreach (int c in below) if (FirstSeen(c)) next.Push(c);
         }
-        return sites.Order().ToArray();
+        int[] found = sites.ToArray();
+        Array.Sort(found);
+        return found;
     }
+
+    // Whether this walk meets origin r for the first time: a leaf by its
+    // site, an object by its holder and index.
+    private bool FirstSeen(int r)
+    {
+        if (r < 0)
+        {
+            int site = -r - 1;
+            if (_siteSeen[site] == _walk) return false;
+            _siteSeen[site] = _walk;
+            return true;
+        }
+        int holder = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
+        if (holder >= _refSeen.Length)
+        {
+            Array.Resize(ref _refSeen, holder + 1);
+            Array.Resize(ref _holderSeen, holder + 1);
+        }
+        int[]? seen = _refSeen[holder];
+        if (seen is null || seen.Length <= k)
+        {
+            Array.Resize(ref seen, Math.Max(k + 1, seen is null ? 4 : seen.Length * 2));
+            _refSeen[holder] = seen;
+        }
+        if (seen[k] == _walk) return false;
+        seen[k] = _walk;
+        return true;
+    }
+
+    private int _walk;
+    private int[] _siteSeen = Array.Empty<int>();
+    private int[] _holderSeen = Array.Empty<int>();
+    private int[]?[] _refSeen = Array.Empty<int[]?>();
+    private readonly Stack<int> _walkNext = new();
+    private readonly List<int> _walkSites = new();
 
     // After every function: what is global, down to sites -- what the unknown
     // object reaches, and what functions called from where nobody follows hand back.
@@ -1133,6 +1198,9 @@ internal sealed class RegionEscape
         // its shape last grew at (Again).
         public int Holder = -1;
         public long ChangedAt;
+        // Per target, the shape last covered and its version: covering it
+        // again grows nothing (Check).
+        public (Shaped? Shape, long Version)[]? Covered;
 
         public Assumed(int[] targets) { Targets = targets; }
 
@@ -1159,8 +1227,8 @@ internal sealed class RegionEscape
                 index[cls] = s.Objects.Count;
                 s.Objects.Add(cls switch
                 {
-                    1 => (Kind.Made, -1, Array.Empty<int>(), Sites.Select(Leaf).Order().ToArray()),
-                    HeldClass => (Kind.Made, -1, Array.Empty<int>(), HeldSites.Select(Leaf).Order().ToArray()),
+                    1 => (Kind.Made, -1, Array.Empty<int>(), Leaves(Sites)),
+                    HeldClass => (Kind.Made, -1, Array.Empty<int>(), Leaves(HeldSites)),
                     2 => (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()),
                     _ => (cls - 3) % 2 == 0 ? (Kind.Place, (cls - 3) / 2, Array.Empty<int>(), Array.Empty<int>()) : (Kind.Deep, (cls - 3) / 2, DeepBelow, Array.Empty<int>()),
                 });
@@ -1338,25 +1406,24 @@ internal sealed class RegionEscape
         for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
         if (more || widening)
         {
-            SortedSet<int> all = new(a.Sites);
-            all.UnionWith(sites);
+            int had = a.Sites.Length;
             // Widened, every site beneath its targets is taken at once as
             // what they make, not as what the unknown object holds: those it
             // holds still grow a site at a time, and are finitely many.
             if (widening)
             {
+                SortedSet<int> all = new(a.Sites);
+                all.UnionWith(sites);
                 a.Widened = true;
                 all.UnionWith(Beneath(a.Targets));
+                a.Sites = all.ToArray();
             }
-            int had = a.Sites.Length;
-            a.Sites = all.ToArray();
+            else a.Sites = Union(a.Sites, sites);
             more = a.Sites.Length > had;
         }
         if (moreHeld)
         {
-            SortedSet<int> all = new(a.HeldSites);
-            all.UnionWith(heldSites);
-            a.HeldSites = all.ToArray();
+            a.HeldSites = Union(a.HeldSites, heldSites);
             more = true;
         }
         if (shape) { a.ChangedAt = _tick; GrewShape++; }
@@ -1368,6 +1435,31 @@ internal sealed class RegionEscape
             if (more && a.Holder >= 0) OriginsChanged(a.Holder);
         }
         return shape || more;
+    }
+
+    /// <summary>Two sorted lists of distinct sites as one, sorted and distinct: one walk, where a sorted set was made of each.</summary>
+    private static int[] Union(int[] had, int[] more)
+    {
+        int[] all = new int[had.Length + more.Length];
+        int i = 0, j = 0, n = 0;
+        while (i < had.Length && j < more.Length)
+        {
+            if (had[i] < more[j]) all[n++] = had[i++];
+            else if (had[i] > more[j]) all[n++] = more[j++];
+            else { all[n++] = had[i++]; j++; }
+        }
+        while (i < had.Length) all[n++] = had[i++];
+        while (j < more.Length) all[n++] = more[j++];
+        if (n < all.Length) Array.Resize(ref all, n);
+        return all;
+    }
+
+    /// <summary>Sorted distinct sites as their leaves, sorted: a leaf falls as its site rises, so it is the list reversed.</summary>
+    private static int[] Leaves(int[] sites)
+    {
+        int[] leaves = new int[sites.Length];
+        for (int i = 0; i < sites.Length; i++) leaves[i] = Leaf(sites[sites.Length - 1 - i]);
+        return leaves;
     }
 
     // A summary as a stand-in's shape: which classes hold which, and the
@@ -1395,25 +1487,72 @@ internal sealed class RegionEscape
             if (s.Objects[k].Kind == Kind.Made) (Class(k) == HeldClass ? heldOrigins : origins).AddRange(s.Objects[k].Origins);
         if (origins.Count == 0 && heldOrigins.Count == 0) return (bits, Array.Empty<int>(), Array.Empty<int>());
         // Not what the component being solved reads: a stand-in's sites
-        // are its holder's, and that is what an applier reads.
+        // are its holder's, and that is what an applier reads. What the
+        // walks read is the shape's own (ShapeOf): the holders whose origins
+        // its sites stand on.
         HashSet<int>? reading = _reading;
         _reading = null;
+        _shapeReading = new();
+        _shapeReadingAll = false;
         int[] sites = origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray());
         int[] heldSites = heldOrigins.Count == 0 ? Array.Empty<int>() : SitesOf(heldOrigins.ToArray());
+        _shapeRead = _shapeReadingAll ? null : _shapeReading.ToArray();
+        _shapeReading = null;
         _reading = reading;
         return (bits, sites, heldSites);
     }
 
+    // While Shape walks its sites: the holders read, and whether past
+    // MostRead of them; then, for ShapeOf, what the last walk read (null:
+    // too many to say, so any change counts).
+    private HashSet<int>? _shapeReading;
+    private bool _shapeReadingAll;
+    private int[]? _shapeRead = Array.Empty<int>();
+
     // BY THE SUMMARY ITSELF, while no holder's origins changed in place since
     // (OriginsAt): one a round kept (Publish) keeps its shape, and its sites
     // while nothing beneath them moved.
+    //
+    // BY THE HOLDERS ITS SITES WERE READ FROM, not by every holder: kept
+    // while none of those changed since. Any holder's change took every
+    // shape for stale, and a round that grew one stand-in in place walked
+    // every summary's sites again -- the compiler's own link spent most of
+    // an hour in SitesOf.
     private (ulong[] Bits, int[] Sites, int[] HeldSites) ShapeOf(Summary s)
     {
         Shaped known = ShapedOf(s);
-        if (known.Bits is not null && known.Sites is not null && known.At > _lastOriginsChange) return (known.Bits, known.Sites, known.HeldSites!);
+        if (known.Bits is not null && known.Sites is not null && Fresh(known)) return (known.Bits, known.Sites, known.HeldSites!);
+        _shapeRead = Array.Empty<int>();
         var shape = Shape(s);
         known.Bits = shape.Bits; known.Sites = shape.Sites; known.HeldSites = shape.HeldSites; known.At = _tick;
+        // ITS OWN HOLDER AMONG THEM: the summary's own origins are its
+        // holder's (Register), and changed in place (Publish) they are new
+        // sites no walk below them saw.
+        int[]? read = _shapeRead;
+        if (read is not null && s.Holder >= 0 && Array.IndexOf(read, s.Holder) < 0)
+        {
+            Array.Resize(ref read, read.Length + 1);
+            read[^1] = s.Holder;
+        }
+        known.ReadHolders = read;
+        known.Version++;
         return shape;
+    }
+
+    /// <summary>
+    /// Whether a shape's sites stand: no holder they were read from has
+    /// changed in place since they were. Found so, it is stamped now: every
+    /// change so far is older than the tick (OriginsChanged moves it on), so
+    /// the next ask is answered by the stamp alone.
+    /// </summary>
+    private bool Fresh(Shaped known)
+    {
+        if (known.At > _lastOriginsChange) return true;
+        if (known.ReadHolders is not { } read) return false;
+        foreach (int h in read)
+            if (_originsAt.TryGetValue(h, out long changed) && changed >= known.At) return false;
+        known.At = _tick;
+        return true;
     }
 
     /// <summary>
@@ -1450,6 +1589,10 @@ internal sealed class RegionEscape
         public ulong[]? Bits;
         public int[]? Sites, HeldSites;
         public long At;
+        // The holders the sites were read from; null when too many to keep.
+        public int[]? ReadHolders;
+        // Moved on each time the sites are worked out again (Check's skip).
+        public long Version;
     }
 
     /// <summary>
@@ -1468,7 +1611,20 @@ internal sealed class RegionEscape
             foreach (Assumed a in _assumed!.Values)
             {
                 bool more = false;
-                foreach (int t in a.Targets) more |= Cover(a, _summaries[t] ?? _noSummary, false);
+                // A TARGET WHOSE SHAPE IS THE ONE LAST COVERED IS PASSED BY: a
+                // stand-in only grows, so covering it again grows nothing.
+                // Every pass of every round covered every target of every
+                // stand-in again, a merge of two site lists each.
+                a.Covered ??= new (Shaped?, long)[a.Targets.Length];
+                for (int i = 0; i < a.Targets.Length; i++)
+                {
+                    Summary target = _summaries[a.Targets[i]] ?? _noSummary;
+                    if (target.Shape is { Bits: not null, Sites: not null } had && had.Generation == _shapeGeneration
+                        && ReferenceEquals(a.Covered[i].Shape, had) && a.Covered[i].Version == had.Version && Fresh(had))
+                        continue;
+                    more |= Cover(a, target, false);
+                    a.Covered[i] = (target.Shape, target.Shape?.Version ?? -1);
+                }
                 // Widened once grown, as WidenAfter has it.
                 if (more && widen) Cover(a, _noShape, true);
                 if (more) grown.Add(a);
@@ -1713,6 +1869,13 @@ internal sealed class RegionEscape
         _holderFirst = null;
         _escapingBits = null;
         if (_bitsByOrigins.Count > 0) _bitsByOrigins.Clear();
+        // AND THE CLOCK MOVED ON: a shape made after this change, at the
+        // tick it was stamped with, was taken for one made before it
+        // (ShapeOf keeps a shape only when it is newer than the last change),
+        // and from the first change of a round of Check's to its end every
+        // summary's sites were walked afresh at every ask -- the compiler's
+        // own link spent half an hour in SitesOf.
+        _tick++;
     }
 
     // Callees first, a cycle together; a wide call is no edge. Each component
