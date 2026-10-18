@@ -222,9 +222,12 @@ public static class Interlocked
     static long Read64(long at) { return Sys.Cas(at, 0, 0); }
 #else
     // TWO WORDS, UNDER THE ONE LOCK, read and written a word at a time. Each
-    // answers what was there before.
+    // answers what was there before. A LOCK A HANDLER TAKES TOO (Platform.
+    // HandlerLockEnter): interrupts off on bare metal while it is held, so a
+    // timer's handler incrementing a long cannot come in on the processor
+    // whose thread holds it and spin there for ever with interrupts off.
 
-    static AtomicCell _wide = new AtomicCell();
+    static nint _wide;
 
     static long Held(long at) { return (Sys.PeekWord(at) & 0xFFFFFFFF) | (Sys.PeekWord(at + 4) << 32); }
 
@@ -236,42 +239,46 @@ public static class Interlocked
 
     static long Add64(long at, long value)
     {
-        _wide.Enter();
-        try { long was = Held(at); Put(at, was + value); return was; }
-        finally { _wide.Exit(); }
+        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        long was = Held(at);
+        Put(at, was + value);
+        Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
+        return was;
     }
 
     static long Swap64(long at, long value)
     {
-        _wide.Enter();
-        try { long was = Held(at); Put(at, value); return was; }
-        finally { _wide.Exit(); }
+        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        long was = Held(at);
+        Put(at, value);
+        Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
+        return was;
     }
 
     static long Cas64(long at, long expect, long value)
     {
-        _wide.Enter();
-        try
-        {
-            long was = Held(at);
-            if (was == expect) Put(at, value);
-            return was;
-        }
-        finally { _wide.Exit(); }
+        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        long was = Held(at);
+        if (was == expect) Put(at, value);
+        Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
+        return was;
     }
 
     static long Combine64(long at, long value, bool or)
     {
-        _wide.Enter();
-        try { long was = Held(at); Put(at, or ? was | value : was & value); return was; }
-        finally { _wide.Exit(); }
+        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        long was = Held(at);
+        Put(at, or ? was | value : was & value);
+        Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
+        return was;
     }
 
     static long Read64(long at)
     {
-        _wide.Enter();
-        try { return Held(at); }
-        finally { _wide.Exit(); }
+        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        long was = Held(at);
+        Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
+        return was;
     }
 #endif
 

@@ -68,16 +68,39 @@ static class Atom
         return Sys.Word(o) + offset;
     }
 
-    /// Takes the spin lock at `at` (0 free, 1 held). Uncontended on one
-    /// thread, which is the only case today; Pause is what a waiter does on a
-    /// multiprocessor.
+    /// Takes the spin lock at `at` (0 free, 1 held), waiting a Turn at a
+    /// time while another thread holds it.
     public static void Enter(long at)
     {
+        long turns = 0;
         while (Sys.Cas(at, 0, 1) != 0)
         {
-            Sys.Pause();
+            Turn(ref turns);
         }
     }
+
+    /// ONE TURN OF A WAIT ON ANOTHER THREAD: a pause, as a multiprocessor
+    /// waits, for the first few; then the processor given up as a thread
+    /// that is stopped (Thread.Yield). The other may be allocating under the
+    /// lock this one waits for, and its collection waits for every thread
+    /// but the stopped: a waiter that only paused kept that collection
+    /// waiting while it waited for the holder, and neither moved again. Not
+    /// from an interrupt handler, which takes Platform.HandlerLockEnter's
+    /// locks instead.
+    public static void Turn(ref long turns)
+    {
+        turns = turns + 1;
+        if (turns < SpinTurns)
+        {
+            Sys.Pause();
+            return;
+        }
+        Runtime.BeginBlocking();
+        Platform.Yield();
+        Runtime.EndBlocking();
+    }
+
+    const long SpinTurns = 64;
 
     public static void Exit(long at)
     {
@@ -199,6 +222,9 @@ class Task
     List<AsyncContext?>? _moreContexts;
     System.Threading.Tasks.TaskCreationOptions _options;
     object? _asyncState;
+    // The token that canceled it, when one did (TrySetCanceled(token)):
+    // what a TaskCanceledException for it carries (TaskCanceledException(Task)).
+    CancellationToken _canceledBy;
 
     const int Incomplete = 0;
     const int Claimed = 1;
@@ -720,6 +746,22 @@ class Task
         return true;
     }
 
+    /// Canceled by `token`, with no exception of its own: awaiting it
+    /// throws a TaskCanceledException for that token, as .NET's does.
+    public bool TrySetCanceled(CancellationToken token)
+    {
+        if (!TryClaim())
+        {
+            return false;
+        }
+        _canceledBy = token;
+        Finish(Canceled);
+        return true;
+    }
+
+    /// The token that canceled it, or none.
+    internal CancellationToken CanceledBy => _canceledBy;
+
     /// Step one of completing: exactly one caller ever gets true.
     public bool TryClaim()
     {
@@ -799,6 +841,34 @@ class Task
                 Scheduler.Post(more[i], moreContexts != null && i < moreContexts.Count ? moreContexts[i] : null);
             }
         }
+    }
+
+    /// A continuation added and no longer wanted, taken off again while it
+    /// still waits: what a wait that timed out leaves on the tasks it waited
+    /// for (WaitAny), which a loop of short waits piled up on every one.
+    internal void RemoveContinuation(Action continuation)
+    {
+        long lockAt = Atom.At(this, Atom.SecondWord);
+        Atom.Enter(lockAt);
+        if (_state < RanToCompletion)
+        {
+            if (ReferenceEquals(_first, continuation))
+            {
+                _first = null;
+                _firstContext = null;
+            }
+            else if (_more != null)
+            {
+                for (int i = 0; i < _more.Count; i++)
+                {
+                    if (!ReferenceEquals(_more[i], continuation)) continue;
+                    _more.RemoveAt(i);
+                    if (_moreContexts != null && i < _moreContexts.Count) _moreContexts.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+        Atom.Exit(lockAt);
     }
 
     /// Step two for a caller that claimed in an interrupt handler and left
@@ -891,10 +961,14 @@ class Task
         }
     }
 
+    /// Faulted with `exception`, an OperationCanceledException too, as
+    /// .NET's: only a token cancels a task made this way (FromCanceled).
     public static Task FromException(Exception exception)
     {
+        if (exception == null) throw new ArgumentNullException("exception");
         Task t = new Task();
-        t.TrySetException(exception);
+        t.TryClaim();
+        t.FaultClaimed(exception);
         return t;
     }
 
@@ -907,7 +981,7 @@ class Task
             throw new ArgumentOutOfRangeException("cancellationToken");
         }
         Task t = new Task();
-        t.TrySetCanceled(new TaskCanceledException());
+        t.TrySetCanceled(cancellationToken);
         return t;
     }
 
@@ -932,7 +1006,7 @@ class Task
         if (token.IsCancellationRequested)
         {
             Task canceled = new Task();
-            canceled.TrySetCanceled(new TaskCanceledException());
+            canceled.TrySetCanceled(token);
             return canceled;
         }
         if (milliseconds == 0)
@@ -949,6 +1023,7 @@ class Task
         }
         if (token.CanBeCanceled)
         {
+            done.Token = token;
             done.Registration = token.Register(new DelayCancellation(done));
         }
         return t;
@@ -1393,14 +1468,34 @@ class Task
                 return i;
             }
         }
-        if (tasks.Length == 0)
+        // NONE COMPLETE, AND NO TIME TO WAIT: -1, as .NET's, with nothing
+        // left on any of them.
+        if (tasks.Length == 0 || millisecondsTimeout == 0)
         {
             return -1;
         }
 
-        Task<Task> any = WhenAny(tasks);
+        // ITS OWN PARTS, so a wait that times out takes them off again
+        // (RemoveContinuation): `while (Task.WaitAny(tasks, 10) == -1)` left
+        // one on every task every turn, all run when each completed.
+        Task<Task> any = new Task<Task>();
+        WhenAnyPart[] parts = new WhenAnyPart[tasks.Length];
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            parts[i] = new WhenAnyPart(tasks[i], any);
+            tasks[i].AddContinuation(parts[i]);
+        }
 
-        if (!Scheduler.RunUntil(any, Scheduler.DeadlineAfter(millisecondsTimeout), cancellationToken))
+        bool done;
+        try { done = Scheduler.RunUntil(any, Scheduler.DeadlineAfter(millisecondsTimeout), cancellationToken); }
+        catch
+        {
+            for (int i = 0; i < tasks.Length; i++) tasks[i].RemoveContinuation(parts[i]);
+            throw;
+        }
+        // Off the others too, whichever way it ended: the winner's has run.
+        for (int i = 0; i < tasks.Length; i++) tasks[i].RemoveContinuation(parts[i]);
+        if (!done)
         {
             return -1;
         }
@@ -1460,8 +1555,10 @@ class Task
 
     public static Task<T> FromException<T>(Exception exception)
     {
+        if (exception == null) throw new ArgumentNullException("exception");
         Task<T> t = new Task<T>();
-        t.TrySetException(exception);
+        t.TryClaim();
+        t.FaultClaimed(exception);
         return t;
     }
 
@@ -1472,7 +1569,7 @@ class Task
             throw new ArgumentOutOfRangeException("cancellationToken");
         }
         Task<T> t = new Task<T>();
-        t.TrySetCanceled(new TaskCanceledException());
+        t.TrySetCanceled(cancellationToken);
         return t;
     }
 }
@@ -1514,7 +1611,7 @@ class Task<T> : Task
         Task<T> result = new Task<T>();
         if (cancellationToken.IsCancellationRequested)
         {
-            result.TrySetCanceled(new TaskCanceledException());
+            result.TrySetCanceled(cancellationToken);
             return result;
         }
         if (milliseconds == 0)
@@ -1727,8 +1824,10 @@ static class TaskOf<T>
 
     public static Task<T> FromException(Exception exception)
     {
+        if (exception == null) throw new ArgumentNullException("exception");
         Task<T> t = new Task<T>();
-        t.TrySetException(exception);
+        t.TryClaim();
+        t.FaultClaimed(exception);
         return t;
     }
 }
@@ -1938,12 +2037,14 @@ class TaskStart
     nint _pad;
     Task _task;
     CancellationTokenRegistration? _registration;
+    CancellationToken _token;
 
-    TaskStart(Task task)
+    TaskStart(Task task, CancellationToken token)
     {
         _claim = 0;
         _pad = 0;
         _task = task;
+        _token = token;
     }
 
     public static TaskStart? For(Task task, CancellationToken token)
@@ -1952,7 +2053,7 @@ class TaskStart
         {
             return null;
         }
-        TaskStart start = new TaskStart(task);
+        TaskStart start = new TaskStart(task, token);
         start._registration = token.Register(start.Canceled);
         return start;
     }
@@ -1961,7 +2062,7 @@ class TaskStart
     {
         if (Sys.Cas(Atom.At(this, Atom.FirstWord), 0, 2) == 0)
         {
-            _task.TrySetCanceled();
+            _task.TrySetCanceled(_token);
         }
     }
 
@@ -2131,7 +2232,12 @@ static class ContinuationRules
             ? System.Threading.Tasks.TaskContinuationOptions.NotOnRanToCompletion
             : antecedent.IsFaulted ? System.Threading.Tasks.TaskContinuationOptions.NotOnFaulted
             : System.Threading.Tasks.TaskContinuationOptions.NotOnCanceled;
-        if (token.IsCancellationRequested || (options & excluded) != 0)
+        if (token.IsCancellationRequested)
+        {
+            next.TrySetCanceled(token);
+            return false;
+        }
+        if ((options & excluded) != 0)
         {
             next.TrySetCanceled();
             return false;
@@ -2767,6 +2873,7 @@ class DelayCompletion : Action
     Task _task;
     public TimerEntry? Timer;
     public CancellationTokenRegistration? Registration;
+    public CancellationToken Token;
 
     public DelayCompletion(Task task)
     {
@@ -2789,7 +2896,7 @@ class DelayCompletion : Action
 
     public void Cancel()
     {
-        if (_task.TrySetCanceled(new TaskCanceledException()))
+        if (_task.TrySetCanceled(Token))
         {
             TimerEntry? timer = Timer;
 
@@ -2886,6 +2993,7 @@ class TaskCompletionSource<T>
     /// OperationCanceledException into cancellation.
     public bool TrySetException(Exception exception)
     {
+        if (exception == null) throw new ArgumentNullException("exception");
         if (!_task.TryClaim())
         {
             return false;
@@ -2924,7 +3032,15 @@ class TaskCompletionSource<T>
 
     public bool TrySetCanceled(CancellationToken cancellationToken)
     {
-        return _task.TrySetCanceled(new TaskCanceledException());
+        return _task.TrySetCanceled(cancellationToken);
+    }
+
+    public void SetCanceled(CancellationToken cancellationToken)
+    {
+        if (!TrySetCanceled(cancellationToken))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
     }
 }
 
@@ -2937,6 +3053,7 @@ class WaitAsyncRace : Action
     Task _result;
     TimerEntry? _timer;
     CancellationTokenRegistration? _registration;
+    CancellationToken _token;
 
     public WaitAsyncRace(Task source, Task result)
     {
@@ -2952,6 +3069,7 @@ class WaitAsyncRace : Action
         }
         if (token.CanBeCanceled)
         {
+            _token = token;
             _registration = token.Register(new WaitAsyncCanceled(this));
         }
         _source.AddContinuation(this);
@@ -2974,7 +3092,7 @@ class WaitAsyncRace : Action
 
     public void Canceled()
     {
-        if (_result.TrySetCanceled(new TaskCanceledException()))
+        if (_result.TrySetCanceled(_token))
         {
             Settled();
         }
@@ -3059,6 +3177,7 @@ class TaskCompletionSource
 
     public bool TrySetException(Exception exception)
     {
+        if (exception == null) throw new ArgumentNullException("exception");
         if (!_task.TryClaim())
         {
             return false;
@@ -3092,6 +3211,19 @@ class TaskCompletionSource
     {
         return _task.TrySetCanceled();
     }
+
+    public bool TrySetCanceled(CancellationToken cancellationToken)
+    {
+        return _task.TrySetCanceled(cancellationToken);
+    }
+
+    public void SetCanceled(CancellationToken cancellationToken)
+    {
+        if (!TrySetCanceled(cancellationToken))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
 }
 
 // ---- cancellation ------------------------------------------------------------
@@ -3120,6 +3252,12 @@ class OperationCanceledException : SystemException
 
     public CancellationToken CancellationToken => _token;
     public OperationCanceledException(string? message, Exception? innerException) : base(message ?? "The operation was canceled.", innerException) { }
+
+    public OperationCanceledException(string? message, Exception? innerException, CancellationToken token)
+        : base(message ?? "The operation was canceled.", innerException)
+    {
+        _token = token;
+    }
 }
 
 /// A task was canceled.
@@ -3133,7 +3271,8 @@ class TaskCanceledException : OperationCanceledException
     {
     }
 
-    public TaskCanceledException(Task task) : base("A task was canceled.")
+    /// For a canceled task, with the token that canceled it, as .NET's.
+    public TaskCanceledException(Task? task) : base("A task was canceled.", task != null ? task.CanceledBy : default(CancellationToken))
     {
         _task = task;
     }
@@ -3141,6 +3280,11 @@ class TaskCanceledException : OperationCanceledException
     /// The canceled task, when this was raised by awaiting one.
     public Task? Task => _task;
     public TaskCanceledException(string? message, Exception? innerException) : base(message ?? "A task was canceled.", innerException) { }
+
+    public TaskCanceledException(string? message, Exception? innerException, CancellationToken token)
+        : base(message ?? "A task was canceled.", innerException, token)
+    {
+    }
 }
 
 /// Timeout.Infinite, which Task.Delay accepts.
@@ -3181,14 +3325,19 @@ class CancellationTokenSource : IDisposable
     }
 
     /// Cancels itself once `delay` has passed.
-    public CancellationTokenSource(TimeSpan delay) : this()
+    public CancellationTokenSource(TimeSpan delay) : this(Timeouts.Milliseconds(delay, "delay"))
     {
-        CancelAfter(Timeouts.Milliseconds(delay, "delay"));
     }
 
-    /// Cancels itself after `millisecondsDelay`, once the scheduler runs.
+    /// Cancels itself after `millisecondsDelay`, once the scheduler runs;
+    /// after none, canceled as it is made, as .NET's.
     public CancellationTokenSource(int millisecondsDelay) : this()
     {
+        if (millisecondsDelay == 0)
+        {
+            Cancel();
+            return;
+        }
         CancelAfter(millisecondsDelay);
     }
 
@@ -3298,7 +3447,7 @@ class CancellationTokenSource : IDisposable
         {
             throw new ArgumentOutOfRangeException("millisecondsDelay");
         }
-        if (IsCancellationRequested || millisecondsDelay == -1)
+        if (IsCancellationRequested)
         {
             return;
         }
@@ -3309,7 +3458,9 @@ class CancellationTokenSource : IDisposable
         {
             old.Cancel();
         }
-        _timer = Scheduler.AddTimer(millisecondsDelay, new CancelAction(this));
+        // -1 DISARMS, as .NET's: `CancelAfter(100); CancelAfter(-1);` cancels
+        // nothing.
+        _timer = millisecondsDelay == -1 ? null : Scheduler.AddTimer(millisecondsDelay, new CancelAction(this));
     }
 
     public void CancelAfter(TimeSpan delay)
@@ -3587,10 +3738,13 @@ class TimerEntry
     }
 
     /// Stops it firing. The entry stays in the heap and is discarded when it
-    /// reaches the top.
+    /// reaches the top, or when canceled ones are half the heap
+    /// (Scheduler.TimerCanceled); what it would have run is let go now.
     public void Cancel()
     {
+        if (Canceled) return;
         Canceled = true;
+        Scheduler.TimerCanceled(this);
     }
 
     /// Earlier deadline first; equal deadlines in the order they were added.
@@ -3685,9 +3839,10 @@ static partial class Scheduler
                 return made;
             }
         }
+        long turns = 0;
         while (_gateReady == 0)
         {
-            Sys.Pause();
+            Atom.Turn(ref turns);
         }
         return _gate!;
     }
@@ -3777,6 +3932,24 @@ static partial class Scheduler
             if (_count > 0)
             {
                 continue;
+            }
+            // THE TIMERS, BY A WORKER WITH NOTHING TO DO: the thread that
+            // started the pool drives them only while it waits for a task
+            // (RunUntilWithWorkers), and one in Join, WaitOne or a lock left
+            // every Task.Delay, CancelAfter and timed wait never due. The due
+            // ones posted, and the sleep no longer than the next; a timer
+            // that comes sooner wakes a worker to sleep again (AddTimerAt).
+            if (_timerCount > 0)
+            {
+                long now = Clock.Now();
+                PostDueTimers(now);
+                if (_count > 0) continue;
+                long due = NextDeadline();
+                if (due >= 0)
+                {
+                    Native.WaitFor(at, seen, due > now ? due - now : 1);
+                    continue;
+                }
             }
             Native.Wait(at, seen);
         }
@@ -3894,7 +4067,14 @@ static partial class Scheduler
 
     static void RunOne(Action work, AsyncContext? context)
     {
+        // A RUN OF ITS OWN to the locks it takes (Monitor.Owner), named by
+        // this frame, and the run it is inside named again as it ends.
+        // RunPosted answers what escaped, so nothing leaves between the two.
+        long block = Sys.ThreadBlock();
+        long outer = Sys.Peek(block + Tls.MonitorRun);
+        Sys.Poke(block + Tls.MonitorRun, Sys.FramePointer() & ~3L);
         Exception? failed = RunPosted(work, context);
+        Sys.Poke(block + Tls.MonitorRun, outer);
         if (failed != null)
         {
             AsyncRuntime.Unhandled(failed);
@@ -3956,7 +4136,7 @@ static partial class Scheduler
         gate.Enter();
         TimerEntry? next = _timerCount > 0 ? _timers[0] : null;
         long due = next != null ? next.Deadline : -1;
-        _soonest = due + 1;
+        Interlocked.Exchange(ref _soonest, due + 1);
         gate.Exit();
         return due;
     }
@@ -3966,7 +4146,10 @@ static partial class Scheduler
     /// it may not take the scheduler's gate, which the code it interrupted
     /// may hold. Lowered by every AddTimer, set exactly by NextDeadline; a
     /// timer canceled since leaves it early, which costs one look. -1: none.
-    public static long SoonestHint => _soonest - 1;
+    // READ WHOLE, two words on i386 that a clock interrupt read half of
+    // the old and half of the new, and armed the clock seconds off:
+    // Interlocked's, a lock its handlers take too (Platform.HandlerLockEnter).
+    public static long SoonestHint => Interlocked.Read(ref _soonest) - 1;
 
     // The deadline plus one, 0 for none: zero-initialised, so Scheduler keeps
     // no static constructor (one would run before a bare-metal Main says
@@ -4112,6 +4295,11 @@ static partial class Scheduler
                     Clock.SleepUntil(Waking(at, Sooner(at + OthersPollNanos, deadline)));
                     continue;
                 }
+                // LOOKED AT AGAIN FIRST, as the timer's branch does: completed
+                // by another thread since the round's test, one that has
+                // exited since, and is no deadlock -- nor a reason to sleep
+                // out the whole timeout.
+                if (task.IsCompleted) return true;
                 // NOTHING CAN, BUT THE WAIT ENDS: slept out, and the deadline
                 // seen passed at the top of the loop.
                 if (deadline != NoDeadline)
@@ -4272,9 +4460,13 @@ static partial class Scheduler
         _timerCount = _timerCount + 1;
         _timers[at] = entry;
         SiftUp(at);
-        if (_soonest == 0 || deadline + 1 < _soonest) _soonest = deadline + 1;
+        bool soonest = _timers[0] == entry;
+        if (_soonest == 0 || deadline + 1 < _soonest) Interlocked.Exchange(ref _soonest, deadline + 1);
 
         gate.Exit();
+        // Sooner than any a worker sleeps until (WorkerLoop): one woken to
+        // sleep again until this one.
+        if (soonest && _workers > 0) WakeOneWorker();
         return entry;
     }
 
@@ -4334,10 +4526,48 @@ static partial class Scheduler
         }
     }
 
+    /// A TIMER CANCELED, its callback let go -- a CancellationTokenSource
+    /// and everything its callbacks hold, a semaphore's waiter -- and the
+    /// heap rid of every canceled entry once they are half of it: a
+    /// CancelAfter(30000) per request, canceled a moment later, kept each
+    /// entry and what it held for the whole thirty seconds.
+    internal static void TimerCanceled(TimerEntry entry)
+    {
+        AtomicCell gate = Gate();
+        gate.Enter();
+        entry.Callback = NoCallback.Instance;
+        _canceledTimers = _canceledTimers + 1;
+        if (_timerCount >= 32 && _canceledTimers * 2 > _timerCount)
+        {
+            int kept = 0;
+            for (int i = 0; i < _timerCount; i++)
+            {
+                TimerEntry? held = _timers[i];
+                if (held != null && !held.Canceled) _timers[kept++] = held;
+            }
+            for (int i = kept; i < _timerCount; i++) _timers[i] = null;
+            _timerCount = kept;
+            _canceledTimers = 0;
+            for (int i = kept / 2 - 1; i >= 0; i--) SiftDown(i);
+        }
+        gate.Exit();
+    }
+
+    /// Canceled entries still in the heap (TimerCanceled).
+    static int _canceledTimers;
+
+    /// What a canceled timer runs if it is ever run: nothing.
+    sealed class NoCallback : Action
+    {
+        public static readonly NoCallback Instance = new();
+        public void Invoke() { }
+    }
+
     /// Called with the gate held and _timerCount > 0.
     static void RemoveTop()
     {
         int last = _timerCount - 1;
+        if (_timers[0] is { Canceled: true }) _canceledTimers = _canceledTimers - 1;
 
         _timers[0] = _timers[last];
         _timers[last] = null;
@@ -4459,10 +4689,30 @@ static class Monitor
 
     public static long LockContentionCount => Interlocked.Read(ref _contentions);
 
+    // A RUN OF QUEUED WORK IS AN OWNER OF ITS OWN (Tls.MonitorRun): a Wait
+    // that runs queued work on the waiting thread (Scheduler.RunUntil) ran it
+    // as that thread, and a lock the waiter held was the run's to enter
+    // again -- `lock (gate) { Task.Delay(1).Wait(); }` let a queued `lock
+    // (gate) { ... }` in, and the waiter's update was lost.
     static long Owner()
     {
         long me = Platform.MonitorOwner();
-        return me == 0 ? 0 : me & ~Asleep;
+        if (me == 0) return 0;
+        long run = Sys.Peek(Sys.ThreadBlock() + Tls.MonitorRun);
+        return (run != 0 ? run : me) & ~Asleep;
+    }
+
+    /// Whether the lock's owner is this thread's own, lower on its stack --
+    /// the thread outside any run, or a run that is waiting for this one --
+    /// which can never let go while this run waits: a deadlock, said as one.
+    static void RefuseHeldBelow(long seen)
+    {
+        long owner = seen & ~Asleep;
+        long block = Sys.ThreadBlock();
+        if (owner == 0 || Sys.Peek(block + Tls.MonitorRun) == 0) return;
+        long top = Sys.Peek(block + Tls.StackBase);
+        if (owner == (Platform.MonitorOwner() & ~Asleep) || (owner > Sys.FramePointer() && owner < top))
+            throw new InvalidOperationException("deadlock: the lock is held by the code waiting for this work to run");
     }
 
     public static void Enter(object obj)
@@ -4571,6 +4821,7 @@ static class Monitor
         // a millisecond early.
         long deadline = -1;
 
+        long turns = 0;
         while (true)
         {
             long seen = Sys.Cas(word, 0, mark);
@@ -4588,6 +4839,8 @@ static class Monitor
             {
                 return false;
             }
+            // For as long as it takes, from a run its holder waits for: never.
+            if (millisecondsTimeout == -1 && deadline < 0) RefuseHeldBelow(seen);
             long now = Clock.Now();
             if (deadline < 0)
             {
@@ -4599,7 +4852,9 @@ static class Monitor
             {
                 return false;
             }
-            Sys.Pause();
+            // A TURN, not a pause: the holder may be collecting, or waiting
+            // for this processor (Atom.Turn).
+            Atom.Turn(ref turns);
         }
     }
 
@@ -4672,6 +4927,7 @@ static class Monitor
                 }
                 continue;
             }
+            if (spins == 0) RefuseHeldBelow(seen);
             if (spins < 64)
             {
                 spins = spins + 1;
@@ -4693,7 +4949,7 @@ static class Monitor
     {
         long gate = Sys.AddressOf(ref _depthGate);
 
-        while (Sys.Cas(gate, 0, 1) != 0) { Sys.Pause(); }
+        Atom.Enter(gate);
         bool had = false;
         try
         {
@@ -4724,7 +4980,7 @@ static class Monitor
     {
         long gate = Sys.AddressOf(ref _depthGate);
 
-        while (Sys.Cas(gate, 0, 1) != 0) { Sys.Pause(); }
+        Atom.Enter(gate);
         int depth = 0;
         try
         {
@@ -4895,8 +5151,7 @@ static class Monitor
 
     static void EnterGate()
     {
-        long gate = Sys.AddressOf(ref _waitGate);
-        while (Sys.Cas(gate, 0, 1) != 0) { Sys.Pause(); }
+        Atom.Enter(Sys.AddressOf(ref _waitGate));
     }
 
     static void ExitGate()
@@ -5339,7 +5594,8 @@ static class InterruptCompletions
                 return made;
             }
         }
-        while (_gateReady == 0) Sys.Pause();
+        long turns = 0;
+        while (_gateReady == 0) Atom.Turn(ref turns);
         return _gate!;
     }
 
@@ -6411,7 +6667,11 @@ namespace System.Threading
         /// Throws OperationCanceledException when the token is canceled first.
         public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken)
         {
-            return WaitAsync(millisecondsTimeout, cancellationToken).GetAwaiter().GetResult();
+            Task<bool> waiting = WaitAsync(millisecondsTimeout, cancellationToken);
+            // CANCELED, it throws as .NET's does: an OperationCanceledException
+            // for the token, not the TaskCanceledException awaiting would.
+            try { return waiting.GetAwaiter().GetResult(); }
+            catch (TaskCanceledException) when (waiting.IsCanceled) { throw new OperationCanceledException(cancellationToken); }
         }
 
         public Task WaitAsync()
@@ -6449,7 +6709,7 @@ namespace System.Threading
             if (cancellationToken.IsCancellationRequested)
             {
                 Task<bool> canceled = new Task<bool>();
-                canceled.TrySetCanceled(new TaskCanceledException());
+                canceled.TrySetCanceled(cancellationToken);
                 return canceled;
             }
 
@@ -6562,6 +6822,7 @@ namespace System.Threading
         readonly Task<bool> _task = new Task<bool>();
         TimerEntry? _timer;
         CancellationTokenRegistration? _registration;
+        CancellationToken _token;
 
         public SemaphoreWaiter(SemaphoreSlim owner)
         {
@@ -6578,6 +6839,7 @@ namespace System.Threading
             }
             if (token.CanBeCanceled)
             {
+                _token = token;
                 _registration = token.Register(new SemaphoreWaitCanceled(this));
             }
         }
@@ -6604,7 +6866,7 @@ namespace System.Threading
 
         public void Canceled()
         {
-            if (_owner.Withdraw(this) && _task.TrySetCanceled(new TaskCanceledException()))
+            if (_owner.Withdraw(this) && _task.TrySetCanceled(_token))
             {
                 Disarm();
             }

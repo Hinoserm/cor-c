@@ -123,8 +123,9 @@ public static class GC
         // process, and what a build admitting work by it must see.
         long ceiling = Gc.CeilingToBe();
         if (ceiling != 0 && (total == 0 || ceiling < total)) total = ceiling;
+        // -1 where the platform cannot say; 0 is none left, all of it loaded.
         long available = Platform.AvailableMemory();
-        long load = physical != 0 && available != 0 ? physical - available : Gc.HeapBytes;
+        long load = physical != 0 && available >= 0 ? physical - available : Gc.HeapBytes;
         long heap = Gc.HeapBytes;
         long live = Gc.LiveBytes;
         long high = physical != 0 ? physical : total;

@@ -1,0 +1,92 @@
+// test: cancellation_tokens_and_timer_rules_as_dotnet
+// expect-exit: 0
+// expect-output:
+// fromcanceled True True
+// tcs True Canceled
+// run Canceled True
+// delay True
+// semaphore OperationCanceledException True
+// run-wait Canceled
+// zero True True
+// disarmed False
+// fault Faulted True OperationCanceledException
+// null ArgumentNullException exception
+// sleep ArgumentOutOfRangeException millisecondsTimeout
+//
+// What .NET's cancellation does, token and all. A task canceled by a token
+// -- FromCanceled, TaskCompletionSource.TrySetCanceled(token), a Task.Run
+// whose token was canceled before it ran, a Delay -- throws, awaited, a
+// TaskCanceledException carrying that token: the runtime made them all with
+// none, so a `catch (OperationCanceledException e) when (e.CancellationToken
+// == token)` never matched, and a Task.Run whose delegate gave up for its own
+// token ended Faulted. SemaphoreSlim.Wait canceled throws the
+// OperationCanceledException .NET's throws, not the TaskCanceledException
+// awaiting its task would. A source made to cancel after no time is
+// canceled as it is made; CancelAfter(-1) disarms a pending cancel.
+// Task.FromException faults with an OperationCanceledException too, and
+// refuses null; Thread.Sleep refuses a timeout below -1.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static CancellationToken TokenOf(Exception e) => e is OperationCanceledException oce ? oce.CancellationToken : default;
+
+    static Exception Caught(Task t)
+    {
+        try { t.GetAwaiter().GetResult(); return null!; }
+        catch (Exception e) { return e; }
+    }
+
+    static int Main()
+    {
+        CancellationTokenSource cts = new();
+        cts.Cancel();
+        Exception e1 = Caught(Task.FromCanceled(cts.Token));
+        Console.WriteLine("fromcanceled " + (e1 is TaskCanceledException) + " " + (TokenOf(e1) == cts.Token));
+
+        TaskCompletionSource<int> tcs = new();
+        tcs.TrySetCanceled(cts.Token);
+        Console.WriteLine("tcs " + (TokenOf(Caught(tcs.Task)) == cts.Token) + " " + tcs.Task.Status);
+
+        CancellationTokenSource before = new();
+        Task run = Task.Run(() => Console.WriteLine("never"), before.Token);
+        before.Cancel();
+        Exception e2 = Caught(run);
+        Console.WriteLine("run " + run.Status + " " + (TokenOf(e2) == before.Token));
+
+        CancellationTokenSource later = new();
+        Task delay = Task.Delay(-1, later.Token);
+        later.Cancel();
+        Console.WriteLine("delay " + (TokenOf(Caught(delay)) == later.Token));
+
+        SemaphoreSlim none = new(0);
+        try { none.Wait(cts.Token); }
+        catch (OperationCanceledException oce) { Console.WriteLine("semaphore " + oce.GetType().Name + " " + (oce.CancellationToken == cts.Token)); }
+
+        CancellationTokenSource soon = new();
+        soon.CancelAfter(20);
+        Task waiting = Task.Run(() => { none.Wait(soon.Token); }, soon.Token);
+        Caught(waiting);
+        Console.WriteLine("run-wait " + waiting.Status);
+
+        Console.WriteLine("zero " + new CancellationTokenSource(0).IsCancellationRequested + " " + new CancellationTokenSource(TimeSpan.Zero).IsCancellationRequested);
+
+        CancellationTokenSource disarmed = new();
+        disarmed.CancelAfter(10);
+        disarmed.CancelAfter(-1);
+        Task.Delay(60).Wait();
+        Console.WriteLine("disarmed " + disarmed.IsCancellationRequested);
+
+        Task faulted = Task.FromException(new OperationCanceledException());
+        Console.WriteLine("fault " + faulted.Status + " " + (faulted.Exception != null) + " " + faulted.Exception!.InnerException!.GetType().Name);
+        try { Task.FromException(null!); }
+        catch (ArgumentNullException ane) { Console.WriteLine("null " + ane.GetType().Name + " " + ane.ParamName); }
+        try { Thread.Sleep(-2); }
+        catch (ArgumentOutOfRangeException aoe) { Console.WriteLine("sleep " + aoe.GetType().Name + " " + aoe.ParamName); }
+        Thread.Sleep(0);
+        return 0;
+    }
+}

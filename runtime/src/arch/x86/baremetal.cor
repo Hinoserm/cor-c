@@ -162,21 +162,24 @@ static class Platform
     /// entry unfound there, its live objects no heap's to the marker.
     const long RegionPage = 4096;
 
-    /// The region's bookkeeping -- the bump, the free ranges -- taken by
-    /// XCHG round every change. Map and Unmap are called with the heap's lock
-    /// held and without it (Marshal.AllocHGlobal), and on a kernel's
-    /// processors at once. Never from an interrupt handler, which allocates
-    /// nothing, so nothing here turns interrupts off.
+    /// The region's bookkeeping -- the bump, the free ranges -- taken round
+    /// every change. Map and Unmap are called with the heap's lock held and
+    /// without it (Marshal.AllocHGlobal), on a kernel's processors at once,
+    /// AND FROM AN INTERRUPT HANDLER: a handler allocates nothing, but the
+    /// owner it drops may hold a dedicated chunk, which Gc.Free hands back
+    /// here (HeapChunks.Release). Taken with interrupts off where this code
+    /// may turn them off (Platform.HandlerLockEnter), or a handler's free
+    /// landing while thread code held it spun for ever with them off.
     private static nint _regionLock;
 
-    static void LockRegion()
+    static long LockRegion()
     {
-        while (Sys.AtomicSwap(Sys.AddressOf(ref _regionLock), 1) != 0) Sys.Pause();
+        return HandlerLockEnter(Sys.AddressOf(ref _regionLock));
     }
 
-    static void UnlockRegion()
+    static void UnlockRegion(long held)
     {
-        Sys.AtomicSwap(Sys.AddressOf(ref _regionLock), 0);
+        HandlerLockLeave(Sys.AddressOf(ref _regionLock), held);
     }
 
     /// Where the region began, which _at has moved on from: with _limit, the
@@ -192,11 +195,17 @@ static class Platform
     /// code runs.
     public static void SetHeap(long start, long end)
     {
-        LockRegion();
+#if !TARGET_64BIT
+        // NOT TO THE TOP OF 32 BITS: a chunk ending at 4 GiB has a limit word
+        // of 0, and the collector's table, its sweep and its release then
+        // saw no chunk there, or a negative size.
+        if (end > 0x100000000 - RegionPage) end = 0x100000000 - RegionPage;
+#endif
+        long held = LockRegion();
         _at = (start + RegionPage - 1) & -RegionPage;
         _start = _at;
         _limit = end & -RegionPage;
-        UnlockRegion();
+        UnlockRegion(held);
     }
 
     /// Where this image's data segment starts in the linear space: 0 for a
@@ -232,9 +241,9 @@ static class Platform
     {
         if (_limit != 0 && at >= _start && at < _limit)
         {
-            LockRegion();
+            long held = LockRegion();
             Release(at, (bytes + RegionPage - 1) & -RegionPage);
-            UnlockRegion();
+            UnlockRegion(held);
             return;
         }
         if (UnmapHook != 0)
@@ -363,9 +372,9 @@ static class Platform
         if (_freeRanges != 0 && bytes > 0)
         {
             long want = (bytes + RegionPage - 1) & -RegionPage;
-            LockRegion();
+            long reusing = LockRegion();
             long reused = TakeRange(want);
-            UnlockRegion();
+            UnlockRegion(reusing);
             if (reused != 0)
             {
                 Zero(reused, want);
@@ -395,15 +404,15 @@ static class Platform
         if (bytes <= 0 || bytes > _limit - _start) return 0;
         long need = (bytes + RegionPage - 1) & -RegionPage;
 
-        LockRegion();
+        long held = LockRegion();
         if (need > _limit - _at)
         {
-            UnlockRegion();
+            UnlockRegion(held);
             return 0;
         }
         long got = _at;
         _at = _at + need;
-        UnlockRegion();
+        UnlockRegion(held);
         Zero(got, need);
         return got;
     }
@@ -539,10 +548,12 @@ static class Platform
     /// of nothing real. The collector paces itself by FreeMemoryQuietly
     /// instead, which asks only a kernel, so an image alone keeps the pace
     /// it always had.
+    /// What is free, or -1 where nothing can say: none left is 0, which a
+    /// region used up is (GC.GetGCMemoryInfo's load is then all of it).
     public static long AvailableMemory()
     {
         if (TotalMemoryBytes == 0 && MapHook == 0) return _limit - _at + _freeBytes;
-        return FreeMemoryQuietly();
+        return FreeMemoryHook == 0 ? -1 : FreeMemoryQuietly();
     }
 
     /// MEMORY COMMITTED AS IT IS FIRST TOUCHED, for the collector's tables that
@@ -952,6 +963,27 @@ static class Platform
         else if ((held & InterruptFlag) != 0) Sys.Sti();
     }
 
+    /// A LOCK AN INTERRUPT HANDLER TAKES TOO, the word at `at`: interrupts
+    /// off first where this code may turn them off -- a handler cannot then
+    /// come in on this processor while the lock is held, and find it held
+    /// by the code it interrupted, and wait for ever -- then the word taken
+    /// by exchange, a pause a turn, against another processor's holder.
+    /// Answers what Leave is handed.
+    public static long HandlerLockEnter(long at)
+    {
+        long flags = Sys.ReadFlags();
+        bool may = (Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3);
+        if (may) Sys.Cli();
+        while (Sys.AtomicSwap(at, 1) != 0) Sys.Pause();
+        return may ? flags : 0;
+    }
+
+    public static void HandlerLockLeave(long at, long held)
+    {
+        Sys.AtomicSwap(at, 0);
+        if ((held & InterruptFlag) != 0) Sys.Sti();
+    }
+
     /// EFLAGS.IF.
     const long InterruptFlag = 0x200;
     /// What AtomicsEnter answers for the lock: no flags word is negative.
@@ -1110,20 +1142,9 @@ static class Clock
     /// a kernel with a clock of its own (NanosHook) never comes here.
     static nint _pitLock;
 
-    static long Enter()
-    {
-        long flags = Sys.ReadFlags();
-        bool may = (Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3);
-        if (may) Sys.Cli();
-        while (Sys.AtomicSwap(Sys.AddressOf(ref _pitLock), 1) != 0) Sys.Pause();
-        return may ? flags : 0;
-    }
+    static long Enter() { return Platform.HandlerLockEnter(Sys.AddressOf(ref _pitLock)); }
 
-    static void Leave(long flags)
-    {
-        Sys.AtomicSwap(Sys.AddressOf(ref _pitLock), 0);
-        if ((flags & 0x200) != 0) Sys.Sti();
-    }
+    static void Leave(long flags) { Platform.HandlerLockLeave(Sys.AddressOf(ref _pitLock), flags); }
 
     /// The count now, latched so both bytes belong to one instant.
     static long Count()

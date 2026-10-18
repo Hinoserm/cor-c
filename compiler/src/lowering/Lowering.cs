@@ -512,7 +512,7 @@ public sealed partial class Lowering
     public const int TlsState = 28;
     /// <summary>This thread's [ThreadStatic] cells: an object?[] (Tls.ThreadStatics).</summary>
     public const int TlsThreadStatics = 168;
-    public const int TlsBytes = 188;
+    public const int TlsBytes = 192;
 
     /// <summary>The type the runtime library provides its hooks in.</summary>
     public const string RuntimeType = "Runtime";
@@ -1106,6 +1106,17 @@ public sealed partial class Lowering
                 VReg bssEnd = e.Address("_end");
                 VReg bssBytes = e.Binary(Opcode.Sub, bssEnd, bssStart);
                 e.Emit(Opcode.MemSet, null, RegOperand.Of(bssStart), new ImmOperand(0, IrType.I32), RegOperand.Of(bssBytes));
+            }
+
+            // A DOUBLE ROUNDED ONCE here too, as a hosted image's is: a
+            // freestanding image's floating point is the x87's always, and a
+            // reset processor's precision is the extended format's, where the
+            // double-double steps Math rests on round twice. The profile has
+            // an FPU -- none is refused (Driver) -- and the selection emits
+            // nothing without one.
+            if (Target.Current.WordSize == 4)
+            {
+                e.Call(MachineIntrinsics.DoublePrecision, IrType.Void);
             }
 
             // With no operating system there is one thread, and its block is

@@ -411,12 +411,10 @@ static class Platform
         long got = Sys.Syscall(Call.Mmap, 0, bytes, 3, 0x22, 0 - 1, 0);
         long answer = Result(got);
 
+        // REFUSED, said by whoever asked: the heap's out of memory is
+        // reported only if nothing catches it (Gc.ThrowOutOfMemory).
         if (answer < 0)
         {
-            // Said here, without allocating (this is the allocator's own
-            // failure path): the kernel's log has the numbers.
-            string text = "mmap refused by the kernel\n";
-            Runtime.WriteLiteral(2, text);
             return 0;
         }
         if (answer == 0)
@@ -614,13 +612,15 @@ static class Platform
         return limit != 0 && (physical == 0 || limit < physical) ? limit : physical;
     }
 
+    /// What is free, or -1 where nothing can say (sysinfo refused, no
+    /// group limit).
     public static long AvailableMemory()
     {
         long free = SysinfoBytes(SysinfoFree);
         long limit = MemoryLimit();
         if (limit == 0)
         {
-            return free;
+            return free != 0 ? free : -1;
         }
         long used = CgroupUsage();
         long left = used < 0 ? limit : used < limit ? limit - used : 0;
@@ -1197,6 +1197,28 @@ static class Platform
     public static void AtomicsLeave(long held)
     {
         Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 0);
+    }
+
+    /// A LOCK AN INTERRUPT HANDLER TAKES TOO, as bare metal has it: a
+    /// process has no interrupts to turn off, so the word at `at` taken by
+    /// exchange, a pause a turn, and the processor given up past a few --
+    /// its holder, a few loads and stores from letting go, may have been
+    /// put off it. Answers what Leave is handed.
+    public static long HandlerLockEnter(long at)
+    {
+        long turns = 0;
+        while (Sys.AtomicSwap(at, 1) != 0)
+        {
+            turns = turns + 1;
+            if (turns < 64) Sys.Pause();
+            else Yield();
+        }
+        return 0;
+    }
+
+    public static void HandlerLockLeave(long at, long held)
+    {
+        Sys.AtomicSwap(at, 0);
     }
 }
 

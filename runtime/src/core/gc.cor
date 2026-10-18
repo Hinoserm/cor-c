@@ -1641,6 +1641,19 @@ static class Gc
                     if ((regsAll & LiveEsi) != 0 && atEsi != 0) at = KeepWord(Sys.Peek(atEsi), copy, at);
                     if ((regsAll & LiveEdi) != 0 && atEdi != 0) at = KeepWord(Sys.Peek(atEdi), copy, at);
                 }
+                else
+                {
+                    // WHAT THE FRAMES UNDER IT SAVED, whatever it holds: a
+                    // frame no map describes -- C called from managed code,
+                    // calling back in -- may never touch a register and so
+                    // carry a reference of a frame outside it through to
+                    // the callback, whose saves are below the words read
+                    // whole. Forgotten here, a reference held only in ESI
+                    // across qsort was freed while qsort ran.
+                    if (atEbx != 0) at = KeepWord(Sys.Peek(atEbx), copy, at);
+                    if (atEsi != 0) at = KeepWord(Sys.Peek(atEsi), copy, at);
+                    if (atEdi != 0) at = KeepWord(Sys.Peek(atEdi), copy, at);
+                }
                 atEbx = Zero;
                 atEsi = Zero;
                 atEdi = Zero;
@@ -2889,19 +2902,9 @@ static class Gc
     /// (_growPast): the ceiling slows a heap and never fails one.
     public static bool GrowthWaits(long ask)
     {
-        _ceilingRefused = false;
-        if (HeapCeiling == 0 || _collecting || _growPast || HeapChunks.HeapBytes + ask <= HeapCeiling
-            || _since < _threshold / 2)
-        {
-            return false;
-        }
-        _ceilingRefused = true;
-        return true;
+        return HeapCeiling != 0 && !_collecting && !_growPast && HeapChunks.HeapBytes + ask > HeapCeiling
+            && _since >= _threshold / 2;
     }
-
-    // Set when GrowthWaits refused the last chunk asked for, so that Grow
-    // does not report a wait at the ceiling as the system's refusal.
-    static bool _ceilingRefused;
 
     // The allocator's last try, which the ceiling does not refuse. The heap
     // lock is held.
@@ -2917,9 +2920,10 @@ static class Gc
 
         if (raw == 0)
         {
-            // Waiting for a collection at the ceiling is no failure to report.
-            if (!_ceilingRefused) SayNumber("heap: no chunk for ", need);
-            _ceilingRefused = false;
+            // SAID NOTHING, the cap's refusal, the system's or a wait at the
+            // ceiling: the request that ends out of memory is caught or not,
+            // and the heap's report is said only if it is not
+            // (ThrowOutOfMemory), as .NET says nothing of a caught one.
             return false;
         }
 
@@ -4220,12 +4224,16 @@ static class Gc
         // Not to be stopped from outside between here and the bump: see AllocKindUnguarded.
         Sys.Poke(tb + (nint)Tls.InAlloc, 1);
         nuint block = (nuint)Sys.Peek(tb + (nint)Tls.AllocPtr);
-        nuint next = block + (nuint)need;
-        if (next + (nuint)Smallest > (nuint)Sys.Peek(tb + (nint)Tls.AllocLimit))
+        // ROOM COUNTED, not the end summed (AllocRegion's same rule): in 32
+        // bits a request of hundreds of megabytes from a buffer near the top
+        // of the address space wrapped the sum below the limit, and the bump
+        // handed out memory from address zero up.
+        if ((nuint)need + (nuint)Smallest > (nuint)Sys.Peek(tb + (nint)Tls.AllocLimit) - block)
         {
             Sys.Poke(tb + (nint)Tls.InAlloc, 0);
             return (nint)AllocSlow(bytes, kind);
         }
+        nuint next = block + (nuint)need;
         Sys.Poke(tb + (nint)Tls.AllocPtr, (nint)next);
         Sys.Poke((nint)block, need);
         Sys.Poke((nint)block + (nint)KindAt, kind);
@@ -6314,9 +6322,11 @@ static class Gc
         if (!_outOfMemoryMade)
         {
             _outOfMemoryMade = true;
+            _outOfMemoryMaker = Sys.ThreadBlock();
             OutOfMemoryException made = new OutOfMemoryException(null);
             made.Reserve$(new long[Runtime.TraceDepth]);
             _outOfMemory = made;
+            _outOfMemoryMaker = 0;
         }
 
         // The size checked BEFORE it is rounded, with a bound that leaves
@@ -6499,6 +6509,7 @@ static class Gc
         // the reserve kept under the cap for this (HeapChunks.Reserve).
         long lapped = 0;
         long failedAt = -1;
+        long givenUp = 0;
         for (long attempt = 0; block == 0 && attempt < 3; attempt++)
         {
             // A cycle has not found the room: the platform asked for it,
@@ -6519,7 +6530,7 @@ static class Gc
                 WaitOutCycle();
                 early = waited <= failedAt;
             }
-            else CollectLocked();
+            else early = CollectedNothing(ref givenUp);
 
             // THE POOL OF EMPTY PAGES IS GIVEN BACK: a whole collection has
             // not found this request's room, and pages kept to spare a
@@ -6585,6 +6596,7 @@ static class Gc
         long c = Sys.Peek(_classOf + (small >> 3) * WordSize.Bytes);
         long failedAt = -1;
         long lapped = 0;
+        long givenUp = 0;
         for (long attempt = 0; attempt < 4; attempt++)
         {
             // After a whole cycle has failed it: room asked for, the lock
@@ -6680,7 +6692,11 @@ static class Gc
                     continue;
                 }
             }
-            else CollectLocked();
+            else if (CollectedNothing(ref givenUp))
+            {
+                attempt = attempt - 1;
+                continue;
+            }
             if (attempt == 2) DrainPool();
         }
         ShutLastTry();
@@ -7416,9 +7432,12 @@ static class Gc
     /// run, thrown again each time with the trace of that throw, as .NET's
     /// is. The flag is a latch -- set before the exception is made, never
     /// cleared -- so it is made once (Escape's latched blocks); two first
-    /// requests racing make two, and either serves.
+    /// requests racing may make two, and either serves. One that finds the
+    /// latch set while another thread is still making it (_outOfMemoryMaker)
+    /// and then runs out itself waits for it (ThrowOutOfMemory).
     static OutOfMemoryException? _outOfMemory;
     static bool _outOfMemoryMade;
+    static long _outOfMemoryMaker;
 
     /// The request the heap last could not answer, for its report.
     static long _failedNeed;
@@ -7438,6 +7457,19 @@ static class Gc
         if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
         _failedNeed = need;
         OutOfMemoryException? thrown = _outOfMemory;
+        // MADE BY ANOTHER THREAD AT THIS MOMENT, the first request of all,
+        // which this one raced: waited for, as a thread that is blocked, the
+        // heap lock let go meanwhile, for the maker allocates it. Its maker
+        // running out making it ends the process, as below.
+        if (thrown == null && _outOfMemoryMaker != 0 && _outOfMemoryMaker != Sys.ThreadBlock())
+        {
+            if (locked) GcLock.Exit();
+            GcThreads.BeginBlocking();
+            while ((thrown = _outOfMemory) == null && _outOfMemoryMaker != 0) Platform.Yield();
+            GcThreads.EndBlocking();
+            if (locked) GcLock.Enter();
+            thrown = _outOfMemory;
+        }
         if (thrown == null)
         {
             if (!locked) GcLock.Enter();
@@ -7571,6 +7603,14 @@ static class Gc
         // before one exists there is no fast path to be on top of.
         if (at == 0 || IgnoredFrees != 0 && IgnoredFrees != 'p' && IgnoredFrees != 'f' && IgnoredFrees != 'r'
             && IgnoredFrees != 'v' && IgnoredFrees != 'w' && IgnoredFrees != 'o' && IgnoredFrees != 's')
+        {
+            return;
+        }
+        // NO HEAP YET: nothing to free was made by it -- an owned variable
+        // that held a literal, a free before the first allocation -- and
+        // asking its lock maps the lock's words, which on bare metal before
+        // Platform.SetHeap stopped the image ("no heap").
+        if (!HeapChunks.Any())
         {
             return;
         }
@@ -9848,7 +9888,8 @@ static class Gc
     /// and Free promises to ignore the first two and give back the third.
     public static bool LiveObject(long at)
     {
-        if (at == 0 || (at & 7) != 0)
+        // No heap yet, nothing of its (Free).
+        if (at == 0 || (at & 7) != 0 || !HeapChunks.Any())
         {
             return false;
         }
@@ -9971,7 +10012,11 @@ static class Gc
 
     static long ValidAllocated(long at)
     {
-        if ((at & 7) != 0 || at < HeaderBytes)
+        // UNSIGNED: a heap in the top half of the address space -- a
+        // higher-half kernel's -- has addresses that are negative longs,
+        // and refused here, every locked-path free and owner check refused
+        // them all.
+        if ((at & 7) != 0 || (ulong)at < (ulong)HeaderBytes)
         {
             return 0;
         }
@@ -11347,16 +11392,30 @@ static class Gc
     {
         // ASKED FOR, it is whole: GC.Collect promises every unreachable
         // object is gone, and a minor collection leaves the old ones be.
+        // No heap yet, nothing to collect: and asking its lock would map
+        // the lock's words before SetHeap (Free).
+        if (!HeapChunks.Any()) return;
         _forceMajor = true;
+        long tries = 0;
         while (true)
         {
             GcLock.Enter();
 
             if (!_collecting)
             {
+                long had = Collections;
+                long abortedHad = Aborted;
                 CollectLocked();
                 GcLock.Exit();
-                return;
+                // GIVEN UP -- a barrier report lost to a full ring -- nothing
+                // was freed, and the call promised what was unreachable is
+                // gone: again, a few times, each major with a ring fitted
+                // larger (FitBarrier). Not for ever: a ring that overflows
+                // every time leaves the call as an allocation's would.
+                tries = tries + 1;
+                if (Collections != had || Aborted == abortedHad || tries >= 4) return;
+                _forceMajor = true;
+                continue;
             }
 
             // Somebody else's collection is between its two stops. Asking
@@ -11373,6 +11432,21 @@ static class Gc
 
             GcThreads.EndBlocking();
         }
+    }
+
+    /// A collection for a request that came up short, with the heap lock
+    /// held: whether it was GIVEN UP and freed nothing (GiveUp), which is no
+    /// try of the request's -- a few times over, `givenUp` counting, so a
+    /// ring that overflows every cycle still ends in out of memory.
+    static bool CollectedNothing(ref long givenUp)
+    {
+        long had = Collections;
+        long abortedHad = Aborted;
+        CollectLocked();
+        if (Collections != had || Aborted == abortedHad || givenUp >= 4) return false;
+        givenUp = givenUp + 1;
+        _forceMajor = true;
+        return true;
     }
 
     /// With the heap lock held, waits until the collection in progress has
@@ -11795,6 +11869,16 @@ static class Gc
         _concurrent = true;
         ConcurrentCycles = ConcurrentCycles + 1;
         GcLock.Exit();
+
+        // THE BARRIER ON IN EVERY THREAD BEFORE ANY STACK IS COPIED. A thread
+        // that read Marking as 0 just before it changed, and stopped before
+        // its store, overwrote the field after another thread's STAMP had
+        // copied that thread's stack -- which then read the old value and
+        // hid it in a newcomer, never traced -- and reported nothing: the
+        // value was swept while the newcomer held it. Every thread passes a
+        // safepoint here, and none falls between a barrier's test and its
+        // store, so every store from here on is reported.
+        GcThreads.Round(GcThreads.Ack);
 
         // 2. Every thread's own buffer.
         GcThreads.Round(GcThreads.Stamp);
@@ -14877,7 +14961,10 @@ static class GcRoots
 
         if (_extra == 0)
         {
-            _extra = Platform.Map(ExtraBytes);
+            // PUBLISHED ONCE (GcLock.Words): a registration written into a
+            // table another first caller then replaced was never scanned.
+            long fresh = Platform.Map(ExtraBytes);
+            if (fresh != 0 && Sys.Cas(Sys.AddressOf(ref _extra), 0, fresh) != 0) Platform.Unmap(fresh, ExtraBytes);
 
             if (_extra == 0)
             {
@@ -15017,7 +15104,11 @@ static class GcLock
     {
         if (_words == 0)
         {
-            _words = Platform.Map(4096);
+            // PUBLISHED ONCE, as ClaimLocal's pool is: two processors asking
+            // first each mapped words of their own, and spun on two locks
+            // that excluded nothing.
+            long fresh = Platform.Map(4096);
+            if (fresh != 0 && Sys.Cas(Sys.AddressOf(ref _words), 0, fresh) != 0) Platform.Unmap(fresh, 4096);
         }
         return _words;
     }

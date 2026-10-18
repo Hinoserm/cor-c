@@ -267,7 +267,11 @@ static class Tls
     /// asks one word whether a region is open and is not one a throw has
     /// left -- an allocating frame at or above it -- with one compare.
     public const long RegionFloor = 46 * WordSize.Bytes;
-    public const long Bytes = 47 * WordSize.Bytes;
+    /// The run of queued work this thread is inside (Scheduler.RunUntil's
+    /// frame), the owner a lock taken there is held by (Monitor.Owner), or
+    /// 0 outside any: a run is another flow of work, as a thread is.
+    public const long MonitorRun = 47 * WordSize.Bytes;
+    public const long Bytes = 48 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (Corsac.GC.AllocSample): every sixteenth

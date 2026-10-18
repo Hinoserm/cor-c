@@ -1,0 +1,32 @@
+// test: pool_workers_drive_timers
+// expect-exit: 0
+// expect-output:
+// delayed True
+// canceled True
+//
+// With the pool's workers running, a timer comes due though no thread is
+// waiting for a task: the thread that started them is in a
+// ManualResetEventSlim's wait, and the delay awaited on a worker and a
+// CancelAfter both fire. Workers slept on their signal with no timeout and
+// only a thread in a task's wait drove the timers, so this waited for ever.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int Main()
+    {
+        ThreadPool.SetMinThreads(4, 4);
+        ManualResetEventSlim done = new(false);
+        Task.Run(async () => { await Task.Delay(50); done.Set(); });
+        Console.WriteLine("delayed " + done.Wait(10000));
+        CancellationTokenSource cts = new();
+        cts.CancelAfter(30);
+        ManualResetEventSlim heard = new(false);
+        cts.Token.Register(() => heard.Set());
+        Console.WriteLine("canceled " + heard.Wait(10000));
+        return 0;
+    }
+}

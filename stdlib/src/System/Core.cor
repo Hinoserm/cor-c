@@ -19019,6 +19019,13 @@ class Exception
     long[]? _frames;
 
     bool _placed;
+    // THE HEAP'S OWN, made with its array in advance (Reserve$): every throw
+    // of it keeps that array, filled where it is thrown (Refill$). One shared
+    // by every thread that runs out of memory took frames afresh on a throw
+    // whose placed trace another thread's had already taken -- allocating on
+    // a heap just found empty -- and the array it replaced, an owned field,
+    // was freed while the other thread's catch still read it.
+    bool _reserved;
 
     /// At the throw: the site's own line and the return addresses above it.
     /// Not when the trace was already placed (Placed$): the throw that
@@ -19030,6 +19037,7 @@ class Exception
             _placed = false;
             return;
         }
+        if (_reserved) return;
         _trace = "";
         _site = site;
         _frames = frames;
@@ -19049,6 +19057,7 @@ class Exception
     /// asks first, because the heap's throw out of memory may make nothing.
     public bool Keeps$()
     {
+        if (_reserved) return true;
         if (!_placed) return false;
         _placed = false;
         return true;
@@ -19063,6 +19072,7 @@ class Exception
     {
         _site = "";
         _frames = frames;
+        _reserved = true;
     }
 
     /// THE HEAP'S OWN THROW, out of memory, which may make nothing: the

@@ -860,7 +860,17 @@ class Thread
             Sys.AtomicSwap(at, 0);
             return;
         }
-        while (Sys.Cas(at, 0, 1) != 0) { }
+        // Paused, then the processor given up: no holder allocates under
+        // it, but one may have been put off the processor. Never stopped for
+        // the collector (Atom.Turn): Finish takes it after EndThread, when
+        // the thread is no longer the collector's to answer for.
+        long turns = 0;
+        while (Sys.Cas(at, 0, 1) != 0)
+        {
+            turns = turns + 1;
+            if (turns < 64) Sys.Pause();
+            else Platform.Yield();
+        }
     }
 
     /// With the counting lock held: one foreground thread more or fewer.
@@ -1238,13 +1248,31 @@ class Thread
     public bool Join(TimeSpan timeout) { return Join((int)timeout.TotalMilliseconds); }
 
     /// Stops this thread for `milliseconds`, leaving the processor to others.
-    public static void Sleep(int milliseconds)
+    /// .NET's rules: -1 for ever, less refused, 0 the processor given up to
+    /// any thread ready for it, and otherwise the whole time, whatever
+    /// signal wakes the thread early.
+    public static void Sleep(int millisecondsTimeout)
     {
-        if (milliseconds <= 0)
+        if (millisecondsTimeout < -1)
         {
+            throw new ArgumentOutOfRangeException("millisecondsTimeout", "Number must be either non-negative and less than or equal to Int32.MaxValue or -1.");
+        }
+        if (millisecondsTimeout == 0)
+        {
+            Yield();
             return;
         }
-        Clock.SleepUntil(Clock.Now() + (long)milliseconds * 1000000);
+        if (millisecondsTimeout == -1)
+        {
+            while (true) Clock.SleepUntil(Clock.Now() + 3600L * 1000000000);
+        }
+        long deadline = Clock.Now() + (long)millisecondsTimeout * 1000000;
+        while (Clock.Now() < deadline) Clock.SleepUntil(deadline);
+    }
+
+    public static void Sleep(TimeSpan timeout)
+    {
+        Sleep(Timeouts.Milliseconds(timeout, "timeout"));
     }
 
     /// Gives the processor up to any other thread ready to run on it
@@ -1284,8 +1312,11 @@ static partial class Environment
 //
 //   - ONE GATE over every handle (WaitHandle.EnterGate), a futex lock: a
 //     handle's state and its queue of waits change only with it held, and it
-//     is held for the few instructions a change takes. Nothing is allocated
-//     and nothing waits while it is held.
+//     is held for the few instructions a change takes -- but for a NAMED
+//     mutex, whose look at the other processes' hold (Ours, TryLock, Mark)
+//     opens, locks and writes a file and makes what it reads. Nothing waits
+//     while it is held, and nothing thrown leaves it held: a hold that would
+//     overflow is refused before the take (WaitOverflow).
 //   - A WAIT THAT CANNOT BE ANSWERED AT ONCE is queued on every handle it
 //     names (a HandleWait, with a HandleWaitLink in each queue) and sleeps on
 //     a word of its own.
@@ -1325,6 +1356,9 @@ namespace System.Threading
         // index of the handle that ended it, that plus WaitAbandoned when the
         // handle was a mutex its owner left behind, or WaitTimeout.
         const int WaitAbandoned = 0x80;
+        /// A wait that would take a mutex this thread holds int.MaxValue
+        /// times: nothing taken, and Wait throws once the gate is let go.
+        const int WaitOverflow = -2;
         const int MaxWaitHandles = 64;
 
         // .NET names the handle under a closed WaitHandle, not the WaitHandle.
@@ -1653,8 +1687,21 @@ namespace System.Threading
         // THE ONE WAIT every public wait comes to: on `one`, or on the first
         // `count` of `many` -- any of them, or all of them at once -- after
         // `signal` is given its signal, when there is one, in the same hold of
-        // the gate. It ends as WaitTimeout and WaitAbandoned say.
+        // the gate. It ends as WaitTimeout and WaitAbandoned say -- or, a
+        // mutex it would take again past int.MaxValue holds, as .NET's
+        // OverflowException, thrown here with the gate let go and nothing
+        // taken (WaitOverflow).
         static int Wait(WaitHandle? one, WaitHandle[]? many, int count, bool all, WaitHandle? signal, int milliseconds)
+        {
+            int result = WaitCore(one, many, count, all, signal, milliseconds);
+            if (result == WaitOverflow)
+            {
+                throw new OverflowException("The current thread attempted to reacquire a mutex that has reached its maximum acquire count.");
+            }
+            return result;
+        }
+
+        static int WaitCore(WaitHandle? one, WaitHandle[]? many, int count, bool all, WaitHandle? signal, int milliseconds)
         {
             Thread me = Thread.CurrentThread;
 
@@ -1802,6 +1849,7 @@ namespace System.Threading
                 {
                     return WaitTimeout;
                 }
+                if (one.Overflows(thread)) return WaitOverflow;
                 return one.Take(thread) ? WaitAbandoned : 0;
             }
             WaitHandle[] handles = many!;
@@ -1812,6 +1860,7 @@ namespace System.Threading
                     WaitHandle handle = handles[i];
                     if (handle.SignaledFor(thread))
                     {
+                        if (handle.Overflows(thread)) return WaitOverflow;
                         return handle.Take(thread) ? WaitAbandoned + i : i;
                     }
                 }
@@ -1823,6 +1872,11 @@ namespace System.Threading
                 {
                     return WaitTimeout;
                 }
+            }
+            // ALL OR NONE, the overflow too: looked for before any is taken.
+            for (int i = 0; i < count; i++)
+            {
+                if (handles[i].Overflows(thread)) return WaitOverflow;
             }
             int abandoned = -1;
             for (int i = 0; i < count; i++)
@@ -1911,6 +1965,14 @@ namespace System.Threading
         /// Takes the handle for `thread`, which SignaledFor allowed: true when
         /// that took over a mutex its owner abandoned.
         internal virtual bool Take(Thread thread)
+        {
+            return false;
+        }
+
+        /// Whether taking it for `thread` would hold it past what may be
+        /// counted (a mutex's int.MaxValue): asked, with the gate held,
+        /// before anything is taken.
+        internal virtual bool Overflows(Thread thread)
         {
             return false;
         }
@@ -2371,15 +2433,17 @@ namespace System.Threading
             return _owner == null && Ours();
         }
 
+        // AT MOST int.MaxValue HOLDS, as .NET counts them: refused before the
+        // take (Wait's WaitOverflow), never thrown with the gate held.
+        internal override bool Overflows(Thread thread)
+        {
+            return _owner == thread && _depth == int.MaxValue;
+        }
+
         internal override bool Take(Thread thread)
         {
             if (_owner == thread)
             {
-                // AT MOST int.MaxValue HOLDS, as .NET counts them.
-                if (_depth == int.MaxValue)
-                {
-                    throw new OverflowException("The current thread attempted to reacquire a mutex that has reached its maximum acquire count.");
-                }
                 _depth = _depth + 1;
                 return false;
             }

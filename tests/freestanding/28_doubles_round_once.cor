@@ -1,0 +1,32 @@
+// test: a freestanding i386 image's doubles round once, as SSE2 and .NET round them
+// expect-exit: 0
+// expect-output:
+// once 3FF0000000000001 3FF0000000000000 3FD3333333333334
+// series 401DF11F45F4E618
+//
+// THE ENTRY TELLS THE X87 TO ROUND TO 53 BITS on a freestanding image as on
+// a hosted one: a freestanding image's floating point is the x87's always,
+// and a reset processor -- or a loader -- leaves the extended format's 64,
+// where 1 + (2^-53 + 2^-105) rounds to 64 bits and then the tie to even,
+// and the double-double steps Math's functions rest on round twice. A merge
+// kept the setting on the hosted path alone. In long mode the doubles are
+// SSE2's, and the answers the same.
+
+using System;
+
+static class Program
+{
+    static string H(double d) { return BitConverter.DoubleToInt64Bits(d).ToString("X16"); }
+
+    static int Main()
+    {
+        double one = BitConverter.Int64BitsToDouble(0x3FF0000000000000);
+        double tiny = BitConverter.Int64BitsToDouble(0x3CA0000000000001);
+        double third = one / 3.0;
+        Console.WriteLine("once " + H(one + tiny) + " " + H(third * 3.0) + " " + H(BitConverter.Int64BitsToDouble(0x3FB999999999999A) + BitConverter.Int64BitsToDouble(0x3FC999999999999A)));
+        double sum = 0.0;
+        for (int i = 1; i <= 1000; i++) { sum = sum + one / i; }
+        Console.WriteLine("series " + H(sum));
+        return 0;
+    }
+}
