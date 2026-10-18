@@ -315,7 +315,12 @@ internal sealed class Allocator
     private readonly int[] _runS;
     private readonly int[] _runE;
     private readonly List<(int S, int E)>?[] _ranges;
-    private readonly int[][] _busy = new int[Physical][];
+    // THE POSITIONS EACH PHYSICAL REGISTER IS BUSY AT, sorted: a list, not a
+    // table of every position. A table was four words an instruction for
+    // each of the thirty-two registers, half a kilobyte an instruction, and
+    // the gigabytes of a program's 1.4-million-instruction Main ran the
+    // compiler out of memory; most registers are busy nowhere.
+    private readonly List<int>[] _busy = new List<int>[Physical];
     private readonly int[] _assigned;
     private readonly int[] _spilledFrom;
     private readonly int[] _slot;
@@ -356,7 +361,7 @@ internal sealed class Allocator
         }
         for (int r = 0; r < Physical; r++)
         {
-            _busy[r] = new int[_lin.Count * 4 + 1];
+            _busy[r] = new List<int>();
         }
     }
 
@@ -455,7 +460,7 @@ internal sealed class Allocator
     {
         if (reg < Physical)
         {
-            _busy[reg][pos] = 1;
+            _busy[reg].Add(pos);
         }
         else
         {
@@ -613,19 +618,25 @@ internal sealed class Allocator
 
         for (int r = 0; r < Physical; r++)
         {
-            int[] arr = _busy[r];
-            for (int p = 1; p < arr.Length; p++)
-            {
-                arr[p] += arr[p - 1];
-            }
+            List<int> marks = _busy[r];
+            marks.Sort();
+            int w = 0;
+            for (int k = 0; k < marks.Count; k++)
+                if (w == 0 || marks[k] != marks[w - 1]) marks[w++] = marks[k];
+            marks.RemoveRange(w, marks.Count - w);
         }
     }
 
     private bool Busy(int reg, int start, int end)
     {
-        int[] arr = _busy[reg];
-        int before = start == 0 ? 0 : arr[start - 1];
-        return arr[Math.Min(end, arr.Length - 1)] - before > 0;
+        List<int> marks = _busy[reg];
+        int lo = 0, hi = marks.Count;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (marks[mid] < start) lo = mid + 1; else hi = mid;
+        }
+        return lo < marks.Count && marks[lo] <= end;
     }
 
     // ---- the scan -----------------------------------------------------------------
