@@ -19850,7 +19850,7 @@ public sealed partial class Binder
                 if (c.Args[i] is not LambdaExpr && invokes.Count > 0
                     && _r.Resolved.TryGetValue(c.Args[i], out Sym? passed)
                     && Grouped(passed) is { Count: > 0 } named
-                    && !invokes.Any(v => named.Any(g => g.Params.Count == v.Params.Count)))
+                    && !invokes.Any(v => named.Any(g => g.Params.Count == v.Params.Count && TakesItsTypes(m, m.Params[i].Type, v, g))))
                 {
                     return false;
                 }
@@ -19867,6 +19867,27 @@ public sealed partial class Binder
                 {
                     return false;
                 }
+            }
+            return true;
+        }
+
+        // AND BY ITS TYPES, where the delegate's are known (C# 10.8): each of
+        // the delegate's parameters goes to the method's as it is, or by a
+        // reference conversion. `s.Where(char.IsUpper)` has IsUpper(string,
+        // int) beside IsUpper(char), and two parameters fit Where's
+        // Func<char, int, bool> by count -- not a char for the string. What a
+        // type argument stands for is what the arguments before the group
+        // inferred (OrdinaryInferred); one still open decides nothing.
+        bool TakesItsTypes(MethodSymbol m, Type delegateType, MethodSymbol invoke, MethodSymbol candidate)
+        {
+            Dictionary<string, Type> applied = Applied(delegateType);
+            Dictionary<string, Type> known = m.TypeParams.Count > 0 ? OrdinaryInferred(m) ?? new(StringComparer.Ordinal) : new(StringComparer.Ordinal);
+            for (int k = 0; k < invoke.Params.Count; k++)
+            {
+                Type want = Close(Substitute(invoke.Params[k].Type, applied), known);
+                Type given = candidate.Params[k].Type;
+                if (want.IsError || Unmade(want) || want.ParamName is not null || given.ParamName is not null || invoke.Params[k].ByRef || candidate.Params[k].ByRef) continue;
+                if (!(Same(want, given) || want.IsReference && given.IsReference && Convertible(want, given))) return false;
             }
             return true;
         }

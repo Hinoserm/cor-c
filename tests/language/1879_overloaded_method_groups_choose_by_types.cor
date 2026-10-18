@@ -1,0 +1,34 @@
+// test: overloaded_method_groups_choose_by_types
+// expect-exit: 0
+// expect-output:
+// HLLW 10
+// 2,4 i1,i2,i3,i4
+// True i2
+//
+// A METHOD GROUP WITH OVERLOADS converts to the delegate whose parameter
+// types one of them takes (C# 10.8): `s.Where(char.IsUpper)` is the
+// one-argument Where with IsUpper(char), not the two-argument one by
+// IsUpper(string, int)'s count; Even and Show choose among their own by
+// what the call's other arguments make the delegate.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class P
+{
+    static bool Even(int n) => n % 2 == 0;
+    static bool Even(long n) => n % 2 == 0;
+    static string Show(int n) => "i" + n;
+    static string Show(string s) => "s" + s;
+
+    static void Main()
+    {
+        string s = "HeLLo World";
+        Console.WriteLine(new string(s.Where(char.IsUpper).ToArray()) + " " + s.Count(char.IsLetter));
+        List<int> xs = new List<int> { 1, 2, 3, 4 };
+        Console.WriteLine(string.Join(",", xs.Where(Even)) + " " + string.Join(",", xs.Select(Show)));
+        Func<char, bool> f = char.IsDigit;
+        Console.WriteLine(f('3') + " " + Array.ConvertAll(new[] { 1, 2 }, Show)[1]);
+    }
+}
