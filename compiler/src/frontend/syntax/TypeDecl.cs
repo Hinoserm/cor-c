@@ -331,6 +331,18 @@ public sealed class TypeDecl : Node
     /// <summary>Indexed signatures, not executable bodies. Never lower their declaration markers.</summary>
     public bool SignatureOnly { get; set; }
 
+    /// <summary>
+    /// SOME BODY WRITTEN IN IT NAMES MemberwiseClone, read off its text
+    /// (Parser.NamesMemberwiseClone) -- a body left out of a declarations-only
+    /// read too, and in an index's text (SourceIndexBuilder keeps the name in
+    /// the body it leaves out). C# lets only a class's own code copy an
+    /// object that way, of its own type or one derived from it, so an
+    /// object of this type, or of one derived from it, may have its fields
+    /// copied into another by bytes: none of them owns what it holds
+    /// (Lowering.TagsField).
+    /// </summary>
+    public bool MemberwiseCopied { get; set; }
+
     /// <summary>Which library it came from, so its statics can be found.</summary>
     public int LibSlot { get; set; }
 

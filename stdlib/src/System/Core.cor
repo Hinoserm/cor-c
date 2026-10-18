@@ -387,16 +387,16 @@ static class String {
             if (provider != null && value is IFormattable told) { return told.ToString(null, provider); }
             return "" + value;
         }
-        if (value is int i32) { return i32.ToString(format); }
-        if (value is long i64) { return i64.ToString(format); }
+        if (value is int i32) { return i32.ToString(format, provider); }
+        if (value is long i64) { return i64.ToString(format, provider); }
         if (value is double f64) { return f64.ToString(format, provider); }
         if (value is float f32) { return f32.ToString(format, provider); }
-        if (value is uint u32) { return u32.ToString(format); }
-        if (value is ulong u64) { return u64.ToString(format); }
-        if (value is short i16) { return i16.ToString(format); }
-        if (value is ushort u16) { return u16.ToString(format); }
-        if (value is byte u8) { return u8.ToString(format); }
-        if (value is sbyte i8) { return i8.ToString(format); }
+        if (value is uint u32) { return u32.ToString(format, provider); }
+        if (value is ulong u64) { return u64.ToString(format, provider); }
+        if (value is short i16) { return i16.ToString(format, provider); }
+        if (value is ushort u16) { return u16.ToString(format, provider); }
+        if (value is byte u8) { return u8.ToString(format, provider); }
+        if (value is sbyte i8) { return i8.ToString(format, provider); }
         if (value is IFormattable formattable) { return formattable.ToString(format, provider); }
         return "" + value;
     }
@@ -407,19 +407,19 @@ static class String {
     /// as an IFormattable -- the box is how that question got here.
     public static string FormatBoxed(object? value, string? format, IFormatProvider? provider) {
         if (value == null) { return ""; }
-        if (format == null || format.Length == 0) { return "" + value; }
-        if (value is int i32) { return i32.ToString(format); }
-        if (value is long i64) { return i64.ToString(format); }
+        if ((format == null || format.Length == 0) && provider == null) { return "" + value; }
+        if (value is int i32) { return i32.ToString(format, provider); }
+        if (value is long i64) { return i64.ToString(format, provider); }
         if (value is double f64) { return f64.ToString(format, provider); }
         if (value is float f32) { return f32.ToString(format, provider); }
-        if (value is uint u32) { return u32.ToString(format); }
-        if (value is ulong u64) { return u64.ToString(format); }
-        if (value is short i16) { return i16.ToString(format); }
-        if (value is ushort u16) { return u16.ToString(format); }
-        if (value is byte u8) { return u8.ToString(format); }
-        if (value is sbyte i8) { return i8.ToString(format); }
-        if (value is nint native) { return ((long)native).ToString(format); }
-        if (value is nuint unative) { return ((ulong)unative).ToString(format); }
+        if (value is uint u32) { return u32.ToString(format, provider); }
+        if (value is ulong u64) { return u64.ToString(format, provider); }
+        if (value is short i16) { return i16.ToString(format, provider); }
+        if (value is ushort u16) { return u16.ToString(format, provider); }
+        if (value is byte u8) { return u8.ToString(format, provider); }
+        if (value is sbyte i8) { return i8.ToString(format, provider); }
+        if (value is nint native) { return native.ToString(format, provider); }
+        if (value is nuint unative) { return unative.ToString(format, provider); }
         return "" + value;
     }
 
@@ -3213,20 +3213,25 @@ static class Convert {
 
     public static string ToString(bool value, IFormatProvider? provider) { return ToString(value); }
     public static string ToString(char value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(sbyte value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(byte value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(short value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(ushort value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(int value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(uint value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(long value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(ulong value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(float value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(double value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(decimal value, IFormatProvider? provider) { return ToString(value); }
-    public static string ToString(DateTime value, IFormatProvider? provider) { return ToString(value); }
+    // A number or a date as the provider says, as .NET's value.ToString(provider).
+    public static string ToString(sbyte value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(byte value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(short value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(ushort value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(int value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(uint value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(long value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(ulong value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(float value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(double value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(decimal value, IFormatProvider? provider) { return value.ToString(provider); }
+    public static string ToString(DateTime value, IFormatProvider? provider) { return value.ToString(provider); }
     public static string? ToString(string? value, IFormatProvider? provider) { return value; }
-    public static string ToString(object? value, IFormatProvider? provider) { return ToString(value); }
+    public static string ToString(object? value, IFormatProvider? provider) {
+        if (value == null) { return ""; }
+        if (provider != null && value is IFormattable formattable) { return formattable.ToString(null, provider); }
+        return ToString(value);
+    }
 
     // ---- to DateTime ------------------------------------------------------------
     //
@@ -3919,7 +3924,7 @@ static class NumberFormat {
     }
 
     /// THOUSANDS SEPARATED BY COMMAS, counting from the right -- which is what
-    /// "N" means on an invariant culture, and this machine has only that one.
+    /// "N" means on the invariant culture.
     private static string Group(string digits) {
         StringBuilder made = new StringBuilder();
         int n = digits.Length;
@@ -3931,12 +3936,68 @@ static class NumberFormat {
         return made.ToString();
     }
 
+    /// THE DIGITS IN A CULTURE'S GROUPS, as .NET's FormatFixed puts them:
+    /// counting from the right, `sizes[0]` digits, then each next size, the
+    /// last one again and again, a 0 ending the grouping there (and an empty
+    /// array or a first 0 grouping nothing), `separator` between.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static string Group(string digits, int[] sizes, string separator) {
+        int size = sizes.Length == 0 ? 0 : sizes[0];
+        if (size == 0) { return digits; }
+        StringBuilder made = new StringBuilder();
+        int index = 0;
+        int count = 0;
+        for (int i = digits.Length - 1; i >= 0; i--) {
+            made.Append(Sys.GetChar(digits, i));
+            if (size > 0) {
+                count = count + 1;
+                if (count == size && i != 0) {
+                    for (int j = separator.Length - 1; j >= 0; j--) { made.Append(Sys.GetChar(separator, j)); }
+                    if (index < sizes.Length - 1) {
+                        index = index + 1;
+                        size = sizes[index];
+                    }
+                    count = 0;
+                }
+            }
+        }
+        string back = made.ToString();
+        string written = Sys.NewChars(back.Length);
+        for (int i = 0; i < back.Length; i++) { Sys.SetChar(written, i, Sys.GetChar(back, back.Length - 1 - i)); }
+        return written;
+    }
+
+    /// THE NEGATIVE SIGN a number is written with: the culture's, or '-'.
+    internal static string Minus(NumberFormatInfo? nfi) { return nfi == null ? "-" : nfi._negativeSign; }
+
+    /// A culture's patterns, .NET's: '#' the number, '-' the negative sign,
+    /// '$' the currency symbol and '%' the percent symbol, the rest as written.
+    static readonly string[] PositiveCurrency = { "$#", "#$", "$ #", "# $" };
+    static readonly string[] NegativeCurrency = { "($#)", "-$#", "$-#", "$#-", "(#$)", "-#$", "#-$", "#$-", "-# $", "-$ #", "# $-", "$ #-", "$ -#", "#- $", "($ #)", "(# $)", "$- #" };
+    static readonly string[] PositivePercent = { "# %", "#%", "%#", "% #" };
+    static readonly string[] NegativePercent = { "-# %", "-#%", "-%#", "%-#", "%#-", "#-%", "#%-", "-% #", "# %-", "% #-", "% -#", "#- %" };
+    static readonly string[] NegativeNumber = { "(#)", "-#", "- #", "#-", "# -" };
+
+    static string Patterned(string pattern, string body, NumberFormatInfo nfi) {
+        StringBuilder made = new StringBuilder();
+        for (int i = 0; i < pattern.Length; i++) {
+            char ch = Sys.GetChar(pattern, i);
+            if (ch == '#') { made.Append(body); }
+            else if (ch == '-') { made.Append(nfi._negativeSign); }
+            else if (ch == '$') { made.Append(nfi._currencySymbol); }
+            else if (ch == '%') { made.Append(nfi._percentSymbol); }
+            else { made.Append(ch); }
+        }
+        return made.ToString();
+    }
+
     /// `value`, as `format` says, where `bits` is how wide the type is: it
     /// decides what a negative number looks like in hexadecimal and binary,
     /// where .NET shows the two's complement rather than a minus sign.
-    public static string Of(long value, int bits, string format) {
-        if (format.Length == 0) { return String.FromInt(value); }
-        if (PictureFormat.Is(format)) { return PictureFormat.Of(value, format); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string Of(long value, int bits, string format, NumberFormatInfo? nfi = null) {
+        if (format.Length == 0) { return nfi == null || value >= 0 ? String.FromInt(value) : String.Concat(nfi._negativeSign, String.FromUInt((ulong)0 - (ulong)value)); }
+        if (PictureFormat.Is(format)) { return PictureFormat.Of(value, format, nfi); }
 
         char kind = Sys.GetChar(format, 0);
         int width = Width(format);
@@ -3951,14 +4012,15 @@ static class NumberFormat {
         // The size as an unsigned number, which long.MinValue has and its
         // own negation does not.
         ulong size = negative ? (ulong)0 - whole : whole;
-        return Standard(kind, width, negative, String.FromUInt(size));
+        return Standard(kind, width, negative, String.FromUInt(size), nfi);
     }
 
     /// The UNSIGNED form, which cannot simply widen to long: a ulong above
     /// long.MaxValue would come out negative and print a minus sign.
-    public static string OfUnsigned(ulong value, string format) {
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string OfUnsigned(ulong value, string format, NumberFormatInfo? nfi = null) {
         if (format.Length == 0) { return Digits(value, 10, Lower); }
-        if (PictureFormat.Is(format)) { return PictureFormat.OfUnsigned(value, format); }
+        if (PictureFormat.Is(format)) { return PictureFormat.OfUnsigned(value, format, nfi); }
 
         char kind = Sys.GetChar(format, 0);
         int width = Width(format);
@@ -3966,7 +4028,7 @@ static class NumberFormat {
         if (kind == 'x') { return Pad(Digits(value, 16, Lower), width); }
         if (kind == 'X') { return Pad(Digits(value, 16, Upper), width); }
         if (kind == 'b' || kind == 'B') { return Pad(Digits(value, 2, Lower), width); }
-        return Standard(kind, width, false, String.FromUInt(value));
+        return Standard(kind, width, false, String.FromUInt(value), nfi);
     }
 
     /// THE DECIMAL SHAPES OF A WHOLE NUMBER, signed or not: `plain` is its
@@ -3976,20 +4038,30 @@ static class NumberFormat {
     /// "E", and "G" and "R" with a precision, round the digits themselves --
     /// never a double made of them, which would lose a long's last three --
     /// half away from zero, as .NET rounds the digits of every integer.
-    static string Standard(char kind, int width, bool negative, string plain) {
+    /// A precision a culture gives a letter written without one: its number,
+    /// currency or percent digits, two on the invariant culture.
+    internal static int Places(char kind, int width, NumberFormatInfo? nfi) {
+        if (width >= 0) { return width; }
+        if (nfi == null) { return 2; }
+        if (kind == 'c' || kind == 'C') { return nfi._currencyDecimalDigits; }
+        if (kind == 'p' || kind == 'P') { return nfi._percentDecimalDigits; }
+        return nfi._numberDecimalDigits;
+    }
+
+    static string Standard(char kind, int width, bool negative, string plain, NumberFormatInfo? nfi) {
         // "G" and "R" without a precision are "D" without one: every digit.
         bool general = kind == 'g' || kind == 'G' || kind == 'r' || kind == 'R';
         if (kind == 'd' || kind == 'D' || (general && width < 1)) {
-            return negative ? String.Concat("-", Pad(plain, width)) : Pad(plain, width);
+            return negative ? String.Concat(Minus(nfi), Pad(plain, width)) : Pad(plain, width);
         }
 
         if (kind == 'f' || kind == 'F' || kind == 'n' || kind == 'N' || kind == 'c' || kind == 'C') {
-            return Dress(kind, negative, plain, String.Repeat('0', width < 0 ? 2 : width));
+            return Dress(kind, negative, plain, String.Repeat('0', Places(kind, width, nfi)), nfi);
         }
 
         if (kind == 'p' || kind == 'P') {
             string hundreds = plain == "0" ? plain : String.Concat(plain, "00");
-            return Dress(kind, negative, hundreds, String.Repeat('0', width < 0 ? 2 : width));
+            return Dress(kind, negative, hundreds, String.Repeat('0', Places(kind, width, nfi)), nfi);
         }
 
         // Nought has no digits at all, as .NET keeps it: its exponent is 0
@@ -4000,13 +4072,13 @@ static class NumberFormat {
         if (kind == 'e' || kind == 'E') {
             int places = width < 0 ? 6 : width;
             digits = Round(digits, places + 1, ref point);
-            return Scientific(negative, digits, digits.Length == 0 ? 0 : point - 1, places, kind);
+            return Scientific(negative, digits, digits.Length == 0 ? 0 : point - 1, places, kind, nfi);
         }
 
         if (general) {
             if (digits.Length == 0) { return "0"; }
             digits = Round(digits, width, ref point);
-            return DoubleFormat.Layout(digits, point, negative, width, kind == 'g' || kind == 'r' ? 'e' : 'E');
+            return DoubleFormat.Layout(digits, point, negative, width, kind == 'g' || kind == 'r' ? 'e' : 'E', nfi);
         }
 
         throw new FormatException("Format specifier was invalid.");
@@ -4046,6 +4118,37 @@ static class NumberFormat {
     /// the currency sign and a negative in parentheses -- (¤7.00) -- and "P"
     /// with a space and the percent sign after it. `units` and `fraction`
     /// are the digits either side of the point, the sign already taken off.
+    /// A CULTURE'S DRESS (`nfi`): "F" its decimal separator and negative
+    /// sign, "N", "C" and "P" their own group sizes, separators and patterns,
+    /// and the currency and percent symbols.
+    public static string Dress(char kind, bool negative, string units, string fraction, NumberFormatInfo? nfi) {
+        return nfi == null ? Dress(kind, negative, units, fraction) : DressCulture(kind, negative, units, fraction, nfi);
+    }
+
+    // Out of line, as every culture's way is: a program writing in the
+    // invariant culture alone carries one copy of it, never one in each of
+    // the invariant writers' own.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string DressCulture(char kind, bool negative, string units, string fraction, NumberFormatInfo nfi) {
+        bool currency = kind == 'c' || kind == 'C';
+        bool percent = kind == 'p' || kind == 'P';
+        if (kind == 'f' || kind == 'F') {
+            string plainBody = fraction.Length > 0 ? String.Concat(String.Concat(units, nfi._numberDecimalSeparator), fraction) : units;
+            return negative ? String.Concat(nfi._negativeSign, plainBody) : plainBody;
+        }
+        string body = currency ? Group(units, nfi._currencyGroupSizes, nfi._currencyGroupSeparator)
+                    : percent ? Group(units, nfi._percentGroupSizes, nfi._percentGroupSeparator)
+                    : Group(units, nfi._numberGroupSizes, nfi._numberGroupSeparator);
+        if (fraction.Length > 0) {
+            string point = currency ? nfi._currencyDecimalSeparator : percent ? nfi._percentDecimalSeparator : nfi._numberDecimalSeparator;
+            body = String.Concat(String.Concat(body, point), fraction);
+        }
+        string pattern = currency ? (negative ? NegativeCurrency[nfi._currencyNegativePattern] : PositiveCurrency[nfi._currencyPositivePattern])
+                       : percent ? (negative ? NegativePercent[nfi._percentNegativePattern] : PositivePercent[nfi._percentPositivePattern])
+                       : negative ? NegativeNumber[nfi._numberNegativePattern] : "#";
+        return Patterned(pattern, body, nfi);
+    }
+
     public static string Dress(char kind, bool negative, string units, string fraction) {
         bool plain = kind == 'f' || kind == 'F';
         StringBuilder made = new StringBuilder();
@@ -4067,27 +4170,28 @@ static class NumberFormat {
     /// the point (none and no point at all for "E0"), the digits padded with
     /// zeros past their end, and an exponent with its sign always written and
     /// at least three digits -- 4.20E+001.
-    public static string Scientific(bool negative, string digits, int exponent, int places, char letter) {
+    public static string Scientific(bool negative, string digits, int exponent, int places, char letter, NumberFormatInfo? nfi = null) {
         StringBuilder made = new StringBuilder();
-        if (negative) { made.Append('-'); }
+        if (negative) { made.Append(Minus(nfi)); }
         made.Append(digits.Length > 0 ? Sys.GetChar(digits, 0) : '0');
         if (places > 0) {
-            made.Append('.');
+            made.Append(nfi == null ? "." : nfi._numberDecimalSeparator);
             for (int i = 1; i <= places; i++) { made.Append(i < digits.Length ? Sys.GetChar(digits, i) : '0'); }
         }
-        Exponent(made, letter, exponent, 3, true);
+        Exponent(made, letter, exponent, 3, true, nfi);
         return made.ToString();
     }
 
     /// AN EXPONENT AS .NET WRITES ONE, in every shape that has one: the
-    /// letter, a minus when it is negative and a plus only when `plus` asks
-    /// for it, and at least `least` digits.
-    public static void Exponent(StringBuilder made, char letter, int exponent, int least, bool plus) {
+    /// letter, the negative sign when it is negative and the positive sign
+    /// only when `plus` asks for it -- a culture's, or '-' and '+' -- and at
+    /// least `least` digits.
+    public static void Exponent(StringBuilder made, char letter, int exponent, int least, bool plus, NumberFormatInfo? nfi = null) {
         made.Append(letter);
         if (exponent < 0) {
-            made.Append('-');
+            made.Append(nfi == null ? "-" : nfi._negativeSign);
         } else if (plus) {
-            made.Append('+');
+            made.Append(nfi == null ? "+" : nfi._positiveSign);
         }
         made.Append(String.PadLeft(String.FromInt(exponent < 0 ? -exponent : exponent), least, '0'));
     }
@@ -4120,18 +4224,18 @@ static class DoubleFormat {
     /// The sign bit, which -0.0 has and .NET prints: "-0".
     static bool Negative(double x) { return BitConverter.DoubleToInt64Bits(x) < 0; }
 
-    private static string? Special(double x) {
-        if (IsNaN(x)) { return "NaN"; }
-        if (x > 0.0 && IsInfinity(x)) { return "Infinity"; }
-        if (x < 0.0 && IsInfinity(x)) { return "-Infinity"; }
+    private static string? Special(double x, NumberFormatInfo? nfi = null) {
+        if (IsNaN(x)) { return nfi == null ? "NaN" : nfi._nanSymbol; }
+        if (x > 0.0 && IsInfinity(x)) { return nfi == null ? "Infinity" : nfi._positiveInfinitySymbol; }
+        if (x < 0.0 && IsInfinity(x)) { return nfi == null ? "-Infinity" : nfi._negativeInfinitySymbol; }
         return null;
     }
 
     /// `places` digits after the point, from the value's exact decimal
     /// expansion, an exact tie rounded to even -- and the sign is kept even
     /// when every digit rounds to nought, because that is what .NET prints.
-    public static string Fixed(double value, int places) {
-        string? special = Special(value);
+    public static string Fixed(double value, int places, NumberFormatInfo? nfi = null) {
+        string? special = Special(value, nfi);
         if (special != null) { return special; }
 
         bool negative = Negative(value);
@@ -4149,21 +4253,21 @@ static class DoubleFormat {
             }
         }
 
-        return Compose(digits, point, negative, places);
+        return Compose(digits, point, negative, places, nfi);
     }
 
     /// 0.DIGITS x 10^point written with `places` after the point, what the
     /// digits do not reach being zeros.
-    public static string Compose(string digits, int point, bool negative, int places) {
+    public static string Compose(string digits, int point, bool negative, int places, NumberFormatInfo? nfi = null) {
         StringBuilder made = new StringBuilder();
-        if (negative) { made.Append('-'); }
+        if (negative) { made.Append(NumberFormat.Minus(nfi)); }
         if (point <= 0) {
             made.Append('0');
         } else {
             for (int i = 0; i < point; i++) { made.Append(i < digits.Length ? Sys.GetChar(digits, i) : '0'); }
         }
         if (places > 0) {
-            made.Append('.');
+            made.Append(nfi == null ? "." : nfi._numberDecimalSeparator);
             for (int i = 0; i < places; i++) {
                 int at = point + i;
                 made.Append(at >= 0 && at < digits.Length ? Sys.GetChar(digits, at) : '0');
@@ -4193,25 +4297,25 @@ static class DoubleFormat {
 
     /// `d.dddE+eee`, with .NET's three-digit exponent and its default of six
     /// places after the point.
-    public static string Scientific(double value, int places, char letter) {
-        string? special = Special(value);
+    public static string Scientific(double value, int places, char letter, NumberFormatInfo? nfi = null) {
+        string? special = Special(value, nfi);
         if (special != null) { return special; }
 
         int exponent = 0;
         string digits = Significant(value, places + 1, out exponent);
-        return NumberFormat.Scientific(Negative(value), digits, exponent, places, letter);
+        return NumberFormat.Scientific(Negative(value), digits, exponent, places, letter, nfi);
     }
 
     /// .NET's "G" with a precision: that many significant digits, exactly
     /// rounded, trailing zeros dropped.
-    public static string General(double value, int significant, char letter) {
-        string? special = Special(value);
+    public static string General(double value, int significant, char letter, NumberFormatInfo? nfi = null) {
+        string? special = Special(value, nfi);
         if (special != null) { return special; }
-        if (value == 0.0) { return Negative(value) ? "-0" : "0"; }
+        if (value == 0.0) { return Negative(value) ? String.Concat(NumberFormat.Minus(nfi), "0") : "0"; }
 
         int exponent = 0;
         string digits = TrimZeros(Significant(value, significant, out exponent));
-        return Layout(digits, exponent + 1, Negative(value), significant, letter);
+        return Layout(digits, exponent + 1, Negative(value), significant, letter, nfi);
     }
 
     /// What ToString(), "G" and "R" answer since .NET Core 3.0: the shortest
@@ -4219,13 +4323,13 @@ static class DoubleFormat {
     /// point is further out than 17 digits (or the digits' own count).
     public static string Shortest(double value) { return Shortest(value, 'E'); }
 
-    public static string Shortest(double value, char letter) {
-        string? special = Special(value);
+    public static string Shortest(double value, char letter, NumberFormatInfo? nfi = null) {
+        string? special = Special(value, nfi);
         if (special != null) { return special; }
-        if (value == 0.0) { return Negative(value) ? "-0" : "0"; }
+        if (value == 0.0) { return Negative(value) ? String.Concat(NumberFormat.Minus(nfi), "0") : "0"; }
         int point;
         string digits = FloatDecimal.Shortest(value, out point);
-        return Layout(digits, point, Negative(value), digits.Length > 17 ? digits.Length : 17, letter);
+        return Layout(digits, point, Negative(value), digits.Length > 17 ? digits.Length : 17, letter, nfi);
     }
 
     /// The same for a float, whose round trip is to a float: nine digits.
@@ -4263,37 +4367,39 @@ static class DoubleFormat {
         return Of(wide, format);
     }
 
-    public static string ShortestSingle(float value, char letter) {
+    public static string ShortestSingle(float value, char letter, NumberFormatInfo? nfi = null) {
         double wide = (double)value;
-        string? special = Special(wide);
+        string? special = Special(wide, nfi);
         if (special != null) { return special; }
-        if (wide == 0.0) { return Negative(wide) ? "-0" : "0"; }
+        if (wide == 0.0) { return Negative(wide) ? String.Concat(NumberFormat.Minus(nfi), "0") : "0"; }
         int point;
         string digits = FloatDecimal.ShortestSingle(value, out point);
-        return Layout(digits, point, Negative(wide), digits.Length > 9 ? digits.Length : 9, letter);
+        return Layout(digits, point, Negative(wide), digits.Length > 9 ? digits.Length : 9, letter, nfi);
     }
 
     /// 0.DIGITS x 10^point in .NET's general shape: plain digits while the
     /// point is within `most` digits and not four places below the units,
     /// d.dddE+xx otherwise -- d.ddde+xx for a "g" or "r", whose case the
     /// exponent's letter takes.
-    public static string Layout(string digits, int point, bool negative, int most, char letter) {
+    public static string Layout(string digits, int point, bool negative, int most, char letter, NumberFormatInfo? nfi = null) {
         StringBuilder made = new StringBuilder();
-        if (negative) { made.Append('-'); }
+        if (negative) { made.Append(NumberFormat.Minus(nfi)); }
+        string separator = nfi == null ? "." : nfi._numberDecimalSeparator;
 
         if (point > most || point < -3) {
             int exponent = point - 1;
             made.Append(Sys.GetChar(digits, 0));
             if (digits.Length > 1) {
-                made.Append('.');
+                made.Append(separator);
                 made.Append(String.Substring(digits, 1, digits.Length - 1));
             }
-            NumberFormat.Exponent(made, letter, exponent, 2, true);
+            NumberFormat.Exponent(made, letter, exponent, 2, true, nfi);
             return made.ToString();
         }
 
         if (point <= 0) {
-            made.Append("0.");
+            made.Append('0');
+            made.Append(separator);
             made.Append(String.Repeat('0', -point));
             made.Append(digits);
             return made.ToString();
@@ -4306,7 +4412,7 @@ static class DoubleFormat {
         }
 
         made.Append(String.Substring(digits, 0, point));
-        made.Append('.');
+        made.Append(separator);
         made.Append(String.Substring(digits, point, digits.Length - point));
         return made.ToString();
     }
@@ -4317,10 +4423,10 @@ static class DoubleFormat {
     /// value, for the rest. A picture reads a float to seven digits, not a
     /// double's fifteen, so 16777216f in "0.00" is 16777220.00 as .NET
     /// writes it.
-    public static string OfSingle(float value, string format) {
-        if (format.Length == 0) { return ShortestSingle(value, 'E'); }
+    public static string OfSingle(float value, string format, NumberFormatInfo? nfi = null) {
+        if (format.Length == 0) { return ShortestSingle(value, 'E', nfi); }
         if (PictureFormat.Is(format)) {
-            return Special((double)value) == null ? PictureFormat.OfSingle(value, format) : Of((double)value, format);
+            return Special((double)value) == null ? PictureFormat.OfSingle(value, format, nfi) : Of((double)value, format, nfi);
         }
 
         char kind = Sys.GetChar(format, 0);
@@ -4331,19 +4437,20 @@ static class DoubleFormat {
                 if (Sys.GetChar(format, i) != (int)'0') { shortest = false; }
             }
         }
-        if (shortest) { return ShortestSingle(value, kind == 'g' || kind == 'r' ? 'e' : 'E'); }
-        return Of((double)value, format);
+        if (shortest) { return ShortestSingle(value, kind == 'g' || kind == 'r' ? 'e' : 'E', nfi); }
+        return Of((double)value, format, nfi);
     }
 
-    public static string Of(double value, string format) {
-        if (format.Length == 0) { return Shortest(value); }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string Of(double value, string format, NumberFormatInfo? nfi = null) {
+        if (format.Length == 0) { return Shortest(value, 'E', nfi); }
 
         // NOT A NUMBER AND THE INFINITIES ARE WORDS whatever the format says:
         // .NET answers them before it reads the format at all, so even "X",
         // which no double may have, gives "NaN".
-        string? special = Special(value);
+        string? special = Special(value, nfi);
         if (special != null) { return special; }
-        if (PictureFormat.Is(format)) { return PictureFormat.Of(value, format); }
+        if (PictureFormat.Is(format)) { return PictureFormat.Of(value, format, nfi); }
 
         char kind = Sys.GetChar(format, 0);
         int width = -1;
@@ -4356,18 +4463,20 @@ static class DoubleFormat {
             }
         }
 
-        if (kind == 'f' || kind == 'F') { return Fixed(value, width < 0 ? 2 : width); }
-        if (kind == 'e') { return Scientific(value, width < 0 ? 6 : width, 'e'); }
-        if (kind == 'E') { return Scientific(value, width < 0 ? 6 : width, 'E'); }
+        if (kind == 'f' || kind == 'F') { return Fixed(value, NumberFormat.Places(kind, width, nfi), nfi); }
+        if (kind == 'e') { return Scientific(value, width < 0 ? 6 : width, 'e', nfi); }
+        if (kind == 'E') { return Scientific(value, width < 0 ? 6 : width, 'E', nfi); }
         // The exponent of "g" and "r" is written "e+", of "G" and "R" "E+".
         char letter = kind == 'g' || kind == 'r' ? 'e' : 'E';
-        if (kind == 'g' || kind == 'G') { return width <= 0 ? Shortest(value, letter) : General(value, width, letter); }
-        if (kind == 'r' || kind == 'R') { return Shortest(value, letter); }
+        if (kind == 'g' || kind == 'G') { return width <= 0 ? Shortest(value, letter, nfi) : General(value, width, letter, nfi); }
+        if (kind == 'r' || kind == 'R') { return Shortest(value, letter, nfi); }
+        // THE INVARIANT CULTURE'S "F" CARRIES THE DIGITS to the dress, which
+        // reads its '-' and '.': a culture's are put on by the dress.
         if (kind == 'n' || kind == 'N' || kind == 'c' || kind == 'C') {
-            return Dressed(kind, Fixed(value, width < 0 ? 2 : width), 0);
+            return Dressed(kind, Fixed(value, NumberFormat.Places(kind, width, nfi)), 0, nfi);
         }
         if (kind == 'p' || kind == 'P') {
-            return Dressed(kind, Fixed(value, (width < 0 ? 2 : width) + 2), 2);
+            return Dressed(kind, Fixed(value, NumberFormat.Places(kind, width, nfi) + 2), 2, nfi);
         }
         throw new FormatException("Format specifier was invalid.");
     }
@@ -4380,7 +4489,7 @@ static class DoubleFormat {
     /// 1 %, but 0.005 * 100.0 is exactly 0.5 and would round to 0 %.
     /// The sign stays even when every digit rounded to nought, as .NET keeps
     /// it: -0.256 in "C0" is (¤0).
-    static string Dressed(char kind, string body, int shift) {
+    static string Dressed(char kind, string body, int shift, NumberFormatInfo? nfi = null) {
         bool negative = Sys.GetChar(body, 0) == (int)'-';
         if (negative) { body = String.Substring(body, 1, body.Length - 1); }
 
@@ -4393,7 +4502,7 @@ static class DoubleFormat {
         int first = 0;
         while (first < at - 1 && Sys.GetChar(digits, first) == (int)'0') { first = first + 1; }
         return NumberFormat.Dress(kind, negative, String.Substring(digits, first, at - first),
-                                  String.Substring(digits, at, digits.Length - at));
+                                  String.Substring(digits, at, digits.Length - at), nfi);
     }
 }
 
@@ -4954,35 +5063,35 @@ static class PictureFormat {
     /// rounded, half away from zero at the last place asked for -- 1.25 to
     /// "0.0" is 1.3, where "F1" says 1.2. Minus nought keeps its sign, as
     /// .NET keeps it: (-0.0).ToString("0.00") is -0.00.
-    public static string Of(double value, string format) { return Real(value, format, 15); }
+    public static string Of(double value, string format, NumberFormatInfo? nfi = null) { return Real(value, format, 15, nfi); }
 
-    public static string OfSingle(float value, string format) { return Real((double)value, format, 7); }
+    public static string OfSingle(float value, string format, NumberFormatInfo? nfi = null) { return Real((double)value, format, 7, nfi); }
 
-    public static string OfHalf(double value, string format) { return Real(value, format, 5); }
+    public static string OfHalf(double value, string format) { return Real(value, format, 5, null); }
 
-    private static string Real(double value, string format, int precision) {
+    private static string Real(double value, string format, int precision, NumberFormatInfo? nfi = null) {
         double size = value < 0.0 ? 0.0 - value : value;
         int point = 0;
         string digits = size == 0.0 ? "" : FloatDecimal.Digits(size, precision, true, out point);
 
-        return Written(format, BitConverter.DoubleToInt64Bits(value) < 0, true, digits, point);
+        return Written(format, BitConverter.DoubleToInt64Bits(value) < 0, true, digits, point, nfi);
     }
 
     /// The same for a whole number, which must not go through a double: a long
     /// above 2^53 would lose its last digits on the way. Its digits are all
     /// of it, and long.MinValue's size is taken unsigned, the one place its
     /// negation fits.
-    public static string Of(long value, string format) {
+    public static string Of(long value, string format, NumberFormatInfo? nfi = null) {
         ulong size = value < 0 ? (ulong)0 - (ulong)value : (ulong)value;
         string digits = value == 0 ? "" : Decimal(size);
 
-        return Written(format, value < 0, false, digits, digits.Length);
+        return Written(format, value < 0, false, digits, digits.Length, nfi);
     }
 
-    public static string OfUnsigned(ulong value, string format) {
+    public static string OfUnsigned(ulong value, string format, NumberFormatInfo? nfi = null) {
         string digits = value == 0 ? "" : Decimal(value);
 
-        return Written(format, false, false, digits, digits.Length);
+        return Written(format, false, false, digits, digits.Length, nfi);
     }
 
     /// A DECIMAL'S DIGITS ARE ALL OF IT, its point where its scale puts it:
@@ -4994,10 +5103,10 @@ static class PictureFormat {
 
     /// The same for a whole number given as its decimal digits, which is all
     /// a BigInteger can give: no machine word holds one.
-    public static string OfDigits(bool negative, string digits, string format) {
+    public static string OfDigits(bool negative, string digits, string format, NumberFormatInfo? nfi = null) {
         bool zero = String.Compare(digits, "0") == 0;
 
-        return Written(format, negative && !zero, false, zero ? "" : digits, zero ? 0 : digits.Length);
+        return Written(format, negative && !zero, false, zero ? "" : digits, zero ? 0 : digits.Length, nfi);
     }
 
     /// An unsigned number's digits, which String.FromInt cannot give: a ulong
@@ -5028,9 +5137,12 @@ static class PictureFormat {
 
     // ---- the picture, read and written ----------------------------------
     //
-    // .NET's NumberToStringFormat, step for step, on the invariant culture:
-    // one pass reads the section to learn its shape, the number is rounded
-    // to it, and a second pass writes the section a character at a time.
+    // .NET's NumberToStringFormat, step for step: one pass reads the section
+    // to learn its shape, the number is rounded to it, and a second pass
+    // writes the section a character at a time -- in the invariant culture's
+    // signs and separators, or a culture's (`nfi`): its decimal separator,
+    // its group separator in its group sizes, its percent and per mille
+    // symbols, its negative sign, and an exponent's signs.
 
     /// WHERE SECTION `which` STARTS -- 0 positive, 1 negative, 2 zero -- or
     /// 0, the first, when the format has no such section or it is empty. A
@@ -5070,7 +5182,7 @@ static class PictureFormat {
     /// -0) where a whole number's does not (-4 in "0," is 0), because .NET has
     /// a minus nought for doubles only. A number that rounds to nought in its
     /// own section is written by the zero section, when there is one.
-    private static string Written(string format, bool negative, bool real, string digits, int scale) {
+    private static string Written(string format, bool negative, bool real, string digits, int scale, NumberFormatInfo? nfi) {
         int section = FindSection(format, digits.Length == 0 ? 2 : negative ? 1 : 0);
         int digitCount;
         int decimalPos;
@@ -5183,16 +5295,23 @@ static class PictureFormat {
         }
 
         // WHERE THE GROUP SEPARATORS GO, counted in digits from the point:
-        // every third, as far as the whole part reaches.
+        // every third, as far as the whole part reaches -- or a culture's
+        // groups, each separator after the digit that many places up
+        // (`groups`, the nearest the point last), as .NET's thousandsSepPos.
         int separators = 0;
+        int[]? groups = null;
         if (thousandSeps) {
             int totalDigits = digPos + (adjust < 0 ? adjust : 0);
             int numDigits = firstDigit > totalDigits ? firstDigit : totalDigits;
-            if (numDigits > 3) { separators = (numDigits - 1) / 3; }
+            if (nfi == null) {
+                if (numDigits > 3) { separators = (numDigits - 1) / 3; }
+            } else if (nfi._numberGroupSeparator.Length > 0) {
+                groups = GroupsAt(nfi._numberGroupSizes, numDigits, out separators);
+            }
         }
 
         StringBuilder made = new StringBuilder();
-        if (negative && section == 0 && scale != 0) { made.Append('-'); }
+        if (negative && section == 0 && scale != 0) { made.Append(NumberFormat.Minus(nfi)); }
 
         bool decimalWritten = false;
         int cur = 0;
@@ -5209,7 +5328,7 @@ static class PictureFormat {
                 while (adjust > 0) {
                     made.Append(cur < digits.Length ? Sys.GetChar(digits, cur) : '0');
                     if (cur < digits.Length) { cur = cur + 1; }
-                    separators = Separate(made, thousandSeps, digPos, separators);
+                    separators = Separate(made, thousandSeps, digPos, separators, groups, nfi);
                     digPos = digPos - 1;
                     adjust = adjust - 1;
                 }
@@ -5228,7 +5347,7 @@ static class PictureFormat {
                 }
                 if (c != 0) {
                     made.Append((char)c);
-                    separators = Separate(made, thousandSeps, digPos, separators);
+                    separators = Separate(made, thousandSeps, digPos, separators, groups, nfi);
                 }
                 digPos = digPos - 1;
             } else if (ch == '.') {
@@ -5236,11 +5355,12 @@ static class PictureFormat {
                 // picture asks for one with a '0'.
                 if (digPos != 0 || decimalWritten) { continue; }
                 if (lastDigit < 0 || (decimalPos < digitCount && cur < digits.Length)) {
-                    made.Append('.');
+                    made.Append(nfi == null ? "." : nfi._numberDecimalSeparator);
                     decimalWritten = true;
                 }
             } else if (ch == '\u2030' || ch == '%') {
-                made.Append(ch);
+                if (nfi == null) { made.Append(ch); }
+                else { made.Append(ch == '%' ? nfi._percentSymbol : nfi._perMilleSymbol); }
             } else if (ch == ',') {
                 continue;
             } else if (ch == '\'' || ch == '"') {
@@ -5271,7 +5391,7 @@ static class PictureFormat {
                         least = least + 1;
                         at = at + 1;
                     }
-                    NumberFormat.Exponent(made, ch, digits.Length == 0 ? 0 : scale - decimalPos, least > 10 ? 10 : least, mark == '+');
+                    NumberFormat.Exponent(made, ch, digits.Length == 0 ? 0 : scale - decimalPos, least > 10 ? 10 : least, mark == '+', nfi);
                     scientific = false;
                 } else {
                     made.Append(ch);
@@ -5292,8 +5412,36 @@ static class PictureFormat {
         // A MINUS ONLY IN FRONT OF SOMETHING when the number is below one:
         // -0.2 in "#" is nothing at all, not a lone sign, where in "0" it
         // is -0.
-        if (negative && section == 0 && scale == 0 && made.Length > 0) { made.Insert(0, '-'); }
+        if (negative && section == 0 && scale == 0 && made.Length > 0) { made.Insert(0, NumberFormat.Minus(nfi)); }
         return made.ToString();
+    }
+
+    /// A CULTURE'S GROUPS in a picture (.NET's thousandsSepPos): the places,
+    /// counted from the point, after which a separator goes, for a whole
+    /// part of `numDigits` digits; `count` how many.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int[] GroupsAt(int[] sizes, int numDigits, out int count) {
+        count = 0;
+        int[] at = new int[4];
+        int index = 0;
+        int total = sizes.Length != 0 ? sizes[0] : 0;
+        int size = total;
+        while (numDigits > total) {
+            if (size == 0) { break; }
+            if (count >= at.Length) {
+                int[] more = new int[at.Length * 2];
+                for (int k = 0; k < count; k++) { more[k] = at[k]; }
+                at = more;
+            }
+            at[count] = total;
+            count = count + 1;
+            if (index < sizes.Length - 1) {
+                index = index + 1;
+                size = sizes[index];
+            }
+            total = total + size;
+        }
+        return at;
     }
 
     /// Whether an 'E' or 'e' whose next character is at `at` starts an
@@ -5308,7 +5456,14 @@ static class PictureFormat {
     /// to the point are a whole number of groups: `left` separators remain,
     /// the next one after digit 3 x left + 1 counting down to the point.
     /// Answers how many remain.
-    private static int Separate(StringBuilder made, bool grouping, int digPos, int left) {
+    private static int Separate(StringBuilder made, bool grouping, int digPos, int left, int[]? groups, NumberFormatInfo? nfi) {
+        if (groups != null) {
+            if (grouping && digPos > 1 && left > 0 && digPos == groups[left - 1] + 1) {
+                made.Append(nfi!._numberGroupSeparator);
+                return left - 1;
+            }
+            return left;
+        }
         if (grouping && digPos > 1 && left > 0 && digPos == 3 * left + 1) {
             made.Append(',');
             return left - 1;
@@ -5538,25 +5693,58 @@ static class NumberRead {
     /// The integer `s` says, or the exception .NET throws: `bits` wide, signed
     /// or not, the answer as its two's-complement bits (a caller casts them to
     /// its type). The style has been checked already.
-    public static ulong Integer(string s, NumberStyles style, int bits, bool signed, string what) {
-        int status = ReadInteger(s, (int)style, bits, signed, out ulong value);
+    public static ulong Integer(string s, NumberStyles style, int bits, bool signed, string what, NumberFormatInfo? nfi = null) {
+        int status = ReadInteger(s, (int)style, bits, signed, out ulong value, nfi);
         if (status == Format) { throw Bad(s); }
         if (status == Overflow) { throw TooBig(what); }
         return value;
     }
 
     /// The same, false where Integer would throw.
-    public static bool TryInteger(string s, NumberStyles style, int bits, bool signed, out ulong value) {
-        if (ReadInteger(s, (int)style, bits, signed, out value) == Ok) { return true; }
+    public static bool TryInteger(string s, NumberStyles style, int bits, bool signed, out ulong value, NumberFormatInfo? nfi = null) {
+        if (ReadInteger(s, (int)style, bits, signed, out value, nfi) == Ok) { return true; }
         value = 0;
         return false;
     }
 
-    static int ReadInteger(string s, int style, int bits, bool signed, out ulong value) {
-        if ((style & ~(LeadingWhite | TrailingWhite | LeadingSign)) == 0) { return IntegerStyle(s, style, bits, signed, out value); }
+    static int ReadInteger(string s, int style, int bits, bool signed, out ulong value, NumberFormatInfo? nfi) {
+        if ((style & ~(LeadingWhite | TrailingWhite | LeadingSign)) == 0) { return IntegerStyle(s, style, bits, signed, out value, nfi); }
         if ((style & Hex) != 0) { return Pattern(s, style, bits, 4, out value); }
         if ((style & Binary) != 0) { return Pattern(s, style, bits, 1, out value); }
-        return IntegerNumber(s, style, bits, signed, out value);
+        return IntegerNumber(s, style, bits, signed, out value, nfi);
+    }
+
+    // ---- a culture's signs and symbols -----------------------------------------
+
+    /// Where `value` ends when it is written at `p`, or -1: never an empty one,
+    /// and a space where it has a non-breaking one, as .NET's MatchChars
+    /// takes it (nobody types those).
+    static int MatchChars(string s, int p, string value) {
+        if (value.Length == 0) { return -1; }
+        for (int k = 0; k < value.Length; k++) {
+            char cp = p + k < s.Length ? s[p + k] : (char)0;
+            char want = value[k];
+            if (cp != want && !((want == '\u00a0' || want == '\u202f') && cp == ' ')) { return -1; }
+        }
+        return p + value.Length;
+    }
+
+    /// Where `value` ends when it is written at `p` exactly, or -1: never an
+    /// empty one (a whole-number sign, as .NET's StartsWith reads it).
+    static int StartsAt(string s, int p, string value) {
+        if (value.Length == 0 || p + value.Length > s.Length) { return -1; }
+        for (int k = 0; k < value.Length; k++) {
+            if (s[p + k] != value[k]) { return -1; }
+        }
+        return p + value.Length;
+    }
+
+    /// The negative sign at `p`, or a hyphen where the culture's is one of
+    /// Unicode's other minus signs (AllowHyphenDuringParsing).
+    static int MatchNegative(string s, int p, string negative, NumberFormatInfo? nfi) {
+        int at = MatchChars(s, p, negative);
+        if (at < 0 && nfi != null && nfi.AllowHyphenDuringParsing && p < s.Length && s[p] == '-') { at = p + 1; }
+        return at;
     }
 
     // The largest magnitude of the type: one more below zero when signed.
@@ -5578,7 +5766,7 @@ static class NumberRead {
     // White space, a sign, digits, white space: the whole text read before
     // an overflow is reported, so text that is malformed after its digits is
     // a format error however many of them there were.
-    static int IntegerStyle(string s, int style, int bits, bool signed, out ulong value) {
+    static int IntegerStyle(string s, int style, int bits, bool signed, out ulong value, NumberFormatInfo? nfi) {
         value = 0;
         int n = s.Length;
         int i = 0;
@@ -5588,10 +5776,31 @@ static class NumberRead {
             if (i == n) { return Format; }
         }
         bool negative = false;
-        if ((style & LeadingSign) != 0 && (s[i] == '-' || s[i] == '+')) {
-            negative = s[i] == '-';
-            i++;
-            if (i == n) { return Format; }
+        if ((style & LeadingSign) != 0) {
+            // A CULTURE'S OWN SIGNS, as .NET's TryParseBinaryIntegerStyle reads
+            // them: a hyphen too where its minus is another, else each sign's
+            // whole text.
+            if (nfi == null || nfi._positiveSign == "+" && nfi._negativeSign == "-") {
+                if (s[i] == '-' || s[i] == '+') {
+                    negative = s[i] == '-';
+                    i++;
+                    if (i == n) { return Format; }
+                }
+            } else if (nfi.AllowHyphenDuringParsing && s[i] == '-') {
+                negative = true;
+                i++;
+                if (i == n) { return Format; }
+            } else {
+                int past = StartsAt(s, i, nfi._positiveSign);
+                if (past < 0) {
+                    past = StartsAt(s, i, nfi._negativeSign);
+                    if (past >= 0) { negative = true; }
+                }
+                if (past >= 0) {
+                    i = past;
+                    if (i == n) { return Format; }
+                }
+            }
         }
         if (!Digit(s[i])) { return Format; }
         ulong magnitude = 0;
@@ -5660,11 +5869,11 @@ static class NumberRead {
     // Through the digit buffer, as .NET reads every style beyond Integer: the
     // buffer holds as many digits as the type's longest number, and the
     // number is whole digits up to the point and nothing after it but zeros.
-    static int IntegerNumber(string s, int style, int bits, bool signed, out ulong value) {
+    static int IntegerNumber(string s, int style, int bits, bool signed, out ulong value, NumberFormatInfo? nfi) {
         value = 0;
         int width = bits == 8 ? 3 : bits == 16 ? 5 : bits == 32 ? 10 : signed ? 19 : 20;
         char[] digits = new char[width];
-        if (!Scan(s, style, NumberBufferKind.Integer, digits, out int count, out int scale, out bool negative, out bool tail)) { return Format; }
+        if (!Scan(s, style, NumberBufferKind.Integer, digits, out int count, out int scale, out bool negative, out bool tail, nfi)) { return Format; }
         if (scale > width || scale < count || (!signed && negative)) { return Overflow; }
         ulong magnitude = 0;
         for (int i = 0; i < scale; i++) {
@@ -5677,8 +5886,10 @@ static class NumberRead {
 
     // ---- the digit buffer ------------------------------------------------------
     //
-    // .NET's TryParseNumber, under the invariant culture: '+' and '-' the
-    // signs, '.' the point, ',' the group separator, '¤' the currency symbol.
+    // .NET's TryParseNumber: the invariant culture's '+' and '-' the signs,
+    // '.' the point, ',' the group separator, '¤' the currency symbol, or a
+    // culture's own texts for each (`nfi`) -- the currency's separators while
+    // a currency symbol may be read, the number's too until one has been.
     // `digits` takes the significant digits, as many as it holds; `count` is
     // how many of them count (an integer's trailing zeros do not, a float's
     // fraction's trailing zeros are trimmed), `scale` where the point falls
@@ -5688,33 +5899,45 @@ static class NumberRead {
     // its fraction's trailing zeros, which are its scale, and nought's.
     const int StateSign = 1, StateParens = 2, StateDigits = 4, StateNonZero = 8, StateDecimal = 16, StateCurrency = 32;
 
-    internal static bool Scan(string s, int style, NumberBufferKind kind, char[] digits, out int count, out int scale, out bool negative, out bool tail) {
+    internal static bool Scan(string s, int style, NumberBufferKind kind, char[] digits, out int count, out int scale, out bool negative, out bool tail, NumberFormatInfo? nfi = null) {
         bool integer = kind == NumberBufferKind.Integer;
         count = 0;
         scale = 0;
         negative = false;
         tail = false;
         int most = digits.Length;
-        bool currency = (style & Currency) != 0;
+        string plus = nfi == null ? "+" : nfi._positiveSign;
+        string minus = nfi == null ? "-" : nfi._negativeSign;
+        string? currencySymbol = (style & Currency) == 0 ? null : nfi == null ? "¤" : nfi._currencySymbol;
+        bool parsingCurrency = currencySymbol != null;
+        string point = nfi == null ? "." : parsingCurrency ? nfi._currencyDecimalSeparator : nfi._numberDecimalSeparator;
+        string group = nfi == null ? "," : parsingCurrency ? nfi._currencyGroupSeparator : nfi._numberGroupSeparator;
+        string numberPoint = nfi == null ? "." : nfi._numberDecimalSeparator;
+        string numberGroup = nfi == null ? "," : nfi._numberGroupSeparator;
+        bool spacedSign = nfi != null && nfi._numberNegativePattern == 2;
         int state = 0;
         int end = s.Length;
         int p = 0;
+        int next;
         char ch = p < end ? s[p] : (char)0;
 
         // Before the digits: white space, a sign or an opening parenthesis,
         // the currency symbol, in any order. White space after a sign is not
-        // taken, unless the currency symbol came first.
+        // taken, unless the currency symbol came first (or the culture writes
+        // a space after its negative sign).
         while (true) {
-            if (!White(ch) || (style & LeadingWhite) == 0 || ((state & StateSign) != 0 && (state & StateCurrency) == 0)) {
-                if ((style & LeadingSign) != 0 && (state & StateSign) == 0 && (ch == '+' || ch == '-')) {
-                    if (ch == '-') { negative = true; }
+            if (!White(ch) || (style & LeadingWhite) == 0 || ((state & StateSign) != 0 && (state & StateCurrency) == 0 && !spacedSign)) {
+                if ((style & LeadingSign) != 0 && (state & StateSign) == 0
+                    && ((next = MatchChars(s, p, plus)) >= 0 || (next = MatchNegative(s, p, minus, nfi)) >= 0 && (negative = true))) {
                     state |= StateSign;
+                    p = next - 1;
                 } else if (ch == '(' && (style & Parentheses) != 0 && (state & StateSign) == 0) {
                     state |= StateSign | StateParens;
                     negative = true;
-                } else if (currency && ch == '¤') {
+                } else if (currencySymbol != null && (next = MatchChars(s, p, currencySymbol)) >= 0) {
                     state |= StateCurrency;
-                    currency = false;
+                    currencySymbol = null;
+                    p = next - 1;
                 } else {
                     break;
                 }
@@ -5742,10 +5965,14 @@ static class NumberRead {
                 } else if ((state & StateDecimal) != 0) {
                     scale--;
                 }
-            } else if ((style & DecimalPoint) != 0 && (state & StateDecimal) == 0 && ch == '.') {
+            } else if ((style & DecimalPoint) != 0 && (state & StateDecimal) == 0
+                       && ((next = MatchChars(s, p, point)) >= 0 || parsingCurrency && (state & StateCurrency) == 0 && (next = MatchChars(s, p, numberPoint)) >= 0)) {
                 state |= StateDecimal;
-            } else if ((style & Thousands) != 0 && (state & StateDigits) != 0 && (state & StateDecimal) == 0 && ch == ',') {
+                p = next - 1;
+            } else if ((style & Thousands) != 0 && (state & StateDigits) != 0 && (state & StateDecimal) == 0
+                       && ((next = MatchChars(s, p, group)) >= 0 || parsingCurrency && (state & StateCurrency) == 0 && (next = MatchChars(s, p, numberGroup)) >= 0)) {
                 // A group separator, between digits before the point.
+                p = next - 1;
             } else {
                 break;
             }
@@ -5763,11 +5990,11 @@ static class NumberRead {
             bool down = false;
             p++;
             ch = p < end ? s[p] : (char)0;
-            if (ch == '+') {
-                p++;
+            if ((next = MatchChars(s, p, plus)) >= 0) {
+                p = next;
                 ch = p < end ? s[p] : (char)0;
-            } else if (ch == '-') {
-                p++;
+            } else if ((next = MatchNegative(s, p, minus, nfi)) >= 0) {
+                p = next;
                 ch = p < end ? s[p] : (char)0;
                 down = true;
             }
@@ -5809,13 +6036,15 @@ static class NumberRead {
         // parenthesis, the currency symbol not yet seen.
         while (true) {
             if (!White(ch) || (style & TrailingWhite) == 0) {
-                if ((style & TrailingSign) != 0 && (state & StateSign) == 0 && (ch == '+' || ch == '-')) {
-                    if (ch == '-') { negative = true; }
+                if ((style & TrailingSign) != 0 && (state & StateSign) == 0
+                    && ((next = MatchChars(s, p, plus)) >= 0 || (next = MatchNegative(s, p, minus, nfi)) >= 0 && (negative = true))) {
                     state |= StateSign;
+                    p = next - 1;
                 } else if (ch == ')' && (state & StateParens) != 0) {
                     state &= ~StateParens;
-                } else if (currency && ch == '¤') {
-                    currency = false;
+                } else if (currencySymbol != null && (next = MatchChars(s, p, currencySymbol)) >= 0) {
+                    currencySymbol = null;
+                    p = next - 1;
                 } else {
                     break;
                 }
@@ -5838,10 +6067,10 @@ static class NumberRead {
     // ---- floating point --------------------------------------------------------
 
     /// The double `s` says, correctly rounded, or false where it is no number.
-    public static bool TryDouble(string s, NumberStyles style, out double value) {
+    public static bool TryDouble(string s, NumberStyles style, out double value, NumberFormatInfo? nfi = null) {
         int width = s.Length < 768 ? s.Length : 768;
         char[] digits = new char[width == 0 ? 1 : width];
-        if (Scan(s, (int)style, NumberBufferKind.FloatingPoint, digits, out int count, out int scale, out bool negative, out bool tail)) {
+        if (Scan(s, (int)style, NumberBufferKind.FloatingPoint, digits, out int count, out int scale, out bool negative, out bool tail, nfi)) {
             double magnitude = 0.0;
             if (count > 0) {
                 int exponent;
@@ -5853,17 +6082,17 @@ static class NumberRead {
             value = negative ? BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(magnitude) | long.MinValue) : magnitude;
             return true;
         }
-        int special = Special(s);
+        int special = Special(s, nfi);
         value = special == 1 ? Double.PositiveInfinity : special == 2 ? Double.NegativeInfinity : special == 3 ? Double.NaN : 0.0;
         return special != 0;
     }
 
     /// The float `s` says, rounded once from the decimal and not through a
     /// double, which would round twice.
-    public static bool TrySingle(string s, NumberStyles style, out float value) {
+    public static bool TrySingle(string s, NumberStyles style, out float value, NumberFormatInfo? nfi = null) {
         int width = s.Length < 113 ? s.Length : 113;
         char[] digits = new char[width == 0 ? 1 : width];
-        if (Scan(s, (int)style, NumberBufferKind.FloatingPoint, digits, out int count, out int scale, out bool negative, out bool tail)) {
+        if (Scan(s, (int)style, NumberBufferKind.FloatingPoint, digits, out int count, out int scale, out bool negative, out bool tail, nfi)) {
             float magnitude = 0.0F;
             if (count > 0) {
                 int exponent;
@@ -5873,7 +6102,7 @@ static class NumberRead {
             value = negative ? BitConverter.Int32BitsToSingle(BitConverter.SingleToInt32Bits(magnitude) | int.MinValue) : magnitude;
             return true;
         }
-        int special = Special(s);
+        int special = Special(s, nfi);
         value = special == 1 ? Single.PositiveInfinity : special == 2 ? Single.NegativeInfinity : special == 3 ? Single.NaN : 0.0F;
         return special != 0;
     }
@@ -6127,23 +6356,29 @@ static class NumberRead {
     }
 
     // The words .NET reads where the digits failed: 1 infinity, 2 negative
-    // infinity, 3 NaN, 0 none. White space either side, any case.
-    static int Special(string s) {
+    // infinity, 3 NaN, 0 none. White space either side, any case. The
+    // culture's words and signs (`nfi`), or the invariant culture's.
+    static int Special(string s, NumberFormatInfo? nfi) {
         int at = 0;
         int end = s.Length;
         while (at < end && Char.IsWhiteSpace(s[at])) { at++; }
         while (end > at && Char.IsWhiteSpace(s[end - 1])) { end--; }
         string t = s.Substring(at, end - at);
-        if (Same(t, "Infinity")) { return 1; }
-        if (Same(t, "-Infinity")) { return 2; }
-        if (Same(t, "NaN")) { return 3; }
-        if (t.Length > 0 && t[0] == '+') {
-            string rest = t.Substring(1);
-            if (Same(rest, "Infinity")) { return 1; }
-            if (Same(rest, "NaN")) { return 3; }
+        string infinity = nfi == null ? "Infinity" : nfi._positiveInfinitySymbol;
+        string nan = nfi == null ? "NaN" : nfi._nanSymbol;
+        string plus = nfi == null ? "+" : nfi._positiveSign;
+        string minus = nfi == null ? "-" : nfi._negativeSign;
+        if (Same(t, infinity)) { return 1; }
+        if (Same(t, nfi == null ? "-Infinity" : nfi._negativeInfinitySymbol)) { return 2; }
+        if (Same(t, nan)) { return 3; }
+        if (t.StartsWith(plus, StringComparison.OrdinalIgnoreCase)) {
+            string rest = t.Substring(plus.Length);
+            if (Same(rest, infinity)) { return 1; }
+            if (Same(rest, nan)) { return 3; }
             return 0;
         }
-        if (t.Length > 0 && t[0] == '-' && Same(t.Substring(1), "NaN")) { return 3; }
+        if (t.StartsWith(minus, StringComparison.OrdinalIgnoreCase) && Same(t.Substring(minus.Length), nan)) { return 3; }
+        if (nfi != null && nfi.AllowHyphenDuringParsing && t.Length > 0 && t[0] == '-' && Same(t.Substring(1), nan)) { return 3; }
         return 0;
     }
 
@@ -6175,10 +6410,21 @@ static class SByte {
         return NumberFormat.Of(value, 8, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this sbyte value, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 8, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this sbyte value, string? format, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 8, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -6190,7 +6436,7 @@ static class SByte {
     public static sbyte Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (sbyte)NumberRead.Integer(s, style, 8, true, "a signed byte");
+        return (sbyte)NumberRead.Integer(s, style, 8, true, "a signed byte", NumberFormatInfo.Given(provider));
     }
 
     public static sbyte Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -6199,7 +6445,7 @@ static class SByte {
 
     public static sbyte Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (sbyte)NumberRead.Integer(s.ToString(), style, 8, true, "a signed byte");
+        return (sbyte)NumberRead.Integer(s.ToString(), style, 8, true, "a signed byte", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out sbyte result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -6208,7 +6454,7 @@ static class SByte {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out sbyte result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 8, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 8, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (sbyte)bits;
         return ok;
     }
@@ -6218,7 +6464,7 @@ static class SByte {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out sbyte result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 8, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 8, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (sbyte)bits;
         return ok;
     }
@@ -6257,10 +6503,21 @@ static class Int16 {
         return NumberFormat.Of(value, 16, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this short value, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 16, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this short value, string? format, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 16, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -6272,7 +6529,7 @@ static class Int16 {
     public static short Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (short)NumberRead.Integer(s, style, 16, true, "an Int16");
+        return (short)NumberRead.Integer(s, style, 16, true, "an Int16", NumberFormatInfo.Given(provider));
     }
 
     public static short Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -6281,7 +6538,7 @@ static class Int16 {
 
     public static short Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (short)NumberRead.Integer(s.ToString(), style, 16, true, "an Int16");
+        return (short)NumberRead.Integer(s.ToString(), style, 16, true, "an Int16", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out short result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -6290,7 +6547,7 @@ static class Int16 {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out short result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 16, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 16, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (short)bits;
         return ok;
     }
@@ -6300,7 +6557,7 @@ static class Int16 {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out short result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 16, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 16, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (short)bits;
         return ok;
     }
@@ -6339,10 +6596,21 @@ static class UInt16 {
         return NumberFormat.OfUnsigned((ulong)value, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this ushort value, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this ushort value, string? format, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -6354,7 +6622,7 @@ static class UInt16 {
     public static ushort Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (ushort)NumberRead.Integer(s, style, 16, false, "a UInt16");
+        return (ushort)NumberRead.Integer(s, style, 16, false, "a UInt16", NumberFormatInfo.Given(provider));
     }
 
     public static ushort Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -6363,7 +6631,7 @@ static class UInt16 {
 
     public static ushort Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (ushort)NumberRead.Integer(s.ToString(), style, 16, false, "a UInt16");
+        return (ushort)NumberRead.Integer(s.ToString(), style, 16, false, "a UInt16", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out ushort result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -6372,7 +6640,7 @@ static class UInt16 {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out ushort result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 16, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 16, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (ushort)bits;
         return ok;
     }
@@ -6382,7 +6650,7 @@ static class UInt16 {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out ushort result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 16, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 16, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (ushort)bits;
         return ok;
     }
@@ -6421,10 +6689,21 @@ static class UInt32 {
         return NumberFormat.OfUnsigned((ulong)value, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this uint value, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this uint value, string? format, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -6436,7 +6715,7 @@ static class UInt32 {
     public static uint Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (uint)NumberRead.Integer(s, style, 32, false, "a UInt32");
+        return (uint)NumberRead.Integer(s, style, 32, false, "a UInt32", NumberFormatInfo.Given(provider));
     }
 
     public static uint Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -6445,7 +6724,7 @@ static class UInt32 {
 
     public static uint Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (uint)NumberRead.Integer(s.ToString(), style, 32, false, "a UInt32");
+        return (uint)NumberRead.Integer(s.ToString(), style, 32, false, "a UInt32", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out uint result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -6454,7 +6733,7 @@ static class UInt32 {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out uint result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 32, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 32, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (uint)bits;
         return ok;
     }
@@ -6464,7 +6743,7 @@ static class UInt32 {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out uint result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 32, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 32, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (uint)bits;
         return ok;
     }
@@ -6502,18 +6781,25 @@ static class Int64 {
     public static long MaxValue => long.MaxValue;
     public static long MinValue => long.MinValue;
 
-    public static string ToString(this long value, IFormatProvider? provider) {
-        return String.FromInt(value);
-    }
-
     public static string ToString(this long value, string format) {
         return NumberFormat.Of(value, 64, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this long value, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 64, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this long value, string? format, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 64, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -6525,7 +6811,7 @@ static class Int64 {
     public static long Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (long)NumberRead.Integer(s, style, 64, true, "an Int64");
+        return (long)NumberRead.Integer(s, style, 64, true, "an Int64", NumberFormatInfo.Given(provider));
     }
 
     public static long Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -6534,7 +6820,7 @@ static class Int64 {
 
     public static long Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (long)NumberRead.Integer(s.ToString(), style, 64, true, "an Int64");
+        return (long)NumberRead.Integer(s.ToString(), style, 64, true, "an Int64", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out long result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -6543,7 +6829,7 @@ static class Int64 {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out long result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 64, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 64, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (long)bits;
         return ok;
     }
@@ -6553,7 +6839,7 @@ static class Int64 {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out long result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 64, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 64, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (long)bits;
         return ok;
     }
@@ -6588,18 +6874,25 @@ static class Int32 {
     public static int MaxValue => int.MaxValue;
     public static int MinValue => int.MinValue;
 
-    public static string ToString(this int value, IFormatProvider? provider) {
-        return String.FromInt(value);
-    }
-
     public static string ToString(this int value, string format) {
         return NumberFormat.Of(value, 32, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this int value, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 32, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this int value, string? format, IFormatProvider? provider) {
+        return NumberFormat.Of(value, 32, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -6611,7 +6904,7 @@ static class Int32 {
     public static int Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (int)NumberRead.Integer(s, style, 32, true, "an Int32");
+        return (int)NumberRead.Integer(s, style, 32, true, "an Int32", NumberFormatInfo.Given(provider));
     }
 
     public static int Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -6620,7 +6913,7 @@ static class Int32 {
 
     public static int Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (int)NumberRead.Integer(s.ToString(), style, 32, true, "an Int32");
+        return (int)NumberRead.Integer(s.ToString(), style, 32, true, "an Int32", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out int result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -6629,7 +6922,7 @@ static class Int32 {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out int result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 32, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 32, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (int)bits;
         return ok;
     }
@@ -6639,7 +6932,7 @@ static class Int32 {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out int result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 32, true, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 32, true, out ulong bits, NumberFormatInfo.Given(provider));
         result = (int)bits;
         return ok;
     }
@@ -6690,7 +6983,9 @@ class CultureInfo : IFormatProvider {
     // posted item's never the thread's that ran it (AsyncContext). Held here
     // as the thread's, and carried by the context the work runs in.
     // Whatever is set is handed back; the formatting is the invariant
-    // culture's all the same, the one this machine has.
+    // Whatever is set is handed back. A culture's formats are used where
+    // it is the provider given; with none, a date or a number is written in
+    // the invariant culture's (DateTimeFormatInfo.Given, NumberFormatInfo.Given).
     [ThreadStatic] static CultureInfo? _current;
     [ThreadStatic] static CultureInfo? _currentUI;
     static bool _flowUsed;
@@ -6765,8 +7060,8 @@ class CultureInfo : IFormatProvider {
     public CultureInfo() { _lcid = Invariant; }
 
     /// A culture by its Windows locale id (an input language's, as
-    /// InputLanguage.Culture makes it). Its formatting is the invariant
-    /// culture's: this machine formats with one.
+    /// InputLanguage.Culture makes it). Its formats start as the invariant
+    /// culture's: this machine has no other culture's data.
     public CultureInfo(int culture) { _lcid = culture & 0xFFFF; }
 
     public int LCID => _lcid;
@@ -6805,8 +7100,7 @@ class CultureInfo : IFormatProvider {
 
     // ITS DATE FORMATS: the invariant culture's own, read-only, for the
     // invariant culture (and so for the current one); for one made by its
-    // id, a copy of them it may change, its formatting being the invariant
-    // culture's.
+    // id, a copy of them it may change.
     System.Globalization.DateTimeFormatInfo? _dateTimeFormat;
 
     public System.Globalization.DateTimeFormatInfo DateTimeFormat
@@ -6824,6 +7118,30 @@ class CultureInfo : IFormatProvider {
         }
     }
 
+    // ITS NUMBER FORMATS, as its date formats: the invariant culture's own,
+    // read-only, for the invariant culture; for another, a copy of them it
+    // may change, made when first asked for.
+    System.Globalization.NumberFormatInfo? _numberFormat;
+
+    public System.Globalization.NumberFormatInfo NumberFormat
+    {
+        get
+        {
+            if (_lcid == Invariant) return System.Globalization.NumberFormatInfo.InvariantInfo;
+            return _numberFormat ??= new System.Globalization.NumberFormatInfo();
+        }
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value, "value");
+            if (_lcid == Invariant) throw new InvalidOperationException("Instance is read-only.");
+            _numberFormat = value;
+        }
+    }
+
+    /// What its numbers are written with, or null while it has never been
+    /// asked and so holds the invariant culture's (NumberFormatInfo.Given).
+    internal System.Globalization.NumberFormatInfo? MadeNumberFormat => _lcid == Invariant ? null : _numberFormat;
+
     public System.Globalization.Calendar Calendar => DateTimeFormat.Calendar;
 
     /// The calendars the culture may be given: the Gregorian, as each new.
@@ -6831,6 +7149,7 @@ class CultureInfo : IFormatProvider {
 
     public object? GetFormat(Type? formatType)
     {
+        if (formatType == typeof(System.Globalization.NumberFormatInfo)) return NumberFormat;
         return formatType == typeof(System.Globalization.DateTimeFormatInfo) ? DateTimeFormat : null;
     }
 }
@@ -6854,6 +7173,16 @@ static class IntPtr {
     public static string ToString(this nint value, string format) {
         return NumberFormat.Of((long)value, (int)WordSize.Bytes * 8, format);
     }
+
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this nint value, IFormatProvider? provider) {
+        return NumberFormat.Of((long)value, (int)WordSize.Bytes * 8, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this nint value, string? format, IFormatProvider? provider) {
+        return NumberFormat.Of((long)value, (int)WordSize.Bytes * 8, format ?? "", NumberFormatInfo.Given(provider));
+    }
 }
 
 /// System.UIntPtr's statics: `nuint` is UIntPtr (C# 11).
@@ -6867,6 +7196,16 @@ static class UIntPtr {
 
     public static string ToString(this nuint value, string format) {
         return NumberFormat.OfUnsigned((ulong)value, format);
+    }
+
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this nuint value, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned((ulong)value, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this nuint value, string? format, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned((ulong)value, format ?? "", NumberFormatInfo.Given(provider));
     }
 }
 
@@ -6903,10 +7242,21 @@ static class UInt64 {
         return NumberFormat.OfUnsigned(value, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this ulong value, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this ulong value, string? format, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -6918,7 +7268,7 @@ static class UInt64 {
     public static ulong Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (ulong)NumberRead.Integer(s, style, 64, false, "a UInt64");
+        return (ulong)NumberRead.Integer(s, style, 64, false, "a UInt64", NumberFormatInfo.Given(provider));
     }
 
     public static ulong Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -6927,7 +7277,7 @@ static class UInt64 {
 
     public static ulong Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (ulong)NumberRead.Integer(s.ToString(), style, 64, false, "a UInt64");
+        return (ulong)NumberRead.Integer(s.ToString(), style, 64, false, "a UInt64", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out ulong result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -6936,7 +7286,7 @@ static class UInt64 {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out ulong result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 64, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 64, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (ulong)bits;
         return ok;
     }
@@ -6946,7 +7296,7 @@ static class UInt64 {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out ulong result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 64, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 64, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (ulong)bits;
         return ok;
     }
@@ -6981,18 +7331,25 @@ static class Byte {
     public static byte MaxValue => byte.MaxValue;
     public static byte MinValue => 0;
 
-    public static string ToString(this byte value, IFormatProvider? provider) {
-        return String.FromInt(value);
-    }
-
     public static string ToString(this byte value, string format) {
         return NumberFormat.OfUnsigned((ulong)value, format);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
+    public static string ToString(this byte value, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, "", NumberFormatInfo.Given(provider));
+    }
+
+    public static string ToString(this byte value, string? format, IFormatProvider? provider) {
+        return NumberFormat.OfUnsigned(value, format ?? "", NumberFormatInfo.Given(provider));
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
-    // NumberStyles.Integer unless a style is given; the provider is the
-    // invariant culture whatever it is. Parse throws ArgumentNullException,
+    // NumberStyles.Integer unless a style is given; the provider's signs,
+    // separators and currency symbol (NumberFormatInfo.Given), the invariant
+    // culture's when it gives none. Parse throws ArgumentNullException,
     // FormatException or OverflowException with .NET's messages; TryParse
     // answers false where Parse would throw, but a style .NET refuses is
     // refused by both.
@@ -7004,7 +7361,7 @@ static class Byte {
     public static byte Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        return (byte)NumberRead.Integer(s, style, 8, false, "an unsigned byte");
+        return (byte)NumberRead.Integer(s, style, 8, false, "an unsigned byte", NumberFormatInfo.Given(provider));
     }
 
     public static byte Parse(ReadOnlySpan<char> s) { return Parse(s, NumberStyles.Integer, null); }
@@ -7013,7 +7370,7 @@ static class Byte {
 
     public static byte Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckInteger(style);
-        return (byte)NumberRead.Integer(s.ToString(), style, 8, false, "an unsigned byte");
+        return (byte)NumberRead.Integer(s.ToString(), style, 8, false, "an unsigned byte", NumberFormatInfo.Given(provider));
     }
 
     public static bool TryParse([NotNullWhen(true)] string? s, out byte result) { return TryParse(s, NumberStyles.Integer, null, out result); }
@@ -7022,7 +7379,7 @@ static class Byte {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out byte result) {
         NumberRead.CheckInteger(style);
         if (s == null) { result = 0; return false; }
-        bool ok = NumberRead.TryInteger(s, style, 8, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s, style, 8, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (byte)bits;
         return ok;
     }
@@ -7032,7 +7389,7 @@ static class Byte {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out byte result) {
         NumberRead.CheckInteger(style);
-        bool ok = NumberRead.TryInteger(s.ToString(), style, 8, false, out ulong bits);
+        bool ok = NumberRead.TryInteger(s.ToString(), style, 8, false, out ulong bits, NumberFormatInfo.Given(provider));
         result = (byte)bits;
         return ok;
     }
@@ -7074,16 +7431,19 @@ static class Double {
         return String.FromDouble(value);
     }
 
+    /// As the provider says (NumberFormatInfo.Given): a culture's signs,
+    /// separators, symbols, group sizes, digits and patterns.
     public static string ToString(this double value, IFormatProvider? provider) {
-        return String.FromDouble(value);
+        NumberFormatInfo? nfi = NumberFormatInfo.Given(provider);
+        return nfi == null ? String.FromDouble(value) : DoubleFormat.Of(value, "", nfi);
     }
 
     public static string ToString(this double value, string format) {
         return DoubleFormat.Of(value, format);
     }
 
-    public static string ToString(this double value, string format, IFormatProvider? provider) {
-        return DoubleFormat.Of(value, format);
+    public static string ToString(this double value, string? format, IFormatProvider? provider) {
+        return DoubleFormat.Of(value, format ?? "", NumberFormatInfo.Given(provider));
     }
 
     public static bool IsNaN(double value) { return DoubleFormat.IsNaN(value); }
@@ -7197,8 +7557,9 @@ static class Double {
     //
     // NumberStyles.Float | AllowThousands unless a style is given, correctly
     // rounded; too large is infinity, never an OverflowException. "Infinity",
-    // "-Infinity" and "NaN" in any case. The provider is the invariant
-    // culture whatever it is.
+    // "-Infinity" and "NaN" in any case -- or the provider's words, signs and
+    // separators (NumberFormatInfo.Given), the invariant culture's when it
+    // gives none.
 
     public static double Parse(string s) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, null); }
     public static double Parse(string s, NumberStyles style) { return Parse(s, style, null); }
@@ -7207,7 +7568,7 @@ static class Double {
     public static double Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckFloat(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        if (!NumberRead.TryDouble(s, style, out double value)) { throw NumberRead.Bad(s); }
+        if (!NumberRead.TryDouble(s, style, out double value, NumberFormatInfo.Given(provider))) { throw NumberRead.Bad(s); }
         return value;
     }
 
@@ -7218,7 +7579,7 @@ static class Double {
     public static double Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckFloat(style);
         string text = s.ToString();
-        if (!NumberRead.TryDouble(text, style, out double value)) { throw NumberRead.Bad(text); }
+        if (!NumberRead.TryDouble(text, style, out double value, NumberFormatInfo.Given(provider))) { throw NumberRead.Bad(text); }
         return value;
     }
 
@@ -7228,7 +7589,7 @@ static class Double {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out double result) {
         NumberRead.CheckFloat(style);
         if (s == null) { result = 0.0; return false; }
-        if (NumberRead.TryDouble(s, style, out result)) { return true; }
+        if (NumberRead.TryDouble(s, style, out result, NumberFormatInfo.Given(provider))) { return true; }
         result = 0.0;
         return false;
     }
@@ -7238,7 +7599,7 @@ static class Double {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out double result) {
         NumberRead.CheckFloat(style);
-        if (NumberRead.TryDouble(s.ToString(), style, out result)) { return true; }
+        if (NumberRead.TryDouble(s.ToString(), style, out result, NumberFormatInfo.Given(provider))) { return true; }
         result = 0.0;
         return false;
     }
@@ -7279,9 +7640,9 @@ static class Single {
     }
 
     public static string ToString(this float value) { return DoubleFormat.ShortestSingle(value); }
-    public static string ToString(this float value, IFormatProvider? provider) { return DoubleFormat.ShortestSingle(value); }
+    public static string ToString(this float value, IFormatProvider? provider) { return DoubleFormat.ShortestSingle(value, 'E', NumberFormatInfo.Given(provider)); }
     public static string ToString(this float value, string format) { return DoubleFormat.OfSingle(value, format); }
-    public static string ToString(this float value, string format, IFormatProvider? provider) { return DoubleFormat.OfSingle(value, format); }
+    public static string ToString(this float value, string? format, IFormatProvider? provider) { return DoubleFormat.OfSingle(value, format ?? "", NumberFormatInfo.Given(provider)); }
 
     public static bool IsNaN(float value) { return value != value; }
     public static bool IsInfinity(float value) { return DoubleFormat.IsInfinity(value); }
@@ -7309,8 +7670,9 @@ static class Single {
     //
     // NumberStyles.Float | AllowThousands unless a style is given, correctly
     // rounded; too large is infinity, never an OverflowException. "Infinity",
-    // "-Infinity" and "NaN" in any case. The provider is the invariant
-    // culture whatever it is.
+    // "-Infinity" and "NaN" in any case -- or the provider's words, signs and
+    // separators (NumberFormatInfo.Given), the invariant culture's when it
+    // gives none.
 
     public static float Parse(string s) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, null); }
     public static float Parse(string s, NumberStyles style) { return Parse(s, style, null); }
@@ -7319,7 +7681,7 @@ static class Single {
     public static float Parse(string s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckFloat(style);
         if (s == null) { throw new ArgumentNullException("s"); }
-        if (!NumberRead.TrySingle(s, style, out float value)) { throw NumberRead.Bad(s); }
+        if (!NumberRead.TrySingle(s, style, out float value, NumberFormatInfo.Given(provider))) { throw NumberRead.Bad(s); }
         return value;
     }
 
@@ -7330,7 +7692,7 @@ static class Single {
     public static float Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
         NumberRead.CheckFloat(style);
         string text = s.ToString();
-        if (!NumberRead.TrySingle(text, style, out float value)) { throw NumberRead.Bad(text); }
+        if (!NumberRead.TrySingle(text, style, out float value, NumberFormatInfo.Given(provider))) { throw NumberRead.Bad(text); }
         return value;
     }
 
@@ -7340,7 +7702,7 @@ static class Single {
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out float result) {
         NumberRead.CheckFloat(style);
         if (s == null) { result = 0.0F; return false; }
-        if (NumberRead.TrySingle(s, style, out result)) { return true; }
+        if (NumberRead.TrySingle(s, style, out result, NumberFormatInfo.Given(provider))) { return true; }
         result = 0.0F;
         return false;
     }
@@ -7350,7 +7712,7 @@ static class Single {
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out float result) {
         NumberRead.CheckFloat(style);
-        if (NumberRead.TrySingle(s.ToString(), style, out result)) { return true; }
+        if (NumberRead.TrySingle(s.ToString(), style, out result, NumberFormatInfo.Given(provider))) { return true; }
         result = 0.0F;
         return false;
     }
@@ -10065,11 +10427,9 @@ interface IEnumerator<out T> : IDisposable, IEnumerator {
     T Current { get; }
 }
 
-/// `out T`. Everything read from a sequence is a T, so a sequence of
-/// FieldDecl IS a sequence of MemberDecl -- which is what lets
-/// `decl.Members.AddRange(several.More)` be written at all.
 /// A SEQUENCE READ BY AWAITING, as .NET's: each MoveNextAsync a ValueTask
 /// that says whether there is another, the enumerator disposed by awaiting.
+/// `await foreach` walks one, and an async iterator is one.
 interface IAsyncEnumerable<out T> {
     IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default);
 }
@@ -10079,6 +10439,418 @@ interface IAsyncEnumerator<out T> : System.IAsyncDisposable {
     System.Threading.Tasks.ValueTask<bool> MoveNextAsync();
 }
 
+// ---- async iterators --------------------------------------------------------
+//
+// AN ASYNC ITERATOR -- a method that awaits and yields, returning
+// IAsyncEnumerable<T> or IAsyncEnumerator<T> -- is written by the parser as
+// two things: the method itself, which makes one of these machines and runs
+// none of the body, and the body, an async local function given the machine
+// and the token, each `yield return v` in it an `await machine.Yield(v)` and
+// each `yield break` a return. The machine then runs it as C#'s does.
+//
+// Each MoveNextAsync runs the body from where it stopped until it yields
+// (true), ends (false) or throws (the ValueTask faulted with what it threw);
+// a step that gets to one of those before it returns is answered with no
+// task made, and one still waiting on an await is answered a task that the
+// rest of the step completes. DisposeAsync of one stopped at a yield
+// resumes it with the stop signal (Runtime.IteratorStop), which runs the
+// finally blocks around the yield, awaiting in them as they need, and ends
+// it; one not started is finished as it is, and one running is refused, as
+// .NET refuses it. The enumerable hands itself out the first time it is
+// enumerated and again whenever it has finished, and otherwise a new
+// machine over the arguments it was called with. The body is given the
+// [EnumeratorCancellation] argument, GetAsyncEnumerator's token, or one
+// linked to both, as .NET combines them.
+//
+// Two threads may race over a step -- the body resumed by an await on a
+// pool thread while the step's caller is still deciding whether it waits --
+// so what the step came to is settled by compare-and-swap: whoever moves it
+// on from Running answers.
+
+namespace System.Runtime.CompilerServices {
+
+/// Where an async iterator is: not started, running a step (or waiting in
+/// one), stopped at a yield, or finished -- which is also where an
+/// enumerable is before it is first enumerated.
+enum AsyncIteratorState { NotStarted, Running, Suspended, Finished }
+
+/// What the step being run came to: nothing yet, a yield, waiting with its
+/// caller answered a task, or the end of the body.
+enum AsyncIteratorStep { Running, Yielded, Waiting, Ended }
+
+/// The machine an async iterator returning IAsyncEnumerator<T> is, and the
+/// base of the one returning IAsyncEnumerable<T>.
+class AsyncIterator<T> : IAsyncEnumerator<T> {
+    // The body, as the parser wrote it, and the [EnumeratorCancellation]
+    // argument it was called with (default when it has none).
+    readonly Func<AsyncIterator<T>, CancellationToken, Task> _body;
+    readonly CancellationToken _argument;
+    // What the body is given, and the source linking two tokens into it.
+    CancellationToken _token;
+    CancellationTokenSource? _linked;
+    T _current;
+    // An AsyncIteratorState and an AsyncIteratorStep, held as numbers for
+    // the compare-and-swaps.
+    int _state;
+    int _step;
+    bool _disposing;
+    // The body's continuation at the yield it stopped at.
+    Action? _resume;
+    // The body's task, from its first step on.
+    Task? _task;
+    // What the caller of a step that waits was answered, to complete.
+    Task<bool>? _moving;
+    Task? _disposal;
+    // Registered on the body's task the first time a step waits: an end
+    // that comes while one does is its to answer.
+    Action? _ended;
+
+    public AsyncIterator(Func<AsyncIterator<T>, CancellationToken, Task> body) : this(body, default, AsyncIteratorState.NotStarted) { }
+
+    public AsyncIterator(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument) : this(body, argument, AsyncIteratorState.NotStarted) { }
+
+    protected AsyncIterator(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument, AsyncIteratorState state) {
+        _body = body;
+        _argument = argument;
+        _token = argument;
+        _current = default!;
+        _state = (int)state;
+    }
+
+    protected Func<AsyncIterator<T>, CancellationToken, Task> Body => _body;
+    protected CancellationToken Argument => _argument;
+
+    public T Current => _current;
+
+    public System.Threading.Tasks.ValueTask<bool> MoveNextAsync() {
+        AsyncIteratorState state = (AsyncIteratorState)_state;
+        if (state == AsyncIteratorState.Finished) {
+            return default;
+        }
+        if (state == AsyncIteratorState.Running) {
+            throw new NotSupportedException();
+        }
+        Run();
+        if (StillRunning()) {
+            Task<bool> moving = new Task<bool>();
+            _moving = moving;
+            if (Wait()) {
+                return new System.Threading.Tasks.ValueTask<bool>(moving);
+            }
+        }
+        if (System.Threading.Volatile.Read(ref _step) == (int)AsyncIteratorStep.Yielded) {
+            _state = (int)AsyncIteratorState.Suspended;
+            return new System.Threading.Tasks.ValueTask<bool>(true);
+        }
+        Exception? fault = Fault(_task!);
+        Finish();
+        if (fault == null) {
+            return default;
+        }
+        Task<bool> failed = new Task<bool>();
+        failed.TrySetException(fault);
+        return new System.Threading.Tasks.ValueTask<bool>(failed);
+    }
+
+    public System.Threading.Tasks.ValueTask DisposeAsync() {
+        AsyncIteratorState state = (AsyncIteratorState)_state;
+        if (state == AsyncIteratorState.Running) {
+            throw new NotSupportedException();
+        }
+        if (state == AsyncIteratorState.NotStarted) {
+            Finish();
+        }
+        if (state != AsyncIteratorState.Suspended) {
+            return default;
+        }
+        _disposing = true;
+        Run();
+        if (StillRunning()) {
+            Task disposal = new Task();
+            _disposal = disposal;
+            if (Wait()) {
+                return new System.Threading.Tasks.ValueTask(disposal);
+            }
+        }
+        Exception? fault = Fault(_task!);
+        Finish();
+        if (fault == null || Runtime.IteratorStopping(fault)) {
+            return default;
+        }
+        Task failed = new Task();
+        failed.TrySetException(fault);
+        return new System.Threading.Tasks.ValueTask(failed);
+    }
+
+    /// `yield return value`, as the parser writes it: the value is Current,
+    /// and the await suspends the body (Suspend).
+    public AsyncIteratorYield<T> Yield(T value) {
+        _current = value;
+        return new AsyncIteratorYield<T>(this);
+    }
+
+    /// The body stopped at a yield, `resume` its continuation. The step's
+    /// caller answers true unless it is already waiting, when the task it
+    /// was answered is completed with true here.
+    public void Suspend(Action resume) {
+        _resume = resume;
+        if (System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Yielded, (int)AsyncIteratorStep.Running) == (int)AsyncIteratorStep.Running) {
+            return;
+        }
+        _state = (int)AsyncIteratorState.Suspended;
+        Task<bool> moving = _moving!;
+        _moving = null;
+        moving.TrySetResult(true);
+    }
+
+    /// The body goes on from a yield: stopped, if it is being disposed.
+    public void Resumed() {
+        if (_disposing) {
+            Runtime.IteratorStop();
+        }
+    }
+
+    /// Claims an enumerable that is not being enumerated -- never yet, or
+    /// finished -- for the enumeration being asked for.
+    protected bool Claim() {
+        if (System.Threading.Interlocked.CompareExchange(ref _state, (int)AsyncIteratorState.NotStarted, (int)AsyncIteratorState.Finished) != (int)AsyncIteratorState.Finished) {
+            return false;
+        }
+        _task = null;
+        _ended = null;
+        _disposing = false;
+        _token = _argument;
+        return true;
+    }
+
+    /// The token GetAsyncEnumerator was given, combined with the argument
+    /// as .NET combines them.
+    protected void Given(CancellationToken token) {
+        if (token.Equals(default)) {
+            _token = _argument;
+        } else if (_argument.Equals(token) || _argument.Equals(default)) {
+            _token = token;
+        } else {
+            _linked = CancellationTokenSource.CreateLinkedTokenSource(_argument, token);
+            _token = _linked.Token;
+        }
+    }
+
+    // One step of the body: begun, or resumed from its yield.
+    void Run() {
+        _step = (int)AsyncIteratorStep.Running;
+        _state = (int)AsyncIteratorState.Running;
+        if (_task == null) {
+            _task = _body(this, _token);
+        } else {
+            Action resume = _resume!;
+            _resume = null;
+            resume();
+        }
+    }
+
+    // The step returned with neither a yield nor the end: it waits on an await.
+    bool StillRunning() {
+        return System.Threading.Volatile.Read(ref _step) == (int)AsyncIteratorStep.Running && !_task!.IsCompleted;
+    }
+
+    // Says the step waits, its caller's task already in place; false when
+    // the body got to a yield first.
+    bool Wait() {
+        if (_ended == null) {
+            Action ended = Ended;
+            _ended = ended;
+            _task!.AddContinuation(ended);
+        }
+        return System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Waiting, (int)AsyncIteratorStep.Running) == (int)AsyncIteratorStep.Running;
+    }
+
+    // The body's task completed. A step waiting for it is answered: false,
+    // or what the body threw; a disposal, done, or what a finally threw. An
+    // end some step already answered is nothing here.
+    void Ended() {
+        Task? task = _task;
+        if (task == null || !task.IsCompleted) {
+            return;
+        }
+        if (System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Ended, (int)AsyncIteratorStep.Waiting) != (int)AsyncIteratorStep.Waiting) {
+            return;
+        }
+        Exception? fault = Fault(task);
+        bool disposing = _disposing;
+        Task<bool>? moving = _moving;
+        Task? disposal = _disposal;
+        Finish();
+        if (disposing) {
+            if (fault == null || Runtime.IteratorStopping(fault)) {
+                disposal!.TrySetResult();
+            } else {
+                disposal!.TrySetException(fault);
+            }
+        } else if (fault == null) {
+            moving!.TrySetResult(false);
+        } else {
+            moving!.TrySetException(fault);
+        }
+    }
+
+    // What the body's finished task threw, as it threw it; null when it ran to the end.
+    static Exception? Fault(Task task) {
+        if (task.IsCompletedSuccessfully) {
+            return null;
+        }
+        try {
+            task.GetAwaiter().GetResult();
+        } catch (Exception e) {
+            return e;
+        }
+        return null;
+    }
+
+    void Finish() {
+        _state = (int)AsyncIteratorState.Finished;
+        _current = default!;
+        _resume = null;
+        _moving = null;
+        _disposal = null;
+        CancellationTokenSource? linked = _linked;
+        _linked = null;
+        linked?.Dispose();
+    }
+}
+
+/// The machine an async iterator returning IAsyncEnumerable<T> is.
+class AsyncIterable<T> : AsyncIterator<T>, IAsyncEnumerable<T> {
+    public AsyncIterable(Func<AsyncIterator<T>, CancellationToken, Task> body) : base(body, default, AsyncIteratorState.Finished) { }
+
+    public AsyncIterable(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument) : base(body, argument, AsyncIteratorState.Finished) { }
+
+    AsyncIterable(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument, AsyncIteratorState state) : base(body, argument, state) { }
+
+    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default) {
+        AsyncIterable<T> walk = Claim() ? this : new AsyncIterable<T>(Body, Argument, AsyncIteratorState.NotStarted);
+        walk.Given(cancellationToken);
+        return walk;
+    }
+}
+
+/// What `await machine.Yield(value)` awaits: never complete, so the body
+/// always stops there, its continuation kept by the machine.
+readonly struct AsyncIteratorYield<T> {
+    readonly AsyncIterator<T> _machine;
+
+    public AsyncIteratorYield(AsyncIterator<T> machine) {
+        _machine = machine;
+    }
+
+    public AsyncIteratorYield<T> GetAwaiter() => this;
+
+    public bool IsCompleted => false;
+
+    public void OnCompleted(Action continuation) {
+        _machine.Suspend(continuation);
+    }
+
+    public void UnsafeOnCompleted(Action continuation) {
+        _machine.Suspend(continuation);
+    }
+
+    public void GetResult() {
+        _machine.Resumed();
+    }
+}
+
+/// `sequence.ConfigureAwait(false)` and `sequence.WithCancellation(token)`:
+/// what `await foreach` walks the sequence with, the token handed to its
+/// GetAsyncEnumerator and each MoveNextAsync and the DisposeAsync awaited as
+/// configured. .NET's, member for member.
+readonly struct ConfiguredCancelableAsyncEnumerable<T> {
+    readonly IAsyncEnumerable<T> _enumerable;
+    readonly CancellationToken _cancellationToken;
+    readonly bool _continueOnCapturedContext;
+
+    public ConfiguredCancelableAsyncEnumerable(IAsyncEnumerable<T> enumerable, bool continueOnCapturedContext, CancellationToken cancellationToken) {
+        _enumerable = enumerable;
+        _continueOnCapturedContext = continueOnCapturedContext;
+        _cancellationToken = cancellationToken;
+    }
+
+    public ConfiguredCancelableAsyncEnumerable<T> ConfigureAwait(bool continueOnCapturedContext)
+        => new ConfiguredCancelableAsyncEnumerable<T>(_enumerable, continueOnCapturedContext, _cancellationToken);
+
+    public ConfiguredCancelableAsyncEnumerable<T> WithCancellation(CancellationToken cancellationToken)
+        => new ConfiguredCancelableAsyncEnumerable<T>(_enumerable, _continueOnCapturedContext, cancellationToken);
+
+    public Enumerator GetAsyncEnumerator()
+        => new Enumerator(_enumerable.GetAsyncEnumerator(_cancellationToken), _continueOnCapturedContext);
+
+    public readonly struct Enumerator {
+        readonly IAsyncEnumerator<T> _enumerator;
+        readonly bool _continueOnCapturedContext;
+
+        public Enumerator(IAsyncEnumerator<T> enumerator, bool continueOnCapturedContext) {
+            _enumerator = enumerator;
+            _continueOnCapturedContext = continueOnCapturedContext;
+        }
+
+        public ConfiguredValueTaskAwaitable<bool> MoveNextAsync() => _enumerator.MoveNextAsync().ConfigureAwait(_continueOnCapturedContext);
+
+        public T Current => _enumerator.Current;
+
+        public ConfiguredValueTaskAwaitable DisposeAsync() => _enumerator.DisposeAsync().ConfigureAwait(_continueOnCapturedContext);
+    }
+}
+
+/// `resource.ConfigureAwait(false)` in an `await using`: the resource's
+/// DisposeAsync awaited as configured.
+readonly struct ConfiguredAsyncDisposable {
+    readonly System.IAsyncDisposable _source;
+    readonly bool _continueOnCapturedContext;
+
+    public ConfiguredAsyncDisposable(System.IAsyncDisposable source, bool continueOnCapturedContext) {
+        _source = source;
+        _continueOnCapturedContext = continueOnCapturedContext;
+    }
+
+    public ConfiguredValueTaskAwaitable DisposeAsync() => _source.DisposeAsync().ConfigureAwait(_continueOnCapturedContext);
+}
+
+}
+
+namespace System.Threading.Tasks {
+
+/// .NET's TaskAsyncEnumerableExtensions: ConfigureAwait and WithCancellation
+/// for an async sequence and ConfigureAwait for an async resource, and the
+/// sequence walked by waiting for each element.
+static class TaskAsyncEnumerableExtensions {
+    public static System.Runtime.CompilerServices.ConfiguredAsyncDisposable ConfigureAwait(this System.IAsyncDisposable source, bool continueOnCapturedContext)
+        => new System.Runtime.CompilerServices.ConfiguredAsyncDisposable(source, continueOnCapturedContext);
+
+    public static System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T> ConfigureAwait<T>(this IAsyncEnumerable<T> source, bool continueOnCapturedContext)
+        => new System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T>(source, continueOnCapturedContext, default);
+
+    public static System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T> WithCancellation<T>(this IAsyncEnumerable<T> source, CancellationToken cancellationToken)
+        => new System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T>(source, true, cancellationToken);
+
+    /// Each element as MoveNextAsync makes it, waited for; the enumerator
+    /// disposed, and the disposal waited for, however the walk ends.
+    public static IEnumerable<T> ToBlockingEnumerable<T>(this IAsyncEnumerable<T> source, CancellationToken cancellationToken = default) {
+        IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(cancellationToken);
+        try {
+            while (enumerator.MoveNextAsync().Result) {
+                yield return enumerator.Current;
+            }
+        } finally {
+            enumerator.DisposeAsync().GetAwaiter().GetResult();
+        }
+    }
+}
+
+}
+
+/// `out T`. Everything read from a sequence is a T, so a sequence of
+/// FieldDecl IS a sequence of MemberDecl -- which is what lets
+/// `decl.Members.AddRange(several.More)` be written at all.
 interface IEnumerable<out T> : IEnumerable {
     IEnumerator<T> GetEnumerator();
 }
@@ -10916,6 +11688,10 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // this list and dead whenever the list is freed, however that comes.
     public void OwnElements() { ownsElements = true; }
 
+    // ITS ARRAY SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone): lent,
+    // as Backing lends it, and its elements no longer its alone.
+    internal void LendStorage() { lent = true; ownsElements = false; }
+
     public void FreeStorage() {
         // Marked through a field, its elements may have been put back into
         // it: each given back once.
@@ -11260,8 +12036,13 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         T[] old = items;
         items = bigger;
         head = 0;
-        OutgrownStorage.Release(old);
+        if (!lent) { OutgrownStorage.Release(old); }
     }
+
+    // ITS ARRAY SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone): the
+    // other holds it too, and a growth leaves it to the collector.
+    private bool lent;
+    internal void LendStorage() { lent = true; }
 }
 
 // ---- Dictionary -----------------------------------------------------------
@@ -17301,7 +18082,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
-                OutgrownStorage.Release(was);
+                Outgrown(was);
             }
             vacant[vacancies] = place;
             vacancies = vacancies + 1;
@@ -17335,8 +18116,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         order = list;
         placeOf = places;
         ordered = kept;
-        OutgrownStorage.Release(old);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(old);
+        Outgrown(oldPlaces);
     }
 
     internal int SlotAt(int n) {
@@ -17940,12 +18721,12 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     public void FreeStorage() {
         if (ownsElements) { ownsElements = false; FreeOwnedElements(); }
-        OutgrownStorage.Release(keys);
-        OutgrownStorage.Release(values);
-        OutgrownStorage.Release(hashes);
-        OutgrownStorage.Release(order);
-        OutgrownStorage.Release(placeOf);
-        OutgrownStorage.Release(vacant);
+        Outgrown(keys);
+        Outgrown(values);
+        Outgrown(hashes);
+        Outgrown(order);
+        Outgrown(placeOf);
+        Outgrown(vacant);
         keys = null!; values = null!; hashes = null!;
         order = null; placeOf = null; vacant = null;
         count = 0; filled = 0; ordered = 0; vacancies = 0;
@@ -18025,12 +18806,24 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         order = list;
         placeOf = places;
         ordered = oldOrdered;
-        OutgrownStorage.Release(oldKeys);
-        OutgrownStorage.Release(oldValues);
-        OutgrownStorage.Release(oldHashes);
-        OutgrownStorage.Release(oldOrder);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(oldKeys);
+        Outgrown(oldValues);
+        Outgrown(oldHashes);
+        Outgrown(oldOrder);
+        Outgrown(oldPlaces);
     }
+
+    // A COPY'S STORAGE IS NOT ITS OWN (LendStorage): what a resize or FreeStorage
+    // would give back is left to the collector.
+    private bool lent;
+
+    private void Outgrown<E>(E[]? old) {
+        if (!lent) { OutgrownStorage.Release(old); }
+    }
+
+    // ITS ARRAYS SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone): the
+    // other holds them too, so neither gives them back, nor its values.
+    internal void LendStorage() { lent = true; ownsElements = false; }
 }
 
 // ---- Func and Action ------------------------------------------------------
@@ -20727,7 +21520,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
-                OutgrownStorage.Release(was);
+                Outgrown(was);
             }
             vacant[vacancies] = place;
             vacancies = vacancies + 1;
@@ -20761,8 +21554,8 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         order = list;
         placeOf = places;
         ordered = kept;
-        OutgrownStorage.Release(old);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(old);
+        Outgrown(oldPlaces);
     }
 
     internal int SlotAt(int n) {
@@ -21019,11 +21812,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // THE STORAGE GIVEN BACK with a set proved dead (Runtime.Free): no array
     // of it ever leaves the set.
     public void FreeStorage() {
-        OutgrownStorage.Release(items);
-        OutgrownStorage.Release(hashes);
-        OutgrownStorage.Release(order);
-        OutgrownStorage.Release(placeOf);
-        OutgrownStorage.Release(vacant);
+        Outgrown(items);
+        Outgrown(hashes);
+        Outgrown(order);
+        Outgrown(placeOf);
+        Outgrown(vacant);
         items = null!; hashes = null!;
         order = null; placeOf = null; vacant = null;
         count = 0; filled = 0; ordered = 0; vacancies = 0;
@@ -21225,11 +22018,21 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         order = list;
         placeOf = places;
         ordered = oldOrdered;
-        OutgrownStorage.Release(old);
-        OutgrownStorage.Release(oldHashes);
-        OutgrownStorage.Release(oldOrder);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(old);
+        Outgrown(oldHashes);
+        Outgrown(oldOrder);
+        Outgrown(oldPlaces);
     }
+
+    // A COPY'S STORAGE IS NOT ITS OWN (LendStorage), as Dictionary's.
+    private bool lent;
+
+    private void Outgrown<E>(E[]? old) {
+        if (!lent) { OutgrownStorage.Release(old); }
+    }
+
+    // ITS ARRAYS SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone).
+    internal void LendStorage() { lent = true; }
 }
 
 // The ordered set surface used by the compiler's metadata writer. This small
@@ -29360,27 +30163,25 @@ namespace System.Globalization
             }
         }
 
-        /// A copy that may be changed, read-only or not. Each calendar makes
-        /// its own (Copy): nothing here copies an object field for field.
+        /// A copy that may be changed, read-only or not: the calendar's own
+        /// type with every field, as .NET's MemberwiseClone makes it. A copy
+        /// of a calendar is one, so it is taken as one, not tested (Sys.As):
+        /// a test names the type's table, and with it every method of it, in
+        /// every program a provider's Clone is in.
         public virtual object Clone()
         {
-            Calendar made = Copy();
-            made._isReadOnly = false;
-            return made;
-        }
-
-        internal virtual Calendar Copy()
-        {
-            throw new NotSupportedException("Specified method is not supported.");
+            object o = MemberwiseClone();
+            Sys.As<Calendar>(o).SetReadOnlyState(false);
+            return o;
         }
 
         public static Calendar ReadOnly(Calendar calendar)
         {
             ArgumentNullException.ThrowIfNull(calendar);
             if (calendar.IsReadOnly) return calendar;
-            Calendar made = calendar.Copy();
-            made._isReadOnly = true;
-            return made;
+            Calendar clonedCalendar = Sys.As<Calendar>(calendar.MemberwiseClone());
+            clonedCalendar.SetReadOnlyState(true);
+            return clonedCalendar;
         }
 
         internal void VerifyWritable()
@@ -29549,13 +30350,6 @@ namespace System.Globalization
 
         /// The shared one if it has been made, for a copy of it as it stands.
         internal static Calendar? Existing => s_default;
-
-        internal override Calendar Copy()
-        {
-            GregorianCalendar made = new GregorianCalendar((GregorianCalendarTypes)_kind);
-            made._twoDigitYearMax = _twoDigitYearMax;
-            return made;
-        }
 
         public override DateTime MinSupportedDateTime => DateTime.MinValue;
         public override DateTime MaxSupportedDateTime => DateTime.MaxValue;
@@ -29913,22 +30707,33 @@ namespace System.Globalization
 
         public object? GetFormat(Type? formatType) => formatType == typeof(DateTimeFormatInfo) ? this : null;
 
-        /// A copy that may be changed, its calendar a copy too.
+        /// A copy that may be changed, its calendar a copy too: every field
+        /// as it is, by MemberwiseClone, the arrays shared, as they are in
+        /// .NET (a setter replaces an array, it never writes one).
         public object Clone()
         {
-            DateTimeFormatInfo made = Copy();
-            // A COPY OF THE CALENDAR, writable: of the one made, or of the
-            // shared one when that is what this one would make -- as it
-            // stands now -- or a fresh Gregorian.
-            Calendar? from = _calendar ?? (_making == Making.Shared ? GregorianCalendar.Existing : null);
-            made._calendar = null;
-            made._making = Making.Copy;
-            made._copyOf = from;
-            if (from != null)
+            DateTimeFormatInfo made = (DateTimeFormatInfo)MemberwiseClone();
+            // A COPY OF THE CALENDAR, writable: of the one made -- its own
+            // type, a program's subclass too -- now; of the shared one when
+            // that is what this one would make, as it stands now, made when
+            // the copy asks for it; or a fresh Gregorian. A copy not yet
+            // asked keeps what it would copy, as MemberwiseClone left it.
+            if (_calendar != null)
             {
-                made._copyTwoDigitYearMax = from._twoDigitYearMax;
-                made._copyKind = from._kind;
+                made._calendar = Sys.As<Calendar>(_calendar.Clone());
+                made._copyOf = null;
             }
+            else if (_making != Making.Copy)
+            {
+                Calendar? shared = _making == Making.Shared ? GregorianCalendar.Existing : null;
+                made._copyOf = shared;
+                if (shared != null)
+                {
+                    made._copyTwoDigitYearMax = shared._twoDigitYearMax;
+                    made._copyKind = shared._kind;
+                }
+            }
+            made._making = Making.Copy;
             made._isReadOnly = false;
             return made;
         }
@@ -29937,55 +30742,11 @@ namespace System.Globalization
         {
             ArgumentNullException.ThrowIfNull(dtfi);
             if (dtfi.IsReadOnly) return dtfi;
-            DateTimeFormatInfo made = dtfi.Copy();
-            Calendar from = dtfi.Calendar;
-            made._calendar = Calendar.ReadOnly(from);
+            DateTimeFormatInfo made = (DateTimeFormatInfo)dtfi.MemberwiseClone();
+            made._calendar = Calendar.ReadOnly(dtfi.Calendar);
             made._making = Making.ReadOnlyCopy;
             made._copyOf = null;
             made._isReadOnly = true;
-            return made;
-        }
-
-        // Field for field, as .NET's MemberwiseClone: the arrays shared, as
-        // they are there (a setter replaces an array, it never writes one).
-        DateTimeFormatInfo Copy()
-        {
-            DateTimeFormatInfo made = new DateTimeFormatInfo();
-            made._calendar = _calendar;
-            made._making = _making;
-            made._copyOf = _copyOf;
-            made._copyTwoDigitYearMax = _copyTwoDigitYearMax;
-            made._copyKind = _copyKind;
-            made._amDesignator = _amDesignator;
-            made._pmDesignator = _pmDesignator;
-            made._dateSeparator = _dateSeparator;
-            made._timeSeparator = _timeSeparator;
-            made._firstDayOfWeek = _firstDayOfWeek;
-            made._calendarWeekRule = _calendarWeekRule;
-            made._fullDateTimePattern = _fullDateTimePattern;
-            made._longDatePattern = _longDatePattern;
-            made._longTimePattern = _longTimePattern;
-            made._shortDatePattern = _shortDatePattern;
-            made._shortTimePattern = _shortTimePattern;
-            made._monthDayPattern = _monthDayPattern;
-            made._yearMonthPattern = _yearMonthPattern;
-            made._generalShortTimePattern = _generalShortTimePattern;
-            made._generalLongTimePattern = _generalLongTimePattern;
-            made._dateTimeOffsetPattern = _dateTimeOffsetPattern;
-            made._allShortDatePatterns = _allShortDatePatterns;
-            made._allLongDatePatterns = _allLongDatePatterns;
-            made._allShortTimePatterns = _allShortTimePatterns;
-            made._allLongTimePatterns = _allLongTimePatterns;
-            made._allYearMonthPatterns = _allYearMonthPatterns;
-            made._dayNames = _dayNames;
-            made._abbreviatedDayNames = _abbreviatedDayNames;
-            made._shortestDayNames = _shortestDayNames;
-            made._monthNames = _monthNames;
-            made._abbreviatedMonthNames = _abbreviatedMonthNames;
-            made._genitiveMonthNames = _genitiveMonthNames;
-            made._abbreviatedGenitiveMonthNames = _abbreviatedGenitiveMonthNames;
-            made._formatFlags = _formatFlags;
-            made.Tokens = Tokens;
             return made;
         }
 
@@ -30021,7 +30782,7 @@ namespace System.Globalization
                     else if (_making == Making.ReadOnlyCopy) made = Calendar.ReadOnly(new GregorianCalendar());
                     else if (_copyOf != null)
                     {
-                        made = _copyOf.Copy();
+                        made = Sys.As<Calendar>(_copyOf.Clone());
                         made._twoDigitYearMax = _copyTwoDigitYearMax;
                         made._kind = _copyKind;
                         _copyOf = null;
@@ -30600,6 +31361,265 @@ namespace System.Globalization
         internal static readonly string[] ShortestDayNames = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
         internal static readonly string[] MonthNames = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "" };
         internal static readonly string[] AbbreviatedMonthNames = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "" };
+    }
+
+    /// How a culture's digits are shown: .NET's DigitShapes.
+    public enum DigitShapes
+    {
+        Context = 0,
+        None = 1,
+        NativeNational = 2,
+    }
+
+    /// .NET'S NumberFormatInfo: the signs, separators, symbols, group sizes,
+    /// digit counts and patterns a number is written and read with. The
+    /// invariant culture's is InvariantInfo, read-only, made when first asked
+    /// for; a new one, or a Clone, may be changed, and every number's
+    /// ToString, Parse and TryParse given it as their provider then uses what
+    /// it says. Every setter checks what .NET's checks, with .NET's messages.
+    /// A provider that is none, or the invariant culture's own, keeps the
+    /// writers and readers on their invariant paths (Given), which name
+    /// nothing of this.
+    public sealed class NumberFormatInfo : IFormatProvider, ICloneable
+    {
+        static NumberFormatInfo? s_invariant;
+
+        // The invariant arrays, shared: a setter is given its own copy and a
+        // getter hands out one, so none of these is ever written.
+        static readonly int[] s_three = { 3 };
+        static readonly string[] s_digits = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" };
+
+        internal int[] _numberGroupSizes = s_three;
+        internal int[] _currencyGroupSizes = s_three;
+        internal int[] _percentGroupSizes = s_three;
+        internal string _positiveSign = "+";
+        internal string _negativeSign = "-";
+        internal string _numberDecimalSeparator = ".";
+        internal string _numberGroupSeparator = ",";
+        internal string _currencyGroupSeparator = ",";
+        internal string _currencyDecimalSeparator = ".";
+        internal string _currencySymbol = "\u00a4";
+        internal string _nanSymbol = "NaN";
+        internal string _positiveInfinitySymbol = "Infinity";
+        internal string _negativeInfinitySymbol = "-Infinity";
+        internal string _percentDecimalSeparator = ".";
+        internal string _percentGroupSeparator = ",";
+        internal string _percentSymbol = "%";
+        internal string _perMilleSymbol = "\u2030";
+        internal string[] _nativeDigits = s_digits;
+        internal int _numberDecimalDigits = 2;
+        internal int _currencyDecimalDigits = 2;
+        internal int _currencyPositivePattern;
+        internal int _currencyNegativePattern;
+        internal int _numberNegativePattern = 1;
+        internal int _percentPositivePattern;
+        internal int _percentNegativePattern;
+        internal int _percentDecimalDigits = 2;
+        internal DigitShapes _digitSubstitution = DigitShapes.None;
+        bool _isReadOnly;
+
+        public NumberFormatInfo() { }
+
+        public static NumberFormatInfo InvariantInfo
+        {
+            get
+            {
+                NumberFormatInfo? made = s_invariant;
+                if (made == null)
+                {
+                    made = new NumberFormatInfo();
+                    made._isReadOnly = true;
+                    s_invariant = made;
+                }
+                return made;
+            }
+        }
+
+        public static NumberFormatInfo CurrentInfo => CultureInfo.CurrentCulture.NumberFormat;
+
+        /// What a provider says to write numbers with, as .NET asks it: a
+        /// culture's, the provider itself, what its GetFormat answers, or the
+        /// current culture's.
+        public static NumberFormatInfo GetInstance(IFormatProvider? formatProvider)
+        {
+            if (formatProvider == null) return CurrentInfo;
+            if (formatProvider is CultureInfo culture) return culture.NumberFormat;
+            if (formatProvider is NumberFormatInfo info) return info;
+            return formatProvider.GetFormat(typeof(NumberFormatInfo)) as NumberFormatInfo ?? CurrentInfo;
+        }
+
+        /// THE PROVIDER'S, OR NULL FOR THE INVARIANT CULTURE'S OWN, which the
+        /// writers and readers take as their invariant paths: no provider, the
+        /// invariant culture or its NumberFormat, and a culture that has never
+        /// been asked for its own, which holds the invariant culture's yet.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        internal static NumberFormatInfo? Given(IFormatProvider? provider)
+        {
+            if (provider == null) return null;
+            NumberFormatInfo? info = provider is CultureInfo culture ? culture.MadeNumberFormat
+                : provider as NumberFormatInfo ?? provider.GetFormat(typeof(NumberFormatInfo)) as NumberFormatInfo ?? CultureInfo.CurrentCulture.MadeNumberFormat;
+            return ReferenceEquals(info, s_invariant) ? null : info;
+        }
+
+        public object? GetFormat(Type? formatType) => formatType == typeof(NumberFormatInfo) ? this : null;
+
+        /// A copy that may be changed: every field as it is (MemberwiseClone),
+        /// the arrays shared, as no setter writes one.
+        public object Clone()
+        {
+            NumberFormatInfo made = (NumberFormatInfo)MemberwiseClone();
+            made._isReadOnly = false;
+            return made;
+        }
+
+        public static NumberFormatInfo ReadOnly(NumberFormatInfo nfi)
+        {
+            ArgumentNullException.ThrowIfNull(nfi, "nfi");
+            if (nfi._isReadOnly) return nfi;
+            NumberFormatInfo made = (NumberFormatInfo)nfi.MemberwiseClone();
+            made._isReadOnly = true;
+            return made;
+        }
+
+        public bool IsReadOnly => _isReadOnly;
+
+        void VerifyWritable()
+        {
+            if (_isReadOnly) throw new InvalidOperationException("Instance is read-only.");
+        }
+
+        string Written(string value)
+        {
+            ArgumentNullException.ThrowIfNull(value, "value");
+            VerifyWritable();
+            return value;
+        }
+
+        // A decimal separator may be no empty string; a separator is asked
+        // whether it may be written first, as .NET asks.
+        string Separator(string value)
+        {
+            VerifyWritable();
+            ArgumentException.ThrowIfNullOrEmpty(value, "value");
+            return value;
+        }
+
+        string Group(string value)
+        {
+            VerifyWritable();
+            ArgumentNullException.ThrowIfNull(value, "value");
+            return value;
+        }
+
+        int Within(int value, int most)
+        {
+            if (value < 0 || value > most)
+            {
+                throw new ArgumentOutOfRangeException("value", value, "Valid values are between 0 and " + most + ", inclusive.");
+            }
+            VerifyWritable();
+            return value;
+        }
+
+        int[] Sizes(int[] value)
+        {
+            ArgumentNullException.ThrowIfNull(value, "value");
+            VerifyWritable();
+            int[] made = (int[])value.Clone();
+            for (int i = 0; i < made.Length; i++)
+            {
+                if (made[i] < 1 && !(made[i] == 0 && i == made.Length - 1) || made[i] > 9)
+                {
+                    throw new ArgumentException("Every element in the value array should be between one and nine, except for the last element, which can be zero.", "value");
+                }
+            }
+            return made;
+        }
+
+        public int CurrencyDecimalDigits { get { return _currencyDecimalDigits; } set { _currencyDecimalDigits = Within(value, 99); } }
+        public string CurrencyDecimalSeparator { get { return _currencyDecimalSeparator; } set { _currencyDecimalSeparator = Separator(value); } }
+        public string CurrencyGroupSeparator { get { return _currencyGroupSeparator; } set { _currencyGroupSeparator = Group(value); } }
+        public int[] CurrencyGroupSizes { get { return (int[])_currencyGroupSizes.Clone(); } set { _currencyGroupSizes = Sizes(value); } }
+        public int CurrencyNegativePattern { get { return _currencyNegativePattern; } set { _currencyNegativePattern = Within(value, 16); } }
+        public int CurrencyPositivePattern { get { return _currencyPositivePattern; } set { _currencyPositivePattern = Within(value, 3); } }
+        public string CurrencySymbol { get { return _currencySymbol; } set { _currencySymbol = Written(value); } }
+        public string NaNSymbol { get { return _nanSymbol; } set { _nanSymbol = Written(value); } }
+        public string NegativeInfinitySymbol { get { return _negativeInfinitySymbol; } set { _negativeInfinitySymbol = Written(value); } }
+        public string NegativeSign { get { return _negativeSign; } set { _negativeSign = Written(value); } }
+        public int NumberDecimalDigits { get { return _numberDecimalDigits; } set { _numberDecimalDigits = Within(value, 99); } }
+        public string NumberDecimalSeparator { get { return _numberDecimalSeparator; } set { _numberDecimalSeparator = Separator(value); } }
+        public string NumberGroupSeparator { get { return _numberGroupSeparator; } set { _numberGroupSeparator = Group(value); } }
+        public int[] NumberGroupSizes { get { return (int[])_numberGroupSizes.Clone(); } set { _numberGroupSizes = Sizes(value); } }
+        public int NumberNegativePattern { get { return _numberNegativePattern; } set { _numberNegativePattern = Within(value, 4); } }
+        public int PercentDecimalDigits { get { return _percentDecimalDigits; } set { _percentDecimalDigits = Within(value, 99); } }
+        public string PercentDecimalSeparator { get { return _percentDecimalSeparator; } set { _percentDecimalSeparator = Separator(value); } }
+        public string PercentGroupSeparator { get { return _percentGroupSeparator; } set { _percentGroupSeparator = Group(value); } }
+        public int[] PercentGroupSizes { get { return (int[])_percentGroupSizes.Clone(); } set { _percentGroupSizes = Sizes(value); } }
+        public int PercentNegativePattern { get { return _percentNegativePattern; } set { _percentNegativePattern = Within(value, 11); } }
+        public int PercentPositivePattern { get { return _percentPositivePattern; } set { _percentPositivePattern = Within(value, 3); } }
+        public string PercentSymbol { get { return _percentSymbol; } set { _percentSymbol = Written(value); } }
+        public string PerMilleSymbol { get { return _perMilleSymbol; } set { _perMilleSymbol = Written(value); } }
+        public string PositiveInfinitySymbol { get { return _positiveInfinitySymbol; } set { _positiveInfinitySymbol = Written(value); } }
+        public string PositiveSign { get { return _positiveSign; } set { _positiveSign = Written(value); } }
+
+        public DigitShapes DigitSubstitution
+        {
+            get { return _digitSubstitution; }
+            set
+            {
+                VerifyWritable();
+                if (value != DigitShapes.Context && value != DigitShapes.None && value != DigitShapes.NativeNational)
+                {
+                    throw new ArgumentException("The DigitSubstitution property must be of a valid member of the DigitShapes enumeration. Valid entries include Context, NativeNational or None.", "value");
+                }
+                _digitSubstitution = value;
+            }
+        }
+
+        /// Ten digits, each one text element of Unicode's decimal digits whose
+        /// value is its place, as .NET checks them.
+        public string[] NativeDigits
+        {
+            get { return (string[])_nativeDigits.Clone(); }
+            set
+            {
+                VerifyWritable();
+                ArgumentNullException.ThrowIfNull(value, "nativeDig");
+                if (value.Length != 10)
+                {
+                    throw new ArgumentException("The NativeDigits array must contain exactly ten members.", "value");
+                }
+                for (int i = 0; i < value.Length; i++)
+                {
+                    string? digit = value[i];
+                    if (digit == null)
+                    {
+                        throw new ArgumentNullException("value", "Found a null value within an array.");
+                    }
+                    if (digit.Length != 1 && (digit.Length != 2 || !char.IsSurrogatePair(digit[0], digit[1]))
+                        || char.GetUnicodeCategory(digit, 0) != UnicodeCategory.PrivateUse
+                           && (char.GetUnicodeCategory(digit, 0) != UnicodeCategory.DecimalDigitNumber || (int)char.GetNumericValue(digit, 0) != i))
+                    {
+                        throw new ArgumentException("Each member of the NativeDigits array must be a single text element (one or more UTF-16 code points) with a Unicode Nd (Number, Decimal Digit) property indicating it is a digit.", "value");
+                    }
+                }
+                _nativeDigits = value;
+            }
+        }
+
+        // ---- what the writers and readers ask -------------------------------
+
+        /// A negative sign that is one of Unicode's minus signs lets a reader
+        /// take the hyphen too, as .NET's AllowHyphenDuringParsing.
+        internal bool AllowHyphenDuringParsing
+        {
+            get
+            {
+                if (_negativeSign.Length != 1) return false;
+                char c = _negativeSign[0];
+                return c == '\u2012' || c == '\u207B' || c == '\u208B' || c == '\u2212' || c == '\u2796' || c == '\uFE63' || c == '\uFF0D';
+            }
+        }
     }
 }
 

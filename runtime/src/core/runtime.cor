@@ -4647,6 +4647,44 @@ static class Runtime
         throw IteratorStopSignal.One;
     }
 
+    /// THE STRUCTS A MEMBERWISE COPY STILL SHARES, given blocks of its own
+    /// (Lowering.EmitMemberwiseClone, for a type whose descriptor has
+    /// Gc.ValueBlocksFlag): a struct a field holds by pointer is a value, and
+    /// the copy takes its own as an assignment of the struct would. The list
+    /// is after the reference map: how many, then each field's offset, the
+    /// struct's size, and the function that copies one holding structs of its
+    /// own (0 where its bytes are all of it). The copy is the caller's to
+    /// mark: the runtime's own stores mark no card.
+    public static void CopyValueBlocks(object made)
+    {
+        long at = Sys.Word(made);
+        long w = WordSize.Bytes;
+        long desc = Sys.Peek(at) - Gc.DescWords * w;
+        long map = Sys.Peek(desc + Gc.DescRefMapWord * w);
+        long list = map + (1 + (Sys.Peek(map) + 31) / 32) * w;
+        long count = Sys.Peek(list);
+        for (long k = 0; k < count; k++)
+        {
+            long entry = list + (1 + 3 * k) * w;
+            long field = at + Sys.Peek(entry);
+            long shared = Sys.Peek(field);
+            if (shared == 0) continue;
+            long copier = Sys.Peek(entry + 2 * w);
+            long own;
+            if (copier != 0)
+            {
+                own = Sys.Call(copier, shared, 0, 0);
+            }
+            else
+            {
+                long size = Sys.Peek(entry + w);
+                own = Alloc((nint)size);
+                Sys.MemoryCopy(own, shared, size);
+            }
+            Sys.Poke(field, own);
+        }
+    }
+
     public static bool IteratorStopping(object thrown)
     {
         return thrown is IteratorStopSignal;

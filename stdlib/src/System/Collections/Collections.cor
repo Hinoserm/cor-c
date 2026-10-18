@@ -164,8 +164,13 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         for (int i = 0; i < count; i++) { bigger[i] = items[i]; }
         T[] outgrown = items;
         items = bigger;
-        OutgrownStorage.Release(outgrown);
+        if (!lent) { OutgrownStorage.Release(outgrown); }
     }
+
+    // ITS ARRAY SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone): the
+    // other holds it too, and a growth leaves it to the collector.
+    private bool lent;
+    internal void LendStorage() { lent = true; }
 }
 
 // ---- LinkedList -----------------------------------------------------------

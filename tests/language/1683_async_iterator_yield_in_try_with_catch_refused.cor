@@ -1,0 +1,37 @@
+// test: async_iterator_yield_in_try_with_catch_refused
+// expect-compile-error: CS1626: Cannot yield a value in the body of a try block with a catch clause
+//
+// An async iterator may not yield a value inside a try block that has a
+// catch, even one nested in another try (C# CS1626): its body is an async
+// function by the time it is bound, so the rule is kept where its yields are
+// read.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static async IAsyncEnumerable<int> Numbers()
+    {
+        try
+        {
+            try
+            {
+                yield return 1;
+            }
+            finally
+            {
+                await Task.Yield();
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    static async Task Main()
+    {
+        await foreach (int x in Numbers()) Console.WriteLine(x);
+    }
+}

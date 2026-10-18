@@ -1,0 +1,162 @@
+// test: lambda_converts_better_to_the_delegate_it_fits
+// expect-exit: 0
+// expect-output:
+// whenall True
+// async run done 1
+// valued 42
+// expr expr
+// sync 7
+// nested 8
+// Action
+// Func<Task>
+// Func<Task>
+// Func<Task>
+// Func<Task<T>>
+// Func<Task<T>>
+// Func<int>
+// Func<Task<int>>
+// x
+// Y
+// 4
+// 6
+// id
+// natural 5
+// inferred 6.5
+// Func<int> 7
+// Action
+// Func<int> 3
+// Func<int> 0
+// Func<int,int> 2
+// Action<int>
+// Func<int>
+// Func<long>
+// Func<long>
+// Func<Task<int>>
+// Func<Task<long>>
+// run token 5
+// continue 9 11
+// unwrapped deep
+// caught thrown
+// counter 20
+//
+// C#'s lambda overload rules (10.7.1, 12.6.3.13, 12.6.4.5): a lambda is an
+// argument only for a delegate it converts to -- `() => 7` is no Action and
+// no Func<Task>, `x => x + 1` no Action<int> -- and of two that take it, the
+// one returning something over one returning nothing, else the one its
+// inferred return type converts to better; an async lambda's inferred return
+// type is its Task, so Task.Run(async () => ...) is Run(Func<Task>) and
+// Run<T>(Func<Task<T>>), never Run(Action), and type inference learns T
+// through it (Run<T>, Map<TIn, TOut>, Id<T>). Task.Run(() => Task.WhenAll(a,
+// b)) is Run(Func<Task>) and its task the inner one's. Every line is what
+// .NET 10 prints.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static void Say(string s) => Console.WriteLine(s);
+
+    static string Which(Action a) => "Action";
+    static string Which(Func<Task> f) => "Func<Task>";
+    static string Which2(Action a) => "Action";
+    static string Which2<T>(Func<Task<T>> f) => "Func<Task<T>>";
+    static string Which3(Func<int> f) => "Func<int>";
+    static string Which3(Func<Task<int>> f) => "Func<Task<int>>";
+    static Task<T> Run<T>(Func<Task<T>> f) => f();
+    static Task<TOut> Map<TIn, TOut>(TIn x, Func<TIn, Task<TOut>> f) => f(x);
+    static T Id<T>(Func<T> f) => f();
+
+    static async Task Binding()
+    {
+        int done = 0;
+        Task a = Task.Delay(1), b = Task.Delay(2);
+        Task all = Task.Run(() => Task.WhenAll(a, b));
+        await all;
+        Say("whenall " + all.IsCompleted);
+
+        // An async lambda binds Run(Func<Task>), so the task Run hands back
+        // completes when the lambda's does, not when it first awaits.
+        Task run = Task.Run(async () => { await Task.Delay(20); done = 1; });
+        await run;
+        Say("async run done " + done);
+        Task<int> valued = Task.Run(async () => { await Task.Yield(); return 42; });
+        Say("valued " + await valued);
+        Task<string> expr = Task.Run(async () => await Task.FromResult("expr"));
+        Say("expr " + await expr);
+        Task<int> sync = Task.Run(() => 7);
+        Say("sync " + await sync);
+        Task<int> nested = Task.Run(() => Task.FromResult(8));
+        Say("nested " + await nested);
+
+        Say(Which(() => { }));
+        Say(Which(async () => { await Task.Yield(); }));
+        Say(Which(() => Task.CompletedTask));
+        Say(Which(async () => await Task.Yield()));
+        Say(Which2(async () => { await Task.Yield(); return "s"; }));
+        Say(Which2(async () => 1));
+        Say(Which3(() => 1));
+        Say(Which3(async () => 1));
+
+        Say(await Run(async () => { await Task.Yield(); return "x"; }));
+        Say(await Map("y", async s => { await Task.Yield(); return s.ToUpper(); }));
+        Say((await Map(3, async s => { await Task.Yield(); return s + 1; })).ToString());
+        Say((await Map(3, async s => (long)s * 2)).ToString());
+        Task<string> t = Id(async () => { await Task.Yield(); return "id"; });
+        Say(await t);
+        Func<Task<int>> natural = async () => 5;
+        Say("natural " + await natural());
+        var inferred = async () => { await Task.Yield(); return 6.5; };
+        Say("inferred " + await inferred());
+    }
+
+    static int Seven() => 7;
+    static string Pick(Action a) => "Action";
+    static string Pick(Func<int> f) => "Func<int> " + f();
+    static string Step(Action<int> a) => "Action<int>";
+    static string Step(Func<int, int> f) => "Func<int,int> " + f(1);
+    static string Wide(Func<int> f) => "Func<int>";
+    static string Wide(Func<long> f) => "Func<long>";
+    static string Wide2(Func<long> f) => "Func<long>";
+    static string Wide2(Func<double> f) => "Func<double>";
+    static string Later(Func<Task<int>> f) => "Func<Task<int>>";
+    static string Later(Func<Task<long>> f) => "Func<Task<long>>";
+
+    static async Task Choosing()
+    {
+        Say(Pick(() => Seven()));
+        Say(Pick(() => { Seven(); }));
+        Say(Pick(() => 3));
+        int counter = 0;
+        Say(Pick(() => counter++));
+        Say(Step(x => x + 1));
+        Say(Step(x => Console.Write("")));
+        Say(Wide(() => 1));
+        Say(Wide2(() => 1));
+        Say(Wide2(() => 1L));
+        Say(Later(async () => { await Task.Yield(); return 1; }));
+        Say(Later(async () => { await Task.Yield(); return 1L; }));
+        Task<int> run = Task.Run(() => 5, CancellationToken.None);
+        Say("run token " + await run);
+        Task cont = Task.Delay(1).ContinueWith(t => { counter = 9; });
+        await cont;
+        Task<int> cont2 = Task.Delay(1).ContinueWith(t => 11);
+        Say("continue " + counter + " " + await cont2);
+        Task<string> unwrapped = Task.Run(async () => { await Task.Delay(5); return "deep"; });
+        Say("unwrapped " + await unwrapped);
+        try { await Task.Run(() => { throw new InvalidOperationException("thrown"); }); }
+        catch (InvalidOperationException e) { Say("caught " + e.Message); }
+        Func<Task> f = async () => { await Task.Yield(); counter = 20; };
+        await f();
+        Action a = async () => { await Task.Yield(); };
+        a();
+        Say("counter " + counter);
+    }
+
+    static async Task Main()
+    {
+        await Binding();
+        await Choosing();
+    }
+}

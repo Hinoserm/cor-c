@@ -1,0 +1,145 @@
+// test: number_format_info_as_dotnet
+// expect-exit: 0
+// expect-output:
+// invariant: cur 2 '.' ',' [3] 0 0 '¤'
+//   digits None nan 'NaN' native 0123456789 -inf '-Infinity' neg '-'
+//   num 2 '.' ',' [3] 1
+//   pct 2 '.' ',' [3] 0 0 '%' '‰'
+//   +inf 'Infinity' pos '+' ro True
+// new: cur 2 '.' ',' [3] 0 0 '¤'
+//   digits None nan 'NaN' native 0123456789 -inf '-Infinity' neg '-'
+//   num 2 '.' ',' [3] 1
+//   pct 2 '.' ',' [3] 0 0 '%' '‰'
+//   +inf 'Infinity' pos '+' ro False
+// same invariant True True True
+// getinstance True True True True
+// getformat True True True True
+// ro set: InvalidOperationException: Instance is read-only.
+// clone neg ~ ro False
+// ro clone: ok
+// readonly True False True False
+// readonly null: ArgumentNullException: Value cannot be null. (Parameter 'nfi')
+// null symbol: ArgumentNullException: Value cannot be null. (Parameter 'value')
+// null neg: ArgumentNullException: Value cannot be null. (Parameter 'value')
+// empty dec: ArgumentException: The value cannot be an empty string. (Parameter 'value')
+// empty cur dec: ArgumentException: The value cannot be an empty string. (Parameter 'value')
+// empty pct dec: ArgumentException: The value cannot be an empty string. (Parameter 'value')
+// empty group: ok
+// digits 100: ArgumentOutOfRangeException: Valid values are between 0 and 99, inclusive. (Parameter 'value')
+// Actual value was 100.
+// digits -1: ArgumentOutOfRangeException: Valid values are between 0 and 99, inclusive. (Parameter 'value')
+// Actual value was -1.
+// pct digits 99: ok
+// cur neg 16: ok
+// cur neg 15: ok
+// cur pos 4: ArgumentOutOfRangeException: Valid values are between 0 and 3, inclusive. (Parameter 'value')
+// Actual value was 4.
+// num neg 5: ArgumentOutOfRangeException: Valid values are between 0 and 4, inclusive. (Parameter 'value')
+// Actual value was 5.
+// pct neg 12: ArgumentOutOfRangeException: Valid values are between 0 and 11, inclusive. (Parameter 'value')
+// Actual value was 12.
+// pct pos 4: ArgumentOutOfRangeException: Valid values are between 0 and 3, inclusive. (Parameter 'value')
+// Actual value was 4.
+// sizes null: ArgumentNullException: Value cannot be null. (Parameter 'value')
+// sizes 10: ArgumentException: Every element in the value array should be between one and nine, except for the last element, which can be zero. (Parameter 'value')
+// sizes 0 mid: ArgumentException: Every element in the value array should be between one and nine, except for the last element, which can be zero. (Parameter 'value')
+// sizes 3 0: ok
+// sizes empty: ok
+// sizes -1: ArgumentException: Every element in the value array should be between one and nine, except for the last element, which can be zero. (Parameter 'value')
+// native null: ArgumentNullException: Value cannot be null. (Parameter 'nativeDig')
+// native 9: ArgumentException: The NativeDigits array must contain exactly ten members. (Parameter 'value')
+// native bad: ArgumentException: Each member of the NativeDigits array must be a single text element (one or more UTF-16 code points) with a Unicode Nd (Number, Decimal Digit) property indicating it is a digit. (Parameter 'value')
+// native ok: ok
+// digitsub 3: ArgumentException: The DigitSubstitution property must be of a valid member of the DigitShapes enumeration. Valid entries include Context, NativeNational or None. (Parameter 'value')
+// sizes copied [3,2]
+//
+// System.Globalization.NumberFormatInfo as .NET 10 has it: the invariant
+// culture's (InvariantInfo, the invariant culture's NumberFormat, the current
+// one's), read-only; a new one and a Clone writable; ReadOnly; GetInstance and
+// GetFormat; every property's default and every setter's checks, in .NET's
+// order and words (null, empty decimal separators, digit counts, patterns,
+// group sizes, native digits, digit shapes), group sizes copied in and out.
+// Every line is what .NET 10 prints.
+
+using System;
+using System.Globalization;
+
+static class Program
+{
+    static void Say(string s) => Console.WriteLine(s);
+
+    static string Sizes(int[] a) => "[" + string.Join(",", a) + "]";
+
+    static void Show(string name, NumberFormatInfo n)
+    {
+        Say(name + ": cur " + n.CurrencyDecimalDigits + " '" + n.CurrencyDecimalSeparator + "' '" + n.CurrencyGroupSeparator + "' " + Sizes(n.CurrencyGroupSizes)
+            + " " + n.CurrencyNegativePattern + " " + n.CurrencyPositivePattern + " '" + n.CurrencySymbol + "'");
+        Say("  digits " + n.DigitSubstitution + " nan '" + n.NaNSymbol + "' native " + string.Join("", n.NativeDigits)
+            + " -inf '" + n.NegativeInfinitySymbol + "' neg '" + n.NegativeSign + "'");
+        Say("  num " + n.NumberDecimalDigits + " '" + n.NumberDecimalSeparator + "' '" + n.NumberGroupSeparator + "' " + Sizes(n.NumberGroupSizes) + " " + n.NumberNegativePattern);
+        Say("  pct " + n.PercentDecimalDigits + " '" + n.PercentDecimalSeparator + "' '" + n.PercentGroupSeparator + "' " + Sizes(n.PercentGroupSizes)
+            + " " + n.PercentNegativePattern + " " + n.PercentPositivePattern + " '" + n.PercentSymbol + "' '" + n.PerMilleSymbol + "'");
+        Say("  +inf '" + n.PositiveInfinitySymbol + "' pos '" + n.PositiveSign + "' ro " + n.IsReadOnly);
+    }
+
+    static void Try(string what, Action a)
+    {
+        try { a(); Say(what + ": ok"); }
+        catch (Exception e) { Say(what + ": " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    static void Main()
+    {
+        NumberFormatInfo inv = NumberFormatInfo.InvariantInfo;
+        Show("invariant", inv);
+        Show("new", new NumberFormatInfo());
+        Say("same invariant " + ReferenceEquals(inv, NumberFormatInfo.InvariantInfo) + " " + ReferenceEquals(inv, CultureInfo.InvariantCulture.NumberFormat)
+            + " " + ReferenceEquals(NumberFormatInfo.CurrentInfo, CultureInfo.CurrentCulture.NumberFormat));
+        Say("getinstance " + ReferenceEquals(NumberFormatInfo.GetInstance(null), NumberFormatInfo.CurrentInfo)
+            + " " + ReferenceEquals(NumberFormatInfo.GetInstance(inv), inv)
+            + " " + ReferenceEquals(NumberFormatInfo.GetInstance(CultureInfo.InvariantCulture), inv)
+            + " " + ReferenceEquals(NumberFormatInfo.GetInstance(DateTimeFormatInfo.InvariantInfo), NumberFormatInfo.CurrentInfo));
+        Say("getformat " + (inv.GetFormat(typeof(NumberFormatInfo)) == inv) + " " + (inv.GetFormat(typeof(DateTimeFormatInfo)) == null) + " " + (inv.GetFormat(null) == null)
+            + " " + (CultureInfo.InvariantCulture.GetFormat(typeof(NumberFormatInfo)) == inv));
+
+        Try("ro set", () => inv.NegativeSign = "~");
+        Try("ro clone", () => { NumberFormatInfo c = (NumberFormatInfo)inv.Clone(); c.NegativeSign = "~"; Say("clone neg " + c.NegativeSign + " ro " + c.IsReadOnly); });
+        NumberFormatInfo w = new NumberFormatInfo();
+        NumberFormatInfo r = NumberFormatInfo.ReadOnly(w);
+        Say("readonly " + r.IsReadOnly + " " + ReferenceEquals(r, w) + " " + ReferenceEquals(NumberFormatInfo.ReadOnly(r), r) + " " + w.IsReadOnly);
+        Try("readonly null", () => NumberFormatInfo.ReadOnly(null!));
+
+        Try("null symbol", () => w.CurrencySymbol = null!);
+        Try("null neg", () => w.NegativeSign = null!);
+        Try("empty dec", () => w.NumberDecimalSeparator = "");
+        Try("empty cur dec", () => w.CurrencyDecimalSeparator = "");
+        Try("empty pct dec", () => w.PercentDecimalSeparator = "");
+        Try("empty group", () => w.NumberGroupSeparator = "");
+        Try("digits 100", () => w.NumberDecimalDigits = 100);
+        Try("digits -1", () => w.CurrencyDecimalDigits = -1);
+        Try("pct digits 99", () => w.PercentDecimalDigits = 99);
+        Try("cur neg 16", () => w.CurrencyNegativePattern = 16);
+        Try("cur neg 15", () => w.CurrencyNegativePattern = 15);
+        Try("cur pos 4", () => w.CurrencyPositivePattern = 4);
+        Try("num neg 5", () => w.NumberNegativePattern = 5);
+        Try("pct neg 12", () => w.PercentNegativePattern = 12);
+        Try("pct pos 4", () => w.PercentPositivePattern = 4);
+        Try("sizes null", () => w.NumberGroupSizes = null!);
+        Try("sizes 10", () => w.NumberGroupSizes = new[] { 10 });
+        Try("sizes 0 mid", () => w.NumberGroupSizes = new[] { 0, 3 });
+        Try("sizes 3 0", () => w.NumberGroupSizes = new[] { 3, 0 });
+        Try("sizes empty", () => w.NumberGroupSizes = new int[0]);
+        Try("sizes -1", () => w.CurrencyGroupSizes = new[] { -1 });
+        Try("native null", () => w.NativeDigits = null!);
+        Try("native 9", () => w.NativeDigits = new[] { "0", "1", "2", "3", "4", "5", "6", "7", "8" });
+        Try("native bad", () => w.NativeDigits = new[] { "0", "1", "2", "3", "4", "5", "6", "7", "8", "99" });
+        Try("native ok", () => w.NativeDigits = new[] { "٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩" });
+        Try("digitsub 3", () => w.DigitSubstitution = (DigitShapes)3);
+        int[] sizes = { 3, 2 };
+        w.NumberGroupSizes = sizes;
+        sizes[0] = 7;
+        int[] got = w.NumberGroupSizes;
+        got[1] = 9;
+        Say("sizes copied " + Sizes(w.NumberGroupSizes));
+    }
+}

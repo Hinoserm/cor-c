@@ -5893,11 +5893,15 @@ namespace System.Threading.Tasks
         public bool IsCompleted => _task is null || _task.IsCompleted;
         public bool IsCompletedSuccessfully => _task is null || _task.IsCompletedSuccessfully;
         public bool IsFaulted => _task is not null && _task.IsFaulted;
+        public bool IsCanceled => _task is not null && _task.IsCanceled;
 
         public Task AsTask() => _task ?? Task.CompletedTask;
 
         public System.Runtime.CompilerServices.ValueTaskAwaiter GetAwaiter()
             => new System.Runtime.CompilerServices.ValueTaskAwaiter(_task, true);
+
+        public System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable ConfigureAwait(bool continueOnCapturedContext)
+            => new System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable(this);
 
         public static ValueTask FromResult() => default;
     }
@@ -5924,6 +5928,7 @@ namespace System.Threading.Tasks
         public bool IsCompleted => _task is null || _task.IsCompleted;
         public bool IsCompletedSuccessfully => _task is null || _task.IsCompletedSuccessfully;
         public bool IsFaulted => _task is not null && _task.IsFaulted;
+        public bool IsCanceled => _task is not null && _task.IsCanceled;
 
         /// The value, waited for as GetResult waits: what faulted the task is
         /// rethrown as it was, never in an AggregateException, as .NET's
@@ -5934,6 +5939,9 @@ namespace System.Threading.Tasks
 
         public System.Runtime.CompilerServices.ValueTaskAwaiter<TResult> GetAwaiter()
             => new System.Runtime.CompilerServices.ValueTaskAwaiter<TResult>(_task, _result);
+
+        public System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext)
+            => new System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable<TResult>(this);
     }
 }
 
@@ -6021,6 +6029,84 @@ namespace System.Runtime.CompilerServices
         public void UnsafeOnCompleted(Action continuation)
         {
             OnCompleted(continuation);
+        }
+    }
+
+    /// `valueTask.ConfigureAwait(false)`. There is no synchronisation context
+    /// to leave, so this awaits exactly as the ValueTask itself does, as
+    /// ConfiguredTaskAwaitable does a task.
+    readonly struct ConfiguredValueTaskAwaitable
+    {
+        readonly System.Threading.Tasks.ValueTask _value;
+
+        public ConfiguredValueTaskAwaitable(System.Threading.Tasks.ValueTask value)
+        {
+            _value = value;
+        }
+
+        public ConfiguredValueTaskAwaiter GetAwaiter() => new ConfiguredValueTaskAwaiter(_value.GetAwaiter());
+
+        public readonly struct ConfiguredValueTaskAwaiter
+        {
+            readonly ValueTaskAwaiter _awaiter;
+
+            public ConfiguredValueTaskAwaiter(ValueTaskAwaiter awaiter)
+            {
+                _awaiter = awaiter;
+            }
+
+            public bool IsCompleted => _awaiter.IsCompleted;
+
+            public void GetResult()
+            {
+                _awaiter.GetResult();
+            }
+
+            public void OnCompleted(Action continuation)
+            {
+                _awaiter.OnCompleted(continuation);
+            }
+
+            public void UnsafeOnCompleted(Action continuation)
+            {
+                _awaiter.OnCompleted(continuation);
+            }
+        }
+    }
+
+    readonly struct ConfiguredValueTaskAwaitable<TResult>
+    {
+        readonly System.Threading.Tasks.ValueTask<TResult> _value;
+
+        public ConfiguredValueTaskAwaitable(System.Threading.Tasks.ValueTask<TResult> value)
+        {
+            _value = value;
+        }
+
+        public ConfiguredValueTaskAwaiter GetAwaiter() => new ConfiguredValueTaskAwaiter(_value.GetAwaiter());
+
+        public readonly struct ConfiguredValueTaskAwaiter
+        {
+            readonly ValueTaskAwaiter<TResult> _awaiter;
+
+            public ConfiguredValueTaskAwaiter(ValueTaskAwaiter<TResult> awaiter)
+            {
+                _awaiter = awaiter;
+            }
+
+            public bool IsCompleted => _awaiter.IsCompleted;
+
+            public TResult GetResult() => _awaiter.GetResult();
+
+            public void OnCompleted(Action continuation)
+            {
+                _awaiter.OnCompleted(continuation);
+            }
+
+            public void UnsafeOnCompleted(Action continuation)
+            {
+                _awaiter.OnCompleted(continuation);
+            }
         }
     }
 }

@@ -1,0 +1,29 @@
+// The other unit of 1685_memberwise_clone_across_units: a class whose own
+// code copies its objects by MemberwiseClone, and one whose base is above
+// the class that copies.
+using System;
+using System.Collections.Generic;
+
+namespace CloneUnits;
+
+// A class whose own code copies its objects by MemberwiseClone: whatever
+// derives from it, in this unit or another, may be copied so too.
+public class Prototype
+{
+    public string Kind;
+    public List<int> Shared = new();
+    public Prototype(string kind) { Kind = kind; }
+    public Prototype Copy() => (Prototype)MemberwiseClone();
+    public virtual string Describe() => Kind + " [" + string.Join(",", Shared) + "]";
+}
+
+// A base above the copying class, with a field of its own.
+public class Root
+{
+    public List<string> Notes = new();
+}
+
+public class Copier : Root
+{
+    public Copier Twin() => (Copier)MemberwiseClone();
+}

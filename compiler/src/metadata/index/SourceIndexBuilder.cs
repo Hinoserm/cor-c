@@ -157,8 +157,16 @@ public static class SourceIndexBuilder
                             // both. An edit that lets it return changes the
                             // declaration, and what was compiled against it.
                             bool never = parser.NeverReturningBodies.Contains(bodies[bodyIndex].From);
+                            // A BODY THAT NAMES MemberwiseClone KEEPS THE NAME
+                            // (TypeDecl.MemberwiseCopied): a unit reading this
+                            // reads the type as one whose objects may be
+                            // copied by bytes, as the unit compiling it does.
+                            bool copies = false;
+                            for (int k = tokenIndex; k < tokens.Count && tokens[k].Pos < bodies[bodyIndex].To && !copies; k++)
+                                copies = tokens[k].Kind == Tok.Ident && tokens[k].Text == "MemberwiseClone";
                             if (!wroteBody)
-                                declaration.Append(bodies[bodyIndex].Block ? (never ? "{ throw null ; } " : "{} ") : (never ? "throw null " : "default "));
+                                declaration.Append(bodies[bodyIndex].Block ? (never ? (copies ? "{ MemberwiseClone ; throw null ; } " : "{ throw null ; } ") : copies ? "{ MemberwiseClone ; } " : "{} ")
+                                    : (never ? (copies ? "throw MemberwiseClone " : "throw null ") : copies ? "MemberwiseClone " : "default "));
                             wroteBody = true;
                             if (bodies[bodyIndex].Template)
                             {

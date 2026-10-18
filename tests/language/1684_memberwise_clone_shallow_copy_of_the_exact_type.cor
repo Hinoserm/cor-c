@@ -1,0 +1,359 @@
+// test: memberwise_clone_shallow_copy_of_the_exact_type
+// flags: --runtime-knob Corsac.GC.VerifyFrees=1
+// expect-exit: 0
+// expect-output:
+// Square sq 4 [1] 1,2#3 7 5,6 9 k=4 side 2.5 extra x
+// True
+// False True True
+// Square sq 4 [1,2] 1,2#3 7 5,6 9 k=4 side 2.5 extra x
+// Square copy 3 [1,2] 100,2  5,60 90 k=4 side 2.5 extra x
+// Square sq 4 [1,2] 1,2#3 7 5,6 9 k=4 side 9 extra x | 2.5
+// 5 6 Value
+// copy lock free True True True
+// hash differs
+// MyCalendar mine 2060 False 104
+// MyCalendar 2060 True False
+// Instance is read-only.
+// MyCalendar False 2060 False
+// MyCalendar True True
+// Localized False
+// 1 one 2 3 two 4 x,y
+// 10 ten 20 30 two 40 x,y
+// 200 1990000 1 2
+// 4588 item0,item1,item2 text3
+// 6000
+//
+// object.MemberwiseClone as the CLR's: a new object of the exact runtime
+// type, a subclass's own fields and all, every field copied as it is --
+// references shared, structs (nested ones too) copied as values -- through
+// `MemberwiseClone()`, `base.MemberwiseClone()` and a struct's (its box);
+// the copy's lock and hash its own. Calendar.Clone and Calendar.ReadOnly
+// copy a program's subclass as itself, and DateTimeFormatInfo's Clone and
+// ReadOnly copy its calendar so. Copies made in a loop while the originals
+// die, and copies of collections' subclasses whose originals then grow,
+// hold what they hold: the compiler's frees (checked here) and the
+// collections' own give back none of it. Every line is what .NET 10 prints.
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
+
+struct Point
+{
+    public int X, Y;
+    public int? Tag;
+    public override string ToString() => X + "," + Y + (Tag is int t ? "#" + t : "");
+}
+
+struct Holder
+{
+    public Point P;
+    public int? Count;
+    public KeyValuePair<string, int?> Pair;
+}
+
+class Shape
+{
+    public string Name = "shape";
+    public int Sides;
+    public List<int> Marks = new();
+    public Point Corner;
+    public int? Weight;
+    public Holder Held;
+    public Shape Copy() => (Shape)MemberwiseClone();
+    public override string ToString() => GetType().Name + " " + Name + " " + Sides + " [" + string.Join(",", Marks) + "] " + Corner + " " + Weight + " " + Held.P + " " + Held.Count + " " + Held.Pair.Key + "=" + Held.Pair.Value;
+}
+
+class Square : Shape
+{
+    public double Side = 2.5;
+    public object? Extra;
+    public override string ToString() => base.ToString() + " side " + Side + " extra " + (Extra ?? "none");
+    public Square Twin() => (Square)base.MemberwiseClone();
+}
+
+struct Value
+{
+    public int A;
+    public object Clone() => MemberwiseClone();
+}
+
+class Locked
+{
+    public int N = 1;
+    public Locked Copy() => (Locked)MemberwiseClone();
+}
+
+sealed class MyCalendar : GregorianCalendar
+{
+    public string Note = "mine";
+    public override int GetDayOfMonth(DateTime time) => base.GetDayOfMonth(time) + 100;
+}
+
+struct Empty { }
+
+struct Outer
+{
+    public int A;
+    public Empty E;
+    public string Name;
+}
+
+struct Deep
+{
+    public Outer In;
+    public int B;
+}
+
+class Node
+{
+    public Outer O;
+    public Deep D;
+    public Empty Mark;
+    public List<string> Items = new();
+    public Node Copy() => (Node)MemberwiseClone();
+}
+
+class Leaf : Node
+{
+    public Outer Extra;
+}
+
+class Bag
+{
+    public List<string> Items;
+    public StringBuilder Text;
+    public int[] Numbers;
+    public Bag() { Items = new List<string>(); Text = new StringBuilder(); Numbers = new int[4]; }
+    public Bag Copy() => (Bag)MemberwiseClone();
+}
+
+class Chain
+{
+    public Chain? Next;
+    public string Name;
+    public Chain(string name, Chain? next) { Name = name; Next = next; }
+    public Chain Shallow() => (Chain)MemberwiseClone();
+}
+
+class Names : List<string>
+{
+    public string Tag = "names";
+    public Names Copy() => (Names)MemberwiseClone();
+}
+
+class Table : Dictionary<string, int>
+{
+    public Table Copy() => (Table)MemberwiseClone();
+}
+
+class Tags : HashSet<string>
+{
+    public Tags Copy() => (Tags)MemberwiseClone();
+}
+
+class Line : Queue<int>
+{
+    public Line Copy() => (Line)MemberwiseClone();
+}
+
+class Pile : Stack<int>
+{
+    public Pile Copy() => (Pile)MemberwiseClone();
+}
+
+class Buffer : MemoryStream
+{
+    public Buffer Copy() => (Buffer)MemberwiseClone();
+}
+
+static class Program
+{
+
+    static Bag Made(int n)
+    {
+        Bag b = new Bag();
+        for (int i = 0; i < n; i++) b.Items.Add("item" + i);
+        b.Text.Append("text").Append(n);
+        b.Numbers[1] = n;
+        return b.Copy();          // the original dies here; its fields live on in the copy
+    }
+
+    static int Kept(Bag outside)
+    {
+        Bag local = outside.Copy();   // the copy dies here; the original's fields stay
+        local.Items.Add("more");
+        return local.Items.Count;
+    }
+
+    static Chain Walk(int depth)
+    {
+        Chain c = new Chain("leaf", null);
+        for (int i = 0; i < depth; i++) c = new Chain("n" + i, c).Shallow();
+        return c;
+    }
+
+    static void Shapes()
+    {
+        Square s = new Square { Name = "sq", Sides = 4, Extra = "x" };
+        s.Marks.Add(1);
+        s.Corner = new Point { X = 1, Y = 2, Tag = 3 };
+        s.Weight = 7;
+        s.Held = new Holder { P = new Point { X = 5, Y = 6 }, Count = 9, Pair = new KeyValuePair<string, int?>("k", 4) };
+        Shape c = s.Copy();
+        Console.WriteLine(c);
+        Console.WriteLine(c.GetType() == typeof(Square));
+        Console.WriteLine(ReferenceEquals(c, s) + " " + ReferenceEquals(c.Marks, s.Marks) + " " + ReferenceEquals(((Square)c).Extra, s.Extra));
+        // Value fields are copies; reference fields are shared.
+        c.Name = "copy";
+        c.Sides = 3;
+        c.Corner.X = 100;
+        c.Corner.Tag = null;
+        c.Weight = null;
+        c.Held.P.Y = 60;
+        c.Held.Count = 90;
+        c.Marks.Add(2);
+        Console.WriteLine(s);
+        Console.WriteLine(c);
+        Square t = s.Twin();
+        t.Side = 9;
+        Console.WriteLine(t + " | " + s.Side);
+
+        Value v = new Value { A = 5 };
+        object boxed = v.Clone();
+        v.A = 6;
+        Console.WriteLine(((Value)boxed).A + " " + v.A + " " + boxed.GetType().Name);
+
+        Locked l = new Locked();
+        lock (l)
+        {
+            Locked m = l.Copy();
+            bool took = System.Threading.Monitor.TryEnter(m);
+            Console.WriteLine("copy lock free " + took + " " + System.Threading.Monitor.IsEntered(l) + " " + System.Threading.Monitor.IsEntered(m));
+            if (took) System.Threading.Monitor.Exit(m);
+        }
+        Console.WriteLine(l.GetHashCode() == l.Copy().GetHashCode() ? "same hash" : "hash differs");
+
+        // Calendars: a subclass is cloned as itself, read-only as itself.
+        MyCalendar mine = new MyCalendar();
+        mine.TwoDigitYearMax = 2060;
+        Calendar cloned = (Calendar)mine.Clone();
+        Calendar frozen = Calendar.ReadOnly(mine);
+        Console.WriteLine(cloned.GetType().Name + " " + ((MyCalendar)cloned).Note + " " + cloned.TwoDigitYearMax + " " + cloned.IsReadOnly + " " + cloned.GetDayOfMonth(new DateTime(2020, 3, 4)));
+        Console.WriteLine(frozen.GetType().Name + " " + frozen.TwoDigitYearMax + " " + frozen.IsReadOnly + " " + ReferenceEquals(frozen, mine));
+        try { frozen.TwoDigitYearMax = 2070; } catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        DateTimeFormatInfo dtfi = new DateTimeFormatInfo();
+        dtfi.Calendar = mine;
+        DateTimeFormatInfo dc = (DateTimeFormatInfo)dtfi.Clone();
+        Console.WriteLine(dc.Calendar.GetType().Name + " " + ReferenceEquals(dc.Calendar, mine) + " " + dc.Calendar.TwoDigitYearMax + " " + dc.IsReadOnly);
+        DateTimeFormatInfo dr = DateTimeFormatInfo.ReadOnly(dtfi);
+        Console.WriteLine(dr.Calendar.GetType().Name + " " + dr.Calendar.IsReadOnly + " " + dr.IsReadOnly);
+        GregorianCalendar g = new GregorianCalendar(GregorianCalendarTypes.Localized);
+        GregorianCalendar gc = (GregorianCalendar)g.Clone();
+        Console.WriteLine(gc.CalendarType + " " + gc.IsReadOnly);
+    }
+
+    static void Nested()
+    {
+        Leaf n = new Leaf();
+        n.O.A = 1; n.O.Name = "one";
+        n.D.In.A = 2; n.D.B = 3; n.D.In.Name = "two";
+        n.Extra.A = 4;
+        n.Items.Add("x");
+        Leaf c = (Leaf)n.Copy();
+        c.O.A = 10; c.O.Name = "ten";
+        c.D.In.A = 20; c.D.B = 30;
+        c.Extra.A = 40;
+        c.Items.Add("y");
+        Console.WriteLine(n.O.A + " " + n.O.Name + " " + n.D.In.A + " " + n.D.B + " " + n.D.In.Name + " " + n.Extra.A + " " + string.Join(",", n.Items));
+        Console.WriteLine(c.O.A + " " + c.O.Name + " " + c.D.In.A + " " + c.D.B + " " + c.D.In.Name + " " + c.Extra.A + " " + string.Join(",", c.Items));
+        // Many copies, many collections.
+        List<Node> all = new();
+        for (int i = 0; i < 20000; i++)
+        {
+            Node m = n.Copy();
+            m.O.A = i;
+            if (i % 100 == 0) all.Add(m);
+        }
+        long sum = 0;
+        foreach (Node m in all) sum += m.O.A;
+        GC.Collect();
+        Console.WriteLine(all.Count + " " + sum + " " + n.O.A + " " + all[5].Items.Count);
+    }
+
+    static void Lifetimes()
+    {
+        long total = 0;
+        for (int round = 0; round < 200; round++)
+        {
+            Bag copy = Made(round % 7 + 1);
+            total += copy.Items.Count + copy.Text.Length + copy.Numbers[1];
+            Bag again = new Bag();
+            again.Items.Add("a");
+            total += Kept(again) + again.Items.Count;
+            Chain c = Walk(5);
+            int n = 0;
+            for (Chain? x = c; x != null; x = x.Next) n++;
+            total += n;
+            if (round % 50 == 0) GC.Collect();
+        }
+        Bag last = Made(3);
+        Console.WriteLine(total + " " + string.Join(",", last.Items) + " " + last.Text);
+    }
+
+    static void Collections()
+    {
+        long sum = 0;
+        for (int round = 0; round < 50; round++)
+        {
+            Names n = new Names();
+            for (int i = 0; i < 3; i++) n.Add("n" + i);
+            Names c = n.Copy();
+            for (int i = 0; i < 40; i++) n.Add("m" + i);      // the original grows out of the shared array
+            sum += c.Count + c[2].Length + n.Count;
+            c.Add("c");                                          // the copy's own growth
+            sum += c.Count;
+
+            Table t = new Table();
+            t["a"] = 1; t["b"] = 2;
+            Table u = t.Copy();
+            for (int i = 0; i < 50; i++) t["k" + i] = i;
+            sum += u["a"] + u.Count + t.Count;
+
+            Tags g = new Tags { "x", "y" };
+            Tags h = g.Copy();
+            for (int i = 0; i < 50; i++) g.Add("g" + i);
+            sum += h.Count + (h.Contains("x") ? 1 : 0);
+
+            Line q = new Line();
+            q.Enqueue(1); q.Enqueue(2);
+            Line r = q.Copy();
+            for (int i = 0; i < 20; i++) q.Enqueue(i);
+            sum += r.Count + r.Peek();
+
+            Pile p = new Pile();
+            p.Push(5);
+            Pile s = p.Copy();
+            for (int i = 0; i < 20; i++) p.Push(i);
+            sum += s.Count + s.Peek();
+
+            Buffer b = new Buffer();
+            b.WriteByte(7);
+            Buffer d = b.Copy();
+            for (int i = 0; i < 300; i++) b.WriteByte((byte)i);
+            sum += d.Length;
+            if (round % 10 == 0) GC.Collect();
+        }
+        Console.WriteLine(sum);
+    }
+
+    static void Main()
+    {
+        Shapes();
+        Nested();
+        Lifetimes();
+        Collections();
+    }
+}

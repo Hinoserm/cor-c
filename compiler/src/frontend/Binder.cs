@@ -6695,6 +6695,25 @@ public sealed partial class Binder
             {
                 Type seq = Peek(fe.Sequence);
 
+                // `await foreach`, always rewritten (IterateAsync).
+                if (fe.Async)
+                {
+                    if (!seq.IsError && IterateAsync(fe, seq) is Stmt awaited)
+                    {
+                        _r.Lowered[fe] = awaited;
+                        CheckStmt(awaited);
+                    }
+                    else
+                    {
+                        CheckExpr(fe.Sequence);
+                        if (!seq.IsError)
+                        {
+                            Error(fe.Sequence, $"CS8411: Asynchronous foreach statement cannot operate on variables of type '{seq}' because '{seq}' does not contain a suitable public instance or extension definition for 'GetAsyncEnumerator'");
+                        }
+                    }
+                    break;
+                }
+
                 // OVER A DYNAMIC VALUE: over what the binder enumerates of it.
                 if (LateForeach(fe, seq) is Stmt lateLoop)
                 {
@@ -6730,8 +6749,10 @@ public sealed partial class Binder
 
                 if (!linear && !seq.IsError)
                 {
-                    Error(fe.Sequence, $"'{seq}' cannot be iterated: it is not an array, "
-                        + "has no GetEnumerator, and is not a list");
+                    // C#'s CS8414 for an async sequence walked without `await`.
+                    Error(fe.Sequence, seq.Symbol is TypeSymbol walkedLater && Reachable(walkedLater, "GetAsyncEnumerator").Count > 0
+                        ? $"'{seq}' cannot be iterated: it has no GetEnumerator; did you mean 'await foreach' rather than 'foreach'?"
+                        : $"'{seq}' cannot be iterated: it is not an array, has no GetEnumerator, and is not a list");
                 }
 
                 PushScope();
@@ -10237,6 +10258,105 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// `await foreach`, as C# writes it (C# 13.9.5, the async form): the
+    /// enumerator from a GetAsyncEnumerator called with nothing, each
+    /// MoveNextAsync awaited for whether there is another, Current read into
+    /// the loop's variable (or taken apart), and the enumerator disposed by
+    /// awaiting however the loop ends. Null when there is no
+    /// GetAsyncEnumerator to call.
+    /// </summary>
+    private Stmt? IterateAsync(ForeachStmt fe, Type seq)
+    {
+        // A GetAsyncEnumerator that can be called with nothing: its token, and
+        // any other parameter, defaulted (C# 13.9.5, the async pattern).
+        if (seq.Symbol is not TypeSymbol had
+            || Reachable(had, "GetAsyncEnumerator").FirstOrDefault(m => !m.Static
+                   && Enumerable.Range(0, m.Params.Count).All(i => m.Params[i].IsParams || m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null)) is not { } walk)
+        {
+            return null;
+        }
+
+        int n = _iterations++;
+        string walker = $"$enumerator${n}";
+        Expr Named(string name) => new NameExpr { Name = name, Line = fe.Line, Col = fe.Col };
+        Expr On(Expr target, string member) => new MemberExpr { Target = target, Name = member, Line = fe.Line, Col = fe.Col };
+        Expr Called(Expr target, string member) => new CallExpr { Target = On(target, member), Line = fe.Line, Col = fe.Col };
+        Expr Awaited(Expr operand) => new AwaitExpr { Operand = operand, Line = fe.Line, Col = fe.Col };
+
+        Block body = new() { Line = fe.Line, Col = fe.Col };
+        if (fe.Bindings is { } taken)
+        {
+            // What Current hands back, which is what is taken apart (Iterate).
+            Type walking = Close(walk.Returns, Received(seq, walk.Owner ?? had));
+            Type each = walking.Symbol is TypeSymbol e
+                      ? Close(Reachable(e, "get_Current").FirstOrDefault()?.Returns ?? Type.Error, Received(walking, e))
+                      : Type.Error;
+            string element = $"$element${n}";
+            body.WritableStatements.Add(new LocalDecl { Name = element, Init = On(Named(walker), "Current"), Line = fe.Line, Col = fe.Col });
+            body.WritableStatements.AddRange(Deconstruct(fe, Named(element), taken, each));
+        }
+        else
+        {
+            body.WritableStatements.Add(new LocalDecl { Type = fe.Type, Name = fe.Name, Init = On(Named(walker), "Current"), Line = fe.Line, Col = fe.Col });
+        }
+        body.WritableStatements.Add(fe.Body);
+
+        Block outer = new() { Line = fe.Line, Col = fe.Col };
+        outer.WritableStatements.Add(new LocalDecl { Name = walker, Init = Called(fe.Sequence, "GetAsyncEnumerator"), Line = fe.Line, Col = fe.Col });
+        WhileStmt stepping = new()
+        {
+            Cond = Awaited(Called(Named(walker), "MoveNextAsync")), Body = body,
+            Line = fe.Line, Col = fe.Col,
+        };
+
+        // THE ENUMERATOR IS DISPOSED by awaiting its DisposeAsync however the
+        // loop ends: its own, found by the pattern whatever it implements, as
+        // C# finds it for an async loop, or IAsyncDisposable's through the
+        // interface when that is implemented explicitly. Unlike a loop's
+        // IDisposable, an unsealed class with neither is not asked at run
+        // time whether it is one after all: .NET disposes nothing there.
+        Stmt? release = null;
+        if (Close(walk.Returns, Received(seq, walk.Owner ?? had)).Symbol is TypeSymbol enumerator)
+        {
+            MethodSymbol? dispose = Reachable(enumerator, "DisposeAsync").FirstOrDefault(m => m.Params.Count == 0 && !m.Static);
+            MethodSymbol? hidden = enumerator.Kind == TypeKind.Interface ? null
+                : enumerator.Methods.FirstOrDefault(m => m.ExplicitMember == "DisposeAsync" && m.ExplicitInterface is "IAsyncDisposable" or "System.IAsyncDisposable" && m.Params.Count == 0);
+            bool throughInterface = hidden is not null && (dispose is null || dispose.Owner.Kind == TypeKind.Interface);
+            if (dispose is not null || throughInterface)
+            {
+                Expr target = throughInterface
+                    ? new CastExpr { Type = new TypeRef { Name = "System.IAsyncDisposable", Line = fe.Line, Col = fe.Col }, Operand = Named(walker), Line = fe.Line, Col = fe.Col }
+                    : Named(walker);
+                Stmt call = new ExprStmt { Expr = Awaited(Called(target, "DisposeAsync")), Line = fe.Line, Col = fe.Col };
+                release = enumerator.Kind == TypeKind.Struct ? call : new IfStmt
+                {
+                    Cond = new BinaryExpr
+                    {
+                        Op = BinOp.Ne, Left = Named(walker),
+                        Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = fe.Line, Col = fe.Col },
+                        Line = fe.Line, Col = fe.Col,
+                    },
+                    Then = call, Line = fe.Line, Col = fe.Col,
+                };
+            }
+        }
+
+        if (release is null)
+        {
+            outer.WritableStatements.Add(stepping);
+        }
+        else
+        {
+            Block guarded = new() { Line = fe.Line, Col = fe.Col };
+            guarded.WritableStatements.Add(stepping);
+            Block finish = new() { Line = fe.Line, Col = fe.Col };
+            finish.WritableStatements.Add(release);
+            outer.WritableStatements.Add(new TryStmt { Body = guarded, Finally = finish, Line = fe.Line, Col = fe.Col });
+        }
+        return outer;
+    }
+
+    /// <summary>
     /// The statements a `foreach` over a collection stands for, or null when
     /// the thing cannot be looped over at all.
     ///
@@ -12152,6 +12272,57 @@ public sealed partial class Binder
     /// </summary>
     private Type? Produces(MethodSymbol m, Type want, LambdaExpr lam, Dictionary<string, Type> bound)
     {
+        Type? produced = LambdaGives(m, want, lam, bound, out _, out bool valueless);
+        if (valueless) produced = null;
+        // AN ASYNC LAMBDA'S INFERRED RETURN TYPE IS ITS TASK (C# 12.6.3.13):
+        // Task<T> of what it returns, Task when it returns nothing -- or the
+        // ValueTask the delegate answers with -- so `Run<T>(Func<Task<T>>)`
+        // learns T from `async () => { ...; return 42; }`, and Run(Func<Task>)
+        // converts better than Run(Action) an async lambda that returns none.
+        if (lam.Async && (produced is not null || valueless)) return AsyncTask(want, produced);
+        return produced;
+    }
+
+    /// <summary>
+    /// The task an async lambda's body comes to: the delegate's ValueTask
+    /// when that is what it answers, else Task; of `result`, or of nothing
+    /// when null. Null when the result cannot be written as a type argument.
+    /// </summary>
+    private Type? AsyncTask(Type want, Type? result)
+    {
+        string task = Invoked(want)?.Returns.Symbol is TypeSymbol answers && TaskLikeName(answers) == "ValueTask" ? "ValueTask" : TaskTypeName;
+        TypeRef made = new() { Name = task, Line = 0, Col = 0 };
+        if (result is not null)
+        {
+            if (SpellOpen(result) is not TypeRef spelt) return null;
+            made.Arguments.Add(spelt);
+        }
+        Type resolved = Resolve(made, _thisType);
+        return resolved.IsError ? null : resolved;
+    }
+
+    /// <summary>"Task" or "ValueTask" for either, generic or not; null for any other type.</summary>
+    private static string? TaskLikeName(TypeSymbol t)
+    {
+        string name = PlainName(t.Decl?.Template ?? t.Decl?.Name ?? t.Name);
+        int cut = name.IndexOfAny(new[] { '$', '`', '<' });
+        if (cut > 0) name = name[..cut];
+        return name is "Task" or "ValueTask" ? name : null;
+    }
+
+    /// <summary>
+    /// WHAT A LAMBDA'S BODY GIVES, checked with the delegate's parameter
+    /// types: the type of its value -- an expression body's, or the best
+    /// common type of a block's returned values -- or null when that cannot
+    /// be told. `valueless` when it gives none: a block whose returns have no
+    /// value (or that has none), or an expression of no type. `statement`
+    /// when an expression body may stand as a statement (StatementExpression),
+    /// which a delegate returning nothing takes with its value dropped.
+    /// </summary>
+    private Type? LambdaGives(MethodSymbol m, Type want, LambdaExpr lam, Dictionary<string, Type> bound, out bool statement, out bool valueless)
+    {
+        statement = lam.Body is not null && StatementExpression(lam.Body);
+        valueless = false;
         // `delegate { ... }` asked as the lambda it is for this delegate.
         if (lam.NoSignature && Invoked(want) is { Params.Count: > 0 } every && !HasOutParameter(every))
             lam = AnonymousFilled(lam, every);
@@ -12198,6 +12369,7 @@ public sealed partial class Binder
         if (lam.Body is not null)
         {
             produced = CheckExpr(lam.Body);
+            valueless = produced.IsVoid;
         }
         else
         {
@@ -12211,7 +12383,8 @@ public sealed partial class Binder
             try
             {
                 CheckBlock(lam.BlockBody!);
-                produced = BestCommonType(_inferredReturns);
+                valueless = _inferredReturns.All(t => t.IsVoid);
+                produced = valueless ? Type.Void : BestCommonType(_inferredReturns);
             }
             finally
             {
@@ -12226,6 +12399,129 @@ public sealed partial class Binder
         _quiet--;
         return produced is null || produced.IsError ? null : produced;
     }
+
+    /// <summary>
+    /// An expression C# lets stand as a statement (C# 13.7): a call, an
+    /// assignment, ++ or --, a `new`, an await -- what an expression-bodied
+    /// lambda returning nothing may be.
+    /// </summary>
+    private static bool StatementExpression(Expr e) => e switch
+    {
+        CallExpr or AssignExpr or NewExpr or AwaitExpr or ThrowExpr => true,
+        UnaryExpr { Op: UnOp.PreInc or UnOp.PreDec or UnOp.PostInc or UnOp.PostDec } => true,
+        SuppressExpr { Operand: var inner } => StatementExpression(inner),
+        _ => false,
+    };
+
+    /// <summary>
+    /// WHETHER A LAMBDA CONVERTS TO THE DELEGATE parameter `i` of `m` is at
+    /// all (C# 10.7.1), which is what makes `m` a candidate for it: as many
+    /// parameters, of the types written if they are; and what its body gives
+    /// against what the delegate returns -- nothing, or an expression that
+    /// may stand as a statement, for one returning nothing; a value that
+    /// converts to the result for one returning one; and for an async lambda
+    /// a task: nothing (or a statement) for void, Task or ValueTask, a value
+    /// converting to T for Task&lt;T&gt; or ValueTask&lt;T&gt;, no other type.
+    /// `() => 7` is no Action and no Func&lt;Task&gt;; it is Task.Run&lt;int&gt;.
+    /// What cannot be told -- a result still open, a body that does not
+    /// check with these parameters -- fits, as it did.
+    /// </summary>
+    private bool LambdaFits(MethodSymbol m, int i, LambdaExpr lam, Dictionary<string, Type> bound,
+                            Dictionary<(LambdaExpr, string), (Type?, bool, bool)>? asked = null)
+    {
+        Type want = m.Params[i].Type;
+        if (lam.NoSignature || Invoked(want) is not { } invoke) return true;
+        if (invoke.Params.Count != lam.Params.Count) return false;
+        Type returns = Close(Substitute(invoke.Returns, Applied(want)), bound);
+        if (returns.IsError || Unmade(returns) || Open(returns)) return true;
+        if (lam.TypesWritten)
+        {
+            Dictionary<string, Type> applied = Applied(want);
+            for (int k = 0; k < lam.Params.Count; k++)
+            {
+                Type takes = Close(Substitute(invoke.Params[k].Type, applied), bound);
+                Type written = Resolve(lam.Params[k].Type, _thisType);
+                if (!takes.IsError && !written.IsError && takes.ParamName == null && !MethodSignatures.SameType(takes.AsNonNullable(), written.AsNonNullable())) return false;
+            }
+        }
+        // ASKED ONCE FOR EACH SET OF PARAMETER TYPES in a call (`asked`): every
+        // overload of Sum takes a Func<T, ...> of the same T, and the body
+        // checked again for each was most of a LINQ call's binding.
+        Type? gives;
+        bool statement, valueless;
+        string key = "";
+        if (asked is not null)
+        {
+            Dictionary<string, Type> applied = Applied(want);
+            foreach (ParamSymbol p in invoke.Params) key += Close(Substitute(p.Type, applied), bound) + ";";
+        }
+        if (asked is not null && asked.TryGetValue((lam, key), out var known))
+        {
+            (gives, statement, valueless) = known;
+        }
+        else
+        {
+            gives = LambdaGives(m, want, lam, bound, out statement, out valueless);
+            if (asked is not null) asked[(lam, key)] = (gives, statement, valueless);
+        }
+        if (gives is null && !valueless) return true;
+
+        if (lam.Async)
+        {
+            bool nothing = valueless || lam.Body is not null && statement;
+            if (returns.IsVoid) return nothing;
+            if (returns.Symbol is not TypeSymbol task || TaskLikeName(task) is null) return false;
+            Type result = AwaitedResult(returns);
+            if (result.IsError || result.ParamName != null) return true;
+            if (result.IsVoid) return nothing;
+            return !valueless && gives is not null && Fits(gives, result, lam.Body);
+        }
+
+        if (returns.IsVoid) return lam.Body is null ? valueless : statement || valueless;
+        if (valueless)
+        {
+            // A block that never ends normally returns nothing and converts
+            // to any delegate: `() => { throw ...; }`.
+            return lam.BlockBody is { Statements.Count: > 0 } block && block.Statements[^1] is ThrowStmt;
+        }
+        return gives is not null && Fits(gives, returns, lam.Body);
+    }
+
+    /// <summary>What awaiting a task-like type answers: GetAwaiter().GetResult()'s type.</summary>
+    private static Type AwaitedResult(Type task)
+    {
+        MethodSymbol? getAwaiter = task.Symbol?.FindMethods("GetAwaiter").FirstOrDefault(m => m.Params.Count == 0);
+        MethodSymbol? getResult = getAwaiter?.Returns.Symbol?.FindMethods("GetResult").FirstOrDefault(m => m.Params.Count == 0);
+        return getResult?.Returns ?? Type.Error;
+    }
+
+    /// <summary>
+    /// C#'S BETTER CONVERSION FROM A LAMBDA (12.6.4.5) between two delegate
+    /// parameters it converts to: 1 for `a`'s, -1 for `b`'s, 0 neither. With
+    /// the lambda's inferred return type X (an async lambda's task, Produces):
+    /// one returning something over one returning nothing; else the one X
+    /// converts to better (BetterConversion) -- for an async lambda between
+    /// two tasks of values, the one its value converts to better.
+    /// </summary>
+    private int LambdaConversion(LambdaExpr lam, MethodSymbol a, Type aWant, Dictionary<string, Type> aBound,
+                                 MethodSymbol b, Type bWant, Dictionary<string, Type> bBound, Func<Type, Type, Type, int> better)
+    {
+        Type ra = Close(Substitute(Invoked(aWant)?.Returns ?? Type.Error, Applied(aWant)), aBound);
+        Type rb = Close(Substitute(Invoked(bWant)?.Returns ?? Type.Error, Applied(bWant)), bBound);
+        if (ra.IsError || rb.IsError || ra.Equals(rb)) return 0;
+        Type? x = Produces(ra.IsVoid ? b : a, ra.IsVoid ? bWant : aWant, lam, ra.IsVoid ? bBound : aBound);
+        if (x is null || x.IsError || x.IsVoid) return 0;
+        if (ra.IsVoid != rb.IsVoid) return ra.IsVoid ? -1 : 1;
+        if (lam.Async && ra.Symbol is TypeSymbol ta && TaskLikeName(ta) is not null && rb.Symbol is TypeSymbol tb && TaskLikeName(tb) is not null)
+        {
+            Type va = AwaitedResult(ra), vb = AwaitedResult(rb), vx = AwaitedResult(x);
+            if (!va.IsError && !vb.IsError && !vx.IsError && !va.IsVoid && !vb.IsVoid && !vx.IsVoid) return better(vx, va, vb);
+        }
+        return better(x, ra, rb);
+    }
+
+    /// <summary>No type arguments bound: what a lambda is asked with against an ordinary method's delegate.</summary>
+    private static readonly Dictionary<string, Type> NoBindings = new(StringComparer.Ordinal);
 
     /// <summary>What a block lambda's returns are being gathered into, while one is inferred.</summary>
     private List<Type>? _inferredReturns;
@@ -17498,6 +17794,90 @@ public sealed partial class Binder
     /// lambda's body is checked inside its closure class, whose fields are
     /// the captures and are read from the closure object, so that is never
     /// a static context whatever the method around it was.
+    /// <summary>
+    /// OBJECT.MEMBERWISECLONE, protected and not virtual, which every class
+    /// and struct inherits: a copy of the object's exact type with every
+    /// field as it is (Lowering.EmitMemberwiseClone). Written bare it is this
+    /// object's, as GetType is, and `base.` the same; on another object only
+    /// where C#'s protected access lets it be named -- through a qualifier of
+    /// this class or one derived from it (CS1540). A struct's is its box's.
+    /// Null for a call that is not one: a member of that name declared
+    /// somewhere, or a lambda's name in scope.
+    /// </summary>
+    private Type? MemberwiseCloneCall(CallExpr c)
+    {
+        const string Name = "MemberwiseClone";
+        Expr receiver;
+        if (c.Target is NameExpr { Name: Name, TypeArgs.Count: 0 } bare)
+        {
+            if (InStaticContext || Lookup(Name) is not null || _thisType is null || _thisType.FindMethods(Name).Count > 0)
+            {
+                return null;
+            }
+            receiver = new ThisExpr { Line = bare.Line, Col = bare.Col };
+            CallExpr ofThis = new()
+            {
+                Target = new MemberExpr { Target = receiver, Name = Name, Line = bare.Line, Col = bare.Col },
+                Line = c.Line, Col = c.Col,
+            };
+            _r.Rewrites[c] = ofThis;
+            return CheckExpr(ofThis);
+        }
+        if (c.Target is not MemberExpr { Name: Name, TypeArgs.Count: 0, NullConditional: false } member)
+        {
+            return null;
+        }
+        receiver = member.Target;
+
+        // `base.MemberwiseClone()` is this object's: object's own, which the
+        // base chain does not hide.
+        TypeSymbol? within = _capturedThisType ?? _thisType;
+        Type on;
+        if (receiver is BaseExpr)
+        {
+            if (within is null || within.Base?.FindMethods(Name).Count > 0) return null;
+            on = Type.Plain(within, Prim.Void);
+        }
+        else
+        {
+            on = Peek(receiver);
+            if (on.Symbol is TypeSymbol declares && declares.FindMethods(Name).Count > 0) return null;
+            on = CheckExpr(receiver);
+        }
+        if (on.IsError)
+        {
+            return Type.Error;
+        }
+
+        bool reachable = false;
+        if (!on.IsArray && !on.IsPointer && on.Symbol is { Kind: TypeKind.Class or TypeKind.Struct } of)
+        {
+            for (TypeSymbol? from = within; from is not null && !reachable; from = OuterOf(from))
+            {
+                for (TypeSymbol? t = of; t is not null; t = t.Base)
+                {
+                    if (ReferenceEquals(t, from) || (t.Decl is not null && ReferenceEquals(t.Decl, from.Decl)))
+                    {
+                        reachable = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!reachable)
+        {
+            Error(c, $"CS1540: Cannot access protected member 'object.MemberwiseClone()' via a qualifier of type '{on}'; the qualifier must be of type '{within?.Name ?? "object"}' (or derived from it)");
+            return Type.Error;
+        }
+        RequireNonNull(on, receiver, "copy");
+        _r.MemberwiseClones.Add(c);
+        return Type.Any;
+    }
+
+    /// <summary>The type a nested type is written in, whose protected members it may reach too; null at the top.</summary>
+    private TypeSymbol? OuterOf(TypeSymbol t)
+        => t.Decl?.Outer is string outer && FindType(outer, out TypeSymbol? found) ? found : null;
+
     private bool InStaticContext =>
         _method is { Static: true }
         && !(_thisType?.Name.StartsWith("Lambda$", StringComparison.Ordinal) ?? false);
@@ -19514,6 +19894,11 @@ public sealed partial class Binder
             return CheckExpr(ofThis);
         }
 
+        if (c.Args.Count == 0 && MemberwiseCloneCall(c) is Type cloned)
+        {
+            return cloned;
+        }
+
         // A NULL-CONDITIONAL CALL evaluates its receiver once, calls only when
         // that value exists, and otherwise produces null. Member access already
         // had this behaviour; invocation did not, so `x?.Items.FirstOrDefault()`
@@ -20674,38 +21059,15 @@ public sealed partial class Binder
                 // returns one than to one returning void (C# 12.6.4.5), as
                 // GenericBetter has it for a generic: `Task.Run(() =>
                 // Task.WhenAll(a, b))` is Run(Func<Task>), not Run(Action).
+                // And between two that return something, the one the lambda's
+                // inferred return type converts to better (LambdaConversion):
+                // `async () => await f()` is Run(Func<Task<string>>) over
+                // Run(Func<Task>).
                 if (i < c.Args.Count && c.Args[i] is LambdaExpr lam)
                 {
-                    Type oneReturns = Substitute(Invoked(one.Params[i].Type)?.Returns ?? Type.Error, Applied(one.Params[i].Type));
-                    Type otherReturns = Substitute(Invoked(other.Params[i].Type)?.Returns ?? Type.Error, Applied(other.Params[i].Type));
-                    if (!oneReturns.IsError && !otherReturns.IsError && oneReturns.IsVoid != otherReturns.IsVoid)
-                    {
-                        // An async lambda has a value either way: its task.
-                        MethodSymbol valued = oneReturns.IsVoid ? other : one;
-                        Type? made = Produces(valued, valued.Params[i].Type, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
-                        // A VALUE THE DELEGATE CAN RETURN: `Task.Run(() =>
-                        // l.Sum())`'s int is no Task, and Run(Func<Task>) is no
-                        // better than Run(Action) for it -- taken as better,
-                        // it beat Run<T>(Func<T>) too, and the call did not
-                        // compile. An async lambda's task is always one.
-                        if (lam.Async || made is not null && !made.IsError && !made.IsVoid
-                            && Convertible(made, oneReturns.IsVoid ? otherReturns : oneReturns))
-                        {
-                            if (oneReturns.IsVoid) return false;
-                            better = true;
-                        }
-                    }
-                    // AND OF TWO THAT BOTH RETURN ONE, the one the lambda's
-                    // value converts to better: `O(() => 7)` beside
-                    // O(Func<object>) and O(Func<int>) is the Func<int>.
-                    else if (!oneReturns.IsError && !otherReturns.IsError && !oneReturns.IsVoid && !otherReturns.IsVoid
-                             && SameInvokeParameters(one.Params[i].Type, other.Params[i].Type)
-                             && LambdaInferred(one, one.Params[i].Type, lam, null) is Type lambdaGives)
-                    {
-                        int byValue = BetterConversion(lambdaGives, oneReturns, otherReturns);
-                        if (byValue < 0) return false;
-                        if (byValue > 0) better = true;
-                    }
+                    int lambdaSaid = LambdaConversion(lam, one, one.Params[i].Type, NoBindings, other, other.Params[i].Type, NoBindings, BetterConversion);
+                    if (lambdaSaid < 0) return false;
+                    if (lambdaSaid > 0) better = true;
                     continue;
                 }
                 int said = BetterConversion(args[i], Wants(one, i), Wants(other, i));
@@ -20750,11 +21112,19 @@ public sealed partial class Binder
         static bool UnsignedIntegral(Type t)
             => t.Symbol is null && !t.IsNullableValue && t.Prim is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.NUInt;
 
+        // What each lambda argument's body gives, asked once per set of
+        // parameter types for this call (LambdaFits).
+        Dictionary<(LambdaExpr, string), (Type?, bool, bool)>? lambdaAsked = null;
+
         bool Accepts(MethodSymbol m, bool variant)
         {
             for (int i = 0; i < args.Count && i < m.Params.Count; i++)
             {
                 Type want = Wants(m, i);
+
+                // A LAMBDA IS AN ARGUMENT FOR A DELEGATE IT CONVERTS TO, and for
+                // no other (LambdaFits): `() => 7` makes no Run(Func<Task>).
+                if (i < c.Args.Count && c.Args[i] is LambdaExpr lambdaArg && byArity.Count > 1 && !LambdaFits(m, i, lambdaArg, fromReceiver ?? NoBindings, lambdaAsked ??= new())) return false;
 
                 if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (c.Args[i] is NewExpr { Collection: true } && want.IsArray))) continue;
 
@@ -20979,7 +21349,7 @@ public sealed partial class Binder
                     continue;
                 }
 
-                if (Infer(candidate, args, c.Args, out Dictionary<string, Type> got))
+                if (Infer(candidate, args, c.Args, out Dictionary<string, Type> got) && LambdasFit(candidate, got))
                 {
                     // THE MOST SPECIFIC SHAPE WINS, not the first one declared.
                     // `Task.Run(work)` with a Func<Task<int>> unifies against
@@ -21022,6 +21392,17 @@ public sealed partial class Binder
             bound = firstTold;
         }
 
+        // Each lambda argument converts to the delegate the candidate takes,
+        // at the type arguments inferred for it (LambdaFits).
+        bool LambdasFit(MethodSymbol candidate, Dictionary<string, Type> got)
+        {
+            for (int i = 0; i < c.Args.Count && i < candidate.Params.Count; i++)
+            {
+                if (c.Args[i] is LambdaExpr lambdaArg && byArity.Count > 1 && !LambdaFits(candidate, i, lambdaArg, got, lambdaAsked ??= new())) return false;
+            }
+            return true;
+        }
+
         // TYPE ARGUMENTS WRITTEN AT THE CALL name a generic method; an
         // ordinary one is no candidate at all then.
         bool typeArgsWritten = c.Target switch
@@ -21054,31 +21435,16 @@ public sealed partial class Binder
                     // Ui<T>(Func<T>) beside Ui(Action), called with
                     // `() => form.Handle`, is the Func -- it was the Action,
                     // and its answer void.
+                    // And between two that return something, the one the
+                    // lambda's inferred return type converts to better
+                    // (LambdaConversion): `Task.Run(async () => await
+                    // Task.FromResult(s))` is Run<string>(Func<Task<string>>)
+                    // over Run(Func<Task>).
                     if (c.Args[i] is LambdaExpr lam)
                     {
-                        Dictionary<string, Type> known = inferred ?? new();
-                        Type ga = Close(Substitute(Invoked(generic.Params[i].Type)?.Returns ?? Type.Error, Applied(generic.Params[i].Type)), known);
-                        Type gb = Substitute(Invoked(ordinary.Params[i].Type)?.Returns ?? Type.Error, Applied(ordinary.Params[i].Type));
-                        bool aVoid = ga.IsVoid, bVoid = gb.IsVoid;
-                        if (!ga.IsError && !gb.IsError && aVoid != bVoid)
-                        {
-                            Type? made = Produces(generic, generic.Params[i].Type, lam, known);
-                            if (made is not null && !made.IsError && !made.IsVoid)
-                            {
-                                if (bVoid) better = true;
-                                else return false;
-                            }
-                        }
-                        // Both with values: the one the lambda's converts to
-                        // better -- `Run(() => Three())` for a Task<int> is
-                        // Run<T>(Func<Task<T>>), not Run(Func<Task>).
-                        else if (!ga.IsError && !gb.IsError && !aVoid && !bVoid
-                                 && LambdaInferred(generic, generic.Params[i].Type, lam, known) is Type lambdaGives)
-                        {
-                            int byValue = BetterConversion(lambdaGives, ga, gb);
-                            if (byValue < 0) return false;
-                            if (byValue > 0) better = true;
-                        }
+                        int lambdaSaid = LambdaConversion(lam, generic, generic.Params[i].Type, inferred ?? NoBindings, ordinary, ordinary.Params[i].Type, NoBindings, BetterConversion);
+                        if (lambdaSaid < 0) return false;
+                        if (lambdaSaid > 0) better = true;
                     }
                     continue;
                 }

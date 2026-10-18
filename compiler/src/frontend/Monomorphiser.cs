@@ -2586,6 +2586,7 @@ public sealed class Monomorphiser
             SourcePath = d.SourcePath,
             LocalOnly = d.LocalOnly,
             IsDelegate = d.IsDelegate,
+            MemberwiseCopied = d.MemberwiseCopied,
             InitialisersPlaced = d.InitialisersPlaced,
             FromLibrary = d.FromLibrary,
             MovedAside = d.MovedAside,
@@ -3173,7 +3174,7 @@ public sealed class Monomorphiser
                 {
                     Type = fe.Type is null ? null : Sub(fe.Type, map), Name = fe.Name,
                     Sequence = Rewrite(fe.Sequence, map), Body = Rewrite(fe.Body, map),
-                    Line = fe.Line, Col = fe.Col,
+                    Async = fe.Async, Line = fe.Line, Col = fe.Col,
                 };
 
                 // AND THE NAMES A DECONSTRUCTING LOOP BINDS. A copy that lost

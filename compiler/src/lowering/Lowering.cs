@@ -1725,8 +1725,14 @@ public sealed partial class Lowering
     /// A type with no reference fields gets no map at all and the descriptor
     /// slot stays null, which is the common case for a struct of numbers and
     /// saves the collector a load.
+    ///
+    /// A type holding a struct by pointer (`values`, ValueBlocks) has the
+    /// list of them after the bits (ValueBlockList), for a MemberwiseClone to
+    /// copy them by (Runtime.CopyValueBlocks); its descriptor says so
+    /// (GcValueBlocks). Such a field is a traced word, so the map is there.
     /// </summary>
-    private string? ReferenceMap(string key, IEnumerable<(int Offset, Corsac.Lang.Type Type)> fields, int instanceBytes)
+    private string? ReferenceMap(string key, IEnumerable<(int Offset, Corsac.Lang.Type Type)> fields, int instanceBytes,
+                                 Node? at = null, IReadOnlyList<(int Offset, TypeSymbol Struct)>? values = null)
     {
         int w = _t.WordSize;
         int words = (instanceBytes + w - 1) / w;
@@ -1760,13 +1766,21 @@ public sealed partial class Lowering
             return null;
         }
 
-        byte[] block = new byte[(1 + bits.Length) * w];
+        int listAt = (1 + bits.Length) * w;
+        (byte[] Words, List<DataReloc> Relocs)? listed = values is { Count: > 0 } && at is not null ? ValueBlockList(at, values, listAt) : null;
+        byte[] block = new byte[listAt + (listed?.Words.Length ?? 0)];
         WriteWord(block, 0, words);
         for (int i = 0; i < bits.Length; i++)
         {
             WriteWord(block, (1 + i) * w, bits[i]);
         }
-        _m.Data.Add(new DataItem("m_" + key, block) { ReadOnly = true, Exported = false, Align = w });
+        DataItem map = new("m_" + key, block) { ReadOnly = true, Exported = false, Align = w };
+        if (listed is { } list)
+        {
+            Array.Copy(list.Words, 0, block, listAt, list.Words.Length);
+            map.Relocs.AddRange(list.Relocs);
+        }
+        _m.Data.Add(map);
         return "m_" + key;
     }
 
@@ -2716,14 +2730,20 @@ public sealed partial class Lowering
         // one to find the pointers in it.
         {
             List<(int, Corsac.Lang.Type)> fields = new();
+            List<(int, TypeSymbol)> values = new();
             foreach (TypeSymbol s in chain)
             {
                 fields.AddRange(TracedFields(s, 0));
+                values.AddRange(ValueBlocks(s, 0));
             }
-            string? map = ReferenceMap(TypeKey(t), fields, Math.Max(t.InstanceSize, t.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1));
+            string? map = ReferenceMap(TypeKey(t), fields, Math.Max(t.InstanceSize, t.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1), t.Decl, values);
             if (map is not null)
             {
                 item.Relocs.Add(new DataReloc(DescRefMap * w, map, 0));
+            }
+            if (map is not null && values.Count > 0)
+            {
+                WriteWord(block, DescGcFlags * w, (t.Kind == TypeKind.Class && OwnsStorage(t) ? GcOwnsStorage : 0) | GcValueBlocks);
             }
         }
 
@@ -2833,6 +2853,9 @@ public sealed partial class Lowering
 
     /// <summary>DescGcFlags on a class: it gives its storage back when freed (Runtime.FreeStorageOf, IOwnsStorage).</summary>
     private const long GcOwnsStorage = 2;
+
+    /// <summary>DescGcFlags on a class or a box: it holds a struct by pointer, listed after its reference map (ValueBlockList).</summary>
+    private const long GcValueBlocks = 4;
 
     /// <summary>Whether the class or an ancestor implements IOwnsStorage.</summary>
     private static bool OwnsStorage(TypeSymbol t)

@@ -1,0 +1,412 @@
+// test: async_streams_await_foreach_and_iterators
+// expect-exit: 0
+// expect-output:
+// made
+// range starts
+// got 10
+// got 11
+// got 12
+// got 13
+// range ends
+// range starts
+// range ends
+// 0,1,2
+// 100,101,102
+// x,x,y,y
+// 1=one
+// 2=two
+// 1a
+// 2b
+// a1
+// b2
+// bare 7
+// bare 8
+// 0,1,2
+// a1
+// a2
+// a3
+// finally a
+// b1
+// b2
+// finally b
+// c1
+// finally c
+// caught in loop
+// caught early
+// first True 1
+// caught late
+// after fault False
+// 3,2,1 / 3,2,1
+// same True False False
+// fresh first True current 0
+// e3 1 False False
+// d0 after dispose False
+// d1 at d11
+// finally d1
+// d1 after dispose False
+// disposed twice
+// pending done False
+// dispose refused NotSupportedException
+// pending True 42
+// gate finally
+// canceled after 3 OperationCanceledException True
+// none False False
+// param True False
+// with True False
+// same True False
+// both True True
+// range starts
+// cfg 0
+// cfg 1
+// range ends
+// cfg2 0
+// cfg2 1
+// cfg3 0
+// cfg3 1
+// manual 10
+// manual 20
+// manual 30
+// manual disposed
+// nodispose n1
+// nodispose n2
+// 3,6,9
+// 5,10
+// range starts
+// using 50
+// done
+//
+// ASYNC STREAMS (C# 8): `await foreach` over IAsyncEnumerable<T> and over the
+// pattern alone, and async iterators -- methods, instance methods, generic
+// ones and local functions that await and yield -- run as C# runs them:
+// nothing before the first MoveNextAsync, each enumeration starting over
+// from the arguments as they were, the enumerable handed out itself when it
+// is not being enumerated, finally blocks run (awaiting) when the loop runs
+// out, breaks or throws, faults reaching the caller of MoveNextAsync and
+// leaving the iterator finished, DisposeAsync before the start, at a yield
+// and twice, refused while a MoveNextAsync waits, the
+// [EnumeratorCancellation] token combined with WithCancellation's as .NET
+// combines them, ConfigureAwait, and a pattern enumerator with no
+// DisposeAsync. Every line is what .NET 10 prints.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
+
+struct Pair
+{
+    public int A;
+    public string B;
+    public Pair(int a, string b) { A = a; B = b; }
+}
+
+class Counter
+{
+    int _base;
+    public Counter(int b) { _base = b; }
+
+    public async IAsyncEnumerable<int> Up(int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            await Task.Yield();
+            yield return _base + i;
+        }
+    }
+}
+
+// Pattern-based: no interfaces at all.
+class Manual
+{
+    public ManualEnumerator GetAsyncEnumerator() => new ManualEnumerator();
+}
+
+class ManualEnumerator
+{
+    int _i;
+    public int Current => _i * 10;
+    public Task<bool> MoveNextAsync() => Task.FromResult(++_i <= 3);
+    public ValueTask DisposeAsync() { Program.Say("manual disposed"); return default; }
+}
+
+// Pattern without DisposeAsync: nothing to dispose.
+class NoDispose
+{
+    public NoDisposeEnumerator GetAsyncEnumerator(CancellationToken token = default) => new NoDisposeEnumerator();
+}
+
+sealed class NoDisposeEnumerator
+{
+    int _i;
+    public string Current => "n" + _i;
+    public ValueTask<bool> MoveNextAsync() => new ValueTask<bool>(++_i <= 2);
+}
+
+static class Program
+{
+    public static void Say(string s) => Console.WriteLine(s);
+
+    static async IAsyncEnumerable<int> Range(int start, int count)
+    {
+        Say("range starts");
+        for (int i = 0; i < count; i++)
+        {
+            if (i % 2 == 1) await Task.Delay(1);
+            yield return start + i;
+        }
+        Say("range ends");
+    }
+
+    static async IAsyncEnumerable<string> WithFinally(string tag)
+    {
+        try
+        {
+            yield return tag + "1";
+            await Task.Yield();
+            yield return tag + "2";
+            yield return tag + "3";
+        }
+        finally
+        {
+            await Task.Yield();
+            Say("finally " + tag);
+        }
+    }
+
+    static async IAsyncEnumerable<int> Throws(bool early)
+    {
+        if (early) throw new InvalidOperationException("early");
+        yield return 1;
+        await Task.Yield();
+        throw new ArgumentException("late");
+    }
+
+    static async IAsyncEnumerable<int> Changes(int n)
+    {
+        while (n > 0)
+        {
+            yield return n;
+            n--;
+        }
+        await Task.CompletedTask;
+    }
+
+    static async IAsyncEnumerable<int> Cancellable(int n, [EnumeratorCancellation] CancellationToken token = default)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            await Task.Yield();
+            token.ThrowIfCancellationRequested();
+            yield return i;
+        }
+    }
+
+    static async IAsyncEnumerable<string> Tokens(string name, [EnumeratorCancellation] CancellationToken token = default)
+    {
+        await Task.Yield();
+        yield return name + " " + token.CanBeCanceled + " " + token.IsCancellationRequested;
+    }
+
+    static async IAsyncEnumerable<T> Twice<T>(IEnumerable<T> items)
+    {
+        foreach (T item in items)
+        {
+            yield return item;
+            await Task.Yield();
+            yield return item;
+        }
+    }
+
+    static async IAsyncEnumerable<Pair> Pairs()
+    {
+        yield return new Pair(1, "one");
+        await Task.Delay(1);
+        yield return new Pair(2, "two");
+    }
+
+    static async IAsyncEnumerable<(int, string)> Tuples()
+    {
+        yield return (1, "a");
+        await Task.Yield();
+        yield return (2, "b");
+    }
+
+    static async IAsyncEnumerator<int> Bare()
+    {
+        yield return 7;
+        await Task.Yield();
+        yield return 8;
+    }
+
+    static async IAsyncEnumerable<int> Breaks(int stop)
+    {
+        for (int i = 0; ; i++)
+        {
+            if (i == stop) yield break;
+            yield return i;
+        }
+    }
+
+    static async IAsyncEnumerable<int> Gate(TaskCompletionSource<int> gate)
+    {
+        try
+        {
+            yield return 1;
+            int v = await gate.Task;
+            yield return v;
+        }
+        finally
+        {
+            Say("gate finally");
+        }
+    }
+
+    static async Task<string> Join<T>(IAsyncEnumerable<T> seq)
+    {
+        string s = "";
+        await foreach (T x in seq)
+        {
+            s += (s.Length == 0 ? "" : ",") + x;
+        }
+        return s;
+    }
+
+    static async Task Main()
+    {
+        // Nothing runs before the first MoveNextAsync.
+        IAsyncEnumerable<int> r = Range(10, 4);
+        Say("made");
+        await foreach (int x in r) Say("got " + x);
+        Say(await Join(Range(0, 3)));
+
+        // Instance iterator, generic, struct and tuple elements, IAsyncEnumerator.
+        Say(await Join(new Counter(100).Up(3)));
+        Say(await Join(Twice(new[] { "x", "y" })));
+        await foreach (Pair p in Pairs()) Say(p.A + "=" + p.B);
+        await foreach ((int n, string t) in Tuples()) Say(n + t);
+        await foreach (var (n, t) in Tuples()) Say(t + n);
+        IAsyncEnumerator<int> bare = Bare();
+        while (await bare.MoveNextAsync()) Say("bare " + bare.Current);
+        await bare.DisposeAsync();
+        Say(await Join(Breaks(3)));
+
+        // finally blocks, by running out, by break, by an exception in the loop.
+        await foreach (string s in WithFinally("a")) Say(s);
+        await foreach (string s in WithFinally("b"))
+        {
+            Say(s);
+            if (s == "b2") break;
+        }
+        try
+        {
+            await foreach (string s in WithFinally("c"))
+            {
+                Say(s);
+                throw new FormatException("in loop");
+            }
+        }
+        catch (FormatException e) { Say("caught " + e.Message); }
+
+        // Exceptions from the body.
+        try { await foreach (int x in Throws(true)) Say("no " + x); }
+        catch (InvalidOperationException e) { Say("caught " + e.Message); }
+        IAsyncEnumerator<int> th = Throws(false).GetAsyncEnumerator();
+        Say("first " + await th.MoveNextAsync() + " " + th.Current);
+        try { await th.MoveNextAsync(); }
+        catch (ArgumentException e) { Say("caught " + e.Message); }
+        Say("after fault " + await th.MoveNextAsync());
+        await th.DisposeAsync();
+
+        // Each enumerator starts over with the arguments as they were.
+        IAsyncEnumerable<int> ch = Changes(3);
+        Say(await Join(ch) + " / " + await Join(ch));
+        IAsyncEnumerator<int> e1 = ch.GetAsyncEnumerator();
+        IAsyncEnumerator<int> e2 = ch.GetAsyncEnumerator();
+        Say("same " + ReferenceEquals(e1, ch) + " " + ReferenceEquals(e2, ch) + " " + ReferenceEquals(e1, e2));
+        IAsyncEnumerable<int> fresh = Changes(2);
+        IAsyncEnumerator<int> e3 = fresh.GetAsyncEnumerator();
+        Say("fresh first " + ReferenceEquals(e3, fresh) + " current " + e3.Current);
+        await e3.MoveNextAsync();
+        await e3.MoveNextAsync();
+        Say("e3 " + e3.Current + " " + await e3.MoveNextAsync() + " " + await e3.MoveNextAsync());
+
+        // Manual disposal: before starting, suspended at a yield, after the end.
+        IAsyncEnumerator<string> d0 = WithFinally("d0").GetAsyncEnumerator();
+        await d0.DisposeAsync();
+        Say("d0 after dispose " + await d0.MoveNextAsync());
+        IAsyncEnumerator<string> d1 = WithFinally("d1").GetAsyncEnumerator();
+        await d1.MoveNextAsync();
+        Say("d1 at " + d1.Current);
+        await d1.DisposeAsync();
+        Say("d1 after dispose " + await d1.MoveNextAsync());
+        await d1.DisposeAsync();
+        Say("disposed twice");
+
+        // A MoveNextAsync that really waits, and DisposeAsync while it does.
+        TaskCompletionSource<int> gate = new();
+        IAsyncEnumerator<int> g = Gate(gate).GetAsyncEnumerator();
+        await g.MoveNextAsync();
+        ValueTask<bool> pending = g.MoveNextAsync();
+        Say("pending done " + pending.IsCompleted);
+        try { await g.DisposeAsync(); Say("disposed while waiting"); }
+        catch (NotSupportedException e) { Say("dispose refused " + e.GetType().Name); }
+        gate.SetResult(42);
+        Say("pending " + await pending + " " + g.Current);
+        await g.DisposeAsync();
+
+        // Cancellation: WithCancellation reaches [EnumeratorCancellation].
+        CancellationTokenSource cts = new();
+        int seen = 0;
+        try
+        {
+            await foreach (int i in Cancellable(10).WithCancellation(cts.Token))
+            {
+                seen++;
+                if (i == 2) cts.Cancel();
+            }
+        }
+        catch (OperationCanceledException e) { Say("canceled after " + seen + " " + e.GetType().Name + " " + (e.CancellationToken == cts.Token)); }
+        await foreach (string s in Tokens("none")) Say(s);
+        CancellationTokenSource one = new(), two = new();
+        await foreach (string s in Tokens("param", one.Token)) Say(s);
+        await foreach (string s in Tokens("with").WithCancellation(two.Token)) Say(s);
+        await foreach (string s in Tokens("same", one.Token).WithCancellation(one.Token)) Say(s);
+        IAsyncEnumerator<string> both = Tokens("both", one.Token).GetAsyncEnumerator(two.Token);
+        two.Cancel();
+        await both.MoveNextAsync();
+        Say(both.Current);
+        await both.DisposeAsync();
+
+        // ConfigureAwait, with and without WithCancellation.
+        await foreach (int x in Range(0, 2).ConfigureAwait(false)) Say("cfg " + x);
+        await foreach (int x in Cancellable(2).WithCancellation(default).ConfigureAwait(true)) Say("cfg2 " + x);
+        await foreach (int x in Cancellable(2).ConfigureAwait(false).WithCancellation(new CancellationTokenSource().Token)) Say("cfg3 " + x);
+
+        // Patterns.
+        await foreach (int x in new Manual()) Say("manual " + x);
+        await foreach (var s in new NoDispose()) Say("nodispose " + s);
+
+        // A local function iterator, and one capturing.
+        int scale = 3;
+        async IAsyncEnumerable<int> Scaled(int k)
+        {
+            for (int i = 1; i <= k; i++)
+            {
+                await Task.Yield();
+                yield return i * scale;
+            }
+        }
+        Say(await Join(Scaled(3)));
+        scale = 5;
+        Say(await Join(Scaled(2)));
+
+        // await using over IAsyncDisposable and a struct.
+        await using (IAsyncEnumerator<int> u = Range(50, 1).GetAsyncEnumerator())
+        {
+            await u.MoveNextAsync();
+            Say("using " + u.Current);
+        }
+        Say("done");
+    }
+}

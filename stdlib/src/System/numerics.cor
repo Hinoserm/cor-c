@@ -838,13 +838,13 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
     // ---- text -------------------------------------------------------------
 
     public override string ToString() { return Format(this, null); }
-    public string ToString(IFormatProvider? provider) { return Format(this, null); }
+    public string ToString(IFormatProvider? provider) { return Format(this, null, NumberFormatInfo.Given(provider)); }
     public string ToString(string? format) { return Format(this, format); }
-    public string ToString(string? format, IFormatProvider? provider) { return Format(this, format); }
+    public string ToString(string? format, IFormatProvider? provider) { return Format(this, format, NumberFormatInfo.Given(provider)); }
 
     /// What ToString(format) writes, into the destination when it fits there.
     public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
-        string text = Format(this, format.Length == 0 ? null : format.ToString());
+        string text = Format(this, format.Length == 0 ? null : format.ToString(), NumberFormatInfo.Given(provider));
 
         if (text.Length > destination.Length) {
             charsWritten = 0;
@@ -860,7 +860,7 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
     /// precision; "X" and "B" the two's complement; "C", "E", "F", "N" and "P"
     /// round the digits as .NET's number buffer does; anything else is a
     /// picture, as for any other integer.
-    private static string Format(BigInteger value, string? format) {
+    private static string Format(BigInteger value, string? format, NumberFormatInfo? nfi = null) {
         string spec = format ?? "";
         int precision = -1;
         char kind = Specifier(spec, out precision);
@@ -871,14 +871,44 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
         string digits = Decimal(value.Mag);
         bool negative = value.sign < 0;
 
-        if (kind == (char)0) { return PictureFormat.OfDigits(negative, digits, spec); }
+        if (kind == (char)0) { return PictureFormat.OfDigits(negative, digits, spec, nfi); }
 
         if (kind == 'D' || kind == 'd' || kind == 'G' || kind == 'g' || kind == 'R' || kind == 'r') {
             string padded = precision > digits.Length ? String.Concat(String.Repeat('0', precision - digits.Length), digits) : digits;
 
-            return negative ? String.Concat("-", padded) : padded;
+            return negative ? String.Concat(NumberFormat.Minus(nfi), padded) : padded;
         }
-        return Rounded(digits, negative, kind, precision);
+        return nfi == null ? Rounded(digits, negative, kind, precision) : Rounded(digits, negative, kind, precision, nfi);
+    }
+
+    /// The same in a culture's dress (`nfi`): its digits, separators, groups,
+    /// symbols and patterns, by the writers every number shares
+    /// (NumberFormat.Dress and Scientific). A whole number's fraction is
+    /// noughts, and only "E" rounds its digits.
+    private static string Rounded(string digits, bool negative, char kind, int precision, NumberFormatInfo nfi) {
+        string held = digits == "0" ? "" : digits;
+        int scale = held.Length;
+
+        if (kind == 'E' || kind == 'e') {
+            int places = precision < 0 ? 6 : precision;
+            held = Round(held, places + 1, ref scale, ref negative);
+            return NumberFormat.Scientific(negative, held, held.Length > 0 ? scale - 1 : 0, places, kind, nfi);
+        }
+
+        bool percent = kind == 'P' || kind == 'p';
+        if (!(kind == 'C' || kind == 'c' || kind == 'F' || kind == 'f' || kind == 'N' || kind == 'n' || percent)) {
+            throw new FormatException("Format specifier was invalid.");
+        }
+        int fraction = NumberFormat.Places(kind, precision, nfi);
+        if (percent) { scale = scale + 2; }
+        held = Round(held, scale + fraction, ref scale, ref negative);
+        StringBuilder units = new StringBuilder();
+        if (scale > 0) {
+            for (int i = 0; i < scale; i++) { units.Append(i < held.Length ? held[i] : '0'); }
+        } else {
+            units.Append('0');
+        }
+        return NumberFormat.Dress(kind, negative, units.ToString(), String.Repeat('0', fraction), nfi);
     }
 
     /// .NET'S ParseFormatSpecifier: a letter and the number after it, 'G'
@@ -1094,7 +1124,7 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
 
         // ONE MESSAGE FOR BOTH FAILURES, as .NET has: text that is no number
         // and a number too large to hold are each "could not be parsed".
-        int status = Read(value, style, out made);
+        int status = Read(value, style, out made, NumberFormatInfo.Given(provider));
         if (status == NumberRead.Format) { throw new FormatException("The value could not be parsed."); }
         if (status == NumberRead.Overflow) { throw new OverflowException("The value could not be parsed."); }
         return made;
@@ -1118,7 +1148,7 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
             result = default;
             return false;
         }
-        if (Read(value, style, out result) == NumberRead.Ok) { return true; }
+        if (Read(value, style, out result, NumberFormatInfo.Given(provider)) == NumberRead.Ok) { return true; }
         result = default;
         return false;
     }
@@ -1145,7 +1175,7 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
     // The value the text says, with a NumberRead status: hex and binary as
     // two's complement, everything else through the digit buffer every
     // number type reads with.
-    private static int Read(string text, NumberStyles style, out BigInteger result) {
+    private static int Read(string text, NumberStyles style, out BigInteger result, NumberFormatInfo? nfi) {
         CheckStyle(style);
         result = Zero;
 
@@ -1161,7 +1191,7 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
         bool negative = false;
         bool tail = false;
 
-        if (!NumberRead.Scan(text, s, NumberBufferKind.Integer, digits, out count, out scale, out negative, out tail)) { return NumberRead.Format; }
+        if (!NumberRead.Scan(text, s, NumberBufferKind.Integer, digits, out count, out scale, out negative, out tail, nfi)) { return NumberRead.Format; }
 
         // AN EXPONENT BEYOND EVERY TYPE overflows; a point that leaves a
         // digit other than zero behind it is no integer.

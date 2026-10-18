@@ -1,0 +1,67 @@
+// The other unit of 1682_async_streams_across_units: async iterators, one
+// generic with an `await foreach` in it, and an enumerable whose
+// GetAsyncEnumerator is one.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
+
+public static class Streams
+{
+    public static async IAsyncEnumerable<int> Range(int start, int count, [EnumeratorCancellation] CancellationToken token = default)
+    {
+        try
+        {
+            for (int i = 0; i < count; i++)
+            {
+                await Task.Yield();
+                token.ThrowIfCancellationRequested();
+                yield return start + i;
+            }
+        }
+        finally
+        {
+            Console.WriteLine("range " + start + " done");
+        }
+    }
+
+    // Generic, with an `await foreach` inside: its body goes to the other
+    // unit as the template it is.
+    public static async IAsyncEnumerable<List<T>> Chunks<T>(IAsyncEnumerable<T> source, int size)
+    {
+        List<T> chunk = new();
+        await foreach (T item in source)
+        {
+            chunk.Add(item);
+            if (chunk.Count == size)
+            {
+                yield return chunk;
+                chunk = new List<T>();
+            }
+        }
+        if (chunk.Count > 0) yield return chunk;
+    }
+
+    public static async Task<int> Sum(IAsyncEnumerable<int> source)
+    {
+        int sum = 0;
+        await foreach (int x in source.ConfigureAwait(false)) sum += x;
+        return sum;
+    }
+}
+
+public sealed class Lines : IAsyncEnumerable<string>
+{
+    readonly string[] _lines;
+    public Lines(params string[] lines) { _lines = lines; }
+
+    public async IAsyncEnumerator<string> GetAsyncEnumerator(CancellationToken token = default)
+    {
+        foreach (string line in _lines)
+        {
+            await Task.Delay(1, token);
+            yield return line;
+        }
+    }
+}
