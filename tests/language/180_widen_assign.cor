@@ -31,11 +31,12 @@ static class Program
 {
     static long Stat;
 
-    // Opaque to the optimiser: a syscall the compiler cannot fold, so the
-    // widening has to happen at run time and not in the constant folder.
+    // Opaque to the optimiser: a system call the compiler cannot fold -- the
+    // process's id, getpid(2) by the target's own number -- so the widening
+    // has to happen at run time and not in the constant folder.
     static int Opaque(int v)
     {
-        return (int)Sys.Syscall(20, 0, 0, 0) * 0 + v;
+        return System.Environment.ProcessId * 0 + v;
     }
 
     static void L(string t, long v)
