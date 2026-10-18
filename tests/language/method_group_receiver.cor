@@ -11,6 +11,9 @@
 // value at the conversion; so does this. And a method group of another
 // object's instance method converts in an assignment as it does in an
 // argument.
+
+using System.Threading;
+
 class Worker
 {
     public int Id;

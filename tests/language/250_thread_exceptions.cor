@@ -18,6 +18,8 @@
 // something that MUST happen happened -- nothing here depends on which thread
 // runs when.
 
+using System.Threading;
+
 class Trouble : Exception
 {
     public int Round;

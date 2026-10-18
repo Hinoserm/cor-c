@@ -18,6 +18,8 @@
 // reported, and a worker that could not catch would have taken the process
 // with it instead.
 
+using System.Threading;
+
 class Boom : Exception
 {
     public int Which;

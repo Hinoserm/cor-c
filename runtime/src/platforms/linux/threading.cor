@@ -43,7 +43,7 @@ static partial class Scheduler
 
         for (int i = 0; i < count; i++)
         {
-            Thread.Start(new PoolWorker());
+            System.Threading.Thread.Start(new PoolWorker());
         }
     }
 }
@@ -450,6 +450,11 @@ static class Native
     public const long WakeAll = 0x7FFFFFFF;
 }
 
+// THREADS ARE System.Threading's, as .NET's are: Thread, its two delegates
+// and ThreadStateException, by the names .NET gives them.
+namespace System.Threading
+{
+
 /// A thread of execution, started with a body to run.
 ///
 /// A thread body may allocate, throw and catch like any other code: the
@@ -700,7 +705,7 @@ class Thread
     }
 
     /// The thread id the kernel gave it, or 0 before it has been started.
-    public long Id => _id;
+    internal long Id => _id;
 
     /// The thread's number in this process, from the moment it is made: 1
     /// for the first thread, and a number of its own for every other.
@@ -791,7 +796,7 @@ class Thread
 
     /// This thread's kernel thread id (gettid(2)), which is the process id on
     /// the first thread.
-    public static long CurrentId => Native.CurrentThreadId();
+    internal static long CurrentId => Native.CurrentThreadId();
 
     // ---- the registry -------------------------------------------------------
     //
@@ -846,7 +851,7 @@ class Thread
     // ---- starting and joining -----------------------------------------------
 
     /// Runs `body` on a new thread and answers the thread, already running.
-    public static Thread Start(Action body)
+    internal static Thread Start(Action body)
     {
         if (body == null)
         {
@@ -1167,6 +1172,8 @@ class Thread
     }
 }
 
+}
+
 /// The half of System.Environment (stdlib's environment.cor) that is a
 /// thread's, kept here beside Thread: a freestanding image has no Thread,
 /// and compiles environment.cor all the same -- CORSAC's ring-1 kernels do.
@@ -1174,7 +1181,7 @@ static partial class Environment
 {
     /// The running thread's ManagedThreadId, as Thread.CurrentThread has it:
     /// 1 on the first thread.
-    public static int CurrentManagedThreadId => Thread.CurrentThread.ManagedThreadId;
+    public static int CurrentManagedThreadId => System.Threading.Thread.CurrentThread.ManagedThreadId;
 }
 
 // ---- WaitHandle, and the events, mutexes and semaphores that are one ---------

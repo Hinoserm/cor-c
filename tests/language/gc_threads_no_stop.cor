@@ -9,6 +9,9 @@
 // and every payload checked, again and again, while the collector runs
 // beside them asking for its handshakes: a node freed while still reachable
 // is reused, and the check that reads it fails.
+
+using System.Threading;
+
 class Node
 {
     public Node? Next;

@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // static initialization threads passed
+
+using System.Threading;
+
 static class Control
 {
     public static AtomicCell Entered = new();

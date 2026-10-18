@@ -14,6 +14,8 @@
 // a thread other than the first is not safe yet (see the note on Thread in
 // lib/threading.cor).
 
+using System.Threading;
+
 class Counter
 {
     // LAYOUT: first instance field, at Atom.FirstWord -- what AtomicAdd works on.

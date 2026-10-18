@@ -24,6 +24,8 @@
 // after its answer, and lets the spinner go once they are made. Every string
 // is read back after the collection has swept.
 
+using System.Threading;
+
 class Spinner : Action
 {
     public volatile int Hold;

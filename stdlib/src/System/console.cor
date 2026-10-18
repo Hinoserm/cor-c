@@ -885,7 +885,7 @@ static class Terminal
         {
             return false;
         }
-        Thread.Sleep(50);
+        System.Threading.Thread.Sleep(50);
         return Os.SetAttributes(fd, saved) >= 0;
     }
 
@@ -910,7 +910,7 @@ static class Terminal
             {
                 return false;
             }
-            Thread.Sleep(100);
+            System.Threading.Thread.Sleep(100);
             waited = waited + 100;
         }
         return true;

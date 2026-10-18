@@ -97,7 +97,7 @@ public class FileSystemWatcher : IDisposable
     int _bufferSize = 8192;
 
     int _fd = -1;
-    Thread? _reader;
+    System.Threading.Thread? _reader;
     bool _stopping;
     readonly Dictionary<int, string> _below = new Dictionary<int, string>();
     readonly object _gate = new object();
@@ -187,7 +187,7 @@ public class FileSystemWatcher : IDisposable
                         if (_waitedFor == 0) { _waitedFor = changeType; _hasWaited = false; }
                         if (_hasWaited) { _waitedFor = 0; return _waited; }
                     }
-                    Thread.Sleep(20);
+                    System.Threading.Thread.Sleep(20);
                     continue;
                 }
                 if (Os.Poll(fd, 1, (int)(left > 250 ? 250 : left)) <= 0) continue;
@@ -237,14 +237,14 @@ public class FileSystemWatcher : IDisposable
         }
         _fd = fd;
         _stopping = false;
-        _reader = new Thread(ReadLoop);
+        _reader = new System.Threading.Thread(ReadLoop);
         _reader.IsBackground = true;
         _reader.Start();
     }
 
     void Stop()
     {
-        Thread? reader = _reader;
+        System.Threading.Thread? reader = _reader;
         _stopping = true;
         if (reader != null) reader.Join();
         _reader = null;
