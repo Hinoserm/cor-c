@@ -9141,6 +9141,91 @@ public sealed partial class Binder
         return better;
     }
 
+    /// <summary>
+    /// Whether a lambda can be the delegate a parameter wants, by what it
+    /// produces (C# 10.7.1): its value has to convert to what the delegate
+    /// returns, a void delegate takes no `return x;` and no async value, and
+    /// an async lambda's value is its task's -- none for a Task, a T for a
+    /// Task&lt;T&gt;. `Task.Run(() => Now())` for a string Now is not
+    /// Run(Func&lt;Task&gt;), and taking it as one beside Run&lt;T&gt;(Func&lt;T&gt;)
+    /// refused the call. Only what is known refuses: a body that did not
+    /// bind, a return still open or unmade, and an expression body against
+    /// a void delegate are left to the conversion after.
+    /// </summary>
+    private bool LambdaValueFits(MethodSymbol m, Type want, LambdaExpr lam)
+    {
+        if (Invoked(want) is not { } invoke) return true;
+        Type returns = Substitute(invoke.Returns, Applied(want));
+        if (returns.IsError || Open(returns) || Unmade(returns)) return true;
+        Type? made = Produces(m, want, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
+        if (made is not null && (made.Dynamic || made.IsError)) return true;
+        if (lam.Async)
+        {
+            if (returns.IsVoid) return made is null || made.IsVoid;
+            if (returns.Symbol?.FindMethods("GetAwaiter").Any(g => g.Params.Count == 0 && !g.Static) != true) return false;
+            Type result = AsyncBodyType(returns);
+            if (result.IsError || Open(result) || Unmade(result)) return true;
+            if (result.IsVoid) return made is null || made.IsVoid;
+            return made is null || (!made.IsVoid && LambdaValueConverts(made, result, lam));
+        }
+        if (returns.IsVoid) return lam.Body is not null || made is null || made.IsVoid;
+        return made is null || (!made.IsVoid && LambdaValueConverts(made, returns, lam));
+    }
+
+    /// <summary>
+    /// A lambda's inferred return type for this delegate (C# 12.6.3.13):
+    /// what its body produces, an async one's task of it; null when the body
+    /// says nothing (it did not bind, or a block returns no value and is
+    /// not async).
+    /// </summary>
+    private Type? LambdaInferred(MethodSymbol m, Type want, LambdaExpr lam, Dictionary<string, Type>? bound)
+    {
+        Type? made = Produces(m, want, lam, bound ?? new Dictionary<string, Type>(StringComparer.Ordinal));
+        if (made is not null && made.IsError) return null;
+        if (lam.Async) return AsyncLambdaTask(made ?? Type.Void, lam);
+        return made is null || made.IsVoid ? null : made;
+    }
+
+    /// <summary>Whether two delegate types take the same parameters, which is when a lambda's return decides between them.</summary>
+    private static bool SameInvokeParameters(Type a, Type b)
+    {
+        if (Invoked(a) is not { } ia || Invoked(b) is not { } ib || ia.Params.Count != ib.Params.Count) return false;
+        for (int k = 0; k < ia.Params.Count; k++)
+        {
+            Type pa = Substitute(ia.Params[k].Type, Applied(a)), pb = Substitute(ib.Params[k].Type, Applied(b));
+            if (!pa.Equals(pb) && !MethodSignatures.SameType(pa, pb)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>The task an async lambda producing `made` hands back -- Task for no value, Task&lt;made&gt; for one -- or null where it cannot be spelt.</summary>
+    private Type? AsyncLambdaTask(Type made, LambdaExpr lam)
+    {
+        TypeRef task = new() { Name = TaskTypeName, Line = lam.Line, Col = lam.Col };
+        if (!made.IsVoid)
+        {
+            if (SpellOpen(made) is not TypeRef spelt) return null;
+            task.Arguments.Add(spelt);
+        }
+        _quiet++;
+        try
+        {
+            Type resolved = Resolve(task, _thisType);
+            return resolved.IsError ? null : resolved;
+        }
+        finally
+        {
+            _quiet--;
+        }
+    }
+
+    /// <summary>Whether a lambda's value converts to what its delegate returns: implicitly, as a constant, or by an operator.</summary>
+    private bool LambdaValueConverts(Type made, Type to, LambdaExpr lam)
+        => Convertible(made, to) || Variant(made, to)
+        || (lam.Body is not null ? IntegerConstantFits(lam.Body, made, to) : made.IsNumeric && to.IsNumeric)
+        || (to.Symbol is not null && UserConversion(made, to, false, lam.Body is null ? null : IntegerConstant(lam.Body, made)) is not null)
+        || (made.Symbol is not null && UserConversion(made, to, false) is not null);
+
     private bool Infer(MethodSymbol m, List<Type> args, List<Expr> written, out Dictionary<string, Type> bound)
     {
         bool ok = InferOnce(m, args, written, out bound);
@@ -9230,6 +9315,13 @@ public sealed partial class Binder
             {
                 Type gives = Substitute(Invoked(m.Params[i].Type)?.Returns ?? Type.Error,
                                         Applied(m.Params[i].Type));
+
+                // AN ASYNC LAMBDA PRODUCES ITS TASK (C# 12.6.3.13): a Task<X>
+                // of the X its body gives, so `Run(async () => { ...; return
+                // 3; })` is Run<T>(Func<Task<T>>) at int, never Run<T>(Func<T>)
+                // at int with the lambda's task taken for its value.
+                if (lam.Async && AsyncLambdaTask(made, lam) is not Type task) continue;
+                if (lam.Async) made = AsyncLambdaTask(made, lam)!;
 
                 // A concrete delegate result is a constraint too. Ignoring
                 // failure keeps (for example) the int-returning Sum overload
@@ -11826,6 +11918,7 @@ public sealed partial class Binder
         }
 
         _quiet++;
+        if (lam.Async) _producingAsync++;
         PushScope(functionBoundary: true);
         HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
 
@@ -11862,12 +11955,19 @@ public sealed partial class Binder
 
         AssignedAfter(assignedBefore);
         PopScope();
+        if (lam.Async) _producingAsync--;
         _quiet--;
         return produced is null || produced.IsError ? null : produced;
     }
 
     /// <summary>What a block lambda's returns are being gathered into, while one is inferred.</summary>
     private List<Type>? _inferredReturns;
+
+    /// <summary>
+    /// How deep inside async lambdas Produces is asking: an await there is
+    /// the lambda's, whatever the method around it is.
+    /// </summary>
+    private int _producingAsync;
 
     /// <summary>
     /// The best common type of a set of expressions (C# 12.6.3.16): the one
@@ -16162,7 +16262,7 @@ public sealed partial class Binder
             {
                 Type operand = CheckExpr(aw.Operand);
 
-                if (_method is { Async: false })
+                if (_method is { Async: false } && _producingAsync == 0)
                 {
                     Error(aw, $"'{_method.Name}' is not async, so it cannot await");
                     return Type.Error;
@@ -20140,12 +20240,17 @@ public sealed partial class Binder
             // Not where the ones left are one signature (an override beside
             // what it overrides), nor where a generic may still be better,
             // nor where a lambda or a method group is an argument, which the
-            // rules for those judge apart (BetterLambdas).
+            // rules for those judge apart (BetterLambdas), nor a collection
+            // expression, whose better conversion (a span over an array, an
+            // implicit conversion between the rest) is not judged here and
+            // which the library's own overloads -- List.AddRange of a List,
+            // an array and a span beside .NET's IEnumerable -- would make
+            // ambiguous where .NET's one is not: `lst.AddRange([7, 2])`.
             List<MethodSymbol> unbeaten = applicable.Where(one => !applicable.Any(other => !ReferenceEquals(other, one) && BetterThan(other, one))).ToList();
             if (unbeaten.Count >= 2
                 && unbeaten.Skip(1).Any(other => !MethodSignatures.SameParameters(unbeaten[0], other))
                 && !byArity.Any(m => m.TypeParams.Count > 0)
-                && !c.Args.Any(a => IsFunctionSource(a) || a is LambdaExpr)
+                && !c.Args.Any(a => IsFunctionSource(a) || a is LambdaExpr || a is NewExpr { Collection: true })
                 && !args.Any(a => a.Dynamic || a.IsError))
             {
                 Error(c, $"The call is ambiguous between the following methods or properties: '{Spelt(unbeaten[0])}' and '{Spelt(unbeaten.First(other => !MethodSignatures.SameParameters(unbeaten[0], other)))}'");
@@ -20170,13 +20275,25 @@ public sealed partial class Binder
                     Type otherReturns = Substitute(Invoked(other.Params[i].Type)?.Returns ?? Type.Error, Applied(other.Params[i].Type));
                     if (!oneReturns.IsError && !otherReturns.IsError && oneReturns.IsVoid != otherReturns.IsVoid)
                     {
+                        // An async lambda has a value either way: its task.
                         MethodSymbol valued = oneReturns.IsVoid ? other : one;
                         Type? made = Produces(valued, valued.Params[i].Type, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
-                        if (made is not null && !made.IsError && !made.IsVoid)
+                        if (lam.Async || made is not null && !made.IsError && !made.IsVoid)
                         {
                             if (oneReturns.IsVoid) return false;
                             better = true;
                         }
+                    }
+                    // AND OF TWO THAT BOTH RETURN ONE, the one the lambda's
+                    // value converts to better: `O(() => 7)` beside
+                    // O(Func<object>) and O(Func<int>) is the Func<int>.
+                    else if (!oneReturns.IsError && !otherReturns.IsError && !oneReturns.IsVoid && !otherReturns.IsVoid
+                             && SameInvokeParameters(one.Params[i].Type, other.Params[i].Type)
+                             && LambdaInferred(one, one.Params[i].Type, lam, null) is Type lambdaGives)
+                    {
+                        int byValue = BetterConversion(lambdaGives, oneReturns, otherReturns);
+                        if (byValue < 0) return false;
+                        if (byValue > 0) better = true;
                     }
                     continue;
                 }
@@ -20250,6 +20367,7 @@ public sealed partial class Binder
 
                 // A DYNAMIC ARGUMENT converts to anything, at run time.
                 if (args[i].Dynamic && !want.IsPointer) continue;
+                if (i < c.Args.Count && c.Args[i] is LambdaExpr valued && !LambdaValueFits(m, want, valued)) return false;
                 if (NullableIntoValue(args[i], want)) return false;
                 // `null!` is still the null literal, here as in WrittenFits.
                 if (i < c.Args.Count && c.Args[i] is SuppressExpr { Operand: LiteralExpr { Kind: Lit.Null } }
@@ -20493,6 +20611,16 @@ public sealed partial class Binder
                                 if (bVoid) better = true;
                                 else return false;
                             }
+                        }
+                        // Both with values: the one the lambda's converts to
+                        // better -- `Run(() => Three())` for a Task<int> is
+                        // Run<T>(Func<Task<T>>), not Run(Func<Task>).
+                        else if (!ga.IsError && !gb.IsError && !aVoid && !bVoid
+                                 && LambdaInferred(generic, generic.Params[i].Type, lam, known) is Type lambdaGives)
+                        {
+                            int byValue = BetterConversion(lambdaGives, ga, gb);
+                            if (byValue < 0) return false;
+                            if (byValue > 0) better = true;
                         }
                     }
                     continue;

@@ -1,0 +1,96 @@
+// test: lambda_return_decides_overload
+// expect-exit: 0
+// expect-output:
+// Func<T> now
+// Func<T> 5
+// Action
+// Action
+// Func<T> block
+// Func<Task>
+// Func<Task<T>> 3
+// Func<Task<T>> 3
+// Func<Task<T>> 3
+// Func<byte> 5; Func<string> five
+// Func<Money> 250; Func<string> cash
+// Func<int> 1; Action; Action; Func<int> 2
+// Func<object> s; Func<int> 7
+// Func<int?> 3; Func<string> n
+// Func<string> null; Func<int> 9
+// Func<Task>; Action
+// Func<int,string> x4; Func<int,int> 8
+// now 42 late
+//
+// WHAT A LAMBDA PRODUCES DECIDES THE OVERLOAD (C# 10.7.1 and 12.6.4.5): its
+// value has to convert to the delegate's return -- a string or an int is no
+// Func<Task>, a void call no Func<int>, a `return x;` block no Action -- an
+// async lambda's value is its task's, and of two delegates that both take it,
+// the one whose return its value converts to better: Func<int> over
+// Func<object>, Func<Task<T>> over Func<Task> and Func<T>, Func<T> over Action.
+// Constants, user-defined conversions, nullable and null returns, and
+// Task.Run's own overloads.
+
+using System;
+using System.Threading.Tasks;
+
+struct Money
+{
+    public int Cents;
+    public static implicit operator Money(int cents) { Money m; m.Cents = cents; return m; }
+}
+
+static class Run4
+{
+    public static string Run(Action a) { a(); return "Action"; }
+    public static string Run(Func<Task> f) { f().Wait(); return "Func<Task>"; }
+    public static string Run<T>(Func<T> f) { return "Func<T> " + f(); }
+    public static string Run<T>(Func<Task<T>> f) { return "Func<Task<T>> " + f().Result; }
+}
+
+static class Shapes
+{
+    public static string B(Func<byte> f) { return "Func<byte> " + f(); }
+    public static string B(Func<string> f) { return "Func<string> " + f(); }
+    public static string M(Func<Money> f) { return "Func<Money> " + f().Cents; }
+    public static string M(Func<string> f) { return "Func<string> " + f(); }
+    public static string Do(Action a) { a(); return "Action"; }
+    public static string Do(Func<int> f) { return "Func<int> " + f(); }
+    public static string O(Func<object> f) { return "Func<object> " + f(); }
+    public static string O(Func<int> f) { return "Func<int> " + f(); }
+    public static string N(Func<int?> f) { return "Func<int?> " + f(); }
+    public static string N(Func<string> f) { return "Func<string> " + f(); }
+    public static string S(Func<string?> f) { return "Func<string> " + (f() ?? "null"); }
+    public static string S(Func<int> f) { return "Func<int> " + f(); }
+    public static string Go(Action a) { return "Action"; }
+    public static string Go(Func<Task> f) { f().Wait(); return "Func<Task>"; }
+    public static string Two(Func<int, string> f) { return "Func<int,string> " + f(4); }
+    public static string Two(Func<int, int> f) { return "Func<int,int> " + f(4); }
+}
+
+class Program
+{
+    static string Now() { return "now"; }
+    static void Note() { }
+    static async Task<int> Three() { await Task.Yield(); return 3; }
+
+    static void Main()
+    {
+        Console.WriteLine(Run4.Run(() => Now()));
+        Console.WriteLine(Run4.Run(() => 5));
+        Console.WriteLine(Run4.Run(() => { }));
+        Console.WriteLine(Run4.Run(() => Note()));
+        Console.WriteLine(Run4.Run(() => { return "block"; }));
+        Console.WriteLine(Run4.Run(async () => { await Task.Yield(); }));
+        Console.WriteLine(Run4.Run(async () => { await Task.Yield(); return 3; }));
+        Console.WriteLine(Run4.Run(async () => await Three()));
+        Console.WriteLine(Run4.Run(() => Three()));
+        Console.WriteLine(Shapes.B(() => 5) + "; " + Shapes.B(() => "five"));
+        Console.WriteLine(Shapes.M(() => 250) + "; " + Shapes.M(() => "cash"));
+        Console.WriteLine(Shapes.Do(() => { return 1; }) + "; " + Shapes.Do(() => { }) + "; " + Shapes.Do(() => Note()) + "; " + Shapes.Do(() => 2));
+        Console.WriteLine(Shapes.O(() => "s") + "; " + Shapes.O(() => 7));
+        Console.WriteLine(Shapes.N(() => 3) + "; " + Shapes.N(() => "n"));
+        Console.WriteLine(Shapes.S(() => null) + "; " + Shapes.S(() => 9));
+        Console.WriteLine(Shapes.Go(async () => await Task.Yield()) + "; " + Shapes.Go(() => { }));
+        Console.WriteLine(Shapes.Two(x => "x" + x) + "; " + Shapes.Two(x => x * 2));
+        Console.WriteLine(Task.Run(() => Now()).Result + " " + Task.Run(() => 6 * 7).Result + " " + Task.Run(async () => { await Task.Yield(); return "late"; }).Result);
+    }
+}

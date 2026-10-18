@@ -6506,17 +6506,32 @@ class CultureInfo : IFormatProvider {
     /// One invariant culture, the same object every time, as .NET's.
     public static CultureInfo InvariantCulture { get; } = new CultureInfo();
 
-    // THE CURRENT CULTURES ARE A THREAD'S, as .NET's: what the thread was
-    // given, else the default every thread takes until it is given one
-    // (DefaultThreadCurrentCulture), else the machine's, which is the
-    // invariant culture. A thread started takes what its starter was given
-    // (Thread.Start), as .NET's execution context carries it there. Whatever
-    // is set is held and handed back; the formatting is the invariant
+    // THE CURRENT CULTURES ARE THE FLOW'S, as .NET's ExecutionContext has
+    // them since 4.6: what the flow was given, else the default every thread
+    // takes until it is given one (DefaultThreadCurrentCulture), else the
+    // machine's, which is the invariant culture. They go wherever work is
+    // queued -- Task.Run, the thread pool, an await's continuation, a thread
+    // started (Thread.Start) -- and what the work sets is its own: an async
+    // method's culture is never its caller's (AsyncRuntime.FlowSaved), a
+    // posted item's never the thread's that ran it (AsyncContext). Held here
+    // as the thread's, and carried by the context the work runs in.
+    // Whatever is set is handed back; the formatting is the invariant
     // culture's all the same, the one this machine has.
     [ThreadStatic] static CultureInfo? _current;
     [ThreadStatic] static CultureInfo? _currentUI;
+    static bool _flowUsed;
     static CultureInfo? _defaultCurrent;
     static CultureInfo? _defaultCurrentUI;
+
+    /// Whether any flow has set a culture: until then nothing is captured.
+    internal static bool FlowUsed => _flowUsed;
+
+    // The first culture set: what flows from now on (AsyncRuntime.FlowBegins).
+    static void Flows()
+    {
+        _flowUsed = true;
+        AsyncRuntime.FlowBegins();
+    }
 
     public static CultureInfo CurrentCulture
     {
@@ -6524,6 +6539,7 @@ class CultureInfo : IFormatProvider {
         set
         {
             ArgumentNullException.ThrowIfNull(value);
+            if (!_flowUsed) Flows();
             _current = value;
         }
     }
@@ -6534,6 +6550,7 @@ class CultureInfo : IFormatProvider {
         set
         {
             ArgumentNullException.ThrowIfNull(value);
+            if (!_flowUsed) Flows();
             _currentUI = value;
         }
     }
@@ -6552,10 +6569,20 @@ class CultureInfo : IFormatProvider {
         set { _defaultCurrentUI = value; }
     }
 
-    /// What this thread was given, with no default in its place: what a
-    /// thread it starts takes (Thread.Start).
-    internal static CultureInfo? GivenCulture => _current;
-    internal static CultureInfo? GivenUICulture => _currentUI;
+    /// What this flow was given, with no default in its place: what the
+    /// runtime carries with queued work (AsyncContext) and what a thread it
+    /// starts takes (Thread.Start).
+    internal static CultureInfo? GivenCulture
+    {
+        get { return _current; }
+        set { _current = value; }
+    }
+
+    internal static CultureInfo? GivenUICulture
+    {
+        get { return _currentUI; }
+        set { _currentUI = value; }
+    }
 
     /// LOCALE_INVARIANT: what every culture of this machine formats as.
     const int Invariant = 0x7F;
