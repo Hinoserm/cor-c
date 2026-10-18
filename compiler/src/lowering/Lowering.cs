@@ -623,7 +623,11 @@ public sealed partial class Lowering
                 // descriptor anywhere: the runtime declares IOException and
                 // never throws one, and every library above declares it
                 // `--ref` and may not emit a second.
-                if ((_library || PartOfALibrary) && t.Decl is { Canon: null, Specialised: false } && t.Decl.TypeParams.Count == 0)
+                // ONE IMAGE'S, as its statics are: of a type in parts across
+                // units, the unit whose part comes first (Elsewhere: the
+                // first is another unit's), or two units of one link both
+                // defined t_Os.
+                if ((_library || PartOfALibrary) && t.Decl is { Canon: null, Specialised: false, Elsewhere: false } && t.Decl.TypeParams.Count == 0)
                 {
                     if (t.Kind == TypeKind.Interface)
                     {

@@ -3770,6 +3770,7 @@ public sealed partial class Binder
     /// <summary>Whether a type was written in the class library's own sources (stdlib, runtime).</summary>
     private static bool IsClassLibrary(TypeDecl d) => d.SourcePath is string path && LibrarySource is { } isLibrary && isLibrary(path);
 
+
     /// <summary>Whether a type was written in the program's own sources: a file, and not the class library's (the prelude's are neither).</summary>
     private static bool IsProgramSource(TypeDecl d) => d.SourcePath is string path && LibrarySource is { } isLibrary && !isLibrary(path);
 
@@ -3784,9 +3785,12 @@ public sealed partial class Binder
     /// entry unit, named in a signature another unit calls through, was a
     /// second library Random in that unit -- "declared more than once" --
     /// and a unit's own one was the same, where the whole program moves
-    /// either aside.
+    /// either aside. By its file where that is known, the class library's
+    /// files or the program's whatever this compile marks; by the mark the
+    /// front end gave it otherwise.
     /// </summary>
-    internal static bool ClassLibrarySide(TypeDecl d) => d.FromLibrary && !IsProgramSource(d);
+    internal static bool ClassLibrarySide(TypeDecl d)
+        => d.SourcePath is string path && LibrarySource is { } isLibrary ? isLibrary(path) : d.FromLibrary;
 
     /// <summary>Whether a field declaration carries [ThreadStatic], however it is spelt.</summary>
     internal static bool IsThreadStatic(FieldDecl f)
@@ -8416,7 +8420,14 @@ public sealed partial class Binder
             _r.Closures[lam] = sharedClosure;
             return wanted;
         }
-        TypeDecl decl = new() { Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col };
+        // THE LIBRARY'S OWN WHERE IT WAS WRITTEN IN THE LIBRARY: its body
+        // names what the code around it names, and a program's own `Os`
+        // stood for the runtime's inside a lambda of Forms.
+        TypeDecl decl = new()
+        {
+            Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col,
+            FromLibrary = _thisType?.Decl?.FromLibrary == true, SourcePath = _thisType?.Decl?.SourcePath,
+        };
 
         // KEYED UNDER THE TYPE THE LAMBDA WAS WRITTEN IN, so that names inside
         // its body are looked up from where they were written. A closure is a

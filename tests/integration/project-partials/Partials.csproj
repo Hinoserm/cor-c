@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <StartupObject>PartialsFixture.Program</StartupObject>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="Program.cs" /><Compile Include="Grow.cs" /><Compile Include="GrowWider.cs" /><Compile Include="Clock.cs" /></ItemGroup>
+</Project>

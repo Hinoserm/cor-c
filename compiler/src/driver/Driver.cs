@@ -551,10 +551,10 @@ public static class Driver
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private static UnitFront? FrontToModule(List<string> files, string name, bool library, List<string> libraryMark, List<string> symbols,
-        List<string> references, int workers, IndexedDeclarations? declarations, Action<string> phase)
+        List<string> references, int workers, IndexedDeclarations? declarations, Action<string> phase, List<string> classLibrary)
     {
         (CompilationUnit unit, BindResult bound)? front =
-            Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations);
+            Frontend.Compile(files, name, library, libraryMark, symbols, references, workers, declarations, classLibrary);
         // The names the front end shared are let go with it: what lowering
         // still holds keeps its own, and the table kept every one of them.
         Lang.Interned.Forget();
@@ -956,7 +956,7 @@ public static class Driver
         // few things captured from it come back. Done inline, no function
         // returned where it died, and nothing could give it back as one
         // (regions open and close at calls).
-        UnitFront? made = FrontToModule(files, name, library, libraryMark, symbols, references, workers, declarations, Phase);
+        UnitFront? made = FrontToModule(files, name, library, libraryMark, symbols, references, workers, declarations, Phase, classLibrary);
         if (made is null)
         {
             return 1;
