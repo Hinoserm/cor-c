@@ -721,9 +721,17 @@ public sealed class RegionPointsTo : IModulePass
             if (!k.Under(copy, _objects[o].Site!)) return false;
             int context = _objects[o].Context;
             // Beside an object that is never in this boundary's
-            // region -- one that outlives it, or one in a frame --
-            // never in it either, so nothing to prove.
-            if (beside && context >= 0 && (k.Outlives.Contains(context) || _objects[context].Site is null)) return false;
+            // region -- one that outlives it, or one in a frame that
+            // never runs beneath it -- never in it either, so nothing
+            // to prove. A FRAME BENEATH IT IS IN IT: AllocNear makes what
+            // it makes for an object on the stack below the region's
+            // opener in the region (Gc.OnStackWithin) -- a struct's
+            // constructor called on a local of the boundary's own frame,
+            // and the exception it throws gone when the catch above reads
+            // it. A loop's region takes only its calls' frames, not its
+            // host's own (the stack below the lap's callee).
+            if (beside && context >= 0 && (k.Outlives.Contains(context)
+                || _objects[context].Site is null && !k.Beneath.Contains(_objects[context].Context))) return false;
             return k.Outlives.Contains(o);
         }
 
