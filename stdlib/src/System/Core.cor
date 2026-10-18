@@ -10617,6 +10617,9 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
 
     /// A collection is copied whole into an array its own size, as .NET
     /// copies one (ICollection.CopyTo); anything else is walked and added.
+    /// THE ONLY CONSTRUCTOR FROM A SEQUENCE, as in .NET: one over
+    /// IReadOnlyList<T> beside it is the better conversion for an array, and
+    /// `new List<T>(array)` bound to a constructor .NET does not have.
     public List(IEnumerable<T> source) : this() {
         if (source is ICollection<T> collection) {
             int n = collection.Count;
@@ -10628,10 +10631,6 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
             return;
         }
         foreach (T one in source) { Add(one); }
-    }
-
-    public List(IReadOnlyList<T> source) : this(source.Count) {
-        for (int i = 0; i < source.Count; i++) { Add(source[i]); }
     }
 
 
