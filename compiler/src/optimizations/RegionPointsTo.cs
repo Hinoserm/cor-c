@@ -721,11 +721,22 @@ public sealed class RegionPointsTo : IModulePass
             if (!k.Under(copy, _objects[o].Site!)) return false;
             int context = _objects[o].Context;
             // Beside an object that is never in this boundary's
-            // region -- one that outlives it, or one in a frame --
-            // never in it either, so nothing to prove.
-            if (beside && context >= 0 && (k.Outlives.Contains(context) || _objects[context].Site is null)) return false;
+            // region -- one that outlives it, the unknown one, or one in a
+            // frame the region outlasts -- never in it either, so nothing to
+            // prove. BESIDE ONE IN A FRAME THE REGION ENDS NO EARLIER THAN
+            // is in the region (Gc.OnStackWithin): a struct built in a
+            // boundary's frame made its exception there, and the throw out
+            // of the boundary gave it back before the handler read it.
+            if (beside && context >= 0 && (k.Outlives.Contains(context) || _objects[context].Site is null && !FrameWithin(k, context))) return false;
             return k.Outlives.Contains(o);
         }
+
+        // Whether a frame slot's frame returns no later than k's region ends,
+        // as Gc.OnStackWithin answers it: a function boundary's own frame or
+        // one beneath it; for a loop's, a frame its laps call, never the
+        // looping function's own, which outlives every lap.
+        bool FrameWithin(Judged k, int slot) =>
+            _objects[slot].Slot is not null && k.Beneath.Contains(_objects[slot].Context) && (k.Body is null || _objects[slot].Context != k.Host);
 
         // Whether the functions' boundaries, or a loop that drops it, send
         // object `o` to the heap whatever a loop's region would prove.

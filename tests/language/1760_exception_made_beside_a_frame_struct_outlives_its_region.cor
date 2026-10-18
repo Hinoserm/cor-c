@@ -1,0 +1,77 @@
+// test: exception_made_beside_a_frame_struct_outlives_its_region
+// expect-exit: 0
+// expect-output:
+// 46
+// at 36000000000
+// ArgumentOutOfRangeException: too long
+// done
+//
+// A STRUCT'S CONSTRUCTOR IS AN INSTANCE METHOD, run once for each object
+// it builds into. Main's frame is full (five wide temporaries take its
+// whole budget), so its spans are blocks on the heap, and what the
+// constructor makes for them is made beside them (AllocNear) -- that is
+// what made the constructor's one exception site "beside" at all. In each
+// lambda the span is in the lambda's own frame, and the lambda is a
+// boundary. Beside an owner in a frame the region outlasts no earlier, the
+// runtime makes the block in the region (Gc.OnStackWithin), while the
+// region pass took a frame owner as one never in any region and proved
+// nothing: the exception was made in the lambda's region, the throw left
+// it, and the handler read an object already given back.
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+struct Span
+{
+    private long ticks;
+
+    public Span(int days, int hours, int minutes) : this(days, hours, minutes, 0, 0, 0) { }
+
+    public Span(int days, int hours, int minutes, int seconds, int milliseconds, int microseconds)
+    {
+        long total = (long)days * 86400000000 + (long)hours * 3600000000 + (long)minutes * 60000000
+                   + (long)seconds * 1000000 + (long)milliseconds * 1000 + (long)microseconds;
+
+        if (total > 922337203685477580 || total < -922337203685477580) { throw TooLong(); }
+        ticks = total * 10;
+    }
+
+    private static ArgumentOutOfRangeException TooLong() { return new ArgumentOutOfRangeException(null, "too long"); }
+
+    public long Ticks => ticks;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public long Hours() { return ticks / 36000000000; }
+}
+
+struct Eight { public long A, B, C, D, E, F, G, H; }
+
+struct Wide
+{
+    public Eight A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P;
+
+    public Wide(long first) { A.A = first; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public long Touch() { return A.A + P.H; }
+}
+
+class Program
+{
+    static string Said(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+    }
+
+    static int Main()
+    {
+        long wide = new Wide(1).Touch() + new Wide(2).Touch() + new Wide(3).Touch() + new Wide(4).Touch() + new Wide(5).Touch();
+        Console.WriteLine(wide + new Span(1, 2, 3).Hours() + new Span(1, 2, 3, 4, 5, 6).Hours() + new Span(-1, 2, 3).Hours());
+        Console.WriteLine(Said(() => { StringBuilder text = new StringBuilder("at "); text.Append(new Span(0, 1, 0).Ticks); return text.ToString(); }));
+        Console.WriteLine(Said(() => { StringBuilder text = new StringBuilder("at "); text.Append(new Span(0, int.MaxValue, 0).Ticks); return text.ToString(); }));
+        Console.WriteLine("done");
+        return 0;
+    }
+}

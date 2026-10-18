@@ -17908,70 +17908,172 @@ enum DayOfWeek {
 /// AN AMOUNT OF TIME, which is not a moment: the difference between two
 /// DateTimes, or how long to wait. Signed, because a difference can go either
 /// way and refusing that would make subtraction an error half the time.
-struct TimeSpan : IFormattable {
+struct TimeSpan : IComparable, IComparable<TimeSpan>, IEquatable<TimeSpan>, IFormattable {
     private long ticks;
+
+    // ---- the units --------------------------------------------------------
+    //
+    // .NET's table of them, all public since .NET 9. A tick is a tenth of a
+    // microsecond, and every count below is made of those.
+
+    public const long NanosecondsPerTick = 100;
+    public const long TicksPerMicrosecond = 10;
+    public const long TicksPerMillisecond = 10000;
+    public const long TicksPerSecond = 10000000;
+    public const long TicksPerMinute = 600000000;
+    public const long TicksPerHour = 36000000000;
+    public const long TicksPerDay = 864000000000;
+
+    public const long MicrosecondsPerMillisecond = 1000;
+    public const long MicrosecondsPerSecond = 1000000;
+    public const long MicrosecondsPerMinute = 60000000;
+    public const long MicrosecondsPerHour = 3600000000;
+    public const long MicrosecondsPerDay = 86400000000;
+    public const long MillisecondsPerSecond = 1000;
+    public const long MillisecondsPerMinute = 60000;
+    public const long MillisecondsPerHour = 3600000;
+    public const long MillisecondsPerDay = 86400000;
+    public const long SecondsPerMinute = 60;
+    public const long SecondsPerHour = 3600;
+    public const long SecondsPerDay = 86400;
+    public const long MinutesPerHour = 60;
+    public const long MinutesPerDay = 1440;
+    public const int HoursPerDay = 24;
+
+    // THE MOST OF EACH UNIT A SPAN HOLDS: long.MaxValue ticks cut down to whole
+    // units. Each least is the same number negated, because long.MinValue
+    // divided by a unit truncates toward zero onto the same magnitude.
+    private const long MaxDays = 10675199;
+    private const long MaxHours = 256204778;
+    private const long MaxMinutes = 15372286728;
+    private const long MaxSeconds = 922337203685;
+    private const long MaxMilliseconds = 922337203685477;
+    private const long MaxMicroseconds = 922337203685477580;
+
+    private const string TooLongText = "TimeSpan overflowed because the duration is too long.";
+    private const string NaNText = "TimeSpan does not accept floating point Not-a-Number values.";
+    private const string NotFormatText = "Input string was not in a correct format.";
 
     public TimeSpan(long inTicks) { ticks = inTicks; }
 
-    // A SPAN TOO LONG FOR ITS TICKS THROWS rather than wrapping into a short
-    // one, at .NET's bounds: whole seconds for the three-part constructor,
-    // microseconds for the longer ones -- a tenth of what a long holds, in
-    // either sign.
+    /// A CLOCK'S WORTH, with no day part. Three ints summed as seconds in a
+    /// long cannot overflow it -- each term is under 2^44 -- so only the total
+    /// is held to the range.
     public TimeSpan(int hours, int minutes, int seconds) {
         long total = (long)hours * 3600 + (long)minutes * 60 + (long)seconds;
 
-        if (total > 922337203685 || total < -922337203685) { throw TooLong(); }
-        ticks = total * 10000000;
+        if (total > MaxSeconds || total < -MaxSeconds) { throw TooLong(); }
+        ticks = total * TicksPerSecond;
     }
 
-    public TimeSpan(int days, int hours, int minutes, int seconds) {
-        ticks = Micros(days, hours, minutes, seconds, 0, 0);
-    }
+    public TimeSpan(int days, int hours, int minutes, int seconds)
+        : this(days, hours, minutes, seconds, 0, 0) { }
 
-    public TimeSpan(int days, int hours, int minutes, int seconds, int milliseconds) {
-        ticks = Micros(days, hours, minutes, seconds, milliseconds, 0);
-    }
+    public TimeSpan(int days, int hours, int minutes, int seconds, int milliseconds)
+        : this(days, hours, minutes, seconds, milliseconds, 0) { }
 
+    /// EVERY FIELD AT ONCE, summed in microseconds as .NET sums them: in a
+    /// long, unchecked, so that a count of days past what one holds wraps
+    /// there as it wraps in .NET, and only the total is held to the range.
     public TimeSpan(int days, int hours, int minutes, int seconds, int milliseconds, int microseconds) {
-        ticks = Micros(days, hours, minutes, seconds, milliseconds, microseconds);
+        long total = (long)days * MicrosecondsPerDay + (long)hours * MicrosecondsPerHour + (long)minutes * MicrosecondsPerMinute
+                   + (long)seconds * MicrosecondsPerSecond + (long)milliseconds * MicrosecondsPerMillisecond + (long)microseconds;
+
+        if (total > MaxMicroseconds || total < -MaxMicroseconds) { throw TooLong(); }
+        ticks = total * TicksPerMicrosecond;
     }
-
-    private static long Micros(int days, int hours, int minutes, int seconds, int milliseconds, int microseconds) {
-        long total = (long)days * 86400000000 + (long)hours * 3600000000 + (long)minutes * 60000000
-                   + (long)seconds * 1000000 + (long)milliseconds * 1000 + (long)microseconds;
-
-        if (total > 922337203685477580 || total < -922337203685477580) { throw TooLong(); }
-        return total * 10;
-    }
-
-    private static ArgumentOutOfRangeException TooLong() {
-        return new ArgumentOutOfRangeException(null, "TimeSpan overflowed because the duration is too long.");
-    }
-
-    public static long TicksPerMillisecond => 10000;
-    public static long TicksPerSecond => 10000000;
-    public static long TicksPerMinute => 600000000;
-    public static long TicksPerHour => 36000000000;
-    public static long TicksPerDay => 864000000000;
 
     public static TimeSpan Zero => new TimeSpan(0);
+    public static TimeSpan MaxValue => new TimeSpan(long.MaxValue);
+    public static TimeSpan MinValue => new TimeSpan(long.MinValue);
+
+    // ---- making one from a count ------------------------------------------
+    //
+    // A WHOLE COUNT is held to what fits before it is multiplied out, so it
+    // can never wrap; several whole counts are summed in 128 bits first. Both
+    // refuse a span too long with ArgumentOutOfRangeException, as .NET does.
+    //
+    // A FRACTIONAL COUNT is cut to whole ticks toward zero, which .NET has
+    // done since Core 3.0 (it used to round to the millisecond). A NaN is
+    // refused as an argument and a count past the range as an overflow.
 
     public static TimeSpan FromTicks(long value) { return new TimeSpan(value); }
-    public static TimeSpan FromMilliseconds(double value) {
-        return new TimeSpan((long)(value * 10000.0));
+
+    public static TimeSpan FromDays(int days) { return OfUnits(days, TicksPerDay, MaxDays); }
+    public static TimeSpan FromHours(int hours) { return OfUnits(hours, TicksPerHour, MaxHours); }
+    public static TimeSpan FromMinutes(long minutes) { return OfUnits(minutes, TicksPerMinute, MaxMinutes); }
+    public static TimeSpan FromSeconds(long seconds) { return OfUnits(seconds, TicksPerSecond, MaxSeconds); }
+    public static TimeSpan FromMilliseconds(long milliseconds) { return OfUnits(milliseconds, TicksPerMillisecond, MaxMilliseconds); }
+    public static TimeSpan FromMicroseconds(long microseconds) { return OfUnits(microseconds, TicksPerMicrosecond, MaxMicroseconds); }
+
+    public static TimeSpan FromDays(int days, int hours = 0, long minutes = 0, long seconds = 0, long milliseconds = 0, long microseconds = 0) {
+        return OfMicroseconds(Term(days, MicrosecondsPerDay) + Term(hours, MicrosecondsPerHour)
+            + Term(minutes, MicrosecondsPerMinute) + Term(seconds, MicrosecondsPerSecond)
+            + Term(milliseconds, MicrosecondsPerMillisecond) + Term(microseconds, 1));
     }
-    public static TimeSpan FromSeconds(double value) {
-        return new TimeSpan((long)(value * 10000000.0));
+
+    public static TimeSpan FromHours(int hours, long minutes = 0, long seconds = 0, long milliseconds = 0, long microseconds = 0) {
+        return OfMicroseconds(Term(hours, MicrosecondsPerHour) + Term(minutes, MicrosecondsPerMinute)
+            + Term(seconds, MicrosecondsPerSecond) + Term(milliseconds, MicrosecondsPerMillisecond) + Term(microseconds, 1));
     }
-    public static TimeSpan FromMinutes(double value) {
-        return new TimeSpan((long)(value * 600000000.0));
+
+    public static TimeSpan FromMinutes(long minutes, long seconds = 0, long milliseconds = 0, long microseconds = 0) {
+        return OfMicroseconds(Term(minutes, MicrosecondsPerMinute) + Term(seconds, MicrosecondsPerSecond)
+            + Term(milliseconds, MicrosecondsPerMillisecond) + Term(microseconds, 1));
     }
-    public static TimeSpan FromHours(double value) {
-        return new TimeSpan((long)(value * 36000000000.0));
+
+    public static TimeSpan FromSeconds(long seconds, long milliseconds = 0, long microseconds = 0) {
+        return OfMicroseconds(Term(seconds, MicrosecondsPerSecond) + Term(milliseconds, MicrosecondsPerMillisecond)
+            + Term(microseconds, 1));
     }
-    public static TimeSpan FromDays(double value) {
-        return new TimeSpan((long)(value * 864000000000.0));
+
+    public static TimeSpan FromMilliseconds(long milliseconds, long microseconds) {
+        return OfMicroseconds(Term(milliseconds, MicrosecondsPerMillisecond) + Term(microseconds, 1));
     }
+
+    public static TimeSpan FromDays(double value) { return OfFraction(value, 864000000000.0); }
+    public static TimeSpan FromHours(double value) { return OfFraction(value, 36000000000.0); }
+    public static TimeSpan FromMinutes(double value) { return OfFraction(value, 600000000.0); }
+    public static TimeSpan FromSeconds(double value) { return OfFraction(value, 10000000.0); }
+    public static TimeSpan FromMilliseconds(double value) { return OfFraction(value, 10000.0); }
+    public static TimeSpan FromMicroseconds(double value) { return OfFraction(value, 10.0); }
+
+    private static TimeSpan OfUnits(long units, long ticksPerUnit, long most) {
+        if (units > most || units < -most) { throw TooLong(); }
+        return new TimeSpan(units * ticksPerUnit);
+    }
+
+    /// ONE TERM OF A 128-BIT SUM: the count times its unit, each as its two's
+    /// complement in a UInt128, which multiplies and adds exactly as a signed
+    /// 128-bit number would. A term of minutes can be too long on its own and
+    /// still be cancelled by a term of seconds, as it can in .NET's Int128.
+    private static UInt128 Term(long count, long perUnit) { return (UInt128)count * (UInt128)perUnit; }
+
+    /// The sum held to the range. Adding the limit moves -limit .. limit onto
+    /// 0 .. 2 * limit, where one unsigned comparison checks both ends.
+    private static TimeSpan OfMicroseconds(UInt128 total) {
+        if (total + (UInt128)MaxMicroseconds > (UInt128)(2 * MaxMicroseconds)) { throw TooLong(); }
+        return new TimeSpan((long)total * TicksPerMicrosecond);
+    }
+
+    private static TimeSpan OfFraction(double value, double ticksPerUnit) {
+        if (double.IsNaN(value)) { throw new ArgumentException(NaNText); }
+        return OfTicks(value * ticksPerUnit);
+    }
+
+    /// TICKS COUNTED IN A DOUBLE, as .NET's IntervalFromDoubleTicks takes them:
+    /// past the long range (or a NaN) is an overflow, and exactly 2^63 -- which
+    /// is what long.MaxValue becomes as a double -- is MaxValue, rather than a
+    /// conversion that would wrap to the most negative span.
+    private static TimeSpan OfTicks(double count) {
+        if (count > (double)long.MaxValue || count < (double)long.MinValue || double.IsNaN(count)) {
+            throw new OverflowException(TooLongText);
+        }
+        if (count == (double)long.MaxValue) { return MaxValue; }
+        return new TimeSpan((long)count);
+    }
+
+    private static ArgumentOutOfRangeException TooLong() { return new ArgumentOutOfRangeException(null, TooLongText); }
 
     public long Ticks => ticks;
 
@@ -17984,17 +18086,44 @@ struct TimeSpan : IFormattable {
     public int Minutes => (int)(ticks / 600000000 % 60);
     public int Seconds => (int)(ticks / 10000000 % 60);
     public int Milliseconds => (int)(ticks / 10000 % 1000);
+    public int Microseconds => (int)(ticks / 10 % 1000);
+    public int Nanoseconds => (int)(ticks % 10 * 100);
 
     public double TotalDays => (double)ticks / 864000000000.0;
     public double TotalHours => (double)ticks / 36000000000.0;
     public double TotalMinutes => (double)ticks / 600000000.0;
     public double TotalSeconds => (double)ticks / 10000000.0;
-    public double TotalMilliseconds => (double)ticks / 10000.0;
 
-    public TimeSpan Add(TimeSpan other) { return new TimeSpan(ticks + other.Ticks); }
-    public TimeSpan Subtract(TimeSpan other) { return new TimeSpan(ticks - other.Ticks); }
-    public TimeSpan Negate() { return new TimeSpan(-ticks); }
-    public TimeSpan Duration() { return new TimeSpan(ticks < 0 ? -ticks : ticks); }
+    /// HELD TO THE WHOLE MILLISECONDS A SPAN HOLDS, as .NET holds it: MaxValue
+    /// is 922337203685477 milliseconds and not the fraction past it.
+    public double TotalMilliseconds {
+        get {
+            double total = (double)ticks / 10000.0;
+
+            if (total > (double)MaxMilliseconds) { return (double)MaxMilliseconds; }
+            if (total < (double)-MaxMilliseconds) { return (double)-MaxMilliseconds; }
+            return total;
+        }
+    }
+
+    public double TotalMicroseconds => (double)ticks / 10.0;
+    public double TotalNanoseconds => (double)ticks * 100.0;
+
+    public TimeSpan Add(TimeSpan other) { return this + other; }
+    public TimeSpan Subtract(TimeSpan other) { return this - other; }
+    public TimeSpan Negate() { return -this; }
+    public TimeSpan Multiply(double factor) { return this * factor; }
+    public TimeSpan Divide(double divisor) { return this / divisor; }
+    public double Divide(TimeSpan other) { return this / other; }
+
+    /// THE SIZE WITHOUT THE SIGN, which MinValue does not have: its ticks have
+    /// no positive twin, and .NET says so rather than wrap.
+    public TimeSpan Duration() {
+        if (ticks == long.MinValue) {
+            throw new OverflowException("The duration cannot be returned for TimeSpan.MinValue because the absolute value of TimeSpan.MinValue exceeds the value of TimeSpan.MaxValue.");
+        }
+        return new TimeSpan(ticks < 0 ? -ticks : ticks);
+    }
 
     public int CompareTo(TimeSpan other) {
         if (ticks < other.Ticks) { return -1; }
@@ -18002,7 +18131,18 @@ struct TimeSpan : IFormattable {
         return 0;
     }
 
+    /// AGAINST ANY OBJECT, as IComparable asks: a null is less than every span,
+    /// and what is not a span cannot be compared with one at all.
+    public int CompareTo(object? value) {
+        if (value == null) { return 1; }
+        if (value is TimeSpan other) { return CompareTo(other); }
+        throw new ArgumentException("Object must be of type TimeSpan.");
+    }
+
     public bool Equals(TimeSpan other) { return ticks == other.Ticks; }
+    public override bool Equals(object? value) { return value is TimeSpan other && ticks == other.Ticks; }
+    public static bool Equals(TimeSpan a, TimeSpan b) { return a.Ticks == b.Ticks; }
+    public override int GetHashCode() { return ticks.GetHashCode(); }
 
     // ---- the operators C# writes ----------------------------------------
     //
@@ -18011,14 +18151,54 @@ struct TimeSpan : IFormattable {
     // for the operator; the compiler finds it by the name the operator has in
     // metadata, so this and a C# source file say the same thing.
     //
-    // MULTIPLYING BY A NUMBER is .NET's `TimeSpan * double`, and DIVIDING one
-    // span by another is a plain ratio -- "how many of these fit in that".
+    // SUMS AND DIFFERENCES ARE CHECKED, as .NET checks them: two operands of
+    // one sign giving a result of the other is a span past the range, and
+    // that is an OverflowException rather than a wrap.
+    //
+    // MULTIPLYING BY A NUMBER is .NET's `TimeSpan * double`, ROUNDED TO THE
+    // NEAREST TICK (an even one at a half, Math.Round's rule) -- three ticks
+    // times a half is two. Dividing one span by another is a plain ratio --
+    // "how many of these fit in that".
 
-    public static TimeSpan operator +(TimeSpan a, TimeSpan b) { return new TimeSpan(a.Ticks + b.Ticks); }
-    public static TimeSpan operator -(TimeSpan a, TimeSpan b) { return new TimeSpan(a.Ticks - b.Ticks); }
-    public static TimeSpan operator *(TimeSpan a, double factor) { return new TimeSpan((long)((double)a.Ticks * factor)); }
-    public static TimeSpan operator *(double factor, TimeSpan a) { return new TimeSpan((long)((double)a.Ticks * factor)); }
-    public static TimeSpan operator /(TimeSpan a, double divisor) { return new TimeSpan((long)((double)a.Ticks / divisor)); }
+    public static TimeSpan operator +(TimeSpan a) { return a; }
+
+    public static TimeSpan operator -(TimeSpan a) {
+        if (a.Ticks == long.MinValue) {
+            throw new OverflowException("Negating the minimum value of a twos complement number is invalid.");
+        }
+        return new TimeSpan(-a.Ticks);
+    }
+
+    public static TimeSpan operator +(TimeSpan a, TimeSpan b) {
+        long sum = a.Ticks + b.Ticks;
+
+        if ((a.Ticks >> 63) == (b.Ticks >> 63) && (a.Ticks >> 63) != (sum >> 63)) {
+            throw new OverflowException(TooLongText);
+        }
+        return new TimeSpan(sum);
+    }
+
+    public static TimeSpan operator -(TimeSpan a, TimeSpan b) {
+        long difference = a.Ticks - b.Ticks;
+
+        if ((a.Ticks >> 63) != (b.Ticks >> 63) && (a.Ticks >> 63) != (difference >> 63)) {
+            throw new OverflowException(TooLongText);
+        }
+        return new TimeSpan(difference);
+    }
+
+    public static TimeSpan operator *(TimeSpan a, double factor) {
+        if (double.IsNaN(factor)) { throw new ArgumentException(NaNText, "factor"); }
+        return OfTicks(Math.Round((double)a.Ticks * factor));
+    }
+
+    public static TimeSpan operator *(double factor, TimeSpan a) { return a * factor; }
+
+    public static TimeSpan operator /(TimeSpan a, double divisor) {
+        if (double.IsNaN(divisor)) { throw new ArgumentException(NaNText, "divisor"); }
+        return OfTicks(Math.Round((double)a.Ticks / divisor));
+    }
+
     public static double operator /(TimeSpan a, TimeSpan b) { return (double)a.Ticks / (double)b.Ticks; }
 
     public static bool operator ==(TimeSpan a, TimeSpan b) { return a.Ticks == b.Ticks; }
@@ -18030,73 +18210,584 @@ struct TimeSpan : IFormattable {
 
     public static int Compare(TimeSpan a, TimeSpan b) { return a.CompareTo(b); }
 
-    /// "[-][d.]hh:mm[:ss[.fffffff]]", which is the shape ToString writes: a
-    /// span written down reads back as itself. The DAYS ARE SEPARATED BY A
-    /// DOT, not a colon, which is .NET's spelling and the part that surprises.
-    public static TimeSpan Parse(string text) {
-        TimeSpan made = TimeSpan.Zero;
+    // ---- reading one ------------------------------------------------------
 
-        if (!TryParse(text, out made)) {
-            throw new FormatException(String.Concat("String '",
-                String.Concat(text, "' was not recognized as a valid TimeSpan.")));
-        }
-        return made;
+    /// WHY TEXT DID NOT READ AS A SPAN, which is also which exception the
+    /// throwing forms raise: a string that is no span at all, one whose
+    /// numbers are out of range, and a format that is no format are three
+    /// different complaints in .NET, each with its own message.
+    private enum Fault {
+        None,
+        Unformatted,    // the input does not follow the custom format
+        NotSpan,        // the input is not a span in the shape asked for
+        Overflow,       // a field, or the whole, is out of range
+        Specifier,      // a one-letter format that is none of .NET's
+        Quote,          // a quoted literal in the format is never closed
+        NoFormats,      // an empty list of formats
     }
 
-    /// The invariant format is the only one TimeSpan is written in here, so
+    private static Exception Failure(Fault fault, string input, string named) {
+        if (fault == Fault.Overflow) {
+            return new OverflowException("The TimeSpan string '" + input
+                + "' could not be parsed because at least one of the numeric components is out of range or contains too many digits.");
+        }
+        if (fault == Fault.NotSpan) {
+            return new FormatException("String '" + input + "' was not recognized as a valid TimeSpan.");
+        }
+        if (fault == Fault.Specifier) { return new FormatException("Format specifier '" + named + "' was invalid."); }
+        if (fault == Fault.Quote) {
+            return new FormatException("Cannot find a matching quote character for the character '" + named + "'.");
+        }
+        if (fault == Fault.NoFormats) { return new FormatException("No format specifiers were provided."); }
+        return new FormatException(NotFormatText);
+    }
+
+    /// "[-][d.]hh:mm[:ss[.fffffff]]", the shape ToString writes, or the
+    /// invariant culture's "[-][d:]h:mm[:ss[.FFFFFFF]]" -- .NET's Parse takes
+    /// either, so a span written down by either reads back as itself. The
+    /// DAYS ARE SEPARATED BY A DOT in the first, which is the part that
+    /// surprises.
+    public static TimeSpan Parse(string text) {
+        if (text == null) { throw new ArgumentNullException("input"); }
+        Fault fault = General(text, true, false, out long value);
+
+        if (fault != Fault.None) { throw Failure(fault, text, ""); }
+        return new TimeSpan(value);
+    }
+
+    /// The invariant culture is the only one TimeSpan is written in here, so
     /// the provider changes nothing.
     public static TimeSpan Parse(string input, IFormatProvider? formatProvider) { return Parse(input); }
 
     public static bool TryParse(string? input, IFormatProvider? formatProvider, out TimeSpan result) {
-        if (input == null) { result = TimeSpan.Zero; return false; }
         return TryParse(input, out result);
     }
 
     public static bool TryParse(string? text, out TimeSpan value) {
         // .NET's answer for no string at all: false, and the default.
-        if (text is null) { value = default; return false; }
-        value = TimeSpan.Zero;
+        value = default;
         if (text == null) { return false; }
-
-        string rest = String.Trim(text);
-
-        if (rest.Length == 0) { return false; }
-
-        bool negative = Sys.GetChar(rest, 0) == (int)'-';
-
-        if (negative || Sys.GetChar(rest, 0) == (int)'+') {
-            rest = String.Substring(rest, 1, rest.Length - 1);
-        }
-
-        long days = 0;
-        int colon = String.IndexOf(rest, ':');
-        int dot = String.IndexOf(rest, '.');
-
-        // A DOT BEFORE THE FIRST COLON separates the days; one after the last
-        // is the fraction of a second.
-        if (dot >= 0 && (colon < 0 || dot < colon)) {
-            if (!Int64.TryParse(String.Substring(rest, 0, dot), out days)) { return false; }
-            rest = String.Substring(rest, dot + 1, rest.Length - dot - 1);
-            colon = String.IndexOf(rest, ':');
-        }
-
-        long ticks = 0;
-
-        if (colon < 0) {
-            // A bare number is a count of DAYS, which is the one shape that
-            // does not look like a clock.
-            long only = 0;
-
-            if (!Int64.TryParse(rest, out only)) { return false; }
-            ticks = only * 864000000000;
-        } else {
-            if (!DateParts.TryTime(rest, out ticks)) { return false; }
-            ticks = ticks + days * 864000000000;
-        }
-
-        value = new TimeSpan(negative ? -ticks : ticks);
+        if (General(text, true, false, out long ticks) != Fault.None) { return false; }
+        value = new TimeSpan(ticks);
         return true;
     }
+
+    /// BY A FORMAT: one of the standard letters ("c", "t" and "T" the constant
+    /// shape, "g" and "G" the invariant culture's general ones) or a custom
+    /// picture made of the letters ToString(format) writes. AssumeNegative
+    /// negates what a custom picture reads -- it has no place for a sign --
+    /// and is ignored by the standard shapes, which have one, as in .NET.
+    public static TimeSpan ParseExact(string input, string format, IFormatProvider? formatProvider) {
+        return ParseExact(input, format, formatProvider, TimeSpanStyles.None);
+    }
+
+    public static TimeSpan ParseExact(string input, string format, IFormatProvider? formatProvider, TimeSpanStyles styles) {
+        CheckStyles(styles);
+        if (input == null) { throw new ArgumentNullException("input"); }
+        if (format == null) { throw new ArgumentNullException("format"); }
+        Fault fault = Exact(input, format, styles, out long value, out string named);
+
+        if (fault != Fault.None) { throw Failure(fault, input, named); }
+        return new TimeSpan(value);
+    }
+
+    public static TimeSpan ParseExact(string input, string[] formats, IFormatProvider? formatProvider) {
+        return ParseExact(input, formats, formatProvider, TimeSpanStyles.None);
+    }
+
+    public static TimeSpan ParseExact(string input, string[] formats, IFormatProvider? formatProvider, TimeSpanStyles styles) {
+        CheckStyles(styles);
+        if (input == null) { throw new ArgumentNullException("input"); }
+        if (formats == null) { throw new ArgumentNullException("formats"); }
+        Fault fault = AnyOf(input, formats, styles, out long value);
+
+        if (fault != Fault.None) { throw Failure(fault, input, ""); }
+        return new TimeSpan(value);
+    }
+
+    public static bool TryParseExact(string? input, string? format, IFormatProvider? formatProvider, out TimeSpan result) {
+        return TryParseExact(input, format, formatProvider, TimeSpanStyles.None, out result);
+    }
+
+    public static bool TryParseExact(string? input, string? format, IFormatProvider? formatProvider, TimeSpanStyles styles, out TimeSpan result) {
+        CheckStyles(styles);
+        result = default;
+        if (input == null || format == null) { return false; }
+        if (Exact(input, format, styles, out long value, out string named) != Fault.None) { return false; }
+        result = new TimeSpan(value);
+        return true;
+    }
+
+    public static bool TryParseExact(string? input, string?[]? formats, IFormatProvider? formatProvider, out TimeSpan result) {
+        return TryParseExact(input, formats, formatProvider, TimeSpanStyles.None, out result);
+    }
+
+    public static bool TryParseExact(string? input, string?[]? formats, IFormatProvider? formatProvider, TimeSpanStyles styles, out TimeSpan result) {
+        CheckStyles(styles);
+        result = default;
+        if (input == null || formats == null) { return false; }
+        if (AnyOf(input, formats, styles, out long value) != Fault.None) { return false; }
+        result = new TimeSpan(value);
+        return true;
+    }
+
+    // THE SAME OVER A SPAN, read as the text it holds. A span is never null,
+    // so only a list of formats can be missing.
+    public static TimeSpan Parse(ReadOnlySpan<char> input, IFormatProvider? formatProvider = null) { return Parse(input.ToString()); }
+
+    public static bool TryParse(ReadOnlySpan<char> s, out TimeSpan result) { return TryParse(s.ToString(), out result); }
+
+    public static bool TryParse(ReadOnlySpan<char> input, IFormatProvider? formatProvider, out TimeSpan result) {
+        return TryParse(input.ToString(), out result);
+    }
+
+    public static TimeSpan ParseExact(ReadOnlySpan<char> input, ReadOnlySpan<char> format, IFormatProvider? formatProvider,
+                                      TimeSpanStyles styles = TimeSpanStyles.None) {
+        return ParseExact(input.ToString(), format.ToString(), formatProvider, styles);
+    }
+
+    public static TimeSpan ParseExact(ReadOnlySpan<char> input, string[] formats, IFormatProvider? formatProvider,
+                                      TimeSpanStyles styles = TimeSpanStyles.None) {
+        return ParseExact(input.ToString(), formats, formatProvider, styles);
+    }
+
+    public static bool TryParseExact(ReadOnlySpan<char> input, ReadOnlySpan<char> format, IFormatProvider? formatProvider, out TimeSpan result) {
+        return TryParseExact(input.ToString(), format.ToString(), formatProvider, TimeSpanStyles.None, out result);
+    }
+
+    public static bool TryParseExact(ReadOnlySpan<char> input, ReadOnlySpan<char> format, IFormatProvider? formatProvider,
+                                     TimeSpanStyles styles, out TimeSpan result) {
+        return TryParseExact(input.ToString(), format.ToString(), formatProvider, styles, out result);
+    }
+
+    public static bool TryParseExact(ReadOnlySpan<char> input, string?[]? formats, IFormatProvider? formatProvider, out TimeSpan result) {
+        return TryParseExact(input.ToString(), formats, formatProvider, TimeSpanStyles.None, out result);
+    }
+
+    public static bool TryParseExact(ReadOnlySpan<char> input, string?[]? formats, IFormatProvider? formatProvider,
+                                     TimeSpanStyles styles, out TimeSpan result) {
+        return TryParseExact(input.ToString(), formats, formatProvider, styles, out result);
+    }
+
+    private static void CheckStyles(TimeSpanStyles styles) {
+        if (((int)styles & ~(int)TimeSpanStyles.AssumeNegative) != 0) {
+            throw new ArgumentException("An undefined TimeSpanStyles value is being used.", "styles");
+        }
+    }
+
+    /// THE FIRST FORMAT THAT READS THE INPUT. An empty or missing format in the
+    /// list is an error in the list, whichever format would have matched; a
+    /// list where none matches says only that the input is not a span.
+    private static Fault AnyOf(string input, string?[] formats, TimeSpanStyles styles, out long value) {
+        value = 0;
+        if (input.Length == 0) { return Fault.NotSpan; }
+        if (formats.Length == 0) { return Fault.NoFormats; }
+
+        for (int i = 0; i < formats.Length; i++) {
+            string? format = formats[i];
+
+            if (format == null || format.Length == 0) { return Fault.Specifier; }
+            if (Exact(input, format, styles, out value, out string named) == Fault.None) { return Fault.None; }
+        }
+        value = 0;
+        return Fault.NotSpan;
+    }
+
+    /// ONE FORMAT: a standard letter, or a picture of two characters or more.
+    /// `named` is what a FormatException names -- the letter that is no
+    /// format, or the quote never closed.
+    private static Fault Exact(string input, string format, TimeSpanStyles styles, out long value, out string named) {
+        value = 0;
+        named = "";
+        if (format.Length == 0) { return Fault.Specifier; }
+        if (format.Length == 1) {
+            char kind = format[0];
+
+            if (kind == 'c' || kind == 't' || kind == 'T') { return Constant(input, out value); }
+            if (kind == 'g' || kind == 'G') { return General(input, false, kind == 'G', out value); }
+            named = format;
+            return Fault.Specifier;
+        }
+        return Pictured(input, format, ((int)styles & (int)TimeSpanStyles.AssumeNegative) == 0, out value, out named);
+    }
+
+    /// THE CONSTANT SHAPE, "[ws][-]{ d | [d.]hh:mm[:ss[.fffffff]] }[ws]", read
+    /// strictly as .NET's "c" reads it: no plus sign, blanks only spaces and
+    /// tabs, at most seven digits of fraction, and the seconds optional even
+    /// before a fraction ("00:00:.5").
+    private static Fault Constant(string input, out long value) {
+        value = 0;
+        int at = Blanks(input, 0);
+        bool negative = at < input.Length && input[at] == '-';
+
+        if (negative) { at = at + 1; }
+
+        // A COLON AFTER THE FIRST RUN OF DIGITS makes them hours; anything
+        // else, days.
+        int look = at;
+        while (look < input.Length && Char.IsAsciiDigit(input[look])) { look = look + 1; }
+
+        long time = 0;
+        Fault fault = Fault.None;
+
+        if (look < input.Length && input[look] == ':') {
+            fault = ConstantTime(input, ref at, out time);
+            if (fault != Fault.None) { return fault; }
+        } else {
+            fault = ConstantField(input, ref at, MaxDays, out long days);
+            if (fault != Fault.None) { return fault; }
+            time = days * TicksPerDay;
+            if (at < input.Length && input[at] == '.') {
+                at = at + 1;
+                fault = ConstantTime(input, ref at, out long rest);
+                if (fault != Fault.None) { return fault; }
+                time = time + rest;
+            }
+        }
+
+        // PAST THE RANGE THE SUM WRAPS, and the sign it lands on says so.
+        // Negated, the most negative span is its own negation, which is why
+        // "-10675199.02:48:05.4775808" reads.
+        if (negative) {
+            time = -time;
+            if (time > 0) { return Fault.Overflow; }
+        } else if (time < 0) {
+            return Fault.Overflow;
+        }
+        if (Blanks(input, at) < input.Length) { return Fault.NotSpan; }
+        value = time;
+        return Fault.None;
+    }
+
+    private static int Blanks(string input, int at) {
+        while (at < input.Length && (input[at] == ' ' || input[at] == '\t')) { at = at + 1; }
+        return at;
+    }
+
+    private static Fault ConstantField(string input, ref int at, long most, out long field) {
+        field = 0;
+        int from = at;
+
+        while (at < input.Length && Char.IsAsciiDigit(input[at])) {
+            if ((field & 0xF0000000) != 0) { return Fault.Overflow; }
+            field = field * 10 + (input[at] - '0');
+            if (field > int.MaxValue) { return Fault.Overflow; }
+            at = at + 1;
+        }
+        if (at == from) { return Fault.NotSpan; }
+        if (field > most) { return Fault.Overflow; }
+        return Fault.None;
+    }
+
+    private static Fault ConstantTime(string input, ref int at, out long time) {
+        time = 0;
+        Fault fault = ConstantField(input, ref at, 23, out long hours);
+
+        if (fault != Fault.None) { return fault; }
+        if (at >= input.Length || input[at] != ':') { return Fault.NotSpan; }
+        at = at + 1;
+        fault = ConstantField(input, ref at, 59, out long minutes);
+        if (fault != Fault.None) { return fault; }
+        time = hours * TicksPerHour + minutes * TicksPerMinute;
+
+        if (at < input.Length && input[at] == ':') {
+            at = at + 1;
+            if (at >= input.Length || input[at] != '.') {
+                fault = ConstantField(input, ref at, 59, out long seconds);
+                if (fault != Fault.None) { return fault; }
+                time = time + seconds * TicksPerSecond;
+            }
+            if (at < input.Length && input[at] == '.') {
+                at = at + 1;
+                long place = TicksPerSecond;
+
+                while (place > 1 && at < input.Length && Char.IsAsciiDigit(input[at])) {
+                    place = place / 10;
+                    time = time + (input[at] - '0') * place;
+                    at = at + 1;
+                }
+            }
+        }
+        return Fault.None;
+    }
+
+    /// THE GENERAL SHAPES, as .NET's Parse and its "g" and "G" read them: the
+    /// trimmed text cut into up to five numbers and the separators around
+    /// them, and the separators matched against each shape the numbers could
+    /// be. Two numbers are h:m; three are h:m:s, d.h:m or h:m:.f; four are
+    /// h:m:s.f, d.h:m:s or d.h:m:.f; five are all of d.h:m:s.f.
+    ///
+    /// THE DAYS' SEPARATOR is a dot in the invariant shapes, which only Parse
+    /// tries, and a colon in the invariant culture's own ("1:02:03:04"),
+    /// which all three try. Where a shape matches but a field is out of range
+    /// the next one is tried, so "25:00:00" is twenty-five days; `full` is
+    /// "G", which takes only all five.
+    private static Fault General(string input, bool invariant, bool full, out long value) {
+        value = 0;
+        string text = String.Trim(input);
+
+        if (text.Length == 0) { return Fault.NotSpan; }
+
+        long[] numbers = new long[5];
+        int[] zeroes = new int[5];
+        string[] separators = new string[6];
+        int count = 0;
+        int cuts = 0;
+        int at = 0;
+
+        // A NUMBER IS DIGITS and a separator everything between; a text that
+        // starts with a number has an empty separator before it, and one that
+        // ends with one an empty separator after it. Leading zeros are
+        // counted apart, which a fraction needs: ".05" is not ".5".
+        while (at < text.Length) {
+            if (Char.IsAsciiDigit(text[at])) {
+                long number = 0;
+                int leading = 0;
+
+                while (at < text.Length && text[at] == '0') { leading = leading + 1; at = at + 1; }
+                while (at < text.Length && Char.IsAsciiDigit(text[at])) {
+                    number = number * 10 + (text[at] - '0');
+                    at = at + 1;
+                    if ((number & 0xF0000000) != 0) { return Fault.Overflow; }
+                }
+                if (count + cuts == 0) { separators[0] = ""; cuts = 1; }
+                if (count >= 5) { return Fault.NotSpan; }
+                numbers[count] = number;
+                zeroes[count] = leading;
+                count = count + 1;
+            } else {
+                int from = at;
+
+                while (at < text.Length && !Char.IsAsciiDigit(text[at])) { at = at + 1; }
+                if (cuts >= 6) { return Fault.NotSpan; }
+                separators[cuts] = String.Substring(text, from, at - from);
+                cuts = cuts + 1;
+            }
+        }
+        if (Char.IsAsciiDigit(text[text.Length - 1])) {
+            if (cuts >= 6) { return Fault.NotSpan; }
+            separators[cuts] = "";
+            cuts = cuts + 1;
+        }
+        if (count == 0 || (full && count != 5)) { return Fault.NotSpan; }
+
+        bool overflow = false;
+
+        for (int shape = invariant ? 0 : 2; shape < 4; shape++) {
+            bool positive = shape % 2 == 0;
+            string sign = positive ? "" : "-";
+            string dayHour = shape < 2 ? "." : ":";
+            long ticks = 0;
+            bool fits = false;
+
+            if (separators[0] != sign || separators[count] != "") { continue; }
+
+            if (count == 1) {
+                // A BARE NUMBER IS DAYS, which is the one shape that does not
+                // look like a clock.
+                if (!Combine(positive, numbers[0], 0, 0, 0, 0, 0, out ticks)) { return Fault.Overflow; }
+                fits = true;
+            } else if (count == 2) {
+                if (separators[1] != ":") { continue; }
+                if (!Combine(positive, 0, numbers[0], numbers[1], 0, 0, 0, out ticks)) { return Fault.Overflow; }
+                fits = true;
+            } else if (count == 5) {
+                if (separators[1] != dayHour || separators[2] != ":" || separators[3] != ":" || separators[4] != ".") { continue; }
+                if (!Combine(positive, numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], zeroes[4], out ticks)) {
+                    return Fault.Overflow;
+                }
+                fits = true;
+            } else {
+                // THREE OR FOUR NUMBERS, where more than one shape can match
+                // and a field out of range rules out only that shape.
+                bool clock = separators[1] == ":" && separators[2] == ":";
+                bool dated = separators[1] == dayHour && separators[2] == ":";
+
+                if (count == 3) {
+                    if (clock) {
+                        fits = Combine(positive, 0, numbers[0], numbers[1], numbers[2], 0, 0, out ticks);
+                        overflow = overflow || !fits;
+                    }
+                    if (!fits && dated) {
+                        fits = Combine(positive, numbers[0], numbers[1], numbers[2], 0, 0, 0, out ticks);
+                        overflow = overflow || !fits;
+                    }
+                    if (!fits && separators[1] == ":" && separators[2] == ":.") {
+                        fits = Combine(positive, 0, numbers[0], numbers[1], 0, numbers[2], zeroes[2], out ticks);
+                        overflow = overflow || !fits;
+                    }
+                } else {
+                    if (clock && separators[3] == ".") {
+                        fits = Combine(positive, 0, numbers[0], numbers[1], numbers[2], numbers[3], zeroes[3], out ticks);
+                        overflow = overflow || !fits;
+                    }
+                    if (!fits && dated && separators[3] == ":") {
+                        fits = Combine(positive, numbers[0], numbers[1], numbers[2], numbers[3], 0, 0, out ticks);
+                        overflow = overflow || !fits;
+                    }
+                    if (!fits && dated && separators[3] == ":.") {
+                        fits = Combine(positive, numbers[0], numbers[1], numbers[2], 0, numbers[3], zeroes[3], out ticks);
+                        overflow = overflow || !fits;
+                    }
+                }
+            }
+
+            if (fits) {
+                if (!positive) {
+                    ticks = -ticks;
+                    if (ticks > 0) { return Fault.Overflow; }
+                }
+                value = ticks;
+                return Fault.None;
+            }
+        }
+        return overflow ? Fault.Overflow : Fault.NotSpan;
+    }
+
+    /// A CUSTOM PICTURE, read as .NET's TryParseByFormat reads one: each run of
+    /// a letter takes digits (h, m and s one or two for one letter and exactly
+    /// two for two; d one to eight, or exactly as many as written; f exactly as
+    /// many as written; F up to as many), each field at most once, literals
+    /// matching exactly, and nothing left over.
+    private static Fault Pictured(string input, string format, bool positive, out long value, out string named) {
+        value = 0;
+        named = "";
+        long days = 0;
+        long hours = 0;
+        long minutes = 0;
+        long seconds = 0;
+        long fraction = 0;
+        int zeroes = 0;
+        string seen = "";
+        int at = -1;
+        int i = 0;
+
+        while (i < format.Length) {
+            char c = format[i];
+            int run = 1;
+
+            if (c == 'h' || c == 'm' || c == 's' || c == 'd' || c == 'f' || c == 'F') {
+                run = DateParts.Run(format, i);
+
+                // A FIELD READ TWICE is a picture that cannot be right; f and F
+                // are the same field.
+                char field = c == 'F' ? 'f' : c;
+
+                if (String.IndexOf(seen, field) >= 0) { return Fault.Unformatted; }
+                seen = seen + field;
+
+                bool read = false;
+                if (c == 'h' && run <= 2) { read = Digits(input, ref at, run, run == 1 ? 2 : run, out int lead, out hours); }
+                else if (c == 'm' && run <= 2) { read = Digits(input, ref at, run, run == 1 ? 2 : run, out int lead, out minutes); }
+                else if (c == 's' && run <= 2) { read = Digits(input, ref at, run, run == 1 ? 2 : run, out int lead, out seconds); }
+                else if (c == 'd' && run <= 8) { read = Digits(input, ref at, run < 2 ? 1 : run, run < 2 ? 8 : run, out int lead, out days); }
+                else if (c == 'f' && run <= 7) { read = Digits(input, ref at, run, run, out zeroes, out fraction); }
+                else if (c == 'F' && run <= 7) { Digits(input, ref at, run, run, out zeroes, out fraction); read = true; }
+                if (!read) { return Fault.Unformatted; }
+            } else if (c == '\'' || c == '"') {
+                StringBuilder literal = new StringBuilder();
+
+                run = DateParts.QuotedText(format, i, literal);
+                if (run <= 0) { named = String.FromChar(c); return Fault.Quote; }
+                string wanted = literal.ToString();
+
+                for (int k = 0; k < wanted.Length; k++) {
+                    if (Next(input, ref at) != wanted[k]) { return Fault.Unformatted; }
+                }
+            } else if (c == '%') {
+                // "%h" IS ONE LETTER ALONE, which a one-letter format cannot
+                // be; the % is stepped over and the letter read next.
+                if (i + 1 >= format.Length || format[i + 1] == '%') { return Fault.Unformatted; }
+            } else if (c == '\\') {
+                if (i + 1 >= format.Length || Next(input, ref at) != format[i + 1]) { return Fault.Unformatted; }
+                run = 2;
+            } else {
+                return Fault.Unformatted;
+            }
+            i = i + run;
+        }
+        if (at < input.Length - 1) { return Fault.NotSpan; }
+
+        if (!Combine(positive, days, hours, minutes, seconds, fraction, zeroes, out value)) { return Fault.Overflow; }
+        if (!positive) { value = -value; }
+        return Fault.None;
+    }
+
+    /// THE NEXT CHARACTER OF THE INPUT, '\0' past its end, and the position
+    /// moved onto it either way -- the reader .NET's custom pictures use, which
+    /// starts before the first character.
+    private static char Next(string input, ref int at) {
+        at = at + 1;
+        return at < input.Length ? input[at] : '\0';
+    }
+
+    /// FROM `fewest` TO `most` DIGITS as a number, and how many zeros it began
+    /// with. A character that is not a digit is put back -- EXCEPT the input's
+    /// first, which .NET's reader cannot put back (its step back stops at the
+    /// first position), so "x" does not read as "F'x'" there either.
+    private static bool Digits(string input, ref int at, int fewest, int most, out int zeroes, out long number) {
+        int taken = 0;
+
+        zeroes = 0;
+        number = 0;
+        while (taken < most) {
+            char c = Next(input, ref at);
+
+            if (!Char.IsAsciiDigit(c)) {
+                if (at > 0) { at = at - 1; }
+                break;
+            }
+            number = number * 10 + (c - '0');
+            if (number == 0) { zeroes = zeroes + 1; }
+            taken = taken + 1;
+        }
+        return taken >= fewest;
+    }
+
+    /// THE FIELDS PUT TOGETHER, as .NET's TryTimeToTicks does it: each held to
+    /// its clock's range and the whole to the milliseconds a span holds, with
+    /// the fraction added last -- where a positive span that wraps negative
+    /// is the overflow. The sign is the caller's to apply.
+    private static bool Combine(bool positive, long days, long hours, long minutes, long seconds, long fraction, int zeroes, out long value) {
+        value = 0;
+        if (days > MaxDays || hours > 23 || minutes > 59 || seconds > 59) { return false; }
+        if (!Fraction(ref fraction, zeroes)) { return false; }
+
+        long milliseconds = (days * 86400 + hours * 3600 + minutes * 60 + seconds) * 1000;
+
+        if (milliseconds > MaxMilliseconds || milliseconds < -MaxMilliseconds) { return false; }
+        long made = milliseconds * TicksPerMillisecond + fraction;
+
+        if (positive && made < 0) { return false; }
+        value = made;
+        return true;
+    }
+
+    /// A FRACTION OF A SECOND as written, made ticks: the digits read as a
+    /// decimal fraction, `zeroes` of them the leading zeros the number lost.
+    /// Fewer than seven digits are scaled up; more are rounded to seven, a
+    /// half away from zero, and kept below a whole second. More than seven
+    /// with no leading zero is refused outright -- .NET's rule, odd as it is.
+    private static bool Fraction(ref long number, int zeroes) {
+        if (number == 0) { return true; }
+        if (zeroes == 0 && number > 9999999) { return false; }
+
+        int digits = zeroes;
+        for (long left = number; left > 0; left = left / 10) { digits = digits + 1; }
+
+        if (digits <= 7) {
+            for (; digits < 7; digits++) { number = number * 10; }
+            return true;
+        }
+
+        double scale = 1.0;
+        for (; digits > 7; digits--) { scale = scale * 10.0; }
+        number = (long)Math.Round((double)number / scale, MidpointRounding.AwayFromZero);
+        if (number > 9999999) { number = 9999999; }
+        return true;
+    }
+
+    // ---- writing one ------------------------------------------------------
 
     /// `[-][d.]hh:mm:ss[.fffffff]`, which is .NET's constant ("c") format and
     /// its default: the day part appears only when there is one, and the
@@ -18124,6 +18815,31 @@ struct TimeSpan : IFormattable {
         StringBuilder made = new StringBuilder();
         Picture(format, made);
         return made.ToString();
+    }
+
+    /// INTO ROOM THE CALLER HAS, as ToString(format) writes it, or nothing and
+    /// false when the room is too small. A format that is none is refused
+    /// whatever the room, as .NET refuses it.
+    public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? formatProvider = null) {
+        string text = ToString(format.ToString(), formatProvider);
+
+        charsWritten = 0;
+        if (text.Length > destination.Length) { return false; }
+        text.AsSpan().CopyTo(destination);
+        charsWritten = text.Length;
+        return true;
+    }
+
+    /// The same as UTF-8, which a picture's quoted text may need more than
+    /// one byte a character of.
+    public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten, ReadOnlySpan<char> format = default, IFormatProvider? formatProvider = null) {
+        byte[] text = Encoding.UTF8.GetBytes(ToString(format.ToString(), formatProvider));
+
+        bytesWritten = 0;
+        if (text.Length > utf8Destination.Length) { return false; }
+        text.AsSpan().CopyTo(utf8Destination);
+        bytesWritten = text.Length;
+        return true;
     }
 
     // THE FIELDS, SIGN APART: whole days, and the time within the last one.
@@ -19475,6 +20191,18 @@ static class DateParts {
     /// Returns where the picture goes on, after the closing quote; there
     /// must be one.
     public static int Quoted(string format, int at, StringBuilder made) {
+        int taken = QuotedText(format, at, made);
+
+        if (taken == 0) { throw BadFormat(); }
+        if (taken < 0) { throw new FormatException(BadQuote(Sys.GetChar(format, at))); }
+        return at + taken;
+    }
+
+    /// THE SAME, ASKED RATHER THAN REFUSED, for a reader: how many characters
+    /// of the picture the quoted text took, both quotes counted; -1 when the
+    /// closing quote never comes, and 0 when a backslash ends the picture
+    /// inside it.
+    public static int QuotedText(string format, int at, StringBuilder made) {
         char quote = Sys.GetChar(format, at);
         int next = at + 1;
 
@@ -19482,16 +20210,16 @@ static class DateParts {
             char c = Sys.GetChar(format, next);
 
             next = next + 1;
-            if (c == quote) { return next; }
+            if (c == quote) { return next - at; }
             if (c == '\\') {
-                if (next >= format.Length) { throw BadFormat(); }
+                if (next >= format.Length) { return 0; }
                 made.Append(Sys.GetChar(format, next));
                 next = next + 1;
             } else {
                 made.Append(c);
             }
         }
-        throw new FormatException(BadQuote(quote));
+        return -1;
     }
 
     /// A RUN OF f's OR F's: the fraction of a second (`fraction`, in ticks)
@@ -23573,6 +24301,15 @@ namespace System.Globalization
         OrdinalIgnoreCase = 0x10000000,
         StringSort = 0x20000000,
         Ordinal = 0x40000000,
+    }
+
+    /// How TimeSpan.ParseExact takes a span its format has no sign for: as
+    /// written, or negated. .NET's flags and their values.
+    [Flags]
+    public enum TimeSpanStyles
+    {
+        None = 0,
+        AssumeNegative = 1,
     }
 
     /// HOW A DATE IS READ, .NET's flags with .NET's values: where white space

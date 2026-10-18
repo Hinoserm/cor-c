@@ -1,0 +1,31 @@
+// test: interpolation_format_escapes
+// expect-exit: 0
+// expect-output:
+// [a\b] [q"r] [A1] [x9y]
+// [a\b] [c:\d] 5
+// 01:30 1:30:00
+//
+// The format in an interpolation hole is text of the string, its escapes
+// read as C# reads them: `{e:a\\b}` formats by `a\b` with one backslash, in
+// a verbatim string `{e:a\b}` is the same, and \", \u0041 and \x39 are a
+// quote, an A and a 9. Passed on raw, TimeSpan's escaped colon was two
+// backslashes and a colon, which no format means.
+
+using System;
+
+class Echo : IFormattable
+{
+    public string ToString(string? format, IFormatProvider? formatProvider) { return "[" + format + "]"; }
+}
+
+static class P
+{
+    static void Main()
+    {
+        Echo e = new Echo();
+        Console.WriteLine($"{e:a\\b} {e:q\"r} {e:\u00411} {e:x\x39y}");
+        Console.WriteLine($@"{e:a\b} {e:c:\d} " + $"{e:a\\b}".Length);
+        TimeSpan span = TimeSpan.FromMinutes(90);
+        Console.WriteLine($"{span:hh\\:mm} {span:g}");
+    }
+}

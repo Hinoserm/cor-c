@@ -1,0 +1,89 @@
+// test: timespan_formats_and_parse_exact
+// expect-exit: 0
+// expect-output:
+// 1.02:03:04.5670000 1:2:03:04.567 1:02:03:04.5670000
+// 02:03:04.567 1.02:03 3 03:04 567 56 00000001 [02]
+// -10675199.02:48:05.4775808 -10675199:2:48:05.4775808 10675199.02:48
+// 02:03 1.02:03:04.5670000|1:2:03:04.567|   -1:02:03:04.5670000|
+// FormatException FormatException FormatException
+// -1.02:03:04.5670000 1 937845670000 937840050060
+// OverflowException OverflowException ArgumentOutOfRangeException
+// 9223372036854775807 -9223372036854775808 10 100 24 86400000000
+// 93784567000 456 700 922337203685477
+// 2 2 -2 4 1875691340000 468922835000 1
+// ArgumentException OverflowException OverflowException
+// 01:30:00 1.02:03:04.0050060 00:00:01.0020030 00:01:30 0 1
+// 3723 True 05:30:00 -37200000000 True -198000000000
+// 937845670000 937845000000 21600000000000 1 OverflowException
+// FormatException FormatException FormatException False
+// 937845000000 -00:00:30 1.02:03:04 FormatException OverflowException
+// 01:02:00 -01:02:00 True 1:2:03:04.567 False 0 True 18
+//
+// TimeSpan as .NET 10 has it: the five- and six-field constructors, unary
+// + and -, MinValue and MaxValue, the unit constants, Microseconds and
+// Nanoseconds, Multiply and Divide rounding to the nearest tick (three ticks
+// times a half is two), the integer From overloads, the "c", "g" and "G"
+// formats and custom pictures (MinValue among them, which has no positive
+// twin), a format in an interpolation hole with its escapes read, and
+// ParseExact and TryParseExact by standard and custom formats, their span
+// overloads, and TryFormat into chars and UTF-8 bytes. Each line is what
+// .NET prints.
+
+using System;
+using System.Globalization;
+
+static class P
+{
+    static string Fails(Func<TimeSpan> f)
+    {
+        try { f(); return "none"; }
+        catch (Exception e) { return e.GetType().Name; }
+    }
+
+    static void Main()
+    {
+        TimeSpan ts = TimeSpan.FromMilliseconds(93784567);
+        Console.WriteLine(ts.ToString("c") + " " + ts.ToString("g") + " " + ts.ToString("G"));
+        Console.WriteLine(ts.ToString(@"hh\:mm\:ss\.fff") + " " + ts.ToString(@"d\.hh\:mm", CultureInfo.InvariantCulture) + " "
+            + ts.ToString("%m") + " " + ts.ToString("mm':'ss") + " " + ts.ToString("FFFFFFF") + " " + ts.ToString("ff") + " "
+            + ts.ToString("dddddddd") + " " + ts.ToString("'['hh']'"));
+        Console.WriteLine(TimeSpan.MinValue + " " + TimeSpan.MinValue.ToString("g") + " " + TimeSpan.MinValue.ToString(@"d\.hh\:mm"));
+        Console.WriteLine($"{ts:hh\\:mm} {ts:c}|" + string.Format("{0:g}|{1,22:G}|", ts, -ts));
+        Console.WriteLine(Fails(() => TimeSpan.Parse(ts.ToString("h"))) + " " + Fails(() => TimeSpan.Parse(ts.ToString("hhh")))
+            + " " + Fails(() => TimeSpan.Parse(ts.ToString("'open"))));
+
+        Console.WriteLine((-ts).ToString() + " " + (+ts).Days + " " + new TimeSpan(1, 2, 3, 4, 567).Ticks + " "
+            + new TimeSpan(1, 2, 3, 4, 5, 6).Ticks);
+        Console.WriteLine(Fails(() => -TimeSpan.MinValue) + " " + Fails(() => TimeSpan.MaxValue + new TimeSpan(1)) + " "
+            + Fails(() => new TimeSpan(int.MaxValue, 0, 0, 0, 0)));
+        Console.WriteLine(TimeSpan.MaxValue.Ticks + " " + TimeSpan.MinValue.Ticks + " " + TimeSpan.TicksPerMicrosecond + " "
+            + TimeSpan.NanosecondsPerTick + " " + TimeSpan.HoursPerDay + " " + TimeSpan.MicrosecondsPerDay);
+        Console.WriteLine(ts.TotalMicroseconds + " " + new TimeSpan(1234567).Microseconds + " " + new TimeSpan(1234567).Nanoseconds
+            + " " + TimeSpan.MaxValue.TotalMilliseconds);
+
+        Console.WriteLine((TimeSpan.FromTicks(3) * 0.5).Ticks + " " + (TimeSpan.FromTicks(5) / 2.0).Ticks + " "
+            + (TimeSpan.FromTicks(-3) * 0.5).Ticks + " " + (0.5 * TimeSpan.FromTicks(7)).Ticks + " " + ts.Multiply(2).Ticks + " "
+            + ts.Divide(2).Ticks + " " + ts.Divide(ts));
+        Console.WriteLine(Fails(() => ts * double.NaN) + " " + Fails(() => ts / 0.0) + " " + Fails(() => TimeSpan.FromSeconds(1e300)));
+        Console.WriteLine(TimeSpan.FromHours(1, 30) + " " + TimeSpan.FromDays(1, 2, 3, 4, 5, 6) + " " + TimeSpan.FromSeconds(1, 2, 3) + " "
+            + TimeSpan.FromSeconds(90L) + " " + TimeSpan.FromMinutes(1000000000000000, -60000000000000000).Ticks + " "
+            + TimeSpan.FromMicroseconds(0.15).Ticks);
+
+        Console.WriteLine(TimeSpan.ParseExact("01:02:03", @"hh\:mm\:ss", CultureInfo.InvariantCulture).TotalSeconds + " "
+            + TimeSpan.TryParseExact("5:30", @"h\:mm", null, out TimeSpan r) + " " + r + " "
+            + TimeSpan.ParseExact("01:02", @"hh\:mm", null, TimeSpanStyles.AssumeNegative).Ticks + " "
+            + TimeSpan.TryParseExact("5:30", new[] { @"hh\:mm", @"h\:mm" }, null, TimeSpanStyles.AssumeNegative, out TimeSpan m) + " " + m.Ticks);
+        Console.WriteLine(TimeSpan.ParseExact("1.02:03:04.567", "c", null).Ticks + " "
+            + TimeSpan.ParseExact("1.02:03:04.5", @"d\.hh\:mm\:ss\.FFF", null).Ticks + " " + TimeSpan.ParseExact("25:00:00", "g", null).Ticks
+            + " " + TimeSpan.ParseExact("1:2:03:04.567", "G", null).Days + " " + Fails(() => TimeSpan.ParseExact("24:00", @"hh\:mm", null)));
+        Console.WriteLine(Fails(() => TimeSpan.ParseExact("5:3", @"h\:mm", null)) + " " + Fails(() => TimeSpan.ParseExact("5:30", "G", null))
+            + " " + Fails(() => TimeSpan.ParseExact("5", "x", null)) + " " + TimeSpan.TryParseExact("x", "F'x'", null, out TimeSpan q));
+        Console.WriteLine(TimeSpan.Parse("1.02:03:04.5").Ticks + " " + TimeSpan.Parse("-00:00:30") + " " + TimeSpan.Parse("1:02:03:04")
+            + " " + Fails(() => TimeSpan.Parse("+1:00")) + " " + Fails(() => TimeSpan.Parse("25:00")));
+        Span<char> room = stackalloc char[24];
+        Span<byte> bytes = stackalloc byte[24];
+        Console.WriteLine(TimeSpan.Parse("1:02".AsSpan()) + " " + TimeSpan.ParseExact("1:02".AsSpan(), @"h\:mm".AsSpan(), null, TimeSpanStyles.AssumeNegative)
+            + " " + ts.TryFormat(room, out int written, "g") + " " + room.Slice(0, written).ToString() + " " + ts.TryFormat(room.Slice(0, 5), out written)
+            + " " + written + " " + ts.TryFormat(bytes, out written) + " " + written);
+    }
+}
