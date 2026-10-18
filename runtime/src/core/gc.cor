@@ -15445,6 +15445,13 @@ static class GcThreads
 
     public static long Answered, AnsweredFor;
 
+    /// WHETHER A ROUND IS OPEN, for the polls a loop's back edge makes
+    /// (BackEdgePolls): non-zero from before the round's epoch is published
+    /// until every thread has answered it. A loop that allocates nothing and
+    /// never blocks reads only this word a lap, and calls Runtime.Poll when it
+    /// is set.
+    public static nint Asking;
+
     /// Prompts sent while waiting for a round (Platform.PromptStop), over
     /// all rounds.
     public static long Prompts;
@@ -15514,6 +15521,7 @@ static class GcThreads
 
         Sys.AtomicSwap(ctl + GcLock.Request, request);
         Sys.AtomicSwap(ctl + GcLock.Pending, owed);
+        Asking = 1;
         // Last: a thread that sees the new round sees what it asks and how
         // many owe it.
         Sys.AtomicSwap(ctl + GcLock.Epoch, epoch);
@@ -15543,6 +15551,7 @@ static class GcThreads
 
             if (Pending() <= 0)
             {
+                Asking = 0;
                 return;
             }
 
@@ -15550,6 +15559,7 @@ static class GcThreads
 
             if (Pending() <= 0)
             {
+                Asking = 0;
                 return;
             }
 
@@ -15873,7 +15883,12 @@ static class GcThreads
         // replaced finds its base new and its pointer old, and would write
         // down objects that are not there. The thread answers at its next
         // safepoint instead; the collector asks again.
-        if (!Owes(block) || Sys.Peek(block + Tls.InAlloc) != 0 || GcLock.HeldByMe())
+        // NOR FROM A THREAD NOT RUNNING: one gone from the table on its way
+        // out (Runtime.EndThread) still runs a few loops -- its foreground
+        // count's lock -- whose back edges poll (BackEdgePolls), and an
+        // answer for it would scan a stack the collector no longer counts.
+        if (!Owes(block) || Sys.Peek(block + Tls.InAlloc) != 0 || GcLock.HeldByMe()
+            || Sys.Peek(block + Tls.State) != Running)
         {
             return;
         }

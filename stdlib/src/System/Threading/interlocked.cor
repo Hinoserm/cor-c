@@ -390,11 +390,11 @@ public static class Interlocked
     /// Every load and store before this is done before any after it.
     public static void MemoryBarrier() { Sys.Fence(); }
 
-    /// The same for every thread of the process at once. One process's
-    /// threads are this image's, and a fence here orders what each of them
-    /// sees of this one's stores, as .NET's FlushProcessWriteBuffers makes
-    /// sure of on x86.
-    public static void MemoryBarrierProcessWide() { Sys.Fence(); }
+    /// The same for every thread of the process at once, as .NET's
+    /// FlushProcessWriteBuffers: every other processor running one of them
+    /// interrupted and serialised (Platform.ProcessWideBarrier), not only
+    /// this one -- a fence here orders this processor's own accesses alone.
+    public static void MemoryBarrierProcessWide() { Platform.ProcessWideBarrier(); }
 }
 
 /// System.Threading.Volatile: a read no later read is moved before, a write no

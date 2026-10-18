@@ -1035,6 +1035,11 @@ public static class Driver
         // is no operating system to keep an arena, nor under --no-regions; a
         // link making the unit again asks the same (IrUnitCodec.Settings.Regions).
         bool regions = !freestanding && !args.Contains("--no-regions");
+        // Loops that may not end by themselves poll for the collector at
+        // their back edges where threads run under an operating system and a
+        // collector may run (BackEdgePolls); a kernel interrupts its
+        // processors instead.
+        module.SafepointPolls = !freestanding && !module.NoCollector;
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
             && sharedLibs.Count == 0 && (moduleUnit || !(shared || args.Contains("--pic")));
         if (!args.Contains("--no-opt"))
@@ -1052,7 +1057,7 @@ public static class Driver
                 linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
                     !args.Contains("--no-stackmaps"),
                     new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
-                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit, Regions: regions));
+                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit, Regions: regions, Polls: m.SafepointPolls));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 regionHintBytes = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
@@ -1182,6 +1187,10 @@ public static class Driver
             // before the late passes, or no IR in the object, nothing below
             // reads a function's body once Generate has placed it.
             ReleaseBodies = linkRecords is not null || !(args.Contains("--obj") || library),
+            // A closed image that needs no heap has no collector to answer, and
+            // one whose inliner let Runtime.Poll go has none either.
+            SafepointPolls = module.SafepointPolls && (!module.ClosedImage
+                || module.NeedsHeap && module.Functions.Any(f => f.Name == Corsac.Lang.Opt.BackEdgePolls.Poll)),
         };
         foreach (string symbol in imported)
         {
@@ -1192,6 +1201,7 @@ public static class Driver
             PositionIndependent = x86Backend.PositionIndependent,
             Workers = workers,
             EmitLinkSummary = x86Backend.EmitLinkSummary,
+            SafepointPolls = x86Backend.SafepointPolls,
         };
         foreach (string symbol in imported)
         {

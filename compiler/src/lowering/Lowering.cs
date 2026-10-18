@@ -570,7 +570,11 @@ public sealed partial class Lowering
                                                            // (IrLinkOptimizer.DefineFieldSites): without their bodies here
                                                            // a program compiled to an object and linked on its own
                                                            // stopped with "Field sites need Runtime.KeepField".
-                                                           ("FreeField", 2), ("KeepField", 2) })
+                                                           ("FreeField", 2), ("KeepField", 2),
+                                                           // The safepoint a loop's back edge calls, written by the
+                                                           // backend (BackEdgePolls); the inliner keeps it only where
+                                                           // the collector stays.
+                                                           ("Poll", 0) })
                 if (RuntimeMethod(helper, arity) is MethodSymbol provided) Require(provided);
         }
 

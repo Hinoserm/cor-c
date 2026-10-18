@@ -172,7 +172,7 @@ static class Clock
 /// EBP, so a child that simply "returned" from the function holding the system
 /// call would run that function's epilogue against the PARENT's frame and
 /// return onto the parent's stack: two threads on one stack. Every libc solves
-/// this in assembler, and so does this: sixty bytes written into an executable
+/// this in assembler, and so does this: eighty bytes written into an executable
 /// page, called through Sys.Call5, which after the call puts the child on its
 /// own stack with a zero frame pointer and jumps to a real function.
 static class Native
@@ -182,6 +182,12 @@ static class Native
     const long Futex = Call.Futex;      // (uaddr, op, val, timeout, uaddr2, val3)
     const long GetTid = Call.Gettid;    // () -> the caller's thread id
     const long Exit = Call.Exit;        // (status): THIS thread only
+    const long Munmap = Call.Munmap;    // (addr, len)
+
+    /// WHERE A THREAD'S MAPPING SAYS HOW LONG IT IS, for the trampoline to give
+    /// it back as the thread ends: the last word of the block's page, which
+    /// the block (Tls.Bytes) never reaches and the guard page follows.
+    public const long UnmapLengthAt = 4096 - 8;
 
     const long ProtReadWrite = 3;
     const long ProtReadWriteExec = 7;
@@ -296,7 +302,7 @@ static class Native
         at = Byte(at, 0xB8); at = Immediate(at, Clone);                                       // mov eax,56
         at = Byte(at, 0x0F); at = Byte(at, 0x05);                                             // syscall
         at = Byte(at, 0x48); at = Byte(at, 0x85); at = Byte(at, 0xC0);                        // test rax,rax
-        at = Byte(at, 0x75); at = Byte(at, 0x11);                                             // jnz parent (+17)
+        at = Byte(at, 0x75); at = Byte(at, 0x27);                                             // jnz parent (+39)
 
         // The child, on its own stack: [rsp] is the argument, [rsp+8] the
         // entry. Popping both leaves RSP at the sixteen-aligned top, so the
@@ -305,6 +311,16 @@ static class Native
         at = Byte(at, 0x5F);                                                                  // pop rdi  (argument)
         at = Byte(at, 0x58);                                                                  // pop rax  (entry)
         at = Byte(at, 0xFF); at = Byte(at, 0xD0);                                             // call rax
+        // ITS OWN MAPPING GIVEN BACK, by registers alone: the entry answers
+        // the mapping's start or 0 (Thread.ChildEntry), its length in the
+        // block's page (UnmapLengthAt), every signal already blocked.
+        at = Byte(at, 0x48); at = Byte(at, 0x85); at = Byte(at, 0xC0);                        // test rax,rax
+        at = Byte(at, 0x74); at = Byte(at, 0x11);                                             // jz exit (+17)
+        at = Byte(at, 0x48); at = Byte(at, 0x89); at = Byte(at, 0xC7);                        // mov rdi,rax
+        at = Byte(at, 0x48); at = Byte(at, 0x8B); at = Byte(at, 0xB0); at = Immediate(at, UnmapLengthAt); // mov rsi,[rax+UnmapLengthAt]
+        at = Byte(at, 0xB8); at = Immediate(at, Munmap);                                      // mov eax,11
+        at = Byte(at, 0x0F); at = Byte(at, 0x05);                                             // syscall
+        // exit:
         at = Byte(at, 0x31); at = Byte(at, 0xFF);                                             // xor edi,edi
         at = Byte(at, 0xB8); at = Immediate(at, Exit);                                        // mov eax,60
         at = Byte(at, 0x0F); at = Byte(at, 0x05);                                             // syscall
@@ -325,7 +341,7 @@ static class Native
         at = Byte(at, 0xB8); at = Immediate(at, Clone);                                       // mov eax,120
         at = Byte(at, 0xCD); at = Byte(at, 0x80);                                             // int 0x80
         at = Byte(at, 0x85); at = Byte(at, 0xC0);                                             // test eax,eax
-        at = Byte(at, 0x75); at = Byte(at, 0x15);                                             // jnz parent (+21)
+        at = Byte(at, 0x75); at = Byte(at, 0x28);                                             // jnz parent (+40)
 
         // The child, on its own stack: [esp] is the argument, [esp+4] the entry.
         at = Byte(at, 0x31); at = Byte(at, 0xED);                                             // xor ebp,ebp
@@ -334,6 +350,14 @@ static class Native
         at = Byte(at, 0x50);                                                                  // push eax
         at = Byte(at, 0xFF); at = Byte(at, 0xD2);                                             // call edx
         at = Byte(at, 0x83); at = Byte(at, 0xC4); at = Byte(at, 0x04);                        // add esp,4
+        // Its own mapping given back by registers alone, as above.
+        at = Byte(at, 0x85); at = Byte(at, 0xC0);                                             // test eax,eax
+        at = Byte(at, 0x74); at = Byte(at, 0x0F);                                             // jz exit (+15)
+        at = Byte(at, 0x89); at = Byte(at, 0xC3);                                             // mov ebx,eax
+        at = Byte(at, 0x8B); at = Byte(at, 0x88); at = Immediate(at, UnmapLengthAt);          // mov ecx,[eax+UnmapLengthAt]
+        at = Byte(at, 0xB8); at = Immediate(at, Munmap);                                      // mov eax,91
+        at = Byte(at, 0xCD); at = Byte(at, 0x80);                                             // int 0x80
+        // exit:
         at = Byte(at, 0x31); at = Byte(at, 0xDB);                                             // xor ebx,ebx
         at = Byte(at, 0xB8); at = Immediate(at, Exit);                                        // mov eax,1
         at = Byte(at, 0xCD); at = Byte(at, 0x80);                                             // int 0x80
@@ -352,7 +376,8 @@ static class Native
     /// out of the collector's way entirely. One pair for the whole process:
     /// only the parent reads them, and only before the clone, so a lock around
     /// a launch is all they need.
-    const long ParameterOffset = 64;
+    // Past the code, which is some eighty bytes.
+    const long ParameterOffset = 128;
 
     static AtomicCell? _launching;
 
@@ -906,6 +931,11 @@ class Thread
 
     static Thread?[] _all = new Thread?[64];
     static int _slots;
+    // SLOTS GIVEN BACK by threads that ended (Unregister), taken again
+    // before the table grows: a slot a thread, for ever, kept every Thread
+    // the program started, its body and what that captured.
+    static int[] _freed = new int[16];
+    static int _freedCount;
     static AtomicCell? _registry;
 
     static AtomicCell Registry()
@@ -927,6 +957,15 @@ class Thread
 
         gate.Enter();
 
+        if (_freedCount > 0)
+        {
+            _freedCount = _freedCount - 1;
+            int again = _freed[_freedCount];
+            _all[again] = t;
+            gate.Exit();
+            return again;
+        }
+
         if (_slots == _all.Length)
         {
             Thread?[] bigger = new Thread?[_all.Length * 2];
@@ -945,6 +984,25 @@ class Thread
 
         gate.Exit();
         return slot;
+    }
+
+    /// A thread's slot given back as it ends, still a thread the collector
+    /// counts (before Runtime.EndThread): nothing reads the slot after its
+    /// entry has, and the Thread is then only what its joiners hold.
+    static void Unregister(int slot)
+    {
+        AtomicCell gate = Registry();
+        gate.Enter();
+        if (_freedCount == _freed.Length)
+        {
+            int[] bigger = new int[_freed.Length * 2];
+            for (int i = 0; i < _freedCount; i++) bigger[i] = _freed[i];
+            _freed = bigger;
+        }
+        _all[slot] = null;
+        _freed[_freedCount] = slot;
+        _freedCount = _freedCount + 1;
+        gate.Exit();
     }
 
     // ---- starting and joining -----------------------------------------------
@@ -1140,14 +1198,28 @@ class Thread
     /// Where a new thread begins, on its own stack with no frame above it. It
     /// takes a slot rather than a reference because a machine word is all
     /// clone(2) can carry.
-    static void ChildEntry(long slot)
+    ///
+    /// AND ANSWERS ITS MAPPING for the trampoline to give back once it is off
+    /// it (UnmapLengthAt), or 0: read from the block's page, which is not the
+    /// collector's -- the thread is none of the collector's by now, and the
+    /// Thread may already be gone with it. Every signal is blocked first, so
+    /// no handler runs on a stack about to go.
+    static long ChildEntry(long slot)
     {
         Thread? t = _all[(int)slot];
 
-        if (t != null)
+        if (t == null)
         {
-            t.Begin();
+            return 0;
         }
+        t.Begin();
+        long block = Sys.ThreadBlock();
+        if (Sys.Peek(block + Native.UnmapLengthAt) == 0)
+        {
+            return 0;
+        }
+        Platform.QuietWorker();
+        return block;
     }
 
     /// The first thing a new thread does. Until SetThreadBlock returns, GS
@@ -1194,16 +1266,24 @@ class Thread
             System.Threading.Mutex.AbandonHeld(this);
         }
 
+        // Its slot back, and its mapping's length where the trampoline will
+        // read it: the mapping is the block's own (Launch), and a thread the C
+        // library made has none of its own to give back (_stack 0).
+        Unregister(_slot);
+        if (_stack != 0)
+        {
+            Sys.Poke(_block + Native.UnmapLengthAt, _stackBytes);
+        }
+
         // The stack under this thread stops being a stack the collector may
         // read before the thread stops standing on it.
         Runtime.EndThread();
         Finish();
     }
 
-    /// Marks the thread finished and wakes everyone in Join. The stack is NOT
-    /// returned to the kernel: the thread is still standing on it until the
-    /// exit(2) in the trampoline retires. One mapping per thread leaks, which
-    /// is what a pool of long-lived workers wants anyway.
+    /// Marks the thread finished and wakes everyone in Join. The stack is
+    /// returned to the kernel by the trampoline once the thread is off it,
+    /// just before its exit(2) (ChildEntry).
     void Finish()
     {
         long at = Atom.At(this, Atom.FirstWord);
@@ -1232,7 +1312,7 @@ class Thread
     public bool Join(int millisecondsTimeout)
     {
         if (millisecondsTimeout == -1) { Join(); return true; }
-        if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout", "Number must be either non-negative and less than or equal to Int32.MaxValue or -1.");
         if (_id == 0) throw new ThreadStateException("Thread has not been started.");
         long at = Atom.At(this, Atom.FirstWord);
         long until = Clock.Now() + (long)millisecondsTimeout * 1000000;
@@ -1245,7 +1325,7 @@ class Thread
         return true;
     }
 
-    public bool Join(TimeSpan timeout) { return Join((int)timeout.TotalMilliseconds); }
+    public bool Join(TimeSpan timeout) { return Join(Timeouts.Guarded(timeout)); }
 
     /// Stops this thread for `milliseconds`, leaving the processor to others.
     /// .NET's rules: -1 for ever, less refused, 0 the processor given up to
@@ -1253,10 +1333,7 @@ class Thread
     /// signal wakes the thread early.
     public static void Sleep(int millisecondsTimeout)
     {
-        if (millisecondsTimeout < -1)
-        {
-            throw new ArgumentOutOfRangeException("millisecondsTimeout", "Number must be either non-negative and less than or equal to Int32.MaxValue or -1.");
-        }
+        ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
         if (millisecondsTimeout == 0)
         {
             Yield();
@@ -1272,7 +1349,7 @@ class Thread
 
     public static void Sleep(TimeSpan timeout)
     {
-        Sleep(Timeouts.Milliseconds(timeout, "timeout"));
+        Sleep(Timeouts.Guarded(timeout));
     }
 
     /// Gives the processor up to any other thread ready to run on it
@@ -3087,12 +3164,12 @@ public class ManualResetEventSlim : IDisposable
         while (Sys.PeekWord(at) == 0) Native.Wait(at, 0);
     }
 
-    public bool Wait(TimeSpan timeout) => Wait(Timeouts.Milliseconds(timeout, "timeout"));
+    public bool Wait(TimeSpan timeout) => Wait(Timeouts.Guarded(timeout));
 
     /// True once set; false when `millisecondsTimeout` passes first (-1: never).
     public bool Wait(int millisecondsTimeout)
     {
-        if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
         if (millisecondsTimeout == -1) { Wait(); return true; }
         long at = Atom.At(this, Atom.FirstWord);
         // Timed by the runtime's own clock, as Thread.Join's: Stopwatch is a

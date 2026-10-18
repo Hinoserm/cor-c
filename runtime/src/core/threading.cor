@@ -985,24 +985,41 @@ class Task
         return t;
     }
 
-    /// A task that completes after `milliseconds`. Zero is already complete;
-    /// -1 never completes (Timeout.Infinite).
-    public static Task Delay(int milliseconds)
+    /// A task that completes after `millisecondsDelay`. Zero is already
+    /// complete; -1 never completes (Timeout.Infinite).
+    public static Task Delay(int millisecondsDelay)
     {
-        return DelayCore(milliseconds, CancellationToken.None);
+        return Delay(millisecondsDelay, CancellationToken.None);
     }
 
-    public static Task Delay(int milliseconds, CancellationToken cancellationToken)
+    public static Task Delay(int millisecondsDelay, CancellationToken cancellationToken)
     {
+        if (millisecondsDelay < -1)
+        {
+            throw new ArgumentOutOfRangeException("millisecondsDelay", "The value needs to be either -1 (signifying an infinite timeout), 0 or a positive integer.");
+        }
+        return DelayCore(millisecondsDelay, cancellationToken);
+    }
+
+    /// The same for a TimeSpan, in whole milliseconds, as .NET's: up to the
+    /// longest a timer runs (0xFFFFFFFE milliseconds, some 49.7 days).
+    public static Task Delay(TimeSpan delay)
+    {
+        return Delay(delay, CancellationToken.None);
+    }
+
+    public static Task Delay(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        long milliseconds = (long)delay.TotalMilliseconds;
+        if (milliseconds < -1 || milliseconds > 0xFFFFFFFEL)
+        {
+            throw new ArgumentOutOfRangeException("delay", "The value needs to translate in milliseconds to -1 (signifying an infinite timeout), 0, or a positive integer less than or equal to the maximum allowed timer duration.");
+        }
         return DelayCore(milliseconds, cancellationToken);
     }
 
-    static Task DelayCore(int milliseconds, CancellationToken token)
+    static Task DelayCore(long milliseconds, CancellationToken token)
     {
-        if (milliseconds < -1)
-        {
-            throw new ArgumentOutOfRangeException("milliseconds", "The value needs to be either -1 (signifying an infinite timeout), 0, or a positive integer.");
-        }
         if (token.IsCancellationRequested)
         {
             Task canceled = new Task();
@@ -1019,7 +1036,7 @@ class Task
 
         if (milliseconds > 0)
         {
-            done.Timer = Scheduler.AddTimer(milliseconds, done);
+            done.Timer = Scheduler.AddTimerAt(Clock.Now() + milliseconds * 1000000, done);
         }
         if (token.CanBeCanceled)
         {
@@ -1102,7 +1119,7 @@ class Task
         {
             if (tasks[i] == null)
             {
-                throw new ArgumentException("The tasks argument included a null value.");
+                throw new ArgumentException("The tasks argument included a null value.", "tasks");
             }
         }
         return WhenAllOf(tasks, true);
@@ -1233,7 +1250,7 @@ class Task
         {
             if (tasks[i] == null)
             {
-                throw new ArgumentException("The tasks argument included a null value.");
+                throw new ArgumentException("The tasks argument included a null value.", "tasks");
             }
             plain[i] = tasks[i];
         }
@@ -2036,7 +2053,7 @@ class TaskStart
     nint _claim;
     nint _pad;
     Task _task;
-    CancellationTokenRegistration? _registration;
+    CancellationTokenRegistration _registration;
     CancellationToken _token;
 
     TaskStart(Task task, CancellationToken token)
@@ -2071,12 +2088,9 @@ class TaskStart
     public bool Begin()
     {
         bool mine = Sys.Cas(Atom.At(this, Atom.FirstWord), 0, 1) == 0;
-        CancellationTokenRegistration? registration = _registration;
-        _registration = null;
-        if (registration != null)
-        {
-            registration.Dispose();
-        }
+        CancellationTokenRegistration registration = _registration;
+        _registration = default(CancellationTokenRegistration);
+        registration.Dispose();
         return mine;
     }
 }
@@ -2872,7 +2886,7 @@ class DelayCompletion : Action
 {
     Task _task;
     public TimerEntry? Timer;
-    public CancellationTokenRegistration? Registration;
+    public CancellationTokenRegistration Registration;
     public CancellationToken Token;
 
     public DelayCompletion(Task task)
@@ -2885,12 +2899,7 @@ class DelayCompletion : Action
     {
         if (_task.TrySetResult())
         {
-            CancellationTokenRegistration? r = Registration;
-
-            if (r != null)
-            {
-                r.Dispose();
-            }
+            Registration.Dispose();
         }
     }
 
@@ -3052,7 +3061,7 @@ class WaitAsyncRace : Action
     Task _source;
     Task _result;
     TimerEntry? _timer;
-    CancellationTokenRegistration? _registration;
+    CancellationTokenRegistration _registration;
     CancellationToken _token;
 
     public WaitAsyncRace(Task source, Task result)
@@ -3105,11 +3114,7 @@ class WaitAsyncRace : Action
         {
             timer.Cancel();
         }
-        CancellationTokenRegistration? registration = _registration;
-        if (registration != null)
-        {
-            registration.Dispose();
-        }
+        _registration.Dispose();
     }
 }
 
@@ -3409,36 +3414,82 @@ class CancellationTokenSource : IDisposable
 
     /// Most recent first; what they throw as one AggregateException after
     /// all have run, or the first at once when `throwOnFirstException`.
-    static void RunCallbacks(List<Action> callbacks, bool throwOnFirstException)
+    ///
+    /// WHICH ONE IS RUNNING, AND WHERE, is kept under the lock (_running,
+    /// _runningAt, _runningOn), as .NET's registrations ask it: one disposed
+    /// before the run comes to it is taken out of the run (Unregister), and
+    /// one disposed while another thread runs it waits for it to return --
+    /// "dispose the registration, then free what the callback uses" is safe.
+    void RunCallbacks(List<Action> callbacks, bool throwOnFirstException)
     {
-        if (throwOnFirstException)
+        long lockAt = Atom.At(this, Atom.SecondWord);
+        List<Exception>? thrown = null;
+        Atom.Enter(lockAt);
+        _running = callbacks;
+        _runningOn = Sys.ThreadBlock();
+        Atom.Exit(lockAt);
+        try
         {
             for (int i = callbacks.Count - 1; i >= 0; i--)
             {
-                callbacks[i].Invoke();
+                Atom.Enter(lockAt);
+                _runningAt = i;
+                Action next = callbacks[i];
+                Atom.Exit(lockAt);
+                if (throwOnFirstException)
+                {
+                    next.Invoke();
+                    continue;
+                }
+                try
+                {
+                    next.Invoke();
+                }
+                catch (Exception e)
+                {
+                    thrown ??= new List<Exception>();
+                    thrown.Add(e);
+                }
             }
-            return;
         }
-
-        List<Exception>? thrown = null;
-
-        for (int i = callbacks.Count - 1; i >= 0; i--)
+        finally
         {
-            try
-            {
-                callbacks[i].Invoke();
-            }
-            catch (Exception e)
-            {
-                thrown ??= new List<Exception>();
-                thrown.Add(e);
-            }
+            Atom.Enter(lockAt);
+            _running = null;
+            _runningAt = -1;
+            Atom.Exit(lockAt);
         }
 
         if (thrown != null)
         {
             throw new System.AggregateException(thrown);
         }
+    }
+
+    // The callbacks a cancellation is running, the one it is at, and the
+    // thread running them (RunCallbacks).
+    List<Action>? _running;
+    int _runningAt = -1;
+    long _runningOn;
+
+    /// What a callback taken out of a run in progress is: nothing.
+    sealed class Skipped : Action
+    {
+        public static readonly Skipped Instance = new();
+        public void Invoke() { }
+    }
+
+    /// Whether another thread is running `callback` now: what a disposed
+    /// registration waits out (CancellationTokenRegistration.Dispose).
+    internal bool RunningElsewhere(Action callback)
+    {
+        long lockAt = Atom.At(this, Atom.SecondWord);
+        Atom.Enter(lockAt);
+        List<Action>? run = _running;
+        bool there = run != null && _runningAt >= 0 && _runningAt < run.Count
+            && (object)run[_runningAt] == (object)callback && _runningOn != Sys.ThreadBlock();
+        Atom.Exit(lockAt);
+        return there;
     }
 
     public void CancelAfter(int millisecondsDelay)
@@ -3520,20 +3571,38 @@ class CancellationTokenSource : IDisposable
         return new CancellationTokenRegistration(this, callback);
     }
 
-    public void Unregister(Action callback)
+    /// `callback` taken out: of those waiting for a cancellation, or of a
+    /// cancellation's run that has not come to it yet. True when it will
+    /// not run, as .NET's Unregister answers.
+    public bool Unregister(Action callback)
     {
         long lockAt = Atom.At(this, Atom.SecondWord);
 
         Atom.Enter(lockAt);
 
+        bool removed = false;
         List<Action>? callbacks = _callbacks;
 
         if (callbacks != null)
         {
-            callbacks.Remove(callback);
+            removed = callbacks.Remove(callback);
+        }
+        else if (_running is { } run)
+        {
+            // Run from the last down: those below the one it is at are yet to come.
+            for (int j = _runningAt - 1; j >= 0; j--)
+            {
+                if ((object)run[j] == (object)callback)
+                {
+                    run[j] = Skipped.Instance;
+                    removed = true;
+                    break;
+                }
+            }
         }
 
         Atom.Exit(lockAt);
+        return removed;
     }
 
     static CancellationTokenSource? _canceledSource;
@@ -3576,6 +3645,10 @@ class CancellationTokenSource : IDisposable
         if (tokens == null)
         {
             throw new ArgumentNullException("tokens");
+        }
+        if (tokens.Length == 0)
+        {
+            throw new ArgumentException("No tokens were supplied.");
         }
         CancellationTokenSource linked = new CancellationTokenSource();
         for (int i = 0; i < tokens.Length; i++)
@@ -3682,12 +3755,17 @@ struct CancellationToken
     public static bool operator !=(CancellationToken left, CancellationToken right) { return !left.Equals(right); }
 }
 
-/// What Register hands back; Dispose removes the callback. A class here
-/// (a struct in .NET) so that "no registration" is simply null.
-class CancellationTokenRegistration : IDisposable
+/// What Register hands back; Dispose removes the callback. A readonly
+/// struct, as .NET's: `default` is no registration, and its Dispose does
+/// nothing. Every copy names the same callback, and taking it out twice is
+/// taking it out once. Dispose returns once the callback cannot run: taken
+/// out before it did, or, where another thread is running it now, once it
+/// has returned -- not when this thread is the one running it, which would
+/// wait for itself.
+readonly struct CancellationTokenRegistration : IDisposable, IAsyncDisposable, IEquatable<CancellationTokenRegistration>
 {
-    CancellationTokenSource? _source;
-    Action _callback;
+    readonly CancellationTokenSource? _source;
+    readonly Action? _callback;
 
     public CancellationTokenRegistration(CancellationTokenSource? source, Action callback)
     {
@@ -3695,29 +3773,47 @@ class CancellationTokenRegistration : IDisposable
         _callback = callback;
     }
 
+    /// The token the callback was registered with.
+    public CancellationToken Token => _source == null ? default(CancellationToken) : _source.Token;
+
     public void Dispose()
     {
         CancellationTokenSource? s = _source;
+        Action? callback = _callback;
 
-        if (s != null)
+        if (s == null || callback == null)
         {
-            s.Unregister(_callback);
-            _source = null;
+            return;
+        }
+        s.Unregister(callback);
+        long turns = 0;
+        while (s.RunningElsewhere(callback))
+        {
+            Atom.Turn(ref turns);
         }
     }
 
+    public System.Threading.Tasks.ValueTask DisposeAsync()
+    {
+        Dispose();
+        return default(System.Threading.Tasks.ValueTask);
+    }
+
+    /// True when the callback was taken out before it could run; false when
+    /// it has run, is running, or was never registered. Waits for nothing.
     public bool Unregister()
     {
         CancellationTokenSource? s = _source;
+        Action? callback = _callback;
 
-        if (s == null)
-        {
-            return false;
-        }
-        s.Unregister(_callback);
-        _source = null;
-        return true;
+        return s != null && callback != null && s.Unregister(callback);
     }
+
+    public bool Equals(CancellationTokenRegistration other) { return (object?)_source == (object?)other._source && (object?)_callback == (object?)other._callback; }
+    public override bool Equals(object? obj) { return obj is CancellationTokenRegistration other && Equals(other); }
+    public override int GetHashCode() { return (_source == null ? 0 : _source.GetHashCode()) ^ (_callback == null ? 0 : _callback.GetHashCode()); }
+    public static bool operator ==(CancellationTokenRegistration left, CancellationTokenRegistration right) { return left.Equals(right); }
+    public static bool operator !=(CancellationTokenRegistration left, CancellationTokenRegistration right) { return !left.Equals(right); }
 }
 
 // ---- the scheduler -----------------------------------------------------------
@@ -4715,11 +4811,14 @@ static class Monitor
             throw new InvalidOperationException("deadlock: the lock is held by the code waiting for this work to run");
     }
 
+    // NULL REFUSED UNNAMED by Enter, TryEnter and Exit, as .NET 10's are
+    // (ArgumentNullException's "Value cannot be null." and no parameter);
+    // Wait, Pulse and IsEntered name `obj`.
     public static void Enter(object obj)
     {
         if (obj == null)
         {
-            throw new ArgumentNullException("obj");
+            throw new ArgumentNullException();
         }
         long word = Sys.SyncWord(obj);
         long me = Owner();
@@ -4775,12 +4874,12 @@ static class Monitor
 
     public static bool TryEnter(object obj, TimeSpan timeout)
     {
-        return TryEnter(obj, Timeouts.Milliseconds(timeout, "timeout"));
+        return TryEnter(obj, Timeouts.Guarded(timeout));
     }
 
     public static void TryEnter(object obj, TimeSpan timeout, ref bool lockTaken)
     {
-        TryEnter(obj, Timeouts.Milliseconds(timeout, "timeout"), ref lockTaken);
+        TryEnter(obj, Timeouts.Guarded(timeout), ref lockTaken);
     }
 
     public static void TryEnter(object obj, int millisecondsTimeout, ref bool lockTaken)
@@ -4798,12 +4897,11 @@ static class Monitor
     {
         if (obj == null)
         {
-            throw new ArgumentNullException("obj");
+            throw new ArgumentNullException();
         }
-        if (millisecondsTimeout < -1)
-        {
-            throw new ArgumentOutOfRangeException("millisecondsTimeout");
-        }
+        // The guard's words with no name in them, as .NET 10's: " ('-2') must
+        // be greater than or equal to '-1'."
+        ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, null);
         if (millisecondsTimeout == -1)
         {
             Enter(obj);
@@ -4862,7 +4960,7 @@ static class Monitor
     {
         if (obj == null)
         {
-            throw new ArgumentNullException("obj");
+            throw new ArgumentNullException();
         }
         long word = Sys.SyncWord(obj);
         long me = Owner();
@@ -5011,7 +5109,7 @@ static class Monitor
 
     public static bool Wait(object obj, TimeSpan timeout)
     {
-        return Wait(obj, Timeouts.Milliseconds(timeout, "timeout"));
+        return Wait(obj, Timeouts.Guarded(timeout));
     }
 
     public static bool Wait(object obj, int millisecondsTimeout, bool exitContext)
@@ -5031,10 +5129,7 @@ static class Monitor
         {
             throw new ArgumentNullException("obj");
         }
-        if (millisecondsTimeout < -1)
-        {
-            throw new ArgumentOutOfRangeException("millisecondsTimeout");
-        }
+        ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
         long word = Sys.SyncWord(obj);
         long me = Owner();
 
@@ -5107,6 +5202,10 @@ static class Monitor
 
     static void Signal(object obj, bool all)
     {
+        if (obj == null)
+        {
+            throw new ArgumentNullException("obj");
+        }
         if (obj == null)
         {
             throw new ArgumentNullException("obj");
@@ -5184,6 +5283,18 @@ class MonitorWaiter
 /// infinite, and anything else negative or past int.MaxValue refused.
 static class Timeouts
 {
+    /// Monitor's, a wait handle's and Thread's: the range guards' own words,
+    /// the timeout in whole milliseconds -- "timeout ('-2') must be greater
+    /// than or equal to '-1'.", or less than or equal to int.MaxValue -- as
+    /// .NET 10's. Task's, a cancellation's and WaitAll's use Milliseconds.
+    public static int Guarded(TimeSpan timeout)
+    {
+        long ms = (long)timeout.TotalMilliseconds;
+        ArgumentOutOfRangeException.ThrowIfLessThan(ms, -1, "timeout");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(ms, int.MaxValue, "timeout");
+        return (int)ms;
+    }
+
     public static int Milliseconds(TimeSpan timeout, string name)
     {
         long ms = (long)timeout.TotalMilliseconds;
@@ -5696,10 +5807,15 @@ static class InterruptCompletions
     /// its slot back on the free list. In the order they completed.
     public static void Drain()
     {
-        if (_gate == null || _ready == 0)
-        {
-            return;
-        }
+        if (_gate == null) return;
+        // ONE LOOK IN 64 WITH SLOTS ARMED, every armed slot whose task is
+        // complete by another way -- a timeout's TrySetCanceled, a
+        // cancellation's, an exception -- given back (Reap): a handler never
+        // completes it now, and its slot stayed armed for ever, RunUntil
+        // waking each millisecond for it and the 256th such task finding no
+        // slot.
+        if (_armed > 0 && (++_looks & 63) == 0) Reap();
+        if (_ready == 0) return;
         long taken = Sys.AtomicSwap(Sys.AddressOf(ref _ready), 0);
         // Pushed newest first: turned round, so the first completed runs first.
         int reversed = 0;
@@ -5732,6 +5848,37 @@ static class InterruptCompletions
                 else task.FinishClaimedSuccess();
             }
             at = next;
+        }
+    }
+
+    static int _looks;
+
+    /// Every armed slot whose task is complete, given back. Not one a
+    /// handler claimed: claimed, its task is not complete until Drain
+    /// finishes it, and the slot is on the ready list. The generation moves
+    /// first, so a handler still holding the old handle completes nothing
+    /// (Complete reads it again after the task).
+    static void Reap()
+    {
+        AtomicCell gate = Gate();
+        for (int slot = 0; slot < Slots; slot++)
+        {
+            Task? task = _held[slot];
+            if (task == null || !task.IsCompleted) continue;
+            gate.Enter();
+            if (_held[slot] != task)
+            {
+                gate.Exit();
+                continue;
+            }
+            int generation = (_generations[slot] + 1) & 0x7FFF;
+            _generations[slot] = generation == 0 ? 1 : generation;
+            Sys.Fence();
+            _held[slot] = null;
+            _links[slot] = (int)_free;
+            _free = slot + 1;
+            gate.Exit();
+            Sys.AtomicAdd(Sys.AddressOf(ref _armed), -1);
         }
     }
 }
@@ -6625,11 +6772,11 @@ namespace System.Threading
         {
             if (initialCount < 0 || initialCount > maxCount)
             {
-                throw new ArgumentOutOfRangeException("initialCount");
+                throw new ArgumentOutOfRangeException("initialCount", initialCount, "The initialCount argument must be non-negative and less than or equal to the maximumCount.");
             }
             if (maxCount <= 0)
             {
-                throw new ArgumentOutOfRangeException("maxCount");
+                throw new ArgumentOutOfRangeException("maxCount", maxCount, "The maximumCount argument must be a positive number. If a maximum is not required, use the constructor without a maxCount parameter.");
             }
             _count = initialCount;
             _lock = 0;
@@ -6649,25 +6796,59 @@ namespace System.Threading
             Wait(-1, cancellationToken);
         }
 
+        // THE TIMEOUTS AS .NET 10 TAKES THEM. A form with a token refuses one
+        // below -1 (TimeoutWrong); the forms without one do not look: below
+        // -1 is a wait that ends at once, a permit taken if there is one --
+        // and WaitAsync's, which would wait, faults as the delay it would
+        // make does. A TimeSpan below -1 ms is refused in its own words, and
+        // past int.MaxValue ms is a wait of that long, near enough for ever.
+        const string TimeoutWrong = "The timeout must represent a value between -1 and Int32.MaxValue, inclusive.";
+        const string SpanWrong = "The value needs to translate in milliseconds to -1 (signifying an infinite timeout), or be non-negative.";
+
+        static int SpanMilliseconds(TimeSpan timeout)
+        {
+            long ms = (long)timeout.TotalMilliseconds;
+            if (ms < -1)
+            {
+                throw new ArgumentOutOfRangeException("timeout", timeout, SpanWrong);
+            }
+            return ms > int.MaxValue ? int.MaxValue : (int)ms;
+        }
+
         public bool Wait(int millisecondsTimeout)
         {
+            if (millisecondsTimeout < -1)
+            {
+                CheckDisposed();
+                return WaitCore(0, default(CancellationToken));
+            }
             return Wait(millisecondsTimeout, default(CancellationToken));
         }
 
         public bool Wait(TimeSpan timeout)
         {
-            return Wait(Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+            return Wait(SpanMilliseconds(timeout), default(CancellationToken));
         }
 
         public bool Wait(TimeSpan timeout, CancellationToken cancellationToken)
         {
-            return Wait(Timeouts.Milliseconds(timeout, "timeout"), cancellationToken);
+            return Wait(SpanMilliseconds(timeout), cancellationToken);
         }
 
         /// Throws OperationCanceledException when the token is canceled first.
         public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken)
         {
-            Task<bool> waiting = WaitAsync(millisecondsTimeout, cancellationToken);
+            CheckDisposed();
+            if (millisecondsTimeout < -1)
+            {
+                throw new ArgumentOutOfRangeException("millisecondsTimeout", millisecondsTimeout, TimeoutWrong);
+            }
+            return WaitCore(millisecondsTimeout, cancellationToken);
+        }
+
+        bool WaitCore(int millisecondsTimeout, CancellationToken cancellationToken)
+        {
+            Task<bool> waiting = WaitAsyncCore(millisecondsTimeout, cancellationToken);
             // CANCELED, it throws as .NET's does: an OperationCanceledException
             // for the token, not the TaskCanceledException awaiting would.
             try { return waiting.GetAwaiter().GetResult(); }
@@ -6686,17 +6867,26 @@ namespace System.Threading
 
         public Task<bool> WaitAsync(int millisecondsTimeout)
         {
+            if (millisecondsTimeout < -1)
+            {
+                CheckDisposed();
+                Task<bool> now = WaitAsyncCore(0, default(CancellationToken));
+                if (now.Result) return now;
+                Task<bool> refused = new Task<bool>();
+                refused.TrySetException(new ArgumentOutOfRangeException("timeout", "The value needs to translate in milliseconds to -1 (signifying an infinite timeout), 0, or a positive integer less than or equal to the maximum allowed timer duration."));
+                return refused;
+            }
             return WaitAsync(millisecondsTimeout, default(CancellationToken));
         }
 
         public Task<bool> WaitAsync(TimeSpan timeout)
         {
-            return WaitAsync(Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+            return WaitAsync(SpanMilliseconds(timeout), default(CancellationToken));
         }
 
         public Task<bool> WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
         {
-            return WaitAsync(Timeouts.Milliseconds(timeout, "timeout"), cancellationToken);
+            return WaitAsync(SpanMilliseconds(timeout), cancellationToken);
         }
 
         public Task<bool> WaitAsync(int millisecondsTimeout, CancellationToken cancellationToken)
@@ -6704,8 +6894,13 @@ namespace System.Threading
             CheckDisposed();
             if (millisecondsTimeout < -1)
             {
-                throw new ArgumentOutOfRangeException("millisecondsTimeout");
+                throw new ArgumentOutOfRangeException("millisecondsTimeout", millisecondsTimeout, TimeoutWrong);
             }
+            return WaitAsyncCore(millisecondsTimeout, cancellationToken);
+        }
+
+        Task<bool> WaitAsyncCore(int millisecondsTimeout, CancellationToken cancellationToken)
+        {
             if (cancellationToken.IsCancellationRequested)
             {
                 Task<bool> canceled = new Task<bool>();
@@ -6747,7 +6942,7 @@ namespace System.Threading
             CheckDisposed();
             if (releaseCount < 1)
             {
-                throw new ArgumentOutOfRangeException("releaseCount");
+                throw new ArgumentOutOfRangeException("releaseCount", releaseCount, "The releaseCount argument must be greater than zero.");
             }
 
             long gate = Atom.At(this, Atom.SecondWord);
@@ -6821,7 +7016,7 @@ namespace System.Threading
         readonly SemaphoreSlim _owner;
         readonly Task<bool> _task = new Task<bool>();
         TimerEntry? _timer;
-        CancellationTokenRegistration? _registration;
+        CancellationTokenRegistration _registration;
         CancellationToken _token;
 
         public SemaphoreWaiter(SemaphoreSlim owner)
@@ -6879,11 +7074,7 @@ namespace System.Threading
             {
                 timer.Cancel();
             }
-            CancellationTokenRegistration? registration = _registration;
-            if (registration != null)
-            {
-                registration.Dispose();
-            }
+            _registration.Dispose();
         }
     }
 

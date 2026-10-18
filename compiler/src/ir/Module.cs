@@ -129,6 +129,15 @@ public sealed class Module
     /// </summary>
     public bool NoCollector { get; set; }
 
+    /// <summary>
+    /// Loops that may not end by themselves answer the collector at their
+    /// back edges (BackEdgePolls): set by the driver where there is an
+    /// operating system to run threads and a collector may run, and kept in a
+    /// unit's settings for the link (IrUnitCodec.Settings.Polls). The
+    /// inliner keeps Runtime.Poll for them wherever the collector stays.
+    /// </summary>
+    public bool SafepointPolls { get; set; }
+
     /// <summary>The program's own source calls a method of the collector's classes (Lowering), so it has one.</summary>
     public bool CallsCollector { get; set; }
 

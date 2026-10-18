@@ -534,6 +534,34 @@ static class Platform
     {
     }
 
+    /// EVERY THREAD OF THE PROCESS SERIALISED, as .NET's
+    /// FlushProcessWriteBuffers: what an asymmetric fence rests on, the slow
+    /// side making sure every other thread's stores are visible and none of
+    /// its loads is from before. A fence here orders only this processor.
+    /// membarrier(2)'s private expedited command interrupts each processor
+    /// running one of this process's threads; it is registered on first use,
+    /// and where the kernel has none the global command -- every processor,
+    /// slower -- serves, and with neither, a fence. The kernel's answer kept
+    /// (_membarrier): 1 private expedited, 2 global, -1 neither.
+    static long _membarrier;
+
+    public static void ProcessWideBarrier()
+    {
+        Sys.Fence();
+        long how = _membarrier;
+        if (how == 0)
+        {
+            // MEMBARRIER_CMD_QUERY (0): the commands this kernel has.
+            long has = Sys.Syscall(Call.Membarrier, 0, 0, 0);
+            if (has > 0 && (has & 8) != 0 && Sys.Syscall(Call.Membarrier, 16, 0, 0) == 0) how = 1;   // REGISTER_PRIVATE_EXPEDITED
+            else if (has > 0 && (has & 1) != 0) how = 2;                                             // GLOBAL
+            else how = -1;
+            _membarrier = how;
+        }
+        if (how == 1) Sys.Syscall(Call.Membarrier, 8, 0, 0);          // PRIVATE_EXPEDITED
+        else if (how == 2) Sys.Syscall(Call.Membarrier, 1, 0, 0);     // GLOBAL
+    }
+
     // ---- the collector's workers ----------------------------------------
 
     /// How many threads may mark and sweep beside the collecting one: the

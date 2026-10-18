@@ -1,0 +1,49 @@
+// test: spinning_thread_answers_the_collector
+// expect-exit: 0
+// expect-output:
+// done True True True
+//
+// A thread that neither allocates nor blocks -- `while (!s_done) laps++;` --
+// answers a collection's round at its loop's back edge (BackEdgePolls): a
+// load of GcThreads.Asking a lap, and Runtime.Poll while a round is open. It
+// answered nowhere before: the main thread, allocating, became the collector
+// and waited for the spinner, which waited for the main thread's flag, and
+// the program hung. A counted loop -- a counter stepped every lap against a
+// bound the loop never writes -- ends by itself and is not polled.
+using System;
+using System.Collections.Generic;
+using System.Threading;
+static class Program
+{
+    static volatile bool s_done;
+    static volatile bool s_started;
+    static long s_laps;
+    static void Spin()
+    {
+        s_started = true;
+        long laps = 0;
+        while (!s_done) laps++;
+        s_laps = laps;
+    }
+    static int Main()
+    {
+        Thread t = new Thread(Spin);
+        t.Start();
+        while (!s_started) Thread.Yield();
+        int collections = GC.CollectionCount(0);
+        long kept = 0;
+        List<int[]> live = new();
+        for (int i = 0; i < 200000; i++)
+        {
+            int[] a = new int[64];
+            a[0] = i;
+            live.Add(a);
+            if (live.Count > 1000) { kept += live[0][0]; live.Clear(); }
+        }
+        bool collected = GC.CollectionCount(0) > collections;
+        s_done = true;
+        t.Join();
+        Console.WriteLine("done " + collected + " " + (s_laps > 0) + " " + (kept > 0));
+        return 0;
+    }
+}

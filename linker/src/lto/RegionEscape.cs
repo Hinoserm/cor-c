@@ -3631,10 +3631,16 @@ internal sealed class RegionEscape
             // too. Dispatched, it ran every target's merged summary on the
             // constant, and the unknown object that summary holds went into
             // every tree a foreach walked (1200). The call's other arguments
-            // still meet its targets: the group is made all the same.
+            // still meet its targets: the group is made all the same -- a
+            // wide call's too, its stand-in applied with the constant kept
+            // out of the receiver, or what it was handed met nothing.
             if (IsConstant(o))
             {
-                if (!v.Wide && v.Outside.Length > 0) Group(v, v.Outside);
+                if (v.Outside.Length > 0)
+                {
+                    if (v.Wide) WideGroup(v, v.Outside);
+                    else Group(v, v.Outside);
+                }
                 return;
             }
             // A call on a blob, noted to be dispatched again as members join.

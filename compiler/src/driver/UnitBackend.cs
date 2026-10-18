@@ -343,6 +343,8 @@ public sealed class UnitBackend : IUnitBackend
                 PositionIndependent = positionIndependent,
                 EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
+                // As its compile said, unless the image has no collector.
+                SafepointPolls = module.SafepointPolls && module.LinkHeap != false,
             };
             result = backend.Generate(module, errors);
             (peakFunctions, peakBytes) = (backend.PeakBatchFunctions, backend.PeakBatchBytes);
@@ -355,6 +357,7 @@ public sealed class UnitBackend : IUnitBackend
                 AutomaticPacked = cpu.AutomaticPacked,
                 StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
+                SafepointPolls = module.SafepointPolls && module.LinkHeap != false,
             };
             result = backend.Generate(module, errors);
             (peakFunctions, peakBytes) = (backend.PeakBatchFunctions, backend.PeakBatchBytes);

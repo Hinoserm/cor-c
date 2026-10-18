@@ -89,6 +89,7 @@ public static class RegionSummary
         // the unknown object. Which is which the link says (RegionConstants),
         // holding every unit's data: the unit does not know another's.
         private readonly Dictionary<string, int> _symbolNodes = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string Name, long Offset), int> _symbolOffsetNodes = new();
         private readonly List<string> _symbols = new();
         private readonly List<RegionSite> _sites = new();
         private readonly List<RegionConstraint> _constraints = new();
@@ -136,7 +137,21 @@ public static class RegionSummary
         private int Value(Operand o)
         {
             if (o is RegOperand { Reg: var r }) return Reg(r);
-            if (o is SymOperand { Name: var symbol }) return Symbol(symbol);
+            if (o is SymOperand { Name: var symbol, Offset: var offset })
+            {
+                int start = Symbol(symbol);
+                if (offset == 0) return start;
+                // AN ADDRESS INTO THE STATIC, not its start: `@S+8` is the
+                // word 8 bytes in, as `copy @S ; add 8` is (Narrowing folds
+                // the one into the other). A closed struct static is one cell
+                // an offset (RegionTypes): read as the start, a store through
+                // `ref S.Item` landed in the cell `load @S,+8` never reads,
+                // and the call on what it held was narrowed past an override.
+                if (_symbolOffsetNodes.TryGetValue((symbol, offset), out int shifted)) return shifted;
+                int into = _next++;
+                Copy(into, start, offset);
+                return _symbolOffsetNodes[(symbol, offset)] = into;
+            }
             if (o is not SlotOperand { Slot: var slot }) return -1;
             if (_slotNodes.TryGetValue(slot, out int known)) return known;
             if (!_slots.TryGetValue(slot, out int index)) _slots[slot] = index = _slots.Count;
@@ -392,8 +407,11 @@ public static class RegionSummary
                 case Opcode.AtomicCas:
                 case Opcode.AtomicAdd:
                 case Opcode.AtomicAnd:
+                case Opcode.AtomicOr:
+                case Opcode.AtomicXor:
                 {
-                    // A read of the word and a write to it.
+                    // A read of the word and a write to it: an or or xor of a
+                    // word too, a tag set or cleared on an address in it.
                     int at = Base(i.Operands[0]);
                     if (at < 0) return;
                     // What it answers is the word that was there: a number

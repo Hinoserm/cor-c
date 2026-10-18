@@ -1,0 +1,186 @@
+// test: threading_refusals_and_registrations_as_dotnet
+// expect-exit: 0
+// expect-output:
+// Delay(-2): ArgumentOutOfRangeException | The value needs to be either -1 (signifying an infinite timeout), 0 or a positive integer. (Parameter 'millisecondsDelay') | param=millisecondsDelay
+// Delay(TimeSpan -2ms): ArgumentOutOfRangeException | The value needs to translate in milliseconds to -1 (signifying an infinite timeout), 0, or a positive integer less than or equal to the maximum allowed timer duration. (Parameter 'delay') | param=delay
+// Delay(TimeSpan 0): task RanToCompletion
+// WhenAll(null elem): ArgumentException | The tasks argument included a null value. (Parameter 'tasks') | param=tasks
+// WhenAll<T>(null elem): ArgumentException | The tasks argument included a null value. (Parameter 'tasks') | param=tasks
+// WhenAny(null elem): ArgumentException | The tasks argument included a null value. (Parameter 'tasks') | param=tasks
+// SemaphoreSlim(-1,1): ArgumentOutOfRangeException | The initialCount argument must be non-negative and less than or equal to the maximumCount. (Parameter 'initialCount')\nActual value was -1. | param=initialCount
+// SemaphoreSlim(2,1): ArgumentOutOfRangeException | The initialCount argument must be non-negative and less than or equal to the maximumCount. (Parameter 'initialCount')\nActual value was 2. | param=initialCount
+// SemaphoreSlim(0,0): ArgumentOutOfRangeException | The maximumCount argument must be a positive number. If a maximum is not required, use the constructor without a maxCount parameter. (Parameter 'maxCount')\nActual value was 0. | param=maxCount
+// Sem0.Wait(-2): False
+// Sem1.Wait(-2): True
+// Sem1.WaitAsync(-2): task RanToCompletion True
+// Sem0.WaitAsync(-2): task Faulted ArgumentOutOfRangeException | The value needs to translate in milliseconds to -1 (signifying an infinite timeout), 0, or a positive integer less than or equal to the maximum allowed timer duration. (Parameter 'timeout') | timeout
+// Sem0.Wait(-2, none): ArgumentOutOfRangeException | The timeout must represent a value between -1 and Int32.MaxValue, inclusive. (Parameter 'millisecondsTimeout')\nActual value was -2. | param=millisecondsTimeout
+// Sem0.WaitAsync(-2, none): ArgumentOutOfRangeException | The timeout must represent a value between -1 and Int32.MaxValue, inclusive. (Parameter 'millisecondsTimeout')\nActual value was -2. | param=millisecondsTimeout
+// Sem0.Wait(TimeSpan -2): ArgumentOutOfRangeException | The value needs to translate in milliseconds to -1 (signifying an infinite timeout), or be non-negative. (Parameter 'timeout')\nActual value was -00:00:00.0020000. | param=timeout
+// Sem1.WaitAsync(TS -2): ArgumentOutOfRangeException | The value needs to translate in milliseconds to -1 (signifying an infinite timeout), or be non-negative. (Parameter 'timeout')\nActual value was -00:00:00.0020000. | param=timeout
+// Sem1.Wait(TS huge): True
+// Sem.Release(0): ArgumentOutOfRangeException | The releaseCount argument must be greater than zero. (Parameter 'releaseCount')\nActual value was 0. | param=releaseCount
+// Sem.Release() full: SemaphoreFullException | Adding the specified count to the semaphore would cause it to exceed its maximum count.
+// Monitor.Wait unowned: SynchronizationLockException | Object synchronization method was called from an unsynchronized block of code.
+// Monitor.Wait(-2): ArgumentOutOfRangeException | millisecondsTimeout ('-2') must be greater than or equal to '-1'. (Parameter 'millisecondsTimeout')\nActual value was -2. | param=millisecondsTimeout
+// Monitor.TryEnter(-2): ArgumentOutOfRangeException |  ('-2') must be greater than or equal to '-1'.\nActual value was -2. | param=
+// Monitor.TryEnter(TS -2): ArgumentOutOfRangeException | timeout ('-2') must be greater than or equal to '-1'. (Parameter 'timeout')\nActual value was -2. | param=timeout
+// Monitor.TryEnter(TS huge): ArgumentOutOfRangeException | timeout ('2592000000') must be less than or equal to '2147483647'. (Parameter 'timeout')\nActual value was 2592000000. | param=timeout
+// Monitor.Wait(TS -2): ArgumentOutOfRangeException | timeout ('-2') must be greater than or equal to '-1'. (Parameter 'timeout')\nActual value was -2. | param=timeout
+// Monitor.Exit unowned: SynchronizationLockException | Object synchronization method was called from an unsynchronized block of code.
+// TryEnter(null): ArgumentNullException | Value cannot be null. | param=
+// TryEnter(null, 5): ArgumentNullException | Value cannot be null. | param=
+// Enter(null): ArgumentNullException | Value cannot be null. | param=
+// Exit(null): ArgumentNullException | Value cannot be null. | param=
+// Pulse(null): ArgumentNullException | Value cannot be null. (Parameter 'obj') | param=obj
+// Wait(null,-2): ArgumentNullException | Value cannot be null. (Parameter 'obj') | param=obj
+// WaitOne(-2): ArgumentOutOfRangeException | millisecondsTimeout ('-2') must be greater than or equal to '-1'. (Parameter 'millisecondsTimeout')\nActual value was -2. | param=millisecondsTimeout
+// WaitOne(TS huge): ArgumentOutOfRangeException | timeout ('2592000000') must be less than or equal to '2147483647'. (Parameter 'timeout')\nActual value was 2592000000. | param=timeout
+// MRES.Wait(-2): ArgumentOutOfRangeException | millisecondsTimeout ('-2') must be greater than or equal to '-1'. (Parameter 'millisecondsTimeout')\nActual value was -2. | param=millisecondsTimeout
+// MRES.Wait(TS -2): ArgumentOutOfRangeException | timeout ('-2') must be greater than or equal to '-1'. (Parameter 'timeout')\nActual value was -2. | param=timeout
+// MRES.Wait(TS huge): ArgumentOutOfRangeException | timeout ('2592000000') must be less than or equal to '2147483647'. (Parameter 'timeout')\nActual value was 2592000000. | param=timeout
+// Thread.Join(-2): ArgumentOutOfRangeException | Number must be either non-negative and less than or equal to Int32.MaxValue or -1. (Parameter 'millisecondsTimeout') | param=millisecondsTimeout
+// Thread.Join(TimeSpan huge): ArgumentOutOfRangeException | timeout ('2592000000') must be less than or equal to '2147483647'. (Parameter 'timeout')\nActual value was 2592000000. | param=timeout
+// Thread.Join(TimeSpan -2): ArgumentOutOfRangeException | timeout ('-2') must be greater than or equal to '-1'. (Parameter 'timeout')\nActual value was -2. | param=timeout
+// Thread.Sleep(-2): ArgumentOutOfRangeException | millisecondsTimeout ('-2') must be greater than or equal to '-1'. (Parameter 'millisecondsTimeout')\nActual value was -2. | param=millisecondsTimeout
+// Thread.Sleep(TimeSpan -2): ArgumentOutOfRangeException | timeout ('-2') must be greater than or equal to '-1'. (Parameter 'timeout')\nActual value was -2. | param=timeout
+// Thread.Sleep(TS huge): ArgumentOutOfRangeException | timeout ('2592000000') must be less than or equal to '2147483647'. (Parameter 'timeout')\nActual value was 2592000000. | param=timeout
+// Task.Wait(-2): ArgumentOutOfRangeException | Specified argument was out of the range of valid values. (Parameter 'millisecondsTimeout') | param=millisecondsTimeout
+// Task.Wait(TS -2): ArgumentOutOfRangeException | Specified argument was out of the range of valid values. (Parameter 'timeout') | param=timeout
+// WaitAll(-2): ArgumentOutOfRangeException | Specified argument was out of the range of valid values. (Parameter 'millisecondsTimeout') | param=millisecondsTimeout
+// WaitAny(TS -2): ArgumentOutOfRangeException | Specified argument was out of the range of valid values. (Parameter 'timeout') | param=timeout
+// CTS.CancelAfter(-2): ArgumentOutOfRangeException | Specified argument was out of the range of valid values. (Parameter 'millisecondsDelay') | param=millisecondsDelay
+// CTS(-2): ArgumentOutOfRangeException | Specified argument was out of the range of valid values. (Parameter 'millisecondsDelay') | param=millisecondsDelay
+// CTS(TS -2): ArgumentOutOfRangeException | Specified argument was out of the range of valid values. (Parameter 'delay') | param=delay
+// Linked(): ArgumentException | No tokens were supplied. | param=
+// Linked(null): ArgumentNullException | Value cannot be null. (Parameter 'tokens') | param=tokens
+// default CTR.Dispose: ok
+// default CTR.Unregister: False
+// default CTR.Token: False
+// equal True False token True
+// unregister first while running: True
+// ran third second | third after False
+// dispose waited True
+//
+// The threading surface's refusals in .NET 10's own words, names and
+// values, taken from .NET 10 running this program: Task.Delay's
+// millisecondsDelay and its TimeSpan form (which was missing), WhenAll's and
+// WhenAny's null element, SemaphoreSlim's sentences -- and its forms without
+// a token that take a timeout below -1 as a wait that ends at once --
+// Monitor's unnamed null and its guard's words, a wait handle's, a slim
+// event's and Thread's, a linked source of no tokens. A registration is a
+// struct: default's Dispose does nothing; one disposed before a running
+// cancellation comes to it does not run, and Unregister says so; Dispose
+// waits for a callback another thread is running.
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static void Show(string what, Func<object> a)
+    {
+        try
+        {
+            object r = a();
+            if (r is Task t)
+            {
+                try { t.Wait(100); } catch { }
+                string tail = "";
+                if (t.IsFaulted) { Exception inner = t.Exception!.InnerException!; tail = " " + inner.GetType().Name + " | " + inner.Message + " | " + ((ArgumentException)inner).ParamName; }
+                else if (t.Status == TaskStatus.RanToCompletion && t is Task<bool> b) tail = " " + b.Result;
+                r = "task " + t.Status + tail;
+            }
+            Console.WriteLine(what + ": " + r);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(what + ": " + e.GetType().Name + " | " + e.Message.Replace("\n", "\\n") + (e is ArgumentException ae ? " | param=" + ae.ParamName : ""));
+        }
+    }
+
+    static int Main()
+    {
+        Show("Delay(-2)", () => Task.Delay(-2));
+        Show("Delay(TimeSpan -2ms)", () => Task.Delay(TimeSpan.FromMilliseconds(-2)));
+        Show("Delay(TimeSpan 0)", () => Task.Delay(TimeSpan.Zero));
+        Show("WhenAll(null elem)", () => Task.WhenAll(new Task[] { null! }));
+        Show("WhenAll<T>(null elem)", () => Task.WhenAll(new Task<int>[] { null! }));
+        Show("WhenAny(null elem)", () => Task.WhenAny(new Task[] { null! }));
+        Show("SemaphoreSlim(-1,1)", () => new SemaphoreSlim(-1, 1));
+        Show("SemaphoreSlim(2,1)", () => new SemaphoreSlim(2, 1));
+        Show("SemaphoreSlim(0,0)", () => new SemaphoreSlim(0, 0));
+        Show("Sem0.Wait(-2)", () => new SemaphoreSlim(0, 1).Wait(-2));
+        Show("Sem1.Wait(-2)", () => new SemaphoreSlim(1, 1).Wait(-2));
+        Show("Sem1.WaitAsync(-2)", () => new SemaphoreSlim(1, 1).WaitAsync(-2));
+        Show("Sem0.WaitAsync(-2)", () => new SemaphoreSlim(0, 1).WaitAsync(-2));
+        Show("Sem0.Wait(-2, none)", () => new SemaphoreSlim(0, 1).Wait(-2, CancellationToken.None));
+        Show("Sem0.WaitAsync(-2, none)", () => new SemaphoreSlim(0, 1).WaitAsync(-2, CancellationToken.None));
+        Show("Sem0.Wait(TimeSpan -2)", () => new SemaphoreSlim(0, 1).Wait(TimeSpan.FromMilliseconds(-2)));
+        Show("Sem1.WaitAsync(TS -2)", () => new SemaphoreSlim(1, 1).WaitAsync(TimeSpan.FromMilliseconds(-2)));
+        Show("Sem1.Wait(TS huge)", () => new SemaphoreSlim(1, 1).Wait(TimeSpan.FromDays(30)));
+        Show("Sem.Release(0)", () => new SemaphoreSlim(1, 1).Release(0));
+        Show("Sem.Release() full", () => new SemaphoreSlim(1, 1).Release());
+        object o = new object();
+        Show("Monitor.Wait unowned", () => Monitor.Wait(o));
+        Show("Monitor.Wait(-2)", () => { lock (o) return Monitor.Wait(o, -2); });
+        Show("Monitor.TryEnter(-2)", () => Monitor.TryEnter(o, -2));
+        Show("Monitor.TryEnter(TS -2)", () => Monitor.TryEnter(o, TimeSpan.FromMilliseconds(-2)));
+        Show("Monitor.TryEnter(TS huge)", () => Monitor.TryEnter(o, TimeSpan.FromDays(30)));
+        Show("Monitor.Wait(TS -2)", () => { lock (o) return Monitor.Wait(o, TimeSpan.FromMilliseconds(-2)); });
+        Show("Monitor.Exit unowned", () => { Monitor.Exit(o); return 0; });
+        Show("TryEnter(null)", () => Monitor.TryEnter(null!));
+        Show("TryEnter(null, 5)", () => Monitor.TryEnter(null!, 5));
+        Show("Enter(null)", () => { Monitor.Enter(null!); return 0; });
+        Show("Exit(null)", () => { Monitor.Exit(null!); return 0; });
+        Show("Pulse(null)", () => { Monitor.Pulse(null!); return 0; });
+        Show("Wait(null,-2)", () => Monitor.Wait(null!, -2));
+        Show("WaitOne(-2)", () => new ManualResetEvent(false).WaitOne(-2));
+        Show("WaitOne(TS huge)", () => new ManualResetEvent(true).WaitOne(TimeSpan.FromDays(30)));
+        Show("MRES.Wait(-2)", () => new ManualResetEventSlim(true).Wait(-2));
+        Show("MRES.Wait(TS -2)", () => new ManualResetEventSlim(true).Wait(TimeSpan.FromMilliseconds(-2)));
+        Show("MRES.Wait(TS huge)", () => new ManualResetEventSlim(true).Wait(TimeSpan.FromDays(30)));
+        Show("Thread.Join(-2)", () => { Thread t = new Thread(() => { }); t.Start(); return t.Join(-2); });
+        Show("Thread.Join(TimeSpan huge)", () => { Thread t = new Thread(() => { }); t.Start(); return t.Join(TimeSpan.FromDays(30)); });
+        Show("Thread.Join(TimeSpan -2)", () => { Thread t = new Thread(() => { }); t.Start(); return t.Join(TimeSpan.FromMilliseconds(-2)); });
+        Show("Thread.Sleep(-2)", () => { Thread.Sleep(-2); return 0; });
+        Show("Thread.Sleep(TimeSpan -2)", () => { Thread.Sleep(TimeSpan.FromMilliseconds(-2)); return 0; });
+        Show("Thread.Sleep(TS huge)", () => { Thread.Sleep(TimeSpan.FromDays(30)); return 0; });
+        Show("Task.Wait(-2)", () => Task.CompletedTask.Wait(-2));
+        Show("Task.Wait(TS -2)", () => Task.CompletedTask.Wait(TimeSpan.FromMilliseconds(-2)));
+        Show("WaitAll(-2)", () => { Task.WaitAll(new[] { Task.CompletedTask }, -2); return 0; });
+        Show("WaitAny(TS -2)", () => Task.WaitAny(new[] { Task.CompletedTask }, TimeSpan.FromMilliseconds(-2)));
+        Show("CTS.CancelAfter(-2)", () => { new CancellationTokenSource().CancelAfter(-2); return 0; });
+        Show("CTS(-2)", () => new CancellationTokenSource(-2));
+        Show("CTS(TS -2)", () => new CancellationTokenSource(TimeSpan.FromMilliseconds(-2)));
+        Show("Linked()", () => CancellationTokenSource.CreateLinkedTokenSource());
+        Show("Linked(null)", () => CancellationTokenSource.CreateLinkedTokenSource((CancellationToken[])null!));
+        Show("default CTR.Dispose", () => { default(CancellationTokenRegistration).Dispose(); return "ok"; });
+        Show("default CTR.Unregister", () => default(CancellationTokenRegistration).Unregister());
+        Show("default CTR.Token", () => default(CancellationTokenRegistration).Token.CanBeCanceled);
+
+        // A registration disposed by an earlier callback of the same cancel
+        // does not run, and its Unregister says so; one already run says false.
+        CancellationTokenSource cts = new CancellationTokenSource();
+        string ran = "";
+        CancellationTokenRegistration first = cts.Token.Register(() => ran += "first ");
+        CancellationTokenRegistration second = default;
+        second = cts.Token.Register(() => { ran += "second "; Console.WriteLine("unregister first while running: " + first.Unregister()); });
+        CancellationTokenRegistration third = cts.Token.Register(() => { ran += "third "; });
+        Console.WriteLine("equal " + (first == first) + " " + (first == second) + " token " + (third.Token == cts.Token));
+        cts.Cancel();
+        Console.WriteLine("ran " + ran + "| third after " + third.Unregister());
+
+        // Dispose waits for a callback another thread is running.
+        CancellationTokenSource slow = new CancellationTokenSource();
+        int stage = 0;
+        CancellationTokenRegistration held = slow.Token.Register(() => { Volatile.Write(ref stage, 1); Thread.Sleep(200); Volatile.Write(ref stage, 2); });
+        Thread canceler = new Thread(() => slow.Cancel());
+        canceler.Start();
+        while (Volatile.Read(ref stage) == 0) Thread.Yield();
+        held.Dispose();
+        Console.WriteLine("dispose waited " + (Volatile.Read(ref stage) == 2));
+        canceler.Join();
+        return 0;
+    }
+}

@@ -640,7 +640,8 @@ public sealed class RegionPointsTo : IModulePass
                 foreach (Instr i in b.Instrs)
                 {
                     bool storesIt = i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand { Reg: var value } && names.Contains(value)
-                        || i.Op is Opcode.MemCopy or Opcode.AtomicSwap or Opcode.AtomicCas && i.Operands.Skip(1).Any(o => o is RegOperand { Reg: var r } && names.Contains(r));
+                        || i.Op is Opcode.MemCopy or Opcode.AtomicSwap or Opcode.AtomicCas or Opcode.AtomicAdd or Opcode.AtomicAnd or Opcode.AtomicOr or Opcode.AtomicXor
+                            && i.Operands.Skip(1).Any(o => o is RegOperand { Reg: var r } && names.Contains(r));
                     if (!storesIt) continue;
                     if (i.Op != Opcode.Store || i.Field is not string field || !owned.SelfFreed.Contains(field)
                         || !owned.Fields.TryGetValue(field, out long offset) || offset != i.Offset
@@ -2525,8 +2526,11 @@ public sealed class RegionPointsTo : IModulePass
             case Opcode.AtomicCas:
             case Opcode.AtomicAdd:
             case Opcode.AtomicAnd:
+            case Opcode.AtomicOr:
+            case Opcode.AtomicXor:
             {
-                // A read of the word and a write to it.
+                // A read of the word and a write to it: an or or xor of a
+                // word too, a tag set or cleared on an address in it.
                 int at = Base(copy, i.Operands[0]);
                 Load(dest, at, i.Offset);
                 for (int k = 1; k < i.Operands.Count; k++) Store(at, i.Offset, Value(copy, i.Operands[k]));

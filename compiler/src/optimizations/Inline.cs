@@ -942,6 +942,9 @@ public sealed class Inline : IParallelModulePass
     /// without bound (until the growth budget finally chokes it off). This
     /// is the set that must stay out of <see cref="Inlineable"/> instead.
     /// </summary>
+    /// <summary>What stays wherever a collection can run: Runtime.Poll is kept beside it (BackEdgePolls).</summary>
+    private const string PollsCollector = "m_Gc_CollectLocked_0";
+
     internal static HashSet<Function> RecursiveFunctions(Module m, Dictionary<string, Function> byName)
     {
         HashSet<Function> cyclic = new();
@@ -1224,40 +1227,53 @@ public sealed class Inline : IParallelModulePass
             foreach (DataItem d in m.Data)
                 if (d.Exported) Reach(d.Name);
         }
-        while (work.Count > 0 || dataWork.Count > 0)
+        void Close()
         {
-            if (dataWork.Count > 0)
+            while (work.Count > 0 || dataWork.Count > 0)
             {
-                DataItem d = dataWork.Pop();
-                bool table = bySlot && Escape.IsDescriptor(d.Name);
-                foreach (DataReloc r in d.Relocs)
+                if (dataWork.Count > 0)
                 {
-                    if (table && r.Offset >= methods && r.Addend == 0 && byName.ContainsKey(r.Symbol)) TableMethod(d, r.Offset - methods, r.Symbol);
-                    else Reach(r.Symbol);
-                }
-                continue;
-            }
-            Function reached = work.Pop();
-            if (bySlot) VirtualSlotUses.Of(reached, SlotRead);
-            foreach (Block b in reached.Blocks)
-                foreach (Instr i in b.Instrs)
-                {
-                    if (i.Callee is { } callee)
+                    DataItem d = dataWork.Pop();
+                    bool table = bySlot && Escape.IsDescriptor(d.Name);
+                    foreach (DataReloc r in d.Relocs)
                     {
-                        Reach(callee);
-                        // AND WHAT A MACHINE INTRINSIC BECOMES A CALL TO: the
-                        // snapshot barrier the card-mark pass writes out
-                        // (CardMarks.Expand) calls Runtime.WriteBarrier from
-                        // the backend's stub, and a position-independent card
-                        // mark calls Runtime.CardMark (the x86 backend's
-                        // SelectCall). Swept after that pass, the barrier went
-                        // and the stub called nothing.
-                        if (callee == Corsac.Lang.X86.MachineIntrinsics.Barrier) Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrier);
-                        else if (callee == Corsac.Lang.X86.MachineIntrinsics.CardMark) Reach(Corsac.Lang.Lto.RuntimeAbi.CardMark);
+                        if (table && r.Offset >= methods && r.Addend == 0 && byName.ContainsKey(r.Symbol)) TableMethod(d, r.Offset - methods, r.Symbol);
+                        else Reach(r.Symbol);
                     }
-                    foreach (Operand o in i.Operands)
-                        if (o is SymOperand s) Reach(s.Name);
+                    continue;
                 }
+                Function reached = work.Pop();
+                if (bySlot) VirtualSlotUses.Of(reached, SlotRead);
+                foreach (Block b in reached.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Callee is { } callee)
+                        {
+                            Reach(callee);
+                            // AND WHAT A MACHINE INTRINSIC BECOMES A CALL TO: the
+                            // snapshot barrier the card-mark pass writes out
+                            // (CardMarks.Expand) calls Runtime.WriteBarrier from
+                            // the backend's stub, and a position-independent card
+                            // mark calls Runtime.CardMark (the x86 backend's
+                            // SelectCall). Swept after that pass, the barrier went
+                            // and the stub called nothing.
+                            if (callee == Corsac.Lang.X86.MachineIntrinsics.Barrier) Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrier);
+                            else if (callee == Corsac.Lang.X86.MachineIntrinsics.CardMark) Reach(Corsac.Lang.Lto.RuntimeAbi.CardMark);
+                        }
+                        foreach (Operand o in i.Operands)
+                            if (o is SymOperand s) Reach(s.Name);
+                    }
+            }
+        }
+        Close();
+        // THE POLL A LOOP'S BACK EDGE CALLS (BackEdgePolls), which the backend
+        // writes after this: kept wherever the collector stays, and only there
+        // -- kept for its own sake it would keep the collector in an image
+        // that needs none.
+        if (m.SafepointPolls && byName.ContainsKey(BackEdgePolls.Poll) && !live.Contains(BackEdgePolls.Poll) && live.Contains(PollsCollector))
+        {
+            Reach(BackEdgePolls.Poll);
+            Close();
         }
         int gone = m.Functions.RemoveAll(f => !live.Contains(f.Name));
         gone += m.Data.RemoveAll(d => !liveData.Contains(d.Name));

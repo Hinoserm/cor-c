@@ -820,6 +820,20 @@ static class Platform
         }
     }
 
+    /// Every processor serialised (Interlocked.MemoryBarrierProcessWide): on
+    /// one processor a fence, and on a kernel's several whatever it installs
+    /// here to interrupt the others and fence each (BarrierHook).
+    public static long BarrierHook;
+
+    public static void ProcessWideBarrier()
+    {
+        Sys.Fence();
+        if (BarrierHook != 0)
+        {
+            Sys.Call(BarrierHook, 0, 0, 0);
+        }
+    }
+
     /// The one thread never has to stop for another, but the shape is the
     /// runtime's and not the machine's. The register pressure is the same
     /// trick EnterCollection uses below, for the same reason.
@@ -1247,6 +1261,16 @@ static class Clock
         return _interrupts;
     }
 
+    /// WHETHER A HALT WILL END: the clock ticks (InterruptsOn), interrupts
+    /// are enabled where this code stands (EFLAGS.IF), and this is ring 0,
+    /// the one ring HLT runs in. InterruptsOn says only that the PIT was
+    /// programmed: a Monitor.Wait or a timer's wait reached with interrupts
+    /// off halted for ever.
+    public static bool MayHalt()
+    {
+        return _interrupts && (Sys.ReadFlags() & 0x200) != 0 && (Sys.ReadCodeSegment() & 3) == 0;
+    }
+
     /// Waits for the clock to reach `deadline`: a halt per tick when the
     /// kernel drives interrupts, a spin on the counter otherwise -- offered
     /// to whatever else is ready and paused between looks, as Native's
@@ -1255,7 +1279,7 @@ static class Clock
     {
         while (Now() < deadline)
         {
-            if (_interrupts)
+            if (MayHalt())
             {
                 Sys.Hlt();
             }
@@ -1309,7 +1333,7 @@ static class Native
     /// returns at once.
     static void Idle()
     {
-        if (Clock.InterruptsOn())
+        if (Clock.MayHalt())
         {
             Sys.Hlt();
         }

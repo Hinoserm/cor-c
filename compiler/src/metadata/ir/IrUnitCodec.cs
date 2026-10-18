@@ -22,9 +22,11 @@ public static class IrUnitCodec
     /// its compile had never asked for, and a closed image, keeping only what
     /// the archived IR reaches, had dropped them: "undefined symbol
     /// m_Runtime_AllocRegion...".
+    /// Polls: whether its loops poll for the collector at their back edges
+    /// (Module.SafepointPolls), as its compile said.
     /// </summary>
     public sealed record Settings(bool PreLate, bool NoCollector, bool CallsCollector, bool LeavesLinkHints,
-        bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers, bool PositionIndependent = false, bool Regions = true);
+        bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers, bool PositionIndependent = false, bool Regions = true, bool Polls = false);
 
     /// The unit record's two shapes: a snapshot taken after the late passes,
     /// with nothing for the link to run them again by, and one taken before
@@ -58,6 +60,7 @@ public static class IrUnitCodec
                 foreach (string helper in settings.RuntimeHelpers.Order(StringComparer.Ordinal)) IrBinary.Text(writer, helper);
                 writer.Write(settings.PositionIndependent);
                 writer.Write(settings.Regions);
+                writer.Write(settings.Polls);
             }
         }
         records.Add(new("M:unit", false, 0, Array.Empty<string>(), stream.ToArray()));
@@ -124,7 +127,8 @@ public static class IrUnitCodec
         for (int i = 0; i < count; i++) helpers[i] = IrBinary.Name(reader, budget);
         bool pic = IrBinary.Flag(reader);
         bool regions = IrBinary.Flag(reader);
-        return new(true, noCollector, callsCollector, hints, size, batch, helpers, pic, regions);
+        bool polls = IrBinary.Flag(reader);
+        return new(true, noCollector, callsCollector, hints, size, batch, helpers, pic, regions, polls);
     }
 
     public static (Module Module, bool StackMaps, long AccountedBytes) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024,
@@ -158,6 +162,7 @@ public static class IrUnitCodec
             {
                 module.NoCollector = settings.NoCollector; module.CallsCollector = settings.CallsCollector;
                 module.LeavesLinkHints = settings.LeavesLinkHints; module.RuntimeHelpers.UnionWith(settings.RuntimeHelpers);
+                module.SafepointPolls = settings.Polls;
             }
             IrBinary.End(reader);
             // EACH RECORD'S BYTES LET GO once it is decoded (IrReadBudget.Release):

@@ -89,9 +89,11 @@ public sealed class X86Backend : IBackend
     public bool WriteBarriers { get; set; }
 
     /// <summary>
-    /// Emit a safepoint poll at loop back-edges. OFF, for the same reason.
-    /// Where it goes: Select.cs, where a jump to an already-emitted block is
-    /// selected. A call is already a safepoint by virtue of having a map.
+    /// A safepoint poll on the back edges of every loop that may not end by
+    /// itself (BackEdgePolls), put in the function's IR before it is
+    /// selected: an image with a collector and an operating system to run
+    /// threads, where a thread that neither allocates nor blocks would never
+    /// answer a round. A call is already a safepoint by virtue of having a map.
     /// </summary>
     public bool SafepointPolls { get; set; }
 
@@ -789,6 +791,7 @@ public sealed class X86Backend : IBackend
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
         int before = errors.Count;
+        if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent);

@@ -47,6 +47,13 @@ public sealed class X64Backend : IBackend
     public bool PositionIndependent { get; set; }
 
     /// <summary>
+    /// A safepoint poll on the back edges of every loop that may not end by
+    /// itself (BackEdgePolls), as the x86 backend's: an image with a
+    /// collector and an operating system to run its threads.
+    /// </summary>
+    public bool SafepointPolls { get; set; }
+
+    /// <summary>
     /// Names a shared library supplies at load time, which a dynamically
     /// linked executable reaches through its GOT rather than by a copy.
     /// </summary>
@@ -361,9 +368,10 @@ public sealed class X64Backend : IBackend
         return $"{(i.Lock ? "lock " : "")}{name}{width} {string.Join(", ", i.Operands)}";
     }
 
-    private static MFunction? Compile(Function f, List<string> errors, bool entry = false, Func<string, bool>? isExternal = null)
+    private MFunction? Compile(Function f, List<string> errors, bool entry = false, Func<string, bool>? isExternal = null)
     {
         int before = errors.Count;
+        if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.Run(f, errors, isExternal);

@@ -68,7 +68,10 @@ static class String {
         Sys.CopyNoOverlap(dst, dstAt, src, srcAt, count);
     }
 
-    // Called by: a + b
+    // Called by: a + b. ALWAYS A NEW STRING, even of an empty one -- where
+    // .NET hands back the other -- as are Substring's and FromInt's: a unit
+    // without these bodies takes each for a fresh block by name
+    // (Escape.AlwaysFresh), and the lifetime pass frees what it made.
     public static string Concat(string a, string b) {
         int la = a.Length;
         int lb = b.Length;

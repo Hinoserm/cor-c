@@ -898,19 +898,26 @@ public sealed partial class Lowering
     /// an atomic add, compare-exchange, and, or or exclusive or of a word is
     /// a call of the runtime's routine for it (Runtime.AtomicAdd386,
     /// AtomicCas386, AtomicBits386), which reads and writes with interrupts
-    /// off on bare metal or under its one lock in a process. An exchange is
-    /// XCHG, which the 386 has. Where the runtime has no such routine -- a
-    /// program of its own with no library -- the instruction stays, and the
-    /// emitted-code audit refuses it.
+    /// off on bare metal or under its one lock in a process. AN EXCHANGE
+    /// TOO (AtomicSwap386), though the 386 has XCHG: under the lock a
+    /// compare-exchange is a read and then a write, and a bare XCHG between
+    /// the two from another thread -- a Monitor's release while a contender
+    /// sets its Asleep bit -- was lost. Not in the lock's own taking and
+    /// giving back (Platform.AtomicsEnter, AtomicsLeave), which are the
+    /// exchanges everything else waits on. Where the runtime has no such
+    /// routine -- a program of its own with no library -- the instruction
+    /// stays, and the emitted-code audit refuses it.
     /// </summary>
     private void EmitAtomic(Opcode op, VReg old, Operand at, params Operand[] values)
     {
-        if (op != Opcode.AtomicSwap && _t == Target.X86 && !_t.X86Profile.Has(X86Feature.I486) && old.Type == IrType.I32)
+        bool takesTheLock = _method is { Name: "AtomicsEnter" or "AtomicsLeave", Owner.Name: "Platform" };
+        if (!(op == Opcode.AtomicSwap && takesTheLock) && _t == Target.X86 && !_t.X86Profile.Has(X86Feature.I486) && old.Type == IrType.I32)
         {
             (string name, int arity) = op switch
             {
                 Opcode.AtomicAdd => ("AtomicAdd386", 2),
                 Opcode.AtomicCas => ("AtomicCas386", 3),
+                Opcode.AtomicSwap => ("AtomicSwap386", 2),
                 _ => ("AtomicBits386", 3),
             };
             if (RuntimeMethod(name, arity) is MethodSymbol routine)

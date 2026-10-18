@@ -706,6 +706,17 @@ static class Runtime
         return was;
     }
 
+    /// An exchange under the same lock, so that it never lands between a
+    /// compare-exchange's read and its write (Lowering.EmitAtomic).
+    public static int AtomicSwap386(nint at, int value)
+    {
+        long held = Platform.AtomicsEnter();
+        int was = (int)Sys.Peek(at);
+        Sys.Poke(at, value);
+        Platform.AtomicsLeave(held);
+        return was;
+    }
+
     public static int AtomicCas386(nint at, int expect, int value)
     {
         long held = Platform.AtomicsEnter();
@@ -1333,9 +1344,12 @@ static class Runtime
         return Sys.Peek(block + Tls.State) == 0 && GcThreads.Owes(block);
     }
 
-    /// A safepoint: the open round answered, if this thread owes it.
+    /// A safepoint: the open round answered, if this thread owes it. What a
+    /// loop's back edge calls when a round is open (BackEdgePolls), the word
+    /// it read read again here.
     public static void Poll()
     {
+        if (GcThreads.Asking == 0) return;
         GcThreads.Park();
     }
 
