@@ -22,7 +22,8 @@ public static class Frontend
         IReadOnlyList<string> paths, string name, bool library,
         IReadOnlyCollection<string>? libraryPaths = null,
         IReadOnlyCollection<string>? symbols = null,
-        IReadOnlyCollection<string>? elsewherePaths = null, int workers = 1, IndexedDeclarations? declarations = null)
+        IReadOnlyCollection<string>? elsewherePaths = null, int workers = 1, IndexedDeclarations? declarations = null,
+        IReadOnlyCollection<string>? classLibraryPaths = null)
     {
         while (true)
         {
@@ -32,7 +33,7 @@ public static class Frontend
             Meter pass = Meter.Start();
             try
             {
-                var done = CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations);
+                var done = CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations, classLibraryPaths);
                 pass.Stop("front:pass-kept");
                 // WHICH TEMPLATES THE UNIT COPIED A BODY OF, for its receipt:
                 // settled with the binding, and taken now.
@@ -56,7 +57,8 @@ public static class Frontend
     private static (CompilationUnit Unit, BindResult Bound)? CompileCore(
         IReadOnlyList<string> paths, string name, bool library,
         IReadOnlyCollection<string>? libraryPaths, IReadOnlyCollection<string>? symbols,
-        IReadOnlyCollection<string>? elsewherePaths, int workers, IndexedDeclarations? declarations)
+        IReadOnlyCollection<string>? elsewherePaths, int workers, IndexedDeclarations? declarations,
+        IReadOnlyCollection<string>? classLibraryPaths)
     {
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("read-sources");
@@ -75,6 +77,16 @@ public static class Frontend
             {
                 fromLibrary.Add(Path.GetFullPath(lib));
             }
+        }
+
+        // WHICH SOURCES ARE THE CLASS LIBRARY ITSELF, the compiler's own
+        // library sources whatever this compile marks as library: a unit
+        // compiled with --lib marks its own files library too, and a part of
+        // a partial type is the class library's or the program's by its file.
+        HashSet<string> classLibrary = new(StringComparer.Ordinal);
+        foreach (string lib in classLibraryPaths ?? Array.Empty<string>())
+        {
+            classLibrary.Add(Path.GetFullPath(lib));
         }
 
         // WHICH SOURCES ARE SOMEBODY ELSE'S CODE: given for their
@@ -180,13 +192,26 @@ public static class Frontend
             declarations.LibrarySide = path => every || fromLibrary.Contains(Path.GetFullPath(path));
         }
         declarations?.AddHeaders(unit);
+        // WHAT THE INDEX BROUGHT IS LIBRARY CODE BY ITS FILE, as what was
+        // parsed is: one of this compile's library files, or the class
+        // library's. Left the program's, the runtime's own `Scheduler` parts
+        // met as two types in its units, and a program's own Clock was not
+        // moved aside for the runtime's.
+        foreach (TypeDecl indexed in unit.Types)
+        {
+            if (!indexed.FromLibrary && indexed.SignatureOnly && indexed.Elsewhere && indexed.SourcePath is string at
+                && (fromLibrary.Contains(Path.GetFullPath(at)) || classLibrary.Contains(Path.GetFullPath(at))))
+            {
+                indexed.FromLibrary = true;
+            }
+        }
         if (declarations is not null)
             unit.Types.Sort((left, right) =>
             {
                 int path = StringComparer.Ordinal.Compare(left.SourcePath, right.SourcePath);
                 return path != 0 ? path : left.SourceFrom.CompareTo(right.SourceFrom);
             });
-        MergePartialTypes(unit);
+        MergePartialTypes(unit, classLibrary);
 
         // BEFORE ANYTHING IS BOUND, because a declared setting is not
         // storage: the fields under a [Registry] class become properties
@@ -844,14 +869,23 @@ public static class Frontend
     /// overload set, and one constructor-initialiser sequence. Non-partial
     /// duplicates stay separate so the binder reports them normally.
     /// </summary>
-    private static void MergePartialTypes(Lang.CompilationUnit unit)
+    private static void MergePartialTypes(Lang.CompilationUnit unit, HashSet<string> classLibrary)
     {
         Dictionary<string, Lang.TypeDecl> first = new(StringComparer.Ordinal);
         List<Lang.TypeDecl> merged = new();
 
         foreach (Lang.TypeDecl part in unit.Types)
         {
-            string key = Lang.Binder.TypeKey(part);
+            // THE LIBRARY'S PARTS AND THE PROGRAM'S APART, by the file each
+            // came from -- not by how this compile marks it: a --lib unit of a
+            // program marks its own part library and the part the index
+            // brought from the program's next file not, and the two are one
+            // type. A program's own `Os` sorted before the runtime's two
+            // parts kept them from each other, and both were declared twice.
+            bool libraryPart = classLibrary.Count == 0
+                ? part.FromLibrary
+                : part.File == "<prelude>" || part.SourcePath is string at && classLibrary.Contains(at);
+            string key = Lang.Binder.TypeKey(part) + (libraryPart ? "\0library" : "");
 
             if (!first.TryGetValue(key, out Lang.TypeDecl? into))
             {
@@ -865,8 +899,6 @@ public static class Frontend
             // aside (TypeDecl.MovedAside), however it is declared.
             bool compatible = into.Mods.HasFlag(Lang.Mods.Partial)
                 && part.Mods.HasFlag(Lang.Mods.Partial)
-                && into.FromLibrary == part.FromLibrary
-                && Lang.Binder.ClassLibrarySide(into) == Lang.Binder.ClassLibrarySide(part)
                 && into.Kind == part.Kind
                 && into.TypeParams.Count == part.TypeParams.Count
                 && into.TypeParams.Zip(part.TypeParams)
@@ -888,6 +920,7 @@ public static class Frontend
 
             into.Members.AddRange(part.Members);
             into.Mods |= part.Mods;
+            into.FromLibrary |= part.FromLibrary;
             into.SignatureOnly &= part.SignatureOnly;
 
             // AN IMPORTED TEMPLATE'S BODIES ARE THE MERGED TYPE'S NOW, so a
@@ -902,6 +935,51 @@ public static class Frontend
 
         unit.Types.Clear();
         unit.Types.AddRange(merged);
+        foreach (Lang.TypeDecl type in merged) MergePartialMethods(type);
+    }
+
+    /// <summary>
+    /// A PARTIAL METHOD IS ONE METHOD (C# 15.6.9): its declaration and its
+    /// implementation, met as two members once the type's parts are one,
+    /// become the implementation; a declaration with no implementation
+    /// anywhere is a method that does nothing, and calls of it are dropped
+    /// (MethodDecl.PartialWithoutBody). Two of them made two methods of one
+    /// signature, and one of them had no body to emit.
+    /// </summary>
+    private static void MergePartialMethods(Lang.TypeDecl type)
+    {
+        Dictionary<string, Lang.MethodDecl>? seen = null;
+        List<Lang.MemberDecl>? dropped = null;
+        foreach (Lang.MemberDecl member in type.Members)
+        {
+            if (member is not Lang.MethodDecl method || !method.Mods.HasFlag(Lang.Mods.Partial)) continue;
+            string key = method.Name + "`" + method.TypeParams.Count + "(" + string.Join(",", method.Params.Select(p =>
+                (p.IsOut ? "out " : p.IsRef ? "ref " : p.IsReadOnlyRef ? "in " : "") + p.Type)) + ")";
+            seen ??= new Dictionary<string, Lang.MethodDecl>(StringComparer.Ordinal);
+            if (!seen.TryGetValue(key, out Lang.MethodDecl? other))
+            {
+                seen[key] = method;
+                continue;
+            }
+            // The one with the body; else another unit's (read from the
+            // index, its body there), which may well have one.
+            Lang.MethodDecl implementation = method.Body is not null ? method
+                : other.Body is not null ? other
+                : method.OwnedImplementation == false ? method : other;
+            Lang.MethodDecl declaration = ReferenceEquals(implementation, method) ? other : method;
+            (dropped ??= new()).Add(declaration);
+            seen[key] = implementation;
+        }
+        if (seen is null) return;
+        if (dropped is not null) type.Members.RemoveAll(m => dropped.Contains(m));
+        foreach (Lang.MethodDecl lone in seen.Values)
+        {
+            if (lone.Body is null && lone.OwnedImplementation != false && type.Kind != Lang.TypeKind.Interface)
+            {
+                lone.Body = new Lang.Block { Line = lone.Line, Col = lone.Col };
+                lone.PartialWithoutBody = true;
+            }
+        }
     }
 }
 

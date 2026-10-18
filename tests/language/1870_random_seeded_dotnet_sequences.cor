@@ -1,0 +1,153 @@
+// test: Random reproduces .NET's seeded NextInt64, Shuffle and GetItems, through overrides as .NET does
+// expect-exit: 0
+// expect-output:
+// 1434747710 1 5 4602883861542696184
+// 6681488181179016144 779 3 1050932635
+// 191,58,111,183,77,37
+// 85,23,93,204,110
+// 4,2,5,1,6,3
+// 40,10,30,20,50
+// a,b,c,a,b
+// 10,9,8,7
+// 7,7,10
+// 0 0 5 5
+// -4612422864037472292 5978091248091183035 664719636035
+// -1107915561 0 3 1349615394
+// 822959691 482031711295365459 1559595546
+// derived 1434747710 1 5 4602883861542696184
+// derived 6681488181179016144 779 3 1050932635
+// derived 191,58,111,183,77,37
+// derived 85,23,93,204,110
+// sample 5 0 0.5 0.5 512 0
+// sample 534011718 4611690416474947584
+// sample 208,134,130,64,151
+// next 7,7,7,7,7
+// shared True True
+// unseeded True True
+// maxValue ('-1') must be a non-negative value. (Parameter 'maxValue')
+// Actual value was -1.
+// 'minValue' cannot be greater than maxValue. (Parameter 'minValue')
+// maxValue ('-1') must be a non-negative value. (Parameter 'maxValue')
+// Actual value was -1.
+// 'minValue' cannot be greater than maxValue. (Parameter 'minValue')
+// Value cannot be null. (Parameter 'buffer')
+// Value cannot be null. (Parameter 'values')
+// Value cannot be null. (Parameter 'choices')
+// Span may not be empty. (Parameter 'choices')
+// length ('-1') must be a non-negative value. (Parameter 'length')
+// Actual value was -1.
+//
+// EVERY NUMBER HERE CAME FROM .NET, running this same program: a seeded
+// Random is a promise that a replay gets the same numbers, so the test is
+// that they are .NET's, not merely good ones. NextInt64 builds its 64 bits
+// from three Next(int) draws of 22, 22 and 20 bits, lowest first, and narrows
+// a bound by taking only the top bits that hold it and drawing again on a
+// miss; Shuffle walks Fisher-Yates with Next(i, n), GetItems draws
+// Next(choices.Length) apiece. Doubles and floats are printed as their bits.
+//
+// A CLASS DERIVED FROM RANDOM gets the same numbers from the same seed, and
+// its overrides are reached where .NET reaches them: Sample answers
+// Next(maxValue), Next(min, max), NextDouble, NextSingle and the NextInt64
+// family but not Next() or NextBytes(byte[]); Next() answers
+// NextBytes(Span<byte>). Random.Shared and an unseeded Random are checked
+// only for their bounds and for differing, so no number of theirs is printed.
+
+using System;
+
+// Only a seed: every member must give what the base class gives.
+class Plain : Random
+{
+    public Plain(int seed) : base(seed) { }
+}
+
+// Sample replaced: what is defined over it follows; Next() does not.
+class Halves : Random
+{
+    public Halves(int seed) : base(seed) { }
+    protected override double Sample() { return 0.5; }
+}
+
+// Next() replaced, and no seed: NextBytes(Span<byte>) goes through it.
+class Sevens : Random
+{
+    public Sevens() : base() { }
+    public override int Next() { return 0x107; }
+}
+
+class Program
+{
+    static string Bytes(byte[] b) { return string.Join(",", b); }
+
+    static int Main()
+    {
+        var r = new Random(42);
+        Console.WriteLine(r.Next() + " " + r.Next(10) + " " + r.Next(5, 9) + " " + BitConverter.DoubleToInt64Bits(r.NextDouble()));
+        Console.WriteLine(r.NextInt64() + " " + r.NextInt64(1000) + " " + r.NextInt64(-5, 5) + " " + BitConverter.SingleToInt32Bits(r.NextSingle()));
+        var b = new byte[6]; r.NextBytes(b); Console.WriteLine(Bytes(b));
+        var s = new byte[5]; r.NextBytes(s.AsSpan()); Console.WriteLine(Bytes(s));
+        int[] arr = { 1, 2, 3, 4, 5, 6 }; r.Shuffle(arr); Console.WriteLine(string.Join(",", arr));
+        int[] spanned = { 10, 20, 30, 40, 50 }; r.Shuffle(spanned.AsSpan()); Console.WriteLine(string.Join(",", spanned));
+        Console.WriteLine(string.Join(",", r.GetItems(new[] { 'a', 'b', 'c' }, 5)));
+        ReadOnlySpan<int> choices = new[] { 7, 8, 9, 10 };
+        Console.WriteLine(string.Join(",", r.GetItems(choices, 4)));
+        var into = new int[3]; r.GetItems(choices, into.AsSpan()); Console.WriteLine(string.Join(",", into));
+        Console.WriteLine(r.NextInt64(0) + " " + r.NextInt64(1) + " " + r.NextInt64(5, 5) + " " + r.NextInt64(5, 6));
+        Console.WriteLine(r.NextInt64(long.MinValue, long.MaxValue) + " " + r.NextInt64(long.MaxValue) + " " + r.NextInt64(1L << 40));
+        Console.WriteLine(r.Next(int.MinValue, int.MaxValue) + " " + r.Next(0) + " " + r.Next(3, 3) + " " + r.Next());
+
+        var n = new Random(-7);
+        Console.WriteLine(n.Next() + " " + n.NextInt64() + " " + new Random(int.MinValue).Next());
+
+        var p = new Plain(42);
+        Console.WriteLine("derived " + p.Next() + " " + p.Next(10) + " " + p.Next(5, 9) + " " + BitConverter.DoubleToInt64Bits(p.NextDouble()));
+        Console.WriteLine("derived " + p.NextInt64() + " " + p.NextInt64(1000) + " " + p.NextInt64(-5, 5) + " " + BitConverter.SingleToInt32Bits(p.NextSingle()));
+        p.NextBytes(b); Console.WriteLine("derived " + Bytes(b));
+        p.NextBytes(s.AsSpan()); Console.WriteLine("derived " + Bytes(s));
+
+        var h = new Halves(1);
+        Console.WriteLine("sample " + h.Next(10) + " " + h.Next(-10, 10) + " " + h.NextDouble() + " " + h.NextSingle() + " " + h.NextInt64(1000) + " " + h.NextInt64(-8, 8));
+        Console.WriteLine("sample " + h.Next() + " " + h.NextInt64());
+        h.NextBytes(s); Console.WriteLine("sample " + Bytes(s));
+
+        var sv = new Sevens();
+        sv.NextBytes(s.AsSpan()); Console.WriteLine("next " + Bytes(s));
+
+        var shared = Random.Shared;
+        bool inRange = true;
+        for (int i = 0; i < 1000; i++)
+        {
+            int x = shared.Next(3, 7);
+            long y = shared.NextInt64(-4, 4);
+            double d = shared.NextDouble();
+            float f = shared.NextSingle();
+            if (x < 3 || x >= 7 || y < -4 || y >= 4 || d < 0 || d >= 1 || f < 0 || f >= 1) { inRange = false; }
+        }
+        Console.WriteLine("shared " + inRange + " " + (Random.Shared == shared));
+
+        // Two made back to back must not walk in step: sixty-four bits apiece
+        // from each, which agree by chance once in 2^64.
+        var u = new Random();
+        var v = new Random();
+        bool unseeded = true;
+        for (int i = 0; i < 1000; i++)
+        {
+            int x = u.Next();
+            int m = u.Next(13);
+            long y = u.NextInt64(1L << 50);
+            float f = u.NextSingle();
+            if (x < 0 || x == int.MaxValue || m < 0 || m >= 13 || y < 0 || y >= (1L << 50) || f < 0 || f >= 1) { unseeded = false; }
+        }
+        Console.WriteLine("unseeded " + unseeded + " " + (u.NextInt64() != v.NextInt64() || u.Next() != v.Next()));
+
+        try { r.Next(-1); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        try { r.Next(5, 1); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        try { r.NextInt64(-1); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        try { r.NextInt64(5, 1); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        try { r.NextBytes((byte[])null!); } catch (ArgumentNullException e) { Console.WriteLine(e.Message); }
+        try { r.Shuffle((int[])null!); } catch (ArgumentNullException e) { Console.WriteLine(e.Message); }
+        try { r.GetItems((int[])null!, 2); } catch (ArgumentNullException e) { Console.WriteLine(e.Message); }
+        try { r.GetItems(new int[0], 2); } catch (ArgumentException e) { Console.WriteLine(e.Message); }
+        try { r.GetItems(new[] { 1 }, -1); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        return 0;
+    }
+}

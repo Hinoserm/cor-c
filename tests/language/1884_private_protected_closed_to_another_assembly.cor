@@ -1,0 +1,21 @@
+// test: private_protected_closed_to_another_assembly
+// expect-compile-error: no constructor of 'Random' accepts (bool)
+//
+// THE LIBRARY'S PRIVATE PROTECTED IS NOT THE PROGRAM'S (C# 7.2): a class of
+// the program derived from Random does not see Random(bool), the
+// constructor Random.Shared's own class calls, any more than .NET's does.
+
+using System;
+
+class Rand : Random
+{
+    public Rand() : base(true) { }
+}
+
+static class P
+{
+    static void Main()
+    {
+        Console.WriteLine(new Rand().Next(1));
+    }
+}

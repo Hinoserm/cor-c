@@ -1,0 +1,32 @@
+// test: program_types_named_like_runtime_types
+// expect-exit: 0
+// expect-output:
+// 5 mine 3 1970 False
+// lambda mine 3
+// library 2 True
+//
+// A PROGRAM'S OWN TYPE NAMED LIKE ONE OF THE RUNTIME'S -- Clock, Os, Gc --
+// is the program's in the program and the runtime's in the runtime: the
+// runtime's own code, a lambda of the class library's among it, still
+// reaches its Os, and the program's code reaches its own.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Clock { public int Ticks = 5; }
+class Os { public static string Name => "mine"; }
+class Gc { public static int Count => 3; }
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(new Clock().Ticks + " " + Os.Name + " " + Gc.Count + " " + DateTime.UnixEpoch.Year + " " + System.IO.File.Exists("/nonexistent/x"));
+        Func<string> f = () => Os.Name;
+        List<int> xs = new List<int> { 1, 2, 3, 4 };
+        Console.WriteLine("lambda " + f() + " " + xs.Where(x => x > Gc.Count - 2).Count());
+        GC.Collect();
+        Console.WriteLine("library " + xs.Select(x => x * 2).Skip(1).First() / 2 * 1.5 / 1.5 + " " + (DateTime.UtcNow.Year > 2000));
+    }
+}

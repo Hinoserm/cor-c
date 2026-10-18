@@ -930,8 +930,9 @@ public sealed partial class Escape
             }
             bool Fits(long o) => o >= 0 && (r.Bytes < 0 || o + word <= r.Bytes);
             List<long> clean = fs.Clean().Where(Fits).OrderBy(o => o).ToList();
+            bool headerless = HeaderlessSlot(f, r);
             if (FieldTrace is { } traced && f.Name.Contains(traced, StringComparison.Ordinal))
-                Console.Error.WriteLine($"field trace: {f.Name} {r.Origin} slot={r.Slot?.Name} opaque={fs.Opaque} fresh=[{string.Join(",", fs.FreshStored.Order())}] dirty=[{string.Join(",", fs.Dirty.Order())}] clean=[{string.Join(",", clean)}] why={fs.Why}"
+                Console.Error.WriteLine($"field trace: {f.Name} {r.Origin} slot={r.Slot?.Name} headerless={headerless} opaque={fs.Opaque} fresh=[{string.Join(",", fs.FreshStored.Order())}] dirty=[{string.Join(",", fs.Dirty.Order())}] clean=[{string.Join(",", clean)}] why={fs.Why}"
                     + string.Concat((fs.DirtyWhy ?? new()).Where(kv => fs.FreshStored.Contains(kv.Key) || FieldTraceAll).OrderBy(kv => kv.Key).Select(kv => $"\n    +{kv.Key}: {kv.Value}")));
             // The fields only the link can call clean: those some code filled
             // with fresh objects -- or will have, if another unit's function
@@ -957,9 +958,22 @@ public sealed partial class Escape
             }
             if (clean.Count == 0 && later.Count == 0) continue;
 
+            // A FRAME SLOT WITH NO DESCRIPTOR -- a struct's bytes, its fields
+            // from the first word -- has nothing FreeField may read for its
+            // element map (Runtime.OwnsArrayElements), and a struct's first
+            // field read as one faulted. Its fields' objects go by
+            // FreeOwnedReplaced, which reads only what it frees, and none is
+            // left to the link, whose sites are FreeField's.
+            if (headerless)
+            {
+                if (!_headerlessFreer) continue;
+                later.Clear();
+                if (clean.Count == 0) continue;
+            }
+
             // A field the link decides is freed through a symbol of its own,
             // which the link makes Runtime.FreeField or Runtime.KeepField.
-            List<(long Offset, string Callee)> frees = clean.Select(o => (o, FieldFreer)).ToList();
+            List<(long Offset, string Callee)> frees = clean.Select(o => (o, headerless ? OwnedReplacedFreer : FieldFreer)).ToList();
             if (later.Count > 0)
             {
                 List<(string Symbol, long Offset)> sites = later.Select(o => (FieldSiteSymbol(f), o)).ToList();
@@ -1062,8 +1076,36 @@ public sealed partial class Escape
     private static void AppendFieldFree(Function f, List<Instr> output, VReg owner, long offset, int line, string callee = FieldFreer)
     {
         VReg argument = Word(f, output, owner, line, "fieldOwner");
+        // An owner with no descriptor (OwnFields): what the field holds, read
+        // here and given back as a replaced owned field's is.
+        if (callee == OwnedReplacedFreer)
+        {
+            VReg held = f.NewReg(IrTypes.Word, "fieldheld");
+            output.Add(new Instr { Op = Opcode.Load, Dest = held, Offset = offset, Size = IrTypes.Word.Bytes(), Operands = { RegOperand.Of(argument) }, Line = line });
+            output.Add(new Instr { Op = Opcode.Call, Callee = OwnedReplacedFreer,
+                Operands = { RegOperand.Of(held), new ImmOperand(0, IrTypes.Word) }, Line = line });
+            return;
+        }
         output.Add(new Instr { Op = Opcode.Call, Callee = callee,
             Operands = { RegOperand.Of(argument), new ImmOperand(offset, IrTypes.Word) }, Line = line });
+    }
+
+    /// <summary>
+    /// Whether a record is a frame slot that holds no descriptor -- a
+    /// struct's bytes from its first word. A heap or region owner says by
+    /// its block's kind whether it has one (Runtime.FreeField asks); a frame
+    /// slot has no block, and FreeField takes one handed to it for an object.
+    /// </summary>
+    private static bool HeaderlessSlot(Function f, OwnedRecord r)
+    {
+        if (r.Slot is null || r.SlotAddress is null) return false;
+        HashSet<VReg> names = Derivations(f, new[] { r.Root, r.SlotAddress });
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count == 2 && i.Operands[1] is SymOperand { Name: var table } && IsDescriptor(table)
+                    && (i.Operands[0] is SlotOperand { Slot: var into } && into == r.Slot || i.Operands[0] is RegOperand { Reg: var at } && names.Contains(at)))
+                    return false;
+        return true;
     }
 
     /// <summary>The registers holding what the given ones hold, or an address inside it.</summary>

@@ -1808,8 +1808,9 @@ public sealed partial class Binder
 
     private TypeSymbol? ConstantOwner(Expr expression)
     {
+        // `double.NaN`: the keyword is the type it names, Double.
         if (expression is NameExpr name)
-            return FindType(name.Name, out TypeSymbol? owner) ? owner : null;
+            return FindType(name.Name, out TypeSymbol? owner) || Alias(name.Name) is string spelt && FindType(spelt, out owner) ? owner : null;
         if (expression is MemberExpr member)
         {
             // A NAMESPACE-QUALIFIED TYPE: the `Corsac.Lang.Elf.Elf` of
@@ -2106,7 +2107,10 @@ public sealed partial class Binder
     // C# 10.2.11: an int constant into sbyte, byte, short, ushort, uint or
     // ulong when it fits -- never char, which no number becomes implicitly --
     // and a long constant into ulong when it is not negative.
-    private static bool ConstantConverts(Type from, long value, Type to) => to.Prim != Prim.Char && from.Prim switch
+    // AND THE CONSTANT NOUGHT, of any integral type, into every enum (10.2.4).
+    private static bool ConstantConverts(Type from, long value, Type to) => to.Symbol is { Kind: TypeKind.Enum }
+        ? value == 0 && from.IsInteger && from.Symbol is null && from.Prim != Prim.Char
+        : to.Prim != Prim.Char && from.Prim switch
     {
         Prim.I32 => to.Prim == Prim.U64 ? value >= 0 : Fits(value, to),
         Prim.I64 => to.Prim == Prim.U64 && value >= 0,
@@ -2128,7 +2132,7 @@ public sealed partial class Binder
             return false;
         }
         Type target = want.IsNullableValue ? want.Underlying : want;
-        if (target.IsInteger && target.Symbol is null && !target.Nullable && ConstantConverts(had, value, target)) return true;
+        if (target.IsInteger && (target.Symbol is null || target.Symbol.Kind == TypeKind.Enum) && !target.Nullable && ConstantConverts(had, value, target)) return true;
         return target.Symbol is not null && UserConversion(had, target, false, value) is not null;
     }
 
@@ -3770,6 +3774,7 @@ public sealed partial class Binder
     /// <summary>Whether a type was written in the class library's own sources (stdlib, runtime).</summary>
     private static bool IsClassLibrary(TypeDecl d) => d.SourcePath is string path && LibrarySource is { } isLibrary && isLibrary(path);
 
+
     /// <summary>Whether a type was written in the program's own sources: a file, and not the class library's (the prelude's are neither).</summary>
     private static bool IsProgramSource(TypeDecl d) => d.SourcePath is string path && LibrarySource is { } isLibrary && !isLibrary(path);
 
@@ -3784,9 +3789,12 @@ public sealed partial class Binder
     /// entry unit, named in a signature another unit calls through, was a
     /// second library Random in that unit -- "declared more than once" --
     /// and a unit's own one was the same, where the whole program moves
-    /// either aside.
+    /// either aside. By its file where that is known, the class library's
+    /// files or the program's whatever this compile marks; by the mark the
+    /// front end gave it otherwise.
     /// </summary>
-    internal static bool ClassLibrarySide(TypeDecl d) => d.FromLibrary && !IsProgramSource(d);
+    internal static bool ClassLibrarySide(TypeDecl d)
+        => d.SourcePath is string path && LibrarySource is { } isLibrary ? isLibrary(path) : d.FromLibrary;
 
     /// <summary>Whether a field declaration carries [ThreadStatic], however it is spelt.</summary>
     internal static bool IsThreadStatic(FieldDecl f)
@@ -7798,6 +7806,15 @@ public sealed partial class Binder
             return true;
         }
 
+        // NOTHING ELSE BECOMES AN ENUM without a cast (C# 10.2.4): not an int,
+        // not a char, not another enum -- only the constant nought, which the
+        // constant conversion takes (ConstantConverts). `F(2)` for an F(E)
+        // was E's third member, where C# refuses it.
+        if (to.Symbol is { Kind: TypeKind.Enum })
+        {
+            return false;
+        }
+
         // Widening only. A narrowing conversion loses information and must be
         // written as a cast so it is visible at the point it happens.
         if (from.IsInteger && to.IsInteger)
@@ -8416,7 +8433,14 @@ public sealed partial class Binder
             _r.Closures[lam] = sharedClosure;
             return wanted;
         }
-        TypeDecl decl = new() { Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col };
+        // THE LIBRARY'S OWN WHERE IT WAS WRITTEN IN THE LIBRARY: its body
+        // names what the code around it names, and a program's own `Os`
+        // stood for the runtime's inside a lambda of Forms.
+        TypeDecl decl = new()
+        {
+            Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col,
+            FromLibrary = _thisType?.Decl?.FromLibrary == true, SourcePath = _thisType?.Decl?.SourcePath,
+        };
 
         // KEYED UNDER THE TYPE THE LAMBDA WAS WRITTEN IN, so that names inside
         // its body are looked up from where they were written. A closure is a
@@ -10684,7 +10708,9 @@ public sealed partial class Binder
         if (had.IsInteger && !had.Nullable)
         {
             // ulong.ToString() is not long.ToString(): see String.FromUInt.
-            bool unsigned = had.Prim is Prim.U64 || (had.Prim is Prim.NUInt && Target.Current.WordSize == 8);
+            // A nuint goes there whatever its width: it widens to ulong and
+            // to no long.
+            bool unsigned = had.Prim is Prim.U64 or Prim.NUInt;
 
             return Call("String", unsigned ? "FromUInt" : "FromInt", call, spelt.Target);
         }
@@ -12679,7 +12705,7 @@ public sealed partial class Binder
             }
 
             FieldSymbol? field = owner.FindField(init.Name)
-                              ?? owner.FindBackingField(init.Name);
+                              ?? BackingField(owner, init.Name);
 
             // `Name = { … }` -- the member is READ and what it holds is filled
             // in, so a get-only property is enough and no assignment happens.
@@ -14691,7 +14717,20 @@ public sealed partial class Binder
                         MethodSymbol? setter = getter.Owner
                             .FindMethods("set_", propertyName)
                             .FirstOrDefault(m => m.Params.Count == 1);
-                        if (setter == null)
+                        // A GET-ONLY VIRTUAL AUTO-PROPERTY is set in its own
+                        // class's constructor, and that is a store into its
+                        // field (C# 15.7.4): reads call the accessor, which a
+                        // class below may override (BackingField), but there
+                        // is no setter to call.
+                        if (setter == null && getter.Decl is { AutoAccessor: true } && _method is { IsCtor: true, Static: false } ctor
+                            && ctor.Owner == getter.Owner && a.Target is NameExpr or MemberExpr { Target: ThisExpr }
+                            && getter.Owner.FindBackingField(propertyName) is { } backing && backing.Owner == getter.Owner)
+                        {
+                            _r.Resolved[a.Target] = new FieldSym(backing);
+                            if (a.Op is not null) _r.BackingReads[a] = getter;
+                            target = backing.Type;
+                        }
+                        else if (setter == null)
                         {
                             Error(a.Target, $"property '{propertyName}' has no setter");
                         }
@@ -14757,7 +14796,10 @@ public sealed partial class Binder
                     // assignment: its pointee's Prim is no number of its own.
                     bool ok = target.IsPointer || value.IsPointer
                         ? target.IsPointer && a.Op is BinOp.Add or BinOp.Sub && !value.IsPointer && !value.IsNullableValue && value.IsInteger
-                        : target.IsNumeric && value.IsNumeric;
+                        : target.IsNumeric && value.IsNumeric
+                          // `n += null` over an int?: empty after (Combine).
+                          || target.IsNumeric && target.IsNullableValue && value.Prim == Prim.NullLiteral
+                             && a.Op is not (BinOp.AndAlso or BinOp.OrElse or BinOp.Coalesce);
 
                     // `bool` supports the non-short-circuiting bitwise pair in
                     // C#, including their compound-assignment forms. This is
@@ -14769,8 +14811,13 @@ public sealed partial class Binder
                         ok = true;
                     }
 
+                    // A STRING += IS CONCATENATION, unless y's type declares a
+                    // `+` the string reaches: C# prefers a user-defined
+                    // operator to its own (12.4.5), as `text + note` already
+                    // calls Note's here, so `text += note` calls it too.
                     if (a.Op is BinOp.Add && target.Prim == Prim.String)
                     {
+                        OperatorCompound(a, target, value);
                         ok = true;
                     }
 
@@ -14787,6 +14834,29 @@ public sealed partial class Binder
                         _r.DelegateCompounds[a] = synthesised;
                     }
 
+                    // AN OPERATOR A TYPE DECLARED: `total += span` over a
+                    // TimeSpan, `when -= TimeSpan.FromDays(1)` on a DateTime,
+                    // a struct's own. C# 12.21.4 reads `x op= y` as `x = x op y`
+                    // with x evaluated once: the operator is chosen by ordinary
+                    // overload resolution, y reaching its operand by any
+                    // implicit conversion, op_Implicit included.
+                    if (!ok && OperatorCompound(a, target, value))
+                    {
+                        ok = true;
+                    }
+
+                    // A NUMBER'S OWN OPERATOR, y reaching it by a conversion
+                    // its type declares: `total += money` is `total = (int)
+                    // (total + (int)money)` (C# 12.21.4), and what y converts
+                    // to must be something x takes as it is, unless the
+                    // operator is a shift.
+                    if (!ok && target.IsNumeric && !value.IsNumeric && NumericConversion(value) is MethodSymbol numeric
+                        && (a.Op is BinOp.Shl or BinOp.Shr or BinOp.UShr || StandardConvertible(numeric.Returns, target)))
+                    {
+                        ConvertByOperator(a.Value, numeric);
+                        ok = true;
+                    }
+
                     if (!ok)
                     {
                         Error(a, $"cannot apply compound assignment to '{target}' and '{value}'");
@@ -14798,7 +14868,13 @@ public sealed partial class Binder
                 // the expression is the value just written, and C# reads it
                 // with the null state that value has. `MReg Got() => got ??=
                 // m.NewReg();` is the shape: the variable is an `MReg?`, what
-                // it now holds is an MReg, and the method returns one.
+                // it now holds is an MReg, and the method returns one. Through
+                // a declared operator, what was put there is what it made,
+                // null state and all (OperatorCompound).
+                if (a.Op is not null && target.IsReference && _r.OperatorCompounds.TryGetValue(a, out CompoundOperator? declared))
+                {
+                    return declared.Stored.Nullable ? target.AsNullable() : target.AsNonNullable();
+                }
                 if (target.IsReference && target.Nullable
                     && !value.Nullable && value.Prim != Prim.NullLiteral && !value.IsError)
                 {
@@ -14910,7 +14986,20 @@ public sealed partial class Binder
                 // without this the zero stayed an int, `uint | int` widened to
                 // long to hold both, and the flags word would not go back into
                 // the uint it came from.
-                if (a2.IsInteger && b2.IsInteger && !a2.Equals(b2))
+                // AN ENUM AGAINST A CONSTANT NOUGHT IS THE ENUM, the one
+                // constant C# converts to every enum (10.2.4), and the enum
+                // goes to no number by itself: `c ? 0 : Color.Blue` is a
+                // Color, Red when c holds. Any other number against an enum
+                // is no conversion at all and is refused below.
+                bool enumA = a2.Symbol is { Kind: TypeKind.Enum } && !a2.IsNullableValue;
+                bool enumB = b2.Symbol is { Kind: TypeKind.Enum } && !b2.IsNullableValue;
+                if (enumA != enumB)
+                {
+                    if (enumA && b2.IsInteger && ConstantValue(c2.Else, _thisType) is 0) return a2;
+                    if (enumB && a2.IsInteger && ConstantValue(c2.Then, _thisType) is 0) return b2;
+                }
+
+                if (a2.IsInteger && b2.IsInteger && !a2.Equals(b2) && !enumA && !enumB)
                 {
                     if (ConstantValue(c2.Else, _thisType) is long otherwise && Fits(otherwise, a2))
                     {
@@ -14938,8 +15027,42 @@ public sealed partial class Binder
                         {
                             CheckAssignable(had, whole, arm, "arm");
                         }
+                        // AND AN ARM THAT REACHES THE WHOLE ONLY BY A
+                        // USER-DEFINED CONVERSION is converted by its operator,
+                        // as an assignment converts it: `n == 0 ? 1 : big` is a
+                        // BigInteger, and its 1 must become one rather than be
+                        // read as one. The operator may be on either side:
+                        // `c ? meters : 1.5` is a double by Meters' operator to
+                        // double, and the struct must not be read as one either.
+                        else if (!had.IsError && !whole.IsError && (whole.Symbol is not null || had.Symbol is not null)
+                                 && !StandardConvertible(had, whole) && !Variant(had, whole))
+                        {
+                            CheckAssignable(had, whole, arm, "arm");
+                        }
+                        // AND A STRING ARM OF A SEQUENCE-TYPED WHOLE gives up
+                        // its characters as an assignment has it give them:
+                        // `c ? "abc" : list` as an IEnumerable<char> was the
+                        // string handed over as the sequence it is not here.
+                        else if (had.Prim == Prim.String && !had.IsArray && !whole.IsArray
+                                 && ArrayFace(Type.ArrayOf(Type.Char), whole) is not null)
+                        {
+                            CheckAssignable(had, whole, arm, "arm");
+                        }
                     }
                     return whole;
+                }
+
+                // TWO TYPES THAT EACH CONVERT TO THE OTHER, one way at least by
+                // a user-defined operator, give no natural type (C# 12.18), and
+                // the conditional is the type it is wanted as: `Two w = c ? two
+                // : 9` keeps its Two whole and converts only the 9, where taking
+                // the first direction would send the Two out to an int and back.
+                if (_wanted is { IsError: false, IsVoid: false } either && !a2.Equals(b2)
+                    && (either.Equals(a2) || either.Equals(b2))
+                    && Convertible(a2, b2) && Convertible(b2, a2)
+                    && (!StandardConvertible(a2, b2) || !StandardConvertible(b2, a2)))
+                {
+                    return Joined(either);
                 }
 
                 if (Convertible(a2, b2))
@@ -15116,6 +15239,12 @@ public sealed partial class Binder
                 // view that answers Count and the indexer is made here as it is
                 // where the conversion is implicit.
                 ArrayBecomes(cast.Operand, operand, wanted);
+                // So is `(IEnumerable<char>)text`: the string gives up its
+                // characters as it does where it is assigned.
+                if (operand.Prim == Prim.String && !operand.IsArray && !wanted.IsArray && ArrayFace(Type.ArrayOf(Type.Char), wanted) is not null)
+                {
+                    CheckAssignable(operand, wanted, cast.Operand, "cast");
+                }
                 return wanted;
             }
 
@@ -16955,7 +17084,7 @@ public sealed partial class Binder
                 return Type.String;
             }
 
-            FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindBackingField(n.Name);
+            FieldSymbol? f = _thisType.FindField(n.Name) ?? BackingField(_thisType, n.Name);
             if (f is not null && NotInvocable(n, f.Type)) f = null;
 
             // NO INSTANCE IN A STATIC METHOD (C#'s CS0120). A static method
@@ -17136,7 +17265,7 @@ public sealed partial class Binder
         if (_capturedThisType is not null && _capturedThisField is not null)
         {
             FieldSymbol? outerField = _capturedThisType.FindField(n.Name)
-                                   ?? _capturedThisType.FindBackingField(n.Name);
+                                   ?? BackingField(_capturedThisType, n.Name);
             if (outerField is not null && !NotInvocable(n, outerField.Type))
             {
                 _r.Resolved[n] = new CapturedFieldSym(_capturedThisField, outerField);
@@ -17350,6 +17479,36 @@ public sealed partial class Binder
         "Type"   => "SystemType",
         _        => null,
     };
+
+    /// <summary>
+    /// The backing field a use of the auto-property `name` through `owner`
+    /// reads and writes in place of calling its accessors, which is every use
+    /// but one a class below may take over: a virtual property's, or an
+    /// override's that is not sealed. Those call the accessor, which
+    /// dispatches -- `b.N = 2` on a Derived whose N counts its writes stored
+    /// Base's field and never ran Derived's setter. Reaching it through
+    /// `base.` (nonVirtual) is a call of Base's own accessor, and the field
+    /// is that; so are the property's own accessors, which are what reads
+    /// and writes it.
+    /// </summary>
+    private FieldSymbol? BackingField(TypeSymbol owner, string name, bool nonVirtual = false)
+    {
+        FieldSymbol? field = owner.FindBackingField(name);
+        if (field is null or { Static: true } || nonVirtual)
+        {
+            return field;
+        }
+        MethodSymbol? accessor = field.Owner.FindMethods("get_", name).FirstOrDefault(g => g.Owner == field.Owner && g.Params.Count == 0)
+                              ?? field.Owner.FindMethods("set_", name).FirstOrDefault(s => s.Owner == field.Owner && s.Params.Count == 1);
+        if (accessor is not { Virtual: true } and not { Override: true }
+            || accessor.Decl?.Mods.HasFlag(Mods.Sealed) == true || field.Owner.Decl?.Mods.HasFlag(Mods.Sealed) == true)
+        {
+            return field;
+        }
+        return _method is { Decl.AutoAccessor: true } own && own.Owner == field.Owner
+               && (TypeSymbol.IsJoined(own.Name, "get_", name) || TypeSymbol.IsJoined(own.Name, "set_", name))
+            ? field : null;
+    }
 
     /// <summary>
     /// Whether `Type.name` names something: a static field or method, a static
@@ -17971,7 +18130,7 @@ public sealed partial class Binder
         // asks for the specialisation and is given it.
         Dictionary<string, Type>? received = Received(target, owner);
 
-        FieldSymbol? field = owner.FindField(m.Name) ?? owner.FindBackingField(m.Name);
+        FieldSymbol? field = owner.FindField(m.Name) ?? BackingField(owner, m.Name, nonVirtual: m.Target is BaseExpr);
 
         if (field != null)
         {
@@ -18112,7 +18271,12 @@ public sealed partial class Binder
         TypeSymbol? here = _thisType is not null && IsClosure(_thisType) ? _capturedThisType ?? _lexicalType : _thisType;
         if (here is null) return true;
         if (Inside(here, owner)) return true;
-        return (mods & Mods.Protected) != 0 && here.DerivesFrom(owner);
+        if ((mods & Mods.Protected) == 0 || !here.DerivesFrom(owner)) return false;
+        // PRIVATE PROTECTED is protected inside its own assembly only (C#
+        // 7.2): a program's class derived from the library's sees none of the
+        // library's -- Random(bool), Random.Shared's own constructor.
+        return (mods & Mods.Private) == 0 || owner.Decl is not { } ownerDecl || here.Decl is not { } hereDecl
+            || ClassLibrarySide(ownerDecl) == ClassLibrarySide(hereDecl);
 
         // Within: the type itself, or one written inside it, however deep.
         bool Inside(TypeSymbol t, TypeSymbol of)
@@ -18487,8 +18651,12 @@ public sealed partial class Binder
             return null;
         if (value.Symbol is TypeSymbol shape)
         {
-            if (Reachable(shape, "ToString").Any(m => !m.Static && TakesFormat(m, 0))) return null;
-            if (AllInterfaces(shape).Any(i => i.Name == "IFormattable"))
+            // AN IFormattable IS FORMATTED AS ONE, by ToString(format, null),
+            // where it has a ToString(string) beside it too: .NET's handler
+            // asks the interface, and the two may answer differently.
+            bool isFormattable = AllInterfaces(shape).Any(i => i.Name == "IFormattable");
+            if (!isFormattable && Reachable(shape, "ToString").Any(m => !m.Static && TakesFormat(m, 0))) return null;
+            if (isFormattable)
             {
                 CallExpr formattable = new()
                 {
@@ -19539,6 +19707,24 @@ public sealed partial class Binder
             byArity = new List<MethodSymbol>();
         }
 
+        // ONE THAT NEEDS ITS DEFAULTS COMPETES ALL THE SAME (C# 12.6.4.3), and
+        // loses only a tie: `F(1)` beside F(long) and F(int, int = 0) is the
+        // second, an int being better served by an int. Considered only when
+        // nothing of the written arity fitted, it lost to F(long) because
+        // F(long) alone had the arity.
+        if (anyFits && expandedParams is null && !c.ParamsPacked && byArity.All(m => m.TypeParams.Count == 0))
+        {
+            bool NeedsDefaults(MethodSymbol m)
+                => m.TypeParams.Count == 0 && m.Params.Count > args.Count
+                && Enumerable.Range(args.Count, m.Params.Count - args.Count).All(i => m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null)
+                && Enumerable.Range(0, args.Count).All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i]));
+            List<MethodSymbol> written = byArity.Where(m => AllWritten(m, 0)).ToList();
+            if (written.Count > 0 && group.Methods.Where(NeedsDefaults).Any(d => written.All(w => BetterThan(d, w))))
+            {
+                byArity = new List<MethodSymbol>();
+            }
+        }
+
         if (byArity.Count == 0)
         {
             // THE ONE WHOSE WRITTEN ARGUMENTS FIT, not merely the first that
@@ -19673,7 +19859,7 @@ public sealed partial class Binder
                 if (c.Args[i] is not LambdaExpr && invokes.Count > 0
                     && _r.Resolved.TryGetValue(c.Args[i], out Sym? passed)
                     && Grouped(passed) is { Count: > 0 } named
-                    && !invokes.Any(v => named.Any(g => g.Params.Count == v.Params.Count)))
+                    && !invokes.Any(v => named.Any(g => g.Params.Count == v.Params.Count && TakesItsTypes(m, m.Params[i].Type, v, g))))
                 {
                     return false;
                 }
@@ -19690,6 +19876,27 @@ public sealed partial class Binder
                 {
                     return false;
                 }
+            }
+            return true;
+        }
+
+        // AND BY ITS TYPES, where the delegate's are known (C# 10.8): each of
+        // the delegate's parameters goes to the method's as it is, or by a
+        // reference conversion. `s.Where(char.IsUpper)` has IsUpper(string,
+        // int) beside IsUpper(char), and two parameters fit Where's
+        // Func<char, int, bool> by count -- not a char for the string. What a
+        // type argument stands for is what the arguments before the group
+        // inferred (OrdinaryInferred); one still open decides nothing.
+        bool TakesItsTypes(MethodSymbol m, Type delegateType, MethodSymbol invoke, MethodSymbol candidate)
+        {
+            Dictionary<string, Type> applied = Applied(delegateType);
+            Dictionary<string, Type> known = m.TypeParams.Count > 0 ? OrdinaryInferred(m) ?? new(StringComparer.Ordinal) : new(StringComparer.Ordinal);
+            for (int k = 0; k < invoke.Params.Count; k++)
+            {
+                Type want = Close(Substitute(invoke.Params[k].Type, applied), known);
+                Type given = candidate.Params[k].Type;
+                if (want.IsError || Unmade(want) || want.ParamName is not null || given.ParamName is not null || invoke.Params[k].ByRef || candidate.Params[k].ByRef) continue;
+                if (!(Same(want, given) || want.IsReference && given.IsReference && Convertible(want, given))) return false;
             }
             return true;
         }
@@ -19740,7 +19947,26 @@ public sealed partial class Binder
             {
                 if (applicable.All(other => ReferenceEquals(other, one) || BetterThan(one, other))) return one;
             }
-            return applicable[0];
+
+            // NONE BETTER THAN ALL THE REST IS C#'s CS0121: `Math.Max(b, 1)`
+            // for a byte b takes Max(byte, byte) for the byte and Max(int,
+            // int) for the 1, and the first declared was quietly the call.
+            // Not where the ones left are one signature (an override beside
+            // what it overrides), nor where a generic may still be better,
+            // nor where a lambda or a method group is an argument, which the
+            // rules for those judge apart (BetterLambdas).
+            List<MethodSymbol> unbeaten = applicable.Where(one => !applicable.Any(other => !ReferenceEquals(other, one) && BetterThan(other, one))).ToList();
+            if (unbeaten.Count >= 2
+                && unbeaten.Skip(1).Any(other => !MethodSignatures.SameParameters(unbeaten[0], other))
+                && !byArity.Any(m => m.TypeParams.Count > 0)
+                && !c.Args.Any(a => IsFunctionSource(a) || a is LambdaExpr)
+                && !args.Any(a => a.Dynamic || a.IsError))
+            {
+                Error(c, $"The call is ambiguous between the following methods or properties: '{Spelt(unbeaten[0])}' and '{Spelt(unbeaten.First(other => !MethodSignatures.SameParameters(unbeaten[0], other)))}'");
+            }
+            return unbeaten.FirstOrDefault() ?? applicable[0];
+
+            static string Spelt(MethodSymbol m) => m.Owner.Name + "." + m.Name + "(" + string.Join(", ", m.Params.Select(p => p.Type.ToString())) + ")";
         }
 
         bool BetterThan(MethodSymbol one, MethodSymbol other)
@@ -19748,6 +19974,26 @@ public sealed partial class Binder
             bool better = false;
             for (int i = 0; i < args.Count && i < one.Params.Count && i < other.Params.Count; i++)
             {
+                // A LAMBDA WITH A VALUE converts better to a delegate that
+                // returns one than to one returning void (C# 12.6.4.5), as
+                // GenericBetter has it for a generic: `Task.Run(() =>
+                // Task.WhenAll(a, b))` is Run(Func<Task>), not Run(Action).
+                if (i < c.Args.Count && c.Args[i] is LambdaExpr lam)
+                {
+                    Type oneReturns = Substitute(Invoked(one.Params[i].Type)?.Returns ?? Type.Error, Applied(one.Params[i].Type));
+                    Type otherReturns = Substitute(Invoked(other.Params[i].Type)?.Returns ?? Type.Error, Applied(other.Params[i].Type));
+                    if (!oneReturns.IsError && !otherReturns.IsError && oneReturns.IsVoid != otherReturns.IsVoid)
+                    {
+                        MethodSymbol valued = oneReturns.IsVoid ? other : one;
+                        Type? made = Produces(valued, valued.Params[i].Type, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
+                        if (made is not null && !made.IsError && !made.IsVoid)
+                        {
+                            if (oneReturns.IsVoid) return false;
+                            better = true;
+                        }
+                    }
+                    continue;
+                }
                 int said = BetterConversion(args[i], Wants(one, i), Wants(other, i));
                 if (said < 0) return false;
                 if (said > 0) better = true;
@@ -20372,6 +20618,13 @@ public sealed partial class Binder
         }
 
         _r.Calls[c] = called;
+        // A PARTIAL METHOD NOBODY IMPLEMENTED is no call (C# 15.6.9): neither
+        // it nor its arguments run.
+        if (called.Decl is { PartialWithoutBody: true })
+        {
+            _r.Rewrites[c] = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = c.Line, Col = c.Col };
+            CheckExpr(_r.Rewrites[c]);
+        }
         // A SHARED METHOD COPY'S DICTIONARY grown since this call's was placed.
         if (c.HiddenNeedMap is not null) CopyNeedsGrown(c, called);
 
@@ -20900,6 +21153,26 @@ public sealed partial class Binder
             }
         }
 
+        // AND EVERY OTHER, LIFTED (C# 12.4.8): an operator over two value
+        // types answering a value type is one over their nullables too --
+        // `t + span` with a TimeSpan? t is a TimeSpan?, empty where either
+        // side is; `<`, `>`, `<=` and `>=` answering bool answer false there.
+        // Each operand evaluated once, in order, as LiftedEquality has it.
+        if (b.Op is not (BinOp.Eq or BinOp.Ne) && (l.IsNullableValue || r.IsNullableValue)
+            && (found is null || found.Params[0].Type.IsNullableValue == false && l.IsNullableValue || found.Params[1].Type.IsNullableValue == false && r.IsNullableValue))
+        {
+            Type lu = l.IsNullableValue ? l.Underlying : l, ru = r.IsNullableValue ? r.Underlying : r;
+            bool relational = b.Op is BinOp.Lt or BinOp.Gt or BinOp.Le or BinOp.Ge;
+            if ((Operator(lu.Symbol, name, lu, ru, lc, rc) ?? Operator(ru.Symbol, name, lu, ru, lc, rc)) is MethodSymbol op
+                && op.Params.All(p => ValueOperand(p.Type)) && ValueOperand(op.Returns)
+                && (!relational || op.Returns.Prim == Prim.Bool))
+            {
+                _r.Rewrites[b] = LiftedOperator(b, op, name, l.IsNullableValue, r.IsNullableValue, relational);
+                _liftedOperators[b] = op;
+                return CheckExpr(_r.Rewrites[b]);
+            }
+        }
+
         if (found is null)
         {
             return null;
@@ -20919,6 +21192,170 @@ public sealed partial class Binder
 
         _r.Rewrites[b] = call;
         return CheckExpr(call);
+    }
+
+    /// <summary>
+    /// `x op= y` through an operator x's type or y's declared (C# 12.21.4):
+    /// `x op y` built as ordinary syntax and bound like anything the program
+    /// could have written (UserOperator), so the operator is the one overload
+    /// resolution picks and y reaches its operand by whatever conversion it
+    /// needs. Remembered for lowering (BindResult.OperatorCompounds), which
+    /// reads the place once, calls the operator on what it read and stores
+    /// the result back into the same place. False when neither type declares
+    /// such an operator, and the language's own refusal stands.
+    /// </summary>
+    private bool OperatorCompound(AssignExpr a, Type target, Type value)
+    {
+        if (a.Op is not BinOp op || OperatorMethodName(op) is not string name || target.IsArray || value.IsArray)
+        {
+            return false;
+        }
+        long? rc = IntegerConstant(a.Value, value);
+        if ((Operator(target.Symbol, name, target, value, null, rc) ?? Operator(value.Symbol, name, target, value, null, rc)) is null)
+        {
+            return false;
+        }
+
+        // Checking `x op y` checks x again as something read, and what x
+        // was resolved to as the place written stays what it was.
+        BinaryExpr operation = new() { Op = op, Left = a.Target, Right = a.Value, Line = a.Line, Col = a.Col };
+        bool placed = _r.Resolved.TryGetValue(a.Target, out Sym? place);
+        Type made = CheckExpr(operation);
+        if (placed) _r.Resolved[a.Target] = place!;
+        if (made.IsError)
+        {
+            // The operator's call has said what is wrong with it.
+            return true;
+        }
+        // LIFTED, over x's value and y's (LiftedOperator): what it makes is
+        // a nullable, which x must take as it is -- a TimeSpan? does, a
+        // TimeSpan does not.
+        if (_r.Rewrites.TryGetValue(operation, out Expr? liftedForm) && liftedForm is PatternExpr
+            && _liftedOperators.TryGetValue(operation, out MethodSymbol? liftedOp))
+        {
+            if (!target.IsNullableValue || !Convertible(made, target))
+            {
+                Error(a, $"cannot implicitly convert type '{made}' to '{target}'");
+                return true;
+            }
+            _r.OperatorCompounds[a] = new CompoundOperator(liftedOp, null, null, Lifted: true);
+            return true;
+        }
+        if (!_r.Rewrites.TryGetValue(operation, out Expr? rewritten) || rewritten is not CallExpr call
+            || !_r.Calls.TryGetValue(call, out MethodSymbol? chosen) || !chosen.Static || chosen.Params.Count != 2)
+        {
+            return false;
+        }
+
+        // THE RESULT GOES BACK INTO x, so it must be something x can hold
+        // with no cast written: `d += span` on a DateTime makes a DateTime.
+        // An operator answering anything else is refused as C# refuses it
+        // (CS0029) -- an empty `S?` included, which no `S` can hold.
+        bool fits = Convertible(made, target)
+                    && !(made.IsNullableValue && !target.IsNullableValue && !target.IsReference && target.Prim != Prim.Any);
+        if (!fits)
+        {
+            Error(a, $"cannot implicitly convert type '{made}' to '{target}'");
+            return true;
+        }
+
+        // A USER-DEFINED CONVERSION ON EITHER SIDE of the operator is a call
+        // of its own, which lowering makes on the value it has in hand: x's
+        // into the operator's first operand, the result back into x's type.
+        Type first = chosen.Params[0].Type;
+        CompoundOperator compound = new(
+            chosen,
+            StandardConvertible(target, first) ? null : UserConversion(target, first, explicitToo: false),
+            StandardConvertible(made, target) ? null : UserConversion(made, target, explicitToo: false));
+        _r.OperatorCompounds[a] = compound;
+
+        // WHAT x HOLDS NOW IS WHAT THE OPERATOR MADE, and so is its null
+        // state: the write took y's before the operator was known, and an
+        // operator may answer null for a y that is not, or a value for one
+        // that is. `s += note` through an operator answering `string?` leaves
+        // s maybe null, and a join reading it must still ask.
+        if (target.IsReference && Path(a.Target) is string written)
+        {
+            Sym? named = a.Target is NameExpr plain && Lookup(plain.Name) is Sym wrote && wrote is LocalSym or ParamSym ? wrote : null;
+            if (compound.Stored.Nullable)
+            {
+                _notNullPaths.Remove(written);
+                if (named is not null) _notNull.Remove(named);
+            }
+            else
+            {
+                _notNullPaths.Add(written);
+                if (named is not null) _notNull.Add(named);
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// `x op y` over a number and a type converting to one by an implicit
+    /// operator it declares, or over two such: the same operation with each
+    /// such operand made the call of its conversion, for the number's own
+    /// operator to take -- overload resolution over the predefined operators
+    /// finds it so (C# 12.4.5), as it would for an argument. Null where an
+    /// operand is neither, where a string makes `+` a join, and for two
+    /// references, which `==` compares as references.
+    /// </summary>
+    private BinaryExpr? NumericOperands(BinaryExpr b, Type l, Type r)
+    {
+        if (b.Op is BinOp.AndAlso or BinOp.OrElse or BinOp.Coalesce || l.Prim == Prim.String || r.Prim == Prim.String
+            || b.Op is BinOp.Eq or BinOp.Ne && l.IsReference && r.IsReference)
+        {
+            return null;
+        }
+        MethodSymbol? left = l.IsNumeric ? null : NumericConversion(l);
+        MethodSymbol? right = r.IsNumeric ? null : NumericConversion(r);
+        if (left is null && right is null || left is null && !l.IsNumeric || right is null && !r.IsNumeric)
+        {
+            return null;
+        }
+        return new BinaryExpr
+        {
+            Op = b.Op,
+            Left = left is null ? b.Left : ConversionCall(b.Left, left),
+            Right = right is null ? b.Right : ConversionCall(b.Right, right),
+            Line = b.Line, Col = b.Col, File = b.File,
+        };
+    }
+
+    /// <summary>
+    /// The implicit operator a class or struct declares, or inherits, taking
+    /// it to a number: the one whose number every other's widens to, as C#'s
+    /// better conversion target picks (12.6.4.7) -- Money's to int over its
+    /// to long. Null for none, or for no single best.
+    /// </summary>
+    private MethodSymbol? NumericConversion(Type t)
+    {
+        if (t.IsArray || t.IsPointer || t.IsNullableValue || t.Symbol is not { Kind: TypeKind.Struct or TypeKind.Class } holder)
+        {
+            return null;
+        }
+        List<MethodSymbol> numbers = holder.FindMethods("op_Implicit")
+            .Where(m => m.Static && m.Params.Count == 1 && m.Returns.IsNumeric && !m.Returns.IsNullableValue
+                        && StandardConvertible(t, m.Params[0].Type))
+            .ToList();
+        return numbers.FirstOrDefault(m => numbers.All(o => ReferenceEquals(o, m) || StandardConvertible(m.Returns, o.Returns)));
+    }
+
+    /// <summary>
+    /// The call of a conversion operator on a value, as its own expression:
+    /// ConvertByOperator's call, the value left as it was written.
+    /// </summary>
+    private CallExpr ConversionCall(Expr value, MethodSymbol op)
+    {
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(op.Owner, value), Name = op.Name, Line = value.Line, Col = value.Col, File = value.File },
+            Line = value.Line, Col = value.Col, File = value.File,
+        };
+        call.Args.Add(value);
+        CheckExpr(call);
+        Converting(call, op);
+        return call;
     }
 
     /// <summary>
@@ -20960,6 +21397,51 @@ public sealed partial class Binder
             Expr has = Has(leftMay ? 1 : 0);
             test = eq ? Bin(BinOp.AndAlso, has, call) : Bin(BinOp.OrElse, Not(has), call);
         }
+
+        return new PatternExpr
+        {
+            Subject = b.Left,
+            Test = new PatternExpr { Subject = b.Right, Test = test, Line = b.Line, Col = b.Col },
+            Line = b.Line, Col = b.Col,
+        };
+    }
+
+    /// <summary>The operator each lifted `a op b` calls on its values (LiftedOperator), for its compound form (OperatorCompound).</summary>
+    private readonly Dictionary<BinaryExpr, MethodSymbol> _liftedOperators = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A non-nullable value type, which a lifted operator takes and answers (C# 12.4.8).</summary>
+    private static bool ValueOperand(Type t)
+        => !t.IsNullableValue && !t.IsArray && !t.IsPointer && !t.Nullable && !t.IsError && !t.IsVoid
+           && (t.Symbol is { Kind: TypeKind.Struct or TypeKind.Enum } || t.Symbol is null && (t.IsNumeric || t.Prim == Prim.Bool));
+
+    /// <summary>
+    /// `a op b` through an operator over value types, lifted over the
+    /// nullable sides (C# 12.4.8), each side held once: the operator on
+    /// their values where every nullable side holds one, and otherwise empty
+    /// -- or false for a relational operator answering bool.
+    /// </summary>
+    private Expr LiftedOperator(BinaryExpr b, MethodSymbol op, string name, bool leftMay, bool rightMay, bool relational)
+    {
+        Expr Held(int outer) => new SubjectExpr { Outer = outer, Line = b.Line, Col = b.Col };
+        Expr Has(int outer) => new MemberExpr { Target = Held(outer), Name = "HasValue", Line = b.Line, Col = b.Col };
+        Expr Value(int outer, bool may) => may ? new MemberExpr { Target = Held(outer), Name = "Value", Line = b.Line, Col = b.Col } : Held(outer);
+
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(op.Owner, b), Name = name, Line = b.Line, Col = b.Col },
+            Line = b.Line, Col = b.Col,
+        };
+        call.Args.Add(Value(1, leftMay));
+        call.WritableArgNames.Add(null);
+        call.Args.Add(Value(0, rightMay));
+        call.WritableArgNames.Add(null);
+
+        Expr has = leftMay && rightMay
+            ? new BinaryExpr { Op = BinOp.AndAlso, Left = Has(1), Right = Has(0), Line = b.Line, Col = b.Col }
+            : Has(leftMay ? 1 : 0);
+        Expr test = relational
+            ? new BinaryExpr { Op = BinOp.AndAlso, Left = has, Right = call, Line = b.Line, Col = b.Col }
+            : new ConditionalExpr { Cond = has, Then = call, Else = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = b.Line, Col = b.Col }, Line = b.Line, Col = b.Col };
 
         return new PatternExpr
         {
@@ -21347,6 +21829,17 @@ public sealed partial class Binder
             return byOperator;
         }
 
+        // A NUMBER'S OWN OPERATOR REACHED BY A DECLARED CONVERSION (C# 12.4.5):
+        // `total + money` with no operator of Money's still has int's, and
+        // Money's implicit conversion to int takes it there, as it would take
+        // an argument. Each such operand is rewritten as its conversion
+        // (ConvertByOperator) and the operator checked over what that made.
+        if (NumericOperands(b, l, r) is BinaryExpr converted)
+        {
+            _r.Rewrites[b] = converted;
+            return CheckExpr(converted);
+        }
+
         switch (b.Op)
         {
             case BinOp.AndAlso:
@@ -21379,9 +21872,16 @@ public sealed partial class Binder
                     return l.IsNullableValue ? l.Underlying : l.AsNonNullable();
                 }
 
+                // A RIGHT THAT GETS THERE BY A DECLARED CONVERSION is made by
+                // it: `nn ?? 9` over a BigInteger? is 9 as a BigInteger, not
+                // the int read as one.
                 if (l.IsNullableValue && !r.Nullable && !r.IsNullableValue
                     && Convertible(r, l.Underlying))
                 {
+                    if (!r.IsError && !StandardConvertible(r, l.Underlying) && !Variant(r, l.Underlying))
+                    {
+                        CheckAssignable(r, l.Underlying, b.Right, "??");
+                    }
                     return l.Underlying;
                 }
 
@@ -21395,6 +21895,10 @@ public sealed partial class Binder
                     if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left) && !Convertible(left, right))
                     {
                         CoalesceView(b.Right, right, left);
+                        if (!right.IsError && !right.IsArray && !StandardConvertible(right, left) && !Variant(right, left))
+                        {
+                            CheckAssignable(right, left, b.Right, "??");
+                        }
                         return r.Nullable ? l : left;
                     }
                     if (Convertible(left, right))
@@ -21470,6 +21974,28 @@ public sealed partial class Binder
                     _r.Rewrites[b] = items;
                     CheckExpr(items);
                     return Type.Bool;
+                }
+
+                // A NaN CONSTANT PATTERN MATCHES A NaN (C# 11.2.6): `d is
+                // double.NaN`, and a NaN case label, which an `==` with NaN
+                // never is. The subject held once and asked whether it is
+                // itself.
+                if (b.PatternConstant && l.IsFloat && !l.IsNullableValue && r.IsFloat && !r.IsNullableValue
+                    && RealConstant(b.Right, _thisType) is double constant && double.IsNaN(constant))
+                {
+                    PatternExpr itself = new()
+                    {
+                        Subject = b.Left,
+                        Test = new BinaryExpr
+                        {
+                            Op = b.Op == BinOp.Eq ? BinOp.Ne : BinOp.Eq,
+                            Left = new SubjectExpr { Line = b.Line, Col = b.Col }, Right = new SubjectExpr { Line = b.Line, Col = b.Col },
+                            Line = b.Line, Col = b.Col, File = b.File,
+                        },
+                        Line = b.Line, Col = b.Col, File = b.File,
+                    };
+                    _r.Rewrites[b] = itself;
+                    return CheckExpr(itself);
                 }
 
                 // A CONSTANT PATTERN OVER AN `object` asks whether the value IS
@@ -21662,10 +22188,47 @@ public sealed partial class Binder
             case BinOp.Rem:
             default:
             {
+                // A NUMBER AND THE LITERAL null is the lifted operator's empty
+                // answer (C#'s CS0458 case): `n + null` is an int? that holds
+                // nothing, the number evaluated all the same.
+                if (l.Prim == Prim.NullLiteral != (r.Prim == Prim.NullLiteral)
+                    && (l.Prim == Prim.NullLiteral ? r : l) is { IsNumeric: true } number && !number.IsPointer)
+                {
+                    Type empty = Promote(number.IsNullableValue ? number.Underlying : number).AsNullable();
+                    if (RefOf(empty) is TypeRef emptyRef)
+                    {
+                        PatternExpr always = new()
+                        {
+                            Subject = l.Prim == Prim.NullLiteral ? b.Right : b.Left,
+                            Test = new CastExpr { Type = emptyRef, Operand = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = b.Line, Col = b.Col }, Line = b.Line, Col = b.Col },
+                            Line = b.Line, Col = b.Col, File = b.File,
+                        };
+                        _r.Rewrites[b] = always;
+                        return CheckExpr(always);
+                    }
+                }
+
                 if (!l.IsNumeric || !r.IsNumeric)
                 {
                     Error(b, $"'{l}' and '{r}' are not both numbers");
                     return Type.Error;
+                }
+
+                // AN ENUM STEPPED BY A NUMBER IS THE ENUM (C# 12.10.5 and
+                // 12.10.6): `e + 1`, `1 + e` and `e - 1` are each an E, and
+                // `e - f` of one enum is the distance between them in its
+                // underlying type. Read as numbers, `Color.Red + 1` printed 1.
+                if (b.Op is BinOp.Add or BinOp.Sub && !l.IsNullableValue && !r.IsNullableValue)
+                {
+                    TypeSymbol? leftEnum = l.Symbol is { Kind: TypeKind.Enum } le ? le : null;
+                    TypeSymbol? rightEnum = r.Symbol is { Kind: TypeKind.Enum } re ? re : null;
+                    // The number must go to the enum's underlying type as it is.
+                    bool Steps(TypeSymbol of, Type by, Expr at) => by.IsInteger && by.Symbol is null
+                        && (StandardConvertible(by, new Type { Prim = of.EnumUnderlying })
+                            || ConstantValue(at, _thisType) is long k && Fits(k, new Type { Prim = of.EnumUnderlying }));
+                    if (leftEnum is not null && rightEnum is null && Steps(leftEnum, r, b.Right)) return l;
+                    if (b.Op == BinOp.Add && rightEnum is not null && leftEnum is null && Steps(rightEnum, l, b.Left)) return r;
+                    if (b.Op == BinOp.Sub && leftEnum is not null && ReferenceEquals(leftEnum, rightEnum)) return new Type { Prim = leftEnum.EnumUnderlying };
                 }
 
                 // LIFTED, as C# lifts every arithmetic operator: an `int?`

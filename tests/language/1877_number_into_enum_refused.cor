@@ -1,0 +1,14 @@
+// test: number_into_enum_refused
+// expect-compile-error: cannot convert 'int' to 'E'
+//
+// A NUMBER IS NO ENUM without a cast, the constant nought aside (C# 10.2.4).
+
+enum E { A, B, C }
+
+static class P
+{
+    static void Main()
+    {
+        E e = 2;
+    }
+}

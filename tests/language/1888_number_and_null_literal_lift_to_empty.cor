@@ -1,0 +1,27 @@
+// test: number_and_null_literal_lift_to_empty
+// expect-exit: 0
+// expect-output:
+// True True True True 1
+//
+// A NUMBER AND THE LITERAL null under an arithmetic operator is the lifted
+// operator's empty answer (C#'s CS0458 case): `Read() + null` is an int?
+// holding nothing, Read() called all the same; `n += null` and `w *= null`
+// leave the nullable empty.
+
+using System;
+static class P
+{
+    static int reads;
+    static int Read() { reads++; return 4; }
+    static void Main()
+    {
+        int? n = 1;
+        n += null;
+        int? m = 5;
+        long? w = 2;
+        var sum = Read() + null;
+        var diff = null - m;
+        w *= null;
+        Console.WriteLine((n == null) + " " + (sum == null) + " " + (diff == null) + " " + (w == null) + " " + reads);
+    }
+}

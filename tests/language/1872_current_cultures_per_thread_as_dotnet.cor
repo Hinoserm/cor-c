@@ -1,0 +1,77 @@
+// test: current_cultures_per_thread_as_dotnet
+// expect-exit: 0
+// expect-output:
+// start True True True True
+// set en-US True en-US
+// ArgumentNullException: Value cannot be null. (Parameter 'value')
+// ArgumentNullException: Value cannot be null. (Parameter 'value')
+// ArgumentNullException: Value cannot be null. (Parameter 'value')
+// inherited [en-US|] main en-US
+// made before set [de-DE]
+// defaults [de-DE|fr-FR] here de-DE fr-FR
+// InvalidOperationException: This operation must be performed on the same thread as that represented by the Thread instance.
+// ArgumentNullException: Value cannot be null. (Parameter 'value')
+// unstarted [it-IT|ja-JP]
+// InvalidOperationException: This operation must be performed on the same thread as that represented by the Thread instance.
+// default null True de-DE
+// formats 1234.5 1,234.5
+// ui en-US en-US
+//
+// CultureInfo.CurrentCulture AND CurrentUICulture ARE A THREAD'S, as .NET's:
+// what was set is what is read back, on that thread; null is refused with
+// .NET's ArgumentNullException; a thread started takes what its starter
+// set, a thread not started yet may be given its own, and any other
+// thread's are refused. DefaultThreadCurrentCulture is what a thread that
+// was given none reads, and null puts the machine's back -- here the
+// invariant culture, which formats everything whatever is set.
+
+using System;
+using System.Globalization;
+using System.Threading;
+
+static class Program
+{
+    static string Try(Action a) { try { a(); return "ok"; } catch (Exception e) { return e.GetType().Name + ": " + e.Message; } }
+
+    static void Main()
+    {
+        Console.WriteLine("start " + ReferenceEquals(CultureInfo.CurrentCulture, CultureInfo.InvariantCulture) + " " + ReferenceEquals(CultureInfo.CurrentUICulture, CultureInfo.InvariantCulture)
+            + " " + (CultureInfo.DefaultThreadCurrentCulture == null) + " " + ReferenceEquals(Thread.CurrentThread, Thread.CurrentThread));
+        CultureInfo us = new CultureInfo(0x0409);
+        CultureInfo.CurrentCulture = us;
+        Console.WriteLine("set " + CultureInfo.CurrentCulture.Name + " " + ReferenceEquals(CultureInfo.CurrentCulture, us) + " " + Thread.CurrentThread.CurrentCulture.Name);
+        Console.WriteLine(Try(() => CultureInfo.CurrentCulture = null!));
+        Console.WriteLine(Try(() => CultureInfo.CurrentUICulture = null!));
+        Console.WriteLine(Try(() => Thread.CurrentThread.CurrentCulture = null!));
+
+        string other = "";
+        Thread before = new Thread(() => { other = CultureInfo.CurrentCulture.Name; });
+        Thread t = new Thread(() => { other = CultureInfo.CurrentCulture.Name + "|" + CultureInfo.CurrentUICulture.Name; CultureInfo.CurrentCulture = new CultureInfo(0x0410); });
+        t.Start(); t.Join();
+        Console.WriteLine("inherited [" + other + "] main " + CultureInfo.CurrentCulture.Name);
+        CultureInfo.CurrentCulture = new CultureInfo(0x0407);
+        before.Start(); before.Join();
+        Console.WriteLine("made before set [" + other + "]");
+
+        CultureInfo.DefaultThreadCurrentCulture = new CultureInfo(0x040c);
+        CultureInfo.DefaultThreadCurrentUICulture = new CultureInfo(0x040c);
+        t = new Thread(() => { other = CultureInfo.CurrentCulture.Name + "|" + CultureInfo.CurrentUICulture.Name; });
+        t.Start(); t.Join();
+        Console.WriteLine("defaults [" + other + "] here " + CultureInfo.CurrentCulture.Name + " " + CultureInfo.CurrentUICulture.Name);
+
+        Thread u = new Thread(() => { other = CultureInfo.CurrentCulture.Name + "|" + Thread.CurrentThread.CurrentUICulture.Name; });
+        u.CurrentCulture = new CultureInfo(0x0410);
+        u.CurrentUICulture = new CultureInfo(0x0411);
+        Console.WriteLine(Try(() => { CultureInfo seen = u.CurrentCulture; }));
+        Console.WriteLine(Try(() => u.CurrentCulture = null!));
+        u.Start(); u.Join();
+        Console.WriteLine("unstarted [" + other + "]");
+        Console.WriteLine(Try(() => u.CurrentCulture = us));
+
+        CultureInfo.DefaultThreadCurrentCulture = null;
+        Console.WriteLine("default null " + (CultureInfo.DefaultThreadCurrentCulture == null) + " " + CultureInfo.CurrentCulture.Name);
+        Console.WriteLine("formats " + (1234.5).ToString() + " " + string.Format("{0:N1}", 1234.5));
+        CultureInfo.CurrentUICulture = us;
+        Console.WriteLine("ui " + CultureInfo.CurrentUICulture.Name + " " + Thread.CurrentThread.CurrentUICulture.Name);
+    }
+}

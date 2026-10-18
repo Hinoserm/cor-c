@@ -1,0 +1,221 @@
+// test: compound_assignment_through_declared_operators
+// expect-exit: 0
+// expect-output:
+// money 12.00
+// vec (1,3)
+// bits (18,16)
+// span 00:03:00 180
+// date 2024-02-29 23:00
+// count #42
+// value #43 #43
+// caught below zero
+// cell 6
+// shape (12,13) 00:05:00 (4,8) (7,7) receivers 5
+// pair (3,4) 0
+// grid (10,12) receivers 2 indices 2 reads 3 writes 2
+// array (8,7) indices 2
+// list 00:00:42
+// sum 00:00:43
+// note log[open]
+// note [] []
+//
+// `x op= y` THROUGH AN OPERATOR A TYPE DECLARED (C# 12.21.4) is `x = x op y`
+// with x evaluated once: a class's and a struct's operators, TimeSpan and
+// DateTime stepped, an int reaching a struct's operator through its implicit
+// conversion, and every operator that has a compound form. The targets are
+// locals, fields, a static field, a struct's field in a struct, a property,
+// an indexer, an array element and a list element; the counters show each
+// receiver and index evaluated once. An operator writing to its parameter
+// writes to a copy, so x is untouched when it throws. A string's += is the
+// operator y's type declares, not concatenation, and an operator answering
+// `string?` leaves x maybe null: the joins reading it still ask.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Money
+{
+    public readonly int Cents;
+    public Money(int cents) { Cents = cents; }
+    public static Money operator +(Money a, Money b) => new Money(a.Cents + b.Cents);
+    public static Money operator -(Money a, Money b) => new Money(a.Cents - b.Cents);
+    public static Money operator *(Money a, int k) => new Money(a.Cents * k);
+    public override string ToString() => (Cents / 100) + "." + (Cents % 100).ToString("00");
+}
+
+struct Vec
+{
+    public int X, Y;
+    public Vec(int x, int y) { X = x; Y = y; }
+    public static Vec operator +(Vec a, Vec b) => new Vec(a.X + b.X, a.Y + b.Y);
+    public static Vec operator -(Vec a, Vec b) => new Vec(a.X - b.X, a.Y - b.Y);
+    public static Vec operator *(Vec a, int k) => new Vec(a.X * k, a.Y * k);
+    public static Vec operator /(Vec a, int k) => new Vec(a.X / k, a.Y / k);
+    public static Vec operator %(Vec a, int k) => new Vec(a.X % k, a.Y % k);
+    public static Vec operator &(Vec a, Vec b) => new Vec(a.X & b.X, a.Y & b.Y);
+    public static Vec operator |(Vec a, Vec b) => new Vec(a.X | b.X, a.Y | b.Y);
+    public static Vec operator ^(Vec a, Vec b) => new Vec(a.X ^ b.X, a.Y ^ b.Y);
+    public static Vec operator <<(Vec a, int n) => new Vec(a.X << n, a.Y << n);
+    public static Vec operator >>(Vec a, int n) => new Vec(a.X >> n, a.Y >> n);
+    public override string ToString() => "(" + X + "," + Y + ")";
+}
+
+// An int converts to it, implicitly, and an operator takes two of them.
+struct Count
+{
+    public long N;
+    public Count(long n) { N = n; }
+    public static implicit operator Count(int n) => new Count(n);
+    public static Count operator +(Count a, Count b) => new Count(a.N + b.N);
+    public static Count operator *(Count a, Count b) => new Count(a.N * b.N);
+    public override string ToString() => "#" + N;
+}
+
+// The operator writes to its own parameter, which must be a copy of x.
+struct Cell
+{
+    public int V;
+    public Cell(int v) { V = v; }
+    public static Cell operator -(Cell a, Cell b)
+    {
+        a.V -= b.V;
+        if (a.V < 0) throw new InvalidOperationException("below zero");
+        return a;
+    }
+}
+
+struct Pair
+{
+    public Vec Inner;
+    public int Tag;
+}
+
+// A `+` the string reaches, which C# prefers to concatenation; it may answer null.
+sealed class Note
+{
+    public readonly string Body;
+    public Note(string body) { Body = body; }
+    public static string? operator +(string? a, Note n) => n.Body.Length == 0 ? null : a + "[" + n.Body + "]";
+}
+
+sealed class Shape
+{
+    public Vec Position { get; set; }
+    public TimeSpan Age { get; set; }
+    public Vec Field;
+    public static Vec Shared;
+}
+
+sealed class Grid
+{
+    private readonly Vec[] _cells = new Vec[4];
+    public int Reads, Writes;
+    public Vec this[int i]
+    {
+        get { Reads++; return _cells[i]; }
+        set { Writes++; _cells[i] = value; }
+    }
+}
+
+static class Program
+{
+    static int _receivers, _indices;
+
+    static Shape Receiver(Shape s) { _receivers++; return s; }
+    static Grid Receiver(Grid g) { _receivers++; return g; }
+    static int Index(int i) { _indices++; return i; }
+
+    static void Main()
+    {
+        Money wallet = new Money(150);
+        wallet += new Money(275);
+        wallet -= new Money(25);
+        wallet *= 3;
+        Console.WriteLine("money " + wallet);
+
+        Vec v = new Vec(3, 5);
+        v += new Vec(1, 1);
+        v -= new Vec(2, 0);
+        v *= 6;
+        v /= 2;
+        v %= 5;
+        Console.WriteLine("vec " + v);
+        v |= new Vec(8, 8);
+        v &= new Vec(12, 9);
+        v ^= new Vec(1, 1);
+        v <<= 2;
+        v >>= 1;
+        Console.WriteLine("bits " + v);
+
+        TimeSpan total = TimeSpan.Zero;
+        total += TimeSpan.FromSeconds(90);
+        total += TimeSpan.FromMinutes(2);
+        total -= TimeSpan.FromSeconds(30);
+        Console.WriteLine("span " + total + " " + total.TotalSeconds);
+
+        DateTime when = new DateTime(2024, 2, 27, 12, 0, 0);
+        when += TimeSpan.FromDays(3);
+        when -= TimeSpan.FromHours(13);
+        Console.WriteLine("date " + when.ToString("yyyy-MM-dd HH:mm"));
+
+        Count c = new Count(4);
+        c += 3;
+        c *= 6;
+        Console.WriteLine("count " + c);
+
+        // The value of the assignment is what was stored.
+        Count got = (c += 1);
+        Console.WriteLine("value " + got + " " + c);
+
+        Cell cell = new Cell(10);
+        cell -= new Cell(4);
+        try
+        {
+            cell -= new Cell(100);
+        }
+        catch (InvalidOperationException e)
+        {
+            Console.WriteLine("caught " + e.Message);
+        }
+        Console.WriteLine("cell " + cell.V);
+
+        Shape shape = new Shape();
+        Receiver(shape).Position += new Vec(2, 3);
+        Receiver(shape).Position += new Vec(10, 10);
+        Receiver(shape).Age += TimeSpan.FromMinutes(5);
+        Receiver(shape).Field += new Vec(1, 2);
+        Receiver(shape).Field *= 4;
+        Shape.Shared += new Vec(7, 7);
+        Console.WriteLine("shape " + shape.Position + " " + shape.Age + " " + shape.Field + " " + Shape.Shared + " receivers " + _receivers);
+
+        Pair pair = new Pair();
+        pair.Inner += new Vec(4, 4);
+        pair.Inner -= new Vec(1, 0);
+        Console.WriteLine("pair " + pair.Inner + " " + pair.Tag);
+
+        Grid grid = new Grid();
+        _receivers = 0;
+        Receiver(grid)[Index(1)] += new Vec(5, 6);
+        Receiver(grid)[Index(1)] *= 2;
+        Console.WriteLine("grid " + grid[1] + " receivers " + _receivers + " indices " + _indices + " reads " + grid.Reads + " writes " + grid.Writes);
+
+        Vec[] row = new Vec[3];
+        _indices = 0;
+        row[Index(2)] += new Vec(9, 9);
+        row[Index(2)] -= new Vec(1, 2);
+        Console.WriteLine("array " + row[2] + " indices " + _indices);
+
+        List<TimeSpan> laps = new List<TimeSpan> { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2) };
+        laps[1] += TimeSpan.FromSeconds(40);
+        Console.WriteLine("list " + laps[1]);
+
+        TimeSpan sum = TimeSpan.Zero;
+        foreach (TimeSpan lap in laps) sum += lap;
+        Console.WriteLine("sum " + sum);
+
+        string? text = "log";
+        text += new Note("open");
+        Console.WriteLine("note " + text);
+        Console.WriteLine("note [" + (text += new Note("")) + "] [" + text + "]");
+    }
+}

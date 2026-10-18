@@ -1,0 +1,73 @@
+// test: compound_assignment_operator_conversions
+// expect-exit: 0
+// expect-output:
+// back 298
+// c 25
+// into 7
+// next 2000
+// out 5000
+// s 5
+// into 3
+// next 1000
+// out 2000
+// box 2
+//
+// A COMPOUND ASSIGNMENT'S USER-DEFINED CONVERSIONS: an operator answering a
+// type of its own whose op_Implicit takes it back to x's type, and one found
+// on y's type that x reaches only by its own op_Implicit -- x converted, then
+// y evaluated, then the operator, then the result converted back, in that
+// order, on a local and on a property, each read once.
+
+using System;
+
+struct Kelvin
+{
+    public int K;
+    public Kelvin(int k) { K = k; }
+    public static implicit operator Celsius(Kelvin k) { Console.WriteLine("back " + k.K); return new Celsius(k.K - 273); }
+}
+
+struct Celsius
+{
+    public int C;
+    public Celsius(int c) { C = c; }
+    public static Kelvin operator +(Celsius a, Celsius b) => new Kelvin(a.C + b.C + 273);
+}
+
+struct Small
+{
+    public int V;
+    public Small(int v) { V = v; }
+    public static implicit operator Big(Small s) { Console.WriteLine("into " + s.V); return new Big(s.V * 1000); }
+}
+
+struct Big
+{
+    public long V;
+    public Big(long v) { V = v; }
+    public static Big operator -(Big a, Big b) => new Big(a.V - b.V);
+    public static implicit operator Small(Big b) { Console.WriteLine("out " + b.V); return new Small((int)(b.V / 1000)); }
+}
+
+sealed class Box
+{
+    public Small Held { get; set; }
+}
+
+static class Program
+{
+    static Big Next(long v) { Console.WriteLine("next " + v); return new Big(v); }
+
+    static void Main()
+    {
+        Celsius c = new Celsius(20);
+        c += new Celsius(5);
+        Console.WriteLine("c " + c.C);
+        Small s = new Small(7);
+        s -= Next(2000);
+        Console.WriteLine("s " + s.V);
+        Box box = new Box { Held = new Small(3) };
+        box.Held -= Next(1000);
+        Console.WriteLine("box " + box.Held.V);
+    }
+}

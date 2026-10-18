@@ -169,6 +169,17 @@ public sealed partial class BindResult
     public CallTargets Calls { get; }
     /// <summary>A delegate += or -=: the synthesised Combine or Remove call that replaces it, already bound.</summary>
     public Dictionary<AssignExpr, CallExpr> DelegateCompounds { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
+    /// A `x op= y` through an operator a type declared (Binder.OperatorCompound):
+    /// which operator, and the user-defined conversions on the way in and out.
+    /// </summary>
+    public Dictionary<AssignExpr, CompoundOperator> OperatorCompounds { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>
+    /// A `P op= y` on a get-only virtual auto-property in its own class's
+    /// constructor: P is its field, written there, and read through this
+    /// getter, which a class below may override (Binder.BackingField).
+    /// </summary>
+    public Dictionary<AssignExpr, MethodSymbol> BackingReads { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// Which constructor a `: this(...)` or `: base(...)` runs, chosen as any
@@ -688,6 +699,8 @@ public sealed partial class BindResult
             {
                 case AssignExpr a:
                     DelegateCompounds.Remove(a);
+                    OperatorCompounds.Remove(a);
+                    BackingReads.Remove(a);
                     DiscardAssignments.Remove(a);
                     break;
                 case SwitchExpr sx:
@@ -1161,6 +1174,18 @@ public sealed class CallTargets
         c.BoundCall = null;
         return true;
     }
+}
+
+/// <summary>
+/// What a `x op= y` over a declared operator calls (BindResult.OperatorCompounds):
+/// the operator, the op_Implicit taking x's value to its first operand where no
+/// standard conversion does, and the one taking its result back to x's type;
+/// Lifted where the operator is over the values of nullable sides (C# 12.4.8).
+/// </summary>
+public sealed record CompoundOperator(MethodSymbol Operator, MethodSymbol? Into, MethodSymbol? Back, bool Lifted = false)
+{
+    /// <summary>What x is given: the operator's result, or what Back made of it; a lifted operator's in a nullable.</summary>
+    public Type Stored => Lifted ? Operator.Returns.AsNullable() : (Back ?? Operator).Returns;
 }
 
 /// <summary>The constructor each `new` runs (BindResult.NewConstructors), kept on the NewExpr.</summary>

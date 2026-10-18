@@ -1,0 +1,133 @@
+// test: biginteger_operators_conversions_formats
+// expect-exit: 0
+// expect-output:
+// 265252859812191058636308480000000
+// -17636684144620811271604938270 0 123456418643089749631985 -671935
+// -15432098626543209862654320987 -1 -3950617248395061724839506172480 15432098626543209862654320986 268435455
+// 62766 -123456789012345678901234567889 -123456789012345678901234567893 123456789012345678901234567889 -265255577479209133067677240131584
+// True False True True True -1
+// 2361183241434822606848 True 72 71 108
+// -123456789012345 -2147483648 200
+// OverflowException: Value was either too large or too small for an Int64.
+// OverflowException: Arithmetic operation resulted in an overflow.
+// OverflowException: Arithmetic operation resulted in an overflow.
+// OverflowException: Value was either too large or too small for a UInt64.
+// OverflowException: Arithmetic operation resulted in an overflow.
+// OverflowException: The value is not a number.
+// 2.6525285981219103E+32 2.6525285E+32 9007199254740994 Infinity
+// 100000000000000000000 -2 4000000000 18446744073709551615
+// 0: 00 | 00 | 0 0 0
+// 127: 7F | 7F | 127 127 127
+// 128: 80 00 | 00 80 | 128 128 -32768
+// -128: 80 | 80 | -128 128 -128
+// -129: 7F FF | FF 7F | -129 65407 32767
+// 255: FF 00 | 00 FF | 255 255 -256
+// 256: 00 01 | 01 00 | 256 256 1
+// -256: 00 FF | FF 00 | -256 65280 255
+// 265252859812191058636308480000000: 00 00 00 54 DD F5 5D 86 96 0F 37 F6 13 0D | 0D 13 F6 37 0F 96 86 5D F5 DD 54 00 00 00 | 265252859812191058636308480000000 265252859812191058636308480000000 102597938031879985621766925
+// -265252859812191058636308480000000: 00 00 00 AC 22 0A A2 79 69 F0 C8 09 EC F2 | F2 EC 09 C8 F0 69 79 A2 0A 22 AC 00 00 00 | -265252859812191058636308480000000 4927043998722636569894187849220096 208095997609079712277720306
+// OverflowException: Negative values do not have an unsigned representation.
+// 32767 128 0
+// 0D13F6370F96865DF5DD54000000 f2ec09c8f06979a20a22ac000000 FFFF 0FF 101111111
+// -123,456,789,012,345,678,901,234,567,890 265,252,859,812,191,058,636,308,480,000,000.00 -12,345
+// 2.653E+032 -1.234568e+029 1.00E+006 0.000000E+000
+// 0000000265252859812191058636308480000000 -00042 265252859812191058636308480000000.0 700 % (¤123,456,789,012,345,678,901,234,567,890)
+// 2.653E+032 E7116F0093C8C1F11B1C0F52E    265252859812191058636308480000000|
+// -1 255 -1234 1500
+// FormatException: The value could not be parsed.
+// False 0 True -77
+// 32.42366007492572 265252859812191058636308480000000 -123456789012345678901234567890 -5
+// -3 750225565 1001
+// -123456788148148161864 -197434842
+// 1 True True True ArgumentException: The parameter must be a BigInteger. (Parameter 'obj')
+// 0 True 5 0 00
+//
+// BigInteger AS .NET'S: written with operators and conversions, as ordinary
+// C# writes it, where it had only the static methods. Division truncates and
+// the remainder takes the dividend's sign; `>>` is the floor and `>>>` shifts
+// the two's complement in .NET's width; `&`, `|`, `^` and `~` act on an
+// infinitely sign-extended two's complement. Narrowing conversions throw
+// .NET's own messages -- the type named, or the plain overflow message where
+// .NET's small form goes through a checked int -- and a conversion to double
+// truncates as .NET's does. Bytes are the shortest two's complement; "X" and
+// "B" print it, with one leading digit kept for the sign. Every line came
+// from the same program run on .NET.
+
+using System;
+using System.Globalization;
+using System.Numerics;
+
+class Program
+{
+    static string Bytes(byte[] b)
+    {
+        string s = "";
+        for (int i = 0; i < b.Length; i++) { s = s + (i > 0 ? " " : "") + b[i].ToString("X2"); }
+        return s;
+    }
+
+    static string Try(Func<string> f)
+    {
+        try { return f(); } catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+    }
+
+    static int Main()
+    {
+        BigInteger f = 1;
+        for (int i = 2; i <= 30; i++) f = f * i;
+        Console.WriteLine(f);
+
+        BigInteger a = BigInteger.Parse("-123456789012345678901234567890");
+        Console.WriteLine(a / 7 + " " + a % 7 + " " + a / -1000003 + " " + a % -1000003);
+        Console.WriteLine((a >> 3) + " " + (a >> 200) + " " + (a << 5) + " " + (-a >> 3) + " " + (a >>> 100));
+        Console.WriteLine((a & 0xFFFF) + " " + (a | 1) + " " + (a ^ 5) + " " + (~a) + " " + (a & -f));
+        Console.WriteLine((a < 0) + " " + (a > -1L) + " " + (0 < -a) + " " + (f == f + 0) + " " + (f != 7UL) + " " + a.CompareTo(f));
+
+        BigInteger p = 1;
+        p++;
+        p = p << 70;
+        Console.WriteLine(p + " " + p.IsPowerOfTwo + " " + p.GetBitLength() + " " + (-p).GetBitLength() + " " + f.GetBitLength());
+
+        Console.WriteLine((long)(a / BigInteger.Pow(10, 15)) + " " + (int)new BigInteger(-2147483648L) + " " + (byte)new BigInteger(200));
+        Console.WriteLine(Try(() => ((long)f).ToString()));
+        Console.WriteLine(Try(() => ((int)new BigInteger(3000000000u)).ToString()));
+        Console.WriteLine(Try(() => ((uint)new BigInteger(-1)).ToString()));
+        Console.WriteLine(Try(() => ((ulong)a).ToString()));
+        Console.WriteLine(Try(() => ((byte)new BigInteger(256)).ToString()));
+        Console.WriteLine(Try(() => new BigInteger(double.NaN).ToString()));
+        Console.WriteLine((double)f + " " + (float)f + " " + (double)(BigInteger.Pow(2, 53) + 3) + " " + (double)BigInteger.Pow(2, 1024));
+        Console.WriteLine(new BigInteger(1e20) + " " + (BigInteger)(-2.75) + " " + new BigInteger(4000000000u) + " " + new BigInteger(ulong.MaxValue));
+
+        BigInteger[] round = { 0, 127, 128, -128, -129, 255, 256, -256, f, -f };
+        foreach (BigInteger v in round)
+        {
+            byte[] bytes = v.ToByteArray();
+            Console.WriteLine(v + ": " + Bytes(bytes) + " | " + Bytes(v.ToByteArray(false, true)) + " | " + new BigInteger(bytes) + " " + new BigInteger(bytes, true) + " " + new BigInteger(bytes, false, true));
+        }
+        Console.WriteLine(Try(() => Bytes(new BigInteger(-1).ToByteArray(true, false))));
+        Console.WriteLine(new BigInteger(new byte[] { 0xff, 0x7f }) + " " + new BigInteger(new byte[] { 0x80, 0x00 }) + " " + new BigInteger(new byte[0]));
+
+        Console.WriteLine(f.ToString("X") + " " + (-f).ToString("x") + " " + new BigInteger(-1).ToString("X4") + " " + new BigInteger(255).ToString("X") + " " + new BigInteger(-129).ToString("B"));
+        Console.WriteLine(a.ToString("N0") + " " + f.ToString("N2") + " " + new BigInteger(-12345).ToString("N0"));
+        Console.WriteLine(f.ToString("E3") + " " + a.ToString("e") + " " + new BigInteger(999999).ToString("E2") + " " + BigInteger.Zero.ToString("E"));
+        Console.WriteLine(f.ToString("D40") + " " + new BigInteger(-42).ToString("G5") + " " + f.ToString("F1") + " " + new BigInteger(7).ToString("P0") + " " + a.ToString("C0"));
+        Console.WriteLine($"{f:E3} {a,-12:X} {f,36}|");
+
+        Console.WriteLine(BigInteger.Parse("ff", NumberStyles.HexNumber) + " " + BigInteger.Parse("0ff", NumberStyles.HexNumber) + " " + BigInteger.Parse("  (1,234)  ", NumberStyles.Any) + " " + BigInteger.Parse("15e2", NumberStyles.Float));
+        Console.WriteLine(Try(() => BigInteger.Parse("1.5", NumberStyles.Float).ToString()));
+        Console.WriteLine(BigInteger.TryParse("12x", out BigInteger bad) + " " + bad + " " + BigInteger.TryParse(" -77 ", out BigInteger good) + " " + good);
+
+        Console.WriteLine(BigInteger.Log10(f) + " " + BigInteger.Max(a, f) + " " + BigInteger.Min(a, f) + " " + BigInteger.Clamp(a, -5, 5));
+        Console.WriteLine(BigInteger.ModPow(-7, 3, 5) + " " + BigInteger.ModPow(f, f, 1000000007) + " " + BigInteger.GreatestCommonDivisor(f, 1001 * (BigInteger)97));
+        var qr = BigInteger.DivRem(a, 1000000007);
+        Console.WriteLine(qr.Quotient + " " + qr.Remainder);
+
+        IComparable<BigInteger> c = f;
+        IEquatable<BigInteger> e = a;
+        object boxed = f;
+        Console.WriteLine(c.CompareTo(a) + " " + e.Equals(a) + " " + boxed.Equals(f) + " " + f.Equals(boxed) + " " + Try(() => f.CompareTo((object)1).ToString()));
+        BigInteger none = default;
+        Console.WriteLine(none + " " + none.IsZero + " " + (none + 5) + " " + none.ToString("X") + " " + Bytes(none.ToByteArray()));
+        return 0;
+    }
+}

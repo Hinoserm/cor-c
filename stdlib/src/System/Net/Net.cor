@@ -274,6 +274,17 @@ class IPAddress
         return other != null && other._bits == _bits;
     }
 
+    /// The same address, as .NET's IPAddress.Equals(object) has it.
+    public override bool Equals(object? comparand)
+    {
+        return comparand is IPAddress other && Equals(other);
+    }
+
+    public override int GetHashCode()
+    {
+        return (int)_bits;
+    }
+
     /// 127.0.0.0/8, which is the whole of what IsLoopback answers for IPv4.
     public static bool IsLoopback(IPAddress address)
     {

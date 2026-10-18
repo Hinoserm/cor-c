@@ -1,0 +1,41 @@
+// test: biginteger_pictures_scaled_and_hex_trailing_nuls
+// expect-exit: 0
+// expect-output:
+// scaled 1 1,234,567.00 1,234,568 2 0 -1,234,567.00
+// percent 12,345,600% (15.00) zero
+// big 12,345,678,901,234,567,890,123.00 -1,234,567,890,123,456,789,012,300.00%
+// hex 18 18 18 FormatException FormatException
+// bits 4611686018427387904 1.5 3212836864 -1
+//
+// A BigInteger IN A CUSTOM PICTURE is scaled as a long is, the thousands
+// commas dividing and the percent multiplying before the one rounding at
+// the last place shown, never at each step: 1499999 over a million is 1,
+// not 2; a comma after the point scales nothing. Hex text may end in NULs
+// after its trailing white space, as .NET's BigInteger reads it, and the
+// unsigned bit casts of BitConverter answer as .NET's do.
+
+using System;
+using System.Globalization;
+using System.Numerics;
+
+static class Program
+{
+    static string Try(Func<string> f) { try { return f(); } catch (Exception e) { return e.GetType().Name; } }
+
+    static void Main()
+    {
+        BigInteger million = new BigInteger(1499999);
+        BigInteger mid = new BigInteger(1234567);
+        Console.WriteLine("scaled " + million.ToString("#,##0,,") + " " + mid.ToString("#,##0.00,") + " " + new BigInteger(1234567890).ToString("#,##0,")
+            + " " + new BigInteger(1500000).ToString("0,,") + " " + new BigInteger(499).ToString("0,") + " " + (-mid).ToString("#,##0.00,"));
+        Console.WriteLine("percent " + new BigInteger(123456).ToString("#,##0%") + " " + new BigInteger(-15).ToString("0.00,;(0.00,)") + " "
+            + BigInteger.Zero.ToString("0;-0;zero"));
+        BigInteger huge = BigInteger.Parse("12345678901234567890123");
+        Console.WriteLine("big " + huge.ToString("#,##0.00,,,") + " " + (-huge).ToString("#,##0.00,,,,,,,,%"));
+        Console.WriteLine("hex " + BigInteger.Parse("12\0", NumberStyles.HexNumber) + " " + BigInteger.Parse("12\0\0", NumberStyles.AllowHexSpecifier)
+            + " " + BigInteger.Parse(" 12\0 ", NumberStyles.HexNumber) + " " + Try(() => BigInteger.Parse(" 12 \0", NumberStyles.HexNumber).ToString())
+            + " " + Try(() => BigInteger.Parse("\0", NumberStyles.HexNumber).ToString()));
+        Console.WriteLine("bits " + BitConverter.DoubleToUInt64Bits(2.0) + " " + BitConverter.UInt64BitsToDouble(0x3FF8000000000000UL)
+            + " " + BitConverter.SingleToUInt32Bits(-1.0f) + " " + BitConverter.UInt32BitsToSingle(0xBF800000u));
+    }
+}

@@ -258,6 +258,7 @@ public sealed class Monomorphiser
             LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
             Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
             AutoAccessor = made.AutoAccessor, NeverReturnsByText = made.NeverReturnsByText, End = made.End,
+            PartialWithoutBody = made.PartialWithoutBody,
         };
         if (made.Attributes.Count > 0) plain.WritableAttributes.AddRange(made.Attributes);
         plain.WritableParams.AddRange(made.Params);
@@ -2974,6 +2975,7 @@ public sealed class Monomorphiser
                 made.LocalCopy = md.LocalCopy;
                 made.Fresh = md.Fresh;
                 made.AutoAccessor = md.AutoAccessor;
+                made.PartialWithoutBody = md.PartialWithoutBody;
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
                 // What its text says of it and where it ends, read off the

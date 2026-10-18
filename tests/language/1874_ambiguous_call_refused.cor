@@ -1,0 +1,17 @@
+// test: ambiguous_call_refused
+// expect-compile-error: The call is ambiguous between the following methods or properties: 'P.G(int, long)' and 'P.G(long, int)'
+//
+// NO OVERLOAD BETTER THAN EVERY OTHER is C#'s CS0121, not the first one
+// declared: G(1, 2) fits G(int, long) as well as G(long, int), each better
+// for one argument and worse for the other.
+
+static class P
+{
+    static void G(int a, long b) { }
+    static void G(long a, int b) { }
+
+    static void Main()
+    {
+        G(1, 2);
+    }
+}

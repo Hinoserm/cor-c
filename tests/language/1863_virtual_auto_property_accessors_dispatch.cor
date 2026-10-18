@@ -1,0 +1,118 @@
+// test: virtual_auto_property_accessors_dispatch
+// expect-exit: 0
+// expect-output:
+// outside 1 2 sets 2
+// inside 3 sets 3
+// compound 5 sets 5
+// initialiser 9 sets 1
+// lambda 11 sets 1
+// get-only 7 derived 70
+// override auto 4 4 base reads 4
+// sealed 6 6
+// base reads 21 sets 0
+// interface 8 sets 1
+// span 00:00:05 sets 2
+// constructor 00:00:03 10 00:03:23 10
+//
+// A VIRTUAL AUTO-PROPERTY IS ITS ACCESSORS to everything but themselves: a
+// class below may override them, so every read and write through the class,
+// through the base, inside the class, in a compound assignment, an object
+// initialiser, a lambda or an interface calls the accessor, which dispatches.
+// Its own accessors read and write the field; `base.N` is the base's own
+// accessor, and so the field; a get-only one is set in its constructor
+// through its field and read through its getter, a compound assignment
+// there reading through the getter a class below overrides and writing the
+// field; a sealed override is nobody's to override and is read where it is.
+
+using System;
+
+interface IHas { int H { get; set; } }
+
+class Base : IHas
+{
+    public virtual int N { get; set; }
+    public virtual int Ro { get; }
+    public virtual TimeSpan Span { get; set; }
+    public virtual int H { get; set; }
+    public Base() { Ro = 7; }
+    public int ReadRo() => Ro;
+}
+
+class Derived : Base
+{
+    public int sets;
+    public override int N { get => base.N; set { sets++; base.N = value; } }
+    public override int Ro => base.Ro * 10;
+    public override TimeSpan Span { get => base.Span; set { sets++; base.Span = value; } }
+    public override int H { get => base.H; set { sets++; base.H = value; } }
+    public void Inside() { N = 3; }
+    public void Twice() { N += 1; N += 1; }
+    public int Lambda() { Func<int> f = () => { N = 11; return N; }; return f(); }
+    public int BaseRead() { base.N = 21; return base.N; }
+}
+
+class Auto : Base
+{
+    public override int N { get; set; }
+}
+
+sealed class Closed : Base
+{
+    public override int N { get; set; }
+}
+
+class Aged
+{
+    public virtual TimeSpan Age { get; }
+    public virtual int Count { get; }
+    public Aged() { Age = TimeSpan.FromSeconds(1); Age += TimeSpan.FromSeconds(2); Count = 1; Count += 4; this.Count *= 2; }
+}
+
+class Older : Aged
+{
+    public override TimeSpan Age => base.Age + TimeSpan.FromSeconds(100);
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Derived d = new Derived();
+        d.N = 1;
+        Base b = d;
+        int first = d.N;
+        b.N = 2;
+        Console.WriteLine("outside " + first + " " + b.N + " sets " + d.sets);
+        d.Inside();
+        Console.WriteLine("inside " + d.N + " sets " + d.sets);
+        d.Twice();
+        Console.WriteLine("compound " + d.N + " sets " + d.sets);
+        Derived made = new Derived { N = 9 };
+        Console.WriteLine("initialiser " + made.N + " sets " + made.sets);
+        Derived l = new Derived();
+        Console.WriteLine("lambda " + l.Lambda() + " sets " + l.sets);
+        Console.WriteLine("get-only " + new Base().ReadRo() + " derived " + new Derived().ReadRo());
+        Auto a = new Auto();
+        Base ab = a;
+        ab.N = 4;
+        Console.WriteLine("override auto " + a.N + " " + ab.N + " base reads " + ((Base)a).N);
+        Closed c = new Closed();
+        c.N = 6;
+        Base cb = c;
+        Console.WriteLine("sealed " + c.N + " " + cb.N);
+        Derived br = new Derived();
+        Console.WriteLine("base reads " + br.BaseRead() + " sets " + br.sets + "");
+        Derived i = new Derived();
+        IHas ih = i;
+        ih.H = 8;
+        Console.WriteLine("interface " + ih.H + " sets " + i.sets);
+        Derived s = new Derived();
+        s.Span += TimeSpan.FromSeconds(2);
+        Base sb = s;
+        sb.Span += TimeSpan.FromSeconds(3);
+        Console.WriteLine("span " + s.Span + " sets " + s.sets);
+        Aged young = new Aged();
+        Aged old = new Older();
+        Console.WriteLine("constructor " + young.Age + " " + young.Count + " " + old.Age + " " + old.Count);
+    }
+}

@@ -219,6 +219,7 @@ public sealed partial class Escape : IModulePass
         _stampItems = _descriptors;
         bool canFreeFields = canFree && Provided(FieldFreer);
         _fieldSites = canFreeFields && Provided(FieldKeeper);
+        _headerlessFreer = Provided(OwnedReplacedFreer);
         // At the link's own run of a unit's late passes (Module.AtLink), a key
         // of its own: its field sites are defined from its records (attached
         // to the regenerated object), never from the compile's alike-named.
@@ -5282,6 +5283,8 @@ continue;
     /// <summary>The runtime's release of a frame-made collection's storage (Runtime.FreeStorageInFrame).</summary>
     public const string StorageFreer = "m_Runtime_FreeStorageInFrame_1_V$Any";
     private bool _storageFreer;
+    /// <summary>Whether FreeOwnedReplaced is there for an owner with no descriptor's fields (OwnFields).</summary>
+    private bool _headerlessFreer;
     /// <summary>The type descriptors this pass can read: the module's, or the link's (RunAtLink).</summary>
     private Dictionary<string, DataItem>? _descriptors;
 

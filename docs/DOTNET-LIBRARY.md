@@ -42,7 +42,7 @@ and runs, unchanged, on Linux or on CORSAC/OS. Consequences:
 | `lib/io-streams.cor` | System.IO | StringReader/Writer, BufferedStream, BinaryReader/Writer, EndOfStreamException, InvalidDataException |
 | `lib/time.cor` | System, System.Diagnostics | DateOnly, TimeOnly, Stopwatch |
 | `lib/values.cor` | System | Guid, Version, Lazy, Tuple (2-4) and Tuple.Create |
-| `lib/numerics.cor` | System.Numerics | BigInteger (the static-method half; C# spells the rest with operators) |
+| `lib/numerics.cor` | System.Numerics | BigInteger (operators, conversions, bytes, formats and parsing as .NET's), BitOperations |
 
 The compiler links these by default for every Linux program
 (`compiler/Driver.cs`, `DefaultLibraries`); `tests/lang/run.sh` names
@@ -75,6 +75,12 @@ the same list.
 - Dns resolves numeric addresses, localhost and /etc/hosts. A resolver
   that asks a server is the day the network stack grows one.
 - Local time is UTC: the machine keeps no zone.
+- `Random()` with no seed is xoshiro256**, as .NET's is, from a state made
+  of the clock, a fresh object's address and a count of the Randoms made,
+  so every run draws different numbers; .NET asks the operating system,
+  which `stdlib/src/System/Core.cor` sits below. `Random(seed)`, and every
+  class derived from Random, is .NET's subtractive generator number for
+  number, its members reaching each other through the same virtual calls.
 - Signals delivered by the CORSAC kernel, clock_nanosleep and the RTC
   are being added on the kernel side; until then `sleep`, `date` and
   Ctrl+C misbehave there and only there.
@@ -97,11 +103,6 @@ the same list.
 - `Math` and `Enumerable` cannot be extended from another file: only a type
   declared in the PRELUDE may be reopened, and a second declaration of a type
   the library already has is a duplicate. Anything they lack is added there.
-- `Random()` with no seed is xoshiro256**, as .NET's is, but its state cannot
-  be unpredictable: nothing below `stdlib/src/System/Core.cor` has entropy, so the seed is a
-  constant stirred by a counter. `Random(seed)` reproduces .NET's sequence
-  number for number. `NextInt64` is the one member whose sequence has not been
-  checked against .NET's.
 - `DateTime`'s "U" standard format is the same as "u" because local time is
   UTC here; `Uri` does not speak IPv6 hosts or relative resolution; and
   `Encoding.Latin1` has no accessor, because .NET exposes no Latin1Encoding

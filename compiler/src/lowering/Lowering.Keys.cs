@@ -735,18 +735,38 @@ public sealed partial class Lowering
                                                      && m.Params[0].Type.Prim == Prim.Any);
     }
 
+    /// <summary>Whether a class, or one it derives from, is IEquatable&lt;of&gt;, by its interfaces and theirs.</summary>
+    private static bool Equatable(TypeSymbol t, TypeSymbol of)
+    {
+        Stack<TypeSymbol> faces = new();
+        for (TypeSymbol? at = t; at is not null; at = at.Base)
+            foreach (TypeSymbol face in at.Interfaces) faces.Push(face);
+        HashSet<TypeSymbol> seen = new(ReferenceEqualityComparer.Instance);
+        while (faces.TryPop(out TypeSymbol? face))
+        {
+            if (!seen.Add(face)) continue;
+            if (face.Decl is { Template: "IEquatable", TemplateArgs: [TypeRef arg] } && arg.Name == of.Name) return true;
+            foreach (TypeSymbol inner in face.Interfaces) faces.Push(inner);
+        }
+        return false;
+    }
+
     /// <summary>Whether a value of this type could be an object with slots to ask.</summary>
     private static bool CouldBeObject(Type t)
         => t.Prim is Prim.String or Prim.Any or Prim.NullLiteral || t.ParamName is not null
         || t.Symbol is { Kind: TypeKind.Class or TypeKind.Interface } || t.IsArray;
 
     /// <summary>
-    /// For a class that wrote `Equals(T)` and no `Equals(object)`: what object's
-    /// slot holds. C# writes this for a record and .NET's default comparer
-    /// finds the typed one through IEquatable; either way the typed method is
-    /// only ever handed a T. Here anything at all comes through the slot, so
-    /// it is asked whether it IS one first -- a LocalSym compared with a
-    /// FieldSym is not equal to it, rather than read as though it were one.
+    /// For a class that is IEquatable&lt;T&gt; by an `Equals(T)` and wrote no
+    /// `Equals(object)`: what object's slot holds. .NET's default comparer
+    /// finds the typed one through IEquatable, and every table here asks the
+    /// slot (KeyEqualsStub), so the slot answers as the comparer would. Here
+    /// anything at all comes through the slot, so it is asked whether it IS
+    /// one first -- a LocalSym compared with a FieldSym is not equal to it,
+    /// rather than read as though it were one. A class that is NOT
+    /// IEquatable keeps object's own, as .NET's object.Equals is: its typed
+    /// Equals is an overload like any other, and two equal Points are two
+    /// objects to a List of them.
     /// </summary>
     private string? EqualsGuard(TypeSymbol t)
     {
@@ -756,7 +776,8 @@ public sealed partial class Lowering
         {
             typed = at.Methods.FirstOrDefault(
                 m => m.Name == "Equals" && !m.Static && m.Params.Count == 1 && m.Decl?.Body is not null
-                  && m.Returns.Prim == Prim.Bool && m.Params[0].Type.Symbol is { Kind: TypeKind.Class });
+                  && m.Returns.Prim == Prim.Bool && m.Params[0].Type.Symbol is { Kind: TypeKind.Class } of
+                  && Equatable(t, of));
         }
 
         if (typed is null)

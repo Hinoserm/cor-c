@@ -1,0 +1,29 @@
+// test: compound_assignment_operator_result_refused
+// expect-compile-error: cannot implicitly convert type 'Feet' to 'Meters'
+// `m += n` stores what `m + n` makes back into m, so an operator answering a
+// type m cannot hold without a cast is refused there (C#'s CS0029), though
+// the same operator written out as `m + m` is fine anywhere a Feet is wanted.
+
+using System;
+
+sealed class Feet
+{
+    public int Value;
+}
+
+sealed class Meters
+{
+    public int Value;
+    public static Feet operator +(Meters a, Meters b) => new Feet { Value = (a.Value + b.Value) * 3 };
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Meters m = new Meters { Value = 2 };
+        Feet f = m + m;
+        m += new Meters { Value = 1 };
+        Console.WriteLine(f.Value + " " + m.Value);
+    }
+}

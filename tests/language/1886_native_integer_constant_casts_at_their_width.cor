@@ -1,0 +1,26 @@
+// test: native_integer_constant_casts_at_their_width
+// expect-exit: 0
+// expect-output:
+// True True True
+// True 5
+//
+// A CONSTANT CAST TO nint OR nuint IS C#'s CS8778 CASE, not CS0221: the
+// width is the machine's, so `(nint)long.MinValue` is long.MinValue on a
+// 64-bit machine and its low word on a 32-bit one, and checked it throws
+// there at run time rather than folding to the low word.
+
+using System;
+static class P
+{
+    static string Try(Func<string> f) { try { return f(); } catch (OverflowException) { return "overflow"; } }
+    static void Main()
+    {
+        nint a = (nint)long.MinValue;
+        nint c = (nint)0x1_0000_0001L;
+        nuint b = (nuint)ulong.MaxValue;
+        bool wide = IntPtr.Size == 8;
+        Console.WriteLine((wide ? a == long.MinValue : a == 0) + " " + (wide ? c == 0x1_0000_0001L : c == 1) + " " + (wide ? b == ulong.MaxValue : b == uint.MaxValue));
+        string big = Try(() => checked((nint)long.MinValue).ToString());
+        Console.WriteLine((wide ? big == long.MinValue.ToString() : big == "overflow") + " " + checked((nint)5L));
+    }
+}

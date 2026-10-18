@@ -26,7 +26,7 @@ class InvalidTimeZoneException : Exception
     public InvalidTimeZoneException(string message) : base(message) { }
 }
 
-sealed class TimeZoneInfo
+sealed class TimeZoneInfo : IEquatable<TimeZoneInfo>
 {
     public string Id { get; private set; }
     public string DisplayName { get; private set; }
@@ -536,6 +536,10 @@ sealed class TimeZoneInfo
     public override string ToString() { return DisplayName; }
 
     public bool Equals(TimeZoneInfo? other) { return other != null && other.Id == Id; }
+
+    public override bool Equals(object? obj) { return obj is TimeZoneInfo other && Equals(other); }
+
+    public override int GetHashCode() { return Id.GetHashCode(); }
 
     // ---- Windows' names ---------------------------------------------------------
 

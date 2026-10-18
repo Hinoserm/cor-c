@@ -1,0 +1,29 @@
+// test: constant_nought_alone_becomes_an_enum
+// expect-exit: 0
+// expect-output:
+// E C E A A 0 E C
+// A True True
+//
+// ONLY THE CONSTANT NOUGHT BECOMES AN ENUM without a cast (C# 10.2.4): `E
+// zero = 0`, an enum of bytes given 0, F(0) taking F(E) over F(object), a
+// nullable enum; anything else is cast, as (E)2 is.
+
+using System;
+
+enum E { A, B, C }
+enum W : byte { X = 1, Y = 2 }
+
+static class P
+{
+    static string F(E e) => "E " + e;
+    static string F(object o) => "object " + o;
+
+    static void Main()
+    {
+        E zero = 0;
+        W w = 0;
+        Console.WriteLine(F(E.C) + " " + F(0) + " " + zero + " " + w + " " + F((E)2));
+        E? n = 0;
+        Console.WriteLine(n + " " + (n == 0) + " " + (E.B == (E)1));
+    }
+}

@@ -1,0 +1,27 @@
+// test: nan_constant_patterns_match_nan
+// expect-exit: 0
+// expect-output:
+// nan one other
+// True False True True False
+// nan inf zero num
+// False False True
+//
+// A NaN CONSTANT PATTERN MATCHES A NaN (C# 11.2.6), as no `==` with NaN
+// does: `d is double.NaN`, `f is float.NaN`, a NaN arm of a switch
+// expression, a `case float.NaN:` label; `double.NaN` read as the constant
+// it is (the keyword naming Double), and `nan == double.NaN` still false.
+
+using System;
+static class P
+{
+    static string Kind(double d) => d switch { double.NaN => "nan", double.PositiveInfinity => "inf", 0.0 => "zero", _ => "num" };
+    static string Stmt(float f) { switch (f) { case float.NaN: return "nan"; case 1f: return "one"; default: return "other"; } }
+    static void Main()
+    {
+        Console.WriteLine(Stmt(float.NaN) + " " + Stmt(1f) + " " + Stmt(2f));
+        double nan = double.NaN; float fn = float.NaN; object boxed = double.NaN;
+        Console.WriteLine((nan is double.NaN) + " " + (1.0 is double.NaN) + " " + (fn is float.NaN) + " " + (boxed is double.NaN) + " " + (nan is not double.NaN));
+        Console.WriteLine(Kind(nan) + " " + Kind(1.0 / 0.0) + " " + Kind(-0.0) + " " + Kind(2));
+        Console.WriteLine((nan == double.NaN) + " " + (nan is < 0 or > 0) + " " + (0.0 / 0.0 is double.NaN));
+    }
+}
