@@ -20729,6 +20729,20 @@ static class Math {
     public static nint Max(nint a, nint b) { if (a > b) { return a; } return b; }
     public static nuint Min(nuint a, nuint b) { if (a < b) { return a; } return b; }
     public static nuint Max(nuint a, nuint b) { if (a > b) { return a; } return b; }
+
+    /// THE NARROW ONES AND float, which .NET has too: each answers its own
+    /// type, so `Math.Max(s, t)` over two shorts is a short, and a float's
+    /// pair is the double one's NaN and sign of nought rules, narrowed back.
+    public static byte Min(byte a, byte b) { if (a < b) { return a; } return b; }
+    public static byte Max(byte a, byte b) { if (a > b) { return a; } return b; }
+    public static sbyte Min(sbyte a, sbyte b) { if (a < b) { return a; } return b; }
+    public static sbyte Max(sbyte a, sbyte b) { if (a > b) { return a; } return b; }
+    public static short Min(short a, short b) { if (a < b) { return a; } return b; }
+    public static short Max(short a, short b) { if (a > b) { return a; } return b; }
+    public static ushort Min(ushort a, ushort b) { if (a < b) { return a; } return b; }
+    public static ushort Max(ushort a, ushort b) { if (a > b) { return a; } return b; }
+    public static float Min(float a, float b) { return (float)Min((double)a, (double)b); }
+    public static float Max(float a, float b) { return (float)Max((double)a, (double)b); }
     public static double Pi() { return 3.14159265358979323846; }
     public static double Tau() { return 6.28318530717958647692; }
 
@@ -20996,6 +21010,54 @@ static class Math {
     public static long Clamp(long x, long low, long high) {
         if (low > high) { throw MinMax(low, high); }
         return Min(Max(x, low), high);
+    }
+
+    public static byte Clamp(byte x, byte low, byte high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    public static sbyte Clamp(sbyte x, sbyte low, sbyte high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    public static short Clamp(short x, short low, short high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    public static ushort Clamp(ushort x, ushort low, ushort high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    public static uint Clamp(uint x, uint low, uint high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    public static ulong Clamp(ulong x, ulong low, ulong high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    public static nint Clamp(nint x, nint low, nint high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    public static nuint Clamp(nuint x, nuint low, nuint high) {
+        if (low > high) { throw MinMax(low, high); }
+        return Min(Max(x, low), high);
+    }
+
+    /// A NaN passes through, as the double's does.
+    public static float Clamp(float x, float low, float high) {
+        if (low > high) { throw MinMax(low, high); }
+        if (x < low) { return low; }
+        if (x > high) { return high; }
+        return x;
     }
 
     // TO THE EVEN NEIGHBOUR AT A HALF, which is .NET's DEFAULT and the half

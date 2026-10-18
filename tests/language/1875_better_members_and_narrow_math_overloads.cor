@@ -1,0 +1,43 @@
+// test: better_members_and_narrow_math_overloads
+// expect-exit: 0
+// expect-output:
+// 8 4 1 Int16 Byte Single
+// F(int,int) F(long,long) F(double,double) F(int,int) F(long,long)
+// 200 200 3 -2 Single 1.5
+// clamp 7 Byte 3 SByte 10 UInt16 NaN 2.5
+// ArgumentException: '5' cannot be greater than 3.
+//
+// THE BETTER FUNCTION MEMBER, where one is better than every other (C#
+// 12.6.4.3): Min(long, long) for two longs, F(int, int) for a byte and a
+// short; and Math's overloads for every type .NET gives it -- byte, sbyte,
+// short, ushort, float -- each answering its own type, Clamp with them.
+
+using System;
+
+static class P
+{
+    static string F(int a, int b) { return "F(int,int)"; }
+    static string F(long a, long b) { return "F(long,long)"; }
+    static string F(double a, double b) { return "F(double,double)"; }
+
+    static void Main()
+    {
+        long va = 0x1234, a = 9;
+        long piece = Math.Min(a - 1, 0x1000 - (va & 0xFFF));
+        short s = 3, t = 4;
+        byte b = 200, one = 1;
+        float f = 1.5f;
+        Console.WriteLine(piece + " " + Math.Max(3L, 4L) + " " + Math.Min(2.5, 1) + " " + Math.Max(s, t).GetType().Name
+            + " " + Math.Min(b, one).GetType().Name + " " + Math.Max(f, 0.5f).GetType().Name);
+        Console.WriteLine(F(1, 2) + " " + F(1L, 2) + " " + F(1, 2.0) + " " + F((byte)1, (short)2) + " " + F(1u, 2));
+        sbyte minus = -2;
+        Console.WriteLine(Math.Max(b, one) + " " + Math.Clamp(b, (byte)0, (byte)255) + " " + Math.Max((ushort)3, (ushort)2) + " " + Math.Min(minus, (sbyte)5)
+            + " " + Math.Min(f, 2f).GetType().Name + " " + Math.Max(f, 1.25f));
+        Console.WriteLine("clamp " + Math.Clamp((byte)9, (byte)1, (byte)7) + " " + Math.Clamp((byte)9, (byte)1, (byte)7).GetType().Name
+            + " " + Math.Clamp((sbyte)3, (sbyte)-1, (sbyte)4) + " " + Math.Clamp((sbyte)3, (sbyte)-1, (sbyte)4).GetType().Name
+            + " " + Math.Clamp((ushort)40, (ushort)1, (ushort)10) + " " + Math.Clamp((ushort)40, (ushort)1, (ushort)10).GetType().Name
+            + " " + Math.Clamp(float.NaN, 1f, 2f) + " " + Math.Clamp(2.5f, 1f, 3f));
+        try { Math.Clamp((short)1, (short)5, (short)3); }
+        catch (ArgumentException e) { Console.WriteLine("ArgumentException: " + e.Message); }
+    }
+}

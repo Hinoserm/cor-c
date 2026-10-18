@@ -19887,7 +19887,26 @@ public sealed partial class Binder
             {
                 if (applicable.All(other => ReferenceEquals(other, one) || BetterThan(one, other))) return one;
             }
-            return applicable[0];
+
+            // NONE BETTER THAN ALL THE REST IS C#'s CS0121: `Math.Max(b, 1)`
+            // for a byte b takes Max(byte, byte) for the byte and Max(int,
+            // int) for the 1, and the first declared was quietly the call.
+            // Not where the ones left are one signature (an override beside
+            // what it overrides), nor where a generic may still be better,
+            // nor where a lambda or a method group is an argument, which the
+            // rules for those judge apart (BetterLambdas).
+            List<MethodSymbol> unbeaten = applicable.Where(one => !applicable.Any(other => !ReferenceEquals(other, one) && BetterThan(other, one))).ToList();
+            if (unbeaten.Count >= 2
+                && unbeaten.Skip(1).Any(other => !MethodSignatures.SameParameters(unbeaten[0], other))
+                && !byArity.Any(m => m.TypeParams.Count > 0)
+                && !c.Args.Any(a => IsFunctionSource(a) || a is LambdaExpr)
+                && !args.Any(a => a.Dynamic || a.IsError))
+            {
+                Error(c, $"The call is ambiguous between the following methods or properties: '{Spelt(unbeaten[0])}' and '{Spelt(unbeaten.First(other => !MethodSignatures.SameParameters(unbeaten[0], other)))}'");
+            }
+            return unbeaten.FirstOrDefault() ?? applicable[0];
+
+            static string Spelt(MethodSymbol m) => m.Owner.Name + "." + m.Name + "(" + string.Join(", ", m.Params.Select(p => p.Type.ToString())) + ")";
         }
 
         bool BetterThan(MethodSymbol one, MethodSymbol other)
