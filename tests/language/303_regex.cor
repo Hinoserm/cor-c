@@ -29,6 +29,21 @@ class Program
         Same(what, got ? "yes" : "no", "no");
     }
 
+    /// The rule a pattern breaks and where, as .NET reports it, or
+    /// "accepted".
+    static string Refused(string pattern)
+    {
+        try
+        {
+            new Regex(pattern);
+            return "accepted";
+        }
+        catch (RegexParseException e)
+        {
+            return e.Error.ToString() + "@" + e.Offset;
+        }
+    }
+
     static int Main()
     {
         // ---- literals, dot, anchors ----------------------------------------
@@ -65,12 +80,15 @@ class Program
         True("word", new Regex("^\\w+$").IsMatch("a_9"));
         True("space", new Regex("a\\s+b").IsMatch("a \t b"));
         True("class with shorthand", new Regex("^[\\d-]+$").IsMatch("12-34"));
-        True("posix name", new Regex("^[[:digit:]]+$").IsMatch("42"));
+        // [:digit:] IS NOTHING SPECIAL to .NET: '[' ':' and the letters are
+        // the class, which its first ']' ends, and the second is a ']'.
+        False("posix name", new Regex("^[[:digit:]]+$").IsMatch("42"));
+        True("posix name as characters", new Regex("^[[:digit:]]$").IsMatch(":]"));
 
         // ---- alternation, groups, back-references ---------------------------
         True("alternation", new Regex("^(cat|dog)$").IsMatch("dog"));
         Same("group value", new Regex("(a+)(b+)").Match("xaabbby").Groups[2].Value, "bbb");
-        Same("named group", new Regex("(?<tail>b+)").Match("abbb").Groups.ByName("tail").Value, "bbb");
+        Same("named group", new Regex("(?<tail>b+)").Match("abbb").Groups["tail"].Value, "bbb");
         True("non-capturing", new Regex("^(?:ab)+$").IsMatch("abab"));
         True("backreference", new Regex("^(ab)\\1$").IsMatch("abab"));
         False("backreference miss", new Regex("^(ab)\\1$").IsMatch("abcd"));
@@ -78,6 +96,48 @@ class Program
         False("negative lookahead", new Regex("^a(?!b)").IsMatch("ab"));
         True("word boundary", new Regex("\\bcat\\b").IsMatch("a cat here"));
         False("word boundary miss", new Regex("\\bcat\\b").IsMatch("concatenate"));
+
+        // ---- group numbers: the unnamed groups first, then the named -------
+        Match person = new Regex("(?<first>\\w+)\\s(?<last>\\w+),\\s(\\d+)").Match("John Smith, 42");
+        Same("unnamed group is 1", person.Groups[1].Value, "42");
+        Same("named groups follow", person.Groups[2].Value + "|" + person.Groups[3].Value, "John|Smith");
+        Same("groups by name", person.Groups["first"].Value + "|" + person.Groups["last"].Value, "John|Smith");
+        Same("group by number text", person.Groups["1"].Value, "42");
+        Same("missing group", person.Groups["middle"].Name + "|" + person.Groups[9].Name, "|");
+        False("missing group fails", person.Groups["middle"].Success);
+        Same("group names", String.Join(",", new Regex("(?<a>x)(y)").GetGroupNames()), "0,1,a");
+        Same("group numbers", String.Join(",", new Regex("(?<y>\\d+)-(\\d+)").GetGroupNumbers()), "0,1,2");
+        Same("group name", new Regex("(?<y>\\d+)-(\\d+)").Match("12-34").Groups[2].Name, "y");
+        Same("numbered name", String.Join(",", new Regex("(?<5>a)(b)(?<x>c)").GetGroupNumbers()), "0,1,2,5");
+        Same("name from number", new Regex("(?<5>a)(b)(?<x>c)").GroupNameFromNumber(2), "x");
+        Same("number from name", new Regex("(?<5>a)(b)(?<x>c)").GroupNumberFromName("x").ToString(), "2");
+        Same("repeated name", new Regex("(?<x>a)(?<x>b)").Match("ab").Groups["x"].Value, "b");
+        Same("forward reference", new Regex("\\k<p>|(?<p>x)").Match("xx").Value, "x");
+        Same("reference by name", new Regex("(?<p>ab)\\k<p>").Match("abab").Value, "abab");
+        Same("ten groups", new Regex("(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\\10").Match("abcdefghijj").Value, "abcdefghijj");
+        Same("octal past the groups", ((int)new Regex("(a)\\10").Match("a\b").Value[1]).ToString(), "8");
+        True("contains name", person.Groups.ContainsKey("first"));
+        False("contains no name", person.Groups.ContainsKey("middle"));
+        Group got;
+        True("try name", person.Groups.TryGetValue("last", out got) && got.Value == "Smith");
+        Same("keys", String.Join(",", person.Groups.Keys), "0,1,first,last");
+        Same("match is group zero", person.Groups[0] == person ? "yes" : "no", "yes");
+
+        // ---- Unicode: .NET's sets, ASCII only under ECMAScript ---------------
+        Same("unicode word", new Regex("\\w+").Match("h\u00E9llo").Value, "h\u00E9llo");
+        True("unicode space", new Regex("a\\sb").IsMatch("a\u00A0b"));
+        True("unicode digit", new Regex("^\\d$").IsMatch("\u0663"));
+        False("mark is no digit", new Regex("^\\d$").IsMatch("\u00B2"));
+        False("ecmascript word", new Regex("^\\w$", RegexOptions.ECMAScript).IsMatch("\u00E9"));
+        False("ecmascript digit", new Regex("^\\d$", RegexOptions.ECMAScript).IsMatch("\u0663"));
+        False("joiner inside a word", new Regex("a\\b").IsMatch("a\u200D"));
+        Same("category", new Regex("\\p{L}+").Match("1h\u00E9llo w").Value, "h\u00E9llo");
+        True("category upper", new Regex("^\\p{Lu}$").IsMatch("\u00C4"));
+        True("category inverted", new Regex("^\\P{Lu}$").IsMatch("a"));
+        False("category inverted ignoring case", new Regex("^\\P{Lu}$", RegexOptions.IgnoreCase).IsMatch("a"));
+        True("category in a class", new Regex("^[\\p{N}x]+$").IsMatch("1x\u00B2\u216B"));
+        True("block", new Regex("^\\p{IsGreek}+$").IsMatch("\u03B1\u03B2"));
+        True("block inverted", new Regex("^\\P{IsBasicLatin}$").IsMatch("\u00E9"));
 
         // ---- case --------------------------------------------------------
         True("ignore case", new Regex("abc", RegexOptions.IgnoreCase).IsMatch("ABC"));
@@ -101,12 +161,49 @@ class Program
         Same("replace group", new Regex("(a)(b)").Replace("ab", "$2$1"), "ba");
         Same("replace whole", new Regex("b+").Replace("abbc", "[$&]"), "a[bb]c");
         Same("replace dollar", new Regex("b").Replace("ab", "$$"), "a$");
+        Same("replace by number", Regex.Replace("12-34", "(?<y>\\d+)-(\\d+)", "$2|${y}|$1"), "12|12|34");
+        Same("replace names no group", new Regex("(a)(b)").Replace("ab", "$12|$3|${z}|$+"), "$12|$3|${z}|b");
+        Same("split captures by number", String.Join("|", Regex.Split("a1-b", "(?<n>\\d)(-)")), "a|-|1|b");
+        Same("count", Regex.Count("a1b22c333", "\\d+").ToString(), "3");
+        Same("count empty matches", new Regex("a*").Count("baaa").ToString(), "3");
         Same("split", String.Join("|", new Regex("\\s*,\\s*").Split("a , b,c")), "a|b|c");
         Same("static ismatch", Regex.IsMatch("hello", "^h.*o$") ? "yes" : "no", "yes");
         Same("static replace", Regex.Replace("a-b", "-", "+"), "a+b");
         Same("escape", Regex.Escape("a.b*c"), "a\\.b\\*c");
         True("escaped pattern is literal", new Regex(Regex.Escape("a.b")).IsMatch("a.b"));
         False("escaped pattern not a dot", new Regex(Regex.Escape("a.b")).IsMatch("axb"));
+
+        // ---- patterns .NET refuses, refused the same way ---------------------
+        Same("unknown escape", Refused("\\q"), "UnrecognizedEscape@2");
+        Same("unknown escape in a class", Refused("[\\q]"), "UnrecognizedEscape@3");
+        Same("escaped punctuation", Refused("\\#\\-\\ "), "accepted");
+        Same("possessive", Refused("a++"), "NestedQuantifiersNotParenthesized@3");
+        Same("nested counted", Refused("a{2}{3}"), "NestedQuantifiersNotParenthesized@5");
+        Same("lazy then more", Refused("a*?+"), "NestedQuantifiersNotParenthesized@4");
+        Same("nothing to repeat", Refused("*a"), "QuantifierAfterNothing@1");
+        Same("unclosed group", Refused("((a)"), "InsufficientClosingParentheses@4");
+        Same("unopened group", Refused("a)"), "InsufficientOpeningParentheses@2");
+        Same("unknown property", Refused("\\p{Foo}"), "UnrecognizedUnicodeProperty@7");
+        Same("property case", Refused("\\p{l}"), "UnrecognizedUnicodeProperty@5");
+        Same("incomplete property", Refused("\\pL"), "InvalidUnicodePropertyEscape@2");
+        Same("no such group", Refused("(a)\\2"), "UndefinedNumberedReference@5");
+        Same("no such name", Refused("(?<x>a)\\k<y>"), "UndefinedNamedReference@12");
+        Same("short hex", Refused("\\x4"), "InsufficientOrInvalidHexDigits@2");
+        Same("reversed range", Refused("[z-a]"), "ReversedCharacterRange@4");
+        Same("class in a range", Refused("[a-\\d]"), "ShorthandClassInCharacterRange@5");
+        Same("reversed count", Refused("a{3,2}"), "ReversedQuantifierRange@6");
+        Same("group zero", Refused("(?<0>x)"), "CaptureGroupOfZero@4");
+        Same("unknown construct", Refused("(?Q)"), "InvalidGroupingConstruct@3");
+        Same("unterminated class", Refused("[a"), "UnterminatedBracket@2");
+        Same("ending backslash", Refused("\\"), "UnescapedEndingBackslash@1");
+        try
+        {
+            new Regex("(");
+        }
+        catch (RegexParseException e)
+        {
+            Same("message", e.Message, "Invalid pattern '(' at offset 1. Not enough )'s.");
+        }
 
         // ---- the empty match, which every substitution has to survive -------
         Same("empty match replace", new Regex("x*").Replace("ab", "-"), "-a-b-");

@@ -1,0 +1,90 @@
+// test: regex numbering unicode and errors as dotnet
+// expect-exit: 0
+// expect-output:
+// groups: 42|John|Smith y 0,1,first,last
+// gaps: 0,1,2,3,5 0,1,2,x,5 0,1,2,x, abdc
+// replace: 12|12|34|34|12|$3|${z}|12|12-34 a2|$2
+// split: a|-|1|b a||b
+// count: 3 3 0
+// unicode: héllo True True False True False
+// ecmascript: True False True n
+// G: 0,1 False
+// x: b True 0,1,2
+// Invalid pattern 'a++' at offset 3. Nested quantifier '+'.
+// Invalid pattern '\q' at offset 2. Unrecognized escape sequence \q.
+// Invalid pattern '\p{Foo}' at offset 7. Unknown property 'Foo'.
+// Invalid pattern '(?<x>a' at offset 6. Not enough )'s.
+// Invalid pattern '\k<y>(?<x>a)' at offset 5. Reference to undefined group name 'y'.
+// UnrecognizedEscape 5 3
+//
+// System.Text.RegularExpressions as .NET 10 answers: unnamed groups numbered
+// before named ones, what a GroupCollection walk shows where the numbers have
+// a gap, $ substitutions that name no group, the Unicode shorthands and \p,
+// the ASCII ones under ECMAScript, \G, IgnorePatternWhitespace, and .NET's
+// RegexParseException for patterns it refuses.
+
+using System;
+using System.Linq;
+using System.Text.RegularExpressions;
+
+class Program
+{
+    static string Refused(string pattern)
+    {
+        try
+        {
+            new Regex(pattern);
+            return "accepted";
+        }
+        catch (RegexParseException e)
+        {
+            return e.Message;
+        }
+    }
+
+    static int Main()
+    {
+        Match m = Regex.Match("John Smith, 42", @"(?<first>\w+)\s(?<last>\w+),\s(\d+)");
+        Regex dates = new Regex(@"(?<y>\d+)-(\d+)");
+        Console.WriteLine("groups: " + m.Groups[1].Value + "|" + m.Groups["first"] + "|" + m.Groups[3]
+            + " " + dates.GroupNameFromNumber(2) + " " + string.Join(",", m.Groups.Keys));
+
+        Regex gaps = new Regex(@"(?<5>a)(b)(?<x>c)(?<2>d)");
+        Match g = gaps.Match("abcd");
+        Console.WriteLine("gaps: " + string.Join(",", gaps.GetGroupNumbers()) + " " + string.Join(",", gaps.GetGroupNames())
+            + " " + string.Join(",", g.Groups.Cast<Group>().Select(one => one.Name))
+            + " " + g.Groups[5].Value + g.Groups[1].Value + g.Groups[2].Value + g.Groups["x"].Value);
+
+        Console.WriteLine("replace: " + dates.Replace("12-34", "$2|${y}|$1|${1}|${2}|$3|${z}|$+|$0")
+            + " " + Regex.Replace("ab", "(a)(b)", "$12", RegexOptions.ECMAScript) + "|" + Regex.Replace("ab", "(a)b", "$2"));
+        Console.WriteLine("split: " + string.Join("|", Regex.Split("a1-b", @"(?<n>\d)(-)")) + " " + string.Join("|", Regex.Split("a1b", @"(?<3>\d)")));
+        Console.WriteLine("count: " + Regex.Count("a1b22c333", @"\d+") + " " + new Regex("a*").Count("baaa") + " " + Regex.Count("", "x"));
+
+        Console.WriteLine("unicode: " + Regex.Match("h\u00E9llo w", @"\w+").Value + " " + Regex.IsMatch("a\u00A0b", @"a\sb")
+            + " " + Regex.IsMatch("\u0663", @"^\d$") + " " + Regex.IsMatch("a", @"^\P{Lu}$", RegexOptions.IgnoreCase)
+            + " " + Regex.IsMatch("\u03B1\u03B2", @"^\p{IsGreek}+$") + " " + Regex.IsMatch("a\u200D", @"a\b"));
+        Console.WriteLine("ecmascript: " + Regex.IsMatch("\u0130", @"^\w$", RegexOptions.ECMAScript)
+            + " " + Regex.IsMatch("\u0663", @"^\d$", RegexOptions.ECMAScript)
+            + " " + Regex.IsMatch("b", @"^(a)?b\1$", RegexOptions.ECMAScript)
+            + " " + Regex.Match("q", @"\q", RegexOptions.ECMAScript).Value.Replace("q", "n"));
+        Console.WriteLine("G: " + string.Join(",", Regex.Matches("aab", @"\Ga").Select(one => one.Index)) + " " + Regex.IsMatch("xa", @"\Ga"));
+        Console.WriteLine("x: " + Regex.Match("ab", "a # (x) is a comment\n (b)", RegexOptions.IgnorePatternWhitespace).Groups[1].Value
+            + " " + Regex.IsMatch(" ", "[ ]", RegexOptions.IgnorePatternWhitespace)
+            + " " + string.Join(",", new Regex("(a) #(b)\n(c)", RegexOptions.IgnorePatternWhitespace).GetGroupNumbers()));
+
+        Console.WriteLine(Refused("a++"));
+        Console.WriteLine(Refused(@"\q"));
+        Console.WriteLine(Refused(@"\p{Foo}"));
+        Console.WriteLine(Refused("(?<x>a"));
+        Console.WriteLine(Refused(@"\k<y>(?<x>a)"));
+        try
+        {
+            Regex.Match("x", "[\\q]");
+        }
+        catch (RegexParseException e)
+        {
+            Console.WriteLine(e.Error + " " + (int)e.Error + " " + e.Offset);
+        }
+        return 0;
+    }
+}

@@ -1,0 +1,58 @@
+// test: yield_break_ends_the_null_test
+// expect-exit: 0
+// expect-no-compile-warning: CS8603
+// expect-output:
+// alpha beta gamma
+// 1 2 3
+//
+// `yield break` LEAVES AN ITERATOR as `return` leaves a method, so the guard
+// clause `if (w == null) { yield break; }` proves w set for what follows, and
+// a switch case that ends in it does not fall out of the switch.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static string? Find(string[] words, int i)
+    {
+        return i < words.Length ? words[i] : null;
+    }
+
+    static IEnumerable<string> Words(string[] words)
+    {
+        int i = 0;
+        while (true)
+        {
+            string? w = Find(words, i++);
+            if (w == null)
+            {
+                yield break;
+            }
+            yield return w;
+        }
+    }
+
+    static IEnumerable<int> Counted(int n)
+    {
+        for (int i = 1; ; i++)
+        {
+            string? done;
+            switch (i > n ? 1 : 0)
+            {
+                case 1:
+                    yield break;
+                default:
+                    done = "no";
+                    break;
+            }
+            yield return done.Length > 0 ? i : 0;
+        }
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(string.Join(" ", Words(new[] { "alpha", "beta", "gamma" })));
+        Console.WriteLine(string.Join(" ", Counted(3)));
+    }
+}

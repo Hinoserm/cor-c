@@ -1,0 +1,71 @@
+// test: switch_case_constant_expressions
+// expect-exit: 0
+// expect-output:
+// load, load back, store back twice, jump back, other 130
+// eleven, nineteen, thirty-two, twenty-five, seventy-four, minus one, three, guarded, five or six, five or six, 7
+// ab, the program, ?
+// True True False
+//
+// A CASE LABEL IS A WHOLE CONSTANT EXPRESSION, as C#'s is: `case Op.A |
+// Op.Back:` is one constant, an enum's flags or'd together, and so are a
+// sum, a shift, a char less a char and two strings joined. The pattern
+// combinators still follow: `when` guards the constant, and `or` joins a
+// second alternative to it. After `is`, a constant stays one operand.
+
+using System;
+
+enum Op { Load = 1, Store = 2, Jump = 3, Back = 128, Twice = 256 }
+
+static class Program
+{
+    const int Base = 10;
+
+    static string Name(Op op)
+    {
+        switch (op)
+        {
+            case Op.Load: return "load";
+            case Op.Load | Op.Back: return "load back";
+            case Op.Store | Op.Back | Op.Twice: return "store back twice";
+            case (Op)((int)Op.Jump | 128): return "jump back";
+            default: return "other " + (int)op;
+        }
+    }
+
+    static string Number(int n)
+    {
+        switch (n)
+        {
+            case Base + 1: return "eleven";
+            case Base * 2 - 1: return "nineteen";
+            case 1 << 5: return "thirty-two";
+            case 'z' - 'a': return "twenty-five";
+            case Base | 0x40: return "seventy-four";
+            case ~0: return "minus one";
+            case 3 when Base > 5: return "three, guarded";
+            case 4 | 1 or 6: return "five or six";
+            default: return "" + n;
+        }
+    }
+
+    static string Word(string s)
+    {
+        switch (s)
+        {
+            case "a" + "b": return "ab";
+            case nameof(Program): return "the program";
+            default: return "?";
+        }
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Name(Op.Load) + ", " + Name(Op.Load | Op.Back) + ", " + Name(Op.Store | Op.Back | Op.Twice) + ", " + Name(Op.Jump | Op.Back) + ", " + Name(Op.Store | Op.Back));
+        Console.WriteLine(Number(11) + ", " + Number(19) + ", " + Number(32) + ", " + Number(25) + ", " + Number(74) + ", " + Number(-1) + ", " + Number(3) + ", " + Number(5) + ", " + Number(6) + ", " + Number(7));
+        Console.WriteLine(Word("ab") + ", " + Word("Program") + ", " + Word("a"));
+        int x = 5;
+        bool b = x is 5 or 6;
+        Op both = Op.Load | Op.Back;
+        Console.WriteLine(b + " " + (x is > 4 and < 6) + " " + (both is Op.Load));
+    }
+}

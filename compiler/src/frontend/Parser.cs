@@ -6368,13 +6368,33 @@ public sealed class Parser
         return path;
     }
 
+    /// <summary>
+    /// Whether a name, dotted or not, is followed by an arithmetic or bitwise
+    /// operator: in a case label, `case Base + 1:` is a constant expression,
+    /// where the bare name alone would be read as a type.
+    /// </summary>
+    private bool OperatorAfterName()
+    {
+        int j = _i;
+        if (j >= _t.Count || _t[j].Kind != Tok.Ident)
+        {
+            return false;
+        }
+        while (j + 2 < _t.Count && _t[j + 1].Kind == Tok.Dot && _t[j + 2].Kind == Tok.Ident)
+        {
+            j += 2;
+        }
+        return j + 1 < _t.Count && _t[j + 1].Kind is Tok.Plus or Tok.Minus or Tok.Star or Tok.Slash or Tok.Percent
+            or Tok.Pipe or Tok.Amp or Tok.Caret or Tok.Shl or Tok.Shr or Tok.UShr;
+    }
+
     private bool StartsValuePattern()
         // A PROPERTY PATTERN READS THE SUBJECT TWICE TOO -- once for the null
         // test and again for the member -- so it needs hoisting for the same
         // reason a constant alternative does.
         => At(Tok.LBrace)
            || At(Tok.LParen) || Cur.Kind is Tok.Lt or Tok.Gt or Tok.LtEq or Tok.GtEq
-           or Tok.Int or Tok.Minus or Tok.Char or Tok.Real
+           or Tok.Int or Tok.Minus or Tok.Tilde or Tok.Char or Tok.Real
            or Tok.KwTrue or Tok.KwFalse or Tok.Str
            || (At(Tok.Ident) && Ahead().Kind == Tok.Dot && !QualifiedTypePattern())
            // `case unchecked((int)0x80000000):` is a constant, not a type
@@ -6442,6 +6462,11 @@ public sealed class Parser
     /// </summary>
     private Expr ParsePrimaryPattern(Expr subject, Token at)
     {
+        // Only a case label's own first constant is a whole expression: a
+        // constant nested in a property or positional pattern is not.
+        bool whole = _caseLabel;
+        _caseLabel = false;
+
         // `not` IS A PATTERN OPERATOR, not merely a prefix accepted once after
         // `is`. It may begin either side of `and`/`or`: `x is not A and not B`
         // is the ordinary form used by the assembler. Keeping it here gives it
@@ -6535,8 +6560,9 @@ public sealed class Parser
         // as a constant: the copy that learned better was not the copy that
         // ran. That is the third time in this parser -- the `is` dispatch was
         // duplicated too.
-        if (StartsValuePattern() && !At(Tok.LBrace) && !TupleArrayTypeAhead())
+        if ((StartsValuePattern() || (whole && OperatorAfterName())) && !At(Tok.LBrace) && !TupleArrayTypeAhead())
         {
+            _caseLabel = whole;
             return ParseOnePattern(subject, at);
         }
 
@@ -7026,11 +7052,21 @@ public sealed class Parser
     }
 
     /// <summary>One alternative of a value pattern: `&lt; 0`, `&gt;= 10`, or `5`.</summary>
-    /// <summary>The loosest operator a bare constant pattern takes in: shift after `is`, `|` in a case label.</summary>
-    private int _constantPrecedence = Precedence(Tok.Shl);
+    /// <summary>
+    /// Set while a switch statement's case label is read, until its first
+    /// constant: there a constant is a whole constant expression, as C#'s
+    /// is, so `case Op.Lazybranch | Op.Back:` is one constant and not a
+    /// pattern followed by a stray `|`. After `is`, and past the first
+    /// alternative, a constant is a shift expression, as C#'s is, so that
+    /// `or` and `and` and the relational patterns keep their own precedence.
+    /// </summary>
+    private bool _caseLabel;
 
     private Expr ParseOnePattern(Expr subject, Token at)
     {
+        bool whole = _caseLabel;
+        _caseLabel = false;
+
         // A PARENTHESISED PATTERN, which is how alternatives are grouped:
         // `c is not ('r' or 'R')`. The brackets are the grouping and nothing
         // else, so what is inside them is a whole pattern again -- of any
@@ -7070,7 +7106,7 @@ public sealed class Parser
         // Read | Write:` is the flags' union.
         return new BinaryExpr
         {
-            Op = op, Left = subject, Right = ParseBinary(op == BinOp.Eq ? _constantPrecedence : 9),
+            Op = op, Left = subject, Right = op == BinOp.Eq ? (whole ? ParseBinary(1) : ParseBinary(Precedence(Tok.Shl))) : ParseBinary(9),
             PatternConstant = op == BinOp.Eq,
             Line = at.Line, Col = at.Col,
         };
@@ -7115,15 +7151,9 @@ public sealed class Parser
                 // every label reads the answer. The old code re-emitted the
                 // subject after each guard and each property load, which for a
                 // subject that DID something was three calls for one switch.
-                _constantPrecedence = Precedence(Tok.Pipe);
-                try
-                {
-                    label = ParseIsPattern(new SubjectExpr { Line = caseAt.Line, Col = caseAt.Col }, caseAt);
-                }
-                finally
-                {
-                    _constantPrecedence = Precedence(Tok.Shl);
-                }
+                _caseLabel = true;
+                label = ParseIsPattern(new SubjectExpr { Line = caseAt.Line, Col = caseAt.Col }, caseAt);
+                _caseLabel = false;
             }
             else if (!Take(Tok.KwDefault))
             {

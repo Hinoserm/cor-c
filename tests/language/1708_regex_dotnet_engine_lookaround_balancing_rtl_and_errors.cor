@@ -1,0 +1,262 @@
+// test: regex_dotnet_engine_lookaround_balancing_rtl_and_errors
+// expect-exit: 0
+// expect-output:
+// [a**\q] UnrecognizedEscape @5
+// [*\q] UnrecognizedEscape @3
+// [a{3,2}\q] UnrecognizedEscape @8
+// [[z-a]\q] UnrecognizedEscape @7
+// [a**[a] UnterminatedBracket @5
+// [*(?#x] UnterminatedComment @5
+// [a**[\p{L] InvalidUnicodePropertyEscape @6
+// [a{3,2}[\p{Foo}]] ReversedQuantifierRange @6
+// [*\k] MalformedNamedReference @2
+// [*\c(] UnrecognizedControlCharacter @4
+// [*\x1] InsufficientOrInvalidHexDigits @3
+// [(?<x>a)\k<y>\q] UnrecognizedEscape @14
+// [\pL*\q] UnrecognizedEscape @6
+// [a**\p{Foo] NestedQuantifiersNotParenthesized @3
+// [a)\q] UnrecognizedEscape @4
+// [(?<x>a\q] UnrecognizedEscape @8
+// [\pL] InvalidUnicodePropertyEscape @2
+// [\pLxx] MalformedUnicodePropertyEscape @3
+// [\p{L)x] InvalidUnicodePropertyEscape @5
+// [\p{L] InvalidUnicodePropertyEscape @2
+// [\p] InvalidUnicodePropertyEscape @2
+// [\p{] InvalidUnicodePropertyEscape @2
+// [\p{}x] UnrecognizedUnicodeProperty @4
+// [[\pL]] InvalidUnicodePropertyEscape @3
+// [[\p{L)x]] InvalidUnicodePropertyEscape @6
+// [\P{L)xx] InvalidUnicodePropertyEscape @5
+// [(?'=a)] InvalidGroupingConstruct @4
+// [(?'!a)] InvalidGroupingConstruct @4
+// OK [(?'a'x)]
+// [(?<a>x] InsufficientClosingParentheses @6
+// OK [\c[(?<n>a)]
+// OK [\c\(a)]
+// OK [[\c](a)]]
+// OK [\c[\[(\d+)m]
+// OK [[a-[b]]]
+// OK [[a-z-[aeiou]]]
+// OK [[\--z]]
+// [[a-\-]] ReversedCharacterRange @5
+// ctl bracket => [a|31|a|1]
+// dash class => [nyyyyn]
+// G empty => [0:1,1:1,2:0 3 xxxb |||b 0:0 0:0,2:1,3:0]
+// G next => [0:1,1:1,2:0,]
+// repl overflow match => RegexParseException: Invalid pattern '$99999999999' at offset 11. Quantifier and capture group numbers must be less than or equal to Int32.MaxValue.
+// repl overflow nomatch => RegexParseException: Invalid pattern '$99999999999' at offset 11. Quantifier and capture group numbers must be less than or equal to Int32.MaxValue.
+// repl overflow braced => RegexParseException: Invalid pattern '${99999999999}' at offset 12. Quantifier and capture group numbers must be less than or equal to Int32.MaxValue.
+// repl overflow ecma => RegexParseException: Invalid pattern '$199999999999' at offset 11. Quantifier and capture group numbers must be less than or equal to Int32.MaxValue.
+// zwj name => [x]
+// num from name => [-1 2 2 -1 -1]
+// name from num => [||1]
+// dup num => [0,1,x c]
+// ic => [ynyn]
+// cats => [yyyyyyyyyny]
+// x class => [yyyyn]
+// x quant => [aa|a{2}]
+// groups enum => [0,1,x ab,b,a 3]
+// empty group named => [[][][]False]
+// backref empty => [nyn]
+// octal => [83  255 1]
+// bool => [ynyn]
+// w zwj => [nnnnynnyyyn]
+// ref ic => [yynnnynyyn]
+// lower => [130 131 3B8 DF 39C]
+// rep count2 => ArgumentOutOfRangeException: Count cannot be less than -1. (Parameter 'count')
+// rep startat => ArgumentOutOfRangeException: Start index cannot be less than 0 or greater than input length. (Parameter 'startat')
+// split count => ArgumentOutOfRangeException: Count cannot be less than -1. (Parameter 'count')
+// split startat => ArgumentOutOfRangeException: Start index cannot be less than 0 or greater than input length. (Parameter 'startat')
+// match startat => ArgumentOutOfRangeException: Start index cannot be less than 0 or greater than input length. (Parameter 'startat')
+// match startat neg => ArgumentOutOfRangeException: Start index cannot be less than 0 or greater than input length. (Parameter 'startat')
+// match beg => ArgumentOutOfRangeException: Start index cannot be less than 0 or greater than input length. (Parameter 'startat')
+// match len => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'start')
+// match len ok => [True]
+// matches startat => ArgumentOutOfRangeException: Start index cannot be less than 0 or greater than input length. (Parameter 'startat')
+// ismatch startat => ArgumentOutOfRangeException: Start index cannot be less than 0 or greater than input length. (Parameter 'startat')
+// options => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'options')
+// options ecma => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'options')
+// options nb => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'options')
+// timeout => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'matchTimeout')
+// timeout neg => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'matchTimeout')
+// timeout inf => [-1]
+// timeout default => [True]
+// null pattern => ArgumentNullException: Value cannot be null. (Parameter 'pattern')
+// null input => ArgumentNullException: Value cannot be null. (Parameter 'input')
+// null repl => ArgumentNullException: Value cannot be null. (Parameter 'replacement')
+// null eval => ArgumentNullException: Value cannot be null. (Parameter 'evaluator')
+// nb backref => NotSupportedException: RegexOptions.NonBacktracking is not supported in conjunction with expressions containing: 'backreference (\ number)'.
+// nb look => NotSupportedException: RegexOptions.NonBacktracking is not supported in conjunction with expressions containing: 'positive lookahead (?= pattern) or positive lookbehind (?<= pattern)'.
+// nb atomic => NotSupportedException: RegexOptions.NonBacktracking is not supported in conjunction with expressions containing: 'atomic subexpressions (?> pattern)'.
+// nb cond => NotSupportedException: RegexOptions.NonBacktracking is not supported in conjunction with expressions containing: 'test conditional (?( test-pattern ) yes-pattern | no-pattern )'.
+// nb ok => [aa]
+// nb lazy => [a|abab|abab]
+// nb groups => [4 abFalse1]
+// cachesize => [15]
+// cachesize neg => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'value')
+// result => [ba]
+// result fail => NotSupportedException: Result cannot be called on a failed Match.
+// result null => ArgumentNullException: Value cannot be null. (Parameter 'replacement')
+// escape => [a\.b\*c\+\?\|\{\[\(\)\^\$\#\\\ \t\n\r\f]}]
+// unescape => RegexParseException: Invalid pattern 'a\.b\*\n\t\x41B\101\cA\q' at offset 24. Unrecognized escape sequence \q.
+// unescape2 => RegexParseException: Invalid pattern 'a\x4' at offset 3. Insufficient or invalid hexadecimal digits.
+// unescape3 => RegexParseException: Invalid pattern '\w' at offset 2. Unrecognized escape sequence \w.
+// unescape4 => [ab]
+// unescape5 => RegexParseException: Invalid pattern '\Q\-\]' at offset 2. Unrecognized escape sequence \Q.
+// tostring => [a+b IgnoreCase True]
+// group idx => [False |||1 3 TrueFalseTrueTrue]
+// matchcol => [2 3 True False]
+// matchcol oob => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'i')
+// matchcol neg => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'i')
+// captures => [0:a,1:b,2:c,3:d d 1 b]
+// captures oob => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'i')
+// balancing => [True a,b,(a)(b) 0]
+// balancing2 => [  0 0]
+// lookbehind => [42|4|abXabX|a]
+// atomic => [nyb]
+// cond => [ab|c|xb|y|ab|zz]
+// rtl => [6,345,12 a#b# a|b|c 12 2]
+// rtl groups => [abcac 2 0 aa]
+// inline => [yyynnyyy2ny]
+// inline bad => RegexParseException: Invalid pattern '(?z)' at offset 3. Unrecognized grouping construct.
+// inline bad2 => RegexParseException: Invalid pattern '(?i' at offset 3. Unrecognized grouping construct.
+// lazy => [aa|abc|aa|xyz|aab]
+// empty loops => [2 4 1 1 2 2]
+// nested q => [aaaa|aaaa|2]
+// ecma ref => [nnny]
+// xml => [yyyny]
+// ignorecase => [yyynnyn]
+// posix => [nnny]
+// timeout => [^(a+)+b$ 50 40]
+// deep => [True 20000]
+//
+// System.Text.RegularExpressions run as .NET runs it: the error a pattern
+// with two faults reports (the counting scan's first: an escape, a class or
+// a comment it could not read, before any quantifier or group the parse
+// would refuse), offsets and all; control characters, octal and hexadecimal
+// escapes; class subtraction and the escaped dash; POSIX names passed over;
+// \G after an empty match; $ references past Int32.MaxValue refused; group
+// numbers and names; every capture of a group, balancing groups, lookbehind,
+// atomic groups, conditionals and RightToLeft; the inline options; empty loop
+// iterations counted as .NET counts them; the case-insensitive sets;
+// NonBacktracking's refusals; the argument checks and their messages; Escape
+// and Unescape; the XML sets; a match timeout; and inputs long enough that a
+// recursive engine would have run out of stack.
+
+using System;
+using System.Linq;
+using System.Text.RegularExpressions;
+
+static class Program
+{
+    static void Bad(string p, RegexOptions o = RegexOptions.None)
+    {
+        try { new Regex(p, o); Console.WriteLine("OK [" + p + "]"); }
+        catch (RegexParseException e) { Console.WriteLine("[" + p + "] " + e.Error + " @" + e.Offset); }
+        catch (Exception e) { Console.WriteLine("[" + p + "] " + e.GetType().Name + " :: " + e.Message); }
+    }
+    static void T(string label, Func<object> f)
+    {
+        try { Console.WriteLine(label + " => [" + f() + "]"); }
+        catch (Exception e) { Console.WriteLine(label + " => " + e.GetType().Name + ": " + e.Message); }
+    }
+    static string M(string p, string s, RegexOptions o = RegexOptions.None) => Regex.IsMatch(s, p, o) ? "y" : "n";
+    static string Ms(MatchCollection ms) => string.Join(",", ms.Cast<Match>().Select(m => m.Index + ":" + m.Length));
+    static void Main()
+    {
+        Bad(@"a**\q"); Bad(@"*\q"); Bad(@"a{3,2}\q"); Bad(@"[z-a]\q"); Bad(@"a**[a"); Bad(@"*(?#x"); Bad(@"a**[\p{L"); Bad(@"a{3,2}[\p{Foo}]"); Bad(@"*\k"); Bad(@"*\c("); Bad(@"*\x1"); Bad(@"(?<x>a)\k<y>\q"); Bad(@"\pL*\q"); Bad(@"a**\p{Foo"); Bad(@"a)\q"); Bad(@"(?<x>a\q");
+        Bad(@"\pL"); Bad(@"\pLxx"); Bad(@"\p{L)x"); Bad(@"\p{L"); Bad(@"\p"); Bad(@"\p{"); Bad(@"\p{}x"); Bad(@"[\pL]"); Bad(@"[\p{L)x]"); Bad(@"\P{L)xx");
+        Bad("(?'=a)"); Bad("(?'!a)"); Bad("(?'a'x)"); Bad("(?<a>x"); Bad(@"\c[(?<n>a)"); Bad(@"\c\(a)"); Bad(@"[\c](a)]"); Bad(@"\c[\[(\d+)m");
+        Bad(@"[a-[b]]"); Bad(@"[a-z-[aeiou]]"); Bad(@"[\--z]"); Bad(@"[a-\-]");
+        T("ctl bracket", () => Regex.Match("\u001Bab", @"\c[(?<n>a)b").Groups["n"].Value + "|" + Regex.Match("\u001B[31m", @"\c[\[(\d+)m").Groups[1].Value + "|" + Regex.Match("\u001Ca", @"\c\(a)").Groups[1].Value + "|" + new Regex(@"[\c](a)]").GetGroupNumbers().Length);
+        T("dash class", () => M(@"^[\--z]$", "a") + M(@"^[\--z]$", "z") + M(@"^[\--z]$", "-") + M(@"^[\-a]$", "a") + M(@"^[%-\-]$", "&") + M(@"^[\--/]$", "."));
+        T("G empty", () => Ms(Regex.Matches("aab", @"\Ga?")) + " " + Regex.Count("aab", @"\Ga?") + " " + Regex.Replace("aab", @"\Ga?", "x") + " " + string.Join("|", Regex.Split("aab", @"\Ga?")) + " " + Ms(Regex.Matches("ab", @"\G")) + " " + Ms(Regex.Matches("xab", @"\G|b")));
+        T("G next", () => { var m = Regex.Match("aab", @"\Ga?"); string s = ""; while (m.Success) { s += m.Index + ":" + m.Length + ","; m = m.NextMatch(); } return s; });
+        T("repl overflow match", () => Regex.Replace("a", "a", "$99999999999"));
+        T("repl overflow nomatch", () => Regex.Replace("b", "a", "$99999999999"));
+        T("repl overflow braced", () => Regex.Replace("a", "a", "${99999999999}"));
+        T("repl overflow ecma", () => Regex.Replace("a", "(a)", "$199999999999", RegexOptions.ECMAScript));
+        T("zwj name", () => Regex.Match("x", "(?<a‍b>x)").Groups["a‍b"].Value);
+        T("num from name", () => new Regex("(a)(?<x>b)").GroupNumberFromName("2") + " " + new Regex("(a)(b)").GroupNumberFromName("2") + " " + new Regex("(a)(b)").GroupNumberFromName("02") + " " + new Regex("(a)(b)").GroupNumberFromName("+1") + " " + new Regex("(a)(b)").GroupNumberFromName(" 1"));
+        T("name from num", () => new Regex("(a)(?<x>b)").GroupNameFromNumber(5) + "|" + new Regex("(a)(?<x>b)").GroupNameFromNumber(-1) + "|" + new Regex("(a)").GroupNameFromNumber(1));
+        T("dup num", () => string.Join(",", new Regex("(?<x>a)(b)(?<1>c)").GetGroupNames()) + " " + Regex.Match("abc", "(?<x>a)(b)(?<1>c)").Groups[1].Value);
+        T("ic", () => M(@"^\p{IsBasicLatin}$", "K", RegexOptions.IgnoreCase) + M(@"^[^a]$", "A", RegexOptions.IgnoreCase) + M(@"^\p{Lt}$", "a", RegexOptions.IgnoreCase) + M(@"^\P{Ll}$", "a", RegexOptions.IgnoreCase));
+        T("cats", () => M(@"^\p{Cn}$", "͸") + M(@"^\p{C}$", "͸") + M(@"^\p{Co}$", "") + M(@"^\p{Cs}$", "\uD800") + M(@"^\p{Zs}$", "　") + M(@"^\p{Sc}$", "€") + M(@"^\p{Pi}$", "«") + M(@"^\p{Me}$", "⃝") + M(@"^\p{Nl}$", "Ⅰ") + M(@"^\w$", "ः") + M(@"^\w$", "‿"));
+        T("x class", () => M("^[a b]$", " ", RegexOptions.IgnorePatternWhitespace) + M("^a b$", "ab", RegexOptions.IgnorePatternWhitespace) + M("^a\\ b$", "a b", RegexOptions.IgnorePatternWhitespace) + M("^a#x\nb$", "ab", RegexOptions.IgnorePatternWhitespace) + M("^a{2 }$", "a{2 }", RegexOptions.IgnorePatternWhitespace));
+        T("x quant", () => Regex.Match("aaa", "a {2}", RegexOptions.IgnorePatternWhitespace).Value + "|" + Regex.Match("a{2}", "a{ 2}", RegexOptions.IgnorePatternWhitespace).Value);
+        T("groups enum", () => { var m = Regex.Match("ab", "(?<x>a)(b)"); return string.Join(",", m.Groups.Keys) + " " + string.Join(",", m.Groups.Values.Select(g => g.Value)) + " " + m.Groups.Count; });
+        T("empty group named", () => { var m = Regex.Match("ab", "(a)"); return "[" + m.Groups[5].Name + "][" + m.Groups["zz"].Name + "][" + m.Groups["5"].Name + "]" + m.Groups[-1].Success; });
+        T("backref empty", () => M(@"^(a)?\1$", "") + M(@"^(a)?\1$", "", RegexOptions.ECMAScript) + M(@"^(?:(a)|b)\1$", "b"));
+        T("octal", () => ((int)Regex.Match("S", @"\123").Value[0]).ToString() + " " + Regex.Match("a8", @"(a)\18").Value + " " + ((int)Regex.Match("ÿ", @"\377").Value[0]) + " " + Regex.Match("\u00000", @"\400").Length);
+        T("bool", () => M(@"\b", "‍") + M(@"\B", "‍") + M(@"a\Bb", "ab") + M(@"\w\b̀", "à"));
+        T("w zwj", () => M(@"^\w$", "‍") + M(@"^\w$", "‌") + M(@"^\w$", "ः") + M(@"^\w$", "Ⅰ") + M(@"^\W$", "‍") + M(@"^[\w]$", "‍") + M(@"\b", "ः") + M(@"^\d$", "٠") + M(@"^\s$", "\u0085") + M(@"^\s$", " ") + M(@"^\s$", "​"));
+        T("ref ic", () => M(@"^(k)\1$", "kK", RegexOptions.IgnoreCase) + M(@"^(k)\1$", "kK", RegexOptions.IgnoreCase) + M(@"^(i)\1$", "iİ", RegexOptions.IgnoreCase) + M(@"^(İ)\1$", "İi", RegexOptions.IgnoreCase) + M(@"^(ς)\1$", "ςΣ", RegexOptions.IgnoreCase) + M(@"^(ß)\1$", "ßẞ", RegexOptions.IgnoreCase) + M(@"^(µ)\1$", "µΜ", RegexOptions.IgnoreCase) + M(@"^(ϴ)\1$", "ϴθ", RegexOptions.IgnoreCase) + M(@"^(ǅ)\1$", "ǅǄ", RegexOptions.IgnoreCase) + M(@"^(ẛ)\1$", "ẛṡ", RegexOptions.IgnoreCase));
+        T("lower", () => ((int)char.ToLowerInvariant('İ')).ToString("X") + " " + ((int)char.ToUpperInvariant('ı')).ToString("X") + " " + ((int)char.ToLowerInvariant('ϴ')).ToString("X") + " " + ((int)char.ToLowerInvariant('ẞ')).ToString("X") + " " + ((int)char.ToUpperInvariant('µ')).ToString("X"));
+        T("rep count2", () => new Regex("a").Replace("aaa", "b", -2));
+        T("rep startat", () => new Regex("a").Replace("aaa", "b", 1, 4));
+        T("split count", () => new Regex("a").Split("bab", -1).Length);
+        T("split startat", () => new Regex("a").Split("bab", 2, 9).Length);
+        T("match startat", () => new Regex("a").Match("aaa", 4));
+        T("match startat neg", () => new Regex("a").Match("aaa", -1));
+        T("match beg", () => new Regex("a").Match("aaa", -1, 2));
+        T("match len", () => new Regex("a").Match("aaa", 1, 3));
+        T("match len ok", () => new Regex("^a$").Match("bab", 1, 1).Success);
+        T("matches startat", () => new Regex("a").Matches("aaa", 4).Count);
+        T("ismatch startat", () => new Regex("a").IsMatch("aaa", 4));
+        T("options", () => new Regex("a", (RegexOptions)2048));
+        T("options ecma", () => new Regex("a", RegexOptions.ECMAScript | RegexOptions.Singleline));
+        T("options nb", () => new Regex("a", RegexOptions.NonBacktracking | RegexOptions.RightToLeft));
+        T("timeout", () => new Regex("a", RegexOptions.None, TimeSpan.Zero));
+        T("timeout neg", () => new Regex("a", RegexOptions.None, TimeSpan.FromMilliseconds(-2)));
+        T("timeout inf", () => new Regex("a", RegexOptions.None, Regex.InfiniteMatchTimeout).MatchTimeout.TotalMilliseconds);
+        T("timeout default", () => new Regex("a").MatchTimeout == Regex.InfiniteMatchTimeout);
+        T("null pattern", () => new Regex(null!));
+        T("null input", () => new Regex("a").Match(null!));
+        T("null repl", () => new Regex("a").Replace("a", (string)null!));
+        T("null eval", () => new Regex("a").Replace("a", (MatchEvaluator)null!));
+        T("nb backref", () => new Regex(@"(a)\1", RegexOptions.NonBacktracking));
+        T("nb look", () => new Regex(@"(?=a)", RegexOptions.NonBacktracking));
+        T("nb atomic", () => new Regex(@"(?>a)", RegexOptions.NonBacktracking));
+        T("nb cond", () => new Regex(@"(?(a)b)", RegexOptions.NonBacktracking));
+        T("nb ok", () => Regex.Match("xaay", "a+", RegexOptions.NonBacktracking).Value);
+        T("nb lazy", () => Regex.Match("xaay", "a+?", RegexOptions.NonBacktracking).Value + "|" + Regex.Match("abab", "(a|ab)(c|bab)?", RegexOptions.NonBacktracking).Value + "|" + Regex.Match("abab", "(a|ab)(c|bab)?").Value);
+        T("nb groups", () => { var m = Regex.Match("abc", "(a)(b)?(x)?", RegexOptions.NonBacktracking); return m.Groups.Count + " " + m.Groups[1].Value + m.Groups[2].Value + m.Groups[3].Success + m.Groups[1].Captures.Count; });
+        T("cachesize", () => Regex.CacheSize);
+        T("cachesize neg", () => { Regex.CacheSize = -1; return 0; });
+        T("result", () => Regex.Match("ab", "(a)(b)").Result("$2$1"));
+        T("result fail", () => Regex.Match("ab", "x").Result("$2$1"));
+        T("result null", () => Regex.Match("ab", "(a)").Result(null!));
+        T("escape", () => Regex.Escape("a.b*c+?|{[()^$#\\ \t\n\r\f\v]}"));
+        T("unescape", () => Regex.Unescape(@"a\.b\*\n\t\x41B\101\cA\q"));
+        T("unescape2", () => Regex.Unescape(@"a\x4"));
+        T("unescape3", () => Regex.Unescape(@"\w"));
+        T("unescape4", () => Regex.Unescape(@"ab\"));
+        T("unescape5", () => Regex.Unescape(@"\Q\-\]"));
+        T("tostring", () => new Regex("a+b", RegexOptions.IgnoreCase).ToString() + " " + new Regex("a+b", RegexOptions.IgnoreCase).Options + " " + new Regex("a", RegexOptions.RightToLeft).RightToLeft);
+        T("group idx", () => { var m = Regex.Match("ab", "(a)(?<n>b)"); return m.Groups[-1].Success + " " + m.Groups[3].Name + "|" + m.Groups["zz"].Name + "|" + m.Groups["2"].Value + "|" + m.Groups["n"].Index + " " + m.Groups.Count + " " + m.Groups.ContainsKey("n") + m.Groups.ContainsKey("2") + m.Groups.ContainsKey("1") + m.Groups.ContainsKey("0"); });
+        T("matchcol", () => { var mc = Regex.Matches("aXbXc", "X"); return mc.Count + " " + mc[1].Index + " " + mc.IsReadOnly + " " + mc.IsSynchronized; });
+        T("matchcol oob", () => Regex.Matches("aXbXc", "X")[5]);
+        T("matchcol neg", () => Regex.Matches("aXbXc", "X")[-1]);
+        T("captures", () => { var m = Regex.Match("abcd", @"(?:(\w))+"); return string.Join(",", m.Groups[1].Captures.Select(c => c.Index + ":" + c.Value)) + " " + m.Groups[1].Value + " " + m.Captures.Count + " " + m.Groups[1].Captures[1]; });
+        T("captures oob", () => Regex.Match("abcd", @"(?:(\w))+").Groups[1].Captures[9]);
+        T("balancing", () => { var m = Regex.Match("((a)(b))", @"^(?:(?<o>\()|(?<c-o>\))|[^()])*(?(o)(?!))$"); return m.Success + " " + string.Join(",", m.Groups["c"].Captures.Select(c => c.Value)) + " " + m.Groups["o"].Captures.Count; });
+        T("balancing2", () => { var m = Regex.Match("<<a>>", @"(?<open><)+(?<close-open>>)+"); return m.Value + " " + m.Groups["close"].Value + " " + m.Groups["open"].Captures.Count + " " + m.Groups["close"].Captures.Count; });
+        T("lookbehind", () => Regex.Match("price: $42", @"(?<=\$)\d+").Value + "|" + Regex.Match("ab ac", @"(?<!a)c|(?<=a)c").Index + "|" + Regex.Replace("abcabc", @"(?<=b)c", "X") + "|" + Regex.Match("xay", @"(?<=(a))y").Groups[1].Value);
+        T("atomic", () => M(@"^(?>a+)a$", "aaa") + M(@"^(?>a+)b$", "aab") + Regex.Match("aaab", @"(?>a*?)b").Value);
+        T("cond", () => Regex.Match("ab", @"(a)?(?(1)b|c)").Value + "|" + Regex.Match("c", @"(a)?(?(1)b|c)").Value + "|" + Regex.Match("xb", @"(?(x)xb|y)").Value + "|" + Regex.Match("y", @"(?(x)xb|y)").Value + "|" + Regex.Match("ab", @"(?<n>a)?(?(n)b)").Value + "|" + Regex.Match("zz", @"(?(?=z)zz|q)").Value);
+        T("rtl", () => { var r = new Regex(@"\d+", RegexOptions.RightToLeft); return string.Join(",", r.Matches("a12b345c6").Select(m => m.Value)) + " " + r.Replace("a12b345", "#") + " " + string.Join("|", r.Split("a12b345c")) + " " + r.Match("a12b345", 4).Value + " " + new Regex("ab", RegexOptions.RightToLeft).Match("abab").Index; });
+        T("rtl groups", () => { var m = Regex.Match("abc", @"(a)(b)(c)", RegexOptions.RightToLeft); return m.Value + m.Groups[1].Value + m.Groups[3].Value + " " + Regex.Match("aaa", "a+?", RegexOptions.RightToLeft).Index + " " + Regex.Match("abab", @"(ab)\1", RegexOptions.RightToLeft).Index + " " + Regex.Match("xaa", @"\1(a)", RegexOptions.RightToLeft).Value; });
+        T("inline", () => M("(?i)abc", "ABC") + M("a(?i)bc", "aBC") + M("(?i:a)b", "Ab") + M("(?i:a)b", "AB") + M("(?-i)a", "A", RegexOptions.IgnoreCase) + M("(?x) a b ", "ab") + M("(?s).", "\n") + M("(?m)^b", "a\nb") + Regex.Match("ab", "(?n)(a)(?<x>b)").Groups.Count + M("(?i-i)a", "A") + M("(?ix-s:a b)", "AB"));
+        T("inline bad", () => new Regex("(?z)"));
+        T("inline bad2", () => new Regex("(?i"));
+        T("lazy", () => Regex.Match("aaa", "a{2,}?").Value + "|" + Regex.Match("abcabc", "(abc)+?").Value + "|" + Regex.Match("aaaa", "(a{2}){1,}?").Value + "|" + Regex.Match("xyz", "(x|xy)??z").Value + "|" + Regex.Match("aab", "a*?b").Value);
+        T("empty loops", () => Regex.Match("ab", "(a?)*b").Groups[1].Captures.Count + " " + Regex.Match("aaa", "(a|)*").Groups[1].Captures.Count + " " + Regex.Match("", "(a*)*").Groups[1].Captures.Count + " " + Regex.Match("ab", "(a*?)*?b").Groups[1].Captures.Count + " " + Regex.Match("aaa", "(a*)+").Groups[1].Captures.Count + " " + Regex.Match("aaa", "(a*){2,3}").Groups[1].Captures.Count);
+        T("nested q", () => Regex.Match("aaaa", "(a{2})*").Value + "|" + Regex.Match("aaaaa", "(?:a{2}){1,2}").Value + "|" + Regex.Match("abab", "(?:(a)|b)*").Groups[1].Captures.Count);
+        T("ecma ref", () => M(@"^\1(a)$", "a", RegexOptions.ECMAScript) + M(@"^\1(a)$", "a") + M(@"^(a)\10$", "a0", RegexOptions.ECMAScript) + M(@"^(a)\2$", "a\u0002", RegexOptions.ECMAScript));
+        T("xml", () => M(@"^\p{_xmlI}\p{_xmlC}*$", "a1-b") + M(@"^\p{_xmlD}$", "٠") + M(@"^\p{_xmlW}$", "$") + M(@"^\p{_xmlI}$", "1") + M(@"^\P{_xmlC}$", " "));
+        T("ignorecase", () => M("^k$", "K", RegexOptions.IgnoreCase) + M("^[a-c]+$", "AbC", RegexOptions.IgnoreCase) + M("^ß$", "ẞ", RegexOptions.IgnoreCase) + M("^σ$", "ς", RegexOptions.IgnoreCase) + M("^i$", "İ", RegexOptions.IgnoreCase) + M(@"^\p{Lu}$", "a", RegexOptions.IgnoreCase) + M("^[^k]$", "K", RegexOptions.IgnoreCase));
+        T("posix", () => M("^[[:digit:]]+$", "42") + M("^[[:digit:]]$", "[") + M("^[[:digit:]]$", ":") + M("^[[:digit]$", "d"));
+        T("timeout", () => { try { Regex.IsMatch(new string('a', 40), "^(a+)+b$", RegexOptions.None, TimeSpan.FromMilliseconds(50)); return "no"; } catch (RegexMatchTimeoutException e) { return e.Pattern + " " + e.MatchTimeout.TotalMilliseconds + " " + e.Input.Length; } });
+        T("deep", () => Regex.IsMatch(new string('a', 30000) + "c", "^(a|b)*c$") + " " + Regex.Match(new string('x', 20000), "(x)+").Groups[1].Captures.Count);
+    }
+}

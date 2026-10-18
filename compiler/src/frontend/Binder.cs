@@ -16906,6 +16906,8 @@ public sealed partial class Binder
     private static bool Leaves(Stmt s) => s switch
     {
         ReturnStmt or ThrowStmt or BreakStmt or ContinueStmt or GotoStmt => true,
+        // `yield break` ends an iterator as `return` ends a method.
+        YieldStmt { Value: null } => true,
         Block b => b.Statements.Count > 0 && Leaves(b.Statements[^1]),
         IfStmt i => i.Else != null && Leaves(i.Then) && Leaves(i.Else),
         _ => false,
@@ -16947,6 +16949,7 @@ public sealed partial class Binder
     {
         BreakStmt => true,
         ReturnStmt or ThrowStmt or ContinueStmt or GotoStmt => false,
+        YieldStmt { Value: null } => false,
         Block b => b.Statements.Count == 0 || ReachesAfterSwitch(b.Statements[^1]!),
         IfStmt i when i.Else is not null
             => ReachesAfterSwitch(i.Then) || ReachesAfterSwitch(i.Else),

@@ -37,7 +37,7 @@ and runs, unchanged, on Linux or on CORSAC/OS. Consequences:
 | `lib/signals.cor` | System.Runtime.InteropServices | PosixSignal, PosixSignalRegistration, PosixSignalContext |
 | `lib/process.cor` | System.Diagnostics | Process, ProcessStartInfo |
 | `lib/threading.cor`, `lib/threading-linux.cor` | System.Threading, System.Threading.Tasks | Task, the scheduler, Thread, Mutex |
-| `lib/regex.cor` | System.Text.RegularExpressions | Regex, Match (in progress) |
+| `stdlib/src/System/Text/RegularExpressions.cor` | System.Text.RegularExpressions | Regex, Match, Group, Capture and their collections, RegexParseException, RegexMatchTimeoutException: .NET's parser, writer and interpreter (lookaround, atomic groups, conditionals, balancing groups, RightToLeft, timeouts) |
 | `lib/collections.cor` | System.Collections(.Generic, .ObjectModel) | Stack, LinkedList(+Node), SortedList, SortedDictionary, PriorityQueue, BitArray, ReadOnlyCollection, ReadOnlyDictionary |
 | `lib/io-streams.cor` | System.IO | StringReader/Writer, BufferedStream, BinaryReader/Writer, EndOfStreamException, InvalidDataException |
 | `lib/time.cor` | System, System.Diagnostics | DateOnly, TimeOnly, Stopwatch |
@@ -113,6 +113,11 @@ the same list.
 - On the x87 (the default target) an operation on TWO NaNs answers the one
   with the larger payload, where SSE2, and so .NET, answers the first. Only
   that NaN's sign and payload differ.
+- `GroupCollection` has IReadOnlyDictionary<string, Group>'s members but is
+  not one: the compiler cannot yet tell apart two explicit GetEnumerators of
+  one generic interface (IEnumerable<Group> and IEnumerable<KeyValuePair<
+  string, Group>>), as its explicit implementations keep only the
+  interface's arity.
 - `Random()` with no seed is xoshiro256**, as .NET's is, but its state cannot
   be unpredictable: nothing below `stdlib/src/System/Core.cor` has entropy, so the seed is a
   constant stirred by a counter. `Random(seed)` reproduces .NET's sequence
