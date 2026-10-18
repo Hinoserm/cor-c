@@ -15,9 +15,13 @@ using Block = Corsac.Lang.Ir.Block;
 /// lowering wrote (hoisted, shared, merged into one call). Each read is
 /// named by the class it was made through, where it was made for virtual
 /// calls of a class and nothing else (Instr.DispatchType), and by object --
-/// every descriptor -- otherwise. A load at offset 0 of anything is taken
-/// for a method table, so a field read through a reference read from memory
-/// counts as a slot's read too: more is kept, never less.
+/// every descriptor -- otherwise. What may hold a method table is read
+/// widely, so a field read through a reference read from memory counts as a
+/// slot's read too -- more is kept, never less: a word loaded from offset 0
+/// of anything; one loaded from anywhere in the frame or in a static, where
+/// an object the escape pass placed there has its first word at whatever
+/// offset it was given (a foreach's enumerator made on the stack had its
+/// table read from its slot, and MoveNext's slot was left empty).
 /// </summary>
 internal static class VirtualSlotUses
 {
@@ -76,7 +80,7 @@ internal static class VirtualSlotUses
             {
                 IEnumerable<(string? Table, long At)>? some = d.Op switch
                 {
-                    Opcode.Load when d.Offset == 0 && d.Size == w && d.Operands.Count == 1 && d.Operands[0] is RegOperand => new[] { ((string?)null, 0L) },
+                    Opcode.Load when d.Size == w && d.Operands.Count == 1 && (d.Offset == 0 || InPlace(d.Operands[0], 0)) => new[] { ((string?)null, 0L) },
                     Opcode.Copy or Opcode.Phi => d.Operands.SelectMany(o => Table(o) ?? new()).ToList(),
                     Opcode.And when d.Operands is [var x, ImmOperand] => Table(x),
                     Opcode.And when d.Operands is [ImmOperand, var x] => Table(x),
@@ -88,6 +92,27 @@ internal static class VirtualSlotUses
                 if (some is not null) (all ??= new()).AddRange(some);
             }
             return tables[r] = all is { Count: > 0 } ? all.Distinct().ToList() : null;
+        }
+
+        // Whether an address is in the frame or in a static's storage, where
+        // an object may sit at any offset: a slot, a symbol, or a register
+        // made of one, moved by constants.
+        bool InPlace(Operand o, int depth)
+        {
+            if (o is SlotOperand || o is SymOperand) return true;
+            if (o is not RegOperand { Reg: var r } || depth > 8 || !defs.TryGetValue(r, out List<Instr>? written)) return false;
+            foreach (Instr d in written)
+            {
+                bool placed = d.Op switch
+                {
+                    Opcode.FramePointer => true,
+                    Opcode.Copy or Opcode.Phi => d.Operands.Any(x => InPlace(x, depth + 1)),
+                    Opcode.Add or Opcode.Sub => d.Operands.Count == 2 && d.Operands[1] is ImmOperand && InPlace(d.Operands[0], depth + 1),
+                    _ => false,
+                };
+                if (placed) return true;
+            }
+            return false;
         }
 
         // The class a method loaded into `r` is called through: the one class
