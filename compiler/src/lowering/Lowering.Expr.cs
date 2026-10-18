@@ -186,11 +186,19 @@ public sealed partial class Lowering
         // Not inside its own rewrite, though: a late conversion's call takes
         // the very node it replaces as its argument (Binder.LateConversion),
         // and there it is still the value that was written.
-        Type had = _b.Rewrites.TryGetValue(e, out Expr? made) && !_rewriting.Contains(e)
-                   && (_b.UserConversions.Contains(made) || made is PatternExpr { Test: TupleExpr })
-                 ? _b.TypeOf(made) : _b.TypeOf(e);
-        return Convert(e, v, had, target);
+        return Convert(e, v, Evaluated(e), target);
     }
+
+    /// <summary>
+    /// The type of what Eval makes of an expression: its own, or for one a
+    /// user-defined conversion or a tuple rebuilt has replaced, that
+    /// replacement's -- but not inside the replacement, where the expression
+    /// is still the value that was written.
+    /// </summary>
+    private Type Evaluated(Expr e)
+        => _b.Rewrites.TryGetValue(e, out Expr? made) && !_rewriting.Contains(e)
+           && (_b.UserConversions.Contains(made) || made is PatternExpr { Test: TupleExpr })
+         ? _b.TypeOf(made) : _b.TypeOf(e);
 
     /// <summary>
     /// `ref x` where a reference is held rather than passed: the address of
@@ -3500,7 +3508,7 @@ public sealed partial class Lowering
 
         // Compound: read, combine, write back, through the one place.
         BinOp op = a.Op.Value;
-        Type valueType = _b.TypeOf(a.Value);
+        Type valueType = Evaluated(a.Value);
 
         // A delegate += or -= is the multicast Combine or Remove the binder
         // synthesised, stored back into the same place.
@@ -3550,10 +3558,18 @@ public sealed partial class Lowering
             targetType = p.Type;
         }
 
-        VReg current = LoadPlace(p);
+        // A get-only virtual auto-property in its constructor is read
+        // through its getter, which a class below may override.
+        VReg current = _b.BackingReads.TryGetValue(a, out MethodSymbol? backingGetter)
+            ? CallMethod(backingGetter, _this, new List<Operand> { R(_this!) })!
+            : LoadPlace(p);
         VReg result;
 
-        if (targetType.Prim == Prim.String && op == BinOp.Add)
+        if (_b.OperatorCompounds.TryGetValue(a, out CompoundOperator? declared))
+        {
+            result = DeclaredOperator(a, declared, current, targetType);
+        }
+        else if (targetType.Prim == Prim.String && op == BinOp.Add)
         {
             VReg right = Stringify(a.Value, Eval(a.Value), valueType);
             result = StringBinary(a, BinOp.Add, current, right);
@@ -3601,10 +3617,67 @@ public sealed partial class Lowering
         return Convert(at, combined, ResultTypeOf(op, promoted), resultType);
     }
 
+    /// <summary>
+    /// `x op= y` through an operator a type declared (Binder.OperatorCompound),
+    /// x's value already read from its place, which the caller stores the
+    /// result back into: that value converted to the operator's first operand,
+    /// y evaluated as its second, the operator called, and what it made
+    /// converted back to x's type -- each user-defined conversion the binder
+    /// found called on the value in hand, so x is never evaluated again.
+    /// </summary>
+    private VReg DeclaredOperator(AssignExpr a, CompoundOperator declared, VReg current, Type targetType)
+    {
+        // A STRUCT IS HANDED OVER AS A COPY, as any argument is (EvalAs): the
+        // operator may write to its parameter, and what x holds is not its to
+        // change. A value a conversion or a call has just made is nobody
+        // else's, and an `in` operand is read where it is.
+        VReg Passed(VReg v, ParamSymbol p)
+        {
+            if (IsStructValue(p.Type))
+            {
+                return p.ByRef || v != current ? v : CopyStruct(a, v, StructOf(p.Type));
+            }
+            if (!p.ByRef)
+            {
+                return v;
+            }
+            int size = Math.Max(4, p.Type.Size);
+            FrameSlot temp = _f.NewSlot(size, Math.Min(size, _t.Align64), "in");
+            _e.Store(new SlotOperand(temp), RegOperand.Of(v), 0, LoadSize(p.Type));
+            return RegOf(new SlotOperand(temp));
+        }
+
+        VReg Converted(MethodSymbol conversion, VReg v, Type from)
+        {
+            TouchType(conversion.Owner);
+            ParamSymbol operand = conversion.Params[0];
+            return CallMethod(conversion, null, new List<Operand> { R(Passed(Convert(a, v, from, operand.Type), operand)) })!;
+        }
+
+        MethodSymbol op = declared.Operator;
+        TouchType(op.Owner);
+        VReg left = current;
+        Type leftType = targetType;
+        if (declared.Into is MethodSymbol into)
+        {
+            left = Converted(into, current, targetType);
+            leftType = into.Returns;
+        }
+        VReg first = Passed(Convert(a, left, leftType, op.Params[0].Type), op.Params[0]);
+        VReg second = EvalAs(a.Value, op.Params[1]);
+        VReg made = CallMethod(op, null, new List<Operand> { R(first), R(second) })!;
+        if (declared.Back is MethodSymbol back)
+        {
+            return Convert(a, Converted(back, made, op.Returns), back.Returns, targetType);
+        }
+        return Convert(a, made, op.Returns, targetType);
+    }
+
     private VReg EmitAccessorCompound(AssignExpr a, BinOp op)
     {
         Type targetType = _b.TypeOf(a.Target);
-        Type valueType = _b.TypeOf(a.Value);
+        Type valueType = Evaluated(a.Value);
+        _b.OperatorCompounds.TryGetValue(a, out CompoundOperator? declared);
 
         if (a.Target is IndexExpr ix && _b.IndexSetters.TryGetValue(ix, out MethodSymbol? setter)
             && _b.Indexers.TryGetValue(ix, out MethodSymbol? getter))
@@ -3618,7 +3691,8 @@ public sealed partial class Lowering
             List<Operand> getArgs = new() { R(receiver) };
             getArgs.AddRange(indices);
             VReg current = CallMethod(getter, receiver, getArgs, ix.Target is BaseExpr)!;
-            VReg result = targetType.Prim == Prim.String && op == BinOp.Add
+            VReg result = declared is not null ? DeclaredOperator(a, declared, current, targetType)
+                : targetType.Prim == Prim.String && op == BinOp.Add
                 ? StringBinary(a, BinOp.Add, current, Stringify(a.Value, Eval(a.Value), valueType))
                 : Combine(a, op, current, targetType, a.Value, valueType, targetType);
             List<Operand> setArgs = new() { R(receiver) };
@@ -3661,7 +3735,8 @@ public sealed partial class Lowering
             if (receiver is not null)
                 getArgs.Add(R(receiver));
             VReg current = CallMethod(pg, receiver, getArgs, a.Target is MemberExpr { Target: BaseExpr })!;
-            VReg result = targetType.Prim == Prim.String && op == BinOp.Add
+            VReg result = declared is not null ? DeclaredOperator(a, declared, current, targetType)
+                : targetType.Prim == Prim.String && op == BinOp.Add
                 ? StringBinary(a, BinOp.Add, current, Stringify(a.Value, Eval(a.Value), valueType))
                 : Combine(a, op, current, targetType, a.Value, valueType, targetType);
             List<Operand> setArgs = new();
@@ -5159,6 +5234,13 @@ public sealed partial class Lowering
             // `string` now costs nothing and a `string?` costs the one test
             // C# would have made you write.
             return type.Nullable ? OrEmpty(v) : v;
+        }
+
+        // `s + null` AND `s += null` JOIN NOTHING: the literal is a null
+        // string to C#, and that is the empty one.
+        if (type.Prim == Prim.NullLiteral)
+        {
+            return _e.Address(InternString(""));
         }
 
         if (type.Prim == Prim.Any || type.ParamName is not null

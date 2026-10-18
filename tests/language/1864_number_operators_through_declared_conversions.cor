@@ -1,0 +1,63 @@
+// test: number_operators_through_declared_conversions
+// expect-exit: 0
+// expect-output:
+// sum 12 3 6 9
+// compare True False True
+// bits 6 8 1
+// compound 12 3 20 4 reads 4
+// both 15
+// widest 7
+// string x
+//
+// A NUMBER'S OWN OPERATOR REACHED BY A CONVERSION A TYPE DECLARES (C#
+// 12.4.5): `total + money` where Money converts implicitly to int is int's
+// `+`, over Money's conversion. The arithmetic, comparison, bitwise and
+// shift operators, the compound forms (`total += money`, C# 12.21.4: y
+// converted, then the predefined operator and the cast back), two such
+// operands at once, the narrowest of several conversions, and `s + null`
+// and `s += null` joining nothing.
+
+using System;
+
+sealed class Money
+{
+    public int Cents;
+    public Money(int c) { Cents = c; }
+    public static implicit operator int(Money m) => m.Cents;
+}
+
+struct Small
+{
+    public byte V;
+    public Small(byte v) { V = v; }
+    public static implicit operator byte(Small s) => s.V;
+    public static implicit operator long(Small s) => s.V * 1000L;
+}
+
+static class Program
+{
+    static int reads;
+    static Money Read(int c) { reads++; return new Money(c); }
+
+    static void Main()
+    {
+        int total = 5;
+        long wide = 1;
+        double d = 2;
+        Console.WriteLine("sum " + (total + new Money(7)) + " " + (wide + new Money(2)) + " " + (d * new Money(3)) + " " + (new Money(10) - 1));
+        Console.WriteLine("compare " + (new Money(3) < 4) + " " + (5 <= new Money(4)) + " " + (new Money(3) == 3));
+        Console.WriteLine("bits " + (new Money(4) | 2) + " " + (new Money(1) << 3) + " " + (7 & new Money(9)));
+        total += Read(7);
+        wide += Read(2);
+        d *= Read(10);
+        int shifted = 1;
+        shifted <<= Read(2);
+        Console.WriteLine("compound " + total + " " + wide + " " + d + " " + shifted + " reads " + reads);
+        Console.WriteLine("both " + (new Money(5) + new Money(10)));
+        Console.WriteLine("widest " + (new Small(3) + 4));
+        string s = "x";
+        s = s + null;
+        s += null;
+        Console.WriteLine("string " + s);
+    }
+}

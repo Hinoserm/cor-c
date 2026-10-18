@@ -12679,7 +12679,7 @@ public sealed partial class Binder
             }
 
             FieldSymbol? field = owner.FindField(init.Name)
-                              ?? owner.FindBackingField(init.Name);
+                              ?? BackingField(owner, init.Name);
 
             // `Name = { … }` -- the member is READ and what it holds is filled
             // in, so a get-only property is enough and no assignment happens.
@@ -14691,7 +14691,20 @@ public sealed partial class Binder
                         MethodSymbol? setter = getter.Owner
                             .FindMethods("set_", propertyName)
                             .FirstOrDefault(m => m.Params.Count == 1);
-                        if (setter == null)
+                        // A GET-ONLY VIRTUAL AUTO-PROPERTY is set in its own
+                        // class's constructor, and that is a store into its
+                        // field (C# 15.7.4): reads call the accessor, which a
+                        // class below may override (BackingField), but there
+                        // is no setter to call.
+                        if (setter == null && getter.Decl is { AutoAccessor: true } && _method is { IsCtor: true, Static: false } ctor
+                            && ctor.Owner == getter.Owner && a.Target is NameExpr or MemberExpr { Target: ThisExpr }
+                            && getter.Owner.FindBackingField(propertyName) is { } backing && backing.Owner == getter.Owner)
+                        {
+                            _r.Resolved[a.Target] = new FieldSym(backing);
+                            if (a.Op is not null) _r.BackingReads[a] = getter;
+                            target = backing.Type;
+                        }
+                        else if (setter == null)
                         {
                             Error(a.Target, $"property '{propertyName}' has no setter");
                         }
@@ -14769,8 +14782,13 @@ public sealed partial class Binder
                         ok = true;
                     }
 
+                    // A STRING += IS CONCATENATION, unless y's type declares a
+                    // `+` the string reaches: C# prefers a user-defined
+                    // operator to its own (12.4.5), as `text + note` already
+                    // calls Note's here, so `text += note` calls it too.
                     if (a.Op is BinOp.Add && target.Prim == Prim.String)
                     {
+                        OperatorCompound(a, target, value);
                         ok = true;
                     }
 
@@ -14787,6 +14805,29 @@ public sealed partial class Binder
                         _r.DelegateCompounds[a] = synthesised;
                     }
 
+                    // AN OPERATOR A TYPE DECLARED: `total += span` over a
+                    // TimeSpan, `when -= TimeSpan.FromDays(1)` on a DateTime,
+                    // a struct's own. C# 12.21.4 reads `x op= y` as `x = x op y`
+                    // with x evaluated once: the operator is chosen by ordinary
+                    // overload resolution, y reaching its operand by any
+                    // implicit conversion, op_Implicit included.
+                    if (!ok && OperatorCompound(a, target, value))
+                    {
+                        ok = true;
+                    }
+
+                    // A NUMBER'S OWN OPERATOR, y reaching it by a conversion
+                    // its type declares: `total += money` is `total = (int)
+                    // (total + (int)money)` (C# 12.21.4), and what y converts
+                    // to must be something x takes as it is, unless the
+                    // operator is a shift.
+                    if (!ok && target.IsNumeric && !value.IsNumeric && NumericConversion(value) is MethodSymbol numeric
+                        && (a.Op is BinOp.Shl or BinOp.Shr or BinOp.UShr || StandardConvertible(numeric.Returns, target)))
+                    {
+                        ConvertByOperator(a.Value, numeric);
+                        ok = true;
+                    }
+
                     if (!ok)
                     {
                         Error(a, $"cannot apply compound assignment to '{target}' and '{value}'");
@@ -14798,7 +14839,13 @@ public sealed partial class Binder
                 // the expression is the value just written, and C# reads it
                 // with the null state that value has. `MReg Got() => got ??=
                 // m.NewReg();` is the shape: the variable is an `MReg?`, what
-                // it now holds is an MReg, and the method returns one.
+                // it now holds is an MReg, and the method returns one. Through
+                // a declared operator, what was put there is what it made,
+                // null state and all (OperatorCompound).
+                if (a.Op is not null && target.IsReference && _r.OperatorCompounds.TryGetValue(a, out CompoundOperator? declared))
+                {
+                    return declared.Stored.Nullable ? target.AsNullable() : target.AsNonNullable();
+                }
                 if (target.IsReference && target.Nullable
                     && !value.Nullable && value.Prim != Prim.NullLiteral && !value.IsError)
                 {
@@ -16955,7 +17002,7 @@ public sealed partial class Binder
                 return Type.String;
             }
 
-            FieldSymbol? f = _thisType.FindField(n.Name) ?? _thisType.FindBackingField(n.Name);
+            FieldSymbol? f = _thisType.FindField(n.Name) ?? BackingField(_thisType, n.Name);
             if (f is not null && NotInvocable(n, f.Type)) f = null;
 
             // NO INSTANCE IN A STATIC METHOD (C#'s CS0120). A static method
@@ -17136,7 +17183,7 @@ public sealed partial class Binder
         if (_capturedThisType is not null && _capturedThisField is not null)
         {
             FieldSymbol? outerField = _capturedThisType.FindField(n.Name)
-                                   ?? _capturedThisType.FindBackingField(n.Name);
+                                   ?? BackingField(_capturedThisType, n.Name);
             if (outerField is not null && !NotInvocable(n, outerField.Type))
             {
                 _r.Resolved[n] = new CapturedFieldSym(_capturedThisField, outerField);
@@ -17350,6 +17397,36 @@ public sealed partial class Binder
         "Type"   => "SystemType",
         _        => null,
     };
+
+    /// <summary>
+    /// The backing field a use of the auto-property `name` through `owner`
+    /// reads and writes in place of calling its accessors, which is every use
+    /// but one a class below may take over: a virtual property's, or an
+    /// override's that is not sealed. Those call the accessor, which
+    /// dispatches -- `b.N = 2` on a Derived whose N counts its writes stored
+    /// Base's field and never ran Derived's setter. Reaching it through
+    /// `base.` (nonVirtual) is a call of Base's own accessor, and the field
+    /// is that; so are the property's own accessors, which are what reads
+    /// and writes it.
+    /// </summary>
+    private FieldSymbol? BackingField(TypeSymbol owner, string name, bool nonVirtual = false)
+    {
+        FieldSymbol? field = owner.FindBackingField(name);
+        if (field is null or { Static: true } || nonVirtual)
+        {
+            return field;
+        }
+        MethodSymbol? accessor = field.Owner.FindMethods("get_", name).FirstOrDefault(g => g.Owner == field.Owner && g.Params.Count == 0)
+                              ?? field.Owner.FindMethods("set_", name).FirstOrDefault(s => s.Owner == field.Owner && s.Params.Count == 1);
+        if (accessor is not { Virtual: true } and not { Override: true }
+            || accessor.Decl?.Mods.HasFlag(Mods.Sealed) == true || field.Owner.Decl?.Mods.HasFlag(Mods.Sealed) == true)
+        {
+            return field;
+        }
+        return _method is { Decl.AutoAccessor: true } own && own.Owner == field.Owner
+               && (TypeSymbol.IsJoined(own.Name, "get_", name) || TypeSymbol.IsJoined(own.Name, "set_", name))
+            ? field : null;
+    }
 
     /// <summary>
     /// Whether `Type.name` names something: a static field or method, a static
@@ -17971,7 +18048,7 @@ public sealed partial class Binder
         // asks for the specialisation and is given it.
         Dictionary<string, Type>? received = Received(target, owner);
 
-        FieldSymbol? field = owner.FindField(m.Name) ?? owner.FindBackingField(m.Name);
+        FieldSymbol? field = owner.FindField(m.Name) ?? BackingField(owner, m.Name, nonVirtual: m.Target is BaseExpr);
 
         if (field != null)
         {
@@ -20922,6 +20999,156 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// `x op= y` through an operator x's type or y's declared (C# 12.21.4):
+    /// `x op y` built as ordinary syntax and bound like anything the program
+    /// could have written (UserOperator), so the operator is the one overload
+    /// resolution picks and y reaches its operand by whatever conversion it
+    /// needs. Remembered for lowering (BindResult.OperatorCompounds), which
+    /// reads the place once, calls the operator on what it read and stores
+    /// the result back into the same place. False when neither type declares
+    /// such an operator, and the language's own refusal stands.
+    /// </summary>
+    private bool OperatorCompound(AssignExpr a, Type target, Type value)
+    {
+        if (a.Op is not BinOp op || OperatorMethodName(op) is not string name || target.IsArray || value.IsArray)
+        {
+            return false;
+        }
+        long? rc = IntegerConstant(a.Value, value);
+        if ((Operator(target.Symbol, name, target, value, null, rc) ?? Operator(value.Symbol, name, target, value, null, rc)) is null)
+        {
+            return false;
+        }
+
+        // Checking `x op y` checks x again as something read, and what x
+        // was resolved to as the place written stays what it was.
+        BinaryExpr operation = new() { Op = op, Left = a.Target, Right = a.Value, Line = a.Line, Col = a.Col };
+        bool placed = _r.Resolved.TryGetValue(a.Target, out Sym? place);
+        Type made = CheckExpr(operation);
+        if (placed) _r.Resolved[a.Target] = place!;
+        if (made.IsError)
+        {
+            // The operator's call has said what is wrong with it.
+            return true;
+        }
+        if (!_r.Rewrites.TryGetValue(operation, out Expr? rewritten) || rewritten is not CallExpr call
+            || !_r.Calls.TryGetValue(call, out MethodSymbol? chosen) || !chosen.Static || chosen.Params.Count != 2)
+        {
+            return false;
+        }
+
+        // THE RESULT GOES BACK INTO x, so it must be something x can hold
+        // with no cast written: `d += span` on a DateTime makes a DateTime.
+        // An operator answering anything else is refused as C# refuses it
+        // (CS0029) -- an empty `S?` included, which no `S` can hold.
+        bool fits = Convertible(made, target)
+                    && !(made.IsNullableValue && !target.IsNullableValue && !target.IsReference && target.Prim != Prim.Any);
+        if (!fits)
+        {
+            Error(a, $"cannot implicitly convert type '{made}' to '{target}'");
+            return true;
+        }
+
+        // A USER-DEFINED CONVERSION ON EITHER SIDE of the operator is a call
+        // of its own, which lowering makes on the value it has in hand: x's
+        // into the operator's first operand, the result back into x's type.
+        Type first = chosen.Params[0].Type;
+        CompoundOperator compound = new(
+            chosen,
+            StandardConvertible(target, first) ? null : UserConversion(target, first, explicitToo: false),
+            StandardConvertible(made, target) ? null : UserConversion(made, target, explicitToo: false));
+        _r.OperatorCompounds[a] = compound;
+
+        // WHAT x HOLDS NOW IS WHAT THE OPERATOR MADE, and so is its null
+        // state: the write took y's before the operator was known, and an
+        // operator may answer null for a y that is not, or a value for one
+        // that is. `s += note` through an operator answering `string?` leaves
+        // s maybe null, and a join reading it must still ask.
+        if (target.IsReference && Path(a.Target) is string written)
+        {
+            Sym? named = a.Target is NameExpr plain && Lookup(plain.Name) is Sym wrote && wrote is LocalSym or ParamSym ? wrote : null;
+            if (compound.Stored.Nullable)
+            {
+                _notNullPaths.Remove(written);
+                if (named is not null) _notNull.Remove(named);
+            }
+            else
+            {
+                _notNullPaths.Add(written);
+                if (named is not null) _notNull.Add(named);
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// `x op y` over a number and a type converting to one by an implicit
+    /// operator it declares, or over two such: the same operation with each
+    /// such operand made the call of its conversion, for the number's own
+    /// operator to take -- overload resolution over the predefined operators
+    /// finds it so (C# 12.4.5), as it would for an argument. Null where an
+    /// operand is neither, where a string makes `+` a join, and for two
+    /// references, which `==` compares as references.
+    /// </summary>
+    private BinaryExpr? NumericOperands(BinaryExpr b, Type l, Type r)
+    {
+        if (b.Op is BinOp.AndAlso or BinOp.OrElse or BinOp.Coalesce || l.Prim == Prim.String || r.Prim == Prim.String
+            || b.Op is BinOp.Eq or BinOp.Ne && l.IsReference && r.IsReference)
+        {
+            return null;
+        }
+        MethodSymbol? left = l.IsNumeric ? null : NumericConversion(l);
+        MethodSymbol? right = r.IsNumeric ? null : NumericConversion(r);
+        if (left is null && right is null || left is null && !l.IsNumeric || right is null && !r.IsNumeric)
+        {
+            return null;
+        }
+        return new BinaryExpr
+        {
+            Op = b.Op,
+            Left = left is null ? b.Left : ConversionCall(b.Left, left),
+            Right = right is null ? b.Right : ConversionCall(b.Right, right),
+            Line = b.Line, Col = b.Col, File = b.File,
+        };
+    }
+
+    /// <summary>
+    /// The implicit operator a class or struct declares, or inherits, taking
+    /// it to a number: the one whose number every other's widens to, as C#'s
+    /// better conversion target picks (12.6.4.7) -- Money's to int over its
+    /// to long. Null for none, or for no single best.
+    /// </summary>
+    private MethodSymbol? NumericConversion(Type t)
+    {
+        if (t.IsArray || t.IsPointer || t.IsNullableValue || t.Symbol is not { Kind: TypeKind.Struct or TypeKind.Class } holder)
+        {
+            return null;
+        }
+        List<MethodSymbol> numbers = holder.FindMethods("op_Implicit")
+            .Where(m => m.Static && m.Params.Count == 1 && m.Returns.IsNumeric && !m.Returns.IsNullableValue
+                        && StandardConvertible(t, m.Params[0].Type))
+            .ToList();
+        return numbers.FirstOrDefault(m => numbers.All(o => ReferenceEquals(o, m) || StandardConvertible(m.Returns, o.Returns)));
+    }
+
+    /// <summary>
+    /// The call of a conversion operator on a value, as its own expression:
+    /// ConvertByOperator's call, the value left as it was written.
+    /// </summary>
+    private CallExpr ConversionCall(Expr value, MethodSymbol op)
+    {
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(op.Owner, value), Name = op.Name, Line = value.Line, Col = value.Col, File = value.File },
+            Line = value.Line, Col = value.Col, File = value.File,
+        };
+        call.Args.Add(value);
+        CheckExpr(call);
+        Converting(call, op);
+        return call;
+    }
+
+    /// <summary>
     /// `a == b` or `a != b` lifted over nullable structs, each side held once:
     /// for ==, both empty or both holding equal values by the operator; for
     /// !=, its negation by the type's own op_Inequality. A side that is not
@@ -21345,6 +21572,17 @@ public sealed partial class Binder
         if (UserOperator(b, l, r) is Type byOperator)
         {
             return byOperator;
+        }
+
+        // A NUMBER'S OWN OPERATOR REACHED BY A DECLARED CONVERSION (C# 12.4.5):
+        // `total + money` with no operator of Money's still has int's, and
+        // Money's implicit conversion to int takes it there, as it would take
+        // an argument. Each such operand is rewritten as its conversion
+        // (ConvertByOperator) and the operator checked over what that made.
+        if (NumericOperands(b, l, r) is BinaryExpr converted)
+        {
+            _r.Rewrites[b] = converted;
+            return CheckExpr(converted);
         }
 
         switch (b.Op)
