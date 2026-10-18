@@ -621,3 +621,18 @@ namespace System
         bool IsCompleted { get; }
     }
 }
+
+namespace System.Buffers.Text
+{
+    // Utf8Formatter's Guid form (the rest is Core.cor's), here with the Guid:
+    // D, its default, N, B and P, as Guid.ToString writes them.
+    public static partial class Utf8Formatter
+    {
+        public static bool TryFormat(Guid value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
+        {
+            char f = format.Symbol;
+            if (!(format.IsDefault || f == 'D' || f == 'N' || f == 'B' || f == 'P')) { throw BadFormat(); }
+            return Text(value.ToString(format.IsDefault ? "D" : f.ToString()), destination, out bytesWritten);
+        }
+    }
+}

@@ -24032,7 +24032,9 @@ namespace System.Buffers.Text
     /// E, F, N, P, C and R; a Guid D (its default), N, B and P; a TimeSpan c
     /// (its default), t, T, G and g; a date G (its default), O, R and l, R in
     /// lower case; a boolean G and l. Anything else is .NET's FormatException.
-    public static class Utf8Formatter
+    // ITS GUID FORM IS IN values.cor, beside the Guid it writes: this file is
+    // compiled on bare metal too, without that one.
+    public static partial class Utf8Formatter
     {
         public static bool TryFormat(bool value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
         {
@@ -24051,13 +24053,6 @@ namespace System.Buffers.Text
         public static bool TryFormat(byte value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
         public static bool TryFormat(double value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(FloatFormat(format), CultureInfo.InvariantCulture), destination, out bytesWritten); }
         public static bool TryFormat(float value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(FloatFormat(format), CultureInfo.InvariantCulture), destination, out bytesWritten); }
-
-        public static bool TryFormat(Guid value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
-        {
-            char f = format.Symbol;
-            if (!(format.IsDefault || f == 'D' || f == 'N' || f == 'B' || f == 'P')) { throw BadFormat(); }
-            return Text(value.ToString(format.IsDefault ? "D" : f.ToString()), destination, out bytesWritten);
-        }
 
         public static bool TryFormat(TimeSpan value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
         {
