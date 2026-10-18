@@ -1,0 +1,48 @@
+// test: lists_kept_in_a_table_go_with_it
+// expect-exit: 0
+// expect-output:
+// total 338550 left 0
+//
+// A TABLE OF LISTS FILLED BY TryGetValue: `if (!byKey.TryGetValue(k, out var
+// list)) { list = new(); byKey[k] = list; } list.Add(...)`. Every list is made
+// here for the table and added once; what TryGetValue writes into `list` is
+// an element read back, which may go nowhere -- but the read of `list` that
+// hands it to the indexer comes right after the store of the new list, in
+// the same block, and is that new list, which the indexer adds as its own
+// read would: it was refused as an element sent into the table again, and
+// the table's lists were left to the collector with the table. Now the
+// lists are the table's elements, given back with it each lap.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static long Laps(int n)
+    {
+        long total = 0;
+        for (int lap = 0; lap < n; lap++)
+        {
+            var byKey = new Dictionary<int, List<int>>();
+            for (int i = 0; i < 40; i++)
+            {
+                if (!byKey.TryGetValue(i % 7, out var list)) { list = new List<int>(); byKey[i % 7] = list; }
+                list.Add(i + lap);
+            }
+            foreach (var kv in byKey) total += kv.Value.Count + kv.Key + kv.Value[0];
+        }
+        return total;
+    }
+
+    static int Main()
+    {
+        Gc.Collect();
+        long taken = Gc.CollectedBytes;
+        long total = Laps(300);
+        Gc.Collect();
+        // What each lap left the collector: its seven lists and their arrays
+        // gone with the table, nothing.
+        Console.WriteLine("total " + total + " left " + (Gc.CollectedBytes - taken) / 300);
+        return 0;
+    }
+}

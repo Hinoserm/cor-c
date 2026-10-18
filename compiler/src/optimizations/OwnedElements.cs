@@ -1998,7 +1998,23 @@ public sealed partial class Escape
         foreach ((Block b, Instr load) in slotLoads)
         {
             if (load.Dest is null) continue;
-            Flow flow = Analyse(f, new[] { load.Dest }, summaries, null, needs: _elementNeeds);
+            // A READ OF WHAT WAS JUST PUT THERE -- the slot's last write in
+            // this block a store of an object made here for the collection,
+            // `if (!d.TryGetValue(k, out var list)) { list = new(); d[k] = list; }`
+            // -- is that object, and the call that adds it consumes it, as
+            // its own read's does (rule 6): so long as it is handed there
+            // only as what is added. Any other read of the slot may be an
+            // element read back, and goes nowhere.
+            HashSet<Instr>? adding = null;
+            if (Origin(f, defs, b, load, RegOperand.Of(load.Dest), slots) is { } made && adderOf.TryGetValue(made, out Instr? adder))
+            {
+                (Block _, Instr _, OwnedElements.Role role) = calls.First(c => ReferenceEquals(c.Call, adder));
+                bool onlyAdded = true;
+                for (int k = 0; k < adder.Operands.Count; k++)
+                    if (k != role.Adds && adder.Operands[k] is RegOperand r && r.Reg == load.Dest) onlyAdded = false;
+                if (onlyAdded) adding = new(ReferenceEqualityComparer.Instance) { adder };
+            }
+            Flow flow = Analyse(f, new[] { load.Dest }, summaries, null, needs: _elementNeeds, consumers: adding);
             if (flow.Escapes) { _elementWhy = "rule 10"; return null; }
             held.Add(flow.Derived);
         }
