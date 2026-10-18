@@ -21137,6 +21137,26 @@ public sealed partial class Binder
             }
         }
 
+        // AND EVERY OTHER, LIFTED (C# 12.4.8): an operator over two value
+        // types answering a value type is one over their nullables too --
+        // `t + span` with a TimeSpan? t is a TimeSpan?, empty where either
+        // side is; `<`, `>`, `<=` and `>=` answering bool answer false there.
+        // Each operand evaluated once, in order, as LiftedEquality has it.
+        if (b.Op is not (BinOp.Eq or BinOp.Ne) && (l.IsNullableValue || r.IsNullableValue)
+            && (found is null || found.Params[0].Type.IsNullableValue == false && l.IsNullableValue || found.Params[1].Type.IsNullableValue == false && r.IsNullableValue))
+        {
+            Type lu = l.IsNullableValue ? l.Underlying : l, ru = r.IsNullableValue ? r.Underlying : r;
+            bool relational = b.Op is BinOp.Lt or BinOp.Gt or BinOp.Le or BinOp.Ge;
+            if ((Operator(lu.Symbol, name, lu, ru, lc, rc) ?? Operator(ru.Symbol, name, lu, ru, lc, rc)) is MethodSymbol op
+                && op.Params.All(p => ValueOperand(p.Type)) && ValueOperand(op.Returns)
+                && (!relational || op.Returns.Prim == Prim.Bool))
+            {
+                _r.Rewrites[b] = LiftedOperator(b, op, name, l.IsNullableValue, r.IsNullableValue, relational);
+                _liftedOperators[b] = op;
+                return CheckExpr(_r.Rewrites[b]);
+            }
+        }
+
         if (found is null)
         {
             return null;
@@ -21189,6 +21209,20 @@ public sealed partial class Binder
         if (made.IsError)
         {
             // The operator's call has said what is wrong with it.
+            return true;
+        }
+        // LIFTED, over x's value and y's (LiftedOperator): what it makes is
+        // a nullable, which x must take as it is -- a TimeSpan? does, a
+        // TimeSpan does not.
+        if (_r.Rewrites.TryGetValue(operation, out Expr? liftedForm) && liftedForm is PatternExpr
+            && _liftedOperators.TryGetValue(operation, out MethodSymbol? liftedOp))
+        {
+            if (!target.IsNullableValue || !Convertible(made, target))
+            {
+                Error(a, $"cannot implicitly convert type '{made}' to '{target}'");
+                return true;
+            }
+            _r.OperatorCompounds[a] = new CompoundOperator(liftedOp, null, null, Lifted: true);
             return true;
         }
         if (!_r.Rewrites.TryGetValue(operation, out Expr? rewritten) || rewritten is not CallExpr call
@@ -21347,6 +21381,51 @@ public sealed partial class Binder
             Expr has = Has(leftMay ? 1 : 0);
             test = eq ? Bin(BinOp.AndAlso, has, call) : Bin(BinOp.OrElse, Not(has), call);
         }
+
+        return new PatternExpr
+        {
+            Subject = b.Left,
+            Test = new PatternExpr { Subject = b.Right, Test = test, Line = b.Line, Col = b.Col },
+            Line = b.Line, Col = b.Col,
+        };
+    }
+
+    /// <summary>The operator each lifted `a op b` calls on its values (LiftedOperator), for its compound form (OperatorCompound).</summary>
+    private readonly Dictionary<BinaryExpr, MethodSymbol> _liftedOperators = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A non-nullable value type, which a lifted operator takes and answers (C# 12.4.8).</summary>
+    private static bool ValueOperand(Type t)
+        => !t.IsNullableValue && !t.IsArray && !t.IsPointer && !t.Nullable && !t.IsError && !t.IsVoid
+           && (t.Symbol is { Kind: TypeKind.Struct or TypeKind.Enum } || t.Symbol is null && (t.IsNumeric || t.Prim == Prim.Bool));
+
+    /// <summary>
+    /// `a op b` through an operator over value types, lifted over the
+    /// nullable sides (C# 12.4.8), each side held once: the operator on
+    /// their values where every nullable side holds one, and otherwise empty
+    /// -- or false for a relational operator answering bool.
+    /// </summary>
+    private Expr LiftedOperator(BinaryExpr b, MethodSymbol op, string name, bool leftMay, bool rightMay, bool relational)
+    {
+        Expr Held(int outer) => new SubjectExpr { Outer = outer, Line = b.Line, Col = b.Col };
+        Expr Has(int outer) => new MemberExpr { Target = Held(outer), Name = "HasValue", Line = b.Line, Col = b.Col };
+        Expr Value(int outer, bool may) => may ? new MemberExpr { Target = Held(outer), Name = "Value", Line = b.Line, Col = b.Col } : Held(outer);
+
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = Qualified(op.Owner, b), Name = name, Line = b.Line, Col = b.Col },
+            Line = b.Line, Col = b.Col,
+        };
+        call.Args.Add(Value(1, leftMay));
+        call.WritableArgNames.Add(null);
+        call.Args.Add(Value(0, rightMay));
+        call.WritableArgNames.Add(null);
+
+        Expr has = leftMay && rightMay
+            ? new BinaryExpr { Op = BinOp.AndAlso, Left = Has(1), Right = Has(0), Line = b.Line, Col = b.Col }
+            : Has(leftMay ? 1 : 0);
+        Expr test = relational
+            ? new BinaryExpr { Op = BinOp.AndAlso, Left = has, Right = call, Line = b.Line, Col = b.Col }
+            : new ConditionalExpr { Cond = has, Then = call, Else = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = b.Line, Col = b.Col }, Line = b.Line, Col = b.Col };
 
         return new PatternExpr
         {

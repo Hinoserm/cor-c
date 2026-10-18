@@ -1,0 +1,60 @@
+// test: lifted_user_operators_and_their_compound_forms
+// expect-exit: 0
+// expect-output:
+// span 00:00:03 True 00:00:04
+// vec (3,4) True (3,3) True reads 2
+// order True False False False
+// compound 00:00:03 True (11,11) True
+// places 00:02:00 (6,6) (2,3) True
+//
+// A DECLARED OPERATOR OVER VALUE TYPES IS LIFTED over their nullables (C#
+// 12.4.8): `t + span` with a TimeSpan? t is a TimeSpan?, empty where either
+// side is, each side read once; `<` and `>` answer false there. Their
+// compound forms over a local, a field, a property and an array element
+// read the place once and store the nullable back.
+
+using System;
+using System.Collections.Generic;
+
+struct Vec
+{
+    public int X, Y;
+    public Vec(int x, int y) { X = x; Y = y; }
+    public static Vec operator +(Vec a, Vec b) => new Vec(a.X + b.X, a.Y + b.Y);
+    public static Vec operator *(Vec a, int k) => new Vec(a.X * k, a.Y * k);
+    public static bool operator <(Vec a, Vec b) => a.X < b.X;
+    public static bool operator >(Vec a, Vec b) => a.X > b.X;
+    public override string ToString() => "(" + X + "," + Y + ")";
+}
+
+class Holder { public TimeSpan? Span; public Vec? V { get; set; } }
+
+static class P
+{
+    static int reads;
+    static Vec? Read(Vec? v) { reads++; return v; }
+
+    static void Main()
+    {
+        TimeSpan? t = TimeSpan.FromSeconds(1);
+        TimeSpan? empty = null;
+        Console.WriteLine("span " + (t + TimeSpan.FromSeconds(2)) + " " + (empty + TimeSpan.FromSeconds(2) == null) + " " + (TimeSpan.FromSeconds(5) - t));
+        Vec? v = new Vec(1, 1);
+        Vec? none = null;
+        Console.WriteLine("vec " + (v + new Vec(2, 3)) + " " + (v + none == null) + " " + (v * 3) + " " + (Read(v) + Read(none) == null) + " reads " + reads);
+        Console.WriteLine("order " + (v < new Vec(5, 0)) + " " + (none < new Vec(5, 0)) + " " + (none > none) + " " + (v > none));
+        t += TimeSpan.FromSeconds(2);
+        empty += TimeSpan.FromSeconds(2);
+        v += new Vec(10, 10);
+        none += new Vec(1, 1);
+        Console.WriteLine("compound " + t + " " + (empty == null) + " " + v + " " + (none == null));
+        Holder h = new Holder { Span = TimeSpan.FromMinutes(1), V = new Vec(2, 2) };
+        h.Span += TimeSpan.FromMinutes(1);
+        h.V += new Vec(1, 1);
+        h.V *= 2;
+        Vec?[] cells = { new Vec(1, 2), null };
+        cells[0] += new Vec(1, 1);
+        cells[1] += new Vec(1, 1);
+        Console.WriteLine("places " + h.Span + " " + h.V + " " + cells[0] + " " + (cells[1] == null));
+    }
+}

@@ -3656,6 +3656,44 @@ public sealed partial class Lowering
 
         MethodSymbol op = declared.Operator;
         TouchType(op.Owner);
+
+        // LIFTED: the operator on x's value and y's where each nullable side
+        // holds one, put in a nullable; empty where either is (C# 12.4.8).
+        if (declared.Lifted)
+        {
+            VReg y = Eval(a.Value);
+            Type yType = Evaluated(a.Value);
+            VReg lifted = _f.NewReg(IrTypes.Word, "lifted");
+            Block some = _f.NewBlock("liftsome");
+            Block none = _f.NewBlock("liftnone");
+            Block end = _f.NewBlock("liftend");
+            if (targetType.IsNullableValue)
+            {
+                Block next = _f.NewBlock("liftright");
+                _e.Branch(HasValue(current), next, none);
+                _e.SetBlock(next);
+            }
+            if (yType.IsNullableValue) _e.Branch(HasValue(y), some, none);
+            else _e.Jump(some);
+            _e.SetBlock(some);
+            Type xValue = targetType.IsNullableValue ? targetType.Underlying : targetType;
+            Type yValue = yType.IsNullableValue ? yType.Underlying : yType;
+            VReg lv = targetType.IsNullableValue ? NullableRead(current, targetType) : current;
+            VReg rv = yType.IsNullableValue ? NullableRead(y, yType) : y;
+            VReg madeValue = CallMethod(op, null, new List<Operand>
+            {
+                R(Passed(Convert(a, lv, xValue, op.Params[0].Type), op.Params[0])),
+                R(Passed(Convert(a, rv, yValue, op.Params[1].Type), op.Params[1])),
+            })!;
+            _e.CopyTo(lifted, R(Box(a, Convert(a, madeValue, op.Returns, targetType.Underlying), targetType)));
+            _e.Jump(end);
+            _e.SetBlock(none);
+            _e.CopyTo(lifted, R(NullableEmpty(a, targetType)));
+            _e.Jump(end);
+            _e.SetBlock(end);
+            return lifted;
+        }
+
         VReg left = current;
         Type leftType = targetType;
         if (declared.Into is MethodSymbol into)

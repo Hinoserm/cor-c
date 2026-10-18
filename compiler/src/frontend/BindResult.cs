@@ -1179,12 +1179,13 @@ public sealed class CallTargets
 /// <summary>
 /// What a `x op= y` over a declared operator calls (BindResult.OperatorCompounds):
 /// the operator, the op_Implicit taking x's value to its first operand where no
-/// standard conversion does, and the one taking its result back to x's type.
+/// standard conversion does, and the one taking its result back to x's type;
+/// Lifted where the operator is over the values of nullable sides (C# 12.4.8).
 /// </summary>
-public sealed record CompoundOperator(MethodSymbol Operator, MethodSymbol? Into, MethodSymbol? Back)
+public sealed record CompoundOperator(MethodSymbol Operator, MethodSymbol? Into, MethodSymbol? Back, bool Lifted = false)
 {
-    /// <summary>What x is given: the operator's result, or what Back made of it.</summary>
-    public Type Stored => (Back ?? Operator).Returns;
+    /// <summary>What x is given: the operator's result, or what Back made of it; a lifted operator's in a nullable.</summary>
+    public Type Stored => Lifted ? Operator.Returns.AsNullable() : (Back ?? Operator).Returns;
 }
 
 /// <summary>The constructor each `new` runs (BindResult.NewConstructors), kept on the NewExpr.</summary>
