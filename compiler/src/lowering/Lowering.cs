@@ -1129,6 +1129,11 @@ public sealed partial class Lowering
             e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase / 4 * Target.Current.WordSize);
         }
 
+        // DOUBLES ROUNDED ONCE, as .NET's are: the x87 told to round its
+        // results to 53 bits rather than the 64 it starts with, before any
+        // arithmetic, and every thread started after it inherits the word.
+        e.Call(MachineIntrinsics.DoublePrecision, IrType.Void);
+
         // Linux: the block goes behind a GDT entry and GS names it. This is
         // the first call the program makes, because every `try` and every
         // allocation after it reads the block.

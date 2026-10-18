@@ -1,0 +1,76 @@
+// test: math_as_dotnet_answers_to_the_bit
+// expect-exit: 0
+// expect-output:
+// exp 2.718281828459045 9.222020922269275E-242 1.6549840276802644E+308 4.2E-322 1
+// log 2.302585092994046 -0.01927814861702034 -744.4400719213812 3.321928094887362 -0.4150374992788438 -0.12493873660829993 -300
+// pow 81 1.4142135623730951 1E-05 2.7182816941320818 5E-324 NaN -8
+// trig -0.8522008497671888 -0.5753861119575491 16331239353195370 1.2246467991473532E-16 0.9854432046167749 -0
+// inverse 0.5235987755982989 3.141592653589793 4.4721358921319356E-05 1.5707963267948966 2.356194490192345 -0 0.40489178628508343
+// hyperbolic 1E-10 1E-10 1.1169973830808557E+308 -1.1169973830808557E+308 691.4686750787736 0.9624236501192069 -0.9729550745276566
+// cbrt 3.0000000000000004 -2 2.1544266950262728E-107 1.2599210498948734
+// round -0 -0 -2 2
+// fma 5.551115123125783E-17 -Infinity -5.551115123125783E-17 0.00048834085
+// mathf -0.79116344 0.8623189 0.47942555 22026.465 3.8E-44 14.10142 1.4142135
+// -3 0 -3 -3 -Infinity
+// -3 0 -3 -Infinity
+// -3 -3 -2
+// 0 0 0 -0 0 -0
+// -0 -0 -0 -0 -0.2 -0 -0 -0
+// -3.141592653589793 3.141592653589793 -0 -3.141592653589793 -3.1415927
+// True -0 -0 0 0 -0 0
+// -0 5E-324 -0 -0 -0 -0 -0 -0 -0 -0 -0 -0
+// constants FFF8000000000000 FFC00000 FFF8000000000000 FFF8000000000000 FFC00000 FFF8000000000000 3DCCCCCD 3F800001
+//
+// MATH'S ANSWERS ARE .NET's, TO THE LAST BIT, as glibc gives them to .NET on
+// Linux: exp, expm1-built sinh/cosh/tanh, log1p-built asinh/acosh/atanh,
+// log10 and cbrt as glibc computes them (cbrt(27) is 3.0000000000000004 in
+// .NET too), log, log2, pow and the trigonometric functions correctly
+// rounded, which is glibc's answer for all of these inputs; huge angles
+// reduced by 2/pi's own bits; sinf, cosf and expf as glibc's float
+// functions; fused multiply-adds rounded once, the float one included; a
+// negative number rounding to zero is -0, and CopySign takes the sign bit,
+// of -0 and of a NaN alike. Constant expressions fold as Roslyn folds them:
+// every NaN they make is the one with the sign bit set, a const may be
+// double.NaN or an infinity less another, and a float literal is rounded
+// once, to a float, so 1.00000005960464478f is 1 + 2^-23 and not 1.
+
+using System;
+
+static class Program
+{
+    static string R(double d) { return d.ToString("R"); }
+    static string F(float f) { return f.ToString("R"); }
+    static double Z() { return 0.0; }
+
+    const double NegativeNaN = -double.NaN;
+    const float NegativeNaNF = -float.NaN;
+    const double Gap = double.PositiveInfinity - double.PositiveInfinity;
+
+    static void Main()
+    {
+        Console.WriteLine("exp " + R(Math.Exp(1.0)) + " " + R(Math.Exp(-555.0039983020426)) + " " + R(Math.Exp(709.7)) + " " + R(Math.Exp(-740.0)) + " " + R(Math.Exp(1e-300)));
+        Console.WriteLine("log " + R(Math.Log(10.0)) + " " + R(Math.Log(0.9809064865119121)) + " " + R(Math.Log(5e-324)) + " " + R(Math.Log2(10.0)) + " " + R(Math.Log2(0.75)) + " " + R(Math.Log10(0.75)) + " " + R(Math.Log10(1e-300)));
+        Console.WriteLine("pow " + R(Math.Pow(3.0, 4.0)) + " " + R(Math.Pow(2.0, 0.5)) + " " + R(Math.Pow(10.0, -5.0)) + " " + R(Math.Pow(1.0000001, 1e7)) + " " + R(Math.Pow(2.0, -1074.0)) + " " + R(Math.Pow(-8.0, 1.0 / 3.0)) + " " + R(Math.Pow(-2.0, 3.0)));
+        Console.WriteLine("trig " + R(Math.Sin(1e22)) + " " + R(Math.Cos(1e300)) + " " + R(Math.Tan(1.5707963267948966)) + " " + R(Math.Sin(3.141592653589793)) + " " + R(Math.Cos(1647099.5)) + " " + R(Math.Sin(-0.0)));
+        Console.WriteLine("inverse " + R(Math.Asin(0.5)) + " " + R(Math.Acos(-1.0)) + " " + R(Math.Acos(0.999999999)) + " " + R(Math.Atan(1e300)) + " " + R(Math.Atan2(1.0, -1.0)) + " " + R(Math.Atan2(-1e-310, 1e300)) + " " + R(Math.Atan2(3e-310, 7e-310)));
+        Console.WriteLine("hyperbolic " + R(Math.Sinh(1e-10)) + " " + R(Math.Tanh(1e-10)) + " " + R(Math.Cosh(710.0)) + " " + R(Math.Sinh(-710.0)) + " " + R(Math.Asinh(1e300)) + " " + R(Math.Acosh(1.5)) + " " + R(Math.Atanh(-0.75)));
+        Console.WriteLine("cbrt " + R(Math.Cbrt(27.0)) + " " + R(Math.Cbrt(-8.0)) + " " + R(Math.Cbrt(1e-320)) + " " + R(Math.Cbrt(2.0)));
+        Console.WriteLine("round " + R(Math.Round(-0.4)) + " " + R(Math.Round(-0.5)) + " " + R(Math.Round(-1.5)) + " " + R(Math.Round(2.5)));
+        Console.WriteLine("fma " + R(Math.FusedMultiplyAdd(0.1, 10.0, -1.0)) + " " + R(Math.FusedMultiplyAdd(1e308, 10.0, double.NegativeInfinity)) + " " + R(Math.FusedMultiplyAdd(3.0, 1.0 / 3.0, -1.0)) + " " + F(MathF.FusedMultiplyAdd(1.0002441f, 1.0002441f, -1.0f)));
+        Console.WriteLine("mathf " + F(MathF.Sin(1e30f)) + " " + F(MathF.Cos(100f)) + " " + F(MathF.Sin(0.5f)) + " " + F(MathF.Exp(10f)) + " " + F(MathF.Exp(-100f)) + " " + F(MathF.Tan(1.5f)) + " " + F(MathF.Pow(2f, 0.5f)));
+
+        double nz = -0.0;
+        float nzf = -0.0f;
+        Console.WriteLine(Math.CopySign(3.0, -0.0) + " " + Math.CopySign(-0.0, 1.0) + " " + Math.CopySign(3.0, nz) + " " + Math.CopySign(3.0, -Z()) + " " + (1.0 / nz));
+        Console.WriteLine(MathF.CopySign(3f, -0.0f) + " " + MathF.CopySign(-0.0f, 1f) + " " + MathF.CopySign(3f, nzf) + " " + (1f / nzf));
+        Console.WriteLine(Math.CopySign(3.0, double.NaN) + " " + Math.CopySign(3.0, -double.NaN) + " " + MathF.CopySign(2f, -float.NaN));
+        Console.WriteLine(Math.Sign(-0.0) + " " + Math.Abs(-0.0) + " " + Math.Max(-0.0, 0.0) + " " + Math.Min(0.0, -0.0) + " " + Math.MaxMagnitude(-0.0, 0.0) + " " + Math.MinMagnitude(0.0, -0.0));
+        Console.WriteLine(Math.Round(-0.25) + " " + Math.Truncate(-0.5) + " " + Math.Ceiling(-0.5) + " " + Math.Floor(-0.0) + " " + Math.Round(-0.25, 1) + " " + MathF.Round(-0.4f) + " " + MathF.Truncate(-0.5f) + " " + MathF.Ceiling(-0.5f));
+        Console.WriteLine(Math.Atan2(-0.0, -1.0) + " " + Math.Atan2(0.0, -0.0) + " " + Math.Atan2(-0.0, 0.0) + " " + Math.Atan2(-0.0, -0.0) + " " + MathF.Atan2(-0.0f, -1f));
+        Console.WriteLine(double.IsNegative(-0.0) + " " + (-0.0).ToString() + " " + (0.0 * -1.0) + " " + MathF.Abs(-0.0f) + " " + MathF.Max(-0.0f, 0.0f) + " " + MathF.Min(0.0f, -0.0f) + " " + MathF.Sign(-0.0f));
+        Console.WriteLine(Math.ScaleB(-0.0, 5) + " " + Math.BitIncrement(-0.0) + " " + Math.Sqrt(-0.0) + " " + Math.Cbrt(-0.0) + " " + Math.Sin(-0.0) + " " + Math.Tan(-0.0) + " " + Math.Asin(-0.0) + " " + Math.Atan(-0.0) + " " + Math.Sinh(-0.0) + " " + Math.Tanh(-0.0) + " " + Math.Asinh(-0.0) + " " + Math.Atanh(-0.0));
+        Console.WriteLine("constants " + BitConverter.DoubleToInt64Bits(NegativeNaN).ToString("X") + " " + BitConverter.SingleToInt32Bits(NegativeNaNF).ToString("X")
+            + " " + BitConverter.DoubleToInt64Bits(Gap).ToString("X") + " " + BitConverter.DoubleToInt64Bits(-double.NaN).ToString("X") + " " + BitConverter.SingleToInt32Bits(-float.NaN).ToString("X")
+            + " " + BitConverter.DoubleToInt64Bits(-Z() / Z()).ToString("X") + " " + BitConverter.SingleToInt32Bits(0.1f).ToString("X") + " " + BitConverter.SingleToInt32Bits(1.00000005960464478f).ToString("X"));
+    }
+}

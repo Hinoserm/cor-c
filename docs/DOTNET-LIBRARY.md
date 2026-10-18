@@ -103,6 +103,21 @@ the same list.
 - `Math` and `Enumerable` cannot be extended from another file: only a type
   declared in the PRELUDE may be reopened, and a second declaration of a type
   the library already has is a duplicate. Anything they lack is added there.
+- `Math.Log`, `Log2`, `Pow`, `Sin`, `Cos`, `Tan`, `Asin`, `Acos`, `Atan` and
+  `Atan2`, and MathF's logarithms, answer the CORRECTLY ROUNDED result,
+  worked in double-double. .NET's are glibc's on Linux, which round
+  correctly for all but about one argument in five hundred to two thousand;
+  for those the last bit differs. `Exp`, `Log10`, `Cbrt`, the hyperbolic
+  functions and MathF's `Sin`, `Cos` and `Exp` follow glibc operation for
+  operation, fused multiply-adds included, and agree with it.
+- On the x87 (the default target) an operation on TWO NaNs answers the one
+  with the larger payload, where SSE2, and so .NET, answers the first. Only
+  that NaN's sign and payload differ.
+- `Random()` with no seed is xoshiro256**, as .NET's is, but its state cannot
+  be unpredictable: nothing below `stdlib/src/System/Core.cor` has entropy, so the seed is a
+  constant stirred by a counter. `Random(seed)` reproduces .NET's sequence
+  number for number. `NextInt64` is the one member whose sequence has not been
+  checked against .NET's.
 - `DateTime`'s "U" standard format is the same as "u" because local time is
   UTC here; `Uri` does not speak IPv6 hosts or relative resolution; and
   `Encoding.Latin1` has no accessor, because .NET exposes no Latin1Encoding

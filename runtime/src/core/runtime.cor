@@ -4762,11 +4762,13 @@ static class Runtime
         return 4503599627370496.0;
     }
 
-    /// A quiet NaN, made from its bits because the constant folder would
-    /// happily turn 0.0 / 0.0 into a compile-time value we do not control.
+    /// THE NaN AN INVALID OPERATION MAKES, the sign bit set, as the
+    /// processor's 0/0 makes it and as .NET's `2.0 % 0.0` answers. Made from
+    /// its bits because the constant folder would happily turn 0.0 / 0.0
+    /// into a compile-time value we do not control.
     private static double NaN()
     {
-        return Sys.FromBits(0x7FF8000000000000);
+        return Sys.FromBits(unchecked((long)0xFFF8000000000000));
     }
 
     private static bool IsNaN(double x)
@@ -4837,23 +4839,35 @@ static class Runtime
         }
 
         double fraction = x - f;
+        double made;
 
         if (fraction < 0.5)
         {
-            return f;
+            made = f;
         }
-        if (fraction > 0.5)
+        else if (fraction > 0.5)
         {
-            return f + 1.0;
+            made = f + 1.0;
         }
-
-        // A tie. f is integral and within 2^52 (or Floor would have answered
-        // x itself), so its parity is the low bit of its integer value.
-        if (((long)f & 1) == 0)
+        else if (((long)f & 1) == 0)
         {
-            return f;
+            // A tie. f is integral and within 2^52 (or Floor would have
+            // answered x itself), so its parity is the low bit of its
+            // integer value.
+            made = f;
         }
-        return f + 1.0;
+        else
+        {
+            made = f + 1.0;
+        }
+        // A NEGATIVE NUMBER THAT ROUNDS TO ZERO IS -0, as .NET's is:
+        // Math.Round(-0.4) and Math.Round(-0.5) print as -0. Floor's -1 plus
+        // one was +0.
+        if (made == 0.0 && x < 0.0)
+        {
+            return Sys.FromBits(unchecked((long)0x8000000000000000));
+        }
+        return made;
     }
 
     /// C#'s Math.Min and Max propagate NaN: if either is NaN the answer is
@@ -4893,12 +4907,214 @@ static class Runtime
         return a > b ? a : b;
     }
 
-    /// a * b + c. NOT fused: the 486 has no fused multiply-add, so this rounds
-    /// twice where the hardware instruction would round once. Math.Lerp and
-    /// the like are correct to within that last bit.
+    /// a * b + c ROUNDED ONCE, as the hardware's fused multiply-add and C's
+    /// fma round it, and as Math.FusedMultiplyAdd answers. No processor this
+    /// targets has the instruction, so it is done in integers: the product
+    /// of the two 53-bit mantissas is exact in 106 bits, c is lined up with
+    /// it in a 128-bit window whose lost bits are kept as one sticky bit, and
+    /// the sum is rounded to nearest, ties to even, once -- subnormals,
+    /// overflow and an exact cancellation (+0) as IEEE 754 has them.
     public static double Fma(double a, double b, double c)
     {
-        return a * b + c;
+        ulong ua = (ulong)Sys.Bits(a);
+        ulong ub = (ulong)Sys.Bits(b);
+        ulong uc = (ulong)Sys.Bits(c);
+        int ea = (int)((ua >> 52) & 0x7FF);
+        int eb = (int)((ub >> 52) & 0x7FF);
+        int ec = (int)((uc >> 52) & 0x7FF);
+
+        // A NaN or an infinity among the factors, or a zero one: the product
+        // is exact, or no number, and the plain sum rounds once.
+        if (ea == 0x7FF || eb == 0x7FF || (ua << 1) == (ulong)0 || (ub << 1) == (ulong)0)
+        {
+            return a * b + c;
+        }
+        // c infinite or NaN beside a finite product: c itself.
+        if (ec == 0x7FF)
+        {
+            return c + c;
+        }
+
+        ulong productSign = (ua ^ ub) >> 63;
+        ulong ma = ua & 0x000FFFFFFFFFFFFF;
+        ulong mb = ub & 0x000FFFFFFFFFFFFF;
+        if (ea == 0) { ea = 1; } else { ma = ma | 0x0010000000000000; }
+        if (eb == 0) { eb = 1; } else { mb = mb | 0x0010000000000000; }
+
+        // THE PRODUCT, its top bit moved to bit 125 of hi:lo, and its scale:
+        // the value is hi:lo x 2^scale.
+        ulong lo;
+        ulong hi = MultiplyWide(ma, mb, out lo);
+        int up = (hi != (ulong)0 ? Clz64(hi) : 64 + Clz64(lo)) - 2;
+        if (up >= 64)
+        {
+            hi = lo << (up - 64);
+            lo = 0;
+        }
+        else if (up > 0)
+        {
+            hi = (hi << up) | (lo >> (64 - up));
+            lo = lo << up;
+        }
+        int scale = ea + eb - 2150 - up;
+
+        ulong sign = productSign;
+        if ((uc << 1) != (ulong)0)
+        {
+            ulong mc = uc & 0x000FFFFFFFFFFFFF;
+            if (ec == 0) { ec = 1; } else { mc = mc | 0x0010000000000000; }
+            int top = 63 - Clz64(mc);
+            ulong chi = mc << (61 - top);
+            ulong clo = 0;
+            int cscale = ec - 1075 - (61 - top) - 64;
+
+            // The smaller of the two shifted down to the larger's scale.
+            if (cscale > scale)
+            {
+                hi = ShiftRightSticky(hi, lo, cscale - scale, out lo);
+                scale = cscale;
+            }
+            else if (scale > cscale)
+            {
+                chi = ShiftRightSticky(chi, clo, scale - cscale, out clo);
+            }
+
+            ulong csign = uc >> 63;
+            if (csign == productSign)
+            {
+                ulong sum = lo + clo;
+                hi = hi + chi + (sum < lo ? (ulong)1 : (ulong)0);
+                lo = sum;
+            }
+            else if (hi > chi || (hi == chi && lo >= clo))
+            {
+                hi = hi - chi - (lo < clo ? (ulong)1 : (ulong)0);
+                lo = lo - clo;
+            }
+            else
+            {
+                hi = chi - hi - (clo < lo ? (ulong)1 : (ulong)0);
+                lo = clo - lo;
+                sign = csign;
+            }
+            // AN EXACT CANCELLATION IS +0, in the default rounding.
+            if (hi == (ulong)0 && lo == (ulong)0)
+            {
+                return 0.0;
+            }
+        }
+
+        // The leading bit's place, and the mantissa's last place: 2^(e - 52),
+        // or the subnormals' 2^-1074 when e is below the normal range.
+        int lead = hi != (ulong)0 ? 127 - Clz64(hi) : 63 - Clz64(lo);
+        int last = scale + lead - 52;
+        if (last < -1074)
+        {
+            last = -1074;
+        }
+        int drop = last - scale;
+        ulong m;
+        bool above = false;
+        bool half = false;
+        if (drop <= 0)
+        {
+            // Every bit kept, and room to spare: a subnormal sum of tiny
+            // numbers, its mantissa shifted up exactly.
+            m = lo << (0 - drop);
+        }
+        else if (drop >= 128)
+        {
+            // ALL OF IT BELOW HALF THE LAST PLACE: a product far under the
+            // subnormals, whose leading bit (126 at most) is under the
+            // place's half. A zero of its sign -- and the shifts below,
+            // which a count of 64 or more wraps, are never asked to try.
+            m = 0;
+        }
+        else
+        {
+            // What the shift drops, against half of the last place kept.
+            ulong restHi;
+            ulong restLo;
+            ulong halfHi;
+            ulong halfLo;
+            if (drop >= 64)
+            {
+                m = drop == 64 ? hi : hi >> (drop - 64);
+                restHi = drop == 64 ? (ulong)0 : hi & (((ulong)1 << (drop - 64)) - 1);
+                restLo = lo;
+                halfHi = drop == 64 ? (ulong)0 : (ulong)1 << (drop - 65);
+                halfLo = drop == 64 ? (ulong)0x8000000000000000 : (ulong)0;
+            }
+            else
+            {
+                m = (lo >> drop) | (hi << (64 - drop));
+                restHi = 0;
+                restLo = lo & (((ulong)1 << drop) - 1);
+                halfHi = 0;
+                halfLo = (ulong)1 << (drop - 1);
+            }
+            above = restHi > halfHi || (restHi == halfHi && restLo > halfLo);
+            half = restHi == halfHi && restLo == halfLo;
+        }
+        if (above || (half && (m & (ulong)1) != (ulong)0))
+        {
+            m = m + 1;
+        }
+        if (m >= 0x0020000000000000)
+        {
+            m = m >> 1;
+            last = last + 1;
+        }
+        if (m == (ulong)0)
+        {
+            return Sys.FromBits((long)(sign << 63));
+        }
+        if (last + 52 > 1023)
+        {
+            return Sys.FromBits((long)((sign << 63) | 0x7FF0000000000000));
+        }
+        if (m < 0x0010000000000000)
+        {
+            return Sys.FromBits((long)((sign << 63) | m));
+        }
+        return Sys.FromBits((long)((sign << 63) | ((ulong)(last + 1075) << 52) | (m - 0x0010000000000000)));
+    }
+
+    /// The 128-bit product of two 64-bit words: the high word answered, the
+    /// low one through `lo`. Four 32-bit products, which is all a 486 has.
+    private static ulong MultiplyWide(ulong a, ulong b, out ulong lo)
+    {
+        ulong aLo = a & 0xFFFFFFFF;
+        ulong aHi = a >> 32;
+        ulong bLo = b & 0xFFFFFFFF;
+        ulong bHi = b >> 32;
+        ulong ll = aLo * bLo;
+        ulong lh = aLo * bHi;
+        ulong hl = aHi * bLo;
+        ulong hh = aHi * bHi;
+        ulong middle = (ll >> 32) + (lh & 0xFFFFFFFF) + (hl & 0xFFFFFFFF);
+        lo = (middle << 32) | (ll & 0xFFFFFFFF);
+        return hh + (lh >> 32) + (hl >> 32) + (middle >> 32);
+    }
+
+    /// hi:lo shifted right by n, 0 < n, every bit shifted out folded into the
+    /// lowest bit kept: the result rounds as the exact value would.
+    private static ulong ShiftRightSticky(ulong hi, ulong lo, int n, out ulong outLo)
+    {
+        if (n >= 128)
+        {
+            outLo = (hi | lo) != (ulong)0 ? (ulong)1 : (ulong)0;
+            return 0;
+        }
+        if (n >= 64)
+        {
+            ulong lost = n == 64 ? lo : lo | (hi << (128 - n));
+            outLo = (n == 64 ? hi : hi >> (n - 64)) | (lost != (ulong)0 ? (ulong)1 : (ulong)0);
+            return 0;
+        }
+        ulong gone = lo << (64 - n);
+        outLo = (lo >> n) | (hi << (64 - n)) | (gone != (ulong)0 ? (ulong)1 : (ulong)0);
+        return hi >> n;
     }
 
     /// C#'s `%` on doubles, which is C's fmod: the remainder of a truncating

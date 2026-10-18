@@ -163,7 +163,7 @@ These remain unfinished. The default stays 486+x87.
   hardware-specific profitability remain unfinished; see docs/X86-OPTIMIZATION-RESULTS.md.
 - [x] Match current .NET saturating float-to-integer conversions, including NaN,
   infinity, signed boundaries and the upper half of UInt64.
-- [ ] Correct the existing Math.Clamp overloads' missing inverted-bound check;
+- [x] Correct the existing Math.Clamp overloads' missing inverted-bound check;
   found during the saturation-pattern audit. Keep standard .NET behavior.
 - [x] Validate LOCK operand restrictions with positive and rejection fixtures.
   A separate kernel task owns F00F

@@ -20712,6 +20712,11 @@ enum MidpointRounding {
 }
 
 static class Math {
+    /// CONSTANTS, AS .NET'S ARE, so that `const double TwoPi = Math.PI * 2` is
+    /// a constant expression: as properties they were values a program could
+    /// read but never fold. Each is the double nearest the number.
+    public const double PI = 3.14159265358979323846, E = 2.71828182845904523536, Tau = 6.28318530717958647692;
+
     public static int Min(int a, int b) { if (a < b) { return a; } return b; }
     public static int Max(int a, int b) { if (a > b) { return a; } return b; }
     public static long Min(long a, long b) { if (a < b) { return a; } return b; }
@@ -20730,9 +20735,9 @@ static class Math {
     public static nuint Min(nuint a, nuint b) { if (a < b) { return a; } return b; }
     public static nuint Max(nuint a, nuint b) { if (a > b) { return a; } return b; }
 
-    /// THE NARROW ONES AND float, which .NET has too: each answers its own
-    /// type, so `Math.Max(s, t)` over two shorts is a short, and a float's
-    /// pair is the double one's NaN and sign of nought rules, narrowed back.
+    /// THE NARROW PAIRS, which answer in the type they were given: `short s =
+    /// Math.Max(a, b)` on two shorts is a short in .NET, and through the int
+    /// overload it was an int that needed a cast back.
     public static byte Min(byte a, byte b) { if (a < b) { return a; } return b; }
     public static byte Max(byte a, byte b) { if (a > b) { return a; } return b; }
     public static sbyte Min(sbyte a, sbyte b) { if (a < b) { return a; } return b; }
@@ -20741,18 +20746,36 @@ static class Math {
     public static short Max(short a, short b) { if (a > b) { return a; } return b; }
     public static ushort Min(ushort a, ushort b) { if (a < b) { return a; } return b; }
     public static ushort Max(ushort a, ushort b) { if (a > b) { return a; } return b; }
-    public static float Min(float a, float b) { return (float)Min((double)a, (double)b); }
-    public static float Max(float a, float b) { return (float)Max((double)a, (double)b); }
-    public static double Pi() { return 3.14159265358979323846; }
-    public static double Tau() { return 6.28318530717958647692; }
+
+    /// A FLOAT'S PAIR, BY THE RULES THE DOUBLE ONE KEEPS (IEEE 754-2019's
+    /// maximum and minimum): a NaN on either side is the answer, and of the
+    /// two zeros +0 is the larger. A float in is a float out, which through
+    /// the double overload it was not.
+    public static float Max(float x, float y) {
+        if (x != y) {
+            if (float.IsNaN(x)) { return x; }
+            return y < x ? x : y;
+        }
+        return float.IsNegative(y) ? x : y;
+    }
+
+    public static float Min(float x, float y) {
+        if (x != y) {
+            if (float.IsNaN(x)) { return x; }
+            return x < y ? x : y;
+        }
+        return float.IsNegative(x) ? x : y;
+    }
 
     /// AN INT, not a double: .NET's Math.Sign answers -1, 0 or 1 whatever the
     /// argument's type, because what it reports is a direction and not a
-    /// magnitude.
+    /// magnitude. A NaN has no direction, and .NET refuses it rather than
+    /// calling it zero.
     public static int Sign(double x) {
         if (x > 0.0) { return 1; }
         if (x < 0.0) { return -1; }
-        return 0;
+        if (x == 0.0) { return 0; }
+        throw new ArithmeticException("Function does not accept floating point Not-a-Number values.");
     }
 
     public static int Sign(float x) { return Sign((double)x); }
@@ -20770,205 +20793,556 @@ static class Math {
         return new ArgumentException("'" + low + "' cannot be greater than " + high + ".");
     }
 
-    public static double Lerp(double a, double b, double t) {
-        return Math.Fma(b - a, t, a);
+    // ---- the transcendental functions ------------------------------------
+    //
+    // AS THE C LIBRARY .NET CALLS ANSWERS THEM, to the bit: .NET's Math.Exp,
+    // Sin and the rest are glibc's on Linux. Where glibc's algorithm is
+    // known exactly -- exp, expm1, log1p, log10, cbrt and the hyperbolic
+    // functions -- it is followed operation for operation, including the
+    // fused multiply-adds its x86-64 build contracts (Runtime.Fma, which is
+    // exact). The others -- log, log2, pow, the trigonometric functions and
+    // their inverses -- glibc rounds correctly all but a tenth of a percent
+    // of the time, and here they are computed in double-double (about 106
+    // bits) and rounded once, which is the correctly rounded answer.
+
+    // ---- double-double arithmetic ------------------------------------------
+    //
+    // A NUMBER AS TWO DOUBLES, hi + lo, lo below half an ulp of hi. The sum
+    // and the product of two doubles are exact as such a pair (Knuth's
+    // TwoSum; Dekker's product over Veltkamp's split), and the operations on
+    // pairs lose a few units in the 106th bit.
+
+    internal static double TwoSum(double a, double b, out double error) {
+        double s = a + b;
+        double bb = s - a;
+        error = (a - (s - bb)) + (b - bb);
+        return s;
     }
 
-    // Wraps an angle into [-pi, pi], where the polynomials below are accurate.
-    public static double WrapAngle(double x) {
-        double turns = Math.Floor((x + Pi()) / Tau());
-        return x - turns * Tau();
+    // The same when |a| >= |b|, in three operations.
+    static double QuickTwoSum(double a, double b, out double error) {
+        double s = a + b;
+        error = b - (s - a);
+        return s;
     }
 
-    // SINE AND COSINE TO THE LAST BIT OR SO, as the C library's and .NET's
-    // are: the angle less the nearest multiple of pi/2, taken off in three
-    // parts so none of it is lost (Cody and Waite), then fdlibm's minimax
-    // polynomials on [-pi/4, pi/4]. Seven terms of the Taylor series over
-    // [-pi, pi], which this was, are good to about 2e-5 near pi/2: cos(pi/2)
-    // was -2.1e-5, and an arc of 90 degrees measured more than a quarter
-    // turn and was cut in two.
-    const double PiOver2Hi = 1.57079632673412561417e+00;
-    const double PiOver2Mid = 6.07710050630396597660e-11;
-    const double PiOver2Lo = 2.02226624879595063154e-21;
-    const double TwoOverPi = 6.36619772367581382433e-01;
-
-    // x less n quarter turns, n the nearest, as a head and the tail the head
-    // lost (fdlibm's medium reduction); the quadrant (n mod 4) out. Hi and
-    // Mid have 33 bits each, so n times either is exact while n is below
-    // 2^20.
-    static double QuarterTurns(double x, out double tail, out int quadrant) {
-        double n = Math.Floor(x * TwoOverPi + 0.5);
-        quadrant = (int)((long)n & 3);
-        double r = x - n * PiOver2Hi;
-        double t = r;
-        double w = n * PiOver2Mid;
-        r = t - w;
-        w = n * PiOver2Lo - ((t - r) - w);
-        double head = r - w;
-        tail = (r - head) - w;
-        return head;
+    static double TwoProduct(double a, double b, out double error) {
+        double p = a * b;
+        double c = 134217729.0 * a;
+        double ah = c - (c - a);
+        double al = a - ah;
+        c = 134217729.0 * b;
+        double bh = c - (c - b);
+        double bl = b - bh;
+        error = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+        return p;
     }
 
-    static double SinKernel(double x, double y) {
-        double z = x * x;
-        double v = z * x;
-        double r = 8.33333333332248946124e-03 + z * (-1.98412698298579493134e-04 + z * (2.75573137070700676789e-06
-                 + z * (-2.50507602534068634195e-08 + z * 1.58969099521155010221e-10)));
-        return x - ((z * (0.5 * y - v * r) - y) - v * -1.66666666666666324348e-01);
+    static double PairAdd(double ah, double al, double bh, double bl, out double lo) {
+        double e;
+        double f;
+        double s = TwoSum(ah, bh, out e);
+        double t = TwoSum(al, bl, out f);
+        s = QuickTwoSum(s, e + t, out e);
+        return QuickTwoSum(s, e + f, out lo);
     }
 
-    static double CosKernel(double x, double y) {
-        double z = x * x;
-        double r = z * (4.16666666666666019037e-02 + z * (-1.38888888888741095749e-03 + z * (2.48015872894767294178e-05
-                 + z * (-2.75573143513906633035e-07 + z * (2.08757232129817482790e-09 + z * -1.13596475577881948265e-11)))));
-        double hz = 0.5 * z;
-        double w = 1.0 - hz;
-        return w + (((1.0 - w) - hz) + (z * r - x * y));
+    static double PairAddDouble(double ah, double al, double b, out double lo) {
+        double e;
+        double s = TwoSum(ah, b, out e);
+        return QuickTwoSum(s, e + al, out lo);
     }
 
-    // tan(x + y) for |x| <= pi/4, or -1/tan(x + y) when `inverse` (fdlibm's
-    // __kernel_tan): past 0.6744 by the identity at pi/4, which keeps the
-    // polynomial where it is accurate.
-    static double TanKernel(double x, double y, bool inverse) {
+    static double PairMul(double ah, double al, double bh, double bl, out double lo) {
+        double e;
+        double p = TwoProduct(ah, bh, out e);
+        return QuickTwoSum(p, e + (ah * bl + al * bh), out lo);
+    }
+
+    static double PairMulDouble(double ah, double al, double b, out double lo) {
+        double e;
+        double p = TwoProduct(ah, b, out e);
+        return QuickTwoSum(p, e + al * b, out lo);
+    }
+
+    // Three quotients, each of what the last left over.
+    static double PairDiv(double ah, double al, double bh, double bl, out double lo) {
+        double q1 = ah / bh;
+        double pl;
+        double ph = PairMulDouble(bh, bl, q1, out pl);
+        double rl;
+        double rh = PairAdd(ah, al, -ph, -pl, out rl);
+        double q2 = rh / bh;
+        ph = PairMulDouble(bh, bl, q2, out pl);
+        rh = PairAdd(rh, rl, -ph, -pl, out rl);
+        double q3 = rh / bh;
+        double e;
+        q1 = QuickTwoSum(q1, q2, out e);
+        return PairAddDouble(q1, e, q3, out lo);
+    }
+
+    // One step of Newton from the double square root.
+    static double PairSqrt(double ah, double al, out double lo) {
+        if (ah <= 0.0) {
+            lo = 0.0;
+            return Sqrt(ah);
+        }
+        double s = Sqrt(ah);
+        double pl;
+        double ph = TwoProduct(s, s, out pl);
+        double rl;
+        double rh = PairAdd(ah, al, -ph, -pl, out rl);
+        return QuickTwoSum(s, rh / (2.0 * s), out lo);
+    }
+
+    // ENTRY i OF A TABLE, four units a double: the tables are constant
+    // strings, so a program that never calls the function that reads one
+    // carries none of it, and nothing is built when one is first used.
+    static long TableBits(string table, int i) {
+        int at = 4 * i;
+        return ((long)Sys.GetChar(table, at) << 48) | ((long)Sys.GetChar(table, at + 1) << 32)
+             | ((long)Sys.GetChar(table, at + 2) << 16) | (long)Sys.GetChar(table, at + 3);
+    }
+
+    static double TableEntry(string table, int i) { return BitConverter.Int64BitsToDouble(TableBits(table, i)); }
+
+    // 2^(i/128) as scale x (1 + tail), 128 pairs: the tail's bits, then the scale's less i << 45.
+    const string ExpTable =
+          "\u0000\u0000\u0000\u0000\u3FF0\u0000\u0000\u0000\u3C9B\u3B4F\u1A88\uBF6E\u3FEF\uF63D\uA9FB\u3335\uBC71\u6013\u9CD8\uDC5D"
+        + "\u3FEF\uEC9A\u3E77\u8061\uBC90\u5E7A\u1087\u66D1\u3FEF\uE315\uE86E\u7F85\u3C8C\uD252\u3567\uF613\u3FEF\uD9B0\uD315\u8574"
+        + "\uBC8B\uCE80\u23F9\u8EFA\u3FEF\uD06B\u29DD\uF6DE\u3C60\uF74E\u61E6\uC861\u3FEF\uC745\u1875\u9BC8\u3C90\uA3E4\u5B33\uD399"
+        + "\u3FEF\uBE3E\uCAC6\uF383\u3C97\u9AA6\u5D83\u7B6D\u3FEF\uB558\u6CF9\u890F\u3C8E\uB51A\u92FD\uEFFC\u3FEF\uAC92\u2B72\u47F7"
+        + "\u3C3E\uBE3D\u702F\u9CD1\u3FEF\uA3EC\u32D3\uD1A2\uBC6A\u0334\u8990\u6E0B\u3FEF\u9B66\uAFFE\uD31B\uBC95\u5652\u2A2F\uBD0E"
+        + "\u3FEF\u9301\uD012\u5B51\uBC50\u80EF\u8C4E\uEA55\u3FEF\u8ABD\uC06C\u31CC\uBC91\uC923\uB9D5\uF416\u3FEF\u829A\uAEA9\u2DE0"
+        + "\u3C80\uD3E3\uE95C\u55AF\u3FEF\u7A98\uC8A5\u8E51\uBC80\u1B15\uEAA5\u9348\u3FEF\u72B8\u3C7D\u517B\uBC8F\u1FF0\u55DE\u323D"
+        + "\u3FEF\u6AF9\u388C\u8DEA\u3C8B\u898C\u3F13\u53BF\u3FEF\u635B\uEB6F\uCB75\uBC96\uD99C\u7611\uEB26\u3FEF\u5BE0\u8404\u5CD4"
+        + "\u3C9A\uECF7\u3E3A\u2F60\u3FEF\u5487\u3168\uB9AA\uBC8F\uE782\uCB86\u389D\u3FEF\u4D50\u22FC\uD91D\u3C8A\u6F41\u44A6\uC38D"
+        + "\u3FEF\u463B\u8862\u8CD6\u3C80\u7A05\uB0E4\u047D\u3FEF\u3F49\u917D\uDC96\u3C96\u8EFD\uE3A8\uA894\u3FEF\u387A\u6E75\u6238"
+        + "\u3C87\u5E18\uF274\u487D\u3FEF\u31CE\u4FB2\uA63F\u3C80\u472B\u981F\uE7F2\u3FEF\u2B45\u65E2\u7CDD\uBC96\uB87B\u3F71\u085E"
+        + "\u3FEF\u24DF\uE1F5\u6381\u3C82\uF7E1\u6D09\uAB31\u3FEF\u1E9D\uF51F\uDEE1\uBC3D\u219B\u1A6F\uBFFA\u3FEF\u187F\uD0DA\uD990"
+        + "\u3C8B\u3782\u720C\u0AB4\u3FEF\u1285\uA6E4\u030B\u3C6E\u1492\u89CE\uCB8F\u3FEF\u0CAF\uA93E\u2F56\u3C83\u4D75\u4DB0\uABB6"
+        + "\u3FEF\u06FE\u0A31\uB715\u3C86\u4201\uE2AC\u744C\u3FEF\u0170\uFC4C\uD831\u3C8F\uDD39\u5DD3\uF84A\u3FEE\uFC08\uB264\u16FF"
+        + "\uBC86\uA380\u3B8E\u5B04\u3FEE\uF6C5\u5F92\u9FF1\uBC92\u4AED\uCC4B\u5068\u3FEE\uF1A7\u373A\uA9CB\uBC99\u07F8\u1B51\u2D8E"
+        + "\u3FEE\uECAE\u6D05\uD866\uBC71\uD1E8\u3E94\u36D2\u3FEE\uE7DB\u34E5\u9FF7\uBC99\u1919\uB3CE\u1B15\u3FEE\uE32D\uC313\uA8E5"
+        + "\u3C85\u9F48\uA72A\u4C6D\u3FEE\uDEA6\u4C12\u3422\uBC93\u1260\u7A28\u698A\u3FEE\uDA45\u04AC\u801C\uBC58\uA78F\u4817\u895B"
+        + "\u3FEE\uD60A\u21F7\u2E2A\uBC7C\u2C9B\u6749\u9A1B\u3FEE\uD1F5\uD950\uA897\u3C43\u63ED\u60C2\uAC11\u3FEE\uCE08\u6061\u892D"
+        + "\u3C96\u6609\u3B06\u64EF\u3FEE\uCA41\uED1D\u0057\u3C6E\uCCE1\uDAA1\u0379\u3FEE\uC6A2\uB5C1\u3CD0\u3C93\uFF8E\u3F0F\u1230"
+        + "\u3FEE\uC32A\uF0D7\uD3DE\u3C76\u90CE\uBB7A\uAFB0\u3FEE\uBFDA\uD536\u2A27\u3C93\u1DBD\uEB54\uE077\u3FEE\uBCB2\u99FD\uDD0D"
+        + "\uBC8F\u9434\u0071\uA38E\u3FEE\uB9B2\u769D\u2CA7\uBC87\uDECC\uDC93\uA349\u3FEE\uB6DA\uA2CF\u6642\uBC78\uDEC6\uBD0F\u385F"
+        + "\u3FEE\uB42B\u569D\u4F82\uBC86\u1246\uEC7B\u5CF6\u3FEE\uB1A4\uCA5D\u920F\u3C93\u3505\u18FD\uD78E\u3FEE\uAF47\u36B5\u27DA"
+        + "\u3C7B\u98B7\u2F8A\u9B05\u3FEE\uAD12\uD497\uC7FD\u3C90\u63E1\uE21C\u5409\u3FEE\uAB07\uDD48\u5429\u3C34\uC785\u5019\uC6EA"
+        + "\u3FEE\uA926\u8A59\u46B7\u3C94\u32E6\u2B64\uC035\u3FEE\uA76F\u15AD\u2148\uBC8C\uE44A\u6199\u769F\u3FEE\uA5E1\uB976\uDC09"
+        + "\uBC8C\u33C5\u3BEF\u4DA8\u3FEE\uA47E\uB03A\u5585\uBC84\u5378\u892B\uE9AE\u3FEE\uA346\u34CC\uC320\uBC93\uCEDD\u7856\u5858"
+        + "\u3FEE\uA238\u8255\u2225\u3C57\u10AA\u807E\u1964\u3FEE\uA155\uD44C\uA973\uBC93\uB3EF\uBF5E\u2228\u3FEE\uA09E\u667F\u3BCD"
+        + "\uBC6A\u12AD\u8734\uB982\u3FEE\uA012\u750B\uDABF\uBC63\u67EF\uB86D\uA9EE\u3FEE\u9FB2\u3C65\u1A2F\uBC80\uDC3D\u54E0\u8851"
+        + "\u3FEE\u9F7D\uF951\u9484\uBC78\u1F64\u7E5A\u3ECF\u3FEE\u9F75\uE8EC\u5F74\uBC86\uEE4A\uC08B\u7DB0\u3FEE\u9F9A\u48A5\u8174"
+        + "\uBC86\u1932\u1E55\uE68A\u3FEE\u9FEB\u5642\u67C9\u3C90\u9CCB\u5E09\uD4D3\u3FEE\uA069\u4FDE\u5D3F\uBC7B\u32DC\uB94D\uA51D"
+        + "\u3FEE\uA114\u73EB\u0187\u3C94\uECFD\u5467\uC06B\u3FEE\uA1ED\u0130\uC132\u3C65\uEBE1\uABD6\u6C55\u3FEE\uA2F3\u36CF\u4E62"
+        + "\uBC88\uA1C5\u2FB3\uCF42\u3FEE\uA427\u543E\u1A12\uBC93\u69B6\uF13B\u3734\u3FEE\uA589\u994C\uCE13\uBC80\u5E84\u3A19\uFF1E"
+        + "\u3FEE\uA71A\u4623\uC7AD\uBC94\uD450\uD872\u576E\u3FEE\uA8D9\u9B44\u92ED\u3C90\uAD67\u5B0E\u8A00\u3FEE\uAAC7\uD98A\u6699"
+        + "\u3C8D\uB72F\uC1F0\uEAB4\u3FEE\uACE5\u422A\uA0DB\uBC65\uB660\u9CC5\uE7FF\u3FEE\uAF32\u16B5\u448C\u3C7B\uF683\u59F3\u5F44"
+        + "\u3FEE\uB1AE\u9915\u7736\uBC93\u091F\uA71E\u3D83\u3FEE\uB45B\u0B91\uFFC6\uBC5D\uA9B8\u8B6C\u1E29\u3FEE\uB737\uB0CD\uC5E5"
+        + "\uBC6C\u23F9\u7C90\uB959\u3FEE\uBA44\uCBC8\u520F\uBC92\u4343\u22F4\uF9AA\u3FEE\uBD82\u9FDE\u4E50\uBC85\uCA6C\uD766\u8E4B"
+        + "\u3FEE\uC0F1\u70CA\u07BA\u3C71\uAFFC\u2B91\uCE27\u3FEE\uC491\u82A3\uF090\u3C6D\uD235\uE10A\u73BB\u3FEE\uC863\u19E3\u2323"
+        + "\uBC87\uC504\u2262\u2263\u3FEE\uCC66\u7B5D\uE565\u3C8B\u1C86\uE3E2\u31D5\u3FEE\uD09B\uEC4A\u2D33\uBC91\uBBD1\uD3BC\uBB15"
+        + "\u3FEE\uD503\uB23E\u255D\u3C90\uCC31\u9CEE\u31D2\u3FEE\uD99E\u1330\uB358\u3C84\u6984\u6E73\u5AB3\u3FEE\uDE6B\u5579\uFDBF"
+        + "\uBC82\uDFCD\u978E\u9DB4\u3FEE\uE36B\uBFD3\uF37A\u3C8C\u1A77\u92CB\u3387\u3FEE\uE89F\u995A\uD3AD\uBC90\u7B8F\u4AD1\uD9FA"
+        + "\u3FEE\uEE07\u298D\uB666\uBC55\uC3D9\u56DC\uAEBA\u3FEE\uF3A2\uB84F\u15FB\uBC90\uA40E\u3DA6\uF640\u3FEE\uF972\u8DE5\u593A"
+        + "\uBC68\uD6F4\u38AD\u9334\u3FEE\uFF76\uF2FB\u5E47\uBC91\uEEE2\u6B58\u8A35\u3FEF\u05B0\u30A1\u064A\u3C74\uFFD7\u0A5F\uDDCD"
+        + "\u3FEF\u0C1E\u904B\uC1D2\uBC91\uBDFB\uFA92\u98AC\u3FEF\u12C2\u5BD7\u1E09\u3C73\u6EAE\u30AF\u0CB3\u3FEF\u199B\uDD85\u529C"
+        + "\u3C8E\uE332\u5C9F\uFD94\u3FEF\u20AB\u5FFF\uD07A\u3C84\uE08F\uD109\u59AC\u3FEF\u27F1\u2E57\uD14B\u3C63\uCDAF\u384E\u1A67"
+        + "\u3FEF\u2F6D\u9406\uE7B5\u3C67\u6B2C\u6C92\u1968\u3FEF\u3720\uDCEF\u9069\uBC80\u8A18\u83CC\uB5D2\u3FEF\u3F0B\u555D\uC3FA"
+        + "\uBC8F\uAD5D\u3FFF\uFA6F\u3FEF\u472D\u4A07\u897C\uBC90\u0DAE\u3875\uA949\u3FEF\u4F87\u080D\u89F2\u3C74\uA385\uA63D\u07A7"
+        + "\u3FEF\u5818\uDCFB\uA487\uBC82\u919E\u2040\u220F\u3FEF\u60E3\u16C9\u8398\u3C8E\u5A50\uD5C1\u92AC\u3FEF\u69E6\u03DB\u3285"
+        + "\u3C84\u3A59\uAC01\u6B4B\u3FEF\u7321\uF301\uB460\uBC82\uD521\u07B4\u3E1F\u3FEF\u7C97\u337B\u9B5F\uBC89\u2AB9\u3B47\u0DC9"
+        + "\u3FEF\u8646\u14F5\uA129\u3C74\uB604\u603A\u88D3\u3FEF\u902E\uE78B\u3FF6\u3C83\uC5EC\u519D\u7271\u3FEF\u9A51\uFBC7\u4C83"
+        + "\uBC8F\uF712\u8FD3\u91F0\u3FEF\uA4AF\uA2A4\u90DA\uBC8D\uAE98\uE223\u747D\u3FEF\uAF48\u2D8E\u67F1\u3C8E\uC3BC\u41AA\u2008"
+        + "\u3FEF\uBA1B\uEE61\u5A27\u3C84\u2B94\uC3A9\uEB32\u3FEF\uC52B\u376B\uBA97\u3C8A\u64A9\u31D1\u85EE\u3FEF\uD076\u5B6E\u4540"
+        + "\uBC8E\u37BA\uE43B\uE3ED\u3FEF\uDBFD\uAD9C\uBE14\u3C77\u893B\u4D91\uCD9D\u3FEF\uE7C1\u819E\u90D8\u3C53\u05C1\u4160\uCC89"
+        + "\u3FEF\uF3C2\u2B8F\u71F1";
+    // For c = 1 + j/128, j from -38 to 53: 1/c rounded, and -log of that rounded inverse in two parts.
+    const string LogTable =
+          "\u3FF6\uC16C\u16C1\u6C17\uBFD6\u8AC8\u3E9C\u6A15\u3C6A\uCD8A\u9145\uFF44\u3FF6\u8168\u1681\u6817\uBFD5\uD5BD\uDF59\u5F31"
+        + "\uBC4D\u5F75\uB9A2\u3AE4\u3FF6\u42C8\u590B\u2164\uBFD5\u22AE\u0738\uA3D7\uBC73\u840B\u263A\uCB43\u3FF6\u0581\u6058\u1606"
+        + "\uBFD4\u718D\uC271\uC41C\uBC7D\u8FB4\uC14C\u56EE\u3FF5\uC988\u2B93\u1057\uBFD3\uC252\u7733\u3183\uBC71\u52D8\u1AF5\u713A"
+        + "\u3FF5\u8ED2\u3081\u58ED\uBFD3\u14F1\uE1D3\u5CE3\uBC72\u2966\uF61A\u3C23\u3FF5\u5555\u5555\u5555\uBFD2\u6962\u1134\uDB91"
+        + "\uBC7E\u0EFA\uDD9D\uB02A\u3FF5\u1D07\uEAE2\uF815\uBFD1\uBF99\u635A\u6B95\u3C7E\u9575\uC212\u4912\u3FF4\uE5E0\uA72F\u0539"
+        + "\uBFD1\u178E\u8227\uE47A\uBC7B\u8CE2\uD07F\u1CB7\u3FF4\uAFD6\uA052\uBF5B\uBFD0\u7138\u604D\u5864\u3C32\u4E91\u2B16\uEC8B"
+        + "\u3FF4\u7AE1\u47AE\u147B\uBFCF\u991C\u6CB3\uB37A\uBC5E\uCCA0\uCDF3\u0143\u3FF4\u46F8\u6562\uD9FB\uBFCE\u530E\uFFE7\u1013"
+        + "\u3C6F\u7627\uEF82\uF3F0\u3FF4\u1414\u1414\u1414\uBFCD\u1037\uF265\u5E7B\u3C53\uF3AD\uB7B7\u1CBC\u3FF3\uE22C\uBCE4\uA902"
+        + "\uBFCB\uD087\u383B\uD8AA\u3C41\u1655\u04AD\u749E\u3FF3\uB13B\u13B1\u3B14\uBFCA\u93ED\u3C8A\uD9E5\uBC6B\uCAFA\u9DE9\u7202"
+        + "\u3FF3\u8138\u1381\u3814\uBFC9\u5A5A\uDCF7\u0182\uBC68\uA162\u83FD\uBD1C\u3FF3\u521C\uFB2B\u78C1\uBFC8\u23C1\u6551\uA3C0"
+        + "\uBC66\uDCD3\u18F4\u187E\u3FF3\u23E3\u4A2B\u10BF\uBFC6\uF012\u8B75\u6AB9\u3C43\u7967\u0878\u59B9\u3FF2\uF684\uBDA1\u2F68"
+        + "\uBFC5\uBF40\u6B54\u3DB0\u3C21\uF5B4\u4C0D\uF7F7\u3FF2\uC9FB\u4D81\u2CA0\uBFC4\u913D\u8333\uB563\u3C50\uD560\u4930\uF137"
+        + "\u3FF2\u9E41\u29E4\u129E\uBFC3\u65FC\uB015\u9014\uBC6B\uEA08\uD2DC\uA256\u3FF2\u7350\uB881\u2735\uBFC2\u3D71\u2A49\uC201"
+        + "\uBC65\u1C7E\u9EFA\uE297\u3FF2\u4924\u9249\u2492\uBFC1\u178E\u8227\uE47A\u3C50\uE63A\u5F01\uC693\u3FF2\u1FB7\u8121\uFB78"
+        + "\uBFBF\uE891\u39DB\uD565\u3C5A\uC9F4\u215F\u9394\u3FF1\uF704\u7DC1\u1F70\uBFBD\uA727\u6384\u469E\uBC54\u01FA\u7173\u3017"
+        + "\u3FF1\uCF06\uADA2\u811D\uBFBB\u6AC8\u8DAD\u5B1D\u3C50\u02BF\u768E\u52D0\u3FF1\uA7B9\u611A\u7B96\uBFB9\u335E\u5D59\u4988"
+        + "\u3C54\u78A8\u5704\uCCB7\u3FF1\u8118\u1181\u1812\uBFB7\u00D3\u0AEA\uC0E8\uBC4A\u36A6\u77B4\uC8B2\u3FF1\u5B1E\u5F75\u270D"
+        + "\uBFB4\uD311\u5D20\u7EAC\uBC3D\uA7D0\uB1E1\u0B2F\u3FF1\u35C8\u1135\uC811\uBFB2\uAA04\uA447\u17A1\uBC5A\uEA2C\u72D0\u5C08"
+        + "\u3FF1\u1111\u1111\u1111\uBFB0\u8598\uB59E\u3A06\u3C5D\uD700\u9902\uBF32\u3FF0\uECF5\u6BE6\u9C90\uBFAC\uCB73\uCDDD\uB2D0"
+        + "\u3C4E\u48FB\u0500\uEFD5\u3FF0\uC971\u4FBC\uDA3B\uBFA8\u94AA\u149F\uB34B\u3C42\uBA0B\u44CF\uAEE5\u3FF0\uA681\u0A68\u10A7"
+        + "\uBFA4\u66AE\uD42D\uE3F9\u3C39\uBADE\uFE94\u2718\u3FF0\u8421\u0842\u1084\uBFA0\u415D\u89E7\u4440\uBC4C\u05CF\u1D75\u3621"
+        + "\u3FF0\u624D\uD2F1\uA9FC\uBF98\u4925\u28C8\uCAC5\u3C3D\u192D\u0619\uFA68\u3FF0\u4104\u1041\u0410\uBF90\u2056\u5893\u5837"
+        + "\uBC32\u7C8E\u8416\uE717\u3FF0\u2040\u8102\u0408\uBF80\u1015\u7588\uDE69\uBC14\u6662\uD417\uCECE\u3FF0\u0000\u0000\u0000"
+        + "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u3FEF\uC07F\u01FC\u07F0\u3F7F\uE02A\u6B10\u6799\uBBCE\u44B7\uE371\u1E7F"
+        + "\u3FEF\u81F8\u1F81\uF820\u3F8F\uC0A8\uB0FC\u03C4\uBC18\u3092\uC596\u4281\u3FEF\u4465\u9E4A\u4271\u3F97\uB91B\u07D5\uB126"
+        + "\uBC16\uD80A\uB38E\u9430\u3FEF\u07C1\uF07C\u1F08\u3F9F\u829B\u0E78\u32F8\u3C33\u3E3F\u04F1\uEF25\u3FEE\uCC07\uB301\uECC0"
+        + "\u3FA3\u9E87\uB9FE\uBD68\uBC45\uBFA9\u37F5\u51B7\u3FEE\u9131\uABF0\uB767\u3FA7\u7458\uF632\uDCFF\u3C08\uD3CA\u87B9\u2968"
+        + "\u3FEE\u573A\uC901\uE574\u3FAB\u42DD\u7119\u71B9\u3C40\uA345\u31F6\u7DB5\u3FEE\u1E1E\u1E1E\u1E1E\u3FAF\u0A30\uC011\u62A8"
+        + "\u3C48\u5F32\u5C5B\uBACD\u3FED\uE5D6\uE3F8\u868A\u3FB1\u6536\uEEA3\u7AE3\u3C52\u1897\u05CF\u74CA\u3FED\uAE60\u76B9\u81DB"
+        + "\u3FB3\u41D7\u961B\uD1D0\uBC53\u599F\u227B\uECBB\u3FED\u77B6\u54B8\u2C34\u3FB5\u1B07\u3F06\u183C\uBC55\uB61C\u65E5\u741A"
+        + "\u3FED\u41D4\u1D41\uD41D\u3FB6\uF0D2\u8AE5\u6B4E\uBC42\u0DB3\u2309\u7324\u3FED\u0CB5\u8F6E\uC074\u3FB8\uC345\uD631\u9B23"
+        + "\uBC52\u94D2\uF566\u8495\u3FEC\uD856\u8903\u9B0B\u3FBA\u926D\u3A4A\uD562\uBC4D\u7A16\uEAB1\uE2AD\u3FEC\uA4B3\u055E\uE191"
+        + "\u3FBC\u5E54\u8F5B\uC743\u3C42\uEB0B\uF7C0\uB0D9\u3FEC\u71C7\u1C71\uC71C\u3FBE\u2707\u6E2A\uF2EA\uBC36\u1578\u001E\u015A"
+        + "\u3FEC\u3F8F\u01C3\uF8F0\u3FBF\uEC91\u31DB\uEABC\uBC55\u746B\u9981\uB36C\u3FEC\u0E07\u0381\uC0E0\u3FC0\uD77E\u7CD0\u8E5B"
+        + "\u3C69\uA5DC\u5E90\u30AD\u3FEB\uDD2B\u8994\u06F7\u3FC1\uB72A\uD52F\u67A2\uBC6F\uBE7E\uE5C6\u9946\u3FEB\uACF9\u14C1\uBAD0"
+        + "\u3FC2\u9552\uF81F\uF521\u3C63\u0177\u1C40\u7DC0\u3FEB\u7D6C\u3DDA\u338B\u3FC3\u71FC\u201E\u8F75\u3C1E\u6CB6\u2AF1\u8A02"
+        + "\u3FEB\u4E81\uB4E8\u1B4F\u3FC4\u4D2B\u6CCB\u7D1C\u3C47\uD3D9\u50F8\u7E23\u3FEB\u2036\u406C\u80D9\u3FC5\u26E5\uE3A1\uB438"
+        + "\uBC65\u46FF\u8A47\u0D3A\u3FEA\uF286\uBCA1\uAF28\u3FC5\uFF30\u70A7\u93D6\uBC5B\uC60E\uFAFC\u6F6C\u3FEA\uC570\u1AC5\u701B"
+        + "\u3FC6\uD60F\uE719\uD21B\u3C6D\u551D\u9713\u2E87\u3FEA\u98EF\u606A\u63BE\u3FC7\uAB89\u0210\uD907\uBC61\u0725\u34A5\u7E7D"
+        + "\u3FEA\u6D01\uA6D0\u1A6D\u3FC8\u7FA0\u6520\uC911\uBC69\uF7FD\uBFA0\u8D9A\u3FEA\u41A4\u1A41\uA41A\u3FC9\u525A\u9CF4\u56B6"
+        + "\uBC62\u6FB3\uE2B1\uD1DA\u3FEA\u16D3\uF97A\u4B02\u3FCA\u23BC\u1FE2\uB561\u3C62\u4DC4\u6C1E\uA664\u3FE9\uEC8E\u9510\u33D9"
+        + "\u3FCA\uF3C9\u4E80\uBFF3\u3C6A\u3398\u064D\uF33E\u3FE9\uC2D1\u4EE4\uA102\u3FCB\uC286\u742D\u8CD4\u3C5C\uFCE7\u4487\u0F57"
+        + "\u3FE9\u9999\u9999\u999A\u3FCC\u8FF7\uC79A\u9A20\uBC64\uF689\uF843\u4011\u3FE9\u70E4\uF80C\uB872\u3FCD\u5C21\u6B4F\uBB94"
+        + "\uBC5A\u3779\u4D03\u657D\u3FE9\u48B0\uFCD6\uE9E0\u3FCE\u2707\u6E2A\uF2E8\uBC46\u1578\u001E\u015E\u3FE9\u20FB\u49D0\uE229"
+        + "\u3FCE\uF0AD\uCBDC\u5935\u3C6E\u8637\u950D\uC20D\u3FE8\uF9C1\u8F9C\u18FA\u3FCF\uB918\u6D5E\u3E29\u3C63\u5551\u9B0D\uE535"
+        + "\u3FE8\uD301\u8D30\u18D3\u3FD0\u4025\u94B4\uD041\uBC60\u8EC2\u17A5\u022D\u3FE8\uACB9\u0F6B\uF3AA\u3FD0\uA324\uE273\u90E2"
+        + "\u3C7B\uDCFD\uE806\u1C03\u3FE8\u86E5\uF0AB\uB04A\u3FD1\u058B\uF9AE\u4AD4\u3C03\uF415\u6996\u63EC\u3FE8\u6186\u1861\u8618"
+        + "\u3FD1\u675C\uABAB\uA60F\u3C2C\uE63E\uAB88\u3727\u3FE8\u3C97\u7AB2\uBEDD\u3FD1\uC898\uC169\u99FB\u3C79\uF1A3\u9D50\u0E3C"
+        + "\u3FE8\u1818\u1818\u1818\u3FD2\u2941\uFBCF\u7966\uBC5D\uBD7A\uC258\uA2BD\u3FE7\uF405\uFD01\u7F40\u3FD2\u895A\u13DE\u86A4"
+        + "\u3C77\uAD24\uC13F\u040F\u3FE7\uD05F\u417D\u05F4\u3FD2\uE8E2\uBAE1\u1D31\uBC61\uE99B\u72BD\u7BF2\u3FE7\uAD22\u08E0\uECC3"
+        + "\u3FD3\u47DD\u9A98\u7D56\uBC71\u6EA6\u2C04\u8CFB\u3FE7\u8A4C\u8178\uA4C8\u3FD3\uA64C\u5569\u45EA\u3C3C\uBCD7\u35D0\u3424"
+        + "\u3FE7\u67DC\uE434\uA9B1\u3FD4\u0430\u8686\uA7E4\uBC6F\u79F6\uC105\u9CDB\u3FE7\u45D1\u745D\u1746\u3FD4\u618B\uC21C\u5EC2"
+        + "\uBC27\uA426\u4266\u1C62\u3FE7\u2428\u7F46\uDEBC\u3FD4\uBE5F\u9577\u78A1\uBC54\uB366\uB609\u027A\u3FE7\u02E0\u5C0B\u8170"
+        + "\u3FD5\u1AAD\u872D\uF82E\uBC7D\u8DB0\uA7CC\u1543\u3FE6\uE1F7\u6B43\u37C7\u3FD5\u7677\u1745\u5A6C\uBC6F\uB2A4\u9AF9\u33E8"
+        + "\u3FE6\uC16C\u16C1\u6C17\u3FD5\uD1BD\uBF58\u09CA\uBC77\uDC9C\u7C23\u801F\u3FE6\uA13C\uD153\u7290\u3FD6\u2C82\uF2B9\uC796"
+        + "\uBC50\u90A0\uDD59\uFE35";
+    // atan(j/32), j from 0 to 32, in two parts.
+    const string AtanTable =
+          "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u3F9F\uFD55\uBBA9\u7625\uBC35\uEC43\u1444\u912C\u3FAF\uF55B\uB72C\uFDEA"
+        + "\uBC3C\u934D\u86D2\u3F1D\u3FB7\uEE18\u2602\uF10F\uBC5C\uFB65\u4C0C\u3D98\u3FBF\uD5BA\u9AAC\u2F6E\uBC4C\uD376\u8676\u0C17"
+        + "\u3FC3\uD6EE\uE8C6\u626C\u3C66\u1A3B\u0CE9\u281B\u3FC7\uB97B\u4BCE\u5B02\u3C53\u47B0\uB4F8\u81CA\u3FCB\u90D7\u5292\u60A2"
+        + "\u3C21\u7B10\uD2E0\uE5AB\u3FCF\u5B75\uF92C\u80DD\u3C68\uAB6E\u3CF7\uAFBD\u3FD1\u8BF5\uA30B\uF178\u3C63\u0CA4\u748B\u1BF9"
+        + "\u3FD3\u6277\u3707\uEBCC\uBC69\u63A5\u44B6\u72D8\u3FD5\u30AD\u9951\uCD4A\uBC62\u5664\u8088\u4082\u3FD6\uF619\u41E4\uDEF1"
+        + "\uBC7C\u63AA\uE6F6\uE918\u3FD8\uB24D\u394A\u1B25\u3C7B\u6D0B\uA374\u8FA8\u3FDA\u64EE\uC3CC\u23FD\uBC72\u4DEC\u1B50\uB7FF"
+        + "\u3FDC\u0DB4\uC94E\uC9F0\uBC7C\uC1CE\u7093\u4C34\u3FDD\uAC67\u0561\uBB4F\u3C7A\u2B7F\u222F\u65E2\u3FDF\u40DD\u0B54\u1418"
+        + "\uBC6A\u3992\uDC38\u2A23\u3FE0\u657E\u94DB\u30D0\uBC7D\u5B49\u5F63\u49E6\u3FE1\u255D\u9BFB\uD2A9\uBC52\uBDAE\uE1C0\uEE35"
+        + "\u3FE1\uE00B\uABDE\uFEB4\uBC59\u28DF\u287A\u668F\u3FE2\u958E\u5930\u8E31\uBC70\u9E73\uB0C6\uC087\u3FE3\u45F0\u1CCE\u37BB"
+        + "\u3C81\u0211\u37C7\u1102\u3FE3\uF13F\uB89E\u96F4\u3C7E\uCF8B\u4926\u44F0\u3FE4\u978F\uA326\u9EE1\u3C72\u419A\u87F2\uA458"
+        + "\u3FE5\u38F5\u7B89\u061F\uBC81\uBB74\uABDA\u520C\u3FE5\uD589\u8716\u9B18\u3C60\u028E\u4BC5\uE7CA\u3FE6\u6D66\u3923\uE087"
+        + "\uBC76\uEA6F\uEBE8\uBBBA\u3FE7\u00A7\uC578\u4634\uBC78\uC34D\u25AA\uDEF6\u3FE7\u8F6B\uBD5D\u315E\u3C84\u06A0\u8980\u3740"
+        + "\u3FE8\u19D0\uB715\u8A4D\uBC7B\uF762\u29D3\uB917\u3FE8\u9FF5\uFF57\uF1F8\uBC85\u5B9A\u5E17\u7A1B\u3FE9\u21FB\u5444\u2D18"
+        + "\u3C81\uA626\u3314\u5C07";
+    // 2/pi, 24 bits at a time from its first fraction bit, as two units each: the bits a huge angle is reduced by.
+    const string TwoOverPiBits =
+          "\u00A2\uF983\u006E\u4E44\u0015\u29FC\u0027\u57D1\u00F5\u34DD\u00C0\uDB62\u0095\u993C\u0043\u9041\u00FE\u5163\u00AB\uDEBB"
+        + "\u00C5\u61B7\u0024\u6E3A\u0042\u4DD2\u00E0\u0649\u002E\uEA09\u00D1\u921C\u00FE\u1DEB\u001C\uB129\u00A7\u3EE8\u0082\u35F5"
+        + "\u002E\uBB44\u0084\uE99C\u0070\u26B4\u005F\u7E41\u0039\u91D6\u0039\u8353\u0039\uF49C\u0084\u5F8B\u00BD\uF928\u003B\u1FF8"
+        + "\u0097\uFFDE\u0005\u980F\u00EF\u2F11\u008B\u5A0A\u006D\u1F6D\u0036\u7ECF\u0027\uCB09\u00B7\u4F46\u003F\u669E\u005F\uEA2D"
+        + "\u0075\u27BA\u00C7\uEBE5\u00F1\u7B3D\u0007\u39F7\u008A\u5292\u00EA\u6BFB\u005F\uB11F\u008D\u5D08\u0056\u0330\u0046\uFC7B"
+        + "\u006B\uABF0\u00CF\uBC20\u009A\uF436\u001D\uA9E3\u0091\u615E\u00E6\u1B08\u0065\u9985\u005F\u14A0\u0068\u408D\u00FF\uD880"
+        + "\u004D\u7327\u0031\u0606\u0015\u56CA\u0073\uA8C9\u0060\uE27B\u00C0\u8C6B\u0047\uC400";
+
+    // ---- e to a power: glibc's exp, operation for operation ----------------
+    //
+    // x = k ln2/128 + r with |r| <= ln2/256, and e^x = 2^(k/128) e^r: the
+    // power of two from the table (a scale and the tail it lost), e^r from a
+    // polynomial of degree five. The five fused multiply-adds are the ones
+    // glibc's x86-64 build makes, which is what gives its last bit.
+    const double ExpInvLn2N = 184.6649652337873;
+    const double ExpShift = 6755399441055744.0;
+    const double ExpNegLn2HiN = -0.005415212348111709;
+    const double ExpNegLn2LoN = -1.2864023111638346e-14;
+    const double ExpC2 = 0.49999999999996786;
+    const double ExpC3 = 0.16666666666665886;
+    const double ExpC4 = 0.0416666808410674;
+    const double ExpC5 = 0.008333335853059549;
+
+    public static double Exp(double x) {
         long bits = BitConverter.DoubleToInt64Bits(x);
-        int high = (int)(bits >> 32);
-        int size = high & 0x7fffffff;
-        if (size < 0x3e300000) {
-            if (!inverse) { return x; }
-            return -1.0 / x;
+        int abstop = (int)((bits >> 52) & 0x7FF);
+        // 0x3C9 is the top of 2^-54, 0x408 of 512 (glibc's top12).
+        if ((uint)(abstop - 0x3C9) >= (uint)(0x408 - 0x3C9)) {
+            if (abstop - 0x3C9 < 0) {
+                // Tiny or zero: 1 + x, which is 1 rounded the right way.
+                return 1.0 + x;
+            }
+            if (abstop >= 0x409) {
+                if (bits == unchecked((long)0xFFF0000000000000)) { return 0.0; }
+                if (abstop >= 0x7FF) { return 1.0 + x; }
+                return bits < 0 ? 0.0 : double.PositiveInfinity;
+            }
+            // Large: the scale may overflow or underflow, which ExpSpecial
+            // takes care of.
+            abstop = 0;
         }
-        bool big = size >= 0x3FE59428;
-        if (big) {
-            if (high < 0) { x = -x; y = -y; }
-            double z0 = 7.85398163397448278999e-01 - x;
-            double w0 = 3.06161699786838301793e-17 - y;
-            x = z0 + w0;
-            y = 0.0;
-        }
-        double z = x * x;
-        double w = z * z;
-        double r = 1.33333333333201242699e-01 + w * (2.18694882948595424599e-02 + w * (3.59207910759131235356e-03
-                 + w * (5.88041240820264096874e-04 + w * (7.81794442939557092300e-05 + w * -1.85586374855275456654e-05))));
-        double v = z * (5.39682539762260521377e-02 + w * (8.86323982359930005737e-03 + w * (1.45620945432529025516e-03
-                 + w * (2.46463134818469906812e-04 + w * (7.14072491382608190305e-05 + w * 2.59073051863633712884e-05)))));
-        double s = z * x;
-        r = y + z * (s * (r + v) + y);
-        r = r + 3.33333333333334091986e-01 * s;
-        w = x + r;
-        if (big) {
-            double vv = inverse ? -1.0 : 1.0;
-            double sign = high < 0 ? -1.0 : 1.0;
-            return sign * (vv - 2.0 * (x - (w * w / (w + vv) - r)));
-        }
-        if (!inverse) { return w; }
-        // -1/(x + r), its low half kept.
-        double zh = BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(w) & unchecked((long)0xFFFFFFFF00000000));
-        double vl = r - (zh - x);
-        double a = -1.0 / w;
-        double th = BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(a) & unchecked((long)0xFFFFFFFF00000000));
-        double sl = 1.0 + th * zh;
-        return th + a * (sl + th * vl);
+        double z = ExpInvLn2N * x;
+        double kd = z + ExpShift;
+        ulong ki = (ulong)BitConverter.DoubleToInt64Bits(kd);
+        kd = kd - ExpShift;
+        double r = Runtime.Fma(kd, ExpNegLn2LoN, Runtime.Fma(kd, ExpNegLn2HiN, x));
+        int idx = 2 * (int)(ki & 127);
+        ulong top = ki << 45;
+        double tail = BitConverter.Int64BitsToDouble(TableBits(ExpTable, idx));
+        ulong sbits = (ulong)TableBits(ExpTable, idx + 1) + top;
+        double r2 = r * r;
+        double tmp = Runtime.Fma(r2 * r2, Runtime.Fma(r, ExpC5, ExpC4), Runtime.Fma(r2, Runtime.Fma(r, ExpC3, ExpC2), tail + r));
+        if (abstop == 0) { return ExpSpecial(tmp, sbits, ki); }
+        double scale = BitConverter.Int64BitsToDouble((long)sbits);
+        return Runtime.Fma(scale, tmp, scale);
     }
 
-    // |x| <= pi/4 by its high word, as fdlibm asks: pi/4's double itself is in.
-    static bool WithinQuarterPi(double x) {
-        return (int)((BitConverter.DoubleToInt64Bits(x) >> 32) & 0x7fffffff) <= 0x3fe921fb;
+    // The scale out of range: up by 2^1009 after, or into the subnormals
+    // rounded once, through 1 + y, rather than twice. Below, scale times tmp
+    // is used twice and glibc's build fuses neither use.
+    static double ExpSpecial(double tmp, ulong sbits, ulong ki) {
+        if ((ki & 0x80000000) == 0) {
+            double big = BitConverter.Int64BitsToDouble((long)(sbits - ((ulong)1009 << 52)));
+            return TwoTo(1009) * Runtime.Fma(big, tmp, big);
+        }
+        double scale = BitConverter.Int64BitsToDouble((long)(sbits + ((ulong)1022 << 52)));
+        double scaled = scale * tmp;
+        double y = scale + scaled;
+        if (y < 1.0) {
+            double lo = scale - y + scaled;
+            double hi = 1.0 + y;
+            lo = 1.0 - hi + y + lo;
+            y = (hi + lo) - 1.0;
+            if (y == 0.0) { y = 0.0; }
+        }
+        return TwoTo(-1022) * y;
     }
 
+    // ---- the trigonometric functions, correctly rounded ---------------------
+    //
+    // THE ANGLE LESS THE NEAREST MULTIPLE OF pi/2, exactly enough: below
+    // 2^20 pi/2 in six parts of pi/2 (the first four with 33 bits, so their
+    // products with n are exact), and otherwise -- or when what is left is
+    // small enough that those parts are not enough -- by 2/pi's own bits
+    // (Payne and Hanek), the angle's 53-bit mantissa times the 2/pi bits
+    // around its exponent in integers, of which only the fraction and the
+    // quadrant are wanted. Then a series in double-double on [-pi/4, pi/4].
+
+    // The remainder as a pair, and the quadrant (n mod 4).
+    static double QuarterTurns(double x, out double lo, out int quadrant) {
+        if (Abs(x) < 1647099.0) {
+            double n = Math.Floor(x * 0.6366197723675814 + 0.5);
+            double rh = x - n * 1.5707963267341256;
+            double rl = 0.0;
+            double e;
+            rh = TwoSum(rh, -n * 6.077100506303966e-11, out e);
+            rl = rl + e;
+            rh = QuickTwoSum(rh, rl, out rl);
+            rh = TwoSum(rh, -n * 2.0222662487111665e-21, out e);
+            rl = rl + e;
+            rh = QuickTwoSum(rh, rl, out rl);
+            rh = TwoSum(rh, -n * 8.478427660348229e-32, out e);
+            rl = rl + e;
+            rh = QuickTwoSum(rh, rl, out rl);
+            rh = TwoSum(rh, -n * 2.0670321098263988e-43, out e);
+            rl = rl + e;
+            rh = QuickTwoSum(rh, rl, out rl);
+            rl = rl - n * 2.5463057961157e-60;
+            rh = QuickTwoSum(rh, rl, out rl);
+            if (Abs(rh) > TwoTo(-20)) {
+                quadrant = (int)n & 3;
+                lo = rl;
+                return rh;
+            }
+        }
+        return HugeQuarterTurns(x, out lo, out quadrant);
+    }
+
+    // x 2/pi mod 4 in integers: x = M 2^E, and 2/pi = sum of c_k 2^(-24(k+1)),
+    // so x 2/pi is the sum of M c_k 2^(E - 24k - 24). The terms whose power
+    // is 4 or more are multiples of 4 and are left out; those far enough
+    // below the point are too small to matter. What is left is summed in
+    // 24-bit limbs, least significant first.
+    static double HugeQuarterTurns(double x, out double lo, out int quadrant) {
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        int exponent = (int)((bits >> 52) & 0x7FF) - 1075;
+        long mantissa = (bits & 0x000FFFFFFFFFFFFF) | 0x0010000000000000;
+        int first = exponent >= 25 ? (exponent - 25 + 23) / 24 : 0;
+        int last = (183 + exponent) / 24 + 2;
+
+        // The product M (three 24-bit limbs) by c_first..c_last, as limbs:
+        // limb j is worth 2^(24j) times the last chunk's place.
+        int count = last - first + 4;
+        long[] limbs = new long[count];
+        long m0 = mantissa & 0xFFFFFF;
+        long m1 = (mantissa >> 24) & 0xFFFFFF;
+        long m2 = mantissa >> 48;
+        for (int k = first; k <= last; k++) {
+            long chunk = ((long)Sys.GetChar(TwoOverPiBits, 2 * k) << 16) | (long)Sys.GetChar(TwoOverPiBits, 2 * k + 1);
+            int j = last - k;
+            limbs[j] = limbs[j] + m0 * chunk;
+            limbs[j + 1] = limbs[j + 1] + m1 * chunk;
+            limbs[j + 2] = limbs[j + 2] + m2 * chunk;
+        }
+        for (int j = 0; j < count - 1; j++) {
+            limbs[j + 1] = limbs[j + 1] + (limbs[j] >> 24);
+            limbs[j] = limbs[j] & 0xFFFFFF;
+        }
+
+        // The value is the limbs times 2^(E - 24 last - 24): its fraction has
+        // `point` bits, and the two above it are the quadrant.
+        int point = 24 * (last + 1) - exponent;
+        int q = (int)((Bit(limbs, point + 1) << 1) | Bit(limbs, point));
+        bool half = Bit(limbs, point - 1) != 0;
+
+        // The fraction alone, and at or past a half its complement 2^point
+        // less it: the remainder below the next quadrant, taken negative.
+        int fractionLimbs = (point + 23) / 24;
+        long topMask = ((long)1 << (point - 24 * (fractionLimbs - 1))) - 1;
+        limbs[fractionLimbs - 1] = limbs[fractionLimbs - 1] & topMask;
+        if (half) {
+            q = q + 1;
+            long carry = 1;
+            for (int j = 0; j < fractionLimbs; j++) {
+                long v = (~limbs[j] & 0xFFFFFF) + carry;
+                carry = v >> 24;
+                limbs[j] = v & 0xFFFFFF;
+            }
+            limbs[fractionLimbs - 1] = limbs[fractionLimbs - 1] & topMask;
+        }
+
+        // Its leading 106 bits, from its first one, as two doubles of 53;
+        // bit p of the fraction is worth 2^(p - point).
+        int lead = point - 1;
+        while (lead >= 0 && Bit(limbs, lead) == 0) { lead = lead - 1; }
+        double fh = 0.0;
+        double fl = 0.0;
+        if (lead >= 0) {
+            long a = 0;
+            long b = 0;
+            for (int i = 0; i < 53; i++) {
+                a = (a << 1) | (lead - i >= 0 ? Bit(limbs, lead - i) : 0L);
+            }
+            for (int i = 53; i < 106; i++) {
+                b = (b << 1) | (lead - i >= 0 ? Bit(limbs, lead - i) : 0L);
+            }
+            fh = ScaleB((double)a, lead - point - 52);
+            fl = ScaleB((double)b, lead - point - 105);
+            fh = QuickTwoSum(fh, fl, out fl);
+        }
+        double rl;
+        double rh = PairMul(fh, fl, 1.5707963267948966, 6.123233995736766e-17, out rl);
+        if (half) {
+            rh = -rh;
+            rl = -rl;
+        }
+        if (x < 0.0) {
+            rh = -rh;
+            rl = -rl;
+            q = -q;
+        }
+        quadrant = q & 3;
+        lo = rl;
+        return rh;
+    }
+
+    // Bit i of a number held as 24-bit limbs.
+    static long Bit(long[] limbs, int i) { return (limbs[i / 24] >> (i % 24)) & 1; }
+
+    // sin(r) or cos(r), |r| <= pi/4, as a pair: the series in r^2, its first
+    // six terms in double-double and the rest, below 2^-37, in double.
+    static double SinOrCos(double rh, double rl, bool cosine, out double lo) {
+        double zl;
+        double zh = PairMul(rh, rl, rh, rl, out zl);
+        double z = zh;
+        double t;
+        double pl = 0.0;
+        double ph;
+        if (cosine) {
+            t = (((((((3.279889237069838e-30 * z - 2.4795962632247976e-27) * z + 1.6117375710961184e-24) * z
+                - 8.896791392450574e-22) * z + 4.110317623312165e-19) * z - 1.5619206968586225e-16) * z
+                + 4.779477332387385e-14) * z - 1.1470745597729725e-11) * z + 2.08767569878681e-09;
+            ph = PairMul(t, 0.0, zh, zl, out pl);
+            ph = PairAdd(ph, pl, -2.755731922398589e-07, -2.3767714622250297e-23, out pl);
+            ph = PairMul(ph, pl, zh, zl, out pl);
+            ph = PairAdd(ph, pl, 2.48015873015873e-05, 2.1511947866775882e-23, out pl);
+            ph = PairMul(ph, pl, zh, zl, out pl);
+            ph = PairAdd(ph, pl, -0.001388888888888889, 5.300543954373577e-20, out pl);
+            ph = PairMul(ph, pl, zh, zl, out pl);
+            ph = PairAdd(ph, pl, 0.041666666666666664, 2.3129646346357427e-18, out pl);
+            ph = PairMul(ph, pl, zh, zl, out pl);
+            ph = PairAdd(ph, pl, -0.5, 0.0, out pl);
+            ph = PairMul(ph, pl, zh, zl, out pl);
+            return PairAdd(ph, pl, 1.0, 0.0, out lo);
+        }
+        t = (((((((1.1309962886447716e-31 * z - 9.183689863795546e-29) * z + 6.446950284384474e-26) * z
+            - 3.868170170630684e-23) * z + 1.9572941063391263e-20) * z - 8.22063524662433e-18) * z
+            + 2.8114572543455206e-15) * z - 7.647163731819816e-13) * z + 1.6059043836821613e-10;
+        ph = PairMul(t, 0.0, zh, zl, out pl);
+        ph = PairAdd(ph, pl, -2.505210838544172e-08, 1.448814070935912e-24, out pl);
+        ph = PairMul(ph, pl, zh, zl, out pl);
+        ph = PairAdd(ph, pl, 2.7557319223985893e-06, -1.858393274046472e-22, out pl);
+        ph = PairMul(ph, pl, zh, zl, out pl);
+        ph = PairAdd(ph, pl, -0.0001984126984126984, -1.7209558293420705e-22, out pl);
+        ph = PairMul(ph, pl, zh, zl, out pl);
+        ph = PairAdd(ph, pl, 0.008333333333333333, 1.1564823173178714e-19, out pl);
+        ph = PairMul(ph, pl, zh, zl, out pl);
+        ph = PairAdd(ph, pl, -0.16666666666666666, -9.25185853854297e-18, out pl);
+        ph = PairMul(ph, pl, zh, zl, out pl);
+        ph = PairAdd(ph, pl, 1.0, 0.0, out pl);
+        return PairMul(ph, pl, rh, rl, out lo);
+    }
+
+    /// A NaN COMES BACK AS ITSELF, payload and sign, as glibc's x / x
+    /// returns it; an infinity is no angle, and the NaN an invalid operation
+    /// makes.
     public static double Sin(double x) {
-        if (x != x || x - x != 0.0) { return 0.0 / 0.0; }
-        if (WithinQuarterPi(x)) { return SinKernel(x, 0.0); }
-        int quadrant;
-        double tail;
-        double a = QuarterTurns(x, out tail, out quadrant);
-        switch (quadrant) {
-            case 0: return SinKernel(a, tail);
-            case 1: return CosKernel(a, tail);
-            case 2: return 0.0 - SinKernel(a, tail);
-            default: return 0.0 - CosKernel(a, tail);
-        }
+        if (x != x) { return x; }
+        if (x - x != 0.0) { return double.NaN; }
+        if (x == 0.0) { return x; }
+        int quadrant = 0;
+        double rl = 0.0;
+        double rh = x;
+        if (Abs(x) > 0.7853981633974483) { rh = QuarterTurns(x, out rl, out quadrant); }
+        double l;
+        double h = SinOrCos(rh, rl, (quadrant & 1) != 0, out l);
+        double made = h + l;
+        return (quadrant & 2) != 0 ? -made : made;
     }
 
     public static double Cos(double x) {
-        if (x != x || x - x != 0.0) { return 0.0 / 0.0; }
-        if (WithinQuarterPi(x)) { return CosKernel(x, 0.0); }
-        int quadrant;
-        double tail;
-        double a = QuarterTurns(x, out tail, out quadrant);
-        switch (quadrant) {
-            case 0: return CosKernel(a, tail);
-            case 1: return 0.0 - SinKernel(a, tail);
-            case 2: return 0.0 - CosKernel(a, tail);
-            default: return SinKernel(a, tail);
-        }
-    }
-
-    public static double Tan(double x) {
-        if (x != x || x - x != 0.0) { return 0.0 / 0.0; }
-        if (WithinQuarterPi(x)) { return TanKernel(x, 0.0, false); }
-        int quadrant;
-        double tail;
-        double a = QuarterTurns(x, out tail, out quadrant);
-        return TanKernel(a, tail, (quadrant & 1) != 0);
-    }
-
-    public static double Pow(double x, int n) {
-        // Exponentiation by squaring: log(n) multiplies instead of n.
-        double result = 1.0;
-        double baseValue = x;
-        int e = n;
-
-        if (e < 0) { e = 0 - e; }
-
-        while (e > 0) {
-            if ((e & 1) == 1) { result = result * baseValue; }
-            baseValue = baseValue * baseValue;
-            e = e >> 1;
-        }
-
-        if (n < 0) { return 1.0 / result; }
-        return result;
-    }
-
-    /// e TO A POWER, by splitting the exponent into a whole number of halvings
-    /// and a remainder the series can reach.
-    ///
-    /// The series alone is only accurate near zero: seventeen terms of it are
-    /// nothing like enough for exp(20), and the answer silently loses digits.
-    /// Writing x as k*ln2 + r, with |r| below half a ln2, makes the series job
-    /// easy and leaves a power of two to multiply by -- which is exact.
-    public static double Exp(double x) {
         if (x != x) { return x; }
-
-        double ln2 = 0.69314718055994530942;
-        double k = Math.Round(x / ln2);
-        double r = x - k * ln2;
-
-        double sum = 1.0;
-        double term = 1.0;
-
-        for (int i = 1; i < 18; i++) {
-            term = term * r / (double)i;
-            sum = sum + term;
-        }
-        return sum * Pow(2.0, (int)k);
+        if (x - x != 0.0) { return double.NaN; }
+        int quadrant = 0;
+        double rl = 0.0;
+        double rh = x;
+        if (Abs(x) > 0.7853981633974483) { rh = QuarterTurns(x, out rl, out quadrant); }
+        double l;
+        double h = SinOrCos(rh, rl, (quadrant & 1) == 0, out l);
+        double made = h + l;
+        return ((quadrant + 1) & 2) != 0 ? -made : made;
     }
 
-    public static long AbsInt(long x) {
-        if (x < 0) { return 0 - x; }
-        return x;
+    /// Sine over cosine, both as pairs; past an odd quadrant, minus the
+    /// cosine over the sine.
+    public static double Tan(double x) {
+        if (x != x) { return x; }
+        if (x - x != 0.0) { return double.NaN; }
+        if (x == 0.0) { return x; }
+        int quadrant = 0;
+        double rl = 0.0;
+        double rh = x;
+        if (Abs(x) > 0.7853981633974483) { rh = QuarterTurns(x, out rl, out quadrant); }
+        double sl;
+        double sh = SinOrCos(rh, rl, false, out sl);
+        double cl;
+        double ch = SinOrCos(rh, rl, true, out cl);
+        double l;
+        double h = (quadrant & 1) != 0 ? PairDiv(-ch, -cl, sh, sl, out l) : PairDiv(sh, sl, ch, cl, out l);
+        return h + l;
     }
-
-    public static long MinInt(long a, long b) { if (a < b) { return a; } return b; }
-    public static long MaxInt(long a, long b) { if (a > b) { return a; } return b; }
-    public static long ClampInt(long x, long low, long high) { return MinInt(MaxInt(x, low), high); }
 
     // ---- the names .NET uses --------------------------------------------
     //
-    // The machine's rounding instructions are called Ceil and Trunc and the
-    // library's absolute value for integers was called AbsInt, so a C# program
-    // saying Math.Ceiling or Math.Abs found nothing. These are the same
-    // operations under the names a caller writes.
+    // The machine's rounding instructions are called Ceil and Trunc, so a C#
+    // program saying Math.Ceiling or Math.Truncate found nothing. These are
+    // the same operations under the names a caller writes.
 
     public static double Ceiling(double x) { return Math.Ceil(x); }
     public static double Truncate(double x) { return Math.Trunc(x); }
@@ -20976,7 +21350,7 @@ static class Math {
     /// The most negative value has no positive twin, and .NET refuses it.
     public static int Abs(int x) {
         if (x < 0) {
-            if (x == int.MinValue) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); }
+            if (x == int.MinValue) { throw NegatedMinimum(); }
             return -x;
         }
         return x;
@@ -20984,10 +21358,44 @@ static class Math {
 
     public static long Abs(long x) {
         if (x < 0) {
-            if (x == long.MinValue) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); }
+            if (x == long.MinValue) { throw NegatedMinimum(); }
             return -x;
         }
         return x;
+    }
+
+    public static sbyte Abs(sbyte x) {
+        if (x < 0) {
+            if (x == sbyte.MinValue) { throw NegatedMinimum(); }
+            return (sbyte)(-x);
+        }
+        return x;
+    }
+
+    public static short Abs(short x) {
+        if (x < 0) {
+            if (x == short.MinValue) { throw NegatedMinimum(); }
+            return (short)(-x);
+        }
+        return x;
+    }
+
+    public static nint Abs(nint x) {
+        if (x < 0) {
+            if (x == nint.MinValue) { throw NegatedMinimum(); }
+            return -x;
+        }
+        return x;
+    }
+
+    /// THE SIGN BIT CLEARED, and nothing else changed: -0 becomes 0 and a NaN
+    /// stays the NaN it was, which a test against zero gets wrong for both.
+    public static float Abs(float x) {
+        return BitConverter.Int32BitsToSingle(BitConverter.SingleToInt32Bits(x) & 0x7FFFFFFF);
+    }
+
+    private static OverflowException NegatedMinimum() {
+        return new OverflowException("Negating the minimum value of a twos complement number is invalid.");
     }
 
     public static int Sign(int x) {
@@ -21002,6 +21410,17 @@ static class Math {
         return 0;
     }
 
+    public static int Sign(sbyte x) { return Sign((int)x); }
+    public static int Sign(short x) { return Sign((int)x); }
+
+    public static int Sign(nint x) {
+        if (x > 0) { return 1; }
+        if (x < 0) { return -1; }
+        return 0;
+    }
+
+    /// One Clamp for every type .NET has one for, and each refuses a range
+    /// whose ends are the wrong way round before it looks at the value.
     public static int Clamp(int x, int low, int high) {
         if (low > high) { throw MinMax(low, high); }
         return Min(Max(x, low), high);
@@ -21052,7 +21471,7 @@ static class Math {
         return Min(Max(x, low), high);
     }
 
-    /// A NaN passes through, as the double's does.
+    /// As the double one: a NaN passes through.
     public static float Clamp(float x, float low, float high) {
         if (low > high) { throw MinMax(low, high); }
         if (x < low) { return low; }
@@ -21073,73 +21492,442 @@ static class Math {
         return Round(x, 0, mode);
     }
 
+    /// FIFTEEN PLACES AT MOST, AND ONLY BELOW 1e16, as .NET has it: a double
+    /// has no sixteenth digit to round, and a number that large is whole
+    /// already. Away from zero adds the double just below a half, not the
+    /// half: 0.49999999999999994 plus 0.5 rounds up to 1, and a number below
+    /// the half went up with it.
     public static double Round(double x, int digits, MidpointRounding mode) {
-        double scale = 1.0;
-        for (int i = 0; i < digits; i++) { scale = scale * 10.0; }
+        if ((uint)digits > 15) { throw new ArgumentOutOfRangeException("digits", "Rounding digits must be between 0 and 15, inclusive."); }
+        if (mode < MidpointRounding.ToEven || mode > MidpointRounding.ToPositiveInfinity) { throw BadRounding(mode); }
+        if (Abs(x) < 1e16) {
+            double scale = 1.0;
+            for (int i = 0; i < digits; i++) { scale = scale * 10.0; }
 
-        double scaled = x * scale;
-        double whole = 0.0;
+            double scaled = x * scale;
+            double whole = 0.0;
 
-        if (mode == MidpointRounding.AwayFromZero) {
-            whole = scaled < 0.0 ? Math.Ceil(scaled - 0.5) : Math.Floor(scaled + 0.5);
-        } else if (mode == MidpointRounding.ToZero) {
-            whole = Math.Trunc(scaled);
-        } else if (mode == MidpointRounding.ToNegativeInfinity) {
-            whole = Math.Floor(scaled);
-        } else if (mode == MidpointRounding.ToPositiveInfinity) {
-            whole = Math.Ceil(scaled);
+            if (mode == MidpointRounding.AwayFromZero) {
+                whole = Math.Trunc(scaled + CopySign(BitDecrement(0.5), scaled));
+            } else if (mode == MidpointRounding.ToZero) {
+                whole = Math.Trunc(scaled);
+            } else if (mode == MidpointRounding.ToNegativeInfinity) {
+                whole = Math.Floor(scaled);
+            } else if (mode == MidpointRounding.ToPositiveInfinity) {
+                whole = Math.Ceil(scaled);
+            } else {
+                whole = Math.Round(scaled);
+            }
+            x = whole / scale;
+        }
+        return x;
+    }
+
+    // .NET's refusal of a mode that is none of the five, which MathF's Round
+    // shares.
+    internal static ArgumentException BadRounding(MidpointRounding mode) {
+        return new ArgumentException("The value '" + (int)mode + "' is not valid for this usage of the type MidpointRounding.", "mode");
+    }
+
+    // Whether y is a whole number, and whether an odd one. Every double from
+    // 2^53 up is even, and its half is whole too, so the halving needs no
+    // limit of its own.
+    static bool IsInteger(double y) { return y - y == 0.0 && Math.Floor(y) == y; }
+    static bool IsOddInteger(double y) { return IsInteger(y) && Math.Floor(y * 0.5) != y * 0.5; }
+
+    // ---- e^x - 1 and log(1 + x): glibc's (fdlibm's), as it builds them -----
+    //
+    // Not .NET members, but what Sinh, Cosh, Tanh, Asinh, Acosh and Atanh are
+    // made of, as glibc makes them, so that those answer as glibc's do. The
+    // multiply-adds marked Fma are the ones its build fuses.
+
+    static int HighWord(double x) { return (int)(BitConverter.DoubleToInt64Bits(x) >> 32); }
+    static uint LowWord(double x) { return (uint)BitConverter.DoubleToInt64Bits(x); }
+
+    static double WithHighWord(double x, int high) {
+        return BitConverter.Int64BitsToDouble(((long)high << 32) | (long)LowWord(x));
+    }
+
+    const double Ln2Hi = 6.93147180369123816490e-01;
+    const double Ln2Lo = 1.90821492927058770002e-10;
+
+    static double Expm1(double x) {
+        int hx = HighWord(x);
+        bool negative = hx < 0;
+        hx = hx & 0x7fffffff;
+
+        if (hx >= 0x4043687A) {
+            if (hx >= 0x40862E42) {
+                if (hx >= 0x7ff00000) {
+                    if (((hx & 0xfffff) | (int)LowWord(x)) != 0) { return x + x; }
+                    return negative ? -1.0 : x;
+                }
+                if (x > 7.09782712893383973096e+02) { return double.PositiveInfinity; }
+            }
+            if (negative) { return -1.0; }
+        }
+
+        double c = 0.0;
+        int k;
+        if (hx > 0x3fd62e42) {
+            double hi;
+            double lo;
+            if (hx < 0x3FF0A2B2) {
+                if (!negative) {
+                    hi = x - Ln2Hi;
+                    lo = Ln2Lo;
+                    k = 1;
+                } else {
+                    hi = x + Ln2Hi;
+                    lo = -Ln2Lo;
+                    k = -1;
+                }
+            } else {
+                k = (int)Runtime.Fma(1.44269504088896338700e+00, x, negative ? -0.5 : 0.5);
+                double t = k;
+                hi = Runtime.Fma(-t, Ln2Hi, x);
+                lo = t * Ln2Lo;
+            }
+            x = hi - lo;
+            c = (hi - x) - lo;
+        } else if (hx < 0x3c900000) {
+            return x;
         } else {
-            whole = Math.Round(scaled);
+            k = 0;
         }
-        return whole / scale;
+
+        double hfx = 0.5 * x;
+        double hxs = x * hfx;
+        double r1 = Runtime.Fma(hxs, -3.33333333333331316428e-02, 1.0);
+        double h2 = hxs * hxs;
+        double r2 = Runtime.Fma(hxs, -7.93650757867487942473e-05, 1.58730158725481460165e-03);
+        double h4 = h2 * h2;
+        double r3 = Runtime.Fma(hxs, -2.01099218183624371326e-07, 4.00821782732936239552e-06);
+        r1 = Runtime.Fma(h4, r3, Runtime.Fma(h2, r2, r1));
+        double tt = Runtime.Fma(-r1, hfx, 3.0);
+        double e = hxs * ((r1 - tt) / Runtime.Fma(-x, tt, 6.0));
+        if (k == 0) { return x - Runtime.Fma(x, e, -hxs); }
+
+        e = Runtime.Fma(x, e - c, -c);
+        e = e - hxs;
+        if (k == -1) { return Runtime.Fma(0.5, x - e, -0.5); }
+        if (k == 1) {
+            if (x < -0.25) { return -2.0 * (e - (x + 0.5)); }
+            return Runtime.Fma(2.0, x - e, 1.0);
+        }
+        double y;
+        if (k <= -2 || k > 56) {
+            y = 1.0 - (e - x);
+            if (k == 1024) {
+                y = y * 2.0 * TwoTo(1023);
+            } else {
+                y = WithHighWord(y, HighWord(y) + (k << 20));
+            }
+            return y - 1.0;
+        }
+        if (k < 20) {
+            double t = BitConverter.Int64BitsToDouble((long)(0x3ff00000 - (0x200000 >> k)) << 32);
+            y = t - (e - x);
+            y = WithHighWord(y, HighWord(y) + (k << 20));
+        } else {
+            double t = BitConverter.Int64BitsToDouble((long)((0x3ff - k) << 20) << 32);
+            y = x - (e + t);
+            y = y + 1.0;
+            y = WithHighWord(y, HighWord(y) + (k << 20));
+        }
+        return y;
     }
 
-    /// x to a real power, which the integer overload above cannot do: the
-    /// squaring trick needs a whole number of multiplications.
-    public static double Pow(double x, double y) {
-        if (y == 0.0) { return 1.0; }
-        if (x == 0.0) { return 0.0; }
-        return Exp(y * Log(x));
+    static double Log1p(double x) {
+        int hx = HighWord(x);
+        int ax = hx & 0x7fffffff;
+        int k = 1;
+        int hu = 0;
+        double f = 0.0;
+
+        if (hx < 0x3FDA827A) {
+            if (ax >= 0x3ff00000) {
+                if (x == -1.0) { return double.NegativeInfinity; }
+                return double.NaN;
+            }
+            if (ax < 0x3e200000) {
+                if (ax < 0x3c900000) { return x; }
+                return x - x * x * 0.5;
+            }
+            if (hx > 0 || hx <= unchecked((int)0xbfd2bec4)) {
+                k = 0;
+                f = x;
+                hu = 1;
+            }
+        } else if (hx >= 0x7ff00000) {
+            return x + x;
+        }
+
+        double c = 0.0;
+        if (k != 0) {
+            double u;
+            if (hx < 0x43400000) {
+                u = 1.0 + x;
+                hu = HighWord(u);
+                k = (hu >> 20) - 1023;
+                c = k > 0 ? 1.0 - (u - x) : x - (u - 1.0);
+                c = c / u;
+            } else {
+                u = x;
+                hu = HighWord(u);
+                k = (hu >> 20) - 1023;
+                c = 0.0;
+            }
+            hu = hu & 0x000fffff;
+            if (hu < 0x6a09e) {
+                u = WithHighWord(u, hu | 0x3ff00000);
+            } else {
+                k = k + 1;
+                u = WithHighWord(u, hu | 0x3fe00000);
+                hu = (0x00100000 - hu) >> 2;
+            }
+            f = u - 1.0;
+        }
+
+        double hfsq = 0.5 * f * f;
+        if (hu == 0) {
+            if (f == 0.0) {
+                if (k == 0) { return 0.0; }
+                c = c + k * Ln2Lo;
+                return k * Ln2Hi + c;
+            }
+            double rr = hfsq * (1.0 - 0.66666666666666666 * f);
+            if (k == 0) { return f - rr; }
+            return k * Ln2Hi - ((rr - (k * Ln2Lo + c)) - f);
+        }
+        double s = f / (2.0 + f);
+        double z = s * s;
+        double z2 = z * z;
+        double z4 = z2 * z2;
+        double z6 = z4 * z2;
+        double r2 = 3.999999999940941908e-01 + z * 2.857142874366239149e-01;
+        double r3 = 2.222219843214978396e-01 + z * 1.818357216161805012e-01;
+        double r4 = 1.531383769920937332e-01 + z * 1.479819860511658591e-01;
+        double r = Runtime.Fma(z6, r4, Runtime.Fma(z4, r3, Runtime.Fma(z, 6.666666666666735130e-01, z2 * r2)));
+        if (k == 0) { return f - (hfsq - s * (hfsq + r)); }
+        return k * Ln2Hi - ((hfsq - (s * (hfsq + r) + (k * Ln2Lo + c))) - f);
     }
 
-    /// THE NATURAL LOGARITHM, by the series that converges everywhere rather
-    /// than the one that only converges near 1.
-    ///
-    /// The argument is first split into a power of two and a remainder in
-    /// [1, 2), because the series in (x-1)/(x+1) converges quickly only on a
-    /// narrow range and a number can be any size at all.
+    // ---- logarithms, correctly rounded -------------------------------------
+    //
+    // x = 2^k m with m in [sqrt(1/2), sqrt(2)); m near c = 1 + j/128, so
+    // m/c = 1 + r with |r| below 2^-7.5, r exact as m times the table's
+    // rounded 1/c less one. log x = k ln2 - log(1/c) + log(1 + r), the series
+    // for the last carried in double-double as far as it matters.
+    const double Ln2PairHi = 0.6931471805599453;
+    const double Ln2PairLo = 2.3190468138462996e-17;
+
+    // log(m) for x's m, as a pair, and x's k. x is positive and finite.
+    static double LogParts(double x, out double lo, out int k) {
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        int e = (int)((bits >> 52) & 0x7FF);
+        if (e == 0) {
+            bits = BitConverter.DoubleToInt64Bits(x * TwoTo(54));
+            e = (int)((bits >> 52) & 0x7FF) - 54;
+        }
+        k = e - 1023;
+        double m = BitConverter.Int64BitsToDouble((bits & 0x000FFFFFFFFFFFFF) | 0x3FF0000000000000);
+        if (m > 1.4142135623730951) {
+            m = m * 0.5;
+            k = k + 1;
+        }
+        int j = (int)Math.Floor((m - 1.0) * 128.0 + 0.5) + 38;
+        double invc = TableEntry(LogTable, 3 * j);
+        double pl;
+        double ph = TwoProduct(m, invc, out pl);
+        double rl;
+        double rh = QuickTwoSum(ph - 1.0, pl, out rl);
+
+        // log(1 + r) = r - r^2/2 + r^3/3 - r^4 (1/4 - r/5 + ...)
+        double r2l;
+        double r2h = PairMul(rh, rl, rh, rl, out r2l);
+        double r3l;
+        double r3h = PairMul(r2h, r2l, rh, rl, out r3l);
+        double t3l;
+        double t3h = PairDiv(r3h, r3l, 3.0, 0.0, out t3l);
+        double r = rh;
+        double tail = r2h * r2h * (-0.25 + r * (0.2 + r * (-0.16666666666666666 + r * (0.14285714285714285 + r * (-0.125
+                    + r * (0.1111111111111111 + r * (-0.1 + r * (0.09090909090909091 + r * -0.08333333333333333))))))));
+        double sl;
+        double sh = PairAdd(rh, rl, -0.5 * r2h, -0.5 * r2l, out sl);
+        sh = PairAdd(sh, sl, t3h, t3l, out sl);
+        sh = PairAddDouble(sh, sl, tail, out sl);
+        return PairAdd(TableEntry(LogTable, 3 * j + 1), TableEntry(LogTable, 3 * j + 2), sh, sl, out lo);
+    }
+
+    // log x as a pair, x positive and finite.
+    static double LogPair(double x, out double lo) {
+        int k;
+        double l;
+        double h = LogParts(x, out l, out k);
+        double kl;
+        double kh = TwoProduct(k, Ln2PairHi, out kl);
+        kl = kl + k * Ln2PairLo;
+        return PairAdd(kh, kl, h, l, out lo);
+    }
+
     public static double Log(double x) {
-        if (x <= 0.0) { return 0.0 / 0.0; }
-
-        int power = 0;
-        double v = x;
-
-        while (v >= 2.0) {
-            v = v / 2.0;
-            power = power + 1;
-        }
-        while (v < 1.0) {
-            v = v * 2.0;
-            power = power - 1;
-        }
-
-        // atanh's series: 2 * sum of z^(2k+1)/(2k+1), with z = (v-1)/(v+1),
-        // which is at most 1/3 over [1, 2) and so needs few terms.
-        double z = (v - 1.0) / (v + 1.0);
-        double sq = z * z;
-        double term = z;
-        double sum = z;
-
-        for (int k = 1; k < 20; k++) {
-            term = term * sq;
-            sum = sum + term / (double)(2 * k + 1);
-        }
-        return 2.0 * sum + (double)power * 0.69314718055994530942;
+        if (x != x) { return x; }
+        if (x < 0.0) { return double.NaN; }
+        if (x == 0.0) { return double.NegativeInfinity; }
+        if (double.IsPositiveInfinity(x)) { return x; }
+        if (x == 1.0) { return 0.0; }
+        double lo;
+        return LogPair(x, out lo);
     }
 
-    public static double Log10(double x) { return Log(x) / 2.30258509299404568402; }
-    public static double Log2(double x) { return Log(x) / 0.69314718055994530942; }
-    public static double Log(double x, double newBase) { return Log(x) / Log(newBase); }
+    public static double Log2(double x) {
+        if (x != x) { return x; }
+        if (x < 0.0) { return double.NaN; }
+        if (x == 0.0) { return double.NegativeInfinity; }
+        if (double.IsPositiveInfinity(x)) { return x; }
+        int k;
+        double l;
+        double h = LogParts(x, out l, out k);
+        h = PairMul(h, l, 1.4426950408889634, 2.0355273740931033e-17, out l);
+        h = PairAddDouble(h, l, k, out l);
+        return h + l;
+    }
+
+    /// glibc's: log10(2) in two parts times the exponent, and the rest as
+    /// the natural logarithm of x's mantissa over ln 10, which is the answer
+    /// .NET gives to the bit, rounding and all.
+    public static double Log10(double x) {
+        int hx = HighWord(x);
+        uint lx = LowWord(x);
+        int k = 0;
+        if (hx < 0x00100000) {
+            if (((hx & 0x7fffffff) | (int)lx) == 0) { return double.NegativeInfinity; }
+            if (hx < 0) { return x != x ? x : PositiveNaN(); }
+            k = k - 54;
+            x = x * TwoTo(54);
+            hx = HighWord(x);
+        }
+        if (hx >= 0x7ff00000) { return x + x; }
+        k = k + ((hx >> 20) - 1023);
+        int i = (int)(((uint)k & 0x80000000) >> 31);
+        hx = (hx & 0x000fffff) | ((0x3ff - i) << 20);
+        double y = k + i;
+        x = WithHighWord(x, hx);
+        double z = y * 3.69423907715893078616e-13 + 4.34294481903251816668e-01 * Log(x);
+        return z + y * 3.01029995663611771306e-01;
+    }
+
+    /// x TO A REAL POWER, as e^(y log x) in double-double and rounded once.
+    ///
+    /// THE SPECIAL CASES FIRST, as .NET answers them (C99's Annex F), because
+    /// through the logarithm every one of them is wrong: a negative base has
+    /// none, though (-2)^3 is -8; a zero's is minus infinity, though 0^-1 is
+    /// infinity with the zero's sign when the power is odd; and 1^NaN is 1,
+    /// as x^0 is for every x.
+    public static double Pow(double x, double y) {
+        if (y == 0.0 || x == 1.0) { return 1.0; }
+        if (x != x || y != y) { return x + y; }
+        if (x == 0.0) {
+            // A zero keeps its sign only through an odd power, and below
+            // zero the power divides by it: 1/-0 is minus infinity.
+            if (y < 0.0) { return IsOddInteger(y) ? 1.0 / x : double.PositiveInfinity; }
+            return IsOddInteger(y) ? x : 0.0;
+        }
+        if (double.IsInfinity(y)) {
+            double size = Abs(x);
+            if (size == 1.0) { return 1.0; }
+            return (size < 1.0) == (y < 0.0) ? double.PositiveInfinity : 0.0;
+        }
+        if (double.IsInfinity(x)) {
+            // Minus infinity to the y is -0 to the -y, and 1/x is that -0.
+            if (x < 0.0) { return Pow(1.0 / x, -y); }
+            return y < 0.0 ? 0.0 : x;
+        }
+        bool negative = false;
+        if (x < 0.0) {
+            if (!IsInteger(y)) { return double.NaN; }
+            negative = IsOddInteger(y);
+            x = -x;
+            if (x == 1.0) { return negative ? -1.0 : 1.0; }
+        }
+        double ll;
+        double lh = LogPair(x, out ll);
+        // PAST WHAT A DOUBLE HOLDS the answer is known, and y is then too
+        // large for the exact product's split.
+        double z = lh * y;
+        double made;
+        if (z > 709.8) {
+            made = double.PositiveInfinity;
+        } else if (z < -745.2) {
+            made = 0.0;
+        } else {
+            double zl;
+            double zh = PairMulDouble(lh, ll, y, out zl);
+            made = ExpPair(zh, zl);
+        }
+        return negative ? -made : made;
+    }
+
+    // e^(h + l) rounded once, |h| below 746: k ln2/128 taken off in three
+    // parts (the first two exact in a product with k), e^r - 1 as a series,
+    // and the same power-of-two table Exp reads.
+    static double ExpPair(double h, double l) {
+        int k = (int)Math.Floor(h * 184.6649652337873 + 0.5);
+        double kf = k;
+        double rh = h - kf * 0.005415212348452769;
+        double rl;
+        rh = TwoSum(rh, -kf * -3.281964900695705e-13, out rl);
+        rl = rl + (l - kf * 1.636073772867244e-23);
+        rh = QuickTwoSum(rh, rl, out rl);
+
+        double r2l;
+        double r2h = PairMul(rh, rl, rh, rl, out r2l);
+        double r = rh;
+        double tail = r2h * r * (0.16666666666666666 + r * (0.041666666666666664 + r * (0.008333333333333333
+                    + r * (0.001388888888888889 + r * (0.0001984126984126984 + r * (2.48015873015873e-05 + r * 2.7557319223985893e-06))))));
+        double pl;
+        double ph = PairAdd(rh, rl, 0.5 * r2h, 0.5 * r2l, out pl);
+        ph = PairAddDouble(ph, pl, tail, out pl);
+
+        int i = k & 127;
+        int e = (k - i) >> 7;
+        // 2^(i/128) (1 + p) = H (1 + T)(1 + p) = H + H (T + p + T p)
+        double t = BitConverter.Int64BitsToDouble(TableBits(ExpTable, 2 * i));
+        double scale = BitConverter.Int64BitsToDouble(TableBits(ExpTable, 2 * i + 1) + ((long)i << 45));
+        double ul;
+        double uh = PairAddDouble(ph, pl, t, out ul);
+        uh = QuickTwoSum(uh, ul + t * ph, out ul);
+        double vl;
+        double vh = PairMulDouble(uh, ul, scale, out vl);
+        double sl;
+        double sh = PairAddDouble(vh, vl, scale, out sl);
+        return ScalePair(sh, sl, e);
+    }
+
+    // (h + l) 2^e rounded once, h near 1: into the subnormals through 1 + A,
+    // which rounds at their last place, rather than rounding h and then
+    // scaling it.
+    static double ScalePair(double h, double l, int e) {
+        if (e > -1022) { return ScaleB(h + l, e); }
+        double ah = ScaleB(h, e + 1022);
+        double al = ScaleB(l, e + 1022);
+        double err;
+        double t = TwoSum(1.0, ah, out err);
+        t = t + (err + al);
+        return TwoTo(-1022) * (t - 1.0);
+    }
+
+    /// A LOGARITHM TO ANY BASE, by the ratio of two natural ones, with .NET's
+    /// answers where the ratio has none of its own: no base is 1, and 0 and
+    /// infinity are bases only of 1, whose logarithm is 0 in every base.
+    public static double Log(double x, double newBase) {
+        if (x != x) { return x; }
+        if (newBase != newBase) { return newBase; }
+        if (newBase == 1.0) { return double.NaN; }
+        if (x != 1.0 && (newBase == 0.0 || double.IsPositiveInfinity(newBase))) { return double.NaN; }
+        return Log(x) / Log(newBase);
+    }
 
     // ---- the rest of System.Math -----------------------------------------
     //
@@ -21165,157 +21953,845 @@ static class Math {
         return whole;
     }
 
+    /// THE PAIR AS A TUPLE, .NET's newer form, for every integer type: the
+    /// quotient towards zero, and the remainder with the dividend's sign.
+    public static (sbyte Quotient, sbyte Remainder) DivRem(sbyte left, sbyte right) {
+        sbyte quotient = (sbyte)(left / right);
+        return (quotient, (sbyte)(left - quotient * right));
+    }
+
+    public static (byte Quotient, byte Remainder) DivRem(byte left, byte right) {
+        byte quotient = (byte)(left / right);
+        return (quotient, (byte)(left - quotient * right));
+    }
+
+    public static (short Quotient, short Remainder) DivRem(short left, short right) {
+        short quotient = (short)(left / right);
+        return (quotient, (short)(left - quotient * right));
+    }
+
+    public static (ushort Quotient, ushort Remainder) DivRem(ushort left, ushort right) {
+        ushort quotient = (ushort)(left / right);
+        return (quotient, (ushort)(left - quotient * right));
+    }
+
+    public static (int Quotient, int Remainder) DivRem(int left, int right) {
+        int quotient = left / right;
+        return (quotient, left - quotient * right);
+    }
+
+    public static (uint Quotient, uint Remainder) DivRem(uint left, uint right) {
+        uint quotient = left / right;
+        return (quotient, left - quotient * right);
+    }
+
+    public static (long Quotient, long Remainder) DivRem(long left, long right) {
+        long quotient = left / right;
+        return (quotient, left - quotient * right);
+    }
+
+    public static (ulong Quotient, ulong Remainder) DivRem(ulong left, ulong right) {
+        ulong quotient = left / right;
+        return (quotient, left - quotient * right);
+    }
+
+    public static (nint Quotient, nint Remainder) DivRem(nint left, nint right) {
+        nint quotient = left / right;
+        return (quotient, left - quotient * right);
+    }
+
+    public static (nuint Quotient, nuint Remainder) DivRem(nuint left, nuint right) {
+        nuint quotient = left / right;
+        return (quotient, left - quotient * right);
+    }
+
     /// The FULL product of two ints, which does not fit in an int: multiplying
     /// two numbers near a billion is the commonest overflow there is.
     public static long BigMul(int a, int b) { return (long)a * (long)b; }
 
-    public static double Cbrt(double x) {
-        if (x == 0.0) { return 0.0; }
+    public static ulong BigMul(uint a, uint b) { return (ulong)a * (ulong)b; }
 
-        bool negative = x < 0.0;
-        double size = negative ? -x : x;
-        double guess = Exp(Log(size) / 3.0);
+    /// THE HIGH HALF OF A 128-BIT PRODUCT, and the low half out. Four products
+    /// of 32-bit halves, each of which fits in a ulong with room for a carry:
+    /// the low halves' product, the two cross products, which straddle the
+    /// middle, and the high halves', which the carries out of the middle join.
+    public static ulong BigMul(ulong a, ulong b, out ulong low) {
+        ulong aLow = (uint)a;
+        ulong aHigh = a >> 32;
+        ulong bLow = (uint)b;
+        ulong bHigh = b >> 32;
 
-        // Two steps of Newton on g^3 = size, which cleans up whatever the
-        // logarithm and the exponential lost between them.
-        guess = guess - (guess * guess * guess - size) / (3.0 * guess * guess);
-        guess = guess - (guess * guess * guess - size) / (3.0 * guess * guess);
-        return negative ? -guess : guess;
+        ulong lowest = aLow * bLow;
+        ulong middle = aHigh * bLow + (lowest >> 32);
+        ulong cross = aLow * bHigh + (uint)middle;
+
+        low = (cross << 32) | (uint)lowest;
+        return aHigh * bHigh + (middle >> 32) + (cross >> 32);
     }
 
-    /// ARCTANGENT, on a range the series can actually reach.
-    ///
-    /// The series in x converges everywhere below 1 and hopelessly slowly near
-    /// it, so the argument is folded twice: anything above 1 by the reciprocal
-    /// identity, and anything above tan(pi/8) by the half-angle one. What is
-    /// left is under 0.415, where thirty terms is past double precision.
-    public static double Atan(double x) {
-        if (x != x) { return x; }
+    public static UInt128 BigMul(ulong a, ulong b) {
+        ulong low;
+        ulong high = BigMul(a, b, out low);
 
-        bool negative = x < 0.0;
-        double size = negative ? -x : x;
-        double made = 0.0;
+        return new UInt128(high, low);
+    }
 
-        if (size > 1.0) {
-            made = Pi() / 2.0 - AtanSmall(1.0 / size);
+    /// THE SIGNED ONE FROM THE UNSIGNED: a negative factor read as unsigned is
+    /// 2^64 too big, which adds the other factor once too often to the high
+    /// half, and that is taken back off. The low half is the same bits either
+    /// way.
+    public static long BigMul(long a, long b, out long low) {
+        ulong unsignedLow;
+        ulong high = BigMul((ulong)a, (ulong)b, out unsignedLow);
+
+        low = (long)unsignedLow;
+        return (long)high - ((a >> 63) & b) - ((b >> 63) & a);
+    }
+
+    // ---- the inverse trigonometric functions, correctly rounded -------------
+    //
+    // atan t = atan c + atan((t - c)/(1 + c t)) with c = j/32 the nearest,
+    // atan c from the table and the rest a series on |t| <= 1/64. Every
+    // angle is an atan of a ratio of two pairs, taken the way round that
+    // keeps the ratio at most 1: atan(y/x), or pi/2 less atan(x/y).
+
+    // atan t, |t| <= 1/64, as a pair.
+    static double AtanSmall(double th, double tl, out double lo) {
+        double zl;
+        double zh = PairMul(th, tl, th, tl, out zl);
+        double z = zh;
+        double s = (((((-0.05263157894736842 * z + 0.058823529411764705) * z - 0.06666666666666667) * z
+            + 0.07692307692307693) * z - 0.09090909090909091) * z + 0.1111111111111111) * z - 0.14285714285714285;
+        double pl;
+        double ph = PairMul(s, 0.0, zh, zl, out pl);
+        ph = PairAdd(ph, pl, 0.2, -1.1102230246251566e-17, out pl);
+        ph = PairMul(ph, pl, zh, zl, out pl);
+        ph = PairAdd(ph, pl, -0.3333333333333333, -1.850371707708594e-17, out pl);
+        ph = PairMul(ph, pl, zh, zl, out pl);
+        ph = PairMul(ph, pl, th, tl, out pl);
+        return PairAdd(th, tl, ph, pl, out lo);
+    }
+
+    // atan t, 0 <= t <= 1, as a pair.
+    static double AtanUnit(double th, double tl, out double lo) {
+        int j = (int)(th * 32.0 + 0.5);
+        double c = j / 32.0;
+        double nl;
+        double nh = PairAddDouble(th, tl, -c, out nl);
+        double dl;
+        double dh = PairMulDouble(th, tl, c, out dl);
+        dh = PairAddDouble(dh, dl, 1.0, out dl);
+        double ul;
+        double uh = PairDiv(nh, nl, dh, dl, out ul);
+        double al;
+        double ah = AtanSmall(uh, ul, out al);
+        return PairAdd(TableEntry(AtanTable, 2 * j), TableEntry(AtanTable, 2 * j + 1), ah, al, out lo);
+    }
+
+    // atan(y/x), y >= 0 and x > 0 as pairs, as a pair; never the ratio of
+    // the larger to the smaller, which may not be a double.
+    static double AtanRatio(double yh, double yl, double xh, double xl, out double lo) {
+        // Both well inside the doubles, so that no product the division
+        // makes overflows its split or underflows into the subnormals: the
+        // ratio is the same.
+        double larger = yh > xh ? yh : xh;
+        double by = larger > TwoTo(900) ? TwoTo(-200) : larger < TwoTo(-900) ? TwoTo(200) : 1.0;
+        yh = yh * by;
+        yl = yl * by;
+        xh = xh * by;
+        xl = xl * by;
+        bool flipped = yh > xh;
+        double nh = flipped ? xh : yh;
+        double nl = flipped ? xl : yl;
+        double dh = flipped ? yh : xh;
+        double dl = flipped ? yl : xl;
+        double tl;
+        double th = PairDiv(nh, nl, dh, dl, out tl);
+        double al;
+        double ah;
+        if (th < 2.0 * TwoTo(-1001)) {
+            // Below every series term's reach: the ratio is the angle.
+            ah = th;
+            al = 0.0;
+        } else if (nh < dh * TwoTo(-30)) {
+            ah = AtanSmall(th, tl, out al);
         } else {
-            made = AtanSmall(size);
+            ah = AtanUnit(th, tl, out al);
         }
-        return negative ? -made : made;
+        if (!flipped) {
+            lo = al;
+            return ah;
+        }
+        return PairAdd(1.5707963267948966, 6.123233995736766e-17, -ah, -al, out lo);
     }
 
-    private static double AtanSmall(double x) {
-        if (x > 0.41421356237309504880) {
-            return Pi() / 4.0 + AtanSeries((x - 1.0) / (x + 1.0));
-        }
-        return AtanSeries(x);
-    }
-
-    private static double AtanSeries(double x) {
-        double sq = x * x;
-        double term = x;
-        double sum = x;
-
-        for (int k = 1; k < 30; k++) {
-            term = -term * sq;
-            sum = sum + term / (double)(2 * k + 1);
-        }
-        return sum;
+    public static double Atan(double x) {
+        if (x != x || x == 0.0) { return x; }
+        if (double.IsInfinity(x)) { return x > 0.0 ? 1.5707963267948966 : -1.5707963267948966; }
+        double l;
+        double h = AtanRatio(Abs(x), 0.0, 1.0, 0.0, out l);
+        double made = h + l;
+        return x < 0.0 ? -made : made;
     }
 
     /// THE ANGLE OF A POINT, quadrant and all, which is why it takes the two
     /// coordinates rather than their ratio: y/x has thrown away the difference
     /// between the first quadrant and the third. .NET's answer is in
-    /// (-pi, pi].
+    /// [-pi, pi].
+    ///
+    /// ON AN AXIS AND AT INFINITY THE SIGNS DECIDE, as C99 and .NET have it:
+    /// a zero y is above the axis or below it by its sign, so (-0, -1) is at
+    /// -pi and (+0, -1) at pi, and a zero x is to the left when it is -0.
+    /// Two infinities are at a diagonal.
     public static double Atan2(double y, double x) {
-        if (x > 0.0) { return Atan(y / x); }
-        if (x < 0.0) { return y >= 0.0 ? Atan(y / x) + Pi() : Atan(y / x) - Pi(); }
-        if (y > 0.0) { return Pi() / 2.0; }
-        if (y < 0.0) { return 0.0 - Pi() / 2.0; }
-        return 0.0;
+        if (x != x || y != y) { return x + y; }
+        if (y == 0.0) {
+            if (x > 0.0 || (x == 0.0 && !double.IsNegative(x))) { return y; }
+            return double.IsNegative(y) ? -PI : PI;
+        }
+        if (x == 0.0) { return y < 0.0 ? -1.5707963267948966 : 1.5707963267948966; }
+        double angle;
+        if (double.IsInfinity(x)) {
+            if (double.IsInfinity(y)) {
+                angle = x > 0.0 ? 0.7853981633974483 : 2.356194490192345;
+            } else {
+                angle = x > 0.0 ? 0.0 : PI;
+            }
+            return y < 0.0 ? -angle : angle;
+        }
+        if (double.IsInfinity(y)) { return y < 0.0 ? -1.5707963267948966 : 1.5707963267948966; }
+        double l;
+        double h = AtanRatio(Abs(y), 0.0, Abs(x), 0.0, out l);
+        if (x < 0.0) { h = PairAdd(PI, 1.2246467991473532e-16, -h, -l, out l); }
+        angle = h + l;
+        return y < 0.0 ? -angle : angle;
+    }
+
+    // sqrt(1 - a^2) = sqrt((1 - a)(1 + a)) as a pair, 0 <= a <= 1.
+    // The NaN with the sign bit clear: what glibc's asin, acos and log10
+    // answer out of their domains, where every other function answers the
+    // invalid operation's (double.NaN).
+    static double PositiveNaN() { return BitConverter.Int64BitsToDouble(0x7FF8000000000000); }
+
+    static double RootOneLessSquare(double a, out double lo) {
+        double ol;
+        double oh = TwoSum(1.0, -a, out ol);
+        double pl;
+        double ph = TwoSum(1.0, a, out pl);
+        double ql;
+        double qh = PairMul(oh, ol, ph, pl, out ql);
+        return PairSqrt(qh, ql, out lo);
     }
 
     /// OUTSIDE [-1, 1] IS NOT AN ANGLE, and .NET answers NaN rather than
-    /// throwing -- the caller's arithmetic went wrong, not the call.
+    /// throwing -- the caller's arithmetic went wrong, not the call. That NaN
+    /// is glibc's for these two, the sign bit clear.
     public static double Asin(double x) {
-        if (x > 1.0 || x < -1.0) { return 0.0 / 0.0; }
-        if (x == 1.0) { return Pi() / 2.0; }
-        if (x == -1.0) { return 0.0 - Pi() / 2.0; }
-        return Atan(x / Sqrt(1.0 - x * x));
+        if (x != x || x == 0.0) { return x; }
+        if (x > 1.0 || x < -1.0) { return PositiveNaN(); }
+        double a = Abs(x);
+        double cl;
+        double ch = RootOneLessSquare(a, out cl);
+        double l;
+        double h = ch == 0.0 ? QuickTwoSum(1.5707963267948966, 6.123233995736766e-17, out l) : AtanRatio(a, 0.0, ch, cl, out l);
+        double made = h + l;
+        return x < 0.0 ? -made : made;
     }
 
     public static double Acos(double x) {
-        if (x > 1.0 || x < -1.0) { return 0.0 / 0.0; }
-        return Pi() / 2.0 - Asin(x);
+        if (x != x) { return x; }
+        if (x > 1.0 || x < -1.0) { return PositiveNaN(); }
+        double a = Abs(x);
+        double cl;
+        double ch = RootOneLessSquare(a, out cl);
+        double l;
+        double h = a == 0.0 ? QuickTwoSum(1.5707963267948966, 6.123233995736766e-17, out l) : AtanRatio(ch, cl, a, 0.0, out l);
+        if (x < 0.0) { h = PairAdd(PI, 1.2246467991473532e-16, -h, -l, out l); }
+        return h + l;
+    }
+
+    // ---- the cube root and the hyperbolic functions: glibc's ---------------
+
+    /// glibc's cube root, by its polynomial and one rational step: not the
+    /// correctly rounded one, and not exact for a cube -- 27's is
+    /// 3.0000000000000004 -- which is .NET's answer too.
+    public static double Cbrt(double x) {
+        if (x == 0.0 || x - x != 0.0) { return x + x; }
+        int e;
+        double xm = Frexp(Abs(x), out e);
+        double u = 0.354895765043919860 + (1.50819193781584896 + (-2.11499494167371287 + (2.44693122563534430
+                 + (-1.83469277483613086 + (0.784932344976639262 - 0.145263899385486377 * xm) * xm) * xm) * xm) * xm) * xm;
+        double t2 = u * u * u;
+        int rest = e % 3;
+        double factor = rest == -2 ? 0.6299605249474365 : rest == -1 ? 0.7937005259840997
+                      : rest == 0 ? 1.0 : rest == 1 ? 1.2599210498948731648 : 1.5874010519681994748;
+        double ym = u * (t2 + 2.0 * xm) / (2.0 * t2 + xm) * factor;
+        return ScaleB(x > 0.0 ? ym : -ym, e / 3);
+    }
+
+    // |x| = m 2^e with m in [0.5, 1), subnormals included.
+    static double Frexp(double x, out int e) {
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        int biased = (int)((bits >> 52) & 0x7FF);
+        if (biased == 0) {
+            bits = BitConverter.DoubleToInt64Bits(x * TwoTo(54));
+            biased = (int)((bits >> 52) & 0x7FF) - 54;
+        }
+        e = biased - 1022;
+        return BitConverter.Int64BitsToDouble((bits & unchecked((long)0x800FFFFFFFFFFFFF)) | 0x3FE0000000000000);
     }
 
     public static double Sinh(double x) {
-        double up = Exp(x);
-
-        return (up - 1.0 / up) / 2.0;
+        int jx = HighWord(x);
+        int ix = jx & 0x7fffffff;
+        if (ix >= 0x7ff00000) { return x + x; }
+        double h = jx < 0 ? -0.5 : 0.5;
+        if (ix < 0x40360000) {
+            if (ix < 0x3e300000) { return x; }
+            double t = Expm1(Abs(x));
+            if (ix < 0x3ff00000) { return h * (2.0 * t - t * t / (t + 1.0)); }
+            return h * (t + t / (t + 1.0));
+        }
+        if (ix < 0x40862e42) { return h * Exp(Abs(x)); }
+        uint lx = LowWord(x);
+        if (ix < 0x408633ce || (ix == 0x408633ce && lx <= 0x8fb9f87d)) {
+            double w = Exp(0.5 * Abs(x));
+            double t = h * w;
+            return t * w;
+        }
+        return x * 1.0e307;
     }
 
     public static double Cosh(double x) {
-        double up = Exp(x);
-
-        return (up + 1.0 / up) / 2.0;
+        int ix = HighWord(x) & 0x7fffffff;
+        if (ix < 0x40360000) {
+            if (ix < 0x3fd62e43) {
+                if (ix < 0x3c800000) { return 1.0; }
+                double t = Expm1(Abs(x));
+                double w = 1.0 + t;
+                return 1.0 + (t * t) / (w + w);
+            }
+            double e = Exp(Abs(x));
+            return 0.5 * e + 0.5 / e;
+        }
+        if (ix < 0x40862e42) { return 0.5 * Exp(Abs(x)); }
+        uint lx = LowWord(x);
+        if (ix < 0x408633ce || (ix == 0x408633ce && lx <= 0x8fb9f87d)) {
+            double w = Exp(0.5 * Abs(x));
+            double t = 0.5 * w;
+            return t * w;
+        }
+        if (ix >= 0x7ff00000) { return x * x; }
+        return double.PositiveInfinity;
     }
 
-    /// Through exp(2x) rather than as sinh over cosh: the two exponentials of
-    /// the obvious form both overflow long before their ratio does.
     public static double Tanh(double x) {
-        if (x > 20.0) { return 1.0; }
-        if (x < -20.0) { return -1.0; }
+        int jx = HighWord(x);
+        int ix = jx & 0x7fffffff;
+        if (ix >= 0x7ff00000) { return jx >= 0 ? 1.0 / x + 1.0 : 1.0 / x - 1.0; }
+        double z;
+        if (ix < 0x40360000) {
+            if ((ix | (int)LowWord(x)) == 0) { return x; }
+            if (ix < 0x3c800000) { return x * (1.0 + x); }
+            if (ix >= 0x3ff00000) {
+                double t = Expm1(2.0 * Abs(x));
+                z = 1.0 - 2.0 / (t + 2.0);
+            } else {
+                double t = Expm1(-2.0 * Abs(x));
+                z = -t / (t + 2.0);
+            }
+        } else {
+            z = 1.0;
+        }
+        return jx >= 0 ? z : -z;
+    }
 
-        double both = Exp(2.0 * x);
+    public static double Asinh(double x) {
+        int ix = HighWord(x) & 0x7fffffff;
+        if (ix < 0x3e300000) { return x; }
+        double w;
+        if (ix > 0x41b00000) {
+            if (ix >= 0x7ff00000) { return x + x; }
+            w = Log(Abs(x)) + 6.93147180559945286227e-01;
+        } else {
+            double a = Abs(x);
+            if (ix > 0x40000000) {
+                w = Log(2.0 * a + 1.0 / (Sqrt(a * a + 1.0) + a));
+            } else {
+                double t = a * a;
+                w = Log1p(a + t / (1.0 + Sqrt(1.0 + t)));
+            }
+        }
+        return CopySign(w, x);
+    }
 
-        return (both - 1.0) / (both + 1.0);
+    /// Below 1 there is none, and every negative number is below it by its
+    /// high word, which is signed; a NaN comes back as itself, either sign.
+    public static double Acosh(double x) {
+        int hx = HighWord(x);
+        if (hx < 0x3ff00000) { return x != x ? x : double.NaN; }
+        if (hx >= 0x41b00000) {
+            if (hx >= 0x7ff00000) { return x + x; }
+            return Log(x) + 6.93147180559945286227e-01;
+        }
+        if (x == 1.0) { return 0.0; }
+        if (hx > 0x40000000) {
+            double t = x * x;
+            return Log(2.0 * x - 1.0 / (x + Sqrt(t - 1.0)));
+        }
+        double s = x - 1.0;
+        return Log1p(s + Sqrt(2.0 * s + s * s));
+    }
+
+    /// Defined on (-1, 1), infinite at its ends with their signs, and NaN
+    /// past them.
+    public static double Atanh(double x) {
+        double a = Abs(x);
+        double t;
+        if (a < 0.5) {
+            if (a < 3.7252902984619140625e-09) { return x; }
+            t = a + a;
+            t = 0.5 * Log1p(t + t * a / (1.0 - a));
+        } else if (a < 1.0) {
+            t = 0.5 * Log1p((a + a) / (1.0 - a));
+        } else {
+            if (a != a) { return x; }
+            if (a > 1.0) { return double.NaN; }
+            return x / 0.0;
+        }
+        return CopySign(t, x);
     }
 
     /// THE IEEE REMAINDER, which is NOT the `%` operator: it takes the NEAREST
     /// multiple rather than the one towards zero, so its result can be
     /// negative where x is positive. Anything reducing an angle wants this one.
+    ///
+    /// FROM THE `%` REMAINDER, WHICH IS EXACT, as .NET makes it: that one, or
+    /// the one a multiple of y further on, whichever is nearer zero, and at a
+    /// tie the one whose quotient is even. A zero has x's sign, and a finite x
+    /// over an infinite y is x. Rounding x/y, as this did, is out by whole
+    /// multiples once the quotient has more digits than a double holds.
     public static double IEEERemainder(double x, double y) {
-        double quotient = Math.Round(x / y);
+        if (x != x) { return x; }
+        if (y != y) { return y; }
 
-        return x - y * quotient;
+        double regular = x % y;
+        if (regular != regular) { return double.NaN; }
+        if (regular == 0.0 && double.IsNegative(x)) { return -0.0; }
+
+        double other = regular - Abs(y) * Sign(x);
+        if (Abs(other) == Abs(regular)) {
+            double quotient = x / y;
+            if (Abs(Math.Round(quotient)) > Abs(quotient)) { return other; }
+            return regular;
+        }
+        return Abs(other) < Abs(regular) ? other : regular;
     }
 
-    /// The magnitude of the first with the sign of the second, which is the
-    /// only way to move a sign about that does not go wrong at zero.
+    /// THE MAGNITUDE OF THE FIRST WITH THE SIGN OF THE SECOND, sign bit to sign
+    /// bit: a comparison with zero cannot see the sign of -0 or of a NaN.
     public static double CopySign(double x, double y) {
-        double size = x < 0.0 ? -x : x;
+        long size = BitConverter.DoubleToInt64Bits(x) & 0x7FFFFFFFFFFFFFFF;
+        long sign = BitConverter.DoubleToInt64Bits(y) & long.MinValue;
 
-        return y < 0.0 ? -size : size;
+        return BitConverter.Int64BitsToDouble(size | sign);
     }
 
     /// THE ONE FURTHER FROM ZERO, sign kept -- not the larger. MaxMagnitude(-5,
     /// 3) is -5, which is what makes it useful for scaling and surprising for
-    /// everything else.
+    /// everything else. A NaN is the answer, and of two magnitudes alike the
+    /// positive one is the larger (IEEE 754-2019's maximumMagnitude).
     public static double MaxMagnitude(double x, double y) {
-        double a = x < 0.0 ? -x : x;
-        double b = y < 0.0 ? -y : y;
+        double a = Abs(x);
+        double b = Abs(y);
 
-        if (a > b) { return x; }
-        if (b > a) { return y; }
-        return x > y ? x : y;
+        if (a > b || a != a) { return x; }
+        if (a == b) { return double.IsNegative(x) ? y : x; }
+        return y;
     }
 
     public static double MinMagnitude(double x, double y) {
-        double a = x < 0.0 ? -x : x;
-        double b = y < 0.0 ? -y : y;
+        double a = Abs(x);
+        double b = Abs(y);
 
-        if (a < b) { return x; }
-        if (b < a) { return y; }
-        return x < y ? x : y;
+        if (a < b || a != a) { return x; }
+        if (a == b) { return double.IsNegative(x) ? x : y; }
+        return y;
     }
 
-    // .NET spells its two constants as fields. The methods above were the only
-    // way to say them here, and `Math.PI` is what a program writes. There is no
-    // `Tau` field because `Tau()` above is a method of that name already, and
-    // renaming it would break what calls it.
-    public static double PI => 3.14159265358979323846;
-    public static double E => 2.71828182845904523536;
+    /// THE NEXT DOUBLE UP, by its bits: the doubles of one sign are in the
+    /// order of their bit patterns, so a step of one is a step to the
+    /// neighbour -- away from zero for a positive number, towards it for a
+    /// negative one. -0 goes up to the smallest positive double, minus
+    /// infinity to the most negative finite one, and a NaN and infinity stay.
+    public static double BitIncrement(double x) {
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        if ((bits & 0x7FF0000000000000) == 0x7FF0000000000000) {
+            return bits == unchecked((long)0xFFF0000000000000) ? double.MinValue : x;
+        }
+        if (bits == long.MinValue) { return double.Epsilon; }
+        return BitConverter.Int64BitsToDouble(bits < 0 ? bits - 1 : bits + 1);
+    }
+
+    public static double BitDecrement(double x) {
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        if ((bits & 0x7FF0000000000000) == 0x7FF0000000000000) {
+            return bits == 0x7FF0000000000000 ? double.MaxValue : x;
+        }
+        if (bits == 0) { return -double.Epsilon; }
+        return BitConverter.Int64BitsToDouble(bits < 0 ? bits + 1 : bits - 1);
+    }
+
+    /// x * y + z with one rounding, not two: the instruction Fma.
+    public static double FusedMultiplyAdd(double x, double y, double z) { return Math.Fma(x, y, z); }
+
+    /// x TIMES 2 TO THE n, WITHOUT 2^n ITSELF, which past 1023 or below -1022
+    /// is no double though the product may be. The power is taken in steps
+    /// that each are one (musl's scalbn, which .NET's is). Going down, the
+    /// first step stops 53 places above the subnormals, so that only the last
+    /// one rounds; a power past three steps can only overflow or underflow,
+    /// and the last step's limit gives the same infinity or zero.
+    public static double ScaleB(double x, int n) {
+        double y = x;
+        if (n > 1023) {
+            y = y * TwoTo(1023);
+            n = n - 1023;
+            if (n > 1023) {
+                y = y * TwoTo(1023);
+                n = n - 1023;
+                if (n > 1023) { n = 1023; }
+            }
+        } else if (n < -1022) {
+            y = y * TwoTo(-969);
+            n = n + 969;
+            if (n < -1022) {
+                y = y * TwoTo(-969);
+                n = n + 969;
+                if (n < -1022) { n = -1022; }
+            }
+        }
+        return y * TwoTo(n);
+    }
+
+    // 2 to the n, for an n a normal double's exponent can hold (-1022 to
+    // 1023), made from its bits.
+    static double TwoTo(int n) { return BitConverter.Int64BitsToDouble((long)(0x3ff + n) << 52); }
+
+    /// THE EXPONENT, UNBIASED: the n with 2^n <= |x| < 2^(n+1). A subnormal's
+    /// is below the smallest normal one, counted down to its leading bit.
+    /// Zero has none and is int.MinValue; a NaN and infinity are int.MaxValue.
+    public static int ILogB(double x) {
+        if (x != x) { return int.MaxValue; }
+
+        long bits = BitConverter.DoubleToInt64Bits(x) & 0x7FFFFFFFFFFFFFFF;
+        int exponent = (int)(bits >> 52);
+
+        if (exponent == 0x7FF) { return int.MaxValue; }
+        if (exponent != 0) { return exponent - 1023; }
+        if (bits == 0) { return int.MinValue; }
+
+        exponent = -1074;
+        while (bits > 1) {
+            bits = bits >> 1;
+            exponent = exponent + 1;
+        }
+        return exponent;
+    }
+
+    public static (double Sin, double Cos) SinCos(double x) { return (Sin(x), Cos(x)); }
+
+    /// .NET's portable answers, which are exact: an estimate may be anything
+    /// near, and on a machine with no estimating instruction it is this.
+    public static double ReciprocalEstimate(double x) { return 1.0 / x; }
+    public static double ReciprocalSqrtEstimate(double x) { return 1.0 / Sqrt(x); }
+}
+
+/// MATH IN FLOATS, .NET's MathF: a program written in floats stays in
+/// floats, `float s = MathF.Sin(a)` with no cast back. Each member is the
+/// double one rounded to a float once. A float's 24 bits are well inside the
+/// double's 53, so that is exact for Sqrt and the correctly rounded answer
+/// for the rest outside rare ties. Rounding to places, the remainder and the
+/// logarithm to a base are .NET's own float arithmetic instead, step by
+/// step, because the same steps in doubles round differently: MathF.Round(
+/// 2.675f, 2) is 2.68, since 2.675f times 100 is 267.5 as a float.
+static class MathF {
+    public const float PI = 3.14159265f, E = 2.71828183f, Tau = 6.28318531f;
+
+    public static float Abs(float x) { return Math.Abs(x); }
+    public static float Acos(float x) { return (float)Math.Acos(x); }
+    public static float Acosh(float x) { return (float)Math.Acosh(x); }
+    public static float Asin(float x) { return (float)Math.Asin(x); }
+    public static float Asinh(float x) { return (float)Math.Asinh(x); }
+    public static float Atan(float x) { return (float)Math.Atan(x); }
+    public static float Atan2(float y, float x) { return (float)Math.Atan2(y, x); }
+    public static float Atanh(float x) { return (float)Math.Atanh(x); }
+    public static float Cbrt(float x) { return (float)Math.Cbrt(x); }
+    public static float Ceiling(float x) { return (float)Math.Ceiling(x); }
+    public static float Cosh(float x) { return (float)Math.Cosh(x); }
+    public static float Floor(float x) { return (float)Math.Floor(x); }
+    /// x * y + z ROUNDED ONCE, to a float. The product of two floats is exact
+    /// in a double and the sum exact as a pair; the pair is rounded to the
+    /// double of odd last bit on its side, from which the rounding to a float
+    /// is the one the exact sum has. Rounded to the nearest double first, a
+    /// sum just past a float's midpoint landed on it and went to even.
+    public static float FusedMultiplyAdd(float x, float y, float z) {
+        double error;
+        double sum = Math.TwoSum((double)x * (double)y, z, out error);
+        if (error != 0.0 && sum - sum == 0.0 && (BitConverter.DoubleToInt64Bits(sum) & 1) == 0) {
+            sum = error > 0.0 ? Math.BitIncrement(sum) : Math.BitDecrement(sum);
+        }
+        return (float)sum;
+    }
+    public static int ILogB(float x) { return Math.ILogB(x); }
+    public static float Log(float x) { return (float)Math.Log(x); }
+    public static float Log10(float x) { return (float)Math.Log10(x); }
+    public static float Log2(float x) { return (float)Math.Log2(x); }
+    public static float Max(float x, float y) { return Math.Max(x, y); }
+    public static float MaxMagnitude(float x, float y) { return (float)Math.MaxMagnitude(x, y); }
+    public static float Min(float x, float y) { return Math.Min(x, y); }
+    public static float MinMagnitude(float x, float y) { return (float)Math.MinMagnitude(x, y); }
+    public static float Pow(float x, float y) { return (float)Math.Pow(x, y); }
+    public static float ReciprocalEstimate(float x) { return 1.0f / x; }
+    public static float ReciprocalSqrtEstimate(float x) { return 1.0f / Sqrt(x); }
+    public static float ScaleB(float x, int n) { return (float)Math.ScaleB(x, n); }
+    public static int Sign(float x) { return Math.Sign(x); }
+    // ---- sine, cosine and e^x: glibc's float functions -----------------------
+    //
+    // .NET's MathF calls the C library's float functions, and for these three
+    // glibc's are not the correctly rounded float of the double answer: they
+    // are computed in doubles by their own polynomials, and followed here
+    // step for step. The rest are the double functions rounded once.
+
+    public static float Sin(float y) {
+        double x = y;
+        int top = (BitConverter.SingleToInt32Bits(y) >> 20) & 0x7ff;
+        if (top < 0x3f4) {
+            // Below pi/4; below 2^-12 the sine is the angle.
+            if (top < 0x398) { return y; }
+            return SinCosPolynomial(x, x * x, false, 0);
+        }
+        int n;
+        double sign;
+        bool negate;
+        if (top < 0x42f) {
+            x = ReduceFast(x, out n);
+            sign = (n & 3) == 1 || (n & 3) == 2 ? -1.0 : 1.0;
+            negate = (n & 2) != 0;
+        } else if (top < 0x7f8) {
+            uint bits = (uint)BitConverter.SingleToInt32Bits(y);
+            int s = (int)(bits >> 31);
+            x = ReduceLarge(bits, out n);
+            sign = ((n + s) & 3) == 1 || ((n + s) & 3) == 2 ? -1.0 : 1.0;
+            negate = ((n + s) & 2) != 0;
+        } else {
+            return y != y ? y : float.NaN;
+        }
+        return SinCosPolynomial(x * sign, x * x, negate, n);
+    }
+
+    public static float Cos(float y) {
+        double x = y;
+        int top = (BitConverter.SingleToInt32Bits(y) >> 20) & 0x7ff;
+        if (top < 0x3f4) {
+            if (top < 0x398) { return 1.0f; }
+            return SinCosPolynomial(x, x * x, false, 1);
+        }
+        int n;
+        double sign;
+        bool negate;
+        if (top < 0x42f) {
+            x = ReduceFast(x, out n);
+            sign = (n & 3) == 1 || (n & 3) == 2 ? -1.0 : 1.0;
+            negate = (n & 2) != 0;
+        } else if (top < 0x7f8) {
+            uint bits = (uint)BitConverter.SingleToInt32Bits(y);
+            int s = (int)(bits >> 31);
+            x = ReduceLarge(bits, out n);
+            sign = ((n + s) & 3) == 1 || ((n + s) & 3) == 2 ? -1.0 : 1.0;
+            negate = ((n + s) & 2) != 0;
+        } else {
+            return y != y ? y : float.NaN;
+        }
+        return SinCosPolynomial(x * sign, x * x, negate, n ^ 1);
+    }
+
+    // The sine's polynomial for an even n, the cosine's for an odd one;
+    // `negate` is glibc's second table, every cosine coefficient negated.
+    static float SinCosPolynomial(double x, double x2, bool negate, int n) {
+        if ((n & 1) == 0) {
+            double x3 = x * x2;
+            double s1 = 0.008332178146138854 + x2 * -0.00019517298981385725;
+            double x7 = x3 * x2;
+            double s = x + x3 * -0.16666654943701084;
+            return (float)(s + x7 * s1);
+        }
+        double m = negate ? -1.0 : 1.0;
+        double x4 = x2 * x2;
+        double c2 = m * -0.001388676379437604 + x2 * (m * 2.4390450703564542e-05);
+        double c1 = m + x2 * (m * -0.49999999725108224);
+        double x6 = x4 * x2;
+        double c = c1 + x4 * (m * 0.041666623324344516);
+        return (float)(c + x6 * c2);
+    }
+
+    // |x| below 120: the nearest multiple of pi/2 off in one step, its count
+    // from x times 2^24 2/pi rounded through the top byte.
+    static double ReduceFast(double x, out int n) {
+        double r = x * 10680707.430881744;
+        n = ((int)r + 0x800000) >> 24;
+        return x - n * 1.5707963267948966;
+    }
+
+    // 4/pi's bits in 32-bit windows a byte apart: what a large float is
+    // multiplied by in integers, its fraction kept in 62 bits.
+    const string InvPiOver4 = "\u0000\u00A2\u0000\uA2F9\u00A2\uF983\uA2F9\u836E\uF983\u6E4E\u836E\u4E44\u6E4E\u4415\u4E44\u1529\u4415\u29FC\u1529\uFC27\u29FC\u2757\uFC27\u57D1\u2757\uD1F5\u57D1\uF534\uD1F5\u34DD\uF534\uDDC0\u34DD\uC0DB\uDDC0\uDB62\uC0DB\u6295\uDB62\u9599\u6295\u993C\u9599\u3C43\u993C\u4390\u3C43\u9041";
+
+    static uint InvPiOver4At(int i) {
+        return ((uint)Sys.GetChar(InvPiOver4, 2 * i) << 16) | (uint)Sys.GetChar(InvPiOver4, 2 * i + 1);
+    }
+
+    static double ReduceLarge(uint xi, out int n) {
+        int at = (int)((xi >> 26) & 15);
+        int shift = (int)((xi >> 23) & 7);
+        xi = ((xi & 0xffffff) | 0x800000) << shift;
+        ulong res0 = (ulong)(xi * InvPiOver4At(at));
+        ulong res1 = (ulong)xi * InvPiOver4At(at + 4);
+        ulong res2 = (ulong)xi * InvPiOver4At(at + 8);
+        res0 = (res2 >> 32) | (res0 << 32);
+        res0 = res0 + res1;
+        ulong whole = (res0 + ((ulong)1 << 61)) >> 62;
+        res0 = res0 - (whole << 62);
+        n = (int)whole;
+        return (double)(long)res0 * 3.4061215800865545e-19;
+    }
+
+    // 2^(i/32) less i << 47, as each double's bits.
+    const string Exp2Table =
+          "\u3FF0\u0000\u0000\u0000\u3FEF\uD9B0\uD315\u8574\u3FEF\uB558\u6CF9\u890F\u3FEF\u9301\uD012\u5B51\u3FEF\u72B8\u3C7D\u517B"
+        + "\u3FEF\u5487\u3168\uB9AA\u3FEF\u387A\u6E75\u6238\u3FEF\u1E9D\uF51F\uDEE1\u3FEF\u06FE\u0A31\uB715\u3FEE\uF1A7\u373A\uA9CB"
+        + "\u3FEE\uDEA6\u4C12\u3422\u3FEE\uCE08\u6061\u892D\u3FEE\uBFDA\uD536\u2A27\u3FEE\uB42B\u569D\u4F82\u3FEE\uAB07\uDD48\u5429"
+        + "\u3FEE\uA47E\uB03A\u5585\u3FEE\uA09E\u667F\u3BCD\u3FEE\u9F75\uE8EC\u5F74\u3FEE\uA114\u73EB\u0187\u3FEE\uA589\u994C\uCE13"
+        + "\u3FEE\uACE5\u422A\uA0DB\u3FEE\uB737\uB0CD\uC5E5\u3FEE\uC491\u82A3\uF090\u3FEE\uD503\uB23E\u255D\u3FEE\uE89F\u995A\uD3AD"
+        + "\u3FEE\uFF76\uF2FB\u5E47\u3FEF\u199B\uDD85\u529C\u3FEF\u3720\uDCEF\u9069\u3FEF\u5818\uDCFB\uA487\u3FEF\u7C97\u337B\u9B5F"
+        + "\u3FEF\uA4AF\uA2A4\u90DA\u3FEF\uD076\u5B6E\u4540";
+
+    public static float Exp(float x) {
+        double xd = x;
+        int abstop = (BitConverter.SingleToInt32Bits(x) >> 20) & 0x7ff;
+        if (abstop >= 0x42b) {
+            if (x == float.NegativeInfinity) { return 0.0f; }
+            if (abstop >= 0x7f8) { return x + x; }
+            if (x > 88.72283172607422f) { return float.PositiveInfinity; }
+            if (x < -103.97207641601562f) { return 0.0f; }
+        }
+        double z = 46.16624130844683 * xd;
+        double kd = z + 6755399441055744.0;
+        ulong ki = (ulong)BitConverter.DoubleToInt64Bits(kd);
+        kd = kd - 6755399441055744.0;
+        double r = z - kd;
+        int i = (int)(ki & 31);
+        ulong t = ((ulong)Sys.GetChar(Exp2Table, 4 * i) << 48) | ((ulong)Sys.GetChar(Exp2Table, 4 * i + 1) << 32)
+                | ((ulong)Sys.GetChar(Exp2Table, 4 * i + 2) << 16) | (ulong)Sys.GetChar(Exp2Table, 4 * i + 3);
+        t = t + (ki << 47);
+        double s = BitConverter.Int64BitsToDouble((long)t);
+        double zz = 1.6938359250920212e-06 * r + 0.00023459809789509004;
+        double r2 = r * r;
+        double y = 0.021660849396613134 * r + 1.0;
+        y = zz * r2 + y;
+        return (float)(y * s);
+    }
+
+    public static (float Sin, float Cos) SinCos(float x) { return (Sin(x), Cos(x)); }
+    public static float Sinh(float x) { return (float)Math.Sinh(x); }
+    public static float Sqrt(float x) { return (float)Math.Sqrt(x); }
+    public static float Tan(float x) { return (float)Math.Tan(x); }
+    public static float Tanh(float x) { return (float)Math.Tanh(x); }
+    public static float Truncate(float x) { return (float)Math.Truncate(x); }
+
+    public static float CopySign(float x, float y) {
+        int size = BitConverter.SingleToInt32Bits(x) & 0x7FFFFFFF;
+        int sign = BitConverter.SingleToInt32Bits(y) & int.MinValue;
+
+        return BitConverter.Int32BitsToSingle(size | sign);
+    }
+
+    /// The next float up and down, by its bits, as Math's are for doubles.
+    public static float BitIncrement(float x) {
+        int bits = BitConverter.SingleToInt32Bits(x);
+        if ((bits & 0x7F800000) == 0x7F800000) {
+            return bits == unchecked((int)0xFF800000) ? float.MinValue : x;
+        }
+        if (bits == int.MinValue) { return float.Epsilon; }
+        return BitConverter.Int32BitsToSingle(bits < 0 ? bits - 1 : bits + 1);
+    }
+
+    public static float BitDecrement(float x) {
+        int bits = BitConverter.SingleToInt32Bits(x);
+        if ((bits & 0x7F800000) == 0x7F800000) {
+            return bits == 0x7F800000 ? float.MaxValue : x;
+        }
+        if (bits == 0) { return -float.Epsilon; }
+        return BitConverter.Int32BitsToSingle(bits < 0 ? bits + 1 : bits - 1);
+    }
+
+    /// Math's IEEE remainder, from the float `%`.
+    public static float IEEERemainder(float x, float y) {
+        if (x != x) { return x; }
+        if (y != y) { return y; }
+
+        float regular = x % y;
+        if (regular != regular) { return float.NaN; }
+        if (regular == 0.0f && float.IsNegative(x)) { return -0.0f; }
+
+        float other = regular - Abs(y) * Sign(x);
+        if (Abs(other) == Abs(regular)) {
+            float quotient = x / y;
+            if (Abs(Round(quotient)) > Abs(quotient)) { return other; }
+            return regular;
+        }
+        return Abs(other) < Abs(regular) ? other : regular;
+    }
+
+    /// The ratio of two float logarithms, each rounded, as .NET's is.
+    public static float Log(float x, float newBase) {
+        if (x != x) { return x; }
+        if (newBase != newBase) { return newBase; }
+        if (newBase == 1.0f) { return float.NaN; }
+        if (x != 1.0f && (newBase == 0.0f || float.IsPositiveInfinity(newBase))) { return float.NaN; }
+        return Log(x) / Log(newBase);
+    }
+
+    public static float Round(float x) { return (float)Math.Round(x); }
+    public static float Round(float x, int digits) { return Round(x, digits, MidpointRounding.ToEven); }
+    public static float Round(float x, MidpointRounding mode) { return Round(x, 0, mode); }
+
+    /// SIX PLACES AT MOST, AND ONLY BELOW 1e8, Math's rule for a float's
+    /// seven digits, and in float arithmetic throughout.
+    public static float Round(float x, int digits, MidpointRounding mode) {
+        if ((uint)digits > 6) { throw new ArgumentOutOfRangeException("digits", "Rounding digits must be between 0 and 6, inclusive."); }
+        if (mode < MidpointRounding.ToEven || mode > MidpointRounding.ToPositiveInfinity) { throw Math.BadRounding(mode); }
+        if (Abs(x) < 1e8f) {
+            float scale = 1.0f;
+            for (int i = 0; i < digits; i++) { scale = scale * 10.0f; }
+
+            float scaled = x * scale;
+            float whole = 0.0f;
+
+            if (mode == MidpointRounding.AwayFromZero) {
+                whole = Truncate(scaled + CopySign(BitDecrement(0.5f), scaled));
+            } else if (mode == MidpointRounding.ToZero) {
+                whole = Truncate(scaled);
+            } else if (mode == MidpointRounding.ToNegativeInfinity) {
+                whole = Floor(scaled);
+            } else if (mode == MidpointRounding.ToPositiveInfinity) {
+                whole = Ceiling(scaled);
+            } else {
+                whole = Round(scaled);
+            }
+            x = whole / scale;
+        }
+        return x;
+    }
 }
 
 namespace System.Collections.ObjectModel

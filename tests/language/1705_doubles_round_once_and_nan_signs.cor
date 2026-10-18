@@ -1,0 +1,53 @@
+// test: doubles_round_once_and_nan_signs
+// expect-exit: 0
+// expect-output:
+// once 3FF0000000000001 3FF0000000000000 3FF6A09E667F3BCD 3FD3333333333334 7FF0000000000000
+// series 401DF11F45F4E618 7.485470860550343
+// fma 0000000000000000 8000000000000000 00000000000007E8 0000000000000001 0000000000000000 8000000000000000
+// domain 7FF8000000000000 7FF8000000000000 7FF8000000000000 7FF8000000000000 FFF8000000000000 FFF8000000000000
+// invalid FFF8000000000000 FFF8000000000000 FFF8000000000000 FFF8000000000000 FFF8000000000000 FFF8000000000000
+// through 7FF8000000000123 7FF8000000000123 FFF8000000000456 7FF8000000000123 FFF8000000000456 FFF8000000000456 FFF8000000000456
+// float 7FC00000 7FC00000 7FC00000 FFC00000 FFC00000 7FC00123 7FC00123 7FC00123 FFC00000
+//
+// EVERY DOUBLE OPERATION ROUNDS ONCE, as .NET's SSE2 arithmetic does, the
+// x87 included: told at the entry to round to 53 bits, it no longer rounds
+// 1 + (2^-53 + 2^-105) to 64 bits and then the tie to even. A fused
+// multiply-add whose product lies far below the subnormals is a zero of its
+// sign. And the NaN each function answers, bit for bit: the invalid
+// operation's (sign bit set) for most, glibc's positive one for Asin, Acos
+// and Log10 out of their domains, and a NaN argument passed through as
+// itself by the trigonometric and hyperbolic functions.
+
+using System;
+
+static class Program
+{
+    static string H(double d) { return BitConverter.DoubleToInt64Bits(d).ToString("X16"); }
+    static string HF(float f) { return BitConverter.SingleToInt32Bits(f).ToString("X8"); }
+    static double Two() { return 2.0; }
+
+    static void Main()
+    {
+        double one = 1.0;
+        double tiny = BitConverter.Int64BitsToDouble(0x3CA0000000000001);
+        double third = one / 3.0;
+        Console.WriteLine("once " + H(one + tiny) + " " + H(third * 3.0) + " " + H(Math.Sqrt(Two())) + " " + H(0.1 + 0.2) + " " + H(1e308 * 10.0 / 10.0));
+        double sum = 0.0;
+        for (int i = 1; i <= 1000; i++) { sum = sum + one / i; }
+        Console.WriteLine("series " + H(sum) + " " + sum.ToString("R"));
+        Console.WriteLine("fma " + H(Math.FusedMultiplyAdd(1e-300, 1e-300, 0.0)) + " " + H(Math.FusedMultiplyAdd(-1e-170, 1e-160, 0.0)) + " " + H(Math.FusedMultiplyAdd(1e-160, 1e-160, 0.0))
+            + " " + H(Math.FusedMultiplyAdd(-1e-300, 1e-300, 5e-324)) + " " + H(Math.FusedMultiplyAdd(1e-200, 1e-200, -0.0)) + " " + H(Math.FusedMultiplyAdd(-3e-310, 1e-100, -0.0)));
+
+        double two = Two();
+        double inf = double.PositiveInfinity;
+        double pn = BitConverter.Int64BitsToDouble(0x7FF8000000000123);
+        double nn = BitConverter.Int64BitsToDouble(unchecked((long)0xFFF8000000000456));
+        Console.WriteLine("domain " + H(Math.Asin(two)) + " " + H(Math.Acos(-inf)) + " " + H(Math.Log10(-two)) + " " + H(Math.Log10(-inf)) + " " + H(Math.Log(-two)) + " " + H(Math.Sqrt(-two)));
+        Console.WriteLine("invalid " + H(Math.Sin(inf)) + " " + H(Math.Atanh(two)) + " " + H(Math.Acosh(0.5)) + " " + H(two % 0.0) + " " + H(inf % two) + " " + H(Math.Pow(-two, 0.5)));
+        Console.WriteLine("through " + H(Math.Sin(pn)) + " " + H(Math.Cos(pn)) + " " + H(Math.Tan(nn)) + " " + H(Math.Atanh(pn)) + " " + H(Math.Acosh(nn)) + " " + H(Math.Log10(nn)) + " " + H(Math.Exp(nn)));
+        float f2 = (float)two;
+        float fpn = BitConverter.Int32BitsToSingle(0x7FC00123);
+        Console.WriteLine("float " + HF(MathF.Asin(f2)) + " " + HF(MathF.Acos(-f2)) + " " + HF(MathF.Log10(-f2)) + " " + HF(MathF.Log(-f2)) + " " + HF(f2 % 0f)
+            + " " + HF(MathF.Sin(fpn)) + " " + HF(MathF.Cos(fpn)) + " " + HF(MathF.Tan(fpn)) + " " + HF(MathF.Sin(float.PositiveInfinity)));
+    }
+}

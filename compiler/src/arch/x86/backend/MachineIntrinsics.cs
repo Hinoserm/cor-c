@@ -79,4 +79,15 @@ internal static class MachineIntrinsics
     /// program. Only as the entry stub's first instruction.
     /// </summary>
     public const string LoaderFini = Prefix + "loaderfini";
+    /// <summary>
+    /// The x87's precision control set to a double's 53 bits, at the process
+    /// entry. Linux and a reset processor start at the extended format's 64,
+    /// where every double operation rounds twice -- to 64 bits in the
+    /// register, then to 53 at the store -- and about one in two thousand
+    /// lands a last place away from the correctly rounded result .NET's SSE2
+    /// arithmetic gives: 1 + (2^-53 + 2^-105) came out 1. Threads inherit the
+    /// control word. Nothing on x86-64, whose doubles are SSE2's, nor without
+    /// an FPU.
+    /// </summary>
+    public const string DoublePrecision = Prefix + "doubleprecision";
 }

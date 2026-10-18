@@ -1875,6 +1875,9 @@ internal sealed class Selector
                     Mov(V(i.Dest), new MMem(null, 0) { Segment = 0x65 });
                 }
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.DoublePrecision:
+                // SSE2's doubles round once already.
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.LoaderFini:
                 // Unused when no C library is started: nothing to read.
                 if (i.Dest is not null)

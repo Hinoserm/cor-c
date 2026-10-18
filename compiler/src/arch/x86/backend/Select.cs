@@ -2486,6 +2486,23 @@ internal sealed partial class Selector
                     Mov(Lo(i.Dest), Edx);
                 }
                 return;
+            case MachineIntrinsics.DoublePrecision:
+            {
+                if (Target.Current.X86Profile.Fpu == "none")
+                {
+                    return;
+                }
+                // PC, bits 8 and 9 of the control word, to 10: 53 bits.
+                int s = _m.Frame.Scratch;
+                EmitW(MOp.Fnstcw, 2, MMem.Frame(s));
+                MReg cw = Temp();
+                EmitW(MOp.Movzx, 2, cw, MMem.Frame(s));
+                Emit(MOp.And, cw, Imm(~0x300));
+                Emit(MOp.Or, cw, Imm(0x200));
+                EmitW(MOp.Mov, 2, MMem.Frame(s), cw);
+                EmitW(MOp.Fldcw, 2, MMem.Frame(s));
+                return;
+            }
             case MachineIntrinsics.KeepAlive:
             {
                 MReg kept = R(i.Operands[0]);

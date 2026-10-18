@@ -1,0 +1,123 @@
+// test: math_dotnet_surface_and_mathf
+// expect-exit: 0
+// expect-output:
+// const 6.283185307179586 6.283185307179586 0.7853982 2.718281828459045 2.7182817 6.2831855
+// float 2.5 1.5 1 -0 NaN 0
+// narrow 2 3 5 10 -5 3 12
+// divrem -3 -2 -3 2 28 4 2
+// bigmul 16000000000000000000 18446744073709551614 1 -2 -9223372036854775805
+// bits 1.0000000000000002 0.9999999999999999 5E-324 -5E-324 -1.7976931348623157E+308 1.7976931348623157E+308 Infinity
+// scale 24 Infinity 5E-324 1E-323 3 -4 -1074 -2147483648 2147483647 2147483647
+// log -Infinity NaN Infinity NaN NaN -0
+// pow -8 4 1 1 Infinity -Infinity 0 -0 1 0 Infinity -0 Infinity NaN 5E-324
+// exp Infinity 0 0 NaN
+// atan2 -3.141592653589793 3.141592653589793 -3.141592653589793 -0 0.7853981633974483 2.356194490192345 -0 -1.5707963267948966 NaN
+// sign -3 3 0 -0 NaN -1 1 -0 -0 Infinity -Infinity
+// round 0 1 2.68 -3 1E+17
+// ArithmeticException: Function does not accept floating point Not-a-Number values.
+// OverflowException: Negating the minimum value of a twos complement number is invalid.
+// ArgumentException: '5' cannot be greater than 2.
+// ArgumentOutOfRangeException: Rounding digits must be between 0 and 15, inclusive. (Parameter 'digits')
+// ArgumentException: The value '7' is not valid for this usage of the type MidpointRounding. (Parameter 'mode')
+// mathf 1.4142135 2.68 -3 -2 -1 NaN -3 1.0000001 0.99999994 -149 1E-45 -0
+// sincos 0 1 0 1
+//
+// System.Math as .NET has it, and MathF. PI, E and Tau are constants that
+// another constant can be made from. Max, Min, Abs and Clamp of floats are
+// floats, by IEEE's rules for NaN and the signed zeros, and of the narrow
+// integers are those integers. DivRem as a tuple; the high half of a 128-bit
+// product; a double stepped by its bits, scaled by a power of two and asked
+// its exponent. The special values the formulas get wrong: the logarithm of
+// zero, a negative base to a whole power, a zero to a negative odd one, e to
+// infinity, the signed zeros of Atan2 and CopySign, the IEEE remainder by
+// infinity, and the sign of a NaN, which is refused. MathF is Math in
+// floats, and rounds to places in float arithmetic.
+
+using System;
+
+static class Program
+{
+    const double TwoPi = Math.PI * 2;
+    const float QuarterPi = MathF.PI / 4;
+
+    static int Main()
+    {
+        double zero = 0.0, nz = -0.0, one = 1.0, two = 2.0;
+        double nan = double.NaN, inf = double.PositiveInfinity, ninf = double.NegativeInfinity;
+        float fz = 0f, fnz = -0f, fnan = float.NaN;
+
+        Console.WriteLine("const " + TwoPi + " " + Math.Tau + " " + QuarterPi + " " + Math.E + " " + MathF.E + " " + MathF.Tau);
+
+        float a = Math.Max(1f, 2.5f);
+        float b = Math.Abs(-1.5f);
+        float c = Math.Clamp(5f, 0f, 1f);
+        float d = Math.Min(fz, fnz);
+        Console.WriteLine("float " + a + " " + b + " " + c + " " + d + " " + Math.Max(fnan, 1f) + " " + Math.Max(fnz, fz));
+
+        short s = Math.Max((short)1, (short)2);
+        byte by = Math.Min((byte)7, (byte)3);
+        sbyte sb = Math.Abs((sbyte)-5);
+        ushort us = Math.Clamp((ushort)9, (ushort)10, (ushort)20);
+        short ss = Math.Clamp((short)-400, (short)-5, (short)5);
+        uint ui = Math.Clamp(7u, 1u, 3u);
+        nint ni = Math.Abs((nint)(-12));
+        Console.WriteLine("narrow " + s + " " + by + " " + sb + " " + us + " " + ss + " " + ui + " " + ni);
+
+        var q = Math.DivRem(-17, 5);
+        (long lq, long lr) = Math.DivRem(17L, -5L);
+        var bq = Math.DivRem((byte)200, (byte)7);
+        byte bqq = bq.Quotient;
+        Console.WriteLine("divrem " + q.Quotient + " " + q.Remainder + " " + lq + " " + lr + " " + bqq + " " + bq.Remainder + " " + Math.DivRem(100u, 7u).Remainder);
+
+        ulong low;
+        ulong high = Math.BigMul(0xFFFFFFFFFFFFFFFFUL, 0xFFFFFFFFFFFFFFFFUL, out low);
+        long slow;
+        long shigh = Math.BigMul(-3L, long.MaxValue, out slow);
+        Console.WriteLine("bigmul " + Math.BigMul(4000000000u, 4000000000u) + " " + high + " " + low + " " + shigh + " " + slow);
+
+        Console.WriteLine("bits " + Math.BitIncrement(one) + " " + Math.BitDecrement(one) + " " + Math.BitIncrement(nz) + " " + Math.BitDecrement(zero)
+            + " " + Math.BitIncrement(ninf) + " " + Math.BitDecrement(inf) + " " + Math.BitIncrement(inf));
+
+        Console.WriteLine("scale " + Math.ScaleB(1.5, 4) + " " + Math.ScaleB(one, 2000) + " " + Math.ScaleB(one, -1074) + " " + Math.ScaleB(3.0, -1075)
+            + " " + Math.ILogB(8.5) + " " + Math.ILogB(0.1) + " " + Math.ILogB(double.Epsilon) + " " + Math.ILogB(zero) + " " + Math.ILogB(nan) + " " + Math.ILogB(ninf));
+
+        Console.WriteLine("log " + Math.Log(zero) + " " + Math.Log(-one) + " " + Math.Log(inf) + " " + Math.Log(5.0, one) + " " + Math.Log(5.0, zero) + " " + Math.Log(one, zero));
+
+        Console.WriteLine("pow " + Math.Pow(-two, 3.0) + " " + Math.Pow(-two, 2.0) + " " + Math.Pow(one, nan) + " " + Math.Pow(nan, zero)
+            + " " + Math.Pow(zero, -1.0) + " " + Math.Pow(nz, -1.0) + " " + Math.Pow(nz, 2.0) + " " + Math.Pow(nz, 3.0)
+            + " " + Math.Pow(-one, inf) + " " + Math.Pow(0.5, inf) + " " + Math.Pow(0.5, ninf) + " " + Math.Pow(ninf, -3.0)
+            + " " + Math.Pow(ninf, 0.5) + " " + Math.Pow(-two, 0.5) + " " + Math.Pow(two, -1074.0));
+
+        Console.WriteLine("exp " + Math.Exp(inf) + " " + Math.Exp(ninf) + " " + Math.Exp(-746.0) + " " + Math.Exp(nan));
+
+        Console.WriteLine("atan2 " + Math.Atan2(nz, -one) + " " + Math.Atan2(zero, -one) + " " + Math.Atan2(nz, nz) + " " + Math.Atan2(nz, zero)
+            + " " + Math.Atan2(inf, inf) + " " + Math.Atan2(inf, ninf) + " " + Math.Atan2(-one, inf) + " " + Math.Atan2(-one, nz) + " " + Math.Atan2(nan, one));
+
+        Console.WriteLine("sign " + Math.CopySign(3.0, nz) + " " + Math.CopySign(-3.0, zero) + " " + Math.MaxMagnitude(zero, nz) + " " + Math.MinMagnitude(nz, zero)
+            + " " + Math.MaxMagnitude(nan, one) + " " + Math.IEEERemainder(11.0, 3.0) + " " + Math.IEEERemainder(one, inf) + " " + Math.IEEERemainder(-4.0, two)
+            + " " + Math.Atan(nz) + " " + Math.Cbrt(inf) + " " + Math.Cbrt(ninf));
+
+        Console.WriteLine("round " + Math.Round(0.49999999999999994, MidpointRounding.AwayFromZero) + " " + Math.Round(1.005, 2, MidpointRounding.AwayFromZero)
+            + " " + Math.Round(2.675, 2) + " " + Math.Round(-2.5, 0, MidpointRounding.AwayFromZero) + " " + Math.Round(1e17, 3));
+
+        try { Math.Sign(nan); Console.WriteLine("no throw"); }
+        catch (ArithmeticException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+        try { Math.Abs(short.MinValue); Console.WriteLine("no throw"); }
+        catch (OverflowException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+        try { Math.Clamp((byte)1, (byte)5, (byte)2); Console.WriteLine("no throw"); }
+        catch (ArgumentException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+        try { Math.Round(one, 16); Console.WriteLine("no throw"); }
+        catch (ArgumentException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+        try { Math.Round(one, (MidpointRounding)7); Console.WriteLine("no throw"); }
+        catch (ArgumentException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+
+        Console.WriteLine("mathf " + MathF.Sqrt(2f) + " " + MathF.Round(2.675f, 2) + " " + MathF.Round(-2.5f, MidpointRounding.AwayFromZero) + " " + MathF.Floor(-1.5f)
+            + " " + MathF.IEEERemainder(11f, 3f) + " " + MathF.Max(fnan, 1f) + " " + MathF.CopySign(3f, fnz) + " " + MathF.BitIncrement(1f) + " " + MathF.BitDecrement(1f)
+            + " " + MathF.ILogB(float.Epsilon) + " " + MathF.ScaleB(1f, -149) + " " + MathF.Atan2(fnz, 1f));
+
+        var dsc = Math.SinCos(zero);
+        var fsc = MathF.SinCos(fz);
+        Console.WriteLine("sincos " + dsc.Sin + " " + dsc.Cos + " " + fsc.Sin + " " + fsc.Cos);
+        return 0;
+    }
+}

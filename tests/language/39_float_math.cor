@@ -8,14 +8,22 @@
 // exp 2718 3142
 // minmax 3 1099511627776
 // clamp 2000 2500
+// const 6283 6283 2718
+// float 2500 1500 1000 3142
+// narrow 2 3 5
 //
 // The Math class: Sqrt and Abs (compiler intrinsics), and Pow, Sin, Cos, Exp,
-// Pi, Min, Max, Clamp and Lerp from the standard library. Results are
-// rounded to the nearest thousandth before printing so a last-bit difference
-// in a series does not change the output.
+// Min, Max and Clamp from the standard library, with a linear interpolation
+// written out. PI, E and Tau are constants, so a constant can be made from
+// one; the float overloads answer in floats and the narrow integer ones in
+// their own type, and MathF is Math in floats. Results are rounded to the
+// nearest thousandth before printing so a last-bit difference in a series
+// does not change the output.
 
 static class Program
 {
+    const double TwoPi = Math.PI * 2;
+
     static void Line(string s)
     {
         Sys.Print(s);
@@ -40,16 +48,32 @@ static class Program
         Line("pow " + R(Math.Pow(2.0, 10)));
 
         double zero = 0.0;
-        Line("trig " + R(Math.Sin(zero)) + " " + R(Math.Sin(Math.Pi() / 2.0)) + " " + R(Math.Cos(zero)) + " " + R(Math.Sin(Math.Pi() / 6.0)));
+        Line("trig " + R(Math.Sin(zero)) + " " + R(Math.Sin(Math.PI / 2.0)) + " " + R(Math.Cos(zero)) + " " + R(Math.Sin(Math.PI / 6.0)));
 
         double one = 1.0;
-        Line("exp " + R(Math.Exp(one)) + " " + R(Math.Pi()));
+        Line("exp " + R(Math.Exp(one)) + " " + R(Math.PI));
 
         long big = 1L << 40;
         long five = 5;
         Line("minmax " + Math.Min(3, 5) + " " + Math.Max(big, five));
 
-        Line("clamp " + R(Math.Clamp(5.0, 0.0, 2.0)) + " " + R(Math.Lerp(0.0, 10.0, 0.25)));
+        double from = 0.0;
+        double to = 10.0;
+        double t = 0.25;
+        Line("clamp " + R(Math.Clamp(5.0, 0.0, 2.0)) + " " + R(from + (to - from) * t));
+
+        Line("const " + R(TwoPi) + " " + R(Math.Tau) + " " + R(Math.E));
+
+        float most = Math.Max(1f, 2.5f);
+        float size = Math.Abs(-1.5f);
+        float held = Math.Clamp(5f, 0f, 1f);
+        float pi = MathF.Atan2(0f, -1f);
+        Line("float " + R(most) + " " + R(size) + " " + R(held) + " " + R(pi));
+
+        short s = Math.Max((short)1, (short)2);
+        byte b = Math.Min((byte)7, (byte)3);
+        sbyte n = Math.Abs((sbyte)-5);
+        Line("narrow " + s + " " + b + " " + n);
         return 0;
     }
 }

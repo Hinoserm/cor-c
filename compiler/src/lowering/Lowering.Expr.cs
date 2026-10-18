@@ -732,6 +732,25 @@ public sealed partial class Lowering
         return _e.Const(k.Value, IrTypes.Of(k.Type));
     }
 
+    /// <summary>
+    /// A floating constant the lowering can fold where C# does: a real
+    /// literal, a floating const, and either negated. Every NaN it makes is
+    /// .NET's one NaN, as Roslyn's constants have it.
+    /// </summary>
+    private double? RealConstantOf(Expr e)
+    {
+        double? value = e switch
+        {
+            LiteralExpr { Kind: Lit.Real } real => real.RealValue,
+            UnaryExpr { Op: UnOp.Neg } negated when RealConstantOf(negated.Operand) is double inner => -inner,
+            UnaryExpr { Op: UnOp.Plus } plus => RealConstantOf(plus.Operand),
+            NameExpr or MemberExpr when _b.Resolved.TryGetValue(e, out Sym? sym) && sym is ConstSym { Type.IsFloat: true } k
+                => k.Type.Prim == Prim.F32 ? (float)BitConverter.Int64BitsToDouble(k.Value) : BitConverter.Int64BitsToDouble(k.Value),
+            _ => null,
+        };
+        return value is double v && double.IsNaN(v) ? double.NaN : value;
+    }
+
     private VReg EvalCore(Expr e)
     {
         switch (e)
@@ -3902,6 +3921,17 @@ public sealed partial class Lowering
                 Type promoted = NumericRules.Unary(operand);
                 // A uint is negated as the long it widens to (C# 12.9.3).
                 if (promoted.Prim == Prim.U32 && promoted.Symbol is null) promoted = Type.I64;
+                // A CONSTANT NEGATED IS A CONSTANT, which C# folds as it
+                // compiles: `-double.NaN` is .NET's one NaN, the sign bit set,
+                // where a negation at run time would clear it.
+                if (promoted.IsFloat && RealConstantOf(u) is double folded)
+                {
+                    if (promoted.Prim == Prim.F32)
+                    {
+                        return _e.Unary(Opcode.Bits, R(_e.Const(BitConverter.SingleToInt32Bits((float)folded), IrType.I32)), IrType.F32);
+                    }
+                    return _e.Unary(Opcode.Bits, R(_e.Const(BitConverter.DoubleToInt64Bits(folded), IrType.I64)), IrType.F64);
+                }
                 VReg v = EvalAs(u.Operand, promoted);
                 if (promoted.IsFloat)
                 {

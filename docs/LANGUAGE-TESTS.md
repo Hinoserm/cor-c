@@ -164,7 +164,7 @@ marker instead.
 | 36_tuples | tuple returns, names and Item positions, deconstruction, tuples in List, (long,long) |
 | 37_checked_overflow | checked add/sub/mul on int and long throw; unchecked wraps |
 | 38_floats | double/float arithmetic, comparisons, truncating conversions, promotion, mixing with ints |
-| 39_float_math | Math.Sqrt/Abs intrinsics, Pow/Sin/Cos/Exp/Pi/Min/Max/Clamp/Lerp |
+| 39_float_math | Math.Sqrt/Abs intrinsics, Pow/Sin/Cos/Exp/Min/Max/Clamp, PI/E/Tau as constants, float and narrow overloads, MathF |
 | 40_recursion | fib, Ackermann, gcd, factorial, mutual recursion, 10000 frames deep |
 | 41_enums | enum values, comparison, switch, casts, in a List, as a field |
 | 42_stress_sieve | sieve to 10000 cross-checked with trial division |

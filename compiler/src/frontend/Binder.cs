@@ -1772,14 +1772,17 @@ public sealed partial class Binder
                 return real.RealValue;
             case LiteralExpr { Kind: Lit.Int } whole:
                 return whole.IntValue;
+            // EVERY NaN A CONSTANT MAKES IS .NET's ONE NaN, the sign bit set,
+            // as Roslyn's constants are: `-double.NaN` among them, which
+            // negating would have turned into the other.
             case UnaryExpr { Op: UnOp.Neg } negated:
-                return RealConstant(negated.Operand, owner) is double inner ? -inner : null;
+                return RealConstant(negated.Operand, owner) is double inner ? (double.IsNaN(inner) ? double.NaN : -inner) : null;
             case UnaryExpr { Op: UnOp.Plus } plus:
                 return RealConstant(plus.Operand, owner);
             case BinaryExpr { Op: BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem } b:
             {
                 if (RealConstant(b.Left, owner) is not double left || RealConstant(b.Right, owner) is not double right) return null;
-                return b.Op switch
+                double made = b.Op switch
                 {
                     BinOp.Add => left + right,
                     BinOp.Sub => left - right,
@@ -1787,6 +1790,7 @@ public sealed partial class Binder
                     BinOp.Div => left / right,
                     _ => left % right,
                 };
+                return double.IsNaN(made) ? double.NaN : made;
             }
             case CastExpr cast:
             {

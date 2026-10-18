@@ -8733,9 +8733,7 @@ public sealed class Parser
                 return new LiteralExpr
                 {
                     Kind = Lit.Real, Text = at.Text,
-                    RealValue = at.Text[^1] is 'f' or 'F'
-                        ? float.Parse(RealDigits(at.Text).Replace("_", ""), System.Globalization.CultureInfo.InvariantCulture)
-                        : double.Parse(RealDigits(at.Text).Replace("_", ""), System.Globalization.CultureInfo.InvariantCulture),
+                    RealValue = RealValueOf(at),
                     Line = at.Line, Col = at.Col,
                 };
 
@@ -9036,6 +9034,28 @@ public sealed class Parser
     private static string RealDigits(string text)
         => text.Length > 0 && text[^1] is 'F' or 'f' or 'D' or 'd' or 'M' or 'm'
          ? text[..^1] : text;
+
+    /// <summary>
+    /// A real literal's value, ROUNDED ONCE TO ITS OWN TYPE, as C# reads it: a
+    /// float's digits straight to the nearest float, not to the nearest
+    /// double and then to a float, which for digits near a float's midpoint
+    /// rounds twice. One too large for its type is C#'s CS0594; one too small
+    /// is zero.
+    /// </summary>
+    private double RealValueOf(Token at)
+    {
+        string digits = RealDigits(at.Text).Replace("_", "");
+        bool single = at.Text.Length > 0 && at.Text[^1] is 'F' or 'f';
+        double value = single
+            ? float.Parse(digits, System.Globalization.CultureInfo.InvariantCulture)
+            : double.Parse(digits, System.Globalization.CultureInfo.InvariantCulture);
+        if (double.IsInfinity(value))
+        {
+            throw new CompileError(_file, at.Line, at.Col,
+                $"Floating-point constant is outside the range of type '{(single ? "float" : "double")}'");
+        }
+        return value;
+    }
 }
 
 internal static class MethodDeclExtensions
