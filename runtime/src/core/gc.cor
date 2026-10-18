@@ -4050,9 +4050,20 @@ static class Gc
     // of the code that asked. A write past the end of any object lands in
     // the fill or the words and is found -- at the object's free, at every
     // sweep, at every heap walk -- with the object's type and who made it.
-    const long GuardBytes = 24;
+    // FOUR WORDS AND EIGHT BYTES OF FILL: 24 on i386, 40 in long mode. A flat
+    // 24 there was the four words alone less a word, and the guard written
+    // the object's last eight bytes over -- a heap-checked x86-64 program's
+    // tables went round for ever.
+    const long GuardBytes = 4 * WordSize.Bytes + 8;
     const long GuardMagic = 0x6A11EDC0;
     static long _guardReports;
+
+    /// WHAT THE HEAP CHECK HAS SAID (Corsac.GC.HeapCheck), counted: a guard
+    /// written over, a footer or a next header overwritten after its block
+    /// was made, a class list holding a live block, two owners of one range
+    /// -- each said on standard error as well. What a run with the check on
+    /// asks to know it was clean.
+    public static long HeapCheckReports => _guardReports + _recentReports + _listReports + _ownerReports;
 
     static long AllocKind(long bytes, long kind)
     {
@@ -5060,7 +5071,19 @@ static class Gc
             Sys.Poke(e + i * w, back);
         }
         Sys.Poke(e, block);
-        if (_recentIndex != 0) Sys.Poke(RecentSlot(block), e);
+        if (_recentIndex != 0)
+        {
+            // ONE SLOT PER HASH, AND A COLLISION LOSES THE OLDER ENTRY'S
+            // RECHECK, as the ring says: dropped here, not left behind. Kept,
+            // it could no longer be forgotten (Forget finds entries by their
+            // slot), its block freed and made again under it, and read in
+            // the moment another allocation had made it and not yet painted
+            // its guard -- "zeroed whole by a writer", of nothing written.
+            long slot = RecentSlot(block);
+            long older = Sys.Peek(slot);
+            if (older != 0 && older != e && Sys.Peek(older) != 0 && Sys.Peek(older) != block && RecentSlot(Sys.Peek(older)) == slot) Sys.Poke(older, Zero);
+            Sys.Poke(slot, e);
+        }
     }
 
     /// Whether a block still starts at `block`: on its class's grid in a
@@ -5086,7 +5109,14 @@ static class Gc
         return at == block;
     }
 
-    static void CheckRecent()
+    /// `making`: the block being handed out as this runs (CheckMade), which
+    /// is no block to read yet -- its header says live, its guard is not
+    /// painted until its allocation returns (AllocKind) -- and which an
+    /// entry the ring could not forget may still name: an earlier block at
+    /// the same address, freed while its hash slot was a later block's
+    /// (Forget). Read then, it was "zeroed whole by a writer" on every
+    /// allocation of a program that freed and made the same block again.
+    static void CheckRecent(long making)
     {
         if (_recent == 0 || _recentReports >= 12) return;
         long w = WordSize.Bytes;
@@ -5100,7 +5130,7 @@ static class Gc
             _recentCheck = _recentCheck + 1;
             long e = _recent + k * RecentWords * w;
             long block = Sys.Peek(e);
-            if (block == 0) continue;
+            if (block == 0 || block == making) continue;
             // ONLY THIS THREAD'S: another's newest block may be being made on
             // another processor at this moment -- its header there, its guard
             // and footer not yet -- and it is that thread's own recheck that
@@ -5230,7 +5260,7 @@ static class Gc
     /// slot's header (FooterBroken).
     static void CheckMade(long block, string how, long tail)
     {
-        CheckRecent();
+        CheckRecent(block);
         Remember(block, how == "class fast path" ? 1 : how == "bump fast path" ? 2 : how == "PopClass" ? 3 : how == "a bigger class's slot" ? 5 : 4);
         if (WatchHook != 0 && (Sys.Peek(block) & SizeMask) == WatchSize)
         {
@@ -6277,6 +6307,9 @@ static class Gc
     /// to come this way, before it has taken or holds anything.
     static long AllocSlow(long bytes, long kind)
     {
+        // Whether the request was sized with a guard (AllocKind): read before
+        // anything here can start the heap, which is where the check is read.
+        bool checking = _heapCheck;
         if (!_outOfMemoryMade)
         {
             _outOfMemoryMade = true;
@@ -6313,6 +6346,17 @@ static class Gc
         if (!_ready)
         {
             Start();
+        }
+        // THE HEAP CHECK IS KNOWN ONCE THE HEAP HAS STARTED (Start reads the
+        // knob) -- here, or in the allocation of the exception made in
+        // advance above. A request sized before that has no room for a
+        // guard, and a block remembered unguarded was taken by every recheck
+        // after for one a zeroing writer had cleared whole. Asked again, it
+        // is guarded as every later request is.
+        if (_heapCheck && !checking)
+        {
+            GcLock.Exit();
+            return AllocKind(bytes, kind);
         }
         SyncEnd();
 
@@ -7287,7 +7331,8 @@ static class Gc
         _deadCensus = _census && (_deadCensusAsked || Platform.GcDeadCensus());
         _thresholdCap = Platform.GcThreshold();
         _nurseryFixed = Platform.GcNursery();
-        _heapCheck = Platform.HeapCheck();
+        // Kept where the program turned it on before the heap started (CheckHeapOn).
+        _heapCheck = _heapCheck || Platform.HeapCheck();
         CountMarks = CountMarks || Platform.GcStats();
         if (Platform.FreeLog())
         {
