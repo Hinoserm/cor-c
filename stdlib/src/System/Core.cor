@@ -4048,7 +4048,7 @@ static class NumberFormat {
         return nfi._numberDecimalDigits;
     }
 
-    static string Standard(char kind, int width, bool negative, string plain, NumberFormatInfo? nfi) {
+    static string Standard(char kind, int width, bool negative, string plain, NumberFormatInfo? nfi = null) {
         // "G" and "R" without a precision are "D" without one: every digit.
         bool general = kind == 'g' || kind == 'G' || kind == 'r' || kind == 'R';
         if (kind == 'd' || kind == 'D' || (general && width < 1)) {
@@ -4336,24 +4336,24 @@ static class DoubleFormat {
     public static string ShortestSingle(float value) { return ShortestSingle(value, 'E'); }
 
     /// And for a half, to a half: five digits before the scientific shape.
-    public static string ShortestHalf(Half value, char letter) {
+    public static string ShortestHalf(Half value, char letter, NumberFormatInfo? nfi = null) {
         double wide = (double)value;
-        string? special = Special(wide);
+        string? special = Special(wide, nfi);
         if (special != null) { return special; }
-        if (wide == 0.0) { return Negative(wide) ? "-0" : "0"; }
+        if (wide == 0.0) { return Negative(wide) ? String.Concat(NumberFormat.Minus(nfi), "0") : "0"; }
         int point;
         string digits = FloatDecimal.ShortestHalf(BitConverter.HalfToUInt16Bits(value), out point);
-        return Layout(digits, point, Negative(wide), digits.Length > 5 ? digits.Length : 5, letter);
+        return Layout(digits, point, Negative(wide), digits.Length > 5 ? digits.Length : 5, letter, nfi);
     }
 
     /// A half's standard format, as a float's (OfSingle): the shortest half
     /// digits for "", "G", "G0" and "R", the exact value's for the rest, and
     /// five digits for a picture.
-    public static string OfHalf(Half value, string format) {
-        if (format.Length == 0) { return ShortestHalf(value, 'E'); }
+    public static string OfHalf(Half value, string format, NumberFormatInfo? nfi = null) {
+        if (format.Length == 0) { return ShortestHalf(value, 'E', nfi); }
         double wide = (double)value;
         if (PictureFormat.Is(format)) {
-            return Special(wide) == null ? PictureFormat.OfHalf(wide, format) : Of(wide, format);
+            return Special(wide, nfi) == null ? PictureFormat.OfHalf(wide, format, nfi) : Of(wide, format, nfi);
         }
         char kind = format[0];
         bool shortest = kind == 'r' || kind == 'R';
@@ -4363,8 +4363,8 @@ static class DoubleFormat {
                 if (format[i] != '0') { shortest = false; }
             }
         }
-        if (shortest) { return ShortestHalf(value, kind == 'g' || kind == 'r' ? 'e' : 'E'); }
-        return Of(wide, format);
+        if (shortest) { return ShortestHalf(value, kind == 'g' || kind == 'r' ? 'e' : 'E', nfi); }
+        return Of(wide, format, nfi);
     }
 
     public static string ShortestSingle(float value, char letter, NumberFormatInfo? nfi = null) {
@@ -5067,7 +5067,7 @@ static class PictureFormat {
 
     public static string OfSingle(float value, string format, NumberFormatInfo? nfi = null) { return Real((double)value, format, 7, nfi); }
 
-    public static string OfHalf(double value, string format) { return Real(value, format, 5, null); }
+    public static string OfHalf(double value, string format, NumberFormatInfo? nfi = null) { return Real(value, format, 5, nfi); }
 
     private static string Real(double value, string format, int precision, NumberFormatInfo? nfi = null) {
         double size = value < 0.0 ? 0.0 - value : value;
@@ -5097,8 +5097,8 @@ static class PictureFormat {
     /// A DECIMAL'S DIGITS ARE ALL OF IT, its point where its scale puts it:
     /// they are rounded half away from zero at the last place the picture
     /// asks for, and nought has no sign.
-    public static string OfDecimal(bool negative, string digits, int point, string format) {
-        return Written(format, negative, false, digits, digits.Length == 0 ? 0 : point);
+    public static string OfDecimal(bool negative, string digits, int point, string format, NumberFormatInfo? nfi = null) {
+        return Written(format, negative, false, digits, digits.Length == 0 ? 0 : point, nfi);
     }
 
     /// The same for a whole number given as its decimal digits, which is all
@@ -5182,7 +5182,7 @@ static class PictureFormat {
     /// -0) where a whole number's does not (-4 in "0," is 0), because .NET has
     /// a minus nought for doubles only. A number that rounds to nought in its
     /// own section is written by the zero section, when there is one.
-    private static string Written(string format, bool negative, bool real, string digits, int scale, NumberFormatInfo? nfi) {
+    private static string Written(string format, bool negative, bool real, string digits, int scale, NumberFormatInfo? nfi = null) {
         int section = FindSection(format, digits.Length == 0 ? 2 : negative ? 1 : 0);
         int digitCount;
         int decimalPos;
@@ -6111,10 +6111,10 @@ static class NumberRead {
     /// read, the 96-bit integer and the scale made of as many of them as fit
     /// -- at most 28 places -- and rounded half to even on the rest, a
     /// trailing zero of the fraction kept as scale. Ok, Format or Overflow.
-    public static int TryDecimal(string s, NumberStyles style, out decimal value) {
+    public static int TryDecimal(string s, NumberStyles style, out decimal value, NumberFormatInfo? nfi = null) {
         value = new decimal(0);
         char[] digits = new char[30];
-        if (!Scan(s, (int)style, NumberBufferKind.Decimal, digits, out int count, out int scale, out bool negative, out bool tail)) { return Format; }
+        if (!Scan(s, (int)style, NumberBufferKind.Decimal, digits, out int count, out int scale, out bool negative, out bool tail, nfi)) { return Format; }
 
         int p = 0;
         int e = scale;
@@ -6196,10 +6196,10 @@ static class NumberRead {
 
     /// The half `s` says, rounded once from the decimal and not through a
     /// float or a double, which would round twice: its bits.
-    public static bool TryHalf(string s, NumberStyles style, out ushort value) {
+    public static bool TryHalf(string s, NumberStyles style, out ushort value, NumberFormatInfo? nfi = null) {
         int width = s.Length < 22 ? s.Length : 22;
         char[] digits = new char[width == 0 ? 1 : width];
-        if (Scan(s, (int)style, NumberBufferKind.FloatingPoint, digits, out int count, out int scale, out bool negative, out bool tail)) {
+        if (Scan(s, (int)style, NumberBufferKind.FloatingPoint, digits, out int count, out int scale, out bool negative, out bool tail, nfi)) {
             ushort magnitude = 0;
             if (count > 0) {
                 int exponent;
@@ -6209,7 +6209,7 @@ static class NumberRead {
             value = negative ? (ushort)(magnitude | 0x8000) : magnitude;
             return true;
         }
-        int special = Special(s);
+        int special = Special(s, nfi);
         value = special == 1 ? (ushort)0x7C00 : special == 2 ? (ushort)0xFC00 : special == 3 ? (ushort)0xFE00 : (ushort)0;
         return special != 0;
     }
@@ -6220,12 +6220,12 @@ static class NumberRead {
     /// style a digit at a time, hex and binary as a 128-bit pattern, and
     /// anything else through the digit buffer. The bits come back as a
     /// UInt128 -- a negative Int128's two's complement. Ok, Format or Overflow.
-    public static int TryInteger128(string s, NumberStyles style, bool signed, out UInt128 value) {
+    public static int TryInteger128(string s, NumberStyles style, bool signed, out UInt128 value, NumberFormatInfo? nfi = null) {
         int st = (int)style;
-        if ((st & ~(LeadingWhite | TrailingWhite | LeadingSign)) == 0) { return Integer128Style(s, st, signed, out value); }
+        if (nfi == null && (st & ~(LeadingWhite | TrailingWhite | LeadingSign)) == 0) { return Integer128Style(s, st, signed, out value); }
         if ((st & Hex) != 0) { return Pattern128(s, st, 4, out value); }
         if ((st & Binary) != 0) { return Pattern128(s, st, 1, out value); }
-        return Integer128Number(s, st, signed, out value);
+        return Integer128Number(s, st, signed, out value, nfi);
     }
 
     // The largest magnitude of the type: one more below zero when signed.
@@ -6318,11 +6318,11 @@ static class NumberRead {
         return Ok;
     }
 
-    static int Integer128Number(string s, int style, bool signed, out UInt128 value) {
+    static int Integer128Number(string s, int style, bool signed, out UInt128 value, NumberFormatInfo? nfi = null) {
         value = UInt128.Zero;
         const int width = 39;
         char[] digits = new char[width];
-        if (!Scan(s, style, NumberBufferKind.Integer, digits, out int count, out int scale, out bool negative, out bool tail)) { return Format; }
+        if (!Scan(s, style, NumberBufferKind.Integer, digits, out int count, out int scale, out bool negative, out bool tail, nfi)) { return Format; }
         if (scale > width || scale < count || (!signed && negative)) { return Overflow; }
         UInt128 magnitude = UInt128.Zero;
         for (int i = 0; i < scale; i++) {
@@ -6358,7 +6358,7 @@ static class NumberRead {
     // The words .NET reads where the digits failed: 1 infinity, 2 negative
     // infinity, 3 NaN, 0 none. White space either side, any case. The
     // culture's words and signs (`nfi`), or the invariant culture's.
-    static int Special(string s, NumberFormatInfo? nfi) {
+    static int Special(string s, NumberFormatInfo? nfi = null) {
         int at = 0;
         int end = s.Length;
         while (at < end && Char.IsWhiteSpace(s[at])) { at++; }
@@ -14332,9 +14332,9 @@ readonly struct UInt128 : IComparable, IComparable<UInt128>, IEquatable<UInt128>
     }
 
     public override string ToString() { return Digits(this); }
-    public string ToString(IFormatProvider? provider) { return Digits(this); }
+    public string ToString(IFormatProvider? provider) { return Int128Format.Of(false, this, "", false, NumberFormatInfo.Given(provider)); }
     public string ToString(string? format) { return Int128Format.Of(false, this, format ?? "", false); }
-    public string ToString(string? format, IFormatProvider? provider) { return Int128Format.Of(false, this, format ?? "", false); }
+    public string ToString(string? format, IFormatProvider? provider) { return Int128Format.Of(false, this, format ?? "", false, NumberFormatInfo.Given(provider)); }
 
     public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         return Int128Format.Into(ToString(format.ToString()), destination, out charsWritten);
@@ -14351,7 +14351,7 @@ readonly struct UInt128 : IComparable, IComparable<UInt128>, IEquatable<UInt128>
     public static UInt128 Parse(ReadOnlySpan<char> s, NumberStyles style = NumberStyles.Integer, IFormatProvider? provider = null) {
         NumberRead.CheckInteger(style);
         string text = s.ToString();
-        int status = NumberRead.TryInteger128(text, style, false, out UInt128 value);
+        int status = NumberRead.TryInteger128(text, style, false, out UInt128 value, NumberFormatInfo.Given(provider));
         if (status == NumberRead.Format) { throw NumberRead.Bad(text); }
         if (status == NumberRead.Overflow) { throw NumberRead.TooBig("a UInt128"); }
         return value;
@@ -14367,7 +14367,7 @@ readonly struct UInt128 : IComparable, IComparable<UInt128>, IEquatable<UInt128>
             result = Zero;
             return false;
         }
-        if (NumberRead.TryInteger128(s, style, false, out result) == NumberRead.Ok) { return true; }
+        if (NumberRead.TryInteger128(s, style, false, out result, NumberFormatInfo.Given(provider)) == NumberRead.Ok) { return true; }
         result = Zero;
         return false;
     }
@@ -14711,9 +14711,9 @@ readonly struct Int128 : IComparable, IComparable<Int128>, IEquatable<Int128>, I
     // ---- text ---------------------------------------------------------------
 
     public override string ToString() { return Int128Format.Of(IsNegative(this), Magnitude(this), "", true); }
-    public string ToString(IFormatProvider? provider) { return ToString(); }
+    public string ToString(IFormatProvider? provider) { return Int128Format.Of(IsNegative(this), Magnitude(this), "", true, this, NumberFormatInfo.Given(provider)); }
     public string ToString(string? format) { return Int128Format.Of(IsNegative(this), Magnitude(this), format ?? "", true, this); }
-    public string ToString(string? format, IFormatProvider? provider) { return ToString(format); }
+    public string ToString(string? format, IFormatProvider? provider) { return Int128Format.Of(IsNegative(this), Magnitude(this), format ?? "", true, this, NumberFormatInfo.Given(provider)); }
 
     /// The size, which MinValue's negation is too as an unsigned number.
     static UInt128 Magnitude(Int128 value) { return IsNegative(value) ? (UInt128)(-value) : (UInt128)value; }
@@ -14733,7 +14733,7 @@ readonly struct Int128 : IComparable, IComparable<Int128>, IEquatable<Int128>, I
     public static Int128 Parse(ReadOnlySpan<char> s, NumberStyles style = NumberStyles.Integer, IFormatProvider? provider = null) {
         NumberRead.CheckInteger(style);
         string text = s.ToString();
-        int status = NumberRead.TryInteger128(text, style, true, out UInt128 value);
+        int status = NumberRead.TryInteger128(text, style, true, out UInt128 value, NumberFormatInfo.Given(provider));
         if (status == NumberRead.Format) { throw NumberRead.Bad(text); }
         if (status == NumberRead.Overflow) { throw NumberRead.TooBig("an Int128"); }
         return (Int128)value;
@@ -14745,7 +14745,7 @@ readonly struct Int128 : IComparable, IComparable<Int128>, IEquatable<Int128>, I
     public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out Int128 result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out Int128 result) {
         NumberRead.CheckInteger(style);
-        if (s != null && NumberRead.TryInteger128(s, style, true, out UInt128 value) == NumberRead.Ok) {
+        if (s != null && NumberRead.TryInteger128(s, style, true, out UInt128 value, NumberFormatInfo.Given(provider)) == NumberRead.Ok) {
             result = (Int128)value;
             return true;
         }
@@ -14761,14 +14761,14 @@ readonly struct Int128 : IComparable, IComparable<Int128>, IEquatable<Int128>, I
 /// digits, as every integer's (NumberFormat.Standard), "X" and "B" from its
 /// two's complement -- 32 F's for Int128 -1 -- and a picture as any other.
 static class Int128Format {
-    public static string Of(bool negative, UInt128 magnitude, string format, bool signed) {
-        return Of(negative, magnitude, format, signed, negative ? (Int128)(UInt128.Zero - magnitude) : (Int128)magnitude);
+    public static string Of(bool negative, UInt128 magnitude, string format, bool signed, NumberFormatInfo? nfi = null) {
+        return Of(negative, magnitude, format, signed, negative ? (Int128)(UInt128.Zero - magnitude) : (Int128)magnitude, nfi);
     }
 
-    public static string Of(bool negative, UInt128 magnitude, string format, bool signed, Int128 bits) {
+    public static string Of(bool negative, UInt128 magnitude, string format, bool signed, Int128 bits, NumberFormatInfo? nfi = null) {
         string digits = UInt128.Digits(magnitude);
-        if (format.Length == 0) { return negative ? "-" + digits : digits; }
-        if (PictureFormat.Is(format)) { return PictureFormat.OfDigits(negative, digits, format); }
+        if (format.Length == 0) { return negative ? String.Concat(NumberFormat.Minus(nfi), digits) : digits; }
+        if (PictureFormat.Is(format)) { return PictureFormat.OfDigits(negative, digits, format, nfi); }
 
         char kind = format[0];
         int width = -1;
@@ -14783,7 +14783,7 @@ static class Int128Format {
         UInt128 pattern = signed ? (UInt128)bits : magnitude;
         if (kind == 'x' || kind == 'X') { return Pad(Radix(pattern, 4, kind == 'x'), width); }
         if (kind == 'b' || kind == 'B') { return Pad(Radix(pattern, 1, false), width); }
-        return NumberFormat.Standard(kind, width, negative, digits);
+        return NumberFormat.Standard(kind, width, negative, digits, nfi);
     }
 
     /// The bits `per` at a time from the top, leading zeros dropped.
@@ -15050,8 +15050,8 @@ readonly struct Half : IComparable, IComparable<Half>, IEquatable<Half>, IFormat
 
     public override string ToString() { return DoubleFormat.OfHalf(this, ""); }
     public string ToString(string? format) { return DoubleFormat.OfHalf(this, format ?? ""); }
-    public string ToString(IFormatProvider? provider) { return DoubleFormat.OfHalf(this, ""); }
-    public string ToString(string? format, IFormatProvider? provider) { return DoubleFormat.OfHalf(this, format ?? ""); }
+    public string ToString(IFormatProvider? provider) { return DoubleFormat.OfHalf(this, "", NumberFormatInfo.Given(provider)); }
+    public string ToString(string? format, IFormatProvider? provider) { return DoubleFormat.OfHalf(this, format ?? "", NumberFormatInfo.Given(provider)); }
 
     public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         return Int128Format.Into(DoubleFormat.OfHalf(this, format.ToString()), destination, out charsWritten);
@@ -15072,7 +15072,7 @@ readonly struct Half : IComparable, IComparable<Half>, IEquatable<Half>, IFormat
     public static Half Parse(ReadOnlySpan<char> s, NumberStyles style = NumberStyles.Float | NumberStyles.AllowThousands, IFormatProvider? provider = null) {
         NumberRead.CheckFloat(style);
         string text = s.ToString();
-        if (!NumberRead.TryHalf(text, style, out ushort bits)) { throw NumberRead.Bad(text); }
+        if (!NumberRead.TryHalf(text, style, out ushort bits, NumberFormatInfo.Given(provider))) { throw NumberRead.Bad(text); }
         return new Half(bits);
     }
 
@@ -15082,7 +15082,7 @@ readonly struct Half : IComparable, IComparable<Half>, IEquatable<Half>, IFormat
     public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out Half result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider, out result); }
     public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out Half result) {
         NumberRead.CheckFloat(style);
-        if (s != null && NumberRead.TryHalf(s, style, out ushort bits)) {
+        if (s != null && NumberRead.TryHalf(s, style, out ushort bits, NumberFormatInfo.Given(provider))) {
             result = new Half(bits);
             return true;
         }
@@ -15627,8 +15627,8 @@ readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>
 
     public override string ToString() { return DecimalFormat.Of(this, ""); }
     public string ToString(string? format) { return DecimalFormat.Of(this, format ?? ""); }
-    public string ToString(IFormatProvider? provider) { return DecimalFormat.Of(this, ""); }
-    public string ToString(string? format, IFormatProvider? provider) { return DecimalFormat.Of(this, format ?? ""); }
+    public string ToString(IFormatProvider? provider) { return DecimalFormat.Of(this, "", NumberFormatInfo.Given(provider)); }
+    public string ToString(string? format, IFormatProvider? provider) { return DecimalFormat.Of(this, format ?? "", NumberFormatInfo.Given(provider)); }
 
     public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = DecimalFormat.Of(this, format.ToString());
@@ -15659,7 +15659,7 @@ readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>
     public static decimal Parse(ReadOnlySpan<char> s, NumberStyles style = NumberStyles.Number, IFormatProvider? provider = null) {
         NumberRead.CheckFloat(style);
         string text = s.ToString();
-        int status = NumberRead.TryDecimal(text, style, out decimal value);
+        int status = NumberRead.TryDecimal(text, style, out decimal value, NumberFormatInfo.Given(provider));
         if (status == NumberRead.Format) { throw NumberRead.Bad(text); }
         if (status == NumberRead.Overflow) { throw DecimalCalc.Overflow(); }
         return value;
@@ -15676,12 +15676,12 @@ readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>
             result = Zero;
             return false;
         }
-        return NumberRead.TryDecimal(s, style, out result) == NumberRead.Ok;
+        return NumberRead.TryDecimal(s, style, out result, NumberFormatInfo.Given(provider)) == NumberRead.Ok;
     }
 
     public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out decimal result) {
         NumberRead.CheckFloat(style);
-        return NumberRead.TryDecimal(s.ToString(), style, out result) == NumberRead.Ok;
+        return NumberRead.TryDecimal(s.ToString(), style, out result, NumberFormatInfo.Given(provider)) == NumberRead.Ok;
     }
 }
 
@@ -15707,13 +15707,13 @@ static class DecimalFormat {
         return ((uint)low).ToString() + made;
     }
 
-    public static string Of(decimal value, string format) {
+    public static string Of(decimal value, string format, NumberFormatInfo? nfi = null) {
         string digits = Digits(value);
         int point = digits.Length - value.Scale;
         bool negative = Decimal.IsNegative(value);
 
-        if (format.Length == 0) { return General(negative, digits, point); }
-        if (PictureFormat.Is(format)) { return PictureFormat.OfDecimal(negative, digits, point, format); }
+        if (format.Length == 0) { return General(negative, digits, point, nfi); }
+        if (PictureFormat.Is(format)) { return PictureFormat.OfDecimal(negative, digits, point, format, nfi); }
 
         char kind = format[0];
         int width = -1;
@@ -15726,30 +15726,30 @@ static class DecimalFormat {
         }
 
         if (kind == 'g' || kind == 'G' || kind == 'r' || kind == 'R') {
-            if (width < 1 && width != 0) { return General(negative, digits, point); }
+            if (width < 1 && width != 0) { return General(negative, digits, point, nfi); }
             if (width < 1) { width = digits.Length; }
             digits = NumberFormat.Round(digits, width, ref point);
             if (digits.Length == 0) { return "0"; }
-            return DoubleFormat.Layout(digits, point, negative, width, kind == 'g' || kind == 'r' ? 'e' : 'E');
+            return DoubleFormat.Layout(digits, point, negative, width, kind == 'g' || kind == 'r' ? 'e' : 'E', nfi);
         }
 
         if (kind == 'f' || kind == 'F' || kind == 'n' || kind == 'N' || kind == 'c' || kind == 'C') {
             int places = width < 0 ? 2 : width;
             digits = NumberFormat.Round(digits, point + places, ref point);
-            return Dressed(kind, negative && digits.Length > 0, digits, point, places);
+            return Dressed(kind, negative && digits.Length > 0, digits, point, places, nfi);
         }
 
         if (kind == 'p' || kind == 'P') {
             int places = width < 0 ? 2 : width;
             point = point + 2;
             digits = NumberFormat.Round(digits, point + places, ref point);
-            return Dressed(kind, negative && digits.Length > 0, digits, point, places);
+            return Dressed(kind, negative && digits.Length > 0, digits, point, places, nfi);
         }
 
         if (kind == 'e' || kind == 'E') {
             int places = width < 0 ? 6 : width;
             digits = NumberFormat.Round(digits, places + 1, ref point);
-            return NumberFormat.Scientific(negative && digits.Length > 0, digits, digits.Length == 0 ? 0 : point - 1, places, kind);
+            return NumberFormat.Scientific(negative && digits.Length > 0, digits, digits.Length == 0 ? 0 : point - 1, places, kind, nfi);
         }
 
         throw new FormatException("Format specifier was invalid.");
@@ -15757,16 +15757,16 @@ static class DecimalFormat {
 
     /// "G" with no precision: every digit, the point where the scale puts it,
     /// and nought without a sign.
-    static string General(bool negative, string digits, int point) {
+    static string General(bool negative, string digits, int point, NumberFormatInfo? nfi) {
         StringBuilder made = new StringBuilder();
-        if (negative && digits.Length > 0) { made.Append('-'); }
+        if (negative && digits.Length > 0) { made.Append(NumberFormat.Minus(nfi)); }
         if (point > 0) {
             for (int i = 0; i < point; i++) { made.Append(i < digits.Length ? digits[i] : '0'); }
         } else {
             made.Append('0');
         }
         if (point < digits.Length) {
-            made.Append('.');
+            made.Append(nfi == null ? "." : nfi._numberDecimalSeparator);
             for (int i = point; i < 0; i++) { made.Append('0'); }
             for (int i = point < 0 ? 0 : point; i < digits.Length; i++) { made.Append(digits[i]); }
         }
@@ -15775,7 +15775,7 @@ static class DecimalFormat {
 
     /// 0.DIGITS x 10^point with `places` after the point, in the dress of
     /// "F", "N", "C" or "P".
-    static string Dressed(char kind, bool negative, string digits, int point, int places) {
+    static string Dressed(char kind, bool negative, string digits, int point, int places, NumberFormatInfo? nfi) {
         StringBuilder units = new StringBuilder();
         if (point <= 0) {
             units.Append('0');
@@ -15787,7 +15787,7 @@ static class DecimalFormat {
             int at = point + i;
             fraction.Append(at >= 0 && at < digits.Length ? digits[at] : '0');
         }
-        return NumberFormat.Dress(kind, negative, units.ToString(), fraction.ToString());
+        return NumberFormat.Dress(kind, negative, units.ToString(), fraction.ToString(), nfi);
     }
 }
 
