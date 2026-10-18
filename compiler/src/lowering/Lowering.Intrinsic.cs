@@ -607,6 +607,12 @@ public sealed partial class Lowering
                 Addressed(arr);
                 return Widen(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes));
             }
+            case "FrameData":
+            {
+                VReg arr = ToWord(Arg(call, target, 0));
+                Addressed(arr, toReturn: true);
+                return Widen(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes));
+            }
             case "SyncWord":
             {
                 VReg obj = ToWord(Arg(call, target, 0));

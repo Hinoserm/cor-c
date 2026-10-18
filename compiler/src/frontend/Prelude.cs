@@ -878,6 +878,10 @@ public static class Prelude
             // The address of a string's first UTF-16 code unit, for code that
             // wants exactly those -- a Win32 W function's LPCWSTR.
             public static long StringData(string s) { return 0; }
+            // The address of an array's first element, the array kept alive
+            // until the function returns: what `T* p = stackalloc T[n]` is,
+            // whose memory C# keeps for the whole call, not only p's block.
+            public static long FrameData(object array) { return 0; }
             // The address of an object's synchronisation word, for a monitor.
             public static long SyncWord(object o) { return 0; }
             public static bool IsString(object x) { return false; }

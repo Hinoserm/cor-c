@@ -784,6 +784,11 @@ public sealed partial class Lowering
                 return dest;
             }
 
+            // `stackalloc T[n]` as an array, which a span of it is converted
+            // from (Binder.StackAllocMarker); made a pointer it was rewritten.
+            case CallExpr { Target: NameExpr { Name: Binder.StackAllocMarker }, Args: [NewExpr allocated] }:
+                return Eval(allocated);
+
             case CallExpr call when _b.GetTypes.Contains(call) && call.Target is MemberExpr on:
             {
                 // GetType(): the descriptor sits before the vtable the object points at.
@@ -3758,7 +3763,7 @@ public sealed partial class Lowering
                 return _e.Address(CallLabel(addressed));
 
             case UnOp.AddressOf:
-                return AddressOf(u, u.Operand);
+                return AddressOf(u, u.Operand, pins: true);
 
             case UnOp.Neg or UnOp.BitNot when _b.TypeOf(u.Operand).IsNullableValue:
                 return LiftedUnary(u, _b.TypeOf(u.Operand), _b.TypeOf(u));
@@ -3981,15 +3986,20 @@ public sealed partial class Lowering
 
     /// <summary>
     /// The address of a local, parameter, field or element: what `&x` and a
-    /// by-reference argument both ask.
+    /// by-reference argument both ask. A pointer taken (`pins`, `&x`) to an
+    /// element of an array or a string, or to a field of an object, keeps
+    /// what holds it alive to the end of the block, as an address taken with
+    /// Sys.ArrayData does (Addressed) and as C#'s `fixed` keeps it: the
+    /// pointer is a number, which the collector does not follow.
     /// </summary>
-    private VReg AddressOf(Node at, Expr target)
+    private VReg AddressOf(Node at, Expr target, bool pins = false)
     {
         if (target is IndexExpr index && index.Args.Count == 1 && !_b.Indexers.ContainsKey(index))
         {
             Type sequence = _b.TypeOf(index.Target);
             Type element = _b.TypeOf(index);
             VReg basis = Eval(index.Target);
+            if (pins && !sequence.IsPointer) Addressed(basis);
             VReg i = ElementIndex(index.Args[0], sequence);
             MemPlace p = ElementPlace(basis, i, sequence, element, at);
             return p.Offset == 0 ? RegOf(p.Address) : _e.Binary(Opcode.Add, RegOf(p.Address), p.Offset);
@@ -3997,7 +4007,9 @@ public sealed partial class Lowering
 
         if (target is MemberExpr me && _b.Resolved.TryGetValue(me, out Sym? ms) && ms is FieldSym fs)
         {
-            Place p = fs.Field.Static ? PlaceOfField(fs.Field, null, at) : PlaceOfField(fs.Field, FieldBase(fs.Field, me.Target), at);
+            VReg? owner = fs.Field.Static ? null : FieldBase(fs.Field, me.Target);
+            if (pins && owner is not null && fs.Field.Owner.Kind == TypeKind.Class) Addressed(owner);
+            Place p = PlaceOfField(fs.Field, owner, at);
             return AddressOfPlace(p, at);
         }
 

@@ -6173,7 +6173,8 @@ public sealed partial class Binder
                         // is not what it means there.
                         Type? outer = _wanted;
 
-                        _wanted = d.Init is NewExpr { Type.Name.Length: 0 } or TupleExpr or ConditionalExpr or SwitchExpr ? type : outer;
+                        _wanted = d.Init is NewExpr { Type.Name.Length: 0 } or TupleExpr or ConditionalExpr or SwitchExpr
+                            or CallExpr { Target: NameExpr { Name: StackAllocMarker } } ? type : outer;
 
                         Type had = CheckExpr(d.Init);
 
@@ -7205,6 +7206,12 @@ public sealed partial class Binder
             // parameter's `T?` hold zero in the word; there is no cell and no
             // value type here to refuse.
             if (to.Prim == Prim.Any || to.ParamName != null)
+            {
+                return;
+            }
+
+            // A POINTER TAKES NULL (C# 23.5.1): the null pointer, zero.
+            if (to.IsPointer)
             {
                 return;
             }
@@ -13320,6 +13327,92 @@ public sealed partial class Binder
                 return CheckExpr(built);
             }
 
+            // `stackalloc T[n]` (Parser): a block of memory on the stack. Made
+            // a pointer, `T* p = stackalloc T[n]`, it is n elements kept for
+            // the whole call (Sys.FrameData); anywhere else the elements as
+            // an array, which is what a Span<T> of them is here.
+            case CallExpr { Target: NameExpr { Name: StackAllocMarker }, Args: [NewExpr made] } alloc:
+            {
+                // As an array the call is evaluated for its argument (Lowering),
+                // with no rewrite of its own: a span converted from it is a
+                // rewrite of the call (ConvertByOperator), which one here would
+                // have stood in the way of.
+                if (_wanted is not { IsPointer: true }) return CheckExpr(made);
+                Expr resolved = made;
+                if (_wanted is { IsPointer: true } pointer && pointer.Pointee is { } pointee)
+                {
+                    Type element = Resolve(made.Type, _thisType);
+                    if (!element.IsError && !element.Equals(pointee) && pointee.Prim != Prim.Void)
+                    {
+                        Error(alloc, $"CS0266: Cannot implicitly convert type '{element}*' to '{pointer}'");
+                        return Type.Error;
+                    }
+                    resolved = new CastExpr
+                    {
+                        Type = PointerRef(made.Type, alloc), Line = alloc.Line, Col = alloc.Col,
+                        Operand = new CallExpr
+                        {
+                            Target = new MemberExpr { Target = new NameExpr { Name = Prelude.TypeName, Line = alloc.Line, Col = alloc.Col }, Name = "FrameData", Line = alloc.Line, Col = alloc.Col },
+                            Args = { made }, Line = alloc.Line, Col = alloc.Col,
+                        },
+                    };
+                }
+                _r.Rewrites[alloc] = resolved;
+                return CheckExpr(resolved);
+            }
+
+            // `fixed (T* p = x) ...` (Parser): x's address, held while the
+            // block runs -- the collector never moves an object, so holding
+            // is all fixing is (Sys.ArrayData, Lowering.Addressed). An array's
+            // first element, or null for a null or empty one; a string's
+            // first character, or null; an address taken, as it is.
+            case CallExpr { Target: NameExpr { Name: FixedMarker }, Args: [NameExpr held, DefaultExpr { Type: TypeRef pointerRef } wanted] } fix:
+            {
+                Type pointer = Resolve(pointerRef, _thisType);
+                Type of = CheckExpr(held);
+                if (of.IsError || pointer.IsError) return Type.Error;
+                Type? element = of.IsPointer ? of.Pointee : of.IsArray ? of.Element : of.Prim == Prim.String && !of.IsArray ? Type.Char : null;
+                if (element is null)
+                {
+                    Error(held, "CS0213: You cannot use the fixed statement to take the address of an already fixed expression, nor of '" + of + "'");
+                    return Type.Error;
+                }
+                if (!pointer.IsPointer || pointer.Pointee is not { } pointee || !element.Equals(pointee) && pointee.Prim != Prim.Void)
+                {
+                    Error(held, $"CS0266: Cannot implicitly convert type '{element}*' to '{pointer}'");
+                    return Type.Error;
+                }
+                Expr Held() => new NameExpr { Name = held.Name, Line = held.Line, Col = held.Col };
+                Expr Pointer(Expr address) => new CastExpr { Type = pointerRef, Operand = address, Line = fix.Line, Col = fix.Col };
+                Expr Data(string intrinsic) => new CallExpr
+                {
+                    Target = new MemberExpr { Target = new NameExpr { Name = Prelude.TypeName, Line = fix.Line, Col = fix.Col }, Name = intrinsic, Line = fix.Line, Col = fix.Col },
+                    Args = { Held() }, Line = fix.Line, Col = fix.Col,
+                };
+                Expr Null() => new BinaryExpr { Op = BinOp.Eq, Left = Held(), Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = fix.Line, Col = fix.Col }, Line = fix.Line, Col = fix.Col };
+                Expr resolved = of.IsPointer ? Pointer(Held())
+                    : new ConditionalExpr
+                    {
+                        Cond = of.IsArray
+                            ? new BinaryExpr
+                            {
+                                Op = BinOp.OrElse, Left = Null(), Line = fix.Line, Col = fix.Col,
+                                Right = new BinaryExpr
+                                {
+                                    Op = BinOp.Eq, Line = fix.Line, Col = fix.Col,
+                                    Left = new MemberExpr { Target = Held(), Name = "Length", Line = fix.Line, Col = fix.Col },
+                                    Right = new LiteralExpr { Kind = Lit.Int, IntValue = 0, Text = "0", Line = fix.Line, Col = fix.Col },
+                                },
+                            }
+                            : Null(),
+                        Then = wanted,
+                        Else = Pointer(Data(of.IsArray ? "ArrayData" : "StringData")),
+                        Line = fix.Line, Col = fix.Col,
+                    };
+                _r.Rewrites[fix] = resolved;
+                return CheckExpr(resolved);
+            }
+
             // SYSTEM.ENUM'S STATICS, which only the compiler can answer, for
             // the same reason an enum's ToString is: the members exist at
             // compile time and nowhere else. Guarded on nothing having
@@ -14771,6 +14864,9 @@ public sealed partial class Binder
                 // ? 5 : null` crashed on exactly that.
                 Type Lifted(Type had, Expr arm)
                 {
+                    // A POINTER IS ITS OWN NULL (C# 23.5.1): `use ? p : null`
+                    // is the pointer, not a cell holding one.
+                    if (had.IsPointer) return had;
                     Type whole = had.AsNullable();
 
                     if (whole.IsNullableValue && !had.IsNullableValue)
@@ -21031,6 +21127,18 @@ public sealed partial class Binder
             _ => null,
         };
     }
+
+    /// <summary>The name `stackalloc T[n]` is parsed as a call to, its NewExpr the one argument (CheckExprCore).</summary>
+    internal const string StackAllocMarker = "__stackalloc$";
+
+    /// <summary>The name a `fixed` declarator's address is parsed as a call to: its held value and default(T*) (CheckExprCore).</summary>
+    internal const string FixedMarker = "__fixed$";
+
+    /// <summary>A pointer to what `element` names, spelt as it is.</summary>
+    private static TypeRef PointerRef(TypeRef element, Node at)
+        => new TypeRef { Name = element.Name, Arguments = element.Args, UseArgs = element.UseArgs, ArrayRank = element.ArrayRank,
+            Nullable = element.Nullable, ElementNullable = element.ElementNullable, InnerNullable = element.InnerNullable,
+            PointerDepth = element.PointerDepth + 1, TupleNames = element.TupleNames, Line = at.Line, Col = at.Col };
 
     /// <summary>
     /// A binary operator with a pointer on either side: a pointer and an

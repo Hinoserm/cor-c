@@ -396,7 +396,7 @@ public sealed partial class Lowering
     /// set where the address is taken: that may be one arm of `?:` or `&&`,
     /// and the block's end is reached by the other arm too, where a register
     /// set only in the first would hold whatever was there before.
-    private void Addressed(VReg array)
+    private void Addressed(VReg array, bool toReturn = false)
     {
         VReg keep = _f.NewReg(array.Type);
         List<Instr> entry = _f.Entry.Instrs;
@@ -404,7 +404,27 @@ public sealed partial class Lowering
         while (first < entry.Count && entry[first].Op == Opcode.Phi) first++;
         entry.Insert(first, new Instr { Op = Opcode.Copy, Dest = keep, Operands = { new ImmOperand(0, array.Type) } });
         _e.CopyTo(keep, RegOperand.Of(array));
-        _addressed.Add((_f, keep));
+        if (toReturn) _heldToReturn.Add((_f, keep));
+        else _addressed.Add((_f, keep));
+    }
+
+    /// <summary>
+    /// The arrays a `stackalloc` to a pointer made (Sys.FrameData), kept
+    /// alive where the function returns -- every return reaches its return
+    /// block -- since C# keeps that memory for the whole call: a pointer to
+    /// it may be copied out of the block that declared the first.
+    /// </summary>
+    private readonly List<(Function Function, VReg Array)> _heldToReturn = new();
+
+    /// <summary>Keeps alive, in the return block, the arrays this function's stackallocs made (Addressed).</summary>
+    private void KeepHeldToReturn()
+    {
+        for (int i = _heldToReturn.Count - 1; i >= 0; i--)
+        {
+            if (!ReferenceEquals(_heldToReturn[i].Function, _f)) continue;
+            _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, RegOperand.Of(_heldToReturn[i].Array));
+            _heldToReturn.RemoveAt(i);
+        }
     }
 
     private bool _inBlockList;

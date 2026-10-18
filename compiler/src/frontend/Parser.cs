@@ -4484,6 +4484,40 @@ public sealed class Parser
                 return lowered;
             }
 
+            // `fixed (T* p = x, q = y) body`: each address held while the body
+            // runs. A block of its own, each x in a local of its own and its
+            // pointer made of it (Binder.FixedMarker), then the body: the
+            // collector moves nothing, and what is held is kept alive to the
+            // block's end (Lowering.Addressed).
+            case Tok.Ident when Cur.Text == "fixed" && Ahead().Kind == Tok.LParen:
+            {
+                _i++;
+                Expect(Tok.LParen, "'(' after 'fixed'");
+                TypeRef pointer = ParseTypeRef();
+                if (pointer.PointerDepth == 0) throw Error("CS0209: The type of a local declared in a fixed statement must be a pointer type");
+                Block pinned = new() { Line = at.Line, Col = at.Col };
+                do
+                {
+                    Token named = Expect(Tok.Ident, "a name in the fixed statement");
+                    Expect(Tok.Assign, "'=' after the name in a fixed statement");
+                    Expr init = ParseExpr();
+                    string held = "$fixed$" + _lockSerial++;
+                    pinned.WritableStatements.Add(new LocalDecl { Name = held, Init = init, Line = named.Line, Col = named.Col });
+                    CallExpr address = new()
+                    {
+                        Target = new NameExpr { Name = Binder.FixedMarker, Line = named.Line, Col = named.Col },
+                        Line = named.Line, Col = named.Col,
+                    };
+                    address.Args.Add(new NameExpr { Name = held, Line = named.Line, Col = named.Col });
+                    address.Args.Add(new DefaultExpr { Type = pointer, Line = named.Line, Col = named.Col });
+                    pinned.WritableStatements.Add(new LocalDecl { Type = pointer, Name = named.Text, Init = address, Line = named.Line, Col = named.Col });
+                }
+                while (Take(Tok.Comma));
+                Expect(Tok.RParen, "')' after the fixed statement's declarations");
+                pinned.WritableStatements.Add(ParseStmt());
+                return pinned;
+            }
+
             case Tok.KwIf:
             {
                 _i++;
@@ -8801,7 +8835,9 @@ public sealed class Parser
             // that is where the name still exists. C# takes the LAST part of a
             // dotted name, so `nameof(a.b.C)` is "C".
             // `stackalloc byte[2]` -- in C# a block of memory on the stack,
-            // typed as a Span<T> in a safe context.
+            // typed as a Span<T> in a safe context, and as a pointer where a
+            // pointer is declared, kept then for the whole call
+            // (Binder.StackAllocMarker).
             //
             // HEAP HERE, and that is a difference in WHERE rather than in what:
             // the span is the same span, the reads and writes are the same, and
@@ -8819,7 +8855,11 @@ public sealed class Parser
                 Expr many = ParseExpr();
 
                 Expect(Tok.RBracket, "']' after the length");
-                return new NewExpr { Type = of, ArraySize = many, Line = at.Line, Col = at.Col };
+                // A pointer or an array as what it is made for says
+                // (Binder.StackAllocMarker).
+                CallExpr allocated = new() { Target = new NameExpr { Name = Binder.StackAllocMarker, Line = at.Line, Col = at.Col }, Line = at.Line, Col = at.Col };
+                allocated.Args.Add(new NewExpr { Type = of, ArraySize = many, Line = at.Line, Col = at.Col });
+                return allocated;
             }
 
             case Tok.Ident when at.Text == "nameof" && _t[_i + 1].Kind == Tok.LParen:

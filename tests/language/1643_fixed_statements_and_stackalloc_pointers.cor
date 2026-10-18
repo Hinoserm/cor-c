@@ -1,0 +1,124 @@
+// test: fixed_statements_and_stackalloc_pointers
+// expect-exit: 0
+// expect-output:
+// stack 298
+// array 54 40
+// nulls True True
+// string ho 0
+// field 50 8
+// span 4 8
+// held 4950 4950
+// outlived 1234 5678
+// nullptr False True 9 False
+//
+// UNSAFE CODE AS C# WRITES IT: `fixed (T* p = x)` takes an array's first
+// element (null for a null or empty array), a string's first character or
+// an address, and holds what it points into while its block runs; `T* p =
+// stackalloc T[n]` is n zeroed elements for the whole call; `stackalloc`
+// anywhere else is a span of them. Neither parsed: `fixed` was no statement,
+// and a stackalloc was an array, "cannot convert 'int[]' to 'int*'". The
+// collector moves nothing, so holding is all fixing is: the held array, and
+// the memory a stackalloc made, live through collections and new
+// allocations until the block, or the call, is done with them. And a
+// pointer takes null as C# has it: `int* p = null` was "a value type and
+// cannot be null", and `use ? p : null` a nullable cell of a pointer.
+
+using System;
+
+struct Pair { public int A, B; }
+
+class Holder { public int Value = 5; public long Wide = 7; }
+
+static class Program
+{
+    static unsafe int Sum(int* p, int n) { int s = 0; for (int i = 0; i < n; i++) s += p[i]; return s; }
+
+    static unsafe long Stacked(int n)
+    {
+        int* p = stackalloc int[n];
+        long before = 0;
+        for (int i = 0; i < n; i++) before += p[i];
+        for (int i = 0; i < n; i++) p[i] = i * i;
+        Pair* q = stackalloc Pair[3];
+        q[1].A = 4; q[2].B = 9;
+        return before * 1000 + Sum(p, n) + q[1].A + q[2].B + q[0].A;
+    }
+
+    static unsafe string Held()
+    {
+        long a = 0, b = 0;
+        fixed (int* p = new int[1000])
+        {
+            for (int i = 0; i < 1000; i++) p[i] = i;
+            for (int round = 0; round < 5; round++)
+            {
+                GC.Collect();
+                int[] other = new int[1000];
+                for (int i = 0; i < other.Length; i++) other[i] = -1;
+            }
+            for (int i = 0; i < 100; i++) a += p[i];
+            for (int i = 900; i < 1000; i++) b += p[i] - 900;
+        }
+        return a + " " + b;
+    }
+
+    static unsafe string Outlived()
+    {
+        int* kept;
+        {
+            int* p = stackalloc int[2];
+            p[0] = 1234; p[1] = 5678;
+            kept = p;
+        }
+        for (int round = 0; round < 5; round++)
+        {
+            GC.Collect();
+            int[] other = new int[2];
+            other[0] = -1; other[1] = -1;
+        }
+        return kept[0] + " " + kept[1];
+    }
+
+    static unsafe int* Pick(int* p, bool use) { return use ? p : null; }
+
+    static unsafe int Main()
+    {
+        Console.WriteLine("stack " + Stacked(10));
+        int[] a = { 3, 4, 5, 6 };
+        fixed (int* p = a)
+        {
+            p[1] = 40;
+            Console.WriteLine("array " + Sum(p, a.Length) + " " + a[1]);
+        }
+        int[] none = null;
+        int[] empty = new int[0];
+        fixed (int* p = none, q = empty)
+        {
+            Console.WriteLine("nulls " + (p == null) + " " + (q == null));
+        }
+        string s = "hello";
+        fixed (char* c = s)
+        {
+            Console.WriteLine("string " + c[0] + c[4] + " " + (int)c[5]);
+        }
+        Holder h = new Holder();
+        fixed (int* v = &h.Value)
+        {
+            *v = 50;
+        }
+        fixed (long* w = &h.Wide) { *w += 1; }
+        Console.WriteLine("field " + h.Value + " " + h.Wide);
+        Span<int> span = stackalloc int[4];
+        span[2] = 8;
+        Console.WriteLine("span " + span.Length + " " + span[2]);
+        Console.WriteLine("held " + Held());
+        Console.WriteLine("outlived " + Outlived());
+        int* none1 = null;
+        int x = 9;
+        int* got = Pick(&x, true);
+        int* gone = Pick(&x, false);
+        none1 = got;
+        Console.WriteLine("nullptr " + (none1 == null) + " " + (gone == null) + " " + *got + " " + (gone != null));
+        return 0;
+    }
+}

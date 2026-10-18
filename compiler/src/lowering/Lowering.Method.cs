@@ -432,6 +432,7 @@ public sealed partial class Lowering
         }
 
         _e.SetBlock(_returnBlock);
+        KeepHeldToReturn();
         if (fromC is not null)
         {
             LeaveToC(decl, fromC);
