@@ -432,6 +432,10 @@ public sealed partial class Lowering
         {
             if (FaceSlot("IComparable", 1) is int compareOf) slots.Add((compareOf, BoxCompareValue(of, key)));
             if (FaceSlot("IEquatable", 1) is int equatableOf) slots.Add((equatableOf, BoxEqualsValue(of, key)));
+            // AND IN ITS FORM'S OWN BLOCK, where a class implements the form
+            // beside another (InterfaceForms): IComparable<int> called there.
+            if (FormSlot("IComparable", of.Prim) is int compareOwn) slots.Add((compareOwn, BoxCompareValue(of, key)));
+            if (FormSlot("IEquatable", of.Prim) is int equatableOwn) slots.Add((equatableOwn, BoxEqualsValue(of, key)));
         }
         return slots;
     }
@@ -447,6 +451,10 @@ public sealed partial class Lowering
             if (a == arity && member == 0 && !template.Contains('.') && BoxedFaces.Plain(template) == plain) return slot;
         return null;
     }
+
+    /// <summary>The slot of a system interface's one member over a primitive, in its form's own block when it has one.</summary>
+    private int? FormSlot(string plain, Prim p)
+        => InterfaceForms.OfPrimitive(plain, p) is string form && _b.InterfaceFormSlots.TryGetValue((form, 0), out int slot) ? slot : null;
 
     /// <summary>A box's value, read as its type is kept (BoxEquals' reading).</summary>
     private VReg BoxedValue(Builder e, VReg box, Type of)

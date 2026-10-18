@@ -1,0 +1,130 @@
+// test: two_constructions_of_one_generic_interface
+// expect-exit: 0
+// expect-output:
+// price 1 2
+// generic 1 2
+// money -1 True
+// groups a b
+// entries a! b!
+// dictionary 2 a
+// list 2 b
+// shared a;b;
+// count 2 2
+// explicit 3
+// named int string int
+//
+// A class may implement two constructions of one generic interface with a
+// member for each, as C# allows. Every construction of a template had the
+// template's slots, so the second member took the first's slot and a call
+// through one construction ran the other's; then such a class was refused.
+// Now a construction takes its FORM's slots -- every reference argument read
+// as the one word shared code sees -- and a form some class implements
+// beside another form has a block of its own: IComparable<Money> beside
+// IComparable<string>, IEnumerable<KeyValuePair<string, G>> beside
+// IEnumerable<G>. Called directly, through a generic copy, through the code
+// a Dictionary shares among all its reference arguments, through a generic
+// class's shared code, through a struct's box.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+struct Money : IComparable<Money>, IEquatable<Money>
+{
+    public int Cents;
+    public Money(int cents) { Cents = cents; }
+    public int CompareTo(Money other) { return Cents.CompareTo(other.Cents); }
+    public bool Equals(Money other) { return Cents == other.Cents; }
+}
+
+class Price : IComparable<Money>, IComparable<string>
+{
+    public int CompareTo(Money other) { return 1; }
+    public int CompareTo(string? other) { return 2; }
+}
+
+class G
+{
+    public string N;
+    public G(string n) { N = n; }
+    public override string ToString() { return N; }
+}
+
+class Both : IEnumerable<G>, IEnumerable<KeyValuePair<string, G>>
+{
+    readonly G[] items = { new G("a"), new G("b") };
+    public IEnumerator<G> GetEnumerator() { foreach (G g in items) yield return g; }
+    IEnumerator<KeyValuePair<string, G>> IEnumerable<KeyValuePair<string, G>>.GetEnumerator()
+    {
+        foreach (G g in items) yield return new KeyValuePair<string, G>(g.N + "!", g);
+    }
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+}
+
+class Joiner<T>
+{
+    public string Join(IEnumerable<T> xs)
+    {
+        string s = "";
+        foreach (T x in xs) s += x + ";";
+        return s;
+    }
+}
+
+interface IAnswer<T> { int Answer(T x); }
+
+class Explicit : IAnswer<Money>, IAnswer<G>
+{
+    int IAnswer<Money>.Answer(Money m) { return m.Cents; }
+    int IAnswer<G>.Answer(G g) { return g.N.Length * 100; }
+}
+
+interface IName<T> { string Name(); }
+
+class Named : IName<int>, IName<string>
+{
+    string IName<int>.Name() { return "int"; }
+    string IName<string>.Name() { return "string"; }
+}
+
+static class Program
+{
+    static string NameOf<T>(IName<T> n) { return n.Name(); }
+
+    static int Compare<T>(IComparable<T> c, T v) { return c.CompareTo(v); }
+
+    static void Main()
+    {
+        Price p = new Price();
+        IComparable<Money> byMoney = p;
+        IComparable<string> byText = p;
+        Console.WriteLine("price " + byMoney.CompareTo(new Money(5)) + " " + byText.CompareTo("x"));
+        Console.WriteLine("generic " + Compare<Money>(p, new Money(5)) + " " + Compare<string>(p, "x"));
+
+        IComparable<Money> boxed = new Money(3);
+        IEquatable<Money> same = new Money(3);
+        Console.WriteLine("money " + boxed.CompareTo(new Money(4)) + " " + same.Equals(new Money(3)));
+
+        Both both = new Both();
+        Console.Write("groups");
+        foreach (G g in both) Console.Write(" " + g.N);
+        Console.WriteLine();
+        Console.Write("entries");
+        foreach (KeyValuePair<string, G> e in (IEnumerable<KeyValuePair<string, G>>)both) Console.Write(" " + e.Key);
+        Console.WriteLine();
+
+        Dictionary<string, G> table = new Dictionary<string, G>((IEnumerable<KeyValuePair<string, G>>)both);
+        Console.WriteLine("dictionary " + table.Count + " " + table["a!"].N);
+        List<G> list = new List<G>(both);
+        Console.WriteLine("list " + list.Count + " " + list[1].N);
+        Console.WriteLine("shared " + new Joiner<G>().Join(both));
+        Console.WriteLine("count " + ((IEnumerable<G>)both).Count() + " " + ((IEnumerable<KeyValuePair<string, G>>)both).Count());
+
+        Explicit x = new Explicit();
+        Console.WriteLine("explicit " + (((IAnswer<Money>)x).Answer(new Money(-97)) + ((IAnswer<G>)x).Answer(new G("a"))));
+
+        Named named = new Named();
+        Console.WriteLine("named " + ((IName<int>)named).Name() + " " + ((IName<string>)named).Name() + " " + NameOf<int>(named));
+    }
+}

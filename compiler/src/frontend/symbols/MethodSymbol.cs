@@ -39,6 +39,8 @@ public sealed class MethodSymbol
     /// </summary>
     public string? ExplicitInterface { get => _rare?.ExplicitInterface; init { if (value is not null) Rare.ExplicitInterface = Interned.Name(value); } }
     public string? ExplicitMember { get => _rare?.ExplicitMember; init { if (value is not null) Rare.ExplicitMember = value; } }
+    /// <summary>The interface's arguments as the explicit implementation wrote them (MemberDecl.ExplicitInterfaceArgs), or null.</summary>
+    public List<TypeRef>? ExplicitArgs { get => _rare?.ExplicitArgs; init { if (value is not null) Rare.ExplicitArgs = value; } }
 
     /// <summary>
     /// What few methods carry -- an explicit interface and its member, type
@@ -81,5 +83,6 @@ internal sealed class MethodSymbolRare
 {
     public string? ExplicitInterface;
     public string? ExplicitMember;
+    public List<TypeRef>? ExplicitArgs;
     public List<string>? TypeParams;
 }

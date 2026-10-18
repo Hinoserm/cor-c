@@ -24,6 +24,8 @@ public sealed class DeclarationSession : IDisposable
     public string Assembly { get; }
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
     public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces { get; }
+    /// <summary>The conflicted interface forms of the project (InterfaceForms), with whether each is the library's.</summary>
+    public IReadOnlyDictionary<string, bool> InterfaceForms { get; }
 
     /// <summary>
     /// Names looked up in the index and what they turned out to be, shared
@@ -53,6 +55,7 @@ public sealed class DeclarationSession : IDisposable
         Assembly = assembly;
         Interfaces = Catalog.Interfaces(assembly);
         LibraryInterfaces = Catalog.LibraryInterfaces(assembly);
+        InterfaceForms = Catalog.InterfaceForms(assembly);
     }
 
     public bool Speculated((string Name, int Arity) key, out string? value)

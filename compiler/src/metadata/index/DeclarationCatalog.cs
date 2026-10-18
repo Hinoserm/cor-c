@@ -55,6 +55,16 @@ public sealed class DeclarationCatalog : IDisposable
     /// <summary>The build stamp the index under this one had when this one was made on it, or null for an index made on none.</summary>
     public byte[]? UnderStamp => index.UnderStamp;
 
+    /// <summary>The conflicted interface forms the index records (InterfaceFamilies.ReadForms).</summary>
+    public IReadOnlyDictionary<string, bool> InterfaceForms(string assembly)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            return InterfaceFamilies.ReadForms(index, assembly);
+        }
+    }
+
     public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces(string assembly)
     {
         lock (gate)
@@ -275,7 +285,9 @@ public sealed class DeclarationCatalog : IDisposable
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             using MemoryStream stream = new();
             using BinaryWriter writer = new(stream);
-            bool interfacePlan = key.StartsWith("I:", StringComparison.Ordinal) && key.EndsWith('\n');
+            // The interface plan: the families and the conflicted forms,
+            // each read whole (InterfaceFamilies).
+            bool interfacePlan = (key.StartsWith("I:", StringComparison.Ordinal) || key.StartsWith("X:", StringComparison.Ordinal)) && key.EndsWith('\n');
             foreach (DeclarationRecord record in interfacePlan ? index.WithPrefix(key) : index.Find(key))
             {
                 if (interfacePlan) writer.Write(record.Key);

@@ -1,0 +1,77 @@
+// test: comparable_of_int_beside_comparable_of_string
+// whole: yes
+// expect-exit: 0
+// expect-output:
+// direct 1 2
+// generic 1 2
+// derived 10 20
+// pair True False True
+// boxed 1 True True
+// sorted 1,2,3 3
+//
+// IComparable<int> and IComparable<string> on one class, each with its
+// CompareTo: refused before, and before that a call through IComparable<int>
+// ran the string one. IComparable<int>'s form has a block of its own here,
+// beside the one every reference construction shares, and what else answers
+// IComparable<int> answers it there too: an int's box, a struct's box, a
+// class whose base implements the other construction. Compiled apart from
+// a class library numbered without this program, the class is refused, with
+// why: the library's int boxes and its code would not fill the block -- so
+// this is a test of a whole compile.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class C : IComparable<int>, IComparable<string>
+{
+    public int CompareTo(int other) { return 1; }
+    public int CompareTo(string? other) { return 2; }
+}
+
+class Base : IComparable<int>
+{
+    public int CompareTo(int other) { return 10; }
+}
+
+class Derived : Base, IComparable<string>
+{
+    public int CompareTo(string? other) { return 20; }
+}
+
+struct Pair : IEquatable<int>, IEquatable<string>
+{
+    public int V;
+    public bool Equals(int other) { return V == other; }
+    public bool Equals(string? other) { return other == V.ToString(); }
+}
+
+static class Program
+{
+    static int Compare<T>(IComparable<T> c, T v) { return c.CompareTo(v); }
+
+    static void Main()
+    {
+        C c = new C();
+        IComparable<int> byNumber = c;
+        IComparable<string> byText = c;
+        Console.WriteLine("direct " + byNumber.CompareTo(5) + " " + byText.CompareTo("x"));
+        Console.WriteLine("generic " + Compare<int>(c, 5) + " " + Compare<string>(c, "x"));
+
+        Derived d = new Derived();
+        Console.WriteLine("derived " + ((IComparable<int>)d).CompareTo(1) + " " + ((IComparable<string>)d).CompareTo(""));
+
+        IEquatable<int> pairByNumber = new Pair { V = 4 };
+        IEquatable<string> pairByText = new Pair { V = 4 };
+        Console.WriteLine("pair " + pairByNumber.Equals(4) + " " + pairByNumber.Equals(5) + " " + pairByText.Equals("4"));
+
+        IComparable<int> five = 5;
+        IEquatable<int> seven = 7;
+        object boxed = 9;
+        Console.WriteLine("boxed " + five.CompareTo(3) + " " + seven.Equals(7) + " " + (boxed is IComparable<int>));
+
+        List<int> numbers = new List<int> { 3, 1, 2 };
+        numbers.Sort();
+        Console.WriteLine("sorted " + string.Join(",", numbers) + " " + numbers.Max());
+    }
+}

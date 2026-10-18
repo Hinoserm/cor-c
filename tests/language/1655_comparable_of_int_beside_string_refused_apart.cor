@@ -1,0 +1,25 @@
+// test: comparable_of_int_beside_string_refused_apart
+// units: tests/language/support/1655_numbers_units.cor
+// expect-compile-error: 'C' implements both 'IComparable$int' and 'IComparable$string' with different members for 'CompareTo', which take one slot: the class library's units were numbered without the declarations that give IComparable`1<int> slots of its own; compile the program whole, or index it with the library
+//
+// The class of 1653 compiled apart from the units it is linked with: they
+// call IComparable<int> through its template's slot (Numbers.Order here,
+// an int's box in the class library), numbered without this unit's
+// declarations, which alone give that construction a block of its own.
+// Rather than a block nothing else fills, the class is refused, saying why.
+
+using System;
+
+class C : IComparable<int>, IComparable<string>
+{
+    public int CompareTo(int other) { return 1; }
+    public int CompareTo(string? other) { return 2; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(Numbers.Order(new C(), 5));
+    }
+}

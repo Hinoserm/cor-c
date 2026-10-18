@@ -30,6 +30,12 @@ real+=("${global[@]}")
 # whole.
 case " $* " in *" --obj "*|*" --freestanding "*|*" --store-sequences "*) exec "${real[@]}" "$@" ;; esac
 [ "${1:-}" = compile ] || exec "${real[@]}" "$@"
+# A TEST OF WHAT ONLY A WHOLE COMPILE DECIDES ("// whole: yes": what an image
+# leaves out, a slot the library's own build could not have numbered) is
+# compiled whole, as it says.
+for arg in "$@"; do
+    case "$arg" in *.cor) [ -f "$arg" ] && grep -qx '// whole: yes' "$arg" && exec "${real[@]}" "$@" ;; esac
+done
 shift
 # THE LIBRARY AS THIS COMPILE SEES IT: run.sh compiles from its own copy of
 # the sources (--lib-root), so the library sources it names are that copy's,

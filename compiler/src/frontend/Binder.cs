@@ -27,6 +27,8 @@ public sealed partial class Binder
     private readonly Metadata.DeclarationBatch _declarationBatch = new();
     private readonly IReadOnlyDictionary<(string Name, int Arity), int>? _indexedInterfaces;
     private readonly IReadOnlySet<(string Name, int Arity)>? _libraryInterfaces;
+    /// <summary>The conflicted forms the index found over every declaration of the project (InterfaceForms), with whether each is the library's.</summary>
+    private readonly IReadOnlyDictionary<string, bool>? _indexedForms;
     /// <summary>
     /// A kernel module's compile: every interface family the KERNEL'S index
     /// holds. A family outside it is the module's own, and is numbered in a
@@ -353,6 +355,12 @@ public sealed partial class Binder
         {
             MethodSymbol m = t.Methods[i];
             if (m.VtableSlot >= 0 || m.Decl?.LocalCopy == true) continue;
+            if (FormSlot(t, i) is int own)
+            {
+                m.VtableSlot = own;
+                if (DumpSlots) Console.Error.WriteLine("interface slot " + own + " " + t.Key + "." + m.Name + " later, its form's");
+                continue;
+            }
             if (!_familySlots.TryGetValue((template, arity, i), out int slot))
                 throw new InvalidOperationException($"the members of '{t.Name}', declared after the interfaces were numbered, "
                     + $"have a method '{m.Name}' in place {i}, for which its family {template}`{arity} was given no slot");
@@ -1282,9 +1290,11 @@ public sealed partial class Binder
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
         Action<string, int>? requireOverrides = null,
-        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null)
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null,
+        IReadOnlyDictionary<string, bool>? indexedForms = null)
     {
         _file = file;
+        _indexedForms = indexedForms;
         _kernelInterfaces = kernelInterfaces;
         _requireDeclaration = requireDeclaration;
         _requireExtensions = requireExtensions;
@@ -1326,9 +1336,10 @@ public sealed partial class Binder
         Action<string, string>? requireExtensions = null,
         IReadOnlySet<(string Name, int Arity)>? libraryInterfaces = null,
         Action<string, int>? requireOverrides = null, bool freshOnly = false,
-        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null, Metadata.DemandsAsked? asked = null)
+        IReadOnlySet<(string Name, int Arity)>? kernelInterfaces = null, Metadata.DemandsAsked? asked = null,
+        IReadOnlyDictionary<string, bool>? indexedForms = null)
     {
-        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides, kernelInterfaces);
+        Binder b = new(file, requireDeclaration, indexedInterfaces, requireExtensions, libraryInterfaces, requireOverrides, kernelInterfaces, indexedForms);
         // WHAT EARLIER BINDINGS OF THIS UNIT ALREADY ASKED THE INDEX. A name
         // once required is answered for the rest of the unit's compile: it was
         // in no declaration, or it was loaded -- straight away, or by the pass
@@ -2199,7 +2210,7 @@ public sealed partial class Binder
     // ---- top level ------------------------------------------------------
 
     /// <summary>--dump-slots: every interface method's slot as it is numbered, on standard error.</summary>
-    private static readonly bool DumpSlots = Switches.DumpSlots;
+    private static bool DumpSlots => Switches.DumpSlots;
 
     private void Run(CompilationUnit unit)
     {
@@ -2535,6 +2546,50 @@ public sealed partial class Binder
         // together.
         Dictionary<(string, int, int), int> shared = _familySlots;
 
+        // THE FORMS THAT NEED SLOTS OF THEIR OWN (InterfaceForms): those the
+        // index found over the whole project, and those of the declarations
+        // this unit has itself -- all of them, in a compile of the whole
+        // program.
+        Dictionary<string, (string, IReadOnlyList<TypeRef>)> specialised = new(StringComparer.Ordinal);
+        foreach (TypeDecl d in unit.Types)
+            if (d.Template is string template && d.TemplateArgs.Count > 0) specialised.TryAdd(d.Name, (template, d.TemplateArgs));
+        Dictionary<string, bool> conflicted = InterfaceForms.Conflicts(unit.Types
+            .Where(d => !d.Specialised && d.Template is null)
+            .Select(d => InterfaceForms.Declared.Of(d, d.SourcePath is not string path || LibrarySource is null || LibrarySource(path))), specialised);
+        if (_indexedForms is not null)
+            foreach (var (form, library) in _indexedForms) conflicted[form] = conflicted.GetValueOrDefault(form) || library;
+        // COMPILED APART -- against an index, or with the class library's
+        // declarations from sources whose code is elsewhere -- the library's
+        // units were numbered without this unit's declarations. A form the
+        // index does not record is this unit's own to call and to fill where
+        // it names a value type this unit declares -- IComparable<Money> --
+        // or is of a template this unit declares; of the library's template
+        // over the library's types alone -- IComparable<int>, which the
+        // library's code and its int boxes reach through IComparable's slot --
+        // it would be a block they never fill. Left out, a class implementing
+        // it beside another construction is refused (AssignSlots), as one
+        // whose two constructions share a slot.
+        if (_indexedInterfaces is not null || unit.Types.Any(d => d.Elsewhere))
+        {
+            HashSet<string> ownValues = new(StringComparer.Ordinal), ownFamilies = new(StringComparer.Ordinal);
+            foreach (TypeDecl d in unit.Types)
+            {
+                if (d.Elsewhere || d.SignatureOnly || d.Specialised || d.Template is not null) continue;
+                if (d.Kind is TypeKind.Struct or TypeKind.Enum) ownValues.Add(d.Name);
+                else if (d.Kind == TypeKind.Interface && d.TypeParams.Count > 0) ownFamilies.Add(InterfaceForms.Family(d.Name, d.TypeParams.Count));
+            }
+            // A form a declaration of the class library's conflicts, the
+            // library's units numbered too: they compiled that declaration.
+            foreach (var (form, library) in conflicted.ToList())
+                if (!library && _indexedForms?.ContainsKey(form) != true && !ownFamilies.Contains(InterfaceForms.FamilyOf(form))
+                    && !InterfaceForms.Names(form).Any(ownValues.Contains))
+                {
+                    conflicted.Remove(form);
+                    _unindexedForms.Add(form);
+                }
+        }
+        foreach (string form in conflicted.Keys) _formFamilies.Add(InterfaceForms.FamilyOf(form));
+
         // IMPORTED GENERIC TEMPLATES ALREADY HAVE AN ABI. Reserve every slot
         // their GIR selected before allocating slots for interfaces declared
         // by this image. Otherwise the consumer numbers the same canonical
@@ -2548,6 +2603,9 @@ public sealed partial class Binder
         {
             (string template, int arity) = Family(t);
 
+            // A FORM WITH A BLOCK OF ITS OWN is numbered with the blocks
+            // (FormBlocks), as the library that made the hint numbered it.
+            if (conflicted.Count > 0 && FormOf(t) is string form && conflicted.ContainsKey(form)) continue;
             for (int i = 0; i < t.Methods.Count; i++)
             {
                 int wanted = t.Methods[i].Decl?.VtableSlotHint ?? -1;
@@ -2697,7 +2755,13 @@ public sealed partial class Binder
             {
                 (string template, int arity) = Family(t);
                 if ((t.Decl?.LocalOnly == true) != unitOnly) continue;
-                if (!unitOnly && IsLibraryInterface(t, (template, arity)) != library) continue;
+                // A construction whose form has a block of its own is
+                // numbered in that block's tier: the project's, for a form
+                // only the program's declarations conflict, though its
+                // template is the library's.
+                bool tier = (conflicted.Count > 0 && FormOf(t) is string form && conflicted.TryGetValue(form, out bool formLibrary))
+                    ? formLibrary : IsLibraryInterface(t, (template, arity));
+                if (!unitOnly && tier != library) continue;
 
                 for (int i = 0; i < t.Methods.Count; i++)
                 {
@@ -2706,7 +2770,7 @@ public sealed partial class Binder
                         continue;
                     }
 
-                    if (!shared.TryGetValue((template, arity, i), out int slot))
+                    if (FormSlot(t, i) is not int slot && !shared.TryGetValue((template, arity, i), out slot))
                     {
                         slot = _interfaceSlots++;
                         shared[(template, arity, i)] = slot;
@@ -2719,6 +2783,7 @@ public sealed partial class Binder
         }
 
         Number(families);
+        FormBlocks(conflicted, library: true, families, local);
         Assign(true);
         foreach (var (family, slot) in shared) _r.InterfaceFamilySlots[family] = slot;
         // The table this unit numbered over, for diffing the two sides of a
@@ -2739,7 +2804,7 @@ public sealed partial class Binder
         }
         _librarySlots = _interfaceSlots;
 
-        if (local.Count > 0)
+        if (local.Count > 0 || conflicted.ContainsValue(false))
         {
             // The project's interfaces start a fixed distance above the
             // library's interface region: room for the library's classes,
@@ -2751,6 +2816,7 @@ public sealed partial class Binder
             // project's own classes, per type and not per object.
             _interfaceSlots = _librarySlots + LibraryClassReserve;
             Number(local);
+            FormBlocks(conflicted, library: false, families, local);
             if (moduleTier.Count == 0) Assign(false);
         }
         _projectClassSlots = _interfaceSlots;
@@ -4325,9 +4391,10 @@ public sealed partial class Binder
 
                         MethodSymbol gs = new()
                         {
-                            Name = p.ExplicitInterface is null ? getter.Name : p.ExplicitInterface + "." + getter.Name,
+                            Name = p.ExplicitInterface is null ? getter.Name : p.ExplicitInterface + ExplicitConstruction(d, p) + "." + getter.Name,
                             ExplicitInterface = p.ExplicitInterface,
                             ExplicitMember = p.ExplicitInterface is null ? null : getter.Name,
+                            ExplicitArgs = p.ExplicitInterfaceArgs,
                             Returns = propType, Owner = sym,
                             Static = p.Mods.HasFlag(Mods.Static), Decl = getter,
                             Virtual = aVirtual, Override = aOverride, Abstract = aAbstract,
@@ -4368,9 +4435,10 @@ public sealed partial class Binder
 
                         MethodSymbol ss = new()
                         {
-                            Name = p.ExplicitInterface is null ? setter.Name : p.ExplicitInterface + "." + setter.Name,
+                            Name = p.ExplicitInterface is null ? setter.Name : p.ExplicitInterface + ExplicitConstruction(d, p) + "." + setter.Name,
                             ExplicitInterface = p.ExplicitInterface,
                             ExplicitMember = p.ExplicitInterface is null ? null : setter.Name,
+                            ExplicitArgs = p.ExplicitInterfaceArgs,
                             Returns = Type.Void, Owner = sym,
                             Static = p.Mods.HasFlag(Mods.Static), Decl = setter,
                             Virtual = aVirtual, Override = aOverride, Abstract = setAbstract,
@@ -4416,9 +4484,10 @@ public sealed partial class Binder
 
                     MethodSymbol ms = new()
                     {
-                        Name = md.ExplicitInterface is null ? md.Name : md.ExplicitInterface + "." + md.Name,
+                        Name = md.ExplicitInterface is null ? md.Name : md.ExplicitInterface + ExplicitConstruction(d, md) + "." + md.Name,
                         ExplicitInterface = md.ExplicitInterface,
                         ExplicitMember = md.ExplicitInterface is null ? null : md.Name,
+                        ExplicitArgs = md.ExplicitInterfaceArgs,
                         Returns = md.IsCtor ? Type.Void : Resolve(md.Returns!, sym),
                         Owner = sym,
                         Static = md.Mods.HasFlag(Mods.Static),
@@ -4885,12 +4954,114 @@ public sealed partial class Binder
         return arity == 0 ? plain : plain + "`" + arity;
     }
 
+    /// <summary>
+    /// What tells apart two explicit implementations of one member of two
+    /// constructions of an interface, `IEnumerable<Group>.GetEnumerator` and
+    /// `IEnumerable<KeyValuePair<string, Group>>.GetEnumerator`: the
+    /// arguments as written, in the name, where the type declares both --
+    /// one symbol each. Nothing for any other, whose name stays the
+    /// interface's and the member's.
+    /// </summary>
+    private static string ExplicitConstruction(TypeDecl type, MemberDecl member)
+    {
+        if (member.ExplicitInterfaceArgs is not { Count: > 0 } args) return "";
+        string written = Written(args);
+        foreach (MemberDecl other in type.Members)
+            if (!ReferenceEquals(other, member) && other.Name == member.Name && other.ExplicitInterface == member.ExplicitInterface
+                && other.ExplicitInterfaceArgs is { Count: > 0 } theirs && Written(theirs) != written)
+                return "<" + written + ">";
+        return "";
+
+        static string Written(List<TypeRef> args) => string.Join(",", args.Select(a => a.ToString().Replace(" ", "").Replace('.', '$')));
+    }
+
+    /// <summary>
+    /// Whether an explicit implementation is of this construction of its
+    /// interface: one that names the interface's arguments (ExplicitArgs)
+    /// names these, read in its own type's scope; one that names none, any.
+    /// </summary>
+    private bool ExplicitFor(MethodSymbol m, TypeSymbol face)
+    {
+        if (m.ExplicitArgs is not { } written || face.Decl is not { TemplateArgs: { } made } || made.Count != written.Count) return true;
+        for (int i = 0; i < written.Count; i++)
+        {
+            Type mine = Resolve(written[i], m.Owner);
+            Type theirs = face.TemplateArgTypes.Count == made.Count ? face.TemplateArgTypes[i] : Resolve(made[i], face);
+            if (Unresolved(mine) || Unresolved(theirs)) continue;
+            if (!MethodSignatures.SameType(mine, theirs)) return false;
+        }
+        return true;
+    }
+
     private static string PlainName(string name)
     {
         int cut = name.IndexOfAny(new[] { '`', '$', '<' });
         string bare = cut < 0 ? name : name[..cut];
         int dot = bare.LastIndexOf('.');
         return dot < 0 ? bare : bare[(dot + 1)..];
+    }
+
+    /// <summary>Each conflicted form's block: a slot for each member of its template (InterfaceForms).</summary>
+    private readonly Dictionary<string, int[]> _formSlots = new(StringComparer.Ordinal);
+    /// <summary>The templates some conflicted form is of, as InterfaceForms spells them.</summary>
+    private readonly HashSet<string> _formFamilies = new(StringComparer.Ordinal);
+    /// <summary>The conflicted forms of the library's templates this unit found and its index did not (Run).</summary>
+    private readonly HashSet<string> _unindexedForms = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A BLOCK FOR EACH CONFLICTED FORM of this tier, in the forms' order, as
+    /// many slots as its template has members: after the library's families
+    /// for the library's forms, after the project's for the project's. A form
+    /// both have is the library's, which every image shares.
+    /// </summary>
+    private void FormBlocks(Dictionary<string, bool> conflicted, bool library,
+        SortedDictionary<(string, int), int> families, SortedDictionary<(string, int), int> local)
+    {
+        foreach (string form in conflicted.Where(c => c.Value == library).Select(c => c.Key).Order(StringComparer.Ordinal))
+        {
+            string family = InterfaceForms.FamilyOf(form);
+            int methods = 0;
+            foreach (var ((template, arity), count) in families.Concat(local))
+                if (InterfaceForms.Family(template, arity) == family) methods = Math.Max(methods, count);
+            int[] block = new int[methods];
+            for (int i = 0; i < methods; i++) block[i] = _interfaceSlots++;
+            _formSlots[form] = block;
+            for (int i = 0; i < methods; i++) _r.InterfaceFormSlots[(form, i)] = block[i];
+            if (DumpSlots) Console.Error.WriteLine("form " + form + " slots " + string.Join(",", block) + " library=" + library);
+        }
+    }
+
+    /// <summary>
+    /// The slot an interface construction's member `i` takes in its form's own
+    /// block, where its form has one; null where the template's is its slot.
+    /// </summary>
+    private int? FormSlot(TypeSymbol t, int i)
+    {
+        if (_formSlots.Count == 0 || t.Decl is not { Template: string template, TemplateArgs.Count: > 0 } made
+            || !_formFamilies.Contains(InterfaceForms.Family(template, made.TemplateArgs.Count))
+            || FormOf(t) is not string form || !_formSlots.TryGetValue(form, out int[]? block))
+            return null;
+        if (i >= block.Length)
+            throw new InvalidOperationException($"the members of '{t.Name}' have a method in place {i}, past the {block.Length} its form {form} was numbered with");
+        return block[i];
+    }
+
+    /// <summary>
+    /// A construction's form (InterfaceForms), from the arguments it was made
+    /// with: each a keyword, or the key of a type this compile has, a value
+    /// type read through its own arguments. Null for a type that is no
+    /// construction, or an argument not known.
+    /// </summary>
+    private string? FormOf(TypeSymbol t)
+    {
+        if (t.Decl is not { Template: string template, TemplateArgs.Count: > 0 } made) return null;
+        return InterfaceForms.Of(template, made.TemplateArgs, r =>
+        {
+            if (!_r.Types.TryGetValue(r.Name, out TypeSymbol? s)) return null;
+            if (s.Kind is TypeKind.Class or TypeKind.Interface) return new InterfaceForms.Shape(true, "", Array.Empty<TypeRef>());
+            return new InterfaceForms.Shape(false, InterfaceForms.Plain(s.Decl?.Template ?? s.Name),
+                s.Decl is { Template: not null } value ? value.TemplateArgs : Array.Empty<TypeRef>());
+        });
     }
 
     private void AssignSlots(TypeSymbol sym)
@@ -4950,7 +5121,7 @@ public sealed partial class Binder
                 // the first '$' is "System".
                 string ifaceName = ExplicitName(iface);
                 MethodSymbol? impl = sym.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
-                        && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want))
+                        && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want) && ExplicitFor(m, iface))
                     ?? sym.FindMethods(want.Name).FirstOrDefault(m => !m.Abstract && MethodSignatures.Implements(m, want));
 
                 // A RE-IMPLEMENTED INTERFACE MAPS TO A BASE'S EXPLICIT
@@ -4961,7 +5132,7 @@ public sealed partial class Binder
                 for (TypeSymbol? t = sym.Base; impl is null && t != null; t = t.Base)
                 {
                     impl = t.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
-                        && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want));
+                        && m.ExplicitInterface == ifaceName && !m.Abstract && MethodSignatures.Implements(m, want) && ExplicitFor(m, iface));
                 }
                 if (impl is null && sym.Base is not null
                     && sym.Base.InterfaceImplementations.TryGetValue(want.VtableSlot, out MethodSymbol? mapped))
@@ -4990,7 +5161,7 @@ public sealed partial class Binder
                 {
                     impl = AllInterfaces(sym).Select(face => face.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name
                                    && m.ExplicitInterface == ifaceName && m.Decl?.Body is not null
-                                   && MethodSignatures.Implements(m, want)))
+                                   && MethodSignatures.Implements(m, want) && ExplicitFor(m, iface)))
                                .FirstOrDefault(found => found is not null)
                         ?? (want.Decl?.Body is not null ? want : null);
                 }
@@ -5003,18 +5174,28 @@ public sealed partial class Binder
                     }
                     continue;
                 }
-                // ONE SLOT SERVES EVERY CONSTRUCTION OF A GENERIC INTERFACE,
-                // which shared generic code calls through whatever its T is.
-                // A class answering two constructions with two members --
-                // IComparable<int> and IComparable<string> -- had the second
-                // take the first's slot, and a call through IComparable<int>
-                // ran the string one. Refused, where it was miscompiled.
+                // TWO CONSTRUCTIONS IN ONE SLOT, answered by two members. A
+                // construction takes its FORM's slots (InterfaceForms):
+                // IComparable<int> a block of its own beside IComparable<string>,
+                // which shares IComparable<__canon>'s with every reference T.
+                // Two of one form -- IFoo<string> and IFoo<Uri> -- are one to
+                // the code shared between them, and are refused here, where
+                // the second's member took the first's slot and a call through
+                // one ran the other's.
                 if (claimed.TryGetValue(want.VtableSlot, out (TypeSymbol Face, MethodSymbol Impl) had)
                     && !ReferenceEquals(had.Face, iface) && !ReferenceEquals(had.Impl, impl))
                 {
                     if (sym.Decl != null)
                     {
-                        Error(sym.Decl, $"'{sym.Name}' implements both '{had.Face.Name}' and '{iface.Name}' with different members for '{want.Name}'; two constructions of one generic interface share its slots, which this compiler does not yet separate");
+                        string? form = FormOf(iface), hadForm = FormOf(had.Face);
+                        string? unnumbered = form is not null && _unindexedForms.Contains(form) ? form
+                            : hadForm is not null && _unindexedForms.Contains(hadForm) ? hadForm : null;
+                        Error(sym.Decl, $"'{sym.Name}' implements both '{had.Face.Name}' and '{iface.Name}' with different members for '{want.Name}', which take one slot: "
+                            + (unnumbered is not null
+                                ? $"the class library's units were numbered without the declarations that give {unnumbered} slots of its own; compile the program whole, or index it with the library"
+                                : form is not null && form == hadForm
+                                ? "the code shared by every reference type calls both constructions through it, and cannot tell them apart"
+                                : "a construction whose arguments the declarations alone do not say takes its template's slots"));
                     }
                     continue;
                 }
@@ -11375,6 +11556,37 @@ public sealed partial class Binder
         return null;
     }
 
+    /// <summary>Whether every instantiation found is made with the arguments `made` is: one construction, however its copies are named.</summary>
+    private bool UniqueInstance(TypeDecl made, List<TypeDecl> all)
+    {
+        foreach (TypeDecl other in all)
+        {
+            if (ReferenceEquals(other, made) || other.Name == made.Name) continue;
+            for (int i = 0; i < made.TemplateArgs.Count; i++)
+                if (!MethodSignatures.SameType(Resolve(made.TemplateArgs[i], _thisType), Resolve(other.TemplateArgs[i], _thisType))) return false;
+        }
+        return true;
+    }
+
+    /// <summary>Every distinct instantiation of the named template the type is, derives from or implements.</summary>
+    private static List<TypeDecl> Instances(TypeSymbol? t, string template, int arity)
+    {
+        List<TypeDecl> found = new();
+        HashSet<TypeSymbol> seen = new(ReferenceEqualityComparer.Instance);
+        void Walk(TypeSymbol? from)
+        {
+            for (TypeSymbol? at = from; at != null && seen.Add(at); at = at.Base)
+            {
+                if (at.Decl is { Template: not null } made && made.Template == template && made.TemplateArgs.Count == arity
+                    && !found.Any(f => ReferenceEquals(f, made) || f.Name == made.Name))
+                    found.Add(made);
+                foreach (TypeSymbol face in at.Interfaces) Walk(face);
+            }
+        }
+        Walk(t);
+        return found;
+    }
+
     /// <summary>
     /// What a template's base list makes it, as the named interface, with a
     /// set of arguments already put in for its own parameters.
@@ -12002,9 +12214,14 @@ public sealed partial class Binder
         // The parameter is an OPEN application of a template; the argument is
         // a specialisation of one, and it remembers which -- so if they are the
         // same template, unifying their arguments pairwise says what T is.
+        // ONLY A UNIQUE ONE (C# 12.6.3.10): a class implementing both
+        // IEnumerable<Group> and IEnumerable<KeyValuePair<string, Group>>
+        // infers nothing for Count<T>(this IEnumerable<T>), and the call is
+        // no call of it -- the first construction found was taken.
         if (want.Symbol is { } template && want.Args.Count > 0
             && Instance(got.Symbol, template.Name, want.Args.Count) is { } made)
         {
+            if (!UniqueInstance(made, Instances(got.Symbol, template.Name, want.Args.Count))) return false;
             for (int i = 0; i < want.Args.Count; i++)
             {
                 if (!UnifyArgument(m, want.Args[i], Resolve(made.TemplateArgs[i], _thisType), bound))
@@ -21006,7 +21223,7 @@ public sealed partial class Binder
                 // the unit is walked here, and one that cannot have the method
                 // is not declared to find that out. FindMethods asks its bases.
                 own = (t.MayHave(best.Name) ? t.Methods.FirstOrDefault(m => m.ExplicitMember == best.Name && m.ExplicitInterface == ifaceName
-                          && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted)) : null)
+                          && !m.Abstract && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted) && ExplicitFor(m, face)) : null)
                    ?? t.FindMethods(best.Name).FirstOrDefault(m => !m.Static && !m.Abstract
                           && m.TypeParams.Count == best.TypeParams.Count && MethodSignatures.Implements(m, wanted));
             }

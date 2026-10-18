@@ -268,7 +268,7 @@ public static class Frontend
         Meter binding = Meter.Start();
         BindResult bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
             declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked, indexedForms: declarations?.InterfaceForms);
         binding.Stop("front:bind");
 
         // The checker's first pass discovers which generic methods were called
@@ -350,7 +350,7 @@ public static class Frontend
                 Meter fresh = Meter.Start();
                 bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                     declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked);
+                    declarations is null ? null : declarations.RequireOverrides, freshOnly: true, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked, indexedForms: declarations?.InterfaceForms);
                 fresh.Stop("front:bind-fresh");
 
                 Flag(unit.Types, null, fresh: false);
@@ -368,7 +368,7 @@ public static class Frontend
             Meter rebinding = Meter.Start();
             bound = Binder.Bind(unit, name, declarations is null ? null : declarations.Require, declarations?.Interfaces,
                 declarations is null ? null : declarations.RequireExtensions, declarations?.LibraryInterfaces,
-                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked);
+                declarations is null ? null : declarations.RequireOverrides, kernelInterfaces: declarations?.KernelInterfaces, asked: declarations?.Asked, indexedForms: declarations?.InterfaceForms);
             rebinding.Stop("front:bind-round");
             if (Switches.TraceWants)
             {

@@ -57,6 +57,8 @@ public sealed partial class BindResult
     /// family's slot is the same in every unit whatever it instantiates.
     /// </summary>
     public Dictionary<(string Template, int Arity, int Member), int> InterfaceFamilySlots { get; } = new();
+    /// <summary>The slots of each conflicted form's own block (InterfaceForms), by form and member.</summary>
+    public Dictionary<(string Form, int Member), int> InterfaceFormSlots { get; } = new();
 
     /// <summary>
     /// Expressions whose value has to be put in a Nullable&lt;T&gt; cell.

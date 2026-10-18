@@ -1,0 +1,61 @@
+// test: group_collection_is_a_read_only_dictionary
+// expect-exit: 0
+// expect-output:
+// count 4 year 2026 True False
+// try True 10 False
+// entries 0=2026-10-17 1=17 year=2026 month=10
+// groups 0 1 year month
+// list 4 1 17
+// keys 0,1,year,month
+// values 2026-10-17,17,2026,10
+// table 4 10
+// read-only Collection is read-only.
+//
+// A match's groups are an IReadOnlyDictionary<string, Group> as well as an
+// IList<Group>, as .NET's GroupCollection is: by name through the one, by
+// number and as a sequence of groups through the other, and its entries --
+// each group under its name -- through the dictionary's own enumerator. It
+// had the dictionary's members but not the interface, because the two
+// constructions of IEnumerable it then implements shared one slot.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+
+static class Program
+{
+    static void Main()
+    {
+        Match m = Regex.Match("on 2026-10-17", @"(?<year>\d+)-(?<month>\d+)-(\d+)");
+        IReadOnlyDictionary<string, Group> named = m.Groups;
+        Console.WriteLine("count " + named.Count + " year " + named["year"].Value + " " + named.ContainsKey("month") + " " + named.ContainsKey("day"));
+        bool found = named.TryGetValue("month", out Group? month);
+        bool missing = named.TryGetValue("day", out Group? _);
+        Console.WriteLine("try " + found + " " + month!.Value + " " + missing);
+
+        Console.Write("entries");
+        foreach (KeyValuePair<string, Group> e in named) Console.Write(" " + e.Key + "=" + e.Value.Value);
+        Console.WriteLine();
+
+        Console.Write("groups");
+        foreach (Group g in m.Groups) Console.Write(" " + g.Name);
+        Console.WriteLine();
+
+        IList<Group> list = m.Groups;
+        Console.WriteLine("list " + list.Count + " " + list.IndexOf(m.Groups[1]) + " " + list[1].Value);
+        Console.WriteLine("keys " + string.Join(",", named.Keys));
+        Console.WriteLine("values " + string.Join(",", ((IEnumerable<Group>)m.Groups).Select(g => g.Value)));
+
+        Dictionary<string, Group> table = new Dictionary<string, Group>(named);
+        Console.WriteLine("table " + table.Count + " " + table["month"].Value);
+        try
+        {
+            list.Add(m.Groups[0]);
+        }
+        catch (NotSupportedException e)
+        {
+            Console.WriteLine("read-only " + e.Message);
+        }
+    }
+}

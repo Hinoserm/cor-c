@@ -113,10 +113,17 @@ the same list.
 - On the x87 (the default target) an operation on TWO NaNs answers the one
   with the larger payload, where SSE2, and so .NET, answers the first. Only
   that NaN's sign and payload differ.
-- `GroupCollection` has IReadOnlyDictionary<string, Group>'s members but is
-  not one: the compiler gives an interface member one slot for every
-  construction of a generic interface, so a class cannot implement both
-  IEnumerable<Group> and IEnumerable<KeyValuePair<string, Group>>.
+- A class implementing two constructions of one generic interface whose
+  arguments are reference types only -- IComparable<A> beside
+  IComparable<B> -- with a member for each is refused: the generic code
+  shared by every reference type calls both through one slot and cannot tell
+  them apart. Constructions of different forms (IComparable<int> beside
+  IComparable<string>, IEnumerable<KeyValuePair<string, Group>> beside
+  IEnumerable<Group>, as GroupCollection has) have slots of their own; one
+  over the library's types alone that only a program's declarations give
+  slots of their own (IComparable<int> there) is refused in a program
+  compiled apart from a library numbered without it -- compiled whole, or
+  indexed with the library, it is not.
 - `Random()` with no seed is xoshiro256**, as .NET's is, but its state cannot
   be unpredictable: nothing below `stdlib/src/System/Core.cor` has entropy, so the seed is a
   constant stirred by a counter. `Random(seed)` reproduces .NET's sequence

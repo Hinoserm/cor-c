@@ -2885,6 +2885,7 @@ public sealed class Monomorphiser
                     Init = p.Init is null ? null : Rewrite(p.Init, map),
                     VtableSlotHint = p.VtableSlotHint,
                     ExplicitInterface = p.ExplicitInterface,
+                    ExplicitInterfaceArgs = p.ExplicitInterfaceArgs?.Select(a => Sub(a, map)).ToList(),
                     Line = p.Line, Col = p.Col,
                 };
 
@@ -2932,6 +2933,7 @@ public sealed class Monomorphiser
                     VtableSlotHint = md.VtableSlotHint,
                     NotNullIfNotNull = md.NotNullIfNotNull,
                     ExplicitInterface = md.ExplicitInterface,
+                    ExplicitInterfaceArgs = md.ExplicitInterfaceArgs?.Select(a => Sub(a, map)).ToList(),
                     // A shared method copy's dictionary, made again in a later round.
                     CopyNeeds = md.CopyNeeds, CopyParams = md.CopyParams,
                     Line = md.Line, Col = md.Col,

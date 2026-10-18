@@ -169,6 +169,17 @@ interface slots, so a unit's smaller set of imported declarations does not move
 the class virtual slots following them. This is compact global ABI planning,
 not eager loading of the project's class/member graphs.
 
+X: records name the interface FORMS that have slots of their own: a generic
+interface's construction with every reference argument read as `__canon`
+(`IEnumerable`1<KeyValuePair`2<__canon,__canon>>`), which some class or struct
+of the project implements beside another form of the same template
+(InterfaceForms.Conflicts, over the declarations' syntax). The key is
+`X:<assembly>\n<form>`, the payload one byte: 1 where a declaration of the
+class library's has the form, whose block is numbered after the library's
+families, 0 for one numbered after the project's. Every unit numbers a block
+for each, so the slots agree across the units of a link; the records are
+part of the interface plan a receipt fingerprints, beside the I: records.
+
 The initial end-to-end fixtures compile three consumers against an index, link
 their objects with a separately compiled provider, and check namespace, alias
 and qualified references. An unrelated unresolved type in the same namespace

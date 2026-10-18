@@ -58,6 +58,18 @@ public abstract class MemberDecl : Node
     }
 
     /// <summary>
+    /// The arguments of a generic interface an explicit implementation is
+    /// written for -- `KeyValuePair<string, Group>` in `IEnumerable<
+    /// KeyValuePair<string, Group>>.GetEnumerator()` -- or null: which of the
+    /// interface's constructions it fills, where a type implements two.
+    /// </summary>
+    public List<TypeRef>? ExplicitInterfaceArgs
+    {
+        get => _rare?.ExplicitInterfaceArgs;
+        set { if (value is not null) Rare.ExplicitInterfaceArgs = value; else if (_rare is not null) _rare.ExplicitInterfaceArgs = null; }
+    }
+
+    /// <summary>
     /// A specialised copy THIS compilation made for its own use, which is its
     /// code to compile whatever its owner is.
     ///
@@ -143,6 +155,7 @@ public abstract class MemberDecl : Node
 internal sealed class MemberRare
 {
     public string? ExplicitInterface;
+    public List<TypeRef>? ExplicitInterfaceArgs;
     public int VtableSlotHint = -1;
     // MethodDecl's, below.
     public CtorInit? Init;

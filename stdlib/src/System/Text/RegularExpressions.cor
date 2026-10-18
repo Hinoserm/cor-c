@@ -4807,13 +4807,10 @@ class CaptureCollection : IList<Capture>, IReadOnlyList<Capture>
 }
 
 /// A match's groups, by number and by name. A number with no group, or a
-/// name none has, is a group that matched nothing, named "".
-// .NET's is an IReadOnlyDictionary<string, Group> as well; here it has that
-// interface's members but not the interface, because the compiler shares an
-// interface member's slot among the constructions of a generic interface, so
-// one class cannot implement both IEnumerable<Group> and
-// IEnumerable<KeyValuePair<string, Group>>.
-class GroupCollection : IList<Group>, IReadOnlyList<Group>
+/// name none has, is a group that matched nothing, named "". A list of the
+/// groups and a read-only dictionary of them by name, as .NET's is: its
+/// entries, each group under its name, are the dictionary's enumerator.
+class GroupCollection : IList<Group>, IReadOnlyList<Group>, IReadOnlyDictionary<string, Group>
 {
     Match _match;
     Dictionary<int, int>? _captureMap;
@@ -4889,6 +4886,17 @@ class GroupCollection : IList<Group>, IReadOnlyList<Group>
     public IEnumerator GetEnumerator() { return Groups(); }
 
     IEnumerator<Group> IEnumerable<Group>.GetEnumerator() { return Groups(); }
+
+    IEnumerator<KeyValuePair<string, Group>> IEnumerable<KeyValuePair<string, Group>>.GetEnumerator() { return Entries(); }
+
+    IEnumerator<KeyValuePair<string, Group>> Entries()
+    {
+        for (int i = 0; i < Count; i++)
+        {
+            Group group = GetGroupImpl(i);
+            yield return new KeyValuePair<string, Group>(group.Name, group);
+        }
+    }
 
     IEnumerator<Group> Groups()
     {

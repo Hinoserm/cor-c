@@ -1,0 +1,30 @@
+// test: two constructions of one form refused
+// expect-compile-error: 'C' implements both 'IComparable$A' and 'IComparable$B' with different members for 'CompareTo', which take one slot: the code shared by every reference type calls both constructions through it, and cannot tell them apart
+// C# lets a class implement IComparable<A> and IComparable<B> with a
+// CompareTo for each. Here the generic code is compiled once for every
+// reference type argument, and calls IComparable<__canon>.CompareTo whatever
+// its T: both constructions are that one form, which has one slot, and the
+// shared code holds nothing that says which of the two it means. Refused,
+// rather than compiled to call the wrong member. (Constructions of different
+// forms -- IComparable<int> beside IComparable<string> -- have slots of
+// their own: 1651, 1653.)
+
+using System;
+
+class A { }
+class B { }
+
+class C : IComparable<A>, IComparable<B>
+{
+    public int CompareTo(A? other) { return 1; }
+    public int CompareTo(B? other) { return 2; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        IComparable<A> a = new C();
+        Console.WriteLine(a.CompareTo(new A()));
+    }
+}

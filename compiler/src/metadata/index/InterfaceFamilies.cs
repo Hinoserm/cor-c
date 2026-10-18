@@ -42,6 +42,28 @@ public static class InterfaceFamilies
         return result;
     }
 
+    /// <summary>
+    /// A CONFLICTED FORM of the project's declarations (InterfaceForms.Conflicts):
+    /// its key the form, its payload whether a library declaration has it.
+    /// Every unit compiled against the index numbers a block for each.
+    /// </summary>
+    public static DeclarationRecord Form(string assembly, string form, bool library)
+        => new("X:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n" + form, new[] { library ? (byte)1 : (byte)0 });
+
+    /// <summary>The conflicted forms an index records, with whether each is the library's.</summary>
+    public static IReadOnlyDictionary<string, bool> ReadForms(DeclarationIndex index, string assembly)
+    {
+        string prefix = "X:" + SourceIndexBuilder.AssemblyIdentity(assembly) + "\n";
+        Dictionary<string, bool> result = new(StringComparer.Ordinal);
+        foreach (DeclarationRecord record in index.WithPrefix(prefix))
+        {
+            if (record.Payload.Length != 1) throw new InvalidDataException("Invalid interface form record");
+            string form = record.Key[prefix.Length..];
+            result[form] = result.GetValueOrDefault(form) || record.Payload[0] != 0;
+        }
+        return result;
+    }
+
     public static IReadOnlyDictionary<(string Name, int Arity), int> Read(DeclarationIndex index, string assembly)
     {
         Dictionary<(string, int), int> result = new();

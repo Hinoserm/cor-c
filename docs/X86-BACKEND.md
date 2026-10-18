@@ -564,7 +564,11 @@ collector has no notion of an image going away.
 - **Virtual calls** load the vtable from the object, load the slot, and
   `call` through the register.
 - **Interface calls** are the same: the slot number is program-wide, so no
-  lookup is needed. This is why interface slots are numbered first.
+  lookup is needed. This is why interface slots are numbered first. Every
+  construction of a generic interface shares its template's slots -- the
+  code shared by reference type arguments calls IEnumerable<__canon> -- but
+  a FORM a class implements beside another of the same template (IComparable<int>
+  beside IComparable<string>) has a block of its own (InterfaceForms).
 - **Delegates and lambdas** are objects with an Invoke in a known slot.
 - **Indirect calls through a function pointer** (`Sys.AddressOf`) are
   `call` through a register.

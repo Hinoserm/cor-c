@@ -81,6 +81,9 @@ public static class SourceIndexBuilder
                 yield return new DeclarationRecord(DeclarationIndex.OnKey, payload);
             }
             List<(string Path, byte[] Hash)> snapshots = new();
+            // What the conflicted interface forms are read from, kept small:
+            // each type's name, kind, parameters and bases (InterfaceForms).
+            List<InterfaceForms.Declared> skeletons = new();
             foreach (string path in files)
             {
                 IReadOnlyCollection<string>? activeSymbols = fileSymbols?.GetValueOrDefault(path) ?? symbols;
@@ -117,8 +120,10 @@ public static class SourceIndexBuilder
                     return parent is null ? (type.Namespace.Length == 0 ? "" : type.Namespace + ".") + own
                         : TypeName(parent) + "+" + own;
                 }
+                bool librarySide = librarySource?.Invoke(path) ?? true;
                 foreach (TypeDecl type in unit.Types)
                 {
+                    skeletons.Add(InterfaceForms.Declared.Of(type, librarySide));
                     StringBuilder declaration = new();
                     var bodies = parser.OmittedBodies.Where(b => b.From >= type.SourceFrom && b.To <= type.SourceTo).OrderBy(b => b.From).ToArray();
                     int bodyIndex = 0;
@@ -217,6 +222,10 @@ public static class SourceIndexBuilder
                     if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type, librarySource?.Invoke(path) ?? true);
                 }
             }
+            // THE FORMS EVERY UNIT NUMBERS A BLOCK FOR (InterfaceForms), over
+            // the declarations of the whole project at once.
+            foreach (var (form, library) in InterfaceForms.Conflicts(skeletons).OrderBy(c => c.Key, StringComparer.Ordinal))
+                yield return InterfaceFamilies.Form(assembly, form, library);
             // Validate the complete generation before the atomic publication.
             // This rereads one source at a time; no project body graph is retained.
             foreach (var snapshot in snapshots)

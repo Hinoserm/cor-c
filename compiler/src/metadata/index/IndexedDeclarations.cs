@@ -39,6 +39,8 @@ public sealed class IndexedDeclarations : IDisposable
     public long ResidentDeclarationBytes => catalog.ResidentBytes;
     public IReadOnlyDictionary<(string Name, int Arity), int> Interfaces { get; }
     public IReadOnlySet<(string Name, int Arity)> LibraryInterfaces { get; }
+    /// <summary>The conflicted interface forms of the project (InterfaceForms), with whether each is the library's.</summary>
+    public IReadOnlyDictionary<string, bool> InterfaceForms { get; }
 
     /// <summary>
     /// Set for a kernel module's compile (--kernel): then the kernel's own
@@ -68,10 +70,12 @@ public sealed class IndexedDeclarations : IDisposable
         this.assembly = assembly;
         Interfaces = catalog.Interfaces(assembly);
         LibraryInterfaces = catalog.LibraryInterfaces(assembly);
+        InterfaceForms = catalog.InterfaceForms(assembly);
         // Interface slots are reserved over the project's compact family
         // table, even for declarations this unit never demand-loads. Adding
         // an earlier family can move every later slot: it is an ABI input.
         queries.Add(('I', ""));
+        queries.Add(('X', ""));
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -88,7 +92,9 @@ public sealed class IndexedDeclarations : IDisposable
         assembly = session.Assembly;
         Interfaces = session.Interfaces;
         LibraryInterfaces = session.LibraryInterfaces;
+        InterfaceForms = session.InterfaceForms;
         queries.Add(('I', ""));
+        queries.Add(('X', ""));
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 

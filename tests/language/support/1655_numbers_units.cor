@@ -1,0 +1,9 @@
+// The other unit of 1655: a number's comparison, compiled with the class
+// library, which knows nothing of the class the test declares.
+
+using System;
+
+static class Numbers
+{
+    public static int Order(IComparable<int> c, int v) { return c.CompareTo(v); }
+}

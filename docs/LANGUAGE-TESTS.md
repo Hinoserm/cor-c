@@ -78,6 +78,11 @@ Every test starts with a comment block the runner reads:
   libraries, which are one more object; everything linked as the whole program
   (`corc link --closed`). For what a unit reads of its neighbours out of the
   index: another file's part of a partial type, the class library's own types.
+- `whole` (optional): `yes` for a test of what only a compile of the whole
+  program decides -- a method no call can reach left out of the image, a slot
+  of its own for a construction only the program's declarations give one --
+  which the separate-units wrapper (tests/integration/separate/corc-unit)
+  then compiles whole rather than against the library's object.
 - `only-target` (optional): the one target a test of that target's own rule
   is for -- `x86` for an i386 image's four gigabytes, say. Under `--target`
   for another the runner skips it (`SKIP`) rather than fail it for a rule that

@@ -594,7 +594,7 @@ public sealed partial class Binder
                 if (closure.Methods.Any(m => m.VtableSlot == want.VtableSlot) || closure.InterfaceImplementations.ContainsKey(want.VtableSlot)) continue;
                 MethodSymbol? body = AllInterfaces(closure)
                     .Select(face => face.Methods.FirstOrDefault(m => m.ExplicitMember == want.Name && m.ExplicitInterface == ifaceName
-                                                                  && m.Decl?.Body is not null && MethodSignatures.Implements(m, want)))
+                                                                  && m.Decl?.Body is not null && MethodSignatures.Implements(m, want) && ExplicitFor(m, iface)))
                     .FirstOrDefault(found => found is not null)
                     ?? (want.Decl?.Body is not null ? want : null);
                 if (body is not null) closure.WritableInterfaceImplementations[want.VtableSlot] = body;

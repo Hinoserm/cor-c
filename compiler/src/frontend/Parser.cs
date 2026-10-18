@@ -2671,6 +2671,7 @@ public sealed class Parser
         // accessibility on any member yet, so what is kept is the name it fills
         // in and the interface it fills it in for.
         string? explicitInterface = null;
+        List<TypeRef>? explicitArgs = null;
 
         // A QUALIFIED INTERFACE: `object System.Collections.IEnumerator.Current`.
         // The namespaces are stepped over to the interface's own name, which is
@@ -2722,9 +2723,10 @@ public sealed class Parser
             // is not IEnumerable, and a class implementing both explicitly has
             // two GetEnumerators that are not the same method.
             int save = _i;
-            if (TryInterfaceArgs(out int arity) && At(Tok.Dot) && Ahead().Kind == Tok.Ident)
+            if (TryInterfaceArgs(out int arity, out List<TypeRef> written) && At(Tok.Dot) && Ahead().Kind == Tok.Ident)
             {
                 explicitInterface = name + "`" + arity;
+                explicitArgs = written;
                 _i++;
                 name = _t[_i++].Text;
             }
@@ -2733,6 +2735,7 @@ public sealed class Parser
                 _i++;
                 PropertyDecl indexer = ParseIndexer(type, mods, start);
                 indexer.ExplicitInterface = name + "`" + arity;
+                indexer.ExplicitInterfaceArgs = written;
                 return indexer;
             }
             else _i = save;
@@ -2745,7 +2748,7 @@ public sealed class Parser
         // joins the type with the hoisted members.
         if (isEvent && At(Tok.LBrace))
         {
-            return ParseEventAccessors(type, name, mods, start, explicitInterface);
+            return ParseEventAccessors(type, name, mods, start, explicitInterface, explicitArgs);
         }
 
         // property
@@ -2753,6 +2756,7 @@ public sealed class Parser
         {
             MemberDecl property = ParseProperty(type, name, mods, start);
             property.ExplicitInterface = explicitInterface;
+            property.ExplicitInterfaceArgs = explicitArgs;
             return property;
         }
 
@@ -2770,7 +2774,7 @@ public sealed class Parser
             {
                 Name = name, Mods = mods, Type = type, Getter = getter,
                 Auto = false, HasSetter = false, Line = start.Line, Col = start.Col,
-                ExplicitInterface = explicitInterface,
+                ExplicitInterface = explicitInterface, ExplicitInterfaceArgs = explicitArgs,
             };
         }
 
@@ -2786,7 +2790,7 @@ public sealed class Parser
                 // clears the attributes it was read from.
                 NotNullIfNotNull = returnsNullOnlyWith,
                 Line = start.Line, Col = start.Col, Body = null,
-                ExplicitInterface = explicitInterface,
+                ExplicitInterface = explicitInterface, ExplicitInterfaceArgs = explicitArgs,
             };
             // `[DoesNotReturn]` and the rest, which the checker reads off the
             // declaration (Binder.NeverReturns).
@@ -3281,7 +3285,7 @@ public sealed class Parser
         {
             Name = m.Name, Mods = m.Mods, Returns = m.Returns, IsCtor = m.IsCtor,
             NotNullIfNotNull = m.NotNullIfNotNull,
-            ExplicitInterface = m.ExplicitInterface,
+            ExplicitInterface = m.ExplicitInterface, ExplicitInterfaceArgs = m.ExplicitInterfaceArgs,
             Line = m.Line, Col = m.Col, Body = body, Init = init,
         }.CopyListsFrom(m);
         // NOT A CONSTRUCTOR'S, NOR AN ASYNC METHOD'S: a call to an async
@@ -3368,7 +3372,7 @@ public sealed class Parser
     /// produced. An indexer may never be auto-implemented -- there is no single
     /// field to back an arbitrary number of slots -- so both accessors need
     /// bodies and it says so rather than quietly generating a field.
-    private MethodDecl ParseEventAccessors(TypeRef type, string name, Mods mods, Token start, string? explicitInterface)
+    private MethodDecl ParseEventAccessors(TypeRef type, string name, Mods mods, Token start, string? explicitInterface, List<TypeRef>? explicitArgs)
     {
         Expect(Tok.LBrace, "'{' before the event's accessors");
         MethodDecl? add = null, remove = null;
@@ -3405,7 +3409,7 @@ public sealed class Parser
                 Name = (which.Text == "add" ? "add_" : "remove_") + name, Mods = mods,
                 Returns = new TypeRef { Name = "void", Line = which.Line, Col = which.Col },
                 Body = body, Line = which.Line, Col = which.Col,
-                ExplicitInterface = explicitInterface,
+                ExplicitInterface = explicitInterface, ExplicitInterfaceArgs = explicitArgs,
             };
             accessor.WritableParams.Add(new Param { Name = "value", Type = type, Line = which.Line, Col = which.Col });
 
@@ -4003,17 +4007,18 @@ public sealed class Parser
     /// expression-minded TryParseTypeArgs does not take. False, with nothing
     /// consumed that the caller will not put back, when they are not there.
     /// </summary>
-    private bool TryInterfaceArgs() => TryInterfaceArgs(out _);
+    private bool TryInterfaceArgs() => TryInterfaceArgs(out _, out _);
 
-    /// <summary>The `&lt;...&gt;` after an interface's name, and how many arguments it held.</summary>
-    private bool TryInterfaceArgs(out int arity)
+    /// <summary>The `&lt;...&gt;` after an interface's name, its arguments and how many it held.</summary>
+    private bool TryInterfaceArgs(out int arity, out List<TypeRef> args)
     {
         arity = 0;
+        args = new List<TypeRef>();
         if (!Take(Tok.Lt)) return false;
         int mark = _splits.Count;
         try
         {
-            do { ParseTypeRef(); arity++; }
+            do { args.Add(ParseTypeRef()); arity++; }
             while (Take(Tok.Comma));
             if (TakeAngle()) return true;
         }
