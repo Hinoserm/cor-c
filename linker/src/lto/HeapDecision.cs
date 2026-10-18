@@ -35,6 +35,13 @@ public static class HeapDecision
         public List<string> Excused { get; } = new();
         /// <summary>For --alloc-report: whether unwinds are bounded, and the fields that leak.</summary>
         public string Catches { get; set; } = "";
+        /// <summary>
+        /// For --alloc-report, where unwinds are unbounded: the sites a walk
+        /// as if they were bounded finds, which would still need a collector
+        /// without them (Escape's report past the throw budget). Never part
+        /// of the answer.
+        /// </summary>
+        public List<string> PastBudget { get; } = new();
     }
 
     private readonly record struct Node(int Unit, string Name);
@@ -45,10 +52,13 @@ public static class HeapDecision
     /// targets the image holds, null where it cannot say (VirtualTargets.Resolve); <paramref name="ancestry"/>,
     /// every type each of some types is (VirtualTargets.Ancestry); <paramref name="ownedFields"/>,
     /// the fields the whole program found own what they hold (OwnedFieldSolver).
+    /// <paramref name="pastBudget"/>, for the report: where unwinds are
+    /// unbounded, walk on as if they were not and say what is left
+    /// (Answer.PastBudget), the answer the same.
     /// </summary>
     public static Answer Decide(List<(string Name, ObjectFile Object)> inputs, List<(ObjectFile Object, HeapRecords Records)> units,
         string entry, Func<IEnumerable<string>, HashSet<string>> ancestry, IReadOnlySet<string>? ownedFields = null,
-        IReadOnlyCollection<string>? foreign = null)
+        IReadOnlyCollection<string>? foreign = null, bool pastBudget = false)
     {
         // What code without IR names: run from where nothing here follows,
         // with anything, as often as it likes -- roots, and taken addresses.
@@ -106,11 +116,12 @@ public static class HeapDecision
             foreach (HeapEvent e in f.Events)
                 if (e.Kind == HeapEventKind.Catch && !once.RunsOnce(node.Name, e)) repeating.Add(node.Name + ": a catch of " + e.Name + " that can run more than once");
         }
+        Answer? unbounded = null;
         if (repeating.Count > 0)
         {
-            Answer unbounded = new() { NeedsHeap = !none, Because = (none ? "--no-collector; " : "") + "unwinds unbounded: " + string.Join("; ", repeating.Take(4)) };
+            unbounded = new() { NeedsHeap = !none, Because = (none ? "--no-collector; " : "") + "unwinds unbounded: " + string.Join("; ", repeating.Take(4)) };
             unbounded.Sites.AddRange(repeating);
-            return unbounded;
+            if (!pastBudget) return unbounded;
         }
         // THE FIELDS THAT LEAK (Escape.LeakyFields): a reached store that may
         // replace what nobody frees, more than once, not into what is thrown.
@@ -193,6 +204,16 @@ public static class HeapDecision
             List<string> chain = new() { node.Name };
             for (Node at = node; chain.Count < 10 && cameFrom.TryGetValue(at, out Node up) && !chain.Contains(up.Name); at = up) chain.Add(up.Name);
             return string.Join(" <- ", chain);
+        }
+        // PAST THE BUDGET: the answer is the reasons, as it would have been;
+        // what the walk found is the report's.
+        if (unbounded is not null)
+        {
+            unbounded.PastBudget.AddRange(sites);
+            unbounded.Excused.AddRange(excused.Distinct());
+            unbounded.Catches = "unwinds unbounded; fields that leak: " + (leaky.Count == 0 ? "none" : string.Join(", ", leaky.Order(StringComparer.Ordinal).Take(12)))
+                + " (" + reached.Count + " functions reached)";
+            return unbounded;
         }
         Answer answer = new()
         {

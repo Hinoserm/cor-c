@@ -1,0 +1,22 @@
+using Budget;
+
+static class Program
+{
+    static byte[]? s_last;
+
+    static int Main()
+    {
+        int odd = 0;
+        int even = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            // A catch round a loop: unwinds without bound, a collector.
+            try { even += Provider.Check(i) >= 0 ? 1 : 0; }
+            catch (System.InvalidOperationException) { odd++; }
+            // And an allocation that would need one without them: a static
+            // that each lap's array replaces, the last one left behind.
+            s_last = new byte[16 + (i & 3)];
+        }
+        return odd == 500 && even == 500 && s_last!.Length == 19 ? 42 : 1;
+    }
+}
