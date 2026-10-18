@@ -273,14 +273,17 @@ public sealed partial class Escape
 
     /// <summary>
     /// WHAT THE THROW WRITES INTO WHAT IS THROWN (Exception.Thrown$ and
-    /// Placed$, called by the runtime's Capture at the throw): a store into
-    /// the first parameter, through copies and through a join of it and null
-    /// (an `is Exception e` binding).
+    /// Placed$, called by the runtime's Capture at the throw; Reserve$, the
+    /// making of the exception the heap throws out of memory, made in
+    /// advance and thrown with the trace it then writes in place): a store
+    /// into the first parameter, through copies and through a join of it
+    /// and null (an `is Exception e` binding).
     /// </summary>
     private static bool IntoThrown(Function g, VReg r)
     {
         if (g.Params.Count == 0 || !g.Name.StartsWith("m_Exception_Thrown$_", StringComparison.Ordinal)
-            && !g.Name.StartsWith("m_Runtime_Capture_3_", StringComparison.Ordinal) && !g.Name.StartsWith("m_Exception_Placed$_", StringComparison.Ordinal)) return false;
+            && !g.Name.StartsWith("m_Runtime_Capture_3_", StringComparison.Ordinal) && !g.Name.StartsWith("m_Exception_Placed$_", StringComparison.Ordinal)
+            && !g.Name.StartsWith("m_Exception_Reserve$_", StringComparison.Ordinal)) return false;
         RegisterWrites writes = new(g);
         HashSet<VReg> seen = new();
         Stack<VReg> work = new();

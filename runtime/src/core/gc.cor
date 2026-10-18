@@ -3423,6 +3423,14 @@ static class Gc
         }
         if (held > bytes) bytes = held;
         bytes = (bytes + ChunkPage - 1) & -ChunkPage;
+        // UNDER THE HEAP'S CAP, as .NET's hard limit is a limit on all it
+        // manages: past it the arena maps no more, and what a region would
+        // have made comes from the heap (AllocRegion), the collector's to
+        // keep within the cap or to say is out of memory. Uncounted, a
+        // function making sixty megabytes for its own use under a cap of four
+        // made them all in its region.
+        long cap = HeapChunks.Cap;
+        if (cap != 0 && ArenaMappedNow + HeapChunks.HeapBytes + bytes > cap) return 0;
         long start = Platform.Map(bytes);
         if (start == 0) return 0;
         // Stores into its blocks mark cards: theirs committed now.
@@ -6264,15 +6272,25 @@ static class Gc
     /// one is due, a new chunk, and out of memory.
     ///
     /// THIS AND EVERYTHING IT CALLS ALLOCATES NOTHING: no `new`, no arrays, no
-    /// strings. Every one of those is a call to this.
+    /// strings. Every one of those is a call to this. The one exception is
+    /// the exception out of memory throws, made once, by the first request
+    /// to come this way, before it has taken or holds anything.
     static long AllocSlow(long bytes, long kind)
     {
+        if (!_outOfMemoryMade)
+        {
+            _outOfMemoryMade = true;
+            OutOfMemoryException made = new OutOfMemoryException(null);
+            made.Reserve$(new long[Runtime.TraceDepth]);
+            _outOfMemory = made;
+        }
+
         // The size checked BEFORE it is rounded, with a bound that leaves
         // room for the rounding: rounding first lets a huge request wrap
         // negative and slip past the check.
         if (bytes < 0 || bytes > MaxRequest)
         {
-            OutOfMemory("out of memory: a request larger than any object may be\n");
+            ThrowOutOfMemory(bytes, false);
         }
 
         long need = (bytes + Overhead + 7) & SizeMask;
@@ -6498,32 +6516,7 @@ static class Gc
 
         if (block == 0)
         {
-            // What the platform can say of where the heap went (a kernel's
-            // allocation sites), first: nothing it does may allocate.
-            if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
-            SayNumber("out of memory: request ", need);
-            SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
-            SayNumber("out of memory: since last collection ", _since);
-            SayNumber("out of memory: live bytes at last collection ", _liveBytes);
-            SayNumber("out of memory: live blocks at last collection ", _liveBlocks);
-            SayNumber("out of memory: small free blocks ", _smallFree);
-            SayNumber("out of memory: bump bytes remaining ", _limit - _bump);
-            SayNumber("out of memory: anchor metadata bytes ", HeapChunks.BlockAnchorBytes);
-            SayNumber("out of memory: cap ", HeapChunks.Cap);
-            SayNumber("out of memory: reserve under the cap ", HeapChunks.ReserveBytes);
-            SayNumber("out of memory: pooled page bytes ", _poolBytes);
-            if (_bins != 0)
-            {
-                for (long bin = 0; bin < Bins; bin++)
-                {
-                    long root = BinHead(bin);
-                    if (root == 0) continue;
-                    SayNumber("out of memory: free bin ", bin);
-                    SayNumber("out of memory: first block ", SizeOfBlock(root));
-                }
-            }
-            SayFreeShape();
-            OutOfMemory();
+            ThrowOutOfMemory(need, true);
         }
 
         _since = _since + SizeOfBlock(block);
@@ -6646,11 +6639,7 @@ static class Gc
             if (attempt == 2) DrainPool();
         }
         ShutLastTry();
-        SayNumber("out of memory: small request ", small);
-        SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
-        SayNumber("out of memory: live bytes at last collection ", _liveBytes);
-        SayFreeShape();
-        OutOfMemory();
+        ThrowOutOfMemory(small, true);
         return 0;
     }
 
@@ -7351,6 +7340,92 @@ static class Gc
         }
         StartGenerations();
         AllocSamples.Start();
+    }
+
+    /// THE EXCEPTION OUT OF MEMORY THROWS, made in advance (AllocSlow, by the
+    /// first request to come that way) as .NET makes its own: when the heap
+    /// has run out, making one is the thing that cannot be done. One for the
+    /// run, thrown again each time with the trace of that throw, as .NET's
+    /// is. The flag is a latch -- set before the exception is made, never
+    /// cleared -- so it is made once (Escape's latched blocks); two first
+    /// requests racing make two, and either serves.
+    static OutOfMemoryException? _outOfMemory;
+    static bool _outOfMemoryMade;
+
+    /// The request the heap last could not answer, for its report.
+    static long _failedNeed;
+
+    /// OUT OF MEMORY, THROWN as .NET throws it, and catchable as there: the
+    /// exception made in advance, its trace taken with nothing made
+    /// (Exception.Refill$), and the heap lock let go first -- `locked` says
+    /// whether this thread holds it -- for the catch may allocate, and an
+    /// unwind must leave no lock behind. What the platform can say of where
+    /// the heap went comes first (OutOfMemoryHook), as it always did; what
+    /// the heap held is said only if nothing catches it (SayOutOfMemory,
+    /// from Runtime.Unhandled). With nothing made yet to throw, the heap's
+    /// report ends the process, as it did before there was a throw.
+    static void ThrowOutOfMemory(long need, bool locked)
+    {
+        // Nothing the hook does may allocate.
+        if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
+        _failedNeed = need;
+        OutOfMemoryException? thrown = _outOfMemory;
+        if (thrown == null)
+        {
+            if (!locked) GcLock.Enter();
+            SayHeld();
+            OutOfMemory();
+            return;
+        }
+        Runtime.OutOfMemoryReport = Sys.AddressOf(Gc.SayOutOfMemory);
+        if (locked) GcLock.Exit();
+        thrown.Refill$(Sys.FramePointer());
+        throw thrown;
+    }
+
+    /// The heap's report for an out-of-memory exception nobody caught
+    /// (Runtime.OutOfMemoryReport, a hook's three words): what it held, under
+    /// its lock, with nothing made.
+    public static long SayOutOfMemory(long a, long b, long c)
+    {
+        GcLock.Enter();
+        SayHeld();
+        GcLock.Exit();
+        return 0;
+    }
+
+    /// What the heap held when it ran out, every figure, its free bins and
+    /// its free shape. The heap lock is held.
+    static void SayHeld()
+    {
+        if (_failedNeed < 0 || _failedNeed > MaxRequest) SayNumber("out of memory: a request larger than any object may be ", _failedNeed);
+        else SayNumber("out of memory: request ", _failedNeed);
+        SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
+        SayNumber("out of memory: since last collection ", _since);
+        SayNumber("out of memory: live bytes at last collection ", _liveBytes);
+        SayNumber("out of memory: live blocks at last collection ", _liveBlocks);
+        SayNumber("out of memory: small free blocks ", _smallFree);
+        SayNumber("out of memory: bump bytes remaining ", _limit - _bump);
+        SayNumber("out of memory: anchor metadata bytes ", HeapChunks.BlockAnchorBytes);
+        SayNumber("out of memory: cap ", HeapChunks.Cap);
+        SayNumber("out of memory: reserve under the cap ", HeapChunks.ReserveBytes);
+        SayNumber("out of memory: pooled page bytes ", _poolBytes);
+        SayNumber("out of memory: threshold ", _threshold);
+        SayNumber("out of memory: ceiling ", HeapCeiling);
+        SayNumber("out of memory: collections ", Collections);
+        SayNumber("out of memory: of them major ", MajorCollections);
+        SayNumber("out of memory: mark queue bytes ", _markBytes);
+        if (_bins != 0)
+        {
+            for (long bin = 0; bin < Bins; bin++)
+            {
+                long root = BinHead(bin);
+                if (root == 0) continue;
+                SayNumber("out of memory: free bin ", bin);
+                SayNumber("out of memory: first block ", SizeOfBlock(root));
+            }
+        }
+        SayFreeShape();
     }
 
     /// Nothing left: the message is a literal, which is data the compiler laid
@@ -14442,12 +14517,11 @@ static class HeapChunks
             if (_heapBytes + ask > cap) ask = minimum;
         }
 
+        // Refused at the cap, silently: the request that ends out of memory
+        // is caught or not, and the heap's report is said only if it is not
+        // (Gc.ThrowOutOfMemory).
         if (cap != 0 && _heapBytes + ask > cap)
         {
-            // SAID ONLY OF THE LAST TRY, the reserve open: the soft cap
-            // refuses a chunk whenever growth should wait for a collection,
-            // which is ordinary and was said a line per refusal.
-            if (ReserveOpen) Gc.SayNumber("heap: the cap refused a chunk; heap bytes ", _heapBytes);
             return 0;
         }
 

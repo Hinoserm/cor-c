@@ -1355,7 +1355,13 @@ zero-terminated run each, so each is written where it lies with
 `Platform.WriteBytes` and nothing is built; line numbers are left off,
 because a line means decoding a second program for every frame and what
 that report is for is which functions were on the stack. The heap's own
-out-of-memory stop (`Gc.OutOfMemory`) prints its message and then this.
+stop where it cannot even begin (`Gc.OutOfMemory`) prints its message and
+then this. Out of memory once it has begun is an `OutOfMemoryException`,
+as in .NET: the one exception made in advance, whose trace the throw
+writes with nothing made -- return addresses into an array made with it,
+past the allocator's frames (`Exception.Refill$`), named when the trace is
+read -- and, if nothing catches it, written the same way as the process
+ends after .NET's "Out of memory." (`Exception.SayTrace$`).
 
 
 ## Enum names
