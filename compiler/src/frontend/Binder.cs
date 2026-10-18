@@ -13695,6 +13695,15 @@ public sealed partial class Binder
     // The argument count of the call _callee is the target of; -1 when unknown.
     private int _calleeArgs = -1;
 
+    /// <summary>
+    /// The arguments a call was written with: not the receiver a member call
+    /// on a string, or an extension's, put first among them (ReceiverAdded)
+    /// when it was checked before -- counted, a call checked again for each
+    /// generic copy took `s.Contains(x, StringComparison.Ordinal)` for three
+    /// arguments, which no String method takes, and went to LINQ's.
+    /// </summary>
+    private int WrittenArgs(CallExpr c) => c.Args.Count - (c.ReceiverAdded || _receiverAdded.Contains(c) ? 1 : 0);
+
     // THE NAME BEING CALLED, while CheckCall checks its target: C# looks a
     // name up for an invocation among the members that can be invoked
     // (§12.8.10.2, "if the member is invoked"), passing over a field or a
@@ -20291,7 +20300,7 @@ public sealed partial class Binder
             int outerNamedArgs = _calleeArgs;
             _callee = c.Target as MemberExpr;
             _invokedName = c.Target as NameExpr;
-            _calleeArgs = c.Args.Count;
+            _calleeArgs = WrittenArgs(c);
             CheckExpr(c.Target);
             _callee = outerNamedCallee;
             _invokedName = outerNamedInvoked;
@@ -20354,7 +20363,7 @@ public sealed partial class Binder
         int outerCalleeArgs = _calleeArgs;
         _callee = c.Target as MemberExpr;
         _invokedName = c.Target as NameExpr;
-        _calleeArgs = c.Args.Count;
+        _calleeArgs = WrittenArgs(c);
         Type targetType = CheckExpr(c.Target);
         _callee = outerCallee;
         _invokedName = outerInvoked;
