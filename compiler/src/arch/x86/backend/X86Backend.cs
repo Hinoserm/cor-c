@@ -113,6 +113,8 @@ public sealed class X86Backend : IBackend
     public const string RefStoreStub = Corsac.Lang.Lto.RuntimeAbi.RefStore, CardStoreStub = Corsac.Lang.Lto.RuntimeAbi.CardStore;
     public const string RefExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefExchange, RefCompareExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefCompareExchange;
     public const string MarkingFlag = "s_Runtime_Marking";
+    /// <summary>The runtime's 386 lock word (Runtime.Atomics386), which the 386 form of __corsac_refcas takes where it may not turn interrupts off.</summary>
+    public const string Atomics386Lock = "s_Runtime_Atomics386";
     /// <summary>What the store sequences call while Marking is set: the report, the store and the card in one (Runtime.WriteBarrierStore).</summary>
     public const string BarrierStoreRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore,
         BarrierExchangeRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange,
@@ -660,9 +662,11 @@ public sealed class X86Backend : IBackend
             int compareExchange = text.Bytes.Count;
             // These sequences are bytes, which the emitted-code audit never
             // walks: their one instruction past the 386, CMPXCHG, is the
-            // 486's, and on a 386 -- one processor, and a kernel's sequences,
-            // run where interrupts may be turned off -- the compare and the
-            // store are done with them off instead, which is as atomic there.
+            // 486's. On a 386 -- one processor -- the compare and the store
+            // are done with interrupts off where this code may turn them off
+            // (its ring, CS's low bits, at most EFLAGS.IOPL: a kernel's ring 0,
+            // a ring-1 service with IOPL 1), and else under the runtime's 386
+            // lock (Runtime.Atomics386), as Platform.AtomicsEnter does.
             Marked([0x51, 0x52], [0x50, 0x52, 0x51], BarrierCompareExchangeRoutine, 0x0C, [0x5A, 0x59]);
             if (Target.X86Profile.Has(X86Feature.I486))
             {
@@ -670,11 +674,20 @@ public sealed class X86Backend : IBackend
             }
             else
             {
-                Bytes(0x9C, 0xFA,                                                          // pushfd; cli
-                      0x39, 0x01, 0x74, 0x04,                                              // cmp [ecx], eax; je same
-                      0x8B, 0x01, 0xEB, 0x02,                                              // mov eax, [ecx]; jmp done
-                      0x89, 0x11,                                                          // same: mov [ecx], edx
-                      0x9D);                                                               // done: popfd
+                Bytes(0x9C, 0x53,                                                          // pushfd; push ebx
+                      0x31, 0xDB, 0x66, 0x8C, 0xCB, 0x83, 0xE3, 0x03,                      // xor ebx, ebx; mov bx, cs; and ebx, 3
+                      0x51, 0x8B, 0x4C, 0x24, 0x08, 0xC1, 0xE9, 0x0C, 0x83, 0xE1, 0x03,    // push ecx; mov ecx, [esp+8]; shr ecx, 12; and ecx, 3
+                      0x39, 0xCB, 0x59, 0x77, 0x0F,                                        // cmp ebx, ecx; pop ecx; ja locked
+                      0xFA,                                                                // cli
+                      0x39, 0x01, 0x74, 0x04, 0x8B, 0x01, 0xEB, 0x02, 0x89, 0x11,          // cmp [ecx], eax; je +4; mov eax, [ecx]; jmp +2; mov [ecx], edx
+                      0x5B, 0x9D, 0xEB, 0x23);                                             // pop ebx; popfd; jmp past
+                Bytes(0xBB, 0x01, 0x00, 0x00, 0x00, 0x87, 0x1D);                           // locked: mov ebx, 1; xchg [lock], ebx
+                Address(Atomics386Lock, RelocKind.Abs32, 0);
+                Bytes(0x85, 0xDB, 0x75, 0xF1,                                              // test ebx, ebx; jnz locked
+                      0x39, 0x01, 0x74, 0x04, 0x8B, 0x01, 0xEB, 0x02, 0x89, 0x11,          // the compare and the store
+                      0x31, 0xDB, 0x87, 0x1D);                                             // xor ebx, ebx; xchg [lock], ebx
+                Address(Atomics386Lock, RelocKind.Abs32, 0);
+                Bytes(0x5B, 0x9D);                                                         // pop ebx; popfd; past:
             }
             Bytes(0x52, 0x8B, 0x15); Address(CardTable, RelocKind.Abs32, 0);               // push edx; mov edx, [Cards]
             Bytes(0x85, 0xD2, 0x74, 0x09,                                                  // test edx, edx; jz done

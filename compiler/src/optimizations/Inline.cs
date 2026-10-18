@@ -1136,6 +1136,7 @@ public sealed class Inline : IParallelModulePass
             Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore);
             Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange);
             Reach(Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange);
+            Reach(Corsac.Lang.X86.X86Backend.Atomics386Lock);
         }
         // WHAT CODE NOT IN THE IR NAMES: the backend's card stub and store
         // sequences read the card table and the marking flag (X86Backend),

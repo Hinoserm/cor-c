@@ -808,7 +808,7 @@ static class Platform
             Sys.Cli();
             return flags;
         }
-        while (Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 1) != 0)
+        while (Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 1) != 0)
         {
             Yield();
         }
@@ -817,7 +817,7 @@ static class Platform
 
     public static void AtomicsLeave(long held)
     {
-        if (held == LockHeld) Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 0);
+        if (held == LockHeld) Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 0);
         else if ((held & InterruptFlag) != 0) Sys.Sti();
     }
 
@@ -825,7 +825,6 @@ static class Platform
     const long InterruptFlag = 0x200;
     /// What AtomicsEnter answers for the lock: no flags word is negative.
     const long LockHeld = -1;
-    static int _atomics386;
 }
 
 /// The parts of system.cor's `Os` that mean anything with no kernel.

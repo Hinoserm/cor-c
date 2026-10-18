@@ -1183,12 +1183,11 @@ static class Platform
     /// read and write as one the 386 has: it takes the lock, the operation
     /// reads and writes under it, and a plain exchange gives it back. A
     /// thread finding it held yields to its holder, which on the 386's one
-    /// processor can run only once this thread stops. What Leave is handed.
-    static int _atomics386;
-
+    /// processor can run only once this thread stops (Runtime.Atomics386).
+    /// What Leave is handed.
     public static long AtomicsEnter()
     {
-        while (Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 1) != 0)
+        while (Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 1) != 0)
         {
             Yield();
         }
@@ -1197,7 +1196,7 @@ static class Platform
 
     public static void AtomicsLeave(long held)
     {
-        Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 0);
+        Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 0);
     }
 }
 

@@ -687,6 +687,12 @@ static class Runtime
     /// write between Platform.AtomicsEnter and Leave -- interrupts off on
     /// bare metal, one lock in a process -- answering what was there. Never
     /// an atomic of their own but Enter's exchange.
+    ///
+    /// THE LOCK, where interrupts may not be turned off: this word, taken by
+    /// XCHG, by Platform.AtomicsEnter and by the kernel's compare-exchange
+    /// sequence on a 386 (X86Backend's __corsac_refcas), which names it.
+    public static int Atomics386;
+
     public static int AtomicAdd386(nint at, int value)
     {
         long held = Platform.AtomicsEnter();
