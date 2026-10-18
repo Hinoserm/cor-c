@@ -1,0 +1,29 @@
+// test: gc_memory_info_before_the_first_allocation
+// flags: --runtime-knob System.GC.HeapHardLimit=33554432
+// expect-exit: 0
+// expect-output:
+// before 33554432 True
+// after 33554432 True
+//
+// GC.GetGCMemoryInfo ANSWERS THE HARD LIMIT FROM THE START, as .NET's does:
+// the cap is the collector's, set as its heap begins at the first
+// allocation, and before that the answer was the machine's memory. Asked
+// again after allocating, the same. The load past which memory is high is
+// nine tenths of the machine, not of the cap, as .NET reports it.
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        GCMemoryInfo first = GC.GetGCMemoryInfo();
+        long total = first.TotalAvailableMemoryBytes;
+        long high = first.HighMemoryLoadThresholdBytes;
+        byte[] some = new byte[100000];
+        GCMemoryInfo second = GC.GetGCMemoryInfo();
+        Console.WriteLine("before " + total + " " + (high > total));
+        Console.WriteLine("after " + second.TotalAvailableMemoryBytes + " " + (second.HighMemoryLoadThresholdBytes == high));
+        GC.KeepAlive(some);
+        return 0;
+    }
+}

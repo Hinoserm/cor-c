@@ -96,10 +96,14 @@ public static class GC
 
     /// What the collector knew at its last collection: how much memory it
     /// may use (the heap's cap when one is set, the machine's memory
-    /// otherwise), how full the machine is, and how big the heap is. One
-    /// generation, never compacted, never concurrent (see the top of this
-    /// file); the kind asked for changes nothing, as every collection here
-    /// is the same kind.
+    /// otherwise -- from the start, before the heap has begun, as .NET
+    /// answers its hard limit before it has allocated), how full the machine
+    /// is, and how big the heap is. The load past which memory is high is
+    /// .NET's nine tenths of the machine -- of what a 32-bit process's
+    /// address space leaves it -- whatever the cap. One generation,
+    /// never compacted, never concurrent (see the top of this file); the
+    /// kind asked for changes nothing, as every collection here is the same
+    /// kind.
     public static GCMemoryInfo GetGCMemoryInfo()
     {
         return GetGCMemoryInfo(GCKind.Any);
@@ -112,17 +116,20 @@ public static class GC
             throw new ArgumentOutOfRangeException(nameof(kind));
         }
         long physical = Platform.TotalMemory();
-        long cap = HeapChunks.Cap;
+        long cap = Gc.CapToBe();
         long total = cap != 0 && (physical == 0 || cap < physical) ? cap : physical;
         // A 32-bit process can hold no more than its address space leaves the
         // heap, whatever the machine has: that is the limit .NET reports for a
         // process, and what a build admitting work by it must see.
-        if (Gc.HeapCeiling != 0 && (total == 0 || Gc.HeapCeiling < total)) total = Gc.HeapCeiling;
+        long ceiling = Gc.CeilingToBe();
+        if (ceiling != 0 && (total == 0 || ceiling < total)) total = ceiling;
         long available = Platform.AvailableMemory();
         long load = physical != 0 && available != 0 ? physical - available : Gc.HeapBytes;
         long heap = Gc.HeapBytes;
         long live = Gc.LiveBytes;
-        return new GCMemoryInfo(total, total / 10 * 9, load, heap, heap > live ? heap - live : 0, heap, live, Gc.Collections);
+        long high = physical != 0 ? physical : total;
+        if (ceiling != 0 && ceiling < high) high = ceiling;
+        return new GCMemoryInfo(total, high / 10 * 9, load, heap, heap > live ? heap - live : 0, heap, live, Gc.Collections);
     }
 }
 

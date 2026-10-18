@@ -7314,7 +7314,41 @@ static class Gc
     /// The heap's ceiling for the address space this process has.
     static void SetCeiling()
     {
-        HeapCeiling = Platform.AddressSpace() > 3221225472 ? WideCeiling : NarrowCeiling;
+        HeapCeiling = CeilingToBe();
+    }
+
+    /// THE CEILING AND THE CAP START SETS, known before it has: what
+    /// GC.GetGCMemoryInfo answers before the first allocation, as .NET's
+    /// answers its hard limit from the start. The ceiling by the address
+    /// space; the cap the program's own (SetLimit), else the image's knob
+    /// (Platform.HeapLimit), else its share of what its control group
+    /// allows (ContainerCap); 0 for none.
+    public static long CeilingToBe()
+    {
+        if (_ready) return HeapCeiling;
+        return Platform.AddressSpace() > 3221225472 ? WideCeiling : NarrowCeiling;
+    }
+
+    public static long CapToBe()
+    {
+        if (_ready || HeapChunks.Cap != 0) return HeapChunks.Cap;
+        long asked = Platform.HeapLimit();
+        if (asked != 0) return asked;
+        long limit = Platform.MemoryLimit();
+        return limit != 0 ? ContainerCap(limit) : 0;
+    }
+
+    /// ON A SMALL MACHINE, what the program needs beside its heap: its code,
+    /// stacks and the collector's tables came to 16 MB when a compile was
+    /// stopped at the cap, and a quarter of 256 MB held 64 back for them --
+    /// the heap the compile needed was there and refused. An eighth, and
+    /// never less than 32 MB, below 512 MB; past that a quarter, as .NET's
+    /// container cap, which is what the build sizes its parallel work by.
+    static long ContainerCap(long limit)
+    {
+        long reserve = limit / 8 > SmallReserve ? limit / 8 : SmallReserve;
+        long cap = limit <= SmallMachine ? limit - reserve : limit / 4 * 3;
+        return cap > ContainerFloor ? cap : ContainerFloor;
     }
 
     static void Start()
@@ -7351,19 +7385,7 @@ static class Gc
         if (HeapChunks.Cap == 0)
         {
             long limit = Platform.MemoryLimit();
-            if (limit != 0)
-            {
-                // ON A SMALL MACHINE, what the program needs beside its heap:
-                // its code, stacks and the collector's tables came to 16 MB
-                // when a compile was stopped at the cap, and a quarter of 256
-                // MB held 64 back for them -- the heap the compile needed
-                // was there and refused. An eighth, and never less than 32
-                // MB, below 512 MB; past that a quarter, as .NET's container
-                // cap, which is what the build sizes its parallel work by.
-                long reserve = limit / 8 > SmallReserve ? limit / 8 : SmallReserve;
-                long cap = limit <= SmallMachine ? limit - reserve : limit / 4 * 3;
-                HeapChunks.SetLimit(cap > ContainerFloor ? cap : ContainerFloor);
-            }
+            if (limit != 0) HeapChunks.SetLimit(ContainerCap(limit));
         }
         _ready = true;
         _threshold = MinThreshold;
