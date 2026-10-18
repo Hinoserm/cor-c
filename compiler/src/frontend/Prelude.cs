@@ -923,12 +923,12 @@ public static class Prelude
             public static double Sqrt(double x) { return 0.0; }
             public static double Abs(double x) { return 0.0; }
             public static double Floor(double x) { return 0.0; }
-            public static double Ceil(double x) { return 0.0; }
+            public static double Ceiling(double x) { return 0.0; }
             public static double Round(double x) { return 0.0; }
-            public static double Trunc(double x) { return 0.0; }
+            public static double Truncate(double x) { return 0.0; }
             public static double Min(double a, double b) { return 0.0; }
             public static double Max(double a, double b) { return 0.0; }
-            public static double Fma(double a, double b, double c) { return 0.0; }
+            public static double FusedMultiplyAdd(double x, double y, double z) { return 0.0; }
         }
 
         """;

@@ -2474,6 +2474,34 @@ class UriFormatException : FormatException {
 // read by the target type's own Parse, as .NET's Convert reads it.
 //
 // No decimal: this machine has no such type, so the decimal rows are absent.
+/// .NET's TypeCode: which of the types Convert knows a value is.
+enum TypeCode {
+    Empty = 0,
+    Object = 1,
+    DBNull = 2,
+    Boolean = 3,
+    Char = 4,
+    SByte = 5,
+    Byte = 6,
+    Int16 = 7,
+    UInt16 = 8,
+    Int32 = 9,
+    UInt32 = 10,
+    Int64 = 11,
+    UInt64 = 12,
+    Single = 13,
+    Double = 14,
+    Decimal = 15,
+    DateTime = 16,
+    String = 18
+}
+
+/// Whether base 64 is broken into lines of 76.
+enum Base64FormattingOptions {
+    None = 0,
+    InsertLineBreaks = 1
+}
+
 static class Convert {
     // .NET's overflow message for each target, in its words: "an Int32",
     // "a UInt32", "an unsigned byte", "a character".
@@ -2483,6 +2511,98 @@ static class Convert {
 
     private static InvalidCastException Cast(string from, string to) {
         return new InvalidCastException(String.Concat("Invalid cast from '", String.Concat(from, String.Concat("' to '", String.Concat(to, "'.")))));
+    }
+
+    // AN ENUM CONVERTS AS ITS UNDERLYING INTEGER, which is what .NET's enum
+    // IConvertible answers: the value boxed again as that integer, read out
+    // of the box as the CLR reads one (an enum unboxes as its integer).
+    internal static object EnumUnderlying(object value) {
+        switch (Runtime.BoxKind(value)) {
+            case 1: return (sbyte)value;
+            case 2: return (byte)value;
+            case 3: return (short)value;
+            case 4: return (ushort)value;
+            case 5: return (int)value;
+            case 6: return (uint)value;
+            case 7: return (long)value;
+            default: return (ulong)value;
+        }
+    }
+
+    // Whether .NET's value is an IConvertible: the primitives, string, a date
+    // and an enum.
+    private static bool IsConvertible(object value) {
+        return value is string || value is bool || value is char || value is sbyte || value is byte || value is short
+            || value is ushort || value is int || value is uint || value is long || value is ulong || value is float
+            || value is double || value is DateTime || value.GetType().IsEnum;
+    }
+
+    // ---- ChangeType -----------------------------------------------------------
+
+    /// THE VALUE AS THE TYPE ASKED FOR, by that type's Convert.To..., as .NET's
+    /// ChangeType: null only to a type that can hold it, an object that is no
+    /// IConvertible only to its own type, and a type Convert has no method for
+    /// only from the value's own type.
+    public static object? ChangeType(object? value, Type conversionType) {
+        return ChangeType(value, conversionType, null);
+    }
+
+    public static object? ChangeType(object? value, Type conversionType, IFormatProvider? provider) {
+        if (conversionType == null) { throw new ArgumentNullException("conversionType"); }
+        if (value == null) {
+            if (conversionType.IsValueType) { throw new InvalidCastException("Null object cannot be converted to a value type."); }
+            return null;
+        }
+        if (!IsConvertible(value)) {
+            if (value.GetType() == conversionType) { return value; }
+            throw new InvalidCastException("Object must implement IConvertible.");
+        }
+        if (conversionType == typeof(bool)) { return ToBoolean(value, provider); }
+        if (conversionType == typeof(char)) { return ToChar(value, provider); }
+        if (conversionType == typeof(sbyte)) { return ToSByte(value, provider); }
+        if (conversionType == typeof(byte)) { return ToByte(value, provider); }
+        if (conversionType == typeof(short)) { return ToInt16(value, provider); }
+        if (conversionType == typeof(ushort)) { return ToUInt16(value, provider); }
+        if (conversionType == typeof(int)) { return ToInt32(value, provider); }
+        if (conversionType == typeof(uint)) { return ToUInt32(value, provider); }
+        if (conversionType == typeof(long)) { return ToInt64(value, provider); }
+        if (conversionType == typeof(ulong)) { return ToUInt64(value, provider); }
+        if (conversionType == typeof(float)) { return ToSingle(value, provider); }
+        if (conversionType == typeof(double)) { return ToDouble(value, provider); }
+        if (conversionType == typeof(DateTime)) { return ToDateTime(value, provider); }
+        if (conversionType == typeof(string)) { return ToString(value, provider); }
+        if (conversionType == typeof(object)) { return value; }
+        if (value.GetType() == conversionType) { return value; }
+        throw new InvalidCastException("Invalid cast from '" + String.TypeText(value.GetType().FullName) + "' to '" + String.TypeText(conversionType.FullName) + "'.");
+    }
+
+    public static object? ChangeType(object? value, TypeCode typeCode) {
+        return ChangeType(value, typeCode, null);
+    }
+
+    public static object? ChangeType(object? value, TypeCode typeCode, IFormatProvider? provider) {
+        if (value == null && (typeCode == TypeCode.Empty || typeCode == TypeCode.String || typeCode == TypeCode.Object)) { return null; }
+        if (value == null || !IsConvertible(value)) { throw new InvalidCastException("Object must implement IConvertible."); }
+        switch (typeCode) {
+            case TypeCode.Boolean: return ToBoolean(value, provider);
+            case TypeCode.Char: return ToChar(value, provider);
+            case TypeCode.SByte: return ToSByte(value, provider);
+            case TypeCode.Byte: return ToByte(value, provider);
+            case TypeCode.Int16: return ToInt16(value, provider);
+            case TypeCode.UInt16: return ToUInt16(value, provider);
+            case TypeCode.Int32: return ToInt32(value, provider);
+            case TypeCode.UInt32: return ToUInt32(value, provider);
+            case TypeCode.Int64: return ToInt64(value, provider);
+            case TypeCode.UInt64: return ToUInt64(value, provider);
+            case TypeCode.Single: return ToSingle(value, provider);
+            case TypeCode.Double: return ToDouble(value, provider);
+            case TypeCode.DateTime: return ToDateTime(value, provider);
+            case TypeCode.String: return ToString(value, provider);
+            case TypeCode.Object: return value;
+            case TypeCode.DBNull: throw new InvalidCastException("Object cannot be cast to DBNull.");
+            case TypeCode.Empty: throw new InvalidCastException("Object cannot be cast to Empty.");
+            default: throw new ArgumentException("Unknown TypeCode value.");
+        }
     }
 
     // An object that is none of the types Convert knows: .NET reaches it
@@ -2569,6 +2689,7 @@ static class Convert {
         if (value is float vfloat) { return ToBoolean(vfloat); }
         if (value is double vdouble) { return ToBoolean(vdouble); }
         if (value is DateTime vdatetime) { return ToBoolean(vdatetime); }
+        if (value.GetType().IsEnum) { return ToBoolean(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static bool ToBoolean(object? value, IFormatProvider? provider) { return ToBoolean(value); }
@@ -2610,6 +2731,7 @@ static class Convert {
         if (value is float vfloat) { return ToChar(vfloat); }
         if (value is double vdouble) { return ToChar(vdouble); }
         if (value is DateTime vdatetime) { return ToChar(vdatetime); }
+        if (value.GetType().IsEnum) { return ToChar(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static char ToChar(object? value, IFormatProvider? provider) { return ToChar(value); }
@@ -2647,6 +2769,7 @@ static class Convert {
         if (value is float vfloat) { return ToSByte(vfloat); }
         if (value is double vdouble) { return ToSByte(vdouble); }
         if (value is DateTime vdatetime) { return ToSByte(vdatetime); }
+        if (value.GetType().IsEnum) { return ToSByte(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static sbyte ToSByte(object? value, IFormatProvider? provider) { return ToSByte(value); }
@@ -2684,6 +2807,7 @@ static class Convert {
         if (value is float vfloat) { return ToByte(vfloat); }
         if (value is double vdouble) { return ToByte(vdouble); }
         if (value is DateTime vdatetime) { return ToByte(vdatetime); }
+        if (value.GetType().IsEnum) { return ToByte(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static byte ToByte(object? value, IFormatProvider? provider) { return ToByte(value); }
@@ -2721,6 +2845,7 @@ static class Convert {
         if (value is float vfloat) { return ToInt16(vfloat); }
         if (value is double vdouble) { return ToInt16(vdouble); }
         if (value is DateTime vdatetime) { return ToInt16(vdatetime); }
+        if (value.GetType().IsEnum) { return ToInt16(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static short ToInt16(object? value, IFormatProvider? provider) { return ToInt16(value); }
@@ -2758,6 +2883,7 @@ static class Convert {
         if (value is float vfloat) { return ToUInt16(vfloat); }
         if (value is double vdouble) { return ToUInt16(vdouble); }
         if (value is DateTime vdatetime) { return ToUInt16(vdatetime); }
+        if (value.GetType().IsEnum) { return ToUInt16(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static ushort ToUInt16(object? value, IFormatProvider? provider) { return ToUInt16(value); }
@@ -2795,6 +2921,7 @@ static class Convert {
         if (value is float vfloat) { return ToInt32(vfloat); }
         if (value is double vdouble) { return ToInt32(vdouble); }
         if (value is DateTime vdatetime) { return ToInt32(vdatetime); }
+        if (value.GetType().IsEnum) { return ToInt32(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static int ToInt32(object? value, IFormatProvider? provider) { return ToInt32(value); }
@@ -2832,6 +2959,7 @@ static class Convert {
         if (value is float vfloat) { return ToUInt32(vfloat); }
         if (value is double vdouble) { return ToUInt32(vdouble); }
         if (value is DateTime vdatetime) { return ToUInt32(vdatetime); }
+        if (value.GetType().IsEnum) { return ToUInt32(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static uint ToUInt32(object? value, IFormatProvider? provider) { return ToUInt32(value); }
@@ -2869,6 +2997,7 @@ static class Convert {
         if (value is float vfloat) { return ToInt64(vfloat); }
         if (value is double vdouble) { return ToInt64(vdouble); }
         if (value is DateTime vdatetime) { return ToInt64(vdatetime); }
+        if (value.GetType().IsEnum) { return ToInt64(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static long ToInt64(object? value, IFormatProvider? provider) { return ToInt64(value); }
@@ -2906,6 +3035,7 @@ static class Convert {
         if (value is float vfloat) { return ToUInt64(vfloat); }
         if (value is double vdouble) { return ToUInt64(vdouble); }
         if (value is DateTime vdatetime) { return ToUInt64(vdatetime); }
+        if (value.GetType().IsEnum) { return ToUInt64(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static ulong ToUInt64(object? value, IFormatProvider? provider) { return ToUInt64(value); }
@@ -2943,6 +3073,7 @@ static class Convert {
         if (value is float vfloat) { return ToSingle(vfloat); }
         if (value is double vdouble) { return ToSingle(vdouble); }
         if (value is DateTime vdatetime) { return ToSingle(vdatetime); }
+        if (value.GetType().IsEnum) { return ToSingle(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static float ToSingle(object? value, IFormatProvider? provider) { return ToSingle(value); }
@@ -2980,6 +3111,7 @@ static class Convert {
         if (value is float vfloat) { return ToDouble(vfloat); }
         if (value is double vdouble) { return ToDouble(vdouble); }
         if (value is DateTime vdatetime) { return ToDouble(vdatetime); }
+        if (value.GetType().IsEnum) { return ToDouble(EnumUnderlying(value)); }
         throw NotConvertible(value);
     }
     public static double ToDouble(object? value, IFormatProvider? provider) { return ToDouble(value); }
@@ -3275,11 +3407,85 @@ static class Convert {
     // travels through anything that expects text -- a certificate, a mail
     // attachment, a JSON document -- and the alphabet is fixed by RFC 4648, so
     // this and .NET produce the same string byte for byte.
-    public static string ToBase64String(byte[] bytes) {
-        return ToBase64String(bytes, 0, bytes.Length);
+    public static string ToBase64String(byte[] inArray) {
+        if (inArray == null) { throw new ArgumentNullException("inArray"); }
+        return ToBase64String(inArray, 0, inArray.Length, Base64FormattingOptions.None);
     }
 
-    public static string ToBase64String(byte[] bytes, int offset, int length) {
+    public static string ToBase64String(byte[] inArray, Base64FormattingOptions options) {
+        if (inArray == null) { throw new ArgumentNullException("inArray"); }
+        return ToBase64String(inArray, 0, inArray.Length, options);
+    }
+
+    public static string ToBase64String(byte[] inArray, int offset, int length) {
+        return ToBase64String(inArray, offset, length, Base64FormattingOptions.None);
+    }
+
+    public static string ToBase64String(ReadOnlySpan<byte> bytes, Base64FormattingOptions options = Base64FormattingOptions.None) {
+        return ToBase64String(bytes.ToArray(), 0, bytes.Length, options);
+    }
+
+    /// .NET's checks, in its order, and its line breaks: with InsertLineBreaks
+    /// a CR LF after every 76 characters, none after the last.
+    public static string ToBase64String(byte[] inArray, int offset, int length, Base64FormattingOptions options) {
+        if (inArray == null) { throw new ArgumentNullException("inArray"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, inArray.Length - length);
+        if ((uint)options > (uint)Base64FormattingOptions.InsertLineBreaks) {
+            throw new ArgumentException("Illegal enum value: " + (int)options + ".", "options");
+        }
+        string text = Base64Of(inArray, offset, length);
+        if (options != Base64FormattingOptions.InsertLineBreaks || text.Length <= 76) { return text; }
+        StringBuilder lines = new StringBuilder();
+        for (int at = 0; at < text.Length; at = at + 76) {
+            if (at > 0) { lines.Append("\r\n"); }
+            lines.Append(text, at, Math.Min(76, text.Length - at));
+        }
+        return lines.ToString();
+    }
+
+    /// The base 64 of the bytes into an array, as ToBase64String writes it,
+    /// and how many characters that was.
+    public static int ToBase64CharArray(byte[] inArray, int offsetIn, int length, char[] outArray, int offsetOut) {
+        return ToBase64CharArray(inArray, offsetIn, length, outArray, offsetOut, Base64FormattingOptions.None);
+    }
+
+    public static int ToBase64CharArray(byte[] inArray, int offsetIn, int length, char[] outArray, int offsetOut, Base64FormattingOptions options) {
+        if (inArray == null) { throw new ArgumentNullException("inArray"); }
+        if (outArray == null) { throw new ArgumentNullException("outArray"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfNegative(offsetIn);
+        ArgumentOutOfRangeException.ThrowIfNegative(offsetOut);
+        if ((uint)options > (uint)Base64FormattingOptions.InsertLineBreaks) {
+            throw new ArgumentException("Illegal enum value: " + (int)options + ".", "options");
+        }
+        if (offsetIn > inArray.Length - length) {
+            throw new ArgumentOutOfRangeException("offsetIn", "Offset and length must refer to a position in the string.");
+        }
+        string text = ToBase64String(inArray, offsetIn, length, options);
+        if (offsetOut > outArray.Length - text.Length) {
+            throw new ArgumentOutOfRangeException("offsetOut", "Either offset did not refer to a position in the string, or there is an insufficient length of destination character array.");
+        }
+        for (int i = 0; i < text.Length; i++) { outArray[offsetOut + i] = text[i]; }
+        return text.Length;
+    }
+
+    public static bool TryToBase64Chars(ReadOnlySpan<byte> bytes, Span<char> chars, out int charsWritten, Base64FormattingOptions options = Base64FormattingOptions.None) {
+        if ((uint)options > (uint)Base64FormattingOptions.InsertLineBreaks) {
+            throw new ArgumentException("Illegal enum value: " + (int)options + ".", "options");
+        }
+        string text = ToBase64String(bytes, options);
+        if (text.Length > chars.Length) {
+            charsWritten = 0;
+            return false;
+        }
+        for (int i = 0; i < text.Length; i++) { chars[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
+    private static string Base64Of(byte[] bytes, int offset, int length) {
         string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         StringBuilder made = new StringBuilder();
         int at = offset;
@@ -3437,6 +3643,33 @@ static class BitConverter {
     public static double UInt64BitsToDouble(ulong value) { return Sys.FromBits((long)value); }
     public static uint SingleToUInt32Bits(float value) { return (uint)Sys.SingleBits(value); }
     public static float UInt32BitsToSingle(uint value) { return Sys.FromSingleBits((int)value); }
+
+    // ---- a number from the start of a span ----------------------------------
+    //
+    // .NET's: the bytes at the start of the span, little end first; a span
+    // too short for the width is refused by the parameter's name.
+
+    private static long Take(ReadOnlySpan<byte> value, int width, bool signed) {
+        if (value.Length < width) { throw new ArgumentOutOfRangeException("value"); }
+        long made = 0;
+        for (int i = 0; i < width; i++) { made = made | ((long)value[i] << (i * 8)); }
+        if (signed && width < 8) {
+            int spare = 64 - width * 8;
+            made = (made << spare) >> spare;
+        }
+        return made;
+    }
+
+    public static bool ToBoolean(ReadOnlySpan<byte> value) { return Take(value, 1, false) != 0; }
+    public static char ToChar(ReadOnlySpan<byte> value) { return (char)Take(value, 2, false); }
+    public static short ToInt16(ReadOnlySpan<byte> value) { return (short)Take(value, 2, true); }
+    public static ushort ToUInt16(ReadOnlySpan<byte> value) { return (ushort)Take(value, 2, false); }
+    public static int ToInt32(ReadOnlySpan<byte> value) { return (int)Take(value, 4, true); }
+    public static uint ToUInt32(ReadOnlySpan<byte> value) { return (uint)Take(value, 4, false); }
+    public static long ToInt64(ReadOnlySpan<byte> value) { return Take(value, 8, true); }
+    public static ulong ToUInt64(ReadOnlySpan<byte> value) { return (ulong)Take(value, 8, true); }
+    public static float ToSingle(ReadOnlySpan<byte> value) { return Int32BitsToSingle((int)Take(value, 4, true)); }
+    public static double ToDouble(ReadOnlySpan<byte> value) { return Sys.FromBits(Take(value, 8, true)); }
 
     /// TRUE, and it is a fact about the processor rather than a choice: every
     /// machine this compiler targets stores the little end first. A program
@@ -21567,16 +21800,16 @@ static class Math {
         double kd = z + ExpShift;
         ulong ki = (ulong)BitConverter.DoubleToInt64Bits(kd);
         kd = kd - ExpShift;
-        double r = Runtime.Fma(kd, ExpNegLn2LoN, Runtime.Fma(kd, ExpNegLn2HiN, x));
+        double r = Runtime.FusedMultiplyAdd(kd, ExpNegLn2LoN, Runtime.FusedMultiplyAdd(kd, ExpNegLn2HiN, x));
         int idx = 2 * (int)(ki & 127);
         ulong top = ki << 45;
         double tail = BitConverter.Int64BitsToDouble(TableBits(ExpTable, idx));
         ulong sbits = (ulong)TableBits(ExpTable, idx + 1) + top;
         double r2 = r * r;
-        double tmp = Runtime.Fma(r2 * r2, Runtime.Fma(r, ExpC5, ExpC4), Runtime.Fma(r2, Runtime.Fma(r, ExpC3, ExpC2), tail + r));
+        double tmp = Runtime.FusedMultiplyAdd(r2 * r2, Runtime.FusedMultiplyAdd(r, ExpC5, ExpC4), Runtime.FusedMultiplyAdd(r2, Runtime.FusedMultiplyAdd(r, ExpC3, ExpC2), tail + r));
         if (abstop == 0) { return ExpSpecial(tmp, sbits, ki); }
         double scale = BitConverter.Int64BitsToDouble((long)sbits);
-        return Runtime.Fma(scale, tmp, scale);
+        return Runtime.FusedMultiplyAdd(scale, tmp, scale);
     }
 
     // The scale out of range: up by 2^1009 after, or into the subnormals
@@ -21585,7 +21818,7 @@ static class Math {
     static double ExpSpecial(double tmp, ulong sbits, ulong ki) {
         if ((ki & 0x80000000) == 0) {
             double big = BitConverter.Int64BitsToDouble((long)(sbits - ((ulong)1009 << 52)));
-            return TwoTo(1009) * Runtime.Fma(big, tmp, big);
+            return TwoTo(1009) * Runtime.FusedMultiplyAdd(big, tmp, big);
         }
         double scale = BitConverter.Int64BitsToDouble((long)(sbits + ((ulong)1022 << 52)));
         double scaled = scale * tmp;
@@ -21824,15 +22057,6 @@ static class Math {
         return h + l;
     }
 
-    // ---- the names .NET uses --------------------------------------------
-    //
-    // The machine's rounding instructions are called Ceil and Trunc, so a C#
-    // program saying Math.Ceiling or Math.Truncate found nothing. These are
-    // the same operations under the names a caller writes.
-
-    public static double Ceiling(double x) { return Math.Ceil(x); }
-    public static double Truncate(double x) { return Math.Trunc(x); }
-
     /// The most negative value has no positive twin, and .NET refuses it.
     public static int Abs(int x) {
         if (x < 0) {
@@ -21994,13 +22218,13 @@ static class Math {
             double whole = 0.0;
 
             if (mode == MidpointRounding.AwayFromZero) {
-                whole = Math.Trunc(scaled + CopySign(BitDecrement(0.5), scaled));
+                whole = Math.Truncate(scaled + CopySign(BitDecrement(0.5), scaled));
             } else if (mode == MidpointRounding.ToZero) {
-                whole = Math.Trunc(scaled);
+                whole = Math.Truncate(scaled);
             } else if (mode == MidpointRounding.ToNegativeInfinity) {
                 whole = Math.Floor(scaled);
             } else if (mode == MidpointRounding.ToPositiveInfinity) {
-                whole = Math.Ceil(scaled);
+                whole = Math.Ceiling(scaled);
             } else {
                 whole = Math.Round(scaled);
             }
@@ -22069,9 +22293,9 @@ static class Math {
                     k = -1;
                 }
             } else {
-                k = (int)Runtime.Fma(1.44269504088896338700e+00, x, negative ? -0.5 : 0.5);
+                k = (int)Runtime.FusedMultiplyAdd(1.44269504088896338700e+00, x, negative ? -0.5 : 0.5);
                 double t = k;
-                hi = Runtime.Fma(-t, Ln2Hi, x);
+                hi = Runtime.FusedMultiplyAdd(-t, Ln2Hi, x);
                 lo = t * Ln2Lo;
             }
             x = hi - lo;
@@ -22084,22 +22308,22 @@ static class Math {
 
         double hfx = 0.5 * x;
         double hxs = x * hfx;
-        double r1 = Runtime.Fma(hxs, -3.33333333333331316428e-02, 1.0);
+        double r1 = Runtime.FusedMultiplyAdd(hxs, -3.33333333333331316428e-02, 1.0);
         double h2 = hxs * hxs;
-        double r2 = Runtime.Fma(hxs, -7.93650757867487942473e-05, 1.58730158725481460165e-03);
+        double r2 = Runtime.FusedMultiplyAdd(hxs, -7.93650757867487942473e-05, 1.58730158725481460165e-03);
         double h4 = h2 * h2;
-        double r3 = Runtime.Fma(hxs, -2.01099218183624371326e-07, 4.00821782732936239552e-06);
-        r1 = Runtime.Fma(h4, r3, Runtime.Fma(h2, r2, r1));
-        double tt = Runtime.Fma(-r1, hfx, 3.0);
-        double e = hxs * ((r1 - tt) / Runtime.Fma(-x, tt, 6.0));
-        if (k == 0) { return x - Runtime.Fma(x, e, -hxs); }
+        double r3 = Runtime.FusedMultiplyAdd(hxs, -2.01099218183624371326e-07, 4.00821782732936239552e-06);
+        r1 = Runtime.FusedMultiplyAdd(h4, r3, Runtime.FusedMultiplyAdd(h2, r2, r1));
+        double tt = Runtime.FusedMultiplyAdd(-r1, hfx, 3.0);
+        double e = hxs * ((r1 - tt) / Runtime.FusedMultiplyAdd(-x, tt, 6.0));
+        if (k == 0) { return x - Runtime.FusedMultiplyAdd(x, e, -hxs); }
 
-        e = Runtime.Fma(x, e - c, -c);
+        e = Runtime.FusedMultiplyAdd(x, e - c, -c);
         e = e - hxs;
-        if (k == -1) { return Runtime.Fma(0.5, x - e, -0.5); }
+        if (k == -1) { return Runtime.FusedMultiplyAdd(0.5, x - e, -0.5); }
         if (k == 1) {
             if (x < -0.25) { return -2.0 * (e - (x + 0.5)); }
-            return Runtime.Fma(2.0, x - e, 1.0);
+            return Runtime.FusedMultiplyAdd(2.0, x - e, 1.0);
         }
         double y;
         if (k <= -2 || k > 56) {
@@ -22194,7 +22418,7 @@ static class Math {
         double r2 = 3.999999999940941908e-01 + z * 2.857142874366239149e-01;
         double r3 = 2.222219843214978396e-01 + z * 1.818357216161805012e-01;
         double r4 = 1.531383769920937332e-01 + z * 1.479819860511658591e-01;
-        double r = Runtime.Fma(z6, r4, Runtime.Fma(z4, r3, Runtime.Fma(z, 6.666666666666735130e-01, z2 * r2)));
+        double r = Runtime.FusedMultiplyAdd(z6, r4, Runtime.FusedMultiplyAdd(z4, r3, Runtime.FusedMultiplyAdd(z, 6.666666666666735130e-01, z2 * r2)));
         if (k == 0) { return f - (hfsq - s * (hfsq + r)); }
         return k * Ln2Hi - ((hfsq - (s * (hfsq + r) + (k * Ln2Lo + c))) - f);
     }
@@ -22927,9 +23151,6 @@ static class Math {
         if (bits == 0) { return -double.Epsilon; }
         return BitConverter.Int64BitsToDouble(bits < 0 ? bits + 1 : bits - 1);
     }
-
-    /// x * y + z with one rounding, not two: the instruction Fma.
-    public static double FusedMultiplyAdd(double x, double y, double z) { return Math.Fma(x, y, z); }
 
     /// x TIMES 2 TO THE n, WITHOUT 2^n ITSELF, which past 1023 or below -1022
     /// is no double though the product may be. The power is taken in steps

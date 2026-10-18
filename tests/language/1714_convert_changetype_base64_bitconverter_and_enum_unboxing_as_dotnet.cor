@@ -1,0 +1,115 @@
+// test: convert_changetype_base64_bitconverter_and_enum_unboxing_as_dotnet
+// expect-exit: 0
+// expect-output:
+// int->enum => InvalidCastException: Invalid cast from 'System.Int32' to 'Color'.
+// enum->int => [1] Int32
+// enum->string => [Green] String
+// str->enum => InvalidCastException: Invalid cast from 'System.String' to 'Color'.
+// same => [1.2] Version
+// obj => [5] Int32
+// null str => [] null
+// null obj => [] null
+// bad target => InvalidCastException: Invalid cast from 'System.Int32' to 'System.Version'.
+// null type => ArgumentNullException: Value cannot be null. (Parameter 'conversionType')
+// code int => [12] Int32
+// code null => InvalidCastException: Object must implement IConvertible.
+// code null str => [] null
+// code empty => InvalidCastException: Object cannot be cast to Empty.
+// code dbnull => InvalidCastException: Object cannot be cast to DBNull.
+// code bad => ArgumentException: Unknown TypeCode value.
+// code obj => [5] Int32
+// dbl->str => [2.5] String
+// str->dbl => [1000] Double
+// str->bool => [True] Boolean
+// char->int => [65] Int32
+// dbl->char => InvalidCastException: Invalid cast from 'Double' to 'Char'.
+// big->byte => OverflowException: Value was either too large or too small for an unsigned byte.
+// str->dt => [05/06/2024 00:00:00] DateTime
+// b64 null => ArgumentNullException: Value cannot be null. (Parameter 'inArray')
+// b64 off => ArgumentOutOfRangeException: offset ('2') must be less than or equal to '1'. (Parameter 'offset') Actual value was 2.
+// b64 neg => ArgumentOutOfRangeException: offset ('-1') must be a non-negative value. (Parameter 'offset') Actual value was -1.
+// b64 negl => ArgumentOutOfRangeException: length ('-2') must be a non-negative value. (Parameter 'length') Actual value was -2.
+// b64 lines => [76 76 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|AA==] String
+// b64 span => [AQIDBA==] String
+// b64 chars => [82 RNAA] String
+// bits => [13830554455654793216 1 3212836864 1] String
+// span to => [513 1 1.5 False A 0 2.5 9223372036854775809 -1 4294967295] String
+// span short => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'value')
+// span bool empty => ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'value')
+// unbox => [1 Green 5000000000 200 One] String
+// unbox bad => InvalidCastException: Unable to cast object of type 'Color' to type 'System.Int64'.
+// unbox bad2 => InvalidCastException: Unable to cast object of type 'System.Int16' to type 'System.Int32'.
+// enum convert => [5000000000 200 1 False 1] String
+// enum convert big => OverflowException: Value was either too large or too small for an Int32.
+// math => [-0 2 7 2 -2] String
+//
+// Convert.ChangeType as .NET has it, by Type and by TypeCode: each target
+// through its Convert.To..., null only into what can hold it, an object that
+// is no IConvertible only into its own type, and .NET's refusals word for
+// word. An enum converts as its underlying integer, and unboxes as it, as
+// the CLR unboxes one: (int)(object)Color.Green is 1 and (Color)(object)1 is
+// Green. Base 64 with line breaks every 76 characters, into a string, an
+// array or a span, with .NET's argument checks; BitConverter's span forms
+// and the unsigned bit forms; Math's FusedMultiplyAdd, Ceiling and Truncate
+// under .NET's names alone.
+
+using System;
+using System.Globalization;
+
+enum Color { Red, Green }
+enum Wide : long { Far = 5000000000 }
+enum Small : byte { One = 1, Big = 200 }
+
+static class Program
+{
+    static void T(string label, Func<object?> f)
+    {
+        try { var r = f(); Console.WriteLine(label + " => [" + r + "] " + (r == null ? "null" : r.GetType().Name)); }
+        catch (Exception e) { Console.WriteLine(label + " => " + e.GetType().Name + ": " + e.Message.Replace("\n", " ")); }
+    }
+
+    static void Main()
+    {
+        T("int->enum", () => Convert.ChangeType(1, typeof(Color)));
+        T("enum->int", () => Convert.ChangeType(Color.Green, typeof(int)));
+        T("enum->string", () => Convert.ChangeType(Color.Green, typeof(string)));
+        T("str->enum", () => Convert.ChangeType("Green", typeof(Color)));
+        T("same", () => Convert.ChangeType(new Version(1, 2), typeof(Version)));
+        T("obj", () => Convert.ChangeType(5, typeof(object)));
+        T("null str", () => Convert.ChangeType(null, typeof(string)));
+        T("null obj", () => Convert.ChangeType(null, typeof(object)));
+        T("bad target", () => Convert.ChangeType(5, typeof(Version)));
+        T("null type", () => Convert.ChangeType(5, (Type)null!));
+        T("code int", () => Convert.ChangeType("12", TypeCode.Int32));
+        T("code null", () => Convert.ChangeType(null, TypeCode.Int32));
+        T("code null str", () => Convert.ChangeType(null, TypeCode.String));
+        T("code empty", () => Convert.ChangeType(5, TypeCode.Empty));
+        T("code dbnull", () => Convert.ChangeType(5, TypeCode.DBNull));
+        T("code bad", () => Convert.ChangeType(5, (TypeCode)17));
+        T("code obj", () => Convert.ChangeType(5, TypeCode.Object));
+        T("dbl->str", () => Convert.ChangeType(2.5, typeof(string), CultureInfo.InvariantCulture));
+        T("str->dbl", () => Convert.ChangeType("1e3", typeof(double)));
+        T("str->bool", () => Convert.ChangeType("true", typeof(bool)));
+        T("char->int", () => Convert.ChangeType('A', typeof(int)));
+        T("dbl->char", () => Convert.ChangeType(65.0, typeof(char)));
+        T("big->byte", () => Convert.ChangeType(300, typeof(byte)));
+        T("str->dt", () => Convert.ChangeType("2024-05-06", typeof(DateTime)));
+        T("b64 null", () => Convert.ToBase64String(null!));
+        T("b64 off", () => Convert.ToBase64String(new byte[3], 2, 2));
+        T("b64 neg", () => Convert.ToBase64String(new byte[3], -1, 2));
+        T("b64 negl", () => Convert.ToBase64String(new byte[3], 1, -2));
+        T("b64 lines", () => Convert.ToBase64String(new byte[57]).Length + " " + Convert.ToBase64String(new byte[57], Base64FormattingOptions.InsertLineBreaks).Length + " " + Convert.ToBase64String(new byte[58], Base64FormattingOptions.InsertLineBreaks).Replace("\r\n", "|"));
+        T("b64 span", () => Convert.ToBase64String(new ReadOnlySpan<byte>(new byte[] { 1, 2, 3, 4 }), Base64FormattingOptions.None));
+        T("b64 chars", () => { var c = new char[200]; int n = Convert.ToBase64CharArray(new byte[60], 0, 60, c, 0, Base64FormattingOptions.InsertLineBreaks); return n + " " + new string(c, 76, 4).Replace("\r", "R").Replace("\n", "N"); });
+        T("bits", () => BitConverter.DoubleToUInt64Bits(-1.0) + " " + BitConverter.UInt64BitsToDouble(0x3FF0000000000000UL) + " " + BitConverter.SingleToUInt32Bits(-1f) + " " + BitConverter.UInt32BitsToSingle(0x3F800000u));
+        T("span to", () => BitConverter.ToUInt16(new byte[] { 1, 2 }) + " " + BitConverter.ToInt32(new byte[] { 1, 0, 0, 0, 9 }) + " " + BitConverter.ToDouble(BitConverter.GetBytes(1.5)) + " " + BitConverter.ToBoolean(new byte[] { 0, 1 }) + " " + BitConverter.ToChar(new byte[] { 65, 0 }) + " " + BitConverter.ToInt64(new byte[8]) + " " + BitConverter.ToSingle(BitConverter.GetBytes(2.5f)) + " " + BitConverter.ToUInt64(new byte[] {1,0,0,0,0,0,0,128}) + " " + BitConverter.ToInt16(new byte[] {255,255}) + " " + BitConverter.ToUInt32(new byte[] {255,255,255,255}));
+        T("span short", () => BitConverter.ToInt32(new byte[] { 1, 2 }));
+        T("span bool empty", () => BitConverter.ToBoolean(new byte[0]));
+        T("unbox", () => { object g = Color.Green; object one = 1; object w = Wide.Far; object b = Small.Big; return (int)g + " " + (Color)one + " " + (long)w + " " + (byte)b + " " + (Small)(object)(byte)1; });
+        T("unbox bad", () => { object g = Color.Green; return (long)g; });
+        T("unbox bad2", () => { object s = (short)1; return (int)s; });
+        T("enum convert", () => Convert.ToInt64(Wide.Far) + " " + Convert.ToInt32(Small.Big) + " " + Convert.ToDouble(Color.Green) + " " + Convert.ToBoolean(Color.Red) + " " + Convert.ToByte(Color.Green));
+        T("enum convert big", () => Convert.ToInt32(Wide.Far));
+        T("math", () => Math.Ceiling(-0.5) + " " + Math.Truncate(2.7) + " " + Math.FusedMultiplyAdd(2.0, 3.0, 1.0) + " " + Math.Ceiling(1.2) + " " + Math.Truncate(-2.7));
+    }
+}

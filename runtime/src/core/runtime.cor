@@ -4037,6 +4037,16 @@ static class Runtime
     const long FaceFormattableFlag = 128;
     const long FaceOfFlag = 256;
 
+    /// THE INTEGER KIND A BOX HOLDS, from its descriptor's flags
+    /// (Lowering.BoxKind): an enum's underlying integer or the primitive
+    /// itself, 1 sbyte to 8 ulong, 9 and 10 the native integers.
+    public static int BoxKind(object value)
+    {
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(Sys.Word(value)) & WordSize.AddressMask) - DescWordsHere * w;
+        return (int)((Sys.Peek(desc + DescFlagsWordHere * w) >> 12) & 0xFF);
+    }
+
     /// The store of `value` into `array`: refused with ArrayTypeMismatchException
     /// unless the value is of the array's element type or derives from it.
     public static void ArrayStoreCheck(long array, long value)
@@ -4784,7 +4794,7 @@ static class Runtime
     /// Toward zero. NaN and infinities pass through the size test unchanged,
     /// NaN because every comparison with it is false and infinity because it
     /// is larger than the bound.
-    public static double Trunc(double x)
+    public static double Truncate(double x)
     {
         if (IsNaN(x))
         {
@@ -4806,7 +4816,7 @@ static class Runtime
 
     public static double Floor(double x)
     {
-        double t = Trunc(x);
+        double t = Truncate(x);
 
         if (t > x)
         {
@@ -4815,9 +4825,9 @@ static class Runtime
         return t;
     }
 
-    public static double Ceil(double x)
+    public static double Ceiling(double x)
     {
-        double t = Trunc(x);
+        double t = Truncate(x);
 
         if (t < x)
         {
@@ -4914,7 +4924,7 @@ static class Runtime
     /// it in a 128-bit window whose lost bits are kept as one sticky bit, and
     /// the sum is rounded to nearest, ties to even, once -- subnormals,
     /// overflow and an exact cancellation (+0) as IEEE 754 has them.
-    public static double Fma(double a, double b, double c)
+    public static double FusedMultiplyAdd(double a, double b, double c)
     {
         ulong ua = (ulong)Sys.Bits(a);
         ulong ub = (ulong)Sys.Bits(b);
@@ -5126,7 +5136,7 @@ static class Runtime
     {
         // EXACTLY, as C#'s `%` and C's fmod are: x - n*y with n the quotient
         // truncated, and no rounding anywhere -- the result is always
-        // representable. `x - Trunc(x / y) * y` is not that once the
+        // representable. `x - Truncate(x / y) * y` is not that once the
         // quotient passes 2^53: 1e300 % 3.0 came out as whatever the rounded
         // product left behind. So the mantissas are divided the long way,
         // one bit of the quotient per step, as a C library does it.

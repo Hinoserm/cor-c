@@ -33,6 +33,10 @@ using Type = Corsac.Lang.Type;
 /// to be the descriptor of the very type being asked for. `object o = (short)5;
 /// (int)o` throws in C# -- there is no widening on the way out of a box -- and
 /// it throws here, through the same runtime routine an ordinary bad cast uses.
+/// EXCEPT FOR AN ENUM, which the CLR unboxes as its underlying integer and
+/// back: `(int)(object)Color.Green` is 1, and `(Color)(object)1` is Green.
+/// A box's descriptor carries its integer kind (DescFlags, BoxKindShift) so
+/// that the check can tell a box of the same kind from any other.
 /// </summary>
 public sealed partial class Lowering
 {
@@ -58,6 +62,25 @@ public sealed partial class Lowering
 
     /// <summary>Whether a boxed value of this type is a block of bytes rather than a number.</summary>
     private static bool BoxedBlock(Type t) => t.Symbol is { Kind: TypeKind.Struct };
+
+    /// <summary>
+    /// The kind of value a box holds, in the bits of its descriptor's flags
+    /// from BoxKindShift: an enum's underlying integer, or the primitive
+    /// itself; 0 for a struct. Two boxes of one kind unbox as each other when
+    /// either is an enum, as the CLR's do.
+    /// </summary>
+    private const int BoxKindShift = 12;
+
+    private static int BoxKind(Type t)
+    {
+        Prim prim = t.Symbol is { Kind: TypeKind.Enum } e ? e.EnumUnderlying : t.Symbol is null ? t.Prim : Prim.Void;
+        return prim switch
+        {
+            Prim.I8 => 1, Prim.U8 => 2, Prim.I16 => 3, Prim.U16 => 4, Prim.I32 => 5, Prim.U32 => 6,
+            Prim.I64 => 7, Prim.U64 => 8, Prim.NInt => 9, Prim.NUInt => 10, Prim.Char => 11, Prim.Bool => 12,
+            Prim.F32 => 13, Prim.F64 => 14, _ => 0,
+        };
+    }
 
     /// <summary>How many bytes a box of this type holds after the header.</summary>
     private static int BoxPayload(Type t)
@@ -145,7 +168,33 @@ public sealed partial class Lowering
         _e.SetBlock(check);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
         VReg wanted = _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
-        _e.Branch(_e.Binary(Opcode.Eq, vt, wanted), ok, bad);
+        int kind = BoxKind(want);
+        bool integral = kind is >= 1 and <= 10;
+        if (integral)
+        {
+            // Another descriptor: a box of the same integer kind with an
+            // enum on one side or the other.
+            Block kinship = _f.NewBlock("unbkin");
+            _e.Branch(_e.Binary(Opcode.Eq, vt, wanted), ok, kinship);
+            _e.SetBlock(kinship);
+            VReg flags = _e.Load(IrTypes.Word, vt, DescFlags * _t.WordSize - _t.DescriptorBytes);
+            VReg theirs = _e.Binary(Opcode.And, _e.Binary(Opcode.ShrU, flags, BoxKindShift), 0xFF);
+            Block same = _f.NewBlock("unbsame");
+            _e.Branch(_e.Binary(Opcode.Eq, theirs, kind), same, bad);
+            _e.SetBlock(same);
+            if (want.Symbol is { Kind: TypeKind.Enum })
+            {
+                _e.Jump(ok);
+            }
+            else
+            {
+                _e.Branch(_e.Binary(Opcode.And, flags, TypeFlagEnum), ok, bad);
+            }
+        }
+        else
+        {
+            _e.Branch(_e.Binary(Opcode.Eq, vt, wanted), ok, bad);
+        }
 
         _e.SetBlock(bad);
         CastFailed(obj, want);
@@ -285,6 +334,7 @@ public sealed partial class Lowering
         // What Type asks of it (IsValueType, IsEnum, IsPrimitive): a box is
         // always of a value type.
         WriteWord(block, DescFlags * w, TypeFlagValue
+            | (BoxKind(of) << BoxKindShift)
             | (of.Symbol is { Kind: TypeKind.Enum } ? TypeFlagEnum : 0)
             | (of.Symbol is null && of.Prim is Prim.Bool or Prim.Char or Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32
                    or Prim.I64 or Prim.U64 or Prim.F32 or Prim.F64 or Prim.NInt or Prim.NUInt ? TypeFlagPrimitive : 0));
