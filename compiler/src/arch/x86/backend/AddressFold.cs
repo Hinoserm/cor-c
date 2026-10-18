@@ -29,26 +29,59 @@ namespace Corsac.Lang.X86;
 /// A fold is refused where X, Y or Z is written again before a use (the
 /// IR is not SSA), or where something after the removed arithmetic might
 /// read the flags it set.
+///
+/// Step 1's t may be read as a base in other blocks too, those its block
+/// dominates, where X (and Y) are written in one block only, before t in it
+/// or in a block that dominates t's: X then holds at every use what it held
+/// where t was made. The inlined allocator's fast path made `mov t, thread
+/// ; add t, 64`, stored through t, branched, and stored through it again.
 /// </summary>
 internal static class AddressFold
 {
+    /// <summary>Where each register is written: in one block only (its index), or -1, and the last write's place there.</summary>
+    private sealed class WriteSites
+    {
+        public required MFunction M;
+        public required int[] Block;
+        public required int[] At;
+        private int[]? _idom;
+
+        public bool Dominates(int a, int b)
+        {
+            if (_idom is null)
+            {
+                Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+                for (int k = 0; k < M.Blocks.Count; k++) index[M.Blocks[k]] = k;
+                _idom = BlockDominators.Of(M.Blocks.Count, k => M.Successors(k).Where(index.ContainsKey).Select(t => index[t]));
+            }
+            return BlockDominators.Strictly(_idom, a, b);
+        }
+
+        /// <summary>Whether a virtual register holds one value from before `start` in `block` on.</summary>
+        public bool Fixed(int v, int block, int start)
+            => Block[v] >= 0 && (Block[v] == block ? At[v] < start : Dominates(Block[v], block));
+    }
+
     public static void Run(MFunction m)
     {
         int n = m.NextVReg;
         int[] occurrences = new int[n];
         int[] defs = new int[n];
-        foreach (MBlock b in m.Blocks)
+        WriteSites writes = new() { M = m, Block = new int[n], At = new int[n] };
+        Array.Fill(writes.Block, -2);
+        for (int b = 0; b < m.Blocks.Count; b++)
         {
-            foreach (MInstr i in b.Instrs)
+            List<MInstr> ins = m.Blocks[b].Instrs;
+            for (int k = 0; k < ins.Count; k++)
             {
-                Count(i, occurrences, defs);
+                Count(ins[k], occurrences, defs, writes, b, k);
             }
         }
-        foreach (MBlock b in m.Blocks)
+        for (int b = 0; b < m.Blocks.Count; b++)
         {
-            if (FoldBlock(b, occurrences, defs))
+            if (FoldBlock(m.Blocks[b], occurrences, defs, writes, b))
             {
-                b.Instrs.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
+                m.Blocks[b].Instrs.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
             }
         }
     }
@@ -56,7 +89,7 @@ internal static class AddressFold
     /// <summary>The marker a removed instruction carries until the block is swept.</summary>
     private const long Removed = 0x41464C44;
 
-    private static void Count(MInstr i, int[] occurrences, int[] defs)
+    private static void Count(MInstr i, int[] occurrences, int[] defs, WriteSites writes, int block, int at)
     {
         bool zeroing = i.Op == MOp.Xor && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
         for (int k = 0; k < i.Operands.Count; k++)
@@ -68,6 +101,8 @@ internal static class AddressFold
                     if (zeroing || (Roles.Of(i.Op, k) & Role.Def) != 0)
                     {
                         defs[r.Id]++;
+                        writes.Block[r.Id] = writes.Block[r.Id] == -2 || writes.Block[r.Id] == block ? block : -1;
+                        writes.At[r.Id] = at;
                     }
                     break;
                 case MMem mem:
@@ -132,10 +167,120 @@ internal static class AddressFold
 
     private static bool Plain(MMem mem) => mem.Symbol is null && mem.Label is null && !mem.IsSpill;
 
-    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs)
+    /// <summary>
+    /// Every occurrence of t outside its own block, when each is a plain
+    /// base with no index that can take X+Y (or X+imm) in a block t's block
+    /// strictly dominates, and X and Y hold one value from before t is made
+    /// on -- null otherwise. `counted`: t's occurrences in its own block,
+    /// which with these must be all it has.
+    /// </summary>
+    private static List<(MInstr I, int K)>? Beyond(WriteSites writes, MReg t, MReg x, MOperand y, int block, int start, int counted, int[] occurrences)
+    {
+        if (!writes.Fixed(x.Id, block, start) || y is MReg yr && !writes.Fixed(yr.Id, block, start))
+        {
+            return null;
+        }
+        List<(MInstr I, int K)> found = new();
+        for (int b = 0; b < writes.M.Blocks.Count; b++)
+        {
+            if (b == block)
+            {
+                continue;
+            }
+            foreach (MInstr u in writes.M.Blocks[b].Instrs)
+            {
+                for (int k = 0; k < u.Operands.Count; k++)
+                {
+                    switch (u.Operands[k])
+                    {
+                        case MReg r when r.Id == t.Id:
+                            return null;
+                        case MMem mem when mem.Index?.Id == t.Id:
+                            return null;
+                        case MMem mem when mem.Base?.Id == t.Id:
+                            if (!Plain(mem) || mem.Index is not null || (y is MImm imm && !FitsDisp(mem.Disp, imm.Value)) || !writes.Dominates(block, b))
+                            {
+                                return null;
+                            }
+                            found.Add((u, k));
+                            break;
+                    }
+                }
+            }
+        }
+        return counted + found.Count == occurrences[t.Id] ? found : null;
+    }
+
+    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs, WriteSites writes, int block)
     {
         List<MInstr> ins = b.Instrs;
         bool any = false;
+
+        // ---- 0. base = X, a copy ----
+        //
+        // `mov u, t` whose u is read nowhere but as a base, here or in the
+        // blocks this one dominates, is t: a `ref` local made of a field's
+        // address and copied for the join after its arms. Last first, so a
+        // copy of a copy is t's before t is asked about in step 1.
+        for (int q = ins.Count - 1; q >= 0; q--)
+        {
+            MInstr copy = ins[q];
+            if (copy.Op != MOp.Mov || copy.Width != 4 || copy.Operands.Count != 2
+                || copy.Operands[0] is not MReg { IsPhys: false } u || defs[u.Id] != 1
+                || copy.Operands[1] is not MReg { IsPhys: false } t || t.Id == u.Id)
+            {
+                continue;
+            }
+            List<(int J, int K)> uses = new();
+            bool ok = true;
+            for (int j = q + 1; j < ins.Count && ok; j++)
+            {
+                MInstr use = ins[j];
+                for (int k = 0; k < use.Operands.Count; k++)
+                {
+                    switch (use.Operands[k])
+                    {
+                        case MReg r when r.Id == u.Id:
+                        case MMem m1 when m1.Index?.Id == u.Id:
+                        case MMem m2 when m2.Base?.Id == u.Id && !Plain(m2):
+                            ok = false;
+                            break;
+                        case MMem mem when mem.Base?.Id == u.Id:
+                            uses.Add((j, k));
+                            break;
+                    }
+                }
+            }
+            if (!ok)
+            {
+                continue;
+            }
+            List<(MInstr I, int K)>? beyond = null;
+            if (occurrences[u.Id] != 1 + uses.Count)
+            {
+                beyond = Beyond(writes, u, t, new MImm(0), block, q, 1 + uses.Count, occurrences);
+                if (beyond is null)
+                {
+                    continue;
+                }
+            }
+            int last = uses.Count > 0 ? uses[^1].J : ins.Count - 1;
+            if ((uses.Count == 0 && beyond is null) || Written(ins, q + 1, last, t.Id))
+            {
+                continue;
+            }
+            List<(MInstr I, int K)> all = uses.Select(x => (ins[x.J], x.K)).ToList();
+            if (beyond is not null) all.AddRange(beyond);
+            foreach ((MInstr at, int k) in all)
+            {
+                MMem mem = (MMem)at.Operands[k];
+                at.Operands[k] = new MMem(t, mem.Disp) { Index = mem.Index, Scale = mem.Scale };
+            }
+            occurrences[t.Id] += all.Count - 1;
+            occurrences[u.Id] = 0;
+            ins[q] = Gone();
+            any = true;
+        }
 
         // ---- 1. base = X + Y | X + imm ----
         for (int q = 1; q < ins.Count; q++)
@@ -205,27 +350,43 @@ internal static class AddressFold
                     }
                 }
             }
-            // copy (1) + add (1) + the memory bases
-            if (!ok || uses.Count == 0 || occurrences[t.Id] != 2 + uses.Count)
+            // copy (1) + add (1) + the memory bases, here and in the blocks
+            // this one dominates.
+            if (!ok)
             {
                 continue;
             }
-            int last = uses[^1].J;
+            List<(MInstr I, int K)>? beyond = null;
+            if (occurrences[t.Id] != 2 + uses.Count)
+            {
+                beyond = Beyond(writes, t, x, y, block, p, 2 + uses.Count, occurrences);
+                if (beyond is null)
+                {
+                    continue;
+                }
+            }
+            if (uses.Count == 0 && beyond is null)
+            {
+                continue;
+            }
+            int last = uses.Count > 0 ? uses[^1].J : ins.Count - 1;
             if (Written(ins, p + 1, last, x.Id) || (y is MReg yv && Written(ins, q + 1, last, yv.Id)))
             {
                 continue;
             }
-            foreach ((int j, int k) in uses)
+            List<(MInstr I, int K)> all = uses.Select(u => (ins[u.J], u.K)).ToList();
+            if (beyond is not null) all.AddRange(beyond);
+            foreach ((MInstr at, int k) in all)
             {
-                MMem mem = (MMem)ins[j].Operands[k];
-                ins[j].Operands[k] = y is MImm imm
+                MMem mem = (MMem)at.Operands[k];
+                at.Operands[k] = y is MImm imm
                     ? new MMem(x, checked(mem.Disp + (int)imm.Value))
                     : new MMem(x, mem.Disp) { Index = (MReg)y, Scale = 1 };
             }
-            occurrences[x.Id] += uses.Count - 1;
+            occurrences[x.Id] += all.Count - 1;
             if (y is MReg ym)
             {
-                occurrences[ym.Id] += uses.Count - 1;
+                occurrences[ym.Id] += all.Count - 1;
             }
             occurrences[t.Id] = 0;
             ins[p] = Gone();

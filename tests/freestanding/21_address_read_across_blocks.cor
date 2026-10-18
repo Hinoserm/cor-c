@@ -1,0 +1,62 @@
+// test: an address made in one block and read as a base in the blocks it dominates is folded into each
+// expect-exit: 0
+// expect-output:
+// pick 5 6 6
+// sum 24
+// expect-asm-x86: Pick: 0x10(%e
+// expect-no-asm-x86: Pick: $0x10,
+// expect-asm-x86-64: Pick: 0x18(%r
+// expect-no-asm-x86-64: Pick: 0x18(%rdi),%r
+//
+// `ref int slot = ref cell.C` is the cell's address and the field's offset,
+// written in each arm of the `if` and read at the join: a register made in
+// one block, copied, and read as a base in three others. The address fold
+// worked within a block, so the add (or the lea) and the copy stayed, and a
+// register was held across the branch for an address the cell's own
+// register forms. Now t made in a block and read only as a base in blocks
+// that block dominates, of a base written in one block only before it, is
+// folded into every one of them -- and a copy read only as a base is the
+// base it copies. The inlined allocator's fast path, storing through the
+// thread block's field on both sides of a branch, is the same shape.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Cell
+{
+    public int A;
+    public int B;
+    public int C;
+}
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Pick(Cell cell, bool which, int v)
+    {
+        ref int slot = ref cell.C;
+        if (which) slot = v; else slot = v + 1;
+        return slot;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Sum(Cell cell, int n)
+    {
+        ref int total = ref cell.A;
+        for (int i = 0; i < n; i++)
+        {
+            if ((i & 1) == 0) total += i; else total += 2 * i;
+        }
+        return total;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Cell c = new Cell();
+        Host.Line("pick " + Pick(c, true, 5) + " " + Pick(c, false, 5) + " " + c.C);
+        Host.Line("sum " + Sum(c, 6));
+        Host.Done(0);
+        return 0;
+    }
+}
