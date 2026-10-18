@@ -303,7 +303,7 @@ static class Program
         // Generic class, instance iterator over a field, nested await foreach.
         Box<string> box = new("p", "q", "r");
         await foreach (var (i, s) in box.Numbered()) Say(i + ":" + s);
-        Say(string.Join(",", await box.Items().WhereAsync(s => s != "q").SelectAsync<string, string>(async s => { await Task.Yield(); return s.ToUpper(); }).ToListAsync()));
+        Say(string.Join(",", await box.Items().WhereAsync(s => s != "q").SelectAsync(async s => { await Task.Yield(); return s.ToUpper(); }).ToListAsync()));
 
         // Many parameters and a params array.
         await foreach (string s in Many(1, 2, 3, 4, 5, 6, 7, 8, "x", "y")) Say(s);
