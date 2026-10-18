@@ -1024,6 +1024,21 @@ public sealed partial class Escape : IModulePass
         return false;
     }
 
+    /// <summary>Whether `to` is reachable from `from` (one step at least) along edges that do not pass through `avoid`.</summary>
+    private static bool ReachesAvoidingBlock(Cfg cfg, Block from, Block to, Block avoid)
+    {
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> work = new();
+        foreach (Block n in cfg.Succs(from)) work.Push(n);
+        while (work.TryPop(out Block? x))
+        {
+            if (ReferenceEquals(x, to)) return true;
+            if (ReferenceEquals(x, avoid) || !seen.Add(x)) continue;
+            foreach (Block n in cfg.Succs(x)) work.Push(n);
+        }
+        return false;
+    }
+
     /// <summary>Whether register `into` is `made` narrowed or copied (the stamping store's address).</summary>
     private static bool Stamped(Function f, VReg into, VReg made)
     {
@@ -1379,25 +1394,55 @@ public sealed partial class Escape : IModulePass
         HashSet<string> freshThis = new(StringComparer.Ordinal);
         // The call must come straight after the object is made, as a
         // constructor's does: in the same block, nothing between reading it.
+        Dictionary<Function, Cfg> freshCfgs = new();
         bool FreshFirst(Function g, Block at, int index, Operand arg)
         {
             if (arg is not RegOperand r) return false;
             if (g.Params.Count > 0 && r.Reg == g.Params[0]) return freshThis.Contains(g.Name);
             if (Origin(Defs(g), r.Reg) is not { Op: Opcode.Call } made || !IsAllocator(made.Callee)) return false;
-            int from = at.Instrs.IndexOf(made);
-            if (from < 0 || from > index) return false;
             HashSet<VReg> names = new() { made.Dest! };
-            for (int k = from + 1; k < index; k++)
+            bool Untouched(Block b, int start, int end)
             {
-                Instr i = at.Instrs[k];
-                bool uses = i.Operands.Any(o => o is RegOperand u && names.Contains(u.Reg));
-                if (!uses) continue;
-                if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null) { names.Add(i.Dest); continue; }
-                // Stamping its descriptor is making it.
-                if (i.Op == Opcode.Store && i.Operands[1] is SymOperand) continue;
-                return false;
+                for (int k = start; k < end; k++)
+                {
+                    Instr i = b.Instrs[k];
+                    bool uses = i.Operands.Any(o => o is RegOperand u && names.Contains(u.Reg));
+                    if (!uses) continue;
+                    if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null) { names.Add(i.Dest); continue; }
+                    // Stamping its descriptor is making it.
+                    if (i.Op == Opcode.Store && i.Operands[1] is SymOperand) continue;
+                    return false;
+                }
+                return true;
             }
-            return true;
+            int from = at.Instrs.IndexOf(made);
+            if (from >= 0) return from <= index && Untouched(at, from + 1, index);
+            // MADE IN A BLOCK BEFORE THE CALL'S: the arguments evaluated between
+            // the allocation and the constructor -- a `??`, a conditional --
+            // are blocks of their own. Fresh still where the allocation's block
+            // dominates the call's, no way from the call comes round to it
+            // again but through the allocation, and nothing on any way between
+            // touches the object but a copy or its stamp. Refused, every
+            // constructor called so -- ArgumentException's, as x86-64 lowers its
+            // callers -- was no object's making, its stores writes of the
+            // field, and every caller of it a writer.
+            Block? madeIn = g.Blocks.FirstOrDefault(b => b.Instrs.Contains(made));
+            if (madeIn is null) return false;
+            if (!freshCfgs.TryGetValue(g, out Cfg? cfg)) freshCfgs[g] = cfg = new Cfg(g);
+            if (!cfg.Dominates(madeIn, at) || ReachesAvoidingBlock(cfg, at, at, madeIn)) return false;
+            if (!Untouched(madeIn, madeIn.Instrs.IndexOf(made) + 1, madeIn.Instrs.Count)) return false;
+            HashSet<Block> between = new(ReferenceEqualityComparer.Instance);
+            Stack<Block> work = new();
+            foreach (Block n in cfg.Succs(madeIn)) work.Push(n);
+            while (work.TryPop(out Block? x))
+            {
+                if (ReferenceEquals(x, at) || ReferenceEquals(x, madeIn) || !between.Add(x)) continue;
+                // Only the blocks on a way to the call: the rest are none of its business.
+                if (!ReachesAvoidingBlock(cfg, x, at, madeIn)) { between.Remove(x); continue; }
+                foreach (Block n in cfg.Succs(x)) work.Push(n);
+            }
+            foreach (Block x in between) if (!Untouched(x, 0, x.Instrs.Count)) return false;
+            return Untouched(at, 0, index);
         }
         for (bool grew = true; grew;)
         {
@@ -1746,11 +1791,18 @@ continue;
                     // anything the value read is or is inside.
                     if (i.Op == Opcode.Call && IsFreeCall(i.Callee)
                         && (FreesOtherField(f, Defs(f), WrittenIn(f), mine, i, ld) || FreesElementOf(Defs(f), i, inside))) continue;
+                    // A FREE OF A LEAF THIS FUNCTION MADE (FreesOwnMaking) writes no
+                    // field either, whatever the free reaches elsewhere: a leaf
+                    // owns nothing for Runtime.Free to clear. Counted as a writer,
+                    // the x86-64 Exception.Message's own temporary string, freed
+                    // where the getter returns, refused Exception._message its
+                    // owner, and no exception thrown and caught was freed whole.
+                    bool ownFree = i.Op == Opcode.Call && IsFreeCall(i.Callee) && FreesOwnMaking(x, k);
                     bool danger = i.Op == Opcode.CallIndirect && (_indirect is null || !_indirect.TryGetValue(i, out _))
                         || i.Op == Opcode.CallIndirect && _indirect!.TryGetValue(i, out string[]? t) && t.Any(writers.Contains)
-                        || i.Op == Opcode.Call && (IsFreeCall(i.Callee) && !FreesOwnMaking(x, k)
+                        || i.Op == Opcode.Call && (IsFreeCall(i.Callee) && !ownFree
                                                    || IsCatchEnd(i.Callee) || i.Callee == OwnedReplacedFreer
-                                                   || i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee))
+                                                   || i.Callee is not null && writers.Contains(i.Callee) && !NeverWritesFields(i.Callee) && !ownFree)
                         // ANY owned field's store, not only this one's: the
                         // free a replacement gets (below) frees the old value's
                         // own owned fields too (Runtime.FreeOwnedFields), so
