@@ -1,0 +1,73 @@
+// test: biginteger_division_by_knuth_algorithm_d
+// expect-exit: 0
+// expect-output:
+// -18719141591130265834898184974617007182839762018681027259706043579713 39614081263944238911837433054
+// div -472537567296000058103185248847488813896 -35589675245084014798278661329 -472537567296000058103185248847488813896,-35589675245084014798278661329
+// mod 30962046450071712366938522193 1
+// conv OVF OVF OVF FC00 -4271997283855830000 731803961373943942 OVF OVF -861442131956823763
+// 79228162514264337593543950335 -79228162514264337593543950335 -170141183460469231731687303715884105728 340282366920938463463374607431768211455 65504 OVF OVF OVF
+// div 0E836D1F830F1C79
+// mod 05134B7B2A8B96A1
+// conv AFC3B4DCE2786430
+//
+// BIGINTEGER DIVISION BY KNUTH'S ALGORITHM D, over random operands of up to
+// twelve limbs with all-zero, all-one and top-bit limbs among them: quotient,
+// remainder, DivRem, ModPow and the greatest common divisor, each hashed; and
+// the conversions to and from decimal, Int128, UInt128 and Half, with .NET's
+// overflows. The first round's lines are printed as they are.
+
+using System;
+using System.Numerics;
+
+class Program {
+    static string[] names = { "div", "mod", "conv" };
+    static ulong[] hashes = new ulong[3];
+
+    // Each category's lines folded into an FNV-1a hash, the first round's printed.
+    static void Note(int at, int round, string text) {
+        ulong h = hashes[at] == 0 ? 14695981039346656037UL : hashes[at];
+        foreach (char c in text) { h = (h ^ c) * 1099511628211UL; }
+        hashes[at] = h;
+        if (round == 0) { Console.WriteLine(names[at] + " " + text); }
+    }
+    static ulong state = 0x853C49E6748FEA9BUL;
+
+    static ulong Next() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+
+    static int Below(int n) { return (int)(Next() % (ulong)n); }
+
+    static BigInteger Random(int limbs) {
+        BigInteger made = BigInteger.Zero;
+        for (int i = 0; i < limbs; i++) {
+            uint limb = (uint)Next();
+            int shape = Below(8);
+            if (shape == 0) { limb = 0; } else if (shape == 1) { limb = uint.MaxValue; } else if (shape == 2) { limb = 0x80000000; }
+            made = (made << 32) | limb;
+        }
+        return Below(2) == 0 ? made : -made;
+    }
+
+    static string Try(Func<string> f) {
+        try { return f(); } catch (OverflowException) { return "OVF"; } catch (DivideByZeroException) { return "DIV"; }
+    }
+
+    static void Main() {
+        for (int i = 0; i < 400; i++) {
+            BigInteger a = Random(1 + Below(12));
+            BigInteger b = Random(1 + Below(7));
+            if (Below(10) == 0) { b = a / (2 + Below(5)); }
+            if (i == 0) Console.WriteLine(a + " " + b);
+            Note(0, i, Try(() => (a / b).ToString()) + " " + Try(() => (a % b).ToString()) + " " + Try(() => { BigInteger q = BigInteger.DivRem(a, b, out BigInteger r); return q + "," + r; }));
+            Note(1, i, Try(() => BigInteger.ModPow(BigInteger.Abs(a), 65537, BigInteger.Abs(b) + 1).ToString()) + " " + BigInteger.GreatestCommonDivisor(a, b));
+            BigInteger small = a >> (Below(100) + 20);
+            Note(2, i, Try(() => ((decimal)small).ToString()) + " " + Try(() => ((Int128)small).ToString()) + " " + Try(() => ((UInt128)small).ToString()) + " " + BitConverter.HalfToUInt16Bits((Half)small).ToString("X4") + " " + (BigInteger)(decimal)(double)(long)Next() + " " + new BigInteger((decimal)(long)Next() / 7m) + " " + Try(() => ((BigInteger)(Half)(float)(int)(Next() % 100000)).ToString()) + " " + Try(() => ((BigInteger)(Half)(float)(int)Next()).ToString()) + " " + (BigInteger)(Int128)(long)Next());
+        }
+        Console.WriteLine((BigInteger)decimal.MaxValue + " " + (BigInteger)decimal.MinValue + " " + (BigInteger)Int128.MinValue + " " + (BigInteger)UInt128.MaxValue + " " + (BigInteger)Half.MaxValue + " " + Try(() => ((decimal)((BigInteger)decimal.MaxValue + 1)).ToString()) + " " + Try(() => ((Int128)(-(BigInteger)Int128.MinValue)).ToString()) + " " + Try(() => ((BigInteger)Half.PositiveInfinity).ToString()));
+        for (int h = 0; h < names.Length; h++) { Console.WriteLine(names[h] + " " + hashes[h].ToString("X16")); }
+    }
+}

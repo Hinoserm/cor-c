@@ -1469,11 +1469,13 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
         return Trim(made);
     }
 
-    /// LONG DIVISION ONE BIT AT A TIME: shift the next bit of the dividend into
-    /// a running remainder and subtract the divisor when it fits. It is the
-    /// slow algorithm -- a bit per iteration rather than a limb -- and it is
-    /// the one that is obviously right, which matters more here than speed on
-    /// numbers this machine will never be given.
+    /// KNUTH'S ALGORITHM D, as .NET's BigIntegerCalculator does it (its
+    /// "grammar school" division): a 32-bit digit of the quotient at a time,
+    /// guessed from the top two limbs of what is left over the divisor's top
+    /// two -- both read as if shifted up until the divisor's top bit is set,
+    /// which makes the guess at most two too large -- then the guess times
+    /// the divisor taken off in one pass, and added back once if it was still
+    /// one too many. A limb a step, where long division by bits took 32.
     private static void DivModMag(uint[] dividend, uint[] divisor, out uint[] quotient, out uint[] remainder) {
         if (CompareMag(dividend, divisor) < 0) {
             quotient = new uint[0];
@@ -1492,46 +1494,86 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
             return;
         }
 
-        uint[] made = new uint[dividend.Length];
-        uint[] running = new uint[0];
+        uint[] left = new uint[dividend.Length];
+        for (int i = 0; i < dividend.Length; i++) { left[i] = dividend[i]; }
+        uint[] made = new uint[dividend.Length - divisor.Length + 1];
 
-        for (int i = dividend.Length * 32 - 1; i >= 0; i--) {
-            running = ShiftLeftOne(running);
+        uint divHi = divisor[divisor.Length - 1];
+        uint divLo = divisor[divisor.Length - 2];
+        int shift = BitOperations.LeadingZeroCount(divHi);
+        int backShift = 32 - shift;
 
-            if (((dividend[i / 32] >> (i % 32)) & 1) == 1) {
-                running = SetBitZero(running);
-            }
-
-            if (CompareMag(running, divisor) >= 0) {
-                running = SubMag(running, divisor);
-                made[i / 32] = made[i / 32] | ((uint)1 << (i % 32));
-            }
+        if (shift > 0) {
+            uint divNx = divisor.Length > 2 ? divisor[divisor.Length - 3] : 0;
+            divHi = (divHi << shift) | (divLo >> backShift);
+            divLo = (divLo << shift) | (divNx >> backShift);
         }
+
+        for (int i = left.Length; i >= divisor.Length; i--) {
+            int n = i - divisor.Length;
+            uint t = i < left.Length ? left[i] : 0;
+            ulong valHi = ((ulong)t << 32) | left[i - 1];
+            uint valLo = i > 1 ? left[i - 2] : 0;
+
+            if (shift > 0) {
+                uint valNx = i > 2 ? left[i - 3] : 0;
+                valHi = (valHi << shift) | (valLo >> backShift);
+                valLo = (valLo << shift) | (valNx >> backShift);
+            }
+
+            ulong digit = valHi / divHi;
+            if (digit > 0xFFFFFFFF) { digit = 0xFFFFFFFF; }
+            while (GuessTooBig(digit, valHi, valLo, divHi, divLo)) { --digit; }
+
+            if (digit > 0) {
+                uint carry = SubtractDivisor(left, n, divisor, digit);
+                if (carry != t) {
+                    // Still one too many: the divisor back once.
+                    AddDivisor(left, n, divisor);
+                    --digit;
+                }
+            }
+
+            if (n < made.Length) { made[n] = (uint)digit; }
+            if (i < left.Length) { left[i] = 0; }
+        }
+
         quotient = Trim(made);
-        remainder = Trim(running);
+        remainder = Trim(left);
     }
 
-    private static uint[] ShiftLeftOne(uint[] magnitude) {
-        uint[] made = new uint[magnitude.Length + 1];
-        uint carry = 0;
-
-        for (int i = 0; i < magnitude.Length; i++) {
-            made[i] = (magnitude[i] << 1) | carry;
-            carry = magnitude[i] >> 31;
-        }
-        made[magnitude.Length] = carry;
-        return Trim(made);
+    /// Whether q times the divisor's top two limbs passes the dividend's top
+    /// three, which is what makes a guess too large.
+    private static bool GuessTooBig(ulong q, ulong valHi, uint valLo, uint divHi, uint divLo) {
+        ulong chkHi = divHi * q;
+        ulong chkLo = divLo * q;
+        chkHi += chkLo >> 32;
+        chkLo = (uint)chkLo;
+        return chkHi > valHi || (chkHi == valHi && chkLo > valLo);
     }
 
-    private static uint[] SetBitZero(uint[] magnitude) {
-        if (magnitude.Length == 0) {
-            uint[] one = new uint[1];
-
-            one[0] = 1;
-            return one;
+    /// left[at..] -= q * right in one pass; the borrow out of the top answered.
+    private static uint SubtractDivisor(uint[] left, int at, uint[] right, ulong q) {
+        ulong carry = 0;
+        for (int i = 0; i < right.Length; i++) {
+            carry += right[i] * q;
+            uint digit = (uint)carry;
+            carry >>= 32;
+            if (left[at + i] < digit) { ++carry; }
+            left[at + i] -= digit;
         }
-        magnitude[0] = magnitude[0] | 1;
-        return magnitude;
+        return (uint)carry;
+    }
+
+    /// left[at..] += right, repairing a subtraction one divisor too many.
+    private static uint AddDivisor(uint[] left, int at, uint[] right) {
+        ulong carry = 0;
+        for (int i = 0; i < right.Length; i++) {
+            ulong digit = left[at + i] + carry + right[i];
+            left[at + i] = (uint)digit;
+            carry = digit >> 32;
+        }
+        return (uint)carry;
     }
 }
 
@@ -1628,5 +1670,481 @@ static class BitOperations {
     public static uint RoundUpToPowerOf2(uint value) {
         if (value <= 1) { return 1; }
         return (uint)1 << (32 - LeadingZeroCount(value - 1));
+    }
+}
+
+// System.Numerics.Complex -- a complex number in two doubles.
+//
+// .NET's, formula for formula: Smith's division, so a quotient does not
+// overflow where c^2 + d^2 would; the square root by the half-angle
+// identities, symmetric where Pow(z, 0.5) is not; arcsine and arccosine by
+// Hull, Fairgrieve and Tang; the magnitude by Double.Hypot. The operators
+// with a double on one side are their own, as .NET's are, and treat an
+// infinite part as .NET does. Written "<re; im>", each part as a double is.
+
+readonly struct Complex : IEquatable<Complex>, IFormattable {
+    private readonly double m_real;
+    private readonly double m_imaginary;
+
+    public Complex(double real, double imaginary) {
+        m_real = real;
+        m_imaginary = imaginary;
+    }
+
+    public static Complex Zero => new Complex(0.0, 0.0);
+    public static Complex One => new Complex(1.0, 0.0);
+    public static Complex ImaginaryOne => new Complex(0.0, 1.0);
+    public static Complex NaN => new Complex(double.NaN, double.NaN);
+    public static Complex Infinity => new Complex(double.PositiveInfinity, double.PositiveInfinity);
+
+    // 1 / Log(10), and the thresholds .NET computes once: MaxValue over
+    // (sqrt(2) + 1), sqrt(MaxValue) / 2, and Log(2), each the double it is.
+    const double InverseOfLog10 = 0.43429448190325;
+    const double SqrtRescaleThreshold = 7.446288774449766E+307;
+    const double AsinOverflowThreshold = 6.703903964971298E+153;
+    const double Log2 = 0.6931471805599453;
+
+    public double Real => m_real;
+    public double Imaginary => m_imaginary;
+    public double Magnitude => Abs(this);
+    public double Phase => Math.Atan2(m_imaginary, m_real);
+
+    public static Complex FromPolarCoordinates(double magnitude, double phase) {
+        return new Complex(magnitude * Math.Cos(phase), magnitude * Math.Sin(phase));
+    }
+
+    public static Complex Negate(Complex value) { return -value; }
+    public static Complex Add(Complex left, Complex right) { return left + right; }
+    public static Complex Add(Complex left, double right) { return left + right; }
+    public static Complex Add(double left, Complex right) { return left + right; }
+    public static Complex Subtract(Complex left, Complex right) { return left - right; }
+    public static Complex Subtract(Complex left, double right) { return left - right; }
+    public static Complex Subtract(double left, Complex right) { return left - right; }
+    public static Complex Multiply(Complex left, Complex right) { return left * right; }
+    public static Complex Multiply(Complex left, double right) { return left * right; }
+    public static Complex Multiply(double left, Complex right) { return left * right; }
+    public static Complex Divide(Complex dividend, Complex divisor) { return dividend / divisor; }
+    public static Complex Divide(Complex dividend, double divisor) { return dividend / divisor; }
+    public static Complex Divide(double dividend, Complex divisor) { return dividend / divisor; }
+
+    // ---- the operators -----------------------------------------------------
+
+    public static Complex operator -(Complex value) { return new Complex(-value.m_real, -value.m_imaginary); }
+    public static Complex operator +(Complex value) { return value; }
+    public static Complex operator ++(Complex value) { return value + One; }
+    public static Complex operator --(Complex value) { return value - One; }
+
+    public static Complex operator +(Complex left, Complex right) { return new Complex(left.m_real + right.m_real, left.m_imaginary + right.m_imaginary); }
+    public static Complex operator +(Complex left, double right) { return new Complex(left.m_real + right, left.m_imaginary); }
+    public static Complex operator +(double left, Complex right) { return new Complex(left + right.m_real, right.m_imaginary); }
+    public static Complex operator -(Complex left, Complex right) { return new Complex(left.m_real - right.m_real, left.m_imaginary - right.m_imaginary); }
+    public static Complex operator -(Complex left, double right) { return new Complex(left.m_real - right, left.m_imaginary); }
+    public static Complex operator -(double left, Complex right) { return new Complex(left - right.m_real, -right.m_imaginary); }
+
+    /// (a + bi)(c + di) = (ac - bd) + (bc + ad)i.
+    public static Complex operator *(Complex left, Complex right) {
+        double realPart = left.m_real * right.m_real - left.m_imaginary * right.m_imaginary;
+        double imaginaryPart = left.m_imaginary * right.m_real + left.m_real * right.m_imaginary;
+        return new Complex(realPart, imaginaryPart);
+    }
+
+    /// By a double: an infinite part's partner is NaN, as the full product
+    /// would make it.
+    public static Complex operator *(Complex left, double right) {
+        if (!double.IsFinite(left.m_real)) {
+            if (!double.IsFinite(left.m_imaginary)) { return new Complex(double.NaN, double.NaN); }
+            return new Complex(left.m_real * right, double.NaN);
+        }
+        if (!double.IsFinite(left.m_imaginary)) { return new Complex(double.NaN, left.m_imaginary * right); }
+        return new Complex(left.m_real * right, left.m_imaginary * right);
+    }
+
+    public static Complex operator *(double left, Complex right) {
+        if (!double.IsFinite(right.m_real)) {
+            if (!double.IsFinite(right.m_imaginary)) { return new Complex(double.NaN, double.NaN); }
+            return new Complex(left * right.m_real, double.NaN);
+        }
+        if (!double.IsFinite(right.m_imaginary)) { return new Complex(double.NaN, left * right.m_imaginary); }
+        return new Complex(left * right.m_real, left * right.m_imaginary);
+    }
+
+    /// Smith's formula: the smaller part of the divisor over the larger,
+    /// so c * c + d * d is never made to overflow.
+    public static Complex operator /(Complex left, Complex right) {
+        double a = left.m_real;
+        double b = left.m_imaginary;
+        double c = right.m_real;
+        double d = right.m_imaginary;
+        if (Math.Abs(d) < Math.Abs(c)) {
+            double doc = d / c;
+            return new Complex((a + b * doc) / (c + d * doc), (b - a * doc) / (c + d * doc));
+        }
+        double cod = c / d;
+        return new Complex((b + a * cod) / (d + c * cod), (-a + b * cod) / (d + c * cod));
+    }
+
+    public static Complex operator /(Complex left, double right) {
+        if (right == 0) { return new Complex(double.NaN, double.NaN); }
+        if (!double.IsFinite(left.m_real)) {
+            if (!double.IsFinite(left.m_imaginary)) { return new Complex(double.NaN, double.NaN); }
+            return new Complex(left.m_real / right, double.NaN);
+        }
+        if (!double.IsFinite(left.m_imaginary)) { return new Complex(double.NaN, left.m_imaginary / right); }
+        return new Complex(left.m_real / right, left.m_imaginary / right);
+    }
+
+    public static Complex operator /(double left, Complex right) {
+        double a = left;
+        double c = right.m_real;
+        double d = right.m_imaginary;
+        if (Math.Abs(d) < Math.Abs(c)) {
+            double doc = d / c;
+            return new Complex(a / (c + d * doc), (-a * doc) / (c + d * doc));
+        }
+        double cod = c / d;
+        return new Complex(a * cod / (d + c * cod), -a / (d + c * cod));
+    }
+
+    public static bool operator ==(Complex left, Complex right) { return left.m_real == right.m_real && left.m_imaginary == right.m_imaginary; }
+    public static bool operator !=(Complex left, Complex right) { return left.m_real != right.m_real || left.m_imaginary != right.m_imaginary; }
+
+    public override bool Equals(object? obj) { return obj is Complex other && Equals(other); }
+    public bool Equals(Complex value) { return m_real.Equals(value.m_real) && m_imaginary.Equals(value.m_imaginary); }
+    public override int GetHashCode() { return HashCode.Combine(m_real, m_imaginary); }
+
+    // ---- conversions --------------------------------------------------------
+
+    public static implicit operator Complex(byte value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(sbyte value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(char value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(short value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(ushort value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(int value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(uint value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(long value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(ulong value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(nint value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(nuint value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(float value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(double value) { return new Complex(value, 0.0); }
+    public static implicit operator Complex(Half value) { return new Complex((double)value, 0.0); }
+    public static explicit operator Complex(decimal value) { return new Complex((double)value, 0.0); }
+    public static explicit operator Complex(Int128 value) { return new Complex((double)value, 0.0); }
+    public static explicit operator Complex(UInt128 value) { return new Complex((double)value, 0.0); }
+    public static explicit operator Complex(BigInteger value) { return new Complex((double)value, 0.0); }
+
+    // ---- the functions ------------------------------------------------------
+
+    public static double Abs(Complex value) { return double.Hypot(value.m_real, value.m_imaginary); }
+
+    public static Complex Conjugate(Complex value) { return new Complex(value.m_real, -value.m_imaginary); }
+
+    public static Complex Reciprocal(Complex value) {
+        if (value.m_real == 0 && value.m_imaginary == 0) { return Zero; }
+        return One / value;
+    }
+
+    public static bool IsFinite(Complex value) { return double.IsFinite(value.m_real) && double.IsFinite(value.m_imaginary); }
+    public static bool IsInfinity(Complex value) { return double.IsInfinity(value.m_real) || double.IsInfinity(value.m_imaginary); }
+    public static bool IsNaN(Complex value) { return !IsInfinity(value) && !IsFinite(value); }
+    public static bool IsRealNumber(Complex value) { return value.m_imaginary == 0.0 && double.IsRealNumber(value.m_real); }
+    public static bool IsImaginaryNumber(Complex value) { return value.m_real == 0.0 && double.IsRealNumber(value.m_imaginary); }
+    public static bool IsComplexNumber(Complex value) { return value.m_real != 0.0 && value.m_imaginary != 0.0; }
+    public static bool IsZero(Complex value) { return value.m_real == 0.0 && value.m_imaginary == 0.0; }
+
+    public static Complex Sin(Complex value) {
+        double sin = Math.Sin(value.m_real), cos = Math.Cos(value.m_real);
+        return new Complex(sin * Math.Cosh(value.m_imaginary), cos * Math.Sinh(value.m_imaginary));
+    }
+
+    /// sinh(z) = -i sin(iz).
+    public static Complex Sinh(Complex value) {
+        Complex sin = Sin(new Complex(-value.m_imaginary, value.m_real));
+        return new Complex(sin.m_imaginary, -sin.m_real);
+    }
+
+    public static Complex Cos(Complex value) {
+        double sin = Math.Sin(value.m_real), cos = Math.Cos(value.m_real);
+        return new Complex(cos * Math.Cosh(value.m_imaginary), -sin * Math.Sinh(value.m_imaginary));
+    }
+
+    /// cosh(z) = cos(iz).
+    public static Complex Cosh(Complex value) { return Cos(new Complex(-value.m_imaginary, value.m_real)); }
+
+    /// tan z = (sin 2x + i sinh 2y) / (cos 2x + cosh 2y), divided through by
+    /// cosh 2y where |y| is large enough to overflow it.
+    public static Complex Tan(Complex value) {
+        double x2 = 2.0 * value.m_real;
+        double y2 = 2.0 * value.m_imaginary;
+        double sin = Math.Sin(x2), cos = Math.Cos(x2);
+        double cosh = Math.Cosh(y2);
+        if (Math.Abs(value.m_imaginary) <= 4.0) {
+            double D = cos + cosh;
+            return new Complex(sin / D, Math.Sinh(y2) / D);
+        }
+        double E = 1.0 + cos / cosh;
+        return new Complex(sin / cosh / E, Math.Tanh(y2) / E);
+    }
+
+    /// tanh(z) = -i tan(iz).
+    public static Complex Tanh(Complex value) {
+        Complex tan = Tan(new Complex(-value.m_imaginary, value.m_real));
+        return new Complex(tan.m_imaginary, -tan.m_real);
+    }
+
+    public static Complex Asin(Complex value) {
+        double b, bPrime, v;
+        AsinInternal(Math.Abs(value.Real), Math.Abs(value.Imaginary), out b, out bPrime, out v);
+        double u = bPrime < 0.0 ? Math.Asin(b) : Math.Atan(bPrime);
+        if (value.Real < 0.0) { u = -u; }
+        if (value.Imaginary < 0.0) { v = -v; }
+        return new Complex(u, v);
+    }
+
+    public static Complex Acos(Complex value) {
+        double b, bPrime, v;
+        AsinInternal(Math.Abs(value.Real), Math.Abs(value.Imaginary), out b, out bPrime, out v);
+        double u = bPrime < 0.0 ? Math.Acos(b) : Math.Atan(1.0 / bPrime);
+        if (value.Real < 0.0) { u = Math.PI - u; }
+        if (value.Imaginary > 0.0) { v = -v; }
+        return new Complex(u, v);
+    }
+
+    public static Complex Atan(Complex value) {
+        Complex two = new Complex(2.0, 0.0);
+        return (ImaginaryOne / two) * (Log(One - ImaginaryOne * value) - Log(One + ImaginaryOne * value));
+    }
+
+    /// Hull, Fairgrieve and Tang's arcsine for x, y >= 0: beta, or beta' =
+    /// tan(u) where beta is near one (b then -1), and v, the log part --
+    /// with log1p near one and the overflow-free forms for huge arguments.
+    static void AsinInternal(double x, double y, out double b, out double bPrime, out double v) {
+        if (x > AsinOverflowThreshold || y > AsinOverflowThreshold) {
+            b = -1.0;
+            bPrime = x / y;
+            double small, big;
+            if (x < y) {
+                small = x;
+                big = y;
+            } else {
+                small = y;
+                big = x;
+            }
+            double ratio = small / big;
+            v = Log2 + Math.Log(big) + 0.5 * Log1P(ratio * ratio);
+            return;
+        }
+
+        double r = double.Hypot(x + 1.0, y);
+        double s = double.Hypot(x - 1.0, y);
+        double a = (r + s) * 0.5;
+        b = x / a;
+
+        if (b > 0.75) {
+            if (x <= 1.0) {
+                double amx = (y * y / (r + (x + 1.0)) + (s + (1.0 - x))) * 0.5;
+                bPrime = x / Math.Sqrt((a + x) * amx);
+            } else {
+                double t = (1.0 / (r + (x + 1.0)) + 1.0 / (s + (x - 1.0))) * 0.5;
+                bPrime = x / y / Math.Sqrt((a + x) * t);
+            }
+        } else {
+            bPrime = -1.0;
+        }
+
+        if (a < 1.5) {
+            if (x < 1.0) {
+                double t = (1.0 / (r + (x + 1.0)) + 1.0 / (s + (1.0 - x))) * 0.5;
+                double am1 = y * y * t;
+                v = Log1P(am1 + y * Math.Sqrt(t * (a + 1.0)));
+            } else {
+                double am1 = (y * y / (r + (x + 1.0)) + (s + (x - 1.0))) * 0.5;
+                v = Log1P(am1 + Math.Sqrt(am1 * (a + 1.0)));
+            }
+        } else {
+            v = Math.Log(a + Math.Sqrt((a - 1.0) * (a + 1.0)));
+        }
+    }
+
+    /// log(1 + x) without the loss of accuracy at small x, for x >= 0.
+    static double Log1P(double x) {
+        double xp1 = 1.0 + x;
+        if (xp1 == 1.0) { return x; }
+        if (x < 0.75) { return x * Math.Log(xp1) / (xp1 - 1.0); }
+        return Math.Log(xp1);
+    }
+
+    public static Complex Log(Complex value) { return new Complex(Math.Log(Abs(value)), Math.Atan2(value.m_imaginary, value.m_real)); }
+    public static Complex Log(Complex value, double baseValue) { return Log(value) / Log(baseValue); }
+    public static Complex Log10(Complex value) { return Scale(Log(value), InverseOfLog10); }
+    public static Complex Exp(Complex value) { return FromPolarCoordinates(Math.Exp(value.m_real), value.m_imaginary); }
+
+    /// x = sqrt((|z| + a) / 2) and y = b / 2x, or the other way about where
+    /// a is negative -- whichever does not cancel -- and rescaled by exact
+    /// powers of two where |z| would overflow.
+    public static Complex Sqrt(Complex value) {
+        if (double.IsNaN(value.m_real)) {
+            if (double.IsInfinity(value.m_imaginary)) { return new Complex(double.PositiveInfinity, value.m_imaginary); }
+            return new Complex(double.NaN, double.NaN);
+        }
+        if (double.IsNaN(value.m_imaginary)) {
+            if (double.IsPositiveInfinity(value.m_real)) { return new Complex(double.NaN, double.PositiveInfinity); }
+            if (double.IsNegativeInfinity(value.m_real)) { return new Complex(double.PositiveInfinity, double.NaN); }
+            return new Complex(double.NaN, double.NaN);
+        }
+        if (value.m_imaginary == 0.0) {
+            if (value.m_real < 0.0) { return new Complex(0.0, Math.Sqrt(-value.m_real)); }
+            return new Complex(Math.Sqrt(value.m_real), 0.0);
+        }
+
+        bool rescale = false;
+        double realCopy = value.m_real;
+        double imaginaryCopy = value.m_imaginary;
+        if (Math.Abs(realCopy) >= SqrtRescaleThreshold || Math.Abs(imaginaryCopy) >= SqrtRescaleThreshold) {
+            if (double.IsInfinity(value.m_imaginary)) { return new Complex(double.PositiveInfinity, imaginaryCopy); }
+            realCopy *= 0.25;
+            imaginaryCopy *= 0.25;
+            rescale = true;
+        }
+
+        double x, y;
+        if (realCopy >= 0.0) {
+            x = Math.Sqrt((double.Hypot(realCopy, imaginaryCopy) + realCopy) * 0.5);
+            y = imaginaryCopy / (2.0 * x);
+        } else {
+            y = Math.Sqrt((double.Hypot(realCopy, imaginaryCopy) - realCopy) * 0.5);
+            if (imaginaryCopy < 0.0) { y = -y; }
+            x = imaginaryCopy / (2.0 * y);
+        }
+        if (rescale) {
+            x *= 2.0;
+            y *= 2.0;
+        }
+        return new Complex(x, y);
+    }
+
+    public static Complex Pow(Complex value, Complex power) {
+        if (power == Zero) { return One; }
+        if (value == Zero) { return Zero; }
+        double valueReal = value.m_real;
+        double valueImaginary = value.m_imaginary;
+        double powerReal = power.m_real;
+        double powerImaginary = power.m_imaginary;
+        double rho = Abs(value);
+        double theta = Math.Atan2(valueImaginary, valueReal);
+        double newRho = powerReal * theta + powerImaginary * Math.Log(rho);
+        double t = Math.Pow(rho, powerReal) * Math.Exp(-powerImaginary * theta);
+        return FromPolarCoordinates(t, newRho);
+    }
+
+    public static Complex Pow(Complex value, double power) { return Pow(value, new Complex(power, 0)); }
+
+    static Complex Scale(Complex value, double factor) { return new Complex(factor * value.m_real, factor * value.m_imaginary); }
+
+    public static Complex MaxMagnitude(Complex x, Complex y) {
+        double ax = Abs(x);
+        double ay = Abs(y);
+        if (ax > ay || double.IsNaN(ax)) { return x; }
+        if (ax == ay) {
+            // Equal magnitudes: +a + ib above all, -a - ib below, and +a - ib
+            // preferred to -a + ib, as IEEE's maximumMagnitude has it.
+            if (double.IsNegative(y.m_real)) {
+                if (double.IsNegative(y.m_imaginary)) { return x; }
+                if (double.IsNegative(x.m_real)) { return y; }
+                return x;
+            }
+            if (double.IsNegative(y.m_imaginary)) {
+                if (double.IsNegative(x.m_real)) { return y; }
+                return x;
+            }
+            return y;
+        }
+        return y;
+    }
+
+    public static Complex MinMagnitude(Complex x, Complex y) {
+        double ax = Abs(x);
+        double ay = Abs(y);
+        if (ax < ay || double.IsNaN(ax)) { return x; }
+        if (ax == ay) {
+            if (double.IsNegative(y.m_real)) {
+                if (double.IsNegative(y.m_imaginary)) { return y; }
+                if (double.IsNegative(x.m_real)) { return x; }
+                return y;
+            }
+            if (double.IsNegative(y.m_imaginary)) {
+                if (double.IsNegative(x.m_real)) { return x; }
+                return y;
+            }
+            return x;
+        }
+        return y;
+    }
+
+    // ---- text ---------------------------------------------------------------
+
+    public override string ToString() { return ToString(null, null); }
+    public string ToString(string? format) { return ToString(format, null); }
+    public string ToString(IFormatProvider? provider) { return ToString(null, provider); }
+
+    public string ToString(string? format, IFormatProvider? provider) {
+        return "<" + m_real.ToString(format ?? "", provider) + "; " + m_imaginary.ToString(format ?? "", provider) + ">";
+    }
+
+    public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        return Int128Format.Into(ToString(format.ToString(), provider), destination, out charsWritten);
+    }
+
+    /// "<re; im>": each part read as a double is, the one space .NET writes
+    /// after the semicolon allowed whatever the style; anything else is an
+    /// OverflowException, as .NET's Parse has it.
+    public static Complex Parse(string s, IFormatProvider? provider) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider); }
+    public static Complex Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider); }
+
+    public static Complex Parse(string s, NumberStyles style, IFormatProvider? provider) {
+        if (s == null) { throw new ArgumentNullException("s"); }
+        return Parse(s.AsSpan(), style, provider);
+    }
+
+    public static Complex Parse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider) {
+        if (!TryParse(s, style, provider, out Complex result)) { throw new OverflowException(); }
+        return result;
+    }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out Complex result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out Complex result) { return TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, provider, out result); }
+
+    public static bool TryParse([NotNullWhen(true)] string? s, NumberStyles style, IFormatProvider? provider, out Complex result) {
+        if (s == null) {
+            result = Zero;
+            return false;
+        }
+        return TryParse(s.AsSpan(), style, provider, out result);
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> s, NumberStyles style, IFormatProvider? provider, out Complex result) {
+        NumberRead.CheckFloat(style);
+        result = Zero;
+        string text = s.ToString();
+        int openBracket = text.IndexOf('<');
+        int semicolon = text.IndexOf(';');
+        int closeBracket = text.IndexOf('>');
+        if (text.Length < 5 || openBracket == -1 || semicolon == -1 || closeBracket == -1
+            || openBracket > semicolon || openBracket > closeBracket || semicolon > closeBracket) {
+            return false;
+        }
+        if (openBracket != 0 && ((style & NumberStyles.AllowLeadingWhite) == 0 || !String.IsNullOrWhiteSpace(text.Substring(0, openBracket)))) {
+            return false;
+        }
+        if (!double.TryParse(text.Substring(openBracket + 1, semicolon - openBracket - 1), style, provider, out double real)) { return false; }
+        if (char.IsWhiteSpace(text[semicolon + 1])) { semicolon += 1; }
+        if (!double.TryParse(text.Substring(semicolon + 1, closeBracket - semicolon - 1), style, provider, out double imaginary)) { return false; }
+        // From the bracket itself, as .NET slices it: so white space after
+        // it is refused whatever the style allows.
+        if (closeBracket != text.Length - 1 && ((style & NumberStyles.AllowTrailingWhite) == 0 || !String.IsNullOrWhiteSpace(text.Substring(closeBracket)))) {
+            return false;
+        }
+        result = new Complex(real, imaginary);
+        return true;
     }
 }

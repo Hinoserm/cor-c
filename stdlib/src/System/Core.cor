@@ -6877,6 +6877,87 @@ static class Double {
 
     public static bool IsRealNumber(double value) { return value == value; }
 
+    /// sqrt(x^2 + y^2) without the overflow and underflow of computing it so:
+    /// .NET's (AMD's libm's), the sum of squares carried in a head and a tail
+    /// for the bits one double drops, scaled by 2^600 where it would
+    /// overflow or underflow. Infinity if either is, though the other is NaN.
+    public static double Hypot(double x, double y) {
+        if (IsFinite(x) && IsFinite(y)) {
+            double ax = Math.Abs(x);
+            double ay = Math.Abs(y);
+            if (ax == 0.0) { return ay; }
+            if (ay == 0.0) { return ax; }
+
+            ulong xBits = (ulong)BitConverter.DoubleToInt64Bits(ax);
+            ulong yBits = (ulong)BitConverter.DoubleToInt64Bits(ay);
+            uint xExp = (uint)((xBits >> 52) & 0x7FF);
+            uint yExp = (uint)((yBits >> 52) & 0x7FF);
+            int expDiff = (int)xExp - (int)yExp;
+            double expFix = 1.0;
+
+            // One so much smaller than the other is lost in the sum.
+            if (expDiff > 54 || expDiff < -54) { return ax + ay; }
+
+            if (xExp > 1023 + 500 || yExp > 1023 + 500) {
+                // Scaled down by 2^600, against overflow.
+                expFix = 4.149515568880993E+180;
+                xBits -= 0x2580000000000000;
+                yBits -= 0x2580000000000000;
+            } else if (xExp < 1023 - 500 || yExp < 1023 - 500) {
+                // Up by 2^600 against underflow; a subnormal by 2^601 less the
+                // implicit bit it had not.
+                expFix = 2.409919865102884E-181;
+                xBits += 0x2580000000000000;
+                yBits += 0x2580000000000000;
+                if (xExp == 0) {
+                    xBits += 0x0010000000000000;
+                    ax = BitConverter.Int64BitsToDouble((long)xBits);
+                    ax -= 9.232978617785736E-128;
+                    xBits = (ulong)BitConverter.DoubleToInt64Bits(ax);
+                }
+                if (yExp == 0) {
+                    yBits += 0x0010000000000000;
+                    ay = BitConverter.Int64BitsToDouble((long)yBits);
+                    ay -= 9.232978617785736E-128;
+                    yBits = (ulong)BitConverter.DoubleToInt64Bits(ay);
+                }
+            }
+
+            ax = BitConverter.Int64BitsToDouble((long)xBits);
+            ay = BitConverter.Int64BitsToDouble((long)yBits);
+            if (ax < ay) {
+                double tmp = ax;
+                ax = ay;
+                ay = tmp;
+                ulong tmpBits = xBits;
+                xBits = yBits;
+                yBits = tmpBits;
+            }
+
+            // Each split into a head of 26 bits and the tail.
+            double xHead = BitConverter.Int64BitsToDouble((long)(xBits & 0xFFFFFFFFF8000000));
+            double yHead = BitConverter.Int64BitsToDouble((long)(yBits & 0xFFFFFFFFF8000000));
+            double xTail = ax - xHead;
+            double yTail = ay - yHead;
+
+            double xx = ax * ax;
+            double yy = ay * ay;
+            double rHead = xx + yy;
+            double rTail = (xx - rHead) + yy;
+            rTail += (xHead * xHead) - xx;
+            rTail += 2 * xHead * xTail;
+            rTail += xTail * xTail;
+            if (expDiff == 0) {
+                rTail += (yHead * yHead) - yy;
+                rTail += 2 * yHead * yTail;
+                rTail += yTail * yTail;
+            }
+            return Math.Sqrt(rHead + rTail) * expFix;
+        }
+        if (IsInfinity(x) || IsInfinity(y)) { return PositiveInfinity; }
+        return NaN;
+    }
+
     // ---- reading one, as .NET reads it (NumberRead) ----------------------
     //
     // NumberStyles.Float | AllowThousands unless a style is given, correctly

@@ -1,0 +1,63 @@
+// test: complex_numbers_match_dotnet
+// expect-exit: 0
+// expect-output:
+// <3; 4> <-1.5; 2.25> <1; 0> <0; 1> <NaN; NaN> <Infinity; Infinity>
+// <1.5; 6.25> <4.5; 1.75> <-13.5; 0.75> <0.6153846153846154; -1.7435897435897434> <-3; -4> <4; 4> <7.5; 10> <1.5; 2> <0.12; -0.16> <-2; -4>
+// C02B000000000000,3FE8000000000000 3FE3B13B13B13B14,BFFBE5BE5BE5BE5B 3FC70A3D70A3D70A,3FE051EB851EB852 BFCA41A41A41A41A,BFD3B13B13B13B14 BFCA41A41A41A41A,BFD3B13B13B13B14
+// 5 5 2.704163456597992 1.4142135623730952E+300 5E-320 Infinity
+// <3; -4> <2; 1> <0; 2> <1; 1> <0.7759392555471052; 1.449855761204885> 3FE8D47E8FC83CA6,3FF7329BF464ACB7 <1.09868411346781E+154; 4.5508986056222734E+153>
+// True True True False True False
+// <5; 0> <2.5; 0> <7.25; 0> <1.1805916207174113E+21; 0> <-3; 0> <1.5; 0>
+// <-0.140164; 0.173612> <1.60944; 0.927295> <0.69897; 0.402719> <-7; 24> <-0.0068028; 0.00877444> <-4.78455; 0.33184> <0.339296; 4.67942> <-0.00320552; 1.02224>
+// <-0.557728; 1.7022> <2.12852; -1.7022> <-1.34897; 0.303034> <1.33756; 1.83035> <-1.47772; -1.65674> <-1.01633; -0.0991725> <1.5708; 1.31696>
+// <1.22465E-16; 2> 0.927295218 <1; 0> <0; 0>
+// <3.00; 4.00> <-1.5E+000; 2.2E+000> <3; 4> <1.5; -2> False True <1; 2>
+// Arithmetic operation resulted in an overflow.
+// True True True True True <3; 4> <-4; 3> <NaN; Infinity> <Infinity; NaN> <NaN; NaN>
+// <12.5; -4> System.Numerics.Complex Complex
+// 5 1.4142135623731E-310 Infinity 3FCC9F25C5BFEDDA 40FE240C9FBE76C9
+//
+// SYSTEM.NUMERICS.COMPLEX, as .NET's: the constants; the operators with a
+// complex or a double on either side, Smith's division and the infinite-part
+// rules of the double ones, checked to the bit; the magnitude by Double.Hypot
+// without overflow or underflow; the conjugate, reciprocal and the
+// symmetric square root; equality and the implicit and explicit conversions;
+// the functions (exponential, logarithms, powers, trigonometric, hyperbolic
+// and their inverses) to six digits; polar coordinates; "<re; im>" in any
+// format a double takes, and Parse and TryParse of it as .NET reads it; the
+// classification statics and the magnitude comparisons; compound
+// assignments; the type's full name.
+
+using System;
+using System.Globalization;
+using System.Numerics;
+
+class Program {
+    static string C(Complex c) { return BitConverter.DoubleToInt64Bits(c.Real).ToString("X16") + "," + BitConverter.DoubleToInt64Bits(c.Imaginary).ToString("X16"); }
+    static string G(Complex c) { return c.ToString("G6", CultureInfo.InvariantCulture); }
+
+    static void Main() {
+        Complex a = new Complex(3, 4), b = new Complex(-1.5, 2.25), z = Complex.Zero;
+        Console.WriteLine(a + " " + b + " " + Complex.One + " " + Complex.ImaginaryOne + " " + Complex.NaN + " " + Complex.Infinity);
+        Console.WriteLine((a + b) + " " + (a - b) + " " + (a * b) + " " + (a / b) + " " + (-a) + " " + (a + 1) + " " + (2.5 * a) + " " + (a / 2) + " " + (1 / a) + " " + (1 - a));
+        Console.WriteLine(C(a * b) + " " + C(a / b) + " " + C(b / a) + " " + C(1.0 / b) + " " + C(Complex.Reciprocal(b)));
+        Console.WriteLine(Complex.Abs(a) + " " + a.Magnitude + " " + Complex.Abs(b) + " " + Complex.Abs(new Complex(1e300, 1e300)) + " " + Complex.Abs(new Complex(3e-320, 4e-320)) + " " + Complex.Abs(new Complex(double.PositiveInfinity, double.NaN)));
+        Console.WriteLine(Complex.Conjugate(a) + " " + Complex.Sqrt(a) + " " + Complex.Sqrt(new Complex(-4, 0)) + " " + Complex.Sqrt(new Complex(0, 2)) + " " + Complex.Sqrt(b) + " " + C(Complex.Sqrt(b)) + " " + Complex.Sqrt(new Complex(1e308, 1e308)));
+        Console.WriteLine((a == new Complex(3, 4)) + " " + (a != b) + " " + a.Equals(new Complex(3.0, 4.0)) + " " + a.Equals((object)3) + " " + Complex.NaN.Equals(Complex.NaN) + " " + (Complex.NaN == Complex.NaN));
+        Complex c = 5;
+        Complex d = 2.5f;
+        Complex e = (Complex)7.25m;
+        Complex f = (Complex)(BigInteger.One << 70);
+        Console.WriteLine(c + " " + d + " " + e + " " + f + " " + (Complex)(Int128)(-3) + " " + (Complex)(Half)1.5);
+        Console.WriteLine(G(Complex.Exp(b)) + " " + G(Complex.Log(a)) + " " + G(Complex.Log10(a)) + " " + G(Complex.Pow(a, 2)) + " " + G(Complex.Pow(a, b)) + " " + G(Complex.Sin(b)) + " " + G(Complex.Cos(b)) + " " + G(Complex.Tan(b)));
+        Console.WriteLine(G(Complex.Asin(b)) + " " + G(Complex.Acos(b)) + " " + G(Complex.Atan(b)) + " " + G(Complex.Sinh(b)) + " " + G(Complex.Cosh(b)) + " " + G(Complex.Tanh(b)) + " " + G(Complex.Asin(new Complex(2, 0))));
+        Console.WriteLine(G(Complex.FromPolarCoordinates(2, Math.PI / 2)) + " " + a.Phase.ToString("G10") + " " + Complex.Pow(z, 0) + " " + Complex.Pow(z, a));
+        Console.WriteLine(a.ToString("F2") + " " + b.ToString("E1", CultureInfo.InvariantCulture) + " " + a.ToString("N0") + " " + Complex.Parse("<1.5; -2>", CultureInfo.InvariantCulture) + " " + Complex.TryParse("<1;2> ", NumberStyles.Float, CultureInfo.InvariantCulture, out Complex g) + " " + Complex.TryParse(" <1;2>", NumberStyles.Float, CultureInfo.InvariantCulture, out g) + " " + g);
+        try { Complex.Parse("(1, 2)", CultureInfo.InvariantCulture); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        Console.WriteLine(Complex.IsFinite(a) + " " + Complex.IsInfinity(Complex.Infinity) + " " + Complex.IsNaN(Complex.NaN) + " " + Complex.IsRealNumber(c) + " " + Complex.IsImaginaryNumber(Complex.ImaginaryOne) + " " + Complex.MaxMagnitude(a, new Complex(-4, 3)) + " " + Complex.MinMagnitude(a, new Complex(-4, 3)) + " " + (a * Complex.Infinity) + " " + (new Complex(double.PositiveInfinity, 1) * 2) + " " + (new Complex(1, 2) / 0.0));
+        Complex h = a;
+        h++; h += b; h *= 2; h -= 1; h /= new Complex(0, 1);
+        Console.WriteLine(h + " " + typeof(Complex).FullName + " " + ((object)a).GetType().Name);
+        Console.WriteLine(double.Hypot(3, 4) + " " + double.Hypot(1e-310, 1e-310) + " " + double.Hypot(1.7e308, 1.7e308) + " " + BitConverter.DoubleToInt64Bits(double.Hypot(0.1, 0.2)).ToString("X16") + " " + BitConverter.DoubleToInt64Bits(double.Hypot(123456.789, 0.000123)).ToString("X16"));
+    }
+}
