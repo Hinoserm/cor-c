@@ -1,17 +1,19 @@
 // test: mutex
 // expect-exit: 0
 // expect-output:
-// unlocked True
+// free True
 // trylock while held False
 // total 40000
 // balanced True
 //
-// A futex mutex under contention: four threads each take the lock and add to
-// two plain (non-atomic) fields, which only comes out right if the lock really
-// excludes. The second field counts down, so the two must cancel exactly.
-//
-// Thread bodies do arithmetic only: see the note on Thread in
-// lib/threading.cor for what is not safe off the first thread yet.
+// .NET's Mutex under contention: four threads each take it with WaitOne and
+// add to two plain (non-atomic) fields, which only comes out right if the
+// mutex really excludes. The second field counts down, so the two must
+// cancel exactly. Whether it is held is what another thread's WaitOne(0)
+// says: the owner's own would take it again, a mutex being recursive.
+
+using System;
+using System.Threading;
 
 class Ledger
 {
@@ -19,7 +21,7 @@ class Ledger
     public int Mirror;
 }
 
-class Adder : Action
+class Adder
 {
     Mutex _lock;
     Ledger _ledger;
@@ -32,42 +34,46 @@ class Adder : Action
         _times = times;
     }
 
-    public void Invoke()
+    public void Run()
     {
         for (int i = 0; i < _times; i++)
         {
-            _lock.Lock();
+            _lock.WaitOne();
             _ledger.Total = _ledger.Total + 1;
             _ledger.Mirror = _ledger.Mirror - 1;
-            _lock.Unlock();
+            _lock.ReleaseMutex();
         }
     }
 }
 
 static class Program
 {
-    static void Line(string s)
+    /// Whether a thread other than this one can take the mutex now.
+    static bool FreeElsewhere(Mutex m)
     {
-        Sys.Print(s);
-        Sys.PrintLine();
-    }
-
-    static void Flag(string name, bool value)
-    {
-        Sys.Print(name);
-        Sys.Print(" ");
-        Line(value ? "True" : "False");
+        bool took = false;
+        Thread other = new Thread(() =>
+        {
+            took = m.WaitOne(0);
+            if (took)
+            {
+                m.ReleaseMutex();
+            }
+        });
+        other.Start();
+        other.Join();
+        return took;
     }
 
     static int Main()
     {
         Mutex m = new Mutex();
 
-        Flag("unlocked", !m.IsHeld);
+        Console.WriteLine("free " + FreeElsewhere(m));
 
-        m.Lock();
-        Flag("trylock while held", m.TryLock());
-        m.Unlock();
+        m.WaitOne();
+        Console.WriteLine("trylock while held " + FreeElsewhere(m));
+        m.ReleaseMutex();
 
         Ledger ledger = new Ledger();
         int threads = 4;
@@ -77,7 +83,8 @@ static class Program
 
         for (int i = 0; i < threads; i++)
         {
-            all[i] = Thread.Start(new Adder(m, ledger, each));
+            all[i] = new Thread(new Adder(m, ledger, each).Run);
+            all[i].Start();
         }
 
         for (int i = 0; i < threads; i++)
@@ -85,11 +92,8 @@ static class Program
             all[i].Join();
         }
 
-        Sys.Print("total ");
-        Sys.PrintInt(ledger.Total);
-        Sys.PrintLine();
-
-        Flag("balanced", ledger.Total + ledger.Mirror == 0);
+        Console.WriteLine("total " + ledger.Total);
+        Console.WriteLine("balanced " + (ledger.Total + ledger.Mirror == 0));
         return 0;
     }
 }

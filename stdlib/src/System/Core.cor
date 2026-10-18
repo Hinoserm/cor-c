@@ -14486,6 +14486,20 @@ class SystemException : Exception
     public SystemException(string? message, Exception? inner) : base(message, inner) { }
 }
 
+/// The other branch under Exception, beside SystemException: what a program's
+/// own exceptions were once meant to derive from. The framework throws it
+/// itself in one place still -- a Mutex released by a thread that does not
+/// own it -- which is why it is here.
+class ApplicationException : Exception
+{
+    // COR_E_APPLICATION, which .NET gives every one.
+    const int Code = unchecked((int)0x80131600);
+
+    public ApplicationException() : base("Error in the application.") { HResult = Code; }
+    public ApplicationException(string? message) : base(message) { HResult = Code; }
+    public ApplicationException(string? message, Exception? innerException) : base(message, innerException) { HResult = Code; }
+}
+
 /// System.Runtime.InteropServices' ExternalException: a failure outside the
 /// runtime, with the error code it came with (an HRESULT, E_FAIL unless
 /// said) -- what Clipboard throws when another program holds it open.
@@ -14667,6 +14681,20 @@ class ArgumentNullException : ArgumentException
     {
         if (argument == null) { throw new ArgumentNullException(paramName); }
     }
+}
+
+/// One object named twice where each must be named once: a handle twice in
+/// what WaitHandle.WaitAll is to take all at once.
+class DuplicateWaitObjectException : ArgumentException
+{
+    const string Duplicate = "Duplicate objects in argument.";
+    // COR_E_DUPLICATEWAITOBJECT, which .NET gives every one.
+    const int Code = unchecked((int)0x80131529);
+
+    public DuplicateWaitObjectException() : base(Duplicate) { HResult = Code; }
+    public DuplicateWaitObjectException(string? parameterName) : base(Duplicate, parameterName) { HResult = Code; }
+    public DuplicateWaitObjectException(string? parameterName, string? message) : base(message, parameterName) { HResult = Code; }
+    public DuplicateWaitObjectException(string? message, Exception? innerException) : base(message, innerException) { HResult = Code; }
 }
 
 /// An index was outside what the thing being indexed holds.
