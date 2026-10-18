@@ -346,70 +346,7 @@ static class String {
     public static string Format(IFormatProvider? provider, string format, params object?[] args) {
         if (format == null) { throw new ArgumentNullException("format"); }
         if (args == null) { throw new ArgumentNullException("args"); }
-
-        StringBuilder made = new StringBuilder();
-        int at = 0;
-
-        while (at < format.Length) {
-            char c = Sys.GetChar(format, at);
-
-            if (c == '{' && at + 1 < format.Length && Sys.GetChar(format, at + 1) == (int)'{') {
-                made.Append('{');
-                at = at + 2;
-                continue;
-            }
-
-            if (c == '}' && at + 1 < format.Length && Sys.GetChar(format, at + 1) == (int)'}') {
-                made.Append('}');
-                at = at + 2;
-                continue;
-            }
-
-            if (c != '{') {
-                made.Append(c);
-                at = at + 1;
-                continue;
-            }
-
-            int close = String.IndexOf(format, '}', at);
-
-            if (close < 0) { throw new FormatException("Input string was not in a correct format."); }
-
-            string hole = String.Substring(format, at + 1, close - at - 1);
-
-            at = close + 1;
-
-            string indexText = hole;
-            string alignText = "";
-            string formatText = "";
-            int colon = String.IndexOf(hole, ':');
-
-            if (colon >= 0) {
-                formatText = String.Substring(hole, colon + 1, hole.Length - colon - 1);
-                indexText = String.Substring(hole, 0, colon);
-            }
-
-            int comma = String.IndexOf(indexText, ',');
-
-            if (comma >= 0) {
-                alignText = String.Substring(indexText, comma + 1, indexText.Length - comma - 1);
-                indexText = String.Substring(indexText, 0, comma);
-            }
-
-            int index = 0;
-
-            if (!Int32.TryParse(String.Trim(indexText), out index) || index < 0 || index >= args.Length) {
-                throw new FormatException("Index (zero based) must be greater than or equal to zero and less than the size of the argument list.");
-            }
-
-            int width = 0;
-
-            if (alignText.Length > 0 && !Int32.TryParse(String.Trim(alignText), out width)) {
-                throw new FormatException("Input string was not in a correct format.");
-            }
-            made.Append(Padded(Formatted(args[index], formatText, provider), width));
-        }
-        return made.ToString();
+        return new StringBuilder().AppendFormatHelper(provider, format, args).ToString();
     }
 
     public static string Format(string format, object? arg0) {
@@ -442,7 +379,7 @@ static class String {
     /// because a boxed value knows what it is and there is no interface
     /// dispatch to do it through.
     /// A null argument is nothing at all, as .NET writes it.
-    private static string Formatted(object? value, string format, IFormatProvider? provider) {
+    internal static string FormatArgument(object? value, string format, IFormatProvider? provider) {
         if (value == null) { return ""; }
         if (format.Length == 0) { return "" + value; }
         if (value is int i32) { return i32.ToString(format); }
@@ -493,15 +430,6 @@ static class String {
         }
         if (format == "G" || format == "g" || format == "F" || format == "f") { return name; }
         throw new FormatException("Format string can be only \"G\", \"g\", \"X\", \"x\", \"F\", \"f\", \"D\" or \"d\".");
-    }
-
-    /// POSITIVE PADS ON THE LEFT and negative on the right, which is .NET's
-    /// rule for an alignment and reads backwards until you think of it as
-    /// "right-aligned in a field this wide".
-    private static string Padded(string text, int width) {
-        if (width == 0) { return text; }
-        if (width > 0) { return PadLeft(text, width); }
-        return PadRight(text, -width);
     }
 
     public static string Substring(string s, int start, int count) {
@@ -7925,6 +7853,13 @@ readonly struct Memory<T> {
 
     public T[] ToArray() { return Span.ToArray(); }
 
+    /// Memory of characters is the string they make; any other is .NET's
+    /// description of it: "System.Memory<Int32>[3]".
+    public string ToString() {
+        if (typeof(T) != typeof(char)) { return "System.Memory<" + typeof(T).Name + ">[" + count + "]"; }
+        return Span.ToString();
+    }
+
     /// The array, start and length, for a reader that works in those.
     internal T[]? Array => items;
     internal int Start => from;
@@ -7976,6 +7911,12 @@ readonly struct ReadOnlyMemory<T> {
     }
 
     public T[] ToArray() { return Span.ToArray(); }
+
+    /// As Memory's: characters are their string, anything else described.
+    public string ToString() {
+        if (typeof(T) != typeof(char)) { return "System.ReadOnlyMemory<" + typeof(T).Name + ">[" + count + "]"; }
+        return Span.ToString();
+    }
 
     internal T[]? Array => items;
     internal int Start => from;
@@ -15212,6 +15153,7 @@ class StringBuilder : IOwnsStorage {
     public StringBuilder() {
         buffer = Sys.NewChars(DefaultCapacity);
         used = 0;
+        ChunksStart(DefaultCapacity);
     }
 
     // The capacity overload is used by the assembler whenever it knows the
@@ -15221,6 +15163,21 @@ class StringBuilder : IOwnsStorage {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity);
         buffer = Sys.NewChars(capacity == 0 ? DefaultCapacity : capacity);
         used = 0;
+        ChunksStart(capacity == 0 ? DefaultCapacity : capacity);
+    }
+
+    /// A builder that refuses to grow past maxCapacity -- by .NET's checks,
+    /// in its order -- and starts at the default capacity, or less when the
+    /// most it may hold is less.
+    public StringBuilder(int capacity, int maxCapacity) {
+        if (capacity > maxCapacity) { throw new ArgumentOutOfRangeException("capacity", CapacityOverMax); }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxCapacity);
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        if (capacity == 0) { capacity = Math.Min(DefaultCapacity, maxCapacity); }
+        buffer = Sys.NewChars(capacity);
+        used = 0;
+        this.maxCapacity = maxCapacity;
+        ChunksStart(capacity);
     }
 
     /// The text it starts with, which is .NET's commonest constructor and the
@@ -15245,6 +15202,8 @@ class StringBuilder : IOwnsStorage {
         buffer = Sys.NewChars(capacity > length ? capacity : length);
         Sys.CopyNoOverlap(buffer, 0, text, startIndex, length);
         used = length;
+        ChunksStart(capacity > length ? capacity : length);
+        chunkLens[0] = length;
     }
 
     /// PART OF WHAT WAS BUILT, THROWN AWAY -- which is what assigning to
@@ -15253,10 +15212,14 @@ class StringBuilder : IOwnsStorage {
         get { return used; }
         set {
             ArgumentOutOfRangeException.ThrowIfNegative(value);
+            if (value > maxCapacity) { throw new ArgumentOutOfRangeException("value", SmallCapacity); }
 
             if (value > used) {
+                ChunksAppend(value - used, "repeatCount");
                 Reserve(value);
                 Sys.StringFill(buffer, used, 0, value - used);
+            } else {
+                ChunksShorten(value);
             }
             used = value;
         }
@@ -15266,6 +15229,7 @@ class StringBuilder : IOwnsStorage {
     public StringBuilder Append(string? s) {
         if (s == null) { return this; }
         int n = s.Length;
+        ChunksAppend(n, "valueCount");
         Reserve(used + n);
         // buffer and s are distinct owned blocks. Restartable block copy
         // remains legal when the allocator supplies uncached RAM too.
@@ -15281,8 +15245,8 @@ class StringBuilder : IOwnsStorage {
     public StringBuilder Append(long value) {
         if (value == long.MinValue) { return Append("-9223372036854775808"); }
 
+        int sign = value < 0 ? 1 : 0;
         if (value < 0) {
-            Append('-');
             value = -value;
         }
 
@@ -15293,14 +15257,18 @@ class StringBuilder : IOwnsStorage {
             digits = digits + 1;
         }
 
-        Reserve(used + digits);
-        int at = used + digits - 1;
+        // ONE APPEND, the sign with the digits, as .NET formats a number into
+        // its builder.
+        ChunksAppend(sign + digits, "valueCount");
+        Reserve(used + sign + digits);
+        if (sign != 0) { Sys.SetChar(buffer, used, (int)'-'); }
+        int at = used + sign + digits - 1;
         do {
             Sys.SetChar(buffer, at, (int)(48 + value % 10));
             value = value / 10;
             at = at - 1;
         } while (value != 0);
-        used = used + digits;
+        used = used + sign + digits;
         return this;
     }
 
@@ -15314,6 +15282,7 @@ class StringBuilder : IOwnsStorage {
     // That is exactly what happened here, and it is the shape of every bug this
     // library can have: our spelling differing from the one the caller expects.
     public StringBuilder Append(char c) {
+        ChunksAppendChar();
         Reserve(used + 1);
         Sys.SetChar(buffer, used, (int)c);
         used = used + 1;
@@ -15321,34 +15290,140 @@ class StringBuilder : IOwnsStorage {
     }
 
     /// A null line is an empty one, as .NET's AppendLine(string?).
-    public StringBuilder AppendLine(string? value) { return Append(value).Append('\n'); }
+    public StringBuilder AppendLine(string? value) { return Append(value).Append("\n"); }
 
     /// String.Format, appended -- which is the shape a report or a log line is
     /// built in, and saves the intermediate string. .NET's overloads, one to
     /// three arguments and any number, each with or without the provider that
     /// formats them, all of them String.Format's: its refusals are theirs.
     public StringBuilder AppendFormat(string format, params object?[] args) {
-        return Append(String.Format(format, args));
+        return AppendFormat((IFormatProvider?)null, format, args);
     }
 
-    public StringBuilder AppendFormat(string format, object? arg0) { return Append(String.Format(format, arg0)); }
-    public StringBuilder AppendFormat(string format, object? arg0, object? arg1) { return Append(String.Format(format, arg0, arg1)); }
-    public StringBuilder AppendFormat(string format, object? arg0, object? arg1, object? arg2) { return Append(String.Format(format, arg0, arg1, arg2)); }
+    public StringBuilder AppendFormat(string format, object? arg0) { return AppendFormatHelper(null, format, new object?[] { arg0 }); }
+    public StringBuilder AppendFormat(string format, object? arg0, object? arg1) { return AppendFormatHelper(null, format, new object?[] { arg0, arg1 }); }
+    public StringBuilder AppendFormat(string format, object? arg0, object? arg1, object? arg2) { return AppendFormatHelper(null, format, new object?[] { arg0, arg1, arg2 }); }
 
     public StringBuilder AppendFormat(IFormatProvider? provider, string format, params object?[] args) {
-        return Append(String.Format(provider, format, args));
+        if (format == null) { throw new ArgumentNullException("format"); }
+        if (args == null) { throw new ArgumentNullException("args"); }
+        return AppendFormatHelper(provider, format, args);
     }
 
     public StringBuilder AppendFormat(IFormatProvider? provider, string format, object? arg0) {
-        return Append(String.Format(provider, format, arg0));
+        return AppendFormatHelper(provider, format, new object?[] { arg0 });
     }
 
     public StringBuilder AppendFormat(IFormatProvider? provider, string format, object? arg0, object? arg1) {
-        return Append(String.Format(provider, format, arg0, arg1));
+        return AppendFormatHelper(provider, format, new object?[] { arg0, arg1 });
     }
 
     public StringBuilder AppendFormat(IFormatProvider? provider, string format, object? arg0, object? arg1, object? arg2) {
-        return Append(String.Format(provider, format, arg0, arg1, arg2));
+        return AppendFormatHelper(provider, format, new object?[] { arg0, arg1, arg2 });
+    }
+
+    /// .NET's COMPOSITE FORMATTING, appended as .NET appends it, piece by
+    /// piece: the text up to each brace, the one brace a doubled one leaves,
+    /// each argument formatted, and its padding before or after it. A hole is
+    /// an index of ASCII digits, then optionally spaces, a comma, spaces, a
+    /// minus and a width, spaces, and a colon and the format up to the
+    /// closing brace; anything else is .NET's FormatException at .NET's
+    /// offset. String.Format is this, into a new builder.
+    internal StringBuilder AppendFormatHelper(IFormatProvider? provider, string format, object?[] args) {
+        if (format == null) { throw new ArgumentNullException("format"); }
+        const int IndexLimit = 1000000;
+        const int WidthLimit = 1000000;
+        int pos = 0;
+        char ch;
+        while (true) {
+            while (true) {
+                if ((uint)pos >= (uint)format.Length) { return this; }
+                int brace = -1;
+                for (int i = pos; i < format.Length; i++) {
+                    char c = format[i];
+                    if (c == '{' || c == '}') { brace = i; break; }
+                }
+                if (brace < 0) {
+                    Append(format, pos, format.Length - pos);
+                    return this;
+                }
+                Append(format, pos, brace - pos);
+                pos = brace;
+                char open = format[pos];
+                ch = FormatNext(format, ref pos);
+                if (open == ch) {
+                    Append(ch);
+                    pos++;
+                    continue;
+                }
+                if (open != '{') { throw FormatError(pos, "Unexpected closing brace without a corresponding opening brace."); }
+                break;
+            }
+
+            int width = 0;
+            bool leftJustify = false;
+            string itemFormat = "";
+            int index = ch - '0';
+            if ((uint)index >= 10u) { throw FormatError(pos, "Expected an ASCII digit."); }
+            ch = FormatNext(format, ref pos);
+            if (ch != '}') {
+                while (ch >= '0' && ch <= '9' && index < IndexLimit) {
+                    index = index * 10 + ch - '0';
+                    ch = FormatNext(format, ref pos);
+                }
+                while (ch == ' ') { ch = FormatNext(format, ref pos); }
+                if (ch == ',') {
+                    do { ch = FormatNext(format, ref pos); } while (ch == ' ');
+                    if (ch == '-') {
+                        leftJustify = true;
+                        ch = FormatNext(format, ref pos);
+                    }
+                    width = ch - '0';
+                    if ((uint)width >= 10u) { throw FormatError(pos, "Expected an ASCII digit."); }
+                    ch = FormatNext(format, ref pos);
+                    while (ch >= '0' && ch <= '9' && width < WidthLimit) {
+                        width = width * 10 + ch - '0';
+                        ch = FormatNext(format, ref pos);
+                    }
+                    while (ch == ' ') { ch = FormatNext(format, ref pos); }
+                }
+                if (ch != '}') {
+                    if (ch != ':') { throw FormatError(pos, "Format item ends prematurely."); }
+                    int startingPos = pos;
+                    while (true) {
+                        ch = FormatNext(format, ref pos);
+                        if (ch == '}') { break; }
+                        if (ch == '{') { throw FormatError(pos, "Format item ends prematurely."); }
+                    }
+                    startingPos++;
+                    itemFormat = format.Substring(startingPos, pos - startingPos);
+                }
+            }
+            pos++;
+            if ((uint)index >= (uint)args.Length) {
+                throw new FormatException("Index (zero based) must be greater than or equal to zero and less than the size of the argument list.");
+            }
+            string text = String.FormatArgument(args[index], itemFormat, provider);
+            if (width <= text.Length) {
+                Append(text);
+            } else if (leftJustify) {
+                Append(text);
+                Append(' ', width - text.Length);
+            } else {
+                Append(' ', width - text.Length);
+                Append(text);
+            }
+        }
+    }
+
+    private static char FormatNext(string format, ref int pos) {
+        pos++;
+        if ((uint)pos >= (uint)format.Length) { throw FormatError(pos, "Format item ends prematurely."); }
+        return format[pos];
+    }
+
+    private static FormatException FormatError(int offset, string reason) {
+        return new FormatException("Input string was not in a correct format. Failure to parse near offset " + offset + ". " + reason);
     }
 
     // THE VALUES WITH A SEPARATOR BETWEEN EVERY TWO, which is string.Join
@@ -15420,7 +15495,7 @@ class StringBuilder : IOwnsStorage {
         return this;
     }
 
-    public StringBuilder AppendLine() { return Append('\n'); }
+    public StringBuilder AppendLine() { return Append("\n"); }
 
     // ---- the rest of what a StringBuilder does in C# ---------------------
 
@@ -15468,6 +15543,7 @@ class StringBuilder : IOwnsStorage {
     /// What a span or a memory of characters reads, copied in.
     public StringBuilder Append(ReadOnlySpan<char> value) {
         int n = value.Length;
+        ChunksAppend(n, "valueCount");
         Reserve(used + n);
         for (int i = 0; i < n; i++) {
             Sys.SetChar(buffer, used + i, (int)value[i]);
@@ -15481,9 +15557,12 @@ class StringBuilder : IOwnsStorage {
     /// THE SAME CHARACTER, THAT MANY TIMES, which .NET has because building a
     /// rule of dashes or an indent is the commonest thing a builder does that
     /// is not appending text.
-    public StringBuilder Append(char c, int count) {
-        if (count <= 0) { return this; }
+    public StringBuilder Append(char c, int repeatCount) {
+        ArgumentOutOfRangeException.ThrowIfNegative(repeatCount);
+        int count = repeatCount;
+        if (count == 0) { return this; }
 
+        ChunksAppend(count, "repeatCount");
         Reserve(used + count);
         Sys.StringFill(buffer, used, (int)c, count);
         used = used + count;
@@ -15493,8 +15572,29 @@ class StringBuilder : IOwnsStorage {
     /// Another builder's text, or nothing for null. Read through its
     /// ToString, so a builder appended to itself appends what it held.
     public StringBuilder Append(StringBuilder? other) {
-        if (other == null) { return this; }
-        return Append(other.ToString());
+        if (other == null || other.Length == 0) { return this; }
+        return AppendBuilder(other.ToString());
+    }
+
+    // Another builder's text, appended as .NET's AppendCore appends it: its
+    // own MaxCapacity check, by its own name, unless the builder is this one,
+    // which .NET appends as a string.
+    private StringBuilder AppendBuilder(string text) {
+        int n = text.Length;
+        if ((uint)(used + n) > (uint)maxCapacity) { throw new ArgumentOutOfRangeException("Capacity", CapacityOverMax); }
+        int last = chunkCount - 1;
+        int free = chunkCaps[last] - chunkLens[last];
+        if (n <= free) {
+            chunkLens[last] = chunkLens[last] + n;
+        } else {
+            chunkLens[last] = chunkCaps[last];
+            ExpandByABlock(n - free, used + free);
+            chunkLens[chunkCount - 1] = n - free;
+        }
+        Reserve(used + n);
+        Sys.CopyNoOverlap(buffer, used, text, 0, n);
+        used = used + n;
+        return this;
     }
 
     /// Part of another builder's text, with the checks Append(string, int,
@@ -15509,7 +15609,8 @@ class StringBuilder : IOwnsStorage {
         if (count == 0) { return this; }
         if (startIndex > value.Length - count) { throw new ArgumentOutOfRangeException("startIndex", OutOfRange); }
 
-        return Append(value.ToString(startIndex, count));
+        if (value == this) { return Append(value.ToString(startIndex, count)); }
+        return AppendBuilder(value.ToString(startIndex, count));
     }
 
     /// ANYTHING AT ALL, which is .NET's Append(object?): what it says of
@@ -15539,6 +15640,7 @@ class StringBuilder : IOwnsStorage {
         if (count == 0) { return this; }
         if (startIndex > value.Length - count) { throw new ArgumentOutOfRangeException("startIndex", OutOfRange); }
 
+        ChunksAppend(count, "valueCount");
         Reserve(used + count);
         Sys.CopyNoOverlap(buffer, used, value, startIndex, count);
         used = used + count;
@@ -15580,7 +15682,7 @@ class StringBuilder : IOwnsStorage {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         if ((uint)index > (uint)used) { throw new ArgumentOutOfRangeException("index", OutOfRange); }
         if (value == null || value.Length == 0 || count == 0) { return this; }
-        if ((long)value.Length * count > (long)(int.MaxValue - used)) { throw new OutOfMemoryException(); }
+        if ((long)value.Length * count > (long)(maxCapacity - used)) { throw new OutOfMemoryException(); }
 
         Open(index, value.Length * count);
         for (int i = 0; i < count; i++) {
@@ -15652,6 +15754,7 @@ class StringBuilder : IOwnsStorage {
     // BACKWARDS, because source and destination overlap: copying forwards
     // would smear the first character over everything it had yet to read.
     private void Open(int index, int count) {
+        if (count > 0) { ChunksMakeRoom(index, count, false, used); }
         Reserve(used + count);
         for (int i = used - 1; i >= index; i--) {
             Sys.SetChar(buffer, i + count, Sys.GetChar(buffer, i));
@@ -15666,6 +15769,11 @@ class StringBuilder : IOwnsStorage {
         ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
         if (length > used - startIndex) { throw new ArgumentOutOfRangeException("length", OutOfRange); }
 
+        if (length == used && startIndex == 0) {
+            ChunksShorten(0);
+        } else if (length > 0) {
+            ChunksRemove(startIndex, length, used);
+        }
         Move(startIndex + length, startIndex);
         used = used - length;
         return this;
@@ -15706,9 +15814,12 @@ class StringBuilder : IOwnsStorage {
         // where it ends up, and nothing is made when nothing is found.
         int found = 0;
         int at = startIndex;
+        List<int>? starts = null;
         while (at <= end - n) {
             if (Sys.StringEqual(buffer, at, oldValue, 0, n)) {
                 found = found + 1;
+                if (starts == null) { starts = new List<int>(); }
+                starts.Add(at);
                 at = at + n;
             } else {
                 at = at + 1;
@@ -15719,6 +15830,7 @@ class StringBuilder : IOwnsStorage {
         long change = (long)found * (with.Length - n);
         if (change > (long)(int.MaxValue - used)) { throw new OutOfMemoryException(); }
         int grown = (int)change;
+        ChunksReplace(starts!, n, with.Length, startIndex, count);
 
         // THE RANGE IS REWRITTEN FROM A COPY OF ITSELF: written in place, a
         // longer replacement would overwrite text not yet read, and a shorter
@@ -15766,16 +15878,20 @@ class StringBuilder : IOwnsStorage {
     /// holds. Setting it is .NET's way of reserving, or of giving back what a
     /// builder no longer needs: the buffer is made exactly that long.
     public int Capacity {
-        get { return buffer.Length; }
+        get { return LastOffset + chunkCaps[chunkCount - 1]; }
         set {
             ArgumentOutOfRangeException.ThrowIfNegative(value);
-            if (value < used) { throw new ArgumentOutOfRangeException("value", "capacity was less than the current size."); }
-            if (value != buffer.Length) { Resize(value); }
+            if (value > maxCapacity) { throw new ArgumentOutOfRangeException("value", CapacityOverMax); }
+            if (value < used) { throw new ArgumentOutOfRangeException("value", SmallCapacity); }
+            if (value != Capacity) {
+                chunkCaps[chunkCount - 1] = value - LastOffset;
+                if (value > buffer.Length) { Resize(value); }
+            }
         }
     }
 
-    /// No builder here is limited short of the largest string there can be.
-    public int MaxCapacity => int.MaxValue;
+    /// The most it may ever hold: int.MaxValue unless the constructor said.
+    public int MaxCapacity => maxCapacity;
 
     // THE ONLY PLACE A STRING IS MADE. Everything above writes into the buffer,
     // and the buffer is longer than the text in it -- so this cannot hand the
@@ -15786,6 +15902,7 @@ class StringBuilder : IOwnsStorage {
     /// .NET's Clear answers the builder so that it can be chained, and this
     /// one answered nothing -- `sb.Clear().Append(x)` did not compile.
     public StringBuilder Clear() {
+        ChunksShorten(0);
         used = 0;
         return this;
     }
@@ -15796,8 +15913,56 @@ class StringBuilder : IOwnsStorage {
     // less, and answers the capacity it leaves.
     public int EnsureCapacity(int capacity) {
         ArgumentOutOfRangeException.ThrowIfNegative(capacity);
-        if (buffer.Length < capacity) { Resize(capacity); }
-        return buffer.Length;
+        if (Capacity < capacity) { Capacity = capacity; }
+        return Capacity;
+    }
+
+    /// THE TEXT CHUNK BY CHUNK, as .NET's builder holds it -- first to last,
+    /// an empty one included -- each a copy of that part of the text.
+    public ChunkEnumerator GetChunks() {
+        ReadOnlyMemory<char>[] chunks = new ReadOnlyMemory<char>[chunkCount];
+        int offset = 0;
+        for (int i = 0; i < chunkCount; i++) {
+            char[] part = new char[chunkLens[i]];
+            for (int k = 0; k < part.Length; k++) {
+                part[k] = (char)Sys.GetChar(buffer, offset + k);
+            }
+            chunks[i] = new ReadOnlyMemory<char>(part);
+            offset = offset + chunkLens[i];
+        }
+        return new ChunkEnumerator(chunks);
+    }
+
+    public struct ChunkEnumerator {
+        private ReadOnlyMemory<char>[] _chunks;
+        private int _at;
+
+        internal ChunkEnumerator(ReadOnlyMemory<char>[] chunks) {
+            _chunks = chunks;
+            _at = -1;
+        }
+
+        public ChunkEnumerator GetEnumerator() { return this; }
+
+        public bool MoveNext() {
+            if (_at + 1 >= _chunks.Length) { return false; }
+            _at = _at + 1;
+            return true;
+        }
+
+        public ReadOnlyMemory<char> Current => _chunks[_at];
+    }
+
+    /// The span forms of Replace, .NET's: the range checked before the span,
+    /// and an empty span refused by its own words.
+    public StringBuilder Replace(ReadOnlySpan<char> oldValue, ReadOnlySpan<char> newValue) {
+        return Replace(oldValue, newValue, 0, used);
+    }
+
+    public StringBuilder Replace(ReadOnlySpan<char> oldValue, ReadOnlySpan<char> newValue, int startIndex, int count) {
+        CheckRange(startIndex, count);
+        if (oldValue.IsEmpty) { throw new ArgumentException("Span may not be empty.", "oldValue"); }
+        return Replace(oldValue.ToString(), newValue.ToString(), startIndex, count);
     }
 
     /// `count` characters from `sourceIndex` into an array at a place in it:
@@ -15849,6 +16014,242 @@ class StringBuilder : IOwnsStorage {
     // Equals(object) is asked through the typed one (Lowering.EqualsGuard),
     // and two builders holding the same text were equal to object.Equals.
     public override bool Equals(object? obj) { return (object)this == obj; }
+
+    // ---- .NET's chunks, as a model ----------------------------------------
+    //
+    // .NET's builder is a chain of chunks, and its Capacity, its MaxCapacity
+    // refusals and what GetChunks hands out are that chain's: a chunk filled,
+    // then one more of max(what is left, min(the length so far, 8000)); room
+    // for an insertion made inside a small chunk or as a new chunk before
+    // it; a removal that drops the chunks it empties. The text here is in
+    // one buffer, which is faster to read and to copy, and beside it is the
+    // chain as lengths alone -- each chunk's capacity and how much of it is
+    // used, first to last -- updated by every change exactly as .NET's
+    // changes it. The chunks' lengths add up to the text's.
+    private int[] chunkCaps = null!;
+    private int[] chunkLens = null!;
+    private int chunkCount;
+    private int maxCapacity = int.MaxValue;
+
+    // .NET's largest new chunk.
+    private const int MaxChunkSize = 8000;
+
+    private const string SmallCapacity = "capacity was less than the current size.";
+    private const string LengthOverCapacity = "The length cannot be greater than the capacity.";
+    private const string CapacityOverMax = "Capacity exceeds maximum capacity.";
+
+    private void ChunksStart(int capacity) {
+        chunkCaps = new int[4];
+        chunkLens = new int[4];
+        chunkCaps[0] = capacity;
+        chunkLens[0] = 0;
+        chunkCount = 1;
+    }
+
+    // The chunk at `at` (0 first), moved up to make room for one more there.
+    private void ChunkInsert(int at, int cap, int len) {
+        if (chunkCount == chunkCaps.Length) {
+            int[] caps = new int[chunkCount * 2];
+            int[] lens = new int[chunkCount * 2];
+            Array.Copy(chunkCaps, caps, chunkCount);
+            Array.Copy(chunkLens, lens, chunkCount);
+            chunkCaps = caps;
+            chunkLens = lens;
+        }
+        for (int i = chunkCount; i > at; i--) {
+            chunkCaps[i] = chunkCaps[i - 1];
+            chunkLens[i] = chunkLens[i - 1];
+        }
+        chunkCaps[at] = cap;
+        chunkLens[at] = len;
+        chunkCount++;
+    }
+
+    private void ChunkRemove(int at, int count) {
+        for (int i = at; i + count < chunkCount; i++) {
+            chunkCaps[i] = chunkCaps[i + count];
+            chunkLens[i] = chunkLens[i + count];
+        }
+        chunkCount = chunkCount - count;
+    }
+
+    // Where the last chunk begins: the text before it.
+    private int LastOffset => used - chunkLens[chunkCount - 1];
+
+    // .NET's ExpandByABlock, with the builder `length` long.
+    private void ExpandByABlock(int minBlockCharCount, int length) {
+        if (minBlockCharCount + length > maxCapacity || minBlockCharCount + length < minBlockCharCount) {
+            throw new ArgumentOutOfRangeException("requiredLength", SmallCapacity);
+        }
+        int newBlock = Math.Max(minBlockCharCount, Math.Min(length, MaxChunkSize));
+        ChunkInsert(chunkCount, newBlock, 0);
+    }
+
+    // `count` characters appended, in .NET's way: the last chunk filled,
+    // then a new one for the rest. A builder that would grow past its
+    // MaxCapacity is refused before anything changes, by the parameter name
+    // .NET's overload gives.
+    private void ChunksAppend(int count, string paramName) {
+        int last = chunkCount - 1;
+        int free = chunkCaps[last] - chunkLens[last];
+        if (count <= free) {
+            chunkLens[last] = chunkLens[last] + count;
+            return;
+        }
+        if (used + count > maxCapacity || used + count < count) {
+            throw new ArgumentOutOfRangeException(paramName, LengthOverCapacity);
+        }
+        chunkLens[last] = chunkCaps[last];
+        ExpandByABlock(count - free, used + free);
+        chunkLens[chunkCount - 1] = count - free;
+    }
+
+    // One character, which .NET appends without the MaxCapacity check its
+    // longer appends make: a full chunk is followed by a new one.
+    private void ChunksAppendChar() {
+        int last = chunkCount - 1;
+        if (chunkLens[last] < chunkCaps[last]) {
+            chunkLens[last] = chunkLens[last] + 1;
+            return;
+        }
+        ExpandByABlock(1, used);
+        chunkLens[chunkCount - 1] = 1;
+    }
+
+    // .NET's MakeRoom: `count` characters of room at `index`, in the chunk
+    // holding it when that is small and has the room, else in a new chunk
+    // before it.
+    private void ChunksMakeRoom(int index, int count, bool doNotMoveFollowingChars, int length) {
+        if (count + length > maxCapacity || count + length < count) {
+            throw new ArgumentOutOfRangeException("requiredLength", SmallCapacity);
+        }
+        int i = chunkCount - 1;
+        int offset = length - chunkLens[i];
+        while (offset > index) {
+            i--;
+            offset = offset - chunkLens[i];
+        }
+        if (!doNotMoveFollowingChars && chunkLens[i] <= DefaultCapacity * 2 && chunkCaps[i] - chunkLens[i] >= count) {
+            chunkLens[i] = chunkLens[i] + count;
+            return;
+        }
+        ChunkInsert(i, Math.Max(count, DefaultCapacity), count);
+    }
+
+    // .NET's Remove of `count` characters at `startIndex`: the chunks wholly
+    // inside the part dropped, capacity and all.
+    private void ChunksRemove(int startIndex, int count, int length) {
+        int endIndex = startIndex + count;
+        int i = chunkCount - 1;
+        int offset = length - chunkLens[i];
+        int endChunk = -1;
+        int endIndexInChunk = 0;
+        int indexInChunk;
+        while (true) {
+            if (endIndex - offset >= 0) {
+                if (endChunk < 0) {
+                    endChunk = i;
+                    endIndexInChunk = endIndex - offset;
+                }
+                if (startIndex - offset >= 0) {
+                    indexInChunk = startIndex - offset;
+                    break;
+                }
+            }
+            i--;
+            offset = offset - chunkLens[i];
+        }
+        int copyTarget = indexInChunk;
+        if (endChunk != i) {
+            copyTarget = 0;
+            chunkLens[i] = indexInChunk;
+            ChunkRemove(i + 1, endChunk - i - 1);
+            endChunk = i + 1;
+            if (indexInChunk == 0) {
+                ChunkRemove(i, 1);
+                endChunk = i;
+            }
+        }
+        chunkLens[endChunk] = chunkLens[endChunk] - (endIndexInChunk - copyTarget);
+    }
+
+    // The length cut to `value`, .NET's way: within the last chunk only its
+    // length changes; across chunks the chunk holding the new end becomes the
+    // last, and keeps capacity enough that cutting and growing again does not
+    // shrink the builder each time.
+    private void ChunksShorten(int value) {
+        if (value == 0 && chunkCount == 1) {
+            chunkLens[0] = 0;
+            return;
+        }
+        int k = chunkCount - 1;
+        int offset = used - chunkLens[k];
+        while (offset > value) {
+            k--;
+            offset = offset - chunkLens[k];
+        }
+        if (k != chunkCount - 1) {
+            int keep = Math.Min(Capacity, Math.Max(used * 6 / 5, chunkCaps[chunkCount - 1]));
+            int newLen = keep - offset;
+            if (newLen > chunkCaps[k]) {
+                chunkCaps[k] = newLen;
+            }
+            chunkCount = k + 1;
+        }
+        chunkLens[k] = value - offset;
+    }
+
+    // .NET's Replace of `starts` (where the matches begin in the text as it
+    // was, `oldLength` each) by `newLength` characters, as layout. .NET takes
+    // the matches beginning in one chunk together -- room made for, or the
+    // excess removed from, all of them at once -- and then scans on from the
+    // chunk where the text after them now lies.
+    private void ChunksReplace(List<int> starts, int oldLength, int newLength, int startIndex, int count) {
+        int delta = newLength - oldLength;
+        if (delta == 0) {
+            return;
+        }
+        int length = used;
+        int shift = 0;
+        int m = 0;
+        int scan = startIndex;
+        int end = startIndex + count;
+        while (m < starts.Count && scan < end) {
+            int pos = scan + shift;
+            int i = chunkCount - 1;
+            int offset = length - chunkLens[i];
+            while (offset > pos) {
+                i--;
+                offset = offset - chunkLens[i];
+            }
+            int chunkEnd = offset + chunkLens[i] - shift;
+            int first = m;
+            int close = chunkEnd;
+            while (m < starts.Count && starts[m] < chunkEnd) {
+                if (starts[m] + oldLength > close) {
+                    close = starts[m] + oldLength;
+                }
+                m++;
+            }
+            if (close > end) {
+                close = end;
+            }
+            int k = m - first;
+            if (k > 0) {
+                int change = delta * k;
+                int firstAt = starts[first] + shift;
+                if (change > 0) {
+                    ChunksMakeRoom(firstAt, change, true, length);
+                } else {
+                    int written = k * newLength + (starts[m - 1] - starts[first]) - (k - 1) * oldLength;
+                    ChunksRemove(firstAt + written, -change, length);
+                }
+                length = length + change;
+                shift = shift + change;
+            }
+            scan = close;
+        }
+    }
 
     // THE TEXT FROM `from` ON, MOVED TO START AT `to`, which is how Insert
     // makes room and Remove and Replace close or open a gap; the caller has

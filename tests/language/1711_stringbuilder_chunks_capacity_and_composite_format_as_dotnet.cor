@@ -1,0 +1,156 @@
+// test: stringbuilder_chunks_capacity_and_composite_format_as_dotnet
+// expect-exit: 0
+// expect-output:
+// sb cap => [10 20 20]
+// sb cap over => ArgumentOutOfRangeException: The length cannot be greater than the capacity. (Parameter 'valueCount')
+// sb cap bad => ArgumentOutOfRangeException: Capacity exceeds maximum capacity. (Parameter 'capacity')
+// sb cap bad2 => ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') Actual value was -1.
+// sb cap bad3 => ArgumentOutOfRangeException: Capacity exceeds maximum capacity. (Parameter 'capacity')
+// sb grow => [16 32 64 9050 29050]
+// sb chunks => [16,16,8988,20000,]
+// sb chunks2 => [heXYllo|]
+// sb replace span => [a--b--c aXbc]
+// sb ensure => [100 100]
+// sb capset => ArgumentOutOfRangeException: capacity was less than the current size. (Parameter 'value')
+// sb capset2 => ArgumentOutOfRangeException: Capacity exceeds maximum capacity. (Parameter 'value')
+// empty => [0, cap 16 len 0]
+// max cap => [10,5, cap 20 len 15]
+// max 0 0 => ArgumentOutOfRangeException: maxCapacity ('0') must be a non-negative and non-zero value. (Parameter 'maxCapacity') Actual value was 0.
+// max 0 5 => [0, cap 5 len 0]
+// max 0 50 => [0, cap 16 len 0]
+// append char over => [2,2, cap 4 len 4]
+// append rep over => ArgumentOutOfRangeException: The length cannot be greater than the capacity. (Parameter 'repeatCount')
+// insert over => ArgumentOutOfRangeException: capacity was less than the current size. (Parameter 'requiredLength')
+// len over => ArgumentOutOfRangeException: capacity was less than the current size. (Parameter 'value')
+// insert front => [10,3,39, cap 52 len 52 abababababhe]
+// insert big => [1,16,40,84, cap 141 len 141]
+// remove across => [16,16,32,64,128,44, cap 512 len 300 | 10,46,44, cap 312 len 100 aaaaaaaaaahhhhhhhhhhhhhhhhhhhhhhhhhhhhhhiiiiiiiiiiiiiiiiiiiiiiiiiiiiiijjjjjjjjjjjjjjjjjjjjjjjjjjjjjj]
+// remove front => [28,128,44, cap 412 len 200]
+// len shrink => [16,16,8, cap 360 len 40 | 0, cap 328 len 0]
+// clear => [0, cap 100 len 0]
+// replace grow => [10,16,10,16,16,22, cap 100 len 90 90]
+// replace shrink => [12,12,18, cap 56 len 42 ab--ef-ab--ef-ab--ef-ab--ef-ab--ef-ab--ef-]
+// capset => [16,84, cap 300 len 100 | 16,284,100, cap 600 len 400]
+// fmt => [16,16,5, cap 64 len 37]
+// join => [16,9, cap 32 len 25]
+// append sb => [16,34,30, cap 100 len 80]
+// append nums => [16,16,32,64,97, cap 256 len 225]
+// line => [16,16,8, cap 64 len 40]
+// insert int => [9,16, cap 25 len 25 3.True5012344256789012345]
+// span empty => ArgumentException: Span may not be empty. (Parameter 'oldValue')
+// span range => ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'count')
+// str empty => ArgumentException: The value cannot be an empty string. (Parameter 'oldValue')
+// str null => ArgumentNullException: Value cannot be null. (Parameter 'oldValue')
+// str range => ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'count')
+// str range empty => ArgumentException: The value cannot be an empty string. (Parameter 'oldValue')
+// append sb max => ArgumentOutOfRangeException: Capacity exceeds maximum capacity. (Parameter 'Capacity')
+// append sb part max => ArgumentOutOfRangeException: Capacity exceeds maximum capacity. (Parameter 'Capacity')
+// append self => [abcabc]
+// append neg rep => ArgumentOutOfRangeException: repeatCount ('-1') must be a non-negative value. (Parameter 'repeatCount') Actual value was -1.
+// insert max => OutOfMemoryException: Insufficient memory to continue the execution of the program.
+// fmt brace => FormatException: Input string was not in a correct format. Failure to parse near offset 2. Unexpected closing brace without a corresponding opening brace.
+// fmt open => FormatException: Input string was not in a correct format. Failure to parse near offset 2. Expected an ASCII digit.
+// fmt end => FormatException: Input string was not in a correct format. Failure to parse near offset 2. Format item ends prematurely.
+// fmt idx => FormatException: Index (zero based) must be greater than or equal to zero and less than the size of the argument list.
+// fmt space => FormatException: Input string was not in a correct format. Failure to parse near offset 21. Expected an ASCII digit.
+// fmt big => FormatException: Input string was not in a correct format. Failure to parse near offset 8. Format item ends prematurely.
+// fmt colon => FormatException: Input string was not in a correct format. Failure to parse near offset 4. Format item ends prematurely.
+// fmt align bad => FormatException: Input string was not in a correct format. Failure to parse near offset 3. Expected an ASCII digit.
+// fmt ok => [{255} 00FF   2.2|2.25  |]
+// sbfmt => [a-005]
+// sbfmt null => ArgumentNullException: Value cannot be null. (Parameter 'format')
+// fmt null => ArgumentNullException: Value cannot be null. (Parameter 'format')
+// sb len max => ArgumentOutOfRangeException: capacity was less than the current size. (Parameter 'value')
+// sb len neg => ArgumentOutOfRangeException: value ('-1') must be a non-negative value. (Parameter 'value') Actual value was -1.
+// sb cap neg => ArgumentOutOfRangeException: value ('-1') must be a non-negative value. (Parameter 'value') Actual value was -1.
+// sb ensure neg => ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') Actual value was -1.
+//
+// A StringBuilder's Capacity, MaxCapacity and GetChunks are .NET's chunk
+// chain's, kept beside the one buffer the text is in: a full chunk followed
+// by one of max(what is left, min(the length so far, 8000)); room for an
+// insertion made in a small chunk or as a new one before it; Remove dropping
+// the chunks it empties; Length cut across chunks keeping capacity; Replace's
+// matches taken a chunk at a time. AppendFormat appends piece by piece as
+// .NET's does, and it and String.Format read a composite format as .NET
+// reads one, refusing what .NET refuses at .NET's offsets. The (capacity,
+// maxCapacity) constructor and every limit it sets are refused as .NET
+// refuses them, and Replace takes spans.
+
+using System;
+using System.Text;
+
+static class Program
+{
+    static void T(string label, Func<object> f)
+    {
+        try { Console.WriteLine(label + " => [" + f() + "]"); }
+        catch (Exception e) { Console.WriteLine(label + " => " + e.GetType().Name + ": " + e.Message.Replace("\n", " ")); }
+    }
+    static string Chunks(StringBuilder b) { var r = new StringBuilder(); foreach (ReadOnlyMemory<char> c in b.GetChunks()) r.Append(c.Length).Append(','); return r.ToString() + " cap " + b.Capacity + " len " + b.Length; }
+    static void Main()
+    {
+        T("sb cap", () => { var b = new StringBuilder(10, 20); return b.Capacity + " " + b.MaxCapacity + " " + b.Append("0123456789").Append("0123456789").Length; });
+        T("sb cap over", () => new StringBuilder(10, 20).Append(new string('x', 21)).Length);
+        T("sb cap bad", () => new StringBuilder(30, 20));
+        T("sb cap bad2", () => new StringBuilder(-1, 20));
+        T("sb cap bad3", () => new StringBuilder(1, 0));
+        T("sb grow", () => { var b = new StringBuilder(); string r = b.Capacity + ""; b.Append(new string('a', 20)); r += " " + b.Capacity; b.Append(new string('a', 30)); r += " " + b.Capacity; b.Append(new string('a', 9000)); r += " " + b.Capacity; b.Append(new string('a', 20000)); r += " " + b.Capacity; return r; });
+        T("sb chunks", () => { var b = new StringBuilder(); b.Append(new string('a', 20)); b.Append(new string('b', 9000)); b.Append(new string('c', 20000)); var r = new StringBuilder(); foreach (ReadOnlyMemory<char> c in b.GetChunks()) r.Append(c.Length).Append(','); return r.ToString(); });
+        T("sb chunks2", () => { var b = new StringBuilder("hello", 100); b.Insert(2, "XY"); var r = new StringBuilder(); foreach (ReadOnlyMemory<char> c in b.GetChunks()) r.Append(c.ToString()).Append('|'); return r.ToString(); });
+        T("sb replace span", () => new StringBuilder("aXbXc").Replace("X".AsSpan(), "--".AsSpan()).ToString() + " " + new StringBuilder("aXbXc").Replace("X".AsSpan(), "".AsSpan(), 2, 3).ToString());
+        T("sb ensure", () => { var b = new StringBuilder(); return b.EnsureCapacity(100) + " " + b.Capacity; });
+        T("sb capset", () => { var b = new StringBuilder("abc"); b.Capacity = 2; return b.Capacity; });
+        T("sb capset2", () => { var b = new StringBuilder(5, 10); b.Capacity = 11; return b.Capacity; });
+        T("empty", () => Chunks(new StringBuilder()));
+        T("max cap", () => { var b = new StringBuilder(10, 15); b.Append(new string('a', 15)); return Chunks(b); });
+        T("max 0 0", () => new StringBuilder(0, 0));
+        T("max 0 5", () => Chunks(new StringBuilder(0, 5)));
+        T("max 0 50", () => Chunks(new StringBuilder(0, 50)));
+        T("append char over", () => { var b = new StringBuilder(2, 3); b.Append('a').Append('b').Append('c'); b.Append('d'); return Chunks(b); });
+        T("append rep over", () => { var b = new StringBuilder(2, 3); b.Append('a', 4); return Chunks(b); });
+        T("insert over", () => { var b = new StringBuilder(2, 3); b.Append("ab"); b.Insert(0, "xy"); return Chunks(b); });
+        T("len over", () => { var b = new StringBuilder(2, 3); b.Length = 4; return Chunks(b); });
+        T("insert front", () => { var b = new StringBuilder("hello world, this is a long enough text"); for (int i = 0; i < 5; i++) b.Insert(0, "ab"); b.Insert(20, "XYZ"); return Chunks(b) + " " + b.ToString().Substring(0, 12); });
+        T("insert big", () => { var b = new StringBuilder(); b.Append(new string('a', 100)); b.Insert(50, new string('b', 40)); b.Insert(3, "q"); return Chunks(b); });
+        T("remove across", () => { var b = new StringBuilder(); for (int i = 0; i < 10; i++) b.Append(new string((char)('a' + i), 30)); string c0 = Chunks(b); b.Remove(10, 200); return c0 + " | " + Chunks(b) + " " + b.ToString(); });
+        T("remove front", () => { var b = new StringBuilder(); for (int i = 0; i < 10; i++) b.Append(new string((char)('a' + i), 30)); b.Remove(0, 100); return Chunks(b); });
+        T("len shrink", () => { var b = new StringBuilder(); for (int i = 0; i < 10; i++) b.Append(new string((char)('a' + i), 30)); b.Length = 40; string r = Chunks(b); b.Length = 0; return r + " | " + Chunks(b); });
+        T("clear", () => { var b = new StringBuilder(); b.Append(new string('a', 100)); b.Clear(); return Chunks(b); });
+        T("replace grow", () => { var b = new StringBuilder(); for (int i = 0; i < 6; i++) b.Append("ab-cd-ef-"); b.Replace("-", "+++"); return Chunks(b) + " " + b.ToString().Length; });
+        T("replace shrink", () => { var b = new StringBuilder(); for (int i = 0; i < 6; i++) b.Append("ab-cd-ef-"); b.Replace("cd", ""); return Chunks(b) + " " + b.ToString(); });
+        T("capset", () => { var b = new StringBuilder(); b.Append(new string('a', 100)); b.Capacity = 300; string r = Chunks(b); b.Append(new string('b', 300)); return r + " | " + Chunks(b); });
+        T("fmt", () => { var b = new StringBuilder(); b.AppendFormat("{0}-{1}-{2}", new string('x', 10), 12345, new string('y', 20)); return Chunks(b); });
+        T("join", () => { var b = new StringBuilder(); b.AppendJoin(", ", "alpha", "beta", "gamma", "delta"); return Chunks(b); });
+        T("append sb", () => { var o = new StringBuilder(new string('z', 50)); var b = new StringBuilder(); b.Append(o); b.Append(o, 0, 30); return Chunks(b); });
+        T("append nums", () => { var b = new StringBuilder(); for (int i = 0; i < 30; i++) b.Append(i * 1234567); return Chunks(b); });
+        T("line", () => { var b = new StringBuilder(); for (int i = 0; i < 10; i++) b.AppendLine("abc"); return Chunks(b); });
+        T("insert int", () => { var b = new StringBuilder("0123456789012345"); b.Insert(5, 42).Insert(0, 3.5).Insert(2, true); return Chunks(b) + " " + b; });
+        T("span empty", () => new StringBuilder("abc").Replace("".AsSpan(), "x".AsSpan()));
+        T("span range", () => new StringBuilder("abc").Replace("a".AsSpan(), "x".AsSpan(), 2, 5));
+        T("str empty", () => new StringBuilder("abc").Replace("", "x"));
+        T("str null", () => new StringBuilder("abc").Replace(null!, "x"));
+        T("str range", () => new StringBuilder("abc").Replace("a", "x", 2, 5));
+        T("str range empty", () => new StringBuilder("abc").Replace("", "x", 2, 5));
+        T("append sb max", () => { var o = new StringBuilder("0123456789"); var b = new StringBuilder(4, 8); b.Append(o); return b.Length; });
+        T("append sb part max", () => { var o = new StringBuilder("0123456789"); var b = new StringBuilder(4, 8); b.Append(o, 0, 9); return b.Length; });
+        T("append self", () => { var b = new StringBuilder("abc"); b.Append(b); return b.ToString(); });
+        T("append neg rep", () => new StringBuilder().Append('x', -1));
+        T("insert max", () => new StringBuilder(2, 5).Insert(0, "abc", 2));
+        T("fmt brace", () => string.Format("a}b", 1));
+        T("fmt open", () => string.Format("a{b", 1));
+        T("fmt end", () => string.Format("a{", 1));
+        T("fmt idx", () => string.Format("{1}", 1));
+        T("fmt space", () => string.Format("{0 }|{0, 4}|{0,-4 }|{ 0}", 7));
+        T("fmt big", () => string.Format("{1000000000}", 1));
+        T("fmt colon", () => string.Format("{0:x{}", 1));
+        T("fmt align bad", () => string.Format("{0,x}", 1));
+        T("fmt ok", () => string.Format("{{{0}}} {0:X4} {1,5:F1}|{1,-6}|", 255, 2.25));
+        T("sbfmt", () => new StringBuilder().AppendFormat("{0}-{1:D3}", "a", 5).ToString());
+        T("sbfmt null", () => new StringBuilder().AppendFormat(null!, 1));
+        T("fmt null", () => string.Format(null!, 1));
+        T("sb len max", () => { var b = new StringBuilder(2, 5); b.Length = 6; return 0; });
+        T("sb len neg", () => { var b = new StringBuilder(); b.Length = -1; return 0; });
+        T("sb cap neg", () => { var b = new StringBuilder(); b.Capacity = -1; return 0; });
+        T("sb ensure neg", () => new StringBuilder().EnsureCapacity(-1));
+    }
+}
