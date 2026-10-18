@@ -184,11 +184,12 @@ internal static class OwnedElements
     /// <summary>
     /// EVERY READ OF A FIELD in the program, each a load whose value goes
     /// only to the collection's known methods (Uses) -- never handed back,
-    /// stored or passed on -- with those calls; null when one is not, or the
-    /// field's address is taken. What is stored into the field is the
-    /// owned-field rules' to judge (Escape.OwnedFields).
+    /// stored or passed on but to a reader it is lent to (`lenders`, as a
+    /// collection made in a function is) -- with those calls; null when one
+    /// is not, or the field's address is taken. What is stored into the field
+    /// is the owned-field rules' to judge (Escape.OwnedFields).
     /// </summary>
-    internal static List<(Function F, Instr Load, List<(Block B, Instr Call, Role Role)> Calls)>? FieldReads(Module m, string field, string kind)
+    internal static List<(Function F, Instr Load, List<(Block B, Instr Call, Role Role)> Calls)>? FieldReads(Module m, string field, string kind, Lenders? lenders = null)
     {
         List<(Function, Instr, List<(Block, Instr, Role)>)> reads = new();
         foreach (Function g in m.Functions)
@@ -202,7 +203,7 @@ internal static class OwnedElements
                     { Say(g, $"field {field}: not followed: {i}"); return null; }
                     defs ??= new Defs(g, buildCfg: false);
                     HashSet<VReg> container = Container(g, defs, i);
-                    if (Uses(g, defs, kind, container, i, out bool returned) is not { } calls || returned)
+                    if (Uses(g, defs, kind, container, i, out bool returned, lenders: lenders) is not { } calls || returned)
                     { Say(g, $"field {field}: a read not followed: {i}"); return null; }
                     reads.Add((g, i, calls));
                 }
@@ -365,7 +366,8 @@ internal static class OwnedElements
     /// collection's calls there. Null when one is not followed. Whether what
     /// those calls answer goes anywhere is judged after inlining.
     /// </summary>
-    internal static List<(Function F, List<(Block B, Instr Call, Role Role)> Calls)>? FieldUses(Module m, string field, string kind, IReadOnlySet<string> addressed)
+    internal static List<(Function F, List<(Block B, Instr Call, Role Role)> Calls)>? FieldUses(Module m, string field, string kind, IReadOnlySet<string> addressed,
+        Lenders? lenders = null)
     {
         HashSet<string> getters = CollectionGetters(m, field, addressed);
         List<(Function, List<(Block, Instr, Role)>)> uses = new();
@@ -376,7 +378,7 @@ internal static class OwnedElements
             if (FieldValues(g, defs, field, getters) is not { } values) { Say(g, $"field {field}: not followed"); return null; }
             if (values.Seeds.Count == 0) continue;
             if (g.Async is not null) { Say(g, $"field {field}: read in an async body"); return null; }
-            if (Uses(g, defs, kind, values.Values, null, out bool returned, allowed: values.Stores) is not { } calls
+            if (Uses(g, defs, kind, values.Values, null, out bool returned, allowed: values.Stores, lenders: lenders) is not { } calls
                 || returned && !getters.Contains(g.Name))
             { Say(g, $"field {field}: a read not followed"); return null; }
             uses.Add((g, calls));
@@ -694,12 +696,25 @@ internal static class OwnedElements
     /// the collector has then, as it does in the caller. Not an async body,
     /// whose parameters live in its machine; another unit's function is
     /// none, its body not here to read. Answered once per callee, parameter
-    /// and kind; a cycle of readers lends nothing.
+    /// and kind.
+    ///
+    /// A CYCLE OF READERS -- a reader that walks a tree of lists and lends
+    /// each on to itself -- is one: while a reader is judged, a call lending
+    /// to it again is taken for a reader's, and if the judgement then fails,
+    /// every answer reached while it was open is forgotten, to be asked
+    /// again knowing that it failed. What holds of each assuming it of the
+    /// others holds of all of them: a reader's own calls are all that
+    /// touch the collection however deep the cycle goes.
     /// </summary>
     internal sealed class Lenders
     {
         private readonly Func<string, Function?> _find;
         private readonly Dictionary<(string Callee, int Parameter, string Kind), List<(Block B, Instr Call, Role Role)>?> _known = new();
+        // The readers being judged, and every answer reached since the first
+        // of them was opened, in order (Lends).
+        private readonly HashSet<(string Callee, int Parameter, string Kind)> _judging = new();
+        private readonly List<(string Callee, int Parameter, string Kind)> _reached = new();
+        private static readonly List<(Block B, Instr Call, Role Role)> Assumed = new();
 
         public Lenders(Func<string, Function?> find) => _find = find;
 
@@ -715,8 +730,25 @@ internal static class OwnedElements
         {
             (string, int, string) key = (g.Name, p, kind);
             if (_known.TryGetValue(key, out List<(Block B, Instr Call, Role Role)>? known)) return known;
-            // None while it is judged: a cycle of readers lends nothing.
-            _known[key] = null;
+            // Assumed a reader while it is judged: a cycle's calls are the
+            // judgement's own (the class's comment).
+            if (_judging.Contains(key)) return Assumed;
+            _judging.Add(key);
+            int since = _reached.Count;
+            List<(Block B, Instr Call, Role Role)>? found = Judge(g, p, kind);
+            _judging.Remove(key);
+            if (found is null)
+            {
+                for (int k = since; k < _reached.Count; k++) _known.Remove(_reached[k]);
+                _reached.RemoveRange(since, _reached.Count - since);
+            }
+            _known[key] = found;
+            _reached.Add(key);
+            return found;
+        }
+
+        private List<(Block B, Instr Call, Role Role)>? Judge(Function g, int p, string kind)
+        {
             if (g.Async is not null) return null;
             Defs defs = new(g, buildCfg: false);
             VReg parameter = g.Params[p];
@@ -737,7 +769,7 @@ internal static class OwnedElements
                         && !(i.Op == Opcode.Load && i.Offset == 0))
                     { Say(g, $"parameter {p}: its words read or written: {i}"); return null; }
             Say(g, $"parameter {p}: a reader");
-            return _known[key] = calls;
+            return calls;
         }
 
         /// <summary>
@@ -745,15 +777,17 @@ internal static class OwnedElements
         /// and in the readers that one lends it on to, into `keep`: kept from
         /// the inliner with the caller's, so each is still a call when the
         /// lifetime pass judges the reader -- or let go again (Escape.ReleaseReaders).
-        /// Readers lend only to readers judged before them, so this ends.
+        /// Each reader's once, so a cycle of them ends.
         /// </summary>
-        public void Keep(Instr call, int at, string kind, HashSet<Instr> keep)
+        public void Keep(Instr call, int at, string kind, HashSet<Instr> keep, HashSet<(string, int)>? kept = null)
         {
             if (Lends(call, at, kind) is not { } calls) return;
+            kept ??= new();
+            if (Reader(call) is { } g && !kept.Add((g.Name, at))) return;
             foreach ((Block _, Instr c, Role role) in calls)
             {
                 keep.Add(c);
-                if (role.Lent >= 0) Keep(c, role.Lent, kind, keep);
+                if (role.Lent >= 0) Keep(c, role.Lent, kind, keep, kept);
             }
         }
 
@@ -1082,11 +1116,13 @@ public sealed class MarkOwnedElements : IModulePass
                 // Every use, the accessors' too: in a unit, what other units'
                 // calls of the accessors do is the link's to check, from the
                 // accessors the unit names (FieldElementsProved, OwnedFieldSolver).
-                readsOf[field] = reads = OwnedElements.FieldUses(m, field, kind, addressed);
+                readsOf[field] = reads = OwnedElements.FieldUses(m, field, kind, addressed, lenders);
                 if (reads is not null && kind == "List") KeepStashes(m, field, reads, addressed);
             }
             if (reads is null) return false;
-            foreach (var read in reads) foreach (var c in read.Calls) m.KeepCalls.Add(c.Call);
+            // A read lent to a reader keeps the reader's calls as well, as a
+            // candidate's does (Keep).
+            foreach (var read in reads) Keep(read.Calls, kind);
             if (unit) m.ElementFields.TryAdd(field, kind);
             OwnedElements.Say(f, $"handed to {field}, read {reads.Count} time(s)");
             return true;
@@ -1449,6 +1485,9 @@ public sealed partial class Escape
 
     /// <summary>Each reader's verdict, by callee, parameter and kind (ReaderProved).</summary>
     private readonly Dictionary<(string Callee, int Parameter, string Kind), bool> _readers = new();
+    /// <summary>The readers being judged, and every verdict reached since the first of them was opened (ReaderProved).</summary>
+    private readonly HashSet<(string Callee, int Parameter, string Kind)> _readersJudging = new();
+    private readonly List<(string Callee, int Parameter, string Kind)> _readersReached = new();
 
     /// <summary>The calls each proved collection keeps from the inliner, its readers' among them: what ReleaseReaders leaves kept.</summary>
     private readonly HashSet<Instr> _lentHeld = new(ReferenceEqualityComparer.Instance);
@@ -1468,18 +1507,31 @@ public sealed partial class Escape
         if (_lenders?.Reader(call) is not { } g || _lenders.Lends(call, at, kind) is not { } calls) return false;
         (string, int, string) key = (g.Name, at, kind);
         if (_readers.TryGetValue(key, out bool known)) return known;
-        // Unproved while it is judged, though a reader never lends to itself (Lenders).
-        _readers[key] = false;
+        // PROVED WHILE IT IS JUDGED, as a cycle of readers is a reader
+        // (Lenders): what each reads goes nowhere, assuming it of the
+        // others; and a judgement that fails forgets every verdict reached
+        // while it was open, which may have assumed it.
+        if (!_readersJudging.Add(key)) return true;
+        int since = _readersReached.Count;
+        bool proved = true;
         foreach ((Block _, Instr c, OwnedElements.Role role) in calls)
         {
             if (role.Lent >= 0 && !ReaderProved(c, role.Lent, kind, summaries))
-            { OwnedElements.Say(g, $"parameter {at}: lent on to a reader not proved: {c}"); return false; }
+            { OwnedElements.Say(g, $"parameter {at}: lent on to a reader not proved: {c}"); proved = false; break; }
             if (!role.Reads || c.Dest is not { } got) continue;
             Flow flow = Analyse(g, new[] { got }, summaries, null);
-            if (flow.Escapes) { OwnedElements.Say(g, $"parameter {at}: what it reads goes on: {flow.Why}"); return false; }
+            if (flow.Escapes) { OwnedElements.Say(g, $"parameter {at}: what it reads goes on: {flow.Why}"); proved = false; break; }
         }
-        OwnedElements.Say(g, $"parameter {at}: a reader, proved");
-        return _readers[key] = true;
+        _readersJudging.Remove(key);
+        if (!proved)
+        {
+            for (int k = since; k < _readersReached.Count; k++) _readers.Remove(_readersReached[k]);
+            _readersReached.RemoveRange(since, _readersReached.Count - since);
+        }
+        else OwnedElements.Say(g, $"parameter {at}: a reader, proved");
+        _readers[key] = proved;
+        _readersReached.Add(key);
+        return proved;
     }
 
     /// <summary>
@@ -1497,6 +1549,8 @@ public sealed partial class Escape
                 if (!_lentHeld.Contains(c)) m.KeepCalls.Remove(c);
         _lenders = null;
         _readers.Clear();
+        _readersJudging.Clear();
+        _readersReached.Clear();
         _lentHeld.Clear();
     }
 
@@ -1613,7 +1667,7 @@ public sealed partial class Escape
             return false;
         }
         List<(VReg Holder, List<(Block B, Instr After)> Keep)> keeps = new();
-        var reads = OwnedElements.FieldReads(_module!, field, kind);
+        var reads = OwnedElements.FieldReads(_module!, field, kind, _lenders);
         // In a unit's compile, on what other units' calls do: the link's to check.
         Needs? outer = _elementNeeds;
         Needs? needs = _elementNeeds = _elementMode == ElementMode.Hints ? new(this) : null;
@@ -1663,6 +1717,12 @@ public sealed partial class Escape
             }
             return _fieldElements[field] = true;
         }
+        // The readers a read is lent to keep their calls from the inliner, as
+        // a proved collection's do (_lentHeld).
+        if (reads is not null)
+            foreach (var read in reads)
+                foreach (var c in read.Calls)
+                    if (c.Role.Lent >= 0) _lenders?.Keep(c.Call, c.Role.Lent, kind, _lentHeld);
         foreach ((VReg holder, var keep) in keeps) KeepAlives(holder, keep);
         return _fieldElements[field] = true;
     }

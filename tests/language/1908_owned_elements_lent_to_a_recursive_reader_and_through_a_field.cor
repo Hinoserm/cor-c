@@ -1,0 +1,86 @@
+// test: owned_elements_lent_to_a_recursive_reader_and_through_a_field
+// flags: --no-regions
+// expect-exit: 0
+// expect-output:
+// total 11400000 recursive 0 field 0
+//
+// A LIST'S ELEMENTS ARE ITS OWN, given back with it, when what reads them
+// keeps none: two shapes of reader that were refused. Walk lends the list
+// on to itself -- a cycle of readers, which counted as no reader; now a
+// reader is assumed while it is judged, and a judgement that fails forgets
+// what it reached (OwnedElements.Lenders, Escape.ReaderProved). And a list
+// made, filled and handed to a holder's field, then lent to Sum through the
+// field: the field's reads were followed only through the collection's own
+// methods (FieldReads), never into a reader. Without regions, which would
+// take these lists and boxes anyway, each lap left its twenty boxes to the
+// collector; now it leaves nothing.
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+sealed class Box { public long V; public long A, B, C; }
+
+sealed class Holder
+{
+    public List<Box> Items;
+    public int Tag;
+    public Holder(List<Box> items) { Items = items; }
+}
+
+static class Program
+{
+    // A reader that lends the list on to itself.
+    static long Walk(List<Box> list, int from)
+    {
+        if (from >= list.Count) return 0;
+        return list[from].V + Walk(list, from + 1);
+    }
+
+    // A plain reader.
+    static long Sum(List<Box> list)
+    {
+        long sum = 0;
+        foreach (Box b in list) sum += b.V;
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Recursive(int n)
+    {
+        List<Box> list = new List<Box>();
+        for (int i = 0; i < n; i++) { Box b = new Box(); b.V = i; list.Add(b); }
+        return Walk(list, 0);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Holder Make(int n)
+    {
+        List<Box> list = new List<Box>();
+        for (int i = 0; i < n; i++) { Box b = new Box(); b.V = i * 2; list.Add(b); }
+        return new Holder(list);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long ThroughField(int n)
+    {
+        Holder h = Make(n);
+        long sum = Sum(h.Items);
+        return sum + h.Tag;
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        Gc.Collect();
+        long taken = Gc.CollectedBytes;
+        for (int lap = 0; lap < 20000; lap++) total += Recursive(20);
+        Gc.Collect();
+        long recursive = (Gc.CollectedBytes - taken) / 20000;
+        taken = Gc.CollectedBytes;
+        for (int lap = 0; lap < 20000; lap++) total += ThroughField(20);
+        Gc.Collect();
+        long field = (Gc.CollectedBytes - taken) / 20000;
+        Console.WriteLine("total " + total + " recursive " + recursive + " field " + field);
+        return 0;
+    }
+}
