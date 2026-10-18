@@ -1,0 +1,99 @@
+// test: half_conversions_arithmetic_and_shortest_text
+// expect-exit: 0
+// expect-output:
+// 65500 -65500 6E-08 Infinity -Infinity NaN 0 -0 1 2.719 3.14 6.28
+// 7BFF 0001 FE00 8000 4170 4248
+// 255 -128 0.1 Infinity 65500 0 0 6.1E-05 03FF
+// 0.1 1.001 1 1.002 -3.14 65500 -Infinity NaN FE00 FE00 8000
+// Infinity -2048 Infinity 65 12.34 -1 2047 4096 Infinity
+// 3.140625 3.140625 5.960464477539063E-08 NaN Infinity -2 3 3 B -2.75 60000 0
+// Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Value was either too large or too small for a Decimal.)
+// 1.6 1.4 0.1499 15 0.0003662 -1.5 1.5 Infinity NaN Infinity
+// 2048 2048 4096
+// False True True False True False True True True -1 1 1 True
+// True True True True True True False True True True True True
+// 2.75 1.5 NaN 3 -1.5 -1 1.414 -3 -2 -2 2 3 1.23 1.501 -6E-08
+// Arithmetic(Function does not accept floating point Not-a-Number values.) ArgumentOutOfRangeException(Rounding digits must be between 0 and 6, inclusive. (Parameter 'digits'))
+// 0.1 1235 0.000123 6E-08 65500 0.09997558594 1235.000 1.24E+003 1,235.0 10.0 % 1235.0 0.000123 (¤2.75) 0.09998|     1235
+// 0.1 7C00 7BFF 8000 0000 0000 Infinity FE00 1000.5 False 0 Format(The input string '1..2' was not in a correct format.)
+// -2.75,0,0.1,1.5,65500 2
+// True System.Half 1.5 -16000 1 80-C1
+// 3E-00 1.5 3.7E-06
+//
+// SYSTEM.HALF, as .NET's: the constants and their bits; a float or a double
+// rounded once to the nearest half, ties to even, past 65520 infinity, a NaN
+// quiet with its sign; the integer and decimal conversions through float, the
+// checked ones throwing; arithmetic as a float's rounded back; IEEE's
+// comparisons (NaN unordered, the zeros equal) beside CompareTo and Equals,
+// which order NaN; the classification and rounding statics; the shortest
+// digits that read back as the same half (0.1, 65500 for the largest), the
+// other formats from the exact value, five digits for a picture; Parse rounded
+// once from the digits; a list sorted, a box, BitConverter and the bytes.
+
+using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Globalization;
+
+class Program
+{
+    static string H(Half h) { return BitConverter.HalfToUInt16Bits(h).ToString("X4"); }
+
+    static string Try(Func<string> f)
+    {
+        try { return f(); }
+        catch (OverflowException e) { return "Overflow(" + e.Message + ")"; }
+        catch (FormatException e) { return "Format(" + e.Message + ")"; }
+        catch (ArithmeticException e) { return "Arithmetic(" + e.Message + ")"; }
+        catch (ArgumentException e) { return e.GetType().Name + "(" + e.Message + ")"; }
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Half.MaxValue + " " + Half.MinValue + " " + Half.Epsilon + " " + Half.PositiveInfinity + " " + Half.NegativeInfinity + " " + Half.NaN + " " + Half.Zero + " " + Half.NegativeZero + " " + Half.One + " " + Half.E + " " + Half.Pi + " " + Half.Tau);
+        Console.WriteLine(H(Half.MaxValue) + " " + H(Half.Epsilon) + " " + H(Half.NaN) + " " + H(Half.NegativeZero) + " " + H(Half.E) + " " + H(Half.Pi));
+
+        // conversions in: implicit from byte and sbyte, explicit from the rest, rounded to even
+        byte b = 255; sbyte sb = -128;
+        Half fromByte = b, fromSByte = sb;
+        float f1 = 0.1f, f2 = 65520f, f3 = 65519.99f, f4 = 1e-8f, f5 = 2.9802322e-8f, f6 = 6.1e-5f;
+        double d1 = 0.1, d2 = 1.0009765625, d3 = 1.00048828125, d4 = 1.0014648437500001, d5 = -3.14159265358979;
+        Console.WriteLine(fromByte + " " + fromSByte + " " + (Half)f1 + " " + (Half)f2 + " " + (Half)f3 + " " + (Half)f4 + " " + (Half)f5 + " " + (Half)f6 + " " + H((Half)f6));
+        Console.WriteLine((Half)d1 + " " + (Half)d2 + " " + (Half)d3 + " " + (Half)d4 + " " + (Half)d5 + " " + (Half)65504.0 + " " + (Half)(-1e10) + " " + (Half)double.NaN + " " + H((Half)double.NaN) + " " + H((Half)float.NaN) + " " + H((Half)(-0.0)));
+        int big = 70000; long longer = -2049; ulong huge = ulong.MaxValue; char ch = 'A'; decimal money = 12.34m;
+        Console.WriteLine((Half)big + " " + (Half)longer + " " + (Half)huge + " " + (Half)ch + " " + (Half)money + " " + (Half)(short)-1 + " " + (Half)(uint)2047 + " " + (Half)(Int128)4097 + " " + (Half)(UInt128)70000);
+
+        // conversions out: exact widening, truncating integers, checked overflows
+        Half h = (Half)3.140625, n = (Half)(-2.75), nan = Half.NaN, inf = Half.PositiveInfinity, sub = BitConverter.UInt16BitsToHalf(0x0001);
+        Console.WriteLine((float)h + " " + (double)h + " " + (double)sub + " " + (float)nan + " " + (double)inf + " " + (int)n + " " + (long)h + " " + (byte)h + " " + (char)(Half)66 + " " + (decimal)n + " " + (Int128)(Half)60000 + " " + (ulong)n);
+        Console.WriteLine(Try(() => checked((byte)n).ToString()) + " " + Try(() => checked((int)nan).ToString()) + " " + Try(() => checked((short)inf).ToString()) + " " + Try(() => checked((UInt128)n).ToString()) + " " + Try(() => ((decimal)inf).ToString()));
+
+        // arithmetic through float, rounded back
+        Half a = (Half)1.5, c = (Half)0.1;
+        Console.WriteLine((a + c) + " " + (a - c) + " " + (a * c) + " " + (a / c) + " " + (a % c) + " " + (-a) + " " + (+a) + " " + (Half.MaxValue + Half.MaxValue) + " " + (inf - inf) + " " + (a / Half.Zero));
+        Half m = (Half)2047;
+        m++; Console.Write(m + " "); m++; Console.Write(m + " "); m--; m += (Half)0.5; m *= (Half)2;
+        Console.WriteLine(m);
+
+        // comparison, IEEE's
+        Console.WriteLine((a < c) + " " + (a > c) + " " + (a <= a) + " " + (nan == nan) + " " + (nan != nan) + " " + (nan < a) + " " + (Half.Zero == Half.NegativeZero) + " " + Half.Zero.Equals(Half.NegativeZero) + " " + nan.Equals(nan) + " " + nan.CompareTo(a) + " " + a.CompareTo(nan) + " " + a.CompareTo((object)c) + " " + a.Equals((object)(Half)1.5));
+        Console.WriteLine(Half.IsNaN(nan) + " " + Half.IsInfinity(inf) + " " + Half.IsFinite(a) + " " + Half.IsNegative(n) + " " + Half.IsNegative(Half.NegativeZero) + " " + Half.IsSubnormal(sub) + " " + Half.IsNormal(sub) + " " + Half.IsPositiveInfinity(inf) + " " + Half.IsNegativeInfinity(-inf) + " " + Half.IsInteger((Half)4) + " " + Half.IsEvenInteger((Half)4) + " " + Half.IsOddInteger((Half)3));
+        Console.WriteLine(Half.Abs(n) + " " + Half.Max(a, c) + " " + Half.Min(a, nan) + " " + Half.Clamp((Half)7, a, (Half)3) + " " + Half.CopySign(a, n) + " " + Half.Sign(n) + " " + Half.Sqrt((Half)2) + " " + Half.Floor(n) + " " + Half.Ceiling(n) + " " + Half.Truncate(n) + " " + Half.Round((Half)2.5) + " " + Half.Round((Half)2.5, MidpointRounding.AwayFromZero) + " " + Half.Round((Half)1.2345, 2) + " " + Half.BitIncrement(a) + " " + Half.BitDecrement(Half.Zero));
+        Console.WriteLine(Try(() => Half.Sign(nan).ToString()) + " " + Try(() => Half.Round(a, 7).ToString()));
+
+        // text: shortest digits for a half, the rest from its exact value
+        Half t = (Half)0.1, u = (Half)1234.5678, w = (Half)0.000123;
+        Console.WriteLine(t + " " + u + " " + w + " " + sub + " " + Half.MaxValue.ToString("R") + " " + t.ToString("G10") + " " + u.ToString("F3") + " " + u.ToString("E2") + " " + u.ToString("N1") + " " + t.ToString("P1") + " " + u.ToString("0.0") + " " + w.ToString("G") + " " + n.ToString("C") + " " + $"{t:F5}|{u,9}");
+        Console.WriteLine(Half.Parse("0.1") + " " + H(Half.Parse("65520")) + " " + H(Half.Parse("65519")) + " " + H(Half.Parse("-0")) + " " + H(Half.Parse("1e-8")) + " " + H(Half.Parse("2.98023223876953125e-8")) + " " + Half.Parse("Infinity") + " " + H(Half.Parse("NaN")) + " " + Half.Parse("1,000.5") + " " + Half.TryParse("x", out Half bad) + " " + bad + " " + Try(() => Half.Parse("1..2").ToString()));
+
+        // in collections, boxed, as bits and bytes
+        List<Half> list = new List<Half> { a, n, c, Half.MaxValue, Half.Zero };
+        list.Sort();
+        Console.WriteLine(string.Join(",", list) + " " + list.IndexOf(c));
+        object boxed = a;
+        Console.WriteLine((boxed is Half) + " " + boxed.GetType().FullName + " " + boxed + " " + BitConverter.HalfToInt16Bits(n) + " " + BitConverter.Int16BitsToHalf(0x3C00) + " " + BitConverter.ToString(BitConverter.GetBytes(n)));
+        byte[] bytes = new byte[2];
+        BinaryPrimitives.WriteHalfBigEndian(bytes, a);
+        Console.WriteLine(BitConverter.ToString(bytes) + " " + BinaryPrimitives.ReadHalfBigEndian(bytes) + " " + BinaryPrimitives.ReadHalfLittleEndian(bytes));
+    }
+}

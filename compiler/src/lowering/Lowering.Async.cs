@@ -303,9 +303,28 @@ public sealed partial class Lowering
         }
 
         Require(am.MoveNext);
-        _e.Call(Label(am.MoveNext), IrType.Void, R(machine));
+        RunFirstStep(decl, am, machine);
         _e.Ret(task is null ? null : R(task));
         _m.Functions.Add(_f);
+    }
+
+    /// <summary>
+    /// The body's first run, up to its first suspension or its end -- and
+    /// then the caller's flow put back as it was, as .NET's
+    /// AsyncMethodBuilder.Start restores the ExecutionContext: a culture the
+    /// method sets is its own and its continuations', never its caller's
+    /// (AsyncRuntime.FlowSaved and FlowRestore).
+    /// </summary>
+    private void RunFirstStep(MethodDecl decl, AsyncMethod am, VReg machine)
+    {
+        MethodSymbol? saved = AsyncRuntimeMethod(decl, "FlowSaved", 0);
+        MethodSymbol? restore = AsyncRuntimeMethod(decl, "FlowRestore", 1);
+        VReg? flow = saved is null ? null : _e.Call(Label(saved), IrTypes.Word);
+        _e.Call(Label(am.MoveNext), IrType.Void, R(machine));
+        if (restore is not null && flow is not null)
+        {
+            _e.Call(Label(restore), IrType.Void, R(flow));
+        }
     }
 
     /// <summary>
@@ -391,7 +410,7 @@ public sealed partial class Lowering
         }
 
         Require(am.MoveNext);
-        _e.Call(Label(am.MoveNext), IrType.Void, R(machine));
+        RunFirstStep(decl, am, machine);
 
         VReg task = _e.Load(IrTypes.Word, machine, TaskField);
         Block ofTask = _f.NewBlock("vttask");

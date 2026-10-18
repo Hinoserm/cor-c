@@ -273,7 +273,7 @@ public sealed partial class Lowering
          + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type))))
          // A CONVERSION OPERATOR IS ALSO WHAT IT MAKES: JsonNode's explicit
          // operators to bool, int, long and double all take one JsonNode.
-         + (m.Name is "op_Implicit" or "op_Explicit" ? "_to_" + Mangle(m.Returns) : "");
+         + (m.Name is "op_Implicit" or "op_Explicit" or "op_CheckedExplicit" ? "_to_" + Mangle(m.Returns) : "");
 
     private static string Owner(MethodSymbol m) => m.Owner.Key.Replace('.', '$');
 
@@ -1079,6 +1079,12 @@ public sealed partial class Lowering
             // libraries' destructors run at exit. First, before anything can
             // use the register.
             loaderFini = e.Call(MachineIntrinsics.LoaderFini, IrTypes.Word)!;
+            // A double rounded once, to a double, on the x87 too: what the
+            // SSE arithmetic of x86-64 and of .NET answers.
+            if (Target.Current.WordSize == 4)
+            {
+                e.Call(MachineIntrinsics.DoublePrecision, IrType.Void);
+            }
             VReg fp = e.Reg(IrTypes.Word, "fp");
             e.Emit(Opcode.FramePointer, fp);
             entrySp = e.Binary(Opcode.Add, fp, Target.Current.WordSize);
@@ -1128,11 +1134,6 @@ public sealed partial class Lowering
             e.Emit(Opcode.FramePointer, top);
             e.Store(only, e.Binary(Opcode.Add, top, Target.Current.WordSize), TlsStackBase / 4 * Target.Current.WordSize);
         }
-
-        // DOUBLES ROUNDED ONCE, as .NET's are: the x87 told to round its
-        // results to 53 bits rather than the 64 it starts with, before any
-        // arithmetic, and every thread started after it inherits the word.
-        e.Call(MachineIntrinsics.DoublePrecision, IrType.Void);
 
         // Linux: the block goes behind a GDT entry and GS names it. This is
         // the first call the program makes, because every `try` and every
@@ -1624,6 +1625,11 @@ public sealed partial class Lowering
     // Past the boxed faces' bits (64, 128, 256), which the same word holds.
     private const int TypeFlagDelegate = 512;
 
+    // A CLASS THAT IS IEquatable<X> by an Equals(X) (TypedEquals), in its
+    // descriptor's flags: what a table asks such an object is IEquatable's
+    // slot, not object's Equals (KeyEqualsStub).
+    private const int TypeFlagEquatable = 1024;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;
@@ -1884,8 +1890,9 @@ public sealed partial class Lowering
     /// <summary>
     /// The namespace .NET has a type of the class library's in, where the
     /// library declares it without one: the collections and their interfaces
-    /// in System.Collections.Generic, LINQ's own in System.Linq, the rest in
-    /// System -- what FullName and object.ToString say of them.
+    /// in System.Collections.Generic, LINQ's own in System.Linq, BigInteger
+    /// and its kin in System.Numerics, the rest in System -- what FullName and
+    /// object.ToString say of them.
     /// </summary>
     private static string LibraryHome(string name) => name switch
     {
@@ -1894,6 +1901,7 @@ public sealed partial class Lowering
             or "IReadOnlyList" or "IReadOnlySet" or "ISet" or "KeyValuePair" or "List" or "Queue" or "SortedSet" or "Stack"
             or "LinkedList" or "LinkedListNode" or "SortedDictionary" or "SortedList" or "PriorityQueue" => "System.Collections.Generic",
         "IGrouping" or "ILookup" or "IOrderedEnumerable" or "Lookup" or "Grouping" or "OrderedSequence" or "Enumerable" => "System.Linq",
+        "BigInteger" or "Complex" or "BitOperations" => "System.Numerics",
         _ => "System",
     };
 
@@ -2007,7 +2015,7 @@ public sealed partial class Lowering
         if (stringFaces.Count > 0)
         {
             stringFaces.Add((_b.ToStringSlot, StringItself()));
-            stringFaces.Add((_b.EqualsSlot, KeyEqualsStub()));
+            stringFaces.Add((_b.EqualsSlot, KeyEqualsStub(table: false)));
             stringFaces.Add((_b.HashSlot, KeyHashStub()));
             stringFaces.Add((_b.CompareSlot, KeyCompareStub()));
         }
@@ -2685,6 +2693,7 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
+        if (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null) WriteWord(block, DescFlags * w, TypeFlagEquatable);
 
         // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a
         // field of one is keyed by the copy (FieldKey), and the owned-field

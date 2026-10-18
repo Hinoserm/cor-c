@@ -3908,6 +3908,9 @@ static partial class Scheduler
     /// reason to stop the machine as Unhandled stops a program.
     public static Exception? RunPosted(Action work, AsyncContext? context)
     {
+        // Work posted before any culture was set runs with none, not with
+        // what the thread running it has been given since.
+        if (context == null && Platform.ContextHook == 0) context = AsyncContext.Bare();
         AsyncContextSaved saved = default(AsyncContextSaved);
         if (context != null) saved = AsyncContext.Enter(context);
         try
@@ -4945,9 +4948,50 @@ static partial class ThreadPool
         return true;
     }
 
+    /// Without the poster's flow, as .NET's: the work runs with no culture
+    /// of anybody's, a pool thread's defaults.
     public static bool UnsafeQueueUserWorkItem(Action callBack)
     {
-        Scheduler.Post(callBack);
+        Scheduler.Post(callBack, AsyncContext.Bare());
+        return true;
+    }
+
+    // .NET'S OWN SHAPES: a callback of its state -- .NET's WaitCallback, an
+    // Action<object?> here, which every lambda and method group converts to
+    // alike, a delegate type of its own costing every image its descriptor
+    // -- and an Action of a state typed (preferLocal says which queue; there
+    // is one queue here). Each flows as the Action does, the unsafe ones not
+    // at all.
+    public static bool QueueUserWorkItem(Action<object?> callBack)
+    {
+        return QueueUserWorkItem(callBack, null);
+    }
+
+    public static bool QueueUserWorkItem(Action<object?> callBack, object? state)
+    {
+        ArgumentNullException.ThrowIfNull(callBack);
+        Scheduler.Post(() => callBack(state));
+        return true;
+    }
+
+    public static bool QueueUserWorkItem<TState>(Action<TState> callBack, TState state, bool preferLocal)
+    {
+        ArgumentNullException.ThrowIfNull(callBack);
+        Scheduler.Post(() => callBack(state));
+        return true;
+    }
+
+    public static bool UnsafeQueueUserWorkItem(Action<object?> callBack, object? state)
+    {
+        ArgumentNullException.ThrowIfNull(callBack);
+        Scheduler.Post(() => callBack(state), AsyncContext.Bare());
+        return true;
+    }
+
+    public static bool UnsafeQueueUserWorkItem<TState>(Action<TState> callBack, TState state, bool preferLocal)
+    {
+        ArgumentNullException.ThrowIfNull(callBack);
+        Scheduler.Post(() => callBack(state), AsyncContext.Bare());
         return true;
     }
 }
@@ -4998,13 +5042,14 @@ static partial class ThreadPool
 // made in regions is released when its run ends. The block's own region
 // words (a kernel processor's: none) are put back.
 //
-// NOTHING IS CAPTURED where the platform flows nothing (Platform.ContextHook
-// 0: Linux, a loader, a boot test): no allocation, no word moved. Where it
-// does, a continuation registered inside a run shares that run's context,
-// as an ExecutionContext is shared until something changes it; only a root
-// -- an await outside any continuation, a system call starting work -- makes
-// one. The context in force is a word of the thread block (Tls.AsyncContext),
-// so every processor has its own.
+// ONLY THE CULTURES where the platform flows nothing (Platform.ContextHook
+// 0: Linux, a loader, a boot test), and those only once a program has set
+// one (AsyncRuntime.FlowBegins): until then no allocation, no word moved.
+// Where it flows a context, a continuation registered inside a run shares
+// that run's context, as an ExecutionContext is shared until something
+// changes it; only a root -- an await outside any continuation, a system
+// call starting work -- makes one. The context in force is a word of the
+// thread block (Tls.AsyncContext), so every processor has its own.
 //
 // TWO RUNS OF ONE FLOW AT ONCE -- two branches of a WhenAll on two
 // processors -- share its owner but not its statics table: the first to
@@ -5013,6 +5058,8 @@ static partial class ThreadPool
 /// What a run in a context displaced, put back as it ends (AsyncContext).
 struct AsyncContextSaved
 {
+    public CultureInfo? Culture;
+    public CultureInfo? UICulture;
     public long Running;
     public long OwnerWord;
     public long Statics;
@@ -5025,6 +5072,10 @@ sealed class AsyncContext
 {
     /// The platform's: what Platform.ContextHook captured (a kernel's process).
     public object? Owner;
+    /// Where the platform flows no context: the current cultures captured
+    /// (CultureInfo.GivenCulture and GivenUICulture), all that flows there.
+    public CultureInfo? Culture;
+    public CultureInfo? UICulture;
     /// The flow's [ThreadStatic] cells (ThreadStatics), or null for none yet.
     public object?[]? Statics;
     // Whether a run has the statics table in (1) or not (0).
@@ -5044,7 +5095,13 @@ sealed class AsyncContext
     {
         if (Platform.ContextHook == 0)
         {
-            return null;
+            // THE CULTURES FLOW ALL THE SAME, as .NET's ExecutionContext
+            // carries CultureInfo.CurrentCulture and CurrentUICulture: the
+            // ones in force now go with the work, and its run sees them.
+            // Nothing at all until a program has set one, and read only
+            // through what setting one began (AsyncRuntime.FlowBegins).
+            Func<object?>? read = AsyncRuntime.FlowReader;
+            return read == null ? null : read.Invoke() as AsyncContext;
         }
         AsyncContext? running = Running;
         if (running != null)
@@ -5054,6 +5111,42 @@ sealed class AsyncContext
         object? owner = Sys.FromWord(Sys.Call(Platform.ContextHook, CaptureOp, 0, 0));
         AsyncContext made = new AsyncContext();
         made.Owner = owner;
+        return made;
+    }
+
+    /// A context that carries nothing of the poster's where the cultures are
+    /// all that flows (a platform's own context flows as ever): work run in
+    /// it sees a thread's defaults, as .NET's runs in the default context
+    /// where none was captured. One for all, as it holds nothing; null until
+    /// a culture has been set.
+    public static AsyncContext? Bare()
+    {
+        if (Platform.ContextHook != 0)
+        {
+            return Capture();
+        }
+        if (!CultureInfo.FlowUsed)
+        {
+            return null;
+        }
+        return _bare ??= new AsyncContext();
+    }
+
+    static AsyncContext? _bare;
+
+    /// The cultures in force now as a context: `inside`, the one running,
+    /// where it carries them already, else one made to.
+    public static AsyncContext Cultures(AsyncContext? inside)
+    {
+        CultureInfo? culture = CultureInfo.GivenCulture;
+        CultureInfo? uiCulture = CultureInfo.GivenUICulture;
+        if (inside != null && ReferenceEquals(inside.Culture, culture) && ReferenceEquals(inside.UICulture, uiCulture))
+        {
+            return inside;
+        }
+        AsyncContext made = new AsyncContext();
+        made.Culture = culture;
+        made.UICulture = uiCulture;
         return made;
     }
 
@@ -5075,6 +5168,21 @@ sealed class AsyncContext
     {
         AsyncContextSaved saved = default(AsyncContextSaved);
         long block = Sys.ThreadBlock();
+        if (Platform.ContextHook == 0)
+        {
+            // The cultures alone (Capture): this thread's put aside, the
+            // flow's in force. Thread statics stay the thread's.
+            saved.Culture = CultureInfo.GivenCulture;
+            saved.UICulture = CultureInfo.GivenUICulture;
+            CultureInfo.GivenCulture = context.Culture;
+            CultureInfo.GivenUICulture = context.UICulture;
+            if (block != 0)
+            {
+                saved.Running = Sys.Peek(block + Tls.AsyncContext);
+                Sys.Poke(block + Tls.AsyncContext, Sys.Word(context));
+            }
+            return saved;
+        }
         if (Platform.ContextHook != 0)
         {
             saved.OwnerWord = Sys.Call(Platform.ContextHook, EnterOp, Sys.Word(context.Owner), 0);
@@ -5112,6 +5220,14 @@ sealed class AsyncContext
     public static void Leave(AsyncContext context, AsyncContextSaved saved)
     {
         long block = Sys.ThreadBlock();
+        if (Platform.ContextHook == 0)
+        {
+            // What the run set is the run's: the thread's own back.
+            CultureInfo.GivenCulture = saved.Culture;
+            CultureInfo.GivenUICulture = saved.UICulture;
+            if (block != 0) Sys.Poke(block + Tls.AsyncContext, saved.Running);
+            return;
+        }
         if (block != 0)
         {
             long statics = Sys.Peek(block + Tls.ThreadStatics);
@@ -5379,6 +5495,45 @@ static class AsyncRuntime
 
         Runtime.WriteText(2, text);
         Platform.Exit(134);
+    }
+
+    /// THE FLOW AN ASYNC METHOD WAS CALLED IN, read before its first step and
+    /// put back after it (Lowering's kickoff), as .NET's AsyncMethodBuilder
+    /// restores the ExecutionContext: a culture the method sets stays its
+    /// own and its continuations'. Nothing is read until a culture has been
+    /// set (FlowBegins): a program that never sets one carries no code that
+    /// reads one at every async call.
+    public static object? FlowSaved()
+    {
+        Func<object?>? read = _flowReader;
+        return read == null ? null : read.Invoke();
+    }
+
+    /// The flow's cultures as a context (AsyncContext.Cultures), once a
+    /// culture has been set; null before.
+    internal static Func<object?>? FlowReader => _flowReader;
+
+    public static void FlowRestore(object? saved)
+    {
+        Action<object?>? write = _flowWriter;
+        if (write != null) write.Invoke(saved);
+    }
+
+    static Func<object?>? _flowReader;
+    static Action<object?>? _flowWriter;
+
+    /// A culture has been set (CultureInfo.CurrentCulture): from now on the
+    /// kickoff reads and puts back the flow's cultures.
+    public static void FlowBegins()
+    {
+        if (_flowWriter != null) return;
+        _flowReader = () => AsyncContext.Cultures(AsyncContext.Running);
+        _flowWriter = saved =>
+        {
+            AsyncContext? held = saved as AsyncContext;
+            CultureInfo.GivenCulture = held?.Culture;
+            CultureInfo.GivenUICulture = held?.UICulture;
+        };
     }
 
     /// `async Task Main` returned `task`: run until it completes, and end the

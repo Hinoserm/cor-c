@@ -1,0 +1,59 @@
+// test: boxed_struct_and_enum_full_names
+// expect-exit: 0
+// expect-output:
+// System.TimeSpan | TimeSpan | 00:00:00
+// System.Guid | Guid | 00000000-0000-0000-0000-000000000000
+// System.Index | Index | 3
+// Shapes.Point | Point | P0
+// Shapes.Color | Color | Green
+// Shapes.Plain | Plain | Shapes.Plain
+// Shapes.Outer+Inner | Inner | B
+// Shapes.Outer+Cell | Cell | Shapes.Outer+Cell
+// Global | Global | Global
+// System.DateTime | DateTime | 01/01/0001 00:00:00
+// System.Decimal | Decimal | 1.5
+// System.Int128 | Int128 | 1
+// System.Half | Half | 1
+// System.ConsoleColor | ConsoleColor | Red
+// Shapes.Point Shapes.Outer+Inner System.Decimal Global Color
+//
+// A BOXED STRUCT OR ENUM NAMES ITS TYPE IN FULL, as a class does: GetType()
+// .FullName and typeof(T).FullName are the namespace, the outer types with a
+// '+' and the name -- System.TimeSpan, Shapes.Outer+Inner -- and Name its last
+// part; a struct's ToString without an override of its own is that full name.
+
+using System;
+
+namespace Shapes
+{
+    enum Color { Red, Green }
+
+    struct Point
+    {
+        public int X;
+        public override string ToString() => "P" + X;
+    }
+
+    struct Plain { public int Y; }
+
+    class Outer
+    {
+        public enum Inner { A, B }
+        public struct Cell { public int Z; }
+    }
+}
+
+struct Global { public int W; }
+
+class Program
+{
+    static void Main()
+    {
+        object[] boxes = { TimeSpan.Zero, Guid.Empty, (Index)3, new Shapes.Point(), Shapes.Color.Green, new Shapes.Plain(), Shapes.Outer.Inner.B, new Shapes.Outer.Cell(), new Global(), DateTime.MinValue, 1.5m, (Int128)1, (Half)1, ConsoleColor.Red };
+        foreach (object o in boxes)
+        {
+            Console.WriteLine(o.GetType().FullName + " | " + o.GetType().Name + " | " + o);
+        }
+        Console.WriteLine(typeof(Shapes.Point).FullName + " " + typeof(Shapes.Outer.Inner).FullName + " " + typeof(decimal).FullName + " " + typeof(Global).FullName + " " + typeof(Shapes.Color).Name);
+    }
+}

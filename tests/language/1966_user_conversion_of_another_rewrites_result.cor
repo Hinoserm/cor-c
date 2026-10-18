@@ -1,0 +1,47 @@
+// test: user_conversion_of_another_rewrites_result
+// expect-exit: 0
+// expect-output:
+// 123456 15241383936 123456 375 375 250 123456
+// Int128 123456 Int128 250 decimal 375 decimal 250
+// 123456,250,375
+//
+// A USER CONVERSION OF WHAT ANOTHER REWRITE MADE: `Int128 x = (int)big;`
+// converts the int an explicit operator answered, and `decimal sum = a + b;`
+// the int a declared `+` answered, by the implicit operators of Int128 and
+// decimal -- in initialisers, arguments, returns and array elements. The
+// expression holds one rewrite, and the second was dropped: the int was
+// taken for the struct.
+
+using System;
+using System.Numerics;
+
+readonly struct Cents
+{
+    public readonly int Value;
+    public Cents(int value) { Value = value; }
+    public static int operator +(Cents a, Cents b) => a.Value + b.Value;
+    public static explicit operator int(Cents c) => c.Value;
+}
+
+class Program
+{
+    static Int128 Wide(BigInteger big) { return (int)big; }
+    static string Take(Int128 x) => "Int128 " + x;
+    static string TakeMoney(decimal d) => "decimal " + d;
+
+    static void Main()
+    {
+        BigInteger big = 123456;
+        Int128 x = (int)big;
+        Int128 y = (long)(big * big);
+        decimal d = (int)big;
+        Cents a = new Cents(250), b = new Cents(125);
+        decimal sum = a + b;
+        long total = a + b;
+        Int128 cast = (int)a;
+        Console.WriteLine(x + " " + y + " " + d + " " + sum + " " + total + " " + cast + " " + Wide(big));
+        Console.WriteLine(Take((long)big) + " " + Take((int)a) + " " + TakeMoney(a + b) + " " + TakeMoney((int)a));
+        Int128[] many = { (int)big, (short)(int)a, a + b };
+        Console.WriteLine(string.Join(",", many));
+    }
+}

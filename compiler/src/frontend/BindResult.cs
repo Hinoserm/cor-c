@@ -353,6 +353,16 @@ public sealed partial class BindResult
     /// value is the operator's result, not the expression they replace.</summary>
     public HashSet<Expr> UserConversions { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// The decimal constants: a literal `1.5m`, a read of a decimal const and
+    /// an expression of them folded, each with the construction of the struct
+    /// it is (Binder.Decimal), which the code generator evaluates in its place.
+    /// A table of its own, not Rewrites: a conversion applied to the constant
+    /// rewrites the same node into the call it is the argument of, and the
+    /// argument is still evaluated for what it is.
+    /// </summary>
+    public Dictionary<Expr, NewExpr> DecimalValues { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// The Add each element of a collection initialiser calls.
     public Dictionary<InitAdd, MethodSymbol> InitAdder { get; } = new(ReferenceEqualityComparer.Instance);
     public NewTargets NewConstructors { get; }
@@ -697,6 +707,7 @@ public sealed partial class BindResult
             Boxes.Remove(e);
             BoxedAs.Remove(e);
             UserConversions.Remove(e);
+            DecimalValues.Remove(e);
             switch (e)
             {
                 case AssignExpr a:
@@ -790,6 +801,7 @@ public sealed partial class BindResult
         InitSetter.Clear();
         InitGetter.Clear();
         UserConversions.Clear();
+        DecimalValues.Clear();
         InitAdder.Clear();
         InitIndexer.Clear();
         Tuples.Clear();

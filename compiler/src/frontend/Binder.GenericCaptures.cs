@@ -491,6 +491,10 @@ public sealed partial class Binder
         {
             return new LiteralExpr { Kind = Lit.Str, Text = constant.Text, Line = at.Line, Col = at.Col };
         }
+        if (constant.Number is decimal money)
+        {
+            return DecimalLiteral(money, at);
+        }
         if (constant.Type.Prim == Prim.Bool)
         {
             return new LiteralExpr

@@ -1,0 +1,120 @@
+// test: int128_uint128_conversions_operators_and_text
+// expect-exit: 0
+// expect-output:
+// -170141183460469231731687303715884105728 170141183460469231731687303715884105727 1 -1 0 340282366920938463463374607431768211455 1
+// 200 -100 -30000 90 -7 4000000000 -9223372036854775808 18446744073709551615 -5 200 90 4000000000 18446744073709551615 340282366920938463463374607431768211449 340282366920938463454151235394913435648
+// -1 0 18446744073709551615 44 4464 B -1 340282366920938463463374607431768211455
+// Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.)
+// 170141183460469231731687303715884105727 0 -170141183460469231731687303715884105728 340282366920938463463374607431768211455 0 12345 0 3500000128223995495482734411776
+// Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) 0 Overflow(Arithmetic operation resulted in an overflow.)
+// 1.7014118346046923E+38 -1.7014118346046923E+38 3.402823669209385E+38 Infinity 1.8446744073709552E+19 -1.2345678901234568E+17
+// 79228162514264337593543950335 -79228162514264337593543950335 79228162514264337593543950335 -42 12 Overflow(Value was either too large or too small for a Decimal.) Overflow(Arithmetic operation resulted in an overflow.)
+// 123456789012345678900246913569 123456789012345678902222222211 -121932631124828532112482853211126352690 -124999998873437499901 574845669 -123456789012345678901234567890 964506164158950616415895061 -123456791 255 -46563309874142088726641111083161485312 -123456789012345678901234567891 123456789012345678901064827458 -817913889 -123456789012345678901882741347
+// -170141183460469231731687303715884105728 170141183460469231731687303715884105727 -2 0 340282366920938463463374607431768211455
+// Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.) Overflow(Arithmetic operation resulted in an overflow.)
+// Overflow(Arithmetic operation resulted in an overflow.) DivideByZero(Attempted to divide by zero.) DivideByZero(Attempted to divide by zero.) Overflow(Negating the minimum value of a twos complement number is invalid.)
+// 296197 340282366920938463463374607431768211455 296198
+// False True True True 1 True True False True True
+// 123456789012345678901234567890 -987654321 -1 987654321 0 -123456789012345678901234567890 123456789012345678901234567890 170141183460469231731687303715884105727 True 96 127
+// 31 11 112 128 -80481231463878422510582190970802466826 170141183460469231731687303715884105728 True True (123456789012345678901234567, 890)
+// ArgumentException('5' cannot be greater than 2.) ArgumentOutOfRangeException(Non-negative number required. (Parameter 'value'))
+// 85070591730234615847396907784232501249 -27670116110564327424 340282366920938463426481119284349108225 85070591730234615865843651857942052863 1
+// 123,456,789,012,345,678,901,234,567,890 FFFFFFFFFFFFFFFFFFFFFFFFC521974F ffffffffffffffffffffffffc521974f FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF 11111111 1.2346E+029 -000987654321 123456789012345678901234567890.0 (¤987,654,321.00) 700 % 123,456,789,012,345,678,901,234,567,890.00 (987654321)
+// -170141183460469231731687303715884105728 42 -1 1234567 1000 -5
+// Overflow(Value was either too large or too small for an Int128.) Overflow(Value was either too large or too small for a UInt128.) Format(The input string '12x' was not in a correct format.) Overflow(Value was either too large or too small for a UInt128.)
+// True 99 False 0 123,456,789,012,345,678,901,234,567,890.00|               -987654321|00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+// -170141183460469231731687303715884105728,-987654321,0,123456789012345678901234567890,170141183460469231731687303715884105727 True
+// True False System.Int128 System.UInt128 123456789012345678901234567890
+// -170141183460469231731687303715884105728 340282366920938463463374607431768211455 -170141183460469231731687303715884105727 340282366920938463463374607431768211455 Overflow(Value was either too large or too small for an Int128.) Overflow(Value was either too large or too small for a UInt128.)
+// FF-FF-FF-FF-FF-FF-FF-FF-FF-FF-FF-FF-C5-21-97-4F -987654321 105793733499340211260771696488854061055 1329227995784915872903807060280344576
+//
+// INT128 AND UINT128, as .NET's: every implicit conversion from the narrower
+// integers and every explicit one to and from them, the floating-point types
+// (saturating unchecked, an OverflowException checked -- C# 11's checked
+// conversion operators) and decimal; the arithmetic wrapping, and in a
+// checked context the checked operators, which throw; MinValue / -1 and
+// Abs(MinValue); compound assignments; comparison and the integer statics
+// (LeadingZeroCount and its kin answering the type itself, Log2, MaxMagnitude,
+// DivRem, BigMul both ways and Math.BigMul to the 128-bit types); every
+// standard format, hex and binary in two's complement, pictures; Parse with
+// the integer styles and .NET's overflow and format messages; a list sorted,
+// a box and its type's full name; BigInteger to and from both; the bytes.
+
+using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Numerics;
+
+class Program
+{
+    static string Try(Func<string> f)
+    {
+        try { return f(); }
+        catch (OverflowException e) { return "Overflow(" + e.Message + ")"; }
+        catch (DivideByZeroException e) { return "DivideByZero(" + e.Message + ")"; }
+        catch (FormatException e) { return "Format(" + e.Message + ")"; }
+        catch (ArgumentException e) { return e.GetType().Name + "(" + e.Message + ")"; }
+    }
+
+    static void Main()
+    {
+        Int128 min = Int128.MinValue, max = Int128.MaxValue, one = Int128.One, minus = Int128.NegativeOne;
+        UInt128 umax = UInt128.MaxValue;
+        Console.WriteLine(min + " " + max + " " + one + " " + minus + " " + Int128.Zero + " " + umax + " " + UInt128.One);
+
+        // implicit from every integer, explicit to and from the rest
+        byte b = 200; sbyte sb = -100; short sh = -30000; char ch = 'Z'; int i = -7; uint ui = 4000000000; long l = long.MinValue; ulong ul = ulong.MaxValue; nint ni = -5;
+        Int128 x1 = b, x2 = sb, x3 = sh, x4 = ch, x5 = i, x6 = ui, x7 = l, x8 = ul, x9 = ni;
+        UInt128 y1 = b, y2 = ch, y3 = ui, y4 = ul;
+        Console.WriteLine(x1 + " " + x2 + " " + x3 + " " + x4 + " " + x5 + " " + x6 + " " + x7 + " " + x8 + " " + x9 + " " + y1 + " " + y2 + " " + y3 + " " + y4 + " " + (UInt128)i + " " + (UInt128)l);
+        Console.WriteLine((int)max + " " + (long)min + " " + (ulong)minus + " " + (byte)(Int128)300 + " " + (short)(UInt128)70000 + " " + (char)(Int128)66 + " " + (Int128)umax + " " + (UInt128)minus);
+        Console.WriteLine(Try(() => checked((int)max).ToString()) + " " + Try(() => checked((UInt128)minus).ToString()) + " " + Try(() => checked((Int128)umax).ToString()) + " " + Try(() => checked((UInt128)i).ToString()) + " " + Try(() => checked((byte)(UInt128)256).ToString()));
+        double big = 1e40, nan = double.NaN, negative = -1e39, small = 12345.678;
+        Console.WriteLine((Int128)big + " " + (Int128)nan + " " + (Int128)negative + " " + (UInt128)big + " " + (UInt128)negative + " " + (Int128)small + " " + (UInt128)(-0.5) + " " + (Int128)(float)3.5e30);
+        Console.WriteLine(Try(() => checked((Int128)big).ToString()) + " " + Try(() => checked((UInt128)negative).ToString()) + " " + Try(() => checked((UInt128)(-0.0)).ToString()) + " " + Try(() => checked((Int128)nan).ToString()));
+        Console.WriteLine((double)max + " " + (double)min + " " + (double)umax + " " + (float)umax + " " + (double)(UInt128)ul + " " + (double)(Int128)(-123456789012345678L));
+        decimal money = 79228162514264337593543950335m;
+        Console.WriteLine((Int128)money + " " + (Int128)(-money) + " " + (UInt128)money + " " + (decimal)(Int128)(-42) + " " + (Int128)12.99m + " " + Try(() => ((decimal)max).ToString()) + " " + Try(() => ((UInt128)(-1.5m)).ToString()));
+
+        // arithmetic, wrapping and checked
+        Int128 a = Int128.Parse("123456789012345678901234567890"), c = -987654321;
+        UInt128 ua = UInt128.Parse("340282366920938463463374607431768211455");
+        Console.WriteLine((a + c) + " " + (a - c) + " " + (a * c) + " " + (a / c) + " " + (a % c) + " " + (-a) + " " + (a >> 7) + " " + (c >> 3) + " " + (c >>> 120) + " " + (a << 70) + " " + (~a) + " " + (a & c) + " " + (a | c) + " " + (a ^ c));
+        Console.WriteLine((max + 1) + " " + (min - 1) + " " + (max * 2) + " " + (ua + 1) + " " + (UInt128.Zero - 1));
+        Console.WriteLine(Try(() => checked(max + 1).ToString()) + " " + Try(() => checked(min - 1).ToString()) + " " + Try(() => checked(max * 2).ToString()) + " " + Try(() => checked(ua + 1).ToString()) + " " + Try(() => checked(UInt128.Zero - 1).ToString()) + " " + Try(() => checked(-min).ToString()));
+        Console.WriteLine(Try(() => (min / minus).ToString()) + " " + Try(() => (a / Int128.Zero).ToString()) + " " + Try(() => (ua % UInt128.Zero).ToString()) + " " + Try(() => Int128.Abs(min).ToString()));
+        Int128 m = 5;
+        m += 10; m *= a; m -= 1; m /= 7; m %= 1000000; m <<= 3; m >>= 1; m++; m--; ++m;
+        UInt128 n = 9;
+        n -= 10; n++; n--;
+        Console.WriteLine(m + " " + n + " " + checked(m + 1));
+
+        // comparisons and statics
+        Console.WriteLine((a < c) + " " + (a > c) + " " + (min < max) + " " + (ua > UInt128.One) + " " + a.CompareTo(c) + " " + a.Equals((Int128)a) + " " + a.Equals((object)a) + " " + a.Equals((object)1) + " " + (a == a) + " " + (a != c));
+        Console.WriteLine(Int128.Max(a, c) + " " + Int128.Min(a, c) + " " + Int128.Sign(c) + " " + Int128.Abs(c) + " " + Int128.Clamp(a, c, 0) + " " + Int128.CopySign(a, c) + " " + Int128.MaxMagnitude(a, c) + " " + Int128.MinMagnitude(min, max) + " " + Int128.IsPow2(4096) + " " + Int128.Log2(a) + " " + UInt128.Log2(ua));
+        Console.WriteLine(Int128.LeadingZeroCount(a) + " " + Int128.TrailingZeroCount(a << 10) + " " + Int128.PopCount(c) + " " + UInt128.PopCount(ua) + " " + Int128.RotateLeft(a, 64) + " " + UInt128.RotateRight(1, 1) + " " + Int128.IsNegative(c) + " " + Int128.IsEvenInteger(a) + " " + Int128.DivRem(a, 1000));
+        Console.WriteLine(Try(() => Int128.Clamp(1, 5, 2).ToString()) + " " + Try(() => Int128.Log2(-1).ToString()));
+        Int128 low;
+        Console.WriteLine(Math.BigMul(long.MaxValue, long.MaxValue) + " " + Math.BigMul(long.MinValue, 3) + " " + Math.BigMul(ulong.MaxValue, ulong.MaxValue) + " " + Int128.BigMul(max, max, out low) + " " + low);
+
+        // text
+        Console.WriteLine(a.ToString("N0") + " " + c.ToString("X") + " " + c.ToString("x8") + " " + ua.ToString("X") + " " + ((Int128)255).ToString("B") + " " + a.ToString("E4") + " " + c.ToString("D12") + " " + a.ToString("F1") + " " + c.ToString("C") + " " + ((Int128)7).ToString("P0") + " " + a.ToString("#,##0.00") + " " + c.ToString("0;(0)"));
+        Console.WriteLine(Int128.Parse("-170141183460469231731687303715884105728") + " " + UInt128.Parse("  42  ") + " " + Int128.Parse("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", NumberStyles.HexNumber) + " " + UInt128.Parse("1,234,567", NumberStyles.Number) + " " + Int128.Parse("1e3", NumberStyles.Float) + " " + Int128.Parse("(5)", NumberStyles.AllowParentheses));
+        Console.WriteLine(Try(() => Int128.Parse("170141183460469231731687303715884105728").ToString()) + " " + Try(() => UInt128.Parse("-1").ToString()) + " " + Try(() => Int128.Parse("12x").ToString()) + " " + Try(() => UInt128.Parse("1.5", NumberStyles.Float).ToString()));
+        Console.WriteLine(Int128.TryParse("99", out Int128 parsed) + " " + parsed + " " + UInt128.TryParse("nope", out UInt128 none) + " " + none + " " + $"{a:N2}|{c,25}|{ua:X40}");
+
+        // in collections, boxed, as BigInteger and bytes
+        List<Int128> list = new List<Int128> { a, c, min, max, 0 };
+        list.Sort();
+        Console.WriteLine(string.Join(",", list) + " " + list.Contains(c));
+        object boxed = a;
+        Console.WriteLine((boxed is Int128) + " " + (boxed is UInt128) + " " + boxed.GetType().FullName + " " + typeof(UInt128).FullName + " " + boxed);
+        BigInteger asBig = min;
+        BigInteger uBig = ua;
+        Console.WriteLine(asBig + " " + uBig + " " + (Int128)(asBig + 1) + " " + (UInt128)uBig + " " + Try(() => ((Int128)(asBig - 1)).ToString()) + " " + Try(() => ((UInt128)(uBig + 1)).ToString()));
+        byte[] bytes = new byte[16];
+        BinaryPrimitives.WriteInt128BigEndian(bytes, c);
+        Console.WriteLine(BitConverter.ToString(bytes) + " " + BinaryPrimitives.ReadInt128BigEndian(bytes) + " " + BinaryPrimitives.ReadInt128LittleEndian(bytes) + " " + BinaryPrimitives.ReverseEndianness(one));
+    }
+}

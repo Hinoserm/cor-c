@@ -1,0 +1,31 @@
+// test: continuewith_shapes_and_results
+// expect-exit: 0
+// expect-output:
+// 1 more
+// action 1
+// 5
+// plain RanToCompletion
+// True
+//
+// CONTINUEWITH IN .NET'S SHAPES: on a Task<T> with an action or a function of
+// the Task<T>, on a Task with a function of the Task, its value the next
+// task's, and a continuation that throws faulting the task it hands back.
+
+using System;
+using System.Threading.Tasks;
+
+class Program
+{
+    static void Main()
+    {
+        Task<int> one = Task.Run(() => 1);
+        Console.WriteLine(one.ContinueWith(t => t.Result + " more").Result);
+        one.ContinueWith(t => Console.WriteLine("action " + t.Result)).Wait();
+        Task plain = Task.Run(() => { });
+        Console.WriteLine(plain.ContinueWith(t => t.IsCompleted ? 5 : 6).Result);
+        plain.ContinueWith(t => Console.WriteLine("plain " + t.Status)).Wait();
+        Task<string> thrown = one.ContinueWith<string>(t => throw new InvalidOperationException("no"));
+        try { thrown.Wait(); } catch (Exception) { }
+        Console.WriteLine(thrown.IsFaulted);
+    }
+}

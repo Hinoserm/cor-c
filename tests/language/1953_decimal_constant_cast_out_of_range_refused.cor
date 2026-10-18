@@ -1,0 +1,16 @@
+// test: decimal_constant_cast_out_of_range_refused
+// expect-compile-error: Constant value '30000000000M' cannot be converted to a 'int'
+//
+// A DECIMAL CONSTANT CAST TO AN INTEGER TYPE IS A CONSTANT TOO, truncated,
+// and one that does not fit is C#'s CS0031 at compile time.
+
+using System;
+
+class Program
+{
+    static void Main()
+    {
+        int n = (int)3e10m;
+        Console.WriteLine(n);
+    }
+}

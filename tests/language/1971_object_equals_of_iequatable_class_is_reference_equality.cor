@@ -1,0 +1,129 @@
+// test: object_equals_of_iequatable_class_is_reference_equality
+// expect-exit: 0
+// expect-output:
+// typed True False True False
+// object False False False True True True False
+// interface True False True False
+// comparer True False True False
+// list True 1 False True 1 0
+// with a null 1 0 False
+// derived True False True
+// dictionary 1 b False True b
+// set 2 True True 1
+// linq 2 True True 1
+// no hash True False True True
+// plain True False False False False
+// both True True True True True
+// record True True True True
+// struct False True False
+//
+// OBJECT.EQUALS OF A CLASS THAT IS IEQUATABLE<T> AND WROTE NO EQUALS(OBJECT) IS
+// REFERENCE EQUALITY, as .NET's: a.Equals((object)b), ((object)a).Equals(b)
+// and object.Equals(a, b) are false for two equal Points, while the typed
+// Equals, the interface's (handed null as it is), EqualityComparer<T>.Default
+// and every table -- List.Contains/IndexOf/Remove, Array.IndexOf, Dictionary,
+// HashSet, Distinct, SequenceEqual, a record's members -- ask the typed one.
+// A class with a typed Equals and no IEquatable is compared by reference
+// everywhere, one with its own Equals(object) by it, one without its own
+// GetHashCode found by a hash table only as itself, and a struct's fields by
+// their Equals(object).
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Point : IEquatable<Point>
+{
+    public int X, Y;
+    public Point(int x, int y) { X = x; Y = y; }
+    // Null is equal to the origin alone, so a typed call handed null shows it was the typed one.
+    public bool Equals(Point? other) { return other is null ? X == 0 && Y == 0 : X == other.X && Y == other.Y; }
+    public override int GetHashCode() { return X * 31 + Y; }
+}
+
+class Point3 : Point
+{
+    public int Z;
+    public Point3(int x, int y, int z) : base(x, y) { Z = z; }
+}
+
+// IEquatable, with no GetHashCode of its own: a hash table finds only the same object.
+class Tag : IEquatable<Tag>
+{
+    public string Name;
+    public Tag(string name) { Name = name; }
+    public bool Equals(Tag? other) { return other is not null && other.Name == Name; }
+}
+
+// A typed Equals and no IEquatable: an overload like any other.
+class Plain
+{
+    public int V;
+    public Plain(int v) { V = v; }
+    public bool Equals(Plain? other) { return other is not null && other.V == V; }
+    public override int GetHashCode() { return V; }
+}
+
+// IEquatable and its own Equals(object), which both questions answer by.
+class Both : IEquatable<Both>
+{
+    public int V;
+    public Both(int v) { V = v; }
+    public bool Equals(Both? other) { return other is not null && other.V == V; }
+    public override bool Equals(object? obj) { return obj is Both b && Equals(b); }
+    public override int GetHashCode() { return V; }
+}
+
+record Holder(Point P, int N);
+
+struct Pair
+{
+    public Point P;
+    public int N;
+}
+
+class Program
+{
+    static void Main()
+    {
+        Point a = new Point(1, 2), b = new Point(1, 2), c = new Point(3, 4), origin = new Point(0, 0);
+        object boxedB = b;
+        Console.WriteLine("typed " + a.Equals(b) + " " + a.Equals(c) + " " + origin.Equals((Point?)null) + " " + a.Equals((Point?)null));
+        Console.WriteLine("object " + a.Equals(boxedB) + " " + ((object)a).Equals(b) + " " + object.Equals(a, b) + " " + a.Equals((object)a) + " " + object.Equals(a, a) + " " + object.Equals(null, null) + " " + (a == b));
+        IEquatable<Point> face = a;
+        IEquatable<Point> zero = origin;
+        Console.WriteLine("interface " + face.Equals(b) + " " + face.Equals(c) + " " + zero.Equals(null) + " " + face.Equals(null));
+        Console.WriteLine("comparer " + EqualityComparer<Point>.Default.Equals(a, b) + " " + EqualityComparer<Point>.Default.Equals(a, c) + " " + EqualityComparer<Point>.Default.Equals(null, null) + " " + EqualityComparer<Point>.Default.Equals(a, null));
+
+        List<Point> list = new List<Point> { c, a };
+        Console.WriteLine("list " + list.Contains(b) + " " + list.IndexOf(b) + " " + list.Contains(new Point(9, 9)) + " " + list.Remove(new Point(3, 4)) + " " + list.Count + " " + Array.IndexOf(list.ToArray(), b));
+        List<Point> withNull = new List<Point> { null!, a };
+        Console.WriteLine("with a null " + withNull.IndexOf(b) + " " + withNull.IndexOf(null!) + " " + withNull.Contains(origin));
+        List<Point> derived = new List<Point> { new Point3(1, 2, 7) };
+        Console.WriteLine("derived " + derived.Contains(b) + " " + new Point3(5, 6, 0).Equals((object)new Point3(5, 6, 0)) + " " + new Point3(5, 6, 0).Equals(new Point3(5, 6, 1)));
+
+        Dictionary<Point, string> names = new Dictionary<Point, string>();
+        names[a] = "a";
+        names[b] = "b";
+        Console.WriteLine("dictionary " + names.Count + " " + names[new Point(1, 2)] + " " + names.ContainsKey(c) + " " + names.TryGetValue(new Point(1, 2), out string? found) + " " + found);
+        HashSet<Point> set = new HashSet<Point> { a, b, c, new Point(3, 4) };
+        Console.WriteLine("set " + set.Count + " " + set.Contains(new Point(1, 2)) + " " + set.Remove(new Point(3, 4)) + " " + set.Count);
+        Console.WriteLine("linq " + new[] { a, b, c, b }.Distinct().Count() + " " + new[] { a, c }.Contains(b) + " " + new[] { a, c }.SequenceEqual(new[] { b, new Point(3, 4) }) + " " + new[] { a, b, c }.Count(p => p.Equals((object)b)));
+
+        Tag t1 = new Tag("x"), t2 = new Tag("x");
+        HashSet<Tag> tags = new HashSet<Tag> { t1 };
+        Console.WriteLine("no hash " + t1.Equals(t2) + " " + t1.Equals((object)t2) + " " + tags.Contains(t1) + " " + new List<Tag> { t1 }.Contains(t2));
+
+        Plain p1 = new Plain(5), p2 = new Plain(5);
+        Console.WriteLine("plain " + p1.Equals(p2) + " " + p1.Equals((object)p2) + " " + new List<Plain> { p1 }.Contains(p2) + " " + new HashSet<Plain> { p1 }.Contains(p2) + " " + EqualityComparer<Plain>.Default.Equals(p1, p2));
+
+        Both b1 = new Both(8), b2 = new Both(8);
+        Console.WriteLine("both " + b1.Equals(b2) + " " + b1.Equals((object)b2) + " " + object.Equals(b1, b2) + " " + new List<Both> { b1 }.Contains(b2) + " " + new HashSet<Both> { b1 }.Contains(b2));
+
+        Holder h1 = new Holder(a, 1), h2 = new Holder(b, 1);
+        Console.WriteLine("record " + h1.Equals(h2) + " " + (h1 == h2) + " " + h1.Equals((object)h2) + " " + new HashSet<Holder> { h1 }.Contains(h2));
+
+        Pair s1 = new Pair { P = a, N = 1 }, s2 = new Pair { P = b, N = 1 }, s3 = new Pair { P = a, N = 1 };
+        Console.WriteLine("struct " + s1.Equals(s2) + " " + s1.Equals(s3) + " " + s1.Equals((object)s2));
+    }
+}

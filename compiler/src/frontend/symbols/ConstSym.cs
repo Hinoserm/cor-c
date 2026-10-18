@@ -9,5 +9,9 @@ namespace Corsac.Lang;
 /// value is a string: `const string name = "__object_equals";` is an ordinary
 /// local declaration in this compiler's own lowering, and a string is not a
 /// number to hold in the other field.
+///
+/// <paramref name="Number"/> is set for a decimal: `const decimal Rate =
+/// 0.05m;` names a value 96 bits wide with a scale, and every read of the
+/// name becomes the struct made from it (Binder.Decimal).
 /// </summary>
-public sealed record ConstSym(long Value, Type Type, string? Text = null) : Sym;
+public sealed record ConstSym(long Value, Type Type, string? Text = null, decimal? Number = null) : Sym;

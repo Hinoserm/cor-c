@@ -1,0 +1,19 @@
+// test: decimal_constant_overflow_refused
+// expect-compile-error: Evaluation of the decimal constant expression failed
+//
+// A DECIMAL CONSTANT EXPRESSION IS FOLDED, as C# folds it, and one past
+// decimal's range is CS0463 where it is written -- never an
+// OverflowException when the program runs.
+
+using System;
+
+class Program
+{
+    const decimal Big = decimal.MaxValue;
+
+    static void Main()
+    {
+        decimal twice = Big * 2;
+        Console.WriteLine(twice);
+    }
+}

@@ -1,0 +1,32 @@
+// test: double_operations_round_once
+// expect-exit: 0
+// expect-output:
+// 3FFB06FE1CFBE43D
+// 3FD3333333333334 0.30000000000000004
+// 3FA8618618618618 3FE279A74590331C
+// 448F400000000000 1.689207185
+//
+// A DOUBLE OPERATION ROUNDS ONCE, TO A DOUBLE, as .NET's SSE arithmetic does:
+// on the x87 a hosted program's precision control is 53 bits, where Linux
+// starts it at 64, which rounded each quotient twice -- once to 64 bits and
+// again where it was stored -- and got the last bit of 1689207185 / 1e9 wrong,
+// and with it decimal's conversion to double.
+
+using System;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        double[] tens = { 1e9, 3.0, 7.0, 1e-3 };
+        double a = 1689207185.0 + args.Length, b = tens[args.Length];
+        Console.WriteLine(BitConverter.DoubleToInt64Bits(a / b).ToString("X16"));
+        double x = 0.1 + args.Length, y = 0.2;
+        Console.WriteLine(BitConverter.DoubleToInt64Bits(x + y).ToString("X16") + " " + (x + y));
+        double third = 1.0 / tens[1 + args.Length], seventh = 1.0 / tens[2 + args.Length];
+        Console.WriteLine(BitConverter.DoubleToInt64Bits(third * seventh).ToString("X16") + " " + BitConverter.DoubleToInt64Bits(Math.Sqrt(third)).ToString("X16"));
+        ulong u = 18446744073709551557UL - (ulong)args.Length;
+        decimal money = 1689207185m + args.Length, billion = 1000000000m;
+        Console.WriteLine(BitConverter.DoubleToInt64Bits((double)u / tens[3 + args.Length]).ToString("X16") + " " + (decimal)(double)(money / billion));
+    }
+}

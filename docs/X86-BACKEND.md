@@ -93,7 +93,11 @@ stack across instructions is an optimisation for later, and it is confined
 to instruction selection when it comes.
 
 `float` arithmetic is performed in double precision and rounded on store,
-which is what C# permits and what x87 does naturally.
+which is what C# permits and what x87 does naturally. A hosted program's
+entry sets the precision control to 53 bits (control word 0x27F), so a
+double operation is rounded once, to a double, as SSE rounds it; Linux starts
+a process at 64, which rounded twice -- once to 64 bits, once at the store --
+and got the last bit of the occasional quotient wrong.
 
 ## Object layout
 

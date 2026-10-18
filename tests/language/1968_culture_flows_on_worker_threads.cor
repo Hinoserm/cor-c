@@ -1,0 +1,134 @@
+// test: culture_flows_on_worker_threads
+// expect-exit: 0
+// expect-output:
+// before any is set: default/default
+// main fr-FR/de-DE
+// Task.Run fr-FR/de-DE
+// Task.Run setting its own ja-JP/de-DE, main still fr-FR/de-DE
+// Task.Run of a task fr-FR/de-DE
+// QueueUserWorkItem fr-FR/de-DE
+// QueueUserWorkItem with a state state fr-FR/de-DE
+// QueueUserWorkItem<int> 42 fr-FR/de-DE
+// UnsafeQueueUserWorkItem default/default
+// UnsafeQueueUserWorkItem<int> 7 default/default
+// ContinueWith 1 fr-FR/de-DE
+// async method fr-FR/de-DE then sv-SE/de-DE, its caller fr-FR/de-DE
+// inside fr-FR/ja-JP
+// inside after a delay fr-FR/ja-JP
+// after it fr-FR/de-DE
+// after a delay ja-JP/de-DE
+// after a yield ja-JP/de-DE
+// Task.Run after awaits pt-BR/de-DE
+// each its own ja-JP,sv-SE,fr-FR, main pt-BR/de-DE
+// through the thread pt-BR/sv-SE pt-BR
+// a thread started pt-BR/sv-SE
+// main at the end pt-BR/sv-SE
+//
+// THE CURRENT CULTURES FLOW ON WORKER THREADS TOO: the culture-flow test of
+// 1967 with the scheduler's workers started (ThreadPool.SetMinThreads), so
+// queued work and continuations run on other threads, which enter the flow's
+// cultures and put their own back after each item.
+
+using System;
+using System.Globalization;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+class Program
+{
+    static CultureInfo fr = new CultureInfo(0x040C), de = new CultureInfo(0x0407), ja = new CultureInfo(0x0411);
+    static CultureInfo sv = new CultureInfo(0x041D), pt = new CultureInfo(0x0416);
+
+    // The cultures this test sets by name, and anything else (a machine's own) as "default".
+    static string Name(CultureInfo c)
+    {
+        string n = c.Name;
+        return n == "fr-FR" || n == "de-DE" || n == "ja-JP" || n == "sv-SE" || n == "pt-BR" ? n : "default";
+    }
+
+    static string Now() { return Name(CultureInfo.CurrentCulture) + "/" + Name(CultureInfo.CurrentUICulture); }
+
+    static async Task<string> SetsBeforeItsAwait()
+    {
+        string before = Now();
+        CultureInfo.CurrentCulture = sv;
+        await Task.Yield();
+        return before + " then " + Now();
+    }
+
+    static async Task SetsAfterItsAwait()
+    {
+        await Task.Yield();
+        CultureInfo.CurrentUICulture = ja;
+        Console.WriteLine("inside " + Now());
+        await Task.Delay(5);
+        Console.WriteLine("inside after a delay " + Now());
+    }
+
+    static async Task<string> Worker(CultureInfo c)
+    {
+        await Task.Run(() => { });
+        CultureInfo.CurrentCulture = c;
+        await Task.Delay(5);
+        await Task.Yield();
+        return Name(CultureInfo.CurrentCulture);
+    }
+
+    static async Task Main()
+    {
+        ThreadPool.SetMinThreads(4, 4);
+        Console.WriteLine("before any is set: " + Task.Run(() => Now()).Result);
+
+        CultureInfo.CurrentCulture = fr;
+        CultureInfo.CurrentUICulture = de;
+        Console.WriteLine("main " + Now());
+        Console.WriteLine("Task.Run " + Task.Run(() => Now()).Result);
+        Console.WriteLine("Task.Run setting its own " + Task.Run(() => { CultureInfo.CurrentCulture = ja; return Now(); }).Result + ", main still " + Now());
+        Console.WriteLine("Task.Run of a task " + await Task.Run(async () => { await Task.Yield(); return Now(); }));
+
+        TaskCompletionSource<string> pool = new TaskCompletionSource<string>();
+        ThreadPool.QueueUserWorkItem(_ => pool.SetResult(Now()));
+        Console.WriteLine("QueueUserWorkItem " + pool.Task.Result);
+        TaskCompletionSource<string> withState = new TaskCompletionSource<string>();
+        ThreadPool.QueueUserWorkItem(s => withState.SetResult(s + " " + Now()), (object)"state");
+        Console.WriteLine("QueueUserWorkItem with a state " + withState.Task.Result);
+        TaskCompletionSource<string> generic = new TaskCompletionSource<string>();
+        ThreadPool.QueueUserWorkItem(n => generic.SetResult(n + " " + Now()), 42, false);
+        Console.WriteLine("QueueUserWorkItem<int> " + generic.Task.Result);
+        TaskCompletionSource<string> bare = new TaskCompletionSource<string>();
+        ThreadPool.UnsafeQueueUserWorkItem(_ => bare.SetResult(Now()), null);
+        Console.WriteLine("UnsafeQueueUserWorkItem " + bare.Task.Result);
+        TaskCompletionSource<string> bareGeneric = new TaskCompletionSource<string>();
+        ThreadPool.UnsafeQueueUserWorkItem(n => bareGeneric.SetResult(n + " " + Now()), 7, false);
+        Console.WriteLine("UnsafeQueueUserWorkItem<int> " + bareGeneric.Task.Result);
+
+        Console.WriteLine("ContinueWith " + Task.Run(() => 1).ContinueWith(t => t.Result + " " + Now()).Result);
+
+        string inner = await SetsBeforeItsAwait();
+        Console.WriteLine("async method " + inner + ", its caller " + Now());
+        await SetsAfterItsAwait();
+        Console.WriteLine("after it " + Now());
+
+        CultureInfo.CurrentCulture = ja;
+        await Task.Delay(5);
+        Console.WriteLine("after a delay " + Now());
+        await Task.Yield();
+        Console.WriteLine("after a yield " + Now());
+        CultureInfo.CurrentCulture = pt;
+        Console.WriteLine("Task.Run after awaits " + await Task.Run(() => Now()));
+
+        Task<string>[] parts = { Worker(ja), Worker(sv), Worker(fr) };
+        await Task.WhenAll(parts);
+        Console.WriteLine("each its own " + string.Join(",", parts.Select(p => p.Result)) + ", main " + Now());
+
+        Thread.CurrentThread.CurrentUICulture = sv;
+        Console.WriteLine("through the thread " + Now() + " " + Name(Thread.CurrentThread.CurrentCulture));
+        string seen = "";
+        Thread thread = new Thread(() => { seen = Now(); });
+        thread.Start();
+        thread.Join();
+        Console.WriteLine("a thread started " + seen);
+        Console.WriteLine("main at the end " + Now());
+    }
+}
