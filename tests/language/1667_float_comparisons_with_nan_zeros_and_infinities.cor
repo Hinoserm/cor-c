@@ -1,4 +1,5 @@
 // test: float_comparisons_with_nan_zeros_and_infinities
+// only-target: x86
 // flags: --cpu=pentium-pro
 // expect-exit: 0
 // expect-output:

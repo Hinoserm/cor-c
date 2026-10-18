@@ -1,4 +1,5 @@
 // test: the Athlon profile by its k7 name, 3DNow! switched off
+// only-target: x86
 // flags: --cpu k7 --disable-3dnow
 // expect-exit: 0
 // expect-output:

@@ -1,4 +1,5 @@
 // test: a sixth-generation --cpu builds and runs a program
+// only-target: x86
 // flags: --cpu=pentium3
 // expect-exit: 0
 // expect-output:

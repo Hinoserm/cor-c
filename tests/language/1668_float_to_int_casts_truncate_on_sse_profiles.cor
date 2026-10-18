@@ -1,4 +1,5 @@
 // test: float_to_int_casts_truncate_on_sse_profiles
+// only-target: x86
 // flags: --cpu=pentium4
 // expect-exit: 0
 // expect-output:

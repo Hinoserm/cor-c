@@ -1,4 +1,5 @@
 // test: an i386 image based above four gigabytes is refused
+// only-target: x86
 // flags: --base 0x140000000
 // expect-compile-error: --base 0x140000000 is above four gigabytes; an i386 image cannot be there
 //

@@ -1,4 +1,5 @@
 // test: a program compiled for the Pentium III profile
+// only-target: x86
 // flags: --cpu=pentium3
 // expect-exit: 0
 // expect-output:

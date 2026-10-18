@@ -78,6 +78,10 @@ Every test starts with a comment block the runner reads:
   libraries, which are one more object; everything linked as the whole program
   (`corc link --closed`). For what a unit reads of its neighbours out of the
   index: another file's part of a partial type, the class library's own types.
+- `only-target` (optional): the one target a test of that target's own rule
+  is for -- `x86` for an i386 image's four gigabytes, say. Under `--target`
+  for another the runner skips it (`SKIP`) rather than fail it for a rule that
+  is another target's.
 - `regions` (optional, checked only with `--through-link`): `taken` when the
   link must make some site's objects in a region -- a test of what regions
   give back or keep, whose output would pass as well with none -- or `none`

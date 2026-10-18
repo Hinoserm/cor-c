@@ -1,4 +1,5 @@
 // test: conditional_moves_at_the_bounds
+// only-target: x86
 // flags: --cpu pentium-pro
 // expect-exit: 0
 // expect-output:

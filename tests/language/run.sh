@@ -43,6 +43,8 @@ filter=""
 compiler_flags=()
 # What an index is made for: the target the compiles against it are for.
 index_flags=()
+# The target every test is compiled for, which "// only-target:" names.
+run_target=x86
 passthrough=()
 # THROUGH THE LINK (--through-link): each test compiled to an object and
 # linked as the whole program, so the link-time optimiser and its region
@@ -85,6 +87,7 @@ for arg in "$@"; do
             # Every test compiled for this target: x86 (the default) or x86-64.
             compiler_flags+=("--target" "${arg#--target=}")
             index_flags+=("--target" "${arg#--target=}")
+            run_target="${arg#--target=}"
             passthrough+=("$arg")
             ;;
         --runtime-knob=*)
@@ -302,6 +305,9 @@ if [ -z "${CORC_TEST_ONE:-}" ] && [ "${#tests[@]}" -gt 1 ] && [ "$jobs" -gt 1 ];
             if grep -q "^PASS $1\$" "$RUN_REPORTS/$1.log"; then
                 : > "$RUN_REPORTS/$1.passed"
                 echo "PASS $1"
+            elif grep -q "^SKIP $1 " "$RUN_REPORTS/$1.log"; then
+                : > "$RUN_REPORTS/$1.skipped"
+                grep "^SKIP $1 " "$RUN_REPORTS/$1.log"
             else
                 : > "$RUN_REPORTS/$1.failed"
                 if [ -s "$RUN_REPORTS/$1.log" ]; then
@@ -310,7 +316,7 @@ if [ -z "${CORC_TEST_ONE:-}" ] && [ "${#tests[@]}" -gt 1 ] && [ "$jobs" -gt 1 ];
                     echo "FAIL $1 (no report)"
                 fi
             fi
-            ended=$(find "$RUN_REPORTS" -maxdepth 1 \( -name "*.passed" -o -name "*.failed" \) | wc -l)
+            ended=$(find "$RUN_REPORTS" -maxdepth 1 \( -name "*.passed" -o -name "*.failed" -o -name "*.skipped" \) | wc -l)
             if [ $((ended % 25)) -eq 0 ] && [ "$ended" -lt "$RUN_TOTAL" ]; then
                 echo "-- $ended of $RUN_TOTAL ended, $(find "$RUN_REPORTS" -maxdepth 1 -name "*.failed" | wc -l) failed"
             fi' _ {} || true
@@ -319,6 +325,8 @@ if [ -z "${CORC_TEST_ONE:-}" ] && [ "${#tests[@]}" -gt 1 ] && [ "$jobs" -gt 1 ];
         report="$work/parallel/$name.log"
         if [ -s "$report" ] && grep -q "^PASS $name\$" "$report"; then
             passed=$((passed + 1))
+        elif [ -s "$report" ] && grep -q "^SKIP $name " "$report"; then
+            :
         else
             failed=$((failed + 1))
             failed_names="$failed_names $name"
@@ -347,6 +355,14 @@ for f in "${tests[@]}"; do
         exit 2
     fi
     exe="$work/$name"
+    # A TEST OF ONE TARGET'S OWN RULE -- an i386 image's four gigabytes, the
+    # name a 32-bit --cpu is refused by -- says so ("// only-target: x86"),
+    # and is not run for another, where the rule is another's.
+    only_target="$(header_value "$f" only-target)"
+    if [ -n "$only_target" ] && [ "$only_target" != "$run_target" ]; then
+        echo "SKIP $name (only for $only_target)"
+        continue
+    fi
     # A HEADER NOTHING READS IS A CHECK NOTHING MAKES: an "// expect...:" key
     # this runner does not know fails its test, rather than passing it with
     # the check unmade (303's "// expect: ok" was compared with nothing).

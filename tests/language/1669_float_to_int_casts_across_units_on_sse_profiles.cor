@@ -1,4 +1,5 @@
 // test: float_to_int_casts_across_units_on_sse_profiles
+// only-target: x86
 // flags: --cpu=pentium4
 // units: tests/language/support/1669_float_casts_units.cor
 // expect-exit: 0

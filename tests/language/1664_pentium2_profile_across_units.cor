@@ -1,4 +1,5 @@
 // test: a sixth-generation --cpu carried by separately compiled units
+// only-target: x86
 // flags: --cpu=pentium2
 // units: tests/language/support/1664_pentium2_units.cor
 // expect-exit: 0

@@ -1,4 +1,5 @@
 // test: an unknown --cpu is refused
+// only-target: x86
 // flags: --cpu 787
 // expect-compile-error: Unknown x86 CPU: 787
 //
