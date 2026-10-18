@@ -117,37 +117,33 @@ static class Platform
         return raw;
     }
 
-    /// The collector's checked mode for the compiler's frees (Gc.VerifyFree)
-    /// is a hosted test's: a machine without an environment never asks for it.
-    public static bool VerifyFrees()
-    {
-        return false;
-    }
+    // THE COLLECTOR'S SETTINGS ARE THE IMAGE'S KNOBS here as hosted (corc's
+    // --runtime-knob NAME=VALUE, Runtime.KnobValue): the same names and the
+    // same readings as the Linux platform's, with what a kernel says on its
+    // command line (CensusWanted, AllocSampleWanted, DeadCensusWanted,
+    // ThresholdCap) beside them. Read with nothing allocated, at any time.
 
-    public static long IgnoreFrees()
-    {
-        return 0;
-    }
+    /// Corsac.GC.VerifyFrees: the checked mode for the compiler's frees
+    /// (Gc.VerifyFree); =f the fields freed with their owner only.
+    public static bool VerifyFrees() => Runtime.KnobFlag("Corsac.GC.VerifyFrees") && Runtime.KnobLetter("Corsac.GC.VerifyFrees") != 'f';
 
-    public static bool VerifyFieldFrees()
-    {
-        return false;
-    }
+    /// Corsac.GC.IgnoreFrees: which of the compiler's frees are ignored (the
+    /// Linux platform's IgnoreFrees says what each letter is).
+    public static long IgnoreFrees() => Runtime.KnobFlag("Corsac.GC.IgnoreFrees") ? Runtime.KnobLetter("Corsac.GC.IgnoreFrees") : 0;
 
-    public static bool FreeLog()
-    {
-        return false;
-    }
+    public static bool VerifyFieldFrees() => Runtime.KnobFlag("Corsac.GC.VerifyFrees") && Runtime.KnobLetter("Corsac.GC.VerifyFrees") == 'f';
 
-    public static long SkippedFreePaths()
-    {
-        return 0;
-    }
+    /// Corsac.GC.FreeLog: every field free recorded in a ring (Runtime.FreeLog).
+    public static bool FreeLog() => Runtime.KnobFlag("Corsac.GC.FreeLog");
 
-    public static bool GuardReleases()
-    {
-        return false;
-    }
+    /// Corsac.GC.FreePaths: the free paths skipped (Runtime.FreePathsMask).
+    public static long SkippedFreePaths() => Runtime.FreePathsMask();
+
+    /// Corsac.GC.GuardReleases: a chunk the heap releases is kept back
+    /// rather than handed to the UnmapHook -- Guard makes nothing
+    /// inaccessible here, there being no protection to ask for, so a stale
+    /// reference reads what was there instead of faulting.
+    public static bool GuardReleases() => Runtime.KnobFlag("Corsac.GC.GuardReleases");
 
     public static void Guard(long at, long bytes)
     {
@@ -521,20 +517,23 @@ static class Platform
     /// thread does (Runtime.EnterTypeInitialization).
     public static long TypeInitWaitHook;
 
-    public static bool VerifyGenerations()
-    {
-        return false;
-    }
+    /// Corsac.GC.Verify: no old object pointing at a young one the minor
+    /// cycle is about to sweep, checked after each one's mark.
+    public static bool VerifyGenerations() => Runtime.KnobFlag("Corsac.GC.Verify");
 
     /// Set by a program that was asked for the collector's census of what
     /// is live, by type, at every whole collection -- a kernel from its
     /// command line (gui.census=1) -- and read at each collection.
     public static bool CensusWanted;
 
+    /// Or the image's Corsac.GC.Census (or DeadCensus), asked once.
     public static bool GcCensus()
     {
-        return CensusWanted;
+        if (_censusKnob == 0) _censusKnob = (Runtime.KnobFlag("Corsac.GC.Census") || Runtime.KnobFlag("Corsac.GC.DeadCensus")) ? 2 : 1;
+        return CensusWanted || _censusKnob == 2;
     }
+
+    static int _censusKnob;
 
     /// The most a collection may wait for, in bytes allocated since the last
     /// one, or 0 for the collector's own pace: set by a kernel to a share of
@@ -542,15 +541,16 @@ static class Platform
     /// near what is live instead of twice it. Read at every collection.
     public static long ThresholdCap;
 
+    /// The image's Corsac.GC.Threshold when it has one, as hosted, before
+    /// the kernel's share of the machine.
     public static long GcThreshold()
     {
-        return ThresholdCap;
+        long knob = Runtime.KnobNumber("Corsac.GC.Threshold");
+        return knob != 0 ? knob : ThresholdCap;
     }
 
-    public static long GcNursery()
-    {
-        return 0;
-    }
+    /// System.GC.Gen0Size: that much allocated between minor cycles.
+    public static long GcNursery() => Runtime.KnobNumber("System.GC.Gen0Size");
 
     /// No region arena alone on the machine: a thread block there is a
     /// processor's, and the tasks that park and resume on any processor
@@ -563,10 +563,9 @@ static class Platform
         return RegionArenaBytes > 0;
     }
 
-    public static long HeapLimit()
-    {
-        return 0;
-    }
+    /// System.GC.HeapHardLimit, .NET's own knob: the heap's hard limit,
+    /// within the region it was given.
+    public static long HeapLimit() => Runtime.KnobNumber("System.GC.HeapHardLimit");
 
     /// Set by a kernel asked for where its allocations come from
     /// (gui.allocsample=1): every sixteenth sampled by site
@@ -575,7 +574,7 @@ static class Platform
 
     public static bool AllocSample()
     {
-        return AllocSampleWanted;
+        return AllocSampleWanted || Runtime.KnobFlag("Corsac.GC.AllocSample");
     }
 
     /// No record of which sampled blocks were freed: twelve megabytes.
@@ -591,16 +590,14 @@ static class Platform
 
     public static bool GcDeadCensus()
     {
-        return DeadCensusWanted;
+        return DeadCensusWanted || Runtime.KnobFlag("Corsac.GC.DeadCensus");
     }
 
-    /// No environment to ask: no collector report at exit.
-    public static bool GcStats() => false;
+    /// Corsac.GC.Stats: the collector's counts said at exit.
+    public static bool GcStats() => Runtime.KnobFlag("Corsac.GC.Stats");
 
-    public static bool HeapCheck()
-    {
-        return false;
-    }
+    /// Corsac.GC.HeapCheck: the heap's structure checked at every collection.
+    public static bool HeapCheck() => Runtime.KnobFlag("Corsac.GC.HeapCheck");
 
     /// No process address space to speak of: a kernel's heap has its cap.
     /// No signals to report a fault through: an exception handler is the

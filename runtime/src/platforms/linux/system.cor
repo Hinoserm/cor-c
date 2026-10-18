@@ -161,7 +161,7 @@ static class Platform
 
     /// Corsac.GC.Verify: the collector checks, after each minor cycle's
     /// mark, that no old object points at a young one it is about to sweep.
-    public static bool VerifyGenerations() => KnobFlag("Corsac.GC.Verify");
+    public static bool VerifyGenerations() => Runtime.KnobFlag("Corsac.GC.Verify");
 
     /// Corsac.GC.Census: every whole collection counts what it found live,
     /// by type, and says the largest on standard error. Corsac.GC.DeadCensus
@@ -171,14 +171,14 @@ static class Platform
     /// first found.
     public static bool GcCensus()
     {
-        if (_censusAsked == 0) _censusAsked = (KnobFlag("Corsac.GC.Census") || KnobFlag("Corsac.GC.DeadCensus")) ? 2 : 1;
+        if (_censusAsked == 0) _censusAsked = (Runtime.KnobFlag("Corsac.GC.Census") || Runtime.KnobFlag("Corsac.GC.DeadCensus")) ? 2 : 1;
         return _censusAsked == 2;
     }
 
     static int _censusAsked;
 
     /// Corsac.GC.DeadCensus: the census also counts what every sweep found dead.
-    public static bool GcDeadCensus() => KnobFlag("Corsac.GC.DeadCensus");
+    public static bool GcDeadCensus() => Runtime.KnobFlag("Corsac.GC.DeadCensus");
 
     /// Corsac.GC.Threshold=<bytes>: collect at least that often, whatever the
     /// pacing says -- every call site a collection may fall under, tried.
@@ -193,7 +193,7 @@ static class Platform
     {
         if (!_thresholdAsked)
         {
-            _threshold = KnobNumber("Corsac.GC.Threshold");
+            _threshold = Runtime.KnobNumber("Corsac.GC.Threshold");
             if (_threshold == 0)
             {
                 long total = TotalMemory();
@@ -214,7 +214,7 @@ static class Platform
     /// (ManagedRuntimeConfiguration): allocate that much between minor
     /// cycles, whatever the pacing says -- for measuring what a nursery's
     /// size costs.
-    public static long GcNursery() => KnobNumber("System.GC.Gen0Size");
+    public static long GcNursery() => Runtime.KnobNumber("System.GC.Gen0Size");
 
     /// Whether threads have region arenas (Gc, "regions"): here they do,
     /// each mapped chunk by chunk as its regions fill it.
@@ -226,11 +226,11 @@ static class Platform
     /// System.GC.HeapHardLimit=<bytes>, .NET's own knob for it: the heap's
     /// hard limit, as a container's memory.max would set it -- for trying a
     /// small machine on a big one.
-    public static long HeapLimit() => KnobNumber("System.GC.HeapHardLimit");
+    public static long HeapLimit() => Runtime.KnobNumber("System.GC.HeapHardLimit");
 
     /// Corsac.GC.AllocSample: where the allocations come from, sampled and
     /// printed as the process ends (AllocSamples).
-    public static bool AllocSample() => KnobFlag("Corsac.GC.AllocSample");
+    public static bool AllocSample() => Runtime.KnobFlag("Corsac.GC.AllocSample");
 
     /// Which sampled blocks were freed, and which the collector took.
     public static bool AllocSampleFrees() => true;
@@ -238,33 +238,33 @@ static class Platform
     /// Corsac.GC.Stats: the collector's counts, pauses and heap said at exit,
     /// as corc's --gc-stats has corc's own said (AppContext's switch of the
     /// same name).
-    public static bool GcStats() => KnobFlag("Corsac.GC.Stats");
+    public static bool GcStats() => Runtime.KnobFlag("Corsac.GC.Stats");
 
     /// Corsac.GC.HeapCheck: the heap's structure checked as every collection
     /// begins and ends -- every chunk's chain, every buffer's, and the free
     /// lists against what the walks found -- and the first faults said.
-    public static bool HeapCheck() => KnobFlag("Corsac.GC.HeapCheck");
+    public static bool HeapCheck() => Runtime.KnobFlag("Corsac.GC.HeapCheck");
 
     /// Corsac.GC.VerifyFrees: the collector's checked mode for the compiler's
     /// frees (Gc.VerifyFree), every free it was handed poisoned and kept.
-    public static bool VerifyFrees() => KnobFlag("Corsac.GC.VerifyFrees") && KnobLetter("Corsac.GC.VerifyFrees") != 'f';
+    public static bool VerifyFrees() => Runtime.KnobFlag("Corsac.GC.VerifyFrees") && Runtime.KnobLetter("Corsac.GC.VerifyFrees") != 'f';
 
     /// Corsac.GC.VerifyFrees=f: only the fields freed with their owner
     /// (Runtime.FreeField) are checked -- poisoned, kept, their free recorded
     /// -- and every other free gives its block back as usual, so the heap is
     /// reused the way an unchecked run reuses it.
-    public static bool VerifyFieldFrees() => KnobFlag("Corsac.GC.VerifyFrees") && KnobLetter("Corsac.GC.VerifyFrees") == 'f';
+    public static bool VerifyFieldFrees() => Runtime.KnobFlag("Corsac.GC.VerifyFrees") && Runtime.KnobLetter("Corsac.GC.VerifyFrees") == 'f';
 
     /// Corsac.GC.FreeLog: every field free the compiler wrote is recorded in a
     /// ring (Runtime.FreeLog), for a debugger or a scan of the process to
     /// find the free that took an object still in use.
-    public static bool FreeLog() => KnobFlag("Corsac.GC.FreeLog");
+    public static bool FreeLog() => Runtime.KnobFlag("Corsac.GC.FreeLog");
 
     /// Corsac.GC.GuardReleases: a chunk the heap releases is made
     /// inaccessible instead of unmapped (Guard), and a dedicated one released
     /// by a free says who freed it: a stale reference to what was in it
     /// faults at its first use, in the fault report's stack.
-    public static bool GuardReleases() => KnobFlag("Corsac.GC.GuardReleases");
+    public static bool GuardReleases() => Runtime.KnobFlag("Corsac.GC.GuardReleases");
 
     /// Corsac.GC.IgnoreFrees: which frees the compiler wrote are ignored, the
     /// collector finding that garbage instead. What it is for is telling a
@@ -279,7 +279,7 @@ static class Platform
     /// frame gives back (Runtime.FreeStorageInFrame). 0, false, or unset, none.
     public static long IgnoreFrees()
     {
-        return KnobFlag("Corsac.GC.IgnoreFrees") ? KnobLetter("Corsac.GC.IgnoreFrees") : 0;
+        return Runtime.KnobFlag("Corsac.GC.IgnoreFrees") ? Runtime.KnobLetter("Corsac.GC.IgnoreFrees") : 0;
     }
 
     /// Corsac.GC.FreePaths: the ways a free gives a block back that are
@@ -295,70 +295,7 @@ static class Platform
     /// And P 64: every run of dead blocks a sweep gives back is filled with
     /// the pattern too, so an object swept while something still used it --
     /// a root the stack maps missed -- is read as the pattern at once.
-    public static long SkippedFreePaths()
-    {
-        long at = Runtime.KnobValue("Corsac.GC.FreePaths");
-        long mask = 0;
-        while (at != 0 && Sys.PeekHalf(at) != 0)
-        {
-            long c = Sys.PeekHalf(at);
-            mask = mask | (c == 't' ? 1 : c == 'i' ? 2 : c == 'b' ? 4 : c == 'd' ? 8 : c == 'm' ? 16 : c == 'p' ? 32 : c == 'P' ? 64 : 0);
-            at = at + 2;
-        }
-        return mask;
-    }
-
-    /// Knob `name` as a number -- decimal, or hexadecimal after 0x, as .NET
-    /// reads a number from its own knobs -- or 0 when it is not set.
-    static long KnobNumber(string name)
-    {
-        long at = Runtime.KnobValue(name);
-        long value = 0;
-        if (at != 0 && Sys.PeekHalf(at) == '0' && (Sys.PeekHalf(at + 2) | 0x20) == 'x')
-        {
-            at = at + 4;
-            while (true)
-            {
-                long c = Sys.PeekHalf(at);
-                if (c >= '0' && c <= '9') value = value * 16 + c - '0';
-                else if ((c | 0x20) >= 'a' && (c | 0x20) <= 'f') value = value * 16 + (c | 0x20) - 'a' + 10;
-                else return value;
-                at = at + 2;
-            }
-        }
-        while (at != 0 && Sys.PeekHalf(at) >= '0' && Sys.PeekHalf(at) <= '9')
-        {
-            value = value * 10 + Sys.PeekHalf(at) - '0';
-            at = at + 2;
-        }
-        return value;
-    }
-
-    /// Whether knob `name` is set to something other than nothing, 0 or
-    /// false (in any case, as bool.Parse reads it): 1 and true are on, and
-    /// so is a letter that says which kind.
-    static bool KnobFlag(string name)
-    {
-        long at = Runtime.KnobValue(name);
-        if (at == 0) return false;
-        long first = Sys.PeekHalf(at);
-        if (first == 0 || first == '0') return false;
-        string off = "false";
-        int i = 0;
-        while (i < off.Length && (Sys.PeekHalf(at + i * 2) | 0x20) == off[i])
-        {
-            i = i + 1;
-        }
-        return i < off.Length || Sys.PeekHalf(at + i * 2) != 0;
-    }
-
-    /// The first character of knob `name`'s value, or 0 when it is unset or
-    /// empty.
-    static long KnobLetter(string name)
-    {
-        long at = Runtime.KnobValue(name);
-        return at == 0 ? 0 : Sys.PeekHalf(at);
-    }
+    public static long SkippedFreePaths() => Runtime.FreePathsMask();
 
     /// The address the kernel is to be handed for `at`: a Linux process's
     /// memory is flat, so the same one.
@@ -609,7 +546,7 @@ static class Platform
     {
         if (Runtime.KnobValue("Corsac.GC.Workers") != 0)
         {
-            long wanted = KnobNumber("Corsac.GC.Workers");
+            long wanted = Runtime.KnobNumber("Corsac.GC.Workers");
             return (int)(wanted > 15 ? 15 : wanted);
         }
         long page = Map(4096);
