@@ -2143,8 +2143,10 @@ class Inflater
             if (_write > WindowSize)
             {
                 // Everything delivered: keep the 32 KB a match may still
-                // reach back into and start filling again from there.
-                Sys.CopyNoOverlap(_window, 0, _window, _write - WindowSize, WindowSize);
+                // reach back into and start filling again from there. The
+                // two ranges overlap while _write is short of twice the
+                // window, so this is Copy, which moves them as memmove does.
+                Sys.Copy(_window, 0, _window, _write - WindowSize, WindowSize);
                 _write = WindowSize;
                 _read = WindowSize;
             }

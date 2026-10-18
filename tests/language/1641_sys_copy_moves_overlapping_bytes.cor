@@ -1,0 +1,53 @@
+// test: sys_copy_moves_overlapping_bytes
+// expect-exit: 0
+// expect-output:
+// up 3 20 same
+// up 1 33 same
+// up 7 7 same
+// up 31 1 same
+// down 5 20 same
+// down 1 63 same
+// none 0 64 same
+// next 32 32 same
+// 0,1,2,0,1,2,3,4,5,6,7,8,9,13,14,15
+//
+// Sys.Copy IS A MEMMOVE, as the Prelude declares it: where the destination
+// starts inside the source the bytes go last first. It lowered to the
+// forward block copy CopyNoOverlap is, which moves a word at a time from the
+// front, so a copy up by fewer bytes than its length wrote the source's
+// first words over its own tail before reading them. Each copy here is
+// checked against Array.Copy, which moves overlapping elements as .NET does.
+
+using System;
+
+static class Program
+{
+    static string Check(string what, int from, int to, int count)
+    {
+        byte[] a = new byte[96];
+        byte[] b = new byte[96];
+        for (int i = 0; i < a.Length; i++) { a[i] = (byte)(i * 7 + 1); b[i] = a[i]; }
+        Sys.Copy(a, to, a, from, count);
+        Array.Copy(b, from, b, to, count);
+        for (int i = 0; i < a.Length; i++)
+            if (a[i] != b[i]) return what + " " + Math.Abs(to - from) + " " + count + " differs at " + i;
+        return what + " " + Math.Abs(to - from) + " " + count + " same";
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Check("up", 0, 3, 20));
+        Console.WriteLine(Check("up", 10, 11, 33));
+        Console.WriteLine(Check("up", 4, 11, 7));
+        Console.WriteLine(Check("up", 2, 33, 1));
+        Console.WriteLine(Check("down", 5, 0, 20));
+        Console.WriteLine(Check("down", 9, 8, 63));
+        Console.WriteLine(Check("none", 16, 16, 64));
+        Console.WriteLine(Check("next", 0, 32, 32));
+        byte[] c = new byte[16];
+        for (int i = 0; i < c.Length; i++) c[i] = (byte)i;
+        Sys.Copy(c, 3, c, 0, 10);
+        Console.WriteLine(string.Join(",", c));
+        return 0;
+    }
+}

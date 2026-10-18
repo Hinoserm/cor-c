@@ -193,8 +193,40 @@ public sealed partial class Lowering
                 VReg dst = _e.Binary(Opcode.Add, Arg(call, target, 0), Scaled(WordOf(Arg(call, target, 1))));
                 VReg src = _e.Binary(Opcode.Add, Arg(call, target, 2), Scaled(WordOf(Arg(call, target, 3))));
                 VReg n = Scaled(WordOf(Arg(call, target, 4)));
-                _e.Emit(Opcode.MemCopy, null, R(_e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes)),
-                        R(_e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes)), R(n));
+                VReg into = _e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes);
+                VReg from = _e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes);
+                // COPY IS MEMMOVE (the Prelude's word for it): where the
+                // destination starts inside the source -- src <= dst < src + n,
+                // one unsigned compare of dst - src against n -- the bytes go
+                // last first, so that none is overwritten before it is read.
+                // The forward copy below moves words at a time from the
+                // front, and an upward overlapping Copy wrote the source's
+                // first words over its own tail before reading it.
+                // CopyNoOverlap's callers promise there is none.
+                Block forward = _f.NewBlock("copyfwd"), done = _f.NewBlock("copydone");
+                if (name == "Copy")
+                {
+                    Block backward = _f.NewBlock("copyback"), step = _f.NewBlock("copystep");
+                    _e.Branch(_e.Binary(Opcode.LtU, _e.Binary(Opcode.Sub, into, from), n), backward, forward);
+                    _e.SetBlock(backward);
+                    VReg left = _f.NewReg(IrTypes.Word, "copyleft");
+                    _e.CopyTo(left, R(n));
+                    _e.Jump(step);
+                    _e.SetBlock(step);
+                    Block each = _f.NewBlock("copyeach");
+                    _e.Branch(left, each, done);
+                    _e.SetBlock(each);
+                    _e.CopyTo(left, R(_e.Binary(Opcode.Sub, left, 1)));
+                    VReg unit8 = _e.Load(IrType.I32, _e.Binary(Opcode.Add, from, left), 0, 1, signed: false);
+                    _e.Store(_e.Binary(Opcode.Add, into, left), unit8, 0, 1);
+                    _e.Jump(step);
+                }
+                else
+                {
+                    _e.Jump(forward);
+                }
+                _e.SetBlock(forward);
+                _e.Emit(Opcode.MemCopy, null, R(into), R(from), R(n));
                 // CHARACTERS OR BYTES, NEVER AN ADDRESS (Instr.Number): read
                 // as a copy of words that might be, every string a join was
                 // handed held what its parts held, and a key a dictionary's
@@ -203,6 +235,8 @@ public sealed partial class Lowering
                 // looked up, and with it, merged over the node's class, the
                 // tree (test 1200).
                 _e.Block.Instrs[^1].Number = true;
+                _e.Jump(done);
+                _e.SetBlock(done);
                 return Void();
             }
             // Two byte ranges equal or not, and in which order. Two ranges of a
