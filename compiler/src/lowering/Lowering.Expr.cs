@@ -403,6 +403,134 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// object.MemberwiseClone (Binder.MemberwiseCloneCall), as the CLR's: a
+    /// new object of the exact type the receiver is -- its descriptor found
+    /// through its vtable, as GetType finds it, and the size that gives --
+    /// every field copied as it is, so a reference field of the copy is the
+    /// same object as the original's. The header is not copied: the
+    /// synchronisation word starts clear, so a lock held on the original is
+    /// not held on the copy. A struct a field holds by pointer is a value,
+    /// and the copy takes its own (Runtime.CopyValueBlocks) where the
+    /// descriptor says there is one (GcValueBlocks); the cards of the whole
+    /// copy are marked, as the field stores would mark them. A struct's is
+    /// its box's.
+    /// </summary>
+    private VReg EmitMemberwiseClone(CallExpr call, Expr receiver)
+    {
+        VReg from = Eval(receiver);
+        if (receiver is not BaseExpr && _b.TypeOf(receiver) is Type held && IsStructValue(held))
+        {
+            from = BoxValue(call, from, held);
+        }
+        int w = _t.WordSize, header = _t.ObjectHeaderBytes;
+        VReg vtable = Numbered(_e, _e.Load(IrTypes.Word, from, 0));
+        VReg size = Numbered(_e, _e.Load(IrTypes.Word, vtable, DescSize * w - _t.DescriptorBytes));
+        VReg made = AllocateDynamic(call, size, described: true);
+        _e.Store(R(made), R(vtable), 0, w);
+        _e.Emit(Opcode.MemCopy, null, R(_e.Binary(Opcode.Add, made, header)), R(_e.Binary(Opcode.Add, from, header)),
+                R(_e.Binary(Opcode.Sub, size, header)));
+
+        // THE COPY OF EACH FIELD OF THE TYPES ABOVE, AS A FIELD'S: the bytes
+        // carried them already, but a read of the original's field and a
+        // store of it into the copy is what the owned-field rules see
+        // (Escape.OwnedFields, EscapeOwnedUnits), and a field so read and so
+        // stored owns nothing. A field of a class that copies itself, or of
+        // one derived from it, is carried by no load or store at all
+        // (TagsField); one of a base above it -- a library class's -- may be
+        // owned by every other read and store of it, and is refused here.
+        TypeSymbol? copiedType = receiver is BaseExpr ? _method?.Owner : _b.TypeOf(receiver).Symbol;
+        if (copiedType is { Kind: TypeKind.Class })
+        {
+            for (TypeSymbol? s = copiedType; s is not null; s = s.Base)
+            {
+                foreach (FieldSymbol f in s.Fields)
+                {
+                    if (f.Static || f.Inline || f.Boxed || !TagsField(f)) continue;
+                    VReg kept = _e.Load(IrTypes.Word, from, f.Offset);
+                    _e.Block.Instrs[^1].Field = FieldKey(f);
+                    _e.Store(R(made), R(kept), f.Offset, w);
+                    _e.Block.Instrs[^1].Field = FieldKey(f);
+                }
+            }
+        }
+
+        // A COLLECTION'S STORAGE, now the two objects', given back by neither:
+        // a collection that gives back what it outgrows says it lends it
+        // (LendStorage, as a List lends the array Backing hands out). An object
+        // of no such class can have none: what the copy's type derives from,
+        // the receiver's static type does.
+        for (TypeSymbol? s = copiedType; s is not null; s = s.Base)
+        {
+            if (s.Methods.FirstOrDefault(m => m.Name == "LendStorage" && m.Params.Count == 0 && !m.Static) is MethodSymbol lends)
+            {
+                CallDirect(lends, IrType.Void, new List<Operand> { R(from) });
+                CallDirect(lends, IrType.Void, new List<Operand> { R(made) });
+                break;
+            }
+        }
+
+        if (RuntimeMethod("CopyValueBlocks", 1) is MethodSymbol values)
+        {
+            Require(values);
+            Block copy = _f.NewBlock("valueblocks");
+            Block copied = _f.NewBlock("cloned");
+            VReg flags = _e.Load(IrTypes.Word, vtable, DescGcFlags * w - _t.DescriptorBytes);
+            _e.Branch(_e.Binary(Opcode.Ne, _e.Binary(Opcode.And, flags, GcValueBlocks), 0), copy, copied);
+            _e.SetBlock(copy);
+            _e.Call(CallLabel(values), IrType.Void, R(made));
+            _e.Jump(copied);
+            _e.SetBlock(copied);
+        }
+        if (RuntimeMethod("CardMarkObject", 1) is MethodSymbol marks)
+        {
+            Require(marks);
+            _e.Call(CallLabel(marks), IrType.Void, R(made));
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// The structs an instance holds by pointer, each a value of its own: the
+    /// field's offset (through structs held in line) and the struct, for
+    /// Runtime.CopyValueBlocks to give a copy its own blocks (ValueBlockList).
+    /// </summary>
+    private IEnumerable<(int Offset, TypeSymbol Struct)> ValueBlocks(TypeSymbol sym, int at)
+    {
+        foreach (FieldSymbol f in sym.Fields)
+        {
+            if (f.Static || f.Boxed) continue;
+            if (f.Inline)
+            {
+                foreach (var inner in ValueBlocks(StructOf(f.Type), at + f.Offset)) yield return inner;
+                continue;
+            }
+            if (IsStructValue(f.Type)) yield return (at + f.Offset, StructOf(f.Type));
+        }
+    }
+
+    /// <summary>
+    /// The list Runtime.CopyValueBlocks reads after a reference map: how many,
+    /// then for each its offset, the struct's size and the function copying a
+    /// struct that holds structs of its own (StructCopier), or 0 where its
+    /// bytes are all of it.
+    /// </summary>
+    private (byte[] Words, List<DataReloc> Relocs) ValueBlockList(Node at, IReadOnlyList<(int Offset, TypeSymbol Struct)> blocks, int start)
+    {
+        int w = _t.WordSize;
+        byte[] words = new byte[(1 + 3 * blocks.Count) * w];
+        List<DataReloc> relocs = new();
+        WriteWord(words, 0, blocks.Count);
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            (int offset, TypeSymbol held) = blocks[i];
+            WriteWord(words, (1 + 3 * i) * w, offset);
+            WriteWord(words, (2 + 3 * i) * w, Math.Max(1, held.InstanceSize));
+            if (HasStructFields(held)) relocs.Add(new DataReloc(start + (3 + 3 * i) * w, StructCopier(at, held), 0));
+        }
+        return (words, relocs);
+    }
+
+    /// <summary>
     /// `__struct_copy$T(src)`: a copy of a T that holds another struct -- the
     /// bytes moved, then each struct field replaced by a copy of the block
     /// it still shares with the source, all the way down.
@@ -823,6 +951,9 @@ public sealed partial class Lowering
                 VReg vt = _e.Load(IrTypes.Word, obj, 0);
                 return _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
             }
+
+            case CallExpr call when _b.MemberwiseClones.Contains(call) && call.Target is MemberExpr copied:
+                return EmitMemberwiseClone(call, copied.Target);
 
             // A CALL THAT RETURNS BY REFERENCE answers where the variable is;
             // as a value, it is what is there.

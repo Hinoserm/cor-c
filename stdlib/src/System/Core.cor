@@ -10793,6 +10793,10 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     // this list and dead whenever the list is freed, however that comes.
     public void OwnElements() { ownsElements = true; }
 
+    // ITS ARRAY SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone): lent,
+    // as Backing lends it, and its elements no longer its alone.
+    internal void LendStorage() { lent = true; ownsElements = false; }
+
     public void FreeStorage() {
         // Marked through a field, its elements may have been put back into
         // it: each given back once.
@@ -11131,8 +11135,13 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         T[] old = items;
         items = bigger;
         head = 0;
-        OutgrownStorage.Release(old);
+        if (!lent) { OutgrownStorage.Release(old); }
     }
+
+    // ITS ARRAY SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone): the
+    // other holds it too, and a growth leaves it to the collector.
+    private bool lent;
+    internal void LendStorage() { lent = true; }
 }
 
 // ---- Dictionary -----------------------------------------------------------
@@ -13960,7 +13969,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
-                OutgrownStorage.Release(was);
+                Outgrown(was);
             }
             vacant[vacancies] = place;
             vacancies = vacancies + 1;
@@ -13994,8 +14003,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         order = list;
         placeOf = places;
         ordered = kept;
-        OutgrownStorage.Release(old);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(old);
+        Outgrown(oldPlaces);
     }
 
     internal int SlotAt(int n) {
@@ -14599,12 +14608,12 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     public void FreeStorage() {
         if (ownsElements) { ownsElements = false; FreeOwnedElements(); }
-        OutgrownStorage.Release(keys);
-        OutgrownStorage.Release(values);
-        OutgrownStorage.Release(hashes);
-        OutgrownStorage.Release(order);
-        OutgrownStorage.Release(placeOf);
-        OutgrownStorage.Release(vacant);
+        Outgrown(keys);
+        Outgrown(values);
+        Outgrown(hashes);
+        Outgrown(order);
+        Outgrown(placeOf);
+        Outgrown(vacant);
         keys = null!; values = null!; hashes = null!;
         order = null; placeOf = null; vacant = null;
         count = 0; filled = 0; ordered = 0; vacancies = 0;
@@ -14684,12 +14693,24 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         order = list;
         placeOf = places;
         ordered = oldOrdered;
-        OutgrownStorage.Release(oldKeys);
-        OutgrownStorage.Release(oldValues);
-        OutgrownStorage.Release(oldHashes);
-        OutgrownStorage.Release(oldOrder);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(oldKeys);
+        Outgrown(oldValues);
+        Outgrown(oldHashes);
+        Outgrown(oldOrder);
+        Outgrown(oldPlaces);
     }
+
+    // A COPY'S STORAGE IS NOT ITS OWN (LendStorage): what a resize or FreeStorage
+    // would give back is left to the collector.
+    private bool lent;
+
+    private void Outgrown<E>(E[]? old) {
+        if (!lent) { OutgrownStorage.Release(old); }
+    }
+
+    // ITS ARRAYS SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone): the
+    // other holds them too, so neither gives them back, nor its values.
+    internal void LendStorage() { lent = true; ownsElements = false; }
 }
 
 // ---- Func and Action ------------------------------------------------------
@@ -17319,7 +17340,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
-                OutgrownStorage.Release(was);
+                Outgrown(was);
             }
             vacant[vacancies] = place;
             vacancies = vacancies + 1;
@@ -17353,8 +17374,8 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         order = list;
         placeOf = places;
         ordered = kept;
-        OutgrownStorage.Release(old);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(old);
+        Outgrown(oldPlaces);
     }
 
     internal int SlotAt(int n) {
@@ -17611,11 +17632,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // THE STORAGE GIVEN BACK with a set proved dead (Runtime.Free): no array
     // of it ever leaves the set.
     public void FreeStorage() {
-        OutgrownStorage.Release(items);
-        OutgrownStorage.Release(hashes);
-        OutgrownStorage.Release(order);
-        OutgrownStorage.Release(placeOf);
-        OutgrownStorage.Release(vacant);
+        Outgrown(items);
+        Outgrown(hashes);
+        Outgrown(order);
+        Outgrown(placeOf);
+        Outgrown(vacant);
         items = null!; hashes = null!;
         order = null; placeOf = null; vacant = null;
         count = 0; filled = 0; ordered = 0; vacancies = 0;
@@ -17817,11 +17838,21 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         order = list;
         placeOf = places;
         ordered = oldOrdered;
-        OutgrownStorage.Release(old);
-        OutgrownStorage.Release(oldHashes);
-        OutgrownStorage.Release(oldOrder);
-        OutgrownStorage.Release(oldPlaces);
+        Outgrown(old);
+        Outgrown(oldHashes);
+        Outgrown(oldOrder);
+        Outgrown(oldPlaces);
     }
+
+    // A COPY'S STORAGE IS NOT ITS OWN (LendStorage), as Dictionary's.
+    private bool lent;
+
+    private void Outgrown<E>(E[]? old) {
+        if (!lent) { OutgrownStorage.Release(old); }
+    }
+
+    // ITS ARRAYS SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone).
+    internal void LendStorage() { lent = true; }
 }
 
 // The ordered set surface used by the compiler's metadata writer. This small
@@ -25922,27 +25953,25 @@ namespace System.Globalization
             }
         }
 
-        /// A copy that may be changed, read-only or not. Each calendar makes
-        /// its own (Copy): nothing here copies an object field for field.
+        /// A copy that may be changed, read-only or not: the calendar's own
+        /// type with every field, as .NET's MemberwiseClone makes it. A copy
+        /// of a calendar is one, so it is taken as one, not tested (Sys.As):
+        /// a test names the type's table, and with it every method of it, in
+        /// every program a provider's Clone is in.
         public virtual object Clone()
         {
-            Calendar made = Copy();
-            made._isReadOnly = false;
-            return made;
-        }
-
-        internal virtual Calendar Copy()
-        {
-            throw new NotSupportedException("Specified method is not supported.");
+            object o = MemberwiseClone();
+            Sys.As<Calendar>(o).SetReadOnlyState(false);
+            return o;
         }
 
         public static Calendar ReadOnly(Calendar calendar)
         {
             ArgumentNullException.ThrowIfNull(calendar);
             if (calendar.IsReadOnly) return calendar;
-            Calendar made = calendar.Copy();
-            made._isReadOnly = true;
-            return made;
+            Calendar clonedCalendar = Sys.As<Calendar>(calendar.MemberwiseClone());
+            clonedCalendar.SetReadOnlyState(true);
+            return clonedCalendar;
         }
 
         internal void VerifyWritable()
@@ -26111,13 +26140,6 @@ namespace System.Globalization
 
         /// The shared one if it has been made, for a copy of it as it stands.
         internal static Calendar? Existing => s_default;
-
-        internal override Calendar Copy()
-        {
-            GregorianCalendar made = new GregorianCalendar((GregorianCalendarTypes)_kind);
-            made._twoDigitYearMax = _twoDigitYearMax;
-            return made;
-        }
 
         public override DateTime MinSupportedDateTime => DateTime.MinValue;
         public override DateTime MaxSupportedDateTime => DateTime.MaxValue;
@@ -26475,22 +26497,33 @@ namespace System.Globalization
 
         public object? GetFormat(Type? formatType) => formatType == typeof(DateTimeFormatInfo) ? this : null;
 
-        /// A copy that may be changed, its calendar a copy too.
+        /// A copy that may be changed, its calendar a copy too: every field
+        /// as it is, by MemberwiseClone, the arrays shared, as they are in
+        /// .NET (a setter replaces an array, it never writes one).
         public object Clone()
         {
-            DateTimeFormatInfo made = Copy();
-            // A COPY OF THE CALENDAR, writable: of the one made, or of the
-            // shared one when that is what this one would make -- as it
-            // stands now -- or a fresh Gregorian.
-            Calendar? from = _calendar ?? (_making == Making.Shared ? GregorianCalendar.Existing : null);
-            made._calendar = null;
-            made._making = Making.Copy;
-            made._copyOf = from;
-            if (from != null)
+            DateTimeFormatInfo made = (DateTimeFormatInfo)MemberwiseClone();
+            // A COPY OF THE CALENDAR, writable: of the one made -- its own
+            // type, a program's subclass too -- now; of the shared one when
+            // that is what this one would make, as it stands now, made when
+            // the copy asks for it; or a fresh Gregorian. A copy not yet
+            // asked keeps what it would copy, as MemberwiseClone left it.
+            if (_calendar != null)
             {
-                made._copyTwoDigitYearMax = from._twoDigitYearMax;
-                made._copyKind = from._kind;
+                made._calendar = Sys.As<Calendar>(_calendar.Clone());
+                made._copyOf = null;
             }
+            else if (_making != Making.Copy)
+            {
+                Calendar? shared = _making == Making.Shared ? GregorianCalendar.Existing : null;
+                made._copyOf = shared;
+                if (shared != null)
+                {
+                    made._copyTwoDigitYearMax = shared._twoDigitYearMax;
+                    made._copyKind = shared._kind;
+                }
+            }
+            made._making = Making.Copy;
             made._isReadOnly = false;
             return made;
         }
@@ -26499,55 +26532,11 @@ namespace System.Globalization
         {
             ArgumentNullException.ThrowIfNull(dtfi);
             if (dtfi.IsReadOnly) return dtfi;
-            DateTimeFormatInfo made = dtfi.Copy();
-            Calendar from = dtfi.Calendar;
-            made._calendar = Calendar.ReadOnly(from);
+            DateTimeFormatInfo made = (DateTimeFormatInfo)dtfi.MemberwiseClone();
+            made._calendar = Calendar.ReadOnly(dtfi.Calendar);
             made._making = Making.ReadOnlyCopy;
             made._copyOf = null;
             made._isReadOnly = true;
-            return made;
-        }
-
-        // Field for field, as .NET's MemberwiseClone: the arrays shared, as
-        // they are there (a setter replaces an array, it never writes one).
-        DateTimeFormatInfo Copy()
-        {
-            DateTimeFormatInfo made = new DateTimeFormatInfo();
-            made._calendar = _calendar;
-            made._making = _making;
-            made._copyOf = _copyOf;
-            made._copyTwoDigitYearMax = _copyTwoDigitYearMax;
-            made._copyKind = _copyKind;
-            made._amDesignator = _amDesignator;
-            made._pmDesignator = _pmDesignator;
-            made._dateSeparator = _dateSeparator;
-            made._timeSeparator = _timeSeparator;
-            made._firstDayOfWeek = _firstDayOfWeek;
-            made._calendarWeekRule = _calendarWeekRule;
-            made._fullDateTimePattern = _fullDateTimePattern;
-            made._longDatePattern = _longDatePattern;
-            made._longTimePattern = _longTimePattern;
-            made._shortDatePattern = _shortDatePattern;
-            made._shortTimePattern = _shortTimePattern;
-            made._monthDayPattern = _monthDayPattern;
-            made._yearMonthPattern = _yearMonthPattern;
-            made._generalShortTimePattern = _generalShortTimePattern;
-            made._generalLongTimePattern = _generalLongTimePattern;
-            made._dateTimeOffsetPattern = _dateTimeOffsetPattern;
-            made._allShortDatePatterns = _allShortDatePatterns;
-            made._allLongDatePatterns = _allLongDatePatterns;
-            made._allShortTimePatterns = _allShortTimePatterns;
-            made._allLongTimePatterns = _allLongTimePatterns;
-            made._allYearMonthPatterns = _allYearMonthPatterns;
-            made._dayNames = _dayNames;
-            made._abbreviatedDayNames = _abbreviatedDayNames;
-            made._shortestDayNames = _shortestDayNames;
-            made._monthNames = _monthNames;
-            made._abbreviatedMonthNames = _abbreviatedMonthNames;
-            made._genitiveMonthNames = _genitiveMonthNames;
-            made._abbreviatedGenitiveMonthNames = _abbreviatedGenitiveMonthNames;
-            made._formatFlags = _formatFlags;
-            made.Tokens = Tokens;
             return made;
         }
 
@@ -26583,7 +26572,7 @@ namespace System.Globalization
                     else if (_making == Making.ReadOnlyCopy) made = Calendar.ReadOnly(new GregorianCalendar());
                     else if (_copyOf != null)
                     {
-                        made = _copyOf.Copy();
+                        made = Sys.As<Calendar>(_copyOf.Clone());
                         made._twoDigitYearMax = _copyTwoDigitYearMax;
                         made._kind = _copyKind;
                         _copyOf = null;

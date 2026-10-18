@@ -394,11 +394,16 @@ public sealed partial class Lowering
         if (BoxedBlock(of))
         {
             List<(int, Type)> held = TracedFields(of.Symbol!, _t.ObjectHeaderBytes).ToList();
+            List<(int, TypeSymbol)> values = ValueBlocks(of.Symbol!, _t.ObjectHeaderBytes).ToList();
             string? map = ReferenceMap("box_" + Safe(key), held,
-                                       _t.ObjectHeaderBytes + BoxPayload(of));
+                                       _t.ObjectHeaderBytes + BoxPayload(of), of.Symbol!.Decl, values);
             if (map is not null)
             {
                 item.Relocs.Add(new DataReloc(DescRefMap * w, map, 0));
+            }
+            if (map is not null && values.Count > 0)
+            {
+                WriteWord(block, DescGcFlags * w, GcValueBlocks);
             }
         }
 

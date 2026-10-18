@@ -17142,6 +17142,90 @@ public sealed partial class Binder
     /// lambda's body is checked inside its closure class, whose fields are
     /// the captures and are read from the closure object, so that is never
     /// a static context whatever the method around it was.
+    /// <summary>
+    /// OBJECT.MEMBERWISECLONE, protected and not virtual, which every class
+    /// and struct inherits: a copy of the object's exact type with every
+    /// field as it is (Lowering.EmitMemberwiseClone). Written bare it is this
+    /// object's, as GetType is, and `base.` the same; on another object only
+    /// where C#'s protected access lets it be named -- through a qualifier of
+    /// this class or one derived from it (CS1540). A struct's is its box's.
+    /// Null for a call that is not one: a member of that name declared
+    /// somewhere, or a lambda's name in scope.
+    /// </summary>
+    private Type? MemberwiseCloneCall(CallExpr c)
+    {
+        const string Name = "MemberwiseClone";
+        Expr receiver;
+        if (c.Target is NameExpr { Name: Name, TypeArgs.Count: 0 } bare)
+        {
+            if (InStaticContext || Lookup(Name) is not null || _thisType is null || _thisType.FindMethods(Name).Count > 0)
+            {
+                return null;
+            }
+            receiver = new ThisExpr { Line = bare.Line, Col = bare.Col };
+            CallExpr ofThis = new()
+            {
+                Target = new MemberExpr { Target = receiver, Name = Name, Line = bare.Line, Col = bare.Col },
+                Line = c.Line, Col = c.Col,
+            };
+            _r.Rewrites[c] = ofThis;
+            return CheckExpr(ofThis);
+        }
+        if (c.Target is not MemberExpr { Name: Name, TypeArgs.Count: 0, NullConditional: false } member)
+        {
+            return null;
+        }
+        receiver = member.Target;
+
+        // `base.MemberwiseClone()` is this object's: object's own, which the
+        // base chain does not hide.
+        TypeSymbol? within = _capturedThisType ?? _thisType;
+        Type on;
+        if (receiver is BaseExpr)
+        {
+            if (within is null || within.Base?.FindMethods(Name).Count > 0) return null;
+            on = Type.Plain(within, Prim.Void);
+        }
+        else
+        {
+            on = Peek(receiver);
+            if (on.Symbol is TypeSymbol declares && declares.FindMethods(Name).Count > 0) return null;
+            on = CheckExpr(receiver);
+        }
+        if (on.IsError)
+        {
+            return Type.Error;
+        }
+
+        bool reachable = false;
+        if (!on.IsArray && !on.IsPointer && on.Symbol is { Kind: TypeKind.Class or TypeKind.Struct } of)
+        {
+            for (TypeSymbol? from = within; from is not null && !reachable; from = OuterOf(from))
+            {
+                for (TypeSymbol? t = of; t is not null; t = t.Base)
+                {
+                    if (ReferenceEquals(t, from) || (t.Decl is not null && ReferenceEquals(t.Decl, from.Decl)))
+                    {
+                        reachable = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!reachable)
+        {
+            Error(c, $"CS1540: Cannot access protected member 'object.MemberwiseClone()' via a qualifier of type '{on}'; the qualifier must be of type '{within?.Name ?? "object"}' (or derived from it)");
+            return Type.Error;
+        }
+        RequireNonNull(on, receiver, "copy");
+        _r.MemberwiseClones.Add(c);
+        return Type.Any;
+    }
+
+    /// <summary>The type a nested type is written in, whose protected members it may reach too; null at the top.</summary>
+    private TypeSymbol? OuterOf(TypeSymbol t)
+        => t.Decl?.Outer is string outer && FindType(outer, out TypeSymbol? found) ? found : null;
+
     private bool InStaticContext =>
         _method is { Static: true }
         && !(_thisType?.Name.StartsWith("Lambda$", StringComparison.Ordinal) ?? false);
@@ -19128,6 +19212,11 @@ public sealed partial class Binder
             };
             _r.Rewrites[c] = ofThis;
             return CheckExpr(ofThis);
+        }
+
+        if (c.Args.Count == 0 && MemberwiseCloneCall(c) is Type cloned)
+        {
+            return cloned;
         }
 
         // A NULL-CONDITIONAL CALL evaluates its receiver once, calls only when

@@ -731,6 +731,9 @@ class MemoryStream : Stream, IOwnsStorage
     /// and neither growing nor dying gives it back.
     bool _lent;
 
+    /// The array shared with a memberwise copy (object.MemberwiseClone): lent, as GetBuffer lends it.
+    internal void LendStorage() { _lent = true; }
+
     /// THE ARRAY GIVEN BACK with a stream proved dead (Runtime.Free), when
     /// the stream made it and never lent it.
     public void FreeStorage()

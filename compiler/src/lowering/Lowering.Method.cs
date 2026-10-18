@@ -972,8 +972,26 @@ public sealed partial class Lowering
             && ty.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
                 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char;
 
-    /// <summary>Whether a field's loads and stores carry it (Instr.Field): a reference, held by a class or statically.</summary>
-    private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class);
+    /// <summary>
+    /// Whether a field's loads and stores carry it (Instr.Field): a reference,
+    /// held by a class or statically. NOT ONE AN OBJECT MAY HAVE COPIED BY
+    /// BYTES (TypeDecl.MemberwiseCopied, somewhere in its class's chain):
+    /// object.MemberwiseClone puts what it holds in a second object with no
+    /// store of the field, and a field the analyses found owned would free
+    /// what the copy still holds. A field of a class above the one that
+    /// copies is refused where the copy is made (EmitMemberwiseClone).
+    /// </summary>
+    private bool TagsField(FieldSymbol f) => HoldsReference(f.Type) && (f.Static || f.Owner.Kind == TypeKind.Class && !CopiedChain(f.Owner));
+
+    /// <summary>Whether a class or one of its bases is one whose code may copy its objects by bytes (TypeDecl.MemberwiseCopied).</summary>
+    private static bool CopiedChain(TypeSymbol t)
+    {
+        for (TypeSymbol? s = t; s is not null; s = s.Base)
+        {
+            if (s.Decl?.MemberwiseCopied == true) return true;
+        }
+        return false;
+    }
 
     private VReg LoadPlace(Place p)
     {

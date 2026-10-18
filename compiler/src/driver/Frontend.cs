@@ -921,6 +921,7 @@ public static class Frontend
             into.Members.AddRange(part.Members);
             into.Mods |= part.Mods;
             into.FromLibrary |= part.FromLibrary;
+            into.MemberwiseCopied |= part.MemberwiseCopied;
             into.SignatureOnly &= part.SignatureOnly;
 
             // AN IMPORTED TEMPLATE'S BODIES ARE THE MERGED TYPE'S NOW, so a

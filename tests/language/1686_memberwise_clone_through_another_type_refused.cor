@@ -1,0 +1,22 @@
+// test: memberwise_clone_through_another_type_refused
+// expect-compile-error: CS1540: Cannot access protected member 'object.MemberwiseClone()' via a qualifier of type
+//
+// object.MemberwiseClone is protected: a class may copy an object of its
+// own type, or of one derived from it, and no other (C# CS1540) -- not one
+// it holds as an object.
+
+using System;
+
+class Holder
+{
+    public object Held = new Holder();
+    public object Copy() => Held.MemberwiseClone();
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(new Holder().Copy());
+    }
+}

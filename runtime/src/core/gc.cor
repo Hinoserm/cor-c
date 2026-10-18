@@ -149,13 +149,14 @@ static class Gc
     public const long DescSelfWord = 5;
     public const long DescFlagsWord = 6;
     public const long DescPayloadWord = 7;
-    const long DescRefMapWord = 8;
+    public const long DescRefMapWord = 8;
     public const long DescGcFlagsWord = 9;
     const long DescDepthWord = 2;           // as Runtime's type tests read them
     const long DescDisplayWord = 3;
     public const long SequenceFlag = 1;         // DescFlags: an array or a string
     public const long StringFlag = 2;
     public const long ElementsAreReferences = 1; // DescGcFlags, on an array
+    public const long ValueBlocksFlag = 4;       // DescGcFlags: structs held by pointer, listed after the reference map
     public const long ArrayCountAt = 2 * WordSize.Bytes;
 
     // The smallest block that can describe itself while free: header, two

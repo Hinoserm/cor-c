@@ -2564,6 +2564,7 @@ public sealed class Monomorphiser
             SourcePath = d.SourcePath,
             LocalOnly = d.LocalOnly,
             IsDelegate = d.IsDelegate,
+            MemberwiseCopied = d.MemberwiseCopied,
             InitialisersPlaced = d.InitialisersPlaced,
             FromLibrary = d.FromLibrary,
             MovedAside = d.MovedAside,

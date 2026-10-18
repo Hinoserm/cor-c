@@ -1593,9 +1593,24 @@ public sealed class Parser
     /// </summary>
     private HashSet<string>? _createdParams;
 
+    /// <summary>
+    /// Whether a token from `from` up to the one just read is the name
+    /// MemberwiseClone (TypeDecl.MemberwiseCopied): a body that calls it, read
+    /// or left out alike, and a nested type's, which is the outer's text too.
+    /// </summary>
+    private bool NamesMemberwiseClone(int from)
+    {
+        for (int k = from; k < _i && k < _t.Count; k++)
+        {
+            if (_t[k].Kind == Tok.Ident && _t[k].Text == "MemberwiseClone") return true;
+        }
+        return false;
+    }
+
     private TypeDecl ParseTypeDeclCore()
     {
         Token start = Cur;
+        int startIndex = _i;
         Mods mods = ParseMods();
         if (Take(Tok.KwDelegate)) return ParseDelegateDeclaration(start, mods);
 
@@ -1748,6 +1763,7 @@ public sealed class Parser
             AddRecordMembers(decl, positional, start);
             decl.SourceFrom = start.Pos;
             decl.SourceTo = _t[_i - 1].Pos + 1;
+            decl.MemberwiseCopied = NamesMemberwiseClone(startIndex);
             _typePath = outer;
             _enclosingParams = enclosing;
             return decl;
@@ -1847,6 +1863,7 @@ public sealed class Parser
         // into a header exactly as it was written here.
         decl.SourceFrom = start.Pos;
         decl.SourceTo = close.Pos + 1;
+        decl.MemberwiseCopied = NamesMemberwiseClone(startIndex);
         _typePath = outer;
         _enclosingParams = enclosing;
         return decl;

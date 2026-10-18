@@ -413,6 +413,9 @@ public sealed partial class BindResult
     /// <summary>The calls that are GetType(), which is not a declared method.</summary>
     public HashSet<CallExpr> GetTypes { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>The calls that are object.MemberwiseClone() (Binder.MemberwiseCloneCall), made by lowering, not declared.</summary>
+    public HashSet<CallExpr> MemberwiseClones { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// Calls of a VALUE rather than of a named method: `f(x)` where f holds
     /// something with an Invoke. The method recorded here is that Invoke.
     public ExprMethods Invocations { get; }
@@ -723,6 +726,7 @@ public sealed partial class BindResult
                     break;
                 case CallExpr c:
                     GetTypes.Remove(c);
+                    MemberwiseClones.Remove(c);
                     GenericDispatches.Remove(c);
                     PointerCalls.Remove(c);
                     CapturedReceivers.Remove(c);
@@ -797,6 +801,7 @@ public sealed partial class BindResult
         ArrayTypeOfs.Clear();
         RunTimeTypeOfs.Clear();
         GetTypes.Clear();
+        MemberwiseClones.Clear();
         GenericDispatches.Clear();
         WantedOverrides.Clear();
         ForeachSlot.Clear();

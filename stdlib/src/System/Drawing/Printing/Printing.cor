@@ -97,7 +97,7 @@ namespace System.Drawing.Printing
         public int Bottom { get; set; } = 100;
         public Margins() { }
         public Margins(int left, int right, int top, int bottom) { Left = left; Right = right; Top = top; Bottom = bottom; }
-        public object Clone() { return new Margins(Left, Right, Top, Bottom); }
+        public object Clone() { return MemberwiseClone(); }
         public override string ToString() { return "[Margins Left=" + Left + " Right=" + Right + " Top=" + Top + " Bottom=" + Bottom + "]"; }
     }
 
@@ -137,12 +137,11 @@ namespace System.Drawing.Printing
         public float HardMarginY { get { return 0; } }
         public RectangleF PrintableArea { get { Rectangle b = Bounds; return new RectangleF(0, 0, b.Width, b.Height); } }
 
+        /// Its own type with every field, as .NET's, the margins a copy.
         public object Clone()
         {
-            PageSettings made = new PageSettings(_printer);
-            made._paper = _paper; made._landscape = _landscape; made._colour = _colour;
+            PageSettings made = (PageSettings)MemberwiseClone();
             made.Margins = (Margins)Margins.Clone();
-            made.PaperSource = PaperSource;
             return made;
         }
 
@@ -213,12 +212,12 @@ namespace System.Drawing.Printing
         public PaperSourceCollection PaperSources { get { return new PaperSourceCollection(new PaperSource[] { new PaperSource() }); } }
         public PrinterResolutionCollection PrinterResolutions { get { int d = Dpi; return new PrinterResolutionCollection(new PrinterResolution[] { new PrinterResolution(d) }); } }
 
+        /// Its own type with every field, as .NET's; the page settings it
+        /// made for itself are not the copy's, which makes its own.
         public object Clone()
         {
-            PrinterSettings made = new PrinterSettings();
-            made._name = _name; made.Copies = Copies; made.Collate = Collate; made.FromPage = FromPage; made.ToPage = ToPage;
-            made.MinimumPage = MinimumPage; made.MaximumPage = MaximumPage; made.PrintRange = PrintRange;
-            made.PrintToFile = PrintToFile; made.PrintFileName = PrintFileName; made.Duplex = Duplex;
+            PrinterSettings made = (PrinterSettings)MemberwiseClone();
+            made._defaults = null;
             return made;
         }
 

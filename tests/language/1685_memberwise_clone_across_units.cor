@@ -1,0 +1,62 @@
+// test: memberwise_clone_across_units
+// units: tests/language/support/1685_memberwise_clone_units.cor
+// flags: --runtime-knob Corsac.GC.VerifyFrees=1
+// expect-exit: 0
+// expect-output:
+// 3790
+// k7 [7] label7 k7+w7
+// plain [1] | plain [1] | True
+//
+// object.MemberwiseClone of an object whose class derives, across units,
+// from one that copies itself: the copy's fields are the original's, and
+// what they hold outlives the original dying -- the compiler's frees,
+// checked here, owning none of it -- the same for a field of a base above
+// the class that copies. Every line is what .NET 10 prints.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using CloneUnits;
+
+class Labelled : Prototype
+{
+    public StringBuilder Label = new StringBuilder();
+    public List<string> Words;
+    public Labelled(string kind) : base(kind) { Words = new List<string> { kind }; }
+    public override string Describe() => base.Describe() + " " + Label + " " + string.Join("+", Words);
+}
+
+static class Program
+{
+    static Prototype Make(int i)
+    {
+        Labelled l = new Labelled("k" + i);
+        l.Label.Append("label").Append(i);
+        l.Shared.Add(i);
+        l.Words.Add("w" + i);
+        return l.Copy();            // the original dies here; what it held lives on in the copy
+    }
+
+    static void Main()
+    {
+        long total = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            Prototype p = Make(i);
+            Labelled l = (Labelled)p;
+            total += l.Label.Length + l.Words.Count + l.Shared.Count;
+            Copier c = new Copier();
+            c.Notes.Add("n" + i);
+            Copier d = c.Twin();
+            c.Notes.Add("more");
+            total += d.Notes.Count;
+            if (i % 100 == 0) GC.Collect();
+        }
+        Console.WriteLine(total);
+        Console.WriteLine(Make(7).Describe());
+        Prototype a = new Prototype("plain");
+        Prototype b = a.Copy();
+        b.Shared.Add(1);
+        Console.WriteLine(a.Describe() + " | " + b.Describe() + " | " + (b.GetType() == typeof(Prototype)));
+    }
+}
