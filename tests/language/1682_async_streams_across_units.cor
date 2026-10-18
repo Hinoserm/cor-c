@@ -1,0 +1,70 @@
+// test: async_streams_across_units
+// units: tests/language/support/1682_async_streams_units.cor
+// expect-exit: 0
+// expect-output:
+// chunk 1+2
+// chunk 3+4
+// range 1 done
+// chunk 5
+// range 10 done
+// sum 33
+// a,b,c
+// lines x+y
+// lines z
+// got 0
+// got 1
+// range 0 done
+// canceled
+// first 7
+// range 7 done
+// end
+//
+// Async iterators compiled in another unit and walked here: a generic one
+// whose body holds an `await foreach` (the template crosses the units), a
+// sum over ConfigureAwait, an iterator that is a GetAsyncEnumerator, one
+// canceled through WithCancellation, and one disposed at a yield, each
+// finally run. Every line is what .NET 10 prints.
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static async Task<string> Join<T>(IAsyncEnumerable<T> seq)
+    {
+        List<string> all = new();
+        await foreach (T x in seq) all.Add(x!.ToString()!);
+        return string.Join(",", all);
+    }
+
+    static async Task Main()
+    {
+        await foreach (List<int> chunk in Streams.Chunks(Streams.Range(1, 5), 2))
+        {
+            Console.WriteLine("chunk " + string.Join("+", chunk));
+        }
+        Console.WriteLine("sum " + await Streams.Sum(Streams.Range(10, 3)));
+        Console.WriteLine(await Join(new Lines("a", "b", "c")));
+        await foreach (List<string> chunk in Streams.Chunks(new Lines("x", "y", "z"), 2))
+        {
+            Console.WriteLine("lines " + string.Join("+", chunk));
+        }
+        CancellationTokenSource cts = new();
+        try
+        {
+            await foreach (int x in Streams.Range(0, 10).WithCancellation(cts.Token))
+            {
+                Console.WriteLine("got " + x);
+                if (x == 1) cts.Cancel();
+            }
+        }
+        catch (OperationCanceledException) { Console.WriteLine("canceled"); }
+        IAsyncEnumerator<int> e = Streams.Range(7, 2).GetAsyncEnumerator();
+        await e.MoveNextAsync();
+        Console.WriteLine("first " + e.Current);
+        await e.DisposeAsync();
+        Console.WriteLine("end");
+    }
+}

@@ -9531,11 +9531,9 @@ interface IEnumerator<out T> : IDisposable, IEnumerator {
     T Current { get; }
 }
 
-/// `out T`. Everything read from a sequence is a T, so a sequence of
-/// FieldDecl IS a sequence of MemberDecl -- which is what lets
-/// `decl.Members.AddRange(several.More)` be written at all.
 /// A SEQUENCE READ BY AWAITING, as .NET's: each MoveNextAsync a ValueTask
 /// that says whether there is another, the enumerator disposed by awaiting.
+/// `await foreach` walks one, and an async iterator is one.
 interface IAsyncEnumerable<out T> {
     IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default);
 }
@@ -9545,6 +9543,418 @@ interface IAsyncEnumerator<out T> : System.IAsyncDisposable {
     System.Threading.Tasks.ValueTask<bool> MoveNextAsync();
 }
 
+// ---- async iterators --------------------------------------------------------
+//
+// AN ASYNC ITERATOR -- a method that awaits and yields, returning
+// IAsyncEnumerable<T> or IAsyncEnumerator<T> -- is written by the parser as
+// two things: the method itself, which makes one of these machines and runs
+// none of the body, and the body, an async local function given the machine
+// and the token, each `yield return v` in it an `await machine.Yield(v)` and
+// each `yield break` a return. The machine then runs it as C#'s does.
+//
+// Each MoveNextAsync runs the body from where it stopped until it yields
+// (true), ends (false) or throws (the ValueTask faulted with what it threw);
+// a step that gets to one of those before it returns is answered with no
+// task made, and one still waiting on an await is answered a task that the
+// rest of the step completes. DisposeAsync of one stopped at a yield
+// resumes it with the stop signal (Runtime.IteratorStop), which runs the
+// finally blocks around the yield, awaiting in them as they need, and ends
+// it; one not started is finished as it is, and one running is refused, as
+// .NET refuses it. The enumerable hands itself out the first time it is
+// enumerated and again whenever it has finished, and otherwise a new
+// machine over the arguments it was called with. The body is given the
+// [EnumeratorCancellation] argument, GetAsyncEnumerator's token, or one
+// linked to both, as .NET combines them.
+//
+// Two threads may race over a step -- the body resumed by an await on a
+// pool thread while the step's caller is still deciding whether it waits --
+// so what the step came to is settled by compare-and-swap: whoever moves it
+// on from Running answers.
+
+namespace System.Runtime.CompilerServices {
+
+/// Where an async iterator is: not started, running a step (or waiting in
+/// one), stopped at a yield, or finished -- which is also where an
+/// enumerable is before it is first enumerated.
+enum AsyncIteratorState { NotStarted, Running, Suspended, Finished }
+
+/// What the step being run came to: nothing yet, a yield, waiting with its
+/// caller answered a task, or the end of the body.
+enum AsyncIteratorStep { Running, Yielded, Waiting, Ended }
+
+/// The machine an async iterator returning IAsyncEnumerator<T> is, and the
+/// base of the one returning IAsyncEnumerable<T>.
+class AsyncIterator<T> : IAsyncEnumerator<T> {
+    // The body, as the parser wrote it, and the [EnumeratorCancellation]
+    // argument it was called with (default when it has none).
+    readonly Func<AsyncIterator<T>, CancellationToken, Task> _body;
+    readonly CancellationToken _argument;
+    // What the body is given, and the source linking two tokens into it.
+    CancellationToken _token;
+    CancellationTokenSource? _linked;
+    T _current;
+    // An AsyncIteratorState and an AsyncIteratorStep, held as numbers for
+    // the compare-and-swaps.
+    int _state;
+    int _step;
+    bool _disposing;
+    // The body's continuation at the yield it stopped at.
+    Action? _resume;
+    // The body's task, from its first step on.
+    Task? _task;
+    // What the caller of a step that waits was answered, to complete.
+    Task<bool>? _moving;
+    Task? _disposal;
+    // Registered on the body's task the first time a step waits: an end
+    // that comes while one does is its to answer.
+    Action? _ended;
+
+    public AsyncIterator(Func<AsyncIterator<T>, CancellationToken, Task> body) : this(body, default, AsyncIteratorState.NotStarted) { }
+
+    public AsyncIterator(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument) : this(body, argument, AsyncIteratorState.NotStarted) { }
+
+    protected AsyncIterator(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument, AsyncIteratorState state) {
+        _body = body;
+        _argument = argument;
+        _token = argument;
+        _current = default!;
+        _state = (int)state;
+    }
+
+    protected Func<AsyncIterator<T>, CancellationToken, Task> Body => _body;
+    protected CancellationToken Argument => _argument;
+
+    public T Current => _current;
+
+    public System.Threading.Tasks.ValueTask<bool> MoveNextAsync() {
+        AsyncIteratorState state = (AsyncIteratorState)_state;
+        if (state == AsyncIteratorState.Finished) {
+            return default;
+        }
+        if (state == AsyncIteratorState.Running) {
+            throw new NotSupportedException();
+        }
+        Run();
+        if (StillRunning()) {
+            Task<bool> moving = new Task<bool>();
+            _moving = moving;
+            if (Wait()) {
+                return new System.Threading.Tasks.ValueTask<bool>(moving);
+            }
+        }
+        if (System.Threading.Volatile.Read(ref _step) == (int)AsyncIteratorStep.Yielded) {
+            _state = (int)AsyncIteratorState.Suspended;
+            return new System.Threading.Tasks.ValueTask<bool>(true);
+        }
+        Exception? fault = Fault(_task!);
+        Finish();
+        if (fault == null) {
+            return default;
+        }
+        Task<bool> failed = new Task<bool>();
+        failed.TrySetException(fault);
+        return new System.Threading.Tasks.ValueTask<bool>(failed);
+    }
+
+    public System.Threading.Tasks.ValueTask DisposeAsync() {
+        AsyncIteratorState state = (AsyncIteratorState)_state;
+        if (state == AsyncIteratorState.Running) {
+            throw new NotSupportedException();
+        }
+        if (state == AsyncIteratorState.NotStarted) {
+            Finish();
+        }
+        if (state != AsyncIteratorState.Suspended) {
+            return default;
+        }
+        _disposing = true;
+        Run();
+        if (StillRunning()) {
+            Task disposal = new Task();
+            _disposal = disposal;
+            if (Wait()) {
+                return new System.Threading.Tasks.ValueTask(disposal);
+            }
+        }
+        Exception? fault = Fault(_task!);
+        Finish();
+        if (fault == null || Runtime.IteratorStopping(fault)) {
+            return default;
+        }
+        Task failed = new Task();
+        failed.TrySetException(fault);
+        return new System.Threading.Tasks.ValueTask(failed);
+    }
+
+    /// `yield return value`, as the parser writes it: the value is Current,
+    /// and the await suspends the body (Suspend).
+    public AsyncIteratorYield<T> Yield(T value) {
+        _current = value;
+        return new AsyncIteratorYield<T>(this);
+    }
+
+    /// The body stopped at a yield, `resume` its continuation. The step's
+    /// caller answers true unless it is already waiting, when the task it
+    /// was answered is completed with true here.
+    public void Suspend(Action resume) {
+        _resume = resume;
+        if (System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Yielded, (int)AsyncIteratorStep.Running) == (int)AsyncIteratorStep.Running) {
+            return;
+        }
+        _state = (int)AsyncIteratorState.Suspended;
+        Task<bool> moving = _moving!;
+        _moving = null;
+        moving.TrySetResult(true);
+    }
+
+    /// The body goes on from a yield: stopped, if it is being disposed.
+    public void Resumed() {
+        if (_disposing) {
+            Runtime.IteratorStop();
+        }
+    }
+
+    /// Claims an enumerable that is not being enumerated -- never yet, or
+    /// finished -- for the enumeration being asked for.
+    protected bool Claim() {
+        if (System.Threading.Interlocked.CompareExchange(ref _state, (int)AsyncIteratorState.NotStarted, (int)AsyncIteratorState.Finished) != (int)AsyncIteratorState.Finished) {
+            return false;
+        }
+        _task = null;
+        _ended = null;
+        _disposing = false;
+        _token = _argument;
+        return true;
+    }
+
+    /// The token GetAsyncEnumerator was given, combined with the argument
+    /// as .NET combines them.
+    protected void Given(CancellationToken token) {
+        if (token.Equals(default)) {
+            _token = _argument;
+        } else if (_argument.Equals(token) || _argument.Equals(default)) {
+            _token = token;
+        } else {
+            _linked = CancellationTokenSource.CreateLinkedTokenSource(_argument, token);
+            _token = _linked.Token;
+        }
+    }
+
+    // One step of the body: begun, or resumed from its yield.
+    void Run() {
+        _step = (int)AsyncIteratorStep.Running;
+        _state = (int)AsyncIteratorState.Running;
+        if (_task == null) {
+            _task = _body(this, _token);
+        } else {
+            Action resume = _resume!;
+            _resume = null;
+            resume();
+        }
+    }
+
+    // The step returned with neither a yield nor the end: it waits on an await.
+    bool StillRunning() {
+        return System.Threading.Volatile.Read(ref _step) == (int)AsyncIteratorStep.Running && !_task!.IsCompleted;
+    }
+
+    // Says the step waits, its caller's task already in place; false when
+    // the body got to a yield first.
+    bool Wait() {
+        if (_ended == null) {
+            Action ended = Ended;
+            _ended = ended;
+            _task!.AddContinuation(ended);
+        }
+        return System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Waiting, (int)AsyncIteratorStep.Running) == (int)AsyncIteratorStep.Running;
+    }
+
+    // The body's task completed. A step waiting for it is answered: false,
+    // or what the body threw; a disposal, done, or what a finally threw. An
+    // end some step already answered is nothing here.
+    void Ended() {
+        Task? task = _task;
+        if (task == null || !task.IsCompleted) {
+            return;
+        }
+        if (System.Threading.Interlocked.CompareExchange(ref _step, (int)AsyncIteratorStep.Ended, (int)AsyncIteratorStep.Waiting) != (int)AsyncIteratorStep.Waiting) {
+            return;
+        }
+        Exception? fault = Fault(task);
+        bool disposing = _disposing;
+        Task<bool>? moving = _moving;
+        Task? disposal = _disposal;
+        Finish();
+        if (disposing) {
+            if (fault == null || Runtime.IteratorStopping(fault)) {
+                disposal!.TrySetResult();
+            } else {
+                disposal!.TrySetException(fault);
+            }
+        } else if (fault == null) {
+            moving!.TrySetResult(false);
+        } else {
+            moving!.TrySetException(fault);
+        }
+    }
+
+    // What the body's finished task threw, as it threw it; null when it ran to the end.
+    static Exception? Fault(Task task) {
+        if (task.IsCompletedSuccessfully) {
+            return null;
+        }
+        try {
+            task.GetAwaiter().GetResult();
+        } catch (Exception e) {
+            return e;
+        }
+        return null;
+    }
+
+    void Finish() {
+        _state = (int)AsyncIteratorState.Finished;
+        _current = default!;
+        _resume = null;
+        _moving = null;
+        _disposal = null;
+        CancellationTokenSource? linked = _linked;
+        _linked = null;
+        linked?.Dispose();
+    }
+}
+
+/// The machine an async iterator returning IAsyncEnumerable<T> is.
+class AsyncIterable<T> : AsyncIterator<T>, IAsyncEnumerable<T> {
+    public AsyncIterable(Func<AsyncIterator<T>, CancellationToken, Task> body) : base(body, default, AsyncIteratorState.Finished) { }
+
+    public AsyncIterable(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument) : base(body, argument, AsyncIteratorState.Finished) { }
+
+    AsyncIterable(Func<AsyncIterator<T>, CancellationToken, Task> body, CancellationToken argument, AsyncIteratorState state) : base(body, argument, state) { }
+
+    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default) {
+        AsyncIterable<T> walk = Claim() ? this : new AsyncIterable<T>(Body, Argument, AsyncIteratorState.NotStarted);
+        walk.Given(cancellationToken);
+        return walk;
+    }
+}
+
+/// What `await machine.Yield(value)` awaits: never complete, so the body
+/// always stops there, its continuation kept by the machine.
+readonly struct AsyncIteratorYield<T> {
+    readonly AsyncIterator<T> _machine;
+
+    public AsyncIteratorYield(AsyncIterator<T> machine) {
+        _machine = machine;
+    }
+
+    public AsyncIteratorYield<T> GetAwaiter() => this;
+
+    public bool IsCompleted => false;
+
+    public void OnCompleted(Action continuation) {
+        _machine.Suspend(continuation);
+    }
+
+    public void UnsafeOnCompleted(Action continuation) {
+        _machine.Suspend(continuation);
+    }
+
+    public void GetResult() {
+        _machine.Resumed();
+    }
+}
+
+/// `sequence.ConfigureAwait(false)` and `sequence.WithCancellation(token)`:
+/// what `await foreach` walks the sequence with, the token handed to its
+/// GetAsyncEnumerator and each MoveNextAsync and the DisposeAsync awaited as
+/// configured. .NET's, member for member.
+readonly struct ConfiguredCancelableAsyncEnumerable<T> {
+    readonly IAsyncEnumerable<T> _enumerable;
+    readonly CancellationToken _cancellationToken;
+    readonly bool _continueOnCapturedContext;
+
+    public ConfiguredCancelableAsyncEnumerable(IAsyncEnumerable<T> enumerable, bool continueOnCapturedContext, CancellationToken cancellationToken) {
+        _enumerable = enumerable;
+        _continueOnCapturedContext = continueOnCapturedContext;
+        _cancellationToken = cancellationToken;
+    }
+
+    public ConfiguredCancelableAsyncEnumerable<T> ConfigureAwait(bool continueOnCapturedContext)
+        => new ConfiguredCancelableAsyncEnumerable<T>(_enumerable, continueOnCapturedContext, _cancellationToken);
+
+    public ConfiguredCancelableAsyncEnumerable<T> WithCancellation(CancellationToken cancellationToken)
+        => new ConfiguredCancelableAsyncEnumerable<T>(_enumerable, _continueOnCapturedContext, cancellationToken);
+
+    public Enumerator GetAsyncEnumerator()
+        => new Enumerator(_enumerable.GetAsyncEnumerator(_cancellationToken), _continueOnCapturedContext);
+
+    public readonly struct Enumerator {
+        readonly IAsyncEnumerator<T> _enumerator;
+        readonly bool _continueOnCapturedContext;
+
+        public Enumerator(IAsyncEnumerator<T> enumerator, bool continueOnCapturedContext) {
+            _enumerator = enumerator;
+            _continueOnCapturedContext = continueOnCapturedContext;
+        }
+
+        public ConfiguredValueTaskAwaitable<bool> MoveNextAsync() => _enumerator.MoveNextAsync().ConfigureAwait(_continueOnCapturedContext);
+
+        public T Current => _enumerator.Current;
+
+        public ConfiguredValueTaskAwaitable DisposeAsync() => _enumerator.DisposeAsync().ConfigureAwait(_continueOnCapturedContext);
+    }
+}
+
+/// `resource.ConfigureAwait(false)` in an `await using`: the resource's
+/// DisposeAsync awaited as configured.
+readonly struct ConfiguredAsyncDisposable {
+    readonly System.IAsyncDisposable _source;
+    readonly bool _continueOnCapturedContext;
+
+    public ConfiguredAsyncDisposable(System.IAsyncDisposable source, bool continueOnCapturedContext) {
+        _source = source;
+        _continueOnCapturedContext = continueOnCapturedContext;
+    }
+
+    public ConfiguredValueTaskAwaitable DisposeAsync() => _source.DisposeAsync().ConfigureAwait(_continueOnCapturedContext);
+}
+
+}
+
+namespace System.Threading.Tasks {
+
+/// .NET's TaskAsyncEnumerableExtensions: ConfigureAwait and WithCancellation
+/// for an async sequence and ConfigureAwait for an async resource, and the
+/// sequence walked by waiting for each element.
+static class TaskAsyncEnumerableExtensions {
+    public static System.Runtime.CompilerServices.ConfiguredAsyncDisposable ConfigureAwait(this System.IAsyncDisposable source, bool continueOnCapturedContext)
+        => new System.Runtime.CompilerServices.ConfiguredAsyncDisposable(source, continueOnCapturedContext);
+
+    public static System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T> ConfigureAwait<T>(this IAsyncEnumerable<T> source, bool continueOnCapturedContext)
+        => new System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T>(source, continueOnCapturedContext, default);
+
+    public static System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T> WithCancellation<T>(this IAsyncEnumerable<T> source, CancellationToken cancellationToken)
+        => new System.Runtime.CompilerServices.ConfiguredCancelableAsyncEnumerable<T>(source, true, cancellationToken);
+
+    /// Each element as MoveNextAsync makes it, waited for; the enumerator
+    /// disposed, and the disposal waited for, however the walk ends.
+    public static IEnumerable<T> ToBlockingEnumerable<T>(this IAsyncEnumerable<T> source, CancellationToken cancellationToken = default) {
+        IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(cancellationToken);
+        try {
+            while (enumerator.MoveNextAsync().Result) {
+                yield return enumerator.Current;
+            }
+        } finally {
+            enumerator.DisposeAsync().GetAwaiter().GetResult();
+        }
+    }
+}
+
+}
+
+/// `out T`. Everything read from a sequence is a T, so a sequence of
+/// FieldDecl IS a sequence of MemberDecl -- which is what lets
+/// `decl.Members.AddRange(several.More)` be written at all.
 interface IEnumerable<out T> : IEnumerable {
     IEnumerator<T> GetEnumerator();
 }

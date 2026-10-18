@@ -8,6 +8,9 @@ public sealed class ForeachStmt : Stmt
     public required Expr Sequence { get; init; }
     public required Stmt Body { get; init; }
 
+    /// <summary>`await foreach`: the sequence walked by GetAsyncEnumerator, each MoveNextAsync and the DisposeAsync awaited.</summary>
+    public bool Async { get; init; }
+
     /// <summary>
     /// The names a DECONSTRUCTING foreach binds, when it was written that way:
     /// `foreach ((Op op, Fmt f) in table)`.

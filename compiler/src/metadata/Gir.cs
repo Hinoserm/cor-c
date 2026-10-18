@@ -600,6 +600,7 @@ public static class Gir
                     U8((byte)S.Foreach);
                     Type(fe.Type);
                     Str(fe.Name);
+                    Bool(fe.Async);
                     Bool(fe.Bindings != null);
 
                     if (fe.Bindings is { } bound)
@@ -1523,13 +1524,14 @@ public static class Gir
                 {
                     TypeRef? type = TypeOrNull();
                     string name = Str();
+                    bool awaited = Bool();
                     List<Binding>? bound = Bool() ? ReadBindings() : null;
                     Expr sequence = Need();
 
                     return new ForeachStmt
                     {
                         Type = type, Name = name, Bindings = bound,
-                        Sequence = sequence, Body = NeedStmt(),
+                        Sequence = sequence, Body = NeedStmt(), Async = awaited,
                     };
                 }
 

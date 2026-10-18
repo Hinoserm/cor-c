@@ -6463,6 +6463,25 @@ public sealed partial class Binder
             {
                 Type seq = Peek(fe.Sequence);
 
+                // `await foreach`, always rewritten (IterateAsync).
+                if (fe.Async)
+                {
+                    if (!seq.IsError && IterateAsync(fe, seq) is Stmt awaited)
+                    {
+                        _r.Lowered[fe] = awaited;
+                        CheckStmt(awaited);
+                    }
+                    else
+                    {
+                        CheckExpr(fe.Sequence);
+                        if (!seq.IsError)
+                        {
+                            Error(fe.Sequence, $"CS8411: Asynchronous foreach statement cannot operate on variables of type '{seq}' because '{seq}' does not contain a suitable public instance or extension definition for 'GetAsyncEnumerator'");
+                        }
+                    }
+                    break;
+                }
+
                 // OVER A DYNAMIC VALUE: over what the binder enumerates of it.
                 if (LateForeach(fe, seq) is Stmt lateLoop)
                 {
@@ -6498,8 +6517,10 @@ public sealed partial class Binder
 
                 if (!linear && !seq.IsError)
                 {
-                    Error(fe.Sequence, $"'{seq}' cannot be iterated: it is not an array, "
-                        + "has no GetEnumerator, and is not a list");
+                    // C#'s CS8414 for an async sequence walked without `await`.
+                    Error(fe.Sequence, seq.Symbol is TypeSymbol walkedLater && Reachable(walkedLater, "GetAsyncEnumerator").Count > 0
+                        ? $"'{seq}' cannot be iterated: it has no GetEnumerator; did you mean 'await foreach' rather than 'foreach'?"
+                        : $"'{seq}' cannot be iterated: it is not an array, has no GetEnumerator, and is not a list");
                 }
 
                 PushScope();
@@ -9852,6 +9873,105 @@ public sealed partial class Binder
         _r.Wanted.RemoveRange(wanted, _r.Wanted.Count - wanted);
         _r.WantedOverrides.RemoveRange(overrides, _r.WantedOverrides.Count - overrides);
         return had;
+    }
+
+    /// <summary>
+    /// `await foreach`, as C# writes it (C# 13.9.5, the async form): the
+    /// enumerator from a GetAsyncEnumerator called with nothing, each
+    /// MoveNextAsync awaited for whether there is another, Current read into
+    /// the loop's variable (or taken apart), and the enumerator disposed by
+    /// awaiting however the loop ends. Null when there is no
+    /// GetAsyncEnumerator to call.
+    /// </summary>
+    private Stmt? IterateAsync(ForeachStmt fe, Type seq)
+    {
+        // A GetAsyncEnumerator that can be called with nothing: its token, and
+        // any other parameter, defaulted (C# 13.9.5, the async pattern).
+        if (seq.Symbol is not TypeSymbol had
+            || Reachable(had, "GetAsyncEnumerator").FirstOrDefault(m => !m.Static
+                   && Enumerable.Range(0, m.Params.Count).All(i => m.Params[i].IsParams || m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null)) is not { } walk)
+        {
+            return null;
+        }
+
+        int n = _iterations++;
+        string walker = $"$enumerator${n}";
+        Expr Named(string name) => new NameExpr { Name = name, Line = fe.Line, Col = fe.Col };
+        Expr On(Expr target, string member) => new MemberExpr { Target = target, Name = member, Line = fe.Line, Col = fe.Col };
+        Expr Called(Expr target, string member) => new CallExpr { Target = On(target, member), Line = fe.Line, Col = fe.Col };
+        Expr Awaited(Expr operand) => new AwaitExpr { Operand = operand, Line = fe.Line, Col = fe.Col };
+
+        Block body = new() { Line = fe.Line, Col = fe.Col };
+        if (fe.Bindings is { } taken)
+        {
+            // What Current hands back, which is what is taken apart (Iterate).
+            Type walking = Close(walk.Returns, Received(seq, walk.Owner ?? had));
+            Type each = walking.Symbol is TypeSymbol e
+                      ? Close(Reachable(e, "get_Current").FirstOrDefault()?.Returns ?? Type.Error, Received(walking, e))
+                      : Type.Error;
+            string element = $"$element${n}";
+            body.WritableStatements.Add(new LocalDecl { Name = element, Init = On(Named(walker), "Current"), Line = fe.Line, Col = fe.Col });
+            body.WritableStatements.AddRange(Deconstruct(fe, Named(element), taken, each));
+        }
+        else
+        {
+            body.WritableStatements.Add(new LocalDecl { Type = fe.Type, Name = fe.Name, Init = On(Named(walker), "Current"), Line = fe.Line, Col = fe.Col });
+        }
+        body.WritableStatements.Add(fe.Body);
+
+        Block outer = new() { Line = fe.Line, Col = fe.Col };
+        outer.WritableStatements.Add(new LocalDecl { Name = walker, Init = Called(fe.Sequence, "GetAsyncEnumerator"), Line = fe.Line, Col = fe.Col });
+        WhileStmt stepping = new()
+        {
+            Cond = Awaited(Called(Named(walker), "MoveNextAsync")), Body = body,
+            Line = fe.Line, Col = fe.Col,
+        };
+
+        // THE ENUMERATOR IS DISPOSED by awaiting its DisposeAsync however the
+        // loop ends: its own, found by the pattern whatever it implements, as
+        // C# finds it for an async loop, or IAsyncDisposable's through the
+        // interface when that is implemented explicitly. Unlike a loop's
+        // IDisposable, an unsealed class with neither is not asked at run
+        // time whether it is one after all: .NET disposes nothing there.
+        Stmt? release = null;
+        if (Close(walk.Returns, Received(seq, walk.Owner ?? had)).Symbol is TypeSymbol enumerator)
+        {
+            MethodSymbol? dispose = Reachable(enumerator, "DisposeAsync").FirstOrDefault(m => m.Params.Count == 0 && !m.Static);
+            MethodSymbol? hidden = enumerator.Kind == TypeKind.Interface ? null
+                : enumerator.Methods.FirstOrDefault(m => m.ExplicitMember == "DisposeAsync" && m.ExplicitInterface is "IAsyncDisposable" or "System.IAsyncDisposable" && m.Params.Count == 0);
+            bool throughInterface = hidden is not null && (dispose is null || dispose.Owner.Kind == TypeKind.Interface);
+            if (dispose is not null || throughInterface)
+            {
+                Expr target = throughInterface
+                    ? new CastExpr { Type = new TypeRef { Name = "System.IAsyncDisposable", Line = fe.Line, Col = fe.Col }, Operand = Named(walker), Line = fe.Line, Col = fe.Col }
+                    : Named(walker);
+                Stmt call = new ExprStmt { Expr = Awaited(Called(target, "DisposeAsync")), Line = fe.Line, Col = fe.Col };
+                release = enumerator.Kind == TypeKind.Struct ? call : new IfStmt
+                {
+                    Cond = new BinaryExpr
+                    {
+                        Op = BinOp.Ne, Left = Named(walker),
+                        Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = fe.Line, Col = fe.Col },
+                        Line = fe.Line, Col = fe.Col,
+                    },
+                    Then = call, Line = fe.Line, Col = fe.Col,
+                };
+            }
+        }
+
+        if (release is null)
+        {
+            outer.WritableStatements.Add(stepping);
+        }
+        else
+        {
+            Block guarded = new() { Line = fe.Line, Col = fe.Col };
+            guarded.WritableStatements.Add(stepping);
+            Block finish = new() { Line = fe.Line, Col = fe.Col };
+            finish.WritableStatements.Add(release);
+            outer.WritableStatements.Add(new TryStmt { Body = guarded, Finally = finish, Line = fe.Line, Col = fe.Col });
+        }
+        return outer;
     }
 
     /// <summary>

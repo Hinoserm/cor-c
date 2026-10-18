@@ -90,6 +90,33 @@ public sealed class Parser
     private int _iteratorSerial;
     private int _lockSerial;
 
+    /// <summary>
+    /// The async iterator whose body is being read, or null: its `yield
+    /// return v` is read as `await machine.Yield(v)` and its `yield break` as
+    /// a return, the body becoming an async local function the method's
+    /// machine runs (AsyncIteratorKickoff).
+    /// </summary>
+    private AsyncIteratorBody? _asyncIterator;
+
+    /// <summary>
+    /// Where the async iterator's yields are, for C#'s rules on them, which
+    /// its body -- an async function by the time the binder reads it -- no
+    /// longer shows: the finally and catch clauses being read, and the yields
+    /// with a value read in the try block being read, refused (CS1626) once
+    /// it turns out to have a catch.
+    /// </summary>
+    private int _finallyDepth, _catchDepth;
+    private List<Token>? _tryYields;
+
+    /// <summary>The parameters written [EnumeratorCancellation]: the token an async iterator's body is given in their place.</summary>
+    private readonly HashSet<Param> _enumeratorCancellation = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>An async iterator's body as read: its machine parameter's name, its element, and whether it is enumerable.</summary>
+    private sealed record AsyncIteratorBody(string Machine, TypeRef Element, bool Enumerable)
+    {
+        public bool Yields { get; set; }
+    }
+
     /// Types written inside another type, waiting to be put beside it.
     private readonly List<TypeDecl> _nested = new();
 
@@ -3155,13 +3182,32 @@ public sealed class Parser
         return bound;
     }
 
-    private Block ReadBodyBlock(TypeRef? produces, int line, int col)
+    private Block ReadBodyBlock(TypeRef? produces, int line, int col) => ReadBodyBlock(produces, line, col, false, out _);
+
+    /// <summary>
+    /// A body, which is an iterator's when it yields. An `async` one
+    /// returning IAsyncEnumerable&lt;T&gt; or IAsyncEnumerator&lt;T&gt; is an async
+    /// iterator's, its yields read as awaits on the machine (AsyncYield), and
+    /// is handed back as `asyncIterator` for the caller to make the method's
+    /// kickoff of (AsyncIteratorKickoff).
+    /// </summary>
+    private Block ReadBodyBlock(TypeRef? produces, int line, int col, bool async, out AsyncIteratorBody? asyncIterator)
     {
         string? savedTarget = _iteratorTarget;
         TypeRef? savedElement = _iteratorElement;
         bool savedYield = _iteratorSawYield;
+        AsyncIteratorBody? savedAsync = _asyncIterator;
+        int savedFinally = _finallyDepth, savedCatch = _catchDepth;
+        List<Token>? savedTryYields = _tryYields;
 
-        _iteratorTarget = "__yield" + _iteratorSerial++;
+        int serial = _iteratorSerial++;
+        _iteratorTarget = "__yield" + serial;
+        _asyncIterator = async && AsyncSequenceElement(produces, out bool enumerable) is { } produced
+                       ? new AsyncIteratorBody("$machine$" + serial, produced, enumerable)
+                       : null;
+        _finallyDepth = 0;
+        _catchDepth = 0;
+        _tryYields = null;
         // WHAT IT ENUMERATES, when it is an iterator: the T of IEnumerable<T> or
         // IEnumerator<T>, object for the non-generic two.
         _iteratorElement = produces is { Args.Count: 1 } sequence
@@ -3180,20 +3226,176 @@ public sealed class Parser
         Block body = ParseBlock();
         _returns = savedReturns;
 
+        asyncIterator = null;
         if (_iteratorSawYield)
         {
-            if (_iteratorElement is null)
+            if (_asyncIterator is { } made)
+            {
+                asyncIterator = made;
+            }
+            else if (AsyncSequenceElement(produces, out _) is not null)
+            {
+                throw new CompileError(_file, line, col,
+                    $"CS8403: a method with an iterator block must be 'async' to return '{produces!.Name}<{produces.Args[0].Name}>'");
+            }
+            else if (_iteratorElement is null)
             {
                 throw new CompileError(_file, line, col,
                     "a method using 'yield return' must return IEnumerable<T>, IEnumerator<T>, IEnumerable or IEnumerator");
             }
-            body.Iterator = true;
+            else if (async)
+            {
+                throw new CompileError(_file, line, col,
+                    "CS1983: The return type of an async method must be void, Task, Task<T>, a task-like type, IAsyncEnumerable<T>, or IAsyncEnumerator<T>");
+            }
+            else
+            {
+                body.Iterator = true;
+            }
         }
 
         _iteratorTarget = savedTarget;
         _iteratorElement = savedElement;
         _iteratorSawYield = savedYield;
+        _asyncIterator = savedAsync;
+        _finallyDepth = savedFinally;
+        _catchDepth = savedCatch;
+        _tryYields = savedTryYields;
         return body;
+    }
+
+    /// <summary>T, when `produces` is IAsyncEnumerable&lt;T&gt; (enumerable) or IAsyncEnumerator&lt;T&gt;, by its name as written.</summary>
+    private static TypeRef? AsyncSequenceElement(TypeRef? produces, out bool enumerable)
+    {
+        enumerable = false;
+        if (produces is not { Args.Count: 1, ArrayRank: 0, PointerDepth: 0 })
+        {
+            return null;
+        }
+        string name = produces.Name;
+        int dot = name.LastIndexOf('.');
+        if (dot >= 0) name = name[(dot + 1)..];
+        if (name.EndsWith("`1", StringComparison.Ordinal)) name = name[..^2];
+        if (name is not ("IAsyncEnumerable" or "IAsyncEnumerator"))
+        {
+            return null;
+        }
+        enumerable = name == "IAsyncEnumerable";
+        return produces.Args[0];
+    }
+
+    /// <summary>
+    /// A yield in an async iterator's body (_asyncIterator): `yield return
+    /// value` is `await machine.Yield(value)`, the value converted to the
+    /// element as that parameter converts it, and `yield break` a return,
+    /// which ends the body through the finally blocks around it. Where C#
+    /// lets a yield stand is checked here, as the binder checks an
+    /// iterator's (CS1625, CS1631; CS1626 by ParseTry).
+    /// </summary>
+    private Stmt AsyncYield(AsyncIteratorBody it, Token at, Expr? value)
+    {
+        if (_finallyDepth > 0)
+        {
+            throw new CompileError(_file, at.Line, at.Col, "CS1625: Cannot yield in the body of a finally clause");
+        }
+        it.Yields = true;
+        if (value is null)
+        {
+            return new ReturnStmt { Line = at.Line, Col = at.Col };
+        }
+        if (_catchDepth > 0)
+        {
+            throw new CompileError(_file, at.Line, at.Col, "CS1631: Cannot yield a value in the body of a catch clause");
+        }
+        (_tryYields ??= new()).Add(at);
+        CallExpr produce = new()
+        {
+            Target = new MemberExpr
+            {
+                Target = new NameExpr { Name = it.Machine, Line = at.Line, Col = at.Col },
+                Name = "Yield", Line = at.Line, Col = at.Col,
+            },
+            Line = at.Line, Col = at.Col,
+        };
+        produce.Args.Add(value);
+        return new ExprStmt
+        {
+            Expr = new AwaitExpr { Operand = produce, Line = at.Line, Col = at.Col },
+            Line = at.Line, Col = at.Col,
+        };
+    }
+
+    /// <summary>
+    /// AN ASYNC ITERATOR'S METHOD, as it is written for the binder: its body,
+    /// read with each yield an await on the machine (AsyncYield), becomes an
+    /// async local function taking the machine and the method's own
+    /// parameters, and the method makes the machine over it and runs none of
+    /// it -- AsyncIterable&lt;T&gt; for one returning IAsyncEnumerable&lt;T&gt;,
+    /// AsyncIterator&lt;T&gt; for IAsyncEnumerator&lt;T&gt; (Core.cor's
+    /// System.Runtime.CompilerServices). The machine starts the body with the
+    /// token it settled on, passed for the parameter written
+    /// [EnumeratorCancellation]; every other parameter is passed as the
+    /// method was given it, so each enumeration starts from the arguments as
+    /// they were, whatever an earlier one did to its own copies.
+    /// </summary>
+    private Block AsyncIteratorKickoff(AsyncIteratorBody it, List<Param> parameters, Block body, Token at)
+    {
+        int line = at.Line, col = at.Col;
+        string run = "$body" + it.Machine, token = "$token" + it.Machine;
+        NameExpr Named(string name) => new() { Name = name, Line = line, Col = col };
+        TypeRef Machine(string name) => new()
+        {
+            Name = "System.Runtime.CompilerServices." + name, Arguments = new List<TypeRef> { it.Element }, Line = line, Col = col,
+        };
+
+        LambdaExpr steps = new() { BlockBody = body, Async = true, Line = line, Col = col };
+        steps.WritableParams.Add(new Param { Name = it.Machine, Type = Machine("AsyncIterator"), Line = line, Col = col });
+        Param? cancels = null;
+        foreach (Param p in parameters)
+        {
+            if (p.IsRef || p.IsOut)
+            {
+                throw new CompileError(_file, p.Line, p.Col, "CS1988: Async methods cannot have ref, in or out parameters");
+            }
+            if (_enumeratorCancellation.Contains(p)) cancels = p;
+            steps.WritableParams.Add(new Param { Name = p.Name, Type = p.Type, Line = p.Line, Col = p.Col });
+        }
+
+        // The local function's type, as ParseLocalFunction gives one.
+        TypeRef task = new() { Name = "System.Threading.Tasks.Task", Line = line, Col = col };
+        TypeRef shape;
+        if (steps.Params.Count > 8)
+        {
+            shape = LocalFunctionDelegate(at, run, task, steps.WritableParams, Mods.None);
+        }
+        else
+        {
+            shape = new TypeRef { Name = "Func", Line = line, Col = col };
+            shape.Arguments.AddRange(steps.Params.Select(p => p.Type));
+            shape.Arguments.Add(task);
+        }
+
+        Block kickoff = new() { Line = line, Col = col };
+        kickoff.WritableStatements.Add(new LocalDecl { Type = shape, Name = run, Init = steps, LocalFunction = true, Line = line, Col = col });
+
+        CallExpr start = new() { Target = Named(run), Line = line, Col = col };
+        start.Args.Add(Named(it.Machine));
+        foreach (Param p in parameters)
+        {
+            start.Args.Add(Named(ReferenceEquals(p, cancels) ? token : p.Name));
+        }
+        LambdaExpr starts = new() { Body = start, Line = line, Col = col };
+        starts.WritableParams.Add(new Param { Name = it.Machine, Type = new TypeRef { Name = "", Line = line, Col = col }, Line = line, Col = col });
+        starts.WritableParams.Add(new Param { Name = token, Type = new TypeRef { Name = "", Line = line, Col = col }, Line = line, Col = col });
+
+        NewExpr machine = new() { Type = Machine(it.Enumerable ? "AsyncIterable" : "AsyncIterator"), Line = line, Col = col };
+        machine.Args.Add(starts);
+        if (cancels is not null)
+        {
+            machine.Args.Add(Named(cancels.Name));
+        }
+        kickoff.WritableStatements.Add(new ReturnStmt { Value = machine, Line = line, Col = col });
+        return kickoff;
     }
 
     private MethodDecl FinishMethod(MethodDecl m, CtorInit? init = null)
@@ -3220,6 +3422,10 @@ public sealed class Parser
         // starts, for an index that leaves it out.
         bool neverReturns = false;
         int bodyAt = 0;
+        // AN ASYNC ITERATOR'S METHOD IS NOT ASYNC ITSELF: it makes the
+        // machine its body runs in (AsyncIteratorKickoff), however its body
+        // was read -- whole, or left out of a declarations-only one.
+        bool asyncSequence = m.Mods.HasFlag(Mods.Async) && AsyncSequenceElement(m.Returns, out _) is not null;
 
         if (At(Tok.LBrace))
         {
@@ -3228,12 +3434,24 @@ public sealed class Parser
             _returns = m.Returns;
             int open = _i;
             bodyAt = Cur.Pos;
-            body = ReadBodyBlock(m.Returns, m.Line, m.Col);
+            body = ReadBodyBlock(m.Returns, m.Line, m.Col, m.Mods.HasFlag(Mods.Async), out AsyncIteratorBody? asyncIterator);
             neverReturns = NeverReturnsByText(open, _i - 1);
             _returns = savedReturns;
+            if (asyncIterator is not null)
+            {
+                body = AsyncIteratorKickoff(asyncIterator, m.Params, body, _t[open]);
+            }
+            else if (asyncSequence && !SkipImplementation)
+            {
+                throw new CompileError(_file, m.Line, m.Col, "CS8420: The body of an async-iterator method must contain a 'yield' statement.");
+            }
         }
         else if (Take(Tok.FatArrow))
         {
+            if (asyncSequence && !SkipImplementation)
+            {
+                throw new CompileError(_file, m.Line, m.Col, "CS8420: The body of an async-iterator method must contain a 'yield' statement.");
+            }
             // Expression body: sugar for a block that returns the expression --
             // EXCEPT when the method returns nothing, where it is sugar for the
             // expression as a statement. `public void RelocateLast() =>
@@ -3279,7 +3497,7 @@ public sealed class Parser
 
         MethodDecl made = new MethodDecl
         {
-            Name = m.Name, Mods = m.Mods, Returns = m.Returns, IsCtor = m.IsCtor,
+            Name = m.Name, Mods = asyncSequence ? m.Mods & ~Mods.Async : m.Mods, Returns = m.Returns, IsCtor = m.IsCtor,
             NotNullIfNotNull = m.NotNullIfNotNull,
             ExplicitInterface = m.ExplicitInterface,
             Line = m.Line, Col = m.Col, Body = body, Init = init,
@@ -3618,6 +3836,7 @@ public sealed class Parser
             CallerInfo caller = CallerInfo.None;
             string? callerArgument = null;
             string? marshalAs = null;
+            bool cancels = false;
 
             // AND THE CALLER-INFORMATION ATTRIBUTES, which make the compiler
             // pass what it knows at the call for an argument left out: the
@@ -3638,6 +3857,8 @@ public sealed class Parser
                     callerArgument = of;
                 }
                 else if (named == "MarshalAs" && written.Argument is { Length: > 0 } unmanaged) marshalAs = unmanaged;
+                // The token an async iterator's body is given in its place.
+                else if (named == "EnumeratorCancellation") cancels = true;
             }
 
             Token at = Cur;
@@ -3659,13 +3880,15 @@ public sealed class Parser
             string name = Expect(Tok.Ident, "a parameter name").Text;
             Expr? def = Take(Tok.Assign) ? ParseExpr() : null;
 
-            (into ??= new()).Add(new Param
+            Param read = new()
             {
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
                 NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
                 MarshalAs = marshalAs, Default = def, Line = at.Line, Col = at.Col,
-            });
+            };
+            (into ??= new()).Add(read);
+            if (cancels) _enumeratorCancellation.Add(read);
 
             if (variadic && type.ArrayRank == 0)
             {
@@ -4585,8 +4808,11 @@ public sealed class Parser
                 return built;
             }
 
+            // `await foreach` walks an async sequence (ForeachStmt.Async).
+            case Tok.KwAwait when Ahead().Kind == Tok.KwForeach:
             case Tok.KwForeach:
             {
+                bool awaited = Take(Tok.KwAwait);
                 _i++;
                 Expect(Tok.LParen, "'(' after 'foreach'");
 
@@ -4618,7 +4844,7 @@ public sealed class Parser
                     return new ForeachStmt
                     {
                         Name = bound[0].Name, Sequence = over, Bindings = bound,
-                        Body = ParseStmt(), Line = at.Line, Col = at.Col,
+                        Body = ParseStmt(), Async = awaited, Line = at.Line, Col = at.Col,
                     };
                 }
 
@@ -4633,7 +4859,7 @@ public sealed class Parser
                 Expect(Tok.KwIn, "'in' after the loop variable");
                 Expr seq = ParseExpr();
                 Expect(Tok.RParen, "')' after the sequence");
-                return new ForeachStmt { Type = type, Name = name, Sequence = seq, Body = ParseStmt(), Line = at.Line, Col = at.Col };
+                return new ForeachStmt { Type = type, Name = name, Sequence = seq, Body = ParseStmt(), Async = awaited, Line = at.Line, Col = at.Col };
             }
 
             // ITERATORS ARE LOWERED TO THEIR EAGER SEQUENCE at the syntax
@@ -4656,6 +4882,10 @@ public sealed class Parser
                 Expr value = ParseExpr();
                 Expect(Tok.Semi, "';' after 'yield return'");
                 _iteratorSawYield = true;
+                if (_asyncIterator is { } producing)
+                {
+                    return AsyncYield(producing, at, value);
+                }
                 return new YieldStmt { Value = value, Line = at.Line, Col = at.Col };
             }
 
@@ -4669,11 +4899,21 @@ public sealed class Parser
                 _i += 2;
                 Expect(Tok.Semi, "';' after 'yield break'");
                 _iteratorSawYield = true;
+                if (_asyncIterator is { } stopping)
+                {
+                    return AsyncYield(stopping, at, null);
+                }
                 return new YieldStmt { Line = at.Line, Col = at.Col };
             }
 
             case Tok.KwReturn:
             {
+                // An async iterator ends with `yield break` (CS1622), as an
+                // iterator does; its body's return is the one AsyncYield writes.
+                if (_asyncIterator is not null)
+                {
+                    throw new CompileError(_file, at.Line, at.Col, "CS1622: Cannot return a value from an iterator. Use the yield return statement to return a value, or yield break to end the iteration.");
+                }
                 _i++;
                 // `return ref x;` answers the variable itself, from a method
                 // that returns by reference (ParseRefValue).
@@ -5530,6 +5770,9 @@ public sealed class Parser
         // what the lambda is converted to; the method's return type is not it.
         TypeRef? savedReturns = _returns;
         _returns = null;
+        // Nor are its yields an async iterator's around it.
+        AsyncIteratorBody? savedAsync = _asyncIterator;
+        _asyncIterator = null;
         // `=> ref a[0]`: the body of a lambda that returns by reference is
         // the variable it answers (ParseRefValue).
         // EVERY TYPE WRITTEN, or none: C# allows no mixture, and only the
@@ -5539,6 +5782,7 @@ public sealed class Parser
             ? new LambdaExpr { BlockBody = ParseBlock(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed, NoSignature = noSignature }
             : new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed };
         _returns = savedReturns;
+        _asyncIterator = savedAsync;
 
         for (int k = 0; k < names.Count; k++)
         {
@@ -6260,8 +6504,19 @@ public sealed class Parser
         {
             // ITS OWN BODY, as a method's is: a local function may be an
             // iterator of its own, and its `yield`s are not its enclosing
-            // method's.
-            lam = new LambdaExpr { BlockBody = ReadBodyBlock(returns, at.Line, at.Col), Async = isAsync, Line = at.Line, Col = at.Col };
+            // method's -- an async iterator too, which is no async function
+            // itself but the kickoff of its machine (AsyncIteratorKickoff).
+            Token open = Cur;
+            Block read = ReadBodyBlock(returns, at.Line, at.Col, isAsync, out AsyncIteratorBody? asyncIterator);
+            if (asyncIterator is not null)
+            {
+                read = AsyncIteratorKickoff(asyncIterator, made.Params, read, open);
+            }
+            else if (isAsync && AsyncSequenceElement(returns, out _) is not null && !SkipImplementation)
+            {
+                throw new CompileError(_file, at.Line, at.Col, "CS8420: The body of an async-iterator method must contain a 'yield' statement.");
+            }
+            lam = new LambdaExpr { BlockBody = read, Async = isAsync && asyncIterator is null, Line = at.Line, Col = at.Col };
         }
 
         lam.WritableParams.AddRange(made.Params);
@@ -7213,7 +7468,13 @@ public sealed class Parser
     private TryStmt ParseTry()
     {
         Token at = _t[_i++];
+        // The yields with a value read in this try block, refused below if it
+        // has a catch (an async iterator's: _tryYields).
+        List<Token>? outerYields = _tryYields;
+        _tryYields = null;
         Block body = ParseBlock();
+        List<Token>? yields = _tryYields;
+        _tryYields = outerYields;
         TryStmt t = new() { Body = body, Line = at.Line, Col = at.Col };
 
         while (At(Tok.KwCatch))
@@ -7250,7 +7511,9 @@ public sealed class Parser
             CatchScope scope = new() { Name = name };
 
             _catches.Add(scope);
+            _catchDepth++;
             Block caughtBody = ParseBlock();
+            _catchDepth--;
             _catches.RemoveAt(_catches.Count - 1);
 
             t.Catches.Add(new CatchClause
@@ -7260,7 +7523,23 @@ public sealed class Parser
             });
         }
 
-        Block? fin = Take(Tok.KwFinally) ? ParseBlock() : null;
+        Block? fin = null;
+        if (Take(Tok.KwFinally))
+        {
+            _finallyDepth++;
+            fin = ParseBlock();
+            _finallyDepth--;
+        }
+
+        if (yields is { Count: > 0 })
+        {
+            if (t.Catches.Count > 0)
+            {
+                throw new CompileError(_file, yields[0].Line, yields[0].Col, "CS1626: Cannot yield a value in the body of a try block with a catch clause");
+            }
+            // A try with no catch hands them out to the one around it.
+            (_tryYields ??= new()).AddRange(yields);
+        }
 
         TryStmt built = new() { Body = body, Finally = fin, Line = at.Line, Col = at.Col };
         built.Catches.AddRange(t.Catches);
