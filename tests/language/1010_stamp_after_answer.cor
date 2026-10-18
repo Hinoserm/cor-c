@@ -18,8 +18,10 @@
 // with no barrier because the array is new. The rs repro's chains read back
 // a live string as somebody else's text, or as nothing (2026-10-02).
 //
-// Here one thread spins without allocating, so it never answers and stamping
-// stays open; another answers, then makes strings of six sizes -- enough to
+// Here one thread answers the round before STAMP -- every thread past a
+// safepoint once the barrier is on (GcThreads.Ack) -- and then spins without
+// allocating, so it never answers STAMP and stamping stays open; another
+// answers STAMP, then makes strings of six sizes -- enough to
 // use up the page each size class had -- each held only by an array made
 // after its answer, and lets the spinner go once they are made. Every string
 // is read back after the collection has swept.
@@ -31,6 +33,16 @@ class Spinner : Action
     public volatile int Hold;
     public volatile bool Stop;
     public volatile bool Spinning;
+    public static byte[]? Junk;
+
+    /// Whether this thread is square with a round asked since `before`, of
+    /// the kind `request`.
+    public static bool Answered(long request, long before)
+    {
+        long ctl = GcLock.Words();
+        long epoch = Sys.Peek(ctl + GcLock.Epoch);
+        return Sys.Peek(ctl + GcLock.Request) == request && epoch != before && Sys.Peek(Sys.ThreadBlock() + Tls.Epoch) == epoch;
+    }
 
     public void Invoke()
     {
@@ -40,9 +52,13 @@ class Spinner : Action
             GcThreads.BeginBlocking();
             while (Hold == 0 && !Stop) { }
             GcThreads.EndBlocking();
-            // Held as a running thread that neither allocates nor calls:
-            // nothing answers its STAMP, so stamping stays open.
+            // The round before STAMP answered, by allocating until this
+            // thread is square with it; then held as a running thread that
+            // neither allocates nor calls: nothing answers its STAMP, so
+            // stamping stays open.
+            long before = Sys.Peek(GcLock.Words() + GcLock.Epoch);
             Spinning = true;
+            while (Hold != 0 && !Stop && !Answered(GcThreads.Ack, before)) Junk = new byte[4];
             while (Hold != 0 && !Stop) { }
             Spinning = false;
         }
@@ -93,14 +109,15 @@ class Maker : Action
             }
             other.Hold = 1;
             while (!other.Spinning) { }
+            long before = Sys.Peek(GcLock.Words() + GcLock.Epoch);
             Started = round + 1;
             // The collection Main starts: STAMP is asked of this thread.
             while (Runtime.Marking == 0) { }
 
-            // STAMP answered: an allocation is a safepoint, and the round
-            // took the buffer's limit away so the next one is slow.
-            long before = GcThreads.Answered;
-            while (GcThreads.Answered == before && Runtime.Marking == 1) Junk = new byte[16];
+            // STAMP answered: an allocation is a safepoint, and each round
+            // took the buffer's limit away so the next one is slow -- the
+            // round before it first, then STAMP's own.
+            while (!Spinner.Answered(GcThreads.Stamp, before) && Runtime.Marking == 1) Junk = new byte[16];
 
             string[][] held = new string[Lengths * PerLength][];
             Keep = held;

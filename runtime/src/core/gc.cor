@@ -11843,6 +11843,23 @@ static class Gc
         //    that are kept and never traced -- what only they refer to was
         //    swept from under them.
         Runtime.Marking = 1;
+
+        // THE BARRIER ON IN EVERY THREAD BEFORE THE SNAPSHOT IS TAKEN. A thread
+        // that read Marking as 0 just before it changed, and stopped before
+        // its store, overwrote the field after another thread's STAMP had
+        // copied that thread's stack -- which then read the old value and
+        // hid it in a newcomer, never traced -- and reported nothing: the
+        // value was swept while the newcomer held it. Every thread passes a
+        // safepoint here, and none falls between a barrier's test and its
+        // store, so every store from here on is reported. Before stamping is
+        // open, with the heap lock let go: a thread allocating meanwhile owes
+        // no STAMP yet (AnswerBeforeTaking), and waits for no other -- one
+        // that neither allocates nor blocks holds this round up, but parks
+        // nobody else -- and what it makes is in the snapshot taken below.
+        GcLock.Exit();
+        GcThreads.Round(GcThreads.Ack);
+        GcLock.Enter();
+
         _stamping = true;
         if (!GcThreads.StartStackCopies())
         {
@@ -11869,16 +11886,6 @@ static class Gc
         _concurrent = true;
         ConcurrentCycles = ConcurrentCycles + 1;
         GcLock.Exit();
-
-        // THE BARRIER ON IN EVERY THREAD BEFORE ANY STACK IS COPIED. A thread
-        // that read Marking as 0 just before it changed, and stopped before
-        // its store, overwrote the field after another thread's STAMP had
-        // copied that thread's stack -- which then read the old value and
-        // hid it in a newcomer, never traced -- and reported nothing: the
-        // value was swept while the newcomer held it. Every thread passes a
-        // safepoint here, and none falls between a barrier's test and its
-        // store, so every store from here on is reported.
-        GcThreads.Round(GcThreads.Ack);
 
         // 2. Every thread's own buffer.
         GcThreads.Round(GcThreads.Stamp);
