@@ -50,7 +50,7 @@ public static partial class Linker
     /// a library may call back into its consumer; everything the objects
     /// define and export appears in .dynsym.
     /// </summary>
-    public static byte[] LinkShared(IEnumerable<(string Name, ObjectFile Object)> objects, string soname, IEnumerable<string>? needed = null, string? runPath = null, uint loadAddress = 0, IEnumerable<string>? libraries = null, bool? longMode = null)
+    public static byte[] LinkShared(IEnumerable<(string Name, ObjectFile Object)> objects, string soname, IEnumerable<string>? needed = null, string? runPath = null, ulong loadAddress = 0, IEnumerable<string>? libraries = null, bool? longMode = null)
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(soname);
@@ -91,7 +91,7 @@ public static partial class Linker
     /// libraries whose names go in DT_NEEDED and whose symbols the loader
     /// supplies. The executable's own code stays non-PIC.
     /// </summary>
-    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, IEnumerable<string> sharedLibs, string? runPath = null, uint loadAddress = DefaultLoadAddress, ProgramInfo? program = null, IEnumerable<string>? libraries = null, bool? longMode = null)
+    public static byte[] Link(IEnumerable<(string Name, ObjectFile Object)> objects, string entrySymbol, IEnumerable<string> sharedLibs, string? runPath = null, ulong loadAddress = DefaultLoadAddress, ProgramInfo? program = null, IEnumerable<string>? libraries = null, bool? longMode = null)
     {
         _program = program;
         ArgumentNullException.ThrowIfNull(sharedLibs);
@@ -140,7 +140,7 @@ public static partial class Linker
         return Path.GetFileName(path);
     }
 
-    private static byte[] LinkDynamic(IEnumerable<(string Name, ObjectFile Object)> objects, Dyn dyn, string? entrySymbol, uint loadAddress, bool? longMode)
+    private static byte[] LinkDynamic(IEnumerable<(string Name, ObjectFile Object)> objects, Dyn dyn, string? entrySymbol, ulong loadAddress, bool? longMode)
     {
         List<Input> inputs = new();
         foreach ((string name, ObjectFile o) in objects)
@@ -203,7 +203,12 @@ public static partial class Linker
         }
         Prebind(dyn);
         Arrange(layout, dyn);
-        AssignAddresses(layout);
+        Place(layout, AssignAddresses);
+        // A BASE THE IMAGE CAN HAVE: any for x86-64, the image below four
+        // gigabytes for i386. Narrowed to 32 bits on the way here, an x86-64
+        // shared object asked for above them stopped the link with an
+        // OverflowException.
+        BelowFourGigabytes(layout);
         DefineLinkerSymbols(layout);
         DefineDynamicSymbols(layout, dyn);
         Relocate(inputs, layout, errors);

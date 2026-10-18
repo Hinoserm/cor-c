@@ -157,7 +157,7 @@ public static partial class Linker
         Merge(inputs, layout, errors);
         Resolve(inputs, layout, errors);
         ResolveManagedMetadata(layout, errors);
-        AssignAddresses(layout);
+        Place(layout, AssignAddresses);
         BelowFourGigabytes(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
@@ -246,7 +246,7 @@ public static partial class Linker
         Merge(inputs, layout, errors);
         Resolve(inputs, layout, errors);
         ResolveManagedMetadata(layout, errors);
-        AssignFlatAddresses(layout);
+        Place(layout, AssignFlatAddresses);
         BelowFourGigabytes(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
@@ -301,6 +301,24 @@ public static partial class Linker
             : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size)));
         return new FlatImage(image, baseAddress, entry.Address,
                              layout.Text.Size, layout.ReadOnlyData.Size, layout.Numbers.Size + layout.Data.Size, zeroBytes);
+    }
+
+    /// <summary>
+    /// Every section's address, from the base up, as `assign` gives them. The
+    /// arithmetic is checked, and an image that does not fit -- a long-mode
+    /// base so near the top that its sections would wrap past 2^64 -- is the
+    /// link's error, said as one: it died of an OverflowException.
+    /// </summary>
+    private static void Place(Layout layout, Action<Layout> assign)
+    {
+        try
+        {
+            assign(layout);
+        }
+        catch (OverflowException)
+        {
+            throw new LinkException(new[] { $"the image based at 0x{layout.LoadAddress:x} does not fit below the top of the address space" });
+        }
     }
 
     /// <summary>

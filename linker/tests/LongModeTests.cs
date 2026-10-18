@@ -91,6 +91,22 @@ public static partial class Program
         ObjectFile b = ElfReader.ReadObject(ElfWriter.WriteObject(Callee64()));
         string again = Write("exit42-64-read", Linker.Link(new[] { ("caller64.o", a), ("callee64.o", b) }, "_start"));
         Check(Exec(again) == 42, "the same objects read back from ELF64 link and exit 42");
+
+        // AN IMAGE THAT WOULD WRAP PAST 2^64 is the link's error, said as one:
+        // its addresses' checked arithmetic overflowed into an exception.
+        foreach (bool flat in new[] { false, true })
+        {
+            try
+            {
+                if (flat) Linker.LinkFlat(new[] { ("caller64", Caller64()), ("callee64", Callee64()) }, "_start", 0xFFFF_FFFF_FFFF_FFF0, true, null);
+                else Linker.Link(new[] { ("caller64", Caller64()), ("callee64", Callee64()) }, "_start", Array.Empty<string>(), loadAddress: 0xFFFF_FFFF_FFFF_F000);
+                Check(false, "an image past the top of the address space is refused" + (flat ? " (flat)" : ""));
+            }
+            catch (LinkException e)
+            {
+                Check(e.Message.Contains("top of the address space"), "an image past the top of the address space is refused" + (flat ? " (flat)" : ""), e.Message);
+            }
+        }
     }
 
     /// <summary>
@@ -137,6 +153,22 @@ public static partial class Program
         Check(output.Contains("(SONAME)") && output.Contains("(RELA)") && output.Contains("BIND_NOW"), "SONAME, RELA and eager binding", output);
         Check(output.Contains("R_X86_64_RELATIVE") && !output.Contains("TEXTREL"), "the address in .data is RELATIVE; the text has none", output);
         Check(!output.Contains("R_X86_64_GLOB_DAT"), "msg's GOT load was relaxed: no slot for a symbol the library defines", output);
+
+        // A SHARED OBJECT BASED ABOVE FOUR GIGABYTES: the base is 64 bits wide
+        // all the way down (it was narrowed to a uint, an OverflowException),
+        // and an i386 one is refused there as an i386 executable is.
+        string high = Write("libf64high.so", Linker.LinkShared(new[] { ("library64", Library64()) }, "libf64high.so", loadAddress: 0x1_2340_0000));
+        (code, output) = Run("readelf", "-lW", high);
+        Check(code == 0 && output.Contains("0x0000000123400000"), "a shared object based at 0x123400000 is loaded there", output);
+        try
+        {
+            Linker.LinkShared(new[] { ("library", Callee()) }, "libhigh.so", loadAddress: 0x1_2340_0000);
+            Check(false, "an i386 shared object above four gigabytes is refused");
+        }
+        catch (LinkException e)
+        {
+            Check(e.Message.Contains("four gigabytes"), "an i386 shared object above four gigabytes is refused", e.Message);
+        }
 
         // Our program against our library.
         string exe = Write("dyn84-64", Linker.Link(new[] { ("caller64", Caller64()) }, "_start", new[] { lib }));
