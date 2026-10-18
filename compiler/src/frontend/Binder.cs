@@ -19698,6 +19698,24 @@ public sealed partial class Binder
             byArity = new List<MethodSymbol>();
         }
 
+        // ONE THAT NEEDS ITS DEFAULTS COMPETES ALL THE SAME (C# 12.6.4.3), and
+        // loses only a tie: `F(1)` beside F(long) and F(int, int = 0) is the
+        // second, an int being better served by an int. Considered only when
+        // nothing of the written arity fitted, it lost to F(long) because
+        // F(long) alone had the arity.
+        if (anyFits && expandedParams is null && !c.ParamsPacked && byArity.All(m => m.TypeParams.Count == 0))
+        {
+            bool NeedsDefaults(MethodSymbol m)
+                => m.TypeParams.Count == 0 && m.Params.Count > args.Count
+                && Enumerable.Range(args.Count, m.Params.Count - args.Count).All(i => m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null)
+                && Enumerable.Range(0, args.Count).All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i]));
+            List<MethodSymbol> written = byArity.Where(m => AllWritten(m, 0)).ToList();
+            if (written.Count > 0 && group.Methods.Where(NeedsDefaults).Any(d => written.All(w => BetterThan(d, w))))
+            {
+                byArity = new List<MethodSymbol>();
+            }
+        }
+
         if (byArity.Count == 0)
         {
             // THE ONE WHOSE WRITTEN ARGUMENTS FIT, not merely the first that

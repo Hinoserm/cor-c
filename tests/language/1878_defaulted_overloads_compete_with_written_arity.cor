@@ -1,0 +1,28 @@
+// test: defaulted_overloads_compete_with_written_arity
+// expect-exit: 0
+// expect-output:
+// F(int,int=0) F(long) G(int) H(int,string,int) a1 H(double) K(string,int) 2 K(object)
+//
+// AN OVERLOAD THAT NEEDS ITS DEFAULTS COMPETES WITH THOSE OF THE WRITTEN
+// ARITY (C# 12.6.4.3), judged by the arguments written, and loses only a
+// tie: F(1) is F(int, int = 0) beside F(long), K("x") is K(string, int = 2)
+// beside K(object), and G(1) stays G(int) beside G(int, int = 0).
+
+using System;
+
+static class P
+{
+    static string F(long x) => "F(long)";
+    static string F(int x, int y = 0) => "F(int,int=0)";
+    static string G(int x) => "G(int)";
+    static string G(int x, int y = 0) => "G(int,int=0)";
+    static string H(double x) => "H(double)";
+    static string H(int x, string s = "a", int z = 1) => "H(int,string,int) " + s + z;
+    static string K(object o) => "K(object)";
+    static string K(string s, int n = 2) => "K(string,int) " + n;
+
+    static void Main()
+    {
+        Console.WriteLine(F(1) + " " + F(1L) + " " + G(1) + " " + H(1) + " " + H(1.5) + " " + K("x") + " " + K(3));
+    }
+}
