@@ -1027,6 +1027,10 @@ public static class Driver
         module.ClosedImage = !args.Contains("--obj") && !library && kernel is null && sharedLibs.Count == 0 && !module.PreserveExports;
         module.NoCollector = args.Contains("--no-collector");
         bool moduleUnit = kernel is not null && args.Contains("--obj");
+        // Whether the late passes may give objects to regions: not where there
+        // is no operating system to keep an arena, nor under --no-regions; a
+        // link making the unit again asks the same (IrUnitCodec.Settings.Regions).
+        bool regions = !freestanding && !args.Contains("--no-regions");
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
             && sharedLibs.Count == 0 && (moduleUnit || !(shared || args.Contains("--pic")));
         if (!args.Contains("--no-opt"))
@@ -1044,7 +1048,7 @@ public static class Driver
                 linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
                     !args.Contains("--no-stackmaps"),
                     new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
-                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit));
+                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit, Regions: regions));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 regionHintBytes = freestanding ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
@@ -1057,7 +1061,7 @@ public static class Driver
             // The x86 backend puts each function's allocations in place as it
             // selects it (AllocatorFastPaths.AtCodegen): not the late passes.
             module.AllocatorsAtCodegen = Target.Current.Name == "x86";
-            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: !freestanding && !args.Contains("--no-regions"));
+            Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: regions);
             Phase("optimise");
             // The lifetime hints are complete once the passes are (Escape and
             // its owned-unit pass wrote them): written now, as the region

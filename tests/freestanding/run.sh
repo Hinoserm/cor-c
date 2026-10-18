@@ -25,6 +25,10 @@
 #   // expect-readelf-<target>: text
 #                                readelf -hl of the image shows this text
 #   // run: no                   compile and read, do not run
+#   // apart: yes                compiled to an object as well and linked by
+#                                `corc link`, as an image built of units is:
+#                                closed, run and compared like the compile's,
+#                                and flat at a base, which must link
 #   // with-asm: NAME             assemble NAME.<target>.asm (corc asm --obj)
 #                                and link it in (--with)
 #   // expect-asm-<target>: F: a b c
@@ -244,6 +248,32 @@ for source in "$here"/[0-9]*.cor; do
                 wrong="exit $status, not $want_exit"
             elif ! cmp -s "$work/$name.$target.out" "$work/$name.want"; then
                 wrong="output differs: $(diff "$work/$name.want" "$work/$name.$target.out" | head -n 4 | tr '\n' ' ')"
+            fi
+        fi
+
+        # APART: the object a unit compile makes, linked closed and flat --
+        # the link makes the unit again with what the whole image says.
+        # Once both stopped on runtime helpers the late passes call that the
+        # closed image had dropped ("undefined symbol m_Runtime_AllocRegion"),
+        # and a --store-sequences unit's owned-field free split a store from
+        # its barrier.
+        if [ -z "$wrong" ] && [ "$(header "$source" apart)" = yes ]; then
+            object="$work/$name.$target.apart.o"
+            # shellcheck disable=SC2086
+            if ! "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
+                wrong="did not compile to an object"
+            elif ! "$corc" link --closed "$object" -o "$exe.apart" >> "$work/$name.$target.apart.log" 2>&1; then
+                wrong="its object did not link: $(grep -m 2 -i 'error\|undefined' "$work/$name.$target.apart.log" | tr '\n' ' ')"
+            elif ! "$corc" link --flat --base 0x100000 "$object" -o "$exe.flat" >> "$work/$name.$target.apart.log" 2>&1; then
+                wrong="its object did not link flat: $(grep -m 2 -i 'error\|undefined' "$work/$name.$target.apart.log" | tr '\n' ' ')"
+            elif [ "$run" != no ]; then
+                timeout 20 "$exe.apart" > "$work/$name.$target.apart.out" 2>&1
+                status=$?
+                if [ "$status" != "$want_exit" ]; then
+                    wrong="linked from its object, exit $status, not $want_exit"
+                elif ! cmp -s "$work/$name.$target.apart.out" "$work/$name.want"; then
+                    wrong="linked from its object, output differs: $(diff "$work/$name.want" "$work/$name.$target.apart.out" | head -n 4 | tr '\n' ' ')"
+                fi
             fi
         fi
 

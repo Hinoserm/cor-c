@@ -106,7 +106,8 @@ public sealed class UnitBackend : IUnitBackend
             foreach (Function function in module.Functions)
                 if (visibility.TryGetValue(function.Name, out bool exported) && exported != function.Exported)
                     throw new InvalidDataException("Archived IR identity disagrees with native symbol " + function.Name);
-            Pipeline late = Pipeline.Default(optimizeSize: read.Settings!.OptimizeSize, experimentalBatch: read.Settings.ExperimentalBatch);
+            Pipeline late = Pipeline.Default(optimizeSize: read.Settings!.OptimizeSize, experimentalBatch: read.Settings.ExperimentalBatch,
+                regions: read.Settings.Regions);
             late.Workers = Workers;
             late.RunLate(module);
             // What that run found of the unit's own functions, for each one's rules as it is loaded (Escape.LinkFacts.Unit).

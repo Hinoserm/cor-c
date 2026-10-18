@@ -458,18 +458,26 @@ public sealed partial class Escape
                     // collector's.
                     if (st.Operands[0] is not RegOperand baseReg || OriginOf(defs, baseReg.Reg) is not Instr madeOwner
                         || !PrivateOwner(f, madeOwner, summaries, privateOwner)) continue;
-                    List<Instr> made = new();
+                    // THE OLD VALUE READ BEFORE THE STORE AND FREED AFTER IT,
+                    // as OwnedFields places them (Escape): the store stays in
+                    // the block its barrier left it in, which a store sequence
+                    // is made of (CardMarks.FuseStores). Freed first and
+                    // inlined there, the free split the block between the
+                    // barrier and the store, and a link of a --store-sequences
+                    // unit refused "reference store(s) not made one sequence".
                     VReg old = f.NewReg(IrTypes.Word);
                     Instr load = new() { Op = Opcode.Load, Dest = old, Offset = st.Offset, Size = st.Size, Line = st.Line };
                     load.Operands.Add(st.Operands[0]);
-                    made.Add(load);
+                    List<Instr> after = new();
                     Instr free = new() { Op = Opcode.Call, Callee = OwnedReplacedFreer, Line = st.Line };
-                    free.Operands.Add(Word(f, made, RegOperand.Of(old), st.Line));
-                    free.Operands.Add(Word(f, made, st.Operands[1], st.Line));
-                    made.Add(free);
-                    b.Instrs.InsertRange(at, made);
-                    _bookkeeping.UnionWith(made);
-                    at += made.Count;
+                    free.Operands.Add(Word(f, after, RegOperand.Of(old), st.Line));
+                    free.Operands.Add(Word(f, after, st.Operands[1], st.Line));
+                    after.Add(free);
+                    b.Instrs.InsertRange(at + 1, after);
+                    b.Instrs.Insert(at, load);
+                    _bookkeeping.Add(load);
+                    _bookkeeping.UnionWith(after);
+                    at += 1 + after.Count;
                 }
         }
 

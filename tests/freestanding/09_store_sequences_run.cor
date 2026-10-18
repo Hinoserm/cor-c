@@ -1,5 +1,6 @@
 // test: reference stores made as sequences (--store-sequences) store, report and keep every register
 // flags-x86: --store-sequences
+// apart: yes
 // expect-asm-x86: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
 // expect-exit: 0

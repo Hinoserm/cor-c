@@ -16,9 +16,16 @@ public static class IrUnitCodec
     /// <summary>
     /// PositionIndependent: the unit is part of a shared object -- a kernel
     /// module's -- and its regenerated code must be too (version 3).
+    /// Regions: whether its late passes may give objects to regions
+    /// (RegionPointsTo), as its compile said -- never where there is no
+    /// operating system to keep an arena, nor under --no-regions. Made again
+    /// at the link without it, a freestanding unit called the region helpers
+    /// its compile had never asked for, and a closed image, keeping only what
+    /// the archived IR reaches, had dropped them: "undefined symbol
+    /// m_Runtime_AllocRegion...".
     /// </summary>
     public sealed record Settings(bool PreLate, bool NoCollector, bool CallsCollector, bool LeavesLinkHints,
-        bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers, bool PositionIndependent = false);
+        bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers, bool PositionIndependent = false, bool Regions = true);
 
     public static void Attach(ObjectFile obj, Module module, bool stackMaps)
         => IrArchive.Attach(obj, Snapshot(module, stackMaps, null));
@@ -45,6 +52,7 @@ public static class IrUnitCodec
                 writer.Write(settings.RuntimeHelpers.Length);
                 foreach (string helper in settings.RuntimeHelpers.Order(StringComparer.Ordinal)) IrBinary.Text(writer, helper);
                 writer.Write(settings.PositionIndependent);
+                writer.Write(settings.Regions);
             }
         }
         records.Add(new("M:unit", false, 0, Array.Empty<string>(), stream.ToArray()));
@@ -110,7 +118,8 @@ public static class IrUnitCodec
         string[] helpers = new string[count];
         for (int i = 0; i < count; i++) helpers[i] = IrBinary.Name(reader, budget);
         bool pic = version >= 3 && IrBinary.Flag(reader);
-        return new(true, noCollector, callsCollector, hints, size, batch, helpers, pic);
+        bool regions = version < 3 || IrBinary.Flag(reader);
+        return new(true, noCollector, callsCollector, hints, size, batch, helpers, pic, regions);
     }
 
     public static (Module Module, bool StackMaps, long AccountedBytes) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024,
