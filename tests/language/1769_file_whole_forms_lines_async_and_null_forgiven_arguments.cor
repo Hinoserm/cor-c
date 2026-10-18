@@ -1,0 +1,175 @@
+// test: file_whole_forms_lines_async_and_null_forgiven_arguments
+// expect-exit: 0
+// expect-output:
+// encoding True encoding True Exception of type 'Program+Chained' was thrown.
+// DIR/rel.txt
+// DIR/rel.txt
+// DIR/rel.txt
+// 01 02 03
+// 01 02 03 04 05 06
+// 09
+// ArgumentNullException: Value cannot be null. (Parameter 'path') | ArgumentException: The value cannot be an empty string. (Parameter 'path') | ArgumentNullException: Value cannot be null. (Parameter 'bytes') | ArgumentNullException: Value cannot be null. (Parameter 'bytes')
+// ArgumentException: The value cannot be an empty string. (Parameter 'path') | ArgumentNullException: Value cannot be null. (Parameter 'path') | DirectoryNotFoundException: Could not find a part of the path 'DIR/no/x'.
+// 68 c3 a9 6c 6c 6f
+// 68 c3 a9 6c 6c 6f 20 77 c3 b6 72 6c 64
+// ef bb bf 68 c3 a9
+// ef bb bf 68 c3 a9 e9 00
+// ff fe 61 00 62 00 63 00
+// ArgumentNullException: Value cannot be null. (Parameter 'encoding') | ArgumentException: The value cannot be an empty string. (Parameter 'path') | ArgumentNullException: Value cannot be null. (Parameter 'path') | ArgumentException: The value cannot be an empty string. (Parameter 'path')
+// one,two,three | one,two,three
+// aé,b | 2,1
+// aé,b aé,b
+// ArgumentNullException: Value cannot be null. (Parameter 'path') | ArgumentNullException: Value cannot be null. (Parameter 'encoding') | ArgumentException: The value cannot be an empty string. (Parameter 'path') | FileNotFoundException: Could not find file 'DIR/none'.
+// [x][y][][z]
+// [a][b] [a][b]
+// ArgumentNullException: Value cannot be null. (Parameter 'path') | ArgumentNullException: Value cannot be null. (Parameter 'encoding') | ArgumentException: The value cannot be an empty string. (Parameter 'path') | FileNotFoundException: Could not find file 'DIR/none'.
+// TaskCanceledException: A task was canceled. | TaskCanceledException: A task was canceled.
+// [a][b] then [a][b]
+// done 07 08
+// done done 07 08 09 0a
+// done 7a c3 a9 done 7a c3 a9 21
+// done ff fe 7a 00 done ff fe 7a 00 21 00
+// ArgumentNullException: Value cannot be null. (Parameter 'path') | ArgumentNullException: Value cannot be null. (Parameter 'bytes') | ArgumentException: The value cannot be an empty string. (Parameter 'path') | ArgumentNullException: Value cannot be null. (Parameter 'encoding') | ArgumentException: The value cannot be an empty string. (Parameter 'path')
+// ArgumentNullException: Value cannot be null. (Parameter 'bytes') | ArgumentNullException: Value cannot be null. (Parameter 'bytes')
+// False False False
+// memory abc cdef bcd 0 System.ReadOnlyMemory<Int32>[3] System.Memory<Byte>[2] hi ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'start') ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'start') ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'start')
+// TaskCanceledException: A task was canceled. | TaskCanceledException: A task was canceled. | TaskCanceledException: A task was canceled. 07 08 09 0a
+//
+// FILE'S WHOLE-FILE FORMS AS .NET 10 HAS THEM: WriteAllBytes and AppendAllBytes
+// over spans and arrays (the bytes looked at before the path), WriteAllText and
+// AppendAllText over a span of characters, ReadLines in an encoding, and the
+// async forms over ReadOnlyMemory; ReadLinesAsync an IAsyncEnumerable that
+// reopens the file once an earlier enumeration closed it and cancels by either
+// token with TaskCanceledException. FileStream.Name is the full path, and a
+// closed stream can neither read nor write. A string's AsMemory, and a
+// Memory<char>'s text as its ToString. `null!` PASSED AS AN ARGUMENT IS THE NULL
+// LITERAL in choosing an overload or a constructor: typed object, it fitted a
+// CancellationToken parameter and was unboxed.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static string Dir = "";
+
+    static string Said(Func<object?> f)
+    {
+        try { object? o = f(); return o?.ToString() ?? "null"; }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace(Dir, "DIR").Replace("\n", "|"); }
+    }
+
+    static string Bytes(string p) => string.Join(" ", File.ReadAllBytes(p).Select(b => b.ToString("x2")));
+
+    static async Task<string> Lines(IAsyncEnumerable<string> lines, CancellationToken token = default)
+    {
+        StringBuilder s = new StringBuilder();
+        IAsyncEnumerator<string> e = lines.GetAsyncEnumerator(token);
+        try
+        {
+            while (await e.MoveNextAsync()) s.Append("[" + e.Current + "]");
+        }
+        finally { await e.DisposeAsync(); }
+        return s.ToString();
+    }
+
+    static string Wait(Func<Task> f)
+    {
+        try { f().GetAwaiter().GetResult(); return "done"; }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace(Dir, "DIR"); }
+    }
+
+    static string WaitText(Func<Task<string>> f)
+    {
+        try { return f().GetAwaiter().GetResult(); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace(Dir, "DIR"); }
+    }
+
+    static string F(string a, CancellationToken t = default) => "token";
+    static string F(string a, Encoding e, CancellationToken t = default) => "encoding " + (e == null);
+
+    sealed class Made
+    {
+        public readonly string Said;
+        public Made(CancellationToken t) { Said = "token"; }
+        public Made(Encoding? e) { Said = "encoding " + (e == null); }
+    }
+
+    sealed class Chained : Exception
+    {
+        public Chained() : base(null!) { }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(F("x", null!) + " " + new Made(null!).Said + " " + new Chained().Message);
+        Dir = Path.Combine(Path.GetTempPath(), "corc1769-" + Environment.ProcessId);
+        Directory.CreateDirectory(Dir);
+        string p = Path.Combine(Dir, "a.bin");
+        Environment.CurrentDirectory = Path.GetTempPath();
+        string rel = Path.Combine("corc1769-" + Environment.ProcessId, "rel.txt");
+        using (FileStream f = new FileStream(rel, FileMode.Create)) Console.WriteLine(f.Name.Replace(Dir, "DIR"));
+        using (FileStream f = new FileStream(Path.Combine("corc1769-" + Environment.ProcessId, ".", "..", "corc1769-" + Environment.ProcessId, "rel.txt"), FileMode.Open)) Console.WriteLine(f.Name.Replace(Dir, "DIR"));
+        using (FileStream f = File.OpenRead(rel)) Console.WriteLine(f.Name.Replace(Dir, "DIR"));
+        File.WriteAllBytes(p, new ReadOnlySpan<byte>(new byte[] { 1, 2, 3 }));
+        Console.WriteLine(Bytes(p));
+        File.AppendAllBytes(p, new byte[] { 4, 5 });
+        File.AppendAllBytes(p, new ReadOnlySpan<byte>(new byte[] { 6 }));
+        Console.WriteLine(Bytes(p));
+        string q = Path.Combine(Dir, "new.bin");
+        File.AppendAllBytes(q, new byte[] { 9 });
+        Console.WriteLine(Bytes(q));
+        Console.WriteLine(Said(() => { File.AppendAllBytes(null!, new byte[1]); return "ok"; }) + " | " + Said(() => { File.AppendAllBytes("", new byte[1]); return "ok"; }) + " | " + Said(() => { File.AppendAllBytes(p, null!); return "ok"; }) + " | " + Said(() => { File.AppendAllBytes(null!, null!); return "ok"; }));
+        Console.WriteLine(Said(() => { File.WriteAllBytes("", ReadOnlySpan<byte>.Empty); return "ok"; }) + " | " + Said(() => { File.WriteAllBytes(null!, ReadOnlySpan<byte>.Empty); return "ok"; }) + " | " + Said(() => { File.AppendAllBytes(Path.Combine(Dir, "no", "x"), new byte[1]); return "ok"; }));
+        string t = Path.Combine(Dir, "t.txt");
+        File.WriteAllText(t, "héllo".AsSpan());
+        Console.WriteLine(Bytes(t));
+        File.AppendAllText(t, " wörld".AsSpan());
+        Console.WriteLine(Bytes(t));
+        File.WriteAllText(t, "hé".AsSpan(), Encoding.UTF8);
+        Console.WriteLine(Bytes(t));
+        File.AppendAllText(t, "é".AsSpan(), Encoding.Unicode);
+        Console.WriteLine(Bytes(t));
+        File.WriteAllText(t, "ab".AsSpan(), Encoding.Unicode);
+        File.AppendAllText(t, "c".AsSpan(), Encoding.Unicode);
+        Console.WriteLine(Bytes(t));
+        Console.WriteLine(Said(() => { File.WriteAllText(t, "x".AsSpan(), null!); return "ok"; }) + " | " + Said(() => { File.WriteAllText("", "x".AsSpan()); return "ok"; }) + " | " + Said(() => { File.AppendAllText(null!, "x".AsSpan(), null!); return "ok"; }) + " | " + Said(() => { File.AppendAllText("", "x".AsSpan(), Encoding.UTF8); return "ok"; }));
+        string u = Path.Combine(Dir, "u.txt");
+        File.WriteAllText(u, "one\ntwo\r\nthree", Encoding.Unicode);
+        Console.WriteLine(string.Join(",", File.ReadLines(u, Encoding.UTF8)) + " | " + string.Join(",", File.ReadLines(u, Encoding.Latin1)));
+        File.WriteAllBytes(u, new byte[] { 0x61, 0xe9, 0x0a, 0x62 });
+        Console.WriteLine(string.Join(",", File.ReadLines(u, Encoding.Latin1)) + " | " + string.Join(",", File.ReadLines(u, Encoding.UTF8).Select(s => s.Length)));
+        IEnumerable<string> twice = File.ReadLines(u, Encoding.Latin1);
+        Console.WriteLine(string.Join(",", twice) + " " + string.Join(",", twice));
+        Console.WriteLine(Said(() => File.ReadLines(null!, Encoding.UTF8)) + " | " + Said(() => File.ReadLines(u, null!)) + " | " + Said(() => File.ReadLines("", Encoding.UTF8)) + " | " + Said(() => File.ReadLines(Path.Combine(Dir, "none"), Encoding.UTF8)));
+        File.WriteAllText(u, "x\ny\n\nz\n");
+        Console.WriteLine(WaitText(() => Lines(File.ReadLinesAsync(u))));
+        File.WriteAllText(u, "a\nb", Encoding.Unicode);
+        Console.WriteLine(WaitText(() => Lines(File.ReadLinesAsync(u))) + " " + WaitText(() => Lines(File.ReadLinesAsync(u, Encoding.Latin1))));
+        Console.WriteLine(Said(() => File.ReadLinesAsync(null!)) + " | " + Said(() => File.ReadLinesAsync(u, null!)) + " | " + Said(() => File.ReadLinesAsync("")) + " | " + Said(() => File.ReadLinesAsync(Path.Combine(Dir, "none"))));
+        CancellationTokenSource cts = new CancellationTokenSource();
+        cts.Cancel();
+        Console.WriteLine(WaitText(() => Lines(File.ReadLinesAsync(u, cts.Token))) + " | " + WaitText(() => Lines(File.ReadLinesAsync(u), cts.Token)));
+        IAsyncEnumerable<string> once = File.ReadLinesAsync(u);
+        Console.WriteLine(WaitText(() => Lines(once)) + " then " + WaitText(() => Lines(once)));
+        Console.WriteLine(Wait(() => File.WriteAllBytesAsync(p, new ReadOnlyMemory<byte>(new byte[] { 7, 8 }))) + " " + Bytes(p));
+        Console.WriteLine(Wait(() => File.AppendAllBytesAsync(p, new byte[] { 9 })) + " " + Wait(() => File.AppendAllBytesAsync(p, new ReadOnlyMemory<byte>(new byte[] { 10 }))) + " " + Bytes(p));
+        Console.WriteLine(Wait(() => File.WriteAllTextAsync(t, "zé".AsMemory())) + " " + Bytes(t) + " " + Wait(() => File.AppendAllTextAsync(t, "!".AsMemory())) + " " + Bytes(t));
+        Console.WriteLine(Wait(() => File.WriteAllTextAsync(t, "z".AsMemory(), Encoding.Unicode)) + " " + Bytes(t) + " " + Wait(() => File.AppendAllTextAsync(t, "!".AsMemory(), Encoding.Unicode)) + " " + Bytes(t));
+        Console.WriteLine(Said(() => File.AppendAllBytesAsync(null!, new byte[1])) + " | " + Said(() => File.AppendAllBytesAsync(p, null!)) + " | " + Said(() => File.WriteAllBytesAsync("", ReadOnlyMemory<byte>.Empty)) + " | " + Said(() => File.WriteAllTextAsync(t, "x".AsMemory(), null!)) + " | " + Said(() => File.AppendAllTextAsync("", "x".AsMemory())));
+        Console.WriteLine(Said(() => File.AppendAllBytesAsync(null!, null!)) + " | " + Said(() => File.WriteAllBytesAsync(null!, null!)));
+        FileStream closed = File.OpenRead(p);
+        closed.Dispose();
+        Console.WriteLine(closed.CanRead + " " + closed.CanWrite + " " + closed.CanSeek);
+        Console.WriteLine("memory " + "abc".AsMemory() + " " + "abcdef".AsMemory(2) + " " + "abcdef".AsMemory(1, 3) + " " + ((string?)null).AsMemory().Length + " " + new ReadOnlyMemory<int>(new int[3]) + " " + new Memory<byte>(new byte[2]) + " " + new Memory<char>(new[] { 'h', 'i' }) + " " + Said(() => "abc".AsMemory(4)) + " " + Said(() => "abc".AsMemory(1, 3)) + " " + Said(() => ((string?)null).AsMemory(1)));
+        Console.WriteLine(Wait(() => File.WriteAllBytesAsync(p, new ReadOnlyMemory<byte>(new byte[1]), cts.Token)) + " | " + Wait(() => File.AppendAllBytesAsync(p, new byte[1], cts.Token)) + " | " + Wait(() => File.AppendAllTextAsync(t, "x".AsMemory(), cts.Token)) + " " + Bytes(p));
+        foreach (string f in Directory.GetFiles(Dir)) File.Delete(f);
+        Directory.Delete(Dir);
+        return 0;
+    }
+}

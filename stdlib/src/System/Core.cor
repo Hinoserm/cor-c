@@ -8100,6 +8100,10 @@ readonly struct Memory<T> {
 
     public static implicit operator Memory<T>(T[]? array) => new Memory<T>(array);
 
+    /// The characters of a Memory<char> as a string; any other is .NET's
+    /// description of it: "System.Memory<Int32>[3]".
+    public override string ToString() => typeof(T) == typeof(char) ? Span.ToString() : "System.Memory<" + typeof(T).Name + ">[" + count + "]";
+
     public static implicit operator ReadOnlyMemory<T>(Memory<T> memory) => new ReadOnlyMemory<T>(memory.items, memory.from, memory.count);
 }
 
@@ -8156,6 +8160,10 @@ readonly struct ReadOnlyMemory<T> {
     internal int Start => from;
 
     public static implicit operator ReadOnlyMemory<T>(T[]? array) => new ReadOnlyMemory<T>(array);
+
+    /// The characters of a ReadOnlyMemory<char> as a string -- a string's
+    /// text, from AsMemory -- and any other .NET's description of it.
+    public override string ToString() => typeof(T) == typeof(char) ? Span.ToString() : "System.ReadOnlyMemory<" + typeof(T).Name + ">[" + count + "]";
 }
 
 struct Span<T> {
@@ -8293,6 +8301,33 @@ public static class MemoryExtensions {
     public static ReadOnlySpan<char> AsSpan(this string? text) { return String.AsSpan(text!); }
     public static ReadOnlySpan<char> AsSpan(this string? text, int start) { return String.AsSpan(text!, start); }
     public static ReadOnlySpan<char> AsSpan(this string? text, int start, int length) { return String.AsSpan(text!, start, length); }
+
+    // .NET's AsMemory over a string: the text as a ReadOnlyMemory<char> that
+    // may be kept and handed on. Held here as its characters copied out, a
+    // Memory being an array's window; a string never changes, so what it
+    // reads is the same. A null string is empty memory, and a window outside
+    // the text ArgumentOutOfRangeException, as .NET's.
+    public static ReadOnlyMemory<char> AsMemory(this string? text) {
+        return text == null ? default : new ReadOnlyMemory<char>(text.ToCharArray());
+    }
+
+    public static ReadOnlyMemory<char> AsMemory(this string? text, int start) {
+        if (text == null) {
+            if (start != 0) { throw new ArgumentOutOfRangeException("start"); }
+            return default;
+        }
+        if ((uint)start > (uint)text.Length) { throw new ArgumentOutOfRangeException("start"); }
+        return new ReadOnlyMemory<char>(text.ToCharArray(start, text.Length - start));
+    }
+
+    public static ReadOnlyMemory<char> AsMemory(this string? text, int start, int length) {
+        if (text == null) {
+            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException("start"); }
+            return default;
+        }
+        if ((uint)start > (uint)text.Length || (uint)length > (uint)(text.Length - start)) { throw new ArgumentOutOfRangeException("start"); }
+        return new ReadOnlyMemory<char>(text.ToCharArray(start, length));
+    }
 
     // ---- trimming, comparing and splitting spans, as .NET's MemoryExtensions
     // has them: over any element type that compares itself, allocating nothing.
@@ -9473,6 +9508,17 @@ interface IEnumerator<out T> : IDisposable, IEnumerator {
 /// `out T`. Everything read from a sequence is a T, so a sequence of
 /// FieldDecl IS a sequence of MemberDecl -- which is what lets
 /// `decl.Members.AddRange(several.More)` be written at all.
+/// A SEQUENCE READ BY AWAITING, as .NET's: each MoveNextAsync a ValueTask
+/// that says whether there is another, the enumerator disposed by awaiting.
+interface IAsyncEnumerable<out T> {
+    IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default);
+}
+
+interface IAsyncEnumerator<out T> : System.IAsyncDisposable {
+    T Current { get; }
+    System.Threading.Tasks.ValueTask<bool> MoveNextAsync();
+}
+
 interface IEnumerable<out T> : IEnumerable {
     IEnumerator<T> GetEnumerator();
 }

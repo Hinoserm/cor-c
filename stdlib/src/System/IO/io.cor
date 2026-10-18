@@ -337,7 +337,7 @@ class FileStream : Stream
         // No name at all is the caller's mistake, refused before any open
         // as .NET refuses it -- not a file the system could not find.
         ArgumentException.ThrowIfNullOrEmpty(path);
-        _name = path;
+        _name = FileSystem.Full(path);
         int flags = access == FileAccess.Read ? O.Read : access == FileAccess.Write ? O.Write : O.ReadWrite;
         if (mode == FileMode.CreateNew)
         {
@@ -428,7 +428,7 @@ class FileStream : Stream
     {
         _fd = handle;
         _bufferSize = 0;
-        _name = "fd " + handle;
+        _name = "[Unknown]";
         _canRead = access != FileAccess.Write;
         _canWrite = access != FileAccess.Read;
         _owns = ownsHandle;
@@ -454,8 +454,10 @@ class FileStream : Stream
         get { return _name; }
     }
 
-    public override bool CanRead { get { return _canRead; } }
-    public override bool CanWrite { get { return _canWrite; } }
+    // NEITHER ONCE CLOSED, as .NET's: what File.ReadLinesAsync looks at to
+    // tell a reader an earlier enumeration closed.
+    public override bool CanRead { get { return _canRead && _fd >= 0; } }
+    public override bool CanWrite { get { return _canWrite && _fd >= 0; } }
     /// Whether the descriptor takes lseek: a file or a block device does,
     /// a pipe, a terminal or a socket does not.
     public override bool CanSeek
@@ -2353,7 +2355,29 @@ partial static class File
         {
             throw new ArgumentNullException(nameof(path));
         }
-        return new FileLines(path, new StreamReader(path));
+        return new FileLines(path, null, new StreamReader(path));
+    }
+
+    /// The same in the encoding given, unless the file begins with another's
+    /// byte order mark.
+    public static IEnumerable<string> ReadLines(string path, Encoding encoding)
+    {
+        Validate(path, encoding);
+        return new FileLines(path, encoding, new StreamReader(path, encoding));
+    }
+
+    /// THE LINES AS AN ASYNC SEQUENCE, as .NET 7's ReadLinesAsync: the file
+    /// opened now, each line a MoveNextAsync (complete before it returns, as
+    /// the async forms are here), the token looked at before each.
+    public static IAsyncEnumerable<string> ReadLinesAsync(string path, CancellationToken cancellationToken = default)
+    {
+        return ReadLinesAsync(path, new UTF8Encoding(true), cancellationToken);
+    }
+
+    public static IAsyncEnumerable<string> ReadLinesAsync(string path, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        return new FileLinesAsync(path, encoding, new StreamReader(path, encoding), cancellationToken);
     }
 
     public static void WriteAllLines(string path, string[] contents)
@@ -2429,6 +2453,54 @@ partial static class File
         FileStream f = new FileStream(path, FileMode.Create, FileAccess.Write);
         f.Write(bytes, 0, bytes.Length);
         f.Dispose();
+    }
+
+    public static void WriteAllBytes(string path, ReadOnlySpan<byte> bytes)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        WriteAllBytes(path, bytes.ToArray());
+    }
+
+    /// The bytes after what the file holds, the file made when it is not
+    /// there, as .NET 9's AppendAllBytes.
+    /// The bytes are looked at before the path, as .NET looks.
+    public static void AppendAllBytes(string path, byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        FileStream f = new FileStream(path, FileMode.Append, FileAccess.Write);
+        f.Write(bytes, 0, bytes.Length);
+        f.Dispose();
+    }
+
+    public static void AppendAllBytes(string path, ReadOnlySpan<byte> bytes)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        AppendAllBytes(path, bytes.ToArray());
+    }
+
+    public static void WriteAllText(string path, ReadOnlySpan<char> contents)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        WriteAllText(path, contents.ToString());
+    }
+
+    public static void WriteAllText(string path, ReadOnlySpan<char> contents, Encoding encoding)
+    {
+        Validate(path, encoding);
+        WriteAllText(path, contents.ToString(), encoding);
+    }
+
+    public static void AppendAllText(string path, ReadOnlySpan<char> contents)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        AppendAllText(path, contents.ToString());
+    }
+
+    public static void AppendAllText(string path, ReadOnlySpan<char> contents, Encoding encoding)
+    {
+        Validate(path, encoding);
+        AppendAllText(path, contents.ToString(), encoding);
     }
 
     public static void WriteAllText(string path, string text)
@@ -3889,11 +3961,13 @@ class FileLines : IEnumerable<string>
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     readonly string _path;
+    readonly Encoding? _encoding;
     StreamReader? _first;
 
-    public FileLines(string path, StreamReader first)
+    public FileLines(string path, Encoding? encoding, StreamReader first)
     {
         _path = path;
+        _encoding = encoding;
         _first = first;
     }
 
@@ -3901,7 +3975,93 @@ class FileLines : IEnumerable<string>
     {
         StreamReader? reader = _first;
         _first = null;
-        return new FileLinesEnumerator(reader ?? new StreamReader(_path));
+        return new FileLinesEnumerator(reader ?? (_encoding == null ? new StreamReader(_path) : new StreamReader(_path, _encoding)));
+    }
+}
+
+/// File.ReadLinesAsync's sequence, as .NET's async iterator over the reader
+/// opened by the call: each enumeration reads that reader while it is open,
+/// and opens the file again once an earlier one has closed it. Its lines are
+/// read before MoveNextAsync returns, as the async forms here are; a token
+/// canceled -- the call's or GetAsyncEnumerator's -- cancels the next one,
+/// the ValueTask throwing TaskCanceledException when awaited.
+class FileLinesAsync : IAsyncEnumerable<string>
+{
+    readonly string _path;
+    readonly Encoding _encoding;
+    readonly StreamReader _first;
+    readonly CancellationToken _token;
+
+    public FileLinesAsync(string path, Encoding encoding, StreamReader first, CancellationToken token)
+    {
+        _path = path;
+        _encoding = encoding;
+        _first = first;
+        _token = token;
+    }
+
+    public IAsyncEnumerator<string> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+    {
+        return new FileLinesAsyncEnumerator(this, cancellationToken);
+    }
+
+    internal StreamReader Reader() => _first.BaseStream.CanRead ? _first : new StreamReader(_path, _encoding);
+
+    internal CancellationToken Token => _token;
+}
+
+class FileLinesAsyncEnumerator : IAsyncEnumerator<string>
+{
+    readonly FileLinesAsync _lines;
+    readonly CancellationToken _token;
+    StreamReader? _reader;
+    bool _started;
+    bool _done;
+    string _current = "";
+
+    public FileLinesAsyncEnumerator(FileLinesAsync lines, CancellationToken token)
+    {
+        _lines = lines;
+        _token = token;
+    }
+
+    public string Current => _current;
+
+    public System.Threading.Tasks.ValueTask<bool> MoveNextAsync()
+    {
+        if (_done) return new System.Threading.Tasks.ValueTask<bool>(false);
+        if (!_started)
+        {
+            _started = true;
+            _reader = _lines.Reader();
+        }
+        if (_lines.Token.IsCancellationRequested || _token.IsCancellationRequested)
+        {
+            Finish();
+            CancellationToken canceled = _lines.Token.IsCancellationRequested ? _lines.Token : _token;
+            return new System.Threading.Tasks.ValueTask<bool>(System.Threading.Tasks.Task.FromCanceled<bool>(canceled));
+        }
+        string? line = _reader!.ReadLine();
+        if (line == null)
+        {
+            Finish();
+            return new System.Threading.Tasks.ValueTask<bool>(false);
+        }
+        _current = line;
+        return new System.Threading.Tasks.ValueTask<bool>(true);
+    }
+
+    void Finish()
+    {
+        _done = true;
+        _reader?.Dispose();
+        _reader = null;
+    }
+
+    public System.Threading.Tasks.ValueTask DisposeAsync()
+    {
+        Finish();
+        return default;
     }
 }
 
@@ -4062,6 +4222,51 @@ partial static class File
         ArgumentNullException.ThrowIfNull(bytes);
         ArgumentException.ThrowIfNullOrEmpty(path);
         return Completed(() => WriteAllBytes(path, bytes), cancellationToken);
+    }
+
+    public static Task WriteAllBytesAsync(string path, ReadOnlyMemory<byte> bytes, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        byte[] held = bytes.ToArray();
+        return Completed(() => WriteAllBytes(path, held), cancellationToken);
+    }
+
+    public static Task AppendAllBytesAsync(string path, byte[] bytes, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        return Completed(() => AppendAllBytes(path, bytes), cancellationToken);
+    }
+
+    public static Task AppendAllBytesAsync(string path, ReadOnlyMemory<byte> bytes, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        byte[] held = bytes.ToArray();
+        return Completed(() => AppendAllBytes(path, held), cancellationToken);
+    }
+
+    public static Task WriteAllTextAsync(string path, ReadOnlyMemory<char> contents, CancellationToken cancellationToken = default)
+    {
+        return WriteAllTextAsync(path, contents, new UTF8Encoding(false), cancellationToken);
+    }
+
+    public static Task WriteAllTextAsync(string path, ReadOnlyMemory<char> contents, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        string text = contents.ToString();
+        return Completed(() => WriteAllText(path, text, encoding), cancellationToken);
+    }
+
+    public static Task AppendAllTextAsync(string path, ReadOnlyMemory<char> contents, CancellationToken cancellationToken = default)
+    {
+        return AppendAllTextAsync(path, contents, new UTF8Encoding(false), cancellationToken);
+    }
+
+    public static Task AppendAllTextAsync(string path, ReadOnlyMemory<char> contents, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        string text = contents.ToString();
+        return Completed(() => AppendAllText(path, text, encoding), cancellationToken);
     }
 
     public static Task WriteAllLinesAsync(string path, IEnumerable<string> contents, CancellationToken cancellationToken = default)

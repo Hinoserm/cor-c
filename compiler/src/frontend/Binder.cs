@@ -5755,7 +5755,7 @@ public sealed partial class Binder
                 Type? outerChain = _wanted;
                 _wanted = null;
                 List<Type> given = chained.Args.Select(argument =>
-                    argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument) ? Type.Any : CheckExpr(argument)).ToList();
+                    argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument) ? Type.Any : Argument(argument)).ToList();
                 _wanted = outerChain;
 
                 if (target is null)
@@ -14281,7 +14281,7 @@ public sealed partial class Binder
                 foreach (Expr argument in nw.Args)
                 {
                     constructorArgs.Add(argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument)
-                        ? Type.Any : CheckExpr(argument));
+                        ? Type.Any : Argument(argument));
                 }
 
                 _wanted = outerNew;
@@ -18418,6 +18418,21 @@ public sealed partial class Binder
     /// with an error, when none accepts them; <paramref name="except"/> is a
     /// constructor that may not be chosen, the one a `: this(...)` is on.
     /// </summary>
+    /// <summary>
+    /// An argument's type for choosing what it is passed to: its own, but
+    /// `null!` STILL THE NULL LITERAL, as C# has it. Read as the object it
+    /// is typed as everywhere else, it fitted a value type's parameter --
+    /// `File.ReadLinesAsync(path, null!)` took the (string, CancellationToken)
+    /// overload over (string, Encoding, ...), and unboxed the null.
+    /// </summary>
+    private Type Argument(Expr argument)
+    {
+        Type checkedType = CheckExpr(argument);
+        Expr inner = argument;
+        while (inner is SuppressExpr sure) inner = sure.Operand;
+        return inner is LiteralExpr { Kind: Lit.Null } ? Type.Null : checkedType;
+    }
+
     private MethodSymbol? ResolveConstructor(NewExpr nw, TypeSymbol constructed, List<Type> constructorArgs, MethodDecl? except = null, Type? made = null)
     {
         List<MethodSymbol> methods = except is null ? constructed.Methods
@@ -19346,7 +19361,7 @@ public sealed partial class Binder
                 continue;
             }
 
-            Type argumentType = CheckExpr(argument);
+            Type argumentType = Argument(argument);
             args.Add(IsFunctionSource(argument) ? Type.Any : argumentType);
         }
         _wanted = outerTarget;
