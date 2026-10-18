@@ -29,13 +29,12 @@ public static class IrDataCodec
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
-            int version = reader.ReadInt32();
-            if (version is not (1 or 2)) throw new InvalidDataException("Unsupported IR data version");
+            if (reader.ReadInt32() != 2) throw new InvalidDataException("Unknown IR data record");
             string name = IrBinary.Name(reader, budget); int align = reader.ReadInt32();
             bool readOnly = IrBinary.Flag(reader), zero = IrBinary.Flag(reader), exported = IrBinary.Flag(reader);
             bool library = IrBinary.Flag(reader), coalescible = IrBinary.Flag(reader);
-            bool noReferences = version >= 2 && IrBinary.Flag(reader);
-            int copies = version >= 2 ? IrBinary.Count(reader) : 0;
+            bool noReferences = IrBinary.Flag(reader);
+            int copies = IrBinary.Count(reader);
             budget.Charge(copies, 64, "shared copies");
             string[]? shared = copies > 0 ? new string[copies] : null;
             for (int i = 0; i < copies; i++) shared![i] = IrBinary.Name(reader, budget);

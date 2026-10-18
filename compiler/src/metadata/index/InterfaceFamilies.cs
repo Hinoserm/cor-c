@@ -32,11 +32,11 @@ public static class InterfaceFamilies
         {
             using MemoryStream stream = new(record.Payload, writable: false);
             using BinaryReader reader = new(stream, DeclarationIndex.Utf8);
-            int version = reader.ReadInt32();
+            if (reader.ReadInt32() != 2) throw new InvalidDataException("Unknown interface family record");
             int length = reader.ReadInt32();
             string name = DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, length));
             int arity = reader.ReadInt32(); reader.ReadInt32();
-            bool library = version < 2 || reader.ReadBoolean();
+            bool library = reader.ReadBoolean();
             if (library) result.Add((name, arity));
         }
         return result;
@@ -73,13 +73,12 @@ public static class InterfaceFamilies
             using BinaryReader reader = new(stream, DeclarationIndex.Utf8);
             try
             {
-                int version = reader.ReadInt32();
-                if (version != 1 && version != 2) throw new InvalidDataException("Unsupported interface family record");
+                if (reader.ReadInt32() != 2) throw new InvalidDataException("Unknown interface family record");
                 int length = reader.ReadInt32();
                 if (length < 1 || length > record.Payload.Length - 16) throw new InvalidDataException("Invalid interface family name");
                 string name = DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, length));
                 int arity = reader.ReadInt32(), methods = reader.ReadInt32();
-                if (version >= 2) reader.ReadBoolean();
+                reader.ReadBoolean();
                 if (arity < 0 || methods < 0 || stream.Position != stream.Length) throw new InvalidDataException("Invalid interface family counts");
                 result[(name, arity)] = checked(result.GetValueOrDefault((name, arity)) + methods);
             }
