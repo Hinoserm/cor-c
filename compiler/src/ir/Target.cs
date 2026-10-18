@@ -52,6 +52,14 @@ public sealed class Target
     /// <summary>Alignment of an 8-byte field or element inside an object.</summary>
     public required int Align64 { get; init; }
 
+    /// <summary>
+    /// Linux's exit(2) on this target, which a program with no runtime to
+    /// call ends with (Lowering's entry stub): 1 through int 0x80, 60
+    /// through syscall. The i386 number asked through syscall was write(2),
+    /// which came back, and the trap after it ended every such x86-64 program.
+    /// </summary>
+    public required int ExitSyscall { get; init; }
+
     /// <summary>The size of a value of the given primitive on this machine.</summary>
     public int SizeOf(Prim p) => p switch
     {
@@ -78,6 +86,7 @@ public sealed class Target
         DescriptorBytes = 48,
         StaticBase = 16,
         Align64 = 8,
+        ExitSyscall = 1,
     };
 
     /// <summary>
@@ -100,6 +109,7 @@ public sealed class Target
         DescriptorBytes = 96,
         StaticBase = 16,
         Align64 = 8,
+        ExitSyscall = 60,
     };
 
     /// <summary>

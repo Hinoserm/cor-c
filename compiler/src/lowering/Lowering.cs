@@ -1345,7 +1345,7 @@ public sealed partial class Lowering
         }
         else
         {
-            e.Syscall(new ImmOperand(1, IrTypes.Word), new[] { code });
+            e.Syscall(new ImmOperand(_t.ExitSyscall, IrTypes.Word), new[] { code });
         }
         e.Unreachable();
     }
