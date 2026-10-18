@@ -27,24 +27,35 @@ public static class IrFunctionCodec
     // An instruction's marks (Instr): one byte.
     private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4;
 
+    /// <summary>
+    /// What Read charges for the function's record, `payloadBytes` long:
+    /// the most decoding it alone holds at once. Every object at its size,
+    /// as Read charges it -- an instruction 104 bytes and its place in its
+    /// block's list, a register with the operand its uses share, an operand
+    /// a register is not 32, an array its header and a word an element --
+    /// and every name once (IrReadBudget.ChargeName).
+    /// </summary>
     public static long DecodeCost(Function function, int payloadBytes)
     {
         long bytes = 512L + payloadBytes + 64L * function.RegCount + 16L * function.Params.Count
             + 96L * function.Slots.Count + 160L * function.Blocks.Count;
+        HashSet<string> names = _costNames ??= new(StringComparer.Ordinal);
+        names.Clear();
+        void Name(string? value) { if (value is not null && names.Add(value)) bytes = checked(bytes + IrReadBudget.NameBytes(IrBinary.Utf8.GetByteCount(value))); }
         void Text(string? value) { if (value is not null) bytes = checked(bytes + 32 + 3L * IrBinary.Utf8.GetByteCount(value)); }
-        Text(function.Name); Text(function.SourceFile); Text(function.Display);
+        Name(function.Name); Name(function.SourceFile); Text(function.Display);
         // A lowered async body's record (Write): its size symbol and the frame.
-        if (function.Async is AsyncFrame frame) { bytes = checked(bytes + 128); Text(frame.SizeSymbol); Text(frame.StackSymbol); }
+        if (function.Async is AsyncFrame frame) { bytes = checked(bytes + 128); Name(frame.SizeSymbol); Name(frame.StackSymbol); }
         // Each class parameter's chain and interfaces (Write), as Read charges them.
         if (function.ParamClasses is { } classes)
             foreach ((VReg parameter, string[] chain) in classes)
             {
                 bytes = checked(bytes + 64 + 32L * chain.Length);
-                foreach (string name in chain) Text(name);
+                foreach (string name in chain) Name(name);
                 if (function.ParamInterfaces?.GetValueOrDefault(parameter) is { } faces)
                 {
                     bytes = checked(bytes + 32L * faces.Count);
-                    foreach (string name in faces) Text(name);
+                    foreach (string name in faces) Name(name);
                 }
             }
         // WALKED WITHOUT A QUERY: a SelectMany over the blocks and an OfType
@@ -53,16 +64,39 @@ public static class IrFunctionCodec
         foreach (IrBlock block in function.Blocks)
             foreach (Instr instruction in block.Instrs)
             {
-                bytes = checked(bytes + 256 + 64L * instruction.Operands.Count + 16L * instruction.Targets.Count);
-                Text(instruction.Callee);
-                Text(instruction.DispatchType);
-                Text(instruction.Field);
-                Text(instruction.Family);
+                bytes = checked(bytes + InstructionBytes + OperandArrayBytes(instruction.Operands.Count) + TargetArrayBytes(instruction.Targets.Count));
+                if (Extra(instruction.Size, instruction.Offset, instruction.DispatchType) || instruction.Default is not null) bytes = checked(bytes + ExtraBytes);
+                Name(instruction.Callee);
+                Name(instruction.DispatchType);
+                Name(instruction.Field);
+                Name(instruction.Family);
                 foreach (Operand operand in instruction.Operands)
-                    if (operand is SymOperand address) Text(address.Name);
+                {
+                    if (operand is RegOperand) continue;
+                    bytes = checked(bytes + OperandBytes);
+                    if (operand is SymOperand address) Name(address.Name);
+                }
             }
         return bytes;
     }
+
+    [ThreadStatic] private static HashSet<string>? _costNames;
+
+    // WHAT A DECODED INSTRUCTION HOLDS. Instr, 104 bytes, and its place in
+    // its block's list; an operand a register is not (a register's is the
+    // one its every use shares, RegOperand.Of, charged with the register);
+    // InstrRare, where the instruction has what does not fit it.
+    private const int InstructionBytes = 128, OperandBytes = 32, ExtraBytes = 48;
+
+    // Past the two an instruction holds itself, its operands are an array
+    // exactly their number (OperandList); its targets are one (Instr.TargetBlocks).
+    private static long OperandArrayBytes(int count) => count > 2 ? 24 + 8L * (count - 2) : 0;
+    private static long TargetArrayBytes(int count) => count > 0 ? 24 + 8L * count : 0;
+
+    // Whether an instruction keeps a size, an offset or a dispatch type in
+    // its InstrRare (as a switch's default is): what its own fields cannot hold.
+    private static bool Extra(int size, long offset, string? dispatchType)
+        => size is < 0 or > byte.MaxValue || offset is < int.MinValue or > int.MaxValue || dispatchType is not null;
 
     /// <summary>
     /// The function's record. `kept`: the calls the inliner is to leave
@@ -212,7 +246,7 @@ public static class IrFunctionCodec
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
                 NoInlining = IrBinary.Flag(reader), CalleePops = reader.ReadInt32(),
-                SourceFile = IrBinary.Text(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
+                SourceFile = IrBinary.NameOrNull(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);
             budget.Charge(count, 64, "registers");
@@ -236,11 +270,11 @@ public static class IrFunctionCodec
                 int depth = IrBinary.Count(reader);
                 budget.Charge(depth, 32, "parameter class chain");
                 string[] chain = new string[depth];
-                for (int k = 0; k < depth; k++) chain[k] = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("A parameter class without a name");
+                for (int k = 0; k < depth; k++) chain[k] = IrBinary.NameOrNull(reader, budget) ?? throw new InvalidDataException("A parameter class without a name");
                 int faceCount = IrBinary.Count(reader);
                 budget.Charge(faceCount, 32, "parameter interfaces");
                 HashSet<string> faces = new(StringComparer.Ordinal);
-                for (int k = 0; k < faceCount; k++) faces.Add(IrBinary.Text(reader, budget) ?? throw new InvalidDataException("A parameter interface without a name"));
+                for (int k = 0; k < faceCount; k++) faces.Add(IrBinary.NameOrNull(reader, budget) ?? throw new InvalidDataException("A parameter interface without a name"));
                 if (depth == 0) throw new InvalidDataException("A parameter class with no chain");
                 (function.ParamClasses ??= new())[parameter] = chain;
                 (function.ParamInterfaces ??= new())[parameter] = faces;
@@ -252,11 +286,11 @@ public static class IrFunctionCodec
                 if (!Enum.IsDefined(kind)) throw new InvalidDataException("Invalid async frame kind");
                 VReg machine = At(registers, reader.ReadInt32());
                 int stateOffset = reader.ReadInt32(), fieldsStart = reader.ReadInt32();
-                string sizeSymbol = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol");
+                string sizeSymbol = IrBinary.NameOrNull(reader, budget) ?? throw new InvalidDataException("Async frame without a size symbol");
                 bool lowered = IrBinary.Flag(reader);
                 ImmOperand? suspendResult = IrBinary.Flag(reader) ? new ImmOperand(reader.ReadInt64(), (IrType)reader.ReadByte()) : null;
                 bool mayMove = IrBinary.Flag(reader);
-                string? stackSymbol = IrBinary.Text(reader, budget);
+                string? stackSymbol = IrBinary.NameOrNull(reader, budget);
                 function.Async = new AsyncFrame
                 {
                     Kind = kind,
@@ -295,44 +329,70 @@ public static class IrFunctionCodec
             foreach (IrBlock block in blocks)
             {
                 int instructions = IrBinary.Count(reader);
-                budget.Charge(instructions, 256, "instructions");
+                budget.Charge(instructions, InstructionBytes, "instructions");
                 for (int i = 0; i < instructions; i++)
                 {
                     Opcode opcode = (Opcode)reader.ReadInt32(); int destination = reader.ReadInt32();
                     if (!Enum.IsDefined(opcode) || destination < -1) throw new InvalidDataException("Invalid IR instruction");
+                    int size = reader.ReadInt32(); bool signed = IrBinary.Flag(reader); long offset = reader.ReadInt64();
+                    string? callee = IrBinary.NameOrNull(reader, budget), dispatchType = IrBinary.NameOrNull(reader, budget);
+                    string? field = IrBinary.NameOrNull(reader, budget);
+                    bool extra = Extra(size, offset, dispatchType);
+                    if (extra) budget.Charge(1, ExtraBytes, "instructions");
                     Instr instruction = new()
                     {
                         Op = opcode, Dest = destination == -1 ? null : At(registers, destination),
-                        Size = reader.ReadInt32(), Signed = IrBinary.Flag(reader), Offset = reader.ReadInt64(),
-                        Callee = IrBinary.Text(reader, budget), DispatchType = IrBinary.Text(reader, budget), Field = IrBinary.Text(reader, budget), Line = reader.ReadInt32(),
+                        Size = size, Signed = signed, Offset = offset,
+                        Callee = callee, DispatchType = dispatchType, Field = field, Line = reader.ReadInt32(),
                     };
                     byte marks = reader.ReadByte();
                     if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
                     instruction.Number = (marks & NumberMark) != 0;
                     instruction.RegionSite = (marks & RegionSiteMark) != 0;
                     if ((marks & FamilyMark) != 0)
-                        instruction.Family = IrBinary.Text(reader, budget) ?? throw new InvalidDataException("Invalid IR instruction field");
+                        instruction.Family = IrBinary.NameOrNull(reader, budget) ?? throw new InvalidDataException("Invalid IR instruction field");
+                    // MADE AT ONCE, operands and targets: added one at a time,
+                    // each was a copy of all before it (OperandList, TargetList).
                     int operands = IrBinary.Count(reader);
-                    budget.Charge(operands, 64, "operands");
+                    if (operands > 2) budget.Charge(1, checked((int)OperandArrayBytes(operands)), "operands");
+                    Operand[]? all = operands > 2 ? new Operand[operands] : null;
                     for (int operand = 0; operand < operands; operand++)
                     {
+                        Operand read;
                         switch (reader.ReadByte())
                         {
-                            case 1: instruction.Operands.Add(RegOperand.Of(At(registers, reader.ReadInt32()))); break;
+                            case 1: read = RegOperand.Of(At(registers, reader.ReadInt32())); break;
                             case 2:
                                 IrType type = IrBinary.Type(reader);
-                                instruction.Operands.Add(new ImmOperand(reader.ReadInt64(), type)); break;
-                            case 3: instruction.Operands.Add(new SymOperand(IrBinary.Name(reader, budget), reader.ReadInt64())); break;
-                            case 4: instruction.Operands.Add(new SlotOperand(At(slots, reader.ReadInt32()))); break;
+                                budget.Charge(1, OperandBytes, "operands");
+                                read = new ImmOperand(reader.ReadInt64(), type); break;
+                            case 3:
+                                budget.Charge(1, OperandBytes, "operands");
+                                read = new SymOperand(IrBinary.Name(reader, budget), reader.ReadInt64()); break;
+                            case 4:
+                                budget.Charge(1, OperandBytes, "operands");
+                                read = new SlotOperand(At(slots, reader.ReadInt32())); break;
                             default: throw new InvalidDataException("Unknown IR operand encoding");
                         }
+                        if (all is not null) all[operand] = read;
+                        else instruction.Operands.Add(read);
                     }
+                    if (all is not null) instruction.Operands.SetAll(all);
                     int targets = IrBinary.Count(reader);
-                    budget.Charge(targets, 16, "block references");
-                    for (int target = 0; target < targets; target++) instruction.WritableTargets.Add(At(blocks, reader.ReadInt32()));
+                    if (targets > 0)
+                    {
+                        budget.Charge(1, checked((int)TargetArrayBytes(targets)), "block references");
+                        IrBlock[] to = new IrBlock[targets];
+                        for (int target = 0; target < targets; target++) to[target] = At(blocks, reader.ReadInt32());
+                        instruction.TargetBlocks = to;
+                    }
                     int otherwise = reader.ReadInt32();
                     if (otherwise < -1) throw new InvalidDataException("Invalid IR default target");
-                    if (otherwise >= 0) instruction.Default = At(blocks, otherwise);
+                    if (otherwise >= 0)
+                    {
+                        if (!extra) budget.Charge(1, ExtraBytes, "instructions");
+                        instruction.Default = At(blocks, otherwise);
+                    }
                     block.Instrs.Add(instruction);
                 }
             }

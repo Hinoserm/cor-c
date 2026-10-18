@@ -76,15 +76,24 @@ internal static class IrBinary
     /// A name: a symbol, a callee, a label. INTERNED, and read through a
     /// buffer of this thread's: the same names stand in every unit's IR, and a
     /// link that decoded all of them held each one a hundred times over, every
-    /// copy beside the byte array it was decoded from.
+    /// copy beside the byte array it was decoded from. Charged once a decode
+    /// (IrReadBudget.ChargeName): met again, it is the string already held.
     /// </summary>
     public static string Name(BinaryReader reader, IrReadBudget? budget = null)
+        => NameOrNull(reader, budget) ?? throw new InvalidDataException("Null IR name");
+
+    /// <summary>
+    /// A name a record may leave out -- a call's callee, a field, a source
+    /// file: as Name, and null where it says none. Read as Text, every call
+    /// was a string of its callee's name of its own: a link's unit of the
+    /// class library held 194000 such copies, 15 MB of what it decoded to.
+    /// </summary>
+    public static string? NameOrNull(BinaryReader reader, IrReadBudget? budget = null)
     {
         int length = reader.ReadInt32();
-        if (length == -1) throw new InvalidDataException("Null IR name");
+        if (length == -1) return null;
         if (length < 0 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
             throw new InvalidDataException("Invalid IR text length");
-        budget?.Charge(32L + 3L * length, 1, "text");
         byte[] buffer = Fill(reader, length);
         // FOUND BY ITS BYTES, NOT DECODED: an ASCII name met before is the
         // interned string this thread already has, checked byte for byte. A
@@ -103,11 +112,19 @@ internal static class IrBinary
         {
             int k = 0;
             while (k < length && known[k] == buffer[k]) k++;
-            if (k == length) return known;
+            if (k == length)
+            {
+                budget?.ChargeName(known, length);
+                return known;
+            }
         }
         string value = Utf8.GetString(buffer, 0, length);
         if (value.Contains('\0')) throw new InvalidDataException("Invalid IR text");
         value = string.Intern(value);
+        // The pool's string is the one the budget remembers, never the copy
+        // decoded here: kept by the budget, that copy was the name twice. A
+        // name past the limit is one string kept, and the decode stops at it.
+        budget?.ChargeName(value, length);
         if (ascii) seen[hash] = value;
         return value;
     }

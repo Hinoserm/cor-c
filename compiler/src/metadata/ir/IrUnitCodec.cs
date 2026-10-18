@@ -155,12 +155,16 @@ public static class IrUnitCodec
                 module.LeavesLinkHints = settings.LeavesLinkHints; module.RuntimeHelpers.UnionWith(settings.RuntimeHelpers);
             }
             IrBinary.End(reader);
+            // EACH RECORD'S BYTES LET GO once it is decoded (IrReadBudget.Release):
+            // the module holds what was made of them, never them.
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
                 if (entry.Key == "M:unit") continue;
                 if (entry.Key.StartsWith("S:", StringComparison.Ordinal))
                 {
-                    DataItem shadow = IrDataCodec.Read(archive.ReadBody(entry.Key), memoryBudget, budget);
+                    byte[] body = archive.ReadBody(entry.Key);
+                    DataItem shadow = IrDataCodec.Read(body, memoryBudget, budget);
+                    budget.Release(body.Length);
                     if (entry.Key != "S:" + shadow.Name) throw new InvalidDataException("IR shadow key mismatch");
                     module.ShadowData[shadow.Name] = shadow;
                     continue;
@@ -177,13 +181,17 @@ public static class IrUnitCodec
                         module.Functions.Add(new Function(name, IrType.Void) { Exported = exported });
                         continue;
                     }
-                    Function function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), budget, module.KeepCalls);
+                    byte[] body = archive.ReadBody(entry.Key);
+                    Function function = IrFunctionCodec.Read(body, budget, module.KeepCalls);
+                    budget.Release(body.Length);
                     if (entry.Key != "F:" + function.Name) throw new InvalidDataException("IR function key mismatch");
                     module.Functions.Add(function);
                 }
                 else if (entry.Key.StartsWith("D:", StringComparison.Ordinal))
                 {
-                    DataItem item = IrDataCodec.Read(archive.ReadBody(entry.Key), memoryBudget, budget);
+                    byte[] body = archive.ReadBody(entry.Key);
+                    DataItem item = IrDataCodec.Read(body, memoryBudget, budget);
+                    budget.Release(body.Length);
                     if (entry.Key != "D:" + item.Name) throw new InvalidDataException("IR data key mismatch");
                     module.Data.Add(item);
                 }
