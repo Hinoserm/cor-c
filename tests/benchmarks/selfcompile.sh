@@ -13,20 +13,20 @@ work="$(mktemp -d "$root/build/selfcompile.XXXXXX")"
 snapshot="$work/source"
 mkdir "$snapshot"
 printf 'selfcompile work: %s\n' "$work"
-git archive "$revision" compiler linker runtime stdlib tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
+git archive "$revision" compiler linker tools/build runtime stdlib tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
 cd "$snapshot"
 # --lib-root points at the snapshot, so the bootstrap compiler names the
 # snapshot's own library sources.
 mapfile -t libraries < <("$bootstrap" --lib-root "$snapshot" library-sources)
 test "${#libraries[@]}" -gt 0
-mapfile -t sources < <(rg --files compiler/src linker/src -g '*.cs' -g '!linker/src/driver/Program.cs' -g '!**/tests/**' -g '!**/bin/**' -g '!**/obj/**' -g '!**/Legacy/**' | LC_ALL=C sort)
+mapfile -t sources < <(rg --files compiler/src linker/src tools/build/src -g '*.cs' -g '!linker/src/driver/Program.cs' -g '!**/tests/**' -g '!**/bin/**' -g '!**/obj/**' -g '!**/Legacy/**' | LC_ALL=C sort)
 test "${#sources[@]}" -gt 0
 jobs="${SELF_JOBS:-1}"
 if ! [[ "$jobs" =~ ^[1-9][0-9]?$ ]] || [ "$jobs" -gt 64 ]; then
     echo "SELF_JOBS must be a worker count from 1 to 64" >&2
     exit 2
 fi
-flags=(--nostdlib -Wno-error --cpu 486 -D COR_SELFHOST_BENCHMARK --jobs "$jobs")
+flags=(--nostdlib -Wno-error --cpu 486 -D COR_SELFHOST_BENCHMARK --jobs "$jobs" --using System --using System.Collections.Generic --using System.IO --using System.Linq --using System.Net.Http --using System.Threading --using System.Threading.Tasks)
 case "${SELF_PROFILE:-default}" in
     default) ;;
     size) flags+=(--opt-size) ;;
