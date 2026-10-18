@@ -1,0 +1,33 @@
+// test: coroutine_program_drops_dead_data
+// expect-no-symbol: s_Gc_DeferHook
+// expect-no-symbol: s_Console__error
+// expect-exit: 0
+// expect-output:
+// 42
+//
+// A PROGRAM WITH A COROUTINE DROPS THE DATA NOTHING LIVE NAMES, as one
+// without does (Inline.RemoveDeadFunctions): the collector's hooks nobody
+// sets, a console stream nobody writes to. A coroutine's frame is laid out
+// after the optimiser (AsyncTransform), which writes into the items its
+// frame names -- its size, and whether its machine may start in its
+// kickoff's frame -- and so every data item of such a program was kept.
+// Those two are known from the start, kept, and nothing else the transform
+// names is data.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static async Task<int> Answer(int x)
+    {
+        await Task.Yield();
+        return x * 2;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Answer(21).Result);
+        return 0;
+    }
+}

@@ -1106,15 +1106,27 @@ public sealed class Inline : IParallelModulePass
         // And what the objects linked in beside this one name (--with): an
         // entry stub's write to a static, its call into the program.
         foreach (string name in m.ObjectNames) Reach(name);
-        // A coroutine's frame is laid out after the optimiser (AsyncTransform),
-        // and what it names then is not to be seen here: every item stays.
-        // So it does at the link's run of a unit's late passes (Module.AtLink):
-        // the bodies it brings in after them are the unit's archived ones
-        // (UnitBackend's Callee: the allocators, the region helpers), from
+        // A COROUTINE'S FRAME IS LAID OUT AFTER THE OPTIMISER (AsyncTransform),
+        // which writes its size into the item its frame names (SizeSymbol),
+        // clears the word saying whether its machine may start in its
+        // kickoff's frame (StackSymbol) where it may not, and calls the card
+        // mark and the shade reached above. Those two items are known from
+        // the start, and stay; nothing else it names is data.
+        if (coroutines)
+            foreach (Function f in m.Functions)
+                if (f.Async is AsyncFrame frame)
+                {
+                    Reach(frame.SizeSymbol);
+                    if (frame.StackSymbol is string stack) Reach(stack);
+                    if (frame.SuspendResult is SymOperand result) Reach(result.Name);
+                }
+        // AT THE LINK'S RUN OF A UNIT'S LATE PASSES (Module.AtLink) every item
+        // stays: the bodies it brings in after them are the unit's archived
+        // ones (UnitBackend's Callee: the allocators, the region helpers), from
         // before these passes, and may name what nothing here does. What the
         // image does not keep goes after them, judged over those bodies
         // (UnitBackend.PruneAfterLate).
-        if (coroutines || m.AtLink)
+        if (m.AtLink)
             foreach (DataItem d in m.Data) Reach(d.Name);
         if (m.PreserveExports)
         {
