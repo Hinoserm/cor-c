@@ -14,8 +14,8 @@ public static class DependencyTests
         string key = "T:" + assembly + "\nKnown", query = "B:" + assembly + "\nMissing";
         using (DeclarationCatalog catalog = new(index))
         {
-            UnitDependencies.Write(state, catalog, new[] { key }, new HashSet<string>(), new[] { query });
-            UnitDependencies.Write(bodies, catalog, new[] { key }, new HashSet<string> { key }, Array.Empty<string>());
+            UnitDependencies.Write(state, catalog, new[] { key }, new HashSet<string>(), new HashSet<string>(), new[] { query });
+            UnitDependencies.Write(bodies, catalog, new[] { key }, new HashSet<string>(), new HashSet<string> { key }, Array.Empty<string>());
         }
         if (!UnitDependencies.IsCurrent(state, index)) throw new Exception("Fresh unit dependency receipt is stale");
         if (UnitDependencies.Stale(bodies, index) is { } fresh) throw new Exception("Fresh receipt of bodies is stale: " + fresh);
@@ -37,7 +37,21 @@ public static class DependencyTests
         File.WriteAllBytes(state, File.ReadAllBytes(state)[..20]);
         if (UnitDependencies.Stale(state, index) is not { } cut || !cut.StartsWith("receipt unreadable", StringComparison.Ordinal))
             throw new Exception("A receipt cut short was not called unreadable");
-        Console.WriteLine("project dependencies: body-only reuse, negative-lookup invalidation and stale reasons passed");
+
+        // A TEMPLATE IMPORTED AND NEVER COPIED: its bodies' values and lines
+        // are no dependence, and what they name is.
+        File.WriteAllText(source, "class Box<T> { public int Size() { return 4; } }");
+        SourceIndexBuilder.Write(index, new[] { source }, assembly);
+        string box = "T:" + assembly + "\nBox`1";
+        using (DeclarationCatalog catalog = new(index))
+            UnitDependencies.Write(state, catalog, new[] { box }, new HashSet<string> { box }, new HashSet<string>(), Array.Empty<string>());
+        File.WriteAllText(source, "class Box<T>\n{\n    public int Size() { return 0x8; }\n}");
+        SourceIndexBuilder.Write(index, new[] { source }, assembly);
+        if (UnitDependencies.Stale(state, index) is { } literal) throw new Exception("A template body's literal invalidated a unit that copied none of it: " + literal);
+        File.WriteAllText(source, "class Box<T>\n{\n    public int Size() { return Known.Width; }\n}");
+        SourceIndexBuilder.Write(index, new[] { source }, assembly);
+        Expect(state, index, "what Box`1's template bodies name changed");
+        Console.WriteLine("project dependencies: body-only reuse, template-body shape, negative-lookup invalidation and stale reasons passed");
     }
 
     private static void Expect(string receipt, string index, string reason)

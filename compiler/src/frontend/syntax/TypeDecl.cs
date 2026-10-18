@@ -420,4 +420,39 @@ public sealed class TypeDecl : Node
     /// Null for a declaration made elsewhere, read from a header.
     /// </summary>
     public List<TypeParam>? TemplateParams { get; set; }
+
+    /// <summary>
+    /// THE IMPORTED TEMPLATE WHOSE BODIES THIS DECLARATION'S ARE: a
+    /// declaration the index read with its bodies (IndexedDeclarations.
+    /// AddHeaders) -- a generic type, a type nested in one, or a type with
+    /// a generic method -- names itself. Carried to every copy the
+    /// expansion makes (Monomorphiser.RewriteDeclIn), each round's copy of
+    /// a type and each specialisation of a template alike, since a type is
+    /// copied afresh every round and a body is copied out of whichever copy
+    /// is current.
+    /// A part merged into another (Frontend.MergePartialTypes) shares the
+    /// one the merged type has, so a body copied out of the merged type is
+    /// one used of every part. Null for every other declaration, which keeps
+    /// a unit's own declarations, as parsed, from being held by their copies.
+    /// </summary>
+    public TypeDecl? IndexedTemplate { get; set; }
+
+    /// <summary>
+    /// WHETHER THIS UNIT COPIED ANY OF ITS BODIES in the pass under way: a
+    /// specialisation (Monomorphiser.Expand), or a copy of a generic method
+    /// (Frontend.Specialise), made of this declaration or of any copy of the
+    /// imported template it is (<see cref="IndexedTemplate"/>). Read when the
+    /// unit's receipt is written: a template none of whose bodies was copied
+    /// put no code in the unit, and the unit does not depend on the text of
+    /// its bodies (IndexedDeclarations.WriteDependencies).
+    /// </summary>
+    public bool BodiesUsed => IndexedTemplate?._bodiesUsed == true;
+
+    /// <summary>Says a copy was made of this declaration's bodies (BodiesUsed).</summary>
+    public void BodiesCopied()
+    {
+        if (IndexedTemplate is { } template) template._bodiesUsed = true;
+    }
+
+    private bool _bodiesUsed;
 }

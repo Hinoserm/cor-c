@@ -3,32 +3,60 @@ using System.Text;
 
 namespace Corsac.Lang.Metadata;
 
+/// <summary>What of a declaration's text a unit depends on: the flag beside each key of its receipt.</summary>
+public enum Dependence : byte
+{
+    /// <summary>Its declaration: signatures, constants and initialisers, with the bodies left out.</summary>
+    Declaration = 0,
+
+    /// <summary>
+    /// Its declaration and its whole file: the unit copied one of its
+    /// bodies, and the copy carries the file's line positions into the
+    /// unit's code.
+    /// </summary>
+    Source = 1,
+
+    /// <summary>
+    /// Its declaration and the shape of its template bodies: a template the
+    /// unit imported with its bodies and copied none of, whose bodies were
+    /// still read for what they name (SourceDeclaration.TemplateHash).
+    /// </summary>
+    Template = 2,
+}
+
 /// <summary>Consumed declaration families, not a project-wide declaration graph.</summary>
 public static class UnitDependencies
 {
     /// <summary>
-    /// One key's records by their declarations, or by the text of the files
-    /// they are in. The two are kept apart so that a stale receipt can say
-    /// which of them moved: a changed signature and a changed body behind a
-    /// template rebuild the same units for different reasons, and the build
-    /// log should not leave the difference to be worked out by hand.
+    /// One key's records by their declarations (Declaration), by the text of
+    /// the files they are in (Source), or by the shape of their template
+    /// bodies (Template). They are kept apart so that a stale receipt can
+    /// say which of them moved: a changed signature and a changed body
+    /// behind a template rebuild the same units for different reasons, and
+    /// the build log should not leave the difference to be worked out by hand.
     /// </summary>
-    private static byte[] Fingerprint(IReadOnlyList<SourceDeclaration> records, bool text)
+    private static byte[] Fingerprint(IReadOnlyList<SourceDeclaration> records, Dependence part)
     {
         using MemoryStream buffer = new();
         using BinaryWriter writer = new(buffer, Encoding.UTF8, leaveOpen: true);
         foreach (SourceDeclaration record in records.OrderBy(record => record.Path, StringComparer.Ordinal).ThenBy(record => record.From))
         {
-            writer.Write(record.Path); writer.Write(text ? record.SourceHash : record.DeclarationHash);
+            writer.Write(record.Path);
+            writer.Write(part switch { Dependence.Source => record.SourceHash, Dependence.Template => record.TemplateHash, _ => record.DeclarationHash });
         }
         return SHA256.HashData(buffer.ToArray());
     }
 
     /// <summary>
-    /// Each key is written with its declaration fingerprint, and with the
-    /// text fingerprint after it when the unit read the key's bodies too.
+    /// Writes a unit's receipt: every key it loaded, each with what of its
+    /// text the unit depends on -- its declaration fingerprint always, and
+    /// after it its whole file's where the unit copied one of its bodies
+    /// (copied), or its template bodies' shape where it imported it as a
+    /// template and copied none (templates) -- and every lookup the unit
+    /// asked the index.
     /// </summary>
-    public static void Write(string path, DeclarationCatalog catalog, IEnumerable<string> keys, IReadOnlySet<string> implementations, IEnumerable<string> queries)
+    public static void Write(string path, DeclarationCatalog catalog, IEnumerable<string> keys, IReadOnlySet<string> templates,
+        IReadOnlySet<string> copied, IEnumerable<string> queries)
     {
         using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
         using BinaryWriter writer = new(stream, Encoding.UTF8);
@@ -37,11 +65,13 @@ public static class UnitDependencies
         foreach (string key in ordered)
         {
             using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing dependency " + key);
-            bool body = implementations.Contains(key);
+            Dependence dependence = copied.Contains(key) ? Dependence.Source
+                : templates.Contains(key) ? Dependence.Template : Dependence.Declaration;
             byte[] encoded = Encoding.UTF8.GetBytes(key);
             if (encoded.Length > 4096) throw new InvalidDataException("Dependency key exceeds format limit");
-            writer.Write(encoded.Length); writer.Write(encoded); writer.Write(body); writer.Write(Fingerprint(lease.Records, text: false));
-            if (body) writer.Write(Fingerprint(lease.Records, text: true));
+            writer.Write(encoded.Length); writer.Write(encoded); writer.Write((byte)dependence);
+            writer.Write(Fingerprint(lease.Records, Dependence.Declaration));
+            if (dependence != Dependence.Declaration) writer.Write(Fingerprint(lease.Records, dependence));
         }
         string[] lookups = queries.Order(StringComparer.Ordinal).ToArray();
         writer.Write(lookups.Length);
@@ -79,14 +109,15 @@ public static class UnitDependencies
                 int length = reader.ReadInt32();
                 if (length < 1 || length > 4096 || length > stream.Length - stream.Position - 33) return unreadable;
                 string key = Encoding.UTF8.GetString(reader.ReadBytes(length));
-                byte flag = reader.ReadByte(); if (flag > 1) return unreadable;
+                Dependence dependence = (Dependence)reader.ReadByte(); if (!Enum.IsDefined(dependence)) return unreadable;
                 byte[] declaration = reader.ReadBytes(32);
-                byte[]? text = flag != 0 ? reader.ReadBytes(32) : null;
-                if (declaration.Length != 32 || text is { Length: not 32 }) return unreadable;
+                byte[]? more = dependence != Dependence.Declaration ? reader.ReadBytes(32) : null;
+                if (declaration.Length != 32 || more is { Length: not 32 }) return unreadable;
                 using DeclarationLease? lease = catalog.AcquireKey(key);
                 if (lease is null) return Named(key) + " is no longer declared";
-                if (!declaration.SequenceEqual(Fingerprint(lease.Records, text: false))) return "declaration of " + Named(key) + " changed";
-                if (text is not null && !text.SequenceEqual(Fingerprint(lease.Records, text: true))) return TextChanged(key, lease.Records);
+                if (!declaration.SequenceEqual(Fingerprint(lease.Records, Dependence.Declaration))) return "declaration of " + Named(key) + " changed";
+                if (more is not null && !more.SequenceEqual(Fingerprint(lease.Records, dependence)))
+                    return dependence == Dependence.Source ? TextChanged(key, lease.Records) : "what " + Named(key) + "'s template bodies name changed";
             }
             count = reader.ReadInt32();
             if (count < 0 || count > 100000) return unreadable;

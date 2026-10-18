@@ -791,6 +791,9 @@ public sealed class Monomorphiser
                 && job.Name == CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count) ? CanonParams(job.Template) : null;
             _canonMade = _canonParams is null ? null : new List<TypeRef>();
             TypeDecl made;
+            // ITS BODIES ARE THIS UNIT'S NOW, word-shaped copy or not: the
+            // receipt then depends on the template's text (TypeDecl.BodiesUsed).
+            job.Template.BodiesCopied();
             try
             {
                 made = RewriteDecl(job.Template, map, job.Name);
@@ -2554,6 +2557,7 @@ public sealed class Monomorphiser
             Specialised = d.Specialised,
             Template = d.Template,
             TemplateParams = d.TemplateParams,
+            IndexedTemplate = d.IndexedTemplate,
 
             // AND WHERE IT WAS WRITTEN. A nested type's copy is still nested,
             // and losing that makes `Outer.Inner` stop resolving the moment the

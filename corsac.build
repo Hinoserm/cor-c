@@ -182,7 +182,7 @@
         <Environment Name="CORC" Value="$(Compiler)" />
       </Test>
     </Target>
-    <Target Name="projects" DependsOnTargets="/compiler" Description="corc project: the pipeline, a declaration changed between builds, and the slot table">
+    <Target Name="projects" DependsOnTargets="/compiler" Description="corc project: the pipeline, a declaration changed between builds, a template's bodies as a dependence, and the slot table">
       <Test Name="project-pipeline" Executable="bash" Timeout="00:15:00">
         <Argument Value="tests/integration/project-pipeline.sh" />
         <Environment Name="CORC_DLL" Value="$(CompilerDll)" />
@@ -193,6 +193,10 @@
       </Test>
       <Test Name="project-slots" Executable="bash" Timeout="00:15:00">
         <Argument Value="tests/integration/project-slots.sh" />
+        <Environment Name="CORC_DLL" Value="$(CompilerDll)" />
+      </Test>
+      <Test Name="project-template-bodies" Executable="bash" Timeout="00:15:00">
+        <Argument Value="tests/integration/project-template-bodies.sh" />
         <Environment Name="CORC_DLL" Value="$(CompilerDll)" />
       </Test>
     </Target>

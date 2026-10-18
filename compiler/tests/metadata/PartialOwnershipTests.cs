@@ -15,7 +15,9 @@ public static class PartialOwnershipTests
         foreach (string source in new[] { first, second })
         {
             using IndexedDeclarations declarations = new(index, "PartialTest", new[] { source });
-            var front = Frontend.Compile(new[] { source }, "partial", true, declarations: declarations)
+            // A library's unit, its own file marked the library's as the
+            // driver marks it, and its neighbour's part read as the library's too.
+            var front = Frontend.Compile(new[] { source }, "partial", true, libraryPaths: new[] { source }, declarations: declarations)
                 ?? throw new Exception("Partial ownership did not bind");
             TypeDecl split = front.Unit.Types.Single(type => type.Name == "Split");
             if (split.SourcePath != first || split.Elsewhere != (source == second)) throw new Exception("Unstable partial metadata owner");

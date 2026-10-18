@@ -86,16 +86,25 @@ location records use UTF-16 character offsets, matching the parser's string
 indices. Source fingerprints cover complete file text; declaration fingerprints
 cover declaration tokens and lexical scope but exclude omitted bodies and source
 positions. A body-only change therefore invalidates implementation users without
-changing an otherwise identical declaration fingerprint.
+changing an otherwise identical declaration fingerprint. Template-shape
+fingerprints cover the tokens of the bodies a template is imported with (a
+generic type's, a type's nested in one, a generic method's) without literal
+values or positions: a unit that imports a template and copies none of its
+bodies still reads them for the names they mention, and depends on that and
+nothing more of them. A unit's receipt flags each key it loaded with what of it
+the unit depends on (UnitDependencies.Dependence): the declaration alone; the
+declaration and the whole file's text, where the unit copied one of the key's
+bodies; or the declaration and the template shape.
 
 The CDEC payload starts with uint32 magic CDEC and version 2. Four int32-length
 strict UTF-8 strings follow: source path, declaration spelling, namespace and
 outer type path. Next are four int32 fields (source start, end, line, column),
-32-byte source and declaration SHA-256 fingerprints, an int32 import count with
-pairs of scope/namespace strings, and an int32 alias count with triples of
-scope/alias/target strings, then an int32 count and strings for command-line
-conditional-compilation symbols. Lengths and source spans are validated; trailing data
-is rejected. The payload key is supplied by its containing index record.
+32-byte source, declaration and template-shape SHA-256 fingerprints, an int32
+import count with pairs of scope/namespace strings, and an int32 alias count
+with triples of scope/alias/target strings, then an int32 count and strings for
+command-line conditional-compilation symbols. Lengths and source spans are
+validated; trailing data is rejected. The payload key is supplied by its
+containing index record.
 
 Implementation fetching verifies the source fingerprint before returning the
 recorded type fragment. A stale source is an error, not permission to combine a

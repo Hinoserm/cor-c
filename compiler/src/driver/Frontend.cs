@@ -34,6 +34,9 @@ public static class Frontend
             {
                 var done = CompileCore(paths, name, library, libraryPaths, symbols, elsewherePaths, workers, declarations);
                 pass.Stop("front:pass-kept");
+                // WHICH TEMPLATES THE UNIT COPIED A BODY OF, for its receipt:
+                // settled with the binding, and taken now.
+                declarations?.PassKept();
                 return done;
             }
             catch (DeclarationDemand demand) when (declarations is not null)
@@ -165,13 +168,17 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("merge-expand");
 #endif
-        // WHAT THE INDEX GIVES IS ON THE SIDE A NAMED FILE WOULD BE: the
-        // library's when this compile is one (--lib makes every file it is
-        // given the library's) or the file is a class library source, the
-        // program's otherwise -- the rule the loop above applied to the
-        // files this compile was given (IndexedDeclarations.LibrarySide).
+        // WHAT THE INDEX GIVES IS ON THE SIDE A NAMED FILE WOULD BE, by the
+        // rule the loop above applied to the files this compile was given
+        // (IndexedDeclarations.LibrarySide): the library's when the file is
+        // a class library source, and every one when this is a library's
+        // compile that made every file it was given the library's (--lib,
+        // whose driver names them all so); the program's otherwise.
         if (declarations is not null)
-            declarations.LibrarySide = path => library || fromLibrary.Contains(Path.GetFullPath(path));
+        {
+            bool every = library && paths.All(path => fromLibrary.Contains(Path.GetFullPath(path)));
+            declarations.LibrarySide = path => every || fromLibrary.Contains(Path.GetFullPath(path));
+        }
         declarations?.AddHeaders(unit);
         if (declarations is not null)
             unit.Types.Sort((left, right) =>
@@ -601,6 +608,7 @@ public static class Frontend
                     if (origin is not null)
                     {
                         Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted, values);
+                        shared.BodiesCopied();
 
                         twin.File = origin.File;
                         twin.LocalCopy = true;
@@ -649,6 +657,9 @@ public static class Frontend
                 Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
 
                 copy.File = template.File;
+                // A BODY OF THE OWNER'S TEMPLATE IS THIS UNIT'S NOW, and the
+                // unit's receipt depends on its text (TypeDecl.BodiesUsed).
+                owner.BodiesCopied();
 
                 // OURS, wherever it sits. The owner may be a library's type,
                 // and a member of a library's type is normally an import --
@@ -710,6 +721,7 @@ public static class Frontend
             Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
 
             copy.File = template.File;
+            owner.BodiesCopied();
             copy.LocalCopy = true;
             copy.Fresh = true;
             owner.Members.Add(copy);
@@ -877,6 +889,15 @@ public static class Frontend
             into.Members.AddRange(part.Members);
             into.Mods |= part.Mods;
             into.SignatureOnly &= part.SignatureOnly;
+
+            // AN IMPORTED TEMPLATE'S BODIES ARE THE MERGED TYPE'S NOW, so a
+            // copy of any of them is made out of it: the part says it used
+            // its bodies whenever the merged type says so (TypeDecl.BodiesUsed).
+            if (part.IndexedTemplate is not null)
+            {
+                into.IndexedTemplate ??= part.IndexedTemplate;
+                part.IndexedTemplate = into.IndexedTemplate;
+            }
         }
 
         unit.Types.Clear();

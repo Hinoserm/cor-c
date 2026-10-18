@@ -68,8 +68,13 @@ public sealed class Parser
     /// that unit empty, answering whatever its result register held.
     /// </summary>
     private bool SkipWritten(bool generic) => _declarationsOnly && !(_includeTemplateBodies && (_templateDepth > 0 || _templateMethod || generic));
-    /// <summary>Source ranges omitted by declaration-only parsing; end is exclusive.</summary>
-    public List<(int From, int To, bool Block)> OmittedBodies { get; } = new();
+    /// <summary>
+    /// Source ranges omitted by declaration-only parsing; end is exclusive.
+    /// Template says whether a template's import keeps the body (it is in a
+    /// generic type, or is a generic method's), which SourceIndexBuilder
+    /// fingerprints apart from the declaration.
+    /// </summary>
+    public List<(int From, int To, bool Block, bool Template)> OmittedBodies { get; } = new();
     private int _i;
     private string? _iteratorTarget;
     private TypeRef? _iteratorElement;
@@ -4089,7 +4094,7 @@ public sealed class Parser
                 if (token.Kind == Tok.LBrace) depth++;
                 else if (token.Kind == Tok.RBrace) depth--;
             }
-            OmittedBodies.Add((at.Pos, _t[_i - 1].Pos + 1, true));
+            OmittedBodies.Add((at.Pos, _t[_i - 1].Pos + 1, true, _templateDepth > 0 || _templateMethod));
             return block;
         }
 
@@ -4117,7 +4122,7 @@ public sealed class Parser
             else if (token.Kind is Tok.RParen or Tok.RBracket or Tok.RBrace)
                 if (close.Count == 0 || close.Pop() != token.Kind) throw Error("unbalanced expression body");
         }
-        OmittedBodies.Add((start.Pos, Cur.Pos, false));
+        OmittedBodies.Add((start.Pos, Cur.Pos, false, _templateDepth > 0 || _templateMethod));
         // This tree is a declaration marker, never executable implementation.
         return new DefaultExpr { Type = new TypeRef { Name = "object" }, Line = start.Line, Col = start.Col };
     }

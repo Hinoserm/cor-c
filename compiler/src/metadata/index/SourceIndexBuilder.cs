@@ -123,6 +123,19 @@ public static class SourceIndexBuilder
                     var bodies = parser.OmittedBodies.Where(b => b.From >= type.SourceFrom && b.To <= type.SourceTo).OrderBy(b => b.From).ToArray();
                     int bodyIndex = 0;
                     bool wroteBody = false;
+                    // AND ITS TEMPLATE BODIES' SHAPE, kept apart: the bodies a
+                    // template is imported with (Parser.OmittedBodies' Template)
+                    // are read for what they name before a unit is bound
+                    // (IndexedDeclarations.AddHeaders), whether or not the unit
+                    // copies one, and what they name is loaded into the unit.
+                    // Their tokens, without a literal's value or any position:
+                    // neither decides what a body names, so an edit to a number,
+                    // or to a line above, leaves current a unit that never
+                    // copied a body (UnitDependencies, Dependence.Template). An
+                    // interpolated string keeps its text, whose holes are
+                    // expressions.
+                    using MemoryStream shape = new();
+                    using BinaryWriter shaped = new(shape, Encoding.UTF8, leaveOpen: true);
                     for (int tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
                     {
                         Token token = tokens[tokenIndex];
@@ -133,10 +146,16 @@ public static class SourceIndexBuilder
                         {
                             if (!wroteBody) declaration.Append(bodies[bodyIndex].Block ? "{} " : "default ");
                             wroteBody = true;
+                            if (bodies[bodyIndex].Template)
+                            {
+                                shaped.Write((byte)token.Kind);
+                                if (token.Kind is not (Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str)) shaped.Write(token.Text);
+                            }
                             continue;
                         }
                         declaration.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
                     }
+                    shaped.Flush();
                     string syntax = declaration.ToString();
                     FileScope scope = type.Scope ?? new FileScope();
                     using MemoryStream canonical = new();
@@ -159,6 +178,7 @@ public static class SourceIndexBuilder
                         Namespace = type.Namespace, Outer = type.Outer ?? "", Scope = scope,
                         From = type.SourceFrom, To = type.SourceTo, Line = type.Line, Column = type.Col,
                         SourceHash = hash, DeclarationHash = SHA256.HashData(canonical.ToArray()),
+                        TemplateHash = SHA256.HashData(shape.ToArray()),
                         ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
                     yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));

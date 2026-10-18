@@ -8,7 +8,17 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly string assembly;
     private readonly HashSet<string> owned;
     private readonly HashSet<string> loaded = new(StringComparer.Ordinal);
+    /// <summary>The key of every template imported with its bodies (UnitDependencies, Dependence.Template).</summary>
     private readonly HashSet<string> implementations = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Each template the pass under way imported with its bodies, by its key:
+    /// the declarations asked, once the pass is kept, whether a body was
+    /// copied of them (PassKept). Made again by every pass (AddHeaders), whose
+    /// declarations are all new, so only the pass the unit kept counts.
+    /// </summary>
+    private readonly List<(string Key, TypeDecl Template)> withBodies = new();
+    /// <summary>The keys of the templates the kept pass copied a body of (PassKept, WriteDependencies).</summary>
+    private readonly HashSet<string> bodiesUsed = new(StringComparer.Ordinal);
     // WHAT THIS UNIT ASKED THE INDEX, by kind and name: spelled out as the
     // index spells a query ("B:" and this assembly's identity before the
     // name) only when the receipt is written. Kept spelled, every name the
@@ -473,6 +483,7 @@ public sealed class IndexedDeclarations : IDisposable
 
     public void AddHeaders(CompilationUnit unit)
     {
+        withBodies.Clear();
         // Language operations name these helpers implicitly, without a source
         // type reference to trigger ordinary declaration discovery. Load only
         // their headers, not the implementation bodies or entire library files.
@@ -675,6 +686,11 @@ public sealed class IndexedDeclarations : IDisposable
                     // record will ever come for it.
                     templates.Types.Remove(root);
                     if (!templates.Types.Any(type => !type.LocalOnly)) templateFiles.Remove(templateKey);
+                    // ITS OWN, for its copies to say of it that its bodies
+                    // were copied (TypeDecl.BodiesUsed), and kept for the
+                    // receipt to ask.
+                    root.IndexedTemplate = root;
+                    withBodies.Add((key, root));
                 }
                 // Nested declarations have separate index records. Import the
                 // requested declaration only, retaining its own lexical scope.
@@ -898,11 +914,52 @@ public sealed class IndexedDeclarations : IDisposable
         if (session is null) { Tokens.Clear(); catalog.Dispose(); }
     }
 
+    /// <summary>
+    /// Writes the unit's receipt. A TEMPLATE'S WHOLE FILE IS A DEPENDENCE
+    /// ONLY WHERE THE UNIT COPIED ONE OF ITS BODIES (TypeDecl.BodiesUsed).
+    /// Every template's file was one, whether the unit used the template or
+    /// not, and a type is a template merely for having a generic method: a
+    /// body-only edit to Arch.cor, whose Arch has two, rebuilt nine kernel
+    /// units of fourteen, every object coming out byte for byte what it was.
+    /// A template imported and never copied is a dependence of its
+    /// declaration and of its template bodies' shape (Dependence.Template):
+    ///  - a template none of whose bodies was copied put no code in the unit:
+    ///    a template's bodies are never checked or emitted as themselves,
+    ///    only as a specialisation or a generic method's copy, and every one
+    ///    of those says so of the template it was made from;
+    ///  - its signatures, constants and initialisers, which the unit does
+    ///    bind against, are its declaration's;
+    ///  - BUT ITS BODIES ARE READ ALL THE SAME, for what they name (AddHeaders),
+    ///    and what they name is loaded into the unit, where a declaration can
+    ///    reach the object without being asked for: a [Registry] class's
+    ///    schema is written into every unit that loads it, and a second type
+    ///    of one simple name turns the binder's sole-name rule. So their
+    ///    tokens are a dependence, without literal values or positions,
+    ///    which decide nothing a body names;
+    ///  - a template whose bodies were copied keeps the hash of its whole
+    ///    file, not of the bodies alone, because the copies carry the file's
+    ///    line positions into the unit's code.
+    /// </summary>
     public void WriteDependencies(string path)
     {
         string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
-        UnitDependencies.Write(path, catalog, loaded, implementations,
+        UnitDependencies.Write(path, catalog, loaded, implementations, bodiesUsed,
             queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
+    }
+
+    /// <summary>
+    /// The pass is kept, and no body is copied once its binding is over
+    /// (Binder.CheckLate): which templates had one copied is settled, and
+    /// their keys are all the receipt needs of them. Taken here, so that the
+    /// declarations are not held through code generation for a receipt
+    /// written after it.
+    /// </summary>
+    public void PassKept()
+    {
+        bodiesUsed.Clear();
+        foreach ((string key, TypeDecl template) in withBodies)
+            if (template.BodiesUsed) bodiesUsed.Add(key);
+        withBodies.Clear();
     }
 }
 

@@ -13,6 +13,13 @@ public sealed class SourceDeclaration
     public required string Outer { get; init; }
     public required byte[] SourceHash { get; init; }
     public required byte[] DeclarationHash { get; init; }
+    /// <summary>
+    /// The shape of the bodies a template is imported with: their tokens
+    /// without literal values or positions (SourceIndexBuilder). What a unit
+    /// that imported the template and copied none of its bodies depends on
+    /// of them (UnitDependencies, Dependence.Template).
+    /// </summary>
+    public required byte[] TemplateHash { get; init; }
     public required FileScope Scope { get; init; }
     public IReadOnlyList<string> ConditionalSymbols { get; init; } = Array.Empty<string>();
     public int From { get; init; }
@@ -58,8 +65,8 @@ public sealed class SourceDeclaration
         writer.Write(0x43454443u); writer.Write(2u); // CDEC
         String(Path); String(Text); String(Namespace); String(Outer);
         writer.Write(From); writer.Write(To); writer.Write(Line); writer.Write(Column);
-        if (SourceHash.Length != 32 || DeclarationHash.Length != 32) throw new InvalidDataException("Invalid declaration fingerprint");
-        writer.Write(SourceHash); writer.Write(DeclarationHash);
+        if (SourceHash.Length != 32 || DeclarationHash.Length != 32 || TemplateHash.Length != 32) throw new InvalidDataException("Invalid declaration fingerprint");
+        writer.Write(SourceHash); writer.Write(DeclarationHash); writer.Write(TemplateHash);
         writer.Write(Scope.Imports.Count);
         foreach (var import in Scope.Imports) { String(import.In); String(import.Namespace); }
         writer.Write(Scope.Aliases.Count);
@@ -91,7 +98,8 @@ public sealed class SourceDeclaration
             string path = Shared(), text = String(), ns = Shared(), outer = Shared();
             int from = reader.ReadInt32(), to = reader.ReadInt32(), line = reader.ReadInt32(), column = reader.ReadInt32();
             if (from < 0 || to < from || line < 1 || column < 1) throw new InvalidDataException("Invalid source declaration location");
-            byte[] sourceHash = DeclarationIndex.ReadBytes(reader, 32), declarationHash = DeclarationIndex.ReadBytes(reader, 32);
+            byte[] sourceHash = DeclarationIndex.ReadBytes(reader, 32), declarationHash = DeclarationIndex.ReadBytes(reader, 32),
+                templateHash = DeclarationIndex.ReadBytes(reader, 32);
             FileScope scope = new();
             int count = Count();
             for (int i = 0; i < count; i++) scope.Imports.Add((Shared(), Shared()));
@@ -103,7 +111,7 @@ public sealed class SourceDeclaration
             if (stream.Position != stream.Length) throw new InvalidDataException("Trailing source declaration data");
             return new SourceDeclaration { Key = record.Key, Path = path, Text = text, Namespace = ns, Outer = outer,
                 From = from, To = to, Line = line, Column = column, Scope = scope,
-                SourceHash = sourceHash, DeclarationHash = declarationHash, ConditionalSymbols = symbols.AsReadOnly() };
+                SourceHash = sourceHash, DeclarationHash = declarationHash, TemplateHash = templateHash, ConditionalSymbols = symbols.AsReadOnly() };
         }
         catch (EndOfStreamException error) { throw new InvalidDataException("Truncated source declaration", error); }
     }
