@@ -1,0 +1,103 @@
+// test: a freestanding image whose kernel commits memory on first touch keeps its heap in the 4 KB table's window, and the marker reads the table
+// expect-exit: 0
+// expect-output:
+// table True
+// whole True
+// sum 1249975000 kept 50000
+// sum 1249975000 kept 50000
+// collected True
+//
+// PLATFORM.MAPSCOMMITLAZILY, which a kernel sets when its memory is
+// committed as it is first touched -- the Linux mmap below is -- maps the
+// collector's 4 KB table once, for the window of address space the heap is
+// in: on i386 all four gigabytes, in long mode 64 GiB placed by the first
+// chunk the heap is given (HeapChunks.SlotsSet). With every chunk inside
+// that window the table says of every chunk (HeapChunks.Whole), and the
+// marker finds a word's chunk by one load of it in long mode as on i386,
+// turning away whatever lies outside the window. A list of fifty thousand
+// boxes and a tree's worth of garbage between, collected and walked again,
+// say the marker kept what was live and gave back what was not.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Box
+{
+    public int V;
+    public Box? Next;
+    public byte[]? Pad;
+}
+
+static class Program
+{
+#if TARGET_64BIT
+    const long Mmap = 9;
+    const long Munmap = 11;
+#else
+    const long Mmap = 192;
+    const long Munmap = 91;
+#endif
+
+    /// Platform.MapHook: anonymous pages, committed by the kernel as they
+    /// are touched.
+    static long Map(long bytes, long b, long c)
+    {
+        long at = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
+        return at < 0 && at > -4096 ? 0 : at;
+    }
+
+    static long Unmap(long at, long bytes, long c)
+    {
+        return Sys.Syscall(Munmap, at, bytes, 0, 0, 0, 0);
+    }
+
+    static long Sum(Box? head)
+    {
+        long sum = 0;
+        for (Box? b = head; b != null; b = b.Next) sum = sum + b.V;
+        return sum;
+    }
+
+    static int Count(Box? head)
+    {
+        int n = 0;
+        for (Box? b = head; b != null; b = b.Next) n = n + 1;
+        return n;
+    }
+
+    static int Main()
+    {
+        Platform.MapsCommitLazily = true;
+        Platform.MapHook = Sys.AddressOf(Map);
+        Platform.UnmapHook = Sys.AddressOf(Unmap);
+        Box? head = null;
+        long garbage = 0;
+        for (int i = 0; i < 50000; i++)
+        {
+            Box b = new Box();
+            b.V = i;
+            b.Next = head;
+            head = b;
+            // Garbage between the boxes, enough to collect many times.
+            byte[] waste = new byte[200];
+            waste[i % 200] = 1;
+            garbage = garbage + waste.Length;
+        }
+        Host.Line("table " + (HeapChunks.SlotTable != 0));
+        long before = Gc.Collections;
+        GC.Collect();
+        Host.Line("whole " + HeapChunks.Whole);
+        Host.Line("sum " + Sum(head) + " kept " + Count(head));
+        for (int lap = 0; lap < 20; lap++)
+        {
+            List<byte[]> tree = new List<byte[]>();
+            for (int k = 0; k < 500; k++) tree.Add(new byte[1000]);
+            garbage = garbage + tree.Count;
+        }
+        GC.Collect();
+        Host.Line("sum " + Sum(head) + " kept " + Count(head));
+        Host.Line("collected " + (Gc.Collections > before && garbage > 0));
+        Host.Done(0);
+        return 0;
+    }
+}

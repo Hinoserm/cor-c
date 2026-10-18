@@ -10821,7 +10821,7 @@ static class Gc
             // comes after), and one made since holds only newcomers: a page's
             // are refused by their headers or marked and kept, a mixed
             // chunk's by its start table, which is not this cycle's.
-            nuint chunk = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
+            nuint chunk = InWindow(at) ? PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) : 0;
             block = 0;
             tail = 0;
             if (chunk != 0)
@@ -10935,11 +10935,24 @@ static class Gc
     static void MarkRefW(nuint at, nuint local)
     {
         nuint slots = _markSlots;
-        if (slots != 0 && PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) == 0)
+        if (slots != 0 && (!InWindow(at) || PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) == 0))
         {
             return;
         }
         MarkWord(at, local);
+    }
+
+    /// Whether a word lies in the 4 KB table's window (HeapChunks.SlotLow,
+    /// SlotSpan): every address on i386; in long mode a word outside it is
+    /// in no chunk while the marker reads the table (HeapChunks.Whole), and
+    /// its table word would be outside the table.
+    static bool InWindow(nuint at)
+    {
+#if TARGET_64BIT
+        return at - (nuint)HeapChunks.SlotLow < (nuint)HeapChunks.SlotSpan;
+#else
+        return true;
+#endif
     }
 
     /// The bit a queued block carries when it lies in a size-class page and
@@ -12732,7 +12745,7 @@ static class Gc
         // by its cycle (StartsCycle) and takes the page by its class instead.
         _pagesUnwalked = _minor && !stepping && _oldCards != 0 && !_census && !_deadCensus && !_heapCheck
                       && !_verify && !_verifyGenerations && !VerifyHeap && !VerifyMarks && !WalkPages && _referencesEnd == 0
-                      && HeapChunks.SlotTable != 0 && WordSize.Bytes == 4;
+                      && HeapChunks.Whole;
         _snapCount = 0;
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
@@ -12834,10 +12847,11 @@ static class Gc
         // THE MARKER'S LOOKUP BY THE 4 KB TABLE (MarkWord), where the
         // snapshot is whole and no quarantined range's references are being
         // counted -- which wants every word that is not the heap's said.
+        // In long mode only while every chunk is inside the table's window
+        // (HeapChunks.Whole): a word outside it is then no heap's, and is
+        // turned away before the table is read (InWindow).
         _markSlots = 0;
-#if !TARGET_64BIT
-        if (every && _referencesEnd == 0) _markSlots = (nuint)HeapChunks.SlotTable;
-#endif
+        if (every && _referencesEnd == 0 && HeapChunks.Whole) _markSlots = (nuint)HeapChunks.SlotTable;
         // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
         // simply cleared by a major one, which marks everything anyway.
         if (_generational)
@@ -13418,6 +13432,18 @@ static class HeapChunks
     {
         get { return _slotLow; }
     }
+
+    /// WHETHER THE TABLE SAYS OF EVERY CHUNK: there is one, and no chunk lies
+    /// even partly outside its window -- always on i386, where the window is
+    /// all four gigabytes; in long mode while the heap has kept to the 64 GiB
+    /// the first chunk placed it in. The marker reads the table only then
+    /// (Gc.BuildBlockAnchors), and turns away the words outside the window:
+    /// a pointer into a chunk the table cannot say of would be taken for
+    /// nobody's, its object never marked and swept with the garbage.
+    public static bool Whole
+    {
+        get { return _slotBias != 0 && _outsideWindow == 0; }
+    }
     const long ChunkFree = 9 * WordSize.Bytes;
     const long ChunkPageNext = 10 * WordSize.Bytes;
     const long ChunkPagePrev = 11 * WordSize.Bytes;
@@ -13518,6 +13544,10 @@ static class HeapChunks
     static long _slotBias;
     static long _slotLow;
     static bool _slotsTried;
+    // THE CHUNKS NOT WHOLLY INSIDE THE WINDOW, counted as each is entered
+    // and taken out (SlotsSet): while there are none the table says of
+    // every chunk, and a word outside the window is no heap's (Whole).
+    static long _outsideWindow;
     const long SlotShift = 12;
 #if TARGET_64BIT
     public const long SlotSpan = 0x1000000000;
@@ -13553,6 +13583,9 @@ static class HeapChunks
         ulong low = (ulong)_slotLow;
         ulong end = (ulong)Sys.Peek(chunk + ChunkLimit);
         ulong from = (ulong)chunk & ~(ulong)((1L << (int)SlotShift) - 1);
+        // Counted in as it is entered, out as it is taken out, at the same
+        // limit: a chunk's limit is written once, as it is made.
+        if (from < low || end - low > (ulong)SlotSpan) _outsideWindow = _outsideWindow + (value != 0 ? 1 : -1);
         if (from < low) from = low;
         for (ulong at = from; at < end && at - low < (ulong)SlotSpan; at = at + (ulong)(1L << (int)SlotShift))
             Sys.Poke(_slots + (long)((at - low) >> (int)SlotShift) * WordSize.Bytes, value);
