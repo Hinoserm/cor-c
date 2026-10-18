@@ -386,6 +386,7 @@ public sealed class X64Backend : IBackend
         try
         {
             AddressFold.Run(m);
+            IfConvert.Run(m);
             Allocator.Run(m);
             Layout.Run(m);
             LoopRotate.Run(m);

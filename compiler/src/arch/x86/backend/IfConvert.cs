@@ -42,12 +42,25 @@ namespace Corsac.Lang.X86;
 /// - No source names a register an arm writes: the arms' moves are each a
 ///   parallel copy, and they are done here one after another.
 ///
-/// An arm that computes, Abs's `-x`, keeps its branch. The moves become, in a
-/// diamond, `mov v, a` with one arm's value, and `cmovcc v, b` with the
-/// other's, a constant b first put in a fresh register, since a cmov has no
-/// immediate form -- before A's compare where it ends in one, after it
-/// otherwise; MOV leaves the flags alone, so the condition is still the
-/// compare's. The arms that moved are removed.
+/// AN ARM THAT COMPUTES -- Abs's `-x`, `a > b ? b + c : a - c` -- computes
+/// before A's compare, in registers only it uses, what it would have moved:
+/// up to MostComputed instructions of plain arithmetic on registers and
+/// constants, none that can fault or that reads memory, ahead of the moves.
+/// Only where A ends in a compare or a test: the computation then writes the
+/// flags before the compare writes them again, and reads what the arm would
+/// have read, the compare writing no register.
+///
+/// The moves become, in a diamond, `mov v, a` with one arm's value, and
+/// `cmovcc v, b` with the other's, a constant b first put in a fresh
+/// register, since a cmov has no immediate form -- before A's compare where
+/// it ends in one, after it otherwise; MOV leaves the flags alone, so the
+/// condition is still the compare's. The arms that moved are removed.
+///
+/// NOT A SELECT AN INNER LOOP CARRIES: `if (x > m) m = x;` in a loop that
+/// holds no other, where the m it chooses is read on the next lap before
+/// anything writes it, so each lap's compare and cmov wait for the last
+/// one's -- a chain a predicted branch does not have. A select whose value
+/// is used up within the lap, `n += x > t ? 1 : 0`'s, keeps its cmov.
 /// </summary>
 internal static class IfConvert
 {
@@ -57,12 +70,18 @@ internal static class IfConvert
     /// <summary>The most registers the triangles of one function have their definitions followed for.</summary>
     private const int MostFollowed = 64;
 
-    private readonly record struct Arm(MBlock Block, List<MInstr> Moves, MBlock Join);
+    /// <summary>The most instructions an arm may compute with ahead of its moves.</summary>
+    private const int MostComputed = 3;
+
+    /// <summary>An arm: what it computes (into registers only it uses), the moves it ends with, and where it goes.</summary>
+    private readonly record struct Arm(MBlock Block, List<MInstr> Computed, List<MInstr> Moves, MBlock Join);
 
     public static void Run(MFunction m)
     {
         if (m.Blocks.Count < 3) return;
         Dictionary<MBlock, int> refs = References(m);
+        int[] occurrences = Occurrences(m);
+        Loops? loops = null;
 
         // Every candidate first, against the unchanged blocks: a triangle's
         // registers are then followed through the function once.
@@ -79,7 +98,11 @@ internal static class IfConvert
             bool single = true;
             for (int k = 0; k < n - 2 && single; k++) single = instrs[k].Op is not (MOp.Jcc or MOp.Jmp or MOp.JmpTable or MOp.JmpInd);
             if (!single) continue;
-            Arm? onX = MovingArm(x, refs), onY = MovingArm(y, refs);
+            Arm? onX = MovingArm(x, refs, occurrences), onY = MovingArm(y, refs, occurrences);
+            // Computing ahead of A's compare: only where A ends in one.
+            bool compares = n >= 3 && instrs[n - 3].Op is MOp.Cmp or MOp.Test;
+            if (!compares && onX is { Computed.Count: > 0 }) onX = null;
+            if (!compares && onY is { Computed.Count: > 0 }) onY = null;
             if (onX is { } tx && onY is { } ty)
             {
                 if (ReferenceEquals(tx.Join, ty.Join) && SameRegisters(tx.Moves, ty.Moves) && !Overlapping(tx.Moves, ty.Moves))
@@ -118,6 +141,8 @@ internal static class IfConvert
             List<MInstr> instrs = a.Instrs;
             Cond c = instrs[^2].Cond;
             if (inverted) c = c.Negate();
+            loops ??= new Loops(m);
+            if (loops.Carries(a, taken, notTaken)) continue;
             if (notTaken is null)
             {
                 // The cmov reads what it may keep: it must be there to read.
@@ -136,6 +161,10 @@ internal static class IfConvert
             // peephole may make a zero the two-byte `xor`.
             int compare = instrs.Count - 1;
             bool before = compare >= 0 && instrs[compare].Op is MOp.Cmp or MOp.Test;
+            // And what the arms compute, there too: in their own registers,
+            // the flags they write written again by the compare.
+            foreach (MInstr computed in taken.Computed.Concat(notTaken?.Computed ?? Enumerable.Empty<MInstr>()))
+                instrs.Insert(compare++, computed);
             List<MInstr> cmovs = new();
             foreach (MInstr move in taken.Moves)
             {
@@ -149,6 +178,10 @@ internal static class IfConvert
                     // condition turned round: a cmov's source has no
                     // immediate form, and would need a register of its own.
                     if (b is MImm && a2 is not MImm) (b, a2, cc) = (a2, b, c.Negate());
+                    // The plain move after the compare, MOV leaving the flags
+                    // alone: before it, v would be live beside everything
+                    // the compare reads, and in a loop of six registers that
+                    // spilled the array (a `xor` for a zero is not worth it).
                     instrs.Add(new MInstr(MOp.Mov, v, a2) { Line = move.Line });
                     // The same value either way is the move alone.
                     if (Same(a2, b)) continue;
@@ -201,26 +234,179 @@ internal static class IfConvert
         return refs;
     }
 
-    /// <summary>The arm when this block is one: moves A alone reaches, then a jump on.</summary>
-    private static Arm? MovingArm(MBlock b, Dictionary<MBlock, int> refs)
+    /// <summary>
+    /// The arm when this block is one: what A alone reaches -- a computation
+    /// in registers nothing else names, then moves -- and a jump on.
+    /// </summary>
+    private static Arm? MovingArm(MBlock b, Dictionary<MBlock, int> refs, int[] occurrences)
     {
         List<MInstr> instrs = b.Instrs;
-        if (refs.GetValueOrDefault(b) != 1 || instrs.Count < 2 || instrs.Count > MostMoves + 1
+        if (refs.GetValueOrDefault(b) != 1 || instrs.Count < 2 || instrs.Count > MostComputed + MostMoves + 1
             || instrs[^1] is not { Op: MOp.Jmp } jump || jump.Operands[0] is not MLabel { Target: var join }
             || ReferenceEquals(join, b))
             return null;
-        List<MInstr> moves = new(instrs.Count - 1);
-        for (int k = 0; k < instrs.Count - 1; k++)
+        // The moves: the last instructions, each `mov v, s` of a whole word.
+        int first = instrs.Count - 1;
+        while (first > 0 && instrs.Count - 1 - first < MostMoves && IsMove(instrs[first - 1])) first--;
+        if (first == instrs.Count - 1) return null;
+        List<MInstr> moves = new(instrs.Count - 1 - first);
+        for (int k = first; k < instrs.Count - 1; k++)
         {
             MInstr i = instrs[k];
-            if (i.Op != MOp.Mov || i.Width != 4 || i.Lock || i.Operands.Count != 2
-                || i.Operands[0] is not MReg { IsPhys: false } v || !Source(i.Operands[1]))
-                return null;
+            MReg v = (MReg)i.Operands[0];
             foreach (MInstr earlier in moves)
                 if (((MReg)earlier.Operands[0]).Id == v.Id) return null;
             moves.Add(i);
         }
-        return new Arm(b, moves, join);
+        // What comes before them computes, in registers only this block names.
+        List<MInstr> computed = instrs.GetRange(0, first);
+        if (computed.Count > MostComputed) return null;
+        Dictionary<int, int> here = new();
+        foreach (MInstr i in instrs)
+            foreach (MOperand o in i.Operands)
+                if (o is MReg { IsPhys: false } r) here[r.Id] = here.GetValueOrDefault(r.Id) + 1;
+        foreach (MInstr i in computed)
+        {
+            if (!Computes(i) || i.Operands[0] is not MReg { IsPhys: false } t || here[t.Id] != occurrences[t.Id]) return null;
+            // A move's value read from a register the computation writes is
+            // the computed one: the move then reads that register, which
+            // only this block names, so the cmov reads it too.
+        }
+        return new Arm(b, computed, moves, join);
+    }
+
+    private static bool IsMove(MInstr i)
+        => i.Op == MOp.Mov && i.Width == 4 && !i.Lock && i.Operands.Count == 2
+           && i.Operands[0] is MReg { IsPhys: false } && Source(i.Operands[1]);
+
+    /// <summary>
+    /// Arithmetic that may run whichever way A goes: on registers and
+    /// constants, of a whole word, nothing that reads memory, faults or
+    /// writes anything but its destination and the flags.
+    /// </summary>
+    private static bool Computes(MInstr i)
+    {
+        if (i.Lock || i.Width != 4 || i.Operands.Count == 0 || i.Operands[0] is not MReg { IsPhys: false }) return false;
+        foreach (MOperand o in i.Operands)
+            if (o is MMem || o is MReg { IsPhys: true } || o is MImm { IsPlain: false } || o is MLabel) return false;
+        return i.Op switch
+        {
+            MOp.Mov or MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Imul => i.Operands.Count == 2,
+            MOp.Imul3 => i.Operands.Count == 3,
+            MOp.Neg or MOp.Not => i.Operands.Count == 1,
+            MOp.Shl or MOp.Shr or MOp.Sar => i.Operands.Count == 2 && i.Operands[1] is MImm,
+            _ => false,
+        };
+    }
+
+    /// <summary>How many times each virtual register is named in the function.</summary>
+    private static int[] Occurrences(MFunction m)
+    {
+        int[] counts = new int[m.NextVReg];
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MReg { IsPhys: false } r) counts[r.Id]++;
+                    else if (o is MMem mem)
+                    {
+                        if (mem.Base is { IsPhys: false } mb) counts[mb.Id]++;
+                        if (mem.Index is { IsPhys: false } mx) counts[mx.Id]++;
+                    }
+                }
+        return counts;
+    }
+
+    /// <summary>
+    /// The function's innermost loops, for the select one carries: natural
+    /// loops by their back edges (BlockDominators), each block's innermost
+    /// loop that holds no other.
+    /// </summary>
+    private sealed class Loops
+    {
+        private readonly MFunction _m;
+        private readonly Dictionary<MBlock, int> _index = new(ReferenceEqualityComparer.Instance);
+        // For each block, the header and body of the innermost loop it is in,
+        // where that loop holds no other; null for one in no such loop.
+        private readonly (int Header, HashSet<int> Body)?[] _inner;
+        private readonly List<int>[] _succ;
+
+        public Loops(MFunction m)
+        {
+            _m = m;
+            int n = m.Blocks.Count;
+            for (int b = 0; b < n; b++) _index[m.Blocks[b]] = b;
+            List<int>[] succ = _succ = new List<int>[n];
+            List<int>[] pred = new List<int>[n];
+            for (int b = 0; b < n; b++) { succ[b] = new(); pred[b] = new(); }
+            for (int b = 0; b < n; b++)
+                foreach (MBlock s in m.Successors(b))
+                    if (_index.TryGetValue(s, out int si)) { succ[b].Add(si); pred[si].Add(b); }
+            int[] idom = BlockDominators.Of(n, b => succ[b]);
+            Dictionary<int, HashSet<int>> bodies = new();
+            for (int b = 0; b < n; b++)
+                foreach (int h in succ[b])
+                    if (h == b || BlockDominators.Strictly(idom, h, b))
+                    {
+                        HashSet<int> body = bodies.TryGetValue(h, out HashSet<int>? had) ? had : bodies[h] = new() { h };
+                        Stack<int> work = new();
+                        if (body.Add(b)) work.Push(b);
+                        while (work.Count > 0)
+                            foreach (int p in pred[work.Pop()])
+                                if (body.Add(p)) work.Push(p);
+                    }
+            _inner = new (int, HashSet<int>)?[n];
+            foreach (var (h, body) in bodies)
+            {
+                if (bodies.Keys.Any(other => other != h && body.Contains(other))) continue;
+                foreach (int b in body) _inner[b] = (h, body);
+            }
+        }
+
+        /// <summary>
+        /// Whether the select at the end of `a` is carried by an innermost
+        /// loop: a register it chooses is read in the loop, from its header
+        /// on, before anything writes it -- its value goes round the loop to
+        /// the next lap.
+        /// </summary>
+        public bool Carries(MBlock a, Arm taken, Arm? notTaken)
+        {
+            if (!_index.TryGetValue(a, out int at) || _inner[at] is not { } loop) return false;
+            foreach (MInstr move in taken.Moves)
+                if (LiveAt(loop.Header, loop.Body, ((MReg)move.Operands[0]).Id)) return true;
+            return false;
+        }
+
+        /// <summary>Whether v is read on some way through the loop from its header before it is written.</summary>
+        private bool LiveAt(int header, HashSet<int> body, int v)
+        {
+            HashSet<int> seen = new() { header };
+            Stack<int> work = new();
+            work.Push(header);
+            while (work.Count > 0)
+            {
+                int b = work.Pop();
+                bool written = false;
+                foreach (MInstr i in _m.Blocks[b].Instrs)
+                {
+                    // `xor v, v` makes zero whatever v held: a write only.
+                    bool zeroing = i.Op == MOp.Xor && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
+                    for (int k = 0; k < i.Operands.Count && !zeroing; k++)
+                    {
+                        MOperand o = i.Operands[k];
+                        if (o is MMem mem && (mem.Base?.Id == v || mem.Index?.Id == v)) return true;
+                        if (o is MReg r && r.Id == v && (Roles.Of(i.Op, k) & Role.Use) != 0) return true;
+                    }
+                    for (int k = 0; k < i.Operands.Count; k++)
+                        if (i.Operands[k] is MReg r && r.Id == v && (Roles.Of(i.Op, k) & Role.Def) != 0) written = true;
+                    if (written) break;
+                }
+                if (written) continue;
+                foreach (int s in _succ[b])
+                    if (body.Contains(s) && s != header && seen.Add(s)) work.Push(s);
+            }
+            return false;
+        }
     }
 
     /// <summary>
