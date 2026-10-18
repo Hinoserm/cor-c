@@ -52,6 +52,15 @@ internal static class Isa
     };
 
     /// <summary>
+    /// What <paramref name="i"/> needs beyond the 386: its opcode's, and the
+    /// Pentium's for a move to or from CR4, which the 386 and the 486 do not
+    /// have. The source's own control-register moves are Probed, as its
+    /// INVLPG is (Select): a kernel that runs on a 486 too asks first.
+    /// </summary>
+    public static X86Feature Requires(MInstr i)
+        => Requires(i.Op) | (i.Op is MOp.MovFromCr or MOp.MovToCr && i.Operands.Any(o => o is MImm { Value: 4 }) ? X86Feature.Pentium : X86Feature.None);
+
+    /// <summary>
     /// Whether <paramref name="op"/> reads or writes the MMX registers, whose
     /// state is the x87's: code may touch it only where the hosted ABI owns
     /// that state for it (X86Backend.AutomaticPacked). Read off the table, so

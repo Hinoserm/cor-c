@@ -270,7 +270,7 @@ public sealed partial class Lowering
                 VReg expect = ToWord(Arg(call, target, 1));
                 VReg value = ToWord(Arg(call, target, 2));
                 VReg old = _e.Reg(word);
-                _e.Emit(Opcode.AtomicCas, old, R(at), R(expect), R(value));
+                EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
                 return Widen(old);
             }
             case "AtomicAdd" or "AtomicAddRelaxed" or "AtomicAddAcquire" or "AtomicAddRelease" or "AtomicAddSequential":
@@ -294,7 +294,7 @@ public sealed partial class Lowering
                 VReg expect = ToI32(Arg(call, target, 1));
                 VReg value = ToI32(Arg(call, target, 2));
                 VReg old = _e.Reg(IrType.I32);
-                _e.Emit(Opcode.AtomicCas, old, R(at), R(expect), R(value));
+                EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
                 return old;
             }
             case "AtomicAdd32":
@@ -330,7 +330,7 @@ public sealed partial class Lowering
                 CardMarkAhead(place, value);
                 VReg old = _e.Reg(IrTypes.Word);
                 if (swap) _e.Emit(Opcode.AtomicSwap, old, R(at), R(value));
-                else _e.Emit(Opcode.AtomicCas, old, R(at), R(expect), R(value));
+                else EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
                 CardMark(place, value);
                 return Widen(old);
             }
@@ -715,6 +715,8 @@ public sealed partial class Lowering
                 return _e.Call(MachineIntrinsics.ReadTsc, IrType.I64)!;
             case "ReadFlags":
                 return Widen(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!);
+            case "ReadCodeSegment":
+                return Widen(_e.Call(MachineIntrinsics.ReadCodeSegment, IrType.I32)!);
             case "SwapGs":
                 _e.Call(MachineIntrinsics.SwapGs, IrType.Void);
                 return Void();
@@ -877,7 +879,7 @@ public sealed partial class Lowering
         VReg at = Address(call, target, 0);
         VReg value = ToWord(Arg(call, target, 1));
         VReg old = _e.Reg(IrTypes.Word);
-        _e.Emit(op, old, R(at), R(value));
+        EmitAtomic(op, old, R(at), R(value));
         return Widen(old);
     }
 
@@ -887,8 +889,45 @@ public sealed partial class Lowering
         VReg at = Address(call, target, 0);
         VReg value = ToI32(Arg(call, target, 1));
         VReg old = _e.Reg(IrType.I32);
-        _e.Emit(op, old, R(at), R(value));
+        EmitAtomic(op, old, R(at), R(value));
         return old;
+    }
+
+    /// <summary>
+    /// THE 386 HAS NO XADD AND NO CMPXCHG: under a profile without the 486,
+    /// an atomic add, compare-exchange, and, or or exclusive or of a word is
+    /// a call of the runtime's routine for it (Runtime.AtomicAdd386,
+    /// AtomicCas386, AtomicBits386), which reads and writes with interrupts
+    /// off on bare metal or under its one lock in a process. An exchange is
+    /// XCHG, which the 386 has. Where the runtime has no such routine -- a
+    /// program of its own with no library -- the instruction stays, and the
+    /// emitted-code audit refuses it.
+    /// </summary>
+    private void EmitAtomic(Opcode op, VReg old, Operand at, params Operand[] values)
+    {
+        if (op != Opcode.AtomicSwap && _t == Target.X86 && !_t.X86Profile.Has(X86Feature.I486) && old.Type == IrType.I32)
+        {
+            (string name, int arity) = op switch
+            {
+                Opcode.AtomicAdd => ("AtomicAdd386", 2),
+                Opcode.AtomicCas => ("AtomicCas386", 3),
+                _ => ("AtomicBits386", 3),
+            };
+            if (RuntimeMethod(name, arity) is MethodSymbol routine)
+            {
+                Require(routine);
+                List<Operand> args = new() { at };
+                args.AddRange(values);
+                if (op is Opcode.AtomicAnd or Opcode.AtomicOr or Opcode.AtomicXor)
+                    args.Add(new ImmOperand(op == Opcode.AtomicAnd ? 0 : op == Opcode.AtomicOr ? 1 : 2, IrType.I32));
+                VReg answered = _e.Call(CallLabel(routine), IrType.I32, args.ToArray())!;
+                _e.CopyTo(old, R(answered));
+                return;
+            }
+        }
+        List<Operand> operands = new() { at };
+        operands.AddRange(values);
+        _e.Emit(op, old, operands.ToArray());
     }
 
     private VReg Void() => _e.Const(0, IrTypes.Word);

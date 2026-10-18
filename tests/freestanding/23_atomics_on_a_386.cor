@@ -1,0 +1,70 @@
+// test: a 386's atomics: no XADD, no CMPXCHG, done with interrupts off on bare metal
+// flags-x86: --cpu=386 --fpu=387
+// expect-exit: 0
+// expect-output:
+// add 5 then 8
+// inc 9 dec 8
+// cas missed 8 cas 8 then 20
+// xchg 20 then 1
+// bits 1 then 3
+// long 5000000000 then 5000000001
+// expect-no-asm-x86: Bump: xadd cmpxchg
+// expect-no-asm-x86: Swap: xadd cmpxchg
+// expect-asm-x86: Exchange: xchg
+// expect-no-asm-x86: Main: xadd cmpxchg
+//
+// The 386 has XCHG and no other instruction that reads and writes memory as
+// one: XADD and CMPXCHG are the 486's, so --cpu=386 was refused outright.
+// Its add, compare-exchange and bitwise atomics are calls now
+// (Runtime.AtomicAdd386, AtomicCas386, AtomicBits386, small enough to be
+// inlined), the read and the write between Platform.AtomicsEnter and Leave:
+// on bare metal with
+// interrupts off -- the 386's one processor runs nothing else meanwhile, an
+// interrupt handler's atomic included -- and IF put back as it was; run as
+// a process, as here, where it may not turn them off (its ring above
+// EFLAGS.IOPL), under one lock taken by XCHG. An exchange stays XCHG.
+// Interlocked's long forms, under their own lock, are made of these too.
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+class Counter
+{
+    public int Value;
+    public long Wide;
+}
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Bump(Counter c, int by) { return Interlocked.Add(ref c.Value, by); }
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Swap(Counter c, int value, int expected) { return Interlocked.CompareExchange(ref c.Value, value, expected); }
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Exchange(Counter c, int value) { return Interlocked.Exchange(ref c.Value, value); }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Counter c = new Counter();
+        c.Value = 5;
+        int was = c.Value;
+        Host.Line("add " + was + " then " + Bump(c, 3));
+        Host.Line("inc " + Interlocked.Increment(ref c.Value) + " dec " + Interlocked.Decrement(ref c.Value));
+        int missed = Swap(c, 1, 7);
+        int hit = Swap(c, 20, 8);
+        Host.Line("cas missed " + missed + " cas " + hit + " then " + c.Value);
+        Host.Line("xchg " + Exchange(c, 1) + " then " + c.Value);
+        // An atomic or: a word on i386, which is this int (AtomicBits386).
+#if TARGET_64BIT
+        int old = c.Value;
+        while (Interlocked.CompareExchange(ref c.Value, old | 2, old) != old) old = c.Value;
+#else
+        int old = (int)Sys.AtomicOr(Sys.AddressOf(ref c.Value), 2);
+#endif
+        Host.Line("bits " + old + " then " + c.Value);
+        c.Wide = 5000000000;
+        long before = c.Wide;
+        Host.Line("long " + before + " then " + Interlocked.Increment(ref c.Wide));
+        Host.Done(0);
+        return 0;
+    }
+}

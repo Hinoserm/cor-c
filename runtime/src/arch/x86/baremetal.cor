@@ -791,6 +791,42 @@ static class Platform
         }
         return count;
     }
+
+    /// THE 386'S ATOMICS WITH INTERRUPTS OFF (Runtime.AtomicAdd386 and its
+    /// kin): the 386 has no XADD and no CMPXCHG, and on its one processor
+    /// nothing else runs while interrupts are off -- a handler's atomic
+    /// included, which a lock would have deadlocked. Where this code may turn
+    /// them off: its privilege level (CS's low bits) at most EFLAGS.IOPL, a
+    /// kernel's ring 0 or a ring-1 service with IOPL 1. Anywhere else -- the
+    /// bare-metal runtime run as a process, as its tests run it -- under one
+    /// lock taken by XCHG. Answers the flags, for Leave to turn interrupts
+    /// back on only where they were, or LockHeld.
+    public static long AtomicsEnter()
+    {
+        long flags = Sys.ReadFlags();
+        if ((Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3))
+        {
+            Sys.Cli();
+            return flags;
+        }
+        while (Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 1) != 0)
+        {
+            Yield();
+        }
+        return LockHeld;
+    }
+
+    public static void AtomicsLeave(long held)
+    {
+        if (held == LockHeld) Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 0);
+        else if ((held & InterruptFlag) != 0) Sys.Sti();
+    }
+
+    /// EFLAGS.IF.
+    const long InterruptFlag = 0x200;
+    /// What AtomicsEnter answers for the lock: no flags word is negative.
+    const long LockHeld = -1;
+    static int _atomics386;
 }
 
 /// The parts of system.cor's `Os` that mean anything with no kernel.

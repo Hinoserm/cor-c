@@ -659,13 +659,23 @@ public sealed class X86Backend : IBackend
             // saved round it.
             int compareExchange = text.Bytes.Count;
             // These sequences are bytes, which the emitted-code audit never
-            // walks: their one instruction past the 386 is answered to the
-            // same table here.
-            X86Feature missing = Isa.Requires(MOp.Cmpxchg) & ~Target.X86Profile.Features;
-            if (missing != X86Feature.None)
-                errors.Add($"{RefCompareExchangeStub}: Cmpxchg needs {Isa.Describe(missing)}, which --cpu={Target.X86Profile.Name} does not permit");
+            // walks: their one instruction past the 386, CMPXCHG, is the
+            // 486's, and on a 386 -- one processor, and a kernel's sequences,
+            // run where interrupts may be turned off -- the compare and the
+            // store are done with them off instead, which is as atomic there.
             Marked([0x51, 0x52], [0x50, 0x52, 0x51], BarrierCompareExchangeRoutine, 0x0C, [0x5A, 0x59]);
-            Bytes(0xF0, 0x0F, 0xB1, 0x11);                                                 // lock cmpxchg [ecx], edx
+            if (Target.X86Profile.Has(X86Feature.I486))
+            {
+                Bytes(0xF0, 0x0F, 0xB1, 0x11);                                             // lock cmpxchg [ecx], edx
+            }
+            else
+            {
+                Bytes(0x9C, 0xFA,                                                          // pushfd; cli
+                      0x39, 0x01, 0x74, 0x04,                                              // cmp [ecx], eax; je same
+                      0x8B, 0x01, 0xEB, 0x02,                                              // mov eax, [ecx]; jmp done
+                      0x89, 0x11,                                                          // same: mov [ecx], edx
+                      0x9D);                                                               // done: popfd
+            }
             Bytes(0x52, 0x8B, 0x15); Address(CardTable, RelocKind.Abs32, 0);               // push edx; mov edx, [Cards]
             Bytes(0x85, 0xD2, 0x74, 0x09,                                                  // test edx, edx; jz done
                   0x51, 0xC1, 0xE9, 0x0A, 0xC6, 0x04, 0x0A, 0x01, 0x59,                    // push ecx; shr ecx, 10; mov byte [edx+ecx], 1; pop ecx

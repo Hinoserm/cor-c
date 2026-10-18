@@ -1,0 +1,74 @@
+// test: interlocked_on_a_386_under_threads
+// flags: --cpu=386 --fpu=387
+// only-target: x86
+// expect-exit: 0
+// expect-output:
+// count 40000
+// claims 40000
+// biggest 39999
+// long 40000
+// gate opened 4
+//
+// A 386 has no XADD and no CMPXCHG, and --cpu=386 compiles were refused for
+// it. Its atomics are calls now (Runtime.AtomicAdd386, AtomicCas386), the
+// read and the write in a process under one lock taken by XCHG, the one
+// atomic the 386 has. Four threads at once: an increment, a compare-exchange
+// loop claiming slots, a running maximum made of compare-exchanges,
+// Interlocked's long forms (under their own lock, made of these), and a
+// count of arrivals at a gate.
+
+using System;
+using System.Threading;
+
+static class Program
+{
+    static int _count;
+    static int _next;
+    static int _biggest = -1;
+    static long _wide;
+    static int _arrived;
+    static readonly int[] _claimed = new int[40000];
+
+    static void Raise(ref int at, int value)
+    {
+        int seen = Volatile.Read(ref at);
+        while (value > seen)
+        {
+            int was = Interlocked.CompareExchange(ref at, value, seen);
+            if (was == seen) return;
+            seen = was;
+        }
+    }
+
+    static void Work()
+    {
+        for (int i = 0; i < 10000; i++)
+        {
+            Interlocked.Increment(ref _count);
+            int mine;
+            do { mine = _next; } while (Interlocked.CompareExchange(ref _next, mine + 1, mine) != mine);
+            Interlocked.Increment(ref _claimed[mine]);
+            Raise(ref _biggest, mine);
+            Interlocked.Add(ref _wide, 1);
+        }
+        Interlocked.Increment(ref _arrived);
+    }
+
+    static void Main()
+    {
+        Thread[] threads = new Thread[4];
+        for (int t = 0; t < threads.Length; t++)
+        {
+            threads[t] = new Thread(Work);
+            threads[t].Start();
+        }
+        foreach (Thread t in threads) t.Join();
+        int once = 0;
+        foreach (int c in _claimed) if (c == 1) once++;
+        Console.WriteLine("count " + _count);
+        Console.WriteLine("claims " + once);
+        Console.WriteLine("biggest " + _biggest);
+        Console.WriteLine("long " + Interlocked.Read(ref _wide));
+        Console.WriteLine("gate opened " + _arrived);
+    }
+}

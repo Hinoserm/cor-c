@@ -115,8 +115,9 @@ deferred by request; do not resume them without a new request.
 
 1. [ ] Implement Pentium FDIV detection and corrected division, including
    forced-path regression tests on unaffected Linux/QEMU hosts.
-2. [ ] Complete 386+387 support, including the instruction and runtime audit
-   for accidental 486-or-newer instructions and runtime atomics.
+2. [x] Complete 386+387 support, including the instruction and runtime audit
+   for accidental 486-or-newer instructions and runtime atomics
+   (docs/X86-CPU-PROFILES.md); a 386 without a 387 waits on item 3.
 3. [ ] Implement software floating point for `--fpu=none` on all supported
    CPUs, including arithmetic, comparisons, conversions, math/runtime helpers
    and an emitted-code audit for accidental x87/MMX/3DNow instructions.

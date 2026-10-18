@@ -113,6 +113,8 @@ public enum MOp : byte
     Rdtsc,
     /// <summary>pushfd; pop r32 -- EFLAGS into a register.</summary>
     ReadFlags,
+    /// <summary>xor r, r; mov r16, cs -- the code selector, its low two bits the privilege level.</summary>
+    ReadCs,
     /// <summary>ltr r16.</summary>
     Ltr,
     /// <summary>cs &lt;- r: push r; push the next instruction; retf. EAX destroyed.</summary>

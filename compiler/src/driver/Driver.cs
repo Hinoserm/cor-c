@@ -697,7 +697,6 @@ public static class Driver
         {
             X86Cpu profile = X86Cpu.Parse(args);
             if (profile.Fpu == "none") return Fail("Software floating-point lowering is not yet complete; --fpu=none native compilation is not available yet");
-            if (profile.Name == "386") return Fail("The 386 backend instruction/runtime audit is not yet complete");
             target.Cpu = profile.Name;
             target.X86Profile = profile;
         }

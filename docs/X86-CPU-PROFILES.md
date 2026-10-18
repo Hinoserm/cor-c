@@ -18,7 +18,7 @@ Pentium Pro CMOV and no MMX. MMX, 3DNow!, CMOV, SSE and SSE2 have
 Explicit enabling extends instruction permission beyond a model's baseline and
 is the caller's promise that the actual processor provides that extension.
 
-`--fpu=none` is required on all models. The 386 additionally supports an optional
+`--fpu=none` is accepted on all models. The 386 additionally supports an optional
 387. No-FPU disables everything that shares the x87's registers or state (MMX,
 3DNow!, the MMX extensions, FCMOV/FCOMI, SSE); explicitly enabling one of them
 at the same time is an error. Software arithmetic, conversions and math-library
@@ -40,10 +40,26 @@ support are required before no-FPU native compilation can be accepted.
   index/scale/relocation metadata for both floating and 64-bit integer accesses.
 - Instruction tests compare emitted bytes against GNU assembler in both modes.
 
+- The 386 with a 387 (`--cpu=386 --fpu=387`) compiles natively. It has XCHG and
+  no other instruction that reads and writes memory as one: an atomic add,
+  compare-exchange, and, or or exclusive or is a call of the runtime's
+  `AtomicAdd386`, `AtomicCas386` or `AtomicBits386` (lowering), the read and
+  the write between `Platform.AtomicsEnter` and `AtomicsLeave` -- on bare metal
+  with interrupts off where the code's privilege level is at most EFLAGS.IOPL
+  (`Sys.ReadCodeSegment`), else, and in a process, under one lock taken by
+  XCHG. The kernel's store-sequence compare-exchange stub is the same with
+  interrupts off. BSWAP has its 386 form; INVLPG and the control-register moves
+  are the source's own, made after its own processor check (Probed). The
+  emitted-code audit refuses any other 486 instruction under 386, and knows a
+  CR4 move needs a Pentium; the assembler refuses CR4 before the Pentium and
+  the test registers in long mode, and moves the debug registers to and from
+  64-bit registers there.
+
 This is not complete CPU support. Remaining gates include full baseline/x87
-assembler coverage, 386-only code generation, software floating point, FDIV
-correction, automatic MMX/3DNow! selection, serialized CPU/FPU contracts through
-objects/LTO, execution tests and measured cost decisions. Native compilation
-rejects unfinished no-FPU/386 selections rather than emitting invalid code.
+assembler coverage, software floating point, FDIV correction, automatic
+MMX/3DNow! selection, serialized CPU/FPU contracts through objects/LTO,
+execution tests and measured cost decisions. Native compilation rejects
+`--fpu=none` (the 386's default) rather than emitting invalid code: it needs
+software floating point.
 QEMU TCG can test semantics; it is not a K6 timing model. Host benchmarks apply
 only to extensions the host advertises. F00F kernel mitigation is separately owned.

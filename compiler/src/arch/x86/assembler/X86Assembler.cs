@@ -1928,11 +1928,23 @@ public sealed partial class X86Assembler : ISymbols
         {
             bool write = d.Kind is OperandKind.Debug or OperandKind.Test;
             Operand special = write ? d : s, general = write ? s : d;
-            if (general.Kind != OperandKind.Register || general.Size != 4) throw Error("special registers require a 32-bit general register");
-            if (special.Kind == OperandKind.Test && (_cpu.Pentium || special.Reg < (_cpu.Name == "386" ? 6 : 3)))
-                throw Error("test register is unavailable on " + _cpu.Name);
+            // The machine's width, as a control register's: 32 bits, or 64
+            // in long mode, REX.B reaching the upper registers.
+            int wide = _bits == 64 ? 8 : 4;
+            if (general.Kind != OperandKind.Register || general.Size != wide)
+                throw Error($"special registers require a {wide * 8}-bit general register");
+            // THE TEST REGISTERS are the 386's TR6 and TR7 and the 486's TR3
+            // to TR7, which the Pentium dropped and long mode never had:
+            // 0F 24 and 0F 26 there are no instruction at all.
+            if (special.Kind == OperandKind.Test && (_bits == 64 || _cpu.Pentium || special.Reg < (_cpu.Name == "386" ? 6 : 3)))
+                throw Error("test register is unavailable " + (_bits == 64 ? "in long mode" : "on " + _cpu.Name));
+            if (_bits == 64 && general.Reg >= 8)
+            {
+                _rexAt = _sec.Size;
+                _rexB = true;
+            }
             Emit(0x0f, special.Kind == OperandKind.Debug ? (write ? (byte)0x23 : (byte)0x21) : (write ? (byte)0x26 : (byte)0x24));
-            Emit((byte)(0xc0 | special.Reg << 3 | general.Reg)); return;
+            Emit((byte)(0xc0 | special.Reg << 3 | (general.Reg & 7))); return;
         }
 
         // The control registers are reached by their own two-byte opcode and
@@ -1949,6 +1961,9 @@ public sealed partial class X86Assembler : ISymbols
             {
                 throw Error($"mov {d.Text}, {s.Text}: a control register goes to or from a {wide * 8}-bit register");
             }
+            // CR4 CAME WITH THE PENTIUM: the 386 and the 486 have no such
+            // register, and a move to or from it is an invalid opcode there.
+            if (control.Reg == 4) Require(_cpu.Pentium, $"mov {d.Text}, {s.Text}", "a Pentium's CR4");
             if (_bits == 64)
             {
                 _rexAt = _sec.Size;

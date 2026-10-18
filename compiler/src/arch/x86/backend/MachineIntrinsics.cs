@@ -70,6 +70,7 @@ internal static class MachineIntrinsics
     public const string Cpuid = Prefix + "cpuid";
     public const string ReadTsc = Prefix + "rdtsc";
     public const string ReadFlags = Prefix + "readflags";
+    public const string ReadCodeSegment = Prefix + "readcs";
     public const string SwapGs = Prefix + "swapgs";
     public const string LoadTaskRegister = Prefix + "ltr";
     public const string LoadCodeSegment = Prefix + "loadcs";

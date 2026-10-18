@@ -674,6 +674,41 @@ interface IOwnsElements : IOwnsStorage
 
 static class Runtime
 {
+    /// THE 386'S ATOMICS. A 386 reads and writes memory as one only with
+    /// XCHG: it has no XADD (Interlocked.Add and Increment) and no CMPXCHG
+    /// (CompareExchange, and every atomic made of it). Under --cpu=386 the
+    /// compiler calls these instead (Lowering.Atomic386): the read and the
+    /// write between Platform.AtomicsEnter and Leave -- interrupts off on
+    /// bare metal, one lock in a process -- answering what was there. Never
+    /// an atomic of their own but Enter's exchange.
+    public static int AtomicAdd386(nint at, int value)
+    {
+        long held = Platform.AtomicsEnter();
+        int was = (int)Sys.Peek(at);
+        Sys.Poke(at, was + value);
+        Platform.AtomicsLeave(held);
+        return was;
+    }
+
+    public static int AtomicCas386(nint at, int expect, int value)
+    {
+        long held = Platform.AtomicsEnter();
+        int was = (int)Sys.Peek(at);
+        if (was == expect) Sys.Poke(at, value);
+        Platform.AtomicsLeave(held);
+        return was;
+    }
+
+    /// And (0), or (1) or exclusive or (2) of `value` into the word at `at`.
+    public static int AtomicBits386(nint at, int value, int op)
+    {
+        long held = Platform.AtomicsEnter();
+        int was = (int)Sys.Peek(at);
+        Sys.Poke(at, op == 0 ? was & value : op == 1 ? was | value : was ^ value);
+        Platform.AtomicsLeave(held);
+        return was;
+    }
+
     /// The elements of a dying collection, given back (IOwnsElements). Null,
     /// a frame slot not yet filled (no vtable yet), or anything that is not
     /// such a collection is nothing to do.

@@ -2333,11 +2333,14 @@ internal sealed partial class Selector
                 Emit(new MInstr(op, new MMem(addr, 0)) { Probed = op == MOp.Invlpg });
                 return;
             }
+            // NAMED BY THE SOURCE, and so Probed, as INVLPG is: CR4 is the
+            // Pentium's (Isa.Requires), and a kernel that also runs on a 486
+            // asks which it is on before it reads or writes it.
             case MachineIntrinsics.ReadCr:
-                Emit(MOp.MovFromCr, Lo(i.Dest!), ControlRegister(i.Operands[0]));
+                Emit(new MInstr(MOp.MovFromCr, Lo(i.Dest!), ControlRegister(i.Operands[0])) { Probed = true });
                 return;
             case MachineIntrinsics.WriteCr:
-                Emit(MOp.MovToCr, R(i.Operands[1]), ControlRegister(i.Operands[0]));
+                Emit(new MInstr(MOp.MovToCr, R(i.Operands[1]), ControlRegister(i.Operands[0])) { Probed = true });
                 return;
             case MachineIntrinsics.CardMark:
                 // The slot's card, set by the object's stub, which keeps
@@ -2516,6 +2519,9 @@ internal sealed partial class Selector
                 // pushfd; pop r: no call to a stub for the one bit a lock or a
                 // gate asks before it turns interrupts off.
                 if (i.Dest is not null) Emit(MOp.ReadFlags, Lo(i.Dest));
+                return;
+            case MachineIntrinsics.ReadCodeSegment:
+                if (i.Dest is not null) Emit(MOp.ReadCs, Lo(i.Dest));
                 return;
             case MachineIntrinsics.SetGs:
                 Emit(MOp.SetGs, R(i.Operands[0]));

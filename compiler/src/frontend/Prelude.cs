@@ -806,6 +806,10 @@ public static class Prelude
             // kernel asks for the interrupt flag (bit 9) before it turns
             // interrupts off and on again.
             public static long ReadFlags() { return 0; }
+            // The code selector: its low two bits are the privilege level
+            // the code runs at, which with EFLAGS.IOPL says whether it may
+            // turn interrupts off (Platform.AtomicsEnter).
+            public static long ReadCodeSegment() { return 0; }
             // swapgs: the kernel's GS base for the user's, on x86-64.
             public static void SwapGs() { }
 

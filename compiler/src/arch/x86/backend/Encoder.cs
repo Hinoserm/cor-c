@@ -112,7 +112,7 @@ internal sealed class Encoder
         foreach (MBlock block in m.Blocks)
         foreach (MInstr i in block.Instrs)
         {
-            X86Feature missing = Isa.Requires(i.Op) & ~profile.Features;
+            X86Feature missing = Isa.Requires(i) & ~profile.Features;
             if (missing != X86Feature.None && !i.Probed)
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} needs {Isa.Describe(missing)}, which --cpu={profile.Name} does not permit");
@@ -875,6 +875,16 @@ internal sealed class Encoder
                 _out.Add((byte)(0xC0 | (r << 3) | r));
                 B(0x66, 0x8C);
                 _out.Add((byte)(0xE8 | r));
+                break;
+            }
+            case MOp.ReadCs:
+            {
+                // The same with CS, sreg 1: xor r, r; mov r16, cs.
+                int r = ((MReg)i.Operands[0]).Id;
+                B(0x31);
+                _out.Add((byte)(0xC0 | (r << 3) | r));
+                B(0x66, 0x8C);
+                _out.Add((byte)(0xC8 | r));
                 break;
             }
             case MOp.SetGs:

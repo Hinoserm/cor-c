@@ -1598,7 +1598,7 @@ public sealed partial class Lowering
                 _e.SetBlock(make);
                 VReg zero = NewStruct(at, StructOf(f.Type));
                 VReg old = _e.Reg(IrTypes.Word);
-                _e.Emit(Opcode.AtomicCas, old, R(at2), R(_e.Const(0, IrTypes.Word)), R(zero));
+                EmitAtomic(Opcode.AtomicCas, old, R(at2), R(_e.Const(0, IrTypes.Word)), R(zero));
                 _e.Jump(made);
                 _e.SetBlock(made);
             }

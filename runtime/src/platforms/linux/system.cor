@@ -1240,6 +1240,28 @@ static class Platform
         // the thread has the block a blocking call is recorded in.
         return Result(Sys.Syscall(Call.Write, fd, address, count));
     }
+
+    /// THE 386'S ATOMICS ARE DONE UNDER ONE LOCK (Runtime.AtomicAdd386 and
+    /// its kin). A process cannot turn interrupts off, and XCHG is the one
+    /// read and write as one the 386 has: it takes the lock, the operation
+    /// reads and writes under it, and a plain exchange gives it back. A
+    /// thread finding it held yields to its holder, which on the 386's one
+    /// processor can run only once this thread stops. What Leave is handed.
+    static int _atomics386;
+
+    public static long AtomicsEnter()
+    {
+        while (Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 1) != 0)
+        {
+            Yield();
+        }
+        return 0;
+    }
+
+    public static void AtomicsLeave(long held)
+    {
+        Sys.AtomicSwap32(Sys.AddressOf(ref _atomics386), 0);
+    }
 }
 
 /// The system API a program uses, as thin wrappers over the calls above.

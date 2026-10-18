@@ -577,6 +577,15 @@ internal sealed class Encoder
             case MOp.Wrmsr: Byte(0x0F); Byte(0x30); break;
             case MOp.Cpuid: Byte(0x0F); Byte(0xA2); break;
             case MOp.Rdtsc: Byte(0x0F); Byte(0x31); break;
+            case MOp.ReadCs:
+            {
+                // 8C /r, mov r32, cs: in long mode the upper half is nought.
+                MReg cr = (MReg)i.Operands[0];
+                if ((cr.Hw & 8) != 0) Byte(0x41);
+                Byte(0x8C);
+                Byte(0xC8 + (cr.Hw & 7));
+                break;
+            }
             case MOp.ReadFlags:
             {
                 // 9C pushfq (64 bits in long mode), then pop r64.
