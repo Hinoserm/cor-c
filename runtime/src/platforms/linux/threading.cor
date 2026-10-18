@@ -450,6 +450,118 @@ static class Native
     public const long WakeAll = 0x7FFFFFFF;
 }
 
+namespace Microsoft.Win32.SafeHandles
+{
+    /// WHAT IS UNDER A WaitHandle, as .NET's SafeWaitHandle: the object its
+    /// waits wait on (Target) and the number .NET would have from the kernel
+    /// -- one the runtime gives it on the first ask, there being no kernel
+    /// object. A handle made from a number another SafeWaitHandle answered
+    /// is under the same object; from any other, under nothing. Closed once:
+    /// the last of a named Mutex's closed gives the name up.
+    public sealed class SafeWaitHandle : IDisposable
+    {
+        System.Threading.WaitHandle? _target;
+        nint _handle;
+        bool _closed;
+
+        static nint _next = 0x1000;
+        static List<SafeWaitHandle>? _numbered;
+        static AtomicCell _numbering = new AtomicCell();
+
+        public SafeWaitHandle() { _handle = -1; }
+
+        public SafeWaitHandle(IntPtr existingHandle, bool ownsHandle)
+        {
+            _handle = existingHandle;
+            _numbering.Enter();
+            try
+            {
+                List<SafeWaitHandle>? numbered = _numbered;
+                if (numbered != null)
+                {
+                    for (int i = 0; i < numbered.Count; i++)
+                    {
+                        if (numbered[i]._handle == existingHandle && !numbered[i]._closed) _target = numbered[i]._target;
+                    }
+                }
+            }
+            finally
+            {
+                _numbering.Exit();
+            }
+        }
+
+        internal SafeWaitHandle(System.Threading.WaitHandle target)
+        {
+            _target = target;
+        }
+
+        /// What waits wait on; null once closed, or with nothing under it.
+        internal System.Threading.WaitHandle? Target => _closed ? null : _target;
+
+        public bool IsClosed => _closed;
+        public bool IsInvalid => _target == null && (_handle == 0 || _handle == -1);
+
+        public IntPtr DangerousGetHandle()
+        {
+            if (_handle == 0 && _target != null)
+            {
+                _numbering.Enter();
+                try
+                {
+                    if (_handle == 0)
+                    {
+                        _next = _next + 4;
+                        _handle = _next;
+                        (_numbered ??= new List<SafeWaitHandle>()).Add(this);
+                    }
+                }
+                finally
+                {
+                    _numbering.Exit();
+                }
+            }
+            return _handle;
+        }
+
+        public void DangerousAddRef(ref bool success)
+        {
+            ObjectDisposedException.ThrowIf(_closed, this);
+            success = true;
+        }
+
+        public void DangerousRelease()
+        {
+        }
+
+        public void SetHandleAsInvalid()
+        {
+            _closed = true;
+        }
+
+        public void Close()
+        {
+            Dispose();
+        }
+
+        public void Dispose()
+        {
+            if (_closed) return;
+            _closed = true;
+            if (_handle != 0 && _handle != -1)
+            {
+                _numbering.Enter();
+                try { _numbered?.Remove(this); }
+                finally { _numbering.Exit(); }
+            }
+            if (_target is System.Threading.Mutex shared && shared.Key != null)
+            {
+                System.Threading.NamedMutexes.Closed(shared);
+            }
+        }
+    }
+}
+
 // THREADS ARE System.Threading's, as .NET's are: Thread, its two delegates
 // and ThreadStateException, by the names .NET gives them.
 namespace System.Threading
@@ -1252,20 +1364,79 @@ namespace System.Threading
         HandleWaitLink? _first;
         HandleWaitLink? _last;
 
-        // Whether there is something under the handle -- one of the kinds
-        // below -- and whether it has been closed. A WaitHandle a program
-        // derives itself has nothing under it, and a wait on it is refused
-        // naming its own type, as .NET refuses one with no SafeWaitHandle; a
-        // closed one is refused naming the handle that was under it.
-        readonly bool _kind;
-        bool _closed;
+        // WHAT IS UNDER THE HANDLE, as .NET's SafeWaitHandle: the object
+        // whose state and queue a wait reads -- this one for the kinds below,
+        // the one shared by every Mutex of a name, the one another WaitHandle's
+        // SafeWaitHandle names once a program sets it here -- and whether it
+        // has been closed. A WaitHandle a program derives itself has nothing
+        // under it, and a wait on it is refused naming its own type, as .NET
+        // refuses one with no SafeWaitHandle; a closed one is refused naming
+        // the handle that was under it.
+        Microsoft.Win32.SafeHandles.SafeWaitHandle? _safe;
+
+        /// What a handle is when there is none, as .NET's.
+        protected static readonly IntPtr InvalidHandle = new IntPtr(-1);
 
         protected WaitHandle() { }
 
         // The kinds' own.
         internal WaitHandle(bool kind)
         {
-            _kind = kind;
+            _safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(this);
+        }
+
+        /// The object a wait on this handle waits on (CheckOpen first).
+        internal WaitHandle Core => _safe!.Target!;
+
+        /// Under it from now on: another's, for a Mutex of a name another
+        /// Mutex made first.
+        internal void Share(WaitHandle core)
+        {
+            _safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(core);
+        }
+
+        /// .NET's handle on what is under it: one the runtime numbers, as
+        /// there is no kernel object to have one; -1 with nothing under it.
+        public virtual IntPtr Handle
+        {
+            get
+            {
+                Microsoft.Win32.SafeHandles.SafeWaitHandle? safe = _safe;
+                return safe == null ? InvalidHandle : safe.DangerousGetHandle();
+            }
+            set
+            {
+                if (value == InvalidHandle)
+                {
+                    if (_safe != null)
+                    {
+                        _safe.SetHandleAsInvalid();
+                        _safe = null;
+                    }
+                    return;
+                }
+                _safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(value, true);
+            }
+        }
+
+        /// The handle under it, an invalid one made on the first ask when
+        /// there is none, as .NET's; set, it is what waits wait on.
+        public Microsoft.Win32.SafeHandles.SafeWaitHandle SafeWaitHandle
+        {
+            get
+            {
+                Microsoft.Win32.SafeHandles.SafeWaitHandle? safe = _safe;
+                if (safe == null)
+                {
+                    safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(InvalidHandle, false);
+                    _safe = safe;
+                }
+                return safe;
+            }
+            set
+            {
+                _safe = value;
+            }
         }
 
         public virtual bool WaitOne()
@@ -1280,7 +1451,7 @@ namespace System.Threading
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
             CheckOpen();
-            int result = Wait(this, null, 1, false, null, millisecondsTimeout);
+            int result = Wait(Core, null, 1, false, null, millisecondsTimeout);
             if (result == WaitAbandoned)
             {
                 throw new AbandonedMutexException();
@@ -1314,10 +1485,11 @@ namespace System.Threading
         }
 
         /// Closed: every wait and signal from now on is refused with
-        /// ObjectDisposedException.
+        /// ObjectDisposedException -- and the last of a name's Mutexes gives
+        /// the name up.
         protected virtual void Dispose(bool explicitDisposing)
         {
-            _closed = true;
+            _safe?.Close();
         }
 
         public static bool WaitAll(WaitHandle[] waitHandles)
@@ -1400,7 +1572,7 @@ namespace System.Threading
             ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
             toSignal.CheckOpen();
             toWaitOn.CheckOpen();
-            int result = Wait(toWaitOn, null, 1, false, toSignal, millisecondsTimeout);
+            int result = Wait(toWaitOn.Core, null, 1, false, toSignal.Core, millisecondsTimeout);
             if (result == WaitAbandoned)
             {
                 throw new AbandonedMutexException();
@@ -1421,11 +1593,12 @@ namespace System.Threading
         // there is nothing under the handle or it has been closed.
         internal void CheckOpen()
         {
-            ObjectDisposedException.ThrowIf(!_kind, this);
-            if (_closed)
+            Microsoft.Win32.SafeHandles.SafeWaitHandle? safe = _safe;
+            if (safe != null && safe.IsClosed)
             {
                 throw new ObjectDisposedException(ClosedName);
             }
+            ObjectDisposedException.ThrowIf(safe == null || safe.Target == null, this);
         }
 
         // WaitAll and WaitAny, with .NET's checks in .NET's order: the array,
@@ -1463,7 +1636,15 @@ namespace System.Threading
                     throw new ArgumentNullException("waitHandles[" + i + "]", "At least one element in the specified array was null.");
                 }
                 handle.CheckOpen();
-                handles[i] = handle;
+                handles[i] = handle.Core;
+            }
+            // A MUTEX OF A NAME IS WAITED ON ALONE, as on .NET's Unix.
+            for (int i = 0; i < count; i++)
+            {
+                if (handles[i].Elsewhere)
+                {
+                    throw new PlatformNotSupportedException("Wait operations on multiple wait handles including a named synchronization primitive are not supported on this platform.");
+                }
             }
             if (waitAll)
             {
@@ -1487,7 +1668,7 @@ namespace System.Threading
                     throw new AbandonedMutexException();
                 }
                 int index = result - WaitAbandoned;
-                throw new AbandonedMutexException(index, handles[index]);
+                throw new AbandonedMutexException(index, waitHandles[index]);
             }
             return result;
         }
@@ -1541,17 +1722,40 @@ namespace System.Threading
 
             long done = Atom.At(wait, Atom.FirstWord);
             long deadline = milliseconds < 0 ? -1 : Clock.Now() + (long)milliseconds * 1000000;
+            // A MUTEX OF A NAME ANOTHER PROCESS MAY HOLD gives no signal here
+            // when that process lets it go: the wait looks again now and then,
+            // a little less often each time, and takes what it can.
+            long poll = Polled(one, many, count) ? PollFirst : 0;
             while (Sys.PeekWord(done) == 0)
             {
+                long left = deadline < 0 ? long.MaxValue : deadline - Clock.Now();
+                if (left <= 0)
+                {
+                    break;
+                }
+                if (poll > 0)
+                {
+                    Native.WaitFor(done, 0, left < poll ? left : poll);
+                    if (poll < PollMost) poll = poll * 2;
+                    if (Sys.PeekWord(done) != 0) break;
+                    EnterGate();
+                    if (Sys.PeekWord(done) == 0)
+                    {
+                        result = TakeNow(one, many, count, all, me);
+                        if (result != WaitTimeout)
+                        {
+                            wait.Unqueue();
+                            ExitGate();
+                            return result;
+                        }
+                    }
+                    ExitGate();
+                    continue;
+                }
                 if (deadline < 0)
                 {
                     Native.Wait(done, 0);
                     continue;
-                }
-                long left = deadline - Clock.Now();
-                if (left <= 0)
-                {
-                    break;
                 }
                 Native.WaitFor(done, 0, left);
             }
@@ -1576,9 +1780,44 @@ namespace System.Threading
             return result;
         }
 
+        // How long a wait on a named mutex sleeps before it first looks again,
+        // and the most it sleeps between looks, in nanoseconds.
+        const long PollFirst = 1000000;
+        const long PollMost = 32000000;
+
+        static bool Polled(WaitHandle? one, WaitHandle[]? many, int count)
+        {
+            if (one != null) return one.Elsewhere;
+            for (int i = 0; i < count; i++)
+            {
+                if (many![i].Elsewhere) return true;
+            }
+            return false;
+        }
+
+        /// Whether another process can let this handle go: a named mutex's.
+        internal virtual bool Elsewhere => false;
+
+        /// With the gate held, after a look that took nothing: what the look
+        /// claimed on the way -- a named mutex's hold on its file -- let go.
+        internal virtual void Untaken()
+        {
+        }
+
         // With the gate held: what the wait asks for, taken if `thread` can
         // have it now -- answered as Wait answers, WaitTimeout when it cannot.
         static int TakeNow(WaitHandle? one, WaitHandle[]? many, int count, bool all, Thread thread)
+        {
+            int result = TakeNowOrNot(one, many, count, all, thread);
+            if (result == WaitTimeout)
+            {
+                if (one != null) one.Untaken();
+                else for (int i = 0; i < count; i++) many![i].Untaken();
+            }
+            return result;
+        }
+
+        static int TakeNowOrNot(WaitHandle? one, WaitHandle[]? many, int count, bool all, Thread thread)
         {
             if (one != null)
             {
@@ -1868,8 +2107,44 @@ namespace System.Threading
     /// manual-reset one lets everybody through until it is reset.
     public class EventWaitHandle : WaitHandle
     {
+        EventWaitHandle(bool initialState, EventResetMode mode, int unnamed) : this(initialState, mode) { }
+
         bool _set;
         readonly EventResetMode _mode;
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name)
+            : this(initialState, mode, Named.Refused(name)) { }
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name, out bool createdNew)
+            : this(initialState, mode, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name, NamedWaitHandleOptions options)
+            : this(initialState, mode, Named.Refused(name)) { }
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name, NamedWaitHandleOptions options, out bool createdNew)
+            : this(initialState, mode, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        /// No name on this platform opens one, as on .NET's Unix.
+        public static EventWaitHandle OpenExisting(string name) { throw Named.Unsupported(name); }
+        public static EventWaitHandle OpenExisting(string name, NamedWaitHandleOptions options) { throw Named.Unsupported(name); }
+
+        public static bool TryOpenExisting(string name, out EventWaitHandle? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
+
+        public static bool TryOpenExisting(string name, NamedWaitHandleOptions options, out EventWaitHandle? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
 
         public EventWaitHandle(bool initialState, EventResetMode mode) : base(true)
         {
@@ -1959,6 +2234,13 @@ namespace System.Threading
         Mutex? _nextHeld;
         Mutex? _previousHeld;
 
+        // A NAMED ONE'S: what holds the name for this process, its key in
+        // the table of names (NamedMutexes), and how many Mutexes of this
+        // process have it open. Only on the Mutex every one of them shares.
+        NamedMutexFiles? _files;
+        string? _key;
+        int _users;
+
         public Mutex() : this(false) { }
 
         public Mutex(bool initiallyOwned) : base(true)
@@ -1972,6 +2254,108 @@ namespace System.Threading
             }
         }
 
+        /// A MUTEX OF A NAME, which every Mutex of that name in every process
+        /// shares, as .NET's are on Unix: owned by one thread of one process
+        /// at a time. Made by this call, it is owned at once when
+        /// `initiallyOwned` asks; already there, the call only opens it. The
+        /// name is per session unless it says "Global\", and -- with no
+        /// options given -- any user's, as .NET's older forms are.
+        public Mutex(bool initiallyOwned, string? name) : this(initiallyOwned, name, out bool unused) { }
+
+        public Mutex(bool initiallyOwned, string? name, out bool createdNew)
+            : this(initiallyOwned, name, NamedWaitHandleOptions.Legacy, out createdNew) { }
+
+        public Mutex(bool initiallyOwned, string? name, NamedWaitHandleOptions options)
+            : this(initiallyOwned, name, options, out bool unused) { }
+
+        public Mutex(string? name, NamedWaitHandleOptions options) : this(false, name, options, out bool unused) { }
+
+        public Mutex(bool initiallyOwned, string? name, NamedWaitHandleOptions options, out bool createdNew) : base(true)
+        {
+            createdNew = true;
+            if (string.IsNullOrEmpty(name))
+            {
+                if (initiallyOwned)
+                {
+                    Thread me = Thread.CurrentThread;
+                    EnterGate();
+                    Take(me);
+                    ExitGate();
+                }
+                return;
+            }
+            Mutex core = NamedMutexes.Open(name, options, true, out createdNew)!;
+            Share(core);
+            if (initiallyOwned && createdNew)
+            {
+                core.WaitOne();
+            }
+        }
+
+        Mutex(Mutex core) : base(true)
+        {
+            Share(core);
+        }
+
+        public static Mutex OpenExisting(string name) { return OpenExisting(name, NamedWaitHandleOptions.Legacy); }
+
+        public static Mutex OpenExisting(string name, NamedWaitHandleOptions options)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(name);
+            Mutex? core = NamedMutexes.Open(name, options, false, out bool unused);
+            if (core == null)
+            {
+                throw new WaitHandleCannotBeOpenedException();
+            }
+            return new Mutex(core);
+        }
+
+        public static bool TryOpenExisting(string name, out Mutex? result)
+        {
+            return TryOpenExisting(name, NamedWaitHandleOptions.Legacy, out result);
+        }
+
+        public static bool TryOpenExisting(string name, NamedWaitHandleOptions options, out Mutex? result)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(name);
+            Mutex? core = NamedMutexes.Open(name, options, false, out bool unused);
+            result = core == null ? null : new Mutex(core);
+            return result != null;
+        }
+
+        /// The shared Mutex of a name: no thread's yet, and its files.
+        internal static Mutex ForName(string key, NamedMutexFiles files)
+        {
+            Mutex made = new Mutex();
+            made._key = key;
+            made._files = files;
+            return made;
+        }
+
+        internal string? Key => _key;
+
+        /// One more of this process's Mutexes has the name open.
+        internal void Opened() { _users = _users + 1; }
+
+        /// One fewer: the last gives the name up (NamedMutexes.Closed).
+        internal bool LastClosed()
+        {
+            _users = _users - 1;
+            if (_users > 0) return false;
+            _files!.Close();
+            return true;
+        }
+
+        internal override bool Elsewhere => _files != null;
+
+        internal override void Untaken()
+        {
+            if (_files != null && _owner == null)
+            {
+                _files.Unlock(true);
+            }
+        }
+
         /// Gives back one of the calling thread's holds, and the mutex to the
         /// oldest waiter with the last; a thread that does not own it is
         /// refused.
@@ -1979,8 +2363,9 @@ namespace System.Threading
         {
             CheckOpen();
             Thread me = Thread.CurrentThread;
+            Mutex core = (Mutex)Core;
             EnterGate();
-            bool released = Release(me);
+            bool released = core.Release(me);
             ExitGate();
             if (!released)
             {
@@ -1988,20 +2373,36 @@ namespace System.Threading
             }
         }
 
+        // FREE, AND THIS PROCESS'S: a named one only when the file another
+        // process's owner holds is this process's now, a hold taken here and
+        // let go again unless the look takes the mutex (Untaken).
+        bool Ours()
+        {
+            if (_files == null) return true;
+            if (!_files.TryLock(out bool abandoned)) return false;
+            if (abandoned) _abandoned = true;
+            return true;
+        }
+
         internal override bool SignaledFor(Thread thread)
         {
-            return _owner == null || _owner == thread;
+            return _owner == thread || _owner == null && Ours();
         }
 
         internal override bool Signaled()
         {
-            return _owner == null;
+            return _owner == null && Ours();
         }
 
         internal override bool Take(Thread thread)
         {
             if (_owner == thread)
             {
+                // AT MOST int.MaxValue HOLDS, as .NET counts them.
+                if (_depth == int.MaxValue)
+                {
+                    throw new OverflowException("The current thread attempted to reacquire a mutex that has reached its maximum acquire count.");
+                }
                 _depth = _depth + 1;
                 return false;
             }
@@ -2049,6 +2450,10 @@ namespace System.Threading
             {
                 Free();
                 Answer();
+                if (_owner == null && _files != null)
+                {
+                    _files.Unlock(true);
+                }
             }
             return true;
         }
@@ -2087,6 +2492,12 @@ namespace System.Threading
                 held.Free();
                 held._abandoned = true;
                 held.Answer();
+                // Another process's next owner is told too: the file still
+                // says it was owned.
+                if (held._owner == null && held._files != null)
+                {
+                    held._files.Unlock(false);
+                }
                 held = thread.HeldMutexes;
             }
             ExitGate();
@@ -2099,6 +2510,41 @@ namespace System.Threading
     {
         int _count;
         readonly int _maximum;
+
+        public Semaphore(int initialCount, int maximumCount, string? name)
+            : this(initialCount, maximumCount, Named.Refused(name)) { }
+
+        public Semaphore(int initialCount, int maximumCount, string? name, out bool createdNew)
+            : this(initialCount, maximumCount, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        public Semaphore(int initialCount, int maximumCount, string? name, NamedWaitHandleOptions options)
+            : this(initialCount, maximumCount, Named.Refused(name)) { }
+
+        public Semaphore(int initialCount, int maximumCount, string? name, NamedWaitHandleOptions options, out bool createdNew)
+            : this(initialCount, maximumCount, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        public static Semaphore OpenExisting(string name) { throw Named.Unsupported(name); }
+        public static Semaphore OpenExisting(string name, NamedWaitHandleOptions options) { throw Named.Unsupported(name); }
+
+        public static bool TryOpenExisting(string name, out Semaphore? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
+
+        public static bool TryOpenExisting(string name, NamedWaitHandleOptions options, out Semaphore? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
+
+        Semaphore(int initialCount, int maximumCount, int unnamed) : this(initialCount, maximumCount) { }
 
         public Semaphore(int initialCount, int maximumCount) : base(true)
         {
@@ -2167,6 +2613,355 @@ namespace System.Threading
         internal override Exception Refused()
         {
             return new InvalidOperationException("The WaitHandle cannot be signaled because it would exceed its maximum count.");
+        }
+    }
+
+    /// How a named WaitHandle is shared, as .NET 10's options: by the
+    /// current user only and in the current session only, unless said
+    /// otherwise -- a struct whose default says both.
+    public struct NamedWaitHandleOptions
+    {
+        bool _notCurrentUserOnly;
+        bool _notCurrentSessionOnly;
+        bool _legacy;
+
+        public bool CurrentUserOnly
+        {
+            get { return !_notCurrentUserOnly; }
+            set { _notCurrentUserOnly = !value; }
+        }
+
+        public bool CurrentSessionOnly
+        {
+            get { return !_notCurrentSessionOnly; }
+            set { _notCurrentSessionOnly = !value; }
+        }
+
+        /// What the forms with no options mean: any user's, and the session
+        /// by the name's own prefix.
+        internal static NamedWaitHandleOptions Legacy
+        {
+            get
+            {
+                NamedWaitHandleOptions made = default;
+                made._notCurrentUserOnly = true;
+                made._legacy = true;
+                return made;
+            }
+        }
+
+        internal bool IsLegacy => _legacy;
+    }
+
+    /// No WaitHandle of the name, as OpenExisting says.
+    public class WaitHandleCannotBeOpenedException : ApplicationException
+    {
+        const string None = "No handle of the given name exists.";
+        // COR_E_WAITHANDLECANNOTBEOPENED, which .NET gives every one.
+        internal override int Code => unchecked((int)0x8013152C);
+
+        public WaitHandleCannotBeOpenedException() : base(None) { }
+        public WaitHandleCannotBeOpenedException(string? message) : base(message ?? None) { }
+        public WaitHandleCannotBeOpenedException(string? message, Exception? innerException) : base(message ?? None, innerException) { }
+    }
+
+    /// What .NET's Unix answers for a name an EventWaitHandle or a Semaphore
+    /// is given: there are no named ones there.
+    static class Named
+    {
+        const string Message = "The named version of this synchronization primitive is not supported on this platform.";
+
+        /// 0 for no name; any name, the empty one too, refused.
+        public static int Refused(string? name)
+        {
+            if (name != null) throw new PlatformNotSupportedException(Message);
+            return 0;
+        }
+
+        public static Exception Unsupported(string? name)
+        {
+            return new PlatformNotSupportedException(Message);
+        }
+    }
+
+    /// THE NAMED MUTEXES THIS PROCESS HAS OPEN, by key -- where the name is
+    /// kept (the user and session it is shared in) and the name -- each the
+    /// one Mutex every Mutex of the name in this process shares. Changed
+    /// under its own lock, never the wait handles' gate: opening a name
+    /// makes files and objects.
+    static class NamedMutexes
+    {
+        static List<Mutex>? _open;
+        static AtomicCell _lock = new AtomicCell();
+
+        const string Incorrect = "The filename, directory name, or volume label syntax is incorrect.";
+
+        /// The Mutex of `name`, opened for one more of this process's: made
+        /// (and the name with it) when `create` and nobody has it, null when
+        /// not `create` and nobody has it. Refuses a name .NET refuses.
+        public static Mutex? Open(string name, NamedWaitHandleOptions options, bool create, out bool createdNew)
+        {
+            createdNew = false;
+            string bare = name;
+            bool global;
+            if (name.StartsWith("Global\\", StringComparison.Ordinal))
+            {
+                bare = name.Substring(7);
+                global = true;
+                if (!options.IsLegacy && options.CurrentSessionOnly) throw Prefix(name);
+            }
+            else if (name.StartsWith("Local\\", StringComparison.Ordinal))
+            {
+                bare = name.Substring(6);
+                global = false;
+                if (!options.IsLegacy && !options.CurrentSessionOnly) throw Prefix(name);
+            }
+            else
+            {
+                global = !options.IsLegacy && !options.CurrentSessionOnly;
+            }
+            if (bare.Length > 255)
+            {
+                throw new ArgumentException("The length of the name exceeds the maximum limit.", "name");
+            }
+            if (bare.Length == 0)
+            {
+                throw new System.IO.IOException("The parameter is incorrect. : '" + name + "'.");
+            }
+            if (bare.IndexOf('\\') >= 0 || bare.IndexOf('/') >= 0)
+            {
+                throw new System.IO.IOException(Incorrect + " : '" + name + "'.");
+            }
+
+            string scope = (options.CurrentUserOnly ? "u" + Os.Getuid() : "any") + "/"
+                         + (global ? "global" : "s" + Platform.Result(Sys.Syscall(Call.Getsid, 0, 0, 0)));
+            string key = scope + "/" + bare;
+
+            AtomicCell gate = _lock;
+            gate.Enter();
+            try
+            {
+                List<Mutex> open = _open ??= new List<Mutex>();
+                for (int i = 0; i < open.Count; i++)
+                {
+                    if (open[i].Key == key)
+                    {
+                        open[i].Opened();
+                        return open[i];
+                    }
+                }
+                NamedMutexFiles? files = NamedMutexFiles.Open(scope, bare, create, options.CurrentUserOnly, out createdNew);
+                if (files == null)
+                {
+                    return null;
+                }
+                Mutex made = Mutex.ForName(key, files);
+                made.Opened();
+                open.Add(made);
+                return made;
+            }
+            finally
+            {
+                gate.Exit();
+            }
+        }
+
+        /// One of this process's Mutexes of the name closed.
+        public static void Closed(Mutex core)
+        {
+            AtomicCell gate = _lock;
+            gate.Enter();
+            try
+            {
+                if (core.LastClosed()) _open!.Remove(core);
+            }
+            finally
+            {
+                gate.Exit();
+            }
+        }
+
+        static ArgumentException Prefix(string name)
+        {
+            return new ArgumentException("The specified name '" + name + "' has a prefix that is not compatible with the specified option 'CurrentSessionOnly'.", "name");
+        }
+    }
+
+    /// WHAT HOLDS A NAME FOR THIS PROCESS: two files in a directory of the
+    /// user and session it is shared in, under the temporary directory. Every
+    /// process with the name open holds the first shared (flock); the one
+    /// whose thread owns the mutex holds the second exclusively, and writes 1
+    /// in it while it does -- so that a 1 found by the next to take it says
+    /// its owner ended holding it, and the mutex was abandoned. A process
+    /// that ends lets go of both, its kernel says so for it. Made when the
+    /// first file can be held exclusively: nobody else has the name, and
+    /// whatever its second file says is from a mutex nobody has any more.
+    sealed class NamedMutexFiles
+    {
+        const int Shared = 1;
+        const int Exclusive = 2;
+        const int NoWait = 4;
+        const int Let = 8;
+
+        int _users;
+        int _owner;
+        bool _locked;
+        readonly string _file;
+
+        NamedMutexFiles(int users, int owner, string file)
+        {
+            _users = users;
+            _owner = owner;
+            _file = file;
+        }
+
+        public static NamedMutexFiles? Open(string scope, string name, bool create, bool userOnly, out bool createdNew)
+        {
+            createdNew = false;
+            string dir = System.IO.Path.GetTempPath() + ".corsac-names/" + scope + "/";
+            Made(dir, userOnly);
+            string file = dir + Escaped(name);
+            int users;
+            bool alone;
+            while (true)
+            {
+                users = Os.Open(file, O.ReadWrite | (create ? O.Create : 0), userOnly ? 384 : 438);
+                if (users < 0)
+                {
+                    if (users == -Err.NoEnt && !create) return null;
+                    throw Interop.GetExceptionForIoErrno(users, file);
+                }
+                alone = Os.Flock(users, Exclusive | NoWait) == 0;
+                if (alone && !create)
+                {
+                    // A FILE LEFT BY PROCESSES THAT HAVE ALL ENDED: no name.
+                    Os.Flock(users, Let);
+                    Os.Close(users);
+                    return null;
+                }
+                while (!alone && Os.Flock(users, Shared | NoWait) != 0)
+                {
+                    Thread.Sleep(1);
+                }
+                // STILL THE FILE OF THE NAME: the last to close another
+                // process's hold gives the name up by removing it (Close),
+                // and one opened just before that is nobody's.
+                if (Same(users, file)) break;
+                Os.Close(users);
+            }
+            int owner = Os.Open(file + ".owner", O.ReadWrite | O.Create, userOnly ? 384 : 438);
+            if (owner < 0)
+            {
+                Os.Close(users);
+                throw Interop.GetExceptionForIoErrno(owner, file);
+            }
+            if (alone)
+            {
+                Mark(owner, 0);
+                Os.Flock(users, Shared);
+                createdNew = true;
+            }
+            return new NamedMutexFiles(users, owner, file);
+        }
+
+        // Whether the descriptor is still the file at `path`.
+        static bool Same(int fd, string path)
+        {
+            byte[] held = Stat.Room();
+            byte[] named = Stat.Room();
+            return Os.Fstat(fd, held) >= 0 && Os.Stat(path, named) >= 0
+                && Stat.Ino(held) == Stat.Ino(named) && Stat.Device(held) == Stat.Device(named);
+        }
+
+        // The directory, and those it is in, made as they are needed: a
+        // user's own closed to others, the shared ones open to all.
+        static void Made(string dir, bool userOnly)
+        {
+            int at = 0;
+            string top = System.IO.Path.GetTempPath();
+            while (true)
+            {
+                at = dir.IndexOf('/', Math.Max(at, top.Length));
+                if (at < 0) return;
+                Os.Mkdir(dir.Substring(0, at), userOnly ? 448 : 1023);
+                at = at + 1;
+            }
+        }
+
+        // A name as a file's: letters, digits and - _ as they are, anything
+        // else (a dot among them, so no name is "." or "..") as %XX of its
+        // UTF-8 bytes. A LONG ONE -- a name may be 255 characters, a file's
+        // name only 255 bytes -- keeps its first hundred and a hash of all of
+        // it, FNV-1a's sixty-four bits.
+        static string Escaped(string name)
+        {
+            System.Text.StringBuilder made = new System.Text.StringBuilder("mutex-");
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(name);
+            ulong hash = 14695981039346656037;
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                int b = bytes[i];
+                hash = unchecked((hash ^ (ulong)b) * 1099511628211);
+                if (b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '_')
+                {
+                    made.Append((char)b);
+                }
+                else
+                {
+                    made.Append('%').Append("0123456789ABCDEF"[b >> 4]).Append("0123456789ABCDEF"[b & 15]);
+                }
+            }
+            if (made.Length > 120)
+            {
+                made.Length = 106;
+                made.Append('~').Append(hash.ToString("x16"));
+            }
+            return made.ToString();
+        }
+
+        /// The second file held: this process's to give its threads.
+        /// `abandoned` when its last owner ended holding it.
+        public bool TryLock(out bool abandoned)
+        {
+            abandoned = false;
+            if (_locked) return true;
+            if (Os.Flock(_owner, Exclusive | NoWait) != 0) return false;
+            byte[] said = new byte[1];
+            abandoned = Os.Pread(_owner, said, 0, 1, 0) == 1 && said[0] == 1;
+            Mark(_owner, 1);
+            _locked = true;
+            return true;
+        }
+
+        /// Let go: `released` when its owner released it, which clears the
+        /// mark; an owner that ended holding it leaves the mark for the next.
+        public void Unlock(bool released)
+        {
+            if (!_locked) return;
+            if (released) Mark(_owner, 0);
+            _locked = false;
+            Os.Flock(_owner, Let);
+        }
+
+        /// This process lets go of the name -- and the last to have it open
+        /// anywhere removes its files, as .NET removes its own.
+        public void Close()
+        {
+            Unlock(false);
+            if (Os.Flock(_users, Exclusive | NoWait) == 0)
+            {
+                Os.Unlink(_file + ".owner");
+                Os.Unlink(_file);
+            }
+            Os.Close(_owner);
+            Os.Close(_users);
+        }
+
+        static void Mark(int fd, int value)
+        {
+            byte[] mark = new byte[] { (byte)value };
+            Os.Lseek(fd, 0, 0);
+            Os.Write(fd, mark, 0, 1);
         }
     }
 

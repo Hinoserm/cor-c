@@ -1,0 +1,40 @@
+// test: out_variables_in_initializers_and_lambdas_new_intptr
+// expect-exit: 0
+// expect-output:
+// told True
+// told False
+// True False
+// thing True True
+// thing False False
+// -1 5 7 True 2147483647
+//
+// AN `out T x` IN A CONSTRUCTOR'S `: this(...)` is a local of the
+// constructor, its address taken: the scan for addresses read the body only,
+// and lowering refused the argument ("this variable's address was not
+// planned for"). ONE IN A CONSTRUCTOR'S ARGUMENTS IN A LAMBDA'S BODY was
+// declared again when the body was checked again, "'c' is already declared
+// in this scope". `new IntPtr(n)` AND `new UIntPtr(n)` are the machine word
+// the number is, not an object nobody can allocate.
+
+using System;
+
+class Thing
+{
+    public bool Made;
+    public Thing(string name, out bool made) { made = name.Length > 2; Made = made; }
+    public Thing(string name) : this(name, out bool unused) { Console.WriteLine("told " + unused); }
+    public override string ToString() { return "thing " + Made; }
+}
+
+static class Program
+{
+    static string Said(Func<string> f) { return f(); }
+
+    static void Main()
+    {
+        Console.WriteLine(new Thing("abcd").Made + " " + new Thing("a").Made);
+        Console.WriteLine(Said(() => new Thing("xyz", out bool c).ToString() + " " + c));
+        Console.WriteLine(Said(() => new Thing("x", out bool c).ToString() + " " + c));
+        Console.WriteLine(new IntPtr(-1) + " " + new IntPtr(5L) + " " + new UIntPtr(7u) + " " + (new IntPtr(-1) == (nint)(-1)) + " " + new IntPtr(int.MaxValue));
+    }
+}

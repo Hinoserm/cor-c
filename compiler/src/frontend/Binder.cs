@@ -5838,6 +5838,9 @@ public sealed partial class Binder
         }
     }
 
+    // Each `out T x` declaration and the variable it made (RefArgExpr).
+    private readonly Dictionary<RefArgExpr, LocalSym> _outDeclared = new(ReferenceEqualityComparer.Instance);
+
     private void Declare(Node at, string name, Sym sym)
     {
         // A generic local function being probed is told what it declares
@@ -15754,8 +15757,20 @@ public sealed partial class Binder
                 {
                     Type declared = Resolve(ra.Declare, _thisType);
 
+                    // CHECKED AGAIN IN THE SAME SCOPE -- a constructor's
+                    // arguments in a lambda's body are, as the lambda is
+                    // checked for its delegate and then for real -- it is
+                    // the same variable, not a second one of the name.
+                    if (_outDeclared.TryGetValue(ra, out LocalSym? before)
+                        && _scopes[^1].TryGetValue(ra.Name!, out Sym? there) && ReferenceEquals(there, before))
+                    {
+                        CheckExpr(ra.Target);
+                        return declared;
+                    }
+
                     LocalSym declaredLocal = new(NewSlot(), declared, ra.Name!);
                     Declare(ra, ra.Name!, declaredLocal);
+                    _outDeclared[ra] = declaredLocal;
                     _assigned.Add(declaredLocal);
                     CheckExpr(ra.Target);
                     return declared;

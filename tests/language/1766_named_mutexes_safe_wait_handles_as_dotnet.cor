@@ -1,0 +1,190 @@
+// test: named_mutexes_safe_wait_handles_as_dotnet
+// expect-exit: 0
+// expect-output:
+// created True False False
+// open True True True
+// other thread waits False
+// other process tries 0
+// held twice, released once 0
+// released 1
+// another process ends holding it 134
+// AbandonedMutexException: The wait completed due to an abandoned mutex.
+// AbandonedMutexException: The wait completed due to an abandoned mutex.
+// ApplicationException: Object synchronization method was called from an unsynchronized block of code.
+// PlatformNotSupportedException: Wait operations on multiple wait handles including a named synchronization primitive are not supported on this platform.
+// ObjectDisposedException: Cannot access a disposed object.
+// Object name: 'Microsoft.Win32.SafeHandles.SafeWaitHandle'.
+// still open True
+// WaitHandleCannotBeOpenedException: No handle of the given name exists.
+// False True
+// ArgumentException: The value cannot be an empty string. (Parameter 'name')
+// ArgumentNullException: Value cannot be null. (Parameter 'name')
+// 255 ok
+// ArgumentException: The length of the name exceeds the maximum limit. (Parameter 'name')
+// global+255 ok
+// IOException: The filename, directory name, or volume label syntax is incorrect. : 'a/bNAME'.
+// IOException: The filename, directory name, or volume label syntax is incorrect. : 'Session\NAME'.
+// IOException: The parameter is incorrect. : 'Global\'.
+// empty ok
+// True True True False False
+// ArgumentException: The specified name 'Global\NAME' has a prefix that is not compatible with the specified option 'CurrentSessionOnly'. (Parameter 'name')
+// ArgumentException: The specified name 'Local\NAME' has a prefix that is not compatible with the specified option 'CurrentSessionOnly'. (Parameter 'name')
+// user-only apart from legacy True
+// any user is legacy False False
+// options ctor ok
+// PlatformNotSupportedException: The named version of this synchronization primitive is not supported on this platform.
+// PlatformNotSupportedException: The named version of this synchronization primitive is not supported on this platform.
+// System.Threading.Semaphore
+// PlatformNotSupportedException: The named version of this synchronization primitive is not supported on this platform.
+// PlatformNotSupportedException: The named version of this synchronization primitive is not supported on this platform.
+// PlatformNotSupportedException: The named version of this synchronization primitive is not supported on this platform.
+// System.Threading.EventWaitHandle
+// PlatformNotSupportedException: The named version of this synchronization primitive is not supported on this platform.
+// PlatformNotSupportedException: The named version of this synchronization primitive is not supported on this platform.
+// True False False True True False
+// ObjectDisposedException: Cannot access a disposed object.
+// Object name: 'MyHandle'. | True True
+// borrowed False True
+// borrowed set True 0
+// by number True
+// True False
+// ObjectDisposedException: Cannot access a disposed object.
+// Object name: 'Microsoft.Win32.SafeHandles.SafeWaitHandle'.
+// ApplicationException: Object synchronization method was called from an unsynchronized block of code.
+//
+// Wait handles' names as .NET 10's on Unix. A MUTEX OF A NAME is every
+// Mutex of that name in every process: created once (createdNew), opened by
+// OpenExisting and TryOpenExisting, owned by one thread of one process at a
+// time -- another thread here waits, another process (this program run
+// again) cannot take it, and a process that ends holding it leaves it
+// abandoned for the next, here or there. "Local\" is the session's name as
+// a bare one is, "Global\" everyone's, and the options keep a user's names
+// apart from any user's. .NET's refusals: a name too long, a path in it, a
+// prefix the options contradict, a named mutex among several waited on, and
+// any name for a Semaphore or an EventWaitHandle. SAFEWAITHANDLE AND HANDLE:
+// a number for each handle, a WaitHandle of a program's own refused until
+// it is given another's handle (by the SafeWaitHandle or by the number),
+// and closed with the handle it borrowed.
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+
+class MyHandle : WaitHandle { }
+
+static class Program
+{
+    static string Name = "";
+
+    static string Said(Func<string> f)
+    {
+        try { return f(); }
+        catch (Exception e) { return (e.GetType().Name + ": " + e.Message).Replace(Name, "NAME"); }
+    }
+
+    // THE SAME PROGRAM AGAIN, as another process: told what to do with the
+    // mutex of the name.
+    static int Child(string what, string name)
+    {
+        Mutex m = Mutex.OpenExisting(name);
+        if (what == "try") return m.WaitOne(0) ? 1 : 0;
+        if (what == "keep") { m.WaitOne(); return 2; }
+        return 9;
+    }
+
+    static int Again(string what, string name)
+    {
+        string[] me = Environment.GetCommandLineArgs();
+        ProcessStartInfo start = new ProcessStartInfo(Environment.ProcessPath!);
+        if (me[0].EndsWith(".dll")) start.ArgumentList.Add(me[0]);
+        start.ArgumentList.Add(what);
+        start.ArgumentList.Add(name);
+        Process child = Process.Start(start)!;
+        child.WaitForExit();
+        return child.ExitCode;
+    }
+
+    static int Main(string[] args)
+    {
+        if (args.Length == 2) return Child(args[0], args[1]);
+        string n = "corctest" + Environment.ProcessId;
+        Name = n;
+
+        Mutex first = new Mutex(true, n, out bool created);
+        Mutex second = new Mutex(false, n, out bool created2);
+        Mutex local = new Mutex(false, "Local\\" + n, out bool created3);
+        Console.WriteLine("created " + created + " " + created2 + " " + created3);
+        Console.WriteLine("open " + (Mutex.OpenExisting(n) != null) + " " + Mutex.TryOpenExisting(n, out Mutex? also) + " " + (also != null));
+        Thread other = new Thread(() => Console.WriteLine("other thread waits " + second.WaitOne(30)));
+        other.Start();
+        other.Join();
+        Console.WriteLine("other process tries " + Again("try", n));
+        second.WaitOne();
+        first.ReleaseMutex();
+        Console.WriteLine("held twice, released once " + Again("try", n));
+        second.ReleaseMutex();
+        Console.WriteLine("released " + Again("try", n));
+        Console.WriteLine("another process ends holding it " + Again("keep", n));
+        Console.WriteLine(Said(() => first.WaitOne(1000).ToString()));
+        first.ReleaseMutex();
+        Thread keeper = new Thread(() => Mutex.OpenExisting(n).WaitOne());
+        keeper.Start();
+        keeper.Join();
+        Console.WriteLine(Said(() => second.WaitOne(0).ToString()));
+        second.ReleaseMutex();
+        Console.WriteLine(Said(() => { second.ReleaseMutex(); return "released again"; }));
+        Console.WriteLine(Said(() => WaitHandle.WaitAll(new WaitHandle[] { first, second }, 0).ToString()));
+        first.Dispose();
+        Console.WriteLine(Said(() => first.WaitOne(0).ToString()));
+        Console.WriteLine("still open " + second.WaitOne(0));
+        second.ReleaseMutex();
+        second.Dispose();
+        local.Dispose();
+        also!.Dispose();
+        Console.WriteLine(Said(() => Mutex.OpenExisting(n + "x").ToString()));
+        Console.WriteLine(Said(() => Mutex.TryOpenExisting(n + "x", out Mutex? none) + " " + (none == null)));
+        Console.WriteLine(Said(() => Mutex.OpenExisting("").ToString()));
+        Console.WriteLine(Said(() => Mutex.OpenExisting(null!).ToString()));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, new string('x', 255)); return "255 ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, new string('x', 256)); return "256 ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, "Global\\" + new string('y', 255)); return "global+255 ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, "a/b" + n); return "slash ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, "Session\\" + n); return "session ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, "Global\\"); return "global empty ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, ""); return "empty ok"; }));
+        NamedWaitHandleOptions d = new NamedWaitHandleOptions();
+        NamedWaitHandleOptions anyUser = new NamedWaitHandleOptions { CurrentUserOnly = false };
+        NamedWaitHandleOptions everywhere = new NamedWaitHandleOptions { CurrentSessionOnly = false };
+        Console.WriteLine(d.CurrentUserOnly + " " + d.CurrentSessionOnly + " " + default(NamedWaitHandleOptions).CurrentUserOnly + " " + anyUser.CurrentUserOnly + " " + everywhere.CurrentSessionOnly);
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, "Global\\" + n, d); return "global with session-only ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, "Local\\" + n, everywhere); return "local with everywhere ok"; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, n, everywhere); using Mutex x = new Mutex(false, "Global\\" + n, out bool c); return "user-only apart from legacy " + c; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(false, n, anyUser, out bool c1); using Mutex x = new Mutex(false, n, out bool c2); return "any user is legacy " + c1 + " " + c2; }));
+        Console.WriteLine(Said(() => { using Mutex m = new Mutex(n, d); return "options ctor ok"; }));
+        Console.WriteLine(Said(() => new Semaphore(0, 1, n).ToString()));
+        Console.WriteLine(Said(() => new Semaphore(0, 1, "").ToString()));
+        Console.WriteLine(Said(() => new Semaphore(0, 1, null).ToString()));
+        Console.WriteLine(Said(() => new Semaphore(0, 1, n, out bool c).ToString()));
+        Console.WriteLine(Said(() => Semaphore.OpenExisting(n).ToString()));
+        Console.WriteLine(Said(() => new EventWaitHandle(false, EventResetMode.AutoReset, n).ToString()));
+        Console.WriteLine(Said(() => new EventWaitHandle(false, EventResetMode.AutoReset, null).ToString()));
+        Console.WriteLine(Said(() => EventWaitHandle.OpenExisting(n).ToString()));
+        Console.WriteLine(Said(() => EventWaitHandle.TryOpenExisting(n, out EventWaitHandle? e) + " " + (e == null)));
+        ManualResetEvent ev = new ManualResetEvent(false);
+        Console.WriteLine((ev.SafeWaitHandle != null) + " " + ev.SafeWaitHandle!.IsInvalid + " " + ev.SafeWaitHandle.IsClosed + " " + (ev.Handle != IntPtr.Zero) + " " + (ev.Handle == ev.SafeWaitHandle.DangerousGetHandle()) + " " + (ev.Handle == new ManualResetEvent(true).Handle));
+        MyHandle mine = new MyHandle();
+        Console.WriteLine(Said(() => mine.WaitOne(0).ToString()) + " | " + mine.SafeWaitHandle.IsInvalid + " " + (mine.Handle == new IntPtr(-1)));
+        mine.SafeWaitHandle = ev.SafeWaitHandle;
+        Console.WriteLine("borrowed " + mine.WaitOne(0) + " " + (mine.Handle == ev.Handle));
+        ev.Set();
+        Console.WriteLine("borrowed set " + mine.WaitOne(0) + " " + WaitHandle.WaitAny(new WaitHandle[] { mine }, 0));
+        MyHandle numbered = new MyHandle();
+        numbered.Handle = ev.Handle;
+        Console.WriteLine("by number " + numbered.WaitOne(0));
+        ev.Dispose();
+        Console.WriteLine(Said(() => ev.SafeWaitHandle.IsClosed + " " + ev.SafeWaitHandle.IsInvalid));
+        Console.WriteLine(Said(() => mine.WaitOne(0).ToString()));
+        Console.WriteLine(Said(() => { Mutex mm = new Mutex(); for (int i = 0; i < 5; i++) mm.WaitOne(); for (int i = 0; i < 5; i++) mm.ReleaseMutex(); return Said(() => { mm.ReleaseMutex(); return "x"; }); }));
+        return 0;
+    }
+}

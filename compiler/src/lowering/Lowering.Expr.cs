@@ -1531,6 +1531,14 @@ public sealed partial class Lowering
             return bare;
         }
 
+        // `new IntPtr(n)` and `new UIntPtr(n)`: the machine word the number
+        // is, as a conversion makes it -- an nint is no object to allocate.
+        if (sym is null && type.Prim is Prim.NInt or Prim.NUInt && nw.Args.Count == 1)
+        {
+            Type given = _b.TypeOf(nw.Args[0]);
+            return Convert(nw, Eval(nw.Args[0]), given, type);
+        }
+
         if (sym is null)
         {
             return Fail(nw, $"'{type}' cannot be allocated");

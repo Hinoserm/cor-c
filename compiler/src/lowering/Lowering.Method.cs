@@ -333,6 +333,13 @@ public sealed partial class Lowering
         }
 
         ScanAddressTaken(decl.Body!);
+        // AND THE CONSTRUCTOR'S `: this(...)` OR `: base(...)`, whose
+        // arguments are this method's too: `: this(name, out bool unused)`
+        // takes the address of a local of its own.
+        if (decl.Init is { } init)
+        {
+            foreach (Expr argument in init.Args) ScanAddressTaken(argument);
+        }
         // The local-function environment first: the parameters' cells below
         // may be words of it. Zeroed, as every cell begins.
         if (_stateMachine is null && _b.Environments.TryGetValue(decl, out LocalEnvironment? environment))

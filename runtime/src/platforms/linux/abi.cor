@@ -50,6 +50,7 @@ static class Call
     public const long Getgid = 104;
     public const long Setpgid = 109;
     public const long Getpgid = 121;
+    public const long Getsid = 124;     // (pid) -> its session's id
     public const long Setsid = 112;
     public const long Setuid = 105;
     public const long Setgid = 106;
@@ -176,6 +177,7 @@ static class Call
     public const long Getgid = 200;     // getgid32
     public const long Setpgid = 57;     // (pid, pgid)
     public const long Getpgid = 132;    // (pid) -> the group it is in
+    public const long Getsid = 147;     // (pid) -> its session's id
     public const long Setsid = 66;      // () -> the new session id
     public const long Setuid = 213;     // setuid32; the 16-bit one (23) truncates
     public const long Setgid = 214;     // setgid32
