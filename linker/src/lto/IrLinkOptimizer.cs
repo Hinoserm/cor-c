@@ -406,6 +406,7 @@ public static class IrLinkOptimizer
                     .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal));
             facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
             facts.Regions = regionFacts?.GetValueOrDefault(original);
+            facts.ImageRegions = regionFacts is { Count: > 0 };
             if (noCollector) facts.Heap = false;
             return facts;
         }

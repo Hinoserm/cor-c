@@ -35,6 +35,14 @@ public sealed class LifetimeFacts
     /// </summary>
     public RegionFacts? Regions { get; set; }
     /// <summary>
+    /// For a unit of a closed image: whether any unit of it opens a region.
+    /// Then every catch closes what it caught out of (RegionPointsTo.CatchUp)
+    /// -- a unit given no region of its own catches what another's boundary
+    /// threw, and a call made after its catch ran at that boundary's depth
+    /// and was handed the region it left open.
+    /// </summary>
+    public bool ImageRegions { get; set; }
+    /// <summary>
     /// For a unit of a closed image: false when the program needs no
     /// collector (HeapDecision), the unit made again with the manual heap in
     /// its place (Module.LinkHeap). Null: not decided.

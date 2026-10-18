@@ -842,6 +842,9 @@ public sealed class RegionPointsTo : IModulePass
         foreach (Function f in m.Functions) CatchUp(f);
     }
 
+    /// <summary>A function's pads closing what they caught out of, for a unit with no region of its own in an image that has some (UnitBackend).</summary>
+    public static void CatchUpPads(Function f) => CatchUp(f);
+
     // Once a pad: a function caught up already (the unit's, then again after
     // the link brought in and inlined other units' bodies) keeps one call.
     private static void CatchUp(Function f)

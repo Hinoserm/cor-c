@@ -292,6 +292,10 @@ public sealed class UnitBackend : IUnitBackend
             // in the frame or freed where it dies was never the region's.
             // And those of the bodies brought in that it inlined.
             if (module.RegionFacts is not null || importedSites) RegionPointsTo.MakeSitesInRegion(function);
+            // A UNIT GIVEN NO REGION OF ITS OWN STILL CATCHES WHAT ANOTHER'S
+            // BOUNDARY THREW (LifetimeFacts.ImageRegions): its pads close the
+            // regions left open below them, as MakeSitesInRegion's do.
+            else if (facts?.ImageRegions == true) RegionPointsTo.CatchUpPads(function);
             // And what is grown into a field the object frees itself, made
             // beside that object (RegionPointsTo.MakeStorageBeside).
             if (facts?.OwnedFields is { Beside: true } beside) RegionPointsTo.MakeStorageBeside(function, beside);
