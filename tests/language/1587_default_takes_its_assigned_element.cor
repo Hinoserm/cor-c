@@ -1,0 +1,68 @@
+// test: default_takes_its_assigned_element
+// expect-exit: 0
+// expect-output:
+// index 0:null:False
+// index! 0:null:False
+// field 0:null:False
+// prop 0:null:False
+// member index 0:null:False
+// init 0:null:False 0:null:False
+// list 0:null:False
+// dict 0:null:False
+// dict init 0:null:False
+// array init 0:null:False
+// tuple 0:null:False 3
+// local 0:null:False
+// ret 0:null:False 0:null:False 0:null:False 0:null:False 0:null:False
+// yield 0:null:False
+// lambda 0:null:False
+// eq False
+// ref 0:null:False
+// span 0:null:False
+//
+// A bare `default` has no type of its own: it is the zero of whatever waits
+// for it. Assigned to anything but a plain name -- an element, a field
+// reached through an object, a property, an indexer -- nothing told it what
+// that was, so `items[i] = default` of a struct was typed as nothing, lowered
+// as a null word, and the store copied the struct's bytes from address 0
+// (NullReferenceException). The compiler built by itself stopped there, in
+// its chunked list's Remove: `_chunks[k][j] = default!` of a relocation.
+
+using System;
+using System.Collections.Generic;
+struct R { public int A; public string N; public bool P; public override string ToString() => A + ":" + (N ?? "null") + ":" + P; }
+sealed class Holder { public R F; public R Prop { get; set; } public R[] Arr = new R[1]; }
+static class Program
+{
+    static R Full() => new R { A = 7, N = "n", P = true };
+    static R Ret() => default;
+    static R RetBang() => default!;
+    static R Arm(bool c) => c ? Full() : default;
+    static R Sw(int k) => k switch { 1 => Full(), _ => default };
+    static R Coalesce(R? r) => r ?? default;
+    static IEnumerable<R> Yield() { yield return default; }
+    static int Main()
+    {
+        R[] a = { Full() };
+        a[0] = default; Console.WriteLine("index " + a[0]);
+        a[0] = Full(); a[0] = default!; Console.WriteLine("index! " + a[0]);
+        Holder h = new() { F = Full(), Prop = Full() };
+        h.F = default; Console.WriteLine("field " + h.F);
+        h.Prop = default; Console.WriteLine("prop " + h.Prop);
+        h.Arr[0] = Full(); h.Arr[0] = default; Console.WriteLine("member index " + h.Arr[0]);
+        Holder g = new() { F = default, Prop = default }; Console.WriteLine("init " + g.F + " " + g.Prop);
+        List<R> list = new() { Full() }; list[0] = default; Console.WriteLine("list " + list[0]);
+        Dictionary<int, R> d = new(); d[1] = Full(); d[1] = default; Console.WriteLine("dict " + d[1]);
+        Dictionary<int, R> d2 = new() { [2] = default }; Console.WriteLine("dict init " + d2[2]);
+        R[] arr = new R[] { default, Full() }; Console.WriteLine("array init " + arr[0]);
+        (R x, int y) t = (default, 3); Console.WriteLine("tuple " + t.x + " " + t.y);
+        R loc = Full(); loc = default; Console.WriteLine("local " + loc);
+        Console.WriteLine("ret " + Ret() + " " + RetBang() + " " + Arm(false) + " " + Sw(0) + " " + Coalesce(null));
+        foreach (R y in Yield()) Console.WriteLine("yield " + y);
+        Func<R> f = () => default; Console.WriteLine("lambda " + f());
+        R e = Full(); Console.WriteLine("eq " + (e.Equals(default(R))));
+        ref R slot = ref a[0]; a[0] = Full(); slot = default; Console.WriteLine("ref " + a[0]);
+        Span<R> s = a; s[0] = Full(); s[0] = default; Console.WriteLine("span " + a[0]);
+        return 0;
+    }
+}

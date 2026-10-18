@@ -16,7 +16,10 @@ printf 'selfcompile work: %s\n' "$work"
 git archive "$revision" compiler linker tools/build runtime stdlib tests/benchmarks/selfcompile-smoke.cor | tar -x -C "$snapshot"
 cd "$snapshot"
 # --lib-root points at the snapshot, so the bootstrap compiler names the
-# snapshot's own library sources.
+# snapshot's own library sources -- and every generation after it is given the
+# same root: a native stage left to find its own walks up from $work to the
+# repository, whose stdlib is not the snapshot's, and takes none of the files
+# it is handed for the library's (Sys.NewChars refused in String itself).
 mapfile -t libraries < <("$bootstrap" --lib-root "$snapshot" library-sources)
 test "${#libraries[@]}" -gt 0
 mapfile -t sources < <(rg --files compiler/src linker/src tools/build/src -g '*.cs' -g '!linker/src/driver/Program.cs' -g '!**/tests/**' -g '!**/bin/**' -g '!**/obj/**' -g '!**/Legacy/**' | LC_ALL=C sort)
@@ -59,13 +62,13 @@ file "$work/stage1" > "$work/stage1.file"
 measure reference-smoke-compile "$bootstrap" --lib-root "$snapshot" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke-reference"
 measure reference-smoke-run "$work/smoke-reference"
 printf 'selfcompile smoke passed\n' | cmp - "$work/reference-smoke-run.log"
-measure smoke-compile "$work/stage1" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke"
+measure smoke-compile "$work/stage1" --lib-root "$snapshot" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke"
 measure smoke-run "$work/smoke"
 cmp "$work/reference-smoke-run.log" "$work/smoke-run.log"
 cmp "$work/smoke-reference" "$work/smoke"
-measure native-selfcompile "$work/stage1" compile "${flags[@]}" "${libraries[@]}" "${sources[@]}" -o "$work/stage2"
+measure native-selfcompile "$work/stage1" --lib-root "$snapshot" compile "${flags[@]}" "${libraries[@]}" "${sources[@]}" -o "$work/stage2"
 test -s "$work/stage2"
-measure stage2-smoke-compile "$work/stage2" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke2"
+measure stage2-smoke-compile "$work/stage2" --lib-root "$snapshot" compile "${flags[@]}" "${libraries[@]}" tests/benchmarks/selfcompile-smoke.cor -o "$work/smoke2"
 measure stage2-smoke-run "$work/smoke2"
 cmp "$work/smoke-run.log" "$work/stage2-smoke-run.log"
 cmp "$work/smoke" "$work/smoke2"

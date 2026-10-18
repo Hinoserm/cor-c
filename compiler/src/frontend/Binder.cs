@@ -15185,15 +15185,20 @@ public sealed partial class Binder
                     : null;
                 // A LAMBDA ASSIGNED TO A MEMBER -- `h.Op = v => v + 9` -- is
                 // told what it is by the member, which has to be looked at
-                // first to know. Only for a lambda: anything else is checked
-                // in the order the language reads it.
+                // first to know. So is a value with no type of its own: a bare
+                // `default`, `!` or not, is the element's zero only once the
+                // element is known -- `items[i] = default` of a struct was
+                // typed as nothing, lowered as a null word, and its store
+                // copied the struct's bytes from address 0. Anything else is
+                // checked in the order the language reads it.
                 //
                 // Checked here ONCE: `target` below reuses this result rather
                 // than checking the same target expression again, which would
                 // otherwise re-run CheckMember and duplicate any diagnostic it
                 // reports (a typoed member name would then be reported twice).
-                bool targetPrechecked = assignmentWanted is null
-                    && a.Value is LambdaExpr or NewExpr or ConditionalExpr or SwitchExpr && a.Target is not NameExpr;
+                bool targetPrechecked = assignmentWanted is null && a.Target is not NameExpr
+                    && (a.Value is SuppressExpr { Operand: var sureValue } ? sureValue : a.Value)
+                        is LambdaExpr or NewExpr or ConditionalExpr or SwitchExpr or DefaultExpr { Type.Name.Length: 0 };
                 if (targetPrechecked)
                 {
                     assignmentWanted = CheckExpr(a.Target);
