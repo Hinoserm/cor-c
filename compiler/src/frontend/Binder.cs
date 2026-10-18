@@ -13874,6 +13874,21 @@ public sealed partial class Binder
 
                     if (fits)
                     {
+                        // AN ELEMENT REACHING ITS FIELD BY A USER-DEFINED
+                        // CONVERSION IS CONVERTED, as an assignment converts it
+                        // (CheckAssignable): the construction's field inits are
+                        // checked nowhere else, and `(long.MinValue, 7)` made a
+                        // (decimal, decimal) of the integers themselves -- the
+                        // long copied as the decimal's address. The compiler's
+                        // own Binder.DecimalCast was refused at its link.
+                        for (int i = 0; i < elements.Count; i++)
+                        {
+                            Type field = want.Fields[i].Type;
+                            if (!elements[i].IsError && !field.IsError && !StandardConvertible(elements[i], field) && !Variant(elements[i], field)
+                                && !_r.Rewrites.ContainsKey(tup.Items[i])
+                                && UserConversion(elements[i], field, explicitToo: false, IntegerConstant(tup.Items[i], elements[i])) is { } op)
+                                ConvertByOperator(tup.Items[i], op);
+                        }
                         elements = want.Fields.Select(f => f.Type).ToList();
                     }
                 }

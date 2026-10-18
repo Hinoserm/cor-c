@@ -1,0 +1,40 @@
+// test: tuple literal elements converted to their fields by user-defined conversions
+// expect-exit: 0
+// expect-output:
+// switch (-128, 127) (-9223372036854775808, 9223372036854775807) (0, 4294967295)
+// return (-9223372036854775808, 7)
+// conditional (1, 2) (3, 4)
+// local (5, 6)
+// mixed (9, 9)
+//
+// A tuple literal is the construction of its tuple type, each element its
+// field's init, and those inits are checked nowhere else. An element that
+// reaches its field only by a user-defined conversion -- an integer to a
+// decimal, which is decimal's implicit operator here -- was stored as it
+// was: `(long.MinValue, 7)` as a (decimal, decimal) copied sixteen bytes
+// from the integer as if it were the decimal's address. The compiler's own
+// Binder.DecimalCast, a switch of such pairs, was refused at its link.
+using System;
+static class Program
+{
+    static (decimal Least, decimal Most) BySwitch(int k) => k switch
+    {
+        0 => (sbyte.MinValue, sbyte.MaxValue),
+        1 => (long.MinValue, long.MaxValue),
+        _ => (uint.MinValue, uint.MaxValue),
+    };
+    static (decimal Least, decimal Most) ByReturn() => (long.MinValue, 7);
+    static (decimal Least, decimal Most) ByConditional(bool b) => b ? (1, 2) : (3, 4);
+    static int Main()
+    {
+        Console.WriteLine("switch " + BySwitch(0) + " " + BySwitch(1) + " " + BySwitch(2));
+        Console.WriteLine("return " + ByReturn());
+        Console.WriteLine("conditional " + ByConditional(true) + " " + ByConditional(false));
+        (decimal, decimal) local = (5, 6);
+        Console.WriteLine("local " + local);
+        int n = 9;
+        (decimal, long) mixed = (n, n);
+        Console.WriteLine("mixed " + mixed);
+        return 0;
+    }
+}
