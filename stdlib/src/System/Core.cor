@@ -32508,15 +32508,21 @@ namespace System.Runtime
         }
 
         /// NoGCRegion is entered by GC.TryStartNoGCRegion, never set; .NET
-        /// refuses it here, and so does this.
+        /// refuses it here, and so does this -- and any mode while a region
+        /// is open, as .NET's words say.
         public static GCLatencyMode LatencyMode
         {
-            get { return _latency; }
+            get { return GC.InNoGCRegion ? GCLatencyMode.NoGCRegion : _latency; }
             set
             {
                 if (value < GCLatencyMode.Batch || value > GCLatencyMode.SustainedLowLatency)
                 {
-                    throw new ArgumentOutOfRangeException("value");
+                    throw new ArgumentOutOfRangeException("value", "Enum value was out of legal range.");
+                }
+                if (GC.InNoGCRegion)
+                {
+                    GC.LeaveNoGCRegion();
+                    throw new InvalidOperationException("The NoGCRegion mode is in progress.End it and then set a different mode.");
                 }
                 _latency = value;
             }

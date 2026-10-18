@@ -1,10 +1,12 @@
 // System.GC: what a program may ask of the garbage collector, with .NET's
 // names and answers, over the runtime's collector (runtime/src/core/gc.cor).
 //
-// ONE GENERATION. The collector is a conservative, non-moving mark-sweep: it
-// has no nursery to promote out of, so MaxGeneration is 0, every collection
-// is of generation 0, and asking for an older generation collects the same
-// heap. .NET permits exactly this: MaxGeneration is whatever the runtime has.
+// ONE GENERATION, AS ANSWERED. The collector is a non-moving mark-sweep,
+// generational on i386 by sticky marks (gc.cor, "generations") and
+// concurrent where there are threads, but what a program is told is of one
+// generation: MaxGeneration is 0, every collection counts as generation 0's,
+// and asking for an older generation collects the same heap. .NET permits
+// exactly this: MaxGeneration is whatever the runtime says it has.
 //
 // KEEPALIVE needs no trick here. The collector reads every word of every
 // stack and treats any that points into a block -- the block's start or
@@ -25,21 +27,39 @@ public static class GC
     /// A full collection now.
     public static void Collect() { Gc.Collect(); }
 
-    public static void Collect(int generation)
+    public static void Collect(int generation) { Collect(generation, GCCollectionMode.Default, true, false); }
+
+    public static void Collect(int generation, GCCollectionMode mode) { Collect(generation, mode, true, mode == GCCollectionMode.Aggressive); }
+
+    public static void Collect(int generation, GCCollectionMode mode, bool blocking) { Collect(generation, mode, blocking, mode == GCCollectionMode.Aggressive); }
+
+    /// .NET's checks, then a full collection however it is asked: this
+    /// collector does every one the same way, and compacts none. Aggressive
+    /// is refused unless blocking and compacting, as .NET refuses it, but
+    /// not by the overloads that leave the two to it.
+    public static void Collect(int generation, GCCollectionMode mode, bool blocking, bool compacting)
     {
-        if (generation < 0) throw new ArgumentOutOfRangeException(nameof(generation), "The generation must be non-negative.");
+        ArgumentOutOfRangeException.ThrowIfNegative(generation);
+        if (mode < GCCollectionMode.Default || mode > GCCollectionMode.Aggressive)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), "Enum value was out of legal range.");
+        }
+        if (mode == GCCollectionMode.Aggressive && !blocking)
+        {
+            throw new ArgumentException("AggressiveGC requires setting the blocking parameter to true.", nameof(blocking));
+        }
+        if (mode == GCCollectionMode.Aggressive && !compacting)
+        {
+            throw new ArgumentException("AggressiveGC requires setting the compacting parameter to true.", nameof(compacting));
+        }
         Gc.Collect();
     }
-
-    public static void Collect(int generation, GCCollectionMode mode) { Collect(generation); }
-
-    public static void Collect(int generation, GCCollectionMode mode, bool blocking) { Collect(generation); }
 
     /// How many collections of `generation` have run: all of them for 0,
     /// none for a generation this collector does not have.
     public static int CollectionCount(int generation)
     {
-        if (generation < 0) throw new ArgumentOutOfRangeException(nameof(generation), "The generation must be non-negative.");
+        ArgumentOutOfRangeException.ThrowIfNegative(generation);
         return generation == 0 ? (int)Gc.Collections : 0;
     }
 
@@ -60,12 +80,12 @@ public static class GC
 
     /// The bytes allocated since the program began. Other threads' current
     /// allocation buffers are counted as they are retired, which is the
-    /// imprecision .NET allows when `precise` is false; asked precisely, a
-    /// collection retires them all first.
+    /// imprecision .NET allows when `precise` is false; asked precisely, as
+    /// they stand -- read, not collected: .NET never collects here, and a
+    /// collection made every allocation profiler's question a pause.
     public static long GetTotalAllocatedBytes(bool precise)
     {
-        if (precise) Gc.Collect();
-        return Gc.Allocated;
+        return precise ? Gc.AllocatedPrecisely : Gc.Allocated;
     }
 
     public static long GetTotalAllocatedBytes() { return GetTotalAllocatedBytes(false); }
@@ -93,6 +113,179 @@ public static class GC
     }
 
     public static void WaitForPendingFinalizers() { }
+
+    // ---- memory pressure ---------------------------------------------------
+    //
+    // MEMORY THE COLLECTOR DOES NOT SEE, held by objects it does -- a native
+    // buffer behind a managed handle. Added up as .NET does; once what was
+    // added since the last collection passes what that collection found
+    // live (a megabyte at least), a collection is made, as .NET's own
+    // heuristic makes one for pressure piling up.
+    static long _pressure;
+    static long _pressureSince;
+    static long _pressureCollections;
+
+    public static void AddMemoryPressure(long bytesAllocated)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytesAllocated);
+        _pressure = _pressure + bytesAllocated;
+        if (_pressureCollections != Gc.Collections)
+        {
+            _pressureCollections = Gc.Collections;
+            _pressureSince = 0;
+        }
+        _pressureSince = _pressureSince + bytesAllocated;
+        long live = Gc.LiveBytes;
+        if (_pressureSince > (live > 1048576 ? live : 1048576))
+        {
+            _pressureSince = 0;
+            Gc.Collect();
+            _pressureCollections = Gc.Collections;
+        }
+    }
+
+    public static void RemoveMemoryPressure(long bytesAllocated)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bytesAllocated);
+        _pressure = _pressure > bytesAllocated ? _pressure - bytesAllocated : 0;
+    }
+
+    // ---- arrays ------------------------------------------------------------
+    //
+    // An array left unzeroed, or pinned: every array here is zeroed as it is
+    // made, and nothing ever moves, so both are the array a `new` makes --
+    // and refuse a negative length as it does (OverflowException).
+
+    public static T[] AllocateUninitializedArray<T>(int length, bool pinned = false) { return new T[length]; }
+
+    public static T[] AllocateArray<T>(int length, bool pinned = false) { return new T[length]; }
+
+    // ---- no-collection regions ---------------------------------------------
+    //
+    // ENTERED AND LEFT AS .NET'S ARE, a collection made first to give the
+    // region its room; the latency mode says NoGCRegion while one is open.
+    // This collector does not hold its collections off inside one -- a cycle
+    // the heap asks for still runs -- which .NET too allows when the region's
+    // size is passed.
+    static bool _noGCRegion;
+    internal static bool InNoGCRegion => _noGCRegion;
+
+    /// A latency mode asked for while a region is open: the region left, as
+    /// .NET leaves it, before the setter refuses (GCSettings.LatencyMode).
+    internal static void LeaveNoGCRegion() { _noGCRegion = false; }
+
+    public static bool TryStartNoGCRegion(long totalSize) { return StartNoGCRegion(totalSize); }
+
+    public static bool TryStartNoGCRegion(long totalSize, long lohSize)
+    {
+        bool started = StartNoGCRegion(totalSize);
+        return started;
+    }
+
+    public static bool TryStartNoGCRegion(long totalSize, bool disallowFullBlockingGC) { return StartNoGCRegion(totalSize); }
+
+    public static bool TryStartNoGCRegion(long totalSize, long lohSize, bool disallowFullBlockingGC) { return StartNoGCRegion(totalSize); }
+
+    static bool StartNoGCRegion(long totalSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(totalSize);
+        if (_noGCRegion)
+        {
+            // .NET's: the region already open is left as it refuses another.
+            _noGCRegion = false;
+            throw new InvalidOperationException("The NoGCRegion mode was already in progress.");
+        }
+        Gc.Collect();
+        _noGCRegion = true;
+        return true;
+    }
+
+    public static void EndNoGCRegion()
+    {
+        if (!_noGCRegion)
+        {
+            throw new InvalidOperationException("NoGCRegion mode must be set.");
+        }
+        _noGCRegion = false;
+    }
+
+    // ---- full-collection notification --------------------------------------
+    //
+    // REGISTERED AS .NET'S IS, its thresholds checked. This collector raises
+    // no notification: a wait on a registration times out, or for ever
+    // ends only when it is cancelled; with none registered it is not
+    // applicable.
+    static bool _fullGCRegistered;
+    static int _fullGCCancels;
+
+    public static void RegisterForFullGCNotification(int maxGenerationThreshold, int largeObjectHeapThreshold)
+    {
+        if (maxGenerationThreshold <= 0 || maxGenerationThreshold >= 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxGenerationThreshold), "Argument must be between 1 and 99.");
+        }
+        if (largeObjectHeapThreshold <= 0 || largeObjectHeapThreshold >= 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(largeObjectHeapThreshold), "Argument must be between 1 and 99.");
+        }
+        _fullGCRegistered = true;
+    }
+
+    public static void CancelFullGCNotification()
+    {
+        _fullGCRegistered = false;
+        _fullGCCancels = _fullGCCancels + 1;
+    }
+
+    public static GCNotificationStatus WaitForFullGCApproach() { return WaitForFullGC(-1); }
+
+    public static GCNotificationStatus WaitForFullGCApproach(int millisecondsTimeout) { return WaitForFullGC(millisecondsTimeout); }
+
+    public static GCNotificationStatus WaitForFullGCApproach(TimeSpan timeout) { return WaitForFullGC(Timeouts.Guarded(timeout)); }
+
+    public static GCNotificationStatus WaitForFullGCComplete() { return WaitForFullGC(-1); }
+
+    public static GCNotificationStatus WaitForFullGCComplete(int millisecondsTimeout) { return WaitForFullGC(millisecondsTimeout); }
+
+    public static GCNotificationStatus WaitForFullGCComplete(TimeSpan timeout) { return WaitForFullGC(Timeouts.Guarded(timeout)); }
+
+    static GCNotificationStatus WaitForFullGC(int millisecondsTimeout)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1);
+        if (!_fullGCRegistered) return GCNotificationStatus.NotApplicable;
+        if (millisecondsTimeout >= 0)
+        {
+            if (millisecondsTimeout > 0) Clock.SleepUntil(Clock.Now() + (long)millisecondsTimeout * 1000000);
+            return _fullGCRegistered ? GCNotificationStatus.Timeout : GCNotificationStatus.Canceled;
+        }
+        int cancels = _fullGCCancels;
+        while (_fullGCCancels == cancels) Clock.SleepUntil(Clock.Now() + 10000000);
+        return GCNotificationStatus.Canceled;
+    }
+
+    // ---- the collector's configuration -------------------------------------
+
+    /// The heap's limits as they are asked again: here they are read as the
+    /// collector paces each cycle, so there is nothing to refresh.
+    public static void RefreshMemoryLimit() { }
+
+    /// What the collector was configured with, under .NET's names: no server
+    /// collector, one heap, the hard limit the cap sets (0 for none).
+    public static IReadOnlyDictionary<string, object> GetConfigurationVariables()
+    {
+        Dictionary<string, object> made = new Dictionary<string, object>();
+        made["ServerGC"] = false;
+        made["ConcurrentGC"] = true;
+        made["RetainVM"] = false;
+        made["GCHeapHardLimit"] = Gc.CapToBe();
+        made["GCHeapHardLimitPercent"] = 0L;
+        made["GCConserveMem"] = 0L;
+        made["GCLargePages"] = false;
+        made["HeapCount"] = 1L;
+        made["MaxHeapCount"] = 1L;
+        made["GCName"] = "";
+        return made;
+    }
 
     /// What the collector knew at its last collection: how much memory it
     /// may use (the heap's cap when one is set, the machine's memory
@@ -132,6 +325,16 @@ public static class GC
         if (ceiling != 0 && ceiling < high) high = ceiling;
         return new GCMemoryInfo(total, high / 10 * 9, load, heap, heap > live ? heap - live : 0, heap, live, Gc.Collections);
     }
+}
+
+/// What a wait on a full collection's notification answers, as .NET's.
+public enum GCNotificationStatus
+{
+    Succeeded = 0,
+    Failed = 1,
+    Canceled = 2,
+    Timeout = 3,
+    NotApplicable = 4,
 }
 
 /// How a collection may be done, as .NET names it; this collector does every

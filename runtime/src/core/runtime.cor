@@ -42,6 +42,25 @@ class DivideByZeroException : ArithmeticException
 class InvalidCastException : SystemException
 {
     internal override int Code => unchecked((int)0x80004002);
+
+    // A FAILED CAST'S: the object's type and the name it was cast to, kept,
+    // and the sentence made when it is read (Runtime.InvalidCastOfType). Made
+    // at the throw, its strings were allocations every program with a
+    // checked cast reached -- `(string)o` in its own Main -- and a program
+    // proved to need no collector needed one for them.
+    readonly Type? _castFrom;
+    readonly string? _castTo;
+
+    internal InvalidCastException(Type from, string to) : base(null)
+    {
+        _castFrom = from;
+        _castTo = to;
+    }
+
+    public override string Message => _castFrom != null
+        ? "Unable to cast object of type '" + String.TypeText(_castFrom.FullName) + "' to type '" + _castTo + "'."
+        : base.Message;
+
     public InvalidCastException(string? message) : base(message ?? "Specified cast is not valid.") { }
     public InvalidCastException() : base("Specified cast is not valid.") { }
     public InvalidCastException(string? message, Exception? innerException) : base(message ?? "Specified cast is not valid.", innerException) { }
@@ -4863,7 +4882,7 @@ static class Runtime
     /// compiler at the cast.
     public static void InvalidCastTo(object o, string wanted)
     {
-        throw new InvalidCastException("Unable to cast object of type '" + String.TypeText(o.GetType().FullName) + "' to type '" + wanted + "'.");
+        throw new InvalidCastException(o.GetType(), wanted);
     }
 
     /// A FAILED CAST FROM THE OBJECT'S TYPE ALONE, read where the cast failed
@@ -4873,7 +4892,7 @@ static class Runtime
     /// this call (RegionPointsTo.OpenLoops).
     public static void InvalidCastOfType(Type type, string wanted)
     {
-        throw new InvalidCastException("Unable to cast object of type '" + String.TypeText(type.FullName) + "' to type '" + wanted + "'.");
+        throw new InvalidCastException(type, wanted);
     }
 
     /// A NULL DEREFERENCE, thrown as .NET throws it. The fault handler

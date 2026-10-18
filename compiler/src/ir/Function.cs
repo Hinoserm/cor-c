@@ -51,6 +51,15 @@ public sealed class Function
     public bool NoInlining { get; set; }
 
     /// <summary>
+    /// The escape pass's renewal frees, for the region pass to place where
+    /// each lap ends (Escape.NoteLapFree, PlaceLapFrees), taken there. Held
+    /// here so they go with the function: a table keyed by the function is
+    /// one a native compiler, whose ConditionalWeakTable keeps its keys,
+    /// never let go of.
+    /// </summary>
+    internal object? LapFrees { get; set; }
+
+    /// <summary>
     /// The bytes of arguments the function takes off the stack itself as it
     /// returns: stdcall's rule, which COM's interfaces are called by on
     /// i386 -- `[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]`,

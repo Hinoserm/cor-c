@@ -20,13 +20,15 @@ static class Program
 
     static int Main()
     {
-        double one = BitConverter.Int64BitsToDouble(0x3FF0000000000000);
+        Host.Start(1024 * 1024);
+        double one =BitConverter.Int64BitsToDouble(0x3FF0000000000000);
         double tiny = BitConverter.Int64BitsToDouble(0x3CA0000000000001);
         double third = one / 3.0;
-        Console.WriteLine("once " + H(one + tiny) + " " + H(third * 3.0) + " " + H(BitConverter.Int64BitsToDouble(0x3FB999999999999A) + BitConverter.Int64BitsToDouble(0x3FC999999999999A)));
+        Host.Line("once " + H(one + tiny) + " " + H(third * 3.0) + " " + H(BitConverter.Int64BitsToDouble(0x3FB999999999999A) + BitConverter.Int64BitsToDouble(0x3FC999999999999A)));
         double sum = 0.0;
         for (int i = 1; i <= 1000; i++) { sum = sum + one / i; }
-        Console.WriteLine("series " + H(sum));
+        Host.Line("series " + H(sum));
+        Host.Done(0);
         return 0;
     }
 }

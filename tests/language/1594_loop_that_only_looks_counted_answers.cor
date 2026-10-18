@@ -1,0 +1,73 @@
+// test: a loop whose counter never reaches its way out answers the collector
+// expect-exit: 0
+// expect-output:
+// spinning 3
+// collected True
+// done True
+//
+// A counted loop -- a counter stepped every lap against a bound the loop
+// never writes -- ends by itself, and BackEdgePolls puts no poll on it. One
+// that only looks counted does not end: a counter stepped past its bound
+// (`i != 7` by twos), or held to a bound every value meets (`i <= int.MaxValue`,
+// an unsigned `u >= 0`). Each was passed over as counted, so a thread
+// spinning in one answered no round, and the collection the main thread
+// asked for waited for it for ever. A counter is counted now only when its
+// step heads for the way out and the bound can be passed.
+using System;
+using System.Threading;
+static class Program
+{
+    static volatile bool s_done;
+    static int s_spinning;
+    static long s_laps;
+
+    static void PastTheBound()
+    {
+        int bound = 7;
+        Interlocked.Increment(ref s_spinning);
+        long laps = 0;
+        for (int i = 0; i != bound; i += 2) { if (s_done) break; laps++; }
+        Interlocked.Add(ref s_laps, laps);
+    }
+
+    static void AtTheTop()
+    {
+        int top = int.MaxValue;
+        Interlocked.Increment(ref s_spinning);
+        long laps = 0;
+        for (int i = 0; i <= top; i++) { if (s_done) break; laps++; }
+        Interlocked.Add(ref s_laps, laps);
+    }
+
+    static void DownToNothing()
+    {
+        uint floor = 0;
+        Interlocked.Increment(ref s_spinning);
+        long laps = 0;
+        for (uint u = 5; u >= floor; u--) { if (s_done) break; laps++; }
+        Interlocked.Add(ref s_laps, laps);
+    }
+
+    static int Main()
+    {
+        Thread a = new Thread(PastTheBound);
+        Thread b = new Thread(AtTheTop);
+        Thread c = new Thread(DownToNothing);
+        a.Start();
+        b.Start();
+        c.Start();
+        while (Volatile.Read(ref s_spinning) < 3) Thread.Yield();
+        Console.WriteLine("spinning " + Volatile.Read(ref s_spinning));
+        int before = GC.CollectionCount(0);
+        int[][] kept = new int[64][];
+        for (int i = 0; i < 20000; i++) kept[i % 64] = new int[256];
+        GC.Collect();
+        Console.WriteLine("collected " + (GC.CollectionCount(0) > before));
+        s_done = true;
+        a.Join();
+        b.Join();
+        c.Join();
+        Console.WriteLine("done " + (Interlocked.Read(ref s_laps) > 0));
+        return 0;
+    }
+}

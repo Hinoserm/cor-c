@@ -46,7 +46,7 @@ public sealed partial class Escape
     /// the region pass that opens the laps (or the link's per-function rules,
     /// which do both): taken there, and gone with the function.
     /// </summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Function, List<LapFree>> _lapFrees = new();
+    private static readonly object _lapFrees = new();
 
     /// <summary>Whether a loop of `f` has a lap region: marked by the link (MarkLoops), or opened (RegionLoop).</summary>
     internal static bool LapRegions(Function f)
@@ -54,7 +54,11 @@ public sealed partial class Escape
 
     private static void NoteLapFree(Function f, LapFree free)
     {
-        lock (_lapFrees) _lapFrees.GetOrCreateValue(f).Add(free);
+        lock (_lapFrees)
+        {
+            if (f.LapFrees is not List<LapFree> noted) f.LapFrees = noted = new List<LapFree>();
+            noted.Add(free);
+        }
     }
 
     /// <summary>
@@ -68,8 +72,9 @@ public sealed partial class Escape
         List<LapFree>? noted;
         lock (_lapFrees)
         {
-            if (!_lapFrees.TryGetValue(f, out noted) || noted.Count == 0) return 0;
-            _lapFrees.Remove(f);
+            noted = f.LapFrees as List<LapFree>;
+            f.LapFrees = null;
+            if (noted is null || noted.Count == 0) return 0;
         }
         Cfg cfg = new(f);
         HashSet<Block> headers = new(ReferenceEqualityComparer.Instance);

@@ -1,0 +1,112 @@
+// test: gc_pressure_regions_and_notifications_as_dotnet
+// expect-exit: 0
+// expect-output:
+// AddMemoryPressure(0): ArgumentOutOfRangeException | bytesAllocated ('0') must be a non-negative and non-zero value. (Parameter 'bytesAllocated')\nActual value was 0. | param=bytesAllocated
+// AddMemoryPressure(-1): ArgumentOutOfRangeException | bytesAllocated ('-1') must be a non-negative and non-zero value. (Parameter 'bytesAllocated')\nActual value was -1. | param=bytesAllocated
+// AddMemoryPressure(100): ok
+// RemoveMemoryPressure(0): ArgumentOutOfRangeException | bytesAllocated ('0') must be a non-negative and non-zero value. (Parameter 'bytesAllocated')\nActual value was 0. | param=bytesAllocated
+// RemoveMemoryPressure(100): ok
+// RemoveMemoryPressure(1000): ok
+// AllocateUninitializedArray(-1): OverflowException | Arithmetic operation resulted in an overflow.
+// AllocateUninitializedArray(5): 5
+// AllocateArray(3, pinned): 3
+// AllocateArray(-2): OverflowException | Arithmetic operation resulted in an overflow.
+// EndNoGCRegion none: InvalidOperationException | NoGCRegion mode must be set.
+// TryStartNoGCRegion(0): ArgumentOutOfRangeException | totalSize ('0') must be a non-negative and non-zero value. (Parameter 'totalSize')\nActual value was 0. | param=totalSize
+// TryStartNoGCRegion(-1): ArgumentOutOfRangeException | totalSize ('-1') must be a non-negative and non-zero value. (Parameter 'totalSize')\nActual value was -1. | param=totalSize
+// TryStartNoGCRegion(1000): True
+// latency in region: NoGCRegion
+// TryStartNoGCRegion again: InvalidOperationException | The NoGCRegion mode was already in progress.
+// EndNoGCRegion: InvalidOperationException | NoGCRegion mode must be set.
+// latency after: Interactive
+// TryStartNoGCRegion(1000, 100): True
+// TryStartNoGCRegion(1000, true): True
+// Latency set NoGCRegion: ArgumentOutOfRangeException | Enum value was out of legal range. (Parameter 'value') | param=value
+// TryStart then Latency set: InvalidOperationException | NoGCRegion mode must be set.
+// RegisterForFullGCNotification(10,10): ok
+// WaitForFullGCApproach(0) registered: Timeout
+// RegisterForFullGCNotification(0,10): ArgumentOutOfRangeException | Argument must be between 1 and 99. (Parameter 'maxGenerationThreshold') | param=maxGenerationThreshold
+// RegisterForFullGCNotification(10,100): ArgumentOutOfRangeException | Argument must be between 1 and 99. (Parameter 'largeObjectHeapThreshold') | param=largeObjectHeapThreshold
+// CancelFullGCNotification: ok
+// WaitForFullGCApproach(0): NotApplicable
+// WaitForFullGCComplete(0): NotApplicable
+// WaitForFullGCApproach(-2): ArgumentOutOfRangeException | millisecondsTimeout ('-2') must be greater than or equal to '-1'. (Parameter 'millisecondsTimeout')\nActual value was -2. | param=millisecondsTimeout
+// Collect(0, Forced, true, true): ok
+// Collect(0, (mode)9): ArgumentOutOfRangeException | Enum value was out of legal range. (Parameter 'mode') | param=mode
+// Collect(0, (mode)-1, true): ArgumentOutOfRangeException | Enum value was out of legal range. (Parameter 'mode') | param=mode
+// Collect(-1, Forced, true, true): ArgumentOutOfRangeException | generation ('-1') must be a non-negative value. (Parameter 'generation')\nActual value was -1. | param=generation
+// Collect(2, Aggressive): ok
+// Collect(2, Aggressive, true): ok
+// Collect(2, Aggressive, false): ArgumentException | AggressiveGC requires setting the blocking parameter to true. (Parameter 'blocking') | param=blocking
+// Collect(2, Aggressive, true, false): ArgumentException | AggressiveGC requires setting the compacting parameter to true. (Parameter 'compacting') | param=compacting
+// CollectionCount(-1): ArgumentOutOfRangeException | generation ('-1') must be a non-negative value. (Parameter 'generation')\nActual value was -1. | param=generation
+// RefreshMemoryLimit: ok
+// GetConfigurationVariables has GCHeapHardLimit: True
+// GetConfigurationVariables ServerGC: False
+//
+// System.GC's surface beyond collecting, as .NET 10 answers it (taken from
+// .NET 10 running this program): memory pressure added and removed, arrays
+// asked for unzeroed or pinned, a no-collection region entered and left
+// -- the latency mode saying so, a second start or a mode set inside it
+// leaving it as it refuses -- the full-collection notification registered,
+// waited on and cancelled, Collect's checks of its generation, mode and
+// Aggressive's blocking and compacting, and the configuration variables.
+// Each was a compile error.
+using System;
+using System.Runtime;
+
+static class Program
+{
+    static void Show(string what, Func<object> a)
+    {
+        try { Console.WriteLine(what + ": " + a()); }
+        catch (Exception e) { Console.WriteLine(what + ": " + e.GetType().Name + " | " + e.Message.Replace("\n", "\\n") + (e is ArgumentException ae ? " | param=" + ae.ParamName : "")); }
+    }
+
+    static int Main()
+    {
+        Show("AddMemoryPressure(0)", () => { GC.AddMemoryPressure(0); return "ok"; });
+        Show("AddMemoryPressure(-1)", () => { GC.AddMemoryPressure(-1); return "ok"; });
+        Show("AddMemoryPressure(100)", () => { GC.AddMemoryPressure(100); return "ok"; });
+        Show("RemoveMemoryPressure(0)", () => { GC.RemoveMemoryPressure(0); return "ok"; });
+        Show("RemoveMemoryPressure(100)", () => { GC.RemoveMemoryPressure(100); return "ok"; });
+        Show("RemoveMemoryPressure(1000)", () => { GC.RemoveMemoryPressure(1000); return "ok"; });
+        Show("AllocateUninitializedArray(-1)", () => GC.AllocateUninitializedArray<int>(-1).Length);
+        Show("AllocateUninitializedArray(5)", () => GC.AllocateUninitializedArray<int>(5).Length);
+        Show("AllocateArray(3, pinned)", () => GC.AllocateArray<long>(3, pinned: true).Length);
+        Show("AllocateArray(-2)", () => GC.AllocateArray<long>(-2).Length);
+        Show("EndNoGCRegion none", () => { GC.EndNoGCRegion(); return "ok"; });
+        Show("TryStartNoGCRegion(0)", () => GC.TryStartNoGCRegion(0));
+        Show("TryStartNoGCRegion(-1)", () => GC.TryStartNoGCRegion(-1));
+        Show("TryStartNoGCRegion(1000)", () => GC.TryStartNoGCRegion(1000));
+        Show("latency in region", () => GCSettings.LatencyMode);
+        Show("TryStartNoGCRegion again", () => GC.TryStartNoGCRegion(1000));
+        Show("EndNoGCRegion", () => { GC.EndNoGCRegion(); return "ok"; });
+        Show("latency after", () => GCSettings.LatencyMode);
+        Show("TryStartNoGCRegion(1000, 100)", () => { bool r = GC.TryStartNoGCRegion(1000, 100); GC.EndNoGCRegion(); return r; });
+        Show("TryStartNoGCRegion(1000, true)", () => { bool r = GC.TryStartNoGCRegion(1000, true); GC.EndNoGCRegion(); return r; });
+        Show("Latency set NoGCRegion", () => { GCSettings.LatencyMode = GCLatencyMode.NoGCRegion; return "ok"; });
+        Show("TryStart then Latency set", () => { GC.TryStartNoGCRegion(1000); try { GCSettings.LatencyMode = GCLatencyMode.Batch; return GCSettings.LatencyMode; } finally { GC.EndNoGCRegion(); } });
+        Show("RegisterForFullGCNotification(10,10)", () => { GC.RegisterForFullGCNotification(10, 10); return "ok"; });
+        Show("WaitForFullGCApproach(0) registered", () => GC.WaitForFullGCApproach(0));
+        Show("RegisterForFullGCNotification(0,10)", () => { GC.RegisterForFullGCNotification(0, 10); return "ok"; });
+        Show("RegisterForFullGCNotification(10,100)", () => { GC.RegisterForFullGCNotification(10, 100); return "ok"; });
+        Show("CancelFullGCNotification", () => { GC.CancelFullGCNotification(); return "ok"; });
+        Show("WaitForFullGCApproach(0)", () => GC.WaitForFullGCApproach(0));
+        Show("WaitForFullGCComplete(0)", () => GC.WaitForFullGCComplete(0));
+        Show("WaitForFullGCApproach(-2)", () => GC.WaitForFullGCApproach(-2));
+        Show("Collect(0, Forced, true, true)", () => { GC.Collect(0, GCCollectionMode.Forced, true, true); return "ok"; });
+        Show("Collect(0, (mode)9)", () => { GC.Collect(0, (GCCollectionMode)9); return "ok"; });
+        Show("Collect(0, (mode)-1, true)", () => { GC.Collect(0, (GCCollectionMode)(-1), true); return "ok"; });
+        Show("Collect(-1, Forced, true, true)", () => { GC.Collect(-1, GCCollectionMode.Forced, true, true); return "ok"; });
+        Show("Collect(2, Aggressive)", () => { GC.Collect(2, GCCollectionMode.Aggressive); return "ok"; });
+        Show("Collect(2, Aggressive, true)", () => { GC.Collect(2, GCCollectionMode.Aggressive, true); return "ok"; });
+        Show("Collect(2, Aggressive, false)", () => { GC.Collect(2, GCCollectionMode.Aggressive, false); return "ok"; });
+        Show("Collect(2, Aggressive, true, false)", () => { GC.Collect(2, GCCollectionMode.Aggressive, true, false); return "ok"; });
+        Show("CollectionCount(-1)", () => GC.CollectionCount(-1));
+        Show("RefreshMemoryLimit", () => { GC.RefreshMemoryLimit(); return "ok"; });
+        Show("GetConfigurationVariables has GCHeapHardLimit", () => GC.GetConfigurationVariables().ContainsKey("GCHeapHardLimit"));
+        Show("GetConfigurationVariables ServerGC", () => GC.GetConfigurationVariables()["ServerGC"]);
+        return 0;
+    }
+}

@@ -41,10 +41,24 @@ public static class ManagedLayouts
         // program's Point and disagreed with the library's own object about a
         // type the program never touched. A library unit still describes
         // every type it defines; a program describes library types it uses.
+        //
+        // NOR THE PROGRAM'S TYPES, IN THE CLASS LIBRARY'S OWN UNIT. A
+        // project's runtime object is compiled against the project's index,
+        // which it reads to number the interface families as the units do,
+        // and the program's classes it reads there count as used -- but no
+        // library declaration can name a program type, so it compiles nothing
+        // of theirs, and its slots for them, numbered as a library unit
+        // numbers its neighbours, were not the units': the compiler's own
+        // project build stopped at the link on MemberDecl's layout.
+        Func<string, bool>? classLibrary = Binder.LibrarySource;
+        bool classLibraryUnit = library && classLibrary is not null && bound.Types.Values.Any(type => type.Decl is { Elsewhere: false, SourcePath: string })
+            && bound.Types.Values.All(type => type.Decl is not { Elsewhere: false, SourcePath: string own } || classLibrary(own));
+        bool ProgramsInLibrary(TypeSymbol type)
+            => classLibraryUnit && type.Decl is { Elsewhere: true, SourcePath: string path } && !classLibrary!(path);
         HashSet<TypeSymbol> described = new(ReferenceEqualityComparer.Instance);
         Queue<TypeSymbol> pending = new();
         foreach (TypeSymbol type in bound.Types.Values.Distinct())
-            if (type.Used || type.Decl is { Elsewhere: false } && (library || !type.Decl.FromLibrary))
+            if ((type.Used || type.Decl is { Elsewhere: false } && (library || !type.Decl.FromLibrary)) && !ProgramsInLibrary(type))
                 pending.Enqueue(type);
         while (pending.Count != 0)
         {

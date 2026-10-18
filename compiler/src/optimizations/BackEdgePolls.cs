@@ -112,7 +112,12 @@ public static class BackEdgePolls
     /// Whether every lap passes, in a block that dominates every latch, a
     /// branch out of the loop on a compare of a counter with a bound the loop
     /// never writes, the counter written in the loop once, in a block that
-    /// dominates every latch too, to itself plus or minus a constant.
+    /// dominates every latch too, to itself plus or minus a constant -- a
+    /// step TOWARD the way out. A counter stepped away from its bound, or
+    /// past it (`i != n` by twos), or held to a bound every value meets
+    /// (`i <= int.MaxValue`, an unsigned `i >= 0`), never ends by itself,
+    /// and passed over it would keep every other thread's collection
+    /// waiting for as long as it spun.
     /// </summary>
     private static bool Counted(Cfg cfg, HashSet<Block> body, List<Block> backs)
     {
@@ -135,18 +140,24 @@ public static class BackEdgePolls
             if (!writes.TryGetValue(r, out var at)) return true;
             return at.Count == 1 && at[0].Write is { Op: Opcode.ArrayLength, Operands: [RegOperand { Reg: var array }] } && !writes.ContainsKey(array);
         }
-        // The counter stepped every lap: its one write in the loop is itself
-        // plus a constant, directly or through one copy of such a sum.
-        bool Steps(VReg counter)
+        // The counter's step a lap: its one write in the loop is itself plus
+        // or minus a constant, directly or through one copy of such a sum.
+        // Zero when it is no counter. Read at the counter's width, so that a
+        // 32-bit step of -1 held as its unsigned bits is still -1.
+        long Step(VReg counter)
         {
-            if (!writes.TryGetValue(counter, out var mine) || mine.Count != 1 || !EveryLap(mine[0].Block)) return false;
+            if (!writes.TryGetValue(counter, out var mine) || mine.Count != 1 || !EveryLap(mine[0].Block)) return 0;
             Instr w = mine[0].Write;
             if (w is { Op: Opcode.Copy, Operands: [RegOperand { Reg: var sum }] })
             {
-                if (!writes.TryGetValue(sum, out var sums) || sums.Count != 1) return false;
+                if (!writes.TryGetValue(sum, out var sums) || sums.Count != 1) return 0;
                 w = sums[0].Write;
             }
-            return w is { Op: Opcode.Add or Opcode.Sub, Operands: [RegOperand { Reg: var from }, ImmOperand { Value: not 0 }] } && from == counter;
+            if (w is not { Op: Opcode.Add or Opcode.Sub, Operands: [RegOperand { Reg: var from }, ImmOperand { Value: var by } constant] } || from != counter)
+                return 0;
+            if (constant.Type.Bytes() == 4) by = (int)by;
+            if (by == long.MinValue) return 0;
+            return w.Op == Opcode.Add ? by : -by;
         }
         foreach (Block b in body)
         {
@@ -155,12 +166,60 @@ public static class BackEdgePolls
                 continue;
             // A condition the loop never writes is no counter's.
             Instr? test = writes.TryGetValue(cond, out var tests) && tests.Count == 1 ? tests[0].Write : null;
-            if (test is not { Op: Opcode.LtS or Opcode.LeS or Opcode.GtS or Opcode.GeS or Opcode.LtU or Opcode.LeU or Opcode.GtU or Opcode.GeU or Opcode.Ne, Operands.Count: 2 })
+            if (test is not { Op: Opcode.LtS or Opcode.LeS or Opcode.GtS or Opcode.GeS or Opcode.LtU or Opcode.LeU or Opcode.GtU or Opcode.GeU or Opcode.Ne or Opcode.Eq, Operands.Count: 2 })
                 continue;
             Operand a = test.Operands[0], c = test.Operands[1];
-            if (a is RegOperand { Reg: var left } && Steps(left) && Invariant(c)) return true;
-            if (c is RegOperand { Reg: var right } && Steps(right) && Invariant(a)) return true;
+            Opcode op = test.Op;
+            long step = a is RegOperand { Reg: var left } && Invariant(c) ? Step(left) : 0;
+            if (step == 0)
+            {
+                // `bound op counter`, read as `counter op' bound`.
+                if (c is not RegOperand { Reg: var right } || !Invariant(a) || (step = Step(right)) == 0) continue;
+                (a, c) = (c, a);
+                op = Swapped(op);
+            }
+            // What holds while the laps go on: the compare, or its opposite
+            // where the branch's true arm is the way out.
+            if (!body.Contains(branch.Targets[0])) op = Negated(op);
+            if (Ends(op, step, a.Type, c)) return true;
         }
         return false;
     }
+
+    /// <summary>Whether `counter op bound`, the counter stepped by `step` a lap, stops holding by itself.</summary>
+    private static bool Ends(Opcode op, long step, IrType width, Operand bound)
+    {
+        bool wide = width.Bytes() == 8;
+        long at = bound is ImmOperand { Value: var v } ? (wide ? v : (int)v) : 0;
+        bool known = bound is ImmOperand;
+        return op switch
+        {
+            Opcode.Eq => true,
+            Opcode.Ne => step is 1 or -1,
+            Opcode.LtS or Opcode.LtU => step > 0,
+            Opcode.GtS or Opcode.GtU => step < 0,
+            Opcode.LeS => step > 0 && !(known && at == (wide ? long.MaxValue : int.MaxValue)),
+            Opcode.LeU => step > 0 && !(known && at == -1),
+            Opcode.GeS => step < 0 && !(known && at == (wide ? long.MinValue : int.MinValue)),
+            Opcode.GeU => step < 0 && !(known && at == 0),
+            _ => false,
+        };
+    }
+
+    /// <summary>The compare of the same two operands taken the other way round.</summary>
+    private static Opcode Swapped(Opcode op) => op switch
+    {
+        Opcode.LtS => Opcode.GtS, Opcode.GtS => Opcode.LtS, Opcode.LeS => Opcode.GeS, Opcode.GeS => Opcode.LeS,
+        Opcode.LtU => Opcode.GtU, Opcode.GtU => Opcode.LtU, Opcode.LeU => Opcode.GeU, Opcode.GeU => Opcode.LeU,
+        _ => op,
+    };
+
+    /// <summary>The compare that holds where `op` does not.</summary>
+    private static Opcode Negated(Opcode op) => op switch
+    {
+        Opcode.Eq => Opcode.Ne, Opcode.Ne => Opcode.Eq,
+        Opcode.LtS => Opcode.GeS, Opcode.GeS => Opcode.LtS, Opcode.LeS => Opcode.GtS, Opcode.GtS => Opcode.LeS,
+        Opcode.LtU => Opcode.GeU, Opcode.GeU => Opcode.LtU, Opcode.LeU => Opcode.GtU, Opcode.GtU => Opcode.LeU,
+        _ => op,
+    };
 }

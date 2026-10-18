@@ -2504,6 +2504,20 @@ static class Gc
         }
     }
 
+    internal static long InBufferOf(long block) => InBuffer(block);
+
+    /// Bytes allocated by every thread, their current buffers counted as
+    /// they stand: what GC.GetTotalAllocatedBytes(true) answers, with no
+    /// collection, as .NET's.
+    public static long AllocatedPrecisely
+    {
+        get
+        {
+            long made = Allocated + GcThreads.OthersInBuffers();
+            return made > 0 ? made : 0;
+        }
+    }
+
     /// What `block`'s current allocation buffer has handed out so far.
     static long InBuffer(long block)
     {
@@ -4227,8 +4241,13 @@ static class Gc
         // ROOM COUNTED, not the end summed (AllocRegion's same rule): in 32
         // bits a request of hundreds of megabytes from a buffer near the top
         // of the address space wrapped the sum below the limit, and the bump
-        // handed out memory from address zero up.
-        if ((nuint)need + (nuint)Smallest > (nuint)Sys.Peek(tb + (nint)Tls.AllocLimit) - block)
+        // handed out memory from address zero up. AND A LIMIT BELOW THE
+        // POINTER IS NO ROOM: a round takes the limit away -- 0 under a live
+        // pointer -- to send this thread to the slow path, and the room
+        // counted from it wrapped to all there is: the thread bumped on past
+        // its buffer over whatever lay beyond (739).
+        nuint limit = (nuint)Sys.Peek(tb + (nint)Tls.AllocLimit);
+        if (limit < block || (nuint)need + (nuint)Smallest > limit - block)
         {
             Sys.Poke(tb + (nint)Tls.InAlloc, 0);
             return (nint)AllocSlow(bytes, kind);
@@ -6013,6 +6032,13 @@ static class Gc
     static long NextHole(long need)
     {
         if (_sweeping || _collecting)
+        {
+            return 0;
+        }
+        // NOTHING LEFT TO RECYCLE, said before the buffers are captured and
+        // sorted: the walk below would answer 0 at its first look, and every
+        // refill after the last hole paid for the capture all the same.
+        if (_recycle == 0 && _recycleNext == 0)
         {
             return 0;
         }
@@ -15227,6 +15253,24 @@ static class GcThreads
         return _blocks != 0 && _count > 1;
     }
 
+    /// What every other registered thread's current buffer has handed out:
+    /// a precise total of allocation without a collection
+    /// (GC.GetTotalAllocatedBytes(true)). Read under the heap lock, as
+    /// Gc.InBuffer reads another thread's.
+    internal static long OthersInBuffers()
+    {
+        long self = Sys.ThreadBlock();
+        long total = 0;
+        GcLock.Enter();
+        for (long i = 0; i < _count; i++)
+        {
+            long block = At(i);
+            if (block != self) total = total + Gc.InBufferOf(block);
+        }
+        GcLock.Exit();
+        return total;
+    }
+
     static long At(long i)
     {
         return Sys.Peek(_blocks + i * WordSize.Bytes);
@@ -16306,13 +16350,19 @@ static class GcThreads
     /// The first captured buffer beginning at or above `address`.
     public static long BufferAtOrAbove(long address)
     {
-        long i = 0;
+        // HALVED, NOT WALKED: the table is sorted by base (CaptureBuffers),
+        // and a sweep asks this of every chunk -- a buffer and up to
+        // thirty-nine pages a thread, walked from the first each time.
+        long low = 0;
+        long high = _bufferCount;
 
-        while (i < _bufferCount && BufferBase(i) < address)
+        while (low < high)
         {
-            i = i + 1;
+            long middle = low + (high - low) / 2;
+            if (BufferBase(middle) < address) low = middle + 1;
+            else high = middle;
         }
 
-        return i;
+        return low;
     }
 }

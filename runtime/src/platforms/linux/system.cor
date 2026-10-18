@@ -644,7 +644,8 @@ static class Platform
     /// group limit).
     public static long AvailableMemory()
     {
-        long free = SysinfoBytes(SysinfoFree);
+        long free = MemAvailableBytes();
+        if (free == 0) free = SysinfoBytes(SysinfoFree);
         long limit = MemoryLimit();
         if (limit == 0)
         {
@@ -686,7 +687,56 @@ static class Platform
     /// allocating (SysinfoBytes answers into a page of the system's own).
     public static long FreeMemoryQuietly()
     {
-        return SysinfoBytes(SysinfoFree) + SysinfoBytes(SysinfoBuffers);
+        long available = MemAvailableBytes();
+        return available > 0 ? available : SysinfoBytes(SysinfoFree) + SysinfoBytes(SysinfoBuffers);
+    }
+
+    /// MEMAVAILABLE, IN BYTES: what the kernel says can be had without
+    /// swapping -- free memory and the page cache it would drop -- or 0 where
+    /// it says nothing (a kernel before 3.14, no /proc). Free and buffers
+    /// alone made a host whose memory sat in its cache look nearly full: a
+    /// load near 100% (GC.GetGCMemoryInfo) and the collector paced as if
+    /// there were no room. Read with the heap held, into a page of the
+    /// system's own; a caller that finds another reading answers the last.
+    static long _meminfoPage;
+    static long _lastAvailable;
+    const int MeminfoPath = 8;
+    const int MeminfoText = 64;
+
+    static long MemAvailableBytes()
+    {
+        long page = _meminfoPage;
+        if (page == 0)
+        {
+            long made = Map(4096);
+            if (made == 0) return 0;
+            string path = "/proc/meminfo";
+            for (int i = 0; i < path.Length; i++) Sys.PokeByte(made + MeminfoPath + i, path[i]);
+            Sys.PokeByte(made + MeminfoPath + path.Length, 0);
+            if (Sys.Cas(Sys.AddressOf(ref _meminfoPage), 0, made) != 0) Unmap(made, 4096);
+            page = _meminfoPage;
+        }
+        if (Sys.Cas(page, 0, 1) != 0)
+        {
+            return _lastAvailable;
+        }
+        long text = page + MeminfoText;
+        long got = ReadPath(page + MeminfoPath, text, 1024);
+        long at = got > 0 ? LineAfter(text, got, "MemAvailable:") : -1;
+        long value = 0;
+        if (at >= 0)
+        {
+            while (at < text + got && Sys.PeekByte(at) == 32) at = at + 1;
+            while (at < text + got && Sys.PeekByte(at) >= 48 && Sys.PeekByte(at) <= 57)
+            {
+                value = value * 10 + (Sys.PeekByte(at) - 48);
+                at = at + 1;
+            }
+            value = value * 1024;
+        }
+        _lastAvailable = value;
+        Sys.Poke(page, 0);
+        return value;
     }
 
     /// How much address space a 32-bit process has: four gigabytes under a

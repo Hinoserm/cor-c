@@ -54,12 +54,16 @@ class Spinner : Action
             GcThreads.EndBlocking();
             // The round before STAMP answered, by allocating until this
             // thread is square with it; then held as a running thread that
-            // neither allocates nor calls: nothing answers its STAMP, so
-            // stamping stays open.
+            // neither allocates nor calls nor polls: nothing answers its
+            // STAMP, so stamping stays open. A loop that may not end by
+            // itself polls at its back edge and answers (BackEdgePolls); a
+            // counted one does not, and a lap of this one's counter is far
+            // more than a round takes.
             long before = Sys.Peek(GcLock.Words() + GcLock.Epoch);
             Spinning = true;
             while (Hold != 0 && !Stop && !Answered(GcThreads.Ack, before)) Junk = new byte[4];
-            while (Hold != 0 && !Stop) { }
+            while (Hold != 0 && !Stop)
+                for (int lap = 0; lap < int.MaxValue && Hold != 0 && !Stop; lap++) { }
             Spinning = false;
         }
     }
