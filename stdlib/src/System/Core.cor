@@ -905,9 +905,11 @@ static class String {
     /// CRLF, NEL (U+0085), the line and paragraph separators (U+2028, U+2029)
     /// and form feed -- Unicode's list less the vertical tab, which .NET
     /// leaves alone -- each become the text given, or Environment.NewLine.
-    /// A string with none is handed back as it is.
+    /// A string with none is handed back as it is. Environment's is "\n",
+    /// and written here: Environment is a library above this one, which
+    /// libcorsacrt.so would otherwise have to find at load.
     public static string ReplaceLineEndings(string s) {
-        return ReplaceLineEndings(s, Environment.NewLine);
+        return ReplaceLineEndings(s, "\n");
     }
 
     public static string ReplaceLineEndings(string s, string replacement) {
