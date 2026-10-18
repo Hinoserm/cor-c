@@ -334,6 +334,9 @@ class FileStream : Stream
 
     public FileStream(string path, FileMode mode, FileAccess access)
     {
+        // No name at all is the caller's mistake, refused before any open
+        // as .NET refuses it -- not a file the system could not find.
+        ArgumentException.ThrowIfNullOrEmpty(path);
         _name = path;
         int flags = access == FileAccess.Read ? O.Read : access == FileAccess.Write ? O.Write : O.ReadWrite;
         if (mode == FileMode.CreateNew)
@@ -356,19 +359,42 @@ class FileStream : Stream
         {
             flags = flags | O.Create | O.Append;
         }
-        // O_LARGEFILE ALWAYS, as .NET does on Linux: without it a 32-bit
-        // kernel refuses to open anything 2 GiB or larger at all.
-        _fd = Os.Open(path, flags | O.LargeFile, 420);
-        if (_fd < 0)
-        {
-            throw Interop.GetExceptionForIoErrno(_fd, path);
-        }
+        _fd = OpenFile(path, flags);
         _canRead = access != FileAccess.Write;
         _canWrite = access != FileAccess.Read;
         _owns = true;
         // AN APPEND STREAM STARTS AT THE END, as .NET's does: its Position
         // is the file's length from the first moment, not 0.
         _at = mode == FileMode.Append ? Os.Lseek(_fd, 0, (int)SeekOrigin.End) : 0;
+    }
+
+    /// open(2) as .NET's SafeFileHandle.Open makes it: the descriptor, or
+    /// .NET's exception for why not, naming the full path as .NET's does.
+    /// O_LARGEFILE ALWAYS, as .NET does on Linux: without it a 32-bit kernel
+    /// refuses to open anything 2 GiB or larger at all.
+    ///
+    /// A NAME MISSING FROM AN OPEN THAT WOULD HAVE CREATED IT is a missing
+    /// directory. A DIRECTORY IS NOT A FILE: .NET refuses one with access
+    /// denied, whether the kernel said EISDIR (to a writer) or let a reader
+    /// open it, which only an fstat finds out.
+    internal static int OpenFile(string path, int flags)
+    {
+        int fd = Os.Open(path, flags | O.LargeFile, 420);
+        if (fd < 0)
+        {
+            if (fd == -Err.IsDir) fd = -(int)Err.Access;
+            throw Interop.GetExceptionForIoErrno(fd, FileSystem.Full(path), (flags & O.Create) != 0);
+        }
+        if ((flags & (O.Write | O.ReadWrite)) == 0)
+        {
+            byte[] st = Stat.Room();
+            if (Os.Fstat(fd, st) >= 0 && Stat.IsDirMode(Stat.Mode(st)))
+            {
+                Os.Close(fd);
+                throw Interop.GetExceptionForIoErrno((int)Err.Access, FileSystem.Full(path), true);
+            }
+        }
+        return fd;
     }
 
     /// The same with what others may do meanwhile (FileShare). .NET on Unix
@@ -385,7 +411,7 @@ class FileStream : Stream
         {
             Os.Close(_fd);
             _fd = -1;
-            throw new IOException("The process cannot access the file '" + path + "' because it is being used by another process.");
+            throw Interop.GetExceptionForIoErrno((int)Err.Again, FileSystem.Full(path));
         }
     }
 
@@ -552,7 +578,7 @@ class FileStream : Stream
         if (flushToDisk && _fd >= 0)
         {
             int result = Os.Fsync(_fd);
-            if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+            if (result < 0) throw Interop.GetExceptionForIoErrno(result, null);
         }
     }
 
@@ -563,7 +589,7 @@ class FileStream : Stream
         FlushWrite();
         FlushRead();
         int result = Os.Ftruncate(_fd, value);
-        if (result < 0) throw Interop.GetExceptionForIoErrno(result, "");
+        if (result < 0) throw Interop.GetExceptionForIoErrno(result, null);
         // Cut short beneath the position, the position moves to the new end.
         if (Os.Lseek(_fd, 0, (int)SeekOrigin.Current) > value) Os.Lseek(_fd, value, (int)SeekOrigin.Begin);
         _at = -1;
@@ -1860,23 +1886,35 @@ partial static class Directory
         {
             throw new ArgumentException("The path is empty.", nameof(path));
         }
-        Make(path);
+        Make(Path.GetFullPath(path));
         return new DirectoryInfo(path);
     }
 
+    /// The directory first and its parents only when it says they are
+    /// missing, as .NET's does. A FILE IN THE WAY is "already exists" when it
+    /// has the name itself and a missing part of the path when it is above
+    /// it (ENOTDIR); a directory another made meanwhile is no failure.
     static void Make(string path)
     {
         if (path.Length == 0 || Exists(path))
         {
             return;
         }
-        string? parent = Path.GetDirectoryName(path);
-        if (parent != null && parent.Length != 0 && parent != path && !Exists(parent))
-        {
-            Make(parent);
-        }
         int r = Os.Mkdir(path, 511);
-        if (r < 0 && r != -Err.Exist)
+        if (r == -Err.NoEnt)
+        {
+            string? parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
+            if (parent != null && parent.Length != 0 && parent != path)
+            {
+                Make(parent);
+                r = Os.Mkdir(path, 511);
+            }
+        }
+        if (r == -Err.Exist && Exists(path))
+        {
+            return;
+        }
+        if (r < 0)
         {
             throw Interop.GetExceptionForIoErrno(r, path, true);
         }
@@ -1964,10 +2002,11 @@ partial static class Directory
 
     public static string[] GetFiles(string path)
     {
-        string[]? names = Os.ListDir(path);
+        int error;
+        string[]? names = Os.ListDir(path, out error);
         if (names == null)
         {
-            throw Interop.GetExceptionForIoErrno((int)Os.ModeOf(path) < 0 ? 2 : 13, path, true);
+            throw Interop.GetExceptionForIoErrno(error, FileSystem.Full(path), true);
         }
         List<string> files = new List<string>();
         for (int i = 0; i < names.Length; i++)
@@ -1997,6 +2036,20 @@ partial static class Directory
 /// operating system has no answer.
 static partial class Path
 {
+    /// WHAT THE FILING SYSTEM REFUSES IN A NAME, which on Unix is NUL and the
+    /// separator and nothing else -- .NET's answer there. A new array each
+    /// call, as .NET's, so a caller may change the one it was given.
+    public static char[] GetInvalidFileNameChars()
+    {
+        return new char[] { '\0', '/' };
+    }
+
+    /// The same for a whole path, which may hold separators: NUL alone.
+    public static char[] GetInvalidPathChars()
+    {
+        return new char[] { '\0' };
+    }
+
     /// Where temporary files go, as .NET answers on Unix: $TMPDIR when it is
     /// set and not empty, else /tmp/ -- always ending in the separator.
     /// Eight random letters and digits, a dot, and three more: a name that
@@ -2182,7 +2235,11 @@ partial static class File
 
     public static byte[] ReadAllBytes(string path)
     {
-        FileStream f = new FileStream(path, FileMode.Open, FileAccess.Read);
+        return Bytes(new FileStream(path, FileMode.Open, FileAccess.Read));
+    }
+
+    static byte[] Bytes(FileStream f)
+    {
         long size = f.Length;
         // A FILE THAT GIVES NO LENGTH -- everything under /proc -- is read
         // to its end, as .NET's ReadAllBytesUnknownLength reads it; taking
@@ -2232,7 +2289,27 @@ partial static class File
 
     public static string ReadAllText(string path)
     {
-        StreamReader r = new StreamReader(path);
+        return Text(new StreamReader(path));
+    }
+
+    /// In the encoding given, unless the file begins with another's byte
+    /// order mark, as .NET reads it.
+    public static string ReadAllText(string path, Encoding encoding)
+    {
+        Validate(path, encoding);
+        return Text(new StreamReader(path, encoding));
+    }
+
+    /// .NET'S ORDER FOR THE FORMS THAT TAKE AN ENCODING: the path, null or
+    /// empty, and then the encoding, before the contents or the file.
+    static void Validate(string path, Encoding encoding)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        ArgumentNullException.ThrowIfNull(encoding);
+    }
+
+    static string Text(StreamReader r)
+    {
         string all = r.ReadToEnd();
         r.Dispose();
         return all;
@@ -2242,7 +2319,17 @@ partial static class File
     /// make an extra empty line.
     public static string[] ReadAllLines(string path)
     {
-        StreamReader r = new StreamReader(path);
+        return Lines(new StreamReader(path));
+    }
+
+    public static string[] ReadAllLines(string path, Encoding encoding)
+    {
+        Validate(path, encoding);
+        return Lines(new StreamReader(path, encoding));
+    }
+
+    static string[] Lines(StreamReader r)
+    {
         List<string> lines = new List<string>();
         while (true)
         {
@@ -2289,11 +2376,21 @@ partial static class File
         {
             throw new ArgumentNullException(nameof(contents));
         }
-        using StreamWriter writer = new StreamWriter(path, false);
-        foreach (string line in contents)
-        {
-            writer.WriteLine(line);
-        }
+        WriteLines(new StreamWriter(path, false), contents);
+    }
+
+    public static void WriteAllLines(string path, string[] contents, Encoding encoding)
+    {
+        WriteAllLines(path, (IEnumerable<string>)contents, encoding);
+    }
+
+    /// In the encoding given, its byte order mark first when it has one, as
+    /// .NET writes it.
+    public static void WriteAllLines(string path, IEnumerable<string> contents, Encoding encoding)
+    {
+        Validate(path, encoding);
+        ArgumentNullException.ThrowIfNull(contents);
+        WriteLines(new StreamWriter(path, false, encoding), contents);
     }
 
     public static void AppendAllLines(string path, IEnumerable<string> contents)
@@ -2306,10 +2403,24 @@ partial static class File
         {
             throw new ArgumentNullException(nameof(contents));
         }
-        using StreamWriter writer = new StreamWriter(path, true);
-        foreach (string line in contents)
+        WriteLines(new StreamWriter(path, true), contents);
+    }
+
+    public static void AppendAllLines(string path, IEnumerable<string> contents, Encoding encoding)
+    {
+        Validate(path, encoding);
+        ArgumentNullException.ThrowIfNull(contents);
+        WriteLines(new StreamWriter(path, true, encoding), contents);
+    }
+
+    static void WriteLines(StreamWriter writer, IEnumerable<string> contents)
+    {
+        using (writer)
         {
-            writer.WriteLine(line);
+            foreach (string line in contents)
+            {
+                writer.WriteLine(line);
+            }
         }
     }
 
@@ -2327,6 +2438,14 @@ partial static class File
         w.Dispose();
     }
 
+    public static void WriteAllText(string path, string? contents, Encoding encoding)
+    {
+        Validate(path, encoding);
+        StreamWriter w = new StreamWriter(path, false, encoding);
+        w.Write(contents);
+        w.Dispose();
+    }
+
     public static void AppendAllText(string path, string text)
     {
         StreamWriter w = new StreamWriter(path, true);
@@ -2334,13 +2453,40 @@ partial static class File
         w.Dispose();
     }
 
+    public static void AppendAllText(string path, string? contents, Encoding encoding)
+    {
+        Validate(path, encoding);
+        StreamWriter w = new StreamWriter(path, true, encoding);
+        w.Write(contents);
+        w.Dispose();
+    }
+
+    /// Nothing to do for a name that is not there -- unless the directory
+    /// it would be in is missing too, which .NET reports. A directory is
+    /// refused with access denied, as .NET refuses it. A READ-ONLY FILE
+    /// SYSTEM says EROFS before it says whether the name is there, and a
+    /// name that is not is still nothing to do.
     public static void Delete(string path)
     {
         int r = Os.Unlink(path);
-        if (r < 0 && r != -Err.NoEnt)
+        if (r >= 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, path);
+            return;
         }
+        string full = FileSystem.Full(path);
+        if (r == -Err.NoEnt && Directory.Exists(Path.GetDirectoryName(full) ?? ""))
+        {
+            return;
+        }
+        if (r == -Err.RoFs && Os.Lstat(path, Stat.Room()) == -Err.NoEnt)
+        {
+            return;
+        }
+        if (r == -Err.IsDir)
+        {
+            r = -(int)Err.Access;
+        }
+        throw Interop.GetExceptionForIoErrno(r, full);
     }
 
     /// Moves a file, and throws IOException if `to` already exists, as
@@ -2355,12 +2501,25 @@ partial static class File
     /// one and never neither.
     public static void Move(string from, string to, bool overwrite)
     {
-        if (!Exists(from)) throw new FileNotFoundException("could not find file '" + from + "'", from);
-        if (!overwrite && Os.Exists(to)) throw new IOException("the file '" + to + "' already exists");
+        if (!Exists(from))
+        {
+            string missing = FileSystem.Full(from);
+            throw new FileNotFoundException("Could not find file '" + missing + "'.", missing);
+        }
+        if (!overwrite && Os.Exists(to)) throw Interop.GetExceptionForIoErrno((int)Err.Exist, FileSystem.Full(to));
         int r = Os.Rename(from, to);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, from);
+            // THE DESTINATION IS TO BLAME, as .NET blames it -- its directory
+            // missing, or no right to make it there -- unless the name that
+            // went missing was the source's, with the destination's
+            // directory in place.
+            string blamed = FileSystem.Full(to);
+            if (r == -Err.NoEnt && Directory.Exists(Path.GetDirectoryName(blamed) ?? ""))
+            {
+                blamed = FileSystem.Full(from);
+            }
+            throw Interop.GetExceptionForIoErrno(r, blamed);
         }
     }
 
@@ -2369,19 +2528,20 @@ partial static class File
         int r = Os.Chmod(path, (int)mode);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, path);
+            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
         }
     }
 
     /// The permission bits, as .NET's UnixFileMode has them.
     public static UnixFileMode GetUnixFileMode(string path)
     {
-        long mode = Os.ModeOf(path);
-        if (mode < 0)
+        byte[] st = Stat.Room();
+        int r = Os.Stat(path, st);
+        if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno((int)mode, path);
+            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
         }
-        return (UnixFileMode)(int)(mode & 0xFFF);
+        return (UnixFileMode)(int)(Stat.Mode(st) & 0xFFF);
     }
 }
 
@@ -2608,7 +2768,7 @@ abstract class FileSystemInfo
             int r = Os.Chmod(_path, (int)value);
             if (r < 0)
             {
-                throw Interop.GetExceptionForIoErrno(r, _path);
+                throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(_path));
             }
             _fresh = false;
         }
@@ -2789,10 +2949,13 @@ class FileInfo : FileSystemInfo
     {
         get
         {
+            // A DIRECTORY HAS NO LENGTH, and .NET says so as it says a
+            // missing file has none.
             byte[]? d = Target();
-            if (d == null)
+            if (d == null || Stat.IsDirMode(Stat.Mode(d)))
             {
-                throw new FileNotFoundException(_path);
+                string full = FileSystem.Full(_path);
+                throw new FileNotFoundException("Could not find file '" + full + "'.", full);
             }
             return Stat.Size(d);
         }
@@ -2922,10 +3085,11 @@ class DirectoryInfo : FileSystemInfo
     /// The entries by name, in directory order, "." and ".." left out.
     string[] Names()
     {
-        string[]? names = Os.ListDir(_path);
+        int error;
+        string[]? names = Os.ListDir(_path, out error);
         if (names == null)
         {
-            throw Interop.GetExceptionForIoErrno(Os.ModeOf(_path) < 0 ? 2 : 13, _path, true);
+            throw Interop.GetExceptionForIoErrno(error, FileSystem.Full(_path), true);
         }
         List<string> kept = new List<string>();
         for (int i = 0; i < names.Length; i++)
@@ -3021,6 +3185,13 @@ class DirectoryInfo : FileSystemInfo
 /// copies, moves, listings.
 static class FileSystem
 {
+    /// The path an exception names, which is the full one as .NET's are: a
+    /// program that opened "data.txt" is told which data.txt.
+    public static string Full(string path)
+    {
+        return path.Length == 0 ? path : Path.GetFullPath(path);
+    }
+
     /// A link's target as a path somebody else can open: unchanged when it is
     /// absolute, and otherwise in the directory the link itself is in.
     public static string Beside(string link, string target)
@@ -3086,14 +3257,44 @@ partial static class File
         return new StreamWriter(path, true);
     }
 
+    /// The source opened first and the destination made with O_EXCL unless
+    /// it may be replaced, as .NET's: a missing source is what is reported
+    /// when both are wrong, and an existing destination is the open's own
+    /// EEXIST -- or .NET's own sentence when it is a directory.
+    ///
+    /// THE LOCKS ARE .NET'S TOO: the source shared, the destination
+    /// exclusive and cut short only once it is held. A file copied over
+    /// itself is then the sharing violation .NET reports, and not a file
+    /// emptied before a byte of it was read.
     public static void Copy(string source, string destination, bool overwrite)
     {
-        if (!overwrite && Os.Exists(destination))
+        FileStream from = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
+        FileStream to;
+        try
         {
-            throw Interop.GetExceptionForIoErrno(17, destination);
+            if (!overwrite && Directory.Exists(destination))
+            {
+                throw new IOException("The target file '" + FileSystem.Full(destination) + "' is a directory, not a file.");
+            }
+            to = new FileStream(destination, overwrite ? FileMode.OpenOrCreate : FileMode.CreateNew, FileAccess.Write, FileShare.None);
         }
-        FileStream from = new FileStream(source, FileMode.Open, FileAccess.Read);
-        FileStream to = new FileStream(destination, FileMode.Create, FileAccess.Write);
+        catch
+        {
+            from.Dispose();
+            throw;
+        }
+        if (overwrite)
+        {
+            // A device or a pipe cannot be cut short (EINVAL) and is written
+            // over as it is, as .NET writes it.
+            int cut = Os.Ftruncate(to.Handle, 0);
+            if (cut < 0 && cut != -Err.Inval && cut != -Err.BadF)
+            {
+                to.Dispose();
+                from.Dispose();
+                throw Interop.GetExceptionForIoErrno(cut, FileSystem.Full(destination));
+            }
+        }
         from.CopyTo(to);
         to.Dispose();
         from.Dispose();
@@ -3110,7 +3311,7 @@ partial static class File
         FileInfo f = new FileInfo(path);
         if (!Os.Exists(path))
         {
-            throw Interop.GetExceptionForIoErrno(2, path);
+            throw Interop.GetExceptionForIoErrno((int)Err.NoEnt, FileSystem.Full(path));
         }
         return f.Attributes;
     }
@@ -3174,7 +3375,7 @@ partial static class File
                        : Os.Utimensat(path, 0, -1, seconds, nanos, followLinks);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, path);
+            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
         }
     }
 
@@ -3219,7 +3420,7 @@ partial static class File
         int r = Os.Link(pathToTarget, path);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, path);
+            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
         }
     }
 
@@ -3347,7 +3548,7 @@ partial static class Directory
         int r = Os.Rename(source, destination);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, source);
+            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(source), true);
         }
     }
 
@@ -3384,7 +3585,7 @@ partial static class Directory
         int r = Os.Rmdir(path);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, path, true);
+            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path), true);
         }
     }
 
@@ -3808,9 +4009,115 @@ partial static class File
         else if (mode == FileMode.OpenOrCreate) flags = flags | O.Create;
         else if (mode == FileMode.Truncate) flags = flags | O.Truncate;
         else if (mode == FileMode.Append) flags = flags | O.Create | O.Append;
-        int fd = Os.Open(path, flags | O.LargeFile, 420);
-        if (fd < 0) throw Interop.GetExceptionForIoErrno(fd, path);
-        return new Microsoft.Win32.SafeHandles.SafeFileHandle(fd);
+        return new Microsoft.Win32.SafeHandles.SafeFileHandle(FileStream.OpenFile(path, flags));
+    }
+
+    // THE ASYNC FORMS COMPLETE BEFORE THEY RETURN, as Stream's do here: the
+    // descriptors block, so the task handed back is already finished. What
+    // stays .NET's is where a failure goes. A bad argument throws from the
+    // call; a token already canceled gives a canceled task and touches no
+    // file; anything the file system says is the task's, faulting it, so it
+    // surfaces at the await as it would from .NET's async methods.
+
+    public static Task<string> ReadAllTextAsync(string path, CancellationToken cancellationToken = default)
+        => ReadAllTextAsync(path, new UTF8Encoding(true), cancellationToken);
+
+    public static Task<string> ReadAllTextAsync(string path, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        return Completed(() => ReadAllText(path, encoding), cancellationToken);
+    }
+
+    /// THE ONE THAT OPENS BEFORE IT RETURNS, as .NET's does: the token is
+    /// looked at first, before even the path, and a file that cannot be
+    /// opened throws from the call; only the reading is the task's.
+    public static Task<byte[]> ReadAllBytesAsync(string path, CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<byte[]>(cancellationToken);
+        FileStream f = new FileStream(path, FileMode.Open, FileAccess.Read);
+        return Completed(() => Bytes(f), cancellationToken);
+    }
+
+    public static Task<string[]> ReadAllLinesAsync(string path, CancellationToken cancellationToken = default)
+        => ReadAllLinesAsync(path, new UTF8Encoding(true), cancellationToken);
+
+    public static Task<string[]> ReadAllLinesAsync(string path, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        return Completed(() => ReadAllLines(path, encoding), cancellationToken);
+    }
+
+    public static Task WriteAllTextAsync(string path, string? contents, CancellationToken cancellationToken = default)
+        => WriteAllTextAsync(path, contents, new UTF8Encoding(false), cancellationToken);
+
+    public static Task WriteAllTextAsync(string path, string? contents, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        return Completed(() => WriteAllText(path, contents, encoding), cancellationToken);
+    }
+
+    /// The bytes are looked at before the path here, as .NET looks.
+    public static Task WriteAllBytesAsync(string path, byte[] bytes, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        return Completed(() => WriteAllBytes(path, bytes), cancellationToken);
+    }
+
+    public static Task WriteAllLinesAsync(string path, IEnumerable<string> contents, CancellationToken cancellationToken = default)
+        => WriteAllLinesAsync(path, contents, new UTF8Encoding(false), cancellationToken);
+
+    public static Task WriteAllLinesAsync(string path, IEnumerable<string> contents, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        ArgumentNullException.ThrowIfNull(contents);
+        return Completed(() => WriteAllLines(path, contents, encoding), cancellationToken);
+    }
+
+    public static Task AppendAllTextAsync(string path, string? contents, CancellationToken cancellationToken = default)
+        => AppendAllTextAsync(path, contents, new UTF8Encoding(false), cancellationToken);
+
+    public static Task AppendAllTextAsync(string path, string? contents, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        return Completed(() => AppendAllText(path, contents, encoding), cancellationToken);
+    }
+
+    public static Task AppendAllLinesAsync(string path, IEnumerable<string> contents, CancellationToken cancellationToken = default)
+        => AppendAllLinesAsync(path, contents, new UTF8Encoding(false), cancellationToken);
+
+    public static Task AppendAllLinesAsync(string path, IEnumerable<string> contents, Encoding encoding, CancellationToken cancellationToken = default)
+    {
+        Validate(path, encoding);
+        ArgumentNullException.ThrowIfNull(contents);
+        return Completed(() => AppendAllLines(path, contents, encoding), cancellationToken);
+    }
+
+    static Task<T> Completed<T>(Func<T> work, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<T>(cancellationToken);
+        try
+        {
+            return Task.FromResult(work());
+        }
+        catch (Exception e)
+        {
+            return Task.FromException<T>(e);
+        }
+    }
+
+    static Task Completed(Action work, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+        try
+        {
+            work();
+            return Task.CompletedTask;
+        }
+        catch (Exception e)
+        {
+            return Task.FromException(e);
+        }
     }
 }
 
@@ -3826,7 +4133,7 @@ public static class RandomAccess
         if (fileOffset < 0) throw new ArgumentOutOfRangeException("fileOffset");
         if (buffer.Length == 0) return 0;
         long got = Os.Pread(handle.Fd, buffer.Array, buffer.Start, buffer.Length, fileOffset);
-        if (got < 0) throw Interop.GetExceptionForIoErrno((int)got, "");
+        if (got < 0) throw Interop.GetExceptionForIoErrno((int)got, null);
         return (int)got;
     }
 

@@ -14722,17 +14722,70 @@ class OverflowException : ArithmeticException
 
 namespace System.IO
 {
+/// System.IO.FileNotFoundException, with the file it could not find in
+/// FileName -- which .NET's own System.IO always fills, and which a catch
+/// uses rather than taking the name back out of the sentence.
 class FileNotFoundException : IOException
 {
-    public FileNotFoundException(string message) : base(message) { }
-    public FileNotFoundException(string message, string fileName) : base(message) { }
+    // THE MESSAGE AS GIVEN, null included, because .NET's Message tells the
+    // two apart: no message and a file name says "Could not load file or
+    // assembly", no message and no name says nothing at all, and an empty
+    // message stays empty -- where Exception's would invent a sentence.
+    readonly string? _said;
+    readonly string? _fileName;
+
+    public FileNotFoundException() : base("Unable to find the specified file.") { _said = "Unable to find the specified file."; }
+    public FileNotFoundException(string? message) : base(message) { _said = message; }
+    public FileNotFoundException(string? message, Exception? innerException) : base(message, innerException) { _said = message; }
+
+    public FileNotFoundException(string? message, string? fileName) : base(message)
+    {
+        _said = message;
+        _fileName = fileName;
+    }
+
+    public FileNotFoundException(string? message, string? fileName, Exception? innerException) : base(message, innerException)
+    {
+        _said = message;
+        _fileName = fileName;
+    }
+
+    public string? FileName => _fileName;
+
+    /// The assembly loader's log, which only .NET's loader writes; null here
+    /// as it is for every FileNotFoundException that System.IO throws.
+    public string? FusionLog => null;
+
+    /// .NET's wording for the assembly case keeps the line end the system's
+    /// message for the error came with.
+    public override string Message
+    {
+        get
+        {
+            if (_said != null) return _said;
+            return _fileName == null ? "" : "Could not load file or assembly '" + _fileName + "'. The system cannot find the file specified.\n";
+        }
+    }
+
+    /// .NET's own layout, not Exception's: the file's name on a line after the
+    /// message, and the inner exception after " ---> " with no closing line.
+    public override string ToString()
+    {
+        string text = this.GetType().FullName + ": " + Message;
+        if (!string.IsNullOrEmpty(_fileName)) text = text + "\nFile name: '" + _fileName + "'";
+        Exception? inner = InnerException;
+        if (inner != null) text = text + "\n ---> " + inner.ToString();
+        string trace = StackTrace;
+        if (trace.Length > 0) text = text + "\n" + trace;
+        return text;
+    }
 }
 }
 
 /// System.UnauthorizedAccessException: the operating system refused, which on
-/// Unix is EACCES, EPERM or a read-only filing system. .NET throws this rather
-/// than IOException for those, and a caller that wants the exact reason reads
-/// HResult.
+/// Unix is EACCES, EPERM or EBADF. .NET throws this rather than IOException
+/// for those, with the system's own words in the inner exception, and a
+/// caller that wants the exact reason reads HResult.
 class UnauthorizedAccessException : SystemException
 {
     public UnauthorizedAccessException() : base("Attempted to perform an unauthorized operation.") { }

@@ -395,12 +395,23 @@ static partial class Os
     /// is what readdir(3) gives too.
     public static string[]? ListDir(string path)
     {
+        int error;
+        return ListDir(path, out error);
+    }
+
+    /// The same, with why not: `error` is the -errno of the open that
+    /// failed, which is what tells a missing directory from one that may
+    /// not be read, and 0 when the names came back.
+    public static string[]? ListDir(string path, out int error)
+    {
         int fd = Open(path, O.Read | O.Directory);
 
         if (fd < 0)
         {
+            error = fd;
             return null;
         }
+        error = 0;
 
         List<string> names = new List<string>();
         byte[] block = new byte[4096];

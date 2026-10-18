@@ -869,6 +869,13 @@ class Task
         t.TrySetException(exception);
         return t;
     }
+
+    public static Task<T> FromCanceled<T>(CancellationToken cancellationToken)
+    {
+        Task<T> t = new Task<T>();
+        t.TrySetCanceled(new TaskCanceledException());
+        return t;
+    }
 }
 
 /// A task that completes with a value.

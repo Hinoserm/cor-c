@@ -338,6 +338,7 @@ static class Err
     public const long NotDir = 20;      // ENOTDIR
     public const long IsDir = 21;       // EISDIR
     public const long Inval = 22;       // EINVAL
+    public const long FBig = 27;        // EFBIG: longer than the file system allows
     public const long NoSpc = 28;       // ENOSPC
     public const long Pipe = 32;        // EPIPE
     public const long Range = 34;       // ERANGE
@@ -347,6 +348,8 @@ static class Err
     public const long NotSock = 88;     // ENOTSOCK
     public const long NoTty = 25;       // ENOTTY: not a terminal
     public const long Spipe = 29;       // ESPIPE: a pipe cannot seek
+    public const long RoFs = 30;        // EROFS: a file system mounted read-only
+    public const long Canceled = 125;   // ECANCELED
 
     /// A call's answer as the number it is. The register is 32 bits: an
     /// address in the top half of the space arrives with its sign extended,

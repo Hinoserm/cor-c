@@ -18,8 +18,9 @@
 //
 // And Interop.GetExceptionForIoErrno, which is how .NET's own System.IO turns
 // an errno into the exception the caller catches -- FileNotFoundException,
-// DirectoryNotFoundException, UnauthorizedAccessException or IOException --
-// with the errno kept in HResult so the message can still be recovered.
+// DirectoryNotFoundException, UnauthorizedAccessException, PathTooLongException
+// or IOException, each with .NET's message -- with the errno kept in HResult
+// so the system's own words can still be recovered.
 
 static partial class Marshal
 {
@@ -397,12 +398,15 @@ static partial class Marshal
 }
 
 /// What System.IO throws for an errno, which in .NET is Interop's job and not
-/// each caller's. The errno itself is kept in HResult, so a program that wants
-/// the exact sentence can ask Marshal for it rather than reconstructing one
-/// from the type.
+/// each caller's. The types AND THE SENTENCES are .NET's own -- "Could not
+/// find file '...'.", "Access to the path '...' is denied." -- because a
+/// program prints e.Message and a test compares it; strerror with the path
+/// after it is only what an errno with no sentence of its own says. The errno
+/// itself is kept in HResult, so a program that wants the system's words can
+/// still ask Marshal for them.
 static class Interop
 {
-    public static Exception GetExceptionForIoErrno(int error, string path)
+    public static Exception GetExceptionForIoErrno(int error, string? path)
     {
         return GetExceptionForIoErrno(error, path, false);
     }
@@ -410,33 +414,83 @@ static class Interop
     /// `isDirectory` says the path was being used as a directory, which is the
     /// one thing the errno cannot tell us and which decides between
     /// FileNotFoundException and DirectoryNotFoundException -- the same
-    /// decision .NET makes at the same place.
-    public static Exception GetExceptionForIoErrno(int error, string path, bool isDirectory)
+    /// decision .NET makes at the same place. A null path is a failure on a
+    /// descriptor, with no name to give.
+    public static Exception GetExceptionForIoErrno(int error, string? path, bool isDirectory)
     {
         if (error < 0) { error = -error; }
         Marshal.SetLastPInvokeError(error);
 
-        string message = Marshal.GetPInvokeErrorMessage(error);
-        string full = path.Length == 0 ? message : message + " : '" + path + "'";
-
+        bool named = !string.IsNullOrEmpty(path);
         Exception made;
-        if (error == 2)                                  // ENOENT
+        if (error == Err.NoEnt)
         {
-            made = isDirectory ? new DirectoryNotFoundException(full)
-                               : new FileNotFoundException(full);
+            // A MISSING FILE IN A MISSING DIRECTORY IS A MISSING DIRECTORY, as
+            // .NET has it: the file is blamed only when the directory it
+            // names exists.
+            if (isDirectory || (path != null && !Directory.Exists(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path)) ?? "")))
+            {
+                made = PathNotFound(path);
+            }
+            else
+            {
+                made = named ? new FileNotFoundException("Could not find file '" + path + "'.", path)
+                             : new FileNotFoundException("Unable to find the specified file.");
+            }
         }
-        else if (error == 1 || error == 13 || error == 30)   // EPERM, EACCES, EROFS
+        else if (error == Err.NotDir)
         {
-            made = new UnauthorizedAccessException(full);
+            made = PathNotFound(path);
         }
-        else if (error == 20)                            // ENOTDIR
+        else if (error == Err.Access || error == Err.BadF || error == Err.Perm)
         {
-            made = new DirectoryNotFoundException(full);
+            // THE SYSTEM'S OWN WORDS GO INSIDE, as .NET's inner exception,
+            // since EACCES, EBADF and EPERM all say the same thing outside.
+            made = new UnauthorizedAccessException(named ? "Access to the path '" + path + "' is denied." : "Access to the path is denied.",
+                                                   Described(error, null));
+        }
+        else if (error == Err.NameTooLong)
+        {
+            made = named ? new PathTooLongException("The path '" + path + "' is too long, or a component of the specified path is too long.")
+                         : new PathTooLongException("The specified file name or path is too long, or a component of the specified path is too long.");
+        }
+        else if (error == Err.Again)                     // EWOULDBLOCK: a lock another holds
+        {
+            made = new IOException(named ? "The process cannot access the file '" + path + "' because it is being used by another process."
+                                         : "The process cannot access the file because it is being used by another process.");
+        }
+        else if (error == Err.Canceled)
+        {
+            made = new OperationCanceledException();
+        }
+        else if (error == Err.FBig)
+        {
+            made = new ArgumentOutOfRangeException("value", "Specified file length was too large for the file system.");
+        }
+        else if (error == Err.Exist && named)
+        {
+            made = new IOException("The file '" + path + "' already exists.");
         }
         else
         {
-            made = new IOException(full);
+            return Described(error, path);
         }
+        made.HResult = error;
+        return made;
+    }
+
+    static DirectoryNotFoundException PathNotFound(string? path)
+    {
+        return string.IsNullOrEmpty(path) ? new DirectoryNotFoundException("Could not find a part of the path.")
+                                          : new DirectoryNotFoundException("Could not find a part of the path '" + path + "'.");
+    }
+
+    /// What an errno with no sentence of its own says: strerror, and the path
+    /// after it when there is one.
+    static IOException Described(int error, string? path)
+    {
+        string message = Marshal.GetPInvokeErrorMessage(error);
+        IOException made = new IOException(string.IsNullOrEmpty(path) ? message : message + " : '" + path + "'");
         made.HResult = error;
         return made;
     }
