@@ -1,0 +1,110 @@
+// test: loops that are no natural loop, or whose counter can pass its bound, answer the collector
+// expect-exit: 0
+// expect-output:
+// spinning 5
+// collected True
+// done True
+//
+// A collection waits for every running thread to answer at a safepoint;
+// a loop answers at its back edge (BackEdgePolls) unless it is counted and
+// ends by itself. Five that were taken for counted or found as no loop at
+// all, each spun by a thread of its own while the main thread collects:
+//   - a lap that passes a try and its catch: the join after them is reached
+//     from the landing pad too, a root of its own, so the loop's header
+//     dominates nothing past it and no edge was a loop's back edge;
+//   - `i <= top` where top is the largest int at run time;
+//   - `i < top` by twos, which jumps past the largest int and wraps;
+//   - a 64-bit counter run to a `!=` it starts beyond;
+//   - a condition the loop writes only some laps, holding true meanwhile.
+// Each had no poll, and the collection waited for it for ever.
+using System;
+using System.Threading;
+static class Program
+{
+    static volatile bool s_done;
+    static volatile bool s_never;
+    static int s_spinning;
+    static long s_laps;
+    static int s_top = int.MaxValue;
+    static long s_from = 10, s_to = 5;
+
+    static void Step()
+    {
+        if (s_never) throw new InvalidOperationException("never");
+    }
+
+    static void Started() => Interlocked.Increment(ref s_spinning);
+    static void Lapped(long laps) => Interlocked.Add(ref s_laps, laps);
+
+    static void ThroughCatch()
+    {
+        Started();
+        long laps = 0;
+        while (!s_done)
+        {
+            try { Step(); }
+            catch (InvalidOperationException) { laps--; }
+            laps++;
+        }
+        Lapped(laps);
+    }
+
+    static void AtTheTop()
+    {
+        int top = s_top;
+        Started();
+        long laps = 0;
+        for (int i = 0; i <= top; i++) { if (s_done) break; laps++; }
+        Lapped(laps);
+    }
+
+    static void ByTwos()
+    {
+        int top = s_top;
+        Started();
+        long laps = 0;
+        for (int i = 0; i < top; i += 2) { if (s_done) break; laps++; }
+        Lapped(laps);
+    }
+
+    static void WideNotEqual()
+    {
+        long from = s_from, to = s_to;
+        Started();
+        long laps = 0;
+        for (long i = from; i != to; i++) { if (s_done) break; laps++; }
+        Lapped(laps);
+    }
+
+    static void SometimesTested()
+    {
+        Started();
+        bool go = true;
+        int i = 0;
+        long laps = 0;
+        while (go)
+        {
+            if (s_done) go = i < 100;
+            i++;
+            laps++;
+        }
+        Lapped(laps);
+    }
+
+    static int Main()
+    {
+        Thread[] threads = { new Thread(ThroughCatch), new Thread(AtTheTop), new Thread(ByTwos), new Thread(WideNotEqual), new Thread(SometimesTested) };
+        foreach (Thread t in threads) t.Start();
+        while (Volatile.Read(ref s_spinning) < threads.Length) Thread.Yield();
+        Console.WriteLine("spinning " + Volatile.Read(ref s_spinning));
+        int before = GC.CollectionCount(0);
+        int[][] kept = new int[64][];
+        for (int i = 0; i < 20000; i++) kept[i % 64] = new int[256];
+        GC.Collect();
+        Console.WriteLine("collected " + (GC.CollectionCount(0) > before));
+        s_done = true;
+        foreach (Thread t in threads) t.Join();
+        Console.WriteLine("done " + (Interlocked.Read(ref s_laps) > 0));
+        return 0;
+    }
+}

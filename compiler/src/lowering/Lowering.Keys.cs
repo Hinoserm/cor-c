@@ -157,30 +157,42 @@ public sealed partial class Lowering
         => filled is { } m && !(m.Decl is null && m.Owner?.Name == "object" && m.Owner.Kind == TypeKind.Class) ? m : null;
 
     /// <summary>
+    /// <summary>
+    /// What a key stub's call through `narrow`'s slot names as its dispatch:
+    /// the type's descriptor, or object's for a copy of a generic class -- a
+    /// library set no code here makes, a tuple's field that is only ever null
+    /// here (`(HashSet&lt;int&gt;?, bool)` handed back). A copy's descriptor is
+    /// made of members made from its bodies, which binding can no longer
+    /// answer during lowering (Binder.CheckLate), so a unit that never bound
+    /// one cannot name it; and a unit that had would name it where the other
+    /// named object's, and the routine both define is then two (the link
+    /// refuses them). So no unit names a copy's. Object's dispatch is every
+    /// target, which is sound. A class declared once has its members
+    /// declared on demand in any unit, alike in every one.
+    /// </summary>
+    private string KeyDispatch(TypeSymbol? narrow) => narrow is null || GenericCopy(narrow) ? ObjectDispatch : DescriptorOf(narrow);
+
+    /// <summary>Whether `t` or any class it derives from is a copy made of a generic declaration.</summary>
+    private static bool GenericCopy(TypeSymbol t)
+    {
+        for (TypeSymbol? s = t; s is not null; s = s.Base)
+            if (s.Decl is { } d && (d.Template is not null || d.Specialised || d.TypeParams.Count > 0)) return true;
+        return false;
+    }
+
+    /// <summary>
     /// A SEALED CLASS'S SLOT IS KNOWN, and called directly: the method it or
     /// its nearest ancestor puts there, or object's own hash or text. Only
     /// what every unit decides alike from the declarations alone -- a routine
     /// made in two units is one routine only when the two made it the same
     /// (DefinitionSemantics), and another unit's class comes without its
     /// bodies, which the stubs for Equals and CompareTo look at (EqualsGuard,
-    /// OwnCompare): those, and any other type, are asked through the slot.
+    /// OwnCompare): those, a copy of a generic class (KeyDispatch), and any
+    /// other type, are asked through the slot.
     /// </summary>
-    /// <summary>
-    /// What a key stub's call through `narrow`'s slot names as its dispatch:
-    /// the type's descriptor, or object's for a type whose members this unit
-    /// never declared -- a library class no code here makes, a tuple's field
-    /// that is only ever null here (`(HashSet&lt;int&gt;?, bool)` handed back).
-    /// Its descriptor is made of its members, and making them during
-    /// lowering is what binding can no longer answer (Binder.CheckLate):
-    /// every unit returning such a tuple stopped there. Object's dispatch is
-    /// every target, which is sound.
-    /// </summary>
-    private string KeyDispatch(TypeSymbol? narrow) => narrow is null || narrow.MembersPending ? ObjectDispatch : DescriptorOf(narrow);
-
     private string? SealedTarget(TypeSymbol? t, int slot)
     {
-        // Nor a shortcut through one whose members were never declared (KeyDispatch).
-        if (t is not { Kind: TypeKind.Class, Decl: TypeDecl d } || t.MembersPending || !d.Mods.HasFlag(Mods.Sealed) || t.Structural || SharedCopy(t))
+        if (t is not { Kind: TypeKind.Class, Decl: TypeDecl d } || GenericCopy(t) || !d.Mods.HasFlag(Mods.Sealed) || t.Structural || SharedCopy(t))
         {
             return null;
         }
@@ -308,12 +320,12 @@ public sealed partial class Lowering
         }
 
         e.SetBlock(ask);
-        if (table && EquatableSlot is int typedSlot && !(narrow is { Kind: TypeKind.Class } && TypedEquals(narrow) is null && Sealed(narrow)))
+        if (table && EquatableSlot is int typedSlot && !(narrow is { Kind: TypeKind.Class } && !GenericCopy(narrow) && TypedEquals(narrow) is null && Sealed(narrow)))
         {
             // AN IEQUATABLE CLASS BY ITS TYPED Equals: known of a class whose
             // chain declares it, asked of the descriptor otherwise.
             Block typed = f.NewBlock("ketyped");
-            if (narrow is { Kind: TypeKind.Class, MembersPending: false } && TypedEquals(narrow) is not null)
+            if (narrow is { Kind: TypeKind.Class } && !GenericCopy(narrow) && TypedEquals(narrow) is not null)
             {
                 e.Jump(typed);
             }

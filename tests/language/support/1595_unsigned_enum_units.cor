@@ -1,0 +1,22 @@
+// The enums and the struct of 1595, in a unit of their own: the test's unit
+// reads them from the index, as a project's units read each other's.
+using System;
+using System.Collections.Generic;
+
+public enum Small : byte { Low = 1, High = 200 }
+public enum Wide : ushort { Low = 1, High = 65000 }
+
+public struct Holder
+{
+    public Small S;
+    public Wide W;
+}
+
+public static class Made
+{
+    public static (long, Small, Wide) Tuple(long n) => (n, Small.High, Wide.High);
+    public static Holder Held() => new Holder { S = Small.High, W = Wide.High };
+    public static Small[] Smalls() => new[] { Small.High };
+    public static Wide[] Wides() => new[] { Wide.High };
+    public static HashSet<(long, Small)> Seen() => new() { (1, Small.High) };
+}

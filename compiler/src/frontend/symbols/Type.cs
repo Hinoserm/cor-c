@@ -226,7 +226,16 @@ public sealed class Type : IEquatable<Type>
     /// Whether this loads zero-extended, divides unsigned and shifts right
     /// logically. char is unsigned in C# too, and always was here.
     /// </summary>
-    public bool IsUnsigned => Prim is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.Char or Prim.NUInt;
+    /// <summary>
+    /// AN ENUM'S SIGN IS ITS UNDERLYING TYPE'S, read from its symbol as its
+    /// size is (Size). A Type of the enum made without the underlying in its
+    /// Prim -- most are -- was signed whatever the enum said: a unit loading
+    /// a `: byte` enum's field sign-extended it where another unit, holding a
+    /// Type that carried the U8, zero-extended it, and the hash of a
+    /// (long, Prim) that every unit shares was two functions the link refused.
+    /// </summary>
+    public bool IsUnsigned => (IsEnumValue && Symbol is { } counted ? counted.EnumUnderlying : Prim)
+        is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.Char or Prim.NUInt;
     public bool IsFloat => Prim is Prim.F32 or Prim.F64;
 
     /// <summary>

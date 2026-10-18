@@ -2508,12 +2508,17 @@ static class Gc
 
     /// Bytes allocated by every thread, their current buffers counted as
     /// they stand: what GC.GetTotalAllocatedBytes(true) answers, with no
-    /// collection, as .NET's.
+    /// collection, as .NET's. THE TOTAL AND THE OTHERS' BUFFERS READ IN ONE
+    /// HOLD OF THE LOCK: read in two, a buffer retired between them was in
+    /// neither, and a second answer could be less than the first.
     public static long AllocatedPrecisely
     {
         get
         {
-            long made = Allocated + GcThreads.OthersInBuffers();
+            GcLock.Enter();
+            long total = _allocated + GcThreads.OthersInBuffersLocked();
+            GcLock.Exit();
+            long made = total + InBuffer(Sys.ThreadBlock()) - OwnListBytes();
             return made > 0 ? made : 0;
         }
     }
@@ -4699,19 +4704,22 @@ static class Gc
     /// More of a page laid out, when its list has run dry: the head of the
     /// new blocks, or 0 when the page is laid out to its limit.
     ///
-    /// AS MUCH AGAIN AS IS LAID OUT ALREADY, to the next 4 KB boundary: a
-    /// page whose blocks were used up is of a class its thread is making
-    /// many of. Another 4 KB a time, a class of half a kilobyte or more came
-    /// back to the heap lock every few objects -- four in five of a list-
-    /// building loop's slow paths were this -- and doubling still leaves a
-    /// thread no more laid out and unused than it has used.
-    static long FormatMore(long page, long c)
+    /// FOR A THREAD THAT USED ITS LIST UP (`doubling`, ClassRefill), AS MUCH
+    /// AGAIN AS IS LAID OUT ALREADY, to the next 4 KB boundary: a page whose
+    /// blocks were used up is of a class its thread is making many of.
+    /// Another 4 KB a time, a class of half a kilobyte or more came back to
+    /// the heap lock every few objects -- four in five of a list-building
+    /// loop's slow paths were this -- and doubling still leaves a thread no
+    /// more laid out and unused than it has used. For one block (TakeLarger,
+    /// RetireClasses), the next 4 KB: what nobody asked for stays untouched.
+    static long FormatMore(long page, long c, bool doubling)
     {
         long size = ClassSize(c);
         long end = HeapChunks.End(page);
         if (end + size > HeapChunks.PageBlockLimit(page)) return Zero;
         long laid = end - HeapChunks.First(page);
-        long stop = (end + (laid > LayOutBytes ? laid : LayOutBytes)) & ~(LayOutBytes - 1);
+        long step = doubling && laid > LayOutBytes ? laid : LayOutBytes;
+        long stop = (end + step) & ~(LayOutBytes - 1);
         return LayOut(page, end, size, stop) != 0 ? end : Zero;
     }
 
@@ -4748,7 +4756,7 @@ static class Gc
             // with its tail unlaid instead, a page went on no list, and
             // under a small cap, which stamps for much of its time, half of
             // an 8 MB heap was the tails of pages nobody could reach.
-            long more = FormatMore(page, c);
+            long more = FormatMore(page, c, true);
             if (more != 0)
             {
                 ClassLaidFurther = ClassLaidFurther + 1;
@@ -4861,7 +4869,7 @@ static class Gc
             // ClassRefill: the blocks have no start in the snapshot.
             if (HeapChunks.PageFree(page) == 0)
             {
-                long more = FormatMore(page, c);
+                long more = FormatMore(page, c, false);
                 if (more != 0)
                 {
                     HeapChunks.SetPageFree(page, more);
@@ -6779,18 +6787,29 @@ static class Gc
             long page = Sys.Peek(_classPages + k * WordSize.Bytes);
             if (page == 0 || owes && HeapChunks.StartsCycle(page) != _cycle) continue;
             long block = HeapChunks.PageFree(page);
+            // WHAT IS LAID OUT HERE GOES ON THE PAGE'S LIST UNCHARGED, its
+            // bytes in LargestHole with the rest of the list's: the refill
+            // that takes the page charges them (ClassRefill), and handed back
+            // unused they are uncharged (RetireClasses). Left out, the refill
+            // charged none of them, the hand-back uncharged them all, and the
+            // allocation total and the pacing ran low by the difference.
             if (block == 0)
             {
-                block = FormatMore(page, k);
+                block = FormatMore(page, k, false);
                 if (block == 0)
                 {
                     UnlistPage(page);
                     continue;
                 }
+                HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + (HeapChunks.End(page) - block));
             }
             if (_heapCheck) CheckOutsideBuffer(block, block + size, "gc owner check: a bigger class's slot inside the live buffer");
             long next = Sys.Peek(block + KindAt);
-            if (next == 0) next = FormatMore(page, k);
+            if (next == 0)
+            {
+                next = FormatMore(page, k, false);
+                if (next != 0) HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + (HeapChunks.End(page) - next));
+            }
             HeapChunks.SetPageFree(page, next);
             long hole = HeapChunks.LargestHole(page) - size;
             HeapChunks.SetLargestHole(page, hole > 0 ? hole : Zero);
@@ -15284,19 +15303,17 @@ static class GcThreads
 
     /// What every other registered thread's current buffer has handed out:
     /// a precise total of allocation without a collection
-    /// (GC.GetTotalAllocatedBytes(true)). Read under the heap lock, as
+    /// (GC.GetTotalAllocatedBytes(true)). The heap lock is held, as
     /// Gc.InBuffer reads another thread's.
-    internal static long OthersInBuffers()
+    internal static long OthersInBuffersLocked()
     {
         long self = Sys.ThreadBlock();
         long total = 0;
-        GcLock.Enter();
         for (long i = 0; i < _count; i++)
         {
             long block = At(i);
             if (block != self) total = total + Gc.InBufferOf(block);
         }
-        GcLock.Exit();
         return total;
     }
 

@@ -1,0 +1,38 @@
+// test: an enum on an unsigned type loads unsigned from every place it is kept
+// units: tests/language/support/1595_unsigned_enum_units.cor
+// expect-exit: 0
+// expect-output:
+// tuple 200 65000 True
+// field 200 65000
+// array 200 65000
+// hash True
+// compare True True
+//
+// An enum's size is its underlying type's, read from its symbol; its sign
+// was read from the Type's own Prim, which a Type of the enum made without
+// the underlying in it left signed. The hash every unit shares for a tuple
+// holding such an enum then loaded the field sign-extended in some units
+// and zero-extended in others -- the compiler's own (long, Prim) and its
+// X86Feature triple -- and the project's link refused the two definitions.
+// The enums are another unit's here, as a project's are, read from the
+// index; every place a value is kept answers it unsigned.
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        (long, Small, Wide) t = Made.Tuple(7);
+        Console.WriteLine("tuple " + (int)t.Item2 + " " + (int)t.Item3 + " " + (t.Item2 > Small.Low));
+        Holder h = Made.Held();
+        Console.WriteLine("field " + (int)h.S + " " + (int)h.W);
+        Small[] smalls = Made.Smalls();
+        Wide[] wides = Made.Wides();
+        Console.WriteLine("array " + (int)smalls[0] + " " + (int)wides[0]);
+        HashSet<(long, Small)> seen = Made.Seen();
+        Console.WriteLine("hash " + seen.Contains((1, Small.High)));
+        Console.WriteLine("compare " + (h.S > Small.Low) + " " + (h.W.CompareTo(Wide.Low) > 0));
+        return 0;
+    }
+}
