@@ -1808,8 +1808,9 @@ public sealed partial class Binder
 
     private TypeSymbol? ConstantOwner(Expr expression)
     {
+        // `double.NaN`: the keyword is the type it names, Double.
         if (expression is NameExpr name)
-            return FindType(name.Name, out TypeSymbol? owner) ? owner : null;
+            return FindType(name.Name, out TypeSymbol? owner) || Alias(name.Name) is string spelt && FindType(spelt, out owner) ? owner : null;
         if (expression is MemberExpr member)
         {
             // A NAMESPACE-QUALIFIED TYPE: the `Corsac.Lang.Elf.Elf` of
@@ -21970,6 +21971,28 @@ public sealed partial class Binder
                     _r.Rewrites[b] = items;
                     CheckExpr(items);
                     return Type.Bool;
+                }
+
+                // A NaN CONSTANT PATTERN MATCHES A NaN (C# 11.2.6): `d is
+                // double.NaN`, and a NaN case label, which an `==` with NaN
+                // never is. The subject held once and asked whether it is
+                // itself.
+                if (b.PatternConstant && l.IsFloat && !l.IsNullableValue && r.IsFloat && !r.IsNullableValue
+                    && RealConstant(b.Right, _thisType) is double constant && double.IsNaN(constant))
+                {
+                    PatternExpr itself = new()
+                    {
+                        Subject = b.Left,
+                        Test = new BinaryExpr
+                        {
+                            Op = b.Op == BinOp.Eq ? BinOp.Ne : BinOp.Eq,
+                            Left = new SubjectExpr { Line = b.Line, Col = b.Col }, Right = new SubjectExpr { Line = b.Line, Col = b.Col },
+                            Line = b.Line, Col = b.Col, File = b.File,
+                        },
+                        Line = b.Line, Col = b.Col, File = b.File,
+                    };
+                    _r.Rewrites[b] = itself;
+                    return CheckExpr(itself);
                 }
 
                 // A CONSTANT PATTERN OVER AN `object` asks whether the value IS

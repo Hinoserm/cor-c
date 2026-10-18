@@ -3277,7 +3277,11 @@ public sealed partial class Lowering
                 }
                 else if (of.IsFloat)
                 {
-                    same = _e.Binary(Opcode.FEq, subject, want);
+                    // A NaN ARM MATCHES A NaN (C# 11.2.6), which no `==` does:
+                    // equal, or the arm and the subject both not themselves.
+                    VReg equal = _e.Binary(Opcode.FEq, subject, want);
+                    VReg bothNaN = _e.Binary(Opcode.And, _e.Binary(Opcode.FNe, want, want), _e.Binary(Opcode.FNe, subject, subject));
+                    same = _e.Binary(Opcode.Or, equal, bothNaN);
                 }
                 else
                 {
