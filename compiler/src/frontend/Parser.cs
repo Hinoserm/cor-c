@@ -6104,8 +6104,20 @@ public sealed class Parser
         // for. It reads the subject once; leave it alone.
         bool simple = Rereadable(subject);
         bool repeats = StartsValuePattern() || At(Tok.LBracket);
+        int start = _i;
         Expr stands = simple || !repeats ? subject : new SubjectExpr { Line = at.Line, Col = at.Col };
         Expr built = ParsePrimaryPattern(stands, at);
+
+        // BUT A COMBINATOR TESTS IT AGAIN, whatever the first pattern was:
+        // `G() is int or string` called G for each alternative, and a subject
+        // declaring a variable of its own -- `(e is Hold h ? h.Inner : e) is
+        // A or B` -- declared it twice. Read again, the subject in its place.
+        if (!simple && ReferenceEquals(stands, subject) && AtPatternCombinator())
+        {
+            _i = start;
+            stands = new SubjectExpr { Line = at.Line, Col = at.Col };
+            built = ParsePrimaryPattern(stands, at);
+        }
 
         // WHAT `and` TESTS NEXT IS WHAT THE LEFT NARROWED TO (C# 11.2.12):
         // `o is int i and (< 0 or > 100)` compares the int, not the object.

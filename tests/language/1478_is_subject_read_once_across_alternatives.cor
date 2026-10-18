@@ -1,0 +1,62 @@
+// test: is_subject_read_once_across_alternatives
+// expect-exit: 0
+// expect-output:
+// True 1
+// False 1
+// True 1
+// True 1
+// lambda default default other default
+//
+// The subject of `is` is evaluated once (C# 12.12.12), whatever the patterns
+// joined by `or` and `and` are. A subject with a call in it was put in a
+// place of its own only when the FIRST pattern was a constant, a list or a
+// property pattern, so `G() is int or string` called G for each type, and a
+// subject declaring a variable -- `(e is S s ? s.Operand : e) is D or N` --
+// declared it once per alternative: "'s' is already declared in this scope".
+
+using System;
+
+class E { public string Type = ""; public object? Elements; }
+sealed class S : E { public E Operand = new D(); }
+sealed class D : E { }
+sealed class N : E { }
+sealed class L : E { }
+
+static class P
+{
+    static int calls;
+    static object G(object o) { calls++; return o; }
+    static bool Lam(E e) => e is L;
+
+    static string M(E op)
+    {
+        switch (op)
+        {
+            case L:
+            {
+                string suppressed = "lambda";
+                return suppressed;
+            }
+            case E cast:
+            {
+                if (Lam(cast) || (cast is S suppressed ? suppressed.Operand : cast) is D { Type.Length: 0 } or N { Type.Length: 0, Elements: null })
+                    return "default";
+                return "other";
+            }
+        }
+        return "none";
+    }
+
+    static int Main()
+    {
+        Console.WriteLine((G("s") is int or string) + " " + calls);
+        calls = 0;
+        Console.WriteLine((G(2.5) is int or string or null) + " " + calls);
+        calls = 0;
+        Console.WriteLine((G(7) is int and > 3) + " " + calls);
+        calls = 0;
+        Console.WriteLine((G(new D()) is E { Type: "" } and not N) + " " + calls);
+        Console.WriteLine(M(new L()) + " " + M(new S()) + " " + M(new D()) + " " + M(new E()) + " " + M(new N()));
+        return 0;
+    }
+}
