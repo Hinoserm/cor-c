@@ -825,7 +825,11 @@ public sealed partial class Lowering
                 // constant operator is (EmitBinary): `unchecked((int)3e9)` is 0
                 // as Roslyn folds it, where the conversion at run time
                 // saturates to int.MaxValue.
+                // NOT A CHECKED ONE TO A NATIVE INTEGER, whose width C# leaves
+                // to the run (CS8778): checked((nint)long.MinValue) throws on
+                // a 32-bit machine, and folded it was the low word.
                 if ((to.IsInteger || to.Prim == Prim.Char) && !to.IsPointer && !to.IsNullableValue && to.Symbol is null
+                    && !(_checkedDepth > 0 && to.IsNative)
                     && Fold.TryConst(cast, out long folded, NamedConstant) && Fold.Fits(folded, to))
                 {
                     return _e.Const(folded, IrTypes.Of(to));
