@@ -81,8 +81,10 @@ static class String {
     // Called by: a == b, a != b, a < b, and the rest. Ordinal, and the shared
     // prefix decides before the lengths do, so a prefix sorts before what
     // extends it. Culture-aware collation needs tables nobody in this world has.
-    /// Ordinal, by UTF-16 code unit, as .NET's String.CompareOrdinal: null
-    /// before every string, and two nulls equal.
+    /// .NET's culture comparison, which under the invariant globalization
+    /// every culture here has is by UTF-16 code unit: the difference of the
+    /// first units that differ, or else of the lengths -- "a" against "abc"
+    /// is -2. Null before every string, and two nulls equal.
     public static int Compare(string? a, string? b) {
         if ((object?)a == (object?)b) { return 0; }
         if (a == null) { return 0 - 1; }
@@ -94,10 +96,23 @@ static class String {
 
         int byBytes = Sys.StringCompare(a, 0, b, 0, n);
         if (byBytes != 0) { return byBytes; }
+        return la - lb;
+    }
 
-        if (la < lb) { return 0 - 1; }
-        if (la > lb) { return 1; }
-        return 0;
+    /// .NET's String.CompareOrdinal of two whole strings, which reads each
+    /// string's terminating NUL as one more unit: the first two units are
+    /// compared before any length, and then pairs of them, so "a" against
+    /// "abc" is the NUL against 'b', -98, while "ab" against "abc" runs out of
+    /// pairs and answers the lengths' difference, -1.
+    private static int OrdinalWhole(string a, string b) {
+        int min = Math.Min(a.Length, b.Length);
+        int limit = min < 2 ? 2 : ((min & 1) != 0 ? min + 1 : min);
+        for (int i = 0; i < limit; i++) {
+            int x = i < a.Length ? Sys.GetChar(a, i) : 0;
+            int y = i < b.Length ? Sys.GetChar(b, i) : 0;
+            if (x != y) { return x - y; }
+        }
+        return a.Length - b.Length;
     }
 
     // NULL IS EQUAL TO NULL AND TO NOTHING ELSE, which is .NET's answer and is
@@ -1329,10 +1344,16 @@ static class String {
         bool fold = IgnoresCase(kind);
         if (a == null || b == null) { return Compare(a, b); }
         if (fold) { return CompareWindows(a, 0, a.Length, b, 0, b.Length, true); }
+        if (kind == StringComparison.Ordinal) { return CompareOrdinal(a, b); }
         return Compare(a, b);
     }
 
-    public static int CompareOrdinal(string? a, string? b) { return Compare(a, b); }
+    public static int CompareOrdinal(string? a, string? b) {
+        if ((object?)a == (object?)b) { return 0; }
+        if (a == null) { return -1; }
+        if (b == null) { return 1; }
+        return OrdinalWhole(a, b);
+    }
 
     /// At most length characters of each, from those indices, compared by
     /// code unit; a shorter remainder sorts first, as .NET has it.
@@ -1528,22 +1549,8 @@ static class String {
     /// THE TEXT AS RUNES, as .NET's EnumerateRunes: a surrogate pair is one
     /// Rune, and a surrogate without its other half is U+FFFD, the
     /// replacement character, where it stood.
-    public static IEnumerable<Rune> EnumerateRunes(string s) {
-        int i = 0;
-        while (i < s.Length) {
-            int c = Sys.GetChar(s, i);
-            i = i + 1;
-            if (c >= 0xD800 && c <= 0xDFFF) {
-                int low = i < s.Length ? Sys.GetChar(s, i) : 0;
-                if (c <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) {
-                    c = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
-                    i = i + 1;
-                } else {
-                    c = 0xFFFD;
-                }
-            }
-            yield return new Rune(c);
-        }
+    public static StringRuneEnumerator EnumerateRunes(string s) {
+        return new StringRuneEnumerator(s);
     }
 
     public static char[] ToCharArray(string s) {
@@ -6858,6 +6865,59 @@ class ASCIIEncoding : Encoding {
 /// which is exactly what a `char` cannot always hold -- an emoji is two chars
 /// in UTF-16 and one Rune. .NET added the type so that "a character" could
 /// stop meaning "a UTF-16 code unit".
+/// .NET's StringRuneEnumerator, what string.EnumerateRunes answers: a
+/// foreach over it is a foreach over the runes, and it is its own
+/// enumerable and enumerator, as .NET's is.
+struct StringRuneEnumerator : IEnumerable<Rune>, IEnumerator<Rune> {
+    private readonly string _string;
+    private Rune _current;
+    private int _nextIndex;
+
+    internal StringRuneEnumerator(string value) {
+        _string = value;
+        _current = default;
+        _nextIndex = 0;
+    }
+
+    public Rune Current => _current;
+
+    public StringRuneEnumerator GetEnumerator() { return this; }
+
+    public bool MoveNext() {
+        if ((uint)_nextIndex >= (uint)_string.Length) {
+            _current = default;
+            return false;
+        }
+        int c = Sys.GetChar(_string, _nextIndex);
+        int length = 1;
+        if (c >= 0xD800 && c <= 0xDFFF) {
+            int low = _nextIndex + 1 < _string.Length ? Sys.GetChar(_string, _nextIndex + 1) : 0;
+            if (c <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
+                length = 2;
+            } else {
+                c = 0xFFFD;
+            }
+        }
+        _current = new Rune(c);
+        _nextIndex = _nextIndex + length;
+        return true;
+    }
+
+    object? IEnumerator.Current => _current;
+
+    void IDisposable.Dispose() { }
+
+    IEnumerator IEnumerable.GetEnumerator() { return this; }
+
+    IEnumerator<Rune> IEnumerable<Rune>.GetEnumerator() { return this; }
+
+    void IEnumerator.Reset() {
+        _current = default;
+        _nextIndex = 0;
+    }
+}
+
 struct Rune {
     private int value;
 
@@ -7768,18 +7828,6 @@ struct ReadOnlySpan<T> {
         }
     }
 
-    /// THE ORDER OF TWO SEQUENCES, element by element and then by length:
-    /// .NET's MemoryExtensions.SequenceCompareTo.
-    public int SequenceCompareTo(ReadOnlySpan<T> other) {
-        IComparer<T> by = Comparer<T>.Default;
-        int common = count < other.Length ? count : other.Length;
-        for (int i = 0; i < common; i++) {
-            int order = by.Compare(items[from + i], other[i]);
-            if (order != 0) { return order; }
-        }
-        return count.CompareTo(other.Length);
-    }
-
     public ReadOnlySpan<T> Slice(int start) {
         if ((uint)start > (uint)count) { throw new ArgumentOutOfRangeException(); }
         return new ReadOnlySpan<T>(items, from + start, count - start);
@@ -7991,18 +8039,6 @@ struct Span<T> {
         for (int i = 0; i < count; i++) { items[from + i] = default(T)!; }
     }
 
-    /// THE ORDER OF TWO SEQUENCES, element by element and then by length:
-    /// .NET's MemoryExtensions.SequenceCompareTo.
-    public int SequenceCompareTo(ReadOnlySpan<T> other) {
-        IComparer<T> by = Comparer<T>.Default;
-        int common = count < other.Length ? count : other.Length;
-        for (int i = 0; i < common; i++) {
-            int order = by.Compare(items[from + i], other[i]);
-            if (order != 0) { return order; }
-        }
-        return count.CompareTo(other.Length);
-    }
-
     public Span<T> Slice(int start) {
         if ((uint)start > (uint)count) { throw new ArgumentOutOfRangeException(); }
         return new Span<T>(items, from + start, count - start);
@@ -8134,7 +8170,11 @@ public static class MemoryExtensions {
         return n;
     }
 
-    /// The two compared element by element, then by length, as .NET orders them.
+    /// The two compared element by element, then by length, as .NET orders
+    /// them: by each element's CompareTo, and then -1, 0 or 1 for the
+    /// lengths. Characters and bytes have their own, below, as .NET's fast
+    /// paths answer: the difference of the first two that differ, or else of
+    /// the lengths.
     public static int SequenceCompareTo<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> other) where T : IComparable<T> {
         int shorter = span.Length < other.Length ? span.Length : other.Length;
         for (int i = 0; i < shorter; i++) {
@@ -8142,6 +8182,36 @@ public static class MemoryExtensions {
             if (c != 0) { return c; }
         }
         return span.Length.CompareTo(other.Length);
+    }
+
+    public static int SequenceCompareTo<T>(this Span<T> span, ReadOnlySpan<T> other) where T : IComparable<T> {
+        return SequenceCompareTo((ReadOnlySpan<T>)span, other);
+    }
+
+    public static int SequenceCompareTo(this ReadOnlySpan<char> span, ReadOnlySpan<char> other) {
+        int shorter = span.Length < other.Length ? span.Length : other.Length;
+        for (int i = 0; i < shorter; i++) {
+            int c = span[i] - other[i];
+            if (c != 0) { return c; }
+        }
+        return span.Length - other.Length;
+    }
+
+    public static int SequenceCompareTo(this Span<char> span, ReadOnlySpan<char> other) {
+        return SequenceCompareTo((ReadOnlySpan<char>)span, other);
+    }
+
+    public static int SequenceCompareTo(this ReadOnlySpan<byte> span, ReadOnlySpan<byte> other) {
+        int shorter = span.Length < other.Length ? span.Length : other.Length;
+        for (int i = 0; i < shorter; i++) {
+            int c = span[i] - other[i];
+            if (c != 0) { return c; }
+        }
+        return span.Length - other.Length;
+    }
+
+    public static int SequenceCompareTo(this Span<byte> span, ReadOnlySpan<byte> other) {
+        return SequenceCompareTo((ReadOnlySpan<byte>)span, other);
     }
 
     /// .NET 9's Split: the ranges between each `separator`, walked with foreach.
@@ -8600,6 +8670,21 @@ public static class MemoryExtensions {
         if (value.Length > span.Length) { return false; }
         return Equals(span.Slice(span.Length - value.Length), value, kind);
     }
+    /// The two in order, as string.Compare orders two strings of the same
+    /// units by the same comparison: the difference of the first units that
+    /// differ -- folded, when case is ignored -- or else of the lengths.
+    public static int CompareTo(this ReadOnlySpan<char> span, ReadOnlySpan<char> other, StringComparison comparisonType) {
+        bool fold = comparisonType == StringComparison.OrdinalIgnoreCase
+                 || comparisonType == StringComparison.InvariantCultureIgnoreCase
+                 || comparisonType == StringComparison.CurrentCultureIgnoreCase;
+        if (!fold && comparisonType != StringComparison.Ordinal && comparisonType != StringComparison.InvariantCulture
+         && comparisonType != StringComparison.CurrentCulture) {
+            throw new ArgumentException("The string comparison type passed in is currently not supported.", "comparisonType");
+        }
+        return string.Compare(string.FromChars(span), 0, string.FromChars(other), 0, Math.Max(span.Length, other.Length),
+            fold ? StringComparison.OrdinalIgnoreCase : StringComparison.InvariantCulture);
+    }
+
     public static bool Equals(this ReadOnlySpan<char> span, ReadOnlySpan<char> other, StringComparison kind) {
         if (span.Length != other.Length) { return false; }
         if (kind == StringComparison.OrdinalIgnoreCase

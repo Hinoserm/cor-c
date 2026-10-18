@@ -10107,12 +10107,23 @@ public sealed partial class Binder
             if (enumeratorType.Symbol is TypeSymbol walking)
             {
                 MethodSymbol? dispose = Reachable(walking, "Dispose").FirstOrDefault(m => m.Params.Count == 0 && !m.Static);
+                // AN EXPLICIT IDisposable.Dispose is the one a name cannot
+                // reach: StringRuneEnumerator's, which .NET declares that way.
+                // The interface's own member is no body to call; the type's
+                // implementation of it is, through the interface.
+                MethodSymbol? hidden = walking.Kind == TypeKind.Interface ? null
+                    : walking.Methods.FirstOrDefault(m => m.ExplicitMember == "Dispose" && m.ExplicitInterface == "IDisposable" && m.Params.Count == 0);
+                bool throughInterface = hidden is not null && (dispose is null || dispose.Owner.Kind == TypeKind.Interface);
+                if (throughInterface) dispose = hidden;
                 bool disposable = dispose is not null
                     && (walking.Kind == TypeKind.Struct || AllInterfaces(walking).Any(i => i.Name == "IDisposable") || walking.Name == "IDisposable");
-                bool empty = walking.Kind == TypeKind.Struct && dispose?.Decl is MethodDecl { Body.Statements.Count: 0 };
+                bool empty = (walking.Kind == TypeKind.Struct || throughInterface) && dispose?.Decl is MethodDecl { Body.Statements.Count: 0 };
                 if (disposable && !empty)
                 {
-                    Stmt call = new ExprStmt { Expr = Called(Named(walker), "Dispose"), Line = fe.Line, Col = fe.Col };
+                    Expr target = throughInterface
+                        ? new CastExpr { Type = new TypeRef { Name = "IDisposable", Line = fe.Line, Col = fe.Col }, Operand = Named(walker), Line = fe.Line, Col = fe.Col }
+                        : Named(walker);
+                    Stmt call = new ExprStmt { Expr = Called(target, "Dispose"), Line = fe.Line, Col = fe.Col };
                     release = walking.Kind == TypeKind.Struct ? call : new IfStmt
                     {
                         Cond = new BinaryExpr
