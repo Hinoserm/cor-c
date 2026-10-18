@@ -3700,7 +3700,8 @@ public sealed partial class Escape
                         continue;
                     case Opcode.Call when i.Callee is { } callee
                         && (IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
-                            || callee.StartsWith("m_Runtime_ArrayStoreCheck_2", StringComparison.Ordinal) || callee == Escape.ArrayStoreRefused):
+                            || callee.StartsWith("m_Runtime_ArrayStoreCheck_2", StringComparison.Ordinal) || callee == Escape.ArrayStoreRefused
+                            || callee == Escape.ArrayCopyCheck || callee == Escape.ArrayCopyRefused):
                         continue;
                     default:
                         if (IrInfo.IsIntCompare(i.Op)) continue;
@@ -3822,7 +3823,8 @@ public sealed partial class Escape
                         continue;
                     case Opcode.Call when i.Callee is { } callee
                         && (IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
-                            || callee.StartsWith("m_Runtime_ArrayStoreCheck_2", StringComparison.Ordinal) || callee == Escape.ArrayStoreRefused):
+                            || callee.StartsWith("m_Runtime_ArrayStoreCheck_2", StringComparison.Ordinal) || callee == Escape.ArrayStoreRefused
+                            || callee == Escape.ArrayCopyCheck || callee == Escape.ArrayCopyRefused):
                         continue;
                     default:
                         if (IrInfo.IsIntCompare(i.Op)) continue;

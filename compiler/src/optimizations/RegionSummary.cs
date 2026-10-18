@@ -187,7 +187,9 @@ public static class RegionSummary
             if (i.Operands.Count < 2 || i.Operands[0] is not RegOperand { Reg: var target }) return null;
             if (Single(target) is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } method) return null;
             if (Single(table) is not { Op: Opcode.Copy, Operands: [SymOperand { Name: var name, Offset: var at }] }) return null;
-            if (!(name.StartsWith("t_", StringComparison.Ordinal) || name.StartsWith("b_", StringComparison.Ordinal))) return null;
+            // An array's too: its sequence interfaces' slots (Lowering.ArrayFaces).
+            if (!(name.StartsWith("t_", StringComparison.Ordinal) || name.StartsWith("b_", StringComparison.Ordinal)
+                || name.StartsWith("q_array_", StringComparison.Ordinal))) return null;
             return (name, at + method.Offset);
         }
 

@@ -646,14 +646,6 @@ public sealed partial class Lowering
             SealFunctions();
             MethodSymbol m = _work.Dequeue();
 
-            if (m.Decl is null
-                && (m.Owner.Name.StartsWith("ArrayView$", StringComparison.Ordinal)
-                    || m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal)))
-            {
-                EmitArrayViewMethod(m);
-                continue;
-            }
-
             if (m.Decl is null && m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner))
             {
                 if (ConcreteShape(m.Owner)) EmitTupleMethod(m);
@@ -912,13 +904,11 @@ public sealed partial class Lowering
             || f.Type.Prim == Prim.Void && f.Type.Symbol is null && !f.Type.IsArray));
 
     private static bool Emits(MethodSymbol m)
-        // AN ARRAY VIEW'S METHODS HAVE NO DECLARATION, because the view has
-        // none: it is written here, in EmitArrayViewMethod, and a vtable slot
-        // pointing at it is a symbol something has to define.
+        // A TUPLE SHAPE'S METHODS HAVE NO DECLARATION: they are written here,
+        // in EmitTupleMethod, and a vtable slot pointing at one is a symbol
+        // something has to define.
         => m.Decl is null
-        && (m.Owner.Name.StartsWith("ArrayView$", StringComparison.Ordinal)
-            || m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal)
-            || m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner) && ConcreteShape(m.Owner))
+        && m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner) && ConcreteShape(m.Owner)
         || m.Decl?.Body != null && m.Decl.File != "<prelude>"
         && !IsExternal(m) && (m.Decl?.LocalCopy == true || (m.Decl?.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true)) && m.Owner.Decl?.Canon is null
         && m.Owner.Decl?.TypeParams.Count is null or 0
@@ -1961,8 +1951,9 @@ public sealed partial class Lowering
 
     /// <summary>
     /// The descriptor for arrays of one element type, and for strings. An
-    /// array's vtable holds only object's own virtuals; what matters most is
-    /// that every array of bytes shares one, so `GetType` and the flags agree.
+    /// array's vtable holds object's own virtuals and its sequence
+    /// interfaces' slots (ArrayFaces); what matters most is that every array
+    /// of bytes shares one, so `GetType` and the flags agree.
     /// </summary>
     /// <summary>A string's descriptor: a sequence of two-byte UTF-16 code units.</summary>
     private string StringDescriptor() => SequenceDescriptor("char", 2, isString: true);
@@ -2005,6 +1996,11 @@ public sealed partial class Lowering
         // read whatever data followed the descriptor and jumped there. A
         // string's own methods are reached by name, never through here.
         int slots = isString ? 0 : Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1;
+        // AN ARRAY IS ITS SEQUENCE INTERFACES (ArrayFaces): their slots filled
+        // here, by the element, the same in every unit.
+        List<(int Slot, string Target)> arrayFaces = isString || elementType is null || elementType.IsPointer || elementType.IsError ? new()
+            : ArrayFaceSlots(Unannotated(elementType), sym);
+        foreach (var (faceSlot, _) in arrayFaces) slots = Math.Max(slots, faceSlot + 1);
         // A STRING'S SYSTEM INTERFACES (BoxedFaces): IComparable,
         // IComparable<string> and IEquatable<string>, in their families'
         // slots, the same in every unit -- `IComparable s = "a"` called
@@ -2023,7 +2019,7 @@ public sealed partial class Lowering
         byte[] d = new byte[_t.DescriptorBytes + slots * w];
         WriteWord(d, DescSize * w, stride);
         WriteWord(d, DescDepth * w, -1);
-        WriteWord(d, DescFlags * w, isString ? 3 : 1);
+        WriteWord(d, DescFlags * w, isString ? 3 : 1 | (elementType is not null && ReferenceElements(Unannotated(elementType)) ? TypeFlagReferenceElements : 0));
         WriteWord(d, DescPayload * w, _t.ArrayHeaderBytes);
         WriteWord(d, DescGcFlags * w, elemRefs ? GcElementsAreReferences : 0);
 
@@ -2049,9 +2045,8 @@ public sealed partial class Lowering
 
         // AN EMPTY INTERFACE LIST, the terminator alone, so `is` and `as`
         // against an interface answer no for a sequence rather than read a
-        // list that is not there. An array reaches its sequence interfaces
-        // through a view made where it is converted (Binder.ArrayView); held
-        // as object, it has no table to dispatch them through.
+        // list that is not there. An array's sequence interfaces are answered
+        // by its slots and asked of its element (ArrayFaces), never listed.
         DataItem faces = new("sf_" + sym, new byte[w]) { ReadOnly = true, Exported = false };
         _m.Data.Add(faces);
         item.Relocs.Add(new DataReloc(DescInterfaces * w, faces.Name, 0));
@@ -2063,6 +2058,7 @@ public sealed partial class Lowering
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.HashSlot * w, ObjectHashStub(), 0));
             item.Relocs.Add(new DataReloc(_t.DescriptorBytes + _b.CompareSlot * w, ObjectCompareStub(), 0));
         }
+        foreach (var (faceSlot, target) in arrayFaces) item.Relocs.Add(new DataReloc(_t.DescriptorBytes + faceSlot * w, target, 0));
         return sym;
     }
 
@@ -2412,6 +2408,16 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         WriteWord(d, DescDepth * w, -1);
         int face = BoxedFaceFlags(t, out string? faceOf);
+        // ONE AN ARRAY OR ITS WALKER IS (ArrayFaces), and over what: the array
+        // of its argument, which Runtime.DescribedAs asks the object to be.
+        if (AnsweredByArrays(t))
+        {
+            face |= ArrayFaceOf(t) == ArrayFace.Walker ? TypeFlagWalkerFace : TypeFlagArrayFace;
+            if (ArrayFaceElement(t) is Type elements)
+            {
+                faceOf = SequenceDescriptor(ElementKey(elements), ElementStride(elements), isString: false, elementType: elements);
+            }
+        }
         WriteWord(d, DescFlags * w, TypeFlagInterface | face | (t.Decl?.IsDelegate == true ? TypeFlagDelegate : 0));
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Decl?.Specialised == true };
@@ -2907,10 +2913,6 @@ public sealed partial class Lowering
         return name;
     }
 
-    /// <summary>
-    /// The generated bodies of an array-interface adapter: an object holding
-    /// an array and answering the interface's Count and indexer from it.
-    /// </summary>
     /// <summary>A node to hang a diagnostic on, for code nobody wrote.</summary>
     private static MethodDecl At(MethodSymbol m)
         => m.Decl ?? new MethodDecl { Name = m.Name, Line = 0, Col = 0 };
@@ -3026,128 +3028,5 @@ public sealed partial class Lowering
 
         _m.Functions.Add(f);
         _f = savedFn; _e = savedB; _boundsFail = savedFail;
-    }
-
-    private void EmitArrayViewMethod(MethodSymbol m)
-    {
-        TypeSymbol view = m.Owner;
-        Type of = view.Fields[0].Type.Element ?? Type.I32;
-
-        Function f = new(Label(m), IrTypes.Of(m.Returns)) { Coalescible = true };
-        VReg self = f.NewReg(IrTypes.Word, "this");
-        f.Params.Add(self);
-        foreach (ParamSymbol p in m.Params)
-        {
-            f.Params.Add(f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name));
-        }
-        // A struct element is written to its caller's buffer (Buffered).
-        VReg? buffer = null;
-        if (Buffered(m))
-        {
-            buffer = f.NewReg(IrTypes.Word, "retbuf");
-            f.Params.Add(buffer);
-        }
-        Builder e = new(f, f.NewBlock("entry"));
-        VReg items = e.Load(IrTypes.Word, self, view.Fields[0].Offset);
-
-        Function savedFn = _f; Builder savedB = _e;
-        Block? savedFail = _boundsFail;
-
-        // A FRESH FUNCTION HAS NO FAILURE BLOCK YET. The one a bounds check
-        // jumps to is cached per function, and reusing the last function's put
-        // a branch to a block this one does not contain -- which the optimiser
-        // meets as a successor it cannot find.
-        _f = f; _e = e; _boundsFail = null;
-
-        // ---- the enumerator's own two members ------------------------------
-        //
-        // `at` starts at -1 and MoveNext steps before it answers, which is
-        // .NET's contract: Current is not readable until MoveNext has said
-        // true once.
-        if (m.Owner.Name.StartsWith("ArrayEnumerator$", StringComparison.Ordinal))
-        {
-            FieldSymbol cursor = view.Fields[1];
-
-            if (m.Name == "Dispose")
-            {
-                e.Ret(null);
-            }
-            else if (m.Name == "Reset")
-            {
-                e.Store(RegOperand.Of(self), Imm(-1, IrType.I32), cursor.Offset, 4);
-                e.Ret(null);
-            }
-            else if (m.ExplicitMember == "get_Current")
-            {
-                // IEnumerator's Current, an object: the element boxed.
-                VReg value = LoadElement(items, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), of, At(m));
-                e.Ret(RegOperand.Of(Boxable(of) ? BoxValue(At(m), value, of) : value));
-            }
-            else if (m.Name == "MoveNext")
-            {
-                VReg next = e.Binary(Opcode.Add, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), 1);
-
-                e.Store(RegOperand.Of(self), RegOperand.Of(next), cursor.Offset, 4);
-                e.Ret(RegOperand.Of(e.Binary(Opcode.LtS, next,
-                                              CountOf(e, items))));
-            }
-            else
-            {
-                VReg value = LoadElement(items, Numbered(e, e.Load(IrType.I32, self, cursor.Offset)), of,
-                                         At(m));
-                // A struct element into the caller's buffer, or a copy.
-                if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }
-                else if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
-
-                e.Ret(RegOperand.Of(value));
-            }
-
-            _f = savedFn; _e = savedB; _boundsFail = savedFail;
-            _m.Functions.Add(f);
-            return;
-        }
-
-        // ---- the view's ----------------------------------------------------
-        //
-        // WALKING ONE IS INDEXING IT, through an enumerator written the same
-        // way this view is. An array borrows nothing from a list: the standard
-        // library's ListEnumerator belongs to a List<T> this program may never
-        // have made.
-        if ((m.ExplicitMember ?? m.Name) == "GetEnumerator" && m.Params.Count == 0)
-        {
-            // The non-generic GetEnumerator hands back the same walker, which
-            // is an IEnumerator as well as the IEnumerator<T> it was made for.
-            MethodSymbol typed = view.Methods.First(x => x.Name == "GetEnumerator" && x.Params.Count == 0);
-            TypeSymbol walker = _b.Types[$"ArrayEnumerator${typed.Returns.Symbol!.Name}"];
-            VReg made = Allocate(At(m), Math.Max(_t.ObjectHeaderBytes, walker.InstanceSize), described: true);
-
-            e.Store(RegOperand.Of(made), VtableOf(walker), 0, _t.WordSize);
-            e.Store(RegOperand.Of(made), RegOperand.Of(items), walker.Fields[0].Offset, _t.WordSize);
-            e.Store(RegOperand.Of(made), Imm(-1, IrType.I32), walker.Fields[1].Offset, 4);
-            _f = savedFn; _e = savedB; _boundsFail = savedFail;
-            e.Ret(RegOperand.Of(made));
-            _m.Functions.Add(f);
-            return;
-        }
-
-        _f = savedFn; _e = savedB;
-
-        if (m.Name == "get_Count" || m.Params.Count == 0)
-        {
-            e.Ret(RegOperand.Of(CountOf(e, items)));
-        }
-        else
-        {
-            VReg index = f.Params[1];
-            Function saved = _f; Builder savedE = _e;
-            _f = f; _e = e; _boundsFail = null;
-            VReg value = LoadElement(items, index, of, At(m));
-            if (buffer is not null) { e.Emit(Opcode.MemCopy, null, R(buffer), R(value), Imm(Math.Max(1, StructOf(of).InstanceSize), IrTypes.Word)); value = buffer; }
-            else if (IsStructValue(of)) value = CopyStruct(At(m), value, StructOf(of));
-            _f = saved; _e = savedE;
-            e.Ret(RegOperand.Of(value));
-        }
-        _boundsFail = savedFail;
-        _m.Functions.Add(f);
     }
 }

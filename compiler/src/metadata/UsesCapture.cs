@@ -64,15 +64,15 @@ public static class UsesCapture
 
     /// <summary>
     /// What the compiler made of what somebody wrote. The machinery's types:
-    /// a lambda's closure, an iterator's or async method's state machine, an
-    /// array's interface view -- the method the lambda sits in reaches the
+    /// a lambda's closure, an iterator's or async method's state machine --
+    /// the method the lambda sits in reaches the
     /// closure's descriptor, and through it the Invoke, whenever it runs. And
     /// members no identifier can name: `StaticInit$`, `FieldInit$x`,
     /// `StaticReady$` -- each the shadow of a declaration judged in its own
     /// right. And a delegate's `__Multicast` helper, made for every delegate
     /// type whether or not one is ever combined.
     /// </summary>
-    static readonly string[] MadeTypes = { "Lambda$", "Iter$", "Async$", "ArrayView$", "ArrayEnumerator$", "ValueTuple$" };
+    static readonly string[] MadeTypes = { "Lambda$", "Iter$", "Async$", "ValueTuple$" };
 
     /// <summary>An auto-property's field (`Type.&lt;Name&gt;`) said as the property it is.</summary>
     static string? Property(string? display)

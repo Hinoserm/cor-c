@@ -205,7 +205,7 @@ public sealed partial class Lowering
 
     /// <summary>
     /// Everything but MoveNext: both GetEnumerators, both Currents, Reset and
-    /// Dispose. Written straight into IR, as an array view's members are.
+    /// Dispose. Written straight into IR, as an array's interface members are (ArrayFaces).
     /// </summary>
     private void EmitIteratorMembers(IteratorMethod it)
     {

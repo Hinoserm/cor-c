@@ -2759,6 +2759,8 @@ public sealed class RegionPointsTo : IModulePass
     {
         "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64",
         Opt.Escape.ArrayStoreRefused,
+        Opt.Escape.ArrayCopyCheck,
+        Opt.Escape.ArrayCopyRefused,
         "m_Runtime_ArrayOf_2_V$I64_V$I64",
         "m_Runtime_DescribedAs_2_V$I64_V$I64",
         "m_Runtime_ShapedAs_7_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64",
@@ -2968,7 +2970,9 @@ public sealed class RegionPointsTo : IModulePass
         if (i.Operands.Count < 2 || i.Operands[0] is not RegOperand { Reg: var target }) return null;
         if (Single(f, target) is not { Op: Opcode.Load, Operands: [RegOperand { Reg: var table }] } method) return null;
         if (Single(f, table) is not { Op: Opcode.Copy, Operands: [SymOperand { Name: var name, Offset: var at }] }) return null;
-        if (!(name.StartsWith("t_", StringComparison.Ordinal) || name.StartsWith("b_", StringComparison.Ordinal))) return null;
+        // An array's too: its sequence interfaces' slots (Lowering.ArrayFaces).
+            if (!(name.StartsWith("t_", StringComparison.Ordinal) || name.StartsWith("b_", StringComparison.Ordinal)
+                || name.StartsWith("q_array_", StringComparison.Ordinal))) return null;
         return (name, at + method.Offset);
     }
 

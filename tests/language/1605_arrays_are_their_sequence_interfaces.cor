@@ -1,0 +1,265 @@
+// test: arrays_are_their_sequence_interfaces
+// expect-exit: 0
+// expect-output:
+// True
+// True
+// True
+// True
+// True
+// True
+// False
+// False
+// System.Int32[] Int32[] System.Int32[] True
+// True
+// 3 3 2 True True
+// 30
+// 3
+// Add: NotSupportedException: Collection was of a fixed size.
+// Clear: NotSupportedException: Collection is read-only.
+// Insert: NotSupportedException: Collection was of a fixed size.
+// Remove: NotSupportedException: Collection was of a fixed size.
+// RemoveAt: NotSupportedException: Collection was of a fixed size.
+// get 5: ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')
+// set -1: ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')
+// 0,5,30,8,0
+// CopyTo null: ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// CopyTo -1: ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex')
+// Actual value was -1.
+// CopyTo 3: ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// 5,30,8
+// True
+// True
+// True
+// True
+// True
+// False
+// 2 b 1 System.String[]
+// set covariant: ArrayTypeMismatchException: Attempted to access an element as a type incompatible with the array.
+// z
+// True
+// True
+// True
+// True
+// False
+// rex fido 
+// Current before: InvalidOperationException: Enumeration has not started. Call MoveNext.
+// rex;fido;Current after: InvalidOperationException: Enumeration already finished.
+// True rex
+// True True True False
+// 5 30 8 
+// 1 False 4
+// 9
+// 1 True
+// -1 False
+// 1 2
+// 40
+// 7
+// 40 3 40 39
+// True 40
+// 40
+// 40
+// 3 Int32[]
+// ints 3
+// 8 True
+// True/True True/False False/False False/False 
+// True True True
+// True
+// -1 1 2
+// 1 2 0
+// 1,2,3
+// CopyTo self: ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// CopyTo short: ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// CopyTo covariant: no exception
+// CopyTo mismatch: InvalidCastException: Unable to cast object of type 'System.Int32' to type 'System.String'.
+// one=1 two=2 
+// 2 1
+// 4|5|6 6 6 3 6
+// True True True True
+// 3 String[] System.String[]
+// Dog[] d True True
+// False System.Int32[]
+//
+// A T[] IS ITS SEQUENCE INTERFACES, as the CLR's arrays are: IList<T>,
+// ICollection<T>, IReadOnlyList<T>, IReadOnlyCollection<T>, IEnumerable<T>
+// and IEnumerable -- and, its element a reference, those of every type the
+// element converts to -- the same object seen through each: `is`, `as`,
+// casts, switch patterns and calls through them, GetType() the array's, the
+// cast back the array itself. The members that would change its size refuse
+// as SZArrayHelper does; IndexOf and Contains search with .NET's comparer
+// (Equals(object) for a reference, a struct's own, NaN equal to NaN);
+// CopyTo checks and refuses as Array.Copy does. The library's own questions
+// answer through them: List's constructor copies an ICollection<T> at its
+// count (a capacity of 40 for 40, not the 64 adding one by one grows to),
+// LINQ counts, indexes and copies one. An array of a struct of a form with
+// slots of its own (IEnumerable<KeyValuePair<string, int>>) answers there too.
+// The walker an array hands out is IEnumerator<T> of its element (.NET's is
+// of the interface's T, which no test here tells apart).
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+public class Animal { public string Name; public Animal(string n) { Name = n; } public override string ToString() => Name; }
+public sealed class Dog : Animal { public Dog(string n) : base(n) { } }
+public struct Pt { public int X, Y; public Pt(int x, int y) { X = x; Y = y; } }
+public sealed class Tok : IEquatable<Tok> { public int A; public Tok(int a) { A = a; } public bool Equals(Tok o) => o != null && o.A == A; }
+
+public static class P
+{
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + ": no exception"); }
+        catch (Exception e) { Console.WriteLine(what + ": " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    public static void Main()
+    {
+        int[] xs = { 5, 3, 8 };
+        object o = xs;
+        Console.WriteLine(o is IList<int>);
+        Console.WriteLine(o is ICollection<int>);
+        Console.WriteLine(o is IReadOnlyList<int>);
+        Console.WriteLine(o is IReadOnlyCollection<int>);
+        Console.WriteLine(o is IEnumerable<int>);
+        Console.WriteLine(o is IEnumerable);
+        Console.WriteLine(o is IList<long>);
+        Console.WriteLine(o is IEnumerable<object>);
+        IList<int> il = xs;
+        Console.WriteLine(il.GetType() + " " + il.GetType().Name + " " + il.GetType().FullName + " " + il.GetType().IsArray);
+        Console.WriteLine(ReferenceEquals(il, xs));
+        Console.WriteLine(il.Count + " " + il[1] + " " + il.IndexOf(8) + " " + il.Contains(3) + " " + il.IsReadOnly);
+        il[1] = 30;
+        Console.WriteLine(xs[1]);
+        int[] back = (int[])il;
+        Console.WriteLine(back.Length);
+        Try("Add", () => il.Add(1));
+        Try("Clear", () => il.Clear());
+        Try("Insert", () => il.Insert(0, 1));
+        Try("Remove", () => il.Remove(5));
+        Try("RemoveAt", () => il.RemoveAt(0));
+        Try("get 5", () => { int v = il[5]; });
+        Try("set -1", () => { il[-1] = 2; });
+        int[] dest = new int[5];
+        il.CopyTo(dest, 1);
+        Console.WriteLine(string.Join(",", dest));
+        Try("CopyTo null", () => il.CopyTo(null, 0));
+        Try("CopyTo -1", () => il.CopyTo(dest, -1));
+        Try("CopyTo 3", () => il.CopyTo(dest, 3));
+        il.CopyTo(xs, 0);
+        Console.WriteLine(string.Join(",", xs));
+
+        string[] words = { "b", "a" };
+        object ow = words;
+        Console.WriteLine(ow is IEnumerable<object>);
+        Console.WriteLine(ow is IReadOnlyList<IComparable>);
+        Console.WriteLine(ow is IList<object>);
+        Console.WriteLine(ow is ICollection<object>);
+        Console.WriteLine(ow is IList<string>);
+        Console.WriteLine(ow is IList<int>);
+        IList<object> lo = (IList<object>)ow;
+        Console.WriteLine(lo.Count + " " + lo[0] + " " + lo.IndexOf("a") + " " + lo.GetType());
+        Try("set covariant", () => { lo[0] = 5; });
+        lo[0] = "z";
+        Console.WriteLine(words[0]);
+
+        Dog[] dogs = { new Dog("rex"), new Dog("fido") };
+        object od = dogs;
+        Console.WriteLine(od is IList<Animal>);
+        Console.WriteLine(od is IReadOnlyList<Animal>);
+        Console.WriteLine(od is IEnumerable<Dog>);
+        Console.WriteLine(od is IList<Dog>);
+        Animal[] animals = new Animal[] { new Animal("cat") };
+        Console.WriteLine(((object)animals) is IList<Dog>);
+        IEnumerable<Animal> ea = dogs;
+        foreach (Animal a in ea) Console.Write(a + " ");
+        Console.WriteLine();
+        IEnumerator<Animal> en = ea.GetEnumerator();
+        Try("Current before", () => { var c = en.Current; });
+        while (en.MoveNext()) Console.Write(en.Current + ";");
+        Try("Current after", () => { var c = en.Current; });
+        en.Reset();
+        Console.WriteLine(en.MoveNext() + " " + en.Current);
+        object oe = en;
+        Console.WriteLine((oe is IEnumerator<Animal>) + " " + (oe is IEnumerator) + " " + (oe is IDisposable) + " " + (oe is IEnumerator<string>));
+        IEnumerable ne = xs;
+        foreach (object x in ne) Console.Write(x + " ");
+        Console.WriteLine();
+
+        Pt[] pts = { new Pt(1, 2), new Pt(3, 4) };
+        IList<Pt> lp = pts;
+        Console.WriteLine(lp.IndexOf(new Pt(3, 4)) + " " + lp.Contains(new Pt(1, 3)) + " " + lp[1].Y);
+        lp[0] = new Pt(9, 9);
+        Console.WriteLine(pts[0].X);
+
+        double[] ds = { 1.5, double.NaN };
+        Console.WriteLine(((IList<double>)ds).IndexOf(double.NaN) + " " + ((ICollection<double>)ds).Contains(double.NaN));
+
+        Tok[] toks = { new Tok(1), new Tok(2) };
+        Console.WriteLine(((IList<Tok>)toks).IndexOf(new Tok(2)) + " " + ((ICollection<Tok>)toks).Contains(new Tok(3)));
+        IList<string> ls = new string[] { "x", null, "y" };
+        Console.WriteLine(ls.IndexOf(null) + " " + ls.IndexOf("y"));
+
+        // The library's own checks.
+        Tok[] many = new Tok[40];
+        for (int i = 0; i < 40; i++) many[i] = new Tok(i);
+        Console.WriteLine(new List<Tok>(many).Capacity);
+        Console.WriteLine(new List<int>(new int[7]).Capacity);
+        IEnumerable<Tok> seq = many;
+        Console.WriteLine(seq.Count() + " " + seq.ElementAt(3).A + " " + seq.ToArray().Length + " " + seq.Last().A);
+        Console.WriteLine(seq.TryGetNonEnumeratedCount(out int n) + " " + n);
+        Console.WriteLine(new List<Tok>(seq).Capacity);
+        Console.WriteLine(new List<Tok>((IEnumerable<Tok>)many).Capacity);
+        ICollection<int> ci = new int[] { 1, 2, 3 };
+        Console.WriteLine(ci.Count + " " + ci.GetType().Name);
+        switch (o)
+        {
+            case IList<string> s: Console.WriteLine("strings"); break;
+            case IList<int> s: Console.WriteLine("ints " + s.Count); break;
+        }
+        IReadOnlyList<int> ro = o as IReadOnlyList<int>;
+        Console.WriteLine(ro[2] + " " + (o as IList<string> == null));
+        List<object> held = new List<object> { xs, words, new object(), 5 };
+        foreach (object h in held) Console.Write((h is IEnumerable) + "/" + (h is ICollection<int>) + " ");
+        Console.WriteLine();
+        int[][] jag = { new[] { 1 }, new[] { 2, 3 } };
+        object oj = jag;
+        Console.WriteLine((oj is IList<int[]>) + " " + (oj is IEnumerable<IEnumerable<int>>) + " " + (oj is IEnumerable<object>));
+        Console.WriteLine(new int[0] is IList<int>);
+
+        // Covariance by conversion, and the comparer .NET's arrays search with:
+        // Equals(object) for any reference, so an IEquatable class's typed
+        // Equals is not asked; a struct's EqualityComparer; NaN equal to NaN.
+        IList<object> lt = toks;
+        Console.WriteLine(lt.IndexOf(new Tok(2)) + " " + lt.IndexOf(toks[1]) + " " + lt.Count);
+        IList<double> ld = new double[] { 1.5, double.NaN, -0.0 };
+        Console.WriteLine(ld.IndexOf(double.NaN) + " " + ld.IndexOf(0.0) + " " + ((IList<float>)new float[] { float.NaN }).IndexOf(float.NaN));
+        int[] same = { 1, 2, 3 };
+        ((ICollection<int>)same).CopyTo(same, 0);
+        Console.WriteLine(string.Join(",", same));
+        Try("CopyTo self", () => ((ICollection<int>)same).CopyTo(same, 1));
+        Try("CopyTo short", () => ((ICollection<int>)new int[] { 1, 2 }).CopyTo(new int[3], 2));
+        object[] covariant = new string[] { "p", "q" };
+        ICollection<object> co = covariant;
+        Try("CopyTo covariant", () => co.CopyTo(new string[2], 0));
+        Try("CopyTo mismatch", () => ((ICollection<object>)new object[] { 7 }).CopyTo(new string[1], 0));
+
+        // A struct of a form with slots of its own (InterfaceForms).
+        KeyValuePair<string, int>[] pairs = { new("one", 1), new("two", 2) };
+        IEnumerable<KeyValuePair<string, int>> ep = pairs;
+        foreach (var kv in ep) Console.Write(kv.Key + "=" + kv.Value + " ");
+        Console.WriteLine();
+        Dictionary<string, int> fromPairs = new Dictionary<string, int>(ep);
+        Console.WriteLine(fromPairs["two"] + " " + ((IList<KeyValuePair<string, int>>)pairs).IndexOf(new("two", 2)));
+
+        // The library's sequence answers over an array.
+        IEnumerable<int> seqi = new int[] { 4, 5, 6 };
+        Console.WriteLine(string.Join("|", seqi) + " " + seqi.ElementAt(2) + " " + seqi.Last() + " " + seqi.ToList().Capacity + " " + seqi.Reverse().First());
+        Console.WriteLine(seqi.SequenceEqual(new[] { 4, 5, 6 }) + " " + seqi.Contains(5) + " " + seqi.GetType().IsArray + " " + (seqi.GetType() == typeof(int[])));
+        IReadOnlyCollection<string> rc = new[] { "a", "b", "c" };
+        Console.WriteLine(rc.Count + " " + rc.GetType().Name + " " + rc.GetType().FullName);
+        IEnumerable<object> eo = new Dog[] { new Dog("d") };
+        Console.WriteLine(eo.GetType() + " " + eo.First() + " " + (eo is Animal[]) + " " + (eo is IList<Dog>));
+        IEnumerable<int> empty = new int[0];
+        Console.WriteLine(empty.Any() + " " + empty.GetType());
+    }
+}

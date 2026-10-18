@@ -13,8 +13,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// a descriptor's symbol at its methods, or either moved by a constant or
 /// masked, through copies -- however the passes have moved the virtual call
 /// lowering wrote (hoisted, shared, merged into one call). Each read is
-/// named by the class it was made through, where it was made for virtual
-/// calls of a class and nothing else (Instr.DispatchType), and by object --
+/// named by the class or interface it was made through, where it was made
+/// for calls of one and nothing else (Instr.DispatchType), and by object --
 /// every descriptor -- otherwise. What may hold a method table is read
 /// widely, so a field read through a reference read from memory counts as a
 /// slot's read too -- more is kept, never less: a word loaded from offset 0
@@ -116,8 +116,8 @@ internal static class VirtualSlotUses
         }
 
         // The class a method loaded into `r` is called through: the one class
-        // every call of it names (Lowering's DispatchType), when it is used
-        // for nothing but calls; any other use, or an interface's, is any.
+        // or interface every call of it names (Lowering's DispatchType), when
+        // it is used for nothing but calls; any other use is any.
         string Through(VReg r)
         {
             string? only = null;
@@ -136,7 +136,8 @@ internal static class VirtualSlotUses
                     }
                     if (u.Op != Opcode.CallIndirect || u.Operands[0] is not RegOperand { Reg: var callee } || !seen.Contains(callee)
                         || u.Operands.Skip(1).Any(a => a is RegOperand { Reg: var arg } && seen.Contains(arg))
-                        || u.DispatchType is not string named || !named.StartsWith("t_", StringComparison.Ordinal)
+                        || u.DispatchType is not string named
+                        || !(named.StartsWith("t_", StringComparison.Ordinal) || named.StartsWith("i_", StringComparison.Ordinal))
                         || only is not null && only != named)
                         return Any;
                     only = named;
