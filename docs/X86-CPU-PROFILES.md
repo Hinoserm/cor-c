@@ -3,8 +3,9 @@
 The default is 486+x87. `--cpu` permits the selected processor's complete ISA;
 `--tune` selects cost preferences without adding instructions. Model names cover
 386, 486, Pentium, Pentium MMX, Pentium Pro, Pentium II, Pentium III, Pentium 4,
-K6, K6-2, K6-III, K6-2+, K6-III+, Athlon, Athlon XP and Athlon 64 (32-bit code
-with an x87; `k8` is the long-mode target). Aliases such as `k6-3+`, `k7` and
+K6, K6-2, K6-III, K6-2+, K6-III+, Athlon, Athlon XP, Athlon 64 (32-bit code
+with an x87; `k8` is the long-mode target) and Cyrix's 6x86MX (CMOV without
+FCMOV/FCOMI). Aliases such as `k6-3+`, `k7` and
 `athlon-4` are accepted. Both `--cpu=name` and `--cpu name` forms are accepted
 by the compiler and assembler.
 

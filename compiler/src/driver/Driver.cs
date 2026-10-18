@@ -324,7 +324,7 @@ public static class Driver
               --cpu <name>       ISA profile: 486 (default), pentium, pentium-mmx,
                                  pentium-pro, pentium2, pentium3, pentium4, k6,
                                  k6-2, k6-3, k6-2+, k6-3+, athlon, athlon-xp,
-                                 athlon64
+                                 athlon64, 6x86mx
               --tune <name>      optimization preferences without enabling additional instructions
               --disable-mmx      exclude MMX and what needs it: 3DNow! and the
                                  MMX extensions

@@ -21,6 +21,9 @@
     <Test Name="backend-pentium-pro" Executable="bin/managed/$(Configuration)/net10.0/x86tests">
       <Argument Value="--cpu=pentium-pro" />
     </Test>
+    <Test Name="backend-6x86mx" Executable="bin/managed/$(Configuration)/net10.0/x86tests">
+      <Argument Value="--cpu=6x86mx" />
+    </Test>
     <Test Name="backend-mmx-excluded" Executable="bin/managed/$(Configuration)/net10.0/x86tests">
       <Argument Value="--cpu=pentium-mmx" />
       <Argument Value="--disable-mmx" />

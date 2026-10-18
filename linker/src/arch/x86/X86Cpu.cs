@@ -104,6 +104,7 @@ public sealed class X86Cpu
         "athlon" or "k7" or "athlon-tbird" => "athlon",
         "athlon-xp" or "athlon-4" or "athlon-mp" => "athlon-xp",
         "athlon64" => "athlon64",
+        "6x86mx" or "m2" or "mii" or "cyrix-mii" => "6x86mx",
         _ => throw new ArgumentException("Unknown x86 CPU: " + name),
     };
 
@@ -128,6 +129,10 @@ public sealed class X86Cpu
         "athlon" => Model("k6-2+") | X86Feature.MmxExtensions | X86Feature.Cmov | X86Feature.FloatCmov,
         "athlon-xp" => Model("athlon") | X86Feature.Sse,
         "athlon64" => Model("athlon-xp") | X86Feature.Sse2,
+        // CYRIX'S 6x86MX (the MII): a Pentium MMX's set with CMOVcc, and no
+        // FCMOVcc or FCOMI, which its x87 never had -- whatever CPUID's one
+        // CMOV bit says, as a Pentium Pro's would.
+        "6x86mx" => Model("pentium-mmx") | X86Feature.Cmov,
         _ => null,
     };
 
