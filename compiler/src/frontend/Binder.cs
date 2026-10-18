@@ -18276,7 +18276,7 @@ public sealed partial class Binder
         // 7.2): a program's class derived from the library's sees none of the
         // library's -- Random(bool), Random.Shared's own constructor.
         return (mods & Mods.Private) == 0 || owner.Decl is not { } ownerDecl || here.Decl is not { } hereDecl
-            || LibraryDecl(ownerDecl) == LibraryDecl(hereDecl);
+            || ClassLibrarySide(ownerDecl) == ClassLibrarySide(hereDecl);
 
         // Within: the type itself, or one written inside it, however deep.
         bool Inside(TypeSymbol t, TypeSymbol of)
