@@ -4920,6 +4920,7 @@ public sealed partial class Binder
 
         // An implementation of an interface method takes THAT method's slot, so
         // a call through the interface reaches it whatever class it is on.
+        Dictionary<int, (TypeSymbol Face, MethodSymbol Impl)> claimed = new();
         foreach (TypeSymbol iface in AllInterfaces(sym))
         {
             bool reimplements = sym.Interfaces.Any(direct => Extended(direct).Contains(iface));
@@ -5002,6 +5003,22 @@ public sealed partial class Binder
                     }
                     continue;
                 }
+                // ONE SLOT SERVES EVERY CONSTRUCTION OF A GENERIC INTERFACE,
+                // which shared generic code calls through whatever its T is.
+                // A class answering two constructions with two members --
+                // IComparable<int> and IComparable<string> -- had the second
+                // take the first's slot, and a call through IComparable<int>
+                // ran the string one. Refused, where it was miscompiled.
+                if (claimed.TryGetValue(want.VtableSlot, out (TypeSymbol Face, MethodSymbol Impl) had)
+                    && !ReferenceEquals(had.Face, iface) && !ReferenceEquals(had.Impl, impl))
+                {
+                    if (sym.Decl != null)
+                    {
+                        Error(sym.Decl, $"'{sym.Name}' implements both '{had.Face.Name}' and '{iface.Name}' with different members for '{want.Name}'; two constructions of one generic interface share its slots, which this compiler does not yet separate");
+                    }
+                    continue;
+                }
+                claimed[want.VtableSlot] = (iface, impl);
                 sym.WritableInterfaceImplementations[want.VtableSlot] = impl;
             }
         }

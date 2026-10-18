@@ -4809,8 +4809,9 @@ class CaptureCollection : IList<Capture>, IReadOnlyList<Capture>
 /// A match's groups, by number and by name. A number with no group, or a
 /// name none has, is a group that matched nothing, named "".
 // .NET's is an IReadOnlyDictionary<string, Group> as well; here it has that
-// interface's members but not the interface, because the compiler cannot yet
-// tell apart the explicit GetEnumerators of IEnumerable<Group> and
+// interface's members but not the interface, because the compiler shares an
+// interface member's slot among the constructions of a generic interface, so
+// one class cannot implement both IEnumerable<Group> and
 // IEnumerable<KeyValuePair<string, Group>>.
 class GroupCollection : IList<Group>, IReadOnlyList<Group>
 {

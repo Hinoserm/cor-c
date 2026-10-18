@@ -114,10 +114,9 @@ the same list.
   with the larger payload, where SSE2, and so .NET, answers the first. Only
   that NaN's sign and payload differ.
 - `GroupCollection` has IReadOnlyDictionary<string, Group>'s members but is
-  not one: the compiler cannot yet tell apart two explicit GetEnumerators of
-  one generic interface (IEnumerable<Group> and IEnumerable<KeyValuePair<
-  string, Group>>), as its explicit implementations keep only the
-  interface's arity.
+  not one: the compiler gives an interface member one slot for every
+  construction of a generic interface, so a class cannot implement both
+  IEnumerable<Group> and IEnumerable<KeyValuePair<string, Group>>.
 - `Random()` with no seed is xoshiro256**, as .NET's is, but its state cannot
   be unpredictable: nothing below `stdlib/src/System/Core.cor` has entropy, so the seed is a
   constant stirred by a counter. `Random(seed)` reproduces .NET's sequence

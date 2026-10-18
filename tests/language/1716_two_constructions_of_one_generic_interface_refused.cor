@@ -1,0 +1,26 @@
+// test: two constructions of one generic interface refused
+// expect-compile-error: 'C' implements both 'IComparable$int' and 'IComparable$string' with different members for 'CompareTo'
+// C# lets a class implement IComparable<int> and IComparable<string> with a
+// CompareTo for each. Here every construction of a generic interface shares
+// that interface's slots -- shared generic code calls through one slot
+// whatever its T -- so the second CompareTo took the first's slot, and a
+// call through IComparable<int> ran the string one. Until the slots are
+// separated the class is refused, rather than compiled to call the wrong
+// member.
+
+using System;
+
+class C : IComparable<int>, IComparable<string>
+{
+    public int CompareTo(int other) { return 1; }
+    public int CompareTo(string? other) { return 2; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        IComparable<int> a = new C();
+        Console.WriteLine(a.CompareTo(5));
+    }
+}
