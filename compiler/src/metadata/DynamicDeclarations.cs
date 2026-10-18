@@ -544,7 +544,13 @@ public static class DynamicDeclarations
     /// <summary>The String, Int32 and the rest's dispatch: one static class in the library's scope (PrimitiveCall).</summary>
     static string? PrimitiveText(CompilationUnit unit, Scope scope)
     {
+        // ONE METHOD A PRIMITIVE, each called from Call by the primitive's
+        // type and kept a call (NoInlining): one body over every primitive's
+        // members, moved into the unit's one call of it, was a function of
+        // 4.6 MB, and every pass over a function grows faster than it does --
+        // dynamic's tests took 3.6 GB and twice the time to compile.
         StringBuilder s = new();
+        StringBuilder each = new();
         s.Append("static class __LatePrimitives\n{\n");
         s.Append("    public static int Call(object self, string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
         s.Append("        result = null;\n");
@@ -573,18 +579,22 @@ public static class DynamicDeclarations
             any = true;
             // Each its own name: an `is` pattern's variable is the enclosing block's.
             string own = "__self_" + keyword;
-            s.Append("        if (self is ").Append(keyword).Append(' ').Append(own).Append(")\n        {\n            switch (name)\n            {\n");
+            string method = "Call_" + keyword;
+            s.Append("        if (self is ").Append(keyword).Append(' ').Append(own).Append(") return ").Append(method).Append('(').Append(own).Append(", name, call, out result);\n");
+            each.Append("    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]\n");
+            each.Append("    static int ").Append(method).Append('(').Append(keyword).Append(' ').Append(own).Append(", string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
+            each.Append("        result = null;\n            switch (name)\n            {\n");
             foreach ((string name, List<MethodDecl> overloads) in methods)
             {
-                s.Append("            case \"").Append(name).Append("\":\n            {\n");
+                each.Append("            case \"").Append(name).Append("\":\n            {\n");
                 List<MethodDecl> ordered = overloads.OrderByDescending(o => o.Params.Sum(prm => Weight(scope, statics, prm.Type))).ToList();
                 foreach (bool exact in new[] { true, false })
-                    foreach (MethodDecl md in ordered) CallCases(scope, statics, s, md, exact, callee: Qualified(statics) + "." + name, self: own);
-                s.Append("                return 2;\n            }\n");
+                    foreach (MethodDecl md in ordered) CallCases(scope, statics, each, md, exact, callee: Qualified(statics) + "." + name, self: own);
+                each.Append("                return 2;\n            }\n");
             }
-            s.Append("            }\n            return 1;\n        }\n");
+            each.Append("            }\n        return 1;\n    }\n");
         }
-        s.Append("        return 1;\n    }\n}\n");
+        s.Append("        return 1;\n    }\n").Append(each).Append("}\n");
         return any ? s.ToString() : null;
     }
 

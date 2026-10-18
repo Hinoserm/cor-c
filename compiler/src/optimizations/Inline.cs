@@ -98,6 +98,16 @@ public sealed class Inline : IParallelModulePass
     public int GrowthLimit { get; init; } = 4000;
 
     /// <summary>
+    /// NOR PAST THIS MANY BY A BODY WITH ONE CALLER, which otherwise moves
+    /// whatever its size, as it shrinks the image: the passes over one
+    /// function -- escape, regions, the allocator -- grow faster than the
+    /// function does, and dynamic's dispatcher over every primitive's
+    /// members, moved into the unit's one call of it, was a single function
+    /// of 4.6 MB that took 3.6 GB and twice the time to compile.
+    /// </summary>
+    public int SingleCallerLimit { get; init; } = 60000;
+
+    /// <summary>
     /// Bodies up to this many instructions are inlined however large the
     /// caller has grown: no bigger than the call they replace -- arguments
     /// pushed, the call, the frame, the result moved -- they cannot grow it.
@@ -369,7 +379,8 @@ public sealed class Inline : IParallelModulePass
                             block.Instrs.Count(instruction => instruction.Op is Opcode.Branch or Opcode.Switch));
                     // One caller makes a body free to move only if it then goes:
                     // one whose address is taken stays, and would be twice.
-                    bool single = callers.GetValueOrDefault(callee.Name) == 1 && !addressTaken.Contains(callee.Name);
+                    bool single = callers.GetValueOrDefault(callee.Name) == 1 && !addressTaken.Contains(callee.Name)
+                                  && size + calleeSize <= SingleCallerLimit;
                     bool specializesBranch = calleeSize <= ConstantBranchBody
                         && ConstantControlsBranch(callee, call);
                     // The context walk builds definition/CFG information. Do
