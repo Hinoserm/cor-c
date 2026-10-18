@@ -1,0 +1,6 @@
+// The other unit of 1871_frame_child_handed_to_virtual_call_across_units:
+// the libraries, and nothing of the test's own but this.
+public static class Units
+{
+    public static int Seed() => 0;
+}

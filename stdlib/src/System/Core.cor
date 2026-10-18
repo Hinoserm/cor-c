@@ -14623,17 +14623,18 @@ class ArithmeticException : SystemException
 
 // ---- Random ---------------------------------------------------------------
 //
-// XORSHIFT, and SEEDED BY DEFAULT rather than by the clock: two runs of the
-// same program with the same seed produce the same numbers, which is what
-// makes a failing test reproducible. .NET's parameterless constructor picks a
-// seed nobody can predict; this machine has no entropy to pick one from at the
-// level this file sits at, so the default seed is a constant and a caller that
-// wants unpredictability passes a clock reading in.
+// TWO GENERATORS, as .NET has. Random(seed) is the .NET 5 subtractive
+// generator digit for digit, because a seeded sequence is a promise; Random()
+// is xoshiro256** from a state no run repeats. A class DERIVED from Random
+// gets the subtractive one either way -- seeded from Random.Shared when it
+// gives no seed -- and its members reach each other through the same virtual
+// calls .NET's do, so an override of Sample changes Next(maxValue),
+// NextDouble and NextInt64 exactly as it does there, and leaves Next() alone
+// exactly as it does there.
 //
-// Marsaglia's xorshift64, which is three shifts and three exclusive-ors, has a
-// period of 2^64-1 and passes the tests that matter for shuffling a list or
-// choosing a sample. It is NOT for keys or nonces -- see os/lib/crypto_random
-// for those, and note that the difference is not a matter of degree.
+// Neither is for keys or nonces -- see os/lib/crypto_random and
+// RandomNumberGenerator for those, and note that the difference is not a
+// matter of degree.
 class Random {
     // The .NET 5 SEEDED GENERATOR, kept digit for digit: Knuth's subtractive
     // method over a ring of 56 numbers. .NET's own Random(seed) is this, and
@@ -14644,6 +14645,7 @@ class Random {
     // not choices here; they are the format.
     private const int Big = 2147483647;      // int.MaxValue
     private const int Seeding = 161803398;   // Knuth's, near phi * 10^8
+    private const ulong Golden = 0x9E3779B97F4A7C15;   // 2^64 / phi, SplitMix64's step
 
     private int[] ring;
     private int next;
@@ -14654,33 +14656,74 @@ class Random {
     private ulong s1;
     private ulong s2;
     private ulong s3;
-    private bool seeded;
+
+    // Whether the subtractive ring answers, through the virtual members:
+    // true for a seed and for any derived class, false for a plain Random()
+    // and for Random.Shared, which answers everything itself.
+    private bool subtractive;
 
     private static ulong Different = 0;
 
-    /// NO SEED MEANS UNPREDICTABLE in .NET, which takes its state from the
-    /// operating system and runs xoshiro256** over it. The algorithm here is
-    /// the same one; the entropy is NOT, because this file sits below anything
-    /// that has any -- it is a fixed constant stirred by a counter, so two
-    /// Randoms in a program differ from each other but a run does not differ
-    /// from the run before. A program that needs unpredictability seeds from
-    /// the clock, or asks RandomNumberGenerator, which has the real thing.
+    /// ONE RANDOM FOR EVERY THREAD, as .NET's: unseeded, and safe to call from
+    /// any number of threads at once because each thread draws from a
+    /// generator of its own.
+    public static Random Shared { get; } = new ThreadSafeRandom();
+
+    /// NO SEED MEANS UNPREDICTABLE, as in .NET, which fills xoshiro256**'s
+    /// state from the operating system. This file sits below anything with
+    /// entropy to give, but three things it can reach still differ: the clock
+    /// (Clock.Now, which the Linux runtime and the bare-metal one both
+    /// answer), the address the allocator hands a fresh object, and a count of
+    /// the Randoms made so far -- so two runs differ, and so do two Randoms
+    /// made in the same tick. SplitMix64 spreads them over the four words.
+    ///
+    /// A DERIVED CLASS gets the subtractive generator instead, seeded from
+    /// Random.Shared: what its overrides of Sample and Next say must be what
+    /// the other members reach, and xoshiro's own members never ask them.
     public Random() {
-        seeded = false;
+        if (GetType() != typeof(Random)) {
+            subtractive = true;
+            ring = new int[56];
+            SeedRing(Shared.Next());
+            return;
+        }
+
         Different = Different + 1;
 
-        ulong start = (ulong)0x9E3779B97F4A7C15 * (Different + 1);
+        ulong stream = Mix((ulong)Clock.Now())
+                     ^ Mix((ulong)Sys.Word(new object()) + Golden)
+                     ^ (Different * Golden);
 
-        s0 = Mix(start + (ulong)0x9E3779B97F4A7C15);
-        s1 = Mix(s0);
-        s2 = Mix(s1);
-        s3 = Mix(s2);
+        // FOUR STEPS OF ONE STREAM, never one word mixed into the next: Mix is
+        // a bijection, so four different inputs give four different words and
+        // at most one of them zero -- xoshiro's one state it cannot leave.
+        stream = stream + Golden;
+        s0 = Mix(stream);
+        stream = stream + Golden;
+        s1 = Mix(stream);
+        stream = stream + Golden;
+        s2 = Mix(stream);
+        stream = stream + Golden;
+        s3 = Mix(stream);
     }
 
-    public Random(int seed) {
-        seeded = true;
+    /// THE RING IS MADE HERE, not in SeedRing: a Random a caller makes from a
+    /// seed and keeps to itself then has its ring beside it in the caller's
+    /// frame, once this constructor is inlined there.
+    public Random(int Seed) {
+        subtractive = true;
         ring = new int[56];
+        SeedRing(Seed);
+    }
 
+    /// Random.Shared's own: it answers every member from a generator per
+    /// thread, so the instance itself keeps no state. .NET's.
+    private protected Random(bool isThreadSafeRandom) {
+        subtractive = false;
+    }
+
+    /// The ring, made already, scattered and warmed from the seed.
+    private void SeedRing(int seed) {
         // int.MinValue HAS NO POSITIVE, so it stands in for int.MaxValue --
         // .NET's own guard, and without it the seed would negate to itself.
         int subtraction = seed == -2147483648 ? Big : (seed < 0 ? -seed : seed);
@@ -14762,34 +14805,49 @@ class Random {
         return made;
     }
 
-    /// A DOUBLE IN [0, 1), which every other member is defined in terms of --
-    /// including Next(maxValue), which is why .NET's bounded numbers are what
-    /// they are.
-    private double Sample() {
-        if (!seeded) { return (double)(NextState() >> 11) * (1.0 / 9007199254740992.0); }
+    /// A DOUBLE IN [0, 1), which every bounded int and double of a seeded or
+    /// derived Random is defined in terms of -- including Next(maxValue),
+    /// which is why .NET's bounded numbers are what they are. Protected and
+    /// virtual, as .NET declares it, so a derived class can replace it.
+    protected virtual double Sample() {
+        if (!subtractive) { return (double)(NextState() >> 11) * (1.0 / 9007199254740992.0); }
         return (double)InternalSample() * (1.0 / (double)Big);
     }
 
-    /// A NON-NEGATIVE int below int.MaxValue.
-    public int Next() {
-        if (!seeded) { return (int)(NextState() >> 33); }
-        return InternalSample();
+    /// A NON-NEGATIVE int below int.MaxValue: xoshiro's top 31 bits, drawn
+    /// again on the one value that is int.MaxValue itself.
+    public virtual int Next() {
+        if (subtractive) { return InternalSample(); }
+
+        while (true) {
+            int made = (int)(NextState() >> 33);
+
+            if (made != Big) { return made; }
+        }
     }
 
-    public int Next(int maxValue) {
-        if (maxValue < 0) { throw new ArgumentOutOfRangeException("maxValue"); }
-        return (int)(Sample() * (double)maxValue);
+    public virtual int Next(int maxValue) {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxValue);
+        if (subtractive) { return (int)(Sample() * (double)maxValue); }
+        return (int)Below((ulong)maxValue);
     }
 
     /// THE UPPER BOUND IS EXCLUSIVE and the lower is not, which is .NET's rule
     /// for every one of these and the commonest thing to get wrong.
-    public int Next(int minValue, int maxValue) {
-        if (minValue > maxValue) { throw new ArgumentOutOfRangeException("minValue"); }
+    public virtual int Next(int minValue, int maxValue) {
+        if (minValue > maxValue) { MinAboveMax(); }
 
         long range = (long)maxValue - (long)minValue;
 
+        if (!subtractive) { return (int)((long)Below((ulong)range) + (long)minValue); }
         if (range <= (long)Big) { return (int)(Sample() * (double)range) + minValue; }
         return (int)((long)(LargeSample() * (double)range) + (long)minValue);
+    }
+
+    // .NET's words for a lower bound above the upper one, which every
+    // two-bound member throws.
+    private static void MinAboveMax() {
+        throw new ArgumentOutOfRangeException("minValue", "'minValue' cannot be greater than maxValue.");
     }
 
     // A RANGE WIDER THAN AN INT needs more than one draw to fill evenly: one
@@ -14809,18 +14867,19 @@ class Random {
         return d;
     }
 
-    public double NextDouble() { return Sample(); }
+    public virtual double NextDouble() { return Sample(); }
 
-    public float NextSingle() { return (float)Sample(); }
+    /// xoshiro's top 24 bits, which a float holds exactly, so the answer is
+    /// never rounded up to 1; a seeded Random narrows its Sample, as .NET's
+    /// does.
+    public virtual float NextSingle() {
+        if (subtractive) { return (float)Sample(); }
+        return (float)(NextState() >> 40) * (1.0f / 16777216.0f);
+    }
 
-    /// Sixty-three bits of a long, built from three draws because a draw is
-    /// only thirty-one bits and the top one of those is never set.
-    ///
-    /// The three widths are .NET's, but note that this is the ONE member whose
-    /// sequence has not been checked against .NET number for number: Next,
-    /// Next(max), Next(min, max), NextDouble and NextBytes all reproduce it
-    /// exactly from the same seed, and NextInt64 has not been confirmed.
-    public long NextInt64() {
+    /// A NON-NEGATIVE long below long.MaxValue: the top 63 bits of a 64-bit
+    /// draw, drawn again on the one value that is long.MaxValue itself.
+    public virtual long NextInt64() {
         while (true) {
             ulong made = NextUInt64() >> 1;
 
@@ -14828,18 +14887,167 @@ class Random {
         }
     }
 
-    private ulong NextUInt64() {
-        return ((ulong)(uint)Next(1 << 22) << 42)
-             | ((ulong)(uint)Next(1 << 22) << 20)
-             | (ulong)(uint)Next(1 << 20);
+    public virtual long NextInt64(long maxValue) {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxValue);
+        return (long)Below((ulong)maxValue);
     }
 
-    public void NextBytes(byte[] buffer) {
-        if (buffer == null) { throw new ArgumentNullException("buffer"); }
+    /// The width is taken without overflow checks, so NextInt64(long.MinValue,
+    /// long.MaxValue) draws from all but one of the longs, as in .NET.
+    public virtual long NextInt64(long minValue, long maxValue) {
+        if (minValue > maxValue) { MinAboveMax(); }
+        return (long)Below((ulong)(maxValue - minValue)) + minValue;
+    }
 
-        for (int i = 0; i < buffer.Length; i++) {
-            buffer[i] = (byte)(Next() % 256);
+    /// Sixty-four bits: one xoshiro output, or three draws through Next(int)
+    /// of 22, 22 and 20 bits, LOWEST FIRST -- .NET's order, and the reason a
+    /// seeded NextInt64 is .NET's number rather than merely a good one.
+    private ulong NextUInt64() {
+        if (!subtractive) { return NextState(); }
+        return (ulong)(uint)Next(1 << 22)
+             | ((ulong)(uint)Next(1 << 22) << 22)
+             | ((ulong)(uint)Next(1 << 20) << 44);
+    }
+
+    /// A NUMBER BELOW `range`, every one equally likely: the top bits of a
+    /// 64-bit draw, as few as hold range - 1, drawn again until they fall
+    /// below it -- so fewer than two draws on average, and none for a range of
+    /// one or nothing. .NET's for the NextInt64 bounds of both generators and
+    /// for the int bounds of xoshiro.
+    private ulong Below(ulong range) {
+        if (range <= 1) { return 0; }
+
+        int bits = 0;
+
+        for (ulong rest = range - 1; rest != 0; rest = rest >> 1) { bits = bits + 1; }
+
+        while (true) {
+            ulong made = NextUInt64() >> (64 - bits);
+
+            if (made < range) { return made; }
         }
+    }
+
+    /// The low byte of a draw apiece from a seeded or derived Random, without
+    /// asking Next(), as .NET's NextBytes(byte[]) does not ask it.
+    public virtual void NextBytes(byte[] buffer) {
+        ArgumentNullException.ThrowIfNull(buffer);
+        Fill(buffer, 0, buffer.Length);
+    }
+
+    /// The low byte of Next() apiece from a seeded or derived Random -- here
+    /// .NET DOES ask the override, unlike the array's overload.
+    public virtual void NextBytes(Span<byte> buffer) {
+        if (!subtractive) {
+            Fill(buffer.Array, buffer.Start, buffer.Length);
+            return;
+        }
+        for (int i = 0; i < buffer.Length; i++) { buffer[i] = (byte)Next(); }
+    }
+
+    // EIGHT BYTES TO A XOSHIRO DRAW, lowest first, and what is left over from
+    // one more; one byte to a subtractive draw.
+    private void Fill(byte[] items, int from, int count) {
+        if (subtractive) {
+            for (int i = 0; i < count; i++) { items[from + i] = (byte)InternalSample(); }
+            return;
+        }
+
+        int at = 0;
+
+        while (at < count) {
+            ulong made = NextState();
+
+            for (int b = 0; b < 8 && at < count; b++) {
+                items[from + at] = (byte)made;
+                made = made >> 8;
+                at = at + 1;
+            }
+        }
+    }
+
+    /// THE ARRAY IN A RANDOM ORDER, in place: Fisher and Yates, each place
+    /// from the first taking one of the elements at or after it through
+    /// Next(i, n) -- .NET's walk, so a seeded shuffle is .NET's shuffle.
+    public void Shuffle<T>(T[] values) {
+        ArgumentNullException.ThrowIfNull(values);
+        Shuffle(new Span<T>(values));
+    }
+
+    public void Shuffle<T>(Span<T> values) {
+        int n = values.Length;
+
+        for (int i = 0; i < n - 1; i++) {
+            int j = Next(i, n);
+
+            if (j != i) {
+                T held = values[i];
+
+                values[i] = values[j];
+                values[j] = held;
+            }
+        }
+    }
+
+    /// `length` choices, each choices[Next(choices.Length)], so a choice may
+    /// come up any number of times -- .NET's draw, one Next apiece.
+    public T[] GetItems<T>(T[] choices, int length) {
+        ArgumentNullException.ThrowIfNull(choices);
+        return GetItems(new ReadOnlySpan<T>(choices), length);
+    }
+
+    public T[] GetItems<T>(ReadOnlySpan<T> choices, int length) {
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+
+        T[] items = new T[length];
+
+        GetItems(choices, new Span<T>(items));
+        return items;
+    }
+
+    /// NOTHING TO CHOOSE FROM is an error even when nothing is wanted, as .NET
+    /// has it.
+    public void GetItems<T>(ReadOnlySpan<T> choices, Span<T> destination) {
+        if (choices.IsEmpty) { throw new ArgumentException("Span may not be empty.", "choices"); }
+
+        for (int i = 0; i < destination.Length; i++) {
+            destination[i] = choices[Next(choices.Length)];
+        }
+    }
+
+    // RANDOM.SHARED, .NET's ThreadSafeRandom: every member handed to a
+    // [ThreadStatic] unseeded Random made the first time a thread asks, so no
+    // two threads ever touch one state and nothing needs a lock. Sample alone
+    // is refused, because nothing outside could call it and nothing inside
+    // does.
+    private sealed class ThreadSafeRandom : Random {
+        [ThreadStatic] private static Random? local;
+
+        public ThreadSafeRandom() : base(true) { }
+
+        private static Random Local {
+            get {
+                Random? made = local;
+
+                if (made == null) {
+                    made = new Random();
+                    local = made;
+                }
+                return made;
+            }
+        }
+
+        public override int Next() { return Local.Next(); }
+        public override int Next(int maxValue) { return Local.Next(maxValue); }
+        public override int Next(int minValue, int maxValue) { return Local.Next(minValue, maxValue); }
+        public override long NextInt64() { return Local.NextInt64(); }
+        public override long NextInt64(long maxValue) { return Local.NextInt64(maxValue); }
+        public override long NextInt64(long minValue, long maxValue) { return Local.NextInt64(minValue, maxValue); }
+        public override double NextDouble() { return Local.NextDouble(); }
+        public override float NextSingle() { return Local.NextSingle(); }
+        public override void NextBytes(byte[] buffer) { Local.NextBytes(buffer); }
+        public override void NextBytes(Span<byte> buffer) { Local.NextBytes(buffer); }
+        protected override double Sample() { throw new NotSupportedException(); }
     }
 }
 

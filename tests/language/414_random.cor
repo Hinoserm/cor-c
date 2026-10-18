@@ -31,8 +31,9 @@ class Program
         Random third = new Random(0);
         Console.WriteLine($"{third.Next()} {third.Next()}");
 
-        // Two unseeded generators must not walk in step -- there is no entropy
-        // below this file, so what separates them is a counter.
+        // Two unseeded generators must not walk in step, even made in the
+        // same tick: the count of Randoms made separates them where the clock
+        // and the allocator's address do not.
         Random a = new Random();
         Random b = new Random();
         Console.WriteLine("different " + (a.Next() != b.Next()));

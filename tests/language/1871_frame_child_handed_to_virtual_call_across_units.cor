@@ -1,0 +1,69 @@
+// test: a child of an object in the frame stays there when a callee hands the owner to a virtual call
+// units: tests/language/support/1871_frame_child_virtual_units.cor
+// expect-exit: 0
+// expect-output:
+// 10024002550
+// items in the frame True
+//
+// The link's frame check reads the bodies of what a function hands an
+// object in its frame to (1234). Here Draw -- never inlined -- hands its Bag
+// on through a virtual call with two overrides the image has, Bag's and
+// Doubled's, neither of which lets go of the array it reads. The call names
+// one symbol for both (Escape.VirtualCallees), and the whole program's
+// summaries answer it as they answer a direct call whose body is not in
+// sight: nothing kept, the field left clean. So each lap's array goes in the
+// frame with its Bag. Before, every indirect call in a callee was refused,
+// and the array was made on the heap each lap and freed.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Bag
+{
+    int[] items;
+
+    public Bag(int seed)
+    {
+        items = new int[50];
+        for (int i = 0; i < items.Length; i++) items[i] = seed + i;
+    }
+
+    public virtual int Sum()
+    {
+        int s = 0;
+        for (int i = 0; i < items.Length; i++) s += items[i];
+        return s;
+    }
+}
+
+class Doubled : Bag
+{
+    public Doubled(int seed) : base(seed) { }
+    public override int Sum() { return 2 * base.Sum(); }
+}
+
+static class P
+{
+    const int N = 20000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Draw(Bag b) { return b.Sum(); }
+
+    static void Main()
+    {
+        long total = Draw(new Doubled(1)) + Units.Seed();
+        Gc.Collect();
+        long before = Gc.FreedBytes, taken = Gc.CollectedBytes;
+        for (int k = 0; k < N; k++)
+        {
+            Bag b = new Bag(k);
+            total += Draw(b);
+        }
+        Gc.Collect();
+        long freed = (Gc.FreedBytes - before) / N;
+        long left = (Gc.CollectedBytes - taken) / N;
+        Console.WriteLine(total);
+        // Nothing made on the heap a lap: nothing given back, nothing collected.
+        Console.WriteLine("items in the frame " + (freed >= 0 && freed < 64 && left == 0));
+    }
+}

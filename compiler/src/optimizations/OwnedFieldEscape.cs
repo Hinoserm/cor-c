@@ -365,6 +365,7 @@ internal sealed class OwnedFieldEscape
         // was copied to, and is read there under the same rules.
         Dictionary<FrameSlot, long> slots = new();
         if (!FollowCopies(f, defs, addresses, slots, field, width)) return false;
+        Dictionary<Instr, string[]>? virtuals = null;
         foreach (var b in f.Blocks)
         foreach (Instr i in b.Instrs)
         {
@@ -454,6 +455,31 @@ internal sealed class OwnedFieldEscape
                 if (!Safe(lambda, 0, path, closure)) { LastRefusal ??= i; return false; }
                 continue;
             }
+            // A VIRTUAL CALL THE LINK ANSWERS, the owner handed to it: its
+            // symbol stands for every override the image has
+            // (Escape.VirtualCallees), and the whole program's summaries say
+            // what all of them together do to each argument's fields -- so it
+            // is answered as a call whose body is not in sight is, for a child
+            // at one remove (CleanInSummary). Random.Next(int) is virtual, as
+            // .NET declares it, and the Random a caller hands to a function
+            // that draws from it keeps its ring in the frame. The method itself
+            // read out of the owner is no argument, and is refused.
+            if (VirtualSymbol(f, i, ref virtuals) is string overrides)
+            {
+                if (StartOf(i.Operands[0], addresses, slots, out _)) { LastRefusal = i; return false; }
+                for (int a = 1; a < i.Operands.Count; a++)
+                    if (StartOf(i.Operands[a], addresses, slots, out long offset))
+                    {
+                        long relative;
+                        try { relative = checked(field - offset); }
+                        catch (OverflowException) { return false; }
+                        List<Field> relativePath = new(path);
+                        relativePath[0] = new(relative, width);
+                        // Operand 0 is the method; argument a is parameter a - 1.
+                        if (!CleanInSummary(overrides, a - 1, relativePath)) { LastRefusal = i; return false; }
+                    }
+                continue;
+            }
             if (i.Op == Opcode.MemSet && i.Operands[0] is RegOperand target && addresses.ContainsKey(target.Reg)
                 && !i.Operands.Skip(1).OfType<RegOperand>().Any(r => addresses.ContainsKey(r.Reg))) continue;
             if (i.Op == Opcode.MemCopy && CopyIsFollowed(i, addresses, slots, field, width)) continue;
@@ -464,6 +490,20 @@ internal sealed class OwnedFieldEscape
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// The one symbol a virtual call stands for, when the summaries handed
+    /// over answer it -- the link's do, for every symbol a unit asked about,
+    /// and a compile's own never do, nor has it the field summaries to ask --
+    /// and null otherwise. The calls of the function are named when the first
+    /// is asked about, once for each walk of it.
+    /// </summary>
+    private string? VirtualSymbol(Function f, Instr call, ref Dictionary<Instr, string[]>? named)
+    {
+        if (_fieldsOf is null || call.Op != Opcode.CallIndirect || call.DispatchType is null) return null;
+        named ??= Escape.VirtualCallees(new[] { f }, _summaries.ContainsKey);
+        return named.TryGetValue(call, out string[]? targets) && targets is [string one] ? one : null;
     }
 
     /// <summary>Where a memory operand of the owner (register or frame slot) starts in it; false when it is not one.</summary>
