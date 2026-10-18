@@ -5206,7 +5206,7 @@ continue;
     /// that field. A constructor fills the array it has just stored through
     /// the register it made it in; refused, no array field was ever owned.
     /// </summary>
-    private static readonly bool HandTrace = Switches.HandedTrace;
+    private static bool HandTrace => Switches.HandedTrace;
 
     private bool HandedOverWithField(Function f, Block b, Instr st, HashSet<VReg> derived, Liveness live)
     {

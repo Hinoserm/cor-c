@@ -147,7 +147,7 @@ internal static class AnalysisCache
     /// <summary>The other kinds kept (Kept): the promotion order, the use index, the single definitions, the address scan (OwnedFieldEscape).</summary>
     public const int PromotionOrder = 0, UseIndex = 1, SingleDefs = 2, AddressScans = 3, OtherKinds = 4;
 
-    private static readonly bool Verifying = Switches.VerifyAnalyses;
+    private static bool Verifying => Switches.VerifyAnalyses;
 
     [ThreadStatic] private static List<Entry>? _entries;
 

@@ -412,7 +412,7 @@ public sealed class Pipeline
     }
 
     /// <summary>--trace-functions: each function's name and size as the pipeline starts on it, for finding one that never finishes.</summary>
-    private static readonly bool TraceFunctions = Switches.TraceFunctions;
+    private static bool TraceFunctions => Switches.TraceFunctions;
 
     public void Run(Function f)
     {

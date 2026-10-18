@@ -39,7 +39,7 @@ internal static class PipelineAnalyses
     [ThreadStatic] private static Cfg? _stale, _spare;
     [ThreadStatic] private static Defs? _withCfg, _withoutCfg, _ssaWithCfg;
 
-    private static readonly bool Verifying = Switches.VerifyAnalyses;
+    private static bool Verifying => Switches.VerifyAnalyses;
 
     /// <summary>Kept for `f` from here until End; false when something is already kept (a nested pipeline), which keeps its own.</summary>
     public static bool Begin(Function f)
