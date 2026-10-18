@@ -1312,6 +1312,19 @@ public static class Driver
             return 0;
         }
 
+        // A MODULE OR A SHARED OBJECT IS LINKED HERE TOO, and is held to
+        // what an executable is: every interrupt handler checked through it
+        // (InterruptNotes), and the notes that check and the link read gone
+        // from the image -- a --shared compile's 17 KB libData.so carried a
+        // 14.7 KB .corsac.irq.
+        if (!args.Contains("--obj") && (kernel is not null || shared))
+        {
+            List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj });
+            if (handlerErrors.Count > 0) throw new LinkException(handlerErrors);
+            Corsac.Lang.Lto.UsesNotes.Strip(new[] { obj });
+            Corsac.Lang.Lto.InterruptNotes.Strip(new[] { obj });
+            Corsac.Lang.Lto.LinkTimeOptimizer.StripLinkNotes(new[] { obj });
+        }
         if (kernel is not null && !args.Contains("--obj"))
         {
             byte[] ko = Linker.LinkModule(new[] { (name, obj) }, output, kernel, sharedLibs);
@@ -1393,6 +1406,10 @@ public static class Driver
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
         }
+        // Linked against shared libraries, with no optimiser to read them:
+        // the unit's summaries go all the same (a --link-shared program
+        // carried its .corsac.lto).
+        else Corsac.Lang.Lto.LinkTimeOptimizer.StripLinkNotes(link.Select(input => input.Item2));
         Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
         Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
         // What a CORSAC program carries beyond its code: --subsystem

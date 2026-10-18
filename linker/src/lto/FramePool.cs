@@ -106,13 +106,8 @@ public static class FramePool
         data.Bytes.AddRange(built);
         holder.Sections.Add(data);
         holder.Symbols.Add(new Symbol { Name = PoolSymbol, Section = data, Offset = 0, Size = built.Count, Global = true });
-        // The pool carries the same target notes as the objects it serves.
-        foreach (Section note in inputs[0].Object.Sections.Where(s => s.Name == TargetContract.SectionName))
-        {
-            Section copy = new(note.Name, note.Kind) { Align = note.Align };
-            copy.Bytes.AddRange(note.Bytes);
-            holder.Sections.Add(copy);
-        }
+        // No target note: the link has validated and taken them out of every
+        // input before the pool is made (ObjectLinkCommand), and lays out none.
         inputs.Add(("<frame name pool>", holder));
         Console.Error.WriteLine("frame names: " + tables.Count + " tables, one pool of " + built.Count + " bytes, " + (built.Count - sharedAt) + " of them shared line programs");
     }

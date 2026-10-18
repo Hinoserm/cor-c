@@ -48,4 +48,18 @@ corlink "$work/data.o" --link-shared "$work/libData.so" --runpath "$work" -o "$w
 status=0
 "$work/data" || status=$?
 test "$status" = 42
+# AND COMPILED WHOLE AGAINST IT, linked by the compile: the image carries
+# none of the notes its link reads -- a --shared compile kept its handlers'
+# .corsac.irq, a --link-shared one its .corsac.lto.
+"$corc" compile --nostdlib tests/integration/ir-lto/SharedDataCaller.cor \
+    --ref tests/integration/ir-lto/SharedData.cor --link-shared "$work/libData.so" --runpath "$work" -o "$work/data-whole"
+status=0
+"$work/data-whole" || status=$?
+test "$status" = 42
+for image in libData.so data-whole; do
+    if readelf -SW "$work/$image" | grep -q '\.corsac\.\(irq\|lto\|ir\|uses\)'; then
+        echo "FAIL $image carries the notes its link read: $(readelf -SW "$work/$image" | grep -o '\.corsac\.[a-z.]*' | tr '\n' ' ')" >&2
+        exit 1
+    fi
+done
 printf 'PASS separate dynamic linking with and without LTO: %s\n' "$work"

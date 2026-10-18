@@ -107,10 +107,20 @@ public static class LinkTimeOptimizer
         // of their sections (DuplicateCutter), which moves the relocations
         // the changes above were found at.
         DefinitionCoalescer.Run(inputs);
-        // Summaries describe pre-link code. Do not leave stale summaries in output objects.
-        foreach (var input in inputs) input.Object.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName
-            || s.Name == LifetimeHints.SectionName || s.Name == RegionHints.SectionName || s.Name == HeapRecords.SectionName);
+        StripLinkNotes(inputs.Select(input => input.Object));
         return enabled ? changes.Count : 0;
+    }
+
+    /// <summary>
+    /// What a unit leaves for the link to read, read: summaries describe
+    /// pre-link code, and none of them is the image's. A link that runs no
+    /// optimiser over its objects -- a program linked against shared
+    /// libraries -- takes them out all the same, or the image carries them.
+    /// </summary>
+    public static void StripLinkNotes(IEnumerable<ObjectFile> objects)
+    {
+        foreach (ObjectFile obj in objects) obj.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName
+            || s.Name == LifetimeHints.SectionName || s.Name == RegionHints.SectionName || s.Name == HeapRecords.SectionName);
     }
 
     /// <summary>An object's defined symbols by name, each name's in the order the table holds them.</summary>
