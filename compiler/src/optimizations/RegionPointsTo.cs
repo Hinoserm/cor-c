@@ -918,25 +918,38 @@ public sealed class RegionPointsTo : IModulePass
                 }
         }
 
-        // The program's own functions first: the budget is theirs before
-        // the class library's.
-        foreach (Function f in _m.Functions.Where(f => !f.FromLibrary).Concat(_m.Functions.Where(f => f.FromLibrary)))
-            if (copiesOf.TryGetValue(f, out List<int>? all)) CallsOf(f, all, (i, v) => _roots[i] = v);
-
-        while (next.TryDequeue(out Version? v))
+        // Each version found: how its sites make their objects, and the
+        // versions its calls reach, found in their turn.
+        void Drain()
         {
-            foreach (Block b in v.F.Blocks)
-                foreach (Instr i in b.Instrs)
-                {
-                    if (i.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
-                    List<(int, int)> objects = new();
-                    foreach (int c in v.Copies) if (_madeIn.TryGetValue((c, i), out int o)) objects.Add((o, c));
-                    string? was = chosen.GetValueOrDefault(i);
-                    v.Sites[i] = objects.Count == 0 ? was : decide(v.F, objects) ?? was;
-                    if (v.Sites[i] != was) v.Wanted = true;
-                }
-            CallsOf(v.F, v.Copies, (i, to) => v.Calls[i] = to);
+            while (next.TryDequeue(out Version? v))
+            {
+                foreach (Block b in v.F.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Callee is not (Opt.Escape.Allocator or Opt.Escape.LeafAllocator or Opt.Escape.ObjectAllocator)) continue;
+                        List<(int, int)> objects = new();
+                        foreach (int c in v.Copies) if (_madeIn.TryGetValue((c, i), out int o)) objects.Add((o, c));
+                        string? was = chosen.GetValueOrDefault(i);
+                        v.Sites[i] = objects.Count == 0 ? was : decide(v.F, objects) ?? was;
+                        if (v.Sites[i] != was) v.Wanted = true;
+                    }
+                CallsOf(v.F, v.Copies, (i, to) => v.Calls[i] = to);
+            }
         }
+
+        // The program's own functions first, and all they reach through
+        // their versions: the budget is theirs before the class library's.
+        // A program's call of List<T>.Add needs Add's version and Grow's
+        // beneath it; found only after the library's own calls had taken
+        // the budget, Grow's was never made and the list's array went to
+        // the heap.
+        foreach (Function f in _m.Functions.Where(f => !f.FromLibrary))
+            if (copiesOf.TryGetValue(f, out List<int>? all)) CallsOf(f, all, (i, v) => _roots[i] = v);
+        Drain();
+        foreach (Function f in _m.Functions.Where(f => f.FromLibrary))
+            if (copiesOf.TryGetValue(f, out List<int>? all)) CallsOf(f, all, (i, v) => _roots[i] = v);
+        Drain();
 
         // Wanted too: a version that calls one that is.
         for (bool grew = true; grew;)
