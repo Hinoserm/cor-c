@@ -722,6 +722,11 @@ public static class Driver
         // stays only for a store that cannot be made one
         // (Lowering.CardMarkBefore), in the same images: one scheme an image.
         // A thread block is a processor's in a ring-0 image only.
+        // NOT ASKED OF LONG MODE, where the backend has no store sequences and
+        // no __corsac_store_sequences range: the flag did nothing there, and
+        // a build that asked for them believed it had them.
+        if (longMode && args.Contains("--store-sequences"))
+            return Fail("--store-sequences is the 32-bit backend's: long mode has no store sequences");
         Corsac.Lang.Lower.Lowering.StoreSequences = Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences");
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
         Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding && !Corsac.Lang.Lower.Lowering.Ring1Syscalls;
@@ -1211,7 +1216,10 @@ public static class Driver
         List<string> backendErrors = new();
         // Flat stage-two objects must already place their managed entry first;
         // the separate linker does not regenerate code or guess its prologue.
-        if (flat && module.Entry is { } flatEntry)
+        // NOT WHERE AN ASSEMBLED STARTUP OWNS THE ENTRY (--asm-entry): the
+        // stub is what that startup calls, and the image begins with the
+        // object that defines _start (below).
+        if (flat && module.Entry is { } flatEntry && Value(args, "--asm-entry") is null)
         {
             Function? first = module.Functions.Find(function => function.Name == flatEntry);
             if (first is null) return Fail("flat entry is not a function: " + flatEntry);
@@ -1365,10 +1373,26 @@ public static class Driver
             return 0;
         }
 
-        string entry = Value(args, "--entry") ?? module.Entry ?? "_start";
+        // _START BY DEFAULT, AS THE HELP SAYS, when an assembled object owns
+        // it (--asm-entry): the stub is what its startup calls, and entered
+        // straight from the loader it ran on the loader's stack with .bss
+        // never cleared (EntryClearsBss) and no GS for --tls-gs.
+        string entry = Value(args, "--entry") ?? (Value(args, "--asm-entry") is not null ? "_start" : module.Entry) ?? "_start";
         List<(string, ObjectFile)> link = new() { (name, obj) };
         // And the objects --with named, read before optimising.
         link.AddRange(withObjects);
+        // A FLAT IMAGE BEGINS WITH ITS ENTRY: the object that defines it
+        // first, when that is one --with named.
+        if (flat)
+        {
+            int owner = link.FindIndex(input => input.Item2.Symbols.Any(symbol => symbol.IsDefined && symbol.Global && symbol.Name == entry));
+            if (owner > 0)
+            {
+                (string, ObjectFile) first = link[owner];
+                link.RemoveAt(owner);
+                link.Insert(0, first);
+            }
+        }
         // The report before link-time optimisation; the notes out after it,
         // whose IR archives' integrity hash covers them.
         if (Value(args, "--unused-report") is string unusedReport) Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);

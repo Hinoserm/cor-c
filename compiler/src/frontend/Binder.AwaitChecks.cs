@@ -1033,9 +1033,9 @@ public sealed partial class Binder
                 ? $"'{name}' is an interrupt handler and cannot await: it runs with interrupts off on the interrupt stack (complete a task and let its continuation run, instead)"
                 : $"'{name}' is an interrupt handler and must not allocate: here it {what}");
         }
-        foreach (CallExpr call in DirectCalls(d.Body!))
+        foreach ((Node call, MethodSymbol callee) in DirectCalls(d.Body!, m.Owner))
         {
-            if (!_r.Calls.TryGetValue(call, out MethodSymbol? callee) || !bodies.ContainsKey(callee) || ReferenceEquals(callee, m))
+            if (!bodies.ContainsKey(callee) || ReferenceEquals(callee, m))
             {
                 continue;
             }
@@ -1044,11 +1044,15 @@ public sealed partial class Binder
             if (found.HasValue && _asyncSafetyReported.Add(call))
             {
                 (Node site, string what, MethodSymbol reached) = found.Value;
-                string inner = ReferenceEquals(reached, callee) ? "" : $" (in '{reached.Owner.Name}.{reached.Name}', which it reaches)";
-                Error(call, $"'{name}' is an interrupt handler and must not allocate: '{callee.Owner.Name}.{callee.Name}' {what} at line {site.Line}{inner}");
+                string inner = ReferenceEquals(reached, callee) ? "" : $" (in {Named(reached)}, which it reaches)";
+                Error(call, $"'{name}' is an interrupt handler and must not allocate: {Named(callee)} {what} at line {site.Line}{inner}");
             }
         }
     }
+
+    /// <summary>A method as an interrupt handler's report names it: a type initialiser as one.</summary>
+    private static string Named(MethodSymbol m)
+        => m.Name == "StaticInit$" ? $"the type initialiser of '{m.Owner.Name}'" : $"'{m.Owner.Name}.{m.Name}'";
 
     /// <summary>
     /// Set by the driver for a unit compiled on its own (--obj, a library):
@@ -1093,9 +1097,9 @@ public sealed partial class Binder
             }
             List<string> calls = new();
             HashSet<string> seen = new(StringComparer.Ordinal);
-            foreach (CallExpr call in DirectCalls(d.Body!))
+            foreach ((Node _, MethodSymbol callee) in DirectCalls(d.Body!, m.Owner))
             {
-                if (_r.Calls.TryGetValue(call, out MethodSymbol? callee) && !ReferenceEquals(callee, m))
+                if (!ReferenceEquals(callee, m))
                 {
                     string label = NameOf(callee);
                     if (seen.Add(label)) calls.Add(label);
@@ -1154,15 +1158,19 @@ public sealed partial class Binder
             foreach ((Node site, string what) in AllocationsIn(d.Body!))
             {
                 if (site is AwaitExpr) continue;
+                // A TYPE INITIALISER'S OWN, not the wrapper every one has: the
+                // TypeInitializationException made only if it throws, which
+                // has no line of anybody's.
+                if (m.Name == "StaticInit$" && site.Line == 0) continue;
                 found = (site, what, m);
                 break;
             }
         }
         if (found is null)
         {
-            foreach (CallExpr call in DirectCalls(d.Body!))
+            foreach ((Node _, MethodSymbol callee) in DirectCalls(d.Body!, m.Owner))
             {
-                if (_r.Calls.TryGetValue(call, out MethodSymbol? callee) && bodies.ContainsKey(callee))
+                if (bodies.ContainsKey(callee))
                 {
                     (Node Site, string What, MethodSymbol Where)? deeper = AllocatesThrough(callee, bodies, allocates, visiting);
                     if (deeper.HasValue)
@@ -1178,16 +1186,62 @@ public sealed partial class Binder
         return found;
     }
 
-    /// <summary>Every call in a body made to a method the call names exactly: static, or not virtual.</summary>
-    private IEnumerable<CallExpr> DirectCalls(Node body)
+    /// <summary>
+    /// Every method a body runs that it names exactly -- static, or not
+    /// virtual -- with the node that runs it: its calls, AND WHAT RUNS WITH
+    /// NO CALL WRITTEN: a property's accessor read or written, an indexer's,
+    /// and the type initialiser a first touch of another type's statics runs
+    /// (Lowering.TouchType). An interrupt handler reading `Log.Instance =>
+    /// _i ??= new Log()`, or a static array of a type nothing had touched,
+    /// allocated with interrupts off and nothing said. Operators and
+    /// conversions a type declared are calls already (their rewrites).
+    /// </summary>
+    private IEnumerable<(Node Site, MethodSymbol Callee)> DirectCalls(Node body, TypeSymbol? within)
     {
+        static bool Direct(MethodSymbol m)
+            => m.Static || (!m.Virtual && !m.Abstract && !m.Override && m.Owner.Kind != TypeKind.Interface);
+        MethodSymbol? Initialiser(TypeSymbol? owner)
+            => owner is null || ReferenceEquals(owner, within) ? null
+             : owner.FindMethods("StaticInit$").FirstOrDefault(i => i.Static && i.Params.Count == 0);
         foreach (Node n in SafetyNodes(body))
         {
-            if (n is CallExpr c && _r.Calls.TryGetValue(c, out MethodSymbol? m)
-                && (m.Static || (!m.Virtual && !m.Abstract && !m.Override && m.Owner.Kind != TypeKind.Interface))
-                && !_r.Invocations.ContainsKey(c))
+            if (n is CallExpr c)
             {
-                yield return c;
+                if (_r.Calls.TryGetValue(c, out MethodSymbol? m) && Direct(m) && !_r.Invocations.ContainsKey(c))
+                {
+                    yield return (c, m);
+                    if (m.Static && Initialiser(m.Owner) is { } init) yield return (c, init);
+                }
+                continue;
+            }
+            if (n is IndexExpr ix)
+            {
+                if (_r.Indexers.TryGetValue(ix, out MethodSymbol? get) && Direct(get)) yield return (ix, get);
+                if (_r.IndexSetters.TryGetValue(ix, out MethodSymbol? set) && Direct(set)) yield return (ix, set);
+                continue;
+            }
+            if (n is not Expr e) continue;
+            if (_r.PropertySetters.TryGetValue(e, out MethodSymbol? setter) && Direct(setter))
+            {
+                yield return (e, setter);
+                if (setter.Static && Initialiser(setter.Owner) is { } init) yield return (e, init);
+            }
+            if (!_r.Resolved.TryGetValue(e, out Sym? sym)) continue;
+            MethodSymbol? accessor = sym switch
+            {
+                PropertyGetSym g => g.Getter,
+                CapturedPropertyGetSym g => g.Getter,
+                PropertySetSym ps => ps.Setter,
+                _ => null,
+            };
+            if (accessor is not null && Direct(accessor))
+            {
+                yield return (e, accessor);
+                if (accessor.Static && Initialiser(accessor.Owner) is { } init) yield return (e, init);
+            }
+            else if (sym is FieldSym { Field.Static: true } field && Initialiser(field.Field.Owner) is { } init)
+            {
+                yield return (e, init);
             }
         }
     }

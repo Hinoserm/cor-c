@@ -1,0 +1,31 @@
+// test: an interrupt handler reaching an allocation through a property refused
+// expect-compile-error: is an interrupt handler and must not allocate: 'Log.get_Instance'
+// A property read is a call of its getter, written or not: a handler that
+// reads `Log.Instance => _instance ??= new Log()` allocates on the interrupt
+// stack with interrupts off. The check followed calls written as calls,
+// and this compiled without a word.
+
+using System;
+
+sealed class Log
+{
+    static Log? _instance;
+    public static Log Instance => _instance ??= new Log();
+    public long Lines;
+}
+
+static class Program
+{
+    [InterruptHandler]
+    static void Tick()
+    {
+        Log.Instance.Lines++;
+    }
+
+    static int Main()
+    {
+        Tick();
+        Console.WriteLine(Log.Instance.Lines);
+        return 0;
+    }
+}
