@@ -13341,15 +13341,18 @@ public sealed partial class Binder
                 Expr resolved = made;
                 if (_wanted is { IsPointer: true } pointer && pointer.Pointee is { } pointee)
                 {
-                    Type element = Resolve(made.Type, _thisType);
+                    // `stackalloc[] { ... }` is of what the pointer points at.
+                    bool implicitly = made.Type.Name.Length == 0;
+                    Type element = implicitly ? pointee : Resolve(made.Type, _thisType);
                     if (!element.IsError && !element.Equals(pointee) && pointee.Prim != Prim.Void)
                     {
                         Error(alloc, $"CS0266: Cannot implicitly convert type '{element}*' to '{pointer}'");
                         return Type.Error;
                     }
+                    if ((implicitly ? RefOf(pointee) : made.Type) is not TypeRef elementRef) return Type.Error;
                     resolved = new CastExpr
                     {
-                        Type = PointerRef(made.Type, alloc), Line = alloc.Line, Col = alloc.Col,
+                        Type = PointerRef(elementRef, alloc), Line = alloc.Line, Col = alloc.Col,
                         Operand = new CallExpr
                         {
                             Target = new MemberExpr { Target = new NameExpr { Name = Prelude.TypeName, Line = alloc.Line, Col = alloc.Col }, Name = "FrameData", Line = alloc.Line, Col = alloc.Col },

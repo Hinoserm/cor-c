@@ -8307,6 +8307,219 @@ public sealed class Parser
         => Predefined.Contains(type.Name) || type.ArrayRank > 0
             || type.PointerDepth > 0 || type.Nullable;
 
+    /// <summary>
+    /// `new ...` after the keyword, which `at` is: an object, an array or a
+    /// target-typed `new()`. `stackalloc T[n]` and `stackalloc T[] { ... }`
+    /// read the same array creation after their own keyword.
+    /// </summary>
+    private Expr ParseNew(Token at)
+    {
+        // TARGET-TYPED `new()`, where the type is the one already
+        // written on the left: `List<TypeRef> Args { get; init; } =
+        // new();`. Saying it twice is what this exists to avoid, and
+        // the compiler's own source uses it on nearly every collection
+        // it declares.
+        //
+        // An EMPTY NAME means "the type has not been said here". The
+        // binder fills it in from the declaration when it checks the
+        // initialiser, which is the one place that knows the answer.
+        // `new[] { ... }` -- IMPLICITLY TYPED, its element taken from
+        // the first element written. `new[] { Op.Halt, Op.Nop }` is
+        // how this compiler's own Isa.cs builds every one of its
+        // opcode tables.
+        // `new (string text, Tok kind)[1]` -- an array of TUPLES, whose
+        // type begins with the same bracket a target-typed `new (a, b)`
+        // does. Told apart by reading it as a type and seeing what
+        // follows: a type here is followed by a size, a list or a
+        // constructor's arguments, and nothing else.
+        TypeRef? tupled = null;
+
+        if (At(Tok.LParen))
+        {
+            int was = _i;
+
+            try
+            {
+                TypeRef maybe = ParseTypeRef();
+
+                // A BRACE AFTER IT IS A TYPE ONLY IF THE TYPE IS AN
+                // ARRAY. `new (int, int)[] { … }` is a list of tuples;
+                // `new(sym, block) { ReadOnly = true }` is a
+                // target-typed new with arguments AND an initialiser,
+                // whose arguments read as a tuple type and are not one.
+                if (At(Tok.LBracket) || At(Tok.LParen)
+                    || (At(Tok.LBrace) && maybe.ArrayRank > 0))
+                {
+                    tupled = maybe;
+                }
+            }
+            catch (CompileError)
+            {
+                // Not a type; it is a target-typed new with arguments.
+            }
+
+            if (tupled is null)
+            {
+                _i = was;
+            }
+        }
+
+        TypeRef type = tupled
+                    ?? (At(Tok.LParen) || At(Tok.LBracket)
+                      ? new TypeRef { Name = "", Line = at.Line, Col = at.Col }
+                      : ParseTypeRef());
+        NewExpr n = new() { Type = type, Line = at.Line, Col = at.Col };
+
+        // `new int[] { 1, 2 }` -- ParseTypeRef has already taken the
+        // `[]` as part of the type, so the brackets are gone by the
+        // time the loop below looks for them and only the list is
+        // left. The element is the type with one rank taken off.
+        if (type.ArrayRank > 0 && At(Tok.LBrace))
+        {
+            NewExpr listed = new()
+            {
+                Type = new TypeRef
+                {
+                    Name = type.Name, Arguments = type.Args,
+                    Nullable = type.ArrayRank == 1 ? type.ElementNullable : (type.InnerNullable & 1) != 0,
+                    ElementNullable = type.ArrayRank > 1 && type.ElementNullable,
+                    InnerNullable = type.InnerNullable >> 1,
+                    PointerDepth = type.PointerDepth, ArrayRank = type.ArrayRank - 1,
+                    Line = type.Line, Col = type.Col,
+                },
+                Line = at.Line, Col = at.Col,
+            };
+
+            _i++;
+            listed.Elements = new List<Expr>();
+
+            while (!At(Tok.RBrace))
+            {
+                listed.Elements.Add(ParseExpr());
+
+                if (!Take(Tok.Comma))
+                {
+                    break;
+                }
+            }
+
+            Expect(Tok.RBrace, "'}' to close the array's elements");
+            return listed;
+        }
+
+        if (Take(Tok.LBracket))
+        {
+            // `new int[3]` says how many; `new int[] { ... }` and
+            // `new[] { ... }` say which.
+            Expr? size = At(Tok.RBracket) ? null : ParseExpr();
+
+            Expect(Tok.RBracket, "']' after the array size");
+
+            // A JAGGED ARRAY: `new string[n][]` is n references to
+            // string arrays, none of which exist yet. Only the FIRST
+            // pair carries a length -- the rest of the shape is the
+            // element's type, not a size, which is why C# writes the
+            // empty brackets after the sized one and refuses a length
+            // in them. ParseTypeRef took none of this, because it stops
+            // at the '[' that starts a length; so the ranks are put
+            // back on the element type here.
+            int jagged = 0;
+
+            while (At(Tok.LBracket) && _t[_i + 1].Kind == Tok.RBracket)
+            {
+                _i += 2;
+                jagged++;
+            }
+
+            if (jagged > 0)
+            {
+                // The type's own '?' becomes an inner mark once
+                // brackets are added around it: `new byte[]?[n][]`.
+                type = new TypeRef
+                {
+                    Name = type.Name,
+                    Arguments = type.Args,
+                    Nullable = false,
+                    ElementNullable = type.ArrayRank > 0 ? type.ElementNullable : type.Nullable,
+                    InnerNullable = type.InnerNullable | (type.ArrayRank > 0 && type.Nullable ? 1 << (type.ArrayRank - 1) : 0),
+                    PointerDepth = type.PointerDepth,
+                    ArrayRank = type.ArrayRank + jagged,
+                    TupleNames = type.TupleNames,
+                    Line = type.Line,
+                    Col = type.Col,
+                };
+            }
+
+            NewExpr made = new()
+            {
+                Type = type, ArraySize = size, Line = at.Line, Col = at.Col,
+            };
+
+            if (At(Tok.LBrace))
+            {
+                _i++;
+                made.Elements = new List<Expr>();
+
+                while (!At(Tok.RBrace))
+                {
+                    made.Elements.Add(ParseExpr());
+
+                    if (!Take(Tok.Comma))
+                    {
+                        break;
+                    }
+                }
+
+                Expect(Tok.RBrace, "'}' to close the array's elements");
+            }
+            else if (size is null)
+            {
+                throw Error("an array needs a length or a list of elements");
+            }
+
+            return made;
+        }
+
+        if (Take(Tok.LParen))
+        {
+            int spanMark = _spans.Count;
+            if (Source is not null) { _spans.Add(-1); _spans.Add(-1); }
+            if (!At(Tok.RParen))
+            {
+                do
+                {
+                    if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
+                    {
+                        n.WritableArgNames.Add(_t[_i++].Text);
+                        _i++;
+                    }
+                    else
+                    {
+                        n.WritableArgNames.Add(null);
+                    }
+                    int argumentAt = ArgumentStart();
+                    n.Args.Add(ParseArg());
+                    if (Source is not null) { _spans.Add(argumentAt); _spans.Add(End(_i - 1)); }
+                }
+                while (Take(Tok.Comma));
+            }
+            Expect(Tok.RParen, "')' after the constructor arguments");
+            if (Source is not null)
+            {
+                (n.Spans, n.Source) = TakeSpans(spanMark);
+            }
+        }
+
+        // AN INITIALISER, with or without a constructor before it:
+        // `new T { A = 1 }` and `new T(x) { A = 1 }` are both ordinary,
+        // and `new T()` with an empty brace list is legal too.
+        if (At(Tok.LBrace))
+        {
+            ReadInitBody(n.Body);
+        }
+        return n;
+    }
+
     private Expr ParsePostfix()
     {
         int start = Cur.Pos;
@@ -8599,211 +8812,7 @@ public sealed class Parser
             case Tok.KwNew:
             {
                 _i++;
-
-                // TARGET-TYPED `new()`, where the type is the one already
-                // written on the left: `List<TypeRef> Args { get; init; } =
-                // new();`. Saying it twice is what this exists to avoid, and
-                // the compiler's own source uses it on nearly every collection
-                // it declares.
-                //
-                // An EMPTY NAME means "the type has not been said here". The
-                // binder fills it in from the declaration when it checks the
-                // initialiser, which is the one place that knows the answer.
-                // `new[] { ... }` -- IMPLICITLY TYPED, its element taken from
-                // the first element written. `new[] { Op.Halt, Op.Nop }` is
-                // how this compiler's own Isa.cs builds every one of its
-                // opcode tables.
-                // `new (string text, Tok kind)[1]` -- an array of TUPLES, whose
-                // type begins with the same bracket a target-typed `new (a, b)`
-                // does. Told apart by reading it as a type and seeing what
-                // follows: a type here is followed by a size, a list or a
-                // constructor's arguments, and nothing else.
-                TypeRef? tupled = null;
-
-                if (At(Tok.LParen))
-                {
-                    int was = _i;
-
-                    try
-                    {
-                        TypeRef maybe = ParseTypeRef();
-
-                        // A BRACE AFTER IT IS A TYPE ONLY IF THE TYPE IS AN
-                        // ARRAY. `new (int, int)[] { … }` is a list of tuples;
-                        // `new(sym, block) { ReadOnly = true }` is a
-                        // target-typed new with arguments AND an initialiser,
-                        // whose arguments read as a tuple type and are not one.
-                        if (At(Tok.LBracket) || At(Tok.LParen)
-                            || (At(Tok.LBrace) && maybe.ArrayRank > 0))
-                        {
-                            tupled = maybe;
-                        }
-                    }
-                    catch (CompileError)
-                    {
-                        // Not a type; it is a target-typed new with arguments.
-                    }
-
-                    if (tupled is null)
-                    {
-                        _i = was;
-                    }
-                }
-
-                TypeRef type = tupled
-                            ?? (At(Tok.LParen) || At(Tok.LBracket)
-                              ? new TypeRef { Name = "", Line = at.Line, Col = at.Col }
-                              : ParseTypeRef());
-                NewExpr n = new() { Type = type, Line = at.Line, Col = at.Col };
-
-                // `new int[] { 1, 2 }` -- ParseTypeRef has already taken the
-                // `[]` as part of the type, so the brackets are gone by the
-                // time the loop below looks for them and only the list is
-                // left. The element is the type with one rank taken off.
-                if (type.ArrayRank > 0 && At(Tok.LBrace))
-                {
-                    NewExpr listed = new()
-                    {
-                        Type = new TypeRef
-                        {
-                            Name = type.Name, Arguments = type.Args,
-                            Nullable = type.ArrayRank == 1 ? type.ElementNullable : (type.InnerNullable & 1) != 0,
-                            ElementNullable = type.ArrayRank > 1 && type.ElementNullable,
-                            InnerNullable = type.InnerNullable >> 1,
-                            PointerDepth = type.PointerDepth, ArrayRank = type.ArrayRank - 1,
-                            Line = type.Line, Col = type.Col,
-                        },
-                        Line = at.Line, Col = at.Col,
-                    };
-
-                    _i++;
-                    listed.Elements = new List<Expr>();
-
-                    while (!At(Tok.RBrace))
-                    {
-                        listed.Elements.Add(ParseExpr());
-
-                        if (!Take(Tok.Comma))
-                        {
-                            break;
-                        }
-                    }
-
-                    Expect(Tok.RBrace, "'}' to close the array's elements");
-                    return listed;
-                }
-
-                if (Take(Tok.LBracket))
-                {
-                    // `new int[3]` says how many; `new int[] { ... }` and
-                    // `new[] { ... }` say which.
-                    Expr? size = At(Tok.RBracket) ? null : ParseExpr();
-
-                    Expect(Tok.RBracket, "']' after the array size");
-
-                    // A JAGGED ARRAY: `new string[n][]` is n references to
-                    // string arrays, none of which exist yet. Only the FIRST
-                    // pair carries a length -- the rest of the shape is the
-                    // element's type, not a size, which is why C# writes the
-                    // empty brackets after the sized one and refuses a length
-                    // in them. ParseTypeRef took none of this, because it stops
-                    // at the '[' that starts a length; so the ranks are put
-                    // back on the element type here.
-                    int jagged = 0;
-
-                    while (At(Tok.LBracket) && _t[_i + 1].Kind == Tok.RBracket)
-                    {
-                        _i += 2;
-                        jagged++;
-                    }
-
-                    if (jagged > 0)
-                    {
-                        // The type's own '?' becomes an inner mark once
-                        // brackets are added around it: `new byte[]?[n][]`.
-                        type = new TypeRef
-                        {
-                            Name = type.Name,
-                            Arguments = type.Args,
-                            Nullable = false,
-                            ElementNullable = type.ArrayRank > 0 ? type.ElementNullable : type.Nullable,
-                            InnerNullable = type.InnerNullable | (type.ArrayRank > 0 && type.Nullable ? 1 << (type.ArrayRank - 1) : 0),
-                            PointerDepth = type.PointerDepth,
-                            ArrayRank = type.ArrayRank + jagged,
-                            TupleNames = type.TupleNames,
-                            Line = type.Line,
-                            Col = type.Col,
-                        };
-                    }
-
-                    NewExpr made = new()
-                    {
-                        Type = type, ArraySize = size, Line = at.Line, Col = at.Col,
-                    };
-
-                    if (At(Tok.LBrace))
-                    {
-                        _i++;
-                        made.Elements = new List<Expr>();
-
-                        while (!At(Tok.RBrace))
-                        {
-                            made.Elements.Add(ParseExpr());
-
-                            if (!Take(Tok.Comma))
-                            {
-                                break;
-                            }
-                        }
-
-                        Expect(Tok.RBrace, "'}' to close the array's elements");
-                    }
-                    else if (size is null)
-                    {
-                        throw Error("an array needs a length or a list of elements");
-                    }
-
-                    return made;
-                }
-
-                if (Take(Tok.LParen))
-                {
-                    int spanMark = _spans.Count;
-                    if (Source is not null) { _spans.Add(-1); _spans.Add(-1); }
-                    if (!At(Tok.RParen))
-                    {
-                        do
-                        {
-                            if (At(Tok.Ident) && Ahead().Kind == Tok.Colon)
-                            {
-                                n.WritableArgNames.Add(_t[_i++].Text);
-                                _i++;
-                            }
-                            else
-                            {
-                                n.WritableArgNames.Add(null);
-                            }
-                            int argumentAt = ArgumentStart();
-                            n.Args.Add(ParseArg());
-                            if (Source is not null) { _spans.Add(argumentAt); _spans.Add(End(_i - 1)); }
-                        }
-                        while (Take(Tok.Comma));
-                    }
-                    Expect(Tok.RParen, "')' after the constructor arguments");
-                    if (Source is not null)
-                    {
-                        (n.Spans, n.Source) = TakeSpans(spanMark);
-                    }
-                }
-
-                // AN INITIALISER, with or without a constructor before it:
-                // `new T { A = 1 }` and `new T(x) { A = 1 }` are both ordinary,
-                // and `new T()` with an empty brace list is legal too.
-                if (At(Tok.LBrace))
-                {
-                    ReadInitBody(n.Body);
-                }
-                return n;
+                return ParseNew(at);
             }
 
             // `default(T)`. The bare `default` of newer C# is not taken: it
@@ -8844,21 +8853,17 @@ public sealed class Parser
             // what it costs is that the block outlives the call and is collected
             // instead of being popped. This machine's stack is not something a
             // program may hand out pieces of.
-            case Tok.Ident when at.Text == "stackalloc" && _t[_i + 1].Kind == Tok.Ident:
+            case Tok.Ident when at.Text == "stackalloc" && _t[_i + 1].Kind is Tok.Ident or Tok.LBracket:
             {
                 _i++;
-
-                TypeRef of = ParseTypeRef();
-
-                Expect(Tok.LBracket, "'[' after the type in a stackalloc");
-
-                Expr many = ParseExpr();
-
-                Expect(Tok.RBracket, "']' after the length");
+                // The array creation `new` reads, after this keyword instead:
+                // `stackalloc T[n]`, `stackalloc T[] { ... }`, `stackalloc[] { ... }`.
+                if (ParseNew(at) is not NewExpr made || made.ArraySize is null && made.Elements is null)
+                    throw Error("an array after 'stackalloc'");
                 // A pointer or an array as what it is made for says
                 // (Binder.StackAllocMarker).
                 CallExpr allocated = new() { Target = new NameExpr { Name = Binder.StackAllocMarker, Line = at.Line, Col = at.Col }, Line = at.Line, Col = at.Col };
-                allocated.Args.Add(new NewExpr { Type = of, ArraySize = many, Line = at.Line, Col = at.Col });
+                allocated.Args.Add(made);
                 return allocated;
             }
 

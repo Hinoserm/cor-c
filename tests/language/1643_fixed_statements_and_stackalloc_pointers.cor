@@ -10,12 +10,13 @@
 // held 4950 4950
 // outlived 1234 5678
 // nullptr False True 9 False
+// inits 12 6 30 8 37
 //
 // UNSAFE CODE AS C# WRITES IT: `fixed (T* p = x)` takes an array's first
 // element (null for a null or empty array), a string's first character or
 // an address, and holds what it points into while its block runs; `T* p =
-// stackalloc T[n]` is n zeroed elements for the whole call; `stackalloc`
-// anywhere else is a span of them. Neither parsed: `fixed` was no statement,
+// stackalloc T[n]` is n zeroed elements for the whole call, or the ones its
+// initialiser lists; `stackalloc` anywhere else is a span of them. Neither parsed: `fixed` was no statement,
 // and a stackalloc was an array, "cannot convert 'int[]' to 'int*'". The
 // collector moves nothing, so holding is all fixing is: the held array, and
 // the memory a stackalloc made, live through collections and new
@@ -119,6 +120,12 @@ static class Program
         int* gone = Pick(&x, false);
         none1 = got;
         Console.WriteLine("nullptr " + (none1 == null) + " " + (gone == null) + " " + *got + " " + (gone != null));
+        int* i1 = stackalloc int[] { 3, 1, 4, 1, 5 };
+        int* i2 = stackalloc int[3] { 9, 2, 6 };
+        long* i3 = stackalloc[] { 10L, 20L };
+        Span<byte> i4 = stackalloc byte[] { 7, 8 };
+        Span<int> i5 = stackalloc[] { 5, 6, 7 };
+        Console.WriteLine("inits " + (i1[0] + i1[2] + i1[4]) + " " + i2[2] + " " + (i3[0] + i3[1]) + " " + i4[1] + " " + i5.Length + i5[2]);
         return 0;
     }
 }
