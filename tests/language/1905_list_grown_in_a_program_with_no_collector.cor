@@ -1,0 +1,32 @@
+// test: list_grown_in_a_program_with_no_collector
+// expect-no-symbol: m_Gc_
+// expect-exit: 0
+// expect-output:
+// sum 8200
+//
+// A CONSTRUCTOR'S FIRST STORE INTO ITS OWN FIELD REPLACES NOTHING: List's
+// `items = null!`, a field initialiser, runs on an object just made, zero
+// where it was made, before anything is called. Taken for a store that may
+// replace a value nobody frees, more than once, it made List's array field
+// one that leaks, and every array a growing list made one the collector
+// had to take: a program making a list a lap and growing it past its
+// first array needed a collector. With the store known for the first, the
+// arrays a list outgrows go back as it grows, and the list's last array
+// with it, and the program needs none.
+static class Program
+{
+    static int Main()
+    {
+        long sum = 0;
+        for (int lap = 0; lap < 100; lap++)
+        {
+            System.Collections.Generic.List<int> l = new System.Collections.Generic.List<int>();
+            for (int i = 0; i < 40; i++) l.Add(i);
+            sum = sum + l[39] + l.Count + 3;
+        }
+        Sys.Print("sum ");
+        Sys.PrintInt(sum);
+        Sys.PrintLine();
+        return 0;
+    }
+}

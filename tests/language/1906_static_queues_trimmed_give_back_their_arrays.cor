@@ -1,0 +1,40 @@
+// test: static_queues_trimmed_give_back_their_arrays
+// expect-exit: 0
+// expect-output:
+// total 8000 left 0
+//
+// A QUEUE HELD IN A STATIC AND TRIMMED EVERY LAP left its old array to the
+// collector each time: TrimExcess replaced the array and gave nothing back,
+// and the compiler's own free of a replaced owned field's value is only for
+// an owner one function holds alone (Escape.PrivateOwner), never a static's.
+// Queue.TrimExcess now gives the array it had back as Grow does, and so does
+// PriorityQueue's Resize, both of its arrays: the self-replacing free
+// (OutgrownStorage), whoever holds the collection.
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static Queue<string> s_queue = new Queue<string>();
+    static PriorityQueue<string, int> s_pq = new PriorityQueue<string, int>();
+
+    static int Main()
+    {
+        Gc.Collect();
+        long taken = Gc.CollectedBytes;
+        long total = 0;
+        for (int lap = 0; lap < 2000; lap++)
+        {
+            for (int i = 0; i < 20; i++) s_queue.Enqueue("q");
+            while (s_queue.Count > 2) s_queue.Dequeue();
+            s_queue.TrimExcess();
+            for (int i = 0; i < 20; i++) s_pq.Enqueue("p", i);
+            while (s_pq.Count > 2) s_pq.Dequeue();
+            s_pq.TrimExcess();
+            total += s_queue.Count + s_pq.Count;
+        }
+        Gc.Collect();
+        Console.WriteLine("total " + total + " left " + (Gc.CollectedBytes - taken) / 2000);
+        return 0;
+    }
+}

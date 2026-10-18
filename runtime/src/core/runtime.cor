@@ -1810,18 +1810,23 @@ static class Runtime
     static long ManualTake(long bytes, long flags)
     {
         long w = WordSize.Bytes;
-        if (bytes < 0 || bytes > 0x7FFFFFF0)
-        {
-            Exit(137);
-        }
-        long need = (bytes + 2 * w + 15) & (0 - 16);
         if (_manualBins == 0)
         {
             _manualVerify = Platform.VerifyFrees();
-            ManualGrow(ManualBinCount * w + w);
+            if (!ManualGrow(ManualBinCount * w + w)) { Exit(137); }
             _manualBins = _manualAt;
             _manualAt = _manualAt + ((ManualBinCount * w + w + 15) & (0 - 16));
+            // The exception out of memory throws, made as the heap begins,
+            // as the collector's is (Gc.ThrowOutOfMemory).
+            OutOfMemoryException made = new OutOfMemoryException(null);
+            made.Reserve$(new long[TraceDepth]);
+            _manualOutOfMemory = made;
         }
+        if (bytes < 0 || bytes > 0x7FFFFFF0)
+        {
+            ManualOutOfMemory(0);
+        }
+        long need = (bytes + 2 * w + 15) & (0 - 16);
         long lockAt = _manualBins + ManualBinCount * w;
         while (Sys.AtomicSwap(lockAt, 1) != 0)
         {
@@ -1858,9 +1863,9 @@ static class Runtime
         }
         if (block == 0)
         {
-            if (_manualAt + need > _manualLimit)
+            if (_manualAt + need > _manualLimit && !ManualGrow(need))
             {
-                ManualGrow(need);
+                ManualOutOfMemory(lockAt);
             }
             block = _manualAt;
             _manualAt = _manualAt + need;
@@ -1871,20 +1876,37 @@ static class Runtime
         return block + 2 * w;
     }
 
-    /// A new chunk big enough for `need`, linked in front of the others.
-    static void ManualGrow(long need)
+    /// A new chunk big enough for `need`, linked in front of the others;
+    /// false when the system gives none.
+    static bool ManualGrow(long need)
     {
         long ask = need + 32 > ManualChunk ? need + 32 : ManualChunk;
         long chunk = Platform.Map(ask);
         if (chunk == 0)
         {
-            Exit(137);
+            return false;
         }
         Sys.Poke(chunk, _manualChunks);
         Sys.Poke(chunk + WordSize.Bytes, chunk + ask);
         _manualChunks = chunk;
         _manualAt = (chunk + 2 * WordSize.Bytes + 15) & (0 - 16);
         _manualLimit = chunk + ask;
+        return true;
+    }
+
+    /// The manual heap's exception out of memory, made as it begins.
+    static OutOfMemoryException? _manualOutOfMemory;
+
+    /// OUT OF MEMORY, THROWN from the manual heap as from the collector's
+    /// (Gc.ThrowOutOfMemory): the lock word at `lockAt`, when this thread
+    /// holds it, let go first, and the trace taken with nothing made.
+    static void ManualOutOfMemory(long lockAt)
+    {
+        if (lockAt != 0) { Sys.AtomicSwap(lockAt, 0); }
+        OutOfMemoryException? thrown = _manualOutOfMemory;
+        if (thrown == null) { Exit(137); return; }
+        thrown.Refill$(Sys.FramePointer());
+        throw thrown;
     }
 
     /// The header of the live block `at` is the payload of, or 0.
@@ -3467,7 +3489,7 @@ static class Runtime
 
     /// How many frames a trace keeps. A runaway recursion has thousands and
     /// nobody reads them; .NET truncates too.
-    const int TraceDepth = 32;
+    public const int TraceDepth = 32;
 
     /// 'CFR5' as the code generator writes it, least significant byte first.
     /// Spelled as the four letters rather than the number they come to, so
@@ -3802,7 +3824,7 @@ static class Runtime
     /// or rubbish, and following it would read whatever memory it points at.
     /// [frame] is the caller's frame pointer, the word after it the return
     /// address: the chain every prologue here builds.
-    static long StepFrame(long frame) {
+    public static long StepFrame(long frame) {
         if (frame == 0) { return -1; }
         long next = Sys.Peek(frame);
         if (Sys.Peek(frame + WordSize.Bytes) == 0) { return -1; }
@@ -3991,6 +4013,23 @@ static class Runtime
         SayLiteral(fd, "\n");
     }
 
+    /// The function at `address` on its own line, as a trace writes it, with
+    /// nothing made; false, and nothing written, where no function this image
+    /// describes holds it -- where a trace ends (Exception.SayTrace$).
+    public static bool SayMethod(int fd, long address) {
+        long name;
+        long file;
+        long pool;
+        long line;
+        long offset;
+
+        if (!Lookup(address, out name, out file, out pool, out line, out offset, false)) { return false; }
+        SayLiteral(fd, "   at ");
+        SayName(fd, pool, name);
+        SayLiteral(fd, "\n");
+        return true;
+    }
+
     /// `prefix`, the function at `address`, its file and its line, and a
     /// newline, on standard error -- with no heap at all (AllocSamples.Dump).
     public static void SayWhere(string prefix, long address) {
@@ -4031,6 +4070,44 @@ static class Runtime
         }
     }
 
+    /// Whether the name a lookup found begins with `prefix`, read where it
+    /// lies in either of SayName's forms, with nothing made.
+    static bool NameStarts(long pool, long at, string prefix) {
+        int k = 0;
+        if (pool == 0) {
+            while (k < prefix.Length) {
+                if (Sys.PeekByte(at + k) != prefix[k]) { return false; }
+                k = k + 1;
+            }
+            return true;
+        }
+        long count = Uleb(at, out at);
+        for (long i = 0; i < count && k < prefix.Length; i++) {
+            long token = Uleb(at, out at);
+            long end = TokenEnd(pool, token);
+            for (long p = TokenStart(pool, token); p < end && k < prefix.Length; p++) {
+                if (Sys.PeekByte(p) != prefix[k]) { return false; }
+                k = k + 1;
+            }
+        }
+        return k == prefix.Length;
+    }
+
+    /// THE RUNTIME'S OWN CODE at a return address: a method of Gc or of
+    /// Runtime, the allocator and every way into it, which the heap's
+    /// out-of-memory trace begins past (Exception.Refill$) as .NET's begins at
+    /// the method whose allocation failed. Read from the frame table with
+    /// nothing made.
+    public static bool InRuntime(long address) {
+        long name;
+        long file;
+        long pool;
+        long line;
+        long offset;
+        if (!Lookup(address - 1, out name, out file, out pool, out line, out offset, false)) { return false; }
+        return NameStarts(pool, name, "Gc.") || NameStarts(pool, name, "Runtime.");
+    }
+
     /// A zero-terminated run of bytes in the image, written where it lies.
     static void SayText(int fd, long at) {
         long length = 0;
@@ -4050,12 +4127,21 @@ static class Runtime
         // Tested and bound at once: a cast after the test was a failure path
         // never taken, an InvalidCastException and its message made on it,
         // which a program's walk for allocations still reached.
+        // A TRACE PLACED BEFORE THE THROW is kept, and no frames are taken:
+        // the heap's throw out of memory (Gc.ThrowOutOfMemory) has no memory
+        // to take them with, and Frames would ask the heap that ran out.
         if (thrown is Exception e) {
+            if (e.Keeps$()) { return; }
             e.Thrown$(site, Frames(frame));
         }
     }
 
     // ---- failure -------------------------------------------------------------
+
+    /// What the heap held when it last ran out, said on standard error with
+    /// nothing made (Gc.SayOutOfMemory): set by the heap as it throws, so an
+    /// image with no collector names none of it.
+    public static long OutOfMemoryReport;
 
     /// A throw with nothing to catch it. The message goes to standard error and
     /// the process ends with 134, which is what a C program that abort()s
@@ -4064,6 +4150,19 @@ static class Runtime
     {
         // Do not recursively retry an output buffer which caused the failure.
         _atExit = 0;
+
+        // OUT OF MEMORY IS SAID AS .NET SAYS IT, "Out of memory.", and with
+        // nothing made: the memory to build a message may be what ran out.
+        // Then what .NET leaves out and a heap that ran out can still say:
+        // where the exception was thrown, its frames written where their
+        // names lie (Exception.SayTrace$), and what the heap held, through
+        // the hook the heap set as it threw (Gc.ThrowOutOfMemory).
+        if (exception is OutOfMemoryException) {
+            SayLiteral(StdErr, "Out of memory.\n");
+            ((Exception)exception).SayTrace$(StdErr);
+            if (OutOfMemoryReport != 0) { Sys.Call(OutOfMemoryReport, 0, 0, 0); }
+            Platform.Exit(134);
+        }
         WriteText(StdErr, "Unhandled exception. ");
 
         // An Exception prints as its type name and its message, written

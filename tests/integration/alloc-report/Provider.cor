@@ -1,0 +1,12 @@
+namespace Budget;
+
+public static class Provider
+{
+    /// Throws for every odd number: the caller's catch, round its loop,
+    /// runs more than once.
+    public static int Check(int n)
+    {
+        if ((n & 1) != 0) throw new System.InvalidOperationException("odd");
+        return n;
+    }
+}

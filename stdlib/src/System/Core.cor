@@ -10588,6 +10588,10 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 
     /// What it holds, in an array of no more room than that, as .NET's
     /// TrimExcess gives back its spare capacity (kept at 90% full or more).
+    /// The array it had goes back as Grow's does (OutgrownStorage): left
+    /// behind, a queue held in a static and trimmed each lap left its old
+    /// array to the collector every lap, the compiler's own free of a
+    /// replaced field being only for an owner one function holds alone.
     public void TrimExcess() {
         if (count >= (int)(items.Length * 0.9)) { return; }
         T[] kept = new T[count];
@@ -10596,8 +10600,10 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
             if (at >= items.Length) { at = at - items.Length; }
             kept[i] = items[at];
         }
+        T[] old = items;
         items = kept;
         head = 0;
+        OutgrownStorage.Release(old);
     }
 
     public void Enqueue(T value) {
@@ -14491,6 +14497,68 @@ class Exception
         _placed = true;
     }
 
+    /// Whether the throw about to happen keeps a trace placed before it
+    /// (Placed$, Refill$), and so takes no frames of its own: Runtime.Capture
+    /// asks first, because the heap's throw out of memory may make nothing.
+    public bool Keeps$()
+    {
+        if (!_placed) return false;
+        _placed = false;
+        return true;
+    }
+
+    /// THE ARRAY AN OUT-OF-MEMORY TRACE IS WRITTEN INTO, made with the
+    /// exception the heap makes in advance (Gc.ThrowOutOfMemory), when there
+    /// is memory to make it: a throw that has none fills it in place
+    /// (Refill$). No site line: what the heap's throw records begins at the
+    /// method whose allocation failed.
+    public void Reserve$(long[] frames)
+    {
+        _site = "";
+        _frames = frames;
+    }
+
+    /// THE HEAP'S OWN THROW, out of memory, which may make nothing: the
+    /// return addresses above `from`, past the runtime's own frames -- the
+    /// allocator and its ways in, which .NET's trace never shows, its
+    /// allocation helpers being the runtime's -- written into the array made
+    /// in advance (Reserve$), the rest of it cleared, and the throw that
+    /// follows keeps them (Keeps$). Naming them waits for somebody to read
+    /// the trace, by when the catch may have given memory back. An array a
+    /// later throw of this exception replaced is filled as far as it goes.
+    public void Refill$(long from)
+    {
+        _placed = true;
+        if (_frames == null) return;
+        long frame = from;
+        int i = 0;
+        while (i < _frames.Length)
+        {
+            long next = Runtime.StepFrame(frame);
+            if (next == -1) break;
+            long back = Sys.Peek(frame + WordSize.Bytes);
+            frame = next;
+            if (i == 0 && Runtime.InRuntime(back)) continue;
+            _frames[i] = back;
+            i = i + 1;
+        }
+        while (i < _frames.Length)
+        {
+            _frames[i] = 0;
+            i = i + 1;
+        }
+    }
+
+    /// The frames written straight out, a line each, with nothing made:
+    /// where an out-of-memory exception nobody caught was thrown
+    /// (Runtime.Unhandled), when there is no memory to name them with.
+    public void SayTrace$(int fd)
+    {
+        if (_frames == null) return;
+        for (int i = 0; i < _frames.Length && _frames[i] != 0; i++)
+            if (!Runtime.SayMethod(fd, _frames[i] - 1)) break;
+    }
+
     // Each read of _frames ends where it is made, so the exception owns its
     // frames and they go back with it (Escape's owned fields). THE TEXT IS
     // MADE WHEN IT IS ASKED FOR AND KEPT BY NOBODY, as .NET makes its
@@ -14502,6 +14570,8 @@ class Exception
         if (_site != null && _frames != null)
         {
             string callers = Runtime.TraceOf(_frames);
+            // No site line (Reserve$, a fault with no function to name): the callers alone.
+            if (_site.Length == 0) return callers;
             return callers.Length == 0 ? String.Concat(_site, "") : String.Concat(_site, String.Concat("\n", callers));
         }
         return _trace;
@@ -14816,7 +14886,8 @@ class IndexOutOfRangeException : SystemException
 }
 
 /// There is not enough memory for what was asked: an array larger than any
-/// allocation can be, as .NET throws it.
+/// allocation can be, or a heap that has run out (Gc.ThrowOutOfMemory), as
+/// .NET throws it.
 class OutOfMemoryException : SystemException
 {
     internal override int Code => unchecked((int)0x8007000E);

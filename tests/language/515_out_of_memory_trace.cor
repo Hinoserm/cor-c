@@ -1,26 +1,34 @@
 // test: out_of_memory_trace
 // expect-exit: 0
 // expect-output:
-// died 137
+// caught OutOfMemoryException
+// message Exception of type 'System.OutOfMemoryException' was thrown.
+// frames Program.Third Program.Second Program.First
+// again OutOfMemoryException True
+// after 1048576
+// died 134
+// said Out of memory.
 // frames Program.Third Program.Second Program.First
 // lines no
 //
-// A HEAP THAT HAS RUN OUT still says who asked. .NET prints the frames of an
-// unhandled OutOfMemoryException as it prints any other exception's; here the
-// report is written by the heap itself, because the ordinary path -- make an
-// exception, build its trace into a string, print it -- wants the memory that
-// has just gone.
+// A HEAP THAT HAS RUN OUT THROWS, as .NET's does: an OutOfMemoryException,
+// which a program may catch, let go of what it held, and carry on. The
+// exception is the one the heap made in advance -- there is no memory to
+// make one when it is needed -- with .NET's words for it, and the trace it
+// records at the throw is taken with nothing made: the return addresses
+// written into an array made with it, past the allocator's own frames, as
+// .NET's trace begins at the method whose allocation failed. Naming them
+// waits for StackTrace to be read, by when the catch has given memory back.
 //
-// So the names are written STRAIGHT OUT OF THE FRAME TABLE the code generator
-// puts in every image (docs/software/X86-BACKEND.md): each is a
-// zero-terminated run of bytes in .rodata, and Platform.WriteBytes takes an
-// address and a count, so nothing at all is built. No line numbers appear,
-// because a line means decoding a second program for every frame and what
-// this report is for is WHICH FUNCTIONS were on the stack.
+// Nobody catching it ends the process as .NET's does: "Out of memory." on
+// standard error, and 134, abort()'s status. Then what .NET leaves out and
+// this heap can still say with nothing made: the frames, each name written
+// straight out of the frame table the code generator puts in every image
+// (docs/software/X86-BACKEND.md) -- no line numbers, which would mean
+// decoding a line program per frame -- and what the heap held.
 //
-// The child is a separate process because the report ends it: the heap writes
-// what it can and stops with 137, which is the only honest thing left to do.
-// The parent reads its standard error and asks what the trace named.
+// That child is a separate process because the exception ends it. The
+// parent reads its standard error and asks what the report named.
 static class Program
 {
     static int Sink;
@@ -51,7 +59,7 @@ static class Program
         Second(1, kept);
     }
 
-    /// The name on one row of the report: what follows "   at ". A run of the
+    /// The name on one row of a trace: what follows "   at ". A run of the
     /// same name counts once, because each helper recurses and so appears
     /// twice, and rows that are not frames -- the heap's own numbers -- are
     /// passed over.
@@ -85,22 +93,58 @@ static class Program
         return "";
     }
 
-    /// The frames the report named that belong to THIS test, innermost
-    /// first. What the heap and the entry stub were doing around them
-    /// depends on what the optimiser inlined into what, and is not the
-    /// test's business; that the three it wrote are there, in order, is.
+    /// The frames a trace named that belong to THIS test's three, innermost
+    /// first, after whatever named frame comes first, which must be the
+    /// innermost of them: nothing of the allocator's comes before it. What
+    /// called the three depends on what the optimiser inlined into what, and
+    /// is not the test's business.
     static string Ours(string report)
     {
+        if (Named(report, 0) != "Program.Third") { return "began at " + Named(report, 0); }
         string said = "";
 
         for (int i = 0; Named(report, i).Length > 0; i++)
         {
             string name = Named(report, i);
 
-            if (!name.StartsWith("Program.")) { continue; }
+            if (name != "Program.Third" && name != "Program.Second" && name != "Program.First") { continue; }
             said = said.Length == 0 ? name : said + " " + name;
         }
         return said;
+    }
+
+    /// Caught: the trace named once the memory is back, and the heap
+    /// usable again after.
+    static void Caught()
+    {
+        byte[][] kept = new byte[64][];
+
+        Gc.SetLimit(4194304);
+        try
+        {
+            First(1, kept);
+            Console.WriteLine("not thrown");
+        }
+        catch (OutOfMemoryException e)
+        {
+            for (int i = 0; i < kept.Length; i++) { kept[i] = null!; }
+            Console.WriteLine("caught " + e.GetType().Name);
+            Console.WriteLine("message " + e.Message);
+            Console.WriteLine("frames " + Ours(e.StackTrace ?? ""));
+        }
+
+        // The same exception again, as .NET's is the same object each time.
+        try
+        {
+            First(1, kept);
+        }
+        catch (OutOfMemoryException e)
+        {
+            for (int i = 0; i < kept.Length; i++) { kept[i] = null!; }
+            Console.WriteLine("again " + e.GetType().Name + " " + e.StackTrace!.Contains("Program.Third"));
+        }
+        byte[] after = new byte[1048576];
+        Console.WriteLine("after " + after.Length);
     }
 
     static void Starve()
@@ -110,12 +154,14 @@ static class Program
         Gc.SetLimit(4194304);
         First(1, kept);
 
-        // Never reached: the heap stops this process with 137.
+        // Never reached: nothing catches what the heap throws.
         Environment.Exit(0);
     }
 
     static int Main()
     {
+        Caught();
+
         int[]? pair = UnixProcess.Pipe();
 
         if (pair == null)
@@ -146,6 +192,8 @@ static class Program
         UnixProcess.WaitPid(child, out status);
         Console.WriteLine("died " + UnixProcess.Result(status));
 
+        int line = report.IndexOf('\n');
+        Console.WriteLine("said " + (line < 0 ? report : report.Substring(0, line)));
         Console.WriteLine("frames " + Ours(report));
 
         // No line numbers: this walk does not decode a line program.

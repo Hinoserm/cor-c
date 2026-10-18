@@ -1,0 +1,35 @@
+// test: list_capacity_set_in_a_program_with_no_collector
+// expect-no-symbol: m_Gc_
+// expect-exit: 0
+// expect-output:
+// sum 9300
+//
+// LIST'S CAPACITY SETTER GIVES BACK WHAT IT REPLACES ITSELF, on both of its
+// ways: emptied (`items = null!`) and grown (`items = bigger`), each store
+// followed by its own free of the array read before them (Outgrown). The
+// self-free rule (EscapeSelfFrees) paired a free with one store and failed
+// when the other lay on the other way, so List's array field was refused its
+// ownership in any program that set Capacity or called TrimExcess, and such
+// a program needed a collector for every array its lists grew into. Each
+// free is paired now with the store its way meets, and the program below,
+// which makes, trims and resizes a list a lap, needs none.
+static class Program
+{
+    static int Main()
+    {
+        long sum = 0;
+        for (int lap = 0; lap < 100; lap++)
+        {
+            System.Collections.Generic.List<int> l = new System.Collections.Generic.List<int>();
+            for (int i = 0; i < 40; i++) l.Add(i);
+            l.RemoveRange(10, 30);
+            l.TrimExcess();
+            l.Capacity = 16;
+            sum = sum + l[9] + l.Count + l.Capacity + 58;
+        }
+        Sys.Print("sum ");
+        Sys.PrintInt(sum);
+        Sys.PrintLine();
+        return 0;
+    }
+}

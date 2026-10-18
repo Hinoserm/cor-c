@@ -5373,6 +5373,8 @@ static class AsyncRuntime
     /// Runtime.Unhandled does for a synchronous throw.
     public static void Unhandled(Exception e)
     {
+        // Said with nothing made, as a synchronous throw's is.
+        if (e is OutOfMemoryException) Runtime.Unhandled(e);
         string text = "Unhandled exception. " + e.ToString() + "\n";
 
         Runtime.WriteText(2, text);

@@ -93,11 +93,13 @@ public sealed partial class Escape
                 if (addressed || !pair) continue;
                 written ??= Written(f);
                 if (StableRoot(f, defs, written, baseReg) is not VReg owner) continue;
-                Instr? store = SelfFreeOf(f, defs, written, load, free, owner);
+                HashSet<Instr> met = new(ReferenceEqualityComparer.Instance);
+                Instr? store = SelfFreeOf(f, defs, written, load, free, owner, met);
                 if (store is null) continue;
                 found.Pairs[free] = (load, store);
                 found.Frees.Add(free);
                 found.Stores.Add(store);
+                found.Stores.UnionWith(met);
             }
         return found ?? SelfFrees.None;
     }
@@ -129,9 +131,12 @@ public sealed partial class Escape
     /// <summary>
     /// The store that makes <paramref name="free"/> of what <paramref name="load"/>
     /// read a self-replacing free -- before it on every way there, or after it
-    /// on every way on -- or null.
+    /// on every way on -- or null. Into <paramref name="met"/>, the other
+    /// stores into the same field of the same object a way met first, each
+    /// replacing what was read as well: no free of their own is theirs.
     /// </summary>
-    private static Instr? SelfFreeOf(Function f, Dictionary<VReg, Instr> defs, HashSet<VReg> written, Instr load, Instr free, VReg owner)
+    private static Instr? SelfFreeOf(Function f, Dictionary<VReg, Instr> defs, HashSet<VReg> written, Instr load, Instr free, VReg owner,
+        HashSet<Instr> met)
     {
         string field = load.Field!;
         Instr? Into(Instr i) => i.Op == Opcode.Store && i.Field == field && i.Offset == load.Offset && i.Operands.Count >= 2
@@ -157,6 +162,13 @@ public sealed partial class Escape
             // REPLACED, THEN FREED: on every way from the read to the free the
             // store comes first, and nothing else may write the field before
             // it; once freed, nothing reaches the free again but by the read.
+            // ANY STORE INTO THE SAME FIELD OF THE SAME OBJECT replaces what
+            // was read as well as this one: a setter that empties the field
+            // on one branch and puts a bigger array in it on the other, each
+            // followed by its own free of what it replaced (List.Capacity,
+            // which TrimExcess sets), pairs each free with its own store; the
+            // other's way never reaches this free, or reaches it with the
+            // value read replaced all the same.
             bool replaced = Walk(f, at, index + 1, FreeWalk.BeforeStore, (i, state, throws) =>
             {
                 if (ReferenceEquals(i, load)) return Step.Stop;
@@ -164,6 +176,7 @@ public sealed partial class Escape
                 {
                     case FreeWalk.BeforeStore:
                         if (ReferenceEquals(i, store)) return Step.To(FreeWalk.AfterStore);
+                        if (Into(i) is not null) { met.Add(i); return Step.To(FreeWalk.AfterStore); }
                         if (ReferenceEquals(i, free)) return Step.Fail;
                         return throws || Quiet(i, field, defs, null) ? Step.Go : Step.Fail;
                     case FreeWalk.AfterStore:
@@ -173,6 +186,7 @@ public sealed partial class Escape
                 }
             });
             if (replaced) return store;
+            met.Clear();
             // FREED, THEN CLEARED: nothing writes the field between the read
             // and the free; and from the free on, every way reaches the store
             // before anything reads the field, writes it, calls out, or leaves.

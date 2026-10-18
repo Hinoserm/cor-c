@@ -1,0 +1,66 @@
+// test: a freestanding image's heap that runs out throws OutOfMemoryException, and is usable once let go
+// expect-exit: 0
+// expect-output:
+// oom OutOfMemoryException True
+// message Exception of type 'System.OutOfMemoryException' was thrown.
+// traced True
+// again 40 True
+//
+// OUT OF MEMORY ON BARE METAL is what it is in .NET and in a hosted image: an
+// exception the program may catch (Gc.ThrowOutOfMemory). The region a kernel
+// hands the image (Platform.SetHeap) is all the memory there is; filling it
+// with arrays a tenth of a megabyte each runs it out, and that throws -- it
+// used to stop the image, which on bare metal is a write to the exit port,
+// and here, run as a process, a fault. The exception was made in advance,
+// as the heap began, and its trace was taken with nothing made. Let go of
+// what it held, the heap answers again: the arrays a collection finds dead
+// go back to its free space, as a region with no kernel below it has no
+// one else to give them to.
+
+using System;
+
+static class Program
+{
+    static int Sink;
+
+    /// Fills `big` with arrays until the heap runs out; recursing once, so
+    /// that the optimiser leaves its frame standing for the trace to name.
+    static int Fill(int depth, object[] big)
+    {
+        if (depth > 0) { int got = Fill(depth - 1, big); Sink = Sink + depth; return got; }
+        int n = 0;
+        for (; n < big.Length; n++) big[n] = new byte[100000];
+        return n;
+    }
+
+    static int Main()
+    {
+        Host.Start(8 * 1024 * 1024 + 3);
+        object[] big = new object[200];
+        int n = -1;
+        string thrown = "none";
+        string message = "";
+        bool traced = false;
+        try
+        {
+            n = Fill(1, big);
+        }
+        catch (OutOfMemoryException e)
+        {
+            // Let go of what was made: the array itself may still be named
+            // by a stack word the collector cannot tell from a live one.
+            for (int i = 0; i < big.Length; i++) big[i] = null!;
+            thrown = e.GetType().Name;
+            message = e.Message;
+            traced = e.StackTrace!.StartsWith("   at Program.Fill");
+        }
+        Host.Line("oom " + thrown + " " + (n == -1));
+        Host.Line("message " + message);
+        Host.Line("traced " + traced);
+        GC.Collect();
+        for (int i = 0; i < 40; i++) big[i] = new byte[100000];
+        Host.Line("again 40 " + (((byte[])big[39]).Length == 100000));
+        Host.Done(0);
+        return 0;
+    }
+}

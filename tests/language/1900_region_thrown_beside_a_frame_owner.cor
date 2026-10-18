@@ -1,0 +1,61 @@
+// test: region_thrown_beside_a_frame_owner
+// expect-exit: 0
+// expect-output:
+// 7
+// OverflowException: The value is not a number.
+// 4
+// read 7
+//
+// WHAT IS THROWN OUTLIVES EVERY REGION IT IS THROWN OUT OF. Set makes its
+// exception, and its array, beside the object it is called on (AllocNear):
+// in the region that object is in, or -- for an object on the stack below a
+// region's opener -- in that region (Gc.OnStackWithin). Called on objects
+// of the heap (the array's) the region pass made its sites so; called in
+// a lambda on one the lambda keeps in its own frame, that region is the
+// lambda's, and the pass took an object in a frame for one never in any
+// region, so proved nothing: the exception went into the lambda's region,
+// gone when Try's catch read it. A frame beneath a boundary is in its
+// region, and what is made beside it must be proved dead by the region's
+// end; the exception, thrown, is not. The array made beside the same
+// object is, and stays in the region.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Meter
+{
+    long _v;
+    int[]? _cells;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Set(double d)
+    {
+        if (double.IsNaN(d)) throw new OverflowException("The value is not a number.");
+        _cells = new int[2];
+        _v = (long)d;
+    }
+
+    public long Value => _v + (_cells == null ? 0 : _cells.Length);
+}
+
+static class Program
+{
+    static double Missing = double.NaN;
+
+    static string Try(Func<string> f)
+    {
+        try { return f(); } catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+    }
+
+    static int Main()
+    {
+        Meter[] heap = { new Meter(), new Meter() };
+        heap[0].Set(3.0);
+        heap[1].Set(4.0);
+        Console.WriteLine(heap[0].Value + heap[1].Value - 4);
+        Console.WriteLine(Try(() => { Meter m = new Meter(); m.Set(Missing); return m.Value.ToString(); }));
+        Console.WriteLine(Try(() => { Meter m = new Meter(); m.Set(2.5); return m.Value.ToString(); }));
+        Console.WriteLine("read " + (heap[0].Value + heap[1].Value - 4));
+        return 0;
+    }
+}

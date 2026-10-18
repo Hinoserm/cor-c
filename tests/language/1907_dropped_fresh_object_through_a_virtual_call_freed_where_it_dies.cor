@@ -1,0 +1,67 @@
+// test: dropped_fresh_object_through_a_virtual_call_freed_where_it_dies
+// expect-exit: 0
+// expect-output:
+// climb 82221622222400000
+// collections 0
+//
+// A FRESH OBJECT A LAP MAKES AND DROPS, read through a VIRTUAL CALL THAT
+// ANSWERS A VALUE (t.Weight()), was the collector's: the answer of a call
+// through a table might have been the object itself, and the walk of what
+// holds it (DroppedRegisters) refused any such call. Where every target the
+// call can reach is known (IndirectTargets), the answer is the object only
+// where a target hands its `this` back, as a direct call's is, and kept only
+// where a target keeps it in the box it hands back: neither here, so each
+// lap's object is given back where it dies, and the climbs run no
+// collection.
+using System;
+using System.Runtime.CompilerServices;
+
+abstract class Step
+{
+    public long V;
+    public long A, B, C, D, E, F, G, H;
+
+    public abstract long Weight();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public Step Copy()
+    {
+        Step c = (V & 1) == 0 ? new Even() : new Odd();
+        c.V = V;
+        c.A = A;
+        return c;
+    }
+}
+
+sealed class Even : Step { public override long Weight() => V + A; }
+sealed class Odd : Step { public override long Weight() => V - A; }
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Climb(long start, long limit)
+    {
+        Step r = new Even();
+        r.V = start;
+        r.A = 1;
+        while (true)
+        {
+            Step t = r.Copy();
+            t.V = t.V * 10 + 1;
+            if (t.Weight() >= limit) break;
+            r = t;
+        }
+        return r.V + r.A;
+    }
+
+    static int Main()
+    {
+        long total = 0;
+        int collections = GC.CollectionCount(0);
+        for (int n = 0; n < 200000; n++) total += Climb(n % 7 + 1, 1000000000000L);
+        int ran = GC.CollectionCount(0) - collections;
+        Console.WriteLine("climb " + total);
+        Console.WriteLine("collections " + ran);
+        return 0;
+    }
+}

@@ -454,6 +454,20 @@ public sealed partial class Escape
                             break;
                         case Opcode.CallIndirect when i.Dest is null && !(i.Operands[0] is RegOperand { Reg: var through } && it.Contains(through)):
                             break;
+                        // A VIRTUAL CALL THAT ANSWERS A VALUE, its every target
+                        // known (the devirtualiser's IndirectTargets): the
+                        // answer is the object only where a target hands its
+                        // `this` back, as a direct call's is; kept in a box a
+                        // target hands back, it may be anywhere.
+                        case Opcode.CallIndirect when i.Dest is not null && !(i.Operands[0] is RegOperand { Reg: var through } && it.Contains(through))
+                            && _indirect is not null && _indirect.TryGetValue(i, out string[]? targets) && targets.Length > 0:
+                            for (int a = 1; a < i.Operands.Count; a++)
+                            {
+                                if (i.Operands[a] is not RegOperand { Reg: var arg } || !it.Contains(arg)) continue;
+                                if (a == 1 && targets.Any(ReturnsFirst)) same = i.Dest;
+                                else if (targets.Any(t => Held(t, a - 1) is not null)) known = false;
+                            }
+                            break;
                         default:
                             known = false;
                             break;

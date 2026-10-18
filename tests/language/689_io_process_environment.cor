@@ -6,7 +6,7 @@
 // tempdir True True
 // directory True
 // folder True True
-// runtime X86 True
+// runtime True True
 // utf8 a?b True 1
 // regex x-1-y-22 [a][b]
 // process 0 True from-env
@@ -52,7 +52,9 @@ static class Program
         Console.WriteLine("folder " + (Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) == home)
             + " " + (Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData, Environment.SpecialFolderOption.DoNotVerify) == "/usr/share"));
 
-        Console.WriteLine("runtime " + RuntimeInformation.ProcessArchitecture + " " + RuntimeInformation.IsOSPlatform(OSPlatform.Linux));
+        // The image's own architecture, whichever target it was built for.
+        Architecture own = Environment.Is64BitProcess ? Architecture.X64 : Architecture.X86;
+        Console.WriteLine("runtime " + (RuntimeInformation.ProcessArchitecture == own) + " " + RuntimeInformation.IsOSPlatform(OSPlatform.Linux));
 
         byte[] bad = new byte[] { (byte)'a', 0xFF, (byte)'b' };
         string replaced = Encoding.UTF8.GetString(bad);

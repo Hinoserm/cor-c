@@ -539,7 +539,7 @@ public static class IrLinkOptimizer
             if (complete)
             {
                 HeapDecision.Answer answer = HeapDecision.Decide(inputs, units, closedImageEntry!, types => VirtualTargets.Ancestry(inputs, types),
-                    ownedFields?.Fields.Keys.ToHashSet(StringComparer.Ordinal), foreign);
+                    ownedFields?.Fields.Keys.ToHashSet(StringComparer.Ordinal), foreign, pastBudget: Switches.AllocReport);
                 Console.Error.WriteLine("LTO heap: " + (answer.NeedsHeap ? "a collector, " + (answer.Because ?? answer.Sites.Count + " allocations left to it") : "no collector"));
                 if (Switches.AllocReport) Console.Error.WriteLine("alloc report: link catches keeping: " + answer.Catches);
                 if (Switches.AllocReport)
@@ -548,6 +548,15 @@ public static class IrLinkOptimizer
                 if (Switches.AllocReport)
                     foreach (string site in answer.Sites.Where(site => Switches.AllocReportOnly is not { } which || site.Contains(which, StringComparison.Ordinal)))
                         Console.Error.WriteLine("alloc report: link site " + site);
+                // UNBOUNDED UNWINDS ARE A COLLECTOR ON THEIR OWN, the sites above
+                // their reasons; what a walk as if the budget held still finds
+                // follows, as the compile's report lists it.
+                if (Switches.AllocReport && answer.Because?.Contains("unwinds unbounded", StringComparison.Ordinal) == true)
+                {
+                    Console.Error.WriteLine($"alloc report: link past the throw budget, as if unwinds were bounded: {answer.PastBudget.Count} allocation(s) still need a collector");
+                    foreach (string site in answer.PastBudget.Where(site => Switches.AllocReportOnly is not { } which || site.Contains(which, StringComparison.Ordinal)))
+                        Console.Error.WriteLine("alloc report: link past the budget " + site);
+                }
                 if (!answer.NeedsHeap)
                     foreach (string site in answer.Sites) Console.Error.WriteLine("note: --no-collector: an allocation in " + site + " is never given back");
                 LinkTimings.Phase("heap decision");

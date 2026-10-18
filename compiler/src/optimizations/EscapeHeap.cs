@@ -160,10 +160,67 @@ public sealed partial class Escape
     {
         if (st.Field is not { } field || st.Operands.Count < 2 || st.Operands[0] is not RegOperand baseReg) return false;
         if (FillStoreShape(f, new Defs(f), new RegisterWrites(f), st) is not null) return false;
-        if (FirstStoreIntoMade(f, st, firstFill, cfgOf) || first.Fills(b, b.Instrs.IndexOf(st)) || self.FreedFields.Contains(field)) return false;
+        if (FirstStoreIntoMade(f, st, firstFill, cfgOf) || first.Fills(b, b.Instrs.IndexOf(st)) || self.FreedFields.Contains(field)
+            || ConstructorFirstStore(f, b, st, cfgOf)) return false;
         Dictionary<VReg, Instr> defs = SingleDefs(f);
         if (GuardedFill(f, b, st, defs)) return false;
         return !(OriginOf(defs, baseReg.Reg) is Instr madeOwner && PrivateOwner(f, madeOwner, summaries, privateOwner));
+    }
+
+    /// <summary>
+    /// THE FIRST STORE A CONSTRUCTOR MAKES INTO A FIELD OF ITS OWN OBJECT --
+    /// a field initialiser, List's `items = null!` -- replaces nothing. A
+    /// class's constructor runs on an object just made, zero where it was
+    /// made, or is chained to by another constructor of the same object
+    /// (`: this(...)`, `: base(...)`) before that one's body, whose field
+    /// initialisers are its own class's fields; and before the store, on
+    /// every way from the constructor's entry, nothing but allocations and
+    /// the collector's notes is called, nothing else is stored into the
+    /// field, and no memory is copied or filled, so nothing can have put
+    /// anything there. Only a class's instance fields are tagged
+    /// (Instr.Field), so `this` is an object, never a struct's storage.
+    /// </summary>
+    private static bool ConstructorFirstStore(Function f, Block b, Instr st, Dictionary<Function, Cfg> cfgOf)
+    {
+        if (f.Display is not { } shown || !shown.Contains("..ctor(", StringComparison.Ordinal) || f.Async is not null
+            || f.Params.Count == 0 || f.Params[0].Name != "this" || st.Operands[0] is not RegOperand { Reg: var into }) return false;
+        Dictionary<VReg, Instr> defs = SingleDefs(f);
+        HashSet<VReg> written = new();
+        foreach (Block x in f.Blocks) foreach (Instr i in x.Instrs) if (i.Dest is not null) written.Add(i.Dest);
+        if (written.Contains(f.Params[0])) return false;
+        VReg root = into;
+        for (int hop = 0; hop < 8 && root != f.Params[0]; hop++)
+        {
+            if (!defs.TryGetValue(root, out Instr? d) || d.Op is not (Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32) || d.Operands is not [RegOperand from]) return false;
+            root = from.Reg;
+        }
+        if (root != f.Params[0]) return false;
+        bool Harmless(Instr i) => i.Op switch
+        {
+            Opcode.Call => IsAllocator(i.Callee) || i.Callee is not null && IsCollectorNote(i.Callee),
+            Opcode.Store => i.Field != st.Field,
+            Opcode.CallIndirect or Opcode.Syscall or Opcode.MemCopy or Opcode.MemSet or Opcode.AtomicSwap or Opcode.AtomicAdd
+                or Opcode.AtomicAnd or Opcode.AtomicOr or Opcode.AtomicXor or Opcode.AtomicCas => false,
+            _ => true,
+        };
+        // Back from the store to the entry: a landing pad, or the store's own
+        // block round a loop -- the store again -- is a way that fails.
+        if (!cfgOf.TryGetValue(f, out Cfg? cfg)) cfgOf[f] = cfg = new Cfg(f);
+        for (int k = b.Instrs.IndexOf(st) - 1; k >= 0; k--) if (!Harmless(b.Instrs[k])) return false;
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> work = new();
+        if (!ReferenceEquals(b, f.Entry)) foreach (Block p in cfg.Preds(b)) work.Push(p);
+        else if (cfg.Preds(b).Count > 0) return false;
+        while (work.TryPop(out Block? x))
+        {
+            if (!seen.Add(x)) continue;
+            if (ReferenceEquals(x, b) || x.IsLandingPad) return false;
+            foreach (Instr i in x.Instrs) if (!Harmless(i)) return false;
+            if (ReferenceEquals(x, f.Entry)) { if (cfg.Preds(x).Count > 0) return false; continue; }
+            if (cfg.Preds(x).Count == 0) return false;
+            foreach (Block p in cfg.Preds(x)) work.Push(p);
+        }
+        return true;
     }
 
     /// <summary>
@@ -273,14 +330,17 @@ public sealed partial class Escape
 
     /// <summary>
     /// WHAT THE THROW WRITES INTO WHAT IS THROWN (Exception.Thrown$ and
-    /// Placed$, called by the runtime's Capture at the throw): a store into
-    /// the first parameter, through copies and through a join of it and null
-    /// (an `is Exception e` binding).
+    /// Placed$, called by the runtime's Capture at the throw; Reserve$, the
+    /// making of the exception the heap throws out of memory, made in
+    /// advance and thrown with the trace it then writes in place): a store
+    /// into the first parameter, through copies and through a join of it
+    /// and null (an `is Exception e` binding).
     /// </summary>
     private static bool IntoThrown(Function g, VReg r)
     {
         if (g.Params.Count == 0 || !g.Name.StartsWith("m_Exception_Thrown$_", StringComparison.Ordinal)
-            && !g.Name.StartsWith("m_Runtime_Capture_3_", StringComparison.Ordinal) && !g.Name.StartsWith("m_Exception_Placed$_", StringComparison.Ordinal)) return false;
+            && !g.Name.StartsWith("m_Runtime_Capture_3_", StringComparison.Ordinal) && !g.Name.StartsWith("m_Exception_Placed$_", StringComparison.Ordinal)
+            && !g.Name.StartsWith("m_Exception_Reserve$_", StringComparison.Ordinal)) return false;
         RegisterWrites writes = new(g);
         HashSet<VReg> seen = new();
         Stack<VReg> work = new();

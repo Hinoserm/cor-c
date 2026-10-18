@@ -191,16 +191,108 @@ static class Platform
     public static long MapHook;
     public static long UnmapHook;
 
-    /// Memory given back: to the hook, which returns its frames. Nothing
-    /// from before the hook can be given back, and is not: the bump
-    /// region's, from where it began (_start) to its end -- what it handed
-    /// out lies below _at, and is the region's all the same.
+    /// MEMORY GIVEN BACK. What the region handed out (SetHeap) is the
+    /// region's again, hooks or none -- a kernel's UnmapHook is for what its
+    /// MapHook mapped, and was handed the region's memory before (the bump
+    /// below _at) -- kept in a list of free ranges, in address order and
+    /// joined with its neighbours, each saying its next and its size in its
+    /// first two words, for Map to hand out again; the top of what was
+    /// handed out goes back to the bump. Without it, every chunk the
+    /// collector gave back -- a dead large array's, a page with nothing live
+    /// -- was gone for good, and a heap that had run out once could never
+    /// answer again. Anything else goes to the hook, which returns its frames.
     public static void Unmap(long at, long bytes)
     {
-        if (UnmapHook != 0 && (at < _start || at >= _limit))
+        if (_limit != 0 && at >= _start && at < _limit)
+        {
+            Release(at, (bytes + 7) & (0 - 8));
+            return;
+        }
+        if (UnmapHook != 0)
         {
             Sys.Call(UnmapHook, at, bytes, 0);
         }
+    }
+
+    /// The region's free ranges (Unmap), the lowest first, and their bytes.
+    private static long _freeRanges;
+    private static long _freeBytes;
+    private const long RangeLeast = 2 * WordSize.Bytes;
+
+    static long RangeNext(long range) => Sys.Peek(range);
+    static long RangeSize(long range) => Sys.Peek(range + WordSize.Bytes);
+
+    static void SetRange(long range, long next, long size)
+    {
+        Sys.Poke(range, next);
+        Sys.Poke(range + WordSize.Bytes, size);
+    }
+
+    static void Release(long at, long size)
+    {
+        if (size < RangeLeast || at + size > _at) return;
+        // The top of what was handed out: the bump's again, with the free
+        // range it then ends at.
+        if (at + size == _at)
+        {
+            _at = at;
+            long before = 0;
+            long range = _freeRanges;
+            while (range != 0 && RangeNext(range) != 0) { before = range; range = RangeNext(range); }
+            if (range != 0 && range + RangeSize(range) == _at)
+            {
+                _at = range;
+                _freeBytes = _freeBytes - RangeSize(range);
+                if (before == 0) _freeRanges = 0; else Sys.Poke(before, 0);
+            }
+            return;
+        }
+        long previous = 0;
+        long next = _freeRanges;
+        while (next != 0 && next < at) { previous = next; next = RangeNext(next); }
+        _freeBytes = _freeBytes + size;
+        // Joined with what follows it, and with what comes before.
+        if (next != 0 && at + size == next)
+        {
+            size = size + RangeSize(next);
+            next = RangeNext(next);
+        }
+        if (previous != 0 && previous + RangeSize(previous) == at)
+        {
+            SetRange(previous, next, RangeSize(previous) + size);
+            return;
+        }
+        SetRange(at, next, size);
+        if (previous == 0) _freeRanges = at; else Sys.Poke(previous, at);
+    }
+
+    /// `need` bytes of the free ranges, the first that holds them, from its
+    /// end; 0 when none does.
+    static long TakeRange(long need)
+    {
+        long previous = 0;
+        long range = _freeRanges;
+        while (range != 0)
+        {
+            long size = RangeSize(range);
+            if (size >= need)
+            {
+                _freeBytes = _freeBytes - need;
+                if (size - need >= RangeLeast)
+                {
+                    Sys.Poke(range + WordSize.Bytes, size - need);
+                    return range + size - need;
+                }
+                // The whole of it: what is over is too little to list, and
+                // goes with it.
+                _freeBytes = _freeBytes - (size - need);
+                if (previous == 0) _freeRanges = RangeNext(range); else Sys.Poke(previous, RangeNext(range));
+                return range;
+            }
+            previous = range;
+            range = RangeNext(range);
+        }
+        return 0;
     }
 
     /// The processor given up to whatever else is ready, by the hook -- a
@@ -239,6 +331,17 @@ static class Platform
     /// manual heap and Gc's chunk list both keep what they are given.
     public static long Map(long bytes)
     {
+        // The region's own given back first (Unmap), whoever maps the rest.
+        if (_freeRanges != 0 && bytes > 0)
+        {
+            long want = (bytes + 7) & (0 - 8);
+            long reused = TakeRange(want);
+            if (reused != 0)
+            {
+                Zero(reused, want);
+                return reused;
+            }
+        }
         if (MapHook != 0)
         {
             return Sys.Call(MapHook, bytes, 0, 0);
@@ -416,7 +519,7 @@ static class Platform
     /// it always had.
     public static long AvailableMemory()
     {
-        if (TotalMemoryBytes == 0 && MapHook == 0) return _limit - _at;
+        if (TotalMemoryBytes == 0 && MapHook == 0) return _limit - _at + _freeBytes;
         return FreeMemoryQuietly();
     }
 

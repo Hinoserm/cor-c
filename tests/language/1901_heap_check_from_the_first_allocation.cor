@@ -1,0 +1,40 @@
+// test: heap_check_from_the_first_allocation
+// flags: --runtime-knob Corsac.GC.HeapCheck=true
+// expect-exit: 0
+// expect-output:
+// 100 300 4950
+// reports 0
+//
+// THE HEAP CHECK (Corsac.GC.HeapCheck) ON A SIMPLE ALLOCATING PROGRAM says
+// nothing, as it should. It said "an object's guard written over, zeroed
+// whole by a writer" on every allocation, for three reasons. The knob is read
+// as the heap starts, at the first allocation, which was sized before it and
+// so had no room for a guard, and was remembered for the recheck anyway; now
+// it is asked again once the check is known. The recheck that runs as each
+// block is made read that very block, before its guard was painted, through
+// an entry the ring could not forget (its hash slot a later block's when an
+// earlier block at the same address was freed); now the block being made is
+// passed by. And in long mode the guard -- four words and its fill -- was
+// given 24 bytes for 32 and wrote over the object's last word: a checked
+// x86-64 program's table went round for ever. What the check said is
+// counted here (Gc.HeapCheckReports): nothing.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Main()
+    {
+        var list = new List<string>();
+        for (int i = 0; i < 20000; i++) { list.Add("item " + i); if (list.Count > 100) list.RemoveAt(0); }
+        var d = new Dictionary<int, int[]>();
+        for (int i = 0; i < 5000; i++) d[i % 300] = new int[i % 50 + 1];
+        long sum = 0;
+        for (int i = 0; i < 100; i++) sum += i;
+        GC.Collect();
+        Console.WriteLine(list.Count + " " + d.Count + " " + sum);
+        Console.WriteLine("reports " + Gc.HeapCheckReports);
+        return 0;
+    }
+}

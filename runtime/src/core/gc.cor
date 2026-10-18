@@ -3423,6 +3423,14 @@ static class Gc
         }
         if (held > bytes) bytes = held;
         bytes = (bytes + ChunkPage - 1) & -ChunkPage;
+        // UNDER THE HEAP'S CAP, as .NET's hard limit is a limit on all it
+        // manages: past it the arena maps no more, and what a region would
+        // have made comes from the heap (AllocRegion), the collector's to
+        // keep within the cap or to say is out of memory. Uncounted, a
+        // function making sixty megabytes for its own use under a cap of four
+        // made them all in its region.
+        long cap = HeapChunks.Cap;
+        if (cap != 0 && ArenaMappedNow + HeapChunks.HeapBytes + bytes > cap) return 0;
         long start = Platform.Map(bytes);
         if (start == 0) return 0;
         // Stores into its blocks mark cards: theirs committed now.
@@ -4042,9 +4050,20 @@ static class Gc
     // of the code that asked. A write past the end of any object lands in
     // the fill or the words and is found -- at the object's free, at every
     // sweep, at every heap walk -- with the object's type and who made it.
-    const long GuardBytes = 24;
+    // FOUR WORDS AND EIGHT BYTES OF FILL: 24 on i386, 40 in long mode. A flat
+    // 24 there was the four words alone less a word, and the guard written
+    // the object's last eight bytes over -- a heap-checked x86-64 program's
+    // tables went round for ever.
+    const long GuardBytes = 4 * WordSize.Bytes + 8;
     const long GuardMagic = 0x6A11EDC0;
     static long _guardReports;
+
+    /// WHAT THE HEAP CHECK HAS SAID (Corsac.GC.HeapCheck), counted: a guard
+    /// written over, a footer or a next header overwritten after its block
+    /// was made, a class list holding a live block, two owners of one range
+    /// -- each said on standard error as well. What a run with the check on
+    /// asks to know it was clean.
+    public static long HeapCheckReports => _guardReports + _recentReports + _listReports + _ownerReports;
 
     static long AllocKind(long bytes, long kind)
     {
@@ -5052,7 +5071,19 @@ static class Gc
             Sys.Poke(e + i * w, back);
         }
         Sys.Poke(e, block);
-        if (_recentIndex != 0) Sys.Poke(RecentSlot(block), e);
+        if (_recentIndex != 0)
+        {
+            // ONE SLOT PER HASH, AND A COLLISION LOSES THE OLDER ENTRY'S
+            // RECHECK, as the ring says: dropped here, not left behind. Kept,
+            // it could no longer be forgotten (Forget finds entries by their
+            // slot), its block freed and made again under it, and read in
+            // the moment another allocation had made it and not yet painted
+            // its guard -- "zeroed whole by a writer", of nothing written.
+            long slot = RecentSlot(block);
+            long older = Sys.Peek(slot);
+            if (older != 0 && older != e && Sys.Peek(older) != 0 && Sys.Peek(older) != block && RecentSlot(Sys.Peek(older)) == slot) Sys.Poke(older, Zero);
+            Sys.Poke(slot, e);
+        }
     }
 
     /// Whether a block still starts at `block`: on its class's grid in a
@@ -5078,7 +5109,14 @@ static class Gc
         return at == block;
     }
 
-    static void CheckRecent()
+    /// `making`: the block being handed out as this runs (CheckMade), which
+    /// is no block to read yet -- its header says live, its guard is not
+    /// painted until its allocation returns (AllocKind) -- and which an
+    /// entry the ring could not forget may still name: an earlier block at
+    /// the same address, freed while its hash slot was a later block's
+    /// (Forget). Read then, it was "zeroed whole by a writer" on every
+    /// allocation of a program that freed and made the same block again.
+    static void CheckRecent(long making)
     {
         if (_recent == 0 || _recentReports >= 12) return;
         long w = WordSize.Bytes;
@@ -5092,7 +5130,7 @@ static class Gc
             _recentCheck = _recentCheck + 1;
             long e = _recent + k * RecentWords * w;
             long block = Sys.Peek(e);
-            if (block == 0) continue;
+            if (block == 0 || block == making) continue;
             // ONLY THIS THREAD'S: another's newest block may be being made on
             // another processor at this moment -- its header there, its guard
             // and footer not yet -- and it is that thread's own recheck that
@@ -5222,7 +5260,7 @@ static class Gc
     /// slot's header (FooterBroken).
     static void CheckMade(long block, string how, long tail)
     {
-        CheckRecent();
+        CheckRecent(block);
         Remember(block, how == "class fast path" ? 1 : how == "bump fast path" ? 2 : how == "PopClass" ? 3 : how == "a bigger class's slot" ? 5 : 4);
         if (WatchHook != 0 && (Sys.Peek(block) & SizeMask) == WatchSize)
         {
@@ -6264,15 +6302,28 @@ static class Gc
     /// one is due, a new chunk, and out of memory.
     ///
     /// THIS AND EVERYTHING IT CALLS ALLOCATES NOTHING: no `new`, no arrays, no
-    /// strings. Every one of those is a call to this.
+    /// strings. Every one of those is a call to this. The one exception is
+    /// the exception out of memory throws, made once, by the first request
+    /// to come this way, before it has taken or holds anything.
     static long AllocSlow(long bytes, long kind)
     {
+        // Whether the request was sized with a guard (AllocKind): read before
+        // anything here can start the heap, which is where the check is read.
+        bool checking = _heapCheck;
+        if (!_outOfMemoryMade)
+        {
+            _outOfMemoryMade = true;
+            OutOfMemoryException made = new OutOfMemoryException(null);
+            made.Reserve$(new long[Runtime.TraceDepth]);
+            _outOfMemory = made;
+        }
+
         // The size checked BEFORE it is rounded, with a bound that leaves
         // room for the rounding: rounding first lets a huge request wrap
         // negative and slip past the check.
         if (bytes < 0 || bytes > MaxRequest)
         {
-            OutOfMemory("out of memory: a request larger than any object may be\n");
+            ThrowOutOfMemory(bytes, false);
         }
 
         long need = (bytes + Overhead + 7) & SizeMask;
@@ -6295,6 +6346,17 @@ static class Gc
         if (!_ready)
         {
             Start();
+        }
+        // THE HEAP CHECK IS KNOWN ONCE THE HEAP HAS STARTED (Start reads the
+        // knob) -- here, or in the allocation of the exception made in
+        // advance above. A request sized before that has no room for a
+        // guard, and a block remembered unguarded was taken by every recheck
+        // after for one a zeroing writer had cleared whole. Asked again, it
+        // is guarded as every later request is.
+        if (_heapCheck && !checking)
+        {
+            GcLock.Exit();
+            return AllocKind(bytes, kind);
         }
         SyncEnd();
 
@@ -6498,32 +6560,7 @@ static class Gc
 
         if (block == 0)
         {
-            // What the platform can say of where the heap went (a kernel's
-            // allocation sites), first: nothing it does may allocate.
-            if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
-            SayNumber("out of memory: request ", need);
-            SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
-            SayNumber("out of memory: since last collection ", _since);
-            SayNumber("out of memory: live bytes at last collection ", _liveBytes);
-            SayNumber("out of memory: live blocks at last collection ", _liveBlocks);
-            SayNumber("out of memory: small free blocks ", _smallFree);
-            SayNumber("out of memory: bump bytes remaining ", _limit - _bump);
-            SayNumber("out of memory: anchor metadata bytes ", HeapChunks.BlockAnchorBytes);
-            SayNumber("out of memory: cap ", HeapChunks.Cap);
-            SayNumber("out of memory: reserve under the cap ", HeapChunks.ReserveBytes);
-            SayNumber("out of memory: pooled page bytes ", _poolBytes);
-            if (_bins != 0)
-            {
-                for (long bin = 0; bin < Bins; bin++)
-                {
-                    long root = BinHead(bin);
-                    if (root == 0) continue;
-                    SayNumber("out of memory: free bin ", bin);
-                    SayNumber("out of memory: first block ", SizeOfBlock(root));
-                }
-            }
-            SayFreeShape();
-            OutOfMemory();
+            ThrowOutOfMemory(need, true);
         }
 
         _since = _since + SizeOfBlock(block);
@@ -6646,11 +6683,7 @@ static class Gc
             if (attempt == 2) DrainPool();
         }
         ShutLastTry();
-        SayNumber("out of memory: small request ", small);
-        SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
-        SayNumber("out of memory: live bytes at last collection ", _liveBytes);
-        SayFreeShape();
-        OutOfMemory();
+        ThrowOutOfMemory(small, true);
         return 0;
     }
 
@@ -7281,7 +7314,41 @@ static class Gc
     /// The heap's ceiling for the address space this process has.
     static void SetCeiling()
     {
-        HeapCeiling = Platform.AddressSpace() > 3221225472 ? WideCeiling : NarrowCeiling;
+        HeapCeiling = CeilingToBe();
+    }
+
+    /// THE CEILING AND THE CAP START SETS, known before it has: what
+    /// GC.GetGCMemoryInfo answers before the first allocation, as .NET's
+    /// answers its hard limit from the start. The ceiling by the address
+    /// space; the cap the program's own (SetLimit), else the image's knob
+    /// (Platform.HeapLimit), else its share of what its control group
+    /// allows (ContainerCap); 0 for none.
+    public static long CeilingToBe()
+    {
+        if (_ready) return HeapCeiling;
+        return Platform.AddressSpace() > 3221225472 ? WideCeiling : NarrowCeiling;
+    }
+
+    public static long CapToBe()
+    {
+        if (_ready || HeapChunks.Cap != 0) return HeapChunks.Cap;
+        long asked = Platform.HeapLimit();
+        if (asked != 0) return asked;
+        long limit = Platform.MemoryLimit();
+        return limit != 0 ? ContainerCap(limit) : 0;
+    }
+
+    /// ON A SMALL MACHINE, what the program needs beside its heap: its code,
+    /// stacks and the collector's tables came to 16 MB when a compile was
+    /// stopped at the cap, and a quarter of 256 MB held 64 back for them --
+    /// the heap the compile needed was there and refused. An eighth, and
+    /// never less than 32 MB, below 512 MB; past that a quarter, as .NET's
+    /// container cap, which is what the build sizes its parallel work by.
+    static long ContainerCap(long limit)
+    {
+        long reserve = limit / 8 > SmallReserve ? limit / 8 : SmallReserve;
+        long cap = limit <= SmallMachine ? limit - reserve : limit / 4 * 3;
+        return cap > ContainerFloor ? cap : ContainerFloor;
     }
 
     static void Start()
@@ -7298,7 +7365,8 @@ static class Gc
         _deadCensus = _census && (_deadCensusAsked || Platform.GcDeadCensus());
         _thresholdCap = Platform.GcThreshold();
         _nurseryFixed = Platform.GcNursery();
-        _heapCheck = Platform.HeapCheck();
+        // Kept where the program turned it on before the heap started (CheckHeapOn).
+        _heapCheck = _heapCheck || Platform.HeapCheck();
         CountMarks = CountMarks || Platform.GcStats();
         if (Platform.FreeLog())
         {
@@ -7317,19 +7385,7 @@ static class Gc
         if (HeapChunks.Cap == 0)
         {
             long limit = Platform.MemoryLimit();
-            if (limit != 0)
-            {
-                // ON A SMALL MACHINE, what the program needs beside its heap:
-                // its code, stacks and the collector's tables came to 16 MB
-                // when a compile was stopped at the cap, and a quarter of 256
-                // MB held 64 back for them -- the heap the compile needed
-                // was there and refused. An eighth, and never less than 32
-                // MB, below 512 MB; past that a quarter, as .NET's container
-                // cap, which is what the build sizes its parallel work by.
-                long reserve = limit / 8 > SmallReserve ? limit / 8 : SmallReserve;
-                long cap = limit <= SmallMachine ? limit - reserve : limit / 4 * 3;
-                HeapChunks.SetLimit(cap > ContainerFloor ? cap : ContainerFloor);
-            }
+            if (limit != 0) HeapChunks.SetLimit(ContainerCap(limit));
         }
         _ready = true;
         _threshold = MinThreshold;
@@ -7351,6 +7407,92 @@ static class Gc
         }
         StartGenerations();
         AllocSamples.Start();
+    }
+
+    /// THE EXCEPTION OUT OF MEMORY THROWS, made in advance (AllocSlow, by the
+    /// first request to come that way) as .NET makes its own: when the heap
+    /// has run out, making one is the thing that cannot be done. One for the
+    /// run, thrown again each time with the trace of that throw, as .NET's
+    /// is. The flag is a latch -- set before the exception is made, never
+    /// cleared -- so it is made once (Escape's latched blocks); two first
+    /// requests racing make two, and either serves.
+    static OutOfMemoryException? _outOfMemory;
+    static bool _outOfMemoryMade;
+
+    /// The request the heap last could not answer, for its report.
+    static long _failedNeed;
+
+    /// OUT OF MEMORY, THROWN as .NET throws it, and catchable as there: the
+    /// exception made in advance, its trace taken with nothing made
+    /// (Exception.Refill$), and the heap lock let go first -- `locked` says
+    /// whether this thread holds it -- for the catch may allocate, and an
+    /// unwind must leave no lock behind. What the platform can say of where
+    /// the heap went comes first (OutOfMemoryHook), as it always did; what
+    /// the heap held is said only if nothing catches it (SayOutOfMemory,
+    /// from Runtime.Unhandled). With nothing made yet to throw, the heap's
+    /// report ends the process, as it did before there was a throw.
+    static void ThrowOutOfMemory(long need, bool locked)
+    {
+        // Nothing the hook does may allocate.
+        if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
+        _failedNeed = need;
+        OutOfMemoryException? thrown = _outOfMemory;
+        if (thrown == null)
+        {
+            if (!locked) GcLock.Enter();
+            SayHeld();
+            OutOfMemory();
+            return;
+        }
+        Runtime.OutOfMemoryReport = Sys.AddressOf(Gc.SayOutOfMemory);
+        if (locked) GcLock.Exit();
+        thrown.Refill$(Sys.FramePointer());
+        throw thrown;
+    }
+
+    /// The heap's report for an out-of-memory exception nobody caught
+    /// (Runtime.OutOfMemoryReport, a hook's three words): what it held, under
+    /// its lock, with nothing made.
+    public static long SayOutOfMemory(long a, long b, long c)
+    {
+        GcLock.Enter();
+        SayHeld();
+        GcLock.Exit();
+        return 0;
+    }
+
+    /// What the heap held when it ran out, every figure, its free bins and
+    /// its free shape. The heap lock is held.
+    static void SayHeld()
+    {
+        if (_failedNeed < 0 || _failedNeed > MaxRequest) SayNumber("out of memory: a request larger than any object may be ", _failedNeed);
+        else SayNumber("out of memory: request ", _failedNeed);
+        SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
+        SayNumber("out of memory: since last collection ", _since);
+        SayNumber("out of memory: live bytes at last collection ", _liveBytes);
+        SayNumber("out of memory: live blocks at last collection ", _liveBlocks);
+        SayNumber("out of memory: small free blocks ", _smallFree);
+        SayNumber("out of memory: bump bytes remaining ", _limit - _bump);
+        SayNumber("out of memory: anchor metadata bytes ", HeapChunks.BlockAnchorBytes);
+        SayNumber("out of memory: cap ", HeapChunks.Cap);
+        SayNumber("out of memory: reserve under the cap ", HeapChunks.ReserveBytes);
+        SayNumber("out of memory: pooled page bytes ", _poolBytes);
+        SayNumber("out of memory: threshold ", _threshold);
+        SayNumber("out of memory: ceiling ", HeapCeiling);
+        SayNumber("out of memory: collections ", Collections);
+        SayNumber("out of memory: of them major ", MajorCollections);
+        SayNumber("out of memory: mark queue bytes ", _markBytes);
+        if (_bins != 0)
+        {
+            for (long bin = 0; bin < Bins; bin++)
+            {
+                long root = BinHead(bin);
+                if (root == 0) continue;
+                SayNumber("out of memory: free bin ", bin);
+                SayNumber("out of memory: first block ", SizeOfBlock(root));
+            }
+        }
+        SayFreeShape();
     }
 
     /// Nothing left: the message is a literal, which is data the compiler laid
@@ -10679,7 +10821,7 @@ static class Gc
             // comes after), and one made since holds only newcomers: a page's
             // are refused by their headers or marked and kept, a mixed
             // chunk's by its start table, which is not this cycle's.
-            nuint chunk = PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes);
+            nuint chunk = InWindow(at) ? PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) : 0;
             block = 0;
             tail = 0;
             if (chunk != 0)
@@ -10793,11 +10935,24 @@ static class Gc
     static void MarkRefW(nuint at, nuint local)
     {
         nuint slots = _markSlots;
-        if (slots != 0 && PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) == 0)
+        if (slots != 0 && (!InWindow(at) || PeekW(slots + (at >> 12) * (nuint)WordSize.Bytes) == 0))
         {
             return;
         }
         MarkWord(at, local);
+    }
+
+    /// Whether a word lies in the 4 KB table's window (HeapChunks.SlotLow,
+    /// SlotSpan): every address on i386; in long mode a word outside it is
+    /// in no chunk while the marker reads the table (HeapChunks.Whole), and
+    /// its table word would be outside the table.
+    static bool InWindow(nuint at)
+    {
+#if TARGET_64BIT
+        return at - (nuint)HeapChunks.SlotLow < (nuint)HeapChunks.SlotSpan;
+#else
+        return true;
+#endif
     }
 
     /// The bit a queued block carries when it lies in a size-class page and
@@ -12590,7 +12745,7 @@ static class Gc
         // by its cycle (StartsCycle) and takes the page by its class instead.
         _pagesUnwalked = _minor && !stepping && _oldCards != 0 && !_census && !_deadCensus && !_heapCheck
                       && !_verify && !_verifyGenerations && !VerifyHeap && !VerifyMarks && !WalkPages && _referencesEnd == 0
-                      && HeapChunks.SlotTable != 0 && WordSize.Bytes == 4;
+                      && HeapChunks.Whole;
         _snapCount = 0;
         long chunk = HeapChunks.Newest();
         while (chunk != 0)
@@ -12692,10 +12847,11 @@ static class Gc
         // THE MARKER'S LOOKUP BY THE 4 KB TABLE (MarkWord), where the
         // snapshot is whole and no quarantined range's references are being
         // counted -- which wants every word that is not the heap's said.
+        // In long mode only while every chunk is inside the table's window
+        // (HeapChunks.Whole): a word outside it is then no heap's, and is
+        // turned away before the table is read (InWindow).
         _markSlots = 0;
-#if !TARGET_64BIT
-        if (every && _referencesEnd == 0) _markSlots = (nuint)HeapChunks.SlotTable;
-#endif
+        if (every && _referencesEnd == 0 && HeapChunks.Whole) _markSlots = (nuint)HeapChunks.SlotTable;
         // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
         // simply cleared by a major one, which marks everything anyway.
         if (_generational)
@@ -13276,6 +13432,18 @@ static class HeapChunks
     {
         get { return _slotLow; }
     }
+
+    /// WHETHER THE TABLE SAYS OF EVERY CHUNK: there is one, and no chunk lies
+    /// even partly outside its window -- always on i386, where the window is
+    /// all four gigabytes; in long mode while the heap has kept to the 64 GiB
+    /// the first chunk placed it in. The marker reads the table only then
+    /// (Gc.BuildBlockAnchors), and turns away the words outside the window:
+    /// a pointer into a chunk the table cannot say of would be taken for
+    /// nobody's, its object never marked and swept with the garbage.
+    public static bool Whole
+    {
+        get { return _slotBias != 0 && _outsideWindow == 0; }
+    }
     const long ChunkFree = 9 * WordSize.Bytes;
     const long ChunkPageNext = 10 * WordSize.Bytes;
     const long ChunkPagePrev = 11 * WordSize.Bytes;
@@ -13376,6 +13544,10 @@ static class HeapChunks
     static long _slotBias;
     static long _slotLow;
     static bool _slotsTried;
+    // THE CHUNKS NOT WHOLLY INSIDE THE WINDOW, counted as each is entered
+    // and taken out (SlotsSet): while there are none the table says of
+    // every chunk, and a word outside the window is no heap's (Whole).
+    static long _outsideWindow;
     const long SlotShift = 12;
 #if TARGET_64BIT
     public const long SlotSpan = 0x1000000000;
@@ -13411,6 +13583,9 @@ static class HeapChunks
         ulong low = (ulong)_slotLow;
         ulong end = (ulong)Sys.Peek(chunk + ChunkLimit);
         ulong from = (ulong)chunk & ~(ulong)((1L << (int)SlotShift) - 1);
+        // Counted in as it is entered, out as it is taken out, at the same
+        // limit: a chunk's limit is written once, as it is made.
+        if (from < low || end - low > (ulong)SlotSpan) _outsideWindow = _outsideWindow + (value != 0 ? 1 : -1);
         if (from < low) from = low;
         for (ulong at = from; at < end && at - low < (ulong)SlotSpan; at = at + (ulong)(1L << (int)SlotShift))
             Sys.Poke(_slots + (long)((at - low) >> (int)SlotShift) * WordSize.Bytes, value);
@@ -14442,12 +14617,11 @@ static class HeapChunks
             if (_heapBytes + ask > cap) ask = minimum;
         }
 
+        // Refused at the cap, silently: the request that ends out of memory
+        // is caught or not, and the heap's report is said only if it is not
+        // (Gc.ThrowOutOfMemory).
         if (cap != 0 && _heapBytes + ask > cap)
         {
-            // SAID ONLY OF THE LAST TRY, the reserve open: the soft cap
-            // refuses a chunk whenever growth should wait for a collection,
-            // which is ordinary and was said a line per refusal.
-            if (ReserveOpen) Gc.SayNumber("heap: the cap refused a chunk; heap bytes ", _heapBytes);
             return 0;
         }
 
