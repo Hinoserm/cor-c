@@ -1558,8 +1558,19 @@ internal sealed class RegionEscape
         known.ReadHolders = read;
         known.ReadStandIns = standIns;
         known.Version++;
+        known.StandInStale = false;
+        // Named to the stand-ins it read, for their growth to mark (OriginsChanged).
+        foreach (int h in standIns)
+        {
+            if (h >= _readersOf.Length) Array.Resize(ref _readersOf, Math.Max(h + 1, _readersOf.Length * 2));
+            (_readersOf[h] ??= new()).Add((known, known.Version));
+        }
         return shape;
     }
+
+    // By stand-in holder: the shapes whose sites were read from it, each as
+    // the version it was read for, to be marked stale when it grows.
+    private List<(Shaped Shape, long Version)>?[] _readersOf = Array.Empty<List<(Shaped, long)>?>();
 
     /// <summary>
     /// Whether a shape's sites stand: no holder they were read from has
@@ -1572,11 +1583,15 @@ internal sealed class RegionEscape
     // grows them all the time, and they are few beneath any shape; every
     // other holder changes only as Publish replaces a summary in place
     // (_lastInPlaceChange), so while none did since, they are not asked.
+    //
+    // MARKED, NOT ASKED, BY THE STAND-INS: each one's growth marks the shapes
+    // that read it (OriginsChanged), where every check of every shape asked
+    // each stand-in it read, and Check, growing one every few covers, asked
+    // them all again each time.
     private bool Fresh(Shaped known)
     {
         if (known.At > _lastOriginsChange) return true;
-        foreach (int h in known.ReadStandIns)
-            if (OriginsAt(h) >= known.At) return false;
+        if (known.StandInStale) return false;
         if (known.At <= _lastInPlaceChange)
         {
             if (known.ReadHolders is not { } read) return false;
@@ -1625,6 +1640,8 @@ internal sealed class RegionEscape
         // The stand-ins' among them apart, every one.
         public int[]? ReadHolders;
         public int[] ReadStandIns = Array.Empty<int>();
+        // A stand-in it read grew since its sites were worked out.
+        public bool StandInStale;
         // Moved on each time the sites are worked out again (Check's skip).
         public long Version;
     }
@@ -1710,6 +1727,7 @@ internal sealed class RegionEscape
         _components.Clear(); _globalOf.Clear(); _rootedOf.Clear(); _unseenOf.Clear(); _unseenRootOf.Clear(); _shapeGeneration++;
         _solvedAt.Clear(); _appliedOf.Clear(); _sitesReadOf.Clear();
         _originsAt = Array.Empty<long>();
+        _readersOf = Array.Empty<List<(Shaped, long)>?>();
         _componentOf = null; _callees = null;
         Work = Applied = Unfollowed = LargestCycle = 0;
     }
@@ -1911,6 +1929,14 @@ internal sealed class RegionEscape
         _originsAt[holder] = _tick;
         _lastOriginsChange = _tick;
         if (!_standInHolders.Contains(holder)) _lastInPlaceChange = _tick;
+        else if (holder < _readersOf.Length && _readersOf[holder] is { } readers)
+        {
+            // Every shape read from it as it was, stale now; worked out again,
+            // a shape names itself to it afresh.
+            foreach ((Shaped shape, long version) in readers)
+                if (shape.Version == version) shape.StandInStale = true;
+            readers.Clear();
+        }
         _holderFirst = null;
         _escapingBits = null;
         if (_bitsByOrigins.Count > 0) _bitsByOrigins.Clear();
