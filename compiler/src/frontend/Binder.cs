@@ -20238,7 +20238,13 @@ public sealed partial class Binder
                     {
                         MethodSymbol valued = oneReturns.IsVoid ? other : one;
                         Type? made = Produces(valued, valued.Params[i].Type, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
-                        if (made is not null && !made.IsError && !made.IsVoid)
+                        // A VALUE THE DELEGATE CAN RETURN: `Task.Run(() =>
+                        // l.Sum())`'s int is no Task, and Run(Func<Task>) is no
+                        // better than Run(Action) for it -- taken as better,
+                        // it beat Run<T>(Func<T>) too, and the call did not
+                        // compile.
+                        if (made is not null && !made.IsError && !made.IsVoid
+                            && Convertible(made, oneReturns.IsVoid ? otherReturns : oneReturns))
                         {
                             if (oneReturns.IsVoid) return false;
                             better = true;

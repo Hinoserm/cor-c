@@ -1,0 +1,40 @@
+// test: task_run_of_a_value_is_run_of_func_of_it
+// expect-exit: 0
+// expect-output:
+// sum 3
+// count 1
+// walk 9
+// all done
+// id 6
+//
+// Task.Run(() => l.Sum()) is Run<int>(Func<int>): the lambda's int is no
+// Task, so Run(Func<Task>) does not apply, and is not the better of it and
+// Run(Action). Taken as better -- a lambda with a value converting better
+// to a delegate with one, whatever the value -- it beat the generic
+// overload, and the call did not compile ("cannot convert 'int' to
+// 'Task'"). A lambda whose value is a Task still takes Run(Func<Task>).
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static void Wait() { }
+
+    static T Id<T>(Func<T> f) { return f(); }
+
+    static void Main()
+    {
+        List<int> l = new() { 1, 2 };
+        Console.WriteLine("sum " + Task.Run(() => l.Sum()).Result);
+        Console.WriteLine("count " + Task.Run(() => l.Select(x => x).Count(x => x > 1)).Result);
+        Console.WriteLine("walk " + Task.Run(() => { Wait(); return l.Select(x => x * 3).Sum(); }).Result);
+        Task a = Task.Run(() => Wait());
+        Task b = Task.Run(() => Wait());
+        Task.Run(() => Task.WhenAll(a, b)).Wait();
+        Console.WriteLine("all done");
+        Console.WriteLine("id " + Id(() => l.Select(x => x * 2).Sum()));
+    }
+}
