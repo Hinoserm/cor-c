@@ -232,6 +232,19 @@ public sealed partial class Lowering
     /// </summary>
     private bool InlineElement(Type element) => IsStructValue(element) && StructOf(element).HeldInline;
 
+    /// <summary>
+    /// C#'S sizeof(T): a pointer's or a reference's word, and anything else
+    /// the bytes from one element of an array of it to the next -- a struct's
+    /// whole layout, which a pointer to one steps over too (PointeeStride).
+    /// Answered as a word for every struct, `sizeof(Triple)` of three ints
+    /// was 8, and every `p + i` of a Triple* stepped 8 bytes.
+    /// </summary>
+    private int SizeOf(Type? t)
+        => t is null || t.IsPointer || t.IsReference || t.Symbol is { Kind: TypeKind.Class or TypeKind.Interface } ? _t.WordSize : ElementStride(t);
+
+    /// <summary>The bytes from one element a pointer of this type points at to the next: its pointee's sizeof.</summary>
+    private int PointeeStride(Type pointer) => pointer.Pointee is { } pointee ? SizeOf(pointee) : 1;
+
     /// <summary>The bytes from one element of an array to the next.</summary>
     private int ElementStride(Type element)
     {
@@ -562,6 +575,15 @@ public sealed partial class Lowering
         Type f = from.IsEnumValue && from.Symbol is { } enumFrom ? Type.Plain(null, enumFrom.EnumUnderlying) : from;
         Type t = to.IsEnumValue && to.Symbol is { } enumTo ? Type.Plain(null, enumTo.EnumUnderlying) : to;
 
+        // A POINTER CONVERTS AS AN UNSIGNED NATIVE INT (C# 23.5.1): an int
+        // made one is sign-extended to the word, a uint zero-extended, a long
+        // cut to it; one made a long is zero-extended. Read as its pointee's
+        // Prim, an int* was an int: `(int*)n` kept 32 bits in a 64-bit word,
+        // and a call taking it was handed an I32 where it reads an I64.
+        if (f.IsPointer && t.IsPointer) return v;
+        if (f.IsPointer) f = Type.NUInt;
+        if (t.IsPointer) t = Type.NUInt;
+
         if (f.Prim == Prim.Bool)
             f = Type.I32;
         if (t.Prim == Prim.Bool)
@@ -885,7 +907,7 @@ public sealed partial class Lowering
                 return EmitWith(copy, shape);
 
             case SizeOfExpr so:
-                return _e.Const(_b.SizeOfType(so), IrType.I32);
+                return _e.Const(SizeOf(_b.SizeOfType(so)), IrType.I32);
 
             // AN ENUM'S OR A STRUCT'S TYPE IS ITS BOX'S, as a primitive's is:
             // what GetType() on one reads is the box, and typeof has to be
@@ -3727,7 +3749,7 @@ public sealed partial class Lowering
             case UnOp.Deref:
             {
                 VReg addr = Eval(u.Operand);
-                return LoadPlace(new MemPlace(R(addr), 0, type));
+                return LoadPlace(new MemPlace(R(addr), 0, type, Inline: InlineElement(type)));
             }
 
             case UnOp.AddressOf when _b.MethodAddresses.TryGetValue(u, out MethodSymbol? addressed):
@@ -3841,8 +3863,7 @@ public sealed partial class Lowering
                 }
                 else if (operand.IsPointer)
                 {
-                    int stride = Math.Max(1, operand.Pointee?.Size ?? 1);
-                    updated = _e.Binary(inc ? Opcode.Add : Opcode.Sub, old, stride);
+                    updated = _e.Binary(inc ? Opcode.Add : Opcode.Sub, old, PointeeStride(operand));
                 }
                 else
                 {
@@ -4293,7 +4314,7 @@ public sealed partial class Lowering
         if (left.IsPointer && right.IsPointer && b.Op == BinOp.Sub)
         {
             VReg diff = _e.Binary(Opcode.Sub, Eval(b.Left), Eval(b.Right));
-            int stride = Math.Max(1, left.Pointee?.Size ?? 1);
+            int stride = PointeeStride(left);
             VReg elems = stride == 1 ? diff : _e.Binary(Opcode.DivS, diff, stride);
             return elems.Type == IrType.I64 ? elems : _e.Unary(Opcode.SExt32, elems);
         }

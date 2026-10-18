@@ -1653,7 +1653,8 @@ public sealed partial class Lowering
             {
                 Type pointee = _b.TypeOf(deref);
                 VReg addr = Eval(deref.Operand);
-                return new MemPlace(RegOperand.Of(addr), 0, pointee);
+                // A STRUCT IS IN LINE where a pointer points (ElementPlace).
+                return new MemPlace(RegOperand.Of(addr), 0, pointee, Inline: InlineElement(pointee));
             }
 
             case IndexExpr ix when !_b.Indexers.ContainsKey(ix) && !_b.IndexSetters.ContainsKey(ix):
@@ -1684,13 +1685,14 @@ public sealed partial class Lowering
     /// </summary>
     private MemPlace ElementPlace(VReg basis, VReg index, Type sequence, Type element, Node at)
     {
-        int stride = sequence.Prim == Prim.String ? 2 : sequence.IsPointer ? Math.Max(1, element.Size) : ElementStride(element);
+        int stride = sequence.Prim == Prim.String ? 2 : sequence.IsPointer ? PointeeStride(sequence) : ElementStride(element);
         Type stored = sequence.Prim == Prim.String ? Type.Char : element;
 
         if (sequence.IsPointer)
         {
+            // A STRUCT IS IN LINE where a pointer points, as in an array.
             VReg addr = _e.Binary(Opcode.Add, basis, ElementOffset(index, stride));
-            return new MemPlace(RegOperand.Of(addr), 0, stored);
+            return new MemPlace(RegOperand.Of(addr), 0, stored, Inline: InlineElement(stored));
         }
 
         BoundsCheck(basis, index, at, sequence.IsArray);
@@ -1775,7 +1777,7 @@ public sealed partial class Lowering
 
     /// <summary>`p + n` or `p - n` for a pointer p and a count PointerCount made: n elements on, each the pointee's size.</summary>
     private VReg PointerStep(VReg p, Type pointer, VReg count, bool add)
-        => _e.Binary(add ? Opcode.Add : Opcode.Sub, p, ElementOffset(count, Math.Max(1, pointer.Pointee?.Size ?? 1)));
+        => _e.Binary(add ? Opcode.Add : Opcode.Sub, p, ElementOffset(count, PointeeStride(pointer)));
 
     /// <summary>
     /// An element access's index: through a pointer the word PointerCount

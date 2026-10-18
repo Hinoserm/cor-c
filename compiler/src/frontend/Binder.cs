@@ -14303,7 +14303,8 @@ public sealed partial class Binder
                         return t.IsNullableValue ? Promote(t.Underlying).AsNullable() : Promote(t);
 
                     default:
-                        if (!t.IsNumeric)
+                        // A POINTER STEPS ONE ELEMENT (C# 23.6.6), whatever it points at.
+                        if (!t.IsNumeric && !t.IsPointer)
                         {
                             Error(u, $"'++' and '--' need a number, not '{t}'");
                         }
@@ -14655,7 +14656,12 @@ public sealed partial class Binder
                 }
                 else if (!target.IsError && !value.IsError)
                 {
-                    bool ok = target.IsNumeric && value.IsNumeric;
+                    // A POINTER MOVES BY AN INTEGER COUNT OF ELEMENTS, `p += n` and
+                    // `p -= n` alike (C# 23.6.7), and takes no other compound
+                    // assignment: its pointee's Prim is no number of its own.
+                    bool ok = target.IsPointer || value.IsPointer
+                        ? target.IsPointer && a.Op is BinOp.Add or BinOp.Sub && !value.IsPointer && !value.IsNullableValue && value.IsInteger
+                        : target.IsNumeric && value.IsNumeric;
 
                     // `bool` supports the non-short-circuiting bitwise pair in
                     // C#, including their compound-assignment forms. This is
@@ -15370,11 +15376,12 @@ public sealed partial class Binder
                 // of what it is in C# too -- and what makes `p + 1` mean the
                 // next element rather than the next byte.
                 //
-                // Recorded rather than recomputed later, because by the time
-                // the code generator runs it has a TypeRef and no context to
-                // resolve it in -- and inside a generic the answer depends on
-                // which instantiation this is.
-                _r.SizeOfs[so] = SizeInBytes(Resolve(so.Type, _thisType));
+                // The type recorded rather than resolved later, because by the
+                // time the code generator runs it has a TypeRef and no context
+                // to resolve it in -- and inside a generic the answer depends
+                // on which instantiation this is. The size is the code
+                // generator's, which knows a struct's layout (Lowering.SizeOf).
+                _r.SizeOfs[so] = Resolve(so.Type, _thisType);
                 return Type.I32;
             }
 
@@ -15970,18 +15977,6 @@ public sealed partial class Binder
 
     /// <summary>Small integer types compute at 32 bits, as they do in C#.</summary>
     private static Type Promote(Type t) => NumericRules.Unary(t);
-
-    /// <summary>
-    /// How many bytes one of these takes.
-    ///
-    /// An OBJECT is a pointer, so a class is a word however many fields it has
-    /// -- which is what C# answers for a reference type too. A struct would be
-    /// its contents, and there are none with fields yet.
-    /// </summary>
-    private static int SizeInBytes(Type t)
-        => t.IsPointer || t.IsReference || t.Symbol is { Kind: TypeKind.Class or TypeKind.Interface }
-         ? 8
-         : t.Size;
 
     /// <summary>A closure field over this holds its cell, not its value.</summary>
     private static bool CellSource(Sym? from)
@@ -21037,6 +21032,42 @@ public sealed partial class Binder
         };
     }
 
+    /// <summary>
+    /// A binary operator with a pointer on either side: a pointer and an
+    /// integer of any width added, or the integer taken off, is the pointer
+    /// moved that many of its elements; two of one pointer type taken one
+    /// from the other are the long count of elements between them; any two
+    /// pointers, or a pointer and null, compare as addresses. Nothing else
+    /// applies to a pointer (CS0019).
+    /// </summary>
+    private Type PointerOperator(BinaryExpr b, Type l, Type r)
+    {
+        static bool Count(Type t) => !t.IsPointer && !t.IsNullableValue && t.IsInteger;
+        static bool Address(Type t) => t.IsPointer || t.Prim == Prim.NullLiteral;
+        switch (b.Op)
+        {
+            case BinOp.Add when l.IsPointer && Count(r):
+            case BinOp.Sub when l.IsPointer && Count(r):
+                return l;
+            case BinOp.Add when r.IsPointer && Count(l):
+                return r;
+            case BinOp.Sub when l.IsPointer && r.IsPointer && l.Equals(r):
+                return Type.I64;
+            case BinOp.Eq or BinOp.Ne when Address(l) && Address(r):
+            case BinOp.Lt or BinOp.Gt or BinOp.Le or BinOp.Ge when l.IsPointer && r.IsPointer:
+                return Type.Bool;
+        }
+        string spelt = b.Op switch
+        {
+            BinOp.Add => "+", BinOp.Sub => "-", BinOp.Mul => "*", BinOp.Div => "/", BinOp.Rem => "%",
+            BinOp.And => "&", BinOp.Or => "|", BinOp.Xor => "^", BinOp.Shl => "<<", BinOp.Shr => ">>", BinOp.UShr => ">>>",
+            BinOp.Eq => "==", BinOp.Ne => "!=", BinOp.Lt => "<", BinOp.Gt => ">", BinOp.Le => "<=", BinOp.Ge => ">=",
+            BinOp.AndAlso => "&&", BinOp.OrElse => "||", _ => "??",
+        };
+        Error(b, $"CS0019: Operator '{spelt}' cannot be applied to operands of type '{l}' and '{r}'");
+        return Type.Error;
+    }
+
     private Type CheckBinary(BinaryExpr b)
     {
         // A DOTTED NAME IN A CONSTANT PATTERN THAT NAMES A TYPE IS A TYPE TEST.
@@ -21162,6 +21193,16 @@ public sealed partial class Binder
         }
 
         AdoptUnsignedConstant(b.Left, ref l, b.Right, ref r);
+
+        // POINTER ARITHMETIC AND COMPARISON (C# 23.6.7, 23.6.8), by C#'s own
+        // rules and nothing else's: a pointer type answers its pointee's Prim,
+        // so an int* went through the numeric rules as though it were an int
+        // -- `p * 2` compiled, `q - p` came out an int* -- and a Triple*,
+        // whose pointee is no number, was refused `t + 1` outright.
+        if (l.IsPointer || r.IsPointer)
+        {
+            return PointerOperator(b, l, r);
+        }
 
         // `a + b` AND `a - b` OVER TWO DELEGATES OF ONE TYPE are C#'s too, not
         // only their compound forms: Delegate.Combine and Delegate.Remove,

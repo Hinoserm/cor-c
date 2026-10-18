@@ -374,11 +374,12 @@ public sealed partial class BindResult
     public IndexTargets IndexSetters { get; }
     public ExprMethods PropertySetters { get; }
 
-    /// What each `sizeof(T)` came to. Worked out where the type can be resolved
-    /// and the instantiation is known, not left for the code generator.
-    public Dictionary<SizeOfExpr, int> SizeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+    /// What type each `sizeof(T)` names. Resolved where the type can be and
+    /// the instantiation is known, not left for the code generator, which
+    /// knows the layouts and works out the size (Lowering.SizeOf).
+    public Dictionary<SizeOfExpr, Type> SizeOfs { get; } = new(ReferenceEqualityComparer.Instance);
 
-    public int SizeOfType(SizeOfExpr e) => SizeOfs.TryGetValue(e, out int n) ? n : 8;
+    public Type? SizeOfType(SizeOfExpr e) => SizeOfs.TryGetValue(e, out Type? t) ? t : null;
 
     /// <summary>Which type each typeof(T) named, once resolved.</summary>
     public Dictionary<TypeOfExpr, TypeSymbol> TypeOfs { get; } = new(ReferenceEqualityComparer.Instance);

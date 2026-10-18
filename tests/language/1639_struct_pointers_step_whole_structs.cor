@@ -1,0 +1,65 @@
+// test: struct_pointers_step_whole_structs
+// expect-exit: 0
+// expect-output:
+// sizeof 12 16 4 1 2 8
+// gap 36 36 36 5
+// mixed 32 pair 12
+// sum 3108 last 7 70 700
+// copies 1 1 100
+// stored 4 6 5 40
+// count 4 True True True
+//
+// A POINTER TO A STRUCT STEPS OVER THE WHOLE STRUCT, and sizeof(T) is its
+// layout (C# 23.6.7, 23.6.9). Every struct answered a word for its size:
+// sizeof(Triple) of three ints was 8, and `&tp[i]`, `tp + i` and `tp++`
+// scaled by 8 on both targets. The binder refused `tp + 1` outright -- a
+// pointer was judged by its pointee's Prim, a Triple is no number -- and an
+// int* went through the numeric rules as an int; a pointer is now C#'s:
+// added to or taken from an integer, two of one type differenced to a long,
+// two compared. `*tp` and `tp[i]` are the struct where it lies, copied when
+// read, and `tp->C` is `(*tp).C`.
+
+using System;
+using System.Runtime.InteropServices;
+
+struct Triple { public int A, B, C; }
+struct Mixed { public long L; public int I; }
+struct Pair { public byte X; public short Y; }
+
+static class Program
+{
+    static unsafe ulong Gap(Triple* p, int i) => (ulong)(nuint)(&p[i]) - (ulong)(nuint)p;
+    static unsafe ulong Step(Triple* p, int i) => (ulong)(nuint)(p + i) - (ulong)(nuint)p;
+    static unsafe ulong Inc(Triple* p) { Triple* q = p; q++; q += 2; return (ulong)(nuint)q - (ulong)(nuint)p; }
+    static unsafe long Diff(Triple* p, Triple* q) => q - p;
+    static unsafe ulong MGap(Mixed* p, int i) => (ulong)(nuint)(p + i) - (ulong)(nuint)p;
+    static unsafe ulong PGap(Pair* p, int i) => (ulong)(nuint)(&p[i]) - (ulong)(nuint)p;
+
+    static unsafe int Main()
+    {
+        Console.WriteLine("sizeof " + sizeof(Triple) + " " + sizeof(Mixed) + " " + sizeof(Pair) + " " + sizeof(bool) + " " + sizeof(char) + " " + sizeof(double));
+        Triple* t = (Triple*)Marshal.AllocHGlobal(12 * 8);
+        Console.WriteLine("gap " + Gap(t, 3) + " " + Step(t, 3) + " " + Inc(t) + " " + Diff(t, t + 5));
+        Console.WriteLine("mixed " + MGap((Mixed*)t, 2) + " pair " + PGap((Pair*)t, 3));
+        for (int i = 0; i < 8; i++) { t[i].A = i; t[i].B = i * 10; t[i].C = i * 100; }
+        long sum = 0;
+        for (int i = 0; i < 8; i++) sum += t[i].A + t[i].B + t[i].C;
+        Triple* p = t + 7;
+        Console.WriteLine("sum " + sum + " last " + p->A + " " + p[0].B + " " + (*p).C);
+
+        t->A = 1; t->B = 2; t->C = 3;
+        Triple v = *t;
+        Triple w = t[0];
+        t->A = 100;
+        Console.WriteLine("copies " + v.A + " " + w.A + " " + t->A);
+        Triple x = new Triple { A = 4, B = 5, C = 6 };
+        t[3] = x;
+        *(t + 1) = x;
+        x.A = 40;
+        Console.WriteLine("stored " + t[3].A + " " + t[3].C + " " + t[1].B + " " + x.A);
+        Triple* end = &t[4];
+        Console.WriteLine("count " + (end - t) + " " + (t < end) + " " + (end == t + 4) + " " + (t != null));
+        Marshal.FreeHGlobal((nint)t);
+        return 0;
+    }
+}

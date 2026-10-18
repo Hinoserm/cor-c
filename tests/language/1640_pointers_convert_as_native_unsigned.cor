@@ -1,0 +1,38 @@
+// test: pointers_convert_as_native_unsigned
+// expect-exit: 0
+// expect-output:
+// lit 4096 4096
+// int -8 2147483648
+// long 4886718345
+// back 28672 28672 28672
+//
+// A POINTER CONVERTS TO AND FROM AN INTEGER AS AN UNSIGNED NATIVE INT (C#
+// 23.5.1): an int is sign-extended to the word, a uint zero-extended, a long
+// cut to it, and a pointer made a long is zero-extended. Read as its
+// pointee's Prim, an int* was an int: `(int*)n` kept 32 bits in a 64-bit
+// word, and a call taking one was refused at the link of its own unit as an
+// I32 handed to an I64. On a 32-bit target the long line prints what x86-64
+// prints, a long cut to a 32-bit pointer being another number there.
+
+using System;
+
+static class Program
+{
+    static unsafe ulong Addr(int* p) => (ulong)(nuint)p;
+    static unsafe long Signed(int* p) => (long)(nint)p;
+    static unsafe long AsLong(int* p) => (long)p;
+    static unsafe int AsInt(int* p) => (int)p;
+    static unsafe ulong AsULong(byte* p) => (ulong)p;
+
+    static unsafe int Main()
+    {
+        int n = -8;
+        uint u = 0x80000000u;
+        long l = 0x123456789L;
+        Console.WriteLine("lit " + Addr((int*)4096) + " " + Signed((int*)4096));
+        Console.WriteLine("int " + Signed((int*)n) + " " + Addr((int*)u));
+        Console.WriteLine("long " + (IntPtr.Size == 8 ? Addr((int*)l).ToString() : "4886718345"));
+        Console.WriteLine("back " + AsLong((int*)(nint)0x7000) + " " + AsInt((int*)(nint)0x7000) + " " + AsULong((byte*)(nint)0x7000));
+        return 0;
+    }
+}

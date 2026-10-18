@@ -385,21 +385,35 @@ public static class Driver
         return ulong.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out ulong fallback) ? fallback : null;
     }
 
+    /// <summary>
+    /// A flag's value, written `--name value` or `--name=value`: the second
+    /// spelling was a word no command knew, skipped like any other, and
+    /// `--target=x86-64` compiled for i386 without a word said.
+    /// </summary>
     internal static string? Value(string[] args, string name)
     {
-        int at = Array.IndexOf(args, name);
-        return at >= 0 && at + 1 < args.Length ? args[at + 1] : null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == name) return i + 1 < args.Length ? args[i + 1] : null;
+            if (args[i].Length > name.Length && args[i][name.Length] == '=' && args[i].StartsWith(name, StringComparison.Ordinal))
+                return args[i][(name.Length + 1)..];
+        }
+        return null;
     }
 
-    /// <summary>Every occurrence of a flag that takes a value, in order.</summary>
+    /// <summary>Every occurrence of a flag that takes a value, in order, in either spelling (Value).</summary>
     private static List<string> Values(string[] args, string name)
     {
         List<string> values = new();
-        for (int i = 0; i + 1 < args.Length; i++)
+        for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] == name)
+            if (args[i] == name && i + 1 < args.Length)
             {
-                values.Add(args[i + 1]);
+                values.Add(args[++i]);
+            }
+            else if (args[i].Length > name.Length && args[i][name.Length] == '=' && args[i].StartsWith(name, StringComparison.Ordinal))
+            {
+                values.Add(args[i][(name.Length + 1)..]);
             }
         }
         return values;
@@ -413,8 +427,7 @@ public static class Driver
     /// </summary>
     private static string? LongModeCpuRefusal(string[] args)
     {
-        IEnumerable<string> cpuNames = Values(args, "--cpu")
-            .Concat(args.Where(arg => arg.StartsWith("--cpu=")).Select(arg => arg["--cpu=".Length..]));
+        IEnumerable<string> cpuNames = Values(args, "--cpu");
         string? other = cpuNames.FirstOrDefault(name => name is not ("k8" or "x86-64"));
         return other is null ? null
             : $"--cpu {other}: the x86-64 target's processor is k8 (the first AMD64)";

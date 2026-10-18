@@ -8325,6 +8325,16 @@ public sealed class Parser
                 continue;
             }
 
+            // `p->M` IS `(*p).M` (C# 23.6.3): a member of what a pointer
+            // points at.
+            if (Take(Tok.Arrow))
+            {
+                string name = Expect(Tok.Ident, "a member name after '->'").Text;
+                Expr pointee = new UnaryExpr { Op = UnOp.Deref, Operand = e, Line = at.Line, Col = at.Col };
+                e = new MemberExpr { Target = pointee, Name = name, Line = at.Line, Col = at.Col };
+                continue;
+            }
+
             if (At(Tok.LParen))
             {
                 _i++;
