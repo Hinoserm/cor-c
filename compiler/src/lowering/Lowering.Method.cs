@@ -1448,6 +1448,18 @@ public sealed partial class Lowering
             return;
         }
 
+        // A NAME WHOSE ADDRESS IS TAKEN LIVES IN THE FRAME (StorageOfSym), and
+        // is written there: `F() is not int slot && !d.TryGetValue(k, out
+        // slot)` hands slot's address to the call, and the pattern's value,
+        // put in the register its number names, was never read -- every read
+        // went to the frame, holding whatever an earlier lap's call wrote.
+        // The compiler built by itself numbered interface slots so.
+        if (named is not null && _addressTakenSyms.Contains(named) && StorageOfSym(named, at) is MemPlace place)
+        {
+            StorePlace(place, value);
+            return;
+        }
+
         _e.CopyTo(SlotReg(slot, IrTypes.Of(held)), RegOperand.Of(value));
     }
 

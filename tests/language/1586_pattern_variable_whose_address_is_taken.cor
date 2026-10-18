@@ -1,0 +1,56 @@
+// test: pattern_variable_whose_address_is_taken
+// expect-exit: 0
+// expect-output:
+// 100 51 102 53 104 -1
+// 7
+// int5 now9 big500 other
+//
+// A pattern's variable whose address is taken -- handed on as `out` -- lives
+// in the frame, and the pattern writes it there: `F(i) is not int slot &&
+// !d.TryGetValue(i, out slot)` gave slot the pattern's value in a register
+// nothing read, every read going to the frame, which held whatever an
+// earlier lap's TryGetValue left. The compiler built by itself numbered its
+// interface slots so, and refused its own class library.
+
+using System;
+using System.Collections.Generic;
+
+static class Q
+{
+    static void Out(out int v) { v = 9; }
+
+    public static void Arms(object o)
+    {
+        switch (o)
+        {
+            case int x when x > 100: Console.Write("big" + x + " "); break;
+            case int x: Console.Write("int" + x + " "); Out(out x); Console.Write("now" + x + " "); break;
+            default: Console.Write("other"); break;
+        }
+    }
+}
+
+static class Program
+{
+    static int? F(int i) => i % 2 == 0 ? 100 + i : null;
+
+    static int Main()
+    {
+        Dictionary<int, int> d = new() { [1] = 51, [3] = 53 };
+        for (int i = 0; i < 6; i++)
+        {
+            if (F(i) is not int slot && !d.TryGetValue(i, out slot))
+            {
+                slot = -1;
+            }
+            Console.Write(slot + (i < 5 ? " " : ""));
+        }
+        Console.WriteLine();
+        object o = 7;
+        if (o is not int k) k = -2;
+        Console.WriteLine(k);
+        Q.Arms(5); Q.Arms(500); Q.Arms("s");
+        Console.WriteLine();
+        return 0;
+    }
+}
