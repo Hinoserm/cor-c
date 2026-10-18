@@ -41,6 +41,8 @@ timeout_s="${TIMEOUT:-10}"
 verbose=0
 filter=""
 compiler_flags=()
+# What an index is made for: the target the compiles against it are for.
+index_flags=()
 passthrough=()
 # THROUGH THE LINK (--through-link): each test compiled to an object and
 # linked as the whole program, so the link-time optimiser and its region
@@ -82,6 +84,7 @@ for arg in "$@"; do
         --target=*)
             # Every test compiled for this target: x86 (the default) or x86-64.
             compiler_flags+=("--target" "${arg#--target=}")
+            index_flags+=("--target" "${arg#--target=}")
             passthrough+=("$arg")
             ;;
         --runtime-knob=*)
@@ -412,7 +415,7 @@ for f in "${tests[@]}"; do
             # the ones the run names, or else the compiler's own.
             refs=""
             for lib in ${lib_paths:-$($CORC library-sources)}; do refs="$refs --ref $lib"; done
-            $CORC index --assembly Units $unit_sources -o "$work/$name.idx" \
+            $CORC index "${index_flags[@]}" --assembly Units $unit_sources -o "$work/$name.idx" \
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --assembly Units $unit_sources --obj -o "$work/$name.units.o" \
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib $refs --decl-index "$work/$name.idx" --assembly Units \
                 $extra "$f" --obj -o "$work/$name.o" \
@@ -432,7 +435,7 @@ for f in "${tests[@]}"; do
         }
         # shellcheck disable=SC2086
         {
-            $CORC index --assembly Units $extra "$f" $apart_sources $libraries -o "$work/$name.idx" \
+            $CORC index "${index_flags[@]}" --assembly Units $extra "$f" $apart_sources $libraries -o "$work/$name.idx" \
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --assembly Units $libraries --obj -o "$work/$name.library.o" \
             && compile_apart \
             && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib --decl-index "$work/$name.idx" --assembly Units \

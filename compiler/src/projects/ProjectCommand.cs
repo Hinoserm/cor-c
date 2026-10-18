@@ -123,8 +123,12 @@ public static class ProjectCommand
                 Console.Error.WriteLine("corc: " + source + " is in " + owners[source].AssemblyName + " and " + node.AssemblyName + "; compiled once");
                 continue;
             }
-            symbols[source] = node.Defines;
-            CompilationUnit header = Parser.ParseText(File.ReadAllText(source), source, node.Defines, declarationsOnly: true);
+            // With the target's own symbols, as every unit compile defines
+            // them (Driver.TargetSymbols): the index is what the units read
+            // of one another.
+            string[] defined = node.Defines.Concat(Driver.TargetSymbols(target)).ToArray();
+            symbols[source] = defined;
+            CompilationUnit header = Parser.ParseText(File.ReadAllText(source), source, defined, declarationsOnly: true);
             foreach (TypeDecl type in header.Types)
             {
                 string key = Binder.TypeKey(type);

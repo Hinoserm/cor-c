@@ -7,6 +7,7 @@ public static class IndexCommand
     public static int Run(string[] args)
     {
         string? output = null, assembly = null, on = null;
+        string targetName = "x86";
         List<string> paths = new(), symbols = new(), usings = new();
         for (int i = 0; i < args.Length; i++)
         {
@@ -23,6 +24,11 @@ public static class IndexCommand
                     symbols.AddRange(Value().Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
                     break;
                 case "--using": usings.Add(Value()); break;
+                // THE TARGET THE COMPILES AGAINST THIS INDEX ARE FOR, whose
+                // conditional symbols they define (Driver.TargetSymbols): an
+                // index read without TARGET_64BIT gave an x86-64 unit the
+                // i386 side of every `#if TARGET_64BIT` declaration.
+                case "--target": targetName = Value(); break;
                 // A KERNEL MODULE'S INDEX: its own sources indexed on top of
                 // the kernel's index, which keeps answering for the kernel's
                 // declarations (DeclarationIndex.Under) and whose hash stays
@@ -34,6 +40,7 @@ public static class IndexCommand
                     if (!int.TryParse(Value(), out int ring) || ring < 0 || ring > 3) throw new ArgumentException("--ring is 0, 1, 2 or 3");
                     global::Corsac.Lang.Parser.Ring = ring;
                     break;
+                case var spelt when spelt.StartsWith("--target=", StringComparison.Ordinal): targetName = spelt["--target=".Length..]; break;
                 default:
                     if (args[i].StartsWith('-')) throw new ArgumentException("Unknown index option: " + args[i]);
                     paths.Add(args[i]); break;
@@ -41,6 +48,9 @@ public static class IndexCommand
         }
         if (output is null || assembly is null || paths.Count == 0)
             throw new ArgumentException("index requires --assembly <identity>, source files and -o <index>");
+        global::Corsac.Lang.Target target = global::Corsac.Lang.Target.ByName(targetName)
+            ?? throw new ArgumentException("unknown target '" + targetName + "'");
+        symbols.AddRange(Driver.TargetSymbols(target));
         global::Corsac.Lang.Parser.ProjectUsings = usings;
         if (on is not null && !File.Exists(on)) throw new ArgumentException("--on names the index this one is made on, and " + on + " is not there");
         SourceIndexBuilder.Write(output, paths, assembly, symbols, librarySource: Driver.IsLibrarySource, on: on);

@@ -1,0 +1,15 @@
+// A unit of 1642_target_symbols_reach_the_index: declarations that differ
+// by target, as the runtime's pointer-sized layouts do.
+
+static class Widths
+{
+#if TARGET_64BIT
+    public const int Bytes = 8;
+    public static string Word() { return "64"; }
+    public static long Mask(long x) { return x & 0x7FFFFFFFFFFFFFFF; }
+#else
+    public const int Bytes = 4;
+    public static string Word() { return "32"; }
+    public static int Mask(int x) { return x & 0x7FFFFFFF; }
+#endif
+}

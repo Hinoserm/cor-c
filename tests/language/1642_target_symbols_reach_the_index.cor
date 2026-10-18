@@ -1,0 +1,28 @@
+// test: target_symbols_reach_the_index
+// units: tests/language/support/1642_widths_unit.cor
+// expect-exit: 0
+// expect-output:
+// bytes True
+// word True
+// mask 5
+//
+// A DECLARATION INDEX DEFINES THE TARGET'S SYMBOLS, as every compile against
+// it does: `corc index` defined none, so a unit compiled for x86-64 read the
+// other unit's `#if TARGET_64BIT` declarations from their i386 side -- a
+// constant of 4 where the word is 8, a method taking an int where the other
+// unit's takes a long -- and the two disagreed at the link. The index takes
+// --target, x86 unless it says otherwise, as compile does. (TARGET_64BIT is
+// this compiler's name for the word, CoreLib's own; a .NET program has none.)
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("bytes " + (Widths.Bytes == IntPtr.Size));
+        Console.WriteLine("word " + (Widths.Word() == (IntPtr.Size * 8).ToString()));
+        Console.WriteLine("mask " + Widths.Mask(5));
+        return 0;
+    }
+}
