@@ -474,7 +474,7 @@ class FileStream : Stream
             }
             if (n < 0)
             {
-                throw Interop.GetExceptionForIoErrno(n, _name);
+                throw Interop.GetExceptionForIoErrnoOnHandle(n, _name);
             }
             if (_at >= 0) _at = _at + n;
             return n;
@@ -493,7 +493,7 @@ class FileStream : Stream
             }
             if (n < 0)
             {
-                throw Interop.GetExceptionForIoErrno(n, _name);
+                throw Interop.GetExceptionForIoErrnoOnHandle(n, _name);
             }
             done = done + n;
         }
@@ -578,7 +578,7 @@ class FileStream : Stream
         if (flushToDisk && _fd >= 0)
         {
             int result = Os.Fsync(_fd);
-            if (result < 0) throw Interop.GetExceptionForIoErrno(result, null);
+            if (result < 0) throw Interop.GetExceptionForIoErrnoOnHandle(result, null);
         }
     }
 
@@ -589,7 +589,7 @@ class FileStream : Stream
         FlushWrite();
         FlushRead();
         int result = Os.Ftruncate(_fd, value);
-        if (result < 0) throw Interop.GetExceptionForIoErrno(result, null);
+        if (result < 0) throw Interop.GetExceptionForIoErrnoOnHandle(result, null);
         // Cut short beneath the position, the position moves to the new end.
         if (Os.Lseek(_fd, 0, (int)SeekOrigin.Current) > value) Os.Lseek(_fd, value, (int)SeekOrigin.Begin);
         _at = -1;
@@ -684,7 +684,7 @@ class FileStream : Stream
         long at = Os.Lseek(_fd, offset, (int)origin);
         if (at < 0)
         {
-            throw Interop.GetExceptionForIoErrno((int)at, _name);
+            throw Interop.GetExceptionForIoErrnoOnHandle((int)at, _name);
         }
         _at = at;
         return at;
@@ -4133,7 +4133,7 @@ public static class RandomAccess
         if (fileOffset < 0) throw new ArgumentOutOfRangeException("fileOffset");
         if (buffer.Length == 0) return 0;
         long got = Os.Pread(handle.Fd, buffer.Array, buffer.Start, buffer.Length, fileOffset);
-        if (got < 0) throw Interop.GetExceptionForIoErrno((int)got, null);
+        if (got < 0) throw Interop.GetExceptionForIoErrnoOnHandle((int)got, null);
         return (int)got;
     }
 

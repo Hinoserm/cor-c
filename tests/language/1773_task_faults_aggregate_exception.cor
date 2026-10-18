@@ -1,0 +1,220 @@
+// test: task_faults_aggregate_exception
+// expect-exit: 0
+// expect-output:
+// Wait: AggregateException | One or more errors occurred. (one) | 1
+// Result: AggregateException | same True
+// await: InvalidOperationException | one
+// Exception: One or more errors occurred. (one) | fresh False | null when canceled True
+// whenall: One or more errors occurred. (a) (b) | 2 | first awaited a
+// whenall of finished tasks: Faulted at once
+// whenall in fault order: early | One or more errors occurred. (early) (late)
+// whenall<T> in array order: late | One or more errors occurred. (late) (early)
+// ValueTask Result: InvalidOperationException | vt
+// canceled Wait: TaskCanceledException | One or more errors occurred. (A task was canceled.) | own task True
+// canceled Result: TaskCanceledException
+// tcs list: 2 | Faulted | One or more errors occurred. (t1) (t2)
+// tcs empty: ArgumentException | The exceptions collection was empty. (Parameter 'exceptions')
+// unwrapped: One or more errors occurred. (a) (t1) (t2)
+// flatten: 3 | outer (z) (x) (y)
+// handle: left 1 | outer (h) (k) (k)
+// base: deep | AggregateException | io
+// message: One or more errors occurred. | msg (i) | One or more errors occurred.
+// null element: ArgumentException | An element of innerExceptions was null.
+// System.AggregateException: m (a) (b)
+//  ---> System.InvalidOperationException: a
+//    --- End of inner exception stack trace ---
+//  ---> (Inner Exception #1) System.ArgumentException: b<---
+// timed: False False True | -2 ArgumentOutOfRangeException
+// wait token: OperationCanceledException | The operation was canceled.
+// canceled with its token: OperationCanceledException
+// waitall: AggregateException | One or more errors occurred. (x) (A task was canceled.)
+// waitall timed: False True
+// waitany: 1 -1 1 -1
+// waitany null: ArgumentException | The tasks array included at least one null element. (Parameter 'tasks')
+// cancel: AggregateException | One or more errors occurred. (cb2) (cb1) | ran last True
+// cancel first: InvalidOperationException | only
+//
+// TASK FAULTS AS .NET REPORTS THEM. A faulted task keeps every exception that
+// faulted it; Wait, Result, WaitAll and Task.Exception answer an
+// AggregateException of them all -- a new one at every read of Exception --
+// while `await` rethrows the first, the same object that was thrown. WhenAll
+// gathers every faulted task's exceptions in the order the tasks faulted --
+// WhenAll<T> in array order, as .NET's two do -- and leaves a cancellation
+// out when anything faulted; over tasks already finished it is finished when
+// it is made. ValueTask<T>.Result rethrows as `await` does, unwrapped. A
+// canceled task's Wait throws an
+// AggregateException of a new TaskCanceledException for that task, and its
+// Exception is null. Then AggregateException itself: Flatten (the outer
+// list's own first), Handle (rethrowing the rest under the whole message),
+// GetBaseException, the messages and ToString's "(Inner Exception #i)". The
+// timed and cancelable waits: Wait(int) answering false, a canceled token
+// throwing OperationCanceledException from the wait, WaitAll and WaitAny with
+// their timeouts and checks. And CancellationTokenSource.Cancel throwing an
+// AggregateException of the callbacks that threw, most recent first, or the
+// first at once for Cancel(true).
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static async Task<int> Fail(string message)
+    {
+        await Task.Yield();
+        throw new InvalidOperationException(message);
+    }
+
+    static string Said(Exception e)
+    {
+        return e.GetType().Name + " | " + e.Message;
+    }
+
+    static async Task Faults()
+    {
+        Task<int> t = Fail("one");
+        Exception? waited = null;
+
+        try { t.Wait(); }
+        catch (AggregateException e) { waited = e.InnerException; Console.WriteLine("Wait: " + Said(e) + " | " + e.InnerExceptions.Count); }
+
+        try { int r = t.Result; }
+        catch (AggregateException e) { Console.WriteLine("Result: AggregateException | same " + (e.InnerException == waited)); }
+
+        try { await t; }
+        catch (Exception e) { Console.WriteLine("await: " + Said(e)); }
+
+        Task canceled = Task.FromCanceled(new CancellationToken(true));
+        Console.WriteLine("Exception: " + t.Exception!.Message + " | fresh " + ReferenceEquals(t.Exception, t.Exception)
+                          + " | null when canceled " + (canceled.Exception == null));
+
+        Task all = Task.WhenAll(Fail("a"), Fail("b"), canceled);
+        try { await all; }
+        catch (Exception e)
+        {
+            Console.WriteLine("whenall: " + all.Exception!.Message + " | " + all.Exception.InnerExceptions.Count + " | first awaited " + e.Message);
+        }
+
+        Task done = Task.WhenAll(Task.FromException(new Exception("f")), Task.CompletedTask);
+        Console.WriteLine("whenall of finished tasks: " + done.Status + " at once");
+
+        TaskCompletionSource late = new TaskCompletionSource();
+        TaskCompletionSource early = new TaskCompletionSource();
+        Task ordered = Task.WhenAll(late.Task, early.Task);
+        TaskCompletionSource<int> lateValue = new TaskCompletionSource<int>();
+        TaskCompletionSource<int> earlyValue = new TaskCompletionSource<int>();
+        Task<int[]> arrayOrdered = Task.WhenAll(lateValue.Task, earlyValue.Task);
+        early.SetException(new Exception("early"));
+        late.SetException(new Exception("late"));
+        earlyValue.SetException(new Exception("early"));
+        lateValue.SetException(new Exception("late"));
+        try { await ordered; }
+        catch (Exception e) { Console.WriteLine("whenall in fault order: " + e.Message + " | " + ordered.Exception!.Message); }
+        try { await arrayOrdered; }
+        catch (Exception e) { Console.WriteLine("whenall<T> in array order: " + e.Message + " | " + arrayOrdered.Exception!.Message); }
+
+        ValueTask<int> valued = new ValueTask<int>(Fail("vt"));
+        try { Console.WriteLine(valued.Result); }
+        catch (Exception e) { Console.WriteLine("ValueTask Result: " + Said(e)); }
+
+        try { canceled.Wait(); }
+        catch (AggregateException e)
+        {
+            TaskCanceledException inner = (TaskCanceledException)e.InnerException!;
+            Console.WriteLine("canceled Wait: " + inner.GetType().Name + " | " + e.Message + " | own task " + ReferenceEquals(inner.Task, canceled));
+        }
+
+        Task<int> canceledValue = Task.FromCanceled<int>(new CancellationToken(true));
+        try { Console.WriteLine(canceledValue.Result); }
+        catch (AggregateException e) { Console.WriteLine("canceled Result: " + e.InnerException!.GetType().Name); }
+
+        TaskCompletionSource tcs = new TaskCompletionSource();
+        tcs.SetException(new Exception[] { new InvalidOperationException("t1"), new OperationCanceledException("t2") });
+        Console.WriteLine("tcs list: " + tcs.Task.Exception!.InnerExceptions.Count + " | " + tcs.Task.Status + " | " + tcs.Task.Exception.Message);
+
+        try { new TaskCompletionSource<int>().TrySetException(new List<Exception>()); }
+        catch (ArgumentException e) { Console.WriteLine("tcs empty: " + Said(e)); }
+
+        Func<Task> both = () => Task.WhenAll(Task.FromException(new InvalidOperationException("a")), tcs.Task);
+        Task unwrapped = Task.Run(both);
+        try { unwrapped.Wait(); }
+        catch (AggregateException e) { Console.WriteLine("unwrapped: " + e.Message); }
+    }
+
+    static void Aggregates()
+    {
+        AggregateException nested = new AggregateException("outer", new AggregateException(new Exception("x"), new Exception("y")), new Exception("z"));
+        AggregateException flat = nested.Flatten();
+        Console.WriteLine("flatten: " + flat.InnerExceptions.Count + " | " + flat.Message);
+
+        try { new AggregateException("outer", new InvalidOperationException("h"), new Exception("k")).Handle(e => e is InvalidOperationException); }
+        catch (AggregateException e) { Console.WriteLine("handle: left " + e.InnerExceptions.Count + " | " + e.Message); }
+
+        Console.WriteLine("base: " + new AggregateException(new AggregateException(new Exception("deep"))).GetBaseException().Message
+                          + " | " + new AggregateException(new Exception("p"), new Exception("q")).GetBaseException().GetType().Name
+                          + " | " + new AggregateException(new InvalidOperationException("io", new Exception("under"))).GetBaseException().Message);
+
+        Console.WriteLine("message: " + new AggregateException().Message + " | " + new AggregateException("msg", new Exception("i")).Message
+                          + " | " + new AggregateException((string)null!).Message);
+
+        try { new AggregateException(new Exception[] { new Exception("x"), null! }); }
+        catch (ArgumentException e) { Console.WriteLine("null element: " + Said(e)); }
+
+        // ToString ends its every other inner exception with a line end.
+        Console.Write(new AggregateException("m", new InvalidOperationException("a"), new ArgumentException("b")).ToString());
+    }
+
+    static void Waits()
+    {
+        Task<int> never = new TaskCompletionSource<int>().Task;
+        string refused = "";
+        try { never.Wait(-2); }
+        catch (ArgumentOutOfRangeException e) { refused = e.GetType().Name; }
+        Console.WriteLine("timed: " + never.Wait(0) + " " + Task.Delay(1000).Wait(10) + " " + Task.Delay(5).Wait(TimeSpan.FromSeconds(5)) + " | -2 " + refused);
+
+        CancellationTokenSource soon = new CancellationTokenSource();
+        soon.CancelAfter(10);
+        try { never.Wait(soon.Token); }
+        catch (OperationCanceledException e) { Console.WriteLine("wait token: " + Said(e)); }
+
+        CancellationToken canceledToken = new CancellationToken(true);
+        try { Task.FromCanceled(canceledToken).Wait(canceledToken); }
+        catch (Exception e) { Console.WriteLine("canceled with its token: " + e.GetType().Name); }
+
+        Task x = Task.FromException(new InvalidOperationException("x"));
+        try { Task.WaitAll(x, Task.FromCanceled(canceledToken), Task.Delay(5)); }
+        catch (AggregateException e) { Console.WriteLine("waitall: " + Said(e)); }
+        Console.WriteLine("waitall timed: " + Task.WaitAll(new[] { x, never }, 10) + " " + Task.WaitAll(new[] { Task.Delay(5) }, 5000));
+
+        Console.WriteLine("waitany: " + Task.WaitAny(new[] { Task.Delay(1000), Task.CompletedTask }, 10) + " " + Task.WaitAny(new Task[] { never }, 5)
+                          + " " + Task.WaitAny(Task.Delay(1000), Task.Delay(5)) + " " + Task.WaitAny());
+        try { Task.WaitAny(Task.CompletedTask, null!); }
+        catch (ArgumentException e) { Console.WriteLine("waitany null: " + Said(e)); }
+    }
+
+    static void Cancels()
+    {
+        CancellationTokenSource source = new CancellationTokenSource();
+        bool ranLast = false;
+        source.Token.Register(() => ranLast = true);
+        source.Token.Register(() => throw new InvalidOperationException("cb1"));
+        source.Token.Register(() => throw new ArgumentException("cb2"));
+        try { source.Cancel(); }
+        catch (AggregateException e) { Console.WriteLine("cancel: " + Said(e) + " | ran last " + ranLast); }
+
+        CancellationTokenSource first = new CancellationTokenSource();
+        first.Token.Register(() => throw new ArgumentException("never run"));
+        first.Token.Register(() => throw new InvalidOperationException("only"));
+        try { first.Cancel(true); }
+        catch (Exception e) { Console.WriteLine("cancel first: " + Said(e)); }
+    }
+
+    static async Task Main()
+    {
+        await Faults();
+        Aggregates();
+        Waits();
+        Cancels();
+    }
+}

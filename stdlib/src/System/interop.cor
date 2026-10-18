@@ -418,6 +418,23 @@ static class Interop
     /// descriptor, with no name to give.
     public static Exception GetExceptionForIoErrno(int error, string? path, bool isDirectory)
     {
+        // A MISSING FILE IN A MISSING DIRECTORY IS A MISSING DIRECTORY, as
+        // .NET has it: the file is blamed only when the directory it names
+        // exists.
+        if ((error == Err.NoEnt || error == -Err.NoEnt) && !isDirectory && path != null
+            && !Directory.Exists(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path)) ?? ""))
+        {
+            isDirectory = true;
+        }
+        return GetExceptionForIoErrnoOnHandle(error, path, isDirectory);
+    }
+
+    /// THE SAME FOR A CALL ON A DESCRIPTOR ALREADY OPEN -- a read, a write, a
+    /// seek -- whose path is only what the message names: nothing is looked
+    /// at again, as .NET's FileStream looks at nothing. Every program that
+    /// writes to the console reaches this, and none of the directory tests.
+    public static Exception GetExceptionForIoErrnoOnHandle(int error, string? path, bool isDirectory = false)
+    {
         if (error < 0) { error = -error; }
         Marshal.SetLastPInvokeError(error);
 
@@ -425,10 +442,7 @@ static class Interop
         Exception made;
         if (error == Err.NoEnt)
         {
-            // A MISSING FILE IN A MISSING DIRECTORY IS A MISSING DIRECTORY, as
-            // .NET has it: the file is blamed only when the directory it
-            // names exists.
-            if (isDirectory || (path != null && !Directory.Exists(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path)) ?? "")))
+            if (isDirectory)
             {
                 made = PathNotFound(path);
             }

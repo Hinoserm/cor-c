@@ -14441,6 +14441,22 @@ class Exception
     /// The exception this one was raised in response to, or null.
     public Exception? InnerException => _inner;
 
+    /// THE ROOT CAUSE: the innermost exception down the InnerException chain,
+    /// this one when there is none. Virtual, as .NET's is, so that an
+    /// exception standing for others (AggregateException) can say which.
+    public virtual Exception GetBaseException()
+    {
+        Exception back = this;
+        Exception? inner = _inner;
+
+        while (inner != null)
+        {
+            back = inner;
+            inner = inner.InnerException;
+        }
+        return back;
+    }
+
     /// THE NUMBER UNDERNEATH THE SENTENCE. .NET puts the operating system's
     /// error code here -- on Unix the errno of the call that failed -- so that
     /// a program which needs to say exactly what went wrong can ask

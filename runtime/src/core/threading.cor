@@ -19,10 +19,11 @@
 // Renaming any of those breaks every async program without breaking this
 // file's compilation, so do not.
 //
-// THE NAMES AND BEHAVIOUR ARE .NET'S. Where this differs:
-//   - There is no AggregateException. A faulted task stores the ONE exception
-//     that faulted it, and Wait(), Result and await all rethrow that object.
-//     WhenAll reports the first faulted task's exception, in array order.
+// THE NAMES AND BEHAVIOUR ARE .NET'S, faults included: a faulted task keeps
+// every exception that faulted it (one, or a WhenAll's from all its tasks),
+// `await` rethrows the first of them, and Wait, Result, WaitAll and
+// Task.Exception answer an AggregateException of them all.
+// Where this differs:
 //   - Awaiters and awaitables are classes, not structs: a struct here is a
 //     heap block copied at every boundary, which buys nothing.
 //   - There is one scheduler, a single-threaded event loop, and it runs only
@@ -170,7 +171,7 @@ enum TaskStatus
 ///   0  incomplete
 ///   1  claimed: one completer has won and is filling in the outcome
 ///   2  ran to completion
-///   3  faulted (Exception holds why)
+///   3  faulted (_exception holds the first fault, _faults all of them)
 ///   4  canceled
 ///
 /// Completing is two steps so that the outcome (a result, an exception) is
@@ -185,7 +186,11 @@ class Task
     nint _state;
     nint _lock;
 
+    // THE FIRST FAULT, or what canceled the task. A task faulted by one
+    // exception -- nearly every faulted task -- keeps only this; one faulted
+    // by several keeps them all, this first among them, in _faults.
     Exception? _exception;
+    List<Exception>? _faults;
     Action? _first;
     List<Action>? _more;
     // THE CONTEXT EACH CONTINUATION WAS REGISTERED IN (AsyncContext): what
@@ -293,16 +298,52 @@ class Task
     public bool IsFaulted => _state == Faulted;
     public bool IsCanceled => _state == Canceled;
 
-    /// Why the task faulted, or null. Null for a canceled task, as in .NET.
-    public Exception? Exception
+    /// Why the task faulted: an AggregateException of every fault, or null.
+    /// A NEW ONE AT EVERY READ, as .NET's is, so that whoever catches and
+    /// changes one changes nobody else's. Null for a canceled task.
+    public System.AggregateException? Exception
     {
         get
         {
             if (_state == Faulted)
             {
-                return _exception;
+                return new System.AggregateException(Faults());
             }
             return null;
+        }
+    }
+
+    /// Every exception that faulted the task, first fault first: a list of
+    /// its own, which the caller may keep. Empty unless the task faulted.
+    public List<Exception> Faults()
+    {
+        List<Exception> faults = new List<Exception>();
+        AddFaultsTo(faults);
+        return faults;
+    }
+
+    /// Adds every exception that faulted the task to `into`, in order --
+    /// nothing for a task that did not fault.
+    public void AddFaultsTo(List<Exception> into)
+    {
+        if (_state != Faulted)
+        {
+            return;
+        }
+
+        List<Exception>? faults = _faults;
+
+        if (faults != null)
+        {
+            into.AddRange(faults);
+            return;
+        }
+
+        Exception? e = _exception;
+
+        if (e != null)
+        {
+            into.Add(e);
         }
     }
 
@@ -338,13 +379,101 @@ class Task
         return new ConfiguredTaskAwaitable(this);
     }
 
-    /// Runs the scheduler until this task is complete, then rethrows what
-    /// faulted or canceled it. Throws InvalidOperationException when nothing
-    /// left can complete it (see Scheduler.RunUntil).
+    /// Runs the scheduler until this task is complete, then throws what
+    /// faulted or canceled it, wrapped as .NET's Wait wraps it (ThrowAsWaited).
+    /// Throws InvalidOperationException when nothing left can complete it
+    /// (see Scheduler.RunUntil).
     public void Wait()
     {
         Scheduler.RunUntil(this);
-        ThrowIfNotSuccessful();
+        ThrowAsWaited();
+    }
+
+    /// Waits at most `millisecondsTimeout` (-1 for ever): false when the
+    /// time ran out first, true when the task ran to completion, and the
+    /// AggregateException of Wait() when it faulted or was canceled.
+    public bool Wait(int millisecondsTimeout)
+    {
+        return Wait(millisecondsTimeout, default(CancellationToken));
+    }
+
+    public bool Wait(TimeSpan timeout)
+    {
+        return Wait(Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+    }
+
+    public bool Wait(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        return Wait(Timeouts.Milliseconds(timeout, "timeout"), cancellationToken);
+    }
+
+    /// Waits until the task completes or the token is canceled, which throws
+    /// OperationCanceledException -- the WAIT is canceled, not the task.
+    public void Wait(CancellationToken cancellationToken)
+    {
+        Wait(-1, cancellationToken);
+    }
+
+    /// Every timed or cancelable wait, as .NET's: a task already run to
+    /// completion answers true without looking at the token; a canceled task
+    /// whose cancellation came with the wait's own token throws the wait's
+    /// OperationCanceledException rather than the AggregateException, so that
+    /// one token canceling both says the same whichever saw it first.
+    public bool Wait(int millisecondsTimeout, CancellationToken cancellationToken)
+    {
+        if (millisecondsTimeout < -1)
+        {
+            throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        }
+        if (IsCompletedSuccessfully)
+        {
+            return true;
+        }
+        if (!Scheduler.RunUntil(this, Scheduler.DeadlineAfter(millisecondsTimeout), cancellationToken))
+        {
+            return false;
+        }
+        if (IsCanceled)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        ThrowAsWaited();
+        return true;
+    }
+
+    /// WHAT A BLOCKING WAIT THROWS, as .NET's Wait, Result and WaitAll do: an
+    /// AggregateException of every fault, or for a canceled task one holding
+    /// a new TaskCanceledException for it -- never the exception that
+    /// canceled it, which is what `await` rethrows instead
+    /// (ThrowIfNotSuccessful). Nothing for a task that ran to completion.
+    public void ThrowAsWaited()
+    {
+        int s = (int)_state;
+
+        if (s == Faulted)
+        {
+            throw new System.AggregateException(Faults());
+        }
+        if (s == Canceled)
+        {
+            throw new System.AggregateException(new TaskCanceledException(this));
+        }
+        if (s != RanToCompletion)
+        {
+            throw new InvalidOperationException("the task has not completed");
+        }
+    }
+
+    /// What WaitAll gathers from one task: its faults, or a new
+    /// TaskCanceledException when it was canceled.
+    void AddWaitedFaultsTo(List<Exception> into)
+    {
+        if (_state == Canceled)
+        {
+            into.Add(new TaskCanceledException(this));
+            return;
+        }
+        AddFaultsTo(into);
     }
 
     /// Rethrows the ORIGINAL exception of a faulted task; a canceled one
@@ -437,6 +566,24 @@ class Task
         return true;
     }
 
+    /// Faults the task with every one of `exceptions`, in order: awaiting it
+    /// rethrows the first, Wait and Exception answer them all. Always a
+    /// fault -- an OperationCanceledException among them cancels nothing,
+    /// as .NET's TaskCompletionSource has it. ArgumentNullException when
+    /// there is no sequence, ArgumentException when it is empty or holds a
+    /// null (TaskErrors.Faults), whether or not the task is still to complete.
+    public bool TrySetException(IEnumerable<Exception> exceptions)
+    {
+        List<Exception> faults = TaskErrors.Faults(exceptions);
+
+        if (!TryClaim())
+        {
+            return false;
+        }
+        FaultClaimed(faults);
+        return true;
+    }
+
     /// Canceled with no exception of its own; awaiting it throws a new
     /// TaskCanceledException.
     public bool TrySetCanceled()
@@ -477,6 +624,34 @@ class Task
     {
         _exception = e;
         Finish(Faulted);
+    }
+
+    /// Step two for a caller that claimed: faults with every one of `faults`
+    /// (at least one, none null), which the task keeps as it is.
+    public void FaultClaimed(List<Exception> faults)
+    {
+        _exception = faults[0];
+        if (faults.Count > 1)
+        {
+            _faults = faults;
+        }
+        Finish(Faulted);
+    }
+
+    /// Faults the task with every fault of `from`, a task that faulted: what
+    /// a task completing as another one did carries on (Propagate, WhenAll's
+    /// results). The list of several is shared, not copied: a finished
+    /// task's faults never change, and nothing hands the list itself out.
+    public bool TrySetFaultsOf(Task from)
+    {
+        if (!TryClaim())
+        {
+            return false;
+        }
+        _exception = from._exception;
+        _faults = from._faults;
+        Finish(Faulted);
+        return true;
     }
 
     /// Step two, for the caller that claimed: the outcome is already stored.
@@ -610,8 +785,14 @@ class Task
         return t;
     }
 
+    /// A task canceled by `cancellationToken`, which must be canceled
+    /// already (ArgumentOutOfRangeException otherwise, as in .NET).
     public static Task FromCanceled(CancellationToken cancellationToken)
     {
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            throw new ArgumentOutOfRangeException("cancellationToken");
+        }
         Task t = new Task();
         t.TrySetCanceled(new TaskCanceledException());
         return t;
@@ -683,7 +864,38 @@ class Task
         return t;
     }
 
+    /// Completes once every one of `tasks` has: faulted with the faults of
+    /// all that faulted, IN THE ORDER THEY FAULTED, as .NET's non-generic
+    /// WhenAll gathers them -- so `await` rethrows the first fault to happen,
+    /// not the first in the array -- else canceled when any was, else run to
+    /// completion.
     public static Task WhenAll(params Task[] tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            if (tasks[i] == null)
+            {
+                throw new ArgumentException("The tasks argument included a null value.");
+            }
+        }
+        return WhenAllOf(tasks, true);
+    }
+
+    /// The WhenAll of `tasks`, checked already: its faults in the order the
+    /// tasks faulted (`inFaultOrder`, WhenAll's) or in array order
+    /// (WhenAll<T>'s).
+    ///
+    /// TASKS ALREADY COMPLETE ARE COUNTED AT ONCE, in array order, as .NET's
+    /// are: a WhenAll of finished tasks is finished when it is made, faulted
+    /// or canceled as they say, without a turn of the scheduler. Each other
+    /// task counts itself when it completes -- through a WhenAllPart of its
+    /// own when the order of faults is wanted, since the state alone cannot
+    /// tell which task it was.
+    static Task WhenAllOf(Task[] tasks, bool inFaultOrder)
     {
         int n = tasks.Length;
 
@@ -693,17 +905,24 @@ class Task
         }
 
         Task all = new Task();
-        WhenAllState state = new WhenAllState(tasks, all);
+        WhenAllState state = new WhenAllState(tasks, all, inFaultOrder);
 
         for (int i = 0; i < n; i++)
         {
             Task one = tasks[i];
 
-            if (one == null)
+            if (one.IsCompleted)
             {
-                throw new ArgumentException("The tasks argument included a null value.");
+                state.Completed(one);
             }
-            one.AddContinuation(state);
+            else if (inFaultOrder)
+            {
+                one.AddContinuation(new WhenAllPart(one, state));
+            }
+            else
+            {
+                one.AddContinuation(state);
+            }
         }
         return all;
     }
@@ -758,7 +977,9 @@ class Task
     }
 
     /// Every task's result, in the order the tasks were given, once all have
-    /// completed -- or the first fault, or a cancellation, as .NET's is.
+    /// completed -- or every fault, or a cancellation, as .NET's is. Unlike
+    /// WhenAll's, its faults and the cancellation it carries are taken in
+    /// array order, as .NET's generic WhenAll takes them.
     public static Task<T[]> WhenAll<T>(params Task<T>[] tasks)
     {
         if (tasks == null)
@@ -775,8 +996,16 @@ class Task
             plain[i] = tasks[i];
         }
         Task<T[]> made = new Task<T[]>();
-        Task all = WhenAll(plain);
-        all.AddContinuation(new WhenAllResults<T>(all, tasks, made));
+        Task all = WhenAllOf(plain, false);
+        WhenAllResults<T> results = new WhenAllResults<T>(all, tasks, made);
+
+        // Finished at once when its tasks were, as WhenAll is.
+        if (all.IsCompleted)
+        {
+            results.Invoke();
+            return made;
+        }
+        all.AddContinuation(results);
         return made;
     }
 
@@ -840,6 +1069,179 @@ class Task
         return WhenAny(taken.ToArray());
     }
 
+    // ---- WaitAll and WaitAny ----------------------------------------------------
+    //
+    // The blocking forms of WhenAll and WhenAny, as .NET's: each runs the
+    // scheduler (Scheduler.RunUntil) until its tasks are done, its time runs
+    // out (false, or -1 from WaitAny) or its token is canceled
+    // (OperationCanceledException). The arguments are checked in .NET's
+    // order: the array, the timeout, the token, then the array's elements.
+
+    /// Waits for every one of `tasks`, and throws when any faulted or was
+    /// canceled: an AggregateException of every fault and, for each canceled
+    /// task, a new TaskCanceledException, in the order of the array.
+    public static void WaitAll(params Task[] tasks)
+    {
+        WaitAll(tasks, -1, default(CancellationToken));
+    }
+
+    public static bool WaitAll(Task[] tasks, int millisecondsTimeout)
+    {
+        return WaitAll(tasks, millisecondsTimeout, default(CancellationToken));
+    }
+
+    public static bool WaitAll(Task[] tasks, TimeSpan timeout)
+    {
+        return WaitAll(tasks, Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+    }
+
+    public static void WaitAll(Task[] tasks, CancellationToken cancellationToken)
+    {
+        WaitAll(tasks, -1, cancellationToken);
+    }
+
+    /// Any sequence of tasks, as .NET 9 takes it: read once, then waited on.
+    public static void WaitAll(IEnumerable<Task> tasks, CancellationToken cancellationToken = default)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        List<Task> taken = new List<Task>();
+        foreach (Task one in tasks)
+        {
+            taken.Add(one);
+        }
+        WaitAll(taken.ToArray(), -1, cancellationToken);
+    }
+
+    /// One deadline for them all, the tasks waited on one after another:
+    /// whatever runs while one is waited on runs for the others too, so
+    /// nothing need be made to wait on them together. False when the time
+    /// ran out, and then nothing is thrown, faults or not. When the tasks
+    /// were canceled and nothing faulted, a token canceled since throws the
+    /// wait's OperationCanceledException rather than the AggregateException,
+    /// as Wait's does.
+    public static bool WaitAll(Task[] tasks, int millisecondsTimeout, CancellationToken cancellationToken)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        if (millisecondsTimeout < -1)
+        {
+            throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        TaskErrors.CheckWaited(tasks);
+
+        long deadline = Scheduler.DeadlineAfter(millisecondsTimeout);
+
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            Task one = tasks[i];
+
+            if (!one.IsCompleted && !Scheduler.RunUntil(one, deadline, cancellationToken))
+            {
+                return false;
+            }
+        }
+
+        bool faulted = false;
+        bool canceled = false;
+
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            faulted = faulted || tasks[i].IsFaulted;
+            canceled = canceled || tasks[i].IsCanceled;
+        }
+        if (!faulted && !canceled)
+        {
+            return true;
+        }
+        if (!faulted)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        List<Exception> all = new List<Exception>();
+
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            tasks[i].AddWaitedFaultsTo(all);
+        }
+        throw new System.AggregateException(all);
+    }
+
+    /// Waits for the first of `tasks` to complete, however it completed, and
+    /// answers its index -- the first already complete, when one is; -1 for
+    /// an empty array, or when the time ran out.
+    public static int WaitAny(params Task[] tasks)
+    {
+        return WaitAny(tasks, -1, default(CancellationToken));
+    }
+
+    public static int WaitAny(Task[] tasks, int millisecondsTimeout)
+    {
+        return WaitAny(tasks, millisecondsTimeout, default(CancellationToken));
+    }
+
+    public static int WaitAny(Task[] tasks, TimeSpan timeout)
+    {
+        return WaitAny(tasks, Timeouts.Milliseconds(timeout, "timeout"), default(CancellationToken));
+    }
+
+    public static int WaitAny(Task[] tasks, CancellationToken cancellationToken)
+    {
+        return WaitAny(tasks, -1, cancellationToken);
+    }
+
+    /// Over WhenAny, made only when no task is complete yet; the winner's
+    /// index is its first place in the array.
+    public static int WaitAny(Task[] tasks, int millisecondsTimeout, CancellationToken cancellationToken)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        if (millisecondsTimeout < -1)
+        {
+            throw new ArgumentOutOfRangeException("millisecondsTimeout");
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        TaskErrors.CheckWaited(tasks);
+
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            if (tasks[i].IsCompleted)
+            {
+                return i;
+            }
+        }
+        if (tasks.Length == 0)
+        {
+            return -1;
+        }
+
+        Task<Task> any = WhenAny(tasks);
+
+        if (!Scheduler.RunUntil(any, Scheduler.DeadlineAfter(millisecondsTimeout), cancellationToken))
+        {
+            return -1;
+        }
+
+        Task first = any.ResultWhenDone();
+
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            if (tasks[i] == first)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     // ---- the .NET generic factories ---------------------------------------
 
     public static Task<T> FromResult<T>(T result)
@@ -872,6 +1274,10 @@ class Task
 
     public static Task<T> FromCanceled<T>(CancellationToken cancellationToken)
     {
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            throw new ArgumentOutOfRangeException("cancellationToken");
+        }
         Task<T> t = new Task<T>();
         t.TrySetCanceled(new TaskCanceledException());
         return t;
@@ -935,7 +1341,8 @@ class Task<T> : Task
     }
 
     /// The value; runs the scheduler until there is one (as Wait does), and
-    /// rethrows what faulted the task.
+    /// throws what faulted or canceled the task as Wait throws it, in an
+    /// AggregateException.
     public T Result
     {
         get
@@ -944,7 +1351,7 @@ class Task<T> : Task
             {
                 Scheduler.RunUntil(this);
             }
-            ThrowIfNotSuccessful();
+            ThrowAsWaited();
             return _result;
         }
     }
@@ -1038,6 +1445,50 @@ static class TaskErrors
     public static InvalidOperationException AlreadyCompleted()
     {
         return new InvalidOperationException("An attempt was made to transition a task to a final state when it had already completed.");
+    }
+
+    /// The exceptions a task is to fault with, read once into a list of its
+    /// own and checked as .NET's TaskCompletionSource checks them: none null,
+    /// and at least one.
+    public static List<Exception> Faults(IEnumerable<Exception> exceptions)
+    {
+        if (exceptions == null)
+        {
+            throw new ArgumentNullException("exceptions");
+        }
+
+        List<Exception> faults = new List<Exception>();
+
+        foreach (Exception e in exceptions)
+        {
+            if (e == null)
+            {
+                throw new ArgumentException("The exceptions collection included at least one null element.", "exceptions");
+            }
+            faults.Add(e);
+        }
+        if (faults.Count == 0)
+        {
+            throw new ArgumentException("The exceptions collection was empty.", "exceptions");
+        }
+        return faults;
+    }
+
+    /// The array WaitAll and WaitAny were given, checked as theirs is: there,
+    /// and no null in it.
+    public static void CheckWaited(Task[] tasks)
+    {
+        if (tasks == null)
+        {
+            throw new ArgumentNullException("tasks");
+        }
+        for (int i = 0; i < tasks.Length; i++)
+        {
+            if (tasks[i] == null)
+            {
+                throw new ArgumentException("The tasks array included at least one null element.", "tasks");
+            }
+        }
     }
 }
 
@@ -1330,7 +1781,8 @@ class RunTaskFunction<T> : Action
     }
 }
 
-/// Copies the outcome of one Task<T> onto another, value included.
+/// Copies the outcome of one Task<T> onto another, value included -- every
+/// fault of a faulted one, as .NET's Unwrap carries them.
 class PropagateResult<T> : Action
 {
     Task<T> _from;
@@ -1351,6 +1803,11 @@ class PropagateResult<T> : Action
             _to.TrySetResult(from.ResultWhenDone());
             return;
         }
+        if (from.IsFaulted)
+        {
+            _to.TrySetFaultsOf(from);
+            return;
+        }
 
         try
         {
@@ -1368,7 +1825,7 @@ class PropagateResult<T> : Action
     }
 }
 
-/// Copies the outcome of one task onto another.
+/// Copies the outcome of one task onto another, every fault included.
 class Propagate : Action
 {
     Task _from;
@@ -1389,6 +1846,11 @@ class Propagate : Action
             _to.TrySetResult();
             return;
         }
+        if (from.IsFaulted)
+        {
+            _to.TrySetFaultsOf(from);
+            return;
+        }
 
         try
         {
@@ -1406,10 +1868,8 @@ class Propagate : Action
     }
 }
 
-/// One object shared by every task in a WhenAll: a countdown, and the result
-/// task. Registered as the continuation of each.
 /// WhenAll<T>'s last step: the results collected once every task is done,
-/// or the fault or cancellation WhenAll carried.
+/// or the faults or cancellation WhenAll carried.
 class WhenAllResults<T> : Action
 {
     Task _all;
@@ -1425,9 +1885,9 @@ class WhenAllResults<T> : Action
 
     public void Invoke()
     {
-        if (_all.IsFaulted && _all.Exception is Exception fault)
+        if (_all.IsFaulted)
         {
-            _made.TrySetException(fault);
+            _made.TrySetFaultsOf(_all);
             return;
         }
         if (_all.IsCanceled)
@@ -1474,21 +1934,54 @@ class WhenAnyTyped<T> : Action
     }
 }
 
+/// One object shared by every task in a WhenAll: a countdown, and the result
+/// task. Registered as the continuation of each task in WhenAll<T>'s, which
+/// gathers in array order; in WhenAll's each task has a WhenAllPart that
+/// says which it was.
 class WhenAllState : Action
 {
-    // LAYOUT: Remaining must stay the first instance field (see Atom).
+    // LAYOUT: Remaining and Noted must stay the first two instance fields
+    // (see Atom).
     nint _remaining;
+    nint _noted;
     Task[] _tasks;
     Task _all;
+    // THE TASKS THAT FAULTED OR WERE CANCELED, in the order they completed,
+    // the first _noted of them: what WhenAll gathers from. Null for
+    // WhenAll<T>, which gathers from _tasks in array order.
+    Task?[]? _unsuccessful;
 
-    public WhenAllState(Task[] tasks, Task all)
+    public WhenAllState(Task[] tasks, Task all, bool inFaultOrder)
     {
         _remaining = tasks.Length;
+        _noted = 0;
         _tasks = tasks;
         _all = all;
+        _unsuccessful = inFaultOrder ? new Task?[tasks.Length] : null;
     }
 
+    /// One task completed, not saying which: WhenAll<T>'s continuation.
     public void Invoke()
+    {
+        CountDown();
+    }
+
+    /// `one` completed: noted, in its turn, when it did not run to
+    /// completion, then counted.
+    public void Completed(Task one)
+    {
+        Task?[]? unsuccessful = _unsuccessful;
+
+        if (unsuccessful != null && !one.IsCompletedSuccessfully)
+        {
+            // xadd answers the OLD count: this task's place.
+            long at = Sys.AtomicAdd(Atom.At(this, Atom.SecondWord), 1);
+            unsuccessful[(int)at] = one;
+        }
+        CountDown();
+    }
+
+    void CountDown()
     {
         // xadd answers the OLD count: the last task sees 1.
         long before = Sys.AtomicAdd(Atom.At(this, Atom.FirstWord), -1);
@@ -1497,24 +1990,33 @@ class WhenAllState : Action
         {
             return;
         }
+        Settle();
+    }
 
+    /// Completes the WhenAll from its tasks, every one of them complete.
+    void Settle()
+    {
+        // EVERY FAULT OF EVERY TASK, in the order the tasks faulted (or in
+        // array order, for WhenAll<T>), as .NET's WhenAll gathers them:
+        // awaiting it rethrows the first, its Exception has them all. A
+        // canceled task cancels it only when none faulted, and the first
+        // canceled task's cancellation is the one it carries.
+        Task?[]? unsuccessful = _unsuccessful;
         Task[] tasks = _tasks;
+        int count = unsuccessful != null ? (int)_noted : tasks.Length;
         Exception? canceled = null;
         bool anyCanceled = false;
+        List<Exception>? faults = null;
 
-        for (int i = 0; i < tasks.Length; i++)
+        for (int i = 0; i < count; i++)
         {
-            Task one = tasks[i];
+            Task one = unsuccessful != null ? unsuccessful[i]! : tasks[i];
 
             if (one.IsFaulted)
             {
-                Exception? e = one.Exception;
-
-                if (e != null)
-                {
-                    _all.TrySetException(e);
-                    return;
-                }
+                faults ??= new List<Exception>();
+                one.AddFaultsTo(faults);
+                continue;
             }
             if (one.IsCanceled && !anyCanceled)
             {
@@ -1530,6 +2032,14 @@ class WhenAllState : Action
             }
         }
 
+        if (faults != null)
+        {
+            if (_all.TryClaim())
+            {
+                _all.FaultClaimed(faults);
+            }
+            return;
+        }
         if (anyCanceled)
         {
             if (canceled is OperationCanceledException oce)
@@ -1543,6 +2053,25 @@ class WhenAllState : Action
             return;
         }
         _all.TrySetResult();
+    }
+}
+
+/// One task's continuation in a WhenAll: tells the state which task it was
+/// (WhenAllState.Completed), which the state alone cannot know.
+class WhenAllPart : Action
+{
+    Task _one;
+    WhenAllState _state;
+
+    public WhenAllPart(Task one, WhenAllState state)
+    {
+        _one = one;
+        _state = state;
+    }
+
+    public void Invoke()
+    {
+        _state.Completed(_one);
     }
 }
 
@@ -1693,6 +2222,21 @@ class TaskCompletionSource<T>
         }
         _task.FaultClaimed(exception);
         return true;
+    }
+
+    /// Faults the task with every one of `exceptions`, in order (see
+    /// Task.TrySetException).
+    public void SetException(IEnumerable<Exception> exceptions)
+    {
+        if (!TrySetException(exceptions))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetException(IEnumerable<Exception> exceptions)
+    {
+        return _task.TrySetException(exceptions);
     }
 
     public void SetCanceled()
@@ -1853,6 +2397,19 @@ class TaskCompletionSource
         return true;
     }
 
+    public void SetException(IEnumerable<Exception> exceptions)
+    {
+        if (!TrySetException(exceptions))
+        {
+            throw TaskErrors.AlreadyCompleted();
+        }
+    }
+
+    public bool TrySetException(IEnumerable<Exception> exceptions)
+    {
+        return _task.TrySetException(exceptions);
+    }
+
     public void SetCanceled()
     {
         if (!TrySetCanceled())
@@ -1924,8 +2481,9 @@ static class Timeout
 /// A request to cancel, and everything that asked to hear about it.
 ///
 /// Cancel runs the registered callbacks SYNCHRONOUSLY, most recent first,
-/// as .NET does; the first exception any of them throws is rethrown after
-/// all have run (.NET wraps them in an AggregateException instead).
+/// as .NET does; what they throw is thrown after all have run, as one
+/// AggregateException in the order they threw -- or, for Cancel(true), the
+/// first exception at once, the callbacks after it left unrun.
 class CancellationTokenSource : IDisposable
 {
     // LAYOUT: these two must stay the first instance fields (see Atom).
@@ -1939,6 +2497,15 @@ class CancellationTokenSource : IDisposable
     public CancellationTokenSource()
     {
         _canceled = 0;
+        _lock = 0;
+    }
+
+    /// CANCELED FROM THE START, with nothing to run: AlreadyCanceled's, which
+    /// a Cancel would bring the whole of Cancel -- its callbacks and their
+    /// AggregateException -- into every image that ever makes a token.
+    CancellationTokenSource(bool canceled)
+    {
+        _canceled = canceled ? 1 : 0;
         _lock = 0;
     }
 
@@ -1959,6 +2526,11 @@ class CancellationTokenSource : IDisposable
     public CancellationToken Token => new CancellationToken(this);
 
     public void Cancel()
+    {
+        Cancel(false);
+    }
+
+    public void Cancel(bool throwOnFirstException)
     {
         if (Sys.Cas(Atom.At(this, Atom.FirstWord), 0, 1) != 0)
         {
@@ -1987,7 +2559,16 @@ class CancellationTokenSource : IDisposable
             return;
         }
 
-        Exception? first = null;
+        if (throwOnFirstException)
+        {
+            for (int i = callbacks.Count - 1; i >= 0; i--)
+            {
+                callbacks[i].Invoke();
+            }
+            return;
+        }
+
+        List<Exception>? thrown = null;
 
         for (int i = callbacks.Count - 1; i >= 0; i--)
         {
@@ -1997,16 +2578,14 @@ class CancellationTokenSource : IDisposable
             }
             catch (Exception e)
             {
-                if (first == null)
-                {
-                    first = e;
-                }
+                thrown ??= new List<Exception>();
+                thrown.Add(e);
             }
         }
 
-        if (first != null)
+        if (thrown != null)
         {
-            throw first;
+            throw new System.AggregateException(thrown);
         }
     }
 
@@ -2122,8 +2701,7 @@ class CancellationTokenSource : IDisposable
 
             if (s == null)
             {
-                s = new CancellationTokenSource();
-                s.Cancel();
+                s = new CancellationTokenSource(true);
                 _canceledSource = s;
             }
             return s;
@@ -2693,16 +3271,53 @@ static partial class Scheduler
     /// InvalidOperationException when nothing left could complete it.
     public static void RunUntil(Task task)
     {
+        RunUntil(task, NoDeadline, default(CancellationToken));
+    }
+
+    /// No deadline: a wait that ends only when its task completes.
+    public const long NoDeadline = long.MaxValue;
+
+    /// The deadline, on Clock.Now's scale, of a wait of `milliseconds` from
+    /// now; NoDeadline for -1 (Timeout.Infinite).
+    public static long DeadlineAfter(int milliseconds)
+    {
+        if (milliseconds == -1)
+        {
+            return NoDeadline;
+        }
+        return Clock.Now() + (long)milliseconds * 1000000;
+    }
+
+    /// Runs queued work and timers until `task` completes, and answers true;
+    /// or until `deadline` (Clock.Now's scale, NoDeadline for none) passes
+    /// first, and answers false; or until `cancellationToken` is canceled
+    /// first, and throws OperationCanceledException. Both are looked at
+    /// before every round, the deadline first, so a deadline already passed
+    /// answers at once without running anything, as .NET's Wait(0) does.
+    ///
+    /// A TIMED WAIT IS NEVER A DEADLOCK: with nothing left that could
+    /// complete the task, it sleeps out its time and answers false, as a
+    /// timed wait on a task that never completes does in .NET. Only a wait
+    /// without a deadline throws InvalidOperationException then.
+    public static bool RunUntil(Task task, long deadline, CancellationToken cancellationToken)
+    {
         Gate();
 
         if (_workers > 0)
         {
-            RunUntilWithWorkers(task);
-            return;
+            return RunUntilWithWorkers(task, deadline, cancellationToken);
         }
 
         while (!task.IsCompleted)
         {
+            // The time first: .NET's Wait(0) with a canceled token answers
+            // false, and only a wait with time left looks at the token.
+            if (deadline != NoDeadline && Clock.Now() >= deadline)
+            {
+                return false;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+
             // One round: only what was queued when it began.
             int round = _count;
 
@@ -2721,8 +3336,11 @@ static partial class Scheduler
 
             if (task.IsCompleted)
             {
-                return;
+                return true;
             }
+            // Canceled by what the round ran -- a CancelAfter's timer, as
+            // likely as not -- before anything below calls it a deadlock.
+            cancellationToken.ThrowIfCancellationRequested();
 
             // What interrupt handlers completed since the last round: their
             // continuations posted for the next.
@@ -2748,7 +3366,8 @@ static partial class Scheduler
 
                     if (_timerCount > 0 && next != null && next.Deadline > now)
                     {
-                        long until = Waking(now, next.Deadline);
+                        // The wait's own deadline, when it comes first.
+                        long until = Waking(now, next.Deadline < deadline ? next.Deadline : deadline);
                         // A completion an interrupt may bring is looked for
                         // every InterruptPollNanos, not only at the timer.
                         if (InterruptCompletions.Armed > 0 && until > now + InterruptPollNanos) until = now + InterruptPollNanos;
@@ -2762,7 +3381,7 @@ static partial class Scheduler
                         if (GcThreads.Others() && until > now + OthersPollNanos) until = Waking(now, now + OthersPollNanos);
                         // Looked at again last: completed since the round's
                         // test by a thread that has gone, nothing else wakes this.
-                        if (task.IsCompleted) return;
+                        if (task.IsCompleted) return true;
                         Clock.SleepUntil(until);
                     }
                 }
@@ -2776,7 +3395,7 @@ static partial class Scheduler
                 if (InterruptCompletions.Armed > 0)
                 {
                     long at = Clock.Now();
-                    Clock.SleepUntil(at + InterruptPollNanos);
+                    Clock.SleepUntil(Sooner(at + InterruptPollNanos, deadline));
                     continue;
                 }
                 // ANOTHER THREAD MAY STILL COMPLETE IT: one that took the item
@@ -2784,12 +3403,25 @@ static partial class Scheduler
                 if (GcThreads.Others())
                 {
                     long at = Clock.Now();
-                    Clock.SleepUntil(Waking(at, at + OthersPollNanos));
+                    Clock.SleepUntil(Waking(at, Sooner(at + OthersPollNanos, deadline)));
+                    continue;
+                }
+                // NOTHING CAN, BUT THE WAIT ENDS: slept out, and the deadline
+                // seen passed at the top of the loop.
+                if (deadline != NoDeadline)
+                {
+                    Clock.SleepUntil(deadline);
                     continue;
                 }
                 throw new InvalidOperationException("deadlock: nothing can complete this task");
             }
         }
+        return true;
+    }
+
+    static long Sooner(long one, long other)
+    {
+        return one < other ? one : other;
     }
 
     // How long a wait sleeps before it looks again while other threads run.
@@ -2821,7 +3453,9 @@ static partial class Scheduler
     /// the state word would make every completion pay for a wake. The interval
     /// is short enough not to show up beside the work and long enough not to
     /// spin a processor.
-    static void RunUntilWithWorkers(Task task)
+    ///
+    /// The deadline and the token are RunUntil's, looked at on every poll.
+    static bool RunUntilWithWorkers(Task task, long deadline, CancellationToken cancellationToken)
     {
         const long PollNanos = OthersPollNanos;
 
@@ -2831,6 +3465,11 @@ static partial class Scheduler
 
             long now = Clock.Now();
 
+            if (now >= deadline)
+            {
+                return false;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
             if (_timerCount > 0)
             {
                 PostDueTimers(now);
@@ -2838,10 +3477,10 @@ static partial class Scheduler
 
             if (task.IsCompleted)
             {
-                return;
+                return true;
             }
 
-            long until = now + PollNanos;
+            long until = Sooner(now + PollNanos, deadline);
             TimerEntry? next = _timers[0];
 
             if (_timerCount > 0 && next != null && next.Deadline > now && next.Deadline < until)
@@ -2850,6 +3489,7 @@ static partial class Scheduler
             }
             Clock.SleepUntil(until);
         }
+        return true;
     }
 
     /// Runs everything queued, and every timer, until there is nothing left
@@ -4126,7 +4766,10 @@ namespace System.Threading.Tasks
         public bool IsCompletedSuccessfully => _task is null || _task.IsCompletedSuccessfully;
         public bool IsFaulted => _task is not null && _task.IsFaulted;
 
-        public TResult Result => _task is null ? _result : _task.Result;
+        /// The value, waited for as GetResult waits: what faulted the task is
+        /// rethrown as it was, never in an AggregateException, as .NET's
+        /// ValueTask<T>.Result does -- unlike Task<T>.Result.
+        public TResult Result => _task is null ? _result : _task.GetAwaiter().GetResult();
 
         public Task<TResult> AsTask() => _task ?? Task.FromResult(_result);
 
@@ -4229,6 +4872,228 @@ namespace System
     interface IAsyncDisposable
     {
         System.Threading.Tasks.ValueTask DisposeAsync();
+    }
+
+    /// SEVERAL EXCEPTIONS THROWN AS ONE: what Task.Wait, Result and WaitAll
+    /// throw, and Task.Exception answers, for a task that faulted (with every
+    /// fault) or was canceled (with a TaskCanceledException), and what
+    /// CancellationTokenSource.Cancel throws for the callbacks that threw.
+    ///
+    /// .NET's, member for member. InnerException is the first of
+    /// InnerExceptions; Message is the message given, or "One or more errors
+    /// occurred.", followed by each inner exception's message in brackets;
+    /// ToString is Exception's, the first inner exception after " ---> ", and
+    /// every other one after it as "(Inner Exception #i)".
+    class AggregateException : Exception
+    {
+        const string Default = "One or more errors occurred.";
+
+        readonly List<Exception> _innerExceptions;
+        System.Collections.ObjectModel.ReadOnlyCollection<Exception>? _view;
+
+        public AggregateException() : base(Default)
+        {
+            _innerExceptions = new List<Exception>();
+        }
+
+        public AggregateException(string? message) : base(message ?? Default)
+        {
+            _innerExceptions = new List<Exception>();
+        }
+
+        public AggregateException(string? message, Exception innerException) : base(message ?? Default, Given(innerException))
+        {
+            _innerExceptions = new List<Exception>();
+            _innerExceptions.Add(innerException);
+        }
+
+        public AggregateException(IEnumerable<Exception> innerExceptions) : this(Default, innerExceptions)
+        {
+        }
+
+        public AggregateException(params Exception[] innerExceptions) : this(Default, innerExceptions)
+        {
+        }
+
+        public AggregateException(string? message, IEnumerable<Exception> innerExceptions) : this(message, Taken(innerExceptions))
+        {
+        }
+
+        /// Where every list of inner exceptions ends: the array the others
+        /// make, or the caller's own, copied so that a change to it after
+        /// cannot reach in.
+        public AggregateException(string? message, params Exception[] innerExceptions) : base(message ?? Default, FirstOf(innerExceptions))
+        {
+            List<Exception> kept = new List<Exception>(innerExceptions.Length);
+
+            for (int i = 0; i < innerExceptions.Length; i++)
+            {
+                Exception e = innerExceptions[i];
+
+                if (e == null)
+                {
+                    throw new ArgumentException("An element of innerExceptions was null.");
+                }
+                kept.Add(e);
+            }
+            _innerExceptions = kept;
+        }
+
+        static Exception Given(Exception innerException)
+        {
+            if (innerException == null)
+            {
+                throw new ArgumentNullException("innerException");
+            }
+            return innerException;
+        }
+
+        static Exception[] Taken(IEnumerable<Exception> innerExceptions)
+        {
+            if (innerExceptions == null)
+            {
+                throw new ArgumentNullException("innerExceptions");
+            }
+            List<Exception> taken = new List<Exception>();
+            foreach (Exception e in innerExceptions)
+            {
+                taken.Add(e);
+            }
+            return taken.ToArray();
+        }
+
+        static Exception? FirstOf(Exception[] innerExceptions)
+        {
+            if (innerExceptions == null)
+            {
+                throw new ArgumentNullException("innerExceptions");
+            }
+            return innerExceptions.Length > 0 ? innerExceptions[0] : null;
+        }
+
+        /// Every inner exception, in order: a read-only view, the same one at
+        /// every read.
+        public System.Collections.ObjectModel.ReadOnlyCollection<Exception> InnerExceptions
+        {
+            get
+            {
+                System.Collections.ObjectModel.ReadOnlyCollection<Exception>? view = _view;
+
+                if (view == null)
+                {
+                    view = new System.Collections.ObjectModel.ReadOnlyCollection<Exception>(_innerExceptions);
+                    _view = view;
+                }
+                return view;
+            }
+        }
+
+        public override string Message
+        {
+            get
+            {
+                string message = base.Message;
+
+                for (int i = 0; i < _innerExceptions.Count; i++)
+                {
+                    message = String.Concat(message, String.Concat(" (", String.Concat(_innerExceptions[i].Message, ")")));
+                }
+                return message;
+            }
+        }
+
+        /// One AggregateException holding no other: every inner exception
+        /// that is not itself an AggregateException, the outer list's own
+        /// first and each nested list's after them, breadth first, as .NET
+        /// flattens. The message is this one's own, without the list.
+        public AggregateException Flatten()
+        {
+            List<Exception> flat = new List<Exception>();
+            List<AggregateException> pending = new List<AggregateException>();
+            pending.Add(this);
+
+            for (int next = 0; next < pending.Count; next++)
+            {
+                List<Exception> inner = pending[next]._innerExceptions;
+
+                for (int i = 0; i < inner.Count; i++)
+                {
+                    Exception e = inner[i];
+
+                    if (e is AggregateException nested)
+                    {
+                        pending.Add(nested);
+                    }
+                    else
+                    {
+                        flat.Add(e);
+                    }
+                }
+            }
+            return new AggregateException(GetType() == typeof(AggregateException) ? base.Message : Message, flat);
+        }
+
+        /// Asks `predicate` of every inner exception whether it is handled,
+        /// and throws a new AggregateException of those it was not -- with
+        /// this one's whole Message as its message, as .NET's does.
+        public void Handle(Func<Exception, bool> predicate)
+        {
+            if (predicate == null)
+            {
+                throw new ArgumentNullException("predicate");
+            }
+
+            List<Exception>? unhandled = null;
+
+            for (int i = 0; i < _innerExceptions.Count; i++)
+            {
+                Exception e = _innerExceptions[i];
+
+                if (!predicate(e))
+                {
+                    unhandled ??= new List<Exception>();
+                    unhandled.Add(e);
+                }
+            }
+            if (unhandled != null)
+            {
+                throw new AggregateException(Message, unhandled);
+            }
+        }
+
+        /// The first exception down the chain that is not an AggregateException
+        /// of exactly one: an aggregate of one stands for the one inside it.
+        public override Exception GetBaseException()
+        {
+            Exception back = this;
+            AggregateException? aggregate = this;
+
+            while (aggregate != null && aggregate._innerExceptions.Count == 1)
+            {
+                back = aggregate._innerExceptions[0];
+                aggregate = back as AggregateException;
+            }
+            return back;
+        }
+
+        public override string ToString()
+        {
+            string text = base.ToString();
+            Exception? first = InnerException;
+
+            for (int i = 0; i < _innerExceptions.Count; i++)
+            {
+                Exception e = _innerExceptions[i];
+
+                if (e == first)
+                {
+                    continue;
+                }
+                text = String.Concat(text, String.Concat("\n ---> (Inner Exception #", String.Concat(i.ToString(), ") ")));
+                text = String.Concat(text, String.Concat(e.ToString(), "<---\n"));
+            }
+            return text;
+        }
     }
 }
 

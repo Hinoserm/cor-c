@@ -18325,6 +18325,32 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// Whether one `params` constructor's expanded form is more specific than
+    /// another's for `count` arguments (C# 12.6.4.3): each parameter the
+    /// argument lands on the same type as the other's or converting to it
+    /// implicitly, and one at least not the same -- (string, string, params
+    /// Exception[]) over (params object[]). Implicitly as the method
+    /// resolver's BetterConversion counts it: object reaches any type as a
+    /// machine word, which says nothing of which is the more specific. WHERE
+    /// EVERY ONE IS THE SAME, C#'s tie-break: the form with more declared
+    /// parameters, whose params array takes fewer of the arguments --
+    /// (int, params int[]) over (params int[]) for `new A(1, 2)`.
+    /// </summary>
+    private bool ExpandedMoreSpecific(MethodSymbol one, MethodSymbol other, int count)
+    {
+        bool more = false;
+        for (int i = 0; i < count; i++)
+        {
+            Type a = i < one.Params.Count - 1 ? one.Params[i].Type : one.Params[^1].Type.Element!;
+            Type b = i < other.Params.Count - 1 ? other.Params[i].Type : other.Params[^1].Type.Element!;
+            if (a.Equals(b)) continue;
+            if (!((a.Prim != Prim.Any || b.Prim == Prim.Any) && (Convertible(a, b) || Variant(a, b)))) return false;
+            more = true;
+        }
+        return more || one.Params.Count > other.Params.Count;
+    }
+
+    /// <summary>
     /// The constructor a `new` -- or a constructor's `: base(...)` or
     /// `: this(...)`, checked as one -- calls, with its arguments put in
     /// parameter order, defaults and caller information filled in, a `params`
@@ -18358,13 +18384,32 @@ public sealed partial class Binder
                                        && constructorArgs.Where((a, i) =>
                                             !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0))
         {
-            MethodSymbol? variadic = methods.FirstOrDefault(
+            // THE BEST FORM WHOSE GATHERED ARGUMENTS FIT, not the first
+            // declared: `new AggregateException("m", a, b)` is (string,
+            // params Exception[]), and AggregateException(params
+            // Exception[]), declared before it, took the string as its first
+            // element and refused it. Of several that fit, the most specific
+            // (ExpandedMoreSpecific), as a method's expanded forms compete.
+            // Where none fits every argument, the first is still the one
+            // whose error is reported.
+            List<MethodSymbol> variadics = methods.Where(
                 m => m.IsCtor && m.Params.Count > 0 && m.Params[^1].IsParams
                   && m.Params[^1].Type.Element is not null
                   && constructorArgs.Count >= m.Params.Count - 1
                   && Enumerable.Range(0, m.Params.Count - 1)
                                .All(i => constructorArgs[i].IsError
-                                      || Convertible(constructorArgs[i], m.Params[i].Type)));
+                                      || Convertible(constructorArgs[i], m.Params[i].Type))).ToList();
+            MethodSymbol? variadic = null;
+            foreach (MethodSymbol m in variadics)
+            {
+                if (Enumerable.Range(m.Params.Count - 1, constructorArgs.Count - (m.Params.Count - 1))
+                              .All(i => Fits(constructorArgs[i], m.Params[^1].Type.Element!, nw.Args[i]))
+                    && (variadic is null || ExpandedMoreSpecific(m, variadic, constructorArgs.Count)))
+                {
+                    variadic = m;
+                }
+            }
+            variadic ??= variadics.FirstOrDefault();
 
             if (variadic is not null && RefOf(variadic.Params[^1].Type.Element!) is TypeRef each)
             {

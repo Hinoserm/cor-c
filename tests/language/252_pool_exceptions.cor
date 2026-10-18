@@ -153,8 +153,9 @@ static class Program
         {
             try
             {
-                // Result waits, and rethrows what faulted the task: the
-                // exception object crossed from a worker to this thread.
+                // Result waits, and throws what faulted the task inside an
+                // AggregateException: the exception object crossed from a
+                // worker to this thread.
                 results = results + work[i].Result;
 
                 if ((i & 1) != 0)
@@ -162,11 +163,11 @@ static class Program
                     order = false;      // an odd item must have thrown
                 }
             }
-            catch (Boom b)
+            catch (System.AggregateException e)
             {
                 faulted = faulted + 1;
 
-                if (b.Which != i)
+                if (e.InnerExceptions[0] is not Boom b || b.Which != i)
                 {
                     order = false;
                 }
