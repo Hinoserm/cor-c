@@ -1,0 +1,33 @@
+// test: with_on_named_tuple_elements
+// expect-exit: 0
+// expect-output:
+// (True, True, True) (True, False, False)
+// (3, x) (3, y) y
+// (1, 2) (9, 2)
+//
+// `with` on a tuple (C# 10) names elements as the tuple names them: `t with
+// { Breaks = true }` over a `(bool Breaks, bool Continues, bool Loop)` sets
+// the first element, as `t.Breaks` reads it. The name was looked for as a
+// field of the tuple's class, which has only Item1 to Item3, and the compile
+// stopped with "has no member 'Breaks' to change". Item1 still works, and a
+// copy changes nothing in what it was copied from.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static int Main()
+    {
+        List<(bool Breaks, bool Continues, bool Loop)> targets = new() { (false, false, true), (false, false, false) };
+        targets[^1] = targets[^1] with { Breaks = true };
+        targets[0] = targets[0] with { Continues = true, Item1 = true };
+        Console.WriteLine(targets[0] + " " + targets[1]);
+        (int At, string Label) p = (3, "x");
+        var q = p with { Label = "y" };
+        Console.WriteLine(p + " " + q + " " + q.Label);
+        (int, int) bare = (1, 2);
+        Console.WriteLine(bare + " " + (bare with { Item1 = 9 }));
+        return 0;
+    }
+}

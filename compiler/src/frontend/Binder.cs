@@ -5018,12 +5018,42 @@ public sealed partial class Binder
         if (m.ExplicitArgs is not { } written || face.Decl is not { TemplateArgs: { } made } || made.Count != written.Count) return true;
         for (int i = 0; i < written.Count; i++)
         {
-            Type mine = Resolve(written[i], m.Owner);
+            Type mine = WrittenAt(m, written[i]);
             Type theirs = face.TemplateArgTypes.Count == made.Count ? face.TemplateArgTypes[i] : Resolve(made[i], face);
             if (Unresolved(mine) || Unresolved(theirs)) continue;
             if (!MethodSignatures.SameType(mine, theirs)) return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// An explicit implementation's interface argument, read WHERE THE
+    /// IMPLEMENTATION WAS WRITTEN: its file's namespace and using directives.
+    /// The slots are asked for whenever a type's interfaces are first wanted,
+    /// and that may be while the library is being bound -- a copy's AddRange
+    /// testing the program's list for ICollection&lt;T&gt; -- whose file knew no
+    /// MOperand, or knew two (the compiler's own x86 and x64 ones), and said
+    /// so against a line of its own.
+    /// </summary>
+    private Type WrittenAt(MethodSymbol m, TypeRef written)
+    {
+        TypeSymbol? scope = _scope, lexical = _lexicalType, self = _thisType;
+        MemberDecl? member = _member;
+        _thisType = null;
+        _scope = m.Owner;
+        _lexicalType = m.Owner;
+        _member = m.Decl;
+        try
+        {
+            return Resolve(written, m.Owner);
+        }
+        finally
+        {
+            _scope = scope;
+            _lexicalType = lexical;
+            _thisType = self;
+            _member = member;
+        }
     }
 
     private static string PlainName(string name)
@@ -6058,6 +6088,19 @@ public sealed partial class Binder
             closing.NestedNames.Clear();
             _spareScopes.Push(closing);
         }
+    }
+
+    /// <summary>
+    /// Whether a pattern's variable is the one this same test declared, still
+    /// in scope: the test checked again where it stands -- an argument's
+    /// conditional once more for the parameter it went to (Argument) -- and
+    /// the variable it already has is the one it names, not a second.
+    /// </summary>
+    private bool BoundAgain(IsExpr isx)
+    {
+        if (!_r.PatternSym.TryGetValue(isx, out LocalSym? had) || !ReferenceEquals(Lookup(isx.Binding!), had)) return false;
+        _assigned.Add(had);
+        return true;
     }
 
     // Each `out T x` declaration and the variable it made (RefArgExpr).
@@ -7714,7 +7757,11 @@ public sealed partial class Binder
     /// the expression and not only its type.
     /// </summary>
     private bool Fits(Type had, Type want, Expr? written)
-        => had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
+        // A CONDITIONAL LEFT TO ITS PARAMETER (Argument) fits what each of
+        // its arms fits, an arm that is one of them the same way again.
+        => written is ConditionalExpr deferred && _deferredArms.TryGetValue(deferred, out (Type Then, Type Else) arms)
+            ? Fits(arms.Then, want, deferred.Then) && Fits(arms.Else, want, deferred.Else)
+        : had.IsError || (!NullableIntoValue(had, want) && (Convertible(had, want) || Variant(had, want)))
         || (written is not null && (MethodGroupFits(written, want) || LocalFunctionConverts(written, want)))
         || IntegerConstantFits(written, had, want)
         || TupleLiteralFits(written, want);
@@ -13562,7 +13609,7 @@ public sealed partial class Binder
             // what it is, as an argument of any call does.
             List<Type> given = add.Args.Select(argument =>
                 argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null, Collection: false } || HoldsLambda(argument)
-                    ? Type.Any : CheckExpr(argument)).ToList();
+                    ? Type.Any : Argument(argument)).ToList();
 
             _wanted = outerElement;
 
@@ -13608,7 +13655,7 @@ public sealed partial class Binder
                     given[i] = CheckLambda(lambda, chosen.Params[i].Type);
                     continue;
                 }
-                if (add.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null, Collection: false } || HoldsLambda(add.Args[i]))
+                if (add.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null, Collection: false } || HoldsLambda(add.Args[i]) || Deferred(add.Args[i]))
                 {
                     Type? saved = _wanted;
                     _wanted = chosen.Params[i].Type;
@@ -15686,10 +15733,17 @@ public sealed partial class Binder
                 // `decl is null ? null : decl.Add` an Action<string>.
                 Type? wantedDelegate = _wanted is { IsError: false } w && w.AsNonNullable() is { } plain
                                        && plain.Symbol?.FindMethods("Invoke").Any() == true ? plain : null;
+                // AN ARGUMENT'S, LEFT TO ITS PARAMETER (Argument): an arm that
+                // is a conditional itself waits with it.
+                bool deferring = _wanted is null && ReferenceEquals(c2, _argumentConditional);
                 Type Arm(Expr arm)
                 {
                     if (wantedDelegate is not null && arm is LambdaExpr lambda) return CheckLambda(lambda, wantedDelegate);
-                    Type had = CheckExpr(arm);
+                    ConditionalExpr? outer = _argumentConditional;
+                    if (deferring) _argumentConditional = arm as ConditionalExpr;
+                    Type had;
+                    try { had = CheckExpr(arm); }
+                    finally { _argumentConditional = outer; }
                     if (wantedDelegate is not null && !_r.Rewrites.ContainsKey(arm)
                         && MethodGroupLambda(arm, wantedDelegate) is LambdaExpr wrapper)
                     {
@@ -15713,6 +15767,12 @@ public sealed partial class Binder
                 Type b2 = Arm(c2.Else);
 
                 Forget(whenFalse);
+
+                if (deferring && (Deferred(c2.Then) || Deferred(c2.Else)))
+                {
+                    _deferredArms[c2] = (a2, b2);
+                    return Type.Any;
+                }
 
                 // A METHOD GROUP WITH NOTHING TO SAY WHICH DELEGATE it is has
                 // no type yet (void): the call checks this again once its
@@ -15789,11 +15849,14 @@ public sealed partial class Binder
 
                 if (a2.IsInteger && b2.IsInteger && !a2.Equals(b2) && !enumA && !enumB)
                 {
-                    if (ConstantValue(c2.Else, _thisType) is long otherwise && Fits(otherwise, a2))
+                    // By C#'s rule (ConstantConverts), from the constant's own
+                    // type: ulong.MaxValue read as a long is -1, which an int
+                    // holds, and `c ? 0 : ulong.MaxValue` was taken for an int.
+                    if (ConstantValue(c2.Else, _thisType) is long otherwise && ConstantConverts(b2, otherwise, a2))
                     {
                         return a2;
                     }
-                    if (ConstantValue(c2.Then, _thisType) is long so && Fits(so, b2))
+                    if (ConstantValue(c2.Then, _thisType) is long so && ConstantConverts(a2, so, b2))
                     {
                         return b2;
                     }
@@ -15860,6 +15923,14 @@ public sealed partial class Binder
                 if (Convertible(b2, a2))
                 {
                     return Joined(a2);
+                }
+
+                // An argument's, with no type wanted yet: the parameter's,
+                // once the overload says (Argument).
+                if (_wanted is null && ReferenceEquals(c2, _argumentConditional))
+                {
+                    _deferredArms[c2] = (a2, b2);
+                    return Type.Any;
                 }
 
                 if (CommonReference(a2, b2) is Type common)
@@ -16595,7 +16666,7 @@ public sealed partial class Binder
                 // promise the pattern never made.
                 if (isx.Type.Name == TypeRef.Anything)
                 {
-                    if (isx.Binding is not null)
+                    if (isx.Binding is not null && !BoundAgain(isx))
                     {
                         int held = NewSlot();
                         LocalSym named = new(held, operand, isx.Binding);
@@ -16731,7 +16802,7 @@ public sealed partial class Binder
                     _r.StringTests.Add(isx);
                 }
 
-                if (isx.Binding is not null)
+                if (isx.Binding is not null && !BoundAgain(isx))
                 {
                     int slot = NewSlot();
                     LocalSym pattern = new(slot, tested, isx.Binding);
@@ -16775,6 +16846,20 @@ public sealed partial class Binder
                     Type value = CheckExpr(given);
                     FieldSymbol? field = owner.FindField(init.Name)
                                       ?? owner.FindBackingField(init.Name);
+
+                    // A TUPLE'S ELEMENT BY THE NAME IT WAS GIVEN (C# 10):
+                    // `t with { Breaks = true }` over a `(bool Breaks, bool
+                    // Continues)` sets Item1, as `t.Breaks` reads it.
+                    if (field is null && !of.IsNullableValue && owner.TupleNamings.Count > 0)
+                    {
+                        int which = -1;
+                        for (int i = 0; of.Names is { } named && i < named.Count; i++)
+                        {
+                            if (named[i] == init.Name) { which = i; break; }
+                        }
+                        if (which < 0) which = owner.TupleElement(init.Name);
+                        if (which >= 0 && which < owner.Fields.Count) field = owner.Fields[which];
+                    }
 
                     if (field is null)
                     {
@@ -19309,9 +19394,28 @@ public sealed partial class Binder
     /// `File.ReadLinesAsync(path, null!)` took the (string, CancellationToken)
     /// overload over (string, Encoding, ...), and unboxed the null.
     /// </summary>
+    /// <summary>The conditional being checked as a call's argument, its type left to the parameter (Argument).</summary>
+    private ConditionalExpr? _argumentConditional;
+
+    /// <summary>The arms' types of each argument conditional left to its parameter (Argument), for the overloads to judge.</summary>
+    private readonly Dictionary<ConditionalExpr, (Type Then, Type Else)> _deferredArms = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Whether an argument is a conditional left to its parameter, to be checked again with that type wanted.</summary>
+    private bool Deferred(Expr argument) => argument is ConditionalExpr c && _deferredArms.ContainsKey(c);
+
     private Type Argument(Expr argument)
     {
-        Type checkedType = CheckExpr(argument);
+        // A CONDITIONAL WITH NO NATURAL TYPE IS THE PARAMETER'S (C# 12.18,
+        // target-typed): `new Shape(found ? list : Array.Empty<T>())` against
+        // an IReadOnlyList<T> parameter. Its arms are judged against each
+        // parameter when the overload is chosen, as a lambda's are, and the
+        // argument is checked again with the parameter's type wanted; a
+        // shared interface guessed now (IList<T>) fitted no IReadOnlyList<T>.
+        ConditionalExpr? deferredWas = _argumentConditional;
+        _argumentConditional = argument as ConditionalExpr;
+        Type checkedType;
+        try { checkedType = CheckExpr(argument); }
+        finally { _argumentConditional = deferredWas; }
         Expr inner = argument;
         while (inner is SuppressExpr sure) inner = sure.Operand;
         return inner is LiteralExpr { Kind: Lit.Null } ? Type.Null : checkedType;
@@ -19480,7 +19584,7 @@ public sealed partial class Binder
                     constructorArgs[i] = CheckLambda(wrapper, ctor.Params[i].Type);
                     continue;
                 }
-                if (nw.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(nw.Args[i]))
+                if (nw.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(nw.Args[i]) || Deferred(nw.Args[i]))
                 {
                     Type? saved = _wanted;
                     _wanted = ctor.Params[i].Type;
@@ -20374,7 +20478,7 @@ public sealed partial class Binder
                     {
                         args[i] = CheckLambda(invoked, invoke.Params[i].Type);
                     }
-                    else if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(c.Args[i]))
+                    else if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(c.Args[i]) || Deferred(c.Args[i]))
                     {
                         Type? saved = _wanted;
                         _wanted = invoke.Params[i].Type;
@@ -21126,6 +21230,12 @@ public sealed partial class Binder
                 // no other (LambdaFits): `() => 7` makes no Run(Func<Task>).
                 if (i < c.Args.Count && c.Args[i] is LambdaExpr lambdaArg && byArity.Count > 1 && !LambdaFits(m, i, lambdaArg, fromReceiver ?? NoBindings, lambdaAsked ??= new())) return false;
 
+                // A CONDITIONAL WITH NO NATURAL TYPE IS AN ARGUMENT FOR A
+                // PARAMETER BOTH ITS ARMS CONVERT TO (C# 12.18's conditional
+                // expression conversion), and for no other: `Takes(c ? list :
+                // Array.Empty<int>())` is no Takes(string).
+                if (i < c.Args.Count && Deferred(c.Args[i]) && byArity.Count > 1 && !this.Fits(args[i], want, c.Args[i])) return false;
+
                 if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (c.Args[i] is NewExpr { Collection: true } && want.IsArray))) continue;
 
                 // A BY-REFERENCE ARGUMENT FITS ONLY ITS OWN TYPE. C# counts an
@@ -21615,8 +21725,9 @@ public sealed partial class Binder
                 }
 
                 // A CONDITIONAL WITH A METHOD GROUP OR LAMBDA ARM, checked
-                // again now that the delegate it has to be is known.
-                if (c.Args[i] is ConditionalExpr { } choosing && IsFunctionSource(choosing))
+                // again now that the delegate it has to be is known; and one
+                // with no natural type, now that the type it has to be is.
+                if (c.Args[i] is ConditionalExpr { } choosing && (IsFunctionSource(choosing) || _deferredArms.ContainsKey(choosing)))
                 {
                     Type? saved = _wanted;
                     _wanted = want;

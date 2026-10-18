@@ -1,0 +1,63 @@
+// test: conditional_unsigned_constant_and_target_typed_argument
+// expect-exit: 0
+// expect-output:
+// UInt64 0
+// UInt64 18446744073709551615
+// UInt64 18446744073709551615
+// UInt32 7 UInt32 0
+// list 2 list 0
+// v5 null
+// 3 1 list 3 1 1
+//
+// A conditional's type, two ways C# gives it. ONE ARM A CONSTANT: its type is
+// the other arm's when the constant converts to it (C# 12.18 by 10.2.11), so
+// `c ? 0 : ulong.MaxValue` is a ulong. The test read the constant as a long,
+// where ulong.MaxValue is -1, which an int holds, and took the conditional
+// for an int. NO NATURAL TYPE, as an argument: the parameter's (C# 9's
+// target-typed conditional), `Takes(c ? list : Array.Empty<int>())` against
+// IReadOnlyList<int>, where an interface the arms share, guessed before the
+// overload was chosen, was IList<int>, which converts to no IReadOnlyList.
+// The same for a constructor's argument, a delegate's, an initialiser's Add,
+// and a conditional inside one -- whose own pattern variable is the one it
+// declared when it is checked again for the parameter.
+
+using System;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Kind(object o) => o.GetType().Name;
+    static string Takes(IReadOnlyList<int> xs) => "list " + xs.Count;
+    static string Takes(string s) => "string " + s;
+    static string Opt(int? x) => x is null ? "null" : "v" + x;
+    static string Pick(object o, IReadOnlyList<int> xs) => "list " + xs.Count;
+
+    sealed class Shape { public readonly int N; public Shape(IReadOnlyList<int> xs) { N = xs.Count; } }
+
+    static int Main(string[] args)
+    {
+        bool yes = args.Length == 0;
+        ulong big = ulong.MaxValue;
+        var a = yes ? 0 : ulong.MaxValue;
+        var b = yes ? ulong.MaxValue : 0;
+        var c = yes ? big : 1;
+        Console.WriteLine(Kind(a) + " " + a);
+        Console.WriteLine(Kind(b) + " " + b);
+        Console.WriteLine(Kind(c) + " " + c);
+        uint u = 7;
+        var d = yes ? u : 3;
+        var e = yes ? 0 : u;
+        Console.WriteLine(Kind(d) + " " + d + " " + Kind(e) + " " + e);
+        List<int> list = new() { 1, 2 };
+        Console.WriteLine(Takes(yes ? list : Array.Empty<int>()) + " " + Takes(!yes ? list : Array.Empty<int>()));
+        Console.WriteLine(Opt(yes ? 5 : null) + " " + Opt(!yes ? 5 : null));
+        int[] one = { 1 };
+        List<int> three = new() { 1, 2, 3 };
+        object o = "x";
+        Func<IReadOnlyList<int>, int> count = xs => xs.Count;
+        List<IReadOnlyList<int>> all = new() { yes ? one : three };
+        Console.WriteLine(new Shape(yes ? three : one).N + " " + new Shape(!yes ? three : one).N + " "
+            + Pick(o, o is string s ? s.Length > 0 ? three : one : one) + " " + count(yes ? one : three) + " " + all[0].Count);
+        return 0;
+    }
+}

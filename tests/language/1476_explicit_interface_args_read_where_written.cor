@@ -1,0 +1,79 @@
+// test: explicit_interface_args_read_where_written
+// expect-exit: 0
+// expect-output:
+// 6 6 3 6
+// b
+//
+// An explicit implementation's interface arguments are read where the
+// implementation was written: its namespace and its using directives. Two
+// types here are called Item, one in each namespace, and Shop's list names
+// IEnumerable<Item> explicitly. Its slots are first wanted while a copy of
+// the class library's code is bound -- List<T>.AddRange testing what it is
+// handed for ICollection<T> -- and that file's scope knew neither Item: the
+// argument was read there, found two, and the compile stopped with "'Item'
+// is not a known type" against a line of the library's.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace Shop
+{
+    public sealed class Item { public int V; public Item(int v) { V = v; } }
+
+    public abstract class ItemList : IReadOnlyList<Item>
+    {
+        readonly Item[] _a = { new Item(1), new Item(2), new Item(3) };
+        public int Count => _a.Length;
+        public Item this[int i] => _a[i];
+        public Enumerator GetEnumerator() => new(this);
+        IEnumerator<Item> IEnumerable<Item>.GetEnumerator() => new Boxed(this);
+        IEnumerator IEnumerable.GetEnumerator() => new Boxed(this);
+
+        public struct Enumerator
+        {
+            readonly ItemList _list; int _at;
+            public Enumerator(ItemList list) { _list = list; _at = -1; }
+            public bool MoveNext() => ++_at < _list.Count;
+            public Item Current => _list[_at];
+        }
+
+        sealed class Boxed : IEnumerator<Item>
+        {
+            readonly ItemList _list; int _at = -1;
+            public Boxed(ItemList list) { _list = list; }
+            public bool MoveNext() => ++_at < _list.Count;
+            public Item Current => _list[_at];
+            object IEnumerator.Current => Current;
+            public void Reset() { _at = -1; }
+            public void Dispose() { }
+        }
+    }
+
+    public sealed class Bag : ItemList { }
+}
+
+namespace Store
+{
+    public sealed class Item { public string S = "b"; }
+}
+
+namespace Store.App
+{
+    using Shop;
+
+    static class P
+    {
+        static int Main()
+        {
+            List<Shop.Item> all = new();
+            all.AddRange(new Bag());
+            int s = 0;
+            foreach (Shop.Item i in new Bag()) s += i.V;
+            Console.WriteLine(s + " " + all.Sum(i => i.V) + " " + ((IEnumerable)new Bag()).Cast<Shop.Item>().Count() + " " + new List<Shop.Item>(new Bag()).Sum(i => i.V));
+            Console.WriteLine(new Store.Item().S);
+            return 0;
+        }
+    }
+}
