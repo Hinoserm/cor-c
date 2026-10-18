@@ -1,0 +1,46 @@
+// test: string_slice_handed_to_linq
+// expect-exit: 0
+// expect-output:
+// True False
+// 12 3
+// True
+// block,,Itemx,given
+// spans True True True 9 10 3 True
+// count 2 5 a
+//
+// A string handed to something that reads a sequence gives up its characters
+// whatever the string expression is: `name[4..]` is rewritten to a Substring
+// call before it is converted, and the conversion passed over an expression
+// with a rewrite -- the string itself went to LINQ's All, whose interface
+// call on it found nothing (NullReferenceException). The compiler built by
+// itself stopped there, inferring tuple element names in its own parser.
+// The same for a span of its characters (MemoryExtensions' SequenceEqual,
+// StartsWith), and an array's slice made a span: each went in raw. And
+// `s.Count()` is LINQ's when none of String's methods takes the call, as
+// C# tries the extensions for a type's methods (12.8.10.3).
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static int Sum(ReadOnlySpan<byte> b) { int s = 0; foreach (byte x in b) s += x; return s; }
+
+    static bool Digits(string name) => name.StartsWith("Item", StringComparison.Ordinal) && name.Length > 4 && name[4..].All(char.IsAsciiDigit);
+
+    static int Main()
+    {
+        Console.WriteLine(Digits("Item12") + " " + Digits("Itemx"));
+        string text = "ab123";
+        Console.WriteLine(string.Concat(text[2..].Where(c => c < '3')) + " " + (text[2..^1].Count(c => c > '0') + text[^1..].Length));
+        Console.WriteLine(text[..2].SequenceEqual(new[] { 'a', 'b' }));
+        List<string> names = new() { "block", "Item12", "Itemx", "given" };
+        Console.WriteLine(string.Join(",", names.Select(n => n == "given" ? n : n.StartsWith("Item") && n[4..].All(char.IsAsciiDigit) ? "" : n)));
+        byte[] bytes = { 1, 2, 3, 4 };
+        Console.WriteLine("spans " + text[..2].SequenceEqual("ab") + " " + text[2..].SequenceEqual("123") + " " + text[1..^1].StartsWith("b1")
+            + " " + Sum(bytes[1..]) + " " + Sum(bytes) + " " + Sum(bytes[..^2]) + " " + bytes[2..].SequenceEqual(new byte[] { 3, 4 }));
+        Console.WriteLine("count " + text[..2].Count() + " " + text.Count() + " " + text[..2].First());
+        return 0;
+    }
+}

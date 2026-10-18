@@ -7410,15 +7410,18 @@ public sealed partial class Binder
             && to.Symbol is { } spanOwner
             && spanOwner.Decl is { Template: "ReadOnlySpan" or "Span", TemplateArgs.Count: 1 } span
             && Resolve(span.TemplateArgs[0], _thisType).Equals(held)
-            && !_r.Rewrites.ContainsKey(array))
+            && !(_r.Rewrites.TryGetValue(array, out Expr? arrayWas) && _spanConversions.Contains(arrayWas)))
         {
             // A READ-ONLY SPAN OF CONSTANT BYTES IS DATA, as Roslyn makes it:
             // `ReadOnlySpan<byte> b = new byte[] { 1, 2, 3 }` reads the bytes
             // where the program's data is and allocates nothing, the same as
             // a u8 literal (EmitNew). Only a read-only span of one-byte
             // elements, all of them constants: nothing can write the one copy.
-            Expr wrapped = array;
-            if (span.Template == "ReadOnlySpan" && held.Prim is Prim.U8 or Prim.I8 or Prim.Bool
+            // A REWRITTEN ARRAY -- `bytes[1..]`, RuntimeHelpers.GetSubArray --
+            // is wrapped as what it was rewritten to: the rewrite replaced by
+            // the span, the slice was lost, or the array went in raw.
+            Expr wrapped = arrayWas ?? array;
+            if (arrayWas is null && span.Template == "ReadOnlySpan" && held.Prim is Prim.U8 or Prim.I8 or Prim.Bool
                 && array is NewExpr { Elements: { Count: > 0 } items, Utf8Bytes: null, ArraySize: null } literal)
             {
                 byte[] bytes = new byte[items.Count];
@@ -7446,6 +7449,7 @@ public sealed partial class Binder
 
             made.Args.Add(wrapped);
             _r.Rewrites[array] = made;
+            _spanConversions.Add(made);
             CheckExpr(made);
             return;
         }
@@ -7456,16 +7460,21 @@ public sealed partial class Binder
         // characters are materialised and carried by the same view an array of
         // them gets, which is the one thing that can answer Count, the indexer
         // and GetEnumerator.
+        // A STRING ALREADY REWRITTEN gives up the characters of what it was
+        // rewritten to: `name[4..]` is a Substring call, and refused here
+        // for having a rewrite, it went to LINQ's All as the string itself,
+        // whose interface call found nothing -- the compiler built by itself
+        // stopped in its own tuple names. Not a view already made.
         if (at is Expr letters && from.Prim == Prim.String && !from.IsArray
             && ArrayFace(Type.ArrayOf(Type.Char), to) is { } charFace
             && _r.Types.TryGetValue(TypeKey(charFace), out TypeSymbol? charFaceSym)
-            && !_r.Rewrites.ContainsKey(letters))
+            && !(_r.Rewrites.TryGetValue(letters, out Expr? already) && _r.Views.ContainsKey(already)))
         {
             CallExpr made = new()
             {
                 Target = new MemberExpr
                 {
-                    Target = letters, Name = "ToCharArray",
+                    Target = already ?? letters, Name = "ToCharArray",
                     Line = at.Line, Col = at.Col, File = at.File,
                 },
                 Line = at.Line, Col = at.Col, File = at.File,
@@ -7486,20 +7495,23 @@ public sealed partial class Binder
         // conversions here, so the compiler writes the call the operator would
         // make -- which is String.AsSpan, the same method the author would have
         // written by hand.
+        // A rewritten string -- `text[..2]`, a Substring call -- as what it
+        // was rewritten to, as the characters' view is (above).
         if (at is Expr text && from.Prim == Prim.String && !from.IsArray
             && SpanHolds(to) is { Prim: Prim.Char } && ReadOnlySpanned(to)
-            && !_r.Rewrites.ContainsKey(text))
+            && !(_r.Rewrites.TryGetValue(text, out Expr? textWas) && _spanConversions.Contains(textWas)))
         {
             CallExpr spanned = new()
             {
                 Target = new MemberExpr
                 {
-                    Target = text, Name = "AsSpan", Line = at.Line, Col = at.Col, File = at.File,
+                    Target = textWas ?? text, Name = "AsSpan", Line = at.Line, Col = at.Col, File = at.File,
                 },
                 Line = at.Line, Col = at.Col, File = at.File,
             };
 
             _r.Rewrites[text] = spanned;
+            _spanConversions.Add(spanned);
             CheckExpr(spanned);
             return;
         }
@@ -9431,66 +9443,28 @@ public sealed partial class Binder
         if (Invoked(want) is not { } invoke) return true;
         Type returns = Substitute(invoke.Returns, Applied(want));
         if (returns.IsError || Open(returns) || Unmade(returns)) return true;
-        Type? made = Produces(m, want, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
-        if (made is not null && (made.Dynamic || made.IsError)) return true;
         if (lam.Async)
         {
-            if (returns.IsVoid) return made is null || made.IsVoid;
+            // AN ASYNC LAMBDA'S VALUE IS ITS BODY'S (LambdaGives), judged
+            // against what the delegate's task holds, as LambdaFits judges
+            // it. What Produces answers is the lambda's task (C# 12.6.3.13),
+            // and taken for the value, every async lambda's Task was a value
+            // no delegate took: Task.Run(async () => ...) was refused.
+            Type? value = LambdaGives(m, want, lam, new Dictionary<string, Type>(StringComparer.Ordinal), out bool statement, out bool valueless);
+            if (value is null && !valueless) return true;
+            if (value is not null && (value.Dynamic || value.IsError)) return true;
+            bool nothing = valueless || lam.Body is not null && statement;
+            if (returns.IsVoid) return nothing;
             if (returns.Symbol?.FindMethods("GetAwaiter").Any(g => g.Params.Count == 0 && !g.Static) != true) return false;
             Type result = AsyncBodyType(returns);
             if (result.IsError || Open(result) || Unmade(result)) return true;
-            if (result.IsVoid) return made is null || made.IsVoid;
-            return made is null || (!made.IsVoid && LambdaValueConverts(made, result, lam));
+            if (result.IsVoid) return nothing;
+            return !valueless && value is not null && LambdaValueConverts(value, result, lam);
         }
+        Type? made = Produces(m, want, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
+        if (made is not null && (made.Dynamic || made.IsError)) return true;
         if (returns.IsVoid) return lam.Body is not null || made is null || made.IsVoid;
         return made is null || (!made.IsVoid && LambdaValueConverts(made, returns, lam));
-    }
-
-    /// <summary>
-    /// A lambda's inferred return type for this delegate (C# 12.6.3.13):
-    /// what its body produces, an async one's task of it; null when the body
-    /// says nothing (it did not bind, or a block returns no value and is
-    /// not async).
-    /// </summary>
-    private Type? LambdaInferred(MethodSymbol m, Type want, LambdaExpr lam, Dictionary<string, Type>? bound)
-    {
-        Type? made = Produces(m, want, lam, bound ?? new Dictionary<string, Type>(StringComparer.Ordinal));
-        if (made is not null && made.IsError) return null;
-        if (lam.Async) return AsyncLambdaTask(made ?? Type.Void, lam);
-        return made is null || made.IsVoid ? null : made;
-    }
-
-    /// <summary>Whether two delegate types take the same parameters, which is when a lambda's return decides between them.</summary>
-    private static bool SameInvokeParameters(Type a, Type b)
-    {
-        if (Invoked(a) is not { } ia || Invoked(b) is not { } ib || ia.Params.Count != ib.Params.Count) return false;
-        for (int k = 0; k < ia.Params.Count; k++)
-        {
-            Type pa = Substitute(ia.Params[k].Type, Applied(a)), pb = Substitute(ib.Params[k].Type, Applied(b));
-            if (!pa.Equals(pb) && !MethodSignatures.SameType(pa, pb)) return false;
-        }
-        return true;
-    }
-
-    /// <summary>The task an async lambda producing `made` hands back -- Task for no value, Task&lt;made&gt; for one -- or null where it cannot be spelt.</summary>
-    private Type? AsyncLambdaTask(Type made, LambdaExpr lam)
-    {
-        TypeRef task = new() { Name = TaskTypeName, Line = lam.Line, Col = lam.Col };
-        if (!made.IsVoid)
-        {
-            if (SpellOpen(made) is not TypeRef spelt) return null;
-            task.Arguments.Add(spelt);
-        }
-        _quiet++;
-        try
-        {
-            Type resolved = Resolve(task, _thisType);
-            return resolved.IsError ? null : resolved;
-        }
-        finally
-        {
-            _quiet--;
-        }
     }
 
     /// <summary>Whether a lambda's value converts to what its delegate returns: implicitly, as a constant, or by an operator.</summary>
@@ -9609,12 +9583,11 @@ public sealed partial class Binder
                 Type gives = Substitute(Invoked(m.Params[i].Type)?.Returns ?? Type.Error,
                                         Applied(m.Params[i].Type));
 
-                // AN ASYNC LAMBDA PRODUCES ITS TASK (C# 12.6.3.13): a Task<X>
-                // of the X its body gives, so `Run(async () => { ...; return
-                // 3; })` is Run<T>(Func<Task<T>>) at int, never Run<T>(Func<T>)
-                // at int with the lambda's task taken for its value.
-                if (lam.Async && AsyncLambdaTask(made, lam) is not Type task) continue;
-                if (lam.Async) made = AsyncLambdaTask(made, lam)!;
+                // AN ASYNC LAMBDA PRODUCES ITS TASK (C# 12.6.3.13), as Produces
+                // answers it: a Task<X> of the X its body gives, so `Run(async
+                // () => { ...; return 3; })` is Run<T>(Func<Task<T>>) at int.
+                // Wrapped again here, it was a Task<Task<int>>, which that Run
+                // took at Task<int>.
 
                 // A concrete delegate result is a constraint too. Ignoring
                 // failure keeps (for example) the int-returning Sum overload
@@ -19108,6 +19081,20 @@ public sealed partial class Binder
                                                           && x.Params[0].Type.Prim == target.Prim)
                                                  .ToList();
 
+                // NOT WHERE NONE OF THEM TAKES THE CALL (C# 12.8.10.3): the
+                // extensions are tried then, as for a class's methods --
+                // String's Count(predicate), LINQ's own over a string here,
+                // left `s.Count()` refused for its arity where Enumerable's
+                // takes it. The receiver is the first parameter of each.
+                if (onString.Count > 0 && ReferenceEquals(m, _callee) && _calleeArgs >= 0
+                    && !onString.Any(method => MayTake(method, _calleeArgs + 1))
+                    && Extension(target, m.Name) is { Count: > 0 } stringExtensions)
+                {
+                    _r.Resolved[m] = new MethodGroupSym(stringExtensions);
+                    _r.Receivers[m] = true;
+                    return Type.Void;
+                }
+
                 if (onString.Count > 0)
                 {
                     _r.Resolved[m] = new MethodGroupSym(onString);
@@ -19396,6 +19383,9 @@ public sealed partial class Binder
     /// </summary>
     /// <summary>The conditional being checked as a call's argument, its type left to the parameter (Argument).</summary>
     private ConditionalExpr? _argumentConditional;
+
+    /// <summary>The spans an array or a string was made into (Convert's rewrites): never wrapped again.</summary>
+    private readonly HashSet<Expr> _spanConversions = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The arms' types of each argument conditional left to its parameter (Argument), for the overloads to judge.</summary>
     private readonly Dictionary<ConditionalExpr, (Type Then, Type Else)> _deferredArms = new(ReferenceEqualityComparer.Instance);
