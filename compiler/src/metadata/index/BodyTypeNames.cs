@@ -240,16 +240,25 @@ public static class BodyTypeNames
         Types(declaration.TemplateArgs);
         foreach (Expr argument in declaration.BaseArgs) Expression(argument);
         foreach (TypeParam parameter in declaration.TypeParams) Types(parameter.Constraints);
+        // AN INITIALISER IS BOUND WHERE IT IS COMPILED: in the unit that owns
+        // the declaration, and in every unit that specialises a generic one.
+        // Another unit's part of an ordinary type is only its declaration
+        // there, its initialisers a helper owned elsewhere (InitializerMethods)
+        // -- but a constant, which the binder evaluates wherever it is read.
+        // Followed all the same, `using N = Two.Numbers` in that part loaded
+        // Two.Numbers into a unit whose own part says N is One.Numbers.
+        bool initialisers = !declaration.Elsewhere || declaration.TypeParams.Count > 0;
         foreach (MemberDecl member in declaration.Members)
         {
             switch (member)
             {
                 case FieldDecl field:
-                    Type(field.Type); Expression(field.Init);
-                    foreach (FieldDecl more in field.More) { Type(more.Type); Expression(more.Init); }
+                    bool bound = initialisers || field.Mods.HasFlag(Mods.Const);
+                    Type(field.Type); if (bound) Expression(field.Init);
+                    foreach (FieldDecl more in field.More) { Type(more.Type); if (bound) Expression(more.Init); }
                     break;
                 case PropertyDecl property:
-                    Type(property.Type); Expression(property.Init);
+                    Type(property.Type); if (initialisers) Expression(property.Init);
                     foreach (Param parameter in property.Params) { Type(parameter.Type); Expression(parameter.Default); }
                     Statement(property.Getter); Statement(property.Setter);
                     break;
