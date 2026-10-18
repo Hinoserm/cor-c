@@ -6137,8 +6137,59 @@ interface IFormatProvider {
 }
 
 class CultureInfo : IFormatProvider {
-    public static CultureInfo InvariantCulture => new CultureInfo();
-    public static CultureInfo CurrentCulture => new CultureInfo();
+    /// One invariant culture, the same object every time, as .NET's.
+    public static CultureInfo InvariantCulture { get; } = new CultureInfo();
+
+    // THE CURRENT CULTURES ARE A THREAD'S, as .NET's: what the thread was
+    // given, else the default every thread takes until it is given one
+    // (DefaultThreadCurrentCulture), else the machine's, which is the
+    // invariant culture. A thread started takes what its starter was given
+    // (Thread.Start), as .NET's execution context carries it there. Whatever
+    // is set is held and handed back; the formatting is the invariant
+    // culture's all the same, the one this machine has.
+    [ThreadStatic] static CultureInfo? _current;
+    [ThreadStatic] static CultureInfo? _currentUI;
+    static CultureInfo? _defaultCurrent;
+    static CultureInfo? _defaultCurrentUI;
+
+    public static CultureInfo CurrentCulture
+    {
+        get { return _current ?? _defaultCurrent ?? InvariantCulture; }
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _current = value;
+        }
+    }
+
+    public static CultureInfo CurrentUICulture
+    {
+        get { return _currentUI ?? _defaultCurrentUI ?? InvariantCulture; }
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _currentUI = value;
+        }
+    }
+
+    /// What a thread's current culture is until it is given one: null for
+    /// the machine's own, and null may be set.
+    public static CultureInfo? DefaultThreadCurrentCulture
+    {
+        get { return _defaultCurrent; }
+        set { _defaultCurrent = value; }
+    }
+
+    public static CultureInfo? DefaultThreadCurrentUICulture
+    {
+        get { return _defaultCurrentUI; }
+        set { _defaultCurrentUI = value; }
+    }
+
+    /// What this thread was given, with no default in its place: what a
+    /// thread it starts takes (Thread.Start).
+    internal static CultureInfo? GivenCulture => _current;
+    internal static CultureInfo? GivenUICulture => _currentUI;
 
     /// LOCALE_INVARIANT: what every culture of this machine formats as.
     const int Invariant = 0x7F;

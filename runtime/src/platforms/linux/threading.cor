@@ -494,6 +494,17 @@ class Thread
     string? _name;
     bool _background;
     bool _counted;
+    // A thread this class did not start, adopted when it first asks for
+    // itself (CurrentThread): the program's first thread.
+    bool _adopted;
+    // The cultures it starts with: set on it before it started, or else
+    // what the thread starting it was given (Start), as .NET's carry over.
+    CultureInfo? _culture;
+    CultureInfo? _uiCulture;
+
+    // The Thread each thread is, made the first time one asks that this
+    // class did not start.
+    [ThreadStatic] static Thread? _current;
 
     /// How many foreground threads are running, as a futex word the end of
     /// Main waits on (WaitForForeground); and a spin lock over the counting.
@@ -521,6 +532,86 @@ class Thread
         _slot = slot;
         _background = true;
     }
+
+    /// The thread already running that asks for itself and was not started
+    /// here: claimed, alive, and nobody's to count among the foreground ones.
+    Thread(long block)
+    {
+        _done = 0;
+        _lock = 1;
+        _block = block;
+        _id = Native.CurrentThreadId();
+        _adopted = true;
+    }
+
+    /// The thread this code is running on, as .NET's.
+    public static Thread CurrentThread
+    {
+        get
+        {
+            Thread? made = _current;
+            if (made == null)
+            {
+                made = new Thread(Sys.ThreadBlock());
+                _current = made;
+            }
+            return made;
+        }
+    }
+
+    /// THE THREAD'S CURRENT CULTURES, as .NET's: on the thread itself,
+    /// CultureInfo's current ones; set on a thread not started yet, the ones
+    /// it starts with. Any other thread's are refused, read or set.
+    public CultureInfo CurrentCulture
+    {
+        get
+        {
+            RequireCurrent();
+            return CultureInfo.CurrentCulture;
+        }
+        set
+        {
+            if (ReferenceEquals(this, CurrentThread))
+            {
+                CultureInfo.CurrentCulture = value;
+                return;
+            }
+            _culture = BeforeStart(value);
+        }
+    }
+
+    public CultureInfo CurrentUICulture
+    {
+        get
+        {
+            RequireCurrent();
+            return CultureInfo.CurrentUICulture;
+        }
+        set
+        {
+            if (ReferenceEquals(this, CurrentThread))
+            {
+                CultureInfo.CurrentUICulture = value;
+                return;
+            }
+            _uiCulture = BeforeStart(value);
+        }
+    }
+
+    void RequireCurrent()
+    {
+        if (!ReferenceEquals(this, CurrentThread)) throw new InvalidOperationException(NotCurrent);
+    }
+
+    // A culture for a thread to start with, which only one not started yet takes.
+    CultureInfo BeforeStart(CultureInfo value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (Sys.PeekWord(Atom.At(this, Atom.SecondWord)) != 0) throw new InvalidOperationException(NotCurrent);
+        return value;
+    }
+
+    const string NotCurrent = "This operation must be performed on the same thread as that represented by the Thread instance.";
 
     public Thread(ThreadStart start)
     {
@@ -595,6 +686,11 @@ class Thread
         get { return _background; }
         set
         {
+            if (_adopted)
+            {
+                _background = value;
+                return;
+            }
             Counting(true);
             try
             {
@@ -717,6 +813,14 @@ class Thread
         // mutex: even a completed thread cannot be started a second time.
         if (Sys.Cas(Atom.At(this, Atom.SecondWord), 0, 1) != 0)
             throw new ThreadStateException("Thread has already been started.");
+        // WHAT THE STARTER WAS GIVEN GOES WITH IT, as .NET's execution
+        // context carries the cultures into a thread it starts -- not into
+        // the runtime's own workers, which .NET starts with none.
+        if (_start != null || _withArgument != null)
+        {
+            _culture ??= CultureInfo.GivenCulture;
+            _uiCulture ??= CultureInfo.GivenUICulture;
+        }
         _slot = Register(this);
         if (!_background)
         {
@@ -909,6 +1013,9 @@ class Thread
     {
         try
         {
+            _current = this;
+            if (_culture != null) CultureInfo.CurrentCulture = _culture;
+            if (_uiCulture != null) CultureInfo.CurrentUICulture = _uiCulture;
             ThreadStart? start = _start;
             ParameterizedThreadStart? withArgument = _withArgument;
             if (start != null) start.Invoke();
