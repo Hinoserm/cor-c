@@ -1083,6 +1083,49 @@ public sealed class Inline : IParallelModulePass
             if (byName.TryGetValue(name, out Function? f) && live.Add(name)) work.Push(f);
             if (dataByName.TryGetValue(name, out DataItem? d) && liveData.Add(name)) dataWork.Push(d);
         }
+        // A METHOD A VTABLE HOLDS IS REACHED BY A CALL THROUGH ITS SLOT, not
+        // by the descriptor naming it. Every method of every class whose
+        // objects were made was kept: hello world's StreamWriter brought all
+        // of TextWriter's Write and WriteLine overloads, and with them
+        // String.Format, StringBuilder's formatting, every number's and
+        // double's formats and the culture's tables, none of which it calls.
+        // In a closed image every call is here, so a slot's method is kept
+        // when something reads that slot (VirtualSlotUses) of a class the
+        // descriptor is or derives from -- of any descriptor, for a read made
+        // otherwise than for a class's virtual call -- and the slots nothing
+        // reads are left empty, as an abstract method's are. Not where code
+        // outside the IR may call through a slot: the objects linked in
+        // beside it, a coroutine's frame laid out after the optimiser, the
+        // link's run of a unit's passes.
+        bool bySlot = m.ClosedImage && !m.PreserveExports && !m.AtLink && !coroutines && m.ObjectNames.Count == 0;
+        int methods = Target.Current.DescriptorBytes;
+        Dictionary<long, HashSet<string>> slotReads = new();
+        Dictionary<long, List<(DataItem Table, string Method)>> waiting = new();
+        Dictionary<string, HashSet<string>> ancestry = new(StringComparer.Ordinal);
+        bool Answers(DataItem table, string through)
+        {
+            // A box's or an array's table answers object's and its system
+            // interfaces' slots, whatever a call names it by.
+            if (through == VirtualSlotUses.Any || !table.Name.StartsWith("t_", StringComparison.Ordinal)) return true;
+            if (!ancestry.TryGetValue(table.Name, out HashSet<string>? up)) ancestry[table.Name] = up = Escape.Ancestry(dataByName, table.Name);
+            return Corsac.Lang.Lto.VirtualTargets.Answers(up, through) || Corsac.Lang.Lto.VirtualTargets.MayAnswer(table.Name, through);
+        }
+        void SlotRead(string through, long slot)
+        {
+            if (!(slotReads.TryGetValue(slot, out HashSet<string>? reads) ? reads : slotReads[slot] = new(StringComparer.Ordinal)).Add(through)) return;
+            if (!waiting.TryGetValue(slot, out List<(DataItem Table, string Method)>? held)) return;
+            held.RemoveAll(h =>
+            {
+                if (!Answers(h.Table, through)) return false;
+                Reach(h.Method);
+                return true;
+            });
+        }
+        void TableMethod(DataItem table, long slot, string method)
+        {
+            if (slotReads.TryGetValue(slot, out HashSet<string>? reads) && reads.Any(through => Answers(table, through))) Reach(method);
+            else (waiting.TryGetValue(slot, out List<(DataItem, string)>? held) ? held : waiting[slot] = new()).Add((table, method));
+        }
         Reach(m.Entry);
         foreach (string name in pinned) Reach(name);
         foreach (string name in forLink) Reach(name);
@@ -1127,10 +1170,18 @@ public sealed class Inline : IParallelModulePass
         {
             if (dataWork.Count > 0)
             {
-                foreach (DataReloc r in dataWork.Pop().Relocs) Reach(r.Symbol);
+                DataItem d = dataWork.Pop();
+                bool table = bySlot && Escape.IsDescriptor(d.Name);
+                foreach (DataReloc r in d.Relocs)
+                {
+                    if (table && r.Offset >= methods && r.Addend == 0 && byName.ContainsKey(r.Symbol)) TableMethod(d, r.Offset - methods, r.Symbol);
+                    else Reach(r.Symbol);
+                }
                 continue;
             }
-            foreach (Block b in work.Pop().Blocks)
+            Function reached = work.Pop();
+            if (bySlot) VirtualSlotUses.Of(reached, SlotRead);
+            foreach (Block b in reached.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
                     if (i.Callee is { } callee)
@@ -1152,6 +1203,11 @@ public sealed class Inline : IParallelModulePass
         }
         int gone = m.Functions.RemoveAll(f => !live.Contains(f.Name));
         gone += m.Data.RemoveAll(d => !liveData.Contains(d.Name));
+        // The slots nothing reads, left empty: their methods went.
+        if (bySlot)
+            foreach (List<(DataItem Table, string Method)> held in waiting.Values)
+                foreach (var (table, method) in held)
+                    if (!live.Contains(method)) table.Relocs.RemoveAll(r => r.Offset >= methods && r.Symbol == method);
         return gone > 0;
     }
 }

@@ -2717,7 +2717,7 @@ continue;
     private const int DescriptorDisplay = 3, DescriptorInterfaces = 4;
 
     /// <summary>An object's descriptor: a class's (t_), an array's or a string's (q_), a boxed primitive's (v_) or struct's (b_).</summary>
-    private static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
+    internal static bool IsDescriptor(string name) => name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b';
 
     /// <summary>
     /// THE OWNERS OF THE FIELDS AN OBJECT OF THIS TYPE HOLDS, as field keys
@@ -2738,7 +2738,7 @@ continue;
         return found;
     }
 
-    private static HashSet<string> Ancestry(Dictionary<string, DataItem> items, string type)
+    internal static HashSet<string> Ancestry(Dictionary<string, DataItem> items, string type)
     {
         int w = Target.Current.WordSize;
         HashSet<string> found = new(StringComparer.Ordinal) { type };

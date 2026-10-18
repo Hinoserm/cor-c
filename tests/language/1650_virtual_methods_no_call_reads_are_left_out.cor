@@ -1,0 +1,137 @@
+// test: virtual_methods_no_call_reads_are_left_out
+// expect-exit: 0
+// expect-no-symbol: m_Shape_NeverAsked
+// expect-no-symbol: m_Square_NeverAsked
+// expect-no-symbol: m_Circle_NeverAsked
+// expect-no-symbol: m_Counter_NeverVisited
+// expect-no-symbol: m_Tally_NeverVisited
+// expect-no-symbol: m_StringBuilder_AppendFormatHelper
+// expect-no-symbol: m_TextWriter_WriteLine_2_V$String_A
+// expect-no-symbol: m_DoubleFormat_
+// expect-output:
+// square 4
+// circle 3
+// shape 6
+// visit 8 9
+// tally 12
+// key found 7
+// names Ada Bob Cy
+// lambda 11
+// boxed 5
+// text Point(1,2)
+// eq True False
+//
+// A method a vtable holds is in the image only when some call can read its
+// slot. Every method of every class whose objects were made was kept: hello
+// world's StreamWriter brought every Write and WriteLine overload with it,
+// String.Format, StringBuilder's formatting and every number's and double's
+// formats among them -- three hundred kilobytes it never called. Here the
+// overrides nothing calls through their slot are left out, while every
+// way a slot is read still reaches what it holds: a class's virtual call,
+// an interface's on a class and on a boxed struct, the shared generic code
+// List<T>.Sort calls CompareTo through, a dictionary's Equals and
+// GetHashCode, a delegate's Invoke, ToString and Equals asked of object.
+
+using System;
+using System.Collections.Generic;
+
+abstract class Shape
+{
+    public abstract int Area();
+    public virtual string Name() { return "shape"; }
+    public virtual string NeverAsked() { return "never"; }
+}
+
+sealed class Square : Shape
+{
+    public override int Area() { return 4; }
+    public override string Name() { return "square"; }
+    public override string NeverAsked() { return "square never"; }
+}
+
+class Circle : Shape
+{
+    public override int Area() { return 3; }
+    public override string NeverAsked() { return "circle never"; }
+}
+
+class Disc : Circle
+{
+    public override string Name() { return "circle"; }
+}
+
+interface IVisit
+{
+    int Visit(int x);
+    int NeverVisited(int x);
+}
+
+struct Counter : IVisit
+{
+    public int Start;
+    public int Visit(int x) { return Start + x; }
+    public int NeverVisited(int x) { return -x; }
+}
+
+class Tally : IVisit
+{
+    public int Visit(int x) { return x * 3; }
+    public int NeverVisited(int x) { return -x; }
+}
+
+class Key
+{
+    public int Id;
+    public Key(int id) { Id = id; }
+    public override bool Equals(object? other) { return other is Key k && k.Id == Id; }
+    public override int GetHashCode() { return Id * 31; }
+}
+
+class Person : IComparable<Person>
+{
+    public string Name;
+    public Person(string name) { Name = name; }
+    public int CompareTo(Person? other) { return string.CompareOrdinal(Name, other!.Name); }
+}
+
+struct Point
+{
+    public int X, Y;
+    public override string ToString() { return "Point(" + X + "," + Y + ")"; }
+}
+
+static class Program
+{
+    static int Visit(IVisit v, int x) { return v.Visit(x); }
+
+    static void Main()
+    {
+        Shape[] shapes = { new Square(), new Disc(), new Circle() };
+        Console.WriteLine(shapes[0].Name() + " " + shapes[0].Area());
+        Console.WriteLine(shapes[1].Name() + " " + shapes[1].Area());
+        int total = 0;
+        foreach (Shape s in shapes) total += s.Area();
+        Console.WriteLine(shapes[2].Name() + " " + (total - 4));
+
+        IVisit boxed = new Counter { Start = 5 };
+        Console.WriteLine("visit " + Visit(boxed, 3) + " " + Visit(new Counter { Start = 6 }, 3));
+        Console.WriteLine("tally " + Visit(new Tally(), 4));
+
+        Dictionary<Key, int> table = new();
+        table[new Key(1)] = 7;
+        Console.WriteLine("key " + (table.TryGetValue(new Key(1), out int got) ? "found " + got : "missing"));
+
+        List<Person> people = new() { new Person("Cy"), new Person("Ada"), new Person("Bob") };
+        people.Sort();
+        Console.WriteLine("names " + people[0].Name + " " + people[1].Name + " " + people[2].Name);
+
+        Func<int, int> add = x => x + 1;
+        Console.WriteLine("lambda " + add(10));
+
+        object five = 5;
+        Console.WriteLine("boxed " + five.ToString());
+        object point = new Point { X = 1, Y = 2 };
+        Console.WriteLine("text " + point);
+        Console.WriteLine("eq " + five.Equals(5) + " " + new Key(2).Equals(new Key(3)));
+    }
+}
