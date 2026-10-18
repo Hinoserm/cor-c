@@ -4400,6 +4400,11 @@ static class Gc
     static long _pool;              // empty pages, through their next-page word
     static long _poolBytes;
     public static long PagesTaken, PagesPooled, PagesReleased, PagesRefilled;
+
+    /// The heap lock's trips: requests the fast paths sent to AllocSlow, and
+    /// of those the refills of a thread's class cache, and the refills that
+    /// laid out more of the page it owned (FormatMore). Counted under the lock.
+    public static long SlowPaths, ClassRefills, ClassLaidFurther;
     /// Small requests that found no page and collected for one.
     public static long ClassStarved;
     /// Small requests answered with a free slot of a bigger class (TakeLarger).
@@ -4515,7 +4520,7 @@ static class Gc
         long size = ClassSize(c);
         long first = HeapChunks.First(page);
         if (_heapCheck) CheckOutsideBuffer(page, HeapChunks.Limit(page), "gc owner check: a class page laid out over the live buffer");
-        long made = LayOut(page, first, size);
+        long made = LayOut(page, first, size, (first + LayOutBytes) & ~(LayOutBytes - 1));
         HeapChunks.SetPageFree(page, made != 0 ? first : Zero);
         HeapChunks.SetPageClass(page, c + 1);
         HeapChunks.SetLargestHole(page, made * size);
@@ -4665,13 +4670,12 @@ static class Gc
         return page;
     }
 
-    /// Free blocks of `size` laid from `from` to the next 4 KB boundary past
-    /// it (one block at least, none past the page's limit), linked in address
-    /// order, the last to nothing, and End moved past them. How many.
-    static long LayOut(long page, long from, long size)
+    /// Free blocks of `size` laid from `from` up to `stop` (one block at
+    /// least, none past the page's limit), linked in address order, the last
+    /// to nothing, and End moved past them. How many.
+    static long LayOut(long page, long from, long size, long stop)
     {
         long limit = HeapChunks.PageBlockLimit(page);
-        long stop = (from + LayOutBytes) & ~(LayOutBytes - 1);
         long n = 0;
         long block = from;
         while (block + size <= limit && (n == 0 || block + size <= stop))
@@ -4694,12 +4698,21 @@ static class Gc
 
     /// More of a page laid out, when its list has run dry: the head of the
     /// new blocks, or 0 when the page is laid out to its limit.
+    ///
+    /// AS MUCH AGAIN AS IS LAID OUT ALREADY, to the next 4 KB boundary: a
+    /// page whose blocks were used up is of a class its thread is making
+    /// many of. Another 4 KB a time, a class of half a kilobyte or more came
+    /// back to the heap lock every few objects -- four in five of a list-
+    /// building loop's slow paths were this -- and doubling still leaves a
+    /// thread no more laid out and unused than it has used.
     static long FormatMore(long page, long c)
     {
         long size = ClassSize(c);
         long end = HeapChunks.End(page);
         if (end + size > HeapChunks.PageBlockLimit(page)) return Zero;
-        return LayOut(page, end, size) != 0 ? end : Zero;
+        long laid = end - HeapChunks.First(page);
+        long stop = (end + (laid > LayOutBytes ? laid : LayOutBytes)) & ~(LayOutBytes - 1);
+        return LayOut(page, end, size, stop) != 0 ? end : Zero;
     }
 
     /// This thread's cache of class `c` given free blocks: what other
@@ -4708,6 +4721,7 @@ static class Gc
     /// is held.
     static bool ClassRefill(long tb, long c)
     {
+        ClassRefills = ClassRefills + 1;
         long cache = EnsureCache(tb);
         if (cache == 0)
         {
@@ -4737,6 +4751,7 @@ static class Gc
             long more = FormatMore(page, c);
             if (more != 0)
             {
+                ClassLaidFurther = ClassLaidFurther + 1;
                 Charge(tb, HeapChunks.End(page) - more);
                 Sys.Poke(slot + WordSize.Bytes, more);
                 return true;
@@ -6377,6 +6392,7 @@ static class Gc
         }
 
         GcLock.Enter();
+        SlowPaths = SlowPaths + 1;
         AnswerBeforeTaking(tb);
         FoldClassBytes(tb);
 
@@ -6942,12 +6958,15 @@ static class Gc
         // escape analysis kept in frames never reaches the heap at all.)
         SayNumber("gc: frees ", Frees);
         SayNumber("gc: freed by the program MB ", FreedBytes / 1048576);
+        SayNumber("gc: freed by the program bytes ", FreedBytes);
         SayNumber("gc: frees dropped while marking ", FreesDroppedMarking);
         SayNumber("gc: frees dropped otherwise ", FreesDropped);
         SayNumber("gc: freed by the collector MB ", CollectedBytes / 1048576);
+        SayNumber("gc: freed by the collector bytes ", CollectedBytes);
         // Everything regions gave back: at their ends, and from their tops
         // before (RegionTopFreedBytes, also given alone below).
         SayNumber("gc: given back by regions MB ", (RegionFreedBytes + RegionTopFreedBytes) / 1048576);
+        SayNumber("gc: given back by regions bytes ", RegionFreedBytes + RegionTopFreedBytes);
         SayNumber("gc: region allocations the system had no memory for ", RegionMisses);
         SayNumber("gc: region allocations past the arenas' cap ", RegionCapped);
         // WHAT THE ARENAS TOOK OF THE SYSTEM against what they held: the
@@ -6974,6 +6993,13 @@ static class Gc
         long given = FreedBytes + CollectedBytes;
         SayNumber("gc: freed by the program percent ", given > 0 ? FreedBytes * 100 / given : 0);
         SayNumber("gc: sweep visits ", SweepVisits);
+        SayNumber("gc: slow paths ", SlowPaths);
+        SayNumber("gc: class refills ", ClassRefills);
+        SayNumber("gc: class pages laid out further ", ClassLaidFurther);
+        SayNumber("gc: pages taken ", PagesTaken);
+        SayNumber("gc: pages pooled ", PagesPooled);
+        SayNumber("gc: pages released ", PagesReleased);
+        SayNumber("gc: pages refilled ", PagesRefilled);
         SayNumber("gc: last major live ", _majorLive);
         SayNumber("gc: live now ", _liveBytes);
         SayNumber("gc: peak live ", _peakLive);
@@ -7401,7 +7427,10 @@ static class Gc
         _verify = _verify || Platform.VerifyFrees();
         VerifyingFieldFrees = Platform.VerifyFieldFrees();
         IgnoredFrees = Platform.IgnoreFrees();
-        CountingCollected = Platform.GcStats();
+        // AS THE SWITCH ASKS TOO (AppContext's Corsac.GC.Stats): asked only by
+        // the platform's flag, the report the switch prints read the
+        // collector's frees and its marks as none.
+        CountingCollected = CountingCollected || StatsAsked || Platform.GcStats();
         SkippedFreePaths = Platform.SkippedFreePaths();
         GuardReleases = Platform.GuardReleases();
         _census = Platform.GcCensus();
@@ -7410,7 +7439,7 @@ static class Gc
         _nurseryFixed = Platform.GcNursery();
         // Kept where the program turned it on before the heap started (CheckHeapOn).
         _heapCheck = _heapCheck || Platform.HeapCheck();
-        CountMarks = CountMarks || Platform.GcStats();
+        CountMarks = CountMarks || StatsAsked || Platform.GcStats();
         if (Platform.FreeLog())
         {
             Runtime.StartFreeLog();

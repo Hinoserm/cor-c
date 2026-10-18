@@ -176,11 +176,7 @@ public static class GC
 
     public static bool TryStartNoGCRegion(long totalSize) { return StartNoGCRegion(totalSize); }
 
-    public static bool TryStartNoGCRegion(long totalSize, long lohSize)
-    {
-        bool started = StartNoGCRegion(totalSize);
-        return started;
-    }
+    public static bool TryStartNoGCRegion(long totalSize, long lohSize) { return StartNoGCRegion(totalSize); }
 
     public static bool TryStartNoGCRegion(long totalSize, bool disallowFullBlockingGC) { return StartNoGCRegion(totalSize); }
 
