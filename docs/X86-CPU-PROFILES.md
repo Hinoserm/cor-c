@@ -47,8 +47,9 @@ support are required before no-FPU native compilation can be accepted.
   the write between `Platform.AtomicsEnter` and `AtomicsLeave` -- on bare metal
   with interrupts off where the code's privilege level is at most EFLAGS.IOPL
   (`Sys.ReadCodeSegment`), else, and in a process, under one lock taken by
-  XCHG. The kernel's store-sequence compare-exchange stub is the same with
-  interrupts off. BSWAP has its 386 form; INVLPG and the control-register moves
+  XCHG (`Runtime.Atomics386`). The store-sequence compare-exchange stub
+  (`__corsac_refcas`) makes the same choice itself and takes the same lock.
+  BSWAP has its 386 form; INVLPG and the control-register moves
   are the source's own, made after its own processor check (Probed). The
   emitted-code audit refuses any other 486 instruction under 386, and knows a
   CR4 move needs a Pentium; the assembler refuses CR4 before the Pentium and

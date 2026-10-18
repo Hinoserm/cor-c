@@ -1,5 +1,5 @@
 // test: a 386's atomics: no XADD, no CMPXCHG, done with interrupts off on bare metal
-// flags-x86: --cpu=386 --fpu=387
+// flags-x86: --cpu=386 --fpu=387 --store-sequences
 // expect-exit: 0
 // expect-output:
 // add 5 then 8
@@ -8,9 +8,11 @@
 // xchg 20 then 1
 // bits 1 then 3
 // long 5000000000 then 5000000001
+// ref missed a ref a then b
 // expect-no-asm-x86: Bump: xadd cmpxchg
 // expect-no-asm-x86: Swap: xadd cmpxchg
 // expect-asm-x86: Exchange: xchg
+// expect-asm-x86: SwapName: __corsac_refcas
 // expect-no-asm-x86: Main: xadd cmpxchg
 //
 // The 386 has XCHG and no other instruction that reads and writes memory as
@@ -24,6 +26,9 @@
 // a process, as here, where it may not turn them off (its ring above
 // EFLAGS.IOPL), under one lock taken by XCHG. An exchange stays XCHG.
 // Interlocked's long forms, under their own lock, are made of these too.
+// A reference's compare-exchange, made as a store sequence
+// (--store-sequences), is the stub's 386 form: the same choice, made in
+// the stub, under the same lock (Runtime.Atomics386).
 
 using System;
 using System.Runtime.CompilerServices;
@@ -33,12 +38,14 @@ class Counter
 {
     public int Value;
     public long Wide;
+    public string? Name;
 }
 
 static class Program
 {
     [MethodImpl(MethodImplOptions.NoInlining)] static int Bump(Counter c, int by) { return Interlocked.Add(ref c.Value, by); }
     [MethodImpl(MethodImplOptions.NoInlining)] static int Swap(Counter c, int value, int expected) { return Interlocked.CompareExchange(ref c.Value, value, expected); }
+    [MethodImpl(MethodImplOptions.NoInlining)] static string? SwapName(Counter c, string value, string expected) { return Interlocked.CompareExchange(ref c.Name, value, expected); }
     [MethodImpl(MethodImplOptions.NoInlining)] static int Exchange(Counter c, int value) { return Interlocked.Exchange(ref c.Value, value); }
 
     static int Main()
@@ -64,6 +71,10 @@ static class Program
         c.Wide = 5000000000;
         long before = c.Wide;
         Host.Line("long " + before + " then " + Interlocked.Increment(ref c.Wide));
+        c.Name = "a";
+        string? nameMissed = SwapName(c, "x", "z");
+        string? nameHit = SwapName(c, "b", "a");
+        Host.Line("ref missed " + nameMissed + " ref " + nameHit + " then " + c.Name);
         Host.Done(0);
         return 0;
     }
