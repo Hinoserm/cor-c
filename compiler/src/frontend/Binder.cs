@@ -19965,6 +19965,26 @@ public sealed partial class Binder
             bool better = false;
             for (int i = 0; i < args.Count && i < one.Params.Count && i < other.Params.Count; i++)
             {
+                // A LAMBDA WITH A VALUE converts better to a delegate that
+                // returns one than to one returning void (C# 12.6.4.5), as
+                // GenericBetter has it for a generic: `Task.Run(() =>
+                // Task.WhenAll(a, b))` is Run(Func<Task>), not Run(Action).
+                if (i < c.Args.Count && c.Args[i] is LambdaExpr lam)
+                {
+                    Type oneReturns = Substitute(Invoked(one.Params[i].Type)?.Returns ?? Type.Error, Applied(one.Params[i].Type));
+                    Type otherReturns = Substitute(Invoked(other.Params[i].Type)?.Returns ?? Type.Error, Applied(other.Params[i].Type));
+                    if (!oneReturns.IsError && !otherReturns.IsError && oneReturns.IsVoid != otherReturns.IsVoid)
+                    {
+                        MethodSymbol valued = oneReturns.IsVoid ? other : one;
+                        Type? made = Produces(valued, valued.Params[i].Type, lam, new Dictionary<string, Type>(StringComparer.Ordinal));
+                        if (made is not null && !made.IsError && !made.IsVoid)
+                        {
+                            if (oneReturns.IsVoid) return false;
+                            better = true;
+                        }
+                    }
+                    continue;
+                }
                 int said = BetterConversion(args[i], Wants(one, i), Wants(other, i));
                 if (said < 0) return false;
                 if (said > 0) better = true;

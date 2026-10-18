@@ -1,0 +1,31 @@
+// test: lambda_with_a_value_prefers_a_valued_delegate
+// expect-exit: 0
+// expect-output:
+// Func<Task> Action Func<int> Action
+// fault True
+// True
+//
+// A LAMBDA WITH A VALUE converts better to a delegate that returns one than
+// to one returning void (C# 12.6.4.5), between ordinary overloads as between
+// a generic and an ordinary one: `Task.Run(() => Task.WhenAll(a, b))` is
+// Run(Func<Task>), so the task carries WhenAll's faults, where Run(Action)
+// dropped the task it made and ran to completion.
+
+using System;
+using System.Threading.Tasks;
+static class P
+{
+    static string Run(Action a) => "Action";
+    static string Run(Func<Task> f) => "Func<Task>";
+    static string Do(Action a) => "Action";
+    static string Do(Func<int> f) => "Func<int>";
+    static async Task Fail(string m) { await Task.Yield(); throw new InvalidOperationException(m); }
+    static void Main()
+    {
+        Task a = Task.Delay(1), b = Task.Delay(2);
+        Console.WriteLine(Run(() => Task.WhenAll(a, b)) + " " + Run(() => { }) + " " + Do(() => 5) + " " + Do(() => Console.Write("")));
+        Task both = Task.Run(() => Task.WhenAll(Fail("x"), Fail("y")));
+        try { both.GetAwaiter().GetResult(); } catch (InvalidOperationException e) { Console.WriteLine("fault " + (e.Message == "x" || e.Message == "y")); }
+        Console.WriteLine(both.IsFaulted);
+    }
+}
