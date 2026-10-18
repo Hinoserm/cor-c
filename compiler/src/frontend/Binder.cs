@@ -5053,10 +5053,11 @@ public sealed partial class Binder
         // slot, the second overwrote the first and that call came back to
         // itself until the stack ran out.
         //
-        // A type that wrote only `Equals(T)` is still asked through the slot --
-        // a record is, by every table it is a key of -- but by way of a guard
-        // the code generator writes (Lowering.EqualsGuard), because what comes
-        // through the slot is ANY object and that method reads it as a T.
+        // A type that wrote only `Equals(T)` keeps object's own here, as
+        // .NET's object.Equals is: reference equality. A table asks an
+        // IEquatable one its typed Equals through IEquatable's slot, behind
+        // a guard the code generator writes (Lowering.EqualsGuard), because
+        // what a table hands it is ANY object and that method reads it as a T.
         foreach (MethodSymbol m in sym.Methods
                      .Where(m => m.Name == "Equals" && !m.Static && m.Params.Count == 1
                               && m.Params[0].Type.Prim == Prim.Any))

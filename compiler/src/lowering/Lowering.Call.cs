@@ -397,7 +397,7 @@ public sealed partial class Lowering
             // when a was not boxed to be handed here (KeyEqualsStub).
             Type first = _b.TypeOf(call.Args[0]);
             bool reference = first.Prim == Prim.String || first.IsArray || first.Symbol is { Kind: TypeKind.Class or TypeKind.Interface };
-            return _e.Call(KeyEqualsStub(reference && !first.IsNullableValue ? first : null), IrType.I32, R(a), R(b))!;
+            return _e.Call(KeyEqualsStub(reference && !first.IsNullableValue ? first : null, table: false), IrType.I32, R(a), R(b))!;
         }
 
         // Calling a value is calling its Invoke through the interface slot.

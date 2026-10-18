@@ -18,7 +18,7 @@ using Type = Corsac.Lang.Type;
 /// </summary>
 public sealed partial class Lowering
 {
-    private bool _hasKeyEquals, _hasKeyHash, _hasObjectHash;
+    private bool _hasKeyEquals, _hasEquals, _hasKeyHash, _hasObjectHash;
 
     /// <summary>object.GetHashCode: which object it is. Shared by every class that declares none.</summary>
     private string ObjectHashStub()
@@ -124,6 +124,12 @@ public sealed partial class Lowering
     /// <summary>What fills slot `slot` of a class's vtable when `filled` is the method its chain puts there (ClassDescriptor).</summary>
     private string? SlotTarget(TypeSymbol t, int slot, MethodSymbol? filled)
     {
+        // IEquatable's slot holds the typed Equals behind its guard
+        // (EqualsGuard): a table asks there with any object at all.
+        if (slot == EquatableSlot && t.Kind == TypeKind.Class && EqualsGuard(t) is string guarded)
+        {
+            return guarded;
+        }
         // object's own members are symbols with no body (the binder's
         // Rooted): a slot that still holds one -- `new object()`, or a
         // class that overrides none of them -- gets the stub below, as a
@@ -139,7 +145,7 @@ public sealed partial class Lowering
         }
         // A closure's are its delegate's: the same method on the same target
         // is equal, whichever closure class made it (DelegateEqualsStub).
-        if (slot == _b.EqualsSlot) return (DelegateClosure(t) ? DelegateEqualsStub(t) : null) ?? EqualsGuard(t) ?? ObjectEqualsStub();
+        if (slot == _b.EqualsSlot) return (DelegateClosure(t) ? DelegateEqualsStub(t) : null) ?? ObjectEqualsStub();
         if (slot == _b.HashSlot) return (DelegateClosure(t) ? DelegateHashStub(t) : null) ?? ObjectHashStub();
         if (slot == _b.CompareSlot) return OwnCompare(t) ?? ObjectCompareStub();
         if (slot == _b.ToStringSlot) return ObjectToStringStub();
@@ -214,8 +220,17 @@ public sealed partial class Lowering
     /// slots to ask through: two strings compare as text, and anything else
     /// without slots is only ever itself. `of` is a's static type, when it is
     /// known: the routine for it (see the section's head).
+    ///
+    /// TWO QUESTIONS, as .NET has two. A TABLE's (`table`: what
+    /// EqualityComparer&lt;T&gt;.Default answers, and so Dictionary, HashSet,
+    /// List.IndexOf and a record's members) asks an IEquatable class its
+    /// typed Equals; object.Equals asks Equals(object), which such a class
+    /// left as object's own -- reference equality, its typed Equals being an
+    /// overload like any other. The typed one is IEquatable's slot, behind
+    /// its guard (EqualsGuard), and a class's descriptor says it is there
+    /// (TypeFlagEquatable).
     /// </summary>
-    private string KeyEqualsStub(Type? of = null)
+    private string KeyEqualsStub(Type? of = null, bool table = true)
     {
         if (of is { Prim: Prim.String, IsArray: false, IsPointer: false })
         {
@@ -226,13 +241,15 @@ public sealed partial class Lowering
             return ArrayKeyEquals();
         }
         TypeSymbol? narrow = NarrowKey(of);
-        string name = narrow is null ? "__key_equals" : "__key_equals$" + TypeKey(narrow);
+        string kind = table ? "__key_equals" : "__equals";
+        string name = narrow is null ? kind : kind + "$" + TypeKey(narrow);
 
-        if (narrow is null ? _hasKeyEquals : !_structHelpers.Add(name))
+        if (narrow is null ? (table ? _hasKeyEquals : _hasEquals) : !_structHelpers.Add(name))
         {
             return name;
         }
-        _hasKeyEquals |= narrow is null;
+        if (narrow is null && table) _hasKeyEquals = true;
+        if (narrow is null && !table) _hasEquals = true;
 
         Function f = KeyFunction(name, narrow);
         VReg a = f.NewReg(IrTypes.Word, "a");
@@ -278,7 +295,33 @@ public sealed partial class Lowering
         }
 
         e.SetBlock(ask);
-        e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.EqualsSlot, narrow, IrType.I32, R(a), R(b))));
+        if (table && EquatableSlot is int typedSlot && !(narrow is { Kind: TypeKind.Class } && TypedEquals(narrow) is null && Sealed(narrow)))
+        {
+            // AN IEQUATABLE CLASS BY ITS TYPED Equals: known of a class whose
+            // chain declares it, asked of the descriptor otherwise.
+            Block typed = f.NewBlock("ketyped");
+            if (narrow is { Kind: TypeKind.Class } && TypedEquals(narrow) is not null)
+            {
+                e.Jump(typed);
+            }
+            else
+            {
+                Block plain = f.NewBlock("keplain");
+                VReg classFlags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
+                e.Branch(e.Binary(Opcode.And, classFlags, TypeFlagEquatable), typed, plain);
+                e.SetBlock(plain);
+                e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.EqualsSlot, narrow, IrType.I32, R(a), R(b))));
+            }
+            e.SetBlock(typed);
+            VReg fn = e.Load(IrTypes.Word, vt, (long)typedSlot * _t.WordSize);
+            VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!;
+            e.Block.Instrs[^1].DispatchType = narrow is null ? ObjectDispatch : DescriptorOf(narrow);
+            e.Ret(RegOperand.Of(answered));
+        }
+        else
+        {
+            e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.EqualsSlot, narrow, IrType.I32, R(a), R(b))));
+        }
         e.SetBlock(yes);
         e.Ret(new ImmOperand(1, IrType.I32));
         e.SetBlock(no);
@@ -286,6 +329,26 @@ public sealed partial class Lowering
         _m.Functions.Add(f);
         return name;
     }
+
+    /// <summary>Whether a class is sealed, so nothing derived from it can answer otherwise.</summary>
+    private static bool Sealed(TypeSymbol t) => t.Decl is TypeDecl d && d.Mods.HasFlag(Mods.Sealed) && !t.Structural;
+
+    /// <summary>IEquatable's one slot, shared by every IEquatable&lt;X&gt; (FaceSlot); null where the library declares none.</summary>
+    private int? EquatableSlot
+    {
+        get
+        {
+            if (!_equatableSlotKnown)
+            {
+                _equatableSlot = FaceSlot("IEquatable", 1);
+                _equatableSlotKnown = true;
+            }
+            return _equatableSlot;
+        }
+    }
+
+    private int? _equatableSlot;
+    private bool _equatableSlotKnown;
 
     /// <summary>
     /// From a block where `a` is known to be a string and `b` an object: the
@@ -597,7 +660,7 @@ public sealed partial class Lowering
         if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
         {
             VReg x = _e.Load(IrTypes.Word, a, field.Offset), y = _e.Load(IrTypes.Word, b, field.Offset);
-            return _e.Call(KeyEqualsStub(field.Type), IrType.I32, R(x), R(y))!;
+            return _e.Call(KeyEqualsStub(field.Type, table: false), IrType.I32, R(x), R(y))!;
         }
         // A FLOAT AS ITS OWN Equals: every NaN equal to every other, and
         // each zero to the other -- what EqualityComparer<double>.Default,
@@ -757,30 +820,37 @@ public sealed partial class Lowering
         || t.Symbol is { Kind: TypeKind.Class or TypeKind.Interface } || t.IsArray;
 
     /// <summary>
-    /// For a class that is IEquatable&lt;T&gt; by an `Equals(T)` and wrote no
-    /// `Equals(object)`: what object's slot holds. .NET's default comparer
-    /// finds the typed one through IEquatable, and every table here asks the
-    /// slot (KeyEqualsStub), so the slot answers as the comparer would. Here
-    /// anything at all comes through the slot, so it is asked whether it IS
-    /// one first -- a LocalSym compared with a FieldSym is not equal to it,
-    /// rather than read as though it were one. A class that is NOT
-    /// IEquatable keeps object's own, as .NET's object.Equals is: its typed
-    /// Equals is an overload like any other, and two equal Points are two
-    /// objects to a List of them.
+    /// The typed Equals a class is IEquatable&lt;X&gt; by, X a class: the
+    /// `Equals(X)` nearest it in its chain, for an X it or an ancestor is
+    /// IEquatable of. Asked of the declarations alone, so every unit answers
+    /// alike for a class whose bodies are another's.
+    /// </summary>
+    private static MethodSymbol? TypedEquals(TypeSymbol t)
+    {
+        for (TypeSymbol? at = t; at is not null; at = at.Base)
+        {
+            MethodSymbol? typed = at.Methods.FirstOrDefault(
+                m => m.Name == "Equals" && !m.Static && !m.Abstract && m.Params.Count == 1
+                  && m.Returns.Prim == Prim.Bool && m.Params[0].Type.Symbol is { Kind: TypeKind.Class } of
+                  && Equatable(t, of));
+            if (typed is not null) return typed;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// What IEquatable's slot holds for a class that is IEquatable&lt;X&gt; by
+    /// an `Equals(X)` (TypedEquals): that method, asked first whether what
+    /// it was handed IS an X. An interface call hands it an X or null, which
+    /// pass straight through; a table's question (KeyEqualsStub) hands it
+    /// anything at all, and a LocalSym compared with a FieldSym is not equal
+    /// to it rather than read as though it were one. object's Equals slot is
+    /// not this: object.Equals of a class that wrote no Equals(object) is
+    /// reference equality, as .NET's is.
     /// </summary>
     private string? EqualsGuard(TypeSymbol t)
     {
-        MethodSymbol? typed = null;
-
-        for (TypeSymbol? at = t; at is not null && typed is null; at = at.Base)
-        {
-            typed = at.Methods.FirstOrDefault(
-                m => m.Name == "Equals" && !m.Static && m.Params.Count == 1 && m.Decl?.Body is not null
-                  && m.Returns.Prim == Prim.Bool && m.Params[0].Type.Symbol is { Kind: TypeKind.Class } of
-                  && Equatable(t, of));
-        }
-
-        if (typed is null)
+        if (TypedEquals(t) is not MethodSymbol typed)
         {
             return null;
         }
@@ -807,9 +877,12 @@ public sealed partial class Lowering
         _f = f;
         _e = new Builder(f, f.NewBlock("entry"));
 
+        Block test = f.NewBlock("egtest");
         Block ask = f.NewBlock("egask");
         Block no = f.NewBlock("egno");
 
+        _e.Branch(other, test, ask);
+        _e.SetBlock(test);
         _e.Branch(TypeTest(other, typed.Params[0].Type.Symbol!), ask, no);
         _e.SetBlock(ask);
         _e.Ret(RegOperand.Of(_e.Call(CallLabel(typed), IrType.I32, R(self), R(other))!));

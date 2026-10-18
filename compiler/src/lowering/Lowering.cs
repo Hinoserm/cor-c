@@ -1625,6 +1625,11 @@ public sealed partial class Lowering
     // Past the boxed faces' bits (64, 128, 256), which the same word holds.
     private const int TypeFlagDelegate = 512;
 
+    // A CLASS THAT IS IEquatable<X> by an Equals(X) (TypedEquals), in its
+    // descriptor's flags: what a table asks such an object is IEquatable's
+    // slot, not object's Equals (KeyEqualsStub).
+    private const int TypeFlagEquatable = 1024;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;
@@ -2010,7 +2015,7 @@ public sealed partial class Lowering
         if (stringFaces.Count > 0)
         {
             stringFaces.Add((_b.ToStringSlot, StringItself()));
-            stringFaces.Add((_b.EqualsSlot, KeyEqualsStub()));
+            stringFaces.Add((_b.EqualsSlot, KeyEqualsStub(table: false)));
             stringFaces.Add((_b.HashSlot, KeyHashStub()));
             stringFaces.Add((_b.CompareSlot, KeyCompareStub()));
         }
@@ -2688,6 +2693,7 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
+        if (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null) WriteWord(block, DescFlags * w, TypeFlagEquatable);
 
         // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a
         // field of one is keyed by the copy (FieldKey), and the owned-field
