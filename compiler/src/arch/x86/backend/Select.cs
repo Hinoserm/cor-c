@@ -2486,6 +2486,12 @@ internal sealed partial class Selector
                     Mov(Lo(i.Dest), Edx);
                 }
                 return;
+            case MachineIntrinsics.DoublePrecision:
+                // 0x27F: FNINIT's 0x37F with PC = 10b, double precision.
+                Emit(MOp.Push, Imm(0x27F));
+                EmitW(MOp.Fldcw, 2, new MMem(Esp, 0));
+                Emit(MOp.Add, Esp, Imm(4));
+                return;
             case MachineIntrinsics.KeepAlive:
             {
                 MReg kept = R(i.Operands[0]);

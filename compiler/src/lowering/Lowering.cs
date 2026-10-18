@@ -273,7 +273,7 @@ public sealed partial class Lowering
          + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type))))
          // A CONVERSION OPERATOR IS ALSO WHAT IT MAKES: JsonNode's explicit
          // operators to bool, int, long and double all take one JsonNode.
-         + (m.Name is "op_Implicit" or "op_Explicit" ? "_to_" + Mangle(m.Returns) : "");
+         + (m.Name is "op_Implicit" or "op_Explicit" or "op_CheckedExplicit" ? "_to_" + Mangle(m.Returns) : "");
 
     private static string Owner(MethodSymbol m) => m.Owner.Key.Replace('.', '$');
 
@@ -1079,6 +1079,12 @@ public sealed partial class Lowering
             // libraries' destructors run at exit. First, before anything can
             // use the register.
             loaderFini = e.Call(MachineIntrinsics.LoaderFini, IrTypes.Word)!;
+            // A double rounded once, to a double, on the x87 too: what the
+            // SSE arithmetic of x86-64 and of .NET answers.
+            if (Target.Current.WordSize == 4)
+            {
+                e.Call(MachineIntrinsics.DoublePrecision, IrType.Void);
+            }
             VReg fp = e.Reg(IrTypes.Word, "fp");
             e.Emit(Opcode.FramePointer, fp);
             entrySp = e.Binary(Opcode.Add, fp, Target.Current.WordSize);
@@ -1879,8 +1885,9 @@ public sealed partial class Lowering
     /// <summary>
     /// The namespace .NET has a type of the class library's in, where the
     /// library declares it without one: the collections and their interfaces
-    /// in System.Collections.Generic, LINQ's own in System.Linq, the rest in
-    /// System -- what FullName and object.ToString say of them.
+    /// in System.Collections.Generic, LINQ's own in System.Linq, BigInteger
+    /// and its kin in System.Numerics, the rest in System -- what FullName and
+    /// object.ToString say of them.
     /// </summary>
     private static string LibraryHome(string name) => name switch
     {
@@ -1889,6 +1896,7 @@ public sealed partial class Lowering
             or "IReadOnlyList" or "IReadOnlySet" or "ISet" or "KeyValuePair" or "List" or "Queue" or "SortedSet" or "Stack"
             or "LinkedList" or "LinkedListNode" or "SortedDictionary" or "SortedList" or "PriorityQueue" => "System.Collections.Generic",
         "IGrouping" or "ILookup" or "IOrderedEnumerable" or "Lookup" or "Grouping" or "OrderedSequence" or "Enumerable" => "System.Linq",
+        "BigInteger" or "Complex" or "BitOperations" => "System.Numerics",
         _ => "System",
     };
 

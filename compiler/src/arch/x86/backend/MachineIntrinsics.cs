@@ -79,4 +79,15 @@ internal static class MachineIntrinsics
     /// program. Only as the entry stub's first instruction.
     /// </summary>
     public const string LoaderFini = Prefix + "loaderfini";
+
+    /// <summary>
+    /// At the process entry: the x87's precision control set to 53 bits, so
+    /// that an operation on doubles is rounded once, to a double, as IEEE
+    /// and .NET's SSE arithmetic round it -- not to the 64 bits Linux starts
+    /// a process with, and then again to 53 where it is stored, which gets
+    /// the last bit wrong now and then. The rest of the control word is the
+    /// one the process started with: every exception masked, rounding to
+    /// nearest. A thread is cloned with it.
+    /// </summary>
+    public const string DoublePrecision = Prefix + "x87double";
 }

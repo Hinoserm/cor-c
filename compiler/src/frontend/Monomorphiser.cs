@@ -95,7 +95,7 @@ public sealed class Monomorphiser
     private HashSet<string>? _byValueAlso;
 
     /// <summary>Whether a name is a struct or an enum declared here, or one the caller named.</summary>
-    private bool ByValue(string name) => _byValue.Contains(name) || _byValueAlso?.Contains(name) == true;
+    private bool ByValue(string name) => name == "decimal" || _byValue.Contains(name) || _byValueAlso?.Contains(name) == true;
 
     /// <summary>Names declared as a class or interface, which always are.</summary>
     private readonly HashSet<string> _byRef = new(StringComparer.Ordinal);
@@ -374,7 +374,7 @@ public sealed class Monomorphiser
         }
         List<TypeRef> args = r.Args.Count == 0 ? r.Args : r.Args.Select(Qualify).ToList();
         List<TypeRef>? useArgs = r.UseArgs?.Select(Qualify).ToList();
-        string full = Path(r.Name);
+        string full = KeywordSpelling(Path(r.Name));
 
         if (ReferenceEquals(args, r.Args) && ReferenceEquals(useArgs, r.UseArgs) && full == r.Name)
         {
@@ -394,6 +394,28 @@ public sealed class Monomorphiser
             UseArgs = useArgs,
             Line = r.Line,
             Col = r.Col,
+        };
+    }
+
+    /// <summary>
+    /// C#'S KEYWORD FOR A TYPE AND .NET'S NAME FOR IT ARE ONE TYPE, and one
+    /// specialisation: `List<Int32>` is `List<int>` and `List<System.Decimal>`
+    /// is `List<decimal>`, spelt the keyword's way as the checker spells a
+    /// type it works out (Binder.NameOf). Mangled as written, they were two
+    /// classes that converted to nothing. A program's own type of such a name
+    /// has been moved aside and is spelt otherwise.
+    /// </summary>
+    private static string KeywordSpelling(string name)
+    {
+        string bare = name.StartsWith("System.", StringComparison.Ordinal) ? name[7..] : name;
+        return bare switch
+        {
+            "Boolean" => "bool", "SByte" => "sbyte", "Byte" => "byte",
+            "Int16" => "short", "UInt16" => "ushort", "Int32" => "int", "UInt32" => "uint",
+            "Int64" => "long", "UInt64" => "ulong", "IntPtr" => "nint", "UIntPtr" => "nuint",
+            "Single" => "float", "Double" => "double", "Decimal" => "decimal", "Char" => "char",
+            "String" => "string", "Object" => "object",
+            _ => name,
         };
     }
 

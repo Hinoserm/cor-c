@@ -66,11 +66,13 @@ public sealed partial class Lowering
     /// <summary>
     /// What a boxed value calls itself. A primitive is named as .NET names
     /// it, `System.Byte` rather than the `byte` C# spells it, so a boxed
-    /// value's GetType().Name is "Byte" and its FullName "System.Byte".
+    /// value's GetType().Name is "Byte" and its FullName "System.Byte"; a
+    /// struct or an enum by its full name as a class is -- System.Decimal,
+    /// System.TimeSpan, a namespace's own, an outer type's with a '+' --
+    /// where the bare name made typeof(decimal).FullName "Decimal".
     /// </summary>
     private string BoxName(Type t)
-        => t.Symbol is { Kind: TypeKind.Struct } tuple && IsTupleShape(tuple) ? FullTypeName(tuple)
-         : t.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } named ? named.Name : RuntimeName(t);
+        => t.Symbol is { Kind: TypeKind.Struct or TypeKind.Enum } named ? FullTypeName(named) : RuntimeName(t);
 
     /// <summary>The register width a boxed value is kept and compared in.</summary>
     private static IrType BoxSlot(Type t)
@@ -881,8 +883,16 @@ public sealed partial class Lowering
     }
 
     /// <summary>The value type a name in an `is` or a cast spells, or null.</summary>
-    private Type? ValueTypeNamed(string name)
+    private Type? ValueTypeNamed(Node at, string name)
     {
+        // THE TYPE THE CHECKER RESOLVED, where it is a struct or an enum:
+        // `o is decimal` and `o is System.Decimal` name the library's
+        // Decimal, which no table here is keyed by either spelling.
+        if (_b.TestedTypes.TryGetValue(at, out TypeSymbol? tested) && tested.Kind is TypeKind.Enum or TypeKind.Struct)
+        {
+            return Type.Plain(tested, Prim.Void);
+        }
+        if (name.StartsWith("System.", StringComparison.Ordinal)) name = name[7..];
         Type? prim = name switch
         {
             "sbyte" => Type.I8, "byte" => Type.U8,
@@ -892,6 +902,11 @@ public sealed partial class Lowering
             "nint" => Type.NInt, "nuint" => Type.NUInt,
             "float" => Type.F32, "double" => Type.F64,
             "bool" => Type.Bool, "char" => Type.Char,
+            // .NET's names for the same, as Resolve takes them.
+            "SByte" => Type.I8, "Byte" => Type.U8, "Int16" => Type.I16, "UInt16" => Type.U16,
+            "Int32" => Type.I32, "UInt32" => Type.U32, "Int64" => Type.I64, "UInt64" => Type.U64,
+            "IntPtr" => Type.NInt, "UIntPtr" => Type.NUInt, "Single" => Type.F32, "Double" => Type.F64,
+            "Boolean" => Type.Bool, "Char" => Type.Char,
             _ => null,
         };
         if (prim is not null)

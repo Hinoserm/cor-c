@@ -1,0 +1,132 @@
+// test: decimal_random_arithmetic_matches_dotnet_bits
+// expect-exit: 0
+// expect-output:
+// 80030000:000000000000000000000132 00060000:0000000000000000C5610885
+// ops 00060000:0000000000000000C55C5D35 80060000:0000000000000000C565B3D5 80090000:00000000000000EBEDFC2EFA 801C0000:0000C3AD6E7FF3A837ACB005 80030000:000000000000000000000132
+// cmp -1 False -2147286734 True False
+// dbl BFD395810624DD2F BE9CAC08
+// rnd 9 4 80030000:000000000000000000000132 80000000:000000000000000000000000 80000000:000000000000000000000001 80000000:000000000000000000000000
+// int 0 0 0 0 -3060
+// fmt N [-0.31] [-0.306]
+// prs 80030000:000000000000000000000132
+// fromd BE1EDEFCFABD75DA 80170000:000000000000A36E12388667 800F0000:0000000000000000001B6B43
+// parse 8.0 00010000:000000000000000000000050
+// ops 90DA39B7F5F2FCB2
+// cmp D74A23696A134349
+// dbl 81FC19A9CECE1CBC
+// rnd A1CB48DB5D85DCC3
+// int 53FF33642D2C7256
+// fmt D7F37B9D822E518B
+// prs 00FFB3DF9CBBA290
+// fromd 63C8F25E76AD51CD
+// parse E81BCDBAE7127370
+//
+// A THOUSAND RANDOM DECIMALS through everything .NET's DecCalc does, each
+// category's lines hashed: the five operations' bits (scale, sign, overflow
+// and the remainder's sign and scale), comparison and the scale-blind hash
+// code, the conversions to double and float and from double and float (at
+// fifteen and seven significant digits), Round with each MidpointRounding,
+// Truncate, Floor, Ceiling, the integer conversions and OLE currency, a
+// random standard or custom format, and Parse of the text and of random digit
+// strings with exponents. The first round's lines are printed as they are.
+
+using System;
+using System.Globalization;
+
+class Program {
+    static string[] names = { "ops", "cmp", "dbl", "rnd", "int", "fmt", "prs", "fromd", "parse" };
+    static ulong[] hashes = new ulong[9];
+
+    // Each category's lines folded into an FNV-1a hash, the first round's printed.
+    static void Note(int at, int round, string text) {
+        ulong h = hashes[at] == 0 ? 14695981039346656037UL : hashes[at];
+        foreach (char c in text) { h = (h ^ c) * 1099511628211UL; }
+        hashes[at] = h;
+        if (round == 0) { Console.WriteLine(names[at] + " " + text); }
+    }
+
+    static ulong state = 88172645463325252UL;
+
+    static ulong Next() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+
+    static int Below(int n) { return (int)(Next() % (ulong)n); }
+
+    static decimal RandomDecimal() {
+        int shape = Below(8);
+        int lo = (int)Next(), mid = (int)Next(), hi = (int)Next();
+        if (shape == 0) { mid = 0; hi = 0; lo = Below(1000); }
+        else if (shape == 1) { hi = 0; mid = 0; }
+        else if (shape == 2) { hi = 0; }
+        else if (shape == 3) { hi = Below(100); }
+        else if (shape == 4) { lo = Below(10) * 1000; mid = 0; hi = 0; }
+        byte scale = (byte)Below(29);
+        if (Below(3) == 0) { scale = (byte)Below(5); }
+        return new decimal(lo, mid, hi, Below(2) == 0, scale);
+    }
+
+    static string Bits(decimal d) {
+        int[] b = decimal.GetBits(d);
+        return b[3].ToString("X8") + ":" + b[2].ToString("X8") + b[1].ToString("X8") + b[0].ToString("X8");
+    }
+
+    static string Op(decimal a, decimal b, int which) {
+        try {
+            decimal r;
+            if (which == 0) { r = a + b; }
+            else if (which == 1) { r = a - b; }
+            else if (which == 2) { r = a * b; }
+            else if (which == 3) { r = a / b; }
+            else { r = a % b; }
+            return Bits(r);
+        } catch (OverflowException) {
+            return "OVF";
+        } catch (DivideByZeroException) {
+            return "DIV";
+        }
+    }
+
+    static string Try(Func<string> f) {
+        try { return f(); } catch (OverflowException) { return "OVF"; } catch (FormatException) { return "FMT"; }
+    }
+
+    static void Main() {
+        string[] formats = { "", "G", "G5", "G0", "F", "F0", "F3", "N", "N4", "E", "E2", "e10", "C", "C0", "P", "P1", "R", "0.00", "#,##0.0##", "0.###E+0", "00000", "#;(#);zero" };
+        MidpointRounding[] modes = { MidpointRounding.ToEven, MidpointRounding.AwayFromZero, MidpointRounding.ToZero, MidpointRounding.ToNegativeInfinity, MidpointRounding.ToPositiveInfinity };
+        for (int i = 0; i < 1000; i++) {
+            decimal a = RandomDecimal();
+            decimal b = RandomDecimal();
+            if (Below(10) == 0) { b = a; }
+            if (Below(20) == 0) { b = decimal.Negate(a); }
+            if (i == 0) { Console.WriteLine(Bits(a) + " " + Bits(b)); }
+            Note(0, i, Op(a, b, 0) + " " + Op(a, b, 1) + " " + Op(a, b, 2) + " " + Op(a, b, 3) + " " + Op(a, b, 4));
+            Note(1, i, decimal.Compare(a, b) + " " + a.Equals(b) + " " + a.GetHashCode() + " " + (a < b) + " " + (a >= b));
+            Note(2, i, BitConverter.DoubleToInt64Bits((double)a).ToString("X16") + " " + BitConverter.SingleToInt32Bits((float)a).ToString("X8"));
+            int k = Below(29);
+            MidpointRounding m = modes[Below(5)];
+            Note(3, i, k + " " + (int)m + " " + Bits(decimal.Round(a, k, m)) + " " + Bits(decimal.Truncate(a)) + " " + Bits(decimal.Floor(a)) + " " + Bits(decimal.Ceiling(a)));
+            Note(4, i, Try(() => ((long)a).ToString()) + " " + Try(() => ((int)a).ToString()) + " " + Try(() => ((ulong)a).ToString()) + " " + Try(() => ((short)a).ToString()) + " " + Try(() => decimal.ToOACurrency(a).ToString()));
+            string f = formats[Below(formats.Length)];
+            Note(5, i, f + " [" + a.ToString(f, CultureInfo.InvariantCulture) + "] [" + a.ToString() + "]");
+            Note(6, i, Bits(decimal.Parse(a.ToString(), CultureInfo.InvariantCulture)));
+
+            double x = BitConverter.Int64BitsToDouble((long)Next());
+            if (Below(2) == 0) { double p = 1; int q = Below(23); for (int j = 0; j < q; j++) { p *= 10; } x = (double)(long)Next() / p; }
+            if (Below(3) == 0) { x = (Below(100000) - 50000) / 1000.0; }
+            Note(7, i, BitConverter.DoubleToInt64Bits(x).ToString("X16") + " " + Try(() => Bits((decimal)x)) + " " + Try(() => Bits((decimal)(float)x)));
+
+            string digits = "";
+            int n = 1 + Below(40);
+            for (int j = 0; j < n; j++) { digits += (char)('0' + Below(10)); }
+            int point = Below(n + 1);
+            string text = (Below(2) == 0 ? "-" : "") + digits.Substring(0, point) + "." + digits.Substring(point);
+            if (Below(3) == 0) { text += "e" + (Below(70) - 35); }
+            Note(8, i, text + " " + Try(() => Bits(decimal.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture))));
+        }
+        for (int k = 0; k < names.Length; k++) { Console.WriteLine(names[k] + " " + hashes[k].ToString("X16")); }
+    }
+}

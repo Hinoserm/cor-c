@@ -720,7 +720,7 @@ public sealed partial class Lowering
     /// A const's value. A floating-point one is kept as a double's bits
     /// (Binder.RealBits), and made as a float or a double from them.
     /// </summary>
-    private VReg ConstValue(ConstSym k)
+    private VReg ConstValue(ConstSym k, Expr? read = null)
     {
         if (k.Type.Prim == Prim.F32)
         {
@@ -729,11 +729,25 @@ public sealed partial class Lowering
         }
         if (k.Type.Prim == Prim.F64)
             return _e.Unary(Opcode.Bits, R(_e.Const(k.Value, IrType.I64)), IrType.F64);
-        return _e.Const(k.Value, IrTypes.Of(k.Type));
+        // AT THE WIDTH THE CHECKER GAVE THE READ: `x > int.MaxValue` over a
+        // ulong reads the int constant as a ulong one (C# 10.2.11), and made
+        // at the const's own width it was an I32 in a 64-bit comparison --
+        // which the backends tolerated and the IR verifier of a unit's import
+        // refused.
+        Type at = read is not null && k.Type.IsInteger && !k.Type.IsEnumValue && _b.TypeOf(read) is { IsInteger: true, Nullable: false } wanted
+                  && !wanted.IsEnumValue ? wanted : k.Type;
+        return _e.Const(k.Value, IrTypes.Of(at));
     }
 
     private VReg EvalCore(Expr e)
     {
+        // A DECIMAL CONSTANT -- a literal, a const's read, a folded expression
+        // -- is the struct made from its words (Binder.Decimal).
+        if (_b.DecimalValues.Count > 0 && _b.DecimalValues.TryGetValue(e, out NewExpr? money))
+        {
+            return Eval(money);
+        }
+
         switch (e)
         {
             case LiteralExpr { Kind: Lit.Str } str:
@@ -1148,7 +1162,7 @@ public sealed partial class Lowering
         switch (sym)
         {
             case ConstSym k:
-                return ConstValue(k);
+                return ConstValue(k, n);
 
             case PropertyGetSym pg:
                 return CallAccessor(pg.Getter, self: true, target: null);
@@ -1212,7 +1226,7 @@ public sealed partial class Lowering
                 case PropertySetSym:
                     return Fail(m, $"the property '{m.Name}' cannot be read: it has no get accessor");
                 case ConstSym k:
-                    return ConstValue(k);
+                    return ConstValue(k, m);
                 case FieldSym f when f.Field.Static:
                     return LoadPlace(PlaceOfField(f.Field, null, m));
                 case FieldSym f:
@@ -3104,7 +3118,7 @@ public sealed partial class Lowering
         // widening on the way out of a box.
         if (_b.TypeOf(isx.Operand).Prim == Prim.Any
             && isx.Type is { Args.Count: 0, ArrayRank: 0 }
-            && ValueTypeNamed(isx.Type.Name) is { } boxed)
+            && ValueTypeNamed(isx, isx.Type.Name) is { } boxed)
         {
             return BoxPattern(isx, obj, boxed,
                               _b.PatternSlot.TryGetValue(isx, out int held) ? held : null);
@@ -3216,7 +3230,7 @@ public sealed partial class Lowering
             }
             else if (arm.Type is not null && _b.ArmTests.Contains(arm)
                      && of.Prim == Prim.Any && arm.Type is { Args.Count: 0, ArrayRank: 0 }
-                     && ValueTypeNamed(arm.Type.Name) is { } boxed)
+                     && ValueTypeNamed(arm, arm.Type.Name) is { } boxed)
             {
                 VReg matched = BoxPattern(arm, subject, boxed,
                                           _b.ArmSlot.TryGetValue(arm, out int into) ? into : null);
@@ -5279,6 +5293,15 @@ public sealed partial class Lowering
     }
 
 
+    /// <summary>A type's descriptor rendered as Type.ToString renders it (Prelude.TypeTextMethod).</summary>
+    private VReg TypeText(Expr at, VReg type)
+    {
+        VReg full = _e.Load(IrTypes.Word, type, DescName * _t.WordSize);
+        MethodSymbol? text = HasStringMethod(Prelude.TypeTextMethod)
+            ? StringMethod(at, Prelude.TypeTextMethod, 1, "a type's text") : null;
+        return text is null ? full : _e.Call(CallLabel(text), IrTypes.Word, R(full))!;
+    }
+
     /// <summary>A non-string operand of a string expression rendered as text.</summary>
     private VReg Stringify(Expr at, VReg v, Type type)
     {
@@ -5310,6 +5333,32 @@ public sealed partial class Lowering
             || type.Symbol is { Kind: TypeKind.Class or TypeKind.Interface })
         {
             return ObjectString(v, NarrowKey(type));
+        }
+
+        // A TYPE IS ITS NAME AS Type.ToString WRITES IT: the full name its
+        // descriptor holds, a generic's arguments without their assemblies
+        // -- `"t " + typeof(List<int>)` is
+        // "t System.Collections.Generic.List`1[System.Int32]" -- and a null
+        // one is nothing, as a null object is.
+        if (type.Prim == Prim.Type)
+        {
+            if (!type.Nullable)
+            {
+                return TypeText(at, v);
+            }
+            VReg typeName = _f.NewReg(IrTypes.Word, "tts");
+            Block some = _f.NewBlock("ttssome");
+            Block none = _f.NewBlock("ttsnone");
+            Block end = _f.NewBlock("ttsend");
+            _e.Branch(v, some, none);
+            _e.SetBlock(some);
+            _e.CopyTo(typeName, R(TypeText(at, v)));
+            _e.Jump(end);
+            _e.SetBlock(none);
+            _e.CopyTo(typeName, R(_e.Address(InternString(""))));
+            _e.Jump(end);
+            _e.SetBlock(end);
+            return typeName;
         }
 
         // A NULLABLE VALUE IS ITS VALUE, OR NOTHING AT ALL. `"n " + n` for an

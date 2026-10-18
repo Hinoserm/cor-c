@@ -1,0 +1,70 @@
+// test: checked_user_defined_operators
+// expect-exit: 0
+// expect-output:
+// -2147483648m 2147483647m -2m -2147483648m -1
+// overflow overflow overflow overflow overflow
+// [checked /] 1073741823m 1073741823m
+// -2147483648m
+// overflow overflow overflow
+// 4m -2147483648m overflow
+//
+// C# 11'S CHECKED USER-DEFINED OPERATORS: `operator checked +`, `checked -`
+// both binary and unary, `checked *`, `checked /`, `checked ++` and `--`, and
+// `explicit operator checked short`, declared beside the ordinary ones. In a
+// checked context -- checked(...) or a checked block, its compound
+// assignments, increments and the lambdas written inside it included -- the
+// checked one is called; in an unchecked one, or by default, the ordinary one.
+
+using System;
+
+// A user type with C# 11's checked operators beside its ordinary ones.
+readonly struct Meter
+{
+    public readonly int Value;
+    public Meter(int value) { Value = value; }
+
+    public static Meter operator +(Meter a, Meter b) => new Meter(unchecked(a.Value + b.Value));
+    public static Meter operator checked +(Meter a, Meter b) => new Meter(checked(a.Value + b.Value));
+    public static Meter operator -(Meter a, Meter b) => new Meter(unchecked(a.Value - b.Value));
+    public static Meter operator checked -(Meter a, Meter b) => new Meter(checked(a.Value - b.Value));
+    public static Meter operator *(Meter a, int k) => new Meter(unchecked(a.Value * k));
+    public static Meter operator checked *(Meter a, int k) => new Meter(checked(a.Value * k));
+    public static Meter operator /(Meter a, int k) => new Meter(a.Value / k);
+    public static Meter operator checked /(Meter a, int k) { Console.Write("[checked /] "); return new Meter(a.Value / k); }
+    public static Meter operator -(Meter a) => new Meter(unchecked(-a.Value));
+    public static Meter operator checked -(Meter a) => new Meter(checked(-a.Value));
+    public static Meter operator ++(Meter a) => new Meter(unchecked(a.Value + 1));
+    public static Meter operator checked ++(Meter a) => new Meter(checked(a.Value + 1));
+    public static Meter operator --(Meter a) => new Meter(unchecked(a.Value - 1));
+    public static Meter operator checked --(Meter a) => new Meter(checked(a.Value - 1));
+    public static explicit operator short(Meter a) => unchecked((short)a.Value);
+    public static explicit operator checked short(Meter a) => checked((short)a.Value);
+    public static implicit operator Meter(int v) => new Meter(v);
+    public override string ToString() => Value + "m";
+}
+
+class Program
+{
+    static string Try(Func<string> f)
+    {
+        try { return f(); } catch (OverflowException) { return "overflow"; }
+    }
+
+    static void Main()
+    {
+        Meter top = new Meter(int.MaxValue), low = new Meter(int.MinValue), one = 1;
+        Console.WriteLine((top + one) + " " + (low - one) + " " + (top * 2) + " " + (-low) + " " + (short)top);
+        Console.WriteLine(Try(() => checked(top + one).ToString()) + " " + Try(() => checked(low - one).ToString()) + " " + Try(() => checked(top * 2).ToString()) + " " + Try(() => checked(-low).ToString()) + " " + Try(() => checked((short)top).ToString()));
+        Console.WriteLine(checked(top / 2) + " " + (top / 2));
+        Meter m = top;
+        m++;
+        Console.WriteLine(m);
+        Console.WriteLine(Try(() => { Meter c = top; checked { c++; } return c.ToString(); }) + " " + Try(() => { Meter c = top; checked { c += one; } return c.ToString(); }) + " " + Try(() => { Meter c = low; checked { c--; } return c.ToString(); }));
+        checked
+        {
+            Meter d = new Meter(5);
+            d -= one;
+            Console.WriteLine(d + " " + unchecked(top + one) + " " + Try(() => (top + one).ToString()));
+        }
+    }
+}

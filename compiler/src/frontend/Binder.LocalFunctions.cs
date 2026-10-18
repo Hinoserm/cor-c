@@ -30,6 +30,7 @@ public sealed partial class Binder
             if (expression is NameExpr name && Lookup(name.Name) is ConstSym constant)
             {
                 if (constant.Text is not null) return new LiteralExpr { Kind = Lit.Str, Text = constant.Text, Line = name.Line, Col = name.Col };
+                if (constant.Number is decimal money) return DecimalLiteral(money, name);
                 if (constant.Type.Prim == Prim.Bool) return new LiteralExpr { Kind = Lit.Bool,
                     Text = constant.Value == 0 ? "false" : "true", IntValue = constant.Value, Line = name.Line, Col = name.Col };
                 return new CastExpr { Type = new TypeRef { Name = constant.Type.Symbol?.Key ?? constant.Type.ToString() },

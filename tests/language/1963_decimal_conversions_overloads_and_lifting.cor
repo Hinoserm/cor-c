@@ -1,0 +1,70 @@
+// test: decimal_conversions_overloads_and_lifting
+// expect-exit: 0
+// expect-output:
+// Price(5) Price(65)
+// 300 Low 2
+// long decimal decimal double int int decimal
+// 2.5 3 2 -2 -1
+// -3.5 7.0 True -1 3.5 4.5 False
+// 6.75 3 1.5 2.25 1.5 13.50 3
+// cast: Unable to cast object of type 'System.Int32' to type 'System.Decimal'.
+// Decimal 0 0 0.1 1.23E+04 1.2E-05
+// 0.3333333333333333333333333333 7 0.33333333333333337 0.9999999999999999999999999999
+//
+// DECIMAL'S CONVERSIONS IN C#'S RULES: an integer reaches a user conversion
+// from decimal through decimal's own (`Price p = 5`, a standard conversion
+// before a user-defined one); a decimal casts to an enum through the enum's
+// underlying type and back; overload resolution takes long over decimal for
+// an int and decimal over double for neither; the unary operators and ++ are
+// lifted over decimal?; LINQ over decimals and decimal?s; an unboxing of the
+// wrong type is InvalidCastException; "G" with a precision; a const of a
+// decimal division, a const int of a decimal and a const double of a decimal,
+// all folded.
+
+using System;
+using System.Linq;
+
+struct Price
+{
+    public decimal Amount;
+    public Price(decimal amount) { Amount = amount; }
+    public static implicit operator Price(decimal d) => new Price(d);
+    public override string ToString() => "Price(" + Amount + ")";
+}
+
+enum Level : short { Low = 2, High = 300 }
+
+class Program
+{
+    static string Pick(long x) => "long";
+    static string Pick(decimal x) => "decimal";
+    static string Pick2(double x) => "double";
+    static string Pick2(decimal x) => "decimal";
+    static string Pick3(int x) => "int";
+    static string Pick3(decimal x) => "decimal";
+
+    static void Main()
+    {
+        Price p = 5;
+        Price q = 'A';
+        Console.WriteLine(p + " " + q);
+        Level lv = Level.High;
+        decimal fromEnum = (decimal)lv;
+        Level back = (Level)2.9m;
+        Console.WriteLine(fromEnum + " " + back + " " + (int)Level.Low);
+        Console.WriteLine(Pick(5) + " " + Pick(5m) + " " + Pick2(5m) + " " + Pick2(5f) + " " + Pick3(5) + " " + Pick3((byte)5) + " " + Pick3(5L));
+        Console.WriteLine(Math.Max(1, 2.5m) + " " + Math.Abs(-3) + " " + Math.Round(2.5) + " " + Math.Round(-2.5m) + " " + Math.Sign(-4L));
+        decimal? n = 3.5m;
+        decimal? none = null;
+        Console.WriteLine((-n) + " " + (n * 2) + " " + (n > 3) + " " + (none ?? -1) + " " + (n++) + " " + n + " " + (-none).HasValue);
+        decimal[] arr = { 3m, 1.5m, 2.25m };
+        Console.WriteLine(arr.Sum() + " " + arr.Max() + " " + arr.Min() + " " + arr.Average() + " " + arr.OrderBy(x => x).First() + " " + arr.Sum(x => x * 2) + " " + new decimal?[] { 1m, null, 2m }.Sum());
+        object o = 7;
+        try { decimal bad = (decimal)o; Console.WriteLine(bad); } catch (InvalidCastException e) { Console.WriteLine("cast: " + e.Message); }
+        Console.WriteLine(decimal.Parse("1.5").GetType().Name + " " + default(decimal).ToString() + " " + new decimal().Scale + " " + 0.10m.ToString("G1") + " " + 12345.678m.ToString("G3") + " " + 0.000012345m.ToString("G2"));
+        const decimal Third = 1m / 3;
+        const int Whole = (int)7.9m;
+        const double Approx = (double)Third;
+        Console.WriteLine(Third + " " + Whole + " " + Approx + " " + (Third * 3));
+    }
+}

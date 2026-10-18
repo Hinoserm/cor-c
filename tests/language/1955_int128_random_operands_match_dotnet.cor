@@ -1,0 +1,102 @@
+// test: int128_random_operands_match_dotnet
+// expect-exit: 0
+// expect-output:
+// 29800356960558444994870 933493430598207337167 29800356960558444994870 933493430598207337167
+// u 30733850391156652332037 28866863529960237657703 13674009229391134932197600938620593834 31 862060612014017542693 287113247089541828547222325020554428416 0 38767759651887931398 30695082631504764400639 30656314871852876469241 340282366920938433663017646873323216585
+// uc 30733850391156652332037 28866863529960237657703 OVF OVF OVF
+// s 30733850391156652332037 28866863529960237657703 13674009229391134932197600938620593834 31 862060612014017542693 -53169119831396634916152282411213783040 0 0 -29800356960558444994870 933493430598207337167
+// sc 30733850391156652332037 28866863529960237657703 OVF OVF 933493430598207337167
+// cmp False True 1 False 1 1 29800356960558444994870 933493430598207337167
+// dbl 44993DEC1F3A4796 44494D6970A26B74 64C9EF61 933493430598207337167 29800356960558444994870
+// fromd 08F474FFB8E8AB15 0 0 0 0
+// fmt N [29,800,356,960,558,444,994,870.00] [29,800,356,960,558,444,994,870.00]
+// prs 29800356960558444994870 29800356960558444994870 29800356960558444994870 OVF 298003569605584449948709
+// big 29800356960558444994870 29800356960558444994870 29800356960558444994870 29800356960558444994870 119201427842233779979480 29800356960558444994870 -64632487040390255276484873568983472470 98903092254672669329304938192475236010
+// u 4B5AAF721381970E
+// uc 0E7C93AF07DF8AB7
+// s 81F0E38BFF12FE6F
+// sc 4808CB2507A4D1C3
+// cmp A5CE7A0E72E22AA5
+// dbl 8CCFA25BDFA51980
+// fromd F914CCDBBEE7B6D9
+// fmt A63E897298650D10
+// prs 5F2B2BA564FCF968
+// big 65B7655151AF044B
+//
+// RANDOM INT128 AND UINT128 OPERANDS, each category's lines hashed: the
+// operators unsigned and signed, wrapping and checked (an overflow printed as
+// OVF), comparisons, the conversions to double, float and decimal and from
+// random doubles (saturating and checked), a random format, Parse back of the
+// text, of N0 and of the hex, and BigInteger's conversions and Math.BigMul.
+// The first round's lines are printed as they are.
+
+using System;
+using System.Globalization;
+using System.Numerics;
+
+class Program {
+    static string[] names = { "u", "uc", "s", "sc", "cmp", "dbl", "fromd", "fmt", "prs", "big" };
+    static ulong[] hashes = new ulong[10];
+
+    // Each category's lines folded into an FNV-1a hash, the first round's printed.
+    static void Note(int at, int round, string text) {
+        ulong h = hashes[at] == 0 ? 14695981039346656037UL : hashes[at];
+        foreach (char c in text) { h = (h ^ c) * 1099511628211UL; }
+        hashes[at] = h;
+        if (round == 0) { Console.WriteLine(names[at] + " " + text); }
+    }
+    static ulong state = 0x9E3779B97F4A7C15UL;
+
+    static ulong Next() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+
+    static int Below(int n) { return (int)(Next() % (ulong)n); }
+
+    static UInt128 RandomU() {
+        int shape = Below(6);
+        ulong hi = Next(), lo = Next();
+        if (shape == 0) { hi = 0; lo = (ulong)Below(1000); }
+        else if (shape == 1) { hi = 0; }
+        else if (shape == 2) { hi = (ulong)Below(100); }
+        else if (shape == 3) { hi >>= Below(64); }
+        return new UInt128(hi, lo);
+    }
+
+    static string Try(Func<string> f) {
+        try { return f(); }
+        catch (OverflowException) { return "OVF"; }
+        catch (DivideByZeroException) { return "DIV"; }
+        catch (FormatException) { return "FMT"; }
+    }
+
+    static void Main() {
+        string[] formats = { "", "G", "D", "D45", "X", "x40", "B", "N", "N0", "E", "E3", "F2", "C", "P1", "R", "0.00", "#,##0", "000" };
+        for (int i = 0; i < 600; i++) {
+            UInt128 ua = RandomU(), ub = RandomU();
+            Int128 a = (Int128)ua, b = (Int128)ub;
+            if (Below(2) == 0) { b = -b; }
+            int s = Below(130);
+            if (i == 0) Console.WriteLine(ua + " " + ub + " " + a + " " + b);
+            Note(0, i, (ua + ub) + " " + (ua - ub) + " " + (ua * ub) + " " + Try(() => (ua / ub).ToString()) + " " + Try(() => (ua % ub).ToString()) + " " + (ua << s) + " " + (ua >> s) + " " + (ua & ub) + " " + (ua | ub) + " " + (ua ^ ub) + " " + ~ua);
+            Note(1, i, Try(() => checked(ua + ub).ToString()) + " " + Try(() => checked(ua - ub).ToString()) + " " + Try(() => checked(ua * ub).ToString()) + " " + Try(() => checked((ulong)ua).ToString()) + " " + Try(() => checked((int)ua).ToString()));
+            Note(2, i, (a + b) + " " + (a - b) + " " + (a * b) + " " + Try(() => (a / b).ToString()) + " " + Try(() => (a % b).ToString()) + " " + (a << s) + " " + (a >> s) + " " + (a >>> s) + " " + -a + " " + Int128.Abs(b == Int128.MinValue ? 0 : b));
+            Note(3, i, Try(() => checked(a + b).ToString()) + " " + Try(() => checked(a - b).ToString()) + " " + Try(() => checked(a * b).ToString()) + " " + Try(() => checked((long)a).ToString()) + " " + Try(() => checked((UInt128)b).ToString()));
+            Note(4, i, (a < b) + " " + (a >= b) + " " + a.CompareTo(b) + " " + (ua < ub) + " " + ua.CompareTo(ub) + " " + Int128.Sign(b) + " " + Int128.Max(a, b) + " " + UInt128.Min(ua, ub));
+            Note(5, i, BitConverter.DoubleToInt64Bits((double)ua).ToString("X16") + " " + BitConverter.DoubleToInt64Bits((double)b).ToString("X16") + " " + BitConverter.SingleToInt32Bits((float)a).ToString("X8") + " " + Try(() => ((decimal)b).ToString()) + " " + Try(() => ((decimal)ua).ToString()));
+            double d = BitConverter.Int64BitsToDouble((long)Next());
+            if (Below(2) == 0) { d = (double)(long)Next(); int k = Below(70); for (int j = 0; j < k; j++) { d *= 2; } }
+            Note(6, i, BitConverter.DoubleToInt64Bits(d).ToString("X16") + " " + (Int128)d + " " + (UInt128)d + " " + Try(() => checked((Int128)d).ToString()) + " " + Try(() => checked((UInt128)d).ToString()));
+            string f = formats[Below(formats.Length)];
+            Note(7, i, f + " [" + a.ToString(f, CultureInfo.InvariantCulture) + "] [" + ua.ToString(f, CultureInfo.InvariantCulture) + "]");
+            Note(8, i, Int128.Parse(a.ToString()) + " " + UInt128.Parse(ua.ToString("N0"), NumberStyles.Number) + " " + Int128.Parse(a.ToString("X"), NumberStyles.HexNumber) + " " + Try(() => UInt128.Parse("-" + ua.ToString()).ToString()) + " " + Try(() => Int128.Parse(ua.ToString() + "9").ToString()));
+            BigInteger big = a;
+            BigInteger ubig = ua;
+            Note(9, i, big + " " + ubig + " " + (Int128)big + " " + (UInt128)ubig + " " + Try(() => ((Int128)(ubig * 4)).ToString()) + " " + Try(() => ((decimal)big).ToString()) + " " + Math.BigMul((long)a, (long)b) + " " + Math.BigMul((ulong)ua, (ulong)ub));
+        }
+        for (int h = 0; h < names.Length; h++) { Console.WriteLine(names[h] + " " + hashes[h].ToString("X16")); }
+    }
+}

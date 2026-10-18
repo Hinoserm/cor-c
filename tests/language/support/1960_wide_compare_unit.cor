@@ -1,0 +1,15 @@
+// The other unit of 1960_integer_constant_widened_in_comparisons_across_units:
+// comparisons of 64-bit values with narrower constants, compiled apart and
+// read back from its IR at the link.
+namespace WideUnits;
+
+public static class Wide
+{
+    const int Limit = 2147483647;
+
+    public static bool Above(ulong x) => x > int.MaxValue;
+    public static bool AboveNamed(ulong x) => x > Limit;
+    public static bool Below(long x) => x < int.MinValue;
+    public static bool Equal(ulong x) => x == ushort.MaxValue;
+    public static long Clamp(long x) => x > int.MaxValue ? int.MaxValue : x;
+}

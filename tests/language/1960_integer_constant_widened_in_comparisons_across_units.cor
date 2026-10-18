@@ -1,0 +1,24 @@
+// test: integer_constant_widened_in_comparisons_across_units
+// units: tests/language/support/1960_wide_compare_unit.cor
+// expect-exit: 0
+// expect-output:
+// True False True True False True 2147483647 -9
+//
+// AN INT CONSTANT AGAINST A 64-BIT VALUE IS ONE OF ITS WIDTH, as C# reads
+// `x > int.MaxValue` over a ulong (C# 10.2.11): made at the const's own width
+// it was an I32 register in a 64-bit comparison, which the backends tolerated
+// and the IR verifier of a unit's import refused. Here the comparisons are in
+// a unit of their own, read back from its IR when the program is linked.
+
+using System;
+using WideUnits;
+
+static class Program
+{
+    static void Main(string[] args)
+    {
+        ulong big = 4294967296UL + (ulong)args.Length, small = 7, edge = 65535;
+        long low = -4294967296L, near = -5;
+        Console.WriteLine(Wide.Above(big) + " " + Wide.Above(small) + " " + Wide.AboveNamed(big) + " " + Wide.Below(low) + " " + Wide.Below(near) + " " + Wide.Equal(edge) + " " + Wide.Clamp(1L << 40) + " " + Wide.Clamp(-9));
+    }
+}

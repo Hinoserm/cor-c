@@ -67,6 +67,13 @@ public sealed partial class Binder
     /// <summary>Inside unchecked(...) or an unchecked block: a constant cast may wrap (CS0221).</summary>
     private int _uncheckedDepth;
 
+    /// <summary>
+    /// Inside checked(...) or a checked block, where arithmetic at run time
+    /// is checked: a type's checked operator (`operator checked +`,
+    /// `explicit operator checked int`) is the one its operators call.
+    /// </summary>
+    private bool _checked;
+
     private MethodSymbol? _method;
     private readonly List<LocalScope> _scopes = new();
 
@@ -1711,6 +1718,21 @@ public sealed partial class Binder
                 _r.TextConstants[key] = text;
                 _constantStates[key] = ConstantState.Complete;
             }
+            else if (IsDecimalType(Resolve(field.Type, owner)))
+            {
+                // A DECIMAL CONST, folded with .NET's arithmetic (Binder.Decimal).
+                if (DecimalValue(field.Init, owner, out decimal money, out _))
+                {
+                    _decimalConstants[key] = money;
+                    _constantStates[key] = ConstantState.Complete;
+                }
+                else
+                {
+                    if (_constantStates[key] != ConstantState.Failed)
+                        Error(field, $"'{name}' is const, so it must have a constant expression");
+                    _constantStates[key] = ConstantState.Failed;
+                }
+            }
             else if (Resolve(field.Type, owner) is { } realType && IsReal(realType))
             {
                 if (RealConstant(field.Init, owner) is double real)
@@ -1768,7 +1790,7 @@ public sealed partial class Binder
         {
             case null:
                 return null;
-            case LiteralExpr { Kind: Lit.Real } real:
+            case LiteralExpr { Kind: Lit.Real } real when !IsDecimalLiteral(real):
                 return real.RealValue;
             case LiteralExpr { Kind: Lit.Int } whole:
                 return whole.IntValue;
@@ -1791,11 +1813,16 @@ public sealed partial class Binder
             case CastExpr cast:
             {
                 Type to = Resolve(cast.Type, owner);
+                // A decimal one at a double's or a float's precision, as .NET converts it.
+                if (to.Prim is Prim.F32 or Prim.F64 && !to.Nullable && DecimalValue(cast.Operand, owner, out decimal money, out bool isMoney) && isMoney)
+                {
+                    return to.Prim == Prim.F32 ? (double)(float)money : (double)money;
+                }
                 if (to.Prim == Prim.F32) return RealConstant(cast.Operand, owner) is double f ? (double)(float)f : null;
                 if (to.Prim == Prim.F64) return RealConstant(cast.Operand, owner);
                 return ConstantValue(cast, owner) is long integral ? integral : null;
             }
-            case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
+            case NameExpr local when Lookup(local.Name) is ConstSym { Text: null, Number: null } named:
                 return IsReal(named.Type) ? BitConverter.Int64BitsToDouble(named.Value) : named.Value;
             case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? BitConverter.Int64BitsToDouble(here.Value) : here.Value;
@@ -1880,8 +1907,14 @@ public sealed partial class Binder
         switch (e)
         {
             // A LOCAL const, which names a value exactly as a field's does.
-            case NameExpr local when Lookup(local.Name) is ConstSym { Text: null } named:
+            case NameExpr local when Lookup(local.Name) is ConstSym { Text: null, Number: null } named:
                 return (named.Value, Fold.Whole(named.Type));
+
+            // A DECIMAL CONSTANT CAST TO A WHOLE TYPE is one too (Binder.Decimal).
+            case CastExpr { Type: { ArrayRank: 0, PointerDepth: 0, Nullable: false } to } cast
+                when Fold.Keyword(to.Name) is Prim whole && whole is not (Prim.Bool or Prim.F32 or Prim.F64)
+                  && DecimalCast(cast, whole, owner) is long truncated:
+                return (truncated, whole);
 
             case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return (here.Value, Fold.Whole(here.Type));
@@ -4463,7 +4496,7 @@ public sealed partial class Binder
                     // A CONVERSION OPERATOR is told apart by what it returns
                     // as well (C# 15.10.4): JsonNode converts to bool, int,
                     // long and double from the one parameter.
-                    bool conversion = ms.Name is "op_Implicit" or "op_Explicit";
+                    bool conversion = ms.Name is "op_Implicit" or "op_Explicit" or "op_CheckedExplicit";
                     // A loop over the methods already declared, a name compared
                     // before anything else: as a FirstOrDefault it was a
                     // closure for every method of every type.
@@ -5307,6 +5340,13 @@ public sealed partial class Binder
             case "Double" or "System.Double": return Type.F64;
             case "Char" or "System.Char": return Type.Char;
 
+            // `decimal` IS System.Decimal (C# 8.2.1), and here that is the
+            // class library's struct, not a primitive: a 96-bit integer and a
+            // power of ten, whose operators and conversions are the struct's
+            // own -- which is all C#'s predefined decimal operators are in
+            // .NET too. The library's, whatever the program calls Decimal.
+            case "decimal" when LibraryDecimal() is TypeSymbol money: return NamedType(money, Array.Empty<Type>(), null);
+
             // THE SHARED SHAPE OF EVERY MACHINE WORD.
             //
             // What a generic's type parameter becomes in the ONE compiled copy
@@ -6057,9 +6097,11 @@ public sealed partial class Binder
                 // `checked { }` and `unchecked { }`: what a constant cast may
                 // do inside (CastExpr, CS0221).
                 int outer = _uncheckedDepth;
+                bool outerChecked = _checked;
                 if (b.ArithmeticContext != 0) _uncheckedDepth = b.ArithmeticContext == 1 ? 0 : 1;
+                if (b.ArithmeticContext != 0) _checked = b.ArithmeticContext == 1;
                 try { CheckBlock(b); }
-                finally { _uncheckedDepth = outer; }
+                finally { _uncheckedDepth = outer; _checked = outerChecked; }
                 break;
             }
 
@@ -6086,6 +6128,14 @@ public sealed partial class Binder
 
                     foreach (LocalDecl one in new[] { d }.Concat(d.Also))
                     {
+                        // A DECIMAL ONE, folded with .NET's arithmetic (Binder.Decimal).
+                        if (IsDecimalType(declared) && DecimalValue(one.Init, _thisType, out decimal money, out _))
+                        {
+                            CheckExpr(one.Init!);
+                            Declare(one, one.Name, new ConstSym(0, declared, Number: money));
+                            continue;
+                        }
+
                         if (IsReal(declared) && RealConstant(one.Init, _thisType) is double real)
                         {
                             CheckExpr(one.Init!);
@@ -7334,13 +7384,24 @@ public sealed partial class Binder
 
         // A USER-DEFINED IMPLICIT CONVERSION, where no standard one applies.
         if (at is Expr converted && !StandardConvertible(from, to) && !Variant(from, to)
-            && (!_r.Rewrites.TryGetValue(converted, out Expr? priorRewrite) || priorRewrite is CallExpr { Target: MemberExpr { Name: "op_Implicit" } })
             && UserConversion(from, to, explicitToo: false, IntegerConstant(converted, from)) is { } implicitOp)
         {
-            // CHECKED AGAIN, it is the operator's call already: the operands
-            // of `t - 1 - x` are checked once to choose the operator and again
-            // as its arguments.
-            if (priorRewrite is null) ConvertByOperator(converted, implicitOp);
+            if (!_r.Rewrites.TryGetValue(converted, out Expr? priorRewrite))
+            {
+                ConvertByOperator(converted, implicitOp);
+            }
+            else if (!_r.Rewrites.ContainsKey(priorRewrite) && _r.ExprType.TryGetValue(priorRewrite, out Type? made) && made.Equals(from))
+            {
+                // WHAT ANOTHER REWRITE MADE IS CONVERTED IN TURN: a cast's
+                // explicit operator, a declared `+`, answering the `from` the
+                // conversion starts at -- `Int128 x = (int)big;`. The node
+                // carries one rewrite, so this one hangs on that one's call;
+                // left out, the int was taken for the struct.
+                ConvertByOperator(priorRewrite, implicitOp);
+            }
+            // Otherwise CHECKED AGAIN, it is the operator's call already: the
+            // operands of `t - 1 - x` are checked once to choose the operator
+            // and again as its arguments.
             return;
         }
 
@@ -7552,7 +7613,28 @@ public sealed partial class Binder
     }
 
     private MethodSymbol? UserConversion(Type from, Type to, bool explicitToo)
-        => UserConversionWhere(from, to, explicitToo, operand => StandardConvertible(from, operand));
+        => UserConversionWhere(from, to, explicitToo, operand => StandardConvertible(from, operand) || IntegerToDecimal(from, operand));
+
+    /// <summary>
+    /// AN INTEGER OR A CHAR REACHES A DECIMAL by C#'s implicit numeric
+    /// conversion (10.2.3), which is a standard one -- here decimal's own
+    /// operator, applied when the argument is bound -- so a user-defined
+    /// conversion from decimal is reached through it: `Price p = 5;`.
+    /// </summary>
+    private bool IntegerToDecimal(Type from, Type operand)
+        => from.IsInteger && from.Symbol is null && !from.Nullable && IsDecimalType(operand);
+
+    private static readonly string[] Implicits = { "op_Implicit" };
+    private static readonly string[] Explicits = { "op_Implicit", "op_Explicit" };
+    private static readonly string[] CheckedExplicits = { "op_Implicit", "op_CheckedExplicit", "op_Explicit" };
+
+    /// <summary>The checked form of an operator's name, for those C# 11 lets a type declare one of.</summary>
+    private static string? CheckedOperatorName(string name) => name switch
+    {
+        "op_Addition" or "op_Subtraction" or "op_Multiply" or "op_Division"
+            or "op_UnaryNegation" or "op_Increment" or "op_Decrement" => "op_Checked" + name[3..],
+        _ => null,
+    };
 
     private MethodSymbol? UserConversionWhere(Type from, Type to, bool explicitToo, Func<Type, bool> takes)
     {
@@ -7578,12 +7660,16 @@ public sealed partial class Binder
                 continue;
             }
 
-            foreach (string name in explicitToo ? new[] { "op_Implicit", "op_Explicit" } : new[] { "op_Implicit" })
+            foreach (string name in explicitToo ? (_checked ? CheckedExplicits : Explicits) : Implicits)
             {
                 foreach (MethodSymbol m in holder.FindMethods(name))
                 {
                     if (m.Static && m.Params.Count == 1
-                        && takes(m.Params[0].Type) && StandardConvertible(m.Returns, to))
+                        && takes(m.Params[0].Type) && StandardConvertible(m.Returns, to)
+                        // A checked context's explicit conversion is the
+                        // type's checked one where it has one (C# 11).
+                        && !(name == "op_Explicit" && _checked && holder.FindMethods("op_CheckedExplicit").Any(c => c.Static && c.Params.Count == 1
+                             && MethodSignatures.SameType(c.Params[0].Type, m.Params[0].Type) && MethodSignatures.SameType(c.Returns, m.Returns))))
                     {
                         candidates.Add(m);
                     }
@@ -7615,10 +7701,31 @@ public sealed partial class Binder
             Target = new MemberExpr { Target = Qualified(op.Owner, value), Name = op.Name, Line = value.Line, Col = value.Col, File = value.File },
             Line = value.Line, Col = value.Col, File = value.File,
         };
-        call.Args.Add(value);
+        // AN INTEGER REACHING THE OPERATOR'S DECIMAL (IntegerToDecimal) goes
+        // through decimal's own conversion first, written out here: the
+        // value is the one node either rewrite would hang on.
+        Expr argument = value;
+        if (op.Params.Count == 1 && _r.ExprType.TryGetValue(value, out Type? had) && IntegerToDecimal(had, op.Params[0].Type)
+            && UserConversion(had, op.Params[0].Type, explicitToo: false) is MethodSymbol widen)
+        {
+            CallExpr widened = new()
+            {
+                Target = new MemberExpr { Target = Qualified(widen.Owner, value), Name = widen.Name, Line = value.Line, Col = value.Col, File = value.File },
+                Line = value.Line, Col = value.Col, File = value.File,
+            };
+            widened.Args.Add(value);
+            argument = widened;
+        }
+        call.Args.Add(argument);
         _r.Rewrites[value] = call;
         _r.UserConversions.Add(call);
+        // A CONVERSION'S CALL CONVERTED AGAIN keeps the operator chosen for
+        // it: checked as this call's argument, its overloads -- which differ
+        // only in what they make -- would give it the first of them.
+        MethodSymbol? chosen = value is CallExpr inner && _r.Calls.TryGetValue(inner, out MethodSymbol? had2)
+                               && had2.Name is "op_Implicit" or "op_Explicit" or "op_CheckedExplicit" ? had2 : null;
         CheckExpr(call);
+        if (chosen is not null) Converting((CallExpr)value, chosen);
         return Converting(call, op);
     }
 
@@ -7642,6 +7749,7 @@ public sealed partial class Binder
         {
             return true;
         }
+
 
         // A null literal converts to every reference type and Nullable<T>.
         // Reference annotations do not change conversion/overload membership
@@ -12556,7 +12664,7 @@ public sealed partial class Binder
     /// asked for a `IReadOnlyList$Row`, which is a different specialisation
     /// from the one the list implements and converts to nothing.
     /// </summary>
-    private static string? NameOf(Type t) => t.Symbol?.Key ?? t.Prim switch
+    private static string? NameOf(Type t) => t.Symbol is { Key: "Decimal" } ? "decimal" : t.Symbol?.Key ?? t.Prim switch
     {
         Prim.String => "string",
         Prim.Bool => "bool",
@@ -13040,6 +13148,7 @@ public sealed partial class Binder
         {
             bool has = FindConstant(at, n.Name) is not null
                     || FindText(at, n.Name) is not null
+                    || FindDecimal(at, n.Name) is not null
                     || at.FindField(n.Name) is { Static: true }
                     || at.FindBackingField(n.Name) is { Static: true }
                     || at.EnumValues.ContainsKey(n.Name);
@@ -13067,11 +13176,11 @@ public sealed partial class Binder
     /// </summary>
     private bool NamesConstant(string name)
     {
-        if (FindConstant(_thisType, name) is not null || FindText(_thisType, name) is not null) return true;
+        if (FindConstant(_thisType, name) is not null || FindText(_thisType, name) is not null || FindDecimal(_thisType, name) is not null) return true;
         for (string? outerKey = OuterKey(_thisType ?? _lexicalType ?? _scope); outerKey is not null; outerKey = Enclosing(outerKey))
         {
             if (_r.Types.TryGetValue(outerKey, out TypeSymbol? outer)
-                && (FindConstant(outer, name) is not null || FindText(outer, name) is not null))
+                && (FindConstant(outer, name) is not null || FindText(outer, name) is not null || FindDecimal(outer, name) is not null))
             {
                 return true;
             }
@@ -13138,6 +13247,12 @@ public sealed partial class Binder
     private Type CheckExpr(Expr e)
     {
         Type t = CheckExprCore(e);
+        // A DECIMAL CONSTANT EXPRESSION IS ITS VALUE: `Rate * 12m` folded, as
+        // C# folds it (Binder.Decimal).
+        if (e is BinaryExpr or UnaryExpr or CastExpr && IsDecimalType(t))
+        {
+            FoldDecimal(e);
+        }
         _r.ExprType[e] = t;
         if (_inBodies) ForceBody(t);
         // An event, read from outside the type that declares it, is refused
@@ -13270,6 +13385,10 @@ public sealed partial class Binder
                 _r.Tuples[tup] = made;
                 return shaped;
             }
+
+            // `1.50m` IS A DECIMAL, the struct made from its words (Binder.Decimal).
+            case LiteralExpr money when IsDecimalLiteral(money):
+                return CheckDecimalLiteral(money);
 
             case LiteralExpr l:
                 return l.Kind switch
@@ -14324,11 +14443,12 @@ public sealed partial class Binder
                 }
 
                 int outerContext = _uncheckedDepth;
-                if (u.Op == UnOp.Unchecked) _uncheckedDepth = 1;
-                else if (u.Op == UnOp.Checked) _uncheckedDepth = 0;
+                bool outerChecked = _checked;
+                if (u.Op == UnOp.Unchecked) { _uncheckedDepth = 1; _checked = false; }
+                else if (u.Op == UnOp.Checked) { _uncheckedDepth = 0; _checked = true; }
                 Type t;
                 try { t = CheckExpr(u.Operand); }
-                finally { _uncheckedDepth = outerContext; }
+                finally { _uncheckedDepth = outerContext; _checked = outerChecked; }
 
                 if (t.IsError)
                 {
@@ -15182,6 +15302,28 @@ public sealed partial class Binder
                     }
                 }
 
+                // A DECIMAL CAST TO AN ENUM is one to its underlying type and
+                // then the enum (C# 10.3.3): decimal's operator to the number
+                // first. Left to the rest, the struct's address was the enum.
+                if (!_r.Rewrites.ContainsKey(cast) && IsDecimalType(operand) && wanted.IsEnumValue && !wanted.Nullable
+                    && wanted.Symbol is { } enumType
+                    && UserConversion(operand, new Type { Prim = enumType.EnumUnderlying }, explicitToo: true) is { } toNumber)
+                {
+                    CallExpr number = new()
+                    {
+                        Target = new MemberExpr { Target = Qualified(toNumber.Owner, cast), Name = toNumber.Name, Line = cast.Line, Col = cast.Col, File = cast.File },
+                        Line = cast.Line, Col = cast.Col, File = cast.File,
+                    };
+                    number.Args.Add(cast.Operand);
+                    CastExpr toEnum = new() { Type = cast.Type, Operand = number, Line = cast.Line, Col = cast.Col, File = cast.File };
+                    _r.Rewrites[cast] = toEnum;
+                    Type made = CheckExpr(toEnum);
+                    // The operator chosen, not the first its overloading finds:
+                    // they differ only in what they make.
+                    Converting(number, toNumber);
+                    return made;
+                }
+
                 // `(string?)attribute` CALLS THE OPERATOR the type declares,
                 // implicit or explicit, where no standard conversion either
                 // way does the job (a downcast is a standard one).
@@ -15311,6 +15453,22 @@ public sealed partial class Binder
                     {
                         arm.Value = new NameExpr { Name = bare.Name, Line = bare.Line, Col = bare.Col };
                         arm.Type = null;
+                    }
+
+                    // A DECIMAL CONSTANT IS MATCHED BY decimal's ==, as C#
+                    // matches it: 1.50m takes the `1.5m =>` arm, which their
+                    // bytes would not. The arm becomes the guard over the
+                    // subject a switch statement's label already is.
+                    if (arm.Value is not null and not LiteralExpr { Kind: Lit.Null } && IsDecimalType(subject.AsNonNullable()))
+                    {
+                        Expr same = new BinaryExpr
+                        {
+                            Op = BinOp.Eq, Left = new SubjectExpr { Line = arm.Line, Col = arm.Col }, Right = arm.Value,
+                            Line = arm.Line, Col = arm.Col,
+                        };
+                        arm.When = arm.When is null ? same : new BinaryExpr { Op = BinOp.AndAlso, Left = same, Right = arm.When, Line = arm.Line, Col = arm.Col };
+                        arm.Value = null;
+                        arm.Discard = true;
                     }
 
                     if (arm.Type is not null)
@@ -16975,7 +17133,7 @@ public sealed partial class Binder
         // -- the first part of a namespace-qualified one.
         if (n.Global
             && ((FindType(n.Name, out TypeSymbol? globalType) && globalType is not null)
-                || (Alias(n.Name) is string globalAlias && _r.Types.TryGetValue(globalAlias, out globalType))))
+                || (Alias(n.Name) is string globalAlias && TypeCandidate(globalAlias, out globalType) && globalType is not null)))
         {
             _r.Resolved[n] = new TypeNameSym(globalType);
             return Type.Plain(globalType, Prim.Void);
@@ -17022,6 +17180,12 @@ public sealed partial class Binder
                     Kind = Lit.Str, Text = spelt.Text, Line = n.Line, Col = n.Col, File = n.File,
                 };
                 return spelt.Type;
+            }
+
+            // A CONST DECIMAL READS AS THE STRUCT ITS VALUE IS.
+            if (sym is ConstSym { Number: decimal money })
+            {
+                return DecimalAs(n, money);
             }
 
             Type found = sym switch
@@ -17073,6 +17237,11 @@ public sealed partial class Binder
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
                 return ctype;
+            }
+
+            if (FindDecimal(_thisType, n.Name) is decimal ownMoney)
+            {
+                return ReadDecimalConstant(n, ownMoney);
             }
 
             if (FindText(_thisType, n.Name) is string spelt)
@@ -17186,6 +17355,11 @@ public sealed partial class Binder
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
                 return ctype;
+            }
+
+            if (FindDecimal(_lexicalType, n.Name) is decimal lexicalMoney)
+            {
+                return ReadDecimalConstant(n, lexicalMoney);
             }
 
             if (FindText(_lexicalType, n.Name) is string spelt)
@@ -17323,6 +17497,11 @@ public sealed partial class Binder
                 return outerConstType;
             }
 
+            if (FindDecimal(outer, n.Name) is decimal outerMoney)
+            {
+                return ReadDecimalConstant(n, outerMoney);
+            }
+
             if (FindText(outer, n.Name) is string outerText)
             {
                 _r.Rewrites[n] = new LiteralExpr
@@ -17403,7 +17582,7 @@ public sealed partial class Binder
             return Type.Plain(root, Prim.Void);
         }
         if ((FindType(n.Name, out TypeSymbol? type) && type is not null)
-            || (Alias(n.Name) is string full && _r.Types.TryGetValue(full, out type)))
+            || (Alias(n.Name) is string full && TypeCandidate(full, out type) && type is not null))
         {
             _r.Resolved[n] = new TypeNameSym(type);
             return Type.Plain(type, Prim.Void);
@@ -17469,6 +17648,7 @@ public sealed partial class Binder
         "nuint"  => "UIntPtr",
         "float"  => "Single",
         "double" => "Double",
+        "decimal" => "Decimal",
         "char"   => "Char",
         "string" => "String",
         "object" => "Object",
@@ -17596,7 +17776,8 @@ public sealed partial class Binder
                     || owner.FindMethods(name).Count > 0
                     || owner.FindMethods("get_", name).Count > 0))
             || FindConstant(_thisType, name) is not null
-            || FindText(_thisType, name) is not null;
+            || FindText(_thisType, name) is not null
+            || FindDecimal(_thisType, name) is not null;
 
         bool NamespaceOnly(Expr expression) => expression switch
         {
@@ -18099,6 +18280,11 @@ public sealed partial class Binder
 
             Error(m, $"'{target}' has no member '{m.Name}'");
             return Type.Error;
+        }
+
+        if (FindDecimal(owner, m.Name) is decimal memberMoney)
+        {
+            return ReadDecimalConstant(m, memberMoney);
         }
 
         if (FindText(owner, m.Name) is string constantText)
@@ -21133,7 +21319,16 @@ public sealed partial class Binder
         }
 
         long? lc = IntegerConstant(b.Left, l), rc = IntegerConstant(b.Right, r);
-        MethodSymbol? found = Operator(l.Symbol, name, l, r, lc, rc) ?? Operator(r.Symbol, name, l, r, lc, rc);
+        // IN A CHECKED CONTEXT a type's checked operator first (C# 11), and
+        // its ordinary one where it declares none.
+        MethodSymbol? found = null;
+        if (_checked && CheckedOperatorName(name) is string checkedName
+            && (Operator(l.Symbol, checkedName, l, r, lc, rc) ?? Operator(r.Symbol, checkedName, l, r, lc, rc)) is MethodSymbol checkedOp)
+        {
+            found = checkedOp;
+            name = checkedName;
+        }
+        found ??= Operator(l.Symbol, name, l, r, lc, rc) ?? Operator(r.Symbol, name, l, r, lc, rc);
 
         // LIFTED, C# 12.4.8: `==` and `!=` over a nullable struct whose
         // underlying type declares them -- `path != here` with ListPath? on
@@ -21475,23 +21670,61 @@ public sealed partial class Binder
         {
             return null;
         }
+        // In a checked context the checked one, where the type has it (C# 11).
+        if (_checked && CheckedOperatorName(name) is string checkedName
+            && holder.FindMethods(checkedName).Any(m => m.Static && m.Params.Count == 1 && Convertible(operand, m.Params[0].Type)))
+        {
+            name = checkedName;
+        }
+        // LIFTED (C# 12.4.8): over a nullable struct whose underlying type
+        // declares it, the operator on the value it holds, and empty where it
+        // holds none -- `-n`, `n++` with a decimal? n -- unless the type
+        // declares one over the nullable itself.
         MethodSymbol? found = holder.FindMethods(name)
-            .FirstOrDefault(m => m.Static && m.Params.Count == 1 && Convertible(operand, m.Params[0].Type));
+            .FirstOrDefault(m => m.Static && m.Params.Count == 1 && Convertible(operand, m.Params[0].Type)
+                                 && (!operand.IsNullableValue || m.Params[0].Type.IsNullableValue));
+        bool lifted = false;
+        if (found is null && operand.IsNullableValue)
+        {
+            Type under = operand.Underlying;
+            found = holder.FindMethods(name).FirstOrDefault(m => m.Static && m.Params.Count == 1 && Convertible(under, m.Params[0].Type)
+                                                                 && ValueOperand(m.Params[0].Type) && ValueOperand(m.Returns));
+            lifted = found is not null;
+        }
         if (found is null)
         {
             return null;
         }
 
-        CallExpr Apply(Expr on)
+        Expr Apply(Expr on)
         {
             CallExpr call = new()
             {
                 Target = new MemberExpr { Target = Qualified(found.Owner, u), Name = name, Line = u.Line, Col = u.Col },
                 Line = u.Line, Col = u.Col,
             };
-            call.Args.Add(on);
+            if (!lifted)
+            {
+                call.Args.Add(on);
+                call.WritableArgNames.Add(null);
+                return call;
+            }
+            // The operand held once: its value through the operator if it has one.
+            SubjectExpr held = new() { Line = u.Line, Col = u.Col };
+            call.Args.Add(new MemberExpr { Target = held, Name = "Value", Line = u.Line, Col = u.Col });
             call.WritableArgNames.Add(null);
-            return call;
+            return new PatternExpr
+            {
+                Subject = on,
+                Test = new ConditionalExpr
+                {
+                    Cond = new MemberExpr { Target = new SubjectExpr { Line = u.Line, Col = u.Col }, Name = "HasValue", Line = u.Line, Col = u.Col },
+                    Then = call,
+                    Else = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = u.Line, Col = u.Col },
+                    Line = u.Line, Col = u.Col,
+                },
+                Line = u.Line, Col = u.Col,
+            };
         }
 
         Expr made;

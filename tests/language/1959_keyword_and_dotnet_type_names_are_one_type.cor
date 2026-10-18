@@ -1,0 +1,41 @@
+// test: keyword_and_dotnet_type_names_are_one_type
+// expect-exit: 0
+// expect-output:
+// 6 3 5 3.75 2
+// True True True True True True True False
+// bound 5 1.5
+// int 5; long 5; decimal 1.5; double 2.5; string x; other
+// 2 System.Collections.Generic.List`1[System.Int32] True True
+//
+// C#'S KEYWORD FOR A TYPE AND .NET'S NAME FOR IT ARE ONE TYPE: List<Int32>
+// is List<int>, List<System.Decimal> is List<decimal>, Dictionary<String,
+// Int64> is Dictionary<string, long>, each converting to the other with no
+// cast and one type to typeof; and `o is Int32`, `o is System.Decimal` and
+// the switch arms over them test the box as the keyword's spelling does.
+
+using System;
+using System.Collections.Generic;
+
+class Program
+{
+    static int Sum(List<Int32> xs) { int s = 0; foreach (int x in xs) s += x; return s; }
+    static decimal Total(IEnumerable<System.Decimal> xs) { decimal s = 0; foreach (decimal x in xs) s += x; return s; }
+    static string Kind(object o) => o switch { Int32 i => "int " + i, System.Int64 l => "long " + l, Decimal d => "decimal " + d, System.Double f => "double " + f, String s => "string " + s, _ => "other" };
+
+    static void Main()
+    {
+        List<int> ints = new List<int> { 1, 2, 3 };
+        List<Int32> same = ints;
+        Dictionary<String, Int64> named = new Dictionary<string, long> { { "a", 5 } };
+        List<decimal> money = new List<Decimal> { 1.5m, 2.25m };
+        List<System.Decimal> also = money;
+        Console.WriteLine(Sum(ints) + " " + same.Count + " " + named["a"] + " " + Total(money) + " " + also.Count);
+        object o1 = 5, o2 = 5L, o3 = 1.5m, o4 = 2.5, o5 = "x";
+        Console.WriteLine((o1 is Int32) + " " + (o1 is System.Int32) + " " + (o2 is Int64) + " " + (o3 is decimal) + " " + (o3 is Decimal) + " " + (o3 is System.Decimal) + " " + (o4 is Double) + " " + (o1 is Int64));
+        if (o2 is System.Int64 bound && o3 is System.Decimal cash) Console.WriteLine("bound " + bound + " " + cash);
+        Console.WriteLine(Kind(o1) + "; " + Kind(o2) + "; " + Kind(o3) + "; " + Kind(o4) + "; " + Kind(o5) + "; " + Kind('c'));
+        Int32[] arr = { 4, 5 };
+        int[] arr2 = arr;
+        Console.WriteLine(arr2.Length + " " + typeof(List<Int32>) + " " + (typeof(List<int>) == typeof(List<Int32>)) + " " + (typeof(List<decimal>) == typeof(List<Decimal>)));
+    }
+}

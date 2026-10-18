@@ -401,6 +401,18 @@ class BinaryWriter : IDisposable
         Fixed(BitConverter.DoubleToInt64Bits(value), 8);
     }
 
+    /// Its four words as GetBits gives them, lo, mid, hi and the flags.
+    public void Write(decimal value)
+    {
+        int[] bits = decimal.GetBits(value);
+        for (int i = 0; i < 4; i++) Fixed(bits[i], 4);
+    }
+
+    public void Write(Half value)
+    {
+        Fixed(BitConverter.HalfToUInt16Bits(value), 2);
+    }
+
     /// A char as its bytes in the writer's encoding. A surrogate half alone is
     /// no character and .NET refuses it.
     public void Write(char value)
@@ -576,6 +588,26 @@ class BinaryReader : IDisposable
     public double ReadDouble()
     {
         return BitConverter.Int64BitsToDouble(Fixed(8));
+    }
+
+    /// Four words of a decimal; flags no decimal has are .NET's IOException.
+    public decimal ReadDecimal()
+    {
+        int[] bits = new int[4];
+        for (int i = 0; i < 4; i++) bits[i] = (int)Fixed(4);
+        try
+        {
+            return new decimal(bits);
+        }
+        catch (ArgumentException e)
+        {
+            throw new IOException("Decimal constructor requires an array or span of four valid decimal bytes.", e);
+        }
+    }
+
+    public Half ReadHalf()
+    {
+        return BitConverter.UInt16BitsToHalf((ushort)Fixed(2));
     }
 
     /// One char: the bytes one character takes in the reader's encoding --

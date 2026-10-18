@@ -75,6 +75,18 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
         limbs = whole;
     }
 
+    /// The whole part of a decimal, truncated: its 96-bit integer and its sign.
+    public BigInteger(decimal value) {
+        int[] bits = decimal.GetBits(decimal.Truncate(value));
+        uint[] made = new uint[3];
+        made[0] = (uint)bits[0];
+        made[1] = (uint)bits[1];
+        made[2] = (uint)bits[2];
+        uint[] tidy = Trim(made);
+        sign = tidy.Length == 0 ? 0 : (bits[3] < 0 ? -1 : 1);
+        limbs = tidy;
+    }
+
     public BigInteger(byte[] value) : this(new ReadOnlySpan<byte>(value ?? throw new ArgumentNullException("value"))) { }
 
     /// TWO'S COMPLEMENT BYTES, least significant first unless isBigEndian
@@ -633,8 +645,16 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
         return Of(1, made);
     }
 
+    /// Its magnitude through UInt128's, MinValue's 2^127 included.
+    public static implicit operator BigInteger(Int128 value) {
+        if (Int128.IsNegative(value)) { return -(BigInteger)(UInt128)(-value); }
+        return (BigInteger)(UInt128)value;
+    }
+
     public static explicit operator BigInteger(float value) { return new BigInteger(value); }
     public static explicit operator BigInteger(double value) { return new BigInteger(value); }
+    public static explicit operator BigInteger(decimal value) { return new BigInteger(value); }
+    public static explicit operator BigInteger(Half value) { return new BigInteger((float)value); }
 
     /// THE NARROWING CONVERSIONS THROW .NET'S MESSAGES, which differ by the
     /// form the value is in: past a type's range in the small form the
@@ -696,6 +716,32 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
     public static explicit operator nuint(BigInteger value) {
         if (UIntPtr.Size == 8) { return (nuint)(ulong)value; }
         return (nuint)(uint)value;
+    }
+
+    /// Three limbs at most, the scale nought: past them .NET's decimal overflow.
+    public static explicit operator decimal(BigInteger value) {
+        uint[] magnitude = value.Mag;
+        if (magnitude.Length > 3) { throw new OverflowException("Value was either too large or too small for a Decimal."); }
+        int lo = magnitude.Length > 0 ? (int)magnitude[0] : 0;
+        int mi = magnitude.Length > 1 ? (int)magnitude[1] : 0;
+        int hi = magnitude.Length > 2 ? (int)magnitude[2] : 0;
+        return new decimal(lo, mi, hi, value.sign < 0, 0);
+    }
+
+    public static explicit operator Half(BigInteger value) { return (Half)(double)value; }
+
+    /// Four limbs at most and within Int128's range, as .NET reads the signs.
+    public static explicit operator Int128(BigInteger value) {
+        if (value.Small) { return (int)value; }
+        if (value.limbs.Length > 4) { throw NumberRead.TooBig("an Int128"); }
+
+        uint[] made = new uint[4];
+
+        for (int i = 0; i < value.limbs.Length; i++) { made[i] = value.limbs[i]; }
+        UInt128 magnitude = new UInt128(((ulong)made[3] << 32) | made[2], ((ulong)made[1] << 32) | made[0]);
+        Int128 result = value.sign > 0 ? (Int128)magnitude : -(Int128)magnitude;
+        if ((result > Int128.Zero && value.sign > 0) || (result < Int128.Zero && value.sign < 0)) { return result; }
+        throw NumberRead.TooBig("an Int128");
     }
 
     public static explicit operator UInt128(BigInteger value) {
@@ -1115,7 +1161,7 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
         bool negative = false;
         bool tail = false;
 
-        if (!NumberRead.Scan(text, s, true, digits, out count, out scale, out negative, out tail)) { return NumberRead.Format; }
+        if (!NumberRead.Scan(text, s, NumberBufferKind.Integer, digits, out count, out scale, out negative, out tail)) { return NumberRead.Format; }
 
         // AN EXPONENT BEYOND EVERY TYPE overflows; a point that leaves a
         // digit other than zero behind it is no integer.

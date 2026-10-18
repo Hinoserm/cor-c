@@ -29,11 +29,13 @@ public sealed class SwitchArm : Node, ICanonSlot
     /// The name it binds, or null.
     public string? Binding { get; init; }
 
-    /// `when` guard, evaluated only if the pattern matched.
-    public Expr? When { get; init; }
+    /// `when` guard, evaluated only if the pattern matched. Settable for the
+    /// same reason Value is: a decimal constant arm is a guard over the
+    /// subject, which only the checker knows (Binder).
+    public Expr? When { get; set; }
 
     /// True for `_`, which matches anything and binds nothing.
-    public bool Discard { get; init; }
+    public bool Discard { get; set; }
 
     public required Expr Result { get; init; }
 

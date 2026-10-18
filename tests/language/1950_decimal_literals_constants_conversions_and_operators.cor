@@ -1,0 +1,209 @@
+// test: decimal_literals_constants_conversions_and_operators
+// expect-exit: 0
+// expect-output:
+// 1.50 3 1000.5 0.0015 0.05 0.60 1000 2.05
+// 0,0,0,-2147418112
+// 79228162514264337593543950335 -79228162514264337593543950335 0 1 -1
+// 200 -100 -30000 60000 -2000000000 4000000000 -9223372036854775808 18446744073709551615 65
+// 0.1 0.0000000001 123456789.123457 0.1 340000000000000000000
+// 1.5 0.33333334 -7 1000000000000000000 255 A 18446744073709551615
+// OverflowException: Value was either too large or too small for an Int32.
+// Value was either too large or too small for an unsigned byte.
+// Value was either too large or too small for a character. / Value was either too large or too small for a UInt16.
+// Value was either too large or too small for a Decimal.
+// Value was either too large or too small for a Decimal.
+// 1 0.1
+// 0.200
+// 10.99
+// 8.99 -8.99 8.99
+// True False True False True True False
+// True
+// Value was either too large or too small for a Decimal.
+// Value was either too large or too small for a Decimal.
+// Value was either too large or too small for a Decimal.
+// Attempted to divide by zero.
+// Attempted to divide by zero.
+// False 3.5 6.25 7 True False
+// True 1.25 1.25 True Decimal System.Decimal
+// matched 1.25
+// -1234.5678 -1234.57 -1,234.57 (¤1,234.57) -123,456.8 % -1.235E+003 -1.23E+03 -1234.57     -1,234.6|
+// (1,234.568) 50 % 1,234,567.89
+// 0.00 0.00 100 1E-05 0.00000000000000000000000010
+// Format specifier was invalid.
+// Format specifier was invalid.
+// -1234.50 100000 0.000 -12
+// False 0 True 12.5
+// The input string '1e5' was not in a correct format.
+// Value was either too large or too small for a Decimal.
+// 0.1234567890123456789012345679
+// 79228162514264337593543950335 1.0000000000000000000000000000
+// 2 4 2.34 2.35 -3
+// -2 -1 -1 3.2 1.0 -2 -1 3
+// 1.5 -5 2 1.235
+// Decimal can only round to between 0 and 28 digits of precision. (Parameter 'decimals')
+// '3' cannot be greater than 2.
+// 123456 0 0 196608 123.456 -0.001 3
+// Decimal constructor requires an array or span of four valid decimal bytes.
+// scale ('29') must be less than or equal to '28'. (Parameter 'scale')
+// Actual value was 29.
+// 0.01 5 19.99 100.10 125.10 100.10 0.01 31.275
+// one True
+// 2.5 1 0 0
+// 0.25 1.5
+// zero one and a half negative big other
+// Price(9.95)
+// 3 2.5 4.75 1 2 4 1.5 1.50
+// 12346 1234.56 0.0000
+// True False True True True False
+//
+// C#'S decimal, as .NET's System.Decimal: literals with every suffix,
+// exponent and underscore C# reads, kept at the scale they are written with
+// (1.50m prints 1.50); const fields and locals folded with .NET's own
+// arithmetic, a negative zero's sign kept; the implicit conversions from
+// every integer type and char and the explicit ones to and from float,
+// double and the integers, each overflow .NET's OverflowException and
+// message; every operator, compound and lifted, checked or not; boxing and
+// type tests; the standard and custom formats; Parse and TryParse with their
+// styles; Math's decimal overloads with every MidpointRounding; GetBits and
+// the constructors that check what they are given; decimal in a List, a
+// Dictionary key (1.0m and 1.000m are one key), LINQ's Sum and Average, a
+// generic constraint, a default parameter, a switch expression's constant and
+// relational arms; a user conversion from decimal; Convert's decimal rows and
+// OLE currency.
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+
+struct Price
+{
+    public decimal Amount;
+    public Price(decimal amount) { Amount = amount; }
+    public static implicit operator Price(decimal d) => new Price(d);
+    public override string ToString() => "Price(" + Amount + ")";
+}
+
+class Program
+{
+    const decimal Rate = 0.05m;
+    const decimal Yearly = Rate * 12;
+    const decimal Big = 1e3m;
+    const decimal Mixed = 2 + Rate;
+    const decimal Neg = -0.0m;
+
+    static decimal Half(decimal d = 0.5m) => d / 2;
+
+    static T Larger<T>(T a, T b) where T : IComparable<T> => a.CompareTo(b) >= 0 ? a : b;
+
+    static string Kind(decimal d) => d switch
+    {
+        0m => "zero",
+        1.5m => "one and a half",
+        < 0m => "negative",
+        > 100m => "big",
+        _ => "other",
+    };
+
+    static void Main()
+    {
+        decimal a = 1.50m, b = 3m, c = 1_000.5M, e = 1.5E-3m;
+        Console.WriteLine(a + " " + b + " " + c + " " + e + " " + Rate + " " + Yearly + " " + Big + " " + Mixed);
+        Console.WriteLine(string.Join(",", decimal.GetBits(Neg)));
+        Console.WriteLine(decimal.MaxValue + " " + decimal.MinValue + " " + decimal.Zero + " " + decimal.One + " " + decimal.MinusOne);
+
+        // implicit from every integer type and char
+        byte by = 200; sbyte sb = -100; short sh = -30000; ushort us = 60000; int i = -2000000000; uint ui = 4000000000;
+        long l = long.MinValue; ulong ul = ulong.MaxValue; char ch = 'A';
+        decimal[] all = { by, sb, sh, us, i, ui, l, ul, ch };
+        string listed = "";
+        foreach (decimal x in all) listed += (listed.Length > 0 ? " " : "") + x;
+        Console.WriteLine(listed);
+
+        // explicit conversions
+        Console.WriteLine((decimal)0.1 + " " + (decimal)1e-10 + " " + (decimal)123456789.123456789 + " " + (decimal)0.1f + " " + (decimal)3.4e20f);
+        Console.WriteLine((double)a + " " + (float)(1m / 3m) + " " + (int)-7.9m + " " + (long)1e18m + " " + (byte)255.9m + " " + (char)65.2m + " " + (ulong)18446744073709551615m);
+        decimal huge = 3e10m, minus = -1m;
+        double far = 1e30, nan = double.NaN;
+        try { Console.WriteLine((int)huge); } catch (OverflowException x) { Console.WriteLine(x.GetType().Name + ": " + x.Message); }
+        try { Console.WriteLine((byte)minus); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        try { Console.WriteLine((char)minus); } catch (OverflowException x) { Console.WriteLine(x.Message + " / " + x.InnerException!.Message); }
+        try { Console.WriteLine((decimal)far); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        try { Console.WriteLine((decimal)nan); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        const int folded = (int)1.9m;
+        const double asDouble = (double)0.1m;
+        Console.WriteLine(folded + " " + asDouble);
+
+        // operators
+        decimal t = a;
+        t += 2; t *= 1.1m; t -= 0.25m; t /= 3; t %= 1m;
+        Console.WriteLine(t);
+        decimal u = 9.99m;
+        u++; Console.WriteLine(u); u--; u--; Console.WriteLine(u + " " + -u + " " + +u);
+        Console.WriteLine((a == 1.5m) + " " + (a != 1.5m) + " " + (a < b) + " " + (a >= b) + " " + a.Equals(1.5m) + " " + a.Equals((object)1.5m) + " " + a.Equals((object)1.5));
+        Console.WriteLine(a.GetHashCode() == 1.5m.GetHashCode());
+        decimal max = decimal.MaxValue;
+        try { Console.WriteLine(max + 1); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        try { Console.WriteLine(checked(max * 2)); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        try { Console.WriteLine(unchecked(max * 2)); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        decimal zero = 0;
+        try { Console.WriteLine(a / zero); } catch (DivideByZeroException x) { Console.WriteLine(x.Message); }
+        try { Console.WriteLine(a % zero); } catch (DivideByZeroException x) { Console.WriteLine(x.Message); }
+
+        // nullable
+        decimal? n = null;
+        decimal? m = 2.5m;
+        Console.WriteLine((n + 1m).HasValue + " " + (m + 1m) + " " + (m * m) + " " + (n ?? 7m) + " " + (m > 2m) + " " + (n < 1m));
+
+        // boxing
+        object o = 1.25m;
+        Console.WriteLine((o is decimal) + " " + (decimal)o + " " + o + " " + o.Equals(1.250m) + " " + o.GetType().Name + " " + typeof(decimal).FullName);
+        if (o is decimal dd && dd > 1m) Console.WriteLine("matched " + dd);
+
+        // formatting
+        decimal f = -1234.5678m;
+        Console.WriteLine($"{f} {f:F2} {f:N} {f:C} {f:P1} {f:E3} {f:G3} {f:0.00} {f,12:N1}|");
+        Console.WriteLine(f.ToString("#,##0.000;(#,##0.000)") + " " + 0.5m.ToString("P0") + " " + 1234567.891m.ToString("N2"));
+        Console.WriteLine(0.00m.ToString() + " " + (-0.00m).ToString() + " " + 100m.ToString("G0") + " " + 0.00001m.ToString("G0") + " " + 1.0E-25m);
+        try { Console.WriteLine(f.ToString("D")); } catch (FormatException x) { Console.WriteLine(x.Message); }
+        try { Console.WriteLine(f.ToString("X")); } catch (FormatException x) { Console.WriteLine(x.Message); }
+
+        // parsing
+        Console.WriteLine(decimal.Parse("  -1,234.50 ") + " " + decimal.Parse("1e5", NumberStyles.Float) + " " + decimal.Parse("0.000") + " " + decimal.Parse("(12)", NumberStyles.AllowParentheses));
+        Console.WriteLine(decimal.TryParse("abc", out decimal bad) + " " + bad + " " + decimal.TryParse("12.5", out decimal good) + " " + good);
+        try { decimal.Parse("1e5"); } catch (FormatException x) { Console.WriteLine(x.Message); }
+        try { decimal.Parse("99999999999999999999999999999"); } catch (OverflowException x) { Console.WriteLine(x.Message); }
+        Console.WriteLine(decimal.Parse("0.1234567890123456789012345678901234"));
+        Console.WriteLine(decimal.Parse("79228162514264337593543950335.4") + " " + decimal.Parse("1.00000000000000000000000000005"));
+
+        // Math
+        Console.WriteLine(Math.Round(2.5m) + " " + Math.Round(3.5m) + " " + Math.Round(2.345m, 2) + " " + Math.Round(2.345m, 2, MidpointRounding.AwayFromZero) + " " + Math.Round(-2.5m, MidpointRounding.AwayFromZero));
+        Console.WriteLine(Math.Floor(-1.5m) + " " + Math.Ceiling(-1.5m) + " " + Math.Truncate(-1.5m) + " " + Math.Abs(-3.2m) + " " + Math.Max(1.0m, 1.00m) + " " + Math.Min(-2m, 3m) + " " + Math.Sign(-0.1m) + " " + Math.Clamp(5.5m, 1m, 3m));
+        Console.WriteLine(decimal.Remainder(10.5m, 3m) + " " + decimal.Negate(5m) + " " + decimal.Floor(2.7m) + " " + decimal.Round(1.23456m, 3));
+        try { Math.Round(1m, 29); } catch (ArgumentOutOfRangeException x) { Console.WriteLine(x.Message); }
+        try { Math.Clamp(1m, 3m, 2m); } catch (ArgumentException x) { Console.WriteLine(x.Message); }
+
+        // bits
+        int[] parts = decimal.GetBits(123.456m);
+        Console.WriteLine(string.Join(" ", parts) + " " + new decimal(parts) + " " + new decimal(1, 0, 0, true, 3) + " " + 1.230m.Scale);
+        try { new decimal(new[] { 1, 2, 3 }); } catch (ArgumentException x) { Console.WriteLine(x.Message); }
+        try { new decimal(1, 2, 3, false, 29); } catch (ArgumentOutOfRangeException x) { Console.WriteLine(x.Message); }
+
+        // collections, generics, LINQ
+        List<decimal> prices = new List<decimal> { 19.99m, 5m, 0.01m, 100.10m };
+        prices.Sort();
+        Console.WriteLine(string.Join(" ", prices) + " " + prices.Sum() + " " + prices.Max() + " " + prices.Min() + " " + prices.Average());
+        Dictionary<decimal, string> names = new Dictionary<decimal, string> { { 1.0m, "one" } };
+        Console.WriteLine(names[1.000m] + " " + names.ContainsKey(1m));
+        Console.WriteLine(Larger(2.5m, 2.50m) + " " + Larger(-1m, 1m) + " " + default(decimal) + " " + (new decimal[2])[1]);
+        Console.WriteLine(Half() + " " + Half(3m));
+        Console.WriteLine(Kind(0.0m) + " " + Kind(1.50m) + " " + Kind(-3m) + " " + Kind(500m) + " " + Kind(7m));
+        Price p = 9.95m;
+        Console.WriteLine(p);
+
+        // Convert
+        Console.WriteLine(Convert.ToDecimal(3) + " " + Convert.ToDecimal(2.5) + " " + Convert.ToDecimal("4.75") + " " + Convert.ToDecimal(true) + " " + Convert.ToInt32(2.5m) + " " + Convert.ToInt32(3.5m) + " " + Convert.ToDouble(1.5m) + " " + Convert.ToString(1.50m));
+        Console.WriteLine(decimal.ToOACurrency(1.23456m) + " " + decimal.FromOACurrency(12345600) + " " + decimal.FromOACurrency(0));
+        Console.WriteLine(decimal.IsInteger(2.0m) + " " + decimal.IsCanonical(2.0m) + " " + decimal.IsCanonical(2m) + " " + decimal.IsNegative(-0.0m) + " " + decimal.IsEvenInteger(4m) + " " + decimal.IsOddInteger(4.5m));
+    }
+}

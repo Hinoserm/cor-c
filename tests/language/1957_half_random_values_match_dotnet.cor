@@ -1,0 +1,87 @@
+// test: half_random_values_match_dotnet
+// expect-exit: 0
+// expect-output:
+// E3E7 ABE0 C47CE000 C08F9C0000000000
+// ops E3E7 E3E7 53C7 7404 AB00 63E7 63E7
+// cmp True True False True -1 False False True False
+// fmt G [-1011.5] [-1011.5]
+// prs E3E7
+// int -1011 -1011 -1011.5 -1011
+// from 97B6678E 8000 101F5E859D7DDED0 0000 FA15
+// parse .27e-4 01C5
+// ops 305DEF6D4689AB6F
+// cmp 0A03AE1F9D626BCD
+// fmt 3A0EC2EE75E51D43
+// prs 5619017393B92043
+// int 9FB50DC1E05A3339
+// from 918C66CE5E0F4BC7
+// parse 5058580296ABAC02
+//
+// RANDOM HALVES, each category's lines hashed: their float and double
+// widenings, the five operators and negation, comparisons and the
+// classification, a random format and the default text, Parse of the text
+// back, the integer and decimal conversions, halves from random floats,
+// doubles and integers, and Parse of random digit strings. The first round's
+// lines are printed as they are.
+
+using System;
+using System.Globalization;
+
+class Program {
+    static string[] names = { "ops", "cmp", "fmt", "prs", "int", "from", "parse" };
+    static ulong[] hashes = new ulong[7];
+
+    // Each category's lines folded into an FNV-1a hash, the first round's printed.
+    static void Note(int at, int round, string text) {
+        ulong h = hashes[at] == 0 ? 14695981039346656037UL : hashes[at];
+        foreach (char c in text) { h = (h ^ c) * 1099511628211UL; }
+        hashes[at] = h;
+        if (round == 0) { Console.WriteLine(names[at] + " " + text); }
+    }
+    static ulong state = 0x2545F4914F6CDD1DUL;
+
+    static ulong Next() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+
+    static int Below(int n) { return (int)(Next() % (ulong)n); }
+
+    static string H(Half h) { return BitConverter.HalfToUInt16Bits(h).ToString("X4"); }
+
+    static string Try(Func<string> f) {
+        try { return f(); } catch (OverflowException) { return "OVF"; } catch (FormatException) { return "FMT"; }
+    }
+
+    static void Main() {
+        string[] formats = { "", "G", "R", "G3", "G10", "F2", "F0", "E", "E2", "N1", "P0", "0.000", "#.##E+0" };
+        for (int i = 0; i < 1500; i++) {
+            Half a = BitConverter.UInt16BitsToHalf((ushort)Next());
+            Half b = BitConverter.UInt16BitsToHalf((ushort)Next());
+            if (Below(3) == 0) { a = (Half)((double)Below(20000) / (1 + Below(500))); }
+            // Which NaN two NaNs make is the hardware's operand order's.
+            if (Half.IsNaN(a) && Half.IsNaN(b)) { b = (Half)1.5; }
+            if (i == 0) Console.WriteLine(H(a) + " " + H(b) + " " + BitConverter.SingleToInt32Bits((float)a).ToString("X8") + " " + BitConverter.DoubleToInt64Bits((double)a).ToString("X16"));
+            Note(0, i, H(a + b) + " " + H(a - b) + " " + H(a * b) + " " + H(a / b) + " " + H(a % b) + " " + H(-a) + " " + H(Half.Abs(a)));
+            Note(1, i, (a < b) + " " + (a <= b) + " " + (a == b) + " " + (a != b) + " " + a.CompareTo(b) + " " + a.Equals(b) + " " + Half.IsNaN(a) + " " + Half.IsFinite(a) + " " + Half.IsSubnormal(a));
+            string f = formats[Below(formats.Length)];
+            Note(2, i, f + " [" + a.ToString(f, CultureInfo.InvariantCulture) + "] [" + a + "]");
+            Note(3, i, Try(() => H(Half.Parse(a.ToString(), CultureInfo.InvariantCulture))));
+            Note(4, i, Try(() => ((int)a).ToString()) + " " + Try(() => checked((short)a).ToString()) + " " + Try(() => ((decimal)a).ToString()) + " " + ((long)a));
+            float x = BitConverter.Int32BitsToSingle((int)Next());
+            if (Below(2) == 0) { x = (float)((double)(int)Next() / (1 << Below(31))); }
+            double y = BitConverter.Int64BitsToDouble((long)Next());
+            if (Below(2) == 0) { y = (double)(long)Next() / (1L << Below(63)); }
+            Note(5, i, BitConverter.SingleToInt32Bits(x).ToString("X8") + " " + H((Half)x) + " " + BitConverter.DoubleToInt64Bits(y).ToString("X16") + " " + H((Half)y) + " " + H((Half)(Below(100000) - 50000)));
+            string digits = "";
+            int n = 1 + Below(12);
+            for (int j = 0; j < n; j++) { digits += (char)('0' + Below(10)); }
+            string text = digits.Substring(0, Below(n + 1)) + "." + digits;
+            if (Below(3) == 0) { text += "e" + (Below(12) - 8); }
+            Note(6, i, text + " " + Try(() => H(Half.Parse(text, CultureInfo.InvariantCulture))));
+        }
+        for (int h = 0; h < names.Length; h++) { Console.WriteLine(names[h] + " " + hashes[h].ToString("X16")); }
+    }
+}

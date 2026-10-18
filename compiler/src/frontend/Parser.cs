@@ -2600,9 +2600,17 @@ public sealed class Parser
         {
             bool isImplicit = Cur.Text == "implicit";
             _i += 2;
+            // `explicit operator checked int(Int128 value)` (C# 11): the one
+            // a checked context converts by, op_CheckedExplicit.
+            bool isChecked = At(Tok.Ident) && Cur.Text == "checked" && Ahead().Kind != Tok.LParen;
+            if (isChecked)
+            {
+                if (isImplicit) throw Error("an implicit conversion operator cannot be checked");
+                _i++;
+            }
             MethodDecl conversion = new()
             {
-                Name = isImplicit ? "op_Implicit" : "op_Explicit", Mods = mods, Returns = ParseTypeRef(),
+                Name = isImplicit ? "op_Implicit" : isChecked ? "op_CheckedExplicit" : "op_Explicit", Mods = mods, Returns = ParseTypeRef(),
                 Line = start.Line, Col = start.Col, Body = null,
             };
             { List<Param>? read = null; ParseParams(ref read); conversion.AdoptParams(read); }
@@ -2909,6 +2917,14 @@ public sealed class Parser
     {
         Expect(Tok.KwOperator, "'operator'");
 
+        // `operator checked +` (C# 11): the one a checked context calls,
+        // named as .NET names it -- op_CheckedAddition beside op_Addition.
+        bool isChecked = At(Tok.Ident) && Cur.Text == "checked";
+        if (isChecked)
+        {
+            _i++;
+        }
+
         Token symbol = Cur;
         if (OperatorName(symbol.Kind) is null && UnaryOperatorName(symbol.Kind) is null)
         {
@@ -2937,6 +2953,15 @@ public sealed class Parser
                 : OperatorName(symbol.Kind) is null
                     ? $"'operator {symbol.Text}' takes one operand"
                     : $"'operator {symbol.Text}' takes one or two operands");
+        }
+        if (isChecked)
+        {
+            name = name switch
+            {
+                "op_Addition" or "op_Subtraction" or "op_Multiply" or "op_Division"
+                    or "op_UnaryNegation" or "op_Increment" or "op_Decrement" => "op_Checked" + name[3..],
+                _ => throw Error($"'operator {symbol.Text}' cannot be checked"),
+            };
         }
         made.Name = name;
         return FinishMethod(made);
@@ -4941,8 +4966,11 @@ public sealed class Parser
                     // same reason it is after `is`: `Lit.Str => 4` names an
                     // enum member, and reading it as a type test made the arm
                     // report that 'Lit.Str' is not a known type -- which is
-                    // true, and not what was written.
-                    if (parsed is not null && parsed.Name.Contains('.'))
+                    // true, and not what was written. Unless a name to bind
+                    // or a property pattern follows, which no constant takes:
+                    // `System.Int64 l => …` declares l.
+                    if (parsed is not null && parsed.Name.Contains('.')
+                        && !At(Tok.LBrace) && !(At(Tok.Ident) && Cur.Text is not ("when" or "or" or "and")))
                     {
                         parsed = null;
                     }
