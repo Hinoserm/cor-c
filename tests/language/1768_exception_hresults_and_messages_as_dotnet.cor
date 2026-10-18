@@ -1,0 +1,217 @@
+// test: exception_hresults_and_messages_as_dotnet
+// expect-exit: 0
+// expect-output:
+// AbandonedMutexException () 0x8013152D [The wait completed due to an abandoned mutex.] (null) 0x8013152D [The wait completed due to an abandoned mutex.] ("") 0x8013152D [] (null, inner) 0x8013152D [The wait completed due to an abandoned mutex.]
+// AggregateException () 0x80131500 [One or more errors occurred.] (null) 0x80131500 [One or more errors occurred.] ("") 0x80131500 [] (null, inner) 0x80131500 [One or more errors occurred. (i)]
+// ApplicationException () 0x80131600 [Error in the application.] (null) 0x80131600 [Exception of type 'System.ApplicationException' was thrown.] ("") 0x80131600 [] (null, inner) 0x80131600 [Exception of type 'System.ApplicationException' was thrown.]
+// ArgumentException () 0x80070057 [Value does not fall within the expected range.] (null) 0x80070057 [Value does not fall within the expected range.] ("") 0x80070057 [] (null, inner) 0x80070057 [Value does not fall within the expected range.]
+// ArgumentNullException () 0x80004003 [Value cannot be null.] (null) 0x80004003 [Value cannot be null.] ("") 0x80004003 [Value cannot be null.] (null, inner) 0x80004003 [Value cannot be null.]
+// ArgumentOutOfRangeException () 0x80131502 [Specified argument was out of the range of valid values.] (null) 0x80131502 [Specified argument was out of the range of valid values.] ("") 0x80131502 [Specified argument was out of the range of valid values.] (null, inner) 0x80131502 [Specified argument was out of the range of valid values.]
+// ArithmeticException () 0x80070216 [Overflow or underflow in the arithmetic operation.] (null) 0x80070216 [Overflow or underflow in the arithmetic operation.] ("") 0x80070216 [] (null, inner) 0x80070216 [Overflow or underflow in the arithmetic operation.]
+// ArrayTypeMismatchException () 0x80131503 [Attempted to access an element as a type incompatible with the array.] (null) 0x80131503 [Attempted to access an element as a type incompatible with the array.] ("") 0x80131503 [] (null, inner) 0x80131503 [Attempted to access an element as a type incompatible with the array.]
+// COMException () 0x80004005 [Unexpected HRESULT has been returned from a call to a COM component.] (null) 0x80004005 [Unexpected HRESULT has been returned from a call to a COM component.] ("") 0x80004005 [] (null, inner) 0x80004005 [Unexpected HRESULT has been returned from a call to a COM component.]
+// CryptographicException () 0x80131501 [Error occurred during a cryptographic operation.] (null) 0x80131501 [Error occurred during a cryptographic operation.] ("") 0x80131501 [] (null, inner) 0x80131501 [Error occurred during a cryptographic operation.]
+// DecoderFallbackException () 0x80070057 [Value does not fall within the expected range.] (null) 0x80070057 [Value does not fall within the expected range.] ("") 0x80070057 [] (null, inner) 0x80070057 [Value does not fall within the expected range.]
+// DirectoryNotFoundException () 0x80070003 [Attempted to access a path that is not on the disk.] (null) 0x80070003 [Attempted to access a path that is not on the disk.] ("") 0x80070003 [] (null, inner) 0x80070003 [Attempted to access a path that is not on the disk.]
+// DivideByZeroException () 0x80020012 [Attempted to divide by zero.] (null) 0x80020012 [Attempted to divide by zero.] ("") 0x80020012 [] (null, inner) 0x80020012 [Attempted to divide by zero.]
+// DuplicateWaitObjectException () 0x80131529 [Duplicate objects in argument.] (null) 0x80131529 [Duplicate objects in argument.] ("") 0x80131529 [Duplicate objects in argument.] (null, inner) 0x80131529 [Duplicate objects in argument.]
+// EncoderFallbackException () 0x80070057 [Value does not fall within the expected range.] (null) 0x80070057 [Value does not fall within the expected range.] ("") 0x80070057 [] (null, inner) 0x80070057 [Value does not fall within the expected range.]
+// EndOfStreamException () 0x80070026 [Attempted to read past the end of the stream.] (null) 0x80070026 [Attempted to read past the end of the stream.] ("") 0x80070026 [] (null, inner) 0x80070026 [Attempted to read past the end of the stream.]
+// ExternalException () 0x80004005 [External component has thrown an exception.] (null) 0x80004005 [External component has thrown an exception.] ("") 0x80004005 [] (null, inner) 0x80004005 [External component has thrown an exception.]
+// FileLoadException () 0x80131621 [Could not load the specified file.] (null) 0x80131621 [Could not load file or assembly ''. Could not find or load a specific file. (0x80131621)] ("") 0x80131621 [] (null, inner) 0x80131621 [Could not load file or assembly ''. Could not find or load a specific file. (0x80131621)]
+// FileNotFoundException () 0x80070002 [Unable to find the specified file.] (null) 0x80070002 [<null>] ("") 0x80070002 [] (null, inner) 0x80070002 [<null>]
+// FormatException () 0x80131537 [One of the identified items was in an invalid format.] (null) 0x80131537 [One of the identified items was in an invalid format.] ("") 0x80131537 [] (null, inner) 0x80131537 [One of the identified items was in an invalid format.]
+// IndexOutOfRangeException () 0x80131508 [Index was outside the bounds of the array.] (null) 0x80131508 [Index was outside the bounds of the array.] ("") 0x80131508 [] (null, inner) 0x80131508 [Index was outside the bounds of the array.]
+// InternalBufferOverflowException () 0x80131905 [System error.] (null) 0x80131905 [Exception of type 'System.IO.InternalBufferOverflowException' was thrown.] ("") 0x80131905 [] (null, inner) 0x80131905 [Exception of type 'System.IO.InternalBufferOverflowException' was thrown.]
+// InvalidCastException () 0x80004002 [Specified cast is not valid.] (null) 0x80004002 [Specified cast is not valid.] ("") 0x80004002 [] (null, inner) 0x80004002 [Specified cast is not valid.]
+// InvalidComObjectException () 0x80131527 [Attempt has been made to use a COM object that does not have a backing class factory.] (null) 0x80131527 [Attempt has been made to use a COM object that does not have a backing class factory.] ("") 0x80131527 [] (null, inner) 0x80131527 [Attempt has been made to use a COM object that does not have a backing class factory.]
+// InvalidDataException () 0x80131501 [Found invalid data while decoding.] (null) 0x80131501 [Found invalid data while decoding.] ("") 0x80131501 [] (null, inner) 0x80131501 [Found invalid data while decoding.]
+// InvalidOperationException () 0x80131509 [Operation is not valid due to the current state of the object.] (null) 0x80131509 [Operation is not valid due to the current state of the object.] ("") 0x80131509 [] (null, inner) 0x80131509 [Operation is not valid due to the current state of the object.]
+// InvalidTimeZoneException () 0x80131500 [Exception of type 'System.InvalidTimeZoneException' was thrown.] (null) 0x80131500 [Exception of type 'System.InvalidTimeZoneException' was thrown.] ("") 0x80131500 [] (null, inner) 0x80131500 [Exception of type 'System.InvalidTimeZoneException' was thrown.]
+// IOException () 0x80131620 [I/O error occurred.] (null) 0x80131620 [Exception of type 'System.IO.IOException' was thrown.] ("") 0x80131620 [] (null, inner) 0x80131620 [Exception of type 'System.IO.IOException' was thrown.]
+// JsonException () 0x80131500 [Exception of type 'System.Text.Json.JsonException' was thrown.] (null) 0x80131500 [Exception of type 'System.Text.Json.JsonException' was thrown.] ("") 0x80131500 [] (null, inner) 0x80131500 [Exception of type 'System.Text.Json.JsonException' was thrown.]
+// KeyNotFoundException () 0x80131577 [The given key was not present in the dictionary.] (null) 0x80131577 [The given key was not present in the dictionary.] ("") 0x80131577 [] (null, inner) 0x80131577 [The given key was not present in the dictionary.]
+// MemberAccessException () 0x8013151A [Cannot access member.] (null) 0x8013151A [Cannot access member.] ("") 0x8013151A [] (null, inner) 0x8013151A [Cannot access member.]
+// MissingMemberException () 0x80131512 [Attempted to access a missing member.] (null) 0x80131512 [Attempted to access a missing member.] ("") 0x80131512 [] (null, inner) 0x80131512 [Attempted to access a missing member.]
+// MissingMethodException () 0x80131513 [Attempted to access a missing method.] (null) 0x80131513 [Attempted to access a missing method.] ("") 0x80131513 [] (null, inner) 0x80131513 [Attempted to access a missing method.]
+// NotImplementedException () 0x80004001 [The method or operation is not implemented.] (null) 0x80004001 [The method or operation is not implemented.] ("") 0x80004001 [] (null, inner) 0x80004001 [The method or operation is not implemented.]
+// NotSupportedException () 0x80131515 [Specified method is not supported.] (null) 0x80131515 [Specified method is not supported.] ("") 0x80131515 [] (null, inner) 0x80131515 [Specified method is not supported.]
+// NullReferenceException () 0x80004003 [Object reference not set to an instance of an object.] (null) 0x80004003 [Object reference not set to an instance of an object.] ("") 0x80004003 [] (null, inner) 0x80004003 [Object reference not set to an instance of an object.]
+// OperationCanceledException () 0x8013153B [The operation was canceled.] (null) 0x8013153B [The operation was canceled.] ("") 0x8013153B [] (null, inner) 0x8013153B [The operation was canceled.]
+// OutOfMemoryException () 0x8007000E [Insufficient memory to continue the execution of the program.] (null) 0x8007000E [Insufficient memory to continue the execution of the program.] ("") 0x8007000E [] (null, inner) 0x8007000E [Insufficient memory to continue the execution of the program.]
+// OverflowException () 0x80131516 [Arithmetic operation resulted in an overflow.] (null) 0x80131516 [Arithmetic operation resulted in an overflow.] ("") 0x80131516 [] (null, inner) 0x80131516 [Arithmetic operation resulted in an overflow.]
+// PathTooLongException () 0x800700CE [The specified file name or path is too long, or a component of the specified path is too long.] (null) 0x800700CE [The specified file name or path is too long, or a component of the specified path is too long.] ("") 0x800700CE [] (null, inner) 0x800700CE [The specified file name or path is too long, or a component of the specified path is too long.]
+// PlatformNotSupportedException () 0x80131539 [Operation is not supported on this platform.] (null) 0x80131539 [Operation is not supported on this platform.] ("") 0x80131539 [] (null, inner) 0x80131539 [Operation is not supported on this platform.]
+// SemaphoreFullException () 0x80131501 [Adding the specified count to the semaphore would cause it to exceed its maximum count.] (null) 0x80131501 [Adding the specified count to the semaphore would cause it to exceed its maximum count.] ("") 0x80131501 [] (null, inner) 0x80131501 [Adding the specified count to the semaphore would cause it to exceed its maximum count.]
+// SwitchExpressionException () 0x80131509 [Non-exhaustive switch expression failed to match its input.] (null) 0x80131509 [Non-exhaustive switch expression failed to match its input.] ("") 0x80131509 [] (null, inner) 0x80131509 [Non-exhaustive switch expression failed to match its input.]
+// SynchronizationLockException () 0x80131518 [Object synchronization method was called from an unsynchronized block of code.] (null) 0x80131518 [Object synchronization method was called from an unsynchronized block of code.] ("") 0x80131518 [] (null, inner) 0x80131518 [Object synchronization method was called from an unsynchronized block of code.]
+// SystemException () 0x80131501 [System error.] (null) 0x80131501 [Exception of type 'System.SystemException' was thrown.] ("") 0x80131501 [] (null, inner) 0x80131501 [Exception of type 'System.SystemException' was thrown.]
+// TaskCanceledException () 0x8013153B [A task was canceled.] (null) 0x8013153B [A task was canceled.] ("") 0x8013153B [] (null, inner) 0x8013153B [A task was canceled.]
+// ThreadStateException () 0x80131520 [Thread was in an invalid state for the operation being executed.] (null) 0x80131520 [Thread was in an invalid state for the operation being executed.] ("") 0x80131520 [] (null, inner) 0x80131520 [Thread was in an invalid state for the operation being executed.]
+// TimeoutException () 0x80131505 [The operation has timed out.] (null) 0x80131505 [The operation has timed out.] ("") 0x80131505 [] (null, inner) 0x80131505 [The operation has timed out.]
+// TimeZoneNotFoundException () 0x80131500 [Exception of type 'System.TimeZoneNotFoundException' was thrown.] (null) 0x80131500 [Exception of type 'System.TimeZoneNotFoundException' was thrown.] ("") 0x80131500 [] (null, inner) 0x80131500 [Exception of type 'System.TimeZoneNotFoundException' was thrown.]
+// UnauthorizedAccessException () 0x80070005 [Attempted to perform an unauthorized operation.] (null) 0x80070005 [Attempted to perform an unauthorized operation.] ("") 0x80070005 [] (null, inner) 0x80070005 [Attempted to perform an unauthorized operation.]
+// XmlException () 0x80131940 [An XML error has occurred.] (null) 0x80131940 [An XML error has occurred.] ("") 0x80131940 [] (null, inner) 0x80131940 [An XML error has occurred.]
+// Exception () 0x80131500 [Exception of type 'System.Exception' was thrown.] (null) 0x80131500 [Exception of type 'System.Exception' was thrown.] ("") 0x80131500 [] (null, inner) 0x80131500 [Exception of type 'System.Exception' was thrown.]
+// WaitHandleCannotBeOpenedException () 0x8013152C [No handle of the given name exists.] (null) 0x8013152C [No handle of the given name exists.] ("") 0x8013152C [] (null, inner) 0x8013152C [No handle of the given name exists.]
+// Win32Exception () 0x80004005 [Success] (null) 0x80004005 [External component has thrown an exception.] ("") 0x80004005 [] (null, inner) 0x80004005 [External component has thrown an exception.]
+// ObjectDisposedException () - (null) 0x80131622 [Cannot access a disposed object.] ("") 0x80131622 [Cannot access a disposed object.] (null, inner) 0x80131622 [Cannot access a disposed object.]
+// ext(null,5) 0x00000005 code 0x00000005 [External component has thrown an exception.]
+// ext(s,5) 0x00000005 code 0x00000005 [s]
+// com(null,5) 0x00000005 code 0x00000005 [Unexpected HRESULT has been returned from a call to a COM component.]
+// com(s,5) 0x00000005 code 0x00000005 [s]
+// w32(2) 0x80004005 code 0x80004005 native 2 [No such file or directory]
+// w32(2,s) 0x80004005 code 0x80004005 native 2 [s]
+// w32(2,null) 0x80004005 code 0x80004005 native 2 [External component has thrown an exception.]
+// w32(0) 0x80004005 code 0x80004005 native 0 [Success]
+// w32(-1) 0x80004005 code 0x80004005 native -1 [Unknown error -1]
+// w32(9999) 0x80004005 code 0x80004005 native 9999 [Unknown error 9999]
+// () 0x80131621 [Could not load the specified file.] file (none) log (none) :: System.IO.FileLoadException: Could not load the specified file.
+// (m) 0x80131621 [m] file (none) log (none) :: System.IO.FileLoadException: m
+// (null,f) 0x80131621 [Could not load file or assembly 'f'. Could not find or load a specific file. (0x80131621)] file f log (none) :: System.IO.FileLoadException: Could not load file or assembly 'f'. Could not find or load a specific file. (0x80131621)|File name: 'f'
+// (m,f) 0x80131621 [m] file f log (none) :: System.IO.FileLoadException: m|File name: 'f'
+// (null,f,inner) 0x80131621 [Could not load file or assembly 'f'. Could not find or load a specific file. (0x80131621)] file f log (none) :: System.IO.FileLoadException: Could not load file or assembly 'f'. Could not find or load a specific file. (0x80131621)|File name: 'f'| ---> System.Exception: i
+// (null,"") 0x80131621 [Could not load file or assembly ''. Could not find or load a specific file. (0x80131621)] file  log (none) :: System.IO.FileLoadException: Could not load file or assembly ''. Could not find or load a specific file. (0x80131621)
+// string object int long
+// True x
+//
+// EVERY EXCEPTION TYPE'S HRESULT AND MESSAGE, as .NET 10's: no message at all is
+// the type's own sentence (or Exception's "Exception of type ... was thrown."
+// where .NET has none), an empty one stays empty, and HResult is the type's
+// COR_E_ code from the moment it is made. ExternalException's code is its
+// HResult; Win32Exception says strerror's words, a negative number an "Unknown
+// error"; FileLoadException with no message names the file in .NET's sentence.
+// A CONSTRUCTOR WHOSE PARAMETERS ARE THE MORE SPECIFIC WINS where as many
+// arguments match exactly: `new SwitchExpressionException("")` is the (string?
+// message) one, not the (object? unmatchedValue) declared before it.
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Xml;
+
+static class Program
+{
+    static string One(Func<Exception>? make)
+    {
+        if (make == null) return "-";
+        Exception e = make();
+        string? m = e.Message;
+        return "0x" + e.HResult.ToString("X8") + " [" + (m == null ? "<null>" : m.Replace("\n", "|")) + "]";
+    }
+
+    static void Show(string name, Func<Exception>? none, Func<Exception> nul, Func<Exception> empty, Func<Exception> inner)
+    {
+        Console.WriteLine(name + " () " + One(none) + " (null) " + One(nul) + " (\"\") " + One(empty) + " (null, inner) " + One(inner));
+    }
+
+    static void External(string what, Exception e)
+    {
+        string code = e is ExternalException x ? " code 0x" + x.ErrorCode.ToString("X8") : "";
+        string native = e is Win32Exception w ? " native " + w.NativeErrorCode : "";
+        Console.WriteLine(what + " 0x" + e.HResult.ToString("X8") + code + native + " [" + e.Message + "]");
+    }
+
+    static void Load(string what, FileLoadException e)
+    {
+        Console.WriteLine(what + " 0x" + e.HResult.ToString("X8") + " [" + e.Message + "] file " + (e.FileName ?? "(none)") + " log " + (e.FusionLog ?? "(none)") + " :: " + e.ToString().Replace("\n", "|"));
+    }
+
+    static void Main()
+    {
+        Show("AbandonedMutexException", () => new AbandonedMutexException(), () => new AbandonedMutexException((string?)null), () => new AbandonedMutexException(""), () => new AbandonedMutexException((string?)null, new Exception("i")));
+        Show("AggregateException", () => new AggregateException(), () => new AggregateException((string?)null), () => new AggregateException(""), () => new AggregateException((string?)null, new Exception("i")));
+        Show("ApplicationException", () => new ApplicationException(), () => new ApplicationException((string?)null), () => new ApplicationException(""), () => new ApplicationException((string?)null, new Exception("i")));
+        Show("ArgumentException", () => new ArgumentException(), () => new ArgumentException((string?)null), () => new ArgumentException(""), () => new ArgumentException((string?)null, new Exception("i")));
+        Show("ArgumentNullException", () => new ArgumentNullException(), () => new ArgumentNullException((string?)null), () => new ArgumentNullException(""), () => new ArgumentNullException((string?)null, new Exception("i")));
+        Show("ArgumentOutOfRangeException", () => new ArgumentOutOfRangeException(), () => new ArgumentOutOfRangeException((string?)null), () => new ArgumentOutOfRangeException(""), () => new ArgumentOutOfRangeException((string?)null, new Exception("i")));
+        Show("ArithmeticException", () => new ArithmeticException(), () => new ArithmeticException((string?)null), () => new ArithmeticException(""), () => new ArithmeticException((string?)null, new Exception("i")));
+        Show("ArrayTypeMismatchException", () => new ArrayTypeMismatchException(), () => new ArrayTypeMismatchException((string?)null), () => new ArrayTypeMismatchException(""), () => new ArrayTypeMismatchException((string?)null, new Exception("i")));
+        Show("COMException", () => new COMException(), () => new COMException((string?)null), () => new COMException(""), () => new COMException((string?)null, new Exception("i")));
+        Show("CryptographicException", () => new CryptographicException(), () => new CryptographicException((string?)null), () => new CryptographicException(""), () => new CryptographicException((string?)null, new Exception("i")));
+        Show("DecoderFallbackException", () => new DecoderFallbackException(), () => new DecoderFallbackException((string?)null), () => new DecoderFallbackException(""), () => new DecoderFallbackException((string?)null, new Exception("i")));
+        Show("DirectoryNotFoundException", () => new DirectoryNotFoundException(), () => new DirectoryNotFoundException((string?)null), () => new DirectoryNotFoundException(""), () => new DirectoryNotFoundException((string?)null, new Exception("i")));
+        Show("DivideByZeroException", () => new DivideByZeroException(), () => new DivideByZeroException((string?)null), () => new DivideByZeroException(""), () => new DivideByZeroException((string?)null, new Exception("i")));
+        Show("DuplicateWaitObjectException", () => new DuplicateWaitObjectException(), () => new DuplicateWaitObjectException((string?)null), () => new DuplicateWaitObjectException(""), () => new DuplicateWaitObjectException((string?)null, new Exception("i")));
+        Show("EncoderFallbackException", () => new EncoderFallbackException(), () => new EncoderFallbackException((string?)null), () => new EncoderFallbackException(""), () => new EncoderFallbackException((string?)null, new Exception("i")));
+        Show("EndOfStreamException", () => new EndOfStreamException(), () => new EndOfStreamException((string?)null), () => new EndOfStreamException(""), () => new EndOfStreamException((string?)null, new Exception("i")));
+        Show("ExternalException", () => new ExternalException(), () => new ExternalException((string?)null), () => new ExternalException(""), () => new ExternalException((string?)null, new Exception("i")));
+        Show("FileLoadException", () => new FileLoadException(), () => new FileLoadException((string?)null), () => new FileLoadException(""), () => new FileLoadException((string?)null, new Exception("i")));
+        Show("FileNotFoundException", () => new FileNotFoundException(), () => new FileNotFoundException((string?)null), () => new FileNotFoundException(""), () => new FileNotFoundException((string?)null, new Exception("i")));
+        Show("FormatException", () => new FormatException(), () => new FormatException((string?)null), () => new FormatException(""), () => new FormatException((string?)null, new Exception("i")));
+        Show("IndexOutOfRangeException", () => new IndexOutOfRangeException(), () => new IndexOutOfRangeException((string?)null), () => new IndexOutOfRangeException(""), () => new IndexOutOfRangeException((string?)null, new Exception("i")));
+        Show("InternalBufferOverflowException", () => new InternalBufferOverflowException(), () => new InternalBufferOverflowException((string?)null), () => new InternalBufferOverflowException(""), () => new InternalBufferOverflowException((string?)null, new Exception("i")));
+        Show("InvalidCastException", () => new InvalidCastException(), () => new InvalidCastException((string?)null), () => new InvalidCastException(""), () => new InvalidCastException((string?)null, new Exception("i")));
+        Show("InvalidComObjectException", () => new InvalidComObjectException(), () => new InvalidComObjectException((string?)null), () => new InvalidComObjectException(""), () => new InvalidComObjectException((string?)null, new Exception("i")));
+        Show("InvalidDataException", () => new InvalidDataException(), () => new InvalidDataException((string?)null), () => new InvalidDataException(""), () => new InvalidDataException((string?)null, new Exception("i")));
+        Show("InvalidOperationException", () => new InvalidOperationException(), () => new InvalidOperationException((string?)null), () => new InvalidOperationException(""), () => new InvalidOperationException((string?)null, new Exception("i")));
+        Show("InvalidTimeZoneException", () => new InvalidTimeZoneException(), () => new InvalidTimeZoneException((string?)null), () => new InvalidTimeZoneException(""), () => new InvalidTimeZoneException((string?)null, new Exception("i")));
+        Show("IOException", () => new IOException(), () => new IOException((string?)null), () => new IOException(""), () => new IOException((string?)null, new Exception("i")));
+        Show("JsonException", () => new JsonException(), () => new JsonException((string?)null), () => new JsonException(""), () => new JsonException((string?)null, new Exception("i")));
+        Show("KeyNotFoundException", () => new KeyNotFoundException(), () => new KeyNotFoundException((string?)null), () => new KeyNotFoundException(""), () => new KeyNotFoundException((string?)null, new Exception("i")));
+        Show("MemberAccessException", () => new MemberAccessException(), () => new MemberAccessException((string?)null), () => new MemberAccessException(""), () => new MemberAccessException((string?)null, new Exception("i")));
+        Show("MissingMemberException", () => new MissingMemberException(), () => new MissingMemberException((string?)null), () => new MissingMemberException(""), () => new MissingMemberException((string?)null, new Exception("i")));
+        Show("MissingMethodException", () => new MissingMethodException(), () => new MissingMethodException((string?)null), () => new MissingMethodException(""), () => new MissingMethodException((string?)null, new Exception("i")));
+        Show("NotImplementedException", () => new NotImplementedException(), () => new NotImplementedException((string?)null), () => new NotImplementedException(""), () => new NotImplementedException((string?)null, new Exception("i")));
+        Show("NotSupportedException", () => new NotSupportedException(), () => new NotSupportedException((string?)null), () => new NotSupportedException(""), () => new NotSupportedException((string?)null, new Exception("i")));
+        Show("NullReferenceException", () => new NullReferenceException(), () => new NullReferenceException((string?)null), () => new NullReferenceException(""), () => new NullReferenceException((string?)null, new Exception("i")));
+        Show("OperationCanceledException", () => new OperationCanceledException(), () => new OperationCanceledException((string?)null), () => new OperationCanceledException(""), () => new OperationCanceledException((string?)null, new Exception("i")));
+        Show("OutOfMemoryException", () => new OutOfMemoryException(), () => new OutOfMemoryException((string?)null), () => new OutOfMemoryException(""), () => new OutOfMemoryException((string?)null, new Exception("i")));
+        Show("OverflowException", () => new OverflowException(), () => new OverflowException((string?)null), () => new OverflowException(""), () => new OverflowException((string?)null, new Exception("i")));
+        Show("PathTooLongException", () => new PathTooLongException(), () => new PathTooLongException((string?)null), () => new PathTooLongException(""), () => new PathTooLongException((string?)null, new Exception("i")));
+        Show("PlatformNotSupportedException", () => new PlatformNotSupportedException(), () => new PlatformNotSupportedException((string?)null), () => new PlatformNotSupportedException(""), () => new PlatformNotSupportedException((string?)null, new Exception("i")));
+        Show("SemaphoreFullException", () => new SemaphoreFullException(), () => new SemaphoreFullException((string?)null), () => new SemaphoreFullException(""), () => new SemaphoreFullException((string?)null, new Exception("i")));
+        Show("SwitchExpressionException", () => new SwitchExpressionException(), () => new SwitchExpressionException((string?)null), () => new SwitchExpressionException(""), () => new SwitchExpressionException((string?)null, new Exception("i")));
+        Show("SynchronizationLockException", () => new SynchronizationLockException(), () => new SynchronizationLockException((string?)null), () => new SynchronizationLockException(""), () => new SynchronizationLockException((string?)null, new Exception("i")));
+        Show("SystemException", () => new SystemException(), () => new SystemException((string?)null), () => new SystemException(""), () => new SystemException((string?)null, new Exception("i")));
+        Show("TaskCanceledException", () => new TaskCanceledException(), () => new TaskCanceledException((string?)null), () => new TaskCanceledException(""), () => new TaskCanceledException((string?)null, new Exception("i")));
+        Show("ThreadStateException", () => new ThreadStateException(), () => new ThreadStateException((string?)null), () => new ThreadStateException(""), () => new ThreadStateException((string?)null, new Exception("i")));
+        Show("TimeoutException", () => new TimeoutException(), () => new TimeoutException((string?)null), () => new TimeoutException(""), () => new TimeoutException((string?)null, new Exception("i")));
+        Show("TimeZoneNotFoundException", () => new TimeZoneNotFoundException(), () => new TimeZoneNotFoundException((string?)null), () => new TimeZoneNotFoundException(""), () => new TimeZoneNotFoundException((string?)null, new Exception("i")));
+        Show("UnauthorizedAccessException", () => new UnauthorizedAccessException(), () => new UnauthorizedAccessException((string?)null), () => new UnauthorizedAccessException(""), () => new UnauthorizedAccessException((string?)null, new Exception("i")));
+        Show("XmlException", () => new XmlException(), () => new XmlException((string?)null), () => new XmlException(""), () => new XmlException((string?)null, new Exception("i")));
+        Show("Exception", () => new Exception(), () => new Exception((string?)null), () => new Exception(""), () => new Exception((string?)null, new Exception("i")));
+        Show("WaitHandleCannotBeOpenedException", () => new WaitHandleCannotBeOpenedException(), () => new WaitHandleCannotBeOpenedException((string?)null), () => new WaitHandleCannotBeOpenedException(""), () => new WaitHandleCannotBeOpenedException((string?)null, new Exception("i")));
+        Show("Win32Exception", () => new Win32Exception(), () => new Win32Exception((string?)null), () => new Win32Exception(""), () => new Win32Exception((string?)null, new Exception("i")));
+        Show("ObjectDisposedException", null, () => new ObjectDisposedException((string?)null), () => new ObjectDisposedException(""), () => new ObjectDisposedException((string?)null, new Exception("i")));
+
+        External("ext(null,5)", new ExternalException(null, 5));
+        External("ext(s,5)", new ExternalException("s", 5));
+        External("com(null,5)", new COMException(null, 5));
+        External("com(s,5)", new COMException("s", 5));
+        External("w32(2)", new Win32Exception(2));
+        External("w32(2,s)", new Win32Exception(2, "s"));
+        External("w32(2,null)", new Win32Exception(2, null));
+        External("w32(0)", new Win32Exception(0));
+        External("w32(-1)", new Win32Exception(-1));
+        External("w32(9999)", new Win32Exception(9999));
+        Load("()", new FileLoadException());
+        Load("(m)", new FileLoadException("m"));
+        Load("(null,f)", new FileLoadException(null, "f"));
+        Load("(m,f)", new FileLoadException("m", "f"));
+        Load("(null,f,inner)", new FileLoadException(null, "f", new Exception("i")));
+        Load("(null,\"\")", new FileLoadException(null, ""));
+        Console.WriteLine(new Picked("text").Said + " " + new Picked((object)"text").Said + " " + new Picked(3).Said + " " + new Picked(3L).Said);
+        Console.WriteLine((new SwitchExpressionException("").UnmatchedValue == null) + " " + new SwitchExpressionException((object)"x").UnmatchedValue);
+    }
+}
+
+// THE CONSTRUCTOR WHOSE PARAMETERS ARE THE MORE SPECIFIC, as C# picks it:
+// declared after the wider one, and still the one a string argument takes.
+class Picked
+{
+    public readonly string Said;
+    public Picked(object? value) { Said = "object"; }
+    public Picked(long value) { Said = "long"; }
+    public Picked(string? value) { Said = "string"; }
+    public Picked(int value) { Said = "int"; }
+}
+

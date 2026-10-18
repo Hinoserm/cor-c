@@ -3099,11 +3099,12 @@ class TaskCompletionSource
 /// The operation was canceled. C#'s, with the token that canceled it.
 class OperationCanceledException : SystemException
 {
+    internal override int Code => unchecked((int)0x8013153B);
     CancellationToken _token;
 
     public OperationCanceledException() : base("The operation was canceled.") { }
 
-    public OperationCanceledException(string? message) : base(message)
+    public OperationCanceledException(string? message) : base(message ?? "The operation was canceled.")
     {
     }
 
@@ -3118,7 +3119,7 @@ class OperationCanceledException : SystemException
     }
 
     public CancellationToken CancellationToken => _token;
-    public OperationCanceledException(string? message, Exception? innerException) : base(message, innerException) { }
+    public OperationCanceledException(string? message, Exception? innerException) : base(message ?? "The operation was canceled.", innerException) { }
 }
 
 /// A task was canceled.
@@ -3128,7 +3129,7 @@ class TaskCanceledException : OperationCanceledException
 
     public TaskCanceledException() : base("A task was canceled.") { }
 
-    public TaskCanceledException(string? message) : base(message)
+    public TaskCanceledException(string? message) : base(message ?? "A task was canceled.")
     {
     }
 
@@ -3139,7 +3140,7 @@ class TaskCanceledException : OperationCanceledException
 
     /// The canceled task, when this was raised by awaiting one.
     public Task? Task => _task;
-    public TaskCanceledException(string? message, Exception? innerException) : base(message, innerException) { }
+    public TaskCanceledException(string? message, Exception? innerException) : base(message ?? "A task was canceled.", innerException) { }
 }
 
 /// Timeout.Infinite, which Task.Delay accepts.
@@ -6379,9 +6380,10 @@ namespace System.Threading
     /// Release gave back more permits than the semaphore holds.
     class SemaphoreFullException : SystemException
     {
-        public SemaphoreFullException() : base("Adding the specified count to the semaphore would cause it to exceed its maximum count.") { }
-        public SemaphoreFullException(string message) : base(message) { }
-        public SemaphoreFullException(string message, Exception? inner) : base(message, inner) { }
+        const string Full = "Adding the specified count to the semaphore would cause it to exceed its maximum count.";
+        public SemaphoreFullException() : base(Full) { }
+        public SemaphoreFullException(string? message) : base(message ?? Full) { }
+        public SemaphoreFullException(string? message, Exception? inner) : base(message ?? Full, inner) { }
     }
 
     /// AN AWAITABLE LOCK, for a hold that awaits (docs/X86-BACKEND.md, "Async safety"):

@@ -18370,6 +18370,32 @@ public sealed partial class Binder
     /// parameters, whose params array takes fewer of the arguments --
     /// (int, params int[]) over (params int[]) for `new A(1, 2)`.
     /// </summary>
+    /// <summary>
+    /// Whether every one of <paramref name="one"/>'s first <paramref
+    /// name="count"/> parameters is the other's type or converts to it
+    /// implicitly, and one at least is not the same: the more specific of two
+    /// constructors that fit the arguments as well, as BetterConversion counts
+    /// it for methods.
+    /// </summary>
+    private bool ParametersMoreSpecific(MethodSymbol one, MethodSymbol other, int count)
+    {
+        bool more = false;
+        for (int i = 0; i < count; i++)
+        {
+            Type a = one.Params[i].Type, b = other.Params[i].Type;
+            if (SameAside(a, b)) continue;
+            if (!((a.Prim != Prim.Any || b.Prim == Prim.Any) && (Convertible(a, b) || Variant(a, b)))) return false;
+            more = true;
+        }
+        return more;
+    }
+
+    // THE SAME TYPE, annotations aside, as the method resolver's Same: a
+    // string argument is the `string?` a parameter declares.
+    private static bool SameAside(Type a, Type b)
+        => a.Equals(b) || (!a.IsNullableValue && !b.IsNullableValue
+                           && (a.AsNonNullable().Equals(b.AsNonNullable()) || MethodSignatures.SameType(a, b)));
+
     private bool ExpandedMoreSpecific(MethodSymbol one, MethodSymbol other, int count)
     {
         bool more = false;
@@ -18516,12 +18542,29 @@ public sealed partial class Binder
         // level built a decompressor. A call still resolves as
         // it did whenever no candidate matches more exactly,
         // because the ordering is stable.
-        MethodSymbol? ctor = ctors
+        //
+        // The same type counts annotations aside, and where as many match
+        // exactly, the one whose parameters all convert to the other's is the
+        // more specific (C# 12.6.4.5): `new SwitchExpressionException("")`
+        // is the (string? message) one, not the (object? unmatchedValue)
+        // declared before it.
+        List<MethodSymbol> fitting = ctors
             .Where(m => constructorArgs
                 .Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0)
             .OrderByDescending(m => constructorArgs
-                .Where((a, i) => a.Equals(m.Params[i].Type)).Count())
-            .FirstOrDefault();
+                .Where((a, i) => SameAside(a, m.Params[i].Type)).Count())
+            .ToList();
+        MethodSymbol? ctor = fitting.FirstOrDefault();
+        if (fitting.Count > 1)
+        {
+            int most = constructorArgs.Where((a, i) => SameAside(a, ctor!.Params[i].Type)).Count();
+            List<MethodSymbol> tied = fitting
+                .Where(m => constructorArgs.Where((a, i) => SameAside(a, m.Params[i].Type)).Count() == most)
+                .ToList();
+            ctor = tied.FirstOrDefault(one => tied.All(other => ReferenceEquals(one, other)
+                                                              || ParametersMoreSpecific(one, other, constructorArgs.Count)))
+                   ?? ctor;
+        }
 
         if (ctor != null)
         {

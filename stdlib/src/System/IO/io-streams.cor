@@ -12,12 +12,13 @@ namespace System.IO
 {
 class EndOfStreamException : IOException
 {
-    public EndOfStreamException() : base("Unable to read beyond the end of the stream.") { }
+    internal override int Code => unchecked((int)0x80070026);
+    public EndOfStreamException() : base("Attempted to read past the end of the stream.") { }
 
-    public EndOfStreamException(string? message) : base(message)
+    public EndOfStreamException(string? message) : base(message ?? "Attempted to read past the end of the stream.")
     {
     }
-    public EndOfStreamException(string? message, Exception? innerException) : base(message, innerException) { }
+    public EndOfStreamException(string? message, Exception? innerException) : base(message ?? "Attempted to read past the end of the stream.", innerException) { }
 }
 }
 
@@ -30,7 +31,7 @@ class InvalidDataException : SystemException
 {
     public InvalidDataException() : base("Found invalid data while decoding.") { }
 
-    public InvalidDataException(string? message) : base(message)
+    public InvalidDataException(string? message) : base(message ?? "Found invalid data while decoding.")
     {
     }
 
@@ -655,7 +656,7 @@ class BinaryReader : IDisposable
             int n = _stream.Read(bytes, got, length - got);
             if (n <= 0)
             {
-                throw new EndOfStreamException();
+                throw new EndOfStreamException("Unable to read beyond the end of the stream.");
             }
             got = got + n;
         }
@@ -698,7 +699,7 @@ class BinaryReader : IDisposable
         int c = _stream.ReadByte();
         if (c < 0)
         {
-            throw new EndOfStreamException();
+            throw new EndOfStreamException("Unable to read beyond the end of the stream.");
         }
         return c;
     }

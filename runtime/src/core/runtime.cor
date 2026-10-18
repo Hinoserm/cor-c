@@ -32,17 +32,19 @@
 /// compiler puts in front of every integer `/` and `%`.
 class DivideByZeroException : ArithmeticException
 {
+    internal override int Code => unchecked((int)0x80020012);
     public DivideByZeroException() : base("Attempted to divide by zero.") { }
-    public DivideByZeroException(string? message) : base(message) { }
-    public DivideByZeroException(string? message, Exception? innerException) : base(message, innerException) { }
+    public DivideByZeroException(string? message) : base(message ?? "Attempted to divide by zero.") { }
+    public DivideByZeroException(string? message, Exception? innerException) : base(message ?? "Attempted to divide by zero.", innerException) { }
 }
 
 /// A cast to a class or interface the object is not.
 class InvalidCastException : SystemException
 {
-    public InvalidCastException(string? message) : base(message) { }
+    internal override int Code => unchecked((int)0x80004002);
+    public InvalidCastException(string? message) : base(message ?? "Specified cast is not valid.") { }
     public InvalidCastException() : base("Specified cast is not valid.") { }
-    public InvalidCastException(string? message, Exception? innerException) : base(message, innerException) { }
+    public InvalidCastException(string? message, Exception? innerException) : base(message ?? "Specified cast is not valid.", innerException) { }
 }
 
 /// A member was reached through null. The compiler does not yet raise this
@@ -50,24 +52,27 @@ class InvalidCastException : SystemException
 /// has to exist for source that says `catch (NullReferenceException)`.
 class NullReferenceException : SystemException
 {
+    internal override int Code => unchecked((int)0x80004003);
     public NullReferenceException() : base("Object reference not set to an instance of an object.") { }
-    public NullReferenceException(string? message) : base(message) { }
-    public NullReferenceException(string? message, Exception? innerException) : base(message, innerException) { }
+    public NullReferenceException(string? message) : base(message ?? "Object reference not set to an instance of an object.") { }
+    public NullReferenceException(string? message, Exception? innerException) : base(message ?? "Object reference not set to an instance of an object.", innerException) { }
 }
 
 /// A member that cannot be reached: .NET's base for the missing-member family.
 class MemberAccessException : SystemException
 {
+    internal override int Code => unchecked((int)0x8013151A);
     public MemberAccessException() : base("Cannot access member.") { }
-    public MemberAccessException(string? message) : base(message) { }
-    public MemberAccessException(string? message, Exception? innerException) : base(message, innerException) { }
+    public MemberAccessException(string? message) : base(message ?? "Cannot access member.") { }
+    public MemberAccessException(string? message, Exception? innerException) : base(message ?? "Cannot access member.", innerException) { }
 }
 
 class MissingMemberException : MemberAccessException
 {
+    internal override int Code => unchecked((int)0x80131512);
     public MissingMemberException() : base("Attempted to access a missing member.") { }
-    public MissingMemberException(string? message) : base(message) { }
-    public MissingMemberException(string? message, Exception? innerException) : base(message, innerException) { }
+    public MissingMemberException(string? message) : base(message ?? "Attempted to access a missing member.") { }
+    public MissingMemberException(string? message, Exception? innerException) : base(message ?? "Attempted to access a missing member.", innerException) { }
 }
 
 /// A method with no code to run. The compiler raises it for a generic virtual
@@ -76,9 +81,10 @@ class MissingMemberException : MemberAccessException
 /// argument -- what an ahead-of-time compiler cannot make after the fact.
 class MissingMethodException : MissingMemberException
 {
+    internal override int Code => unchecked((int)0x80131513);
     public MissingMethodException() : base("Attempted to access a missing method.") { }
-    public MissingMethodException(string? message) : base(message) { }
-    public MissingMethodException(string? message, Exception? innerException) : base(message, innerException) { }
+    public MissingMethodException(string? message) : base(message ?? "Attempted to access a missing method.") { }
+    public MissingMethodException(string? message, Exception? innerException) : base(message ?? "Attempted to access a missing method.", innerException) { }
 }
 
 /// THE MACHINE WORD, for every layout the runtime keeps itself: a pointer, a

@@ -586,9 +586,11 @@ public delegate void ParameterizedThreadStart(object? obj);
 
 class ThreadStateException : SystemException
 {
+
+    internal override int Code => unchecked((int)0x80131520);
     public ThreadStateException() : base("Thread was in an invalid state for the operation being executed.") { }
-    public ThreadStateException(string? message) : base(message) { }
-    public ThreadStateException(string? message, Exception? innerException) : base(message, innerException) { }
+    public ThreadStateException(string? message) : base(message ?? "Thread was in an invalid state for the operation being executed.") { }
+    public ThreadStateException(string? message, Exception? innerException) : base(message ?? "Thread was in an invalid state for the operation being executed.", innerException) { }
 }
 
 class Thread
@@ -2973,14 +2975,14 @@ namespace System.Threading
     {
         const string Abandoned = "The wait completed due to an abandoned mutex.";
         // COR_E_ABANDONEDMUTEX, which .NET gives every one.
-        const int Code = unchecked((int)0x8013152D);
+        internal override int Code => unchecked((int)0x8013152D);
 
         int _mutexIndex = -1;
         Mutex? _mutex;
 
-        public AbandonedMutexException() : base(Abandoned) { HResult = Code; }
-        public AbandonedMutexException(string? message) : base(message) { HResult = Code; }
-        public AbandonedMutexException(string? message, Exception? inner) : base(message, inner) { HResult = Code; }
+        public AbandonedMutexException() : base(Abandoned) { }
+        public AbandonedMutexException(string? message) : base(message ?? Abandoned) { }
+        public AbandonedMutexException(string? message, Exception? inner) : base(message ?? Abandoned, inner) { }
 
         public AbandonedMutexException(int location, WaitHandle? handle) : base(Abandoned)
         {
@@ -2999,7 +3001,6 @@ namespace System.Threading
 
         void Locate(int location, WaitHandle? handle)
         {
-            HResult = Code;
             _mutexIndex = location;
             _mutex = handle as Mutex;
         }

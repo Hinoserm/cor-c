@@ -441,8 +441,13 @@ public class FileSystemWatcher : IDisposable
     void OnError(Exception failure) { OnError(new ErrorEventArgs(failure)); }
 }
 
+namespace System.IO
+{
 public class InternalBufferOverflowException : SystemException
 {
-    public InternalBufferOverflowException() : base("Too many changes at once.") { }
-    public InternalBufferOverflowException(string message) : base(message) { }
+    internal override int Code => unchecked((int)0x80131905);
+    public InternalBufferOverflowException() : base("System error.") { }
+    public InternalBufferOverflowException(string? message) : base(message) { }
+    public InternalBufferOverflowException(string? message, Exception? inner) : base(message, inner) { }
+}
 }

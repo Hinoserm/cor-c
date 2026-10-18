@@ -22,6 +22,22 @@
 // or IOException, each with .NET's message -- with the errno kept in HResult
 // so the system's own words can still be recovered.
 
+/// System.ComponentModel's Win32Exception: a Windows error by its number --
+/// on Unix an errno, in strerror's words. Here beside Marshal, whose words they
+/// are, and so where Marshal is: a hosted program's.
+class Win32Exception : ExternalException
+{
+    private int _native;
+    // THE SYSTEM'S WORDS FOR THE ERROR, as .NET's on Unix: strerror, and
+    // "Success" for none -- the last P/Invoke's error when none is named.
+    public Win32Exception() : this(Marshal.GetLastPInvokeError()) { }
+    public Win32Exception(int error) : base(Marshal.GetPInvokeErrorMessage(error)) { _native = error; }
+    public Win32Exception(int error, string? message) : base(message) { _native = error; }
+    public Win32Exception(string? message) : this(Marshal.GetLastPInvokeError(), message) { }
+    public Win32Exception(string? message, Exception? innerException) : base(message, innerException) { _native = Marshal.GetLastPInvokeError(); }
+    public int NativeErrorCode => _native;
+}
+
 static partial class Marshal
 {
     /// The errno of the last call that failed on THIS thread, as .NET's is:
@@ -319,11 +335,10 @@ static partial class Marshal
 
     /// strerror(3), word for word, because these strings are the ones every
     /// Unix program in the world prints and a person recognises them. A number
-    /// with no name gets the form strerror gives an unknown error.
+    /// with no name gets the form strerror gives an unknown error -- a
+    /// negative one too, as .NET's says "Unknown error -1".
     public static string GetPInvokeErrorMessage(int error)
     {
-        if (error < 0) { error = -error; }
-
         if (error == 0) { return "Success"; }
         if (error == 1) { return "Operation not permitted"; }
         if (error == 2) { return "No such file or directory"; }
@@ -472,6 +487,7 @@ static class Interop
         {
             made = new IOException(named ? "The process cannot access the file '" + path + "' because it is being used by another process."
                                          : "The process cannot access the file because it is being used by another process.");
+            made.HResult = error;
         }
         else if (error == Err.Canceled)
         {
@@ -484,12 +500,12 @@ static class Interop
         else if (error == Err.Exist && named)
         {
             made = new IOException("The file '" + path + "' already exists.");
+            made.HResult = error;
         }
         else
         {
             return Described(error, path);
         }
-        made.HResult = error;
         return made;
     }
 

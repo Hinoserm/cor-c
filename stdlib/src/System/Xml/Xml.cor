@@ -58,6 +58,7 @@ namespace System.Xml
     /// <summary>Text that is not well-formed XML, and where.</summary>
     public class XmlException : SystemException
     {
+        internal override int Code => unchecked((int)0x80131940);
         public int LineNumber { get; }
         public int LinePosition { get; }
 

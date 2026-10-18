@@ -28,14 +28,24 @@ namespace System.Text.Json
         readonly long? _line;
         readonly long? _position;
 
-        public JsonException() : base("The JSON value could not be converted.") { }
+        // No sentence of its own, as .NET's has none: a null message is
+        // Exception's "Exception of type ... was thrown."
+        public JsonException() : base() { }
 
-        public JsonException(string? message) : base(message ?? "The JSON value could not be converted.") { }
+        public JsonException(string? message) : base(message) { }
 
-        public JsonException(string? message, Exception? innerException) : base(message ?? "The JSON value could not be converted.", innerException!) { }
+        public JsonException(string? message, Exception? innerException) : base(message, innerException) { }
 
         public JsonException(string? message, string? path, long? lineNumber, long? bytePositionInLine)
-            : base(message ?? "The JSON value could not be converted.")
+            : base(message)
+        {
+            _path = path;
+            _line = lineNumber;
+            _position = bytePositionInLine;
+        }
+
+        public JsonException(string? message, string? path, long? lineNumber, long? bytePositionInLine, Exception? innerException)
+            : base(message, innerException)
         {
             _path = path;
             _line = lineNumber;

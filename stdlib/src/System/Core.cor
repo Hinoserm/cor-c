@@ -2453,6 +2453,7 @@ class Uri {
 /// The URI could not be read. .NET derives it from FormatException, and a
 /// program catching that catches this.
 class UriFormatException : FormatException {
+    internal override int Code => unchecked((int)0x80131537);
     public UriFormatException() : base("Invalid URI: The format of the URI could not be determined.") { }
     public UriFormatException(string message) : base(message) { }
 }
@@ -14295,9 +14296,10 @@ public delegate TOutput Converter<in TInput, out TOutput>(TInput input);
 // threading.cor: whose it is and how a waiter sleeps are the platform's.
 
 class SynchronizationLockException : SystemException {
+    internal override int Code => unchecked((int)0x80131518);
     public SynchronizationLockException() : base("Object synchronization method was called from an unsynchronized block of code.") { }
-    public SynchronizationLockException(string? message) : base(message) { }
-    public SynchronizationLockException(string? message, Exception? inner) : base(message, inner) { }
+    public SynchronizationLockException(string? message) : base(message ?? "Object synchronization method was called from an unsynchronized block of code.") { }
+    public SynchronizationLockException(string? message, Exception? inner) : base(message ?? "Object synchronization method was called from an unsynchronized block of code.", inner) { }
 }
 
 // ---- StringBuilder --------------------------------------------------------
@@ -14326,7 +14328,9 @@ class SynchronizationLockException : SystemException {
 
 class Exception
 {
-    string _message;
+    // THE MESSAGE AS GIVEN: null when none was, and then Message invents one
+    // from the type, as .NET's does -- an empty one stays empty.
+    string? _message;
     Exception? _inner;
 
     /// THE CALLS THAT LED TO THE THROW, recorded by the runtime as the throw
@@ -14337,19 +14341,32 @@ class Exception
 
     public Exception()
     {
-        _message = "";
+        HResult = Code;
     }
 
     public Exception(string? message)
     {
-        _message = message ?? "";
+        _message = message;
+        HResult = Code;
     }
 
     public Exception(string? message, Exception? inner)
     {
-        _message = message ?? "";
+        _message = message;
         _inner = inner;
+        HResult = Code;
     }
+
+    /// THE HRESULT .NET GIVES EVERY ONE OF THE TYPE, COR_E_EXCEPTION here:
+    /// what HResult holds until something says otherwise. Each type that has
+    /// its own says so (asked in the constructor, so the most derived one's).
+    internal virtual int Code => unchecked((int)0x80131500);
+
+    /// The message as given, null when none was: what a type whose Message
+    /// tells the two apart reads (FileNotFoundException's, FileLoadException's).
+    /// Kept here only -- a second field holding the same string would leave
+    /// neither its owner, and every exception's message the collector's.
+    internal string? Given => _message;
 
     /// WHERE IT WAS THROWN: one line a frame, newest first, in .NET's own
     /// wording -- `   at Type.Method in file.cor:line N`.
@@ -14429,7 +14446,7 @@ class Exception
     {
         get
         {
-            if (_message.Length > 0)
+            if (_message != null)
             {
                 return _message;
             }
@@ -14497,6 +14514,7 @@ class Exception
 /// and the shape of the tree.
 class SystemException : Exception
 {
+    internal override int Code => unchecked((int)0x80131501);
     public SystemException() : base("System error.") { }
     public SystemException(string? message) : base(message) { }
     public SystemException(string? message, Exception? inner) : base(message, inner) { }
@@ -14508,12 +14526,10 @@ class SystemException : Exception
 /// own it -- which is why it is here.
 class ApplicationException : Exception
 {
-    // COR_E_APPLICATION, which .NET gives every one.
-    const int Code = unchecked((int)0x80131600);
-
-    public ApplicationException() : base("Error in the application.") { HResult = Code; }
-    public ApplicationException(string? message) : base(message) { HResult = Code; }
-    public ApplicationException(string? message, Exception? innerException) : base(message, innerException) { HResult = Code; }
+    internal override int Code => unchecked((int)0x80131600);
+    public ApplicationException() : base("Error in the application.") { }
+    public ApplicationException(string? message) : base(message) { }
+    public ApplicationException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
 /// System.Runtime.InteropServices' ExternalException: a failure outside the
@@ -14521,27 +14537,19 @@ class ApplicationException : Exception
 /// said) -- what Clipboard throws when another program holds it open.
 class ExternalException : SystemException
 {
-    private int _code;
-    public ExternalException() : base("External component has thrown an exception.") { _code = unchecked((int)0x80004005); }
-    public ExternalException(string? message) : base(message) { _code = unchecked((int)0x80004005); }
-    public ExternalException(string? message, Exception? inner) : base(message, inner) { _code = unchecked((int)0x80004005); }
-    public ExternalException(string message, int errorCode) : base(message) { _code = errorCode; }
-    public virtual int ErrorCode => _code;
-}
-
-/// System.ComponentModel's Win32Exception: a Windows error by its number.
-class Win32Exception : ExternalException
-{
-    private int _native;
-    public Win32Exception() : base("The operation completed with an error.") { _native = 0; }
-    public Win32Exception(int error) : base("Win32 error " + error + ".") { _native = error; }
-    public Win32Exception(int error, string message) : base(message) { _native = error; }
-    public Win32Exception(string message) : base(message) { _native = 0; }
-    public int NativeErrorCode => _native;
+    internal override int Code => unchecked((int)0x80004005);
+    const string External = "External component has thrown an exception.";
+    public ExternalException() : base(External) { }
+    public ExternalException(string? message) : base(message ?? External) { }
+    public ExternalException(string? message, Exception? inner) : base(message ?? External, inner) { }
+    // THE CODE IS THE HRESULT, as .NET's: ErrorCode reads it back.
+    public ExternalException(string? message, int errorCode) : base(message ?? External) { HResult = errorCode; }
+    public virtual int ErrorCode => HResult;
 }
 
 class TypeInitializationException : SystemException
 {
+    internal override int Code => unchecked((int)0x80131534);
     private string _typeName;
     public TypeInitializationException(string? fullTypeName, Exception? innerException)
         : base("The type initializer for '" + (fullTypeName ?? "") + "' threw an exception.", innerException)
@@ -14559,6 +14567,7 @@ interface IFormattable
 /// One of the arguments was not acceptable. C#'s, spelled C#'s way.
 class ArgumentException : SystemException
 {
+    internal override int Code => unchecked((int)0x80070057);
     // THE MESSAGE AND THE PARAMETER ARE KEPT APART, as .NET keeps them:
     // Message is the message and then " (Parameter 'name')" when a name was
     // given, and a derived exception adds its own line after that.
@@ -14605,13 +14614,14 @@ class ArgumentException : SystemException
 /// An argument's value was outside the range accepted by the method.
 class ArgumentOutOfRangeException : ArgumentException
 {
+    internal override int Code => unchecked((int)0x80131502);
     readonly object? _actualValue;
     readonly bool _hasActualValue;
 
     public ArgumentOutOfRangeException() : base("Specified argument was out of the range of valid values.") { }
     public ArgumentOutOfRangeException(string? paramName) : base("Specified argument was out of the range of valid values.", paramName) { }
     public ArgumentOutOfRangeException(string? paramName, string? message) : base(message ?? "Specified argument was out of the range of valid values.", paramName) { }
-    public ArgumentOutOfRangeException(string? message, Exception? innerException) : base(message, innerException) { }
+    public ArgumentOutOfRangeException(string? message, Exception? innerException) : base(message ?? "Specified argument was out of the range of valid values.", innerException) { }
 
     /// .NET's three-argument form: the argument, the value it actually had,
     /// and why -- which Message ends with, on a line of its own.
@@ -14685,6 +14695,7 @@ class ArgumentOutOfRangeException : ArgumentException
 /// An argument was null and the method cannot work with that.
 class ArgumentNullException : ArgumentException
 {
+    internal override int Code => unchecked((int)0x80004003);
     public ArgumentNullException() : base("Value cannot be null.") { }
     public ArgumentNullException(string? paramName) : base("Value cannot be null.", paramName) { }
     public ArgumentNullException(string? paramName, string? message) : base(message ?? "Value cannot be null.", paramName) { }
@@ -14703,14 +14714,13 @@ class ArgumentNullException : ArgumentException
 /// what WaitHandle.WaitAll is to take all at once.
 class DuplicateWaitObjectException : ArgumentException
 {
+    internal override int Code => unchecked((int)0x80131529);
     const string Duplicate = "Duplicate objects in argument.";
-    // COR_E_DUPLICATEWAITOBJECT, which .NET gives every one.
-    const int Code = unchecked((int)0x80131529);
 
-    public DuplicateWaitObjectException() : base(Duplicate) { HResult = Code; }
-    public DuplicateWaitObjectException(string? parameterName) : base(Duplicate, parameterName) { HResult = Code; }
-    public DuplicateWaitObjectException(string? parameterName, string? message) : base(message, parameterName) { HResult = Code; }
-    public DuplicateWaitObjectException(string? message, Exception? innerException) : base(message, innerException) { HResult = Code; }
+    public DuplicateWaitObjectException() : base(Duplicate) { }
+    public DuplicateWaitObjectException(string? parameterName) : base(Duplicate, parameterName) { }
+    public DuplicateWaitObjectException(string? parameterName, string? message) : base(message ?? Duplicate, parameterName) { }
+    public DuplicateWaitObjectException(string? message, Exception? innerException) : base(message ?? Duplicate, innerException) { }
 }
 
 /// An index was outside what the thing being indexed holds.
@@ -14719,49 +14729,55 @@ class DuplicateWaitObjectException : ArgumentException
 /// and refuses at run time (Runtime.ArrayStoreCheck).
 class ArrayTypeMismatchException : SystemException
 {
+    internal override int Code => unchecked((int)0x80131503);
     public ArrayTypeMismatchException() : base("Attempted to access an element as a type incompatible with the array.") { }
-    public ArrayTypeMismatchException(string? message) : base(message) { }
-    public ArrayTypeMismatchException(string? message, Exception? innerException) : base(message, innerException) { }
+    public ArrayTypeMismatchException(string? message) : base(message ?? "Attempted to access an element as a type incompatible with the array.") { }
+    public ArrayTypeMismatchException(string? message, Exception? innerException) : base(message ?? "Attempted to access an element as a type incompatible with the array.", innerException) { }
 }
 
 class IndexOutOfRangeException : SystemException
 {
-    public IndexOutOfRangeException(string? message) : base(message) { }
+    internal override int Code => unchecked((int)0x80131508);
+    public IndexOutOfRangeException(string? message) : base(message ?? "Index was outside the bounds of the array.") { }
     public IndexOutOfRangeException() : base("Index was outside the bounds of the array.") { }
-    public IndexOutOfRangeException(string? message, Exception? innerException) : base(message, innerException) { }
+    public IndexOutOfRangeException(string? message, Exception? innerException) : base(message ?? "Index was outside the bounds of the array.", innerException) { }
 }
 
 /// There is not enough memory for what was asked: an array larger than any
 /// allocation can be, as .NET throws it.
 class OutOfMemoryException : SystemException
 {
+    internal override int Code => unchecked((int)0x8007000E);
     public OutOfMemoryException() : base("Insufficient memory to continue the execution of the program.") { }
-    public OutOfMemoryException(string? message) : base(message) { }
-    public OutOfMemoryException(string? message, Exception? innerException) : base(message, innerException) { }
+    public OutOfMemoryException(string? message) : base(message ?? "Insufficient memory to continue the execution of the program.") { }
+    public OutOfMemoryException(string? message, Exception? innerException) : base(message ?? "Insufficient memory to continue the execution of the program.", innerException) { }
 }
 
 /// The object is not in a state where that call makes sense.
 class InvalidOperationException : SystemException
 {
+    internal override int Code => unchecked((int)0x80131509);
     public InvalidOperationException() : base("Operation is not valid due to the current state of the object.") { }
-    public InvalidOperationException(string? message) : base(message) { }
-    public InvalidOperationException(string? message, Exception? inner) : base(message, inner) { }
+    public InvalidOperationException(string? message) : base(message ?? "Operation is not valid due to the current state of the object.") { }
+    public InvalidOperationException(string? message, Exception? inner) : base(message ?? "Operation is not valid due to the current state of the object.", inner) { }
 }
 
 class FormatException : SystemException
 {
-    public FormatException(string? message) : base(message) { }
+    internal override int Code => unchecked((int)0x80131537);
+    public FormatException(string? message) : base(message ?? "One of the identified items was in an invalid format.") { }
     public FormatException() : base("One of the identified items was in an invalid format.") { }
-    public FormatException(string? message, Exception? innerException) : base(message, innerException) { }
+    public FormatException(string? message, Exception? innerException) : base(message ?? "One of the identified items was in an invalid format.", innerException) { }
 }
 
 /// UNDER ArithmeticException, which is where .NET puts it -- with
 /// DivideByZeroException and NotFiniteNumberException, its two siblings.
 class OverflowException : ArithmeticException
 {
-    public OverflowException(string? message) : base(message) { }
+    internal override int Code => unchecked((int)0x80131516);
+    public OverflowException(string? message) : base(message ?? "Arithmetic operation resulted in an overflow.") { }
     public OverflowException() : base("Arithmetic operation resulted in an overflow.") { }
-    public OverflowException(string? message, Exception? innerException) : base(message, innerException) { }
+    public OverflowException(string? message, Exception? innerException) : base(message ?? "Arithmetic operation resulted in an overflow.", innerException) { }
 }
 
 namespace System.IO
@@ -14771,26 +14787,25 @@ namespace System.IO
 /// uses rather than taking the name back out of the sentence.
 class FileNotFoundException : IOException
 {
-    // THE MESSAGE AS GIVEN, null included, because .NET's Message tells the
-    // two apart: no message and a file name says "Could not load file or
-    // assembly", no message and no name says nothing at all, and an empty
-    // message stays empty -- where Exception's would invent a sentence.
-    readonly string? _said;
+    internal override int Code => unchecked((int)0x80070002);
+    // THE MESSAGE AS GIVEN, null included (Exception.Given), because .NET's
+    // Message tells the two apart: no message and a file name says "Could not
+    // load file or assembly", no message and no name says nothing at all, and
+    // an empty message stays empty -- where Exception's would invent a
+    // sentence.
     readonly string? _fileName;
 
-    public FileNotFoundException() : base("Unable to find the specified file.") { _said = "Unable to find the specified file."; }
-    public FileNotFoundException(string? message) : base(message) { _said = message; }
-    public FileNotFoundException(string? message, Exception? innerException) : base(message, innerException) { _said = message; }
+    public FileNotFoundException() : base("Unable to find the specified file.") { }
+    public FileNotFoundException(string? message) : base(message) { }
+    public FileNotFoundException(string? message, Exception? innerException) : base(message, innerException) { }
 
     public FileNotFoundException(string? message, string? fileName) : base(message)
     {
-        _said = message;
         _fileName = fileName;
     }
 
     public FileNotFoundException(string? message, string? fileName, Exception? innerException) : base(message, innerException)
     {
-        _said = message;
         _fileName = fileName;
     }
 
@@ -14806,8 +14821,9 @@ class FileNotFoundException : IOException
     {
         get
         {
-            if (_said != null) return _said;
-            return _fileName == null ? "" : "Could not load file or assembly '" + _fileName + "'. The system cannot find the file specified.\n";
+            string? said = Given;
+            if (said != null) return said;
+            return _fileName == null ? null! : "Could not load file or assembly '" + _fileName + "'. The system cannot find the file specified.\n";
         }
     }
 
@@ -14832,9 +14848,10 @@ class FileNotFoundException : IOException
 /// caller that wants the exact reason reads HResult.
 class UnauthorizedAccessException : SystemException
 {
+    internal override int Code => unchecked((int)0x80070005);
     public UnauthorizedAccessException() : base("Attempted to perform an unauthorized operation.") { }
-    public UnauthorizedAccessException(string? message) : base(message) { }
-    public UnauthorizedAccessException(string? message, Exception? inner) : base(message, inner) { }
+    public UnauthorizedAccessException(string? message) : base(message ?? "Attempted to perform an unauthorized operation.") { }
+    public UnauthorizedAccessException(string? message, Exception? inner) : base(message ?? "Attempted to perform an unauthorized operation.", inner) { }
 }
 
 /// System.IO.DirectoryNotFoundException: a directory on the path is not
@@ -14844,9 +14861,10 @@ namespace System.IO
 {
 class DirectoryNotFoundException : IOException
 {
-    public DirectoryNotFoundException(string? message) : base(message) { }
+    internal override int Code => unchecked((int)0x80070003);
+    public DirectoryNotFoundException(string? message) : base(message ?? "Attempted to access a path that is not on the disk.") { }
     public DirectoryNotFoundException() : base("Attempted to access a path that is not on the disk.") { }
-    public DirectoryNotFoundException(string? message, Exception? innerException) : base(message, innerException) { }
+    public DirectoryNotFoundException(string? message, Exception? innerException) : base(message ?? "Attempted to access a path that is not on the disk.", innerException) { }
 }
 }
 
@@ -14860,18 +14878,20 @@ class DirectoryNotFoundException : IOException
 /// InvalidOperationException, which means "not just now".
 class NotSupportedException : SystemException
 {
+    internal override int Code => unchecked((int)0x80131515);
     public NotSupportedException() : base("Specified method is not supported.") { }
-    public NotSupportedException(string? message) : base(message) { }
-    public NotSupportedException(string? message, Exception? innerException) : base(message, innerException) { }
+    public NotSupportedException(string? message) : base(message ?? "Specified method is not supported.") { }
+    public NotSupportedException(string? message, Exception? innerException) : base(message ?? "Specified method is not supported.", innerException) { }
 }
 
 /// Not on this platform: the operation exists, and what the program runs on
 /// cannot do it.
 class PlatformNotSupportedException : NotSupportedException
 {
+    internal override int Code => unchecked((int)0x80131539);
     public PlatformNotSupportedException() : base("Operation is not supported on this platform.") { }
-    public PlatformNotSupportedException(string? message) : base(message) { }
-    public PlatformNotSupportedException(string? message, Exception? innerException) : base(message, innerException) { }
+    public PlatformNotSupportedException(string? message) : base(message ?? "Operation is not supported on this platform.") { }
+    public PlatformNotSupportedException(string? message, Exception? innerException) : base(message ?? "Operation is not supported on this platform.", innerException) { }
 }
 
 /// MAKING AN OBJECT OF A TYPE NAMED AS A TYPE ARGUMENT, CreateInstance<T>().
@@ -14903,9 +14923,10 @@ public static partial class Activator
 /// A method that exists so that something compiles and has not been written.
 class NotImplementedException : SystemException
 {
+    internal override int Code => unchecked((int)0x80004001);
     public NotImplementedException() : base("The method or operation is not implemented.") { }
-    public NotImplementedException(string? message) : base(message) { }
-    public NotImplementedException(string? message, Exception? innerException) : base(message, innerException) { }
+    public NotImplementedException(string? message) : base(message ?? "The method or operation is not implemented.") { }
+    public NotImplementedException(string? message, Exception? innerException) : base(message ?? "The method or operation is not implemented.", innerException) { }
 }
 
 /// The key is not in the table. .NET's indexer throws this where the one here
@@ -14913,9 +14934,10 @@ class NotImplementedException : SystemException
 /// that wants the test uses TryGetValue.
 class KeyNotFoundException : SystemException
 {
+    internal override int Code => unchecked((int)0x80131577);
     public KeyNotFoundException() : base("The given key was not present in the dictionary.") { }
-    public KeyNotFoundException(string? message) : base(message) { }
-    public KeyNotFoundException(string? message, Exception? innerException) : base(message, innerException) { }
+    public KeyNotFoundException(string? message) : base(message ?? "The given key was not present in the dictionary.") { }
+    public KeyNotFoundException(string? message, Exception? innerException) : base(message ?? "The given key was not present in the dictionary.", innerException) { }
 }
 
 /// Anything that went wrong at the filing system or a device, and the base of
@@ -14928,6 +14950,7 @@ namespace System.IO
 {
 class IOException : SystemException
 {
+    internal override int Code => unchecked((int)0x80131620);
     public IOException() : base("I/O error occurred.") { }
     public IOException(string? message) : base(message) { }
     public IOException(string? message, Exception? inner) : base(message, inner) { }
@@ -14939,9 +14962,10 @@ namespace System.IO
 {
 class PathTooLongException : IOException
 {
+    internal override int Code => unchecked((int)0x800700CE);
     public PathTooLongException() : base("The specified file name or path is too long, or a component of the specified path is too long.") { }
-    public PathTooLongException(string? message) : base(message) { }
-    public PathTooLongException(string? message, Exception? innerException) : base(message, innerException) { }
+    public PathTooLongException(string? message) : base(message ?? "The specified file name or path is too long, or a component of the specified path is too long.") { }
+    public PathTooLongException(string? message, Exception? innerException) : base(message ?? "The specified file name or path is too long, or a component of the specified path is too long.", innerException) { }
 }
 }
 
@@ -14950,23 +14974,62 @@ namespace System.IO
 {
 class FileLoadException : IOException
 {
+    internal override int Code => unchecked((int)0x80131621);
+    // THE MESSAGE AS GIVEN (Exception.Given), as FileNotFoundException reads
+    // it: none at all names the file, empty or not, in .NET's sentence for
+    // COR_E_FILELOAD.
+    readonly string? _fileName;
+
     public FileLoadException() : base("Could not load the specified file.") { }
-    public FileLoadException(string message) : base(message) { }
-    public FileLoadException(string message, string fileName) : base(message) { }
+    public FileLoadException(string? message) : base(message) { }
+    public FileLoadException(string? message, Exception? inner) : base(message, inner) { }
+
+    public FileLoadException(string? message, string? fileName) : base(message)
+    {
+        _fileName = fileName;
+    }
+
+    public FileLoadException(string? message, string? fileName, Exception? inner) : base(message, inner)
+    {
+        _fileName = fileName;
+    }
+
+    public string? FileName => _fileName;
+
+    /// The assembly loader's log, which only .NET's loader writes.
+    public string? FusionLog => null;
+
+    public override string Message
+        => Given ?? "Could not load file or assembly '" + _fileName + "'. Could not find or load a specific file. (0x" + HResult.ToString("X8") + ")";
+
+    /// .NET's own layout, FileNotFoundException's: the file's name on a line
+    /// after the message, the inner exception after " ---> ".
+    public override string ToString()
+    {
+        string text = this.GetType().FullName + ": " + Message;
+        if (!string.IsNullOrEmpty(_fileName)) text = text + "\nFile name: '" + _fileName + "'";
+        Exception? inner = InnerException;
+        if (inner != null) text = text + "\n ---> " + inner.ToString();
+        string trace = StackTrace;
+        if (trace.Length > 0) text = text + "\n" + trace;
+        return text;
+    }
 }
 }
 
 class TimeoutException : SystemException
 {
+    internal override int Code => unchecked((int)0x80131505);
     public TimeoutException() : base("The operation has timed out.") { }
-    public TimeoutException(string? message) : base(message) { }
-    public TimeoutException(string? message, Exception? innerException) : base(message, innerException) { }
+    public TimeoutException(string? message) : base(message ?? "The operation has timed out.") { }
+    public TimeoutException(string? message, Exception? innerException) : base(message ?? "The operation has timed out.", innerException) { }
 }
 
 /// UNDER InvalidOperationException, which is .NET's placing and says what the
 /// failure is: the call would have been fine a moment ago.
 class ObjectDisposedException : InvalidOperationException
 {
+    internal override int Code => unchecked((int)0x80131622);
     readonly string? _objectName;
 
     public ObjectDisposedException(string? objectName) : base("Cannot access a disposed object.") { _objectName = objectName; }
@@ -15005,8 +15068,8 @@ sealed class SwitchExpressionException : InvalidOperationException
     public SwitchExpressionException() : base("Non-exhaustive switch expression failed to match its input.") { }
     public SwitchExpressionException(Exception? innerException) : base("Non-exhaustive switch expression failed to match its input.", innerException) { }
     public SwitchExpressionException(object? unmatchedValue) : base("Non-exhaustive switch expression failed to match its input.") { _unmatched = unmatchedValue; }
-    public SwitchExpressionException(string? message) : base(message) { }
-    public SwitchExpressionException(string? message, Exception? innerException) : base(message, innerException) { }
+    public SwitchExpressionException(string? message) : base(message ?? "Non-exhaustive switch expression failed to match its input.") { }
+    public SwitchExpressionException(string? message, Exception? innerException) : base(message ?? "Non-exhaustive switch expression failed to match its input.", innerException) { }
 
     /// The value no arm matched.
     public object? UnmatchedValue => _unmatched;
@@ -15025,9 +15088,10 @@ sealed class SwitchExpressionException : InvalidOperationException
 
 class ArithmeticException : SystemException
 {
-    public ArithmeticException(string? message) : base(message) { }
+    internal override int Code => unchecked((int)0x80070216);
+    public ArithmeticException(string? message) : base(message ?? "Overflow or underflow in the arithmetic operation.") { }
     public ArithmeticException() : base("Overflow or underflow in the arithmetic operation.") { }
-    public ArithmeticException(string? message, Exception? innerException) : base(message, innerException) { }
+    public ArithmeticException(string? message, Exception? innerException) : base(message ?? "Overflow or underflow in the arithmetic operation.", innerException) { }
 }
 
 // ---- Random ---------------------------------------------------------------
