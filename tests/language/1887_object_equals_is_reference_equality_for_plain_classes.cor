@@ -1,0 +1,57 @@
+// test: object_equals_is_reference_equality_for_plain_classes
+// expect-exit: 0
+// expect-output:
+// True False False False False
+// True True True
+// library True True True True True
+// True True True
+//
+// object.Equals ON A CLASS THAT ONLY WROTE A TYPED Equals is object's own,
+// reference equality, as .NET's is: two equal Points are two objects to
+// object.Equals and to a List of them. A class that is IEquatable<T> is
+// compared by it in a table, as .NET's default comparer compares it; and a
+// record that wrote its own Equals(R) is still given Equals(object) over it.
+// The library's Version, IPAddress and TimeZoneInfo override Equals(object)
+// as .NET's do.
+
+using System;
+using System.Collections.Generic;
+using System.Net;
+
+class Point
+{
+    public int X;
+    public Point(int x) { X = x; }
+    public bool Equals(Point? other) => other is not null && other.X == X;
+}
+
+class Eq : IEquatable<Eq>
+{
+    public int X;
+    public Eq(int x) { X = x; }
+    public bool Equals(Eq? other) => other is not null && other.X == X;
+}
+
+record R(int X, string Name)
+{
+    public virtual bool Equals(R? other) => other is not null && other.X == X;
+    public override int GetHashCode() => X;
+}
+
+static class P
+{
+    static void Main()
+    {
+        Point a = new Point(1), b = new Point(1);
+        object oa = a, ob = b;
+        Console.WriteLine(a.Equals(b) + " " + oa.Equals(ob) + " " + object.Equals(a, b) + " " + a.Equals((object)b) + " " + new List<Point> { a }.Contains(b));
+        Eq e = new Eq(2), f = new Eq(2);
+        Console.WriteLine(e.Equals(f) + " " + new List<Eq> { e }.Contains(f) + " " + EqualityComparer<Eq>.Default.Equals(e, f));
+        object r1 = new R(3, "a"), r2 = new R(3, "b");
+        Version v = new Version(1, 2), w = new Version(1, 2);
+        IPAddress x = IPAddress.Parse("10.0.0.1"), y = IPAddress.Parse("10.0.0.1");
+        Console.WriteLine("library " + object.Equals(v, w) + " " + new HashSet<Version> { v }.Contains(w) + " " + object.Equals(x, y) + " " + new List<IPAddress> { x }.Contains(y)
+            + " " + object.Equals(TimeZoneInfo.Utc, TimeZoneInfo.FindSystemTimeZoneById("UTC")));
+        Console.WriteLine(r1.Equals(r2) + " " + new List<R> { new R(3, "a") }.Contains(new R(3, "c")) + " " + new Dictionary<R, int> { [new R(4, "x")] = 1 }.ContainsKey(new R(4, "y")));
+    }
+}

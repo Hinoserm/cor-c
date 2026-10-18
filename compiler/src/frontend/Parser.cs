@@ -2253,6 +2253,13 @@ public sealed class Parser
             src.Append(";\n    }\n");
             src.Append("    public override bool Equals(object? obj) { return obj is ").Append(self).Append(" other && Equals(other); }\n");
         }
+        // AND Equals(object) WHERE THE BODY WROTE ONLY Equals(R): C# writes
+        // that one for every record, whatever the body declares, and object's
+        // own was what a table asked of the record.
+        else if (!decl.Members.Exists(m => m is MethodDecl { Name: "Equals", Params.Count: 1 } typed && typed.Params[0].Type.Name is "object" or "Object" or "System.Object"))
+        {
+            src.Append("    public override bool Equals(object? obj) { return obj is ").Append(self).Append(" other && Equals(other); }\n");
+        }
         if (!decl.Members.Exists(m => m.Name == "GetHashCode"))
         {
             src.Append("    public override int GetHashCode()\n    {\n        int hash = 0;\n");
