@@ -161,7 +161,7 @@ public sealed partial class Escape
             foreach (HashSet<long> one in alternatives) every.IntersectWith(one);
             foreach (HashSet<long> one in alternatives)
                 foreach (long at in one)
-                    if (!every.Contains(at) && Dirty.Add(at)) Note(at, $"fresh in only some overrides of {where}");
+                    if (!every.Contains(at) && Dirty.Add(at) && FieldTrace is not null) Note(at, $"fresh in only some overrides of {where}");
         }
     }
 
@@ -383,7 +383,7 @@ public sealed partial class Escape
         void DirtyRange(long at, long bytes)
         {
             fs.Why ??= $"dirty +{at}: {current} in {f.Name}";
-            for (long o = at - ((at % word) + word) % word; o < at + bytes; o += word) fs.Note(o, $"{current} in {f.Name}");
+            for (long o = at - ((at % word) + word) % word; o < at + bytes; o += word) if (FieldTrace is not null) fs.Note(o, $"{current} in {f.Name}");
             long first = at - ((at % word) + word) % word;
             for (long o = first; o < at + bytes; o += word)
             {
@@ -644,7 +644,7 @@ public sealed partial class Escape
             }
             fs.Dirty.Add(at);
             fs.Why ??= $"dirty +{at}: stored {vr.Reg} is not a fresh object only this field keeps ({st}) in {f.Name}";
-            fs.Note(at, $"stored {vr.Reg} not fresh-and-only-here: {st} in {f.Name}");
+            if (FieldTrace is not null) fs.Note(at, $"stored {vr.Reg} not fresh-and-only-here: {st} in {f.Name}");
             if (hint is null) continue;
             // For the link: a child made by another unit's function, or let go
             // only through calls to one, is fresh if the condition holds.
@@ -664,7 +664,7 @@ public sealed partial class Escape
             // One object in two fields would be freed twice.
             if (condition is null)
             {
-                if (storedOrigins[origin] > 1) { fs.Dirty.Add(at); fs.Note(at, $"one object stored twice: {origin} in {f.Name}"); }
+                if (storedOrigins[origin] > 1) { fs.Dirty.Add(at); if (FieldTrace is not null) fs.Note(at, $"one object stored twice: {origin} in {f.Name}"); }
                 else fs.FreshStored.Add(at);
             }
             if (hint is null) continue;
@@ -721,7 +721,7 @@ public sealed partial class Escape
             Needs? needs = hintDirty ? null : new(this);
             Flow flow = Analyse(f, new[] { v }, summaries, load, putBack.Set, needs: needs, consumers: released);
             bool escapes = flow.Escapes || needs is { Condition.IsTrue: false };
-            if (escapes) { fs.Dirty.Add(at); fs.Note(at, $"loaded {v} escapes via {flow.Why} ({load}) in {f.Name}"); }
+            if (escapes) { fs.Dirty.Add(at); if (FieldTrace is not null) fs.Note(at, $"loaded {v} escapes via {flow.Why} ({load}) in {f.Name}"); }
             if (needs is null) continue;
             if (flow.Escapes) hint!.Dirty.Add(at);
             else if (!needs.Condition.IsTrue) hint!.Conditional.Add((at, needs.Condition, false));

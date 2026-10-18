@@ -3409,11 +3409,22 @@ internal sealed class RegionEscape
         {
             if (_kind[o] != Kind.Made || _origins[o].Length == 0 || _owner.NoReference is not { } rule) return false;
             if (_noReference.TryGetValue(Pair(o, at), out bool known)) return known;
+            // LOOPS, NOT A LAMBDA: one over `at` was a closure made at every
+            // call, the cached answers' too, once per location carried along
+            // every load and store edge.
             bool none = true;
             foreach (int r in _origins[o])
             {
-                int[] sites = r < 0 ? new[] { -r - 1 } : _owner.SitesOf(new[] { r });
-                if (sites.Length == 0 || sites.Any(site => !rule(site, at))) { none = false; break; }
+                if (r < 0)
+                {
+                    if (!rule(-r - 1, at)) { none = false; break; }
+                    continue;
+                }
+                int[] sites = _owner.SitesOf(new[] { r });
+                bool refused = sites.Length == 0;
+                foreach (int site in sites)
+                    if (!rule(site, at)) { refused = true; break; }
+                if (refused) { none = false; break; }
             }
             return _noReference[Pair(o, at)] = none;
         }

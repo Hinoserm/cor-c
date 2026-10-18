@@ -258,14 +258,43 @@ public sealed partial class Lowering
             buffer = f.NewReg(IrTypes.Word, "retbuf");
             f.Params.Add(buffer);
         }
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
         // A FRESH FUNCTION HAS NO FAILURE BLOCK YET: a bounds check's is
         // cached per function, and the last function's is not this one's.
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         body(f, self, args, buffer);
         _m.Functions.Add(f);
-        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        _f = savedFn; _e = savedB; _boundsFail = savedFail; LeaveHelper(context);
         return name;
+    }
+
+    /// <summary>The method a shared helper was asked for in, set aside while it is built.</summary>
+    private readonly record struct HelperContext(MethodSymbol? Method, VReg[]? TypeArgs, bool InBarrier);
+
+    /// <summary>
+    /// A SHARED HELPER IS BUILT AS NOBODY'S: every unit that needs one makes
+    /// it and the link keeps one copy, so it must come out the same whoever
+    /// asked for it first. Built inside the method that asked, it took that
+    /// method's rules -- no card mark in the collector's and the runtime's
+    /// classes (CardMarkAt), no barrier inside a barrier, a generic method's
+    /// type arguments -- and the uint array walker the class library's unit
+    /// first wanted in Runtime.CrcTable marked no cards where every other
+    /// unit's did, and the compiler's own project link refused the two.
+    /// </summary>
+    private HelperContext EnterHelper()
+    {
+        HelperContext saved = new(_method, _typeArgs, _inBarrier);
+        _method = null;
+        _typeArgs = null;
+        _inBarrier = false;
+        return saved;
+    }
+
+    private void LeaveHelper(HelperContext saved)
+    {
+        _method = saved.Method;
+        _typeArgs = saved.TypeArgs;
+        _inBarrier = saved.InBarrier;
     }
 
     /// <summary>How an element is passed, as a refusal is named by it: its machine type.</summary>

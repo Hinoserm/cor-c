@@ -623,7 +623,7 @@ public sealed partial class Lowering
         VReg a = f.NewReg(IrTypes.Word, "a"), b = f.NewReg(IrTypes.Word, "b");
         f.Params.Add(a);
         f.Params.Add(b);
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         Node at = new MethodDecl { Name = name, Line = 0, Col = 0 };
 
@@ -662,7 +662,7 @@ public sealed partial class Lowering
         }
 
         _m.Functions.Add(f);
-        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        _f = savedFn; _e = savedB; _boundsFail = savedFail; LeaveHelper(context);
         return name;
     }
 
@@ -717,7 +717,7 @@ public sealed partial class Lowering
         Function f = new(name, IrType.I32) { Coalescible = true };
         VReg a = f.NewReg(IrTypes.Word, "a");
         f.Params.Add(a);
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
 
         MethodSymbol? own = IsTupleShape(sym) ? null : sym.Methods.FirstOrDefault(m => m.Name == "GetHashCode" && !m.Static && m.Params.Count == 0);
@@ -771,7 +771,7 @@ public sealed partial class Lowering
         }
 
         _m.Functions.Add(f);
-        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        _f = savedFn; _e = savedB; _boundsFail = savedFail; LeaveHelper(context);
         return name;
     }
 
@@ -1298,7 +1298,7 @@ public sealed partial class Lowering
         VReg other = f.NewReg(IrTypes.Word, "other");
         f.Params.Add(self);
         f.Params.Add(other);
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
         Node at = new MethodDecl { Name = label, Line = 0, Col = 0 };
 
@@ -1313,7 +1313,7 @@ public sealed partial class Lowering
         }
         _e.Ret(new ImmOperand(0, IrType.I32));
         _m.Functions.Add(f);
-        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        _f = savedFn; _e = savedB; _boundsFail = savedFail; LeaveHelper(context);
         return label;
     }
 

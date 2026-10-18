@@ -1834,7 +1834,7 @@ continue;
                 (int from, int to) = LiveStretch(liveness, x, ReferenceEquals(x, b) ? b.Instrs.IndexOf(ld) : -1, flow.Derived);
                 for (int k = 0; k < x.Instrs.Count && unsafeAt is null; k++)
                 {
-                    if ((k < from || k >= to) && !(intoPad && PadLiveAt(liveness, x, k).Overlaps(flow.Derived))) continue;
+                    if ((k < from || k >= to) && !(intoPad && PadLiveOverlaps(liveness, x, k, flow.Derived))) continue;
                     Instr i = x.Instrs[k];
                     // Nor a self-replacing free of the same object's other
                     // field, nor a free of an element of the value read
@@ -3744,8 +3744,8 @@ continue;
         }
         // By the holders as they stand at the end: slots merged since a write
         // or read was seen are one holder (MergeFrameWrites).
-        if (heldWrites is not null) flow.HeldWrites = heldWrites.Select(w => (w.At, Canon(w.Root), w.Offset)).Distinct().ToList();
-        if (heldReads is not null) flow.HeldReads = heldReads.Select(r => (r.At, Canon(r.Root), r.Offset)).Distinct().ToList();
+        if (heldWrites is not null) flow.HeldWrites = Canonical(heldWrites);
+        if (heldReads is not null) flow.HeldReads = Canonical(heldReads);
         // And the blocks made here each variable may address: its holder's,
         // or every one taken as one with it (MergeFrameWrites).
         if (holderVariables is not null && holderRegs is not null)
@@ -3815,6 +3815,23 @@ continue;
         }
 
         object Canon(object root) => sameSlot is not null && sameSlot.TryGetValue(root, out object? one) ? one : root;
+
+        // The holders' writes or reads by their holders' canonical roots, the
+        // first of each kept, in the order they were seen. A LOOP, NOT A
+        // LAMBDA: a delegate calling Canon put this whole method's captured
+        // state -- every local the local functions share -- in an object made
+        // at each call, and every read of it in the instruction loop a load.
+        List<(Instr At, object Root, long Offset)> Canonical(HashSet<(Instr At, object Root, long Offset)> held)
+        {
+            List<(Instr At, object Root, long Offset)> list = new(held.Count);
+            HashSet<(Instr At, object Root, long Offset)> seen = new(held.Count);
+            foreach ((Instr At, object Root, long Offset) w in held)
+            {
+                (Instr At, object Root, long Offset) one = (w.At, Canon(w.Root), w.Offset);
+                if (seen.Add(one)) list.Add(one);
+            }
+            return list;
+        }
 
         // The frame slot an operand is the address of, through single copies.
         object? FrameSlotOf(Operand o, int depth)
@@ -6207,7 +6224,40 @@ continue;
     /// </summary>
     internal static HashSet<VReg> PadLiveAt(Liveness liveness, Block at, int index = int.MaxValue)
     {
-        // Kept with the analysis it was made from: one liveness, one function.
+        HashSet<VReg> live = PadWhole(liveness, at);
+        // In a push's own block, the pad is entered only after the push: an
+        // allocation before it, in the same block, is outside its reach.
+        if (liveness.PadFrom!.TryGetValue(at, out var from))
+        {
+            bool copied = false;
+            foreach ((int after, HashSet<VReg> reads) in from)
+            {
+                if (index <= after) continue;
+                if (!copied) { live = new HashSet<VReg>(live); copied = true; }
+                live.UnionWith(reads);
+            }
+        }
+        return live;
+    }
+
+    /// <summary>
+    /// Whether `set` meets what a pad reads where instruction `index` of `at`
+    /// can enter it: PadLiveAt(...).Overlaps(set), with no set made. Asked of
+    /// every instruction of a block a pad can be entered from, the copy and
+    /// the closure a lambda over `index` made were each call's.
+    /// </summary>
+    internal static bool PadLiveOverlaps(Liveness liveness, Block at, int index, HashSet<VReg> set)
+    {
+        if (PadWhole(liveness, at).Overlaps(set)) return true;
+        if (liveness.PadFrom!.TryGetValue(at, out var from))
+            foreach ((int after, HashSet<VReg> reads) in from)
+                if (index > after && reads.Overlaps(set)) return true;
+        return false;
+    }
+
+    /// <summary>What every pad `at` can enter reads, the push in its own block aside: kept with the liveness it was made from.</summary>
+    private static HashSet<VReg> PadWhole(Liveness liveness, Block at)
+    {
         Dictionary<Block, HashSet<VReg>>? table = liveness.PadRegions;
         if (table is null)
         {
@@ -6216,16 +6266,7 @@ continue;
             BuildPadRegions(liveness, table, liveness.PadFrom);
             liveness.PadRegions = table;
         }
-        HashSet<VReg> live = table.TryGetValue(at, out HashSet<VReg>? whole) ? whole : Empty;
-        // In a push's own block, the pad is entered only after the push: an
-        // allocation before it, in the same block, is outside its reach.
-        if (liveness.PadFrom!.TryGetValue(at, out var from) && from.Any(p => index > p.After))
-        {
-            live = new HashSet<VReg>(live);
-            foreach ((int after, HashSet<VReg> reads) in from)
-                if (index > after) live.UnionWith(reads);
-        }
-        return live;
+        return table.TryGetValue(at, out HashSet<VReg>? whole) ? whole : Empty;
     }
     private static readonly HashSet<VReg> Empty = new();
 

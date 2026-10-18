@@ -364,7 +364,7 @@ public sealed partial class Lowering
             return name;
         }
         Function f = new(name, IrTypes.Word) { Coalescible = true };
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
 
         VReg made = Allocate(at, Math.Max(1, sym.InstanceSize));
@@ -372,7 +372,7 @@ public sealed partial class Lowering
         _e.Ret(R(made));
 
         _m.Functions.Add(f);
-        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        _f = savedFn; _e = savedB; _boundsFail = savedFail; LeaveHelper(context);
         return name;
     }
 
@@ -519,7 +519,7 @@ public sealed partial class Lowering
         Function f = new(name, IrTypes.Word) { Coalescible = true };
         VReg src = f.NewReg(IrTypes.Word, "src");
         f.Params.Add(src);
-        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail;
+        Function savedFn = _f; Builder savedB = _e; Block? savedFail = _boundsFail; HelperContext context = EnterHelper();
         _f = f; _e = new Builder(f, f.NewBlock("entry")); _boundsFail = null;
 
         int size = Math.Max(1, sym.InstanceSize);
@@ -538,7 +538,7 @@ public sealed partial class Lowering
         _e.Ret(R(made));
 
         _m.Functions.Add(f);
-        _f = savedFn; _e = savedB; _boundsFail = savedFail;
+        _f = savedFn; _e = savedB; _boundsFail = savedFail; LeaveHelper(context);
         return name;
     }
 

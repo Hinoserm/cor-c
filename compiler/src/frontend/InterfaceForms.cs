@@ -171,13 +171,15 @@ internal static class InterfaceForms
 
     /// <summary>
     /// What the search for conflicted forms reads of a declaration: its name,
-    /// kind, type parameters and bases as written, and whether it is the
-    /// class library's.
+    /// kind, type parameters and bases as written, whether it is the class
+    /// library's, and which type it is -- its namespace and the types it is
+    /// written in with its name (`Identity`), which its partial parts share
+    /// and no other type does.
     /// </summary>
-    public sealed record Declared(string Name, TypeKind Kind, string[] TypeParams, List<TypeRef> Bases, bool Library)
+    public sealed record Declared(string Name, TypeKind Kind, string[] TypeParams, List<TypeRef> Bases, bool Library, string Identity)
     {
         public static Declared Of(TypeDecl d, bool library)
-            => new(d.Name, d.Kind, d.TypeParams.Select(p => p.Name).ToArray(), d.Bases, library);
+            => new(d.Name, d.Kind, d.TypeParams.Select(p => p.Name).ToArray(), d.Bases, library, d.Namespace + "|" + (d.Outer ?? "") + "|" + d.Name);
     }
 
     /// <summary>
@@ -227,11 +229,21 @@ internal static class InterfaceForms
         // class of its own, whose conflicts are the program's. Read as one,
         // the program's IName<int> was numbered among the library's slots,
         // which moved every library class's virtuals one up in that unit.
-        foreach (IGrouping<bool, Declared> side in named.Values
-                     .SelectMany(parts => parts.Where(d => d.Kind is TypeKind.Class or TypeKind.Struct).GroupBy(d => d.Library)))
+        // NOR TWO TYPES THAT SHARE A NAME: parts of one type are written in
+        // one namespace and one outer type. Grouped by name alone, the
+        // linker's ChunkedBytes.Enumerator, an IEnumerator<byte>, and
+        // SortedRelocations.Range.Enumerator, an IEnumerator<Relocation>,
+        // were one class with two constructions, IEnumerator<byte> a
+        // conflicted form in every unit that read both, and the class
+        // library's unit, which kept it, put its Current in a slot of its
+        // own: List<byte>'s and the byte array walker's routines were two
+        // in the compiler's own project, which its link refused.
+        foreach (IGrouping<(string, int, bool), Declared> side in all
+                     .Where(d => d.Kind is TypeKind.Class or TypeKind.Struct)
+                     .GroupBy(d => (d.Identity, d.TypeParams.Length, d.Library)))
         {
             List<Declared> classes = side.ToList();
-            bool library = side.Key;
+            bool library = side.Key.Item3;
             // Its own type parameters may be anything.
             Dictionary<string, string?> own = new(StringComparer.Ordinal);
             foreach (string p in classes[0].TypeParams) own[p] = null;

@@ -1090,7 +1090,7 @@ public sealed partial class Escape
                 (int from, int to) = LiveStretch(liveness, x, ReferenceEquals(x, b) ? b.Instrs.IndexOf(ld) : -1, flow.Derived);
                 for (int k = 0; k < x.Instrs.Count; k++)
                 {
-                    if ((k < from || k >= to) && !(intoPad && PadLiveAt(liveness, x, k).Overlaps(flow.Derived))) continue;
+                    if ((k < from || k >= to) && !(intoPad && Escape.PadLiveOverlaps(liveness, x, k, flow.Derived))) continue;
                     Instr i = x.Instrs[k];
                     if (i.Op == Opcode.CallIndirect)
                     {
