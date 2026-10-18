@@ -12011,7 +12011,8 @@ public sealed partial class Binder
     /// What cannot be told -- a result still open, a body that does not
     /// check with these parameters -- fits, as it did.
     /// </summary>
-    private bool LambdaFits(MethodSymbol m, int i, LambdaExpr lam, Dictionary<string, Type> bound)
+    private bool LambdaFits(MethodSymbol m, int i, LambdaExpr lam, Dictionary<string, Type> bound,
+                            Dictionary<(LambdaExpr, string), (Type?, bool, bool)>? asked = null)
     {
         Type want = m.Params[i].Type;
         if (lam.NoSignature || Invoked(want) is not { } invoke) return true;
@@ -12028,7 +12029,26 @@ public sealed partial class Binder
                 if (!takes.IsError && !written.IsError && takes.ParamName == null && !MethodSignatures.SameType(takes.AsNonNullable(), written.AsNonNullable())) return false;
             }
         }
-        Type? gives = LambdaGives(m, want, lam, bound, out bool statement, out bool valueless);
+        // ASKED ONCE FOR EACH SET OF PARAMETER TYPES in a call (`asked`): every
+        // overload of Sum takes a Func<T, ...> of the same T, and the body
+        // checked again for each was most of a LINQ call's binding.
+        Type? gives;
+        bool statement, valueless;
+        string key = "";
+        if (asked is not null)
+        {
+            Dictionary<string, Type> applied = Applied(want);
+            foreach (ParamSymbol p in invoke.Params) key += Close(Substitute(p.Type, applied), bound) + ";";
+        }
+        if (asked is not null && asked.TryGetValue((lam, key), out var known))
+        {
+            (gives, statement, valueless) = known;
+        }
+        else
+        {
+            gives = LambdaGives(m, want, lam, bound, out statement, out valueless);
+            if (asked is not null) asked[(lam, key)] = (gives, statement, valueless);
+        }
         if (gives is null && !valueless) return true;
 
         if (lam.Async)
@@ -20583,6 +20603,10 @@ public sealed partial class Binder
         static bool UnsignedIntegral(Type t)
             => t.Symbol is null && !t.IsNullableValue && t.Prim is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.NUInt;
 
+        // What each lambda argument's body gives, asked once per set of
+        // parameter types for this call (LambdaFits).
+        Dictionary<(LambdaExpr, string), (Type?, bool, bool)>? lambdaAsked = null;
+
         bool Accepts(MethodSymbol m, bool variant)
         {
             for (int i = 0; i < args.Count && i < m.Params.Count; i++)
@@ -20591,7 +20615,7 @@ public sealed partial class Binder
 
                 // A LAMBDA IS AN ARGUMENT FOR A DELEGATE IT CONVERTS TO, and for
                 // no other (LambdaFits): `() => 7` makes no Run(Func<Task>).
-                if (i < c.Args.Count && c.Args[i] is LambdaExpr lambdaArg && !LambdaFits(m, i, lambdaArg, fromReceiver ?? NoBindings)) return false;
+                if (i < c.Args.Count && c.Args[i] is LambdaExpr lambdaArg && byArity.Count > 1 && !LambdaFits(m, i, lambdaArg, fromReceiver ?? NoBindings, lambdaAsked ??= new())) return false;
 
                 if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (c.Args[i] is NewExpr { Collection: true } && want.IsArray))) continue;
 
@@ -20864,7 +20888,7 @@ public sealed partial class Binder
         {
             for (int i = 0; i < c.Args.Count && i < candidate.Params.Count; i++)
             {
-                if (c.Args[i] is LambdaExpr lambdaArg && !LambdaFits(candidate, i, lambdaArg, got)) return false;
+                if (c.Args[i] is LambdaExpr lambdaArg && byArity.Count > 1 && !LambdaFits(candidate, i, lambdaArg, got, lambdaAsked ??= new())) return false;
             }
             return true;
         }
