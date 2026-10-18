@@ -1,0 +1,82 @@
+// test: params_constructor_takes_the_form_that_fits
+// expect-exit: 0
+// expect-output:
+// numbers 3
+// named first 2
+// named first 0
+// numbers 0
+// objects 2
+// words then 1
+// first then 1
+// first then 0
+//
+// OF TWO `params` CONSTRUCTORS, THE ONE THE ARGUMENTS FIT, not the first one
+// declared: `new Bag("first", 1, 2)` is Bag(string, params int[]), and
+// Bag(params int[]), declared before it, took the string as its first number
+// and refused it -- `new AggregateException("m", a, b)` failed so. Every form
+// below is the one C# picks: the arguments gathered into the array are
+// checked against its element type as the fixed ones are against theirs, and
+// of two whose parameters come out the same, the one with more declared
+// parameters wins, as C#'s tie-break has it.
+
+using System;
+
+class Bag
+{
+    public string Said;
+
+    public Bag(params int[] numbers)
+    {
+        Said = "numbers " + numbers.Length;
+    }
+
+    public Bag(string name, params int[] numbers)
+    {
+        Said = "named " + name + " " + numbers.Length;
+    }
+}
+
+class Mixed
+{
+    public string Said;
+
+    public Mixed(params object[] items)
+    {
+        Said = "objects " + items.Length;
+    }
+
+    public Mixed(string first, string second, params Exception[] rest)
+    {
+        Said = "words then " + rest.Length;
+    }
+}
+
+class Tally
+{
+    public string Said;
+
+    public Tally(params int[] numbers)
+    {
+        Said = "numbers " + numbers.Length;
+    }
+
+    public Tally(int first, params int[] rest)
+    {
+        Said = "first then " + rest.Length;
+    }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(new Bag(1, 2, 3).Said);
+        Console.WriteLine(new Bag("first", 1, 2).Said);
+        Console.WriteLine(new Bag("first").Said);
+        Console.WriteLine(new Bag().Said);
+        Console.WriteLine(new Mixed("a", 1).Said);
+        Console.WriteLine(new Mixed("a", "b", new Exception("c")).Said);
+        Console.WriteLine(new Tally(1, 2).Said);
+        Console.WriteLine(new Tally(1).Said);
+    }
+}

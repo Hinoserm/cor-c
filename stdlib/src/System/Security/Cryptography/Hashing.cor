@@ -7,9 +7,10 @@
 /// Something went wrong in a cryptographic operation.
 class CryptographicException : Exception
 {
+    internal override int Code => unchecked((int)0x80131501);
     public CryptographicException() : base("Error occurred during a cryptographic operation.") { }
-    public CryptographicException(string? message) : base(message) { }
-    public CryptographicException(string? message, Exception? innerException) : base(message, innerException) { }
+    public CryptographicException(string? message) : base(message ?? "Error occurred during a cryptographic operation.") { }
+    public CryptographicException(string? message, Exception? innerException) : base(message ?? "Error occurred during a cryptographic operation.", innerException) { }
 }
 
 /// A hash algorithm: data in, in as many pieces as it comes in, and a hash

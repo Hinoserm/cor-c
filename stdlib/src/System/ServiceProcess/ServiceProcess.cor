@@ -183,7 +183,7 @@ namespace System.ServiceProcess
                 Refresh();
                 if (Status == desiredStatus) return;
                 if (DateTime.UtcNow.Ticks >= until) throw new TimeoutException("Time out has expired and the operation has not been completed.");
-                Thread.Sleep(250);
+                System.Threading.Thread.Sleep(250);
             }
         }
 

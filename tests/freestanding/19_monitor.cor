@@ -14,6 +14,7 @@
 // parked other False False clock 0 refused
 // parked wait False 5ms True
 // parked own True after False
+// contentions 1
 //
 // What `lock` is in a kernel: .NET's Monitor, reentrant and owned, where it
 // had been a spin on the object's word with no owner -- a nested lock of the
@@ -31,7 +32,8 @@
 // processor, a ring-1 thread -- and here from the clock's own hook, called
 // by the waiting loop, which locks the object the Wait let go and pulses it.
 // Last, two owners from one hook: the lock taken as one parked call is not
-// the other's to see, to take or to give back.
+// the other's to see, to take or to give back -- and the one wait for it is
+// the one contention LockContentionCount counts.
 //
 // The time is the host's clock_gettime (Platform.NanosHook): the host has no
 // 8254 for Clock to read.
@@ -192,6 +194,10 @@ static class Program
         Host.Line("parked other " + other);
         Host.Line("parked wait " + late + " 5ms " + waitedOut);
         Host.Line("parked own " + own + " after " + after);
+        // ONE CONTENTION: the timed TryEnter of a lock another owner held,
+        // and none for the locks taken free, already owned, or refused at
+        // once.
+        Host.Line("contentions " + Monitor.LockContentionCount);
 
         Host.Done(0);
         return 0;

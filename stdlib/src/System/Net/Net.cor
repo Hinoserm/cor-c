@@ -124,6 +124,7 @@ enum SocketError
 
 class SocketException : IOException
 {
+    internal override int Code => unchecked((int)0x80004005);
     /// The errno, which is what .NET's NativeErrorCode is on Unix.
     public int ErrorCode;
     public int NativeErrorCode;

@@ -1,0 +1,82 @@
+// test: a blocking call before the image has a heap goes through, and what the bump region handed out never reaches an UnmapHook
+// expect-exit: 0
+// expect-output:
+// before the heap
+// wrote 16
+// collected True
+// given back 0
+// given back 1 4096
+//
+// A BLOCKING CALL ASKS THE COLLECTOR whether a round is open for it, and the
+// round's words are the collector's, made by its first allocation. Asked
+// before anything has allocated -- a kernel's first write, before it has
+// read its memory map -- making them wanted a heap there was not yet, and
+// the image stopped with "no heap". With no words there is no round: the
+// call goes through. The literal's UTF-16 units are written a byte each,
+// the low byte first, which for ASCII is the whole character; the garbage
+// made afterwards is what keeps the collector, and its rounds, in the image.
+//
+// MEMORY GIVEN BACK goes to the kernel's UnmapHook only when the kernel gave
+// it: the bump region's, handed out before the hook (below where the bump
+// has got to) as much as the rest of it, is no frame of the kernel's.
+
+using System;
+
+static class Program
+{
+#if TARGET_64BIT
+    const long Write = 1;
+    const long Mmap = 9;
+#else
+    const long Write = 4;
+    const long Mmap = 192;
+#endif
+
+    static long _given;
+    static long _givenBytes;
+
+    /// Platform.UnmapHook: the kernel's, which takes its frames back.
+    static long Unmapped(long at, long bytes, long unused)
+    {
+        _given = _given + 1;
+        _givenBytes = bytes;
+        return 0;
+    }
+
+    static int Main()
+    {
+        string text = "before the heap\n";
+        long units = Sys.StringData(text);
+        long wrote = 0;
+        for (int i = 0; i < text.Length; i++) wrote = wrote + Platform.Blocking(Write, 1, units + i * 2, 1);
+
+        Host.Start(8 * 1024 * 1024);
+        Host.Line("wrote " + wrote);
+
+        object[] keep = new object[10];
+        for (int round = 0; round < 1000; round++)
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                byte[] junk = new byte[500];
+                junk[0] = (byte)i;
+                if (round == 999 && i < 10) keep[i] = junk;
+            }
+        }
+        Host.Line("collected " + (GC.CollectionCount(0) > 0 && keep[9] != null));
+
+        byte[] made = new byte[64];
+        made[0] = 1;
+        Platform.UnmapHook = Sys.AddressOf(Program.Unmapped);
+        Platform.Unmap(Sys.ArrayData(made), made.Length);
+        Host.Line("given back " + _given);
+
+        long page = Sys.Syscall(Mmap, 0, 4096, 3, 0x22, -1, 0);
+        Platform.Unmap(page, 4096);
+        Host.Line("given back " + _given + " " + _givenBytes);
+        Platform.UnmapHook = 0;
+
+        Host.Done(wrote == text.Length && made[0] == 1 ? 0 : 1);
+        return 0;
+    }
+}

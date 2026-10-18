@@ -12,6 +12,9 @@
 // those blocks; a program that carried its own copy of __corsac_tls0 would
 // have a second main thread nobody else could see, and the first allocation
 // on a second thread would find a buffer the collector never registered.
+
+using System.Threading;
+
 class Counter : Action
 {
     public int Made;

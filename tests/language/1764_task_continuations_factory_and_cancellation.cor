@@ -1,0 +1,130 @@
+// test: task_continuations_factory_and_cancellation
+// expect-exit: 0
+// expect-output:
+// run oce Faulted OperationCanceledException
+// run task oce Canceled
+// run own token Canceled
+// run other token Faulted OperationCanceledException
+// run token not canceled Faulted OperationCanceledException
+// run pre-canceled Canceled False
+// run func pre-canceled Canceled
+// run func 5
+// run task func token Canceled
+// run func oce Faulted OperationCanceledException
+// run async oce Canceled
+// cont oce Faulted OperationCanceledException
+// cont result 6
+// cont plain result RanToCompletion
+// saw 4
+// cont typed action RanToCompletion
+// only faulted on ok Canceled
+// only faulted on fault RanToCompletion
+// not on ran Canceled
+// only canceled RanToCompletion
+// cont token canceled Canceled
+// cont state st!
+// factory 7 None
+// factory action RanToCompletion
+// state x
+// factory state x
+// factory nested True RanToCompletion
+// factory nested2 8
+// factory oce Faulted OperationCanceledException
+// factory long LongRunning
+// factory pre-canceled Canceled
+// whenany done True True
+// whenany typed done True
+// cancelasync requested True
+// cancelasync heard 1 RanToCompletion
+// cancelasync threw AggregateException One or more errors occurred. (cb)
+// cancelasync again True
+//
+// Tasks as .NET 10 runs them. AN EXCEPTION FROM A DELEGATE faults the task
+// that ran it -- an OperationCanceledException too -- unless it is one for
+// the task's own token, canceled, which cancels it; a token canceled first
+// cancels the task and the delegate never runs; a Func<Task> that throws one
+// before it hands its task back cancels, as unwrapping has it. ContinueWith
+// in every shape: with and without a value, a state, a token and options,
+// a continuation the options exclude canceled, Task<T>'s own overloads over
+// Task's. Task.Factory.StartNew with its options, state and token, a
+// Func<Task> answered as a Task<Task> and Unwrap. WhenAny over a task
+// already done is done when made. CancelAsync says canceled at once and
+// runs the callbacks after, its task faulting with what they threw.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+class P
+{
+    static string St(Task t)
+    {
+        try { t.Wait(); } catch (Exception) { }
+        return t.Status + (t.IsFaulted ? " " + t.Exception!.InnerException!.GetType().Name : "");
+    }
+
+    static bool Yes() { return true; }
+
+    static async Task Main()
+    {
+        Console.WriteLine("run oce " + St(Task.Run(() => { if (Yes()) throw new OperationCanceledException(); })));
+        Console.WriteLine("run task oce " + St(Task.Run(new Func<Task>(() => { throw new OperationCanceledException(); }))));
+        CancellationTokenSource a = new CancellationTokenSource();
+        Console.WriteLine("run own token " + St(Task.Run(() => { a.Cancel(); a.Token.ThrowIfCancellationRequested(); }, a.Token)));
+        CancellationTokenSource b = new CancellationTokenSource();
+        CancellationTokenSource other = new CancellationTokenSource();
+        other.Cancel();
+        Console.WriteLine("run other token " + St(Task.Run(() => { b.Cancel(); other.Token.ThrowIfCancellationRequested(); }, b.Token)));
+        Console.WriteLine("run token not canceled " + St(Task.Run(() => { if (Yes()) throw new OperationCanceledException(new CancellationTokenSource().Token); }, new CancellationTokenSource().Token)));
+        bool ran = false;
+        Console.WriteLine("run pre-canceled " + St(Task.Run(() => { ran = true; }, other.Token)) + " " + ran);
+        Console.WriteLine("run func pre-canceled " + St(Task.Run(() => 5, other.Token)));
+        Console.WriteLine("run func " + Task.Run(() => 5, CancellationToken.None).Result);
+        Console.WriteLine("run task func token " + St(Task.Run(async () => { await Task.Yield(); }, other.Token)));
+        Console.WriteLine("run func oce " + St(Task.Run(new Func<int>(() => throw new OperationCanceledException()))));
+        Console.WriteLine("run async oce " + St(Task.Run(new Func<Task>(async () => { await Task.Yield(); throw new OperationCanceledException(); }))));
+        Console.WriteLine("cont oce " + St(Task.CompletedTask.ContinueWith(t => { throw new OperationCanceledException(); })));
+        Console.WriteLine("cont result " + await Task.FromResult(3).ContinueWith(x => x.Result * 2));
+        Console.WriteLine("cont plain result " + await Task.CompletedTask.ContinueWith(x => x.Status.ToString()));
+        Console.WriteLine("cont typed action " + St(Task.FromResult(4).ContinueWith(x => Console.WriteLine("saw " + x.Result))));
+        Task failed = Task.FromException(new InvalidOperationException("f"));
+        Console.WriteLine("only faulted on ok " + St(Task.CompletedTask.ContinueWith(t => { }, TaskContinuationOptions.OnlyOnFaulted)));
+        Console.WriteLine("only faulted on fault " + St(failed.ContinueWith(t => { }, TaskContinuationOptions.OnlyOnFaulted)));
+        Console.WriteLine("not on ran " + St(Task.CompletedTask.ContinueWith(t => 1, TaskContinuationOptions.NotOnRanToCompletion)));
+        Console.WriteLine("only canceled " + St(Task.FromCanceled(other.Token).ContinueWith(t => { }, TaskContinuationOptions.OnlyOnCanceled)));
+        Console.WriteLine("cont token canceled " + St(Task.CompletedTask.ContinueWith(t => { }, other.Token)));
+        Console.WriteLine("cont state " + await Task.CompletedTask.ContinueWith((t, s) => (string)s! + "!", "st"));
+        Task<int> f = Task.Factory.StartNew(() => 7);
+        Console.WriteLine("factory " + f.Result + " " + f.CreationOptions);
+        Task fa = Task.Factory.StartNew(() => { });
+        fa.Wait();
+        Console.WriteLine("factory action " + fa.Status);
+        Task fs = Task.Factory.StartNew(s => Console.WriteLine("state " + s), "x");
+        fs.Wait();
+        Console.WriteLine("factory state " + fs.AsyncState);
+        Task<Task> nested = Task.Factory.StartNew(new Func<Task>(async () => { await Task.Yield(); }));
+        Console.WriteLine("factory nested " + (nested.Result != null) + " " + St(nested.Unwrap()));
+        Task<Task<long>> nested2 = Task.Factory.StartNew(new Func<Task<long>>(async () => { await Task.Yield(); return 8L; }));
+        Console.WriteLine("factory nested2 " + await nested2.Unwrap());
+        Console.WriteLine("factory oce " + St(Task.Factory.StartNew(() => { throw new OperationCanceledException(); })));
+        Console.WriteLine("factory long " + Task.Factory.StartNew(() => 1, TaskCreationOptions.LongRunning).CreationOptions);
+        Console.WriteLine("factory pre-canceled " + St(Task.Factory.StartNew(() => { }, other.Token)));
+        TaskCompletionSource<int> pending = new TaskCompletionSource<int>();
+        Task<Task> any = Task.WhenAny(pending.Task, Task.CompletedTask);
+        Console.WriteLine("whenany done " + any.IsCompleted + " " + (any.IsCompleted && any.Result == Task.CompletedTask));
+        Task<Task<int>> anyT = Task.WhenAny(pending.Task, Task.FromResult(2));
+        Console.WriteLine("whenany typed done " + anyT.IsCompleted);
+        CancellationTokenSource c = new CancellationTokenSource();
+        int heard = 0;
+        c.Token.Register(() => heard++);
+        Task ca = c.CancelAsync();
+        Console.WriteLine("cancelasync requested " + c.IsCancellationRequested);
+        await ca;
+        Console.WriteLine("cancelasync heard " + heard + " " + ca.Status);
+        CancellationTokenSource d = new CancellationTokenSource();
+        d.Token.Register(() => throw new InvalidOperationException("cb"));
+        Task da = d.CancelAsync();
+        try { await da; Console.WriteLine("no throw"); } catch (Exception e) { Console.WriteLine("cancelasync threw " + e.GetType().Name + " " + e.Message); }
+        Console.WriteLine("cancelasync again " + d.CancelAsync().IsCompleted);
+    }
+}

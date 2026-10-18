@@ -11,6 +11,9 @@
 // together: breaking one cycle twice (both reading zero, 1 + 1) was what
 // optimizer_static_initialization_threads saw once under load. Each cycle
 // must come out as 1 and 2.
+
+using System.Threading;
+
 static class Control
 {
     public static AtomicCell[] Go = Cells();

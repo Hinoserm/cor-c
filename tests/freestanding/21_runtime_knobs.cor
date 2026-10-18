@@ -1,0 +1,46 @@
+// test: a freestanding image reads the collector's settings from the knobs it was built with, as a hosted one does
+// flags: --runtime-knob System.GC.HeapHardLimit=4194304 --runtime-knob Corsac.GC.Threshold=0x10000 --runtime-knob Corsac.GC.Stats=false --runtime-knob Corsac.GC.Verify=true
+// expect-exit: 0
+// expect-output:
+// total 4194304
+// threshold 3774870
+// limit 4194304 pace 65536 nursery 0
+// verify True stats False census False dead False
+// kernel census True pace kept 65536
+//
+// THE IMAGE'S KNOBS ARE THE COLLECTOR'S SETTINGS ALONE ON THE MACHINE TOO
+// (corc's --runtime-knob, Runtime.KnobValue): the bare-metal platform had
+// answered every one as unset -- a heap built with a hard limit used the
+// whole region it was given, and a kernel could set only what its own
+// statics covered. Numbers are read decimal or 0x hexadecimal, flags as
+// bool.Parse reads them; System.GC.HeapHardLimit caps the heap within the
+// region (GC.GetGCMemoryInfo's total), and a kernel's own word -- its
+// census asked for on its command line -- still counts beside the knobs,
+// while a knob's pace comes before the kernel's share of the machine.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Host.Start(8 * 1024 * 1024);
+
+        object[] keep = new object[16];
+        for (int i = 0; i < keep.Length; i++) keep[i] = new byte[100];
+
+        GCMemoryInfo info = GC.GetGCMemoryInfo();
+        Host.Line("total " + info.TotalAvailableMemoryBytes);
+        Host.Line("threshold " + info.HighMemoryLoadThresholdBytes);
+        Host.Line("limit " + Platform.HeapLimit() + " pace " + Platform.GcThreshold() + " nursery " + Platform.GcNursery());
+        Host.Line("verify " + Platform.VerifyGenerations() + " stats " + Platform.GcStats() + " census " + Platform.GcCensus() + " dead " + Platform.GcDeadCensus());
+        Platform.CensusWanted = true;
+        Platform.ThresholdCap = 1 << 20;
+        Host.Line("kernel census " + Platform.GcCensus() + " pace kept " + Platform.GcThreshold());
+        Platform.CensusWanted = false;
+
+        GC.KeepAlive(keep);
+        Host.Done(0);
+        return 0;
+    }
+}

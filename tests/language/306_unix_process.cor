@@ -13,6 +13,8 @@
 // something a shell does on every command line, and nothing else in lib/
 // can say it.
 
+using System.Threading;
+
 class Program
 {
     static int Main()

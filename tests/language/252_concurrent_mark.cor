@@ -17,6 +17,8 @@
 // run the whole time. Every node carries its value twice and a string made
 // from it; a node that was swept and handed out again has neither.
 
+using System.Threading;
+
 class Node
 {
     public int Value;

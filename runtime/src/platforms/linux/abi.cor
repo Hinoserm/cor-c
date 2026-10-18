@@ -50,6 +50,7 @@ static class Call
     public const long Getgid = 104;
     public const long Setpgid = 109;
     public const long Getpgid = 121;
+    public const long Getsid = 124;     // (pid) -> its session's id
     public const long Setsid = 112;
     public const long Setuid = 105;
     public const long Setgid = 106;
@@ -176,6 +177,7 @@ static class Call
     public const long Getgid = 200;     // getgid32
     public const long Setpgid = 57;     // (pid, pgid)
     public const long Getpgid = 132;    // (pid) -> the group it is in
+    public const long Getsid = 147;     // (pid) -> its session's id
     public const long Setsid = 66;      // () -> the new session id
     public const long Setuid = 213;     // setuid32; the 16-bit one (23) truncates
     public const long Setgid = 214;     // setgid32
@@ -338,6 +340,7 @@ static class Err
     public const long NotDir = 20;      // ENOTDIR
     public const long IsDir = 21;       // EISDIR
     public const long Inval = 22;       // EINVAL
+    public const long FBig = 27;        // EFBIG: longer than the file system allows
     public const long NoSpc = 28;       // ENOSPC
     public const long Pipe = 32;        // EPIPE
     public const long Range = 34;       // ERANGE
@@ -347,6 +350,8 @@ static class Err
     public const long NotSock = 88;     // ENOTSOCK
     public const long NoTty = 25;       // ENOTTY: not a terminal
     public const long Spipe = 29;       // ESPIPE: a pipe cannot seek
+    public const long RoFs = 30;        // EROFS: a file system mounted read-only
+    public const long Canceled = 125;   // ECANCELED
 
     /// A call's answer as the number it is. The register is 32 bits: an
     /// address in the top half of the space arrives with its sign extended,

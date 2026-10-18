@@ -43,7 +43,7 @@ static partial class Scheduler
 
         for (int i = 0; i < count; i++)
         {
-            Thread.Start(new PoolWorker());
+            System.Threading.Thread.Start(new PoolWorker());
         }
     }
 }
@@ -450,6 +450,123 @@ static class Native
     public const long WakeAll = 0x7FFFFFFF;
 }
 
+namespace Microsoft.Win32.SafeHandles
+{
+    /// WHAT IS UNDER A WaitHandle, as .NET's SafeWaitHandle: the object its
+    /// waits wait on (Target) and the number .NET would have from the kernel
+    /// -- one the runtime gives it on the first ask, there being no kernel
+    /// object. A handle made from a number another SafeWaitHandle answered
+    /// is under the same object; from any other, under nothing. Closed once:
+    /// the last of a named Mutex's closed gives the name up.
+    public sealed class SafeWaitHandle : IDisposable
+    {
+        System.Threading.WaitHandle? _target;
+        nint _handle;
+        bool _closed;
+
+        static nint _next = 0x1000;
+        static List<SafeWaitHandle>? _numbered;
+        static AtomicCell _numbering = new AtomicCell();
+
+        public SafeWaitHandle() { _handle = -1; }
+
+        public SafeWaitHandle(IntPtr existingHandle, bool ownsHandle)
+        {
+            _handle = existingHandle;
+            _numbering.Enter();
+            try
+            {
+                List<SafeWaitHandle>? numbered = _numbered;
+                if (numbered != null)
+                {
+                    for (int i = 0; i < numbered.Count; i++)
+                    {
+                        if (numbered[i]._handle == existingHandle && !numbered[i]._closed) _target = numbered[i]._target;
+                    }
+                }
+            }
+            finally
+            {
+                _numbering.Exit();
+            }
+        }
+
+        internal SafeWaitHandle(System.Threading.WaitHandle target)
+        {
+            _target = target;
+        }
+
+        /// What waits wait on; null once closed, or with nothing under it.
+        internal System.Threading.WaitHandle? Target => _closed ? null : _target;
+
+        public bool IsClosed => _closed;
+        public bool IsInvalid => _target == null && (_handle == 0 || _handle == -1);
+
+        public IntPtr DangerousGetHandle()
+        {
+            if (_handle == 0 && _target != null)
+            {
+                _numbering.Enter();
+                try
+                {
+                    if (_handle == 0)
+                    {
+                        _next = _next + 4;
+                        _handle = _next;
+                        (_numbered ??= new List<SafeWaitHandle>()).Add(this);
+                    }
+                }
+                finally
+                {
+                    _numbering.Exit();
+                }
+            }
+            return _handle;
+        }
+
+        public void DangerousAddRef(ref bool success)
+        {
+            ObjectDisposedException.ThrowIf(_closed, this);
+            success = true;
+        }
+
+        public void DangerousRelease()
+        {
+        }
+
+        public void SetHandleAsInvalid()
+        {
+            _closed = true;
+        }
+
+        public void Close()
+        {
+            Dispose();
+        }
+
+        public void Dispose()
+        {
+            if (_closed) return;
+            _closed = true;
+            if (_handle != 0 && _handle != -1)
+            {
+                _numbering.Enter();
+                try { _numbered?.Remove(this); }
+                finally { _numbering.Exit(); }
+            }
+            if (_target is System.Threading.Mutex shared && shared.Key != null)
+            {
+                System.Threading.NamedMutexes.Closed(shared);
+            }
+        }
+    }
+}
+
+// THREADS ARE System.Threading's, as .NET's are: Thread, its two delegates
+// and ThreadStateException, by the names .NET gives them.
+namespace System.Threading
+{
+
 /// A thread of execution, started with a body to run.
 ///
 /// A thread body may allocate, throw and catch like any other code: the
@@ -469,9 +586,11 @@ public delegate void ParameterizedThreadStart(object? obj);
 
 class ThreadStateException : SystemException
 {
+
+    internal override int Code => unchecked((int)0x80131520);
     public ThreadStateException() : base("Thread was in an invalid state for the operation being executed.") { }
-    public ThreadStateException(string? message) : base(message) { }
-    public ThreadStateException(string? message, Exception? innerException) : base(message, innerException) { }
+    public ThreadStateException(string? message) : base(message ?? "Thread was in an invalid state for the operation being executed.") { }
+    public ThreadStateException(string? message, Exception? innerException) : base(message ?? "Thread was in an invalid state for the operation being executed.", innerException) { }
 }
 
 class Thread
@@ -494,6 +613,7 @@ class Thread
     string? _name;
     bool _background;
     bool _counted;
+    int _managedId;
     // A thread this class did not start, adopted when it first asks for
     // itself (CurrentThread): the program's first thread.
     bool _adopted;
@@ -502,9 +622,17 @@ class Thread
     CultureInfo? _culture;
     CultureInfo? _uiCulture;
 
+    /// The mutexes this thread owns, as a list through them
+    /// (System.Threading.Mutex): what it leaves abandoned if it ends
+    /// holding any. Changed only with the wait handles' gate held.
+    internal System.Threading.Mutex? HeldMutexes;
+
     // The Thread each thread is, made the first time one asks that this
     // class did not start.
     [ThreadStatic] static Thread? _current;
+
+    /// How many Threads have been made, for ManagedThreadId.
+    static nint _made;
 
     /// How many foreground threads are running, as a futex word the end of
     /// Main waits on (WaitForForeground); and a spin lock over the counting.
@@ -531,32 +659,7 @@ class Thread
         _body = body;
         _slot = slot;
         _background = true;
-    }
-
-    /// The thread already running that asks for itself and was not started
-    /// here: claimed, alive, and nobody's to count among the foreground ones.
-    Thread(long block)
-    {
-        _done = 0;
-        _lock = 1;
-        _block = block;
-        _id = Native.CurrentThreadId();
-        _adopted = true;
-    }
-
-    /// The thread this code is running on, as .NET's.
-    public static Thread CurrentThread
-    {
-        get
-        {
-            Thread? made = _current;
-            if (made == null)
-            {
-                made = new Thread(Sys.ThreadBlock());
-                _current = made;
-            }
-            return made;
-        }
+        _managedId = NextManagedId();
     }
 
     /// THE THREAD'S CURRENT CULTURES, as .NET's: on the thread itself,
@@ -617,12 +720,38 @@ class Thread
     {
         if (start == null) throw new ArgumentNullException("start");
         _start = start;
+        _managedId = NextManagedId();
     }
 
     public Thread(ParameterizedThreadStart start)
     {
         if (start == null) throw new ArgumentNullException("start");
         _withArgument = start;
+        _managedId = NextManagedId();
+    }
+
+    /// A THREAD THIS CLASS DID NOT START, as CurrentThread first finds it:
+    /// the first thread -- ManagedThreadId 1, as .NET's main thread has, and
+    /// a foreground thread -- or one the runtime made bare. It is running
+    /// already, so Start refuses it (the claim word is taken), and it is
+    /// never counted among the foreground threads: the end of Main does not
+    /// wait for the thread that runs it.
+    Thread(long kernelId, bool first)
+    {
+        _done = 0;
+        _lock = 1;
+        _block = Sys.ThreadBlock();
+        _id = kernelId;
+        _adopted = true;
+        _background = !first;
+        _managedId = first ? 1 : NextManagedId();
+    }
+
+    // ManagedThreadId 1 is the first thread's; every Thread made counts up
+    // from 2, and keeps its number for good.
+    static int NextManagedId()
+    {
+        return (int)Sys.AtomicAdd(Sys.AddressOf(ref _made), 1) + 2;
     }
 
     /// A THREAD OF A STACK SIZE ITS OWN, as .NET's maxStackSize: 0 the
@@ -665,7 +794,27 @@ class Thread
     }
 
     /// The thread id the kernel gave it, or 0 before it has been started.
-    public long Id => _id;
+    internal long Id => _id;
+
+    /// The thread's number in this process, from the moment it is made: 1
+    /// for the first thread, and a number of its own for every other.
+    public int ManagedThreadId => _managedId;
+
+    /// The Thread running the code that asks: the one that started it, or
+    /// for a thread this class did not start, one made on the first ask.
+    public static Thread CurrentThread
+    {
+        get
+        {
+            Thread? current = _current;
+            if (current == null)
+            {
+                current = new Thread(Native.CurrentThreadId(), Sys.ThreadBlock() == Sys.MainThreadBlock());
+                _current = current;
+            }
+            return current;
+        }
+    }
 
     public bool IsAlive => _id != 0 && _done == 0;
 
@@ -695,7 +844,7 @@ class Thread
             try
             {
                 _background = value;
-                bool running = _id != 0 && Sys.PeekWord(Atom.At(this, Atom.FirstWord)) == 0;
+                bool running = !_adopted && _id != 0 && Sys.PeekWord(Atom.At(this, Atom.FirstWord)) == 0;
                 if (running && !value && !_counted) Count(1);
                 if (running && value && _counted) Count(-1);
             }
@@ -736,7 +885,7 @@ class Thread
 
     /// This thread's kernel thread id (gettid(2)), which is the process id on
     /// the first thread.
-    public static long CurrentId => Native.CurrentThreadId();
+    internal static long CurrentId => Native.CurrentThreadId();
 
     // ---- the registry -------------------------------------------------------
     //
@@ -791,7 +940,7 @@ class Thread
     // ---- starting and joining -----------------------------------------------
 
     /// Runs `body` on a new thread and answers the thread, already running.
-    public static Thread Start(Action body)
+    internal static Thread Start(Action body)
     {
         if (body == null)
         {
@@ -812,7 +961,7 @@ class Thread
         // The second layout word is the one-time start claim, not a held
         // mutex: even a completed thread cannot be started a second time.
         if (Sys.Cas(Atom.At(this, Atom.SecondWord), 0, 1) != 0)
-            throw new ThreadStateException("Thread has already been started.");
+            throw new ThreadStateException("Thread is running or terminated; it cannot restart.");
         // WHAT THE STARTER WAS GIVEN GOES WITH IT, as .NET's execution
         // context carries the cultures into a thread it starts -- not into
         // the runtime's own workers, which .NET starts with none.
@@ -1011,6 +1160,7 @@ class Thread
     /// .NET does with one that escapes a thread's start routine.
     void Body()
     {
+        _current = this;
         try
         {
             _current = this;
@@ -1025,6 +1175,13 @@ class Thread
         catch (Exception e)
         {
             AsyncRuntime.Unhandled(e);
+        }
+
+        // Mutexes still held are left abandoned before Join can return: a
+        // thread that joins this one and then waits on one is told.
+        if (HeldMutexes != null)
+        {
+            System.Threading.Mutex.AbandonHeld(this);
         }
 
         // The stack under this thread stops being a stack the collector may
@@ -1104,196 +1261,1733 @@ class Thread
     }
 }
 
-/// Mutual exclusion, one word, three states: 0 free, 1 held with nobody
-/// waiting, 2 held with somebody waiting. An uncontended lock and unlock is a
-/// single atomic instruction each and never enters the kernel; only the state
-/// that says "somebody is asleep" makes Unlock pay for a futex wake. (This is
-/// Drepper's futex mutex, "Futexes Are Tricky", section 6.)
-class Mutex
-{
-    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    nint _state;
-    int _pad;
-
-    const int Free = 0;
-    const int Held = 1;
-    const int Contended = 2;
-
-    public Mutex()
-    {
-        _state = Free;
-        _pad = 0;
-        Atom.CheckLayout();
-    }
-
-    /// Whether the lock is held by somebody, at the moment of asking.
-    public bool IsHeld => _state != Free;
-
-    public void Lock()
-    {
-        long at = Atom.At(this, Atom.FirstWord);
-        long seen = Sys.Cas(at, Free, Held);
-
-        if (seen == Free)
-        {
-            return;
-        }
-
-        // Taking it now means there may be a waiter -- this one -- so it goes
-        // to Contended and stays there until an Unlock finds it free again.
-        while (seen != Free)
-        {
-            seen = Sys.AtomicSwap(at, Contended);
-
-            if (seen == Free)
-            {
-                return;
-            }
-            Native.Wait(at, Contended);
-            seen = Sys.Cas(at, Free, Contended);
-        }
-    }
-
-    /// Takes the lock if it is free, without waiting.
-    public bool TryLock()
-    {
-        return Sys.Cas(Atom.At(this, Atom.FirstWord), Free, Held) == Free;
-    }
-
-    public void Unlock()
-    {
-        long at = Atom.At(this, Atom.FirstWord);
-
-        if (Sys.AtomicSwap(at, Free) == Contended)
-        {
-            Native.Wake(at, 1);
-        }
-    }
 }
 
-/// A count of permits, taken and given back. Wait blocks while the count is
-/// zero; Release adds one and wakes one waiter.
-class Semaphore
+/// The half of System.Environment (stdlib's environment.cor) that is a
+/// thread's, kept here beside Thread: a freestanding image has no Thread,
+/// and compiles environment.cor all the same -- CORSAC's ring-1 kernels do.
+static partial class Environment
 {
-    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    nint _count;
-    int _pad;
+    /// The running thread's ManagedThreadId, as Thread.CurrentThread has it:
+    /// 1 on the first thread.
+    public static int CurrentManagedThreadId => System.Threading.Thread.CurrentThread.ManagedThreadId;
+}
 
-    public Semaphore(int initialCount)
+// ---- WaitHandle, and the events, mutexes and semaphores that are one ---------
+//
+// .NET's waitable objects, kept the way .NET keeps them where there is no
+// kernel object to hand them to -- its own wait subsystem on Unix -- and for
+// the same two reasons: WaitAll must take every handle it names at once or
+// none of them, and a Set must hand an auto-reset event straight to a thread
+// already waiting on it, so that two Sets let two waiters through. A futex
+// word per handle can do neither. So:
+//
+//   - ONE GATE over every handle (WaitHandle.EnterGate), a futex lock: a
+//     handle's state and its queue of waits change only with it held, and it
+//     is held for the few instructions a change takes. Nothing is allocated
+//     and nothing waits while it is held.
+//   - A WAIT THAT CANNOT BE ANSWERED AT ONCE is queued on every handle it
+//     names (a HandleWait, with a HandleWaitLink in each queue) and sleeps on
+//     a word of its own.
+//   - A SIGNAL ANSWERS THE QUEUE. Set, Release and ReleaseMutex walk the
+//     handle's waits oldest first and finish each one the handle can now
+//     finish: they take the handles for it, exactly as the waiting thread
+//     would have, write down what it ended with, and wake it. A semaphore
+//     count or an auto-reset event handed over that way is never seen
+//     signalled by anybody else.
+//   - A WAIT THAT TIMES OUT takes the gate and looks once more: a signal that
+//     finished it in the meantime has already taken its handles for it, and
+//     it answers that instead of the timeout.
+//
+// A MUTEX belongs to a thread (Thread.CurrentThread), as many times over as
+// that thread has taken it. A thread that ends while it holds mutexes leaves
+// them abandoned (Mutex.AbandonHeld, from Thread.Body): each is free again,
+// and the next wait to take one says so with AbandonedMutexException.
+
+namespace System.Threading
+{
+    /// Whether a set EventWaitHandle lets one waiter through and resets
+    /// itself, or stays set for everybody until it is reset.
+    public enum EventResetMode
     {
-        if (initialCount < 0)
-        {
-            throw new ArgumentOutOfRangeException("initialCount");
-        }
-        _count = initialCount;
-        _pad = 0;
-        Atom.CheckLayout();
+        AutoReset = 0,
+        ManualReset = 1,
     }
 
-    public int Count => (int)_count;
-
-    public void Wait()
+    /// .NET's WaitHandle: something a thread can wait on until it is
+    /// signalled, by itself (WaitOne) or with others (WaitAny, WaitAll).
+    public abstract class WaitHandle : IDisposable
     {
-        long at = Atom.At(this, Atom.FirstWord);
+        /// What WaitAny answers when the timeout passed first.
+        public const int WaitTimeout = 258;
 
-        while (true)
+        // WHAT A WAIT ENDS WITH, inside, as .NET's own wait answers it: the
+        // index of the handle that ended it, that plus WaitAbandoned when the
+        // handle was a mutex its owner left behind, or WaitTimeout.
+        const int WaitAbandoned = 0x80;
+        const int MaxWaitHandles = 64;
+
+        // .NET names the handle under a closed WaitHandle, not the WaitHandle.
+        const string ClosedName = "Microsoft.Win32.SafeHandles.SafeWaitHandle";
+
+        // The gate over every handle's state and queue: 0 free, 1 held, 2
+        // held with somebody asleep on it. Drepper's futex mutex ("Futexes Are
+        // Tricky", section 6): taking and giving it back uncontended is one
+        // atomic instruction each, and only a sleeper makes the giving back
+        // pay for a wake.
+        static nint _gate;
+
+        // The waits queued on this handle, oldest first.
+        HandleWaitLink? _first;
+        HandleWaitLink? _last;
+
+        // WHAT IS UNDER THE HANDLE, as .NET's SafeWaitHandle: the object
+        // whose state and queue a wait reads -- this one for the kinds below,
+        // the one shared by every Mutex of a name, the one another WaitHandle's
+        // SafeWaitHandle names once a program sets it here -- and whether it
+        // has been closed. A WaitHandle a program derives itself has nothing
+        // under it, and a wait on it is refused naming its own type, as .NET
+        // refuses one with no SafeWaitHandle; a closed one is refused naming
+        // the handle that was under it.
+        Microsoft.Win32.SafeHandles.SafeWaitHandle? _safe;
+
+        /// What a handle is when there is none, as .NET's.
+        protected static readonly IntPtr InvalidHandle = new IntPtr(-1);
+
+        protected WaitHandle() { }
+
+        // The kinds' own.
+        internal WaitHandle(bool kind)
         {
-            int seen = (int)Sys.PeekWord(at);
+            _safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(this);
+        }
 
-            if (seen > 0)
+        /// The object a wait on this handle waits on (CheckOpen first).
+        internal WaitHandle Core => _safe!.Target!;
+
+        /// Under it from now on: another's, for a Mutex of a name another
+        /// Mutex made first.
+        internal void Share(WaitHandle core)
+        {
+            _safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(core);
+        }
+
+        /// .NET's handle on what is under it: one the runtime numbers, as
+        /// there is no kernel object to have one; -1 with nothing under it.
+        public virtual IntPtr Handle
+        {
+            get
             {
-                if (Sys.Cas(at, seen, seen - 1) == seen)
+                Microsoft.Win32.SafeHandles.SafeWaitHandle? safe = _safe;
+                return safe == null ? InvalidHandle : safe.DangerousGetHandle();
+            }
+            set
+            {
+                if (value == InvalidHandle)
                 {
+                    if (_safe != null)
+                    {
+                        _safe.SetHandleAsInvalid();
+                        _safe = null;
+                    }
                     return;
                 }
-                continue;
+                _safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(value, true);
             }
-            Native.Wait(at, 0);
         }
-    }
 
-    /// Takes a permit if there is one, without waiting.
-    public bool TryWait()
-    {
-        long at = Atom.At(this, Atom.FirstWord);
-        int seen = (int)Sys.PeekWord(at);
+        /// The handle under it, an invalid one made on the first ask when
+        /// there is none, as .NET's; set, it is what waits wait on.
+        public Microsoft.Win32.SafeHandles.SafeWaitHandle SafeWaitHandle
+        {
+            get
+            {
+                Microsoft.Win32.SafeHandles.SafeWaitHandle? safe = _safe;
+                if (safe == null)
+                {
+                    safe = new Microsoft.Win32.SafeHandles.SafeWaitHandle(InvalidHandle, false);
+                    _safe = safe;
+                }
+                return safe;
+            }
+            set
+            {
+                _safe = value;
+            }
+        }
 
-        if (seen <= 0)
+        public virtual bool WaitOne()
+        {
+            return WaitOne(-1);
+        }
+
+        /// True once signalled -- and taken, for a kind that is taken: an
+        /// auto-reset event, a semaphore's count, a mutex -- or false when
+        /// `millisecondsTimeout` passes first (-1: never; 0: only looks).
+        public virtual bool WaitOne(int millisecondsTimeout)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
+            CheckOpen();
+            int result = Wait(Core, null, 1, false, null, millisecondsTimeout);
+            if (result == WaitAbandoned)
+            {
+                throw new AbandonedMutexException();
+            }
+            return result != WaitTimeout;
+        }
+
+        public virtual bool WaitOne(TimeSpan timeout)
+        {
+            return WaitOne(Milliseconds(timeout));
+        }
+
+        public virtual bool WaitOne(int millisecondsTimeout, bool exitContext)
+        {
+            return WaitOne(millisecondsTimeout);
+        }
+
+        public virtual bool WaitOne(TimeSpan timeout, bool exitContext)
+        {
+            return WaitOne(timeout);
+        }
+
+        public virtual void Close()
+        {
+            Dispose();
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+        }
+
+        /// Closed: every wait and signal from now on is refused with
+        /// ObjectDisposedException -- and the last of a name's Mutexes gives
+        /// the name up.
+        protected virtual void Dispose(bool explicitDisposing)
+        {
+            _safe?.Close();
+        }
+
+        public static bool WaitAll(WaitHandle[] waitHandles)
+        {
+            return WaitAll(waitHandles, -1);
+        }
+
+        /// True once every handle could be taken AT ONCE, and has been; false
+        /// when the timeout passed first, with none of them taken.
+        public static bool WaitAll(WaitHandle[] waitHandles, int millisecondsTimeout)
+        {
+            return WaitMultiple(waitHandles, true, millisecondsTimeout) != WaitTimeout;
+        }
+
+        public static bool WaitAll(WaitHandle[] waitHandles, TimeSpan timeout)
+        {
+            return WaitAll(waitHandles, Milliseconds(timeout));
+        }
+
+        public static bool WaitAll(WaitHandle[] waitHandles, int millisecondsTimeout, bool exitContext)
+        {
+            return WaitAll(waitHandles, millisecondsTimeout);
+        }
+
+        public static bool WaitAll(WaitHandle[] waitHandles, TimeSpan timeout, bool exitContext)
+        {
+            return WaitAll(waitHandles, timeout);
+        }
+
+        public static int WaitAny(WaitHandle[] waitHandles)
+        {
+            return WaitAny(waitHandles, -1);
+        }
+
+        /// The index of the handle taken -- the lowest, when several could
+        /// be -- or WaitTimeout when the timeout passed first.
+        public static int WaitAny(WaitHandle[] waitHandles, int millisecondsTimeout)
+        {
+            return WaitMultiple(waitHandles, false, millisecondsTimeout);
+        }
+
+        public static int WaitAny(WaitHandle[] waitHandles, TimeSpan timeout)
+        {
+            return WaitAny(waitHandles, Milliseconds(timeout));
+        }
+
+        public static int WaitAny(WaitHandle[] waitHandles, int millisecondsTimeout, bool exitContext)
+        {
+            return WaitAny(waitHandles, millisecondsTimeout);
+        }
+
+        public static int WaitAny(WaitHandle[] waitHandles, TimeSpan timeout, bool exitContext)
+        {
+            return WaitAny(waitHandles, timeout);
+        }
+
+        public static bool SignalAndWait(WaitHandle toSignal, WaitHandle toWaitOn)
+        {
+            return SignalAndWait(toSignal, toWaitOn, -1, false);
+        }
+
+        public static bool SignalAndWait(WaitHandle toSignal, WaitHandle toWaitOn, TimeSpan timeout, bool exitContext)
+        {
+            return SignalAndWait(toSignal, toWaitOn, Milliseconds(timeout), exitContext);
+        }
+
+        /// Signals one handle and waits on another, the wait queued in the
+        /// same hold of the gate as the signal: nothing the signal sets off
+        /// can signal `toWaitOn` before this thread is waiting on it.
+        public static bool SignalAndWait(WaitHandle toSignal, WaitHandle toWaitOn, int millisecondsTimeout, bool exitContext)
+        {
+            if (toSignal == null)
+            {
+                throw new ArgumentNullException("toSignal");
+            }
+            if (toWaitOn == null)
+            {
+                throw new ArgumentNullException("toWaitOn");
+            }
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
+            toSignal.CheckOpen();
+            toWaitOn.CheckOpen();
+            int result = Wait(toWaitOn.Core, null, 1, false, toSignal.Core, millisecondsTimeout);
+            if (result == WaitAbandoned)
+            {
+                throw new AbandonedMutexException();
+            }
+            return result != WaitTimeout;
+        }
+
+        // A TimeSpan as a wait's milliseconds, refused as .NET refuses it.
+        static int Milliseconds(TimeSpan timeout)
+        {
+            long milliseconds = (long)timeout.TotalMilliseconds;
+            ArgumentOutOfRangeException.ThrowIfLessThan(milliseconds, -1, "timeout");
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(milliseconds, int.MaxValue, "timeout");
+            return (int)milliseconds;
+        }
+
+        // Every wait and signal asks first: refused as .NET refuses it, when
+        // there is nothing under the handle or it has been closed.
+        internal void CheckOpen()
+        {
+            Microsoft.Win32.SafeHandles.SafeWaitHandle? safe = _safe;
+            if (safe != null && safe.IsClosed)
+            {
+                throw new ObjectDisposedException(ClosedName);
+            }
+            ObjectDisposedException.ThrowIf(safe == null || safe.Target == null, this);
+        }
+
+        // WaitAll and WaitAny, with .NET's checks in .NET's order: the array,
+        // its length, the timeout, then each element in turn -- null, then
+        // closed -- and last, for WaitAll, one named twice, which taking all
+        // at once would take twice.
+        static int WaitMultiple(WaitHandle[] waitHandles, bool waitAll, int millisecondsTimeout)
+        {
+            if (waitHandles == null)
+            {
+                throw new ArgumentNullException("waitHandles");
+            }
+            if (waitHandles.Length == 0)
+            {
+                throw new ArgumentException("Waithandle array may not be empty.", "waitHandles");
+            }
+            if (waitHandles.Length > MaxWaitHandles)
+            {
+                throw new NotSupportedException("The number of WaitHandles must be less than or equal to 64.");
+            }
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
+
+            // A COPY, made as each element is checked, as .NET's wait makes
+            // one: the caller's array may change while the wait is queued, and
+            // the wait is what a signal reads -- so the copy is what is
+            // checked, and a null put into the array after its check can never
+            // reach a signal walking the queue with the gate held.
+            int count = waitHandles.Length;
+            WaitHandle[] handles = new WaitHandle[count];
+            for (int i = 0; i < count; i++)
+            {
+                WaitHandle handle = waitHandles[i];
+                if (handle == null)
+                {
+                    throw new ArgumentNullException("waitHandles[" + i + "]", "At least one element in the specified array was null.");
+                }
+                handle.CheckOpen();
+                handles[i] = handle.Core;
+            }
+            // A MUTEX OF A NAME IS WAITED ON ALONE, as on .NET's Unix.
+            for (int i = 0; i < count; i++)
+            {
+                if (handles[i].Elsewhere)
+                {
+                    throw new PlatformNotSupportedException("Wait operations on multiple wait handles including a named synchronization primitive are not supported on this platform.");
+                }
+            }
+            if (waitAll)
+            {
+                for (int i = 1; i < count; i++)
+                {
+                    for (int j = 0; j < i; j++)
+                    {
+                        if (handles[j] == handles[i])
+                        {
+                            throw new DuplicateWaitObjectException();
+                        }
+                    }
+                }
+            }
+
+            int result = Wait(null, handles, count, waitAll, null, millisecondsTimeout);
+            if (result >= WaitAbandoned && result < WaitAbandoned + count)
+            {
+                if (waitAll)
+                {
+                    throw new AbandonedMutexException();
+                }
+                int index = result - WaitAbandoned;
+                throw new AbandonedMutexException(index, waitHandles[index]);
+            }
+            return result;
+        }
+
+        // THE ONE WAIT every public wait comes to: on `one`, or on the first
+        // `count` of `many` -- any of them, or all of them at once -- after
+        // `signal` is given its signal, when there is one, in the same hold of
+        // the gate. It ends as WaitTimeout and WaitAbandoned say.
+        static int Wait(WaitHandle? one, WaitHandle[]? many, int count, bool all, WaitHandle? signal, int milliseconds)
+        {
+            Thread me = Thread.CurrentThread;
+
+            // A wait that may sleep is made before the gate is taken, nothing
+            // being made with it held -- at once for SignalAndWait, whose wait
+            // must be queued in the hold that signals; otherwise only when the
+            // first look finds nothing to take, so that a wait answered at
+            // once makes nothing at all.
+            HandleWait? wait = null;
+            if (signal != null && milliseconds != 0)
+            {
+                wait = new HandleWait(me, one, many, count, all);
+            }
+
+            EnterGate();
+            if (signal != null && !signal.Give(me))
+            {
+                ExitGate();
+                throw signal.Refused();
+            }
+            int result = TakeNow(one, many, count, all, me);
+            if (result != WaitTimeout || milliseconds == 0)
+            {
+                ExitGate();
+                return result;
+            }
+            if (wait == null)
+            {
+                ExitGate();
+                wait = new HandleWait(me, one, many, count, all);
+                EnterGate();
+                // Looked at again: a signal may have come while the gate was open.
+                result = TakeNow(one, many, count, all, me);
+                if (result != WaitTimeout)
+                {
+                    ExitGate();
+                    return result;
+                }
+            }
+            wait.Queue();
+            ExitGate();
+
+            long done = Atom.At(wait, Atom.FirstWord);
+            long deadline = milliseconds < 0 ? -1 : Clock.Now() + (long)milliseconds * 1000000;
+            // A MUTEX OF A NAME ANOTHER PROCESS MAY HOLD gives no signal here
+            // when that process lets it go: the wait looks again now and then,
+            // a little less often each time, and takes what it can.
+            long poll = Polled(one, many, count) ? PollFirst : 0;
+            while (Sys.PeekWord(done) == 0)
+            {
+                long left = deadline < 0 ? long.MaxValue : deadline - Clock.Now();
+                if (left <= 0)
+                {
+                    break;
+                }
+                if (poll > 0)
+                {
+                    Native.WaitFor(done, 0, left < poll ? left : poll);
+                    if (poll < PollMost) poll = poll * 2;
+                    if (Sys.PeekWord(done) != 0) break;
+                    EnterGate();
+                    if (Sys.PeekWord(done) == 0)
+                    {
+                        result = TakeNow(one, many, count, all, me);
+                        if (result != WaitTimeout)
+                        {
+                            wait.Unqueue();
+                            ExitGate();
+                            return result;
+                        }
+                    }
+                    ExitGate();
+                    continue;
+                }
+                if (deadline < 0)
+                {
+                    Native.Wait(done, 0);
+                    continue;
+                }
+                Native.WaitFor(done, 0, left);
+            }
+
+            // Finished by a signal: what it ended with was written before the
+            // word that says so.
+            if (Sys.PeekWord(done) != 0)
+            {
+                return wait.Result;
+            }
+            EnterGate();
+            if (Sys.PeekWord(done) != 0)
+            {
+                result = wait.Result;
+            }
+            else
+            {
+                wait.Unqueue();
+                result = WaitTimeout;
+            }
+            ExitGate();
+            return result;
+        }
+
+        // How long a wait on a named mutex sleeps before it first looks again,
+        // and the most it sleeps between looks, in nanoseconds.
+        const long PollFirst = 1000000;
+        const long PollMost = 32000000;
+
+        static bool Polled(WaitHandle? one, WaitHandle[]? many, int count)
+        {
+            if (one != null) return one.Elsewhere;
+            for (int i = 0; i < count; i++)
+            {
+                if (many![i].Elsewhere) return true;
+            }
+            return false;
+        }
+
+        /// Whether another process can let this handle go: a named mutex's.
+        internal virtual bool Elsewhere => false;
+
+        /// With the gate held, after a look that took nothing: what the look
+        /// claimed on the way -- a named mutex's hold on its file -- let go.
+        internal virtual void Untaken()
+        {
+        }
+
+        // With the gate held: what the wait asks for, taken if `thread` can
+        // have it now -- answered as Wait answers, WaitTimeout when it cannot.
+        static int TakeNow(WaitHandle? one, WaitHandle[]? many, int count, bool all, Thread thread)
+        {
+            int result = TakeNowOrNot(one, many, count, all, thread);
+            if (result == WaitTimeout)
+            {
+                if (one != null) one.Untaken();
+                else for (int i = 0; i < count; i++) many![i].Untaken();
+            }
+            return result;
+        }
+
+        static int TakeNowOrNot(WaitHandle? one, WaitHandle[]? many, int count, bool all, Thread thread)
+        {
+            if (one != null)
+            {
+                if (!one.SignaledFor(thread))
+                {
+                    return WaitTimeout;
+                }
+                return one.Take(thread) ? WaitAbandoned : 0;
+            }
+            WaitHandle[] handles = many!;
+            if (!all)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    WaitHandle handle = handles[i];
+                    if (handle.SignaledFor(thread))
+                    {
+                        return handle.Take(thread) ? WaitAbandoned + i : i;
+                    }
+                }
+                return WaitTimeout;
+            }
+            for (int i = 0; i < count; i++)
+            {
+                if (!handles[i].SignaledFor(thread))
+                {
+                    return WaitTimeout;
+                }
+            }
+            int abandoned = -1;
+            for (int i = 0; i < count; i++)
+            {
+                if (handles[i].Take(thread) && abandoned < 0)
+                {
+                    abandoned = i;
+                }
+            }
+            return abandoned < 0 ? 0 : WaitAbandoned + abandoned;
+        }
+
+        // With the gate held, after this handle's state changed to one that
+        // somebody may take: the queued waits, oldest first, each finished
+        // that now can be, until nobody can take the handle any more.
+        internal void Answer()
+        {
+            HandleWaitLink? link = _first;
+            while (link != null && Signaled())
+            {
+                // Read before the wait is finished, which takes all its links
+                // -- this one among them -- out of their queues. A wait has
+                // one link in a queue at most, so the next is another's.
+                HandleWaitLink? next = link.Next;
+                HandleWait wait = link.Wait;
+                int result = TakeNow(wait.One, wait.Many, wait.Count, wait.All, wait.Waiter);
+                if (result != WaitTimeout)
+                {
+                    wait.Finish(result);
+                }
+                link = next;
+            }
+        }
+
+        internal void Enqueue(HandleWaitLink link)
+        {
+            link.Previous = _last;
+            link.Next = null;
+            if (_last != null)
+            {
+                _last.Next = link;
+            }
+            else
+            {
+                _first = link;
+            }
+            _last = link;
+        }
+
+        internal void Dequeue(HandleWaitLink link)
+        {
+            if (link.Previous != null)
+            {
+                link.Previous.Next = link.Next;
+            }
+            else
+            {
+                _first = link.Next;
+            }
+            if (link.Next != null)
+            {
+                link.Next.Previous = link.Previous;
+            }
+            else
+            {
+                _last = link.Previous;
+            }
+            link.Next = null;
+            link.Previous = null;
+        }
+
+        // ---- what each kind answers, always with the gate held ----------------
+
+        /// Whether `thread` could take the handle now.
+        internal virtual bool SignaledFor(Thread thread)
         {
             return false;
         }
-        return Sys.Cas(at, seen, seen - 1) == seen;
-    }
 
-    public void Release()
-    {
-        Release(1);
-    }
-
-    public void Release(int count)
-    {
-        long at = Atom.At(this, Atom.FirstWord);
-
-        Sys.AtomicAdd(at, count);
-        Native.Wake(at, count);
-    }
-}
-
-/// .NET's WaitHandle: something a thread can wait on until it is signalled.
-public abstract class WaitHandle : IDisposable
-{
-    /// Waits until signalled; true when it was.
-    public abstract bool WaitOne();
-
-    public virtual void Dispose() { }
-}
-
-/// Set or not set; everyone waiting goes through when it is set, and stays
-/// through until somebody resets it.
-class ManualResetEvent : WaitHandle
-{
-    // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    nint _signalled;
-    int _pad;
-
-    public ManualResetEvent(bool initialState)
-    {
-        _signalled = initialState ? 1 : 0;
-        _pad = 0;
-        Atom.CheckLayout();
-    }
-
-    public bool IsSet => _signalled != 0;
-
-    public bool Set()
-    {
-        long at = Atom.At(this, Atom.FirstWord);
-
-        Sys.AtomicSwap(at, 1);
-        Native.Wake(at, Native.WakeAll);
-        return true;
-    }
-
-    public bool Reset()
-    {
-        Sys.AtomicSwap(Atom.At(this, Atom.FirstWord), 0);
-        return true;
-    }
-
-    public override bool WaitOne()
-    {
-        long at = Atom.At(this, Atom.FirstWord);
-
-        while (Sys.PeekWord(at) == 0)
+        /// Whether any thread could: how far a signal walks the queue.
+        internal virtual bool Signaled()
         {
-            Native.Wait(at, 0);
+            return false;
         }
-        return true;
+
+        /// Takes the handle for `thread`, which SignaledFor allowed: true when
+        /// that took over a mutex its owner abandoned.
+        internal virtual bool Take(Thread thread)
+        {
+            return false;
+        }
+
+        /// SignalAndWait's signal, given by `thread`: false when it may not
+        /// be given, and Refused says why.
+        internal virtual bool Give(Thread thread)
+        {
+            return false;
+        }
+
+        internal virtual Exception Refused()
+        {
+            return new InvalidOperationException();
+        }
+
+        // ---- the gate --------------------------------------------------------
+
+        internal static void EnterGate()
+        {
+            long at = Sys.AddressOf(ref _gate);
+            long seen = Sys.Cas(at, 0, 1);
+
+            if (seen == 0)
+            {
+                return;
+            }
+
+            // Taking it now means there may be a sleeper -- this one -- so it
+            // goes to 2 and stays there until a giving back finds it free.
+            while (seen != 0)
+            {
+                seen = Sys.AtomicSwap(at, 2);
+
+                if (seen == 0)
+                {
+                    return;
+                }
+                Native.Wait(at, 2);
+                seen = Sys.Cas(at, 0, 2);
+            }
+        }
+
+        internal static void ExitGate()
+        {
+            long at = Sys.AddressOf(ref _gate);
+
+            if (Sys.AtomicSwap(at, 0) == 2)
+            {
+                Native.Wake(at, 1);
+            }
+        }
+    }
+
+    /// One thread's wait that could not be answered at once: what it waits
+    /// on, how, and for which thread a signal takes the handles.
+    sealed class HandleWait
+    {
+        // LAYOUT: first instance field, at Atom.FirstWord (see Atom), and a
+        // WORD, as the other waiters' are: what the waiting thread sleeps on,
+        // 1 once a signal has finished the wait.
+        nint _done;
+        int _pad;
+
+        // The thread that waits, which a signal takes the handles for.
+        public readonly Thread Waiter;
+        public readonly WaitHandle? One;
+        public readonly WaitHandle[]? Many;
+        public readonly int Count;
+        public readonly bool All;
+
+        /// What the wait ended with, written before the word says it ended.
+        public int Result;
+
+        // Its place in each queue: one for every handle it names, a handle
+        // named twice (WaitAny allows it) queued once.
+        readonly HandleWaitLink[] _links;
+        int _queued;
+
+        public HandleWait(Thread thread, WaitHandle? one, WaitHandle[]? many, int count, bool all)
+        {
+            _done = 0;
+            _pad = 0;
+            Waiter = thread;
+            One = one;
+            Many = many;
+            Count = count;
+            All = all;
+            _links = new HandleWaitLink[count];
+            for (int i = 0; i < count; i++)
+            {
+                _links[i] = new HandleWaitLink(this);
+            }
+            Atom.CheckLayout();
+        }
+
+        /// With the gate held: on the queue of every handle it names.
+        public void Queue()
+        {
+            if (One != null)
+            {
+                One.Enqueue(_links[0]);
+                _queued = 1;
+                return;
+            }
+            WaitHandle[] handles = Many!;
+            int queued = 0;
+            for (int i = 0; i < Count; i++)
+            {
+                WaitHandle handle = handles[i];
+                bool again = false;
+                for (int j = 0; j < i; j++)
+                {
+                    if (handles[j] == handle)
+                    {
+                        again = true;
+                        break;
+                    }
+                }
+                if (!again)
+                {
+                    HandleWaitLink link = _links[queued];
+                    link.Handle = handle;
+                    handle.Enqueue(link);
+                    queued = queued + 1;
+                }
+            }
+            _queued = queued;
+        }
+
+        /// With the gate held: off every queue.
+        public void Unqueue()
+        {
+            for (int i = 0; i < _queued; i++)
+            {
+                HandleWaitLink link = _links[i];
+                WaitHandle handle = One ?? link.Handle!;
+                handle.Dequeue(link);
+            }
+            _queued = 0;
+        }
+
+        /// With the gate held, the handles already taken for it: the wait
+        /// ends with `result`, and its thread is woken.
+        public void Finish(int result)
+        {
+            Unqueue();
+            Result = result;
+            long done = Atom.At(this, Atom.FirstWord);
+            Sys.AtomicSwap(done, 1);
+            Native.Wake(done, 1);
+        }
+    }
+
+    /// A HandleWait's place in one handle's queue.
+    sealed class HandleWaitLink
+    {
+        public readonly HandleWait Wait;
+        public WaitHandle? Handle;
+        public HandleWaitLink? Next;
+        public HandleWaitLink? Previous;
+
+        public HandleWaitLink(HandleWait wait)
+        {
+            Wait = wait;
+        }
+    }
+
+    /// .NET's EventWaitHandle: set or not set. Set, an auto-reset one lets
+    /// one waiter through and is not set again until the next Set; a
+    /// manual-reset one lets everybody through until it is reset.
+    public class EventWaitHandle : WaitHandle
+    {
+        EventWaitHandle(bool initialState, EventResetMode mode, int unnamed) : this(initialState, mode) { }
+
+        bool _set;
+        readonly EventResetMode _mode;
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name)
+            : this(initialState, mode, Named.Refused(name)) { }
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name, out bool createdNew)
+            : this(initialState, mode, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name, NamedWaitHandleOptions options)
+            : this(initialState, mode, Named.Refused(name)) { }
+
+        public EventWaitHandle(bool initialState, EventResetMode mode, string? name, NamedWaitHandleOptions options, out bool createdNew)
+            : this(initialState, mode, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        /// No name on this platform opens one, as on .NET's Unix.
+        public static EventWaitHandle OpenExisting(string name) { throw Named.Unsupported(name); }
+        public static EventWaitHandle OpenExisting(string name, NamedWaitHandleOptions options) { throw Named.Unsupported(name); }
+
+        public static bool TryOpenExisting(string name, out EventWaitHandle? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
+
+        public static bool TryOpenExisting(string name, NamedWaitHandleOptions options, out EventWaitHandle? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
+
+        public EventWaitHandle(bool initialState, EventResetMode mode) : base(true)
+        {
+            if (mode != EventResetMode.AutoReset && mode != EventResetMode.ManualReset)
+            {
+                throw new ArgumentException("Value of flags is invalid.", "mode");
+            }
+            _set = initialState;
+            _mode = mode;
+        }
+
+        /// Sets it: handed straight to the oldest waiter it lets through, if
+        /// there is one, which an auto-reset event then is not set for.
+        public bool Set()
+        {
+            CheckOpen();
+            EnterGate();
+            _set = true;
+            Answer();
+            ExitGate();
+            return true;
+        }
+
+        public bool Reset()
+        {
+            CheckOpen();
+            EnterGate();
+            _set = false;
+            ExitGate();
+            return true;
+        }
+
+        internal override bool SignaledFor(Thread thread)
+        {
+            return _set;
+        }
+
+        internal override bool Signaled()
+        {
+            return _set;
+        }
+
+        internal override bool Take(Thread thread)
+        {
+            if (_mode == EventResetMode.AutoReset)
+            {
+                _set = false;
+            }
+            return false;
+        }
+
+        internal override bool Give(Thread thread)
+        {
+            _set = true;
+            Answer();
+            return true;
+        }
+    }
+
+    public sealed class AutoResetEvent : EventWaitHandle
+    {
+        public AutoResetEvent(bool initialState) : base(initialState, EventResetMode.AutoReset) { }
+    }
+
+    public sealed class ManualResetEvent : EventWaitHandle
+    {
+        public ManualResetEvent(bool initialState) : base(initialState, EventResetMode.ManualReset) { }
+    }
+
+    /// .NET's Mutex: a WaitHandle one thread owns at a time, taken by that
+    /// thread as many times over as it waits on it and free once it has
+    /// released it as many times. Unnamed only: a name is a mutex other
+    /// processes share, which needs something outside this one to keep it.
+    public sealed class Mutex : WaitHandle
+    {
+        // The owner and how many times over it holds the mutex: null and 0
+        // when it is free.
+        Thread? _owner;
+        int _depth;
+
+        // Left behind by a thread that ended holding it, until the next
+        // thread to take it is told.
+        bool _abandoned;
+
+        // The other mutexes the owner holds: a list through them that starts
+        // at its Thread.HeldMutexes.
+        Mutex? _nextHeld;
+        Mutex? _previousHeld;
+
+        // A NAMED ONE'S: what holds the name for this process, its key in
+        // the table of names (NamedMutexes), and how many Mutexes of this
+        // process have it open. Only on the Mutex every one of them shares.
+        NamedMutexFiles? _files;
+        string? _key;
+        int _users;
+
+        public Mutex() : this(false) { }
+
+        public Mutex(bool initiallyOwned) : base(true)
+        {
+            if (initiallyOwned)
+            {
+                Thread me = Thread.CurrentThread;
+                EnterGate();
+                Take(me);
+                ExitGate();
+            }
+        }
+
+        /// A MUTEX OF A NAME, which every Mutex of that name in every process
+        /// shares, as .NET's are on Unix: owned by one thread of one process
+        /// at a time. Made by this call, it is owned at once when
+        /// `initiallyOwned` asks; already there, the call only opens it. The
+        /// name is per session unless it says "Global\", and -- with no
+        /// options given -- any user's, as .NET's older forms are.
+        public Mutex(bool initiallyOwned, string? name) : this(initiallyOwned, name, out bool unused) { }
+
+        public Mutex(bool initiallyOwned, string? name, out bool createdNew)
+            : this(initiallyOwned, name, NamedWaitHandleOptions.Legacy, out createdNew) { }
+
+        public Mutex(bool initiallyOwned, string? name, NamedWaitHandleOptions options)
+            : this(initiallyOwned, name, options, out bool unused) { }
+
+        public Mutex(string? name, NamedWaitHandleOptions options) : this(false, name, options, out bool unused) { }
+
+        public Mutex(bool initiallyOwned, string? name, NamedWaitHandleOptions options, out bool createdNew) : base(true)
+        {
+            createdNew = true;
+            if (string.IsNullOrEmpty(name))
+            {
+                if (initiallyOwned)
+                {
+                    Thread me = Thread.CurrentThread;
+                    EnterGate();
+                    Take(me);
+                    ExitGate();
+                }
+                return;
+            }
+            Mutex core = NamedMutexes.Open(name, options, true, out createdNew)!;
+            Share(core);
+            if (initiallyOwned && createdNew)
+            {
+                core.WaitOne();
+            }
+        }
+
+        Mutex(Mutex core) : base(true)
+        {
+            Share(core);
+        }
+
+        public static Mutex OpenExisting(string name) { return OpenExisting(name, NamedWaitHandleOptions.Legacy); }
+
+        public static Mutex OpenExisting(string name, NamedWaitHandleOptions options)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(name);
+            Mutex? core = NamedMutexes.Open(name, options, false, out bool unused);
+            if (core == null)
+            {
+                throw new WaitHandleCannotBeOpenedException();
+            }
+            return new Mutex(core);
+        }
+
+        public static bool TryOpenExisting(string name, out Mutex? result)
+        {
+            return TryOpenExisting(name, NamedWaitHandleOptions.Legacy, out result);
+        }
+
+        public static bool TryOpenExisting(string name, NamedWaitHandleOptions options, out Mutex? result)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(name);
+            Mutex? core = NamedMutexes.Open(name, options, false, out bool unused);
+            result = core == null ? null : new Mutex(core);
+            return result != null;
+        }
+
+        /// The shared Mutex of a name: no thread's yet, and its files.
+        internal static Mutex ForName(string key, NamedMutexFiles files)
+        {
+            Mutex made = new Mutex();
+            made._key = key;
+            made._files = files;
+            return made;
+        }
+
+        internal string? Key => _key;
+
+        /// One more of this process's Mutexes has the name open.
+        internal void Opened() { _users = _users + 1; }
+
+        /// One fewer: the last gives the name up (NamedMutexes.Closed).
+        internal bool LastClosed()
+        {
+            _users = _users - 1;
+            if (_users > 0) return false;
+            _files!.Close();
+            return true;
+        }
+
+        internal override bool Elsewhere => _files != null;
+
+        internal override void Untaken()
+        {
+            if (_files != null && _owner == null)
+            {
+                _files.Unlock(true);
+            }
+        }
+
+        /// Gives back one of the calling thread's holds, and the mutex to the
+        /// oldest waiter with the last; a thread that does not own it is
+        /// refused.
+        public void ReleaseMutex()
+        {
+            CheckOpen();
+            Thread me = Thread.CurrentThread;
+            Mutex core = (Mutex)Core;
+            EnterGate();
+            bool released = core.Release(me);
+            ExitGate();
+            if (!released)
+            {
+                throw new ApplicationException("Object synchronization method was called from an unsynchronized block of code.");
+            }
+        }
+
+        // FREE, AND THIS PROCESS'S: a named one only when the file another
+        // process's owner holds is this process's now, a hold taken here and
+        // let go again unless the look takes the mutex (Untaken).
+        bool Ours()
+        {
+            if (_files == null) return true;
+            if (!_files.TryLock(out bool abandoned)) return false;
+            if (abandoned) _abandoned = true;
+            return true;
+        }
+
+        internal override bool SignaledFor(Thread thread)
+        {
+            return _owner == thread || _owner == null && Ours();
+        }
+
+        internal override bool Signaled()
+        {
+            return _owner == null && Ours();
+        }
+
+        internal override bool Take(Thread thread)
+        {
+            if (_owner == thread)
+            {
+                // AT MOST int.MaxValue HOLDS, as .NET counts them.
+                if (_depth == int.MaxValue)
+                {
+                    throw new OverflowException("The current thread attempted to reacquire a mutex that has reached its maximum acquire count.");
+                }
+                _depth = _depth + 1;
+                return false;
+            }
+            _owner = thread;
+            _depth = 1;
+            Mutex? first = thread.HeldMutexes;
+            _nextHeld = first;
+            _previousHeld = null;
+            if (first != null)
+            {
+                first._previousHeld = this;
+            }
+            thread.HeldMutexes = this;
+
+            bool abandoned = _abandoned;
+            _abandoned = false;
+            return abandoned;
+        }
+
+        internal override bool Give(Thread thread)
+        {
+            return Release(thread);
+        }
+
+        /// As .NET words a release refused inside SignalAndWait: the system's
+        /// own error, ERROR_NOT_OWNER, with its number.
+        internal override Exception Refused()
+        {
+            ApplicationException refused = new ApplicationException("Attempt to release mutex not owned by caller.\n (0x80070120)");
+            refused.HResult = unchecked((int)0x80070120);
+            return refused;
+        }
+
+        // With the gate held: one of `thread`'s holds given back, and with
+        // the last the mutex to the next waiter; false when `thread` does not
+        // own it.
+        bool Release(Thread thread)
+        {
+            if (_owner != thread)
+            {
+                return false;
+            }
+            _depth = _depth - 1;
+            if (_depth == 0)
+            {
+                Free();
+                Answer();
+                if (_owner == null && _files != null)
+                {
+                    _files.Unlock(true);
+                }
+            }
+            return true;
+        }
+
+        // Off its owner's list, and nobody's.
+        void Free()
+        {
+            Thread owner = _owner!;
+            if (_previousHeld != null)
+            {
+                _previousHeld._nextHeld = _nextHeld;
+            }
+            else
+            {
+                owner.HeldMutexes = _nextHeld;
+            }
+            if (_nextHeld != null)
+            {
+                _nextHeld._previousHeld = _previousHeld;
+            }
+            _nextHeld = null;
+            _previousHeld = null;
+            _owner = null;
+            _depth = 0;
+        }
+
+        /// The mutexes `thread` still holds as it ends, left behind: each is
+        /// free, and handed to its oldest waiter -- which is told so -- or
+        /// else to whichever thread takes it next.
+        internal static void AbandonHeld(Thread thread)
+        {
+            EnterGate();
+            Mutex? held = thread.HeldMutexes;
+            while (held != null)
+            {
+                held.Free();
+                held._abandoned = true;
+                held.Answer();
+                // Another process's next owner is told too: the file still
+                // says it was owned.
+                if (held._owner == null && held._files != null)
+                {
+                    held._files.Unlock(false);
+                }
+                held = thread.HeldMutexes;
+            }
+            ExitGate();
+        }
+    }
+
+    /// .NET's Semaphore: a count of permits up to a maximum, a WaitHandle
+    /// that is signalled while the count is above zero; each wait takes one.
+    public sealed class Semaphore : WaitHandle
+    {
+        int _count;
+        readonly int _maximum;
+
+        public Semaphore(int initialCount, int maximumCount, string? name)
+            : this(initialCount, maximumCount, Named.Refused(name)) { }
+
+        public Semaphore(int initialCount, int maximumCount, string? name, out bool createdNew)
+            : this(initialCount, maximumCount, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        public Semaphore(int initialCount, int maximumCount, string? name, NamedWaitHandleOptions options)
+            : this(initialCount, maximumCount, Named.Refused(name)) { }
+
+        public Semaphore(int initialCount, int maximumCount, string? name, NamedWaitHandleOptions options, out bool createdNew)
+            : this(initialCount, maximumCount, Named.Refused(name))
+        {
+            createdNew = true;
+        }
+
+        public static Semaphore OpenExisting(string name) { throw Named.Unsupported(name); }
+        public static Semaphore OpenExisting(string name, NamedWaitHandleOptions options) { throw Named.Unsupported(name); }
+
+        public static bool TryOpenExisting(string name, out Semaphore? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
+
+        public static bool TryOpenExisting(string name, NamedWaitHandleOptions options, out Semaphore? result)
+        {
+            result = null;
+            throw Named.Unsupported(name);
+        }
+
+        Semaphore(int initialCount, int maximumCount, int unnamed) : this(initialCount, maximumCount) { }
+
+        public Semaphore(int initialCount, int maximumCount) : base(true)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(initialCount, "initialCount");
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumCount, "maximumCount");
+            if (initialCount > maximumCount)
+            {
+                throw new ArgumentException("The initial count for the semaphore must be greater than or equal to zero and less than the maximum count.");
+            }
+            _count = initialCount;
+            _maximum = maximumCount;
+        }
+
+        public int Release()
+        {
+            return Release(1);
+        }
+
+        /// Gives back `releaseCount` permits -- to the oldest waiters first --
+        /// and answers the count as it was before; past the maximum, nothing
+        /// is given back and SemaphoreFullException says why.
+        public int Release(int releaseCount)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(releaseCount, "releaseCount");
+            CheckOpen();
+            EnterGate();
+            int previous = _count;
+            if (_maximum - previous < releaseCount)
+            {
+                ExitGate();
+                throw new SemaphoreFullException();
+            }
+            _count = previous + releaseCount;
+            Answer();
+            ExitGate();
+            return previous;
+        }
+
+        internal override bool SignaledFor(Thread thread)
+        {
+            return _count > 0;
+        }
+
+        internal override bool Signaled()
+        {
+            return _count > 0;
+        }
+
+        internal override bool Take(Thread thread)
+        {
+            _count = _count - 1;
+            return false;
+        }
+
+        internal override bool Give(Thread thread)
+        {
+            if (_count == _maximum)
+            {
+                return false;
+            }
+            _count = _count + 1;
+            Answer();
+            return true;
+        }
+
+        internal override Exception Refused()
+        {
+            return new InvalidOperationException("The WaitHandle cannot be signaled because it would exceed its maximum count.");
+        }
+    }
+
+    /// How a named WaitHandle is shared, as .NET 10's options: by the
+    /// current user only and in the current session only, unless said
+    /// otherwise -- a struct whose default says both.
+    public struct NamedWaitHandleOptions
+    {
+        bool _notCurrentUserOnly;
+        bool _notCurrentSessionOnly;
+        bool _legacy;
+
+        public bool CurrentUserOnly
+        {
+            get { return !_notCurrentUserOnly; }
+            set { _notCurrentUserOnly = !value; }
+        }
+
+        public bool CurrentSessionOnly
+        {
+            get { return !_notCurrentSessionOnly; }
+            set { _notCurrentSessionOnly = !value; }
+        }
+
+        /// What the forms with no options mean: any user's, and the session
+        /// by the name's own prefix.
+        internal static NamedWaitHandleOptions Legacy
+        {
+            get
+            {
+                NamedWaitHandleOptions made = default;
+                made._notCurrentUserOnly = true;
+                made._legacy = true;
+                return made;
+            }
+        }
+
+        internal bool IsLegacy => _legacy;
+    }
+
+    /// No WaitHandle of the name, as OpenExisting says.
+    public class WaitHandleCannotBeOpenedException : ApplicationException
+    {
+        const string None = "No handle of the given name exists.";
+        // COR_E_WAITHANDLECANNOTBEOPENED, which .NET gives every one.
+        internal override int Code => unchecked((int)0x8013152C);
+
+        public WaitHandleCannotBeOpenedException() : base(None) { }
+        public WaitHandleCannotBeOpenedException(string? message) : base(message ?? None) { }
+        public WaitHandleCannotBeOpenedException(string? message, Exception? innerException) : base(message ?? None, innerException) { }
+    }
+
+    /// What .NET's Unix answers for a name an EventWaitHandle or a Semaphore
+    /// is given: there are no named ones there.
+    static class Named
+    {
+        const string Message = "The named version of this synchronization primitive is not supported on this platform.";
+
+        /// 0 for no name; any name, the empty one too, refused.
+        public static int Refused(string? name)
+        {
+            if (name != null) throw new PlatformNotSupportedException(Message);
+            return 0;
+        }
+
+        public static Exception Unsupported(string? name)
+        {
+            return new PlatformNotSupportedException(Message);
+        }
+    }
+
+    /// THE NAMED MUTEXES THIS PROCESS HAS OPEN, by key -- where the name is
+    /// kept (the user and session it is shared in) and the name -- each the
+    /// one Mutex every Mutex of the name in this process shares. Changed
+    /// under its own lock, never the wait handles' gate: opening a name
+    /// makes files and objects.
+    static class NamedMutexes
+    {
+        static List<Mutex>? _open;
+        static AtomicCell _lock = new AtomicCell();
+
+        const string Incorrect = "The filename, directory name, or volume label syntax is incorrect.";
+
+        /// The Mutex of `name`, opened for one more of this process's: made
+        /// (and the name with it) when `create` and nobody has it, null when
+        /// not `create` and nobody has it. Refuses a name .NET refuses.
+        public static Mutex? Open(string name, NamedWaitHandleOptions options, bool create, out bool createdNew)
+        {
+            createdNew = false;
+            string bare = name;
+            bool global;
+            if (name.StartsWith("Global\\", StringComparison.Ordinal))
+            {
+                bare = name.Substring(7);
+                global = true;
+                if (!options.IsLegacy && options.CurrentSessionOnly) throw Prefix(name);
+            }
+            else if (name.StartsWith("Local\\", StringComparison.Ordinal))
+            {
+                bare = name.Substring(6);
+                global = false;
+                if (!options.IsLegacy && !options.CurrentSessionOnly) throw Prefix(name);
+            }
+            else
+            {
+                global = !options.IsLegacy && !options.CurrentSessionOnly;
+            }
+            if (bare.Length > 255)
+            {
+                throw new ArgumentException("The length of the name exceeds the maximum limit.", "name");
+            }
+            if (bare.Length == 0)
+            {
+                throw new System.IO.IOException("The parameter is incorrect. : '" + name + "'.");
+            }
+            if (bare.IndexOf('\\') >= 0 || bare.IndexOf('/') >= 0)
+            {
+                throw new System.IO.IOException(Incorrect + " : '" + name + "'.");
+            }
+
+            string scope = (options.CurrentUserOnly ? "u" + Os.Getuid() : "any") + "/"
+                         + (global ? "global" : "s" + Platform.Result(Sys.Syscall(Call.Getsid, 0, 0, 0)));
+            string key = scope + "/" + bare;
+
+            AtomicCell gate = _lock;
+            gate.Enter();
+            try
+            {
+                List<Mutex> open = _open ??= new List<Mutex>();
+                for (int i = 0; i < open.Count; i++)
+                {
+                    if (open[i].Key == key)
+                    {
+                        open[i].Opened();
+                        return open[i];
+                    }
+                }
+                NamedMutexFiles? files = NamedMutexFiles.Open(scope, bare, create, options.CurrentUserOnly, out createdNew);
+                if (files == null)
+                {
+                    return null;
+                }
+                Mutex made = Mutex.ForName(key, files);
+                made.Opened();
+                open.Add(made);
+                return made;
+            }
+            finally
+            {
+                gate.Exit();
+            }
+        }
+
+        /// One of this process's Mutexes of the name closed.
+        public static void Closed(Mutex core)
+        {
+            AtomicCell gate = _lock;
+            gate.Enter();
+            try
+            {
+                if (core.LastClosed()) _open!.Remove(core);
+            }
+            finally
+            {
+                gate.Exit();
+            }
+        }
+
+        static ArgumentException Prefix(string name)
+        {
+            return new ArgumentException("The specified name '" + name + "' has a prefix that is not compatible with the specified option 'CurrentSessionOnly'.", "name");
+        }
+    }
+
+    /// WHAT HOLDS A NAME FOR THIS PROCESS: two files in a directory of the
+    /// user and session it is shared in, under the temporary directory. Every
+    /// process with the name open holds the first shared (flock); the one
+    /// whose thread owns the mutex holds the second exclusively, and writes 1
+    /// in it while it does -- so that a 1 found by the next to take it says
+    /// its owner ended holding it, and the mutex was abandoned. A process
+    /// that ends lets go of both, its kernel says so for it. Made when the
+    /// first file can be held exclusively: nobody else has the name, and
+    /// whatever its second file says is from a mutex nobody has any more.
+    sealed class NamedMutexFiles
+    {
+        const int Shared = 1;
+        const int Exclusive = 2;
+        const int NoWait = 4;
+        const int Let = 8;
+
+        int _users;
+        int _owner;
+        bool _locked;
+        readonly string _file;
+
+        NamedMutexFiles(int users, int owner, string file)
+        {
+            _users = users;
+            _owner = owner;
+            _file = file;
+        }
+
+        public static NamedMutexFiles? Open(string scope, string name, bool create, bool userOnly, out bool createdNew)
+        {
+            createdNew = false;
+            string dir = System.IO.Path.GetTempPath() + ".corsac-names/" + scope + "/";
+            Made(dir, userOnly);
+            string file = dir + Escaped(name);
+            int users;
+            bool alone;
+            while (true)
+            {
+                users = Os.Open(file, O.ReadWrite | (create ? O.Create : 0), userOnly ? 384 : 438);
+                if (users < 0)
+                {
+                    if (users == -Err.NoEnt && !create) return null;
+                    throw Interop.GetExceptionForIoErrno(users, file);
+                }
+                alone = Os.Flock(users, Exclusive | NoWait) == 0;
+                if (alone && !create)
+                {
+                    // A FILE LEFT BY PROCESSES THAT HAVE ALL ENDED: no name.
+                    Os.Flock(users, Let);
+                    Os.Close(users);
+                    return null;
+                }
+                while (!alone && Os.Flock(users, Shared | NoWait) != 0)
+                {
+                    Thread.Sleep(1);
+                }
+                // STILL THE FILE OF THE NAME: the last to close another
+                // process's hold gives the name up by removing it (Close),
+                // and one opened just before that is nobody's.
+                if (Same(users, file)) break;
+                Os.Close(users);
+            }
+            int owner = Os.Open(file + ".owner", O.ReadWrite | O.Create, userOnly ? 384 : 438);
+            if (owner < 0)
+            {
+                Os.Close(users);
+                throw Interop.GetExceptionForIoErrno(owner, file);
+            }
+            if (alone)
+            {
+                Mark(owner, 0);
+                Os.Flock(users, Shared);
+                createdNew = true;
+            }
+            return new NamedMutexFiles(users, owner, file);
+        }
+
+        // Whether the descriptor is still the file at `path`.
+        static bool Same(int fd, string path)
+        {
+            byte[] held = Stat.Room();
+            byte[] named = Stat.Room();
+            return Os.Fstat(fd, held) >= 0 && Os.Stat(path, named) >= 0
+                && Stat.Ino(held) == Stat.Ino(named) && Stat.Device(held) == Stat.Device(named);
+        }
+
+        // The directory, and those it is in, made as they are needed: a
+        // user's own closed to others, the shared ones open to all.
+        static void Made(string dir, bool userOnly)
+        {
+            int at = 0;
+            string top = System.IO.Path.GetTempPath();
+            while (true)
+            {
+                at = dir.IndexOf('/', Math.Max(at, top.Length));
+                if (at < 0) return;
+                Os.Mkdir(dir.Substring(0, at), userOnly ? 448 : 1023);
+                at = at + 1;
+            }
+        }
+
+        // A name as a file's: letters, digits and - _ as they are, anything
+        // else (a dot among them, so no name is "." or "..") as %XX of its
+        // UTF-8 bytes. A LONG ONE -- a name may be 255 characters, a file's
+        // name only 255 bytes -- keeps its first hundred and a hash of all of
+        // it, FNV-1a's sixty-four bits.
+        static string Escaped(string name)
+        {
+            System.Text.StringBuilder made = new System.Text.StringBuilder("mutex-");
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(name);
+            ulong hash = 14695981039346656037;
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                int b = bytes[i];
+                hash = unchecked((hash ^ (ulong)b) * 1099511628211);
+                if (b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '_')
+                {
+                    made.Append((char)b);
+                }
+                else
+                {
+                    made.Append('%').Append("0123456789ABCDEF"[b >> 4]).Append("0123456789ABCDEF"[b & 15]);
+                }
+            }
+            if (made.Length > 120)
+            {
+                made.Length = 106;
+                made.Append('~').Append(hash.ToString("x16"));
+            }
+            return made.ToString();
+        }
+
+        /// The second file held: this process's to give its threads.
+        /// `abandoned` when its last owner ended holding it.
+        public bool TryLock(out bool abandoned)
+        {
+            abandoned = false;
+            if (_locked) return true;
+            if (Os.Flock(_owner, Exclusive | NoWait) != 0) return false;
+            byte[] said = new byte[1];
+            abandoned = Os.Pread(_owner, said, 0, 1, 0) == 1 && said[0] == 1;
+            Mark(_owner, 1);
+            _locked = true;
+            return true;
+        }
+
+        /// Let go: `released` when its owner released it, which clears the
+        /// mark; an owner that ended holding it leaves the mark for the next.
+        public void Unlock(bool released)
+        {
+            if (!_locked) return;
+            if (released) Mark(_owner, 0);
+            _locked = false;
+            Os.Flock(_owner, Let);
+        }
+
+        /// This process lets go of the name -- and the last to have it open
+        /// anywhere removes its files, as .NET removes its own.
+        public void Close()
+        {
+            Unlock(false);
+            if (Os.Flock(_users, Exclusive | NoWait) == 0)
+            {
+                Os.Unlink(_file + ".owner");
+                Os.Unlink(_file);
+            }
+            Os.Close(_owner);
+            Os.Close(_users);
+        }
+
+        static void Mark(int fd, int value)
+        {
+            byte[] mark = new byte[] { (byte)value };
+            Os.Lseek(fd, 0, 0);
+            Os.Write(fd, mark, 0, 1);
+        }
+    }
+
+    /// A wait took a mutex whose owner ended without releasing it. The wait
+    /// has taken it all the same: whatever the mutex guarded may be half
+    /// changed. MutexIndex and Mutex name it when WaitAny took it; -1 and
+    /// null otherwise.
+    public class AbandonedMutexException : SystemException
+    {
+        const string Abandoned = "The wait completed due to an abandoned mutex.";
+        // COR_E_ABANDONEDMUTEX, which .NET gives every one.
+        internal override int Code => unchecked((int)0x8013152D);
+
+        int _mutexIndex = -1;
+        Mutex? _mutex;
+
+        public AbandonedMutexException() : base(Abandoned) { }
+        public AbandonedMutexException(string? message) : base(message ?? Abandoned) { }
+        public AbandonedMutexException(string? message, Exception? inner) : base(message ?? Abandoned, inner) { }
+
+        public AbandonedMutexException(int location, WaitHandle? handle) : base(Abandoned)
+        {
+            Locate(location, handle);
+        }
+
+        public AbandonedMutexException(string? message, int location, WaitHandle? handle) : base(message)
+        {
+            Locate(location, handle);
+        }
+
+        public AbandonedMutexException(string? message, Exception? inner, int location, WaitHandle? handle) : base(message, inner)
+        {
+            Locate(location, handle);
+        }
+
+        void Locate(int location, WaitHandle? handle)
+        {
+            _mutexIndex = location;
+            _mutex = handle as Mutex;
+        }
+
+        public Mutex? Mutex => _mutex;
+
+        public int MutexIndex => _mutexIndex;
     }
 }
 
-/// .NET's ManualResetEventSlim: ManualResetEvent's word and futex, with the
-/// waits that give up after a time.
+/// .NET's ManualResetEventSlim: a word that is set or not and a futex on it,
+/// with the waits that give up after a time.
 public class ManualResetEventSlim : IDisposable
 {
     // LAYOUT: first instance field, at Atom.FirstWord (see Atom).

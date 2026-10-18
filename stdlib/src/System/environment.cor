@@ -1,6 +1,7 @@
 // System.Environment: the process's arguments, environment, working
-// directory and exit, as .NET spells them.
-static class Environment
+// directory and exit, as .NET spells them. CurrentManagedThreadId is the
+// Linux runtime's (runtime/src/platforms/linux/threading.cor), beside Thread.
+static partial class Environment
 {
     static string[]? _args;
     static string[]? _env;
@@ -157,9 +158,11 @@ static class Environment
         }
         set
         {
-            if (Os.Chdir(value) < 0)
+            ArgumentException.ThrowIfNullOrEmpty(value);
+            int r = Os.Chdir(value);
+            if (r < 0)
             {
-                throw new IOException("cannot change directory to " + value);
+                throw Interop.GetExceptionForIoErrno(r, value, true);
             }
         }
     }

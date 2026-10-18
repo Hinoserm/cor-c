@@ -12,9 +12,11 @@
 // second
 // run item
 // faulted True
-// message boom
+// message One or more errors occurred. (boom)
+// inner same True
 // same exception True
 // result rethrew boom
+// getresult same True
 // canceled exception set False
 // canceled True faulted False
 // canceled: A task was canceled.
@@ -25,7 +27,7 @@
 // d10b
 // d20
 // whenall done
-// whenall fault first
+// whenall fault One or more errors occurred. (first) (second)
 // whenall empty True
 // whenany picked fast True
 // params all True any True
@@ -55,10 +57,12 @@
 //
 // The task library with no async/await: TaskCompletionSource, continuations
 // registered through GetAwaiter().OnCompleted (posted, never run inline),
-// Wait running the scheduler, faulted and canceled tasks rethrowing the
-// original exception, Task.Delay ordering through the timer heap, WhenAll
-// and WhenAny, Task.Yield, Task.Run unwrapping a Func<Task>, cancellation
-// tokens with Delay and CancelAfter, and the scheduler's deadlock report.
+// Wait running the scheduler, faulted and canceled tasks -- Wait, Result and
+// Exception answering an AggregateException of what faulted or canceled
+// them, GetResult rethrowing the original -- Task.Delay ordering through the
+// timer heap, WhenAll and WhenAny, Task.Yield, Task.Run unwrapping a
+// Func<Task>, cancellation tokens with Delay and CancelAfter, and the
+// scheduler's deadlock report.
 
 class Log : Action
 {
@@ -129,20 +133,21 @@ static class Program
         Task<int> t = tcs.Task;
         Line("faulted " + t.IsFaulted);
 
-        Exception? stored = t.Exception;
+        System.AggregateException? stored = t.Exception;
 
         if (stored != null)
         {
             Line("message " + stored.Message);
+            Line("inner same " + (stored.InnerException == boom));
         }
 
         try
         {
             t.Wait();
         }
-        catch (InvalidOperationException e)
+        catch (System.AggregateException e)
         {
-            Line("same exception " + (e == boom));
+            Line("same exception " + (e.InnerException == boom));
         }
 
         try
@@ -150,9 +155,18 @@ static class Program
             int value = t.Result;
             Line("result did not throw " + value);
         }
-        catch (Exception e)
+        catch (System.AggregateException e)
         {
-            Line("result rethrew " + e.Message);
+            Line("result rethrew " + e.InnerExceptions[0].Message);
+        }
+
+        try
+        {
+            t.GetAwaiter().GetResult();
+        }
+        catch (InvalidOperationException e)
+        {
+            Line("getresult same " + (e == boom));
         }
 
         TaskCompletionSource cancel = new TaskCompletionSource();
@@ -263,9 +277,9 @@ static class Program
         {
             Task.Run(bad).Wait();
         }
-        catch (InvalidOperationException e)
+        catch (System.AggregateException e)
         {
-            Line("unwrapped fault " + e.Message);
+            Line("unwrapped fault " + e.InnerExceptions[0].Message);
         }
 
         int six = 6;
@@ -317,9 +331,9 @@ static class Program
             sleeper.Wait();
             Line("delay not canceled");
         }
-        catch (TaskCanceledException)
+        catch (System.AggregateException e)
         {
-            Line("delay canceled " + sleeper.IsCanceled);
+            Line("delay canceled " + (sleeper.IsCanceled && e.InnerExceptions[0] is TaskCanceledException));
         }
 
         CancellationTokenSource timed = new CancellationTokenSource();
@@ -329,9 +343,9 @@ static class Program
         {
             Task.Delay(-1, timed.Token).Wait();
         }
-        catch (OperationCanceledException)
+        catch (System.AggregateException e)
         {
-            Line("cancel after " + timed.IsCancellationRequested);
+            Line("cancel after " + (timed.IsCancellationRequested && e.InnerExceptions[0] is OperationCanceledException));
         }
     }
 

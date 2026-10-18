@@ -368,7 +368,7 @@ abstract class TarEntry
         }
         if (!overwrite && File.Exists(destinationFileName))
         {
-            throw new IOException("the file '" + destinationFileName + "' already exists");
+            throw new IOException("Cannot create '" + destinationFileName + "' because a file or directory with the same name already exists.");
         }
         if (_entryType == TarEntryType.SymbolicLink)
         {

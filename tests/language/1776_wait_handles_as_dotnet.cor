@@ -1,0 +1,277 @@
+// test: wait_handles_as_dotnet
+// expect-exit: 0
+// expect-output:
+// main 1 1 True True False
+// thread True True True True
+// Thread is running or terminated; it cannot restart.
+// volleys 1000 False False
+// handed over 3 False
+// semaphore True True False 0
+// Adding the specified count to the semaphore would cause it to exceed its maximum count.
+// The initial count for the semaphore must be greater than or equal to zero and less than the maximum count.
+// releaseCount
+// any 258 all False
+// partial all False True
+// any 1 all True False 0
+// later all True
+// later any 1
+// recursive True True
+// stranger False Object synchronization method was called from an unsynchronized block of code.
+// released too often
+// abandoned -1 True
+// owned True
+// any abandoned 1 True
+// all abandoned -1 False
+// waiter told True
+// 258 millisecondsTimeout timeout
+// Duplicate objects in argument.
+// At least one element in the specified array was null. (Parameter 'waitHandles[1]')
+// 258
+// signal and wait False True
+// The WaitHandle cannot be signaled because it would exceed its maximum count.
+// closed
+//
+// System.Threading's wait handles as .NET has them. Thread.CurrentThread and
+// ManagedThreadId: 1 for the first thread, its own for every other, the same
+// inside a thread as the Thread object says outside. AutoResetEvent ping-pong
+// a thousand times, and Sets handed straight to waiters already queued -- each
+// queued by SignalAndWait, which signals and starts waiting in one step, so
+// three Sets let all three through and none is left set. Semaphore with its
+// maximum: Release answers the count before and refuses to pass the maximum.
+// WaitAny and WaitAll with timeouts (WaitTimeout, 258), WaitAll taking all
+// or none, and both finished later by another thread's signals. Mutex is
+// recursive and owned: another thread neither takes nor releases it. A
+// thread that ends holding a mutex leaves it abandoned, and the next wait to
+// take it -- WaitOne, WaitAny (which names the index), WaitAll, or one that
+// was already waiting -- takes it and is told.
+
+using System;
+using System.Threading;
+
+static class Program
+{
+    static int Main()
+    {
+        Thread main = Thread.CurrentThread;
+        Console.WriteLine("main " + main.ManagedThreadId + " " + Environment.CurrentManagedThreadId + " "
+            + (Thread.CurrentThread == main) + " " + main.IsAlive + " " + main.IsBackground);
+
+        int inside = 0;
+        bool agrees = false;
+        Thread worker = new Thread(() =>
+        {
+            inside = Thread.CurrentThread.ManagedThreadId;
+            agrees = Environment.CurrentManagedThreadId == inside;
+        });
+        int made = worker.ManagedThreadId;
+        worker.Start();
+        worker.Join();
+        Console.WriteLine("thread " + (made > 1) + " " + (inside == made) + " " + agrees + " " + (Thread.CurrentThread == main));
+
+        try { main.Start(); }
+        catch (ThreadStateException e) { Console.WriteLine(e.Message); }
+
+        // Ping-pong: each side lets the other go, and waits for its turn.
+        AutoResetEvent ping = new AutoResetEvent(false);
+        AutoResetEvent pong = new AutoResetEvent(false);
+        int volleys = 0;
+        Thread player = new Thread(() =>
+        {
+            for (int i = 0; i < 1000; i++)
+            {
+                ping.WaitOne();
+                volleys++;
+                pong.Set();
+            }
+        });
+        player.Start();
+        for (int i = 0; i < 1000; i++)
+        {
+            ping.Set();
+            pong.WaitOne();
+        }
+        player.Join();
+        Console.WriteLine("volleys " + volleys + " " + ping.WaitOne(0) + " " + pong.WaitOne(0));
+
+        // Three waiters queued on one event, three Sets: each Set goes to a
+        // waiter, none is lost to another Set and none is left over.
+        Semaphore ready = new Semaphore(0, 3);
+        AutoResetEvent gate = new AutoResetEvent(false);
+        int through = 0;
+        Thread[] waiters = new Thread[3];
+        for (int i = 0; i < 3; i++)
+        {
+            waiters[i] = new Thread(() =>
+            {
+                if (WaitHandle.SignalAndWait(ready, gate, 5000, false))
+                {
+                    Interlocked.Increment(ref through);
+                }
+            });
+            waiters[i].Start();
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            ready.WaitOne();
+        }
+        gate.Set();
+        gate.Set();
+        gate.Set();
+        for (int i = 0; i < 3; i++)
+        {
+            waiters[i].Join();
+        }
+        Console.WriteLine("handed over " + through + " " + gate.WaitOne(0));
+
+        Semaphore pool = new Semaphore(2, 3);
+        bool first = pool.WaitOne(0);
+        bool second = pool.WaitOne(0);
+        bool third = pool.WaitOne(0);
+        Console.WriteLine("semaphore " + first + " " + second + " " + third + " " + pool.Release(3));
+        try { pool.Release(); }
+        catch (SemaphoreFullException e) { Console.WriteLine(e.Message); }
+        try { new Semaphore(3, 2); }
+        catch (ArgumentException e) { Console.WriteLine(e.Message); }
+        try { pool.Release(0); }
+        catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.ParamName); }
+
+        ManualResetEvent open = new ManualResetEvent(false);
+        AutoResetEvent once = new AutoResetEvent(false);
+        WaitHandle[] both = { open, once };
+        int any = WaitHandle.WaitAny(both, 20);
+        Console.WriteLine("any " + any + " all " + WaitHandle.WaitAll(both, 20));
+
+        // All or none: the set event is not taken while the other is not set.
+        once.Set();
+        Console.WriteLine("partial all " + WaitHandle.WaitAll(both, 20) + " " + once.WaitOne(0));
+
+        once.Set();
+        any = WaitHandle.WaitAny(both, TimeSpan.FromMilliseconds(20));
+        open.Set();
+        once.Set();
+        bool all = WaitHandle.WaitAll(both, 20);
+        Console.WriteLine("any " + any + " all " + all + " " + once.WaitOne(0) + " " + WaitHandle.WaitAny(both, 0));
+
+        // Finished later, by another thread's signals.
+        open.Reset();
+        Thread signaller = new Thread(() =>
+        {
+            Thread.Sleep(20);
+            once.Set();
+            Thread.Sleep(20);
+            open.Set();
+        });
+        signaller.Start();
+        Console.WriteLine("later all " + WaitHandle.WaitAll(both, 5000));
+        signaller.Join();
+        open.Reset();
+        signaller = new Thread(() =>
+        {
+            Thread.Sleep(20);
+            once.Set();
+        });
+        signaller.Start();
+        Console.WriteLine("later any " + WaitHandle.WaitAny(both, 5000));
+        signaller.Join();
+
+        Mutex m = new Mutex(true);
+        Console.WriteLine("recursive " + m.WaitOne(0) + " " + m.WaitOne(0));
+        bool strangerTook = true;
+        string refused = "";
+        Thread stranger = new Thread(() =>
+        {
+            strangerTook = m.WaitOne(0);
+            try { m.ReleaseMutex(); }
+            catch (ApplicationException e) { refused = e.Message; }
+        });
+        stranger.Start();
+        stranger.Join();
+        Console.WriteLine("stranger " + strangerTook + " " + refused);
+        m.ReleaseMutex();
+        m.ReleaseMutex();
+        m.ReleaseMutex();
+        try { m.ReleaseMutex(); }
+        catch (ApplicationException) { Console.WriteLine("released too often"); }
+
+        // Left behind twice over by a thread that ended.
+        Mutex left = new Mutex();
+        Thread quitter = new Thread(() =>
+        {
+            left.WaitOne();
+            left.WaitOne();
+        });
+        quitter.Start();
+        quitter.Join();
+        try
+        {
+            left.WaitOne();
+            Console.WriteLine("not told");
+        }
+        catch (AbandonedMutexException e)
+        {
+            Console.WriteLine("abandoned " + e.MutexIndex + " " + (e.Mutex == null));
+        }
+        Console.WriteLine("owned " + left.WaitOne(0));
+        left.ReleaseMutex();
+        left.ReleaseMutex();
+
+        Mutex leftAny = new Mutex();
+        quitter = new Thread(() => leftAny.WaitOne());
+        quitter.Start();
+        quitter.Join();
+        try { WaitHandle.WaitAny(new WaitHandle[] { new ManualResetEvent(false), leftAny }, 1000); }
+        catch (AbandonedMutexException e) { Console.WriteLine("any abandoned " + e.MutexIndex + " " + (e.Mutex == leftAny)); }
+        leftAny.ReleaseMutex();
+
+        Mutex leftAll = new Mutex();
+        quitter = new Thread(() => leftAll.WaitOne());
+        quitter.Start();
+        quitter.Join();
+        try { WaitHandle.WaitAll(new WaitHandle[] { new ManualResetEvent(true), leftAll }, 1000); }
+        catch (AbandonedMutexException e) { Console.WriteLine("all abandoned " + e.MutexIndex + " " + (e.Mutex != null)); }
+        leftAll.ReleaseMutex();
+
+        // Abandoned while this thread already waits for it.
+        Mutex held = new Mutex();
+        ManualResetEvent taken = new ManualResetEvent(false);
+        Thread holder = new Thread(() =>
+        {
+            held.WaitOne();
+            taken.Set();
+            Thread.Sleep(30);
+        });
+        holder.Start();
+        taken.WaitOne();
+        bool told = false;
+        try { held.WaitOne(5000); }
+        catch (AbandonedMutexException) { told = true; }
+        holder.Join();
+        Console.WriteLine("waiter told " + told);
+        held.ReleaseMutex();
+
+        string ranges = "";
+        try { open.WaitOne(-2); }
+        catch (ArgumentOutOfRangeException e) { ranges = e.ParamName!; }
+        try { open.WaitOne(TimeSpan.FromMilliseconds(-2)); }
+        catch (ArgumentOutOfRangeException e) { ranges = ranges + " " + e.ParamName; }
+        Console.WriteLine(WaitHandle.WaitTimeout + " " + ranges);
+
+        try { WaitHandle.WaitAll(new WaitHandle[] { once, once }, 0); }
+        catch (DuplicateWaitObjectException e) { Console.WriteLine(e.Message); }
+        try { WaitHandle.WaitAny(new WaitHandle[] { once, null! }, 0); }
+        catch (ArgumentNullException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine(WaitHandle.WaitAny(new WaitHandle[] { once, once }, 0));
+
+        AutoResetEvent nudge = new AutoResetEvent(false);
+        ManualResetEvent never = new ManualResetEvent(false);
+        bool waited = WaitHandle.SignalAndWait(nudge, never, 20, false);
+        Console.WriteLine("signal and wait " + waited + " " + nudge.WaitOne(0));
+        try { WaitHandle.SignalAndWait(new Semaphore(1, 1), never, 0, false); }
+        catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+
+        open.Close();
+        try { open.Set(); }
+        catch (ObjectDisposedException) { Console.WriteLine("closed"); }
+        return 0;
+    }
+}

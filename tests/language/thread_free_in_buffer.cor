@@ -24,6 +24,8 @@
 // One round of this found the fault about half the time; twelve rounds, each
 // checking every node and every name, find it nearly always.
 
+using System.Threading;
+
 class Node
 {
     public int Value;

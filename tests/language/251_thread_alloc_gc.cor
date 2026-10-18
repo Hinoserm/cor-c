@@ -17,6 +17,8 @@
 // The cap is what makes the collections happen: with a megabyte to work in,
 // forty thousand nodes and their strings do not fit without several.
 
+using System.Threading;
+
 class Node
 {
     public int Value;

@@ -11,7 +11,15 @@
 // word forms are eight bytes in long mode, and on an int they changed the
 // field after it and compared what that field held. A long is a machine word
 // on x86-64, and its forms are the word intrinsics there, lock-free as .NET's
-// are. A reference is a word on both.
+// are. A reference is a word on both, and so is an nint. A BYTE OR A HALF
+// WORD has no instruction of its own here: it is changed by a
+// compare-exchange of the four bytes it lies in, which leaves its neighbours
+// as they were. A float or a double is its bits, compared as bits, as .NET
+// compares them: NaN matches the same NaN, and 0.0 does not match -0.0.
+//
+// THE GENERIC FORMS TAKE ANY T, as .NET 9's do: a reference by the reference
+// exchange, a primitive or an enum by the form of its size, and anything
+// else refused with NotSupportedException.
 //
 // SIXTY-FOUR BITS ON A 32-BIT PROCESSOR. The 486 has no CMPXCHG8B (it came
 // with the Pentium), so on i386 the long forms are done under one lock shared
@@ -52,65 +60,239 @@ public static class Interlocked
         return Sys.Cas32(Sys.AddressOf(ref location), comparand, value);
     }
 
+    /// The bits both have, kept; answers what was there before.
+    public static int And(ref int location, int value) { return Combine32(Sys.AddressOf(ref location), value, false); }
+
+    /// The bits either has; answers what was there before.
+    public static int Or(ref int location, int value) { return Combine32(Sys.AddressOf(ref location), value, true); }
+
+    public static uint Increment(ref uint location) { return unchecked((uint)Sys.AtomicAdd32(Sys.AddressOf(ref location), 1) + 1); }
+    public static uint Decrement(ref uint location) { return unchecked((uint)Sys.AtomicAdd32(Sys.AddressOf(ref location), -1) - 1); }
+
+    public static uint Add(ref uint location, uint value)
+    {
+        return unchecked((uint)Sys.AtomicAdd32(Sys.AddressOf(ref location), (int)value) + value);
+    }
+
+    public static uint Exchange(ref uint location, uint value)
+    {
+        return unchecked((uint)Sys.AtomicSwap32(Sys.AddressOf(ref location), (int)value));
+    }
+
+    public static uint CompareExchange(ref uint location, uint value, uint comparand)
+    {
+        return unchecked((uint)Sys.Cas32(Sys.AddressOf(ref location), (int)comparand, (int)value));
+    }
+
+    public static uint And(ref uint location, uint value) { return unchecked((uint)Combine32(Sys.AddressOf(ref location), (int)value, false)); }
+    public static uint Or(ref uint location, uint value) { return unchecked((uint)Combine32(Sys.AddressOf(ref location), (int)value, true)); }
+
+    public static float Exchange(ref float location, float value)
+    {
+        return Sys.FromSingleBits(Sys.AtomicSwap32(Sys.AddressOf(ref location), Sys.SingleBits(value)));
+    }
+
+    public static float CompareExchange(ref float location, float value, float comparand)
+    {
+        return Sys.FromSingleBits(Sys.Cas32(Sys.AddressOf(ref location), Sys.SingleBits(comparand), Sys.SingleBits(value)));
+    }
+
+    // AND AND OR OF FOUR BYTES, as a compare-exchange until nothing changed
+    // them in between: the word forms (Sys.AtomicAnd) are eight bytes in long
+    // mode, and would change the four after.
+    static int Combine32(long at, int value, bool or)
+    {
+        int seen = (int)Sys.PeekWord(at);
+        while (true)
+        {
+            int was = Sys.Cas32(at, seen, or ? seen | value : seen & value);
+            if (was == seen) return was;
+            seen = was;
+        }
+    }
+
+    // ---- 8 and 16 bits ---------------------------------------------------------------
+
+    public static byte Exchange(ref byte location, byte value) { return (byte)Narrow(Sys.AddressOf(ref location), 1, value, 0, false); }
+    public static sbyte Exchange(ref sbyte location, sbyte value) { return unchecked((sbyte)Narrow(Sys.AddressOf(ref location), 1, value, 0, false)); }
+    public static short Exchange(ref short location, short value) { return unchecked((short)Narrow(Sys.AddressOf(ref location), 2, value, 0, false)); }
+    public static ushort Exchange(ref ushort location, ushort value) { return (ushort)Narrow(Sys.AddressOf(ref location), 2, value, 0, false); }
+
+    public static byte CompareExchange(ref byte location, byte value, byte comparand)
+    {
+        return (byte)Narrow(Sys.AddressOf(ref location), 1, value, comparand, true);
+    }
+
+    public static sbyte CompareExchange(ref sbyte location, sbyte value, sbyte comparand)
+    {
+        return unchecked((sbyte)Narrow(Sys.AddressOf(ref location), 1, value, comparand, true));
+    }
+
+    public static short CompareExchange(ref short location, short value, short comparand)
+    {
+        return unchecked((short)Narrow(Sys.AddressOf(ref location), 2, value, comparand, true));
+    }
+
+    public static ushort CompareExchange(ref ushort location, ushort value, ushort comparand)
+    {
+        return (ushort)Narrow(Sys.AddressOf(ref location), 2, value, comparand, true);
+    }
+
+    /// THE `width` BYTES AT `at` -- one, or two on an even address -- given
+    /// `value` (only where they hold `comparand`, when `compare`), changed by
+    /// a compare-exchange of the aligned four bytes they lie in, so that what
+    /// shares those four is left as it was. Answers what they held, zero
+    /// extended. A comparison that fails still ends in a locked instruction,
+    /// rewriting the word as it was: every form is a full barrier, as .NET's.
+    static int Narrow(long at, int width, int value, int comparand, bool compare)
+    {
+        long word = at & -4L;
+        int shift = (int)(at & 3) * 8;
+        int ones = width == 1 ? 0xFF : 0xFFFF;
+        int mask = ones << shift;
+        int seen = (int)Sys.PeekWord(word);
+        while (true)
+        {
+            int held = (int)((uint)seen >> shift) & ones;
+            int next = compare && held != (comparand & ones) ? seen : (seen & ~mask) | ((value & ones) << shift);
+            int was = Sys.Cas32(word, seen, next);
+            if (was == seen) return held;
+            seen = was;
+        }
+    }
+
     // ---- 64 bits ---------------------------------------------------------------------
 
     public static long Increment(ref long location) { return Add(ref location, 1); }
     public static long Decrement(ref long location) { return Add(ref location, -1); }
 
+    public static long Add(ref long location, long value) { return Add64(Sys.AddressOf(ref location), value) + value; }
+    public static long Exchange(ref long location, long value) { return Swap64(Sys.AddressOf(ref location), value); }
+
+    public static long CompareExchange(ref long location, long value, long comparand)
+    {
+        return Cas64(Sys.AddressOf(ref location), comparand, value);
+    }
+
+    public static long And(ref long location, long value) { return Combine64(Sys.AddressOf(ref location), value, false); }
+    public static long Or(ref long location, long value) { return Combine64(Sys.AddressOf(ref location), value, true); }
+
+    /// The long as one read, which no Interlocked write is half way through.
+    public static long Read(ref long location) { return Read64(Sys.AddressOf(ref location)); }
+
+    public static ulong Increment(ref ulong location) { return Add(ref location, 1UL); }
+    public static ulong Decrement(ref ulong location) { return Add(ref location, ulong.MaxValue); }
+
+    public static ulong Add(ref ulong location, ulong value)
+    {
+        return unchecked((ulong)Add64(Sys.AddressOf(ref location), (long)value) + value);
+    }
+
+    public static ulong Exchange(ref ulong location, ulong value) { return unchecked((ulong)Swap64(Sys.AddressOf(ref location), (long)value)); }
+
+    public static ulong CompareExchange(ref ulong location, ulong value, ulong comparand)
+    {
+        return unchecked((ulong)Cas64(Sys.AddressOf(ref location), (long)comparand, (long)value));
+    }
+
+    public static ulong And(ref ulong location, ulong value) { return unchecked((ulong)Combine64(Sys.AddressOf(ref location), (long)value, false)); }
+    public static ulong Or(ref ulong location, ulong value) { return unchecked((ulong)Combine64(Sys.AddressOf(ref location), (long)value, true)); }
+    public static ulong Read(ref ulong location) { return unchecked((ulong)Read64(Sys.AddressOf(ref location))); }
+
+    public static double Exchange(ref double location, double value)
+    {
+        return Sys.FromBits(Swap64(Sys.AddressOf(ref location), Sys.Bits(value)));
+    }
+
+    public static double CompareExchange(ref double location, double value, double comparand)
+    {
+        return Sys.FromBits(Cas64(Sys.AddressOf(ref location), Sys.Bits(comparand), Sys.Bits(value)));
+    }
+
 #if TARGET_64BIT
     // A machine word: the processor's own atomics, as for an int.
 
-    public static long Add(ref long location, long value) { return Sys.AtomicAdd(Sys.AddressOf(ref location), value) + value; }
+    static long Add64(long at, long value) { return Sys.AtomicAdd(at, value); }
+    static long Swap64(long at, long value) { return Sys.AtomicSwap(at, value); }
+    static long Cas64(long at, long expect, long value) { return Sys.Cas(at, expect, value); }
+    static long Combine64(long at, long value, bool or) { return or ? Sys.AtomicOr(at, value) : Sys.AtomicAnd(at, value); }
 
-    public static long Exchange(ref long location, long value) { return Sys.AtomicSwap(Sys.AddressOf(ref location), value); }
-
-    public static long CompareExchange(ref long location, long value, long comparand)
-    {
-        return Sys.Cas(Sys.AddressOf(ref location), comparand, value);
-    }
-
-    /// The long as one read: a compare-exchange of 0 with 0, which leaves
-    /// whatever is there as it was, as .NET has it.
-    public static long Read(ref long location) { return Sys.Cas(Sys.AddressOf(ref location), 0, 0); }
+    /// A compare-exchange of 0 with 0, which leaves whatever is there as it
+    /// was, as .NET has it.
+    static long Read64(long at) { return Sys.Cas(at, 0, 0); }
 #else
-    // Two words, under the one lock.
+    // TWO WORDS, UNDER THE ONE LOCK, read and written a word at a time. Each
+    // answers what was there before.
 
     static AtomicCell _wide = new AtomicCell();
 
-    public static long Add(ref long location, long value)
+    static long Held(long at) { return (Sys.PeekWord(at) & 0xFFFFFFFF) | (Sys.PeekWord(at + 4) << 32); }
+
+    static void Put(long at, long value)
+    {
+        Sys.PokeWord(at, (int)value);
+        Sys.PokeWord(at + 4, (int)(value >> 32));
+    }
+
+    static long Add64(long at, long value)
     {
         _wide.Enter();
-        try { location = location + value; return location; }
+        try { long was = Held(at); Put(at, was + value); return was; }
         finally { _wide.Exit(); }
     }
 
-    public static long Exchange(ref long location, long value)
+    static long Swap64(long at, long value)
     {
         _wide.Enter();
-        try { long was = location; location = value; return was; }
+        try { long was = Held(at); Put(at, value); return was; }
         finally { _wide.Exit(); }
     }
 
-    public static long CompareExchange(ref long location, long value, long comparand)
+    static long Cas64(long at, long expect, long value)
     {
         _wide.Enter();
         try
         {
-            long was = location;
-            if (was == comparand) location = value;
+            long was = Held(at);
+            if (was == expect) Put(at, value);
             return was;
         }
         finally { _wide.Exit(); }
     }
 
-    /// A 64-bit read that no concurrent Interlocked write is half way through.
-    public static long Read(ref long location)
+    static long Combine64(long at, long value, bool or)
     {
         _wide.Enter();
-        try { return location; }
+        try { long was = Held(at); Put(at, or ? was | value : was & value); return was; }
+        finally { _wide.Exit(); }
+    }
+
+    static long Read64(long at)
+    {
+        _wide.Enter();
+        try { return Held(at); }
         finally { _wide.Exit(); }
     }
 #endif
+
+    // ---- machine words ----------------------------------------------------------
+
+    public static nint Exchange(ref nint location, nint value) { return (nint)Sys.AtomicSwap(Sys.AddressOf(ref location), value); }
+
+    public static nint CompareExchange(ref nint location, nint value, nint comparand)
+    {
+        return (nint)Sys.Cas(Sys.AddressOf(ref location), comparand, value);
+    }
+
+    public static nuint Exchange(ref nuint location, nuint value)
+    {
+        return unchecked((nuint)Sys.AtomicSwap(Sys.AddressOf(ref location), (nint)value));
+    }
+
+    public static nuint CompareExchange(ref nuint location, nuint value, nuint comparand)
+    {
+        return unchecked((nuint)Sys.Cas(Sys.AddressOf(ref location), (nint)comparand, (nint)value));
+    }
 
     // ---- references ------------------------------------------------------------------
 
@@ -131,36 +313,123 @@ public static class Interlocked
     // card in one sequence no thread is stopped inside. Written out here, a
     // thread stopped between the test of Runtime.Marking and the exchange
     // answered the snapshot and then exchanged a reference nobody reported.
+    //
+    // ANY OTHER T is a primitive or an enum, exchanged by the form of its
+    // size through the bytes it is held in, or refused.
 
-    public static T Exchange<T>(ref T location, T value) where T : class?
+    public static T Exchange<T>(ref T location, T value)
     {
-        return (T)Sys.FromWord(Sys.ExchangeReference(Sys.AddressOf(ref location), Sys.Word(value)));
+        if (!typeof(T).IsValueType)
+        {
+            return Sys.As<T>(Sys.FromWord(Sys.ExchangeReference(Sys.AddressOf(ref location), Sys.Word(value))));
+        }
+        T was = default!;
+        Exchanged(Sys.AddressOf(ref location), Sys.AddressOf(ref value), 0, Sys.AddressOf(ref was), Width<T>(), false);
+        return was;
     }
 
-    public static T CompareExchange<T>(ref T location, T value, T comparand) where T : class?
+    public static T CompareExchange<T>(ref T location, T value, T comparand)
     {
-        return (T)Sys.FromWord(Sys.CompareExchangeReference(Sys.AddressOf(ref location), Sys.Word(comparand), Sys.Word(value)));
+        if (!typeof(T).IsValueType)
+        {
+            return Sys.As<T>(Sys.FromWord(Sys.CompareExchangeReference(Sys.AddressOf(ref location), Sys.Word(comparand), Sys.Word(value))));
+        }
+        T was = default!;
+        Exchanged(Sys.AddressOf(ref location), Sys.AddressOf(ref value), Sys.AddressOf(ref comparand), Sys.AddressOf(ref was), Width<T>(), true);
+        return was;
     }
+
+    // .NET's rule for a T that is no reference: a primitive or an enum, the
+    // width it is held in one an atomic has. A Nullable is neither, though
+    // its Type here answers for the value inside it; its zero is null.
+    static int Width<T>()
+    {
+        if (default(T) == null || !typeof(T).IsPrimitive && !typeof(T).IsEnum)
+        {
+            throw new NotSupportedException("The specified type must be a reference type, a primitive type, or an enum type.");
+        }
+        return sizeof(T);
+    }
+
+    // The value at `value` stored at `at` -- where the one at `comparand` is
+    // there, when `compare` -- and what was there written to `into`, all
+    // `width` bytes wide.
+    static void Exchanged(long at, long value, long comparand, long into, int width, bool compare)
+    {
+        if (width == 8)
+        {
+            long given = Wide(value);
+            long was = compare ? Cas64(at, Wide(comparand), given) : Swap64(at, given);
+            Sys.PokeWord(into, (int)was);
+            Sys.PokeWord(into + 4, (int)(was >> 32));
+            return;
+        }
+        if (width == 4)
+        {
+            int given = (int)Sys.PeekWord(value);
+            Sys.PokeWord(into, compare ? Sys.Cas32(at, (int)Sys.PeekWord(comparand), given) : Sys.AtomicSwap32(at, given));
+            return;
+        }
+        int was8 = Narrow(at, width, Part(value, width), compare ? Part(comparand, width) : 0, compare);
+        if (width == 1) Sys.PokeByte(into, was8); else Sys.PokeHalf(into, was8);
+    }
+
+    static long Wide(long at) { return (Sys.PeekWord(at) & 0xFFFFFFFF) | (Sys.PeekWord(at + 4) << 32); }
+
+    static int Part(long at, int width) { return width == 1 ? (int)Sys.PeekByte(at) : (int)Sys.PeekHalf(at); }
 
     // ---- ordering ----------------------------------------------------------------------
 
     /// Every load and store before this is done before any after it.
     public static void MemoryBarrier() { Sys.Fence(); }
+
+    /// The same for every thread of the process at once. One process's
+    /// threads are this image's, and a fence here orders what each of them
+    /// sees of this one's stores, as .NET's FlushProcessWriteBuffers makes
+    /// sure of on x86.
+    public static void MemoryBarrierProcessWide() { Sys.Fence(); }
 }
 
 /// System.Threading.Volatile: a read no later read is moved before, a write no
-/// earlier write is moved after, as .NET has them. Made of Interlocked's
-/// operations, each a full barrier -- stronger than asked, and never a read
-/// the optimiser keeps from the last time round a loop.
+/// earlier write is moved after, as .NET has them. The fences around a plain
+/// read or write are stronger than asked, and keep the optimiser from reusing
+/// a read from the last time round a loop. A 64-bit value on i386 goes
+/// through Interlocked's lock, as .NET's is one read or one write there too.
 public static class Volatile
 {
-    public static int Read(ref int location) { return Interlocked.CompareExchange(ref location, 0, 0); }
-    public static long Read(ref long location) { return Interlocked.Read(ref location); }
     public static bool Read(ref bool location) { Sys.Fence(); bool seen = location; Sys.Fence(); return seen; }
+    public static byte Read(ref byte location) { Sys.Fence(); byte seen = location; Sys.Fence(); return seen; }
+    public static sbyte Read(ref sbyte location) { Sys.Fence(); sbyte seen = location; Sys.Fence(); return seen; }
+    public static short Read(ref short location) { Sys.Fence(); short seen = location; Sys.Fence(); return seen; }
+    public static ushort Read(ref ushort location) { Sys.Fence(); ushort seen = location; Sys.Fence(); return seen; }
+    public static int Read(ref int location) { return Interlocked.CompareExchange(ref location, 0, 0); }
+    public static uint Read(ref uint location) { return Interlocked.CompareExchange(ref location, 0u, 0u); }
+    public static long Read(ref long location) { return Interlocked.Read(ref location); }
+    public static ulong Read(ref ulong location) { return Interlocked.Read(ref location); }
+    public static nint Read(ref nint location) { return Interlocked.CompareExchange(ref location, 0, 0); }
+    public static nuint Read(ref nuint location) { return Interlocked.CompareExchange(ref location, 0, 0); }
+    public static float Read(ref float location) { Sys.Fence(); float seen = location; Sys.Fence(); return seen; }
+    public static double Read(ref double location) { return Interlocked.CompareExchange(ref location, 0.0, 0.0); }
     public static T Read<T>(ref T location) where T : class? { return Interlocked.CompareExchange<T>(ref location, null!, null!); }
 
-    public static void Write(ref int location, int value) { Interlocked.Exchange(ref location, value); }
-    public static void Write(ref long location, long value) { Interlocked.Exchange(ref location, value); }
     public static void Write(ref bool location, bool value) { Sys.Fence(); location = value; Sys.Fence(); }
+    public static void Write(ref byte location, byte value) { Sys.Fence(); location = value; Sys.Fence(); }
+    public static void Write(ref sbyte location, sbyte value) { Sys.Fence(); location = value; Sys.Fence(); }
+    public static void Write(ref short location, short value) { Sys.Fence(); location = value; Sys.Fence(); }
+    public static void Write(ref ushort location, ushort value) { Sys.Fence(); location = value; Sys.Fence(); }
+    public static void Write(ref int location, int value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref uint location, uint value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref long location, long value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref ulong location, ulong value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref nint location, nint value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref nuint location, nuint value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref float location, float value) { Interlocked.Exchange(ref location, value); }
+    public static void Write(ref double location, double value) { Interlocked.Exchange(ref location, value); }
     public static void Write<T>(ref T location, T value) where T : class? { Interlocked.Exchange<T>(ref location, value); }
+
+    /// Every read before this is done before any after it.
+    public static void ReadBarrier() { Sys.Fence(); }
+
+    /// Every write before this is done before any after it.
+    public static void WriteBarrier() { Sys.Fence(); }
 }

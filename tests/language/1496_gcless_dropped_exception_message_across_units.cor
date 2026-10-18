@@ -1,7 +1,7 @@
 // test: gcless_dropped_exception_message_across_units
 // expect-exit: 0
 // expect-output:
-// 100000 0 True
+// -214623307800000 0 True
 //
 // An exception made and never thrown, dropped where it was made, is freed
 // there, and with it the message made for it: the field holding the message

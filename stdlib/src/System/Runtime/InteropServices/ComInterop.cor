@@ -207,17 +207,21 @@ namespace System.Runtime.InteropServices
     /// <summary>A failure a COM object answered: its HRESULT, .NET's COMException.</summary>
     public class COMException : ExternalException
     {
-        public COMException() : base("Error HRESULT E_FAIL has been returned from a call to a COM component.", unchecked((int)0x80004005)) { HResult = unchecked((int)0x80004005); }
-        public COMException(string? message) : base(message ?? "", unchecked((int)0x80004005)) { HResult = unchecked((int)0x80004005); }
-        public COMException(string? message, int errorCode) : base(message ?? "", errorCode) { HResult = errorCode; }
-        public COMException(string? message, Exception? inner) : base(message, inner) { HResult = unchecked((int)0x80004005); }
+        internal override int Code => unchecked((int)0x80004005);
+        const string Unexpected = "Unexpected HRESULT has been returned from a call to a COM component.";
+        public COMException() : base(Unexpected, unchecked((int)0x80004005)) { }
+        public COMException(string? message) : base(message ?? Unexpected, unchecked((int)0x80004005)) { }
+        public COMException(string? message, int errorCode) : base(message ?? Unexpected, errorCode) { }
+        public COMException(string? message, Exception? inner) : base(message ?? Unexpected, inner) { }
     }
 
     /// <summary>A COM wrapper used after it was released.</summary>
     public class InvalidComObjectException : SystemException
     {
+        internal override int Code => unchecked((int)0x80131527);
         public InvalidComObjectException() : base("Attempt has been made to use a COM object that does not have a backing class factory.") { }
-        public InvalidComObjectException(string? message) : base(message) { }
+        public InvalidComObjectException(string? message) : base(message ?? "Attempt has been made to use a COM object that does not have a backing class factory.") { }
+        public InvalidComObjectException(string? message, Exception? inner) : base(message ?? "Attempt has been made to use a COM object that does not have a backing class factory.", inner) { }
     }
 
     /// <summary>VT_ERROR: an SCODE carried in a VARIANT.</summary>

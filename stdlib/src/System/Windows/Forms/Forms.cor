@@ -6705,16 +6705,16 @@ public delegate void MethodInvoker();
 sealed class Posted : IAsyncResult
 {
     internal readonly Action Work;
-    readonly ManualResetEvent _done = new ManualResetEvent(false);
+    readonly System.Threading.ManualResetEvent _done = new System.Threading.ManualResetEvent(false);
     internal Exception? Failure;
     internal object? Result;
 
     internal Posted(Action work) { Work = work; }
 
     public object? AsyncState => null;
-    public WaitHandle AsyncWaitHandle => _done;
+    public System.Threading.WaitHandle AsyncWaitHandle => _done;
     public bool CompletedSynchronously => false;
-    public bool IsCompleted => _done.IsSet;
+    public bool IsCompleted => _done.WaitOne(0);
 
     internal void Run()
     {
@@ -6963,7 +6963,7 @@ public static class Application
     static int _wakeRead = -1, _wakeWrite = -1;
     static long _uiThread;
 
-    internal static bool OtherThread() { return _uiThread != 0 && Thread.CurrentId != _uiThread; }
+    internal static bool OtherThread() { return _uiThread != 0 && System.Threading.Thread.CurrentId != _uiThread; }
 
     internal static Posted Post(Action work)
     {
@@ -6994,7 +6994,7 @@ public static class Application
     static void StartPosting()
     {
         if (_uiThread != 0) return;
-        _uiThread = Thread.CurrentId;
+        _uiThread = System.Threading.Thread.CurrentId;
         int[] pair = new int[2];
         if (Os.Pipe(pair) == 0)
         {

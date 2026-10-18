@@ -1,0 +1,168 @@
+// test: io_exceptions_as_dotnet
+// expect-exit: 0
+// expect-output:
+// missing file: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
+// file in a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'.
+// create in a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'.
+// missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
+// directory that is a file: DirectoryNotFoundException: Could not find a part of the path 'D/f.txt'.
+// file under a file: DirectoryNotFoundException: Could not find a part of the path 'D/f.txt/x'.
+// directory read as a file: UnauthorizedAccessException: Access to the path 'D' is denied. ---> IOException: Permission denied
+// DirectoryInfo of a missing one: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
+// FileInfo.Length: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
+// move a missing file: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
+// move over a file: IOException: The file 'D/f.txt' already exists.
+// copy over a file: IOException: The file 'D/f.txt' already exists.
+// copy over itself: IOException: The process cannot access the file 'D/f.txt' because it is being used by another process.
+// copy onto a directory: IOException: The target file 'D' is a directory, not a file.
+// copied over a longer file: x x
+// move into a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'.
+// create a new file that exists: IOException: The file 'D/f.txt' already exists.
+// remove a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
+// name too long: PathTooLongException: The path 'D/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn' is too long, or a component of the specified path is too long.
+// no name: ArgumentException: The value cannot be an empty string. (Parameter 'path')
+// path before encoding: ArgumentNullException: Value cannot be null. (Parameter 'path')
+// encoding before lines: ArgumentNullException: Value cannot be null. (Parameter 'encoding')
+// no permission: as .NET
+// relative missing file: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
+// relative missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
+// relative chdir: DirectoryNotFoundException: Could not find a part of the path 'nodir'.
+// System.IO.FileNotFoundException: Unable to find the specified file.
+// System.IO.FileNotFoundException: msg
+// File name: 'name.txt'
+// System.IO.FileNotFoundException: msg
+// File name: 'name.txt'
+//  ---> System.IO.IOException: inner
+// [] []
+// Could not load file or assembly 'name.txt'. The system cannot find the file specified.|
+// 0,47 0
+// one|two|three 14
+// x|y| AB
+// bytes opened at once: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
+// bytes canceled first True
+// missing async Faulted
+// awaited FileNotFoundException: Could not find file 'D/nope'. [D/nope]
+// canceled Canceled False True
+//
+// WHAT System.IO THROWS, AND WHAT IT SAYS, as .NET on Linux: the type the
+// errno maps to and .NET's own sentence, never strerror with the path after
+// it -- "Could not find file '...'." with FileName set, "Could not find a
+// part of the path '...'." when a directory on the way is missing or is a
+// file, "Access to the path '...' is denied." with the system's words inside,
+// and the full path even when the program named a relative one. A copy
+// takes .NET's locks, so a file copied over itself is a sharing violation
+// and keeps its bytes; arguments are refused in .NET's order. Then
+// FileNotFoundException's own constructors and layout, the characters a name
+// may not hold, and File's async forms: a failure faults the task --
+// except ReadAllBytesAsync's open, which throws from the call -- and a
+// token already canceled cancels it without touching the file. The
+// permission case only refuses an ordinary user; run as root the file reads
+// and the line says the same.
+
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static string D = "";
+
+    static string Shown(Exception e)
+    {
+        string text = e.GetType().Name + ": " + e.Message.Replace(D, "D");
+        if (e is FileNotFoundException f)
+        {
+            string? name = f.FileName;
+            text = text + " [" + (name == null ? "null" : name.Replace(D, "D")) + "]";
+        }
+        if (e.InnerException != null) text = text + " ---> " + e.InnerException.GetType().Name + ": " + e.InnerException.Message;
+        return text;
+    }
+
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + ": no exception"); }
+        catch (Exception e) { Console.WriteLine(what + ": " + Shown(e)); }
+    }
+
+    static async Task<int> Main()
+    {
+        D = Path.Combine(Path.GetTempPath(), "corc-ioerr-" + Environment.ProcessId);
+        Directory.CreateDirectory(D);
+        string file = Path.Combine(D, "f.txt");
+        File.WriteAllText(file, "x");
+        string missing = Path.Combine(D, "nope");
+
+        Try("missing file", () => File.ReadAllText(missing));
+        Try("file in a missing directory", () => File.ReadAllText(Path.Combine(D, "nodir", "x")));
+        Try("create in a missing directory", () => File.WriteAllText(Path.Combine(D, "nodir", "x"), "y"));
+        Try("missing directory", () => Directory.GetFiles(Path.Combine(D, "nodir")));
+        Try("directory that is a file", () => Directory.GetFiles(file));
+        Try("file under a file", () => File.ReadAllText(Path.Combine(file, "x")));
+        Try("directory read as a file", () => File.ReadAllText(D));
+        Try("DirectoryInfo of a missing one", () => new DirectoryInfo(Path.Combine(D, "nodir")).GetFiles());
+        Try("FileInfo.Length", () => Console.WriteLine(new FileInfo(missing).Length));
+        Try("move a missing file", () => File.Move(missing, Path.Combine(D, "m")));
+        Try("move over a file", () => { File.WriteAllText(Path.Combine(D, "g"), "g"); File.Move(Path.Combine(D, "g"), file); });
+        Try("copy over a file", () => File.Copy(file, file));
+        Try("copy over itself", () => File.Copy(file, file, true));
+        Try("copy onto a directory", () => File.Copy(file, D));
+        string longer = Path.Combine(D, "longer");
+        File.WriteAllText(longer, "a longer text");
+        File.Copy(file, longer, true);
+        Console.WriteLine("copied over a longer file: " + File.ReadAllText(longer) + " " + File.ReadAllText(file));
+        Try("move into a missing directory", () => File.Move(file, Path.Combine(D, "nodir", "x")));
+        Try("create a new file that exists", () => new FileStream(file, FileMode.CreateNew).Dispose());
+        Try("remove a missing directory", () => Directory.Delete(Path.Combine(D, "nodir")));
+        Try("name too long", () => File.ReadAllText(Path.Combine(D, new string('n', 300))));
+        Try("no name", () => new FileStream("", FileMode.Open));
+        Try("path before encoding", () => File.ReadAllText(null!, null!));
+        Try("encoding before lines", () => File.WriteAllLines(file, (string[])null!, null!));
+
+        string locked = Path.Combine(D, "locked");
+        File.WriteAllText(locked, "x");
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+        string got = "read";
+        try { File.ReadAllText(locked); } catch (Exception e) { got = Shown(e); }
+        Console.WriteLine("no permission: " + (got == "read" || got == "UnauthorizedAccessException: Access to the path 'D/locked' is denied. ---> IOException: Permission denied" ? "as .NET" : got));
+        File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        string home = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = D;
+        Try("relative missing file", () => File.ReadAllText("nope"));
+        Try("relative missing directory", () => Directory.GetFiles("nodir"));
+        Try("relative chdir", () => Environment.CurrentDirectory = "nodir");
+        Environment.CurrentDirectory = home;
+
+        Console.WriteLine(new FileNotFoundException().ToString());
+        Console.WriteLine(new FileNotFoundException("msg", "name.txt").ToString());
+        Console.WriteLine(new FileNotFoundException("msg", "name.txt", new IOException("inner")).ToString());
+        Console.WriteLine("[" + new FileNotFoundException((string?)null).Message + "] [" + new FileNotFoundException("").Message + "]");
+        Console.WriteLine(new FileNotFoundException(null, "name.txt").Message.Replace("\n", "|"));
+        Console.WriteLine(string.Join(",", Path.GetInvalidFileNameChars().Select(c => (int)c)) + " " + string.Join(",", Path.GetInvalidPathChars().Select(c => (int)c)));
+
+        CancellationTokenSource cts = new CancellationTokenSource();
+        cts.Cancel();
+        string a = Path.Combine(D, "a.txt");
+        await File.WriteAllTextAsync(a, "one");
+        await File.AppendAllTextAsync(a, "\ntwo", Encoding.UTF8);
+        await File.AppendAllLinesAsync(a, new[] { "", "three" });
+        Console.WriteLine(string.Join("|", await File.ReadAllLinesAsync(a)) + " " + (await File.ReadAllBytesAsync(a)).Length);
+        await File.WriteAllLinesAsync(a, new[] { "x", "y" }, Encoding.ASCII);
+        await File.WriteAllBytesAsync(Path.Combine(D, "b"), new byte[] { 65, 66 });
+        Console.WriteLine((await File.ReadAllTextAsync(a)).Replace("\n", "|") + " " + await File.ReadAllTextAsync(Path.Combine(D, "b"), Encoding.ASCII));
+        Try("bytes opened at once", () => File.ReadAllBytesAsync(missing));
+        Console.WriteLine("bytes canceled first " + File.ReadAllBytesAsync(null!, cts.Token).IsCanceled);
+        Task<string> failed = File.ReadAllTextAsync(missing);
+        Console.WriteLine("missing async " + failed.Status);
+        try { await failed; } catch (FileNotFoundException e) { Console.WriteLine("awaited " + Shown(e)); }
+        Task written = File.WriteAllTextAsync(Path.Combine(D, "c"), "c", cts.Token);
+        Console.WriteLine("canceled " + written.Status + " " + File.Exists(Path.Combine(D, "c")) + " " + File.ReadAllTextAsync(a, cts.Token).IsCanceled);
+
+        Directory.Delete(D, true);
+        return 0;
+    }
+}

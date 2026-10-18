@@ -341,7 +341,7 @@ class Process : IDisposable
             {
                 return false;
             }
-            Thread.Sleep((int)Math.Min(left, pause));
+            System.Threading.Thread.Sleep((int)Math.Min(left, pause));
             pause = Math.Min(pause * 2, 50);
         }
         return true;

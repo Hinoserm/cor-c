@@ -1,0 +1,45 @@
+// test: monitor_lock_contention_count
+// expect-exit: 0
+// expect-output:
+// uncontended 0
+// try now False 0
+// try timed False True
+// waited True
+// free again 0
+//
+// MONITOR.LockContentionCount, as .NET 10 counts it: once each time taking a
+// lock finds it another thread's and waits for it -- Enter, or a TryEnter that
+// may wait -- and never for a lock taken free, taken again by its owner, or
+// refused at once.
+
+using System;
+using System.Threading;
+
+static class Program
+{
+    static void Main()
+    {
+        long start = Monitor.LockContentionCount;
+        object gate = new object();
+        lock (gate) { lock (gate) { } }
+        Monitor.TryEnter(gate, 0);
+        Monitor.Exit(gate);
+        Console.WriteLine("uncontended " + (Monitor.LockContentionCount - start));
+        ManualResetEvent held = new ManualResetEvent(false);
+        ManualResetEvent go = new ManualResetEvent(false);
+        Thread owner = new Thread(() => { lock (gate) { held.Set(); go.WaitOne(); Thread.Sleep(200); } });
+        owner.Start();
+        held.WaitOne();
+        long before = Monitor.LockContentionCount;
+        Console.WriteLine("try now " + Monitor.TryEnter(gate) + " " + (Monitor.LockContentionCount - before));
+        Console.WriteLine("try timed " + Monitor.TryEnter(gate, 20) + " " + (Monitor.LockContentionCount - before >= 1));
+        go.Set();
+        long beforeWait = Monitor.LockContentionCount;
+        lock (gate) { }
+        Console.WriteLine("waited " + (Monitor.LockContentionCount - beforeWait >= 1));
+        owner.Join();
+        long after = Monitor.LockContentionCount;
+        lock (gate) { }
+        Console.WriteLine("free again " + (Monitor.LockContentionCount - after));
+    }
+}

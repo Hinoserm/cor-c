@@ -5936,7 +5936,7 @@ public sealed partial class Binder
                 Type? outerChain = _wanted;
                 _wanted = null;
                 List<Type> given = chained.Args.Select(argument =>
-                    argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument) ? Type.Any : CheckExpr(argument)).ToList();
+                    argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument) ? Type.Any : Argument(argument)).ToList();
                 _wanted = outerChain;
 
                 if (target is null)
@@ -6018,6 +6018,9 @@ public sealed partial class Binder
             _spareScopes.Push(closing);
         }
     }
+
+    // Each `out T x` declaration and the variable it made (RefArgExpr).
+    private readonly Dictionary<RefArgExpr, LocalSym> _outDeclared = new(ReferenceEqualityComparer.Instance);
 
     private void Declare(Node at, string name, Sym sym)
     {
@@ -9287,7 +9290,26 @@ public sealed partial class Binder
             // ordinary LINQ call before the receiver has had a chance to bind
             // T. The second pass below checks the lambda once those input
             // bindings are known and uses its result to infer R.
+            // A LAMBDA OF ANOTHER ARITY IS NO ARGUMENT FOR THE PARAMETER at
+            // all, and the method no candidate: `t => 1` beside
+            // ContinueWith(Func<Task, TResult>, options) and ContinueWith(
+            // Func<Task, object?, TResult>, object? state) is the first,
+            // whatever the second argument converts to.
+            if (i < written.Count && written[i] is LambdaExpr { NoSignature: false } counted && Invoked(m.Params[i].Type) is { } invoke
+                && invoke.Params.Count != counted.Params.Count)
+            {
+                return false;
+            }
+
             if (i < written.Count && IsFunctionSource(written[i]))
+            {
+                continue;
+            }
+
+            // NOR DOES A BARE `default`, which is whatever its parameter turns
+            // out to be and so says nothing of what that is (C# 12.6.3.2):
+            // `Two(default, "x")` is Two<string>, its zero a null string.
+            if (i < written.Count && written[i] is DefaultExpr { Type.Name.Length: 0 })
             {
                 continue;
             }
@@ -14476,7 +14498,7 @@ public sealed partial class Binder
                 foreach (Expr argument in nw.Args)
                 {
                     constructorArgs.Add(argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(argument)
-                        ? Type.Any : CheckExpr(argument));
+                        ? Type.Any : Argument(argument));
                 }
 
                 _wanted = outerNew;
@@ -15952,8 +15974,20 @@ public sealed partial class Binder
                 {
                     Type declared = Resolve(ra.Declare, _thisType);
 
+                    // CHECKED AGAIN IN THE SAME SCOPE -- a constructor's
+                    // arguments in a lambda's body are, as the lambda is
+                    // checked for its delegate and then for real -- it is
+                    // the same variable, not a second one of the name.
+                    if (_outDeclared.TryGetValue(ra, out LocalSym? before)
+                        && _scopes[^1].TryGetValue(ra.Name!, out Sym? there) && ReferenceEquals(there, before))
+                    {
+                        CheckExpr(ra.Target);
+                        return declared;
+                    }
+
                     LocalSym declaredLocal = new(NewSlot(), declared, ra.Name!);
                     Declare(ra, ra.Name!, declaredLocal);
+                    _outDeclared[ra] = declaredLocal;
                     _assigned.Add(declaredLocal);
                     CheckExpr(ra.Target);
                     return declared;
@@ -18542,6 +18576,58 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// Whether one `params` constructor's expanded form is more specific than
+    /// another's for `count` arguments (C# 12.6.4.3): each parameter the
+    /// argument lands on the same type as the other's or converting to it
+    /// implicitly, and one at least not the same -- (string, string, params
+    /// Exception[]) over (params object[]). Implicitly as the method
+    /// resolver's BetterConversion counts it: object reaches any type as a
+    /// machine word, which says nothing of which is the more specific. WHERE
+    /// EVERY ONE IS THE SAME, C#'s tie-break: the form with more declared
+    /// parameters, whose params array takes fewer of the arguments --
+    /// (int, params int[]) over (params int[]) for `new A(1, 2)`.
+    /// </summary>
+    /// <summary>
+    /// Whether every one of <paramref name="one"/>'s first <paramref
+    /// name="count"/> parameters is the other's type or converts to it
+    /// implicitly, and one at least is not the same: the more specific of two
+    /// constructors that fit the arguments as well, as BetterConversion counts
+    /// it for methods.
+    /// </summary>
+    private bool ParametersMoreSpecific(MethodSymbol one, MethodSymbol other, int count)
+    {
+        bool more = false;
+        for (int i = 0; i < count; i++)
+        {
+            Type a = one.Params[i].Type, b = other.Params[i].Type;
+            if (SameAside(a, b)) continue;
+            if (!((a.Prim != Prim.Any || b.Prim == Prim.Any) && (Convertible(a, b) || Variant(a, b)))) return false;
+            more = true;
+        }
+        return more;
+    }
+
+    // THE SAME TYPE, annotations aside, as the method resolver's Same: a
+    // string argument is the `string?` a parameter declares.
+    private static bool SameAside(Type a, Type b)
+        => a.Equals(b) || (!a.IsNullableValue && !b.IsNullableValue
+                           && (a.AsNonNullable().Equals(b.AsNonNullable()) || MethodSignatures.SameType(a, b)));
+
+    private bool ExpandedMoreSpecific(MethodSymbol one, MethodSymbol other, int count)
+    {
+        bool more = false;
+        for (int i = 0; i < count; i++)
+        {
+            Type a = i < one.Params.Count - 1 ? one.Params[i].Type : one.Params[^1].Type.Element!;
+            Type b = i < other.Params.Count - 1 ? other.Params[i].Type : other.Params[^1].Type.Element!;
+            if (a.Equals(b)) continue;
+            if (!((a.Prim != Prim.Any || b.Prim == Prim.Any) && (Convertible(a, b) || Variant(a, b)))) return false;
+            more = true;
+        }
+        return more || one.Params.Count > other.Params.Count;
+    }
+
+    /// <summary>
     /// The constructor a `new` -- or a constructor's `: base(...)` or
     /// `: this(...)`, checked as one -- calls, with its arguments put in
     /// parameter order, defaults and caller information filled in, a `params`
@@ -18549,6 +18635,21 @@ public sealed partial class Binder
     /// with an error, when none accepts them; <paramref name="except"/> is a
     /// constructor that may not be chosen, the one a `: this(...)` is on.
     /// </summary>
+    /// <summary>
+    /// An argument's type for choosing what it is passed to: its own, but
+    /// `null!` STILL THE NULL LITERAL, as C# has it. Read as the object it
+    /// is typed as everywhere else, it fitted a value type's parameter --
+    /// `File.ReadLinesAsync(path, null!)` took the (string, CancellationToken)
+    /// overload over (string, Encoding, ...), and unboxed the null.
+    /// </summary>
+    private Type Argument(Expr argument)
+    {
+        Type checkedType = CheckExpr(argument);
+        Expr inner = argument;
+        while (inner is SuppressExpr sure) inner = sure.Operand;
+        return inner is LiteralExpr { Kind: Lit.Null } ? Type.Null : checkedType;
+    }
+
     private MethodSymbol? ResolveConstructor(NewExpr nw, TypeSymbol constructed, List<Type> constructorArgs, MethodDecl? except = null, Type? made = null)
     {
         List<MethodSymbol> methods = except is null ? constructed.Methods
@@ -18575,13 +18676,32 @@ public sealed partial class Binder
                                        && constructorArgs.Where((a, i) =>
                                             !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0))
         {
-            MethodSymbol? variadic = methods.FirstOrDefault(
+            // THE BEST FORM WHOSE GATHERED ARGUMENTS FIT, not the first
+            // declared: `new AggregateException("m", a, b)` is (string,
+            // params Exception[]), and AggregateException(params
+            // Exception[]), declared before it, took the string as its first
+            // element and refused it. Of several that fit, the most specific
+            // (ExpandedMoreSpecific), as a method's expanded forms compete.
+            // Where none fits every argument, the first is still the one
+            // whose error is reported.
+            List<MethodSymbol> variadics = methods.Where(
                 m => m.IsCtor && m.Params.Count > 0 && m.Params[^1].IsParams
                   && m.Params[^1].Type.Element is not null
                   && constructorArgs.Count >= m.Params.Count - 1
                   && Enumerable.Range(0, m.Params.Count - 1)
                                .All(i => constructorArgs[i].IsError
-                                      || Convertible(constructorArgs[i], m.Params[i].Type)));
+                                      || Convertible(constructorArgs[i], m.Params[i].Type))).ToList();
+            MethodSymbol? variadic = null;
+            foreach (MethodSymbol m in variadics)
+            {
+                if (Enumerable.Range(m.Params.Count - 1, constructorArgs.Count - (m.Params.Count - 1))
+                              .All(i => Fits(constructorArgs[i], m.Params[^1].Type.Element!, nw.Args[i]))
+                    && (variadic is null || ExpandedMoreSpecific(m, variadic, constructorArgs.Count)))
+                {
+                    variadic = m;
+                }
+            }
+            variadic ??= variadics.FirstOrDefault();
 
             if (variadic is not null && RefOf(variadic.Params[^1].Type.Element!) is TypeRef each)
             {
@@ -18654,12 +18774,29 @@ public sealed partial class Binder
         // level built a decompressor. A call still resolves as
         // it did whenever no candidate matches more exactly,
         // because the ordering is stable.
-        MethodSymbol? ctor = ctors
+        //
+        // The same type counts annotations aside, and where as many match
+        // exactly, the one whose parameters all convert to the other's is the
+        // more specific (C# 12.6.4.5): `new SwitchExpressionException("")`
+        // is the (string? message) one, not the (object? unmatchedValue)
+        // declared before it.
+        List<MethodSymbol> fitting = ctors
             .Where(m => constructorArgs
                 .Where((a, i) => !Fits(a, m.Params[i].Type, nw.Args[i])).Count() == 0)
             .OrderByDescending(m => constructorArgs
-                .Where((a, i) => a.Equals(m.Params[i].Type)).Count())
-            .FirstOrDefault();
+                .Where((a, i) => SameAside(a, m.Params[i].Type)).Count())
+            .ToList();
+        MethodSymbol? ctor = fitting.FirstOrDefault();
+        if (fitting.Count > 1)
+        {
+            int most = constructorArgs.Where((a, i) => SameAside(a, ctor!.Params[i].Type)).Count();
+            List<MethodSymbol> tied = fitting
+                .Where(m => constructorArgs.Where((a, i) => SameAside(a, m.Params[i].Type)).Count() == most)
+                .ToList();
+            ctor = tied.FirstOrDefault(one => tied.All(other => ReferenceEquals(one, other)
+                                                              || ParametersMoreSpecific(one, other, constructorArgs.Count)))
+                   ?? ctor;
+        }
 
         if (ctor != null)
         {
@@ -19441,7 +19578,7 @@ public sealed partial class Binder
                 continue;
             }
 
-            Type argumentType = CheckExpr(argument);
+            Type argumentType = Argument(argument);
             args.Add(IsFunctionSource(argument) ? Type.Any : argumentType);
         }
         _wanted = outerTarget;
@@ -20195,6 +20332,16 @@ public sealed partial class Binder
         MethodSymbol? BetterMember(List<MethodSymbol> applicable)
         {
             if (applicable.Count <= 1) return applicable.FirstOrDefault();
+            // C# 12.8.10.2: OF THE APPLICABLE METHODS, THOSE OF THE MOST
+            // DERIVED TYPES. One declared in a base of another applicable
+            // one's type drops out, however well its parameters fit:
+            // Task<int>'s ContinueWith(Action<Task<int>>) is the one for a
+            // lambda that reads x.Result, not Task's ContinueWith(Action<Task>).
+            if (applicable.Any(m => applicable.Any(o => Hides(o, m))))
+            {
+                applicable = applicable.Where(m => !applicable.Any(o => Hides(o, m))).ToList();
+                if (applicable.Count == 1) return applicable[0];
+            }
             foreach (MethodSymbol one in applicable)
             {
                 if (applicable.All(other => ReferenceEquals(other, one) || BetterThan(one, other))) return one;
@@ -20220,6 +20367,11 @@ public sealed partial class Binder
 
             static string Spelt(MethodSymbol m) => m.Owner.Name + "." + m.Name + "(" + string.Join(", ", m.Params.Select(p => p.Type.ToString())) + ")";
         }
+
+        // Whether `derived` is declared in a type derived from the one `based`
+        // is declared in, and so leaves it no candidate (BetterMember).
+        static bool Hides(MethodSymbol derived, MethodSymbol based)
+            => !ReferenceEquals(derived.Owner, based.Owner) && derived.Owner.DerivesFrom(based.Owner);
 
         bool BetterThan(MethodSymbol one, MethodSymbol other)
         {
@@ -20315,8 +20467,13 @@ public sealed partial class Binder
                     // Nullability aside all the way down: `out C?[]?` is the
                     // `C[]` slot of a Dictionary of them, a class element's
                     // mark being no more part of the type than the array's.
-                    if (args[i].IsError || args[i].AsNonNullable().Equals(want.AsNonNullable())
-                        || MethodSignatures.SameType(args[i].AsNonNullable(), want.AsNonNullable())) continue;
+                    // A VALUE TYPE'S `?` IS PART OF IT: an int? is a Nullable,
+                    // laid out as no int is, and `Interlocked.Exchange(ref
+                    // maybe, 4)` took the (ref int) overload and wrote an int
+                    // over it.
+                    if (args[i].IsError || args[i].IsNullableValue == want.IsNullableValue
+                        && (args[i].AsNonNullable().Equals(want.AsNonNullable())
+                            || MethodSignatures.SameType(args[i].AsNonNullable(), want.AsNonNullable()))) continue;
                     return false;
                 }
 
@@ -20457,6 +20614,21 @@ public sealed partial class Binder
 
         bool anyGeneric = false;
         foreach (MethodSymbol m in byArity) anyGeneric |= m.TypeParams.Count > 0;
+        MethodSymbol? firstWritten = null;
+        Dictionary<string, Type>? firstTold = null;
+        bool WrittenArgumentsFit(MethodSymbol candidate, Dictionary<string, Type> told)
+        {
+            for (int i = 0; i < args.Count && i < candidate.Params.Count; i++)
+            {
+                if (args[i].IsError || i < c.Args.Count && (IsFunctionSource(c.Args[i]) || HoldsLambda(c.Args[i]) || Typeless(c.Args[i])))
+                {
+                    continue;
+                }
+                Type want = Close(candidate.Params[i].Type, told);
+                if (!Unmade(want) && !WrittenFits(args[i], want, c.Args[i])) return false;
+            }
+            return true;
+        }
         if (anyGeneric)
         {
             foreach (MethodSymbol candidate in byArity)
@@ -20481,9 +20653,25 @@ public sealed partial class Binder
                         told[candidate.TypeParams[i]] = Resolve(written[i], _thisType);
                     }
 
-                    best = candidate;
-                    bound = told;
-                    break;
+                    // THE ONE THE ARGUMENTS FIT, of those the written type
+                    // arguments name: `Task.Run<T>(function)` with a
+                    // Func<Task<T>> is Run<T>(Func<Task<T>>), not the
+                    // Run<T>(Func<T>) declared first. A lambda or a method
+                    // group is shaped by the parameter, so it fits any; and
+                    // when none fits, the first is still the one whose error
+                    // is reported.
+                    if (WrittenArgumentsFit(candidate, told))
+                    {
+                        best = candidate;
+                        bound = told;
+                        break;
+                    }
+                    if (firstWritten is null)
+                    {
+                        firstWritten = candidate;
+                        firstTold = told;
+                    }
+                    continue;
                 }
 
                 if (Infer(candidate, args, c.Args, out Dictionary<string, Type> got))
@@ -20508,7 +20696,10 @@ public sealed partial class Binder
                                  ? int.MaxValue
                                  : best.TypeParams.Count(t => bound?.ContainsKey(t) != true);
 
-                    if (best is null || openNow < openBest
+                    // A BASE TYPE'S METHOD IS NO CANDIDATE beside a derived
+                    // type's that applies too (BetterMember's rule).
+                    if (best is not null && Hides(best, candidate)) continue;
+                    if (best is null || Hides(candidate, best) || openNow < openBest
                         || (openNow == openBest && Specificity(candidate) > Specificity(best))
                         || (openNow == openBest && Specificity(candidate) == Specificity(best)
                             && BetterLambdas(candidate, got, best, bound ?? new(), c.Args)))
@@ -20520,6 +20711,12 @@ public sealed partial class Binder
             }
         }
 
+        if (best is null && firstWritten is not null)
+        {
+            best = firstWritten;
+            bound = firstTold;
+        }
+
         // TYPE ARGUMENTS WRITTEN AT THE CALL name a generic method; an
         // ordinary one is no candidate at all then.
         bool typeArgsWritten = c.Target switch
@@ -20529,7 +20726,8 @@ public sealed partial class Binder
             _ => false,
         };
 
-        if (plain is not null && (best is null || (!typeArgsWritten && !GenericBetter(best, bound, plain))))
+        if (plain is not null && (best is null || Hides(plain, best)
+                                  || (!Hides(best, plain) && !typeArgsWritten && !GenericBetter(best, bound, plain))))
         {
             best = plain;
             bound = fromReceiver;
@@ -20598,12 +20796,14 @@ public sealed partial class Binder
 
         // `out var x` AND A BARE `default` GET THEIR TYPE NOW, from the
         // parameter of the overload that was just chosen -- which is why they
-        // could not have one before.
+        // could not have one before -- AS IT IS FOR THIS CALL: a generic
+        // method's T is what was inferred, so `Two(5, default)` hands Two<int>
+        // a zero int, not a value of the type parameter's name.
         for (int i = 0; i < args.Count; i++)
         {
             if (i < best.Params.Count)
             {
-                args[i] = Settle(c.Args[i], best.Params[i].Type, args[i]);
+                args[i] = Settle(c.Args[i], Close(best.Params[i].Type, bound), args[i]);
             }
 
             if (c.Args[i] is RefArgExpr { Declare: null, Name: not null } inferred
@@ -20672,8 +20872,9 @@ public sealed partial class Binder
             // int and that they are the same thing.
             Type wantByRef = Close(best.Params[i].Type, bound);
 
-            if (passed && !args[i].AsNonNullable().Equals(wantByRef.AsNonNullable())
-                && !MethodSignatures.SameType(args[i].AsNonNullable(), wantByRef.AsNonNullable())
+            if (passed && (args[i].IsNullableValue != wantByRef.IsNullableValue
+                    || !args[i].AsNonNullable().Equals(wantByRef.AsNonNullable())
+                       && !MethodSignatures.SameType(args[i].AsNonNullable(), wantByRef.AsNonNullable()))
                 && !args[i].IsError)
             {
                 Error(c.Args[i],
