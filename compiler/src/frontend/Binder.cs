@@ -7464,18 +7464,16 @@ public sealed partial class Binder
         // A STRING HANDED TO SOMETHING THAT READS A SEQUENCE gives up its
         // characters. .NET's string IS an IEnumerable<char>; there is no class
         // for string here -- it is a primitive the compiler knows -- so the
-        // characters are materialised and carried by the same view an array of
-        // them gets, which is the one thing that can answer Count, the indexer
-        // and GetEnumerator.
+        // characters are materialised as an array of them, which is every
+        // sequence interface of char (Lowering.ArrayFaces).
         // A STRING ALREADY REWRITTEN gives up the characters of what it was
         // rewritten to: `name[4..]` is a Substring call, and refused here
         // for having a rewrite, it went to LINQ's All as the string itself,
         // whose interface call found nothing -- the compiler built by itself
-        // stopped in its own tuple names. Not a view already made.
+        // stopped in its own tuple names. Not one made here already.
         if (at is Expr letters && from.Prim == Prim.String && !from.IsArray
-            && ArrayFace(Type.ArrayOf(Type.Char), to) is { } charFace
-            && _r.Types.TryGetValue(TypeKey(charFace), out TypeSymbol? charFaceSym)
-            && !(_r.Rewrites.TryGetValue(letters, out Expr? already) && _r.Views.ContainsKey(already)))
+            && ArrayFace(Type.ArrayOf(Type.Char), to) is not null
+            && !(_r.Rewrites.TryGetValue(letters, out Expr? already) && _spanConversions.Contains(already)))
         {
             CallExpr made = new()
             {
@@ -7488,12 +7486,8 @@ public sealed partial class Binder
             };
 
             _r.Rewrites[letters] = made;
+            _spanConversions.Add(made);
             CheckExpr(made);
-
-            // THE VIEW GOES ON THE CALL, not on the string: the string is still
-            // evaluated for what it is inside the call that reads its
-            // characters out.
-            _r.Views[made] = ArrayView(Type.Char, charFaceSym);
             return;
         }
 
@@ -7714,22 +7708,6 @@ public sealed partial class Binder
             {
                 _r.Boxes.Add(boxed);
                 _r.BoxedAs[boxed] = to;
-            }
-
-            // AND AN ARRAY GETS ITS HELPER (ArrayBecomes). The conversion is
-            // real -- something has to answer Count and the indexer -- and
-            // this is the one place that knows both what was written and what
-            // was wanted.
-            // AND A COVARIANT ONE THE HELPER OF WHAT IS WANTED: a string[] as
-            // an IEnumerable<object> is read through the view that answers
-            // IEnumerable<object>, which reads each element as the word it is
-            // -- the same words, taken as the wider type, which is what array
-            // covariance means. A view is one per element size and interface.
-            if (at is Expr viewed && !ArrayBecomes(viewed, from, to)
-                && from.IsArray && at is Expr covariant && !Convertible(from, to)
-                && to.AsNonNullable().Symbol is { Kind: TypeKind.Interface } wider)
-            {
-                _r.Views[covariant] = ArrayView(from.Element!, wider);
             }
             return;
         }
@@ -11616,58 +11594,11 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// AN ARRAY BECOMING ONE OF ITS INTERFACES, wherever it does -- an
-    /// assignment, an argument, an arm of a conditional or of `??`, a cast:
-    /// an IList&lt;T&gt; or ICollection&lt;T&gt; is .NET's SZArrayHelper over it,
-    /// made by rewriting the array to `SZArrayHelper.Of&lt;X&gt;(array)`; a
-    /// read-only sequence interface is the view the checker writes. One
-    /// place, so an arm cannot be given the one and forget the other --
-    /// an array arm of a conditional typed IList&lt;int&gt; was handed over raw,
-    /// and GetEnumerator was called through a slot it does not have.
-    /// </summary>
-    private bool ArrayBecomes(Expr at, Type from, Type to)
-    {
-        if (!from.IsArray || to.IsArray)
-        {
-            return false;
-        }
-        if (ListFace(from, to) is Type listElement && !_r.Rewrites.ContainsKey(at) && RefOf(listElement) is TypeRef listRef)
-        {
-            MemberExpr maker = new()
-            {
-                Target = new NameExpr { Name = "SZArrayHelper", Line = at.Line, Col = at.Col },
-                Name = "Of", Line = at.Line, Col = at.Col,
-            };
-            maker.WritableTypeArgs.Add(listRef);
-            CallExpr helper = new() { Target = maker, Line = at.Line, Col = at.Col, File = at.File };
-            helper.Args.Add(at);
-            helper.WritableArgNames.Add(null);
-            _r.Rewrites[at] = helper;
-            CheckExpr(helper);
-            return true;
-        }
-        if (ArrayFace(from, to) is { } through && _r.Types.TryGetValue(TypeKey(through), out TypeSymbol? face))
-        {
-            _r.Views[at] = ArrayView(from.Element!, face);
-            return true;
-        }
-        return false;
-    }
-
-    /// <summary>An array operand of `??` going to one of its interfaces: the view that answers them.</summary>
-    private void CoalesceView(Expr operand, Type from, Type to)
-    {
-        if (ArrayBecomes(operand, from, to))
-        {
-        }
-    }
-
-    /// <summary>
     /// A method on a compiler-made class for every slot of these interfaces
     /// and of every interface they extend, the generic ones first. One whose
     /// name and arity a method already has takes the explicit form --
     /// `IEnumerator.get_Current` beside IEnumerator&lt;T&gt;'s get_Current --
-    /// as a class written in C# would implement it (Lowering.ArrayViewMethod).
+    /// as a class written in C# would implement it (Lowering.Iterator).
     /// </summary>
     internal static void ImplementSlots(TypeSymbol made, List<TypeSymbol> faces)
     {
@@ -11697,126 +11628,6 @@ public sealed partial class Binder
         }
     }
 
-    private TypeSymbol ArrayView(Type element, TypeSymbol face)
-    {
-        // Its items as the view is named: a reference element's `?` is the
-        // use's, as a specialisation's argument's is (Unmarked).
-        element = Unmarked(element);
-        string name = $"ArrayView${face.Name}";
-
-        if (_r.Types.TryGetValue(name, out TypeSymbol? already))
-        {
-            return already;
-        }
-
-        TypeDecl decl = new() { Name = name, Kind = TypeKind.Class, File = _in };
-        TypeSymbol view = new() { Name = name, Kind = TypeKind.Class, Decl = decl, Structural = true };
-
-        // EVERY SEQUENCE INTERFACE AN ARRAY HAS, not only the one asked for.
-        //
-        // .NET gives T[] the whole set -- IEnumerable<T>, IReadOnlyCollection<T>
-        // and IReadOnlyList<T> -- and code takes advantage: an operator
-        // declared over IEnumerable<T> asks at run time whether what it was
-        // handed is a list, so that it can count and index rather than walk.
-        // A view that implemented only the interface it was converted to
-        // answered no and then had to walk, through a GetEnumerator nothing
-        // had written.
-        foreach (TypeSymbol also in SequenceFaces(element, face))
-        {
-            view.WritableInterfaces.Add(also);
-        }
-
-        view.InstanceSize = Target.Current.ObjectHeaderBytes + Target.Current.WordSize;
-        view.InlineDecided = true;                    // laid out here, nothing in line
-        view.WritableFields.Add(new FieldSymbol
-        {
-            Name = "items", Type = Type.ArrayOf(element), Owner = view,
-            Offset = Target.Current.ObjectHeaderBytes,
-        });
-
-        // THE INTERFACES' OWN SLOTS, so a caller that has only one of them
-        // reaches these without knowing what it is holding.
-        ImplementSlots(view, view.Interfaces.ToList());
-
-        RegisterType(name, view);
-        _r.ArrayViews.Add(view);
-
-        // AND SOMETHING TO WALK IT WITH. GetEnumerator has to hand back an
-        // IEnumerator<T>, and the only one an array could borrow belongs to a
-        // list this program may never have made. So the view brings its own,
-        // written the same way the view is: two fields and two methods, over
-        // the same array.
-        if (view.Methods.FirstOrDefault(x => x.Name == "GetEnumerator" && x.Params.Count == 0)
-            is { Returns.Symbol: { } walks })
-        {
-            ArrayWalker(element, walks);
-        }
-        return view;
-    }
-
-    /// <summary>The enumerator an array view hands back: an index into the array.</summary>
-    private TypeSymbol ArrayWalker(Type element, TypeSymbol face)
-    {
-        string name = $"ArrayEnumerator${face.Name}";
-
-        if (_r.Types.TryGetValue(name, out TypeSymbol? already))
-        {
-            return already;
-        }
-
-        TypeDecl decl = new() { Name = name, Kind = TypeKind.Class, File = _in };
-        TypeSymbol walker = new() { Name = name, Kind = TypeKind.Class, Decl = decl, Structural = true };
-        int header = Target.Current.ObjectHeaderBytes;
-        int word = Target.Current.WordSize;
-
-        walker.WritableInterfaces.Add(face);
-        walker.InstanceSize = header + word + 4;
-        walker.InlineDecided = true;                    // laid out here, nothing in line
-        walker.WritableFields.Add(new FieldSymbol
-        {
-            Name = "items", Type = Type.ArrayOf(element), Owner = walker, Offset = header,
-        });
-        walker.WritableFields.Add(new FieldSymbol
-        {
-            Name = "at", Type = Type.I32, Owner = walker, Offset = header + word,
-        });
-
-        // EVERY METHOD OF THE INTERFACE AND OF THOSE IT EXTENDS: IEnumerator<T>
-        // is an IDisposable and an IEnumerator, as .NET's is.
-        ImplementSlots(walker, new List<TypeSymbol> { face });
-
-        RegisterType(name, walker);
-        _r.ArrayViews.Add(walker);
-        return walker;
-    }
-
-    /// <summary>
-    /// The sequence interfaces an array of this element implements: the one it
-    /// is being converted to, and every other one the standard library has an
-    /// instantiation of for that element.
-    /// </summary>
-    private List<TypeSymbol> SequenceFaces(Type element, TypeSymbol face)
-    {
-        List<TypeSymbol> faces = new() { face };
-
-        foreach (string sequence in new[] { "IEnumerable", "IReadOnlyCollection", "IReadOnlyList" })
-        {
-            // SPELLED AS SPECIALISATIONS ARE NAMED (SpecialisationKey): a
-            // reference element's `?` is no part of the name, so `string?[]`
-            // viewed as a sequence is IReadOnlyList$string's too. Kept, the
-            // lookups missed, the view was IEnumerable alone, and a unit's
-            // view of string arrays was laid out apart from the library's.
-            if (RefOf(element) is TypeRef written
-                && _r.Types.TryGetValue(Monomorphiser.MangledName(sequence, new List<TypeRef> { SpecialisationKey(written, element) }),
-                                        out TypeSymbol? also)
-                && !faces.Contains(also))
-            {
-                faces.Add(also);
-            }
-        }
-        return faces;
-    }
-
     /// <summary>
     /// The sequence interface an array is being converted to, or null.
     ///
@@ -11842,7 +11653,10 @@ public sealed partial class Binder
         {
             return wanted;
         }
-        return element.IsReference && wanted.IsReference && ReferenceConvertible(element, wanted) ? wanted : null;
+        // OBJECT TOO, which every reference converts to: a Tok[] is an
+        // IList<object>, by array covariance.
+        return element.IsReference && (wanted.IsReference || wanted.Prim == Prim.Any && wanted.Symbol is null && !wanted.IsNullableValue)
+            && ReferenceConvertible(element, wanted) ? wanted : null;
     }
 
     private TypeDecl? ArrayFace(Type from, Type to)
@@ -15851,15 +15665,10 @@ public sealed partial class Binder
                     }
                 }
 
-                // AN ARRAY ARM OF AN INTERFACE-TYPED WHOLE GETS ITS HELPER, as it
-                // would anywhere else an array becomes an interface: `enumerate
-                // ? list : Enumerable.Empty<T>()` is an IEnumerable<T>, and the
-                // array on its far side has no GetEnumerator slot to call.
                 Type Joined(Type whole)
                 {
                     foreach ((Type had, Expr arm) in new[] { (a2, c2.Then), (b2, c2.Else) })
                     {
-                        ArrayBecomes(arm, had, whole);
                         // AND A TUPLE ARM OF ANOTHER SHAPE IS REBUILT AS THE
                         // WHOLE'S, element by element: `c ? (1, 2) : (3L, 4L)`
                         // is two longs either way.
@@ -16105,11 +15914,8 @@ public sealed partial class Binder
                     _r.BoxedAs[cast.Operand] = wanted;
                 }
 
-                // `(IReadOnlyList<T>)array` IS THE CONVERSION it names, and the
-                // view that answers Count and the indexer is made here as it is
-                // where the conversion is implicit.
-                ArrayBecomes(cast.Operand, operand, wanted);
-                // So is `(IEnumerable<char>)text`: the string gives up its
+                // An array is every one of its interfaces as it is
+                // (Lowering.ArrayFaces): nothing to make. `(IEnumerable<char>)text`: the string gives up its
                 // characters as it does where it is assigned.
                 if (operand.Prim == Prim.String && !operand.IsArray && !wanted.IsArray && ArrayFace(Type.ArrayOf(Type.Char), wanted) is not null)
                 {
@@ -16712,9 +16518,8 @@ public sealed partial class Binder
 
                 // AN ARRAY IS EVERY SEQUENCE INTERFACE OF ITS ELEMENT, as .NET's
                 // arrays are -- IList<T>, ICollection<T>, IReadOnlyList<T> --
-                // and here it is one by conversion (a view, SZArrayHelper), not
-                // by its descriptor. Known from the operand's type, the test is
-                // whether there is an array at all.
+                // by its descriptor (Lowering.ArrayFaces). Known from the
+                // operand's type, the test is whether there is an array at all.
                 if (isx.Binding is null && operand.IsArray && !tested.IsArray
                     && tested.AsNonNullable().Symbol is { Kind: TypeKind.Interface }
                     && (ArrayFace(operand, tested) is not null || ListFace(operand, tested) is not null))
@@ -19407,7 +19212,7 @@ public sealed partial class Binder
     /// <summary>The conditional being checked as a call's argument, its type left to the parameter (Argument).</summary>
     private ConditionalExpr? _argumentConditional;
 
-    /// <summary>The spans an array or a string was made into (Convert's rewrites): never wrapped again.</summary>
+    /// <summary>The spans an array or a string was made into, and a string's characters (Convert's rewrites): never wrapped again.</summary>
     private readonly HashSet<Expr> _spanConversions = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The arms' types of each argument conditional left to its parameter (Argument), for the overloads to judge.</summary>
@@ -23198,23 +23003,17 @@ public sealed partial class Binder
 
                 // C#'s RULE for the rest: the left's type when the right
                 // converts to it, and otherwise the right's when the left
-                // converts to that. An array going to one of its interfaces is
-                // wrapped in its view, on whichever side it is.
+                // converts to that.
                 {
                     Type left = l.AsNonNullable();
                     Type right = r.AsNonNullable();
                     if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left) && !Convertible(left, right))
                     {
-                        CoalesceView(b.Right, right, left);
                         if (!right.IsError && !right.IsArray && !StandardConvertible(right, left) && !Variant(right, left))
                         {
                             CheckAssignable(right, left, b.Right, "??");
                         }
                         return r.Nullable ? l : left;
-                    }
-                    if (Convertible(left, right))
-                    {
-                        CoalesceView(b.Left, left, right);
                     }
                 }
 

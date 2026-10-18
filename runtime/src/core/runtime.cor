@@ -4212,6 +4212,50 @@ static class Runtime
         throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
     }
 
+    // ---- an array seen as one of its interfaces (Lowering.ArrayFaces) -----
+    //
+    // What SZArrayHelper says for an array that is an IList<T>: its size is
+    // fixed, an index past it is an argument out of range, and the walker it
+    // hands out reads nothing before MoveNext or after the end.
+
+    /// Add, Insert, Remove and RemoveAt on an array.
+    public static void ArrayFixedSize()
+    {
+        throw new NotSupportedException("Collection was of a fixed size.");
+    }
+
+    /// Clear on an array.
+    public static void ArrayReadOnly()
+    {
+        throw new NotSupportedException("Collection is read-only.");
+    }
+
+    /// The indexer of an array seen as an IList<T> or IReadOnlyList<T>.
+    public static void ArrayFaceIndex()
+    {
+        throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection.");
+    }
+
+    /// CopyTo's refusals, Array.Copy's own: no destination (its length -1),
+    /// a negative index, or too little room from it for `length` elements.
+    public static void ArrayCopyToCheck(int destinationLength, int index, int length)
+    {
+        if (destinationLength < 0) throw new ArgumentNullException("destinationArray");
+        ArgumentOutOfRangeException.ThrowIfLessThan(index, 0, "destinationIndex");
+        if ((uint)(index + length) > (uint)destinationLength)
+        {
+            throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
+        }
+    }
+
+    /// The walker's Current read where it stands on no element: before the
+    /// first MoveNext (-1) or after the last.
+    public static void ArrayWalkerOff(int at)
+    {
+        if (at < 0) throw new InvalidOperationException("Enumeration has not started. Call MoveNext.");
+        throw new InvalidOperationException("Enumeration already finished.");
+    }
+
     /// A Nullable's Value read when it has none.
     public static void NoValue()
     {
@@ -4249,7 +4293,12 @@ static class Runtime
     const long DescElementWord = 10;
 
     // DescFlags of a type (Lowering): a string's, a box's, and an
-    // interface's boxed face (Lowering.BoxedFaceFlags).
+    // interface's boxed face (Lowering.BoxedFaceFlags); an interface an array
+    // or its walker is, an array of references, a walker (Lowering.ArrayFaces).
+    const long ArrayFaceFlag = 2048;
+    const long WalkerFaceFlag = 0x100000;
+    const long ArrayWalkerFlag = 0x200000;
+    const long ReferenceElementsFlag = 0x400000;
     const long TypeStringFlag = 2;
     const long TypeEnumFlag = 8;
     const long TypePrimitiveFlag = 32;
@@ -4308,6 +4357,40 @@ static class Runtime
         throw new ArrayTypeMismatchException();
     }
 
+    /// The copy of `value` into `array` by CopyTo (Lowering.ArrayFaces):
+    /// refused as Array.Copy refuses an element the destination's cannot
+    /// hold, with InvalidCastException naming both types, where a store
+    /// would be ArrayTypeMismatchException.
+    public static void ArrayCopyCheck(long array, long value)
+    {
+        if (array == 0 || value == 0)
+        {
+            return;
+        }
+        long w = WordSize.Bytes;
+        long desc = (Sys.Peek(array) & WordSize.AddressMask) - DescWordsHere * w;
+        long element = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+        if (element == 0)
+        {
+            return;
+        }
+        long vtable = Sys.Peek(value) & WordSize.AddressMask;
+        if (vtable == 0 || !DescribedAs(vtable - DescWordsHere * w, element))
+        {
+            ArrayCopyRefused(value, element);
+        }
+    }
+
+    /// The refusal, out of line as ArrayStoreRefused is: the element's type
+    /// named by its descriptor.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ArrayCopyRefused(long value, long element)
+    {
+        object o = Sys.FromWord(value)!;
+        string named = Sys.FromWord(Sys.Peek(element) & WordSize.AddressMask) as string ?? "";
+        InvalidCastTo(o, String.TypeText(named));
+    }
+
     /// Whether an object is an array whose elements are of `element` or
     /// derive from it: `animals is Animal[]` for a Dog[] (ArrayTest).
     public static bool ArrayOf(long array, long element)
@@ -4364,6 +4447,24 @@ static class Runtime
         // table names none of, so that every unit's copy of it is one table:
         // the interface's own descriptor says which face it is.
         long wantFlags = Sys.Peek(want + DescFlagsWordHere * w);
+        // AN ARRAY IS ITS SEQUENCE INTERFACES, AND ITS WALKER IEnumerator<T>
+        // (Lowering.ArrayFaces), named in no table of theirs for the same
+        // reason: an IList<U> -- its word 10 the descriptor of U[] -- of an
+        // array that is a U[], covariance included; IEnumerable of any array.
+        if ((wantFlags & (ArrayFaceFlag | WalkerFaceFlag)) != 0)
+        {
+            long descFlags = Sys.Peek(desc + DescFlagsWordHere * w);
+            long elements = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
+            if ((wantFlags & ArrayFaceFlag) != 0 && (descFlags & 3) == 1)
+            {
+                return elements == 0 || DescribedAs(desc, elements);
+            }
+            if ((wantFlags & WalkerFaceFlag) != 0 && (descFlags & ArrayWalkerFlag) != 0)
+            {
+                long walked = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
+                return elements == 0 || walked != 0 && DescribedAs(walked, elements);
+            }
+        }
         if ((wantFlags & (FaceComparableFlag | FaceFormattableFlag | FaceOfFlag)) != 0 && BoxedFace(desc, want, wantFlags))
         {
             return true;
@@ -4384,12 +4485,17 @@ static class Runtime
                 }
             }
         }
-        // Two arrays of references: covariance, element by element.
-        if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) == 1 && (Sys.Peek(want + DescFlagsWordHere * w) & 3) == 1)
+        // Two arrays of references: covariance, element by element. Every
+        // array of references is an object[], whose element is named by none.
+        if ((Sys.Peek(desc + DescFlagsWordHere * w) & 3) == 1 && (wantFlags & 3) == 1)
         {
             long had = Sys.Peek(desc + DescElementWord * w) & WordSize.AddressMask;
             long wanted = Sys.Peek(want + DescElementWord * w) & WordSize.AddressMask;
-            return had != 0 && wanted != 0 && DescribedAs(had, wanted);
+            if (wanted == 0)
+            {
+                return (wantFlags & ReferenceElementsFlag) != 0 && (Sys.Peek(desc + DescFlagsWordHere * w) & ReferenceElementsFlag) != 0;
+            }
+            return had != 0 && DescribedAs(had, wanted);
         }
         return false;
     }
@@ -4441,6 +4547,9 @@ static class Runtime
     const long ShapeFaceOf = 256;
     // A class, not an interface (Lowering.ShapeTest), its depth above ShapeDepthShift.
     const long ShapeClass = 512;
+    // A sequence interface an array is, or the IEnumerator<T> its walker is (Lowering.ShapeTest).
+    const long ShapeArrayFace = 1024;
+    const long ShapeWalkerFace = 2048;
     // Which of an interface's arguments the caller found to be object, one bit each from here (Lowering.ShapeTest).
     const long ShapeObjectShift = 24;
     const long ShapeDepthShift = 16;
@@ -4536,6 +4645,21 @@ static class Runtime
             long entries = Sys.Peek(table) & mask;
             long identity = Sys.Peek(table + (1 + entries) * w) & mask;
             return identity != 0 && ShapeRecordIs(identity, family, count, a0, a1, a2, a3);
+        }
+        // AN ARRAY, OR ITS WALKER, ASKED ONE OF ITS INTERFACES (ShapeArrayFace,
+        // ShapeWalkerFace; Lowering.ArrayFaces): its elements are U's, or
+        // derive from it, or U is object and they are references.
+        long descFlags = Sys.Peek(desc + DescFlagsWordHere * w);
+        long arrayAsked = (shape & ShapeArrayFace) != 0 && (descFlags & 3) == 1 ? desc
+            : (shape & ShapeWalkerFace) != 0 && (descFlags & ArrayWalkerFlag) != 0 ? Sys.Peek(desc + DescElementWord * w) & mask : 0;
+        if (arrayAsked != 0)
+        {
+            if (((shape >> ShapeObjectShift) & 1) != 0)
+            {
+                return (Sys.Peek(arrayAsked + DescFlagsWordHere * w) & ReferenceElementsFlag) != 0;
+            }
+            long had = Sys.Peek(arrayAsked + DescElementWord * w) & mask;
+            return had != 0 && DescribedAs(had, a0);
         }
         long faces = Sys.Peek(desc + DescInterfacesWord * w) & mask;
         if (faces != 0)

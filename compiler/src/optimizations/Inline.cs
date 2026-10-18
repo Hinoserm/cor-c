@@ -1115,11 +1115,45 @@ public sealed class Inline : IParallelModulePass
         Dictionary<string, HashSet<string>> ancestry = new(StringComparer.Ordinal);
         bool Answers(DataItem table, string through)
         {
+            if (through == VirtualSlotUses.Any) return true;
+            // AN ARRAY'S TABLE, AND ITS WALKER'S, answer a sequence interface's
+            // slot for the arrays the interface is over (ArrayAnswers).
+            if (through.StartsWith("i_", StringComparison.Ordinal))
+                return !ArrayTable(table.Name) || ArrayAnswers(table, through);
             // A box's or an array's table answers object's and its system
             // interfaces' slots, whatever a call names it by.
-            if (through == VirtualSlotUses.Any || !table.Name.StartsWith("t_", StringComparison.Ordinal)) return true;
+            if (!table.Name.StartsWith("t_", StringComparison.Ordinal)) return true;
             if (!ancestry.TryGetValue(table.Name, out HashSet<string>? up)) ancestry[table.Name] = up = Escape.Ancestry(dataByName, table.Name);
             return Corsac.Lang.Lto.VirtualTargets.Answers(up, through) || Corsac.Lang.Lto.VirtualTargets.MayAnswer(table.Name, through);
+        }
+        // Whether an array's table, or its walker's, answers a call through an
+        // interface (Lowering.ArrayFaces): one over the array's own element,
+        // or over a reference where its elements are references -- covariance
+        // -- and IEnumerable, or any interface that says nothing of arrays,
+        // as before. An interface of another unit's answers.
+        int word = Target.Current.WordSize;
+        bool ArrayAnswers(DataItem table, string through)
+        {
+            if (!dataByName.TryGetValue(through, out DataItem? face) || face.Bytes.Length < 11 * word) return true;
+            long flags = Flags(face);
+            bool sequence = (flags & ArrayFaceFlag) != 0, walker = (flags & WalkerFaceFlag) != 0;
+            string? array = table.Name.StartsWith("q_", StringComparison.Ordinal) ? table.Name : Word10(table);
+            // One over a shared copy's word, which only an array of
+            // references is: arrays are words, values are not. Any other --
+            // IEnumerator and IDisposable, which a walker's table names --
+            // answers as it did.
+            if (!sequence && !walker)
+                return Corsac.Lang.Lto.VirtualTargets.SharedFace(through) is null
+                    || array is null || !dataByName.TryGetValue(array, out DataItem? of) || (Flags(of) & ReferenceElementsFlag) != 0;
+            if (Word10(face) is not string elements || array is null || elements == array) return true;
+            return dataByName.TryGetValue(array, out DataItem? had) && dataByName.TryGetValue(elements, out DataItem? wanted)
+                && (Flags(had) & ReferenceElementsFlag) != 0 && (Flags(wanted) & ReferenceElementsFlag) != 0;
+        }
+        long Flags(DataItem d) => d.Bytes.Length < 7 * word ? 0 : word == 8 ? BitConverter.ToInt64(d.Bytes, 6 * word) : BitConverter.ToInt32(d.Bytes, 6 * word);
+        string? Word10(DataItem d)
+        {
+            foreach (DataReloc r in d.Relocs) if (r.Offset == 10 * word) return r.Symbol;
+            return null;
         }
         void SlotRead(string through, long slot)
         {
@@ -1229,9 +1263,34 @@ public sealed class Inline : IParallelModulePass
         gone += m.Data.RemoveAll(d => !liveData.Contains(d.Name));
         // The slots nothing reads, left empty: their methods went.
         if (bySlot)
+        {
+            HashSet<DataItem> emptied = new(ReferenceEqualityComparer.Instance);
             foreach (List<(DataItem Table, string Method)> held in waiting.Values)
                 foreach (var (table, method) in held)
-                    if (!live.Contains(method)) table.Relocs.RemoveAll(r => r.Offset >= methods && r.Symbol == method);
+                    if (!live.Contains(method) && table.Relocs.RemoveAll(r => r.Offset >= methods && r.Symbol == method) > 0) emptied.Add(table);
+            // AN ARRAY'S TABLE ENDS AT ITS LAST SLOT LEFT, and its walker's:
+            // the sequence interfaces' slots (Lowering.ArrayFaces) are high,
+            // and an image that calls none of them through an array kept
+            // every array's table as long as the highest, empty.
+            foreach (DataItem table in emptied)
+            {
+                if (!ArrayTable(table.Name) || !liveData.Contains(table.Name)) continue;
+                int end = methods + ObjectSlots * word;
+                foreach (DataReloc r in table.Relocs) end = Math.Max(end, (int)r.Offset + word);
+                if (end < table.Bytes.Length) table.Bytes = table.Bytes[..end];
+            }
+        }
         return gone > 0;
     }
+
+    /// <summary>An array's descriptor, or its walker's (Lowering.ArrayFaces).</summary>
+    private static bool ArrayTable(string name)
+        => name.StartsWith("q_array_", StringComparison.Ordinal) || name.StartsWith("t_ArrayEnumerator$0024", StringComparison.Ordinal);
+
+    // Lowering's flags of a sequence interface an array is, the walker's
+    // IEnumerator<T>, and an array of references (Lowering.ArrayFaces).
+    private const long ArrayFaceFlag = 2048, WalkerFaceFlag = 0x100000, ReferenceElementsFlag = 0x400000;
+
+    /// <summary>The slots every table has, object's own four (ToString, Equals, GetHashCode, CompareTo).</summary>
+    private const int ObjectSlots = 4;
 }

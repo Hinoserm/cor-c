@@ -10,6 +10,13 @@
 // read through it the same way. Taken for calls nobody follows, they handed
 // the view and the new list's array to the unknown object, and every Tok
 // made in the boundary outlived it (RegionPointsTo.ConstantTable).
+//
+// The array is the ICollection<Tok> itself (Lowering.ArrayFaces), so the copy
+// is made as .NET's List makes it: its array at the array's count, 40 long,
+// filled by CopyTo -- 96 bytes less than the 64 adding them one by one grew
+// it to. A lap gives back 2,360 bytes where it gave 2,456, and the threshold
+// moves by those 96,000 bytes from 2,400,000: as far below what the region
+// gives back as before, and the failure it guards (1.35 MB) as far below it.
 
 using System;
 using System.Collections.Generic;
@@ -27,7 +34,7 @@ public static class W
     {
         long s = 0;
         for (int i = 0; i < made.Count; i++) made[i].Next = new Tok(-i);
-        // A list made from an array of them: the array's view is an
+        // A list made from an array of them: the array is an
         // IEnumerable<Tok>, asked whether it is an ICollection<Tok> first.
         Tok[] array = new Tok[made.Count];
         for (int i = 0; i < made.Count; i++) array[i] = made[i];
@@ -44,6 +51,6 @@ static class P
         for (int i = 0; i < kept.Count; i++) Keep.All.Add(kept[i]);
         long s = 0; long before = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
         for (int k = 0; k < 1000; k++) s += W.Work(40);
-        Console.WriteLine(s + " given back " + ((Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - before >= 2400000L));
+        Console.WriteLine(s + " given back " + ((Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - before >= 2304000L));
     }
 }

@@ -110,7 +110,27 @@ public static class VirtualTargets
     /// statics needed a collector again (762, 764, 767, 768).
     /// </summary>
     public static bool MayAnswer(string descriptor, string declaring)
-        => (descriptor.StartsWith("b_", StringComparison.Ordinal) || descriptor == "q_string") && IsBoxedFace(declaring);
+        => (descriptor.StartsWith("b_", StringComparison.Ordinal) || descriptor == "q_string") && IsBoxedFace(declaring)
+        || descriptor.StartsWith("q_array_", StringComparison.Ordinal) && IsArrayFace(declaring)
+        || descriptor.StartsWith("t_ArrayEnumerator$0024", StringComparison.Ordinal) && IsInterfaceOf(declaring, "IEnumerator", generic: true);
+
+    /// <summary>
+    /// AND AN ARRAY ITS SEQUENCE INTERFACES, which its table names none of
+    /// either (Lowering.ArrayFaces): IEnumerable, and IEnumerable,
+    /// ICollection, IList, IReadOnlyCollection and IReadOnlyList of any
+    /// element -- an element the array is not of is only more targets -- and
+    /// its walker IEnumerator of any.
+    /// </summary>
+    public static bool IsArrayFace(string declaring)
+        => IsInterfaceOf(declaring, "IEnumerable", generic: false)
+        || IsInterfaceOf(declaring, "IEnumerable", generic: true) || IsInterfaceOf(declaring, "ICollection", generic: true)
+        || IsInterfaceOf(declaring, "IList", generic: true) || IsInterfaceOf(declaring, "IReadOnlyCollection", generic: true)
+        || IsInterfaceOf(declaring, "IReadOnlyList", generic: true);
+
+    /// <summary>Whether an interface's descriptor is the global namespace's `plain`, over arguments or none, as Lowering keys it.</summary>
+    private static bool IsInterfaceOf(string declaring, string plain, bool generic)
+        => declaring.StartsWith("i_", StringComparison.Ordinal) && declaring.AsSpan(2).StartsWith(plain, StringComparison.Ordinal)
+        && (generic ? declaring.AsSpan(2 + plain.Length).StartsWith("$0024", StringComparison.Ordinal) : declaring.Length == 2 + plain.Length);
 
     /// <summary>
     /// Whether an interface's descriptor is one of the system interfaces a box

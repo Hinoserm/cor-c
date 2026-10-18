@@ -54,32 +54,6 @@ public sealed partial class Lowering
             }
         }
 
-        if (_b.Views.TryGetValue(e, out TypeSymbol? view))
-        {
-            // NO ARRAY IS NO LIST. A null `string[]?` becoming an
-            // `IReadOnlyList<string>?` is null, not a helper holding nothing:
-            // wrapped regardless, `names != null` was true of it and the first
-            // `.Count` read the length of an array that was not there.
-            VReg held = _f.NewReg(IrTypes.Word, "view");
-            Block wrap = _f.NewBlock("viewwrap");
-            Block done = _f.NewBlock("viewdone");
-
-            // Null on the way round, not the array: a view held as "the
-            // array, or what was made" was never the caller's own to free,
-            // and every conversion in a loop was left to the collector.
-            _e.CopyTo(held, Imm(0, IrTypes.Word));
-            _e.Branch(v, wrap, done);
-            _e.SetBlock(wrap);
-
-            VReg made = Allocate(e, view.InstanceSize, described: true);
-            _e.Store(R(made), VtableOf(view), 0, _t.WordSize);
-            StoreNewReference(made, v, _t.ObjectHeaderBytes);
-            _e.CopyTo(held, R(made));
-            _e.Jump(done);
-            _e.SetBlock(done);
-            v = held;
-        }
-
         return v;
     }
 
@@ -161,7 +135,7 @@ public sealed partial class Lowering
 
         VReg v = Eval(e);
 
-        if (_b.Boxes.Contains(e) || _b.Views.ContainsKey(e))
+        if (_b.Boxes.Contains(e))
         {
             return v;
         }
@@ -2307,6 +2281,33 @@ public sealed partial class Lowering
                 _e.Branch(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32), yes, no);
                 _e.SetBlock(savedBlock);
             }
+            // AN ARRAY IS ITS SEQUENCE INTERFACES (ArrayFaces), which its table
+            // names none of: asked of the array once the list is through --
+            // IEnumerable of any, IList<U> of a U[] (Runtime.DescribedAs, by
+            // covariance too) -- where no variance asks the runtime already.
+            else if (AnsweredByArrays(want) && ArrayFaceOf(want) == ArrayFace.Sequence)
+            {
+                exhausted = _f.NewBlock("tarrface");
+                Block savedBlock = _e.Block;
+                _e.SetBlock(exhausted);
+                VReg flags = Numbered(_e, _e.Load(IrType.I32, desc, DescFlags * w));
+                VReg array = _e.Binary(Opcode.Eq, R(_e.Binary(Opcode.And, flags, 3)), Imm(1, IrType.I32), IrType.I32);
+                if (ArrayFaceElement(want) is null || RuntimeMethod("DescribedAs", 2) is not MethodSymbol askArray)
+                {
+                    _e.Branch(array, yes, no);
+                }
+                else
+                {
+                    Block ask = _f.NewBlock("tarrask");
+                    _e.Branch(array, ask, no);
+                    _e.SetBlock(ask);
+                    Require(askArray);
+                    VReg answer = _e.Call(CallLabel(askArray), IrTypes.Of(askArray.Returns),
+                        R(AsParam(desc, askArray.Params[0].Type)), R(AsParam(wanted, askArray.Params[1].Type)))!;
+                    _e.Branch(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32), yes, no);
+                }
+                _e.SetBlock(savedBlock);
+            }
             _e.Jump(loop);
             _e.SetBlock(loop);
             VReg entry = _e.Load(IrTypes.Word, cursor, 0);
@@ -2453,7 +2454,7 @@ public sealed partial class Lowering
     ///
     /// C#'s ARRAY COVARIANCE for `object[]`: any array whose elements are
     /// references is one, `string[]` included, and an array of values is not.
-    /// The descriptor's element flag says exactly that. Covariance between
+    /// The descriptor's flags say exactly that (TypeFlagReferenceElements). Covariance between
     /// two class element types (`Dog[] is Animal[]`) would need the element's
     /// own descriptor in the array's, which it does not carry; such a test
     /// answers for the exact type only.
@@ -2477,12 +2478,11 @@ public sealed partial class Lowering
             Block other = _f.NewBlock("arrcov");
             _e.Branch(result, end, other);
             _e.SetBlock(other);
+            // An array, not a string, of references (TypeFlagReferenceElements):
+            // not one of structs holding references, nor of Nullable cells.
             VReg flags = Numbered(_e, _e.Load(IrTypes.Word, vt, DescFlags * w - _t.DescriptorBytes));
-            VReg gc = Numbered(_e, _e.Load(IrTypes.Word, vt, DescGcFlags * w - _t.DescriptorBytes));
-            VReg sequence = _e.Binary(Opcode.Eq, R(flags), Imm(1, IrTypes.Word), IrType.I32);
-            VReg refs = _e.Binary(Opcode.And, gc, GcElementsAreReferences);
-            VReg anyRefs = _e.Binary(Opcode.Ne, R(refs), Imm(0, IrTypes.Word), IrType.I32);
-            _e.CopyTo(result, R(_e.Binary(Opcode.And, R(sequence), R(anyRefs), IrType.I32)));
+            VReg kind = _e.Binary(Opcode.And, flags, 3 | TypeFlagReferenceElements);
+            _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(kind), Imm(1 | TypeFlagReferenceElements, IrTypes.Word), IrType.I32)));
         }
         // COVARIANCE BETWEEN REFERENCE ELEMENTS: a Dog[] is an Animal[]. Not
         // the exact descriptor, then asked of the element's (Runtime.ArrayOf).
@@ -2996,7 +2996,9 @@ public sealed partial class Lowering
             // A CLASS is asked at its depth, by the identity record each
             // instantiation's type context holds there (TypeContext).
             bool cls = shape.Interface.Kind == TypeKind.Class;
-            long kind = cls ? ClassShape | ((long)shape.Interface.Depth << ClassShapeDepthShift) : faceOf;
+            // AN ARRAY OR ITS WALKER, asked of its element (ArrayFaces).
+            long arrayFace = ArrayFaceOf(shape.Interface) switch { ArrayFace.Sequence => ArrayFaceShape, ArrayFace.Walker => WalkerFaceShape, _ => 0 };
+            long kind = cls ? ClassShape | ((long)shape.Interface.Depth << ClassShapeDepthShift) : faceOf | arrayFace;
             List<VReg> words = new()
             {
                 obj,
@@ -4416,7 +4418,7 @@ public sealed partial class Lowering
             // Already made what it is stored as -- a number the checker marked
             // to go into a Nullable -- it is not converted a second time.
             VReg made = Eval(value);
-            return _b.Boxes.Contains(value) || _b.Views.ContainsKey(value) ? made : Convert(value, made, _b.TypeOf(value), storedAs);
+            return _b.Boxes.Contains(value) ? made : Convert(value, made, _b.TypeOf(value), storedAs);
         }
         return EvalAs(value, storedAs);
     }

@@ -229,7 +229,10 @@ public sealed class Devirtualize : IModulePass
                     i.DispatchType = NoTarget;
                     continue;
                 }
-                if (Symbol(i.Operands[0]) is not { Offset: 0 } target || !target.Name.StartsWith("m_", StringComparison.Ordinal)) continue;
+                // A method, or one of the routines an array answers its
+                // sequence interfaces with (Lowering.ArrayFaces).
+                if (Symbol(i.Operands[0]) is not { Offset: 0 } target
+                    || !(target.Name.StartsWith("m_", StringComparison.Ordinal) || target.Name.StartsWith("__array", StringComparison.Ordinal))) continue;
                 // A struct made for the call is made for it whoever answers
                 // it (FreshStruct); a delegate's Invoke is a slot's call no
                 // more, and a direct call needs no declaring type.

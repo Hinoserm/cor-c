@@ -102,26 +102,6 @@ public sealed partial class BindResult
     /// </summary>
     public List<(TypeSymbol? Owner, MethodDecl Body)> Wanting { get; } = new();
 
-    /// <summary>
-    /// Expressions that are an ARRAY on their way to an interface an array
-    /// implements.
-    ///
-    /// In C# a `T[]` is an IReadOnlyList&lt;T&gt;, an IList&lt;T&gt; and an
-    /// IEnumerable&lt;T&gt;, and the runtime makes that true by giving the
-    /// array's method table entries that point at helpers taking the array as
-    /// their receiver. An array here is a length word and its elements -- no
-    /// vtable to put entries in, and giving it one would change the shape of
-    /// every array and every string on the machine.
-    ///
-    /// So the helper is an OBJECT: a generated class holding the array and
-    /// implementing the interface, made where the conversion happens. Same
-    /// answer as .NET's, reached the way this machine can reach it.
-    /// </summary>
-    public Dictionary<Expr, TypeSymbol> Views { get; } = new(ReferenceEqualityComparer.Instance);
-
-    /// <summary>The generated array-view classes, whose bodies the code generator lays down.</summary>
-    public List<TypeSymbol> ArrayViews { get; } = new();
-
     public HashSet<Expr> Boxes { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The Nullable each expression in Boxes is made, when it is not its own type's: an int into a ulong?.</summary>
@@ -706,7 +686,6 @@ public sealed partial class BindResult
         }
         if (n is Expr e)
         {
-            Views.Remove(e);
             Boxes.Remove(e);
             BoxedAs.Remove(e);
             UserConversions.Remove(e);
@@ -773,8 +752,6 @@ public sealed partial class BindResult
         StaticInits.Clear();
         Wanted.Clear();
         Wanting.Clear();
-        Views.Clear();
-        ArrayViews.Clear();
         Boxes.Clear();
         Closures.Clear();
         ExprType.Clear();

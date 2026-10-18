@@ -2098,6 +2098,9 @@ continue;
         ("m_Runtime_ArrayStoreCheck_2_V$I64_V$I64", 2),
         // Its refusal, out of line: says what the free journal knows and throws.
         (ArrayStoreRefused, 2),
+        // CopyTo's check of an array's element, and its refusal (Lowering.ArrayFaces).
+        (ArrayCopyCheck, 2),
+        (ArrayCopyRefused, 2),
         // A failed cast's exception names the object's type; it keeps no reference.
         ("m_Runtime_InvalidCastTo_2_V$Any_V$String", 2),
         // And from the object's type alone (Lowering.CastFailed): the descriptor, no object.
@@ -2640,10 +2643,9 @@ continue;
     /// <summary>A descriptor whose objects own no field: a box's, or a compiler-made iterator's (StampedBox).</summary>
     private static bool OwnsNoField(string? descriptor)
         => descriptor is not null && (descriptor.StartsWith("b_", StringComparison.Ordinal) || IteratorMachine(descriptor)
-            // AN ARRAY'S VIEW AND ITS WALKER (Binder.ArrayView), the classes
-            // an array is wrapped in where it becomes a sequence: the
-            // compiler's own, their words written untagged as an iterator's.
-            || descriptor.StartsWith("t_ArrayView$0024", StringComparison.Ordinal)
+            // AN ARRAY'S WALKER (Lowering.ArrayWalker), the enumerator an
+            // array hands out as a sequence: the compiler's own, its words
+            // written untagged as an iterator's.
             || descriptor.StartsWith("t_ArrayEnumerator$0024", StringComparison.Ordinal));
 
     /// <summary>
@@ -2750,10 +2752,14 @@ continue;
     // and its store of the bigger one, the List's own free of the old array
     // was no self-replacing free (EscapeSelfFrees), and the field was refused.
     internal static bool NeverWritesFields(string callee) =>
-        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64" || callee == ArrayStoreRefused || callee == DescribedAs;
+        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64" || callee == ArrayStoreRefused || callee == DescribedAs
+        || callee == ArrayCopyCheck || callee == ArrayCopyRefused;
 
     /// <summary>Runtime.ArrayStoreRefused(array, value): an array store check's refusal, kept out of line.</summary>
     internal const string ArrayStoreRefused = "m_Runtime_ArrayStoreRefused_2_V$I64_V$I64";
+
+    /// <summary>Runtime.ArrayCopyCheck(array, value) and its refusal: CopyTo's check of an element copied into an array (Lowering.ArrayFaces).</summary>
+    internal const string ArrayCopyCheck = "m_Runtime_ArrayCopyCheck_2_V$I64_V$I64", ArrayCopyRefused = "m_Runtime_ArrayCopyRefused_2_V$I64_V$I64";
 
     /// <summary>Runtime.DescribedAs(desc, want): whether a type is another or derives from it, read from their descriptors.</summary>
     internal const string DescribedAs = "m_Runtime_DescribedAs_2_V$I64_V$I64";
