@@ -7567,7 +7567,7 @@ public sealed partial class Binder
                 // C# gives the literal its own code rather than the general
                 // "possibly null" one below, because a literal null is not
                 // possibly anything -- it is certainly null, every time.
-                Warning(at, NullLiteralCode(what.ToString()), $"{what}: '{to}' is not nullable; declare it as '{to}?' to allow null");
+                Warning(at, NullLiteralCode(what.ToString()), $"{what}: '{to.Shown()}' is not nullable; declare it as '{to.Shown()}?' to allow null");
             }
             return;
         }
@@ -7576,11 +7576,11 @@ public sealed partial class Binder
         // conversion check. A nullable Foo is still not an unrelated Bar.
         if (from.Nullable && !to.Nullable && to.IsReference)
         {
-            Warning(at, NullCode(what.ToString()), $"{what}: '{from}' may be null but '{to}' may not");
+            Warning(at, NullCode(what.ToString()), $"{what}: '{from.Shown()}' may be null but '{to.Shown()}' may not");
         }
         else if (WeakensPromise(from, to))
         {
-            Warning(at, ElementNullCode(what.ToString()), $"{what}: an element of '{from}' may be null but '{to}' says its elements may not");
+            Warning(at, ElementNullCode(what.ToString()), $"{what}: an element of '{from.Shown()}' may be null but '{to.Shown()}' says its elements may not");
         }
 
         // A Nullable<T> WHERE A T IS WANTED is not a conversion the compiler
@@ -7592,7 +7592,7 @@ public sealed partial class Binder
         if (from.IsNullableValue && !to.IsNullableValue && !to.Nullable && !to.IsReference && to.Prim != Prim.Any
             && Convertible(from.Underlying, to))
         {
-            Error(at, $"{what}: '{from}' may have no value; use '.Value' or cast it to '{to}'");
+            Error(at, $"{what}: '{from.Shown()}' may have no value; use '.Value' or cast it to '{to.Shown()}'");
             return;
         }
 
@@ -13473,11 +13473,30 @@ public sealed partial class Binder
             _wanted = null;
 
             List<Type> index = one.Args.Select(CheckExpr).ToList();
-            Type value = CheckExpr(one.Value);
 
             _wanted = outerIndexed;
 
+            // THE VALUE IS WHAT THE INDEXER STORES, as an assignment's is its
+            // target's: `["a"] = new() { 1, 2 }` of a Dictionary<string,
+            // List<int>> is a List<int>, and a bare `default` or a lambda
+            // there is told the same. So the indexer is found from the keys
+            // first and the value checked wanting what it takes.
             TypeSymbol? owner = type.Symbol;
+            MethodSymbol? setter = owner is null ? null : IndexerFor(Reachable(owner, "set_Item"), index, index.Count + 1);
+            // As written: a Dictionary<int, List<int>?> stores a List<int>?,
+            // which its one specialisation for List<int> does not say.
+            Type? stored = setter is null ? null : ThroughUnmade(type, setter, ContextualParameterType(type, setter, index.Count));
+            Type value;
+            if (stored is not null && one.Value is LambdaExpr valueLambda)
+            {
+                value = CheckLambda(valueLambda, stored);
+            }
+            else
+            {
+                _wanted = stored;
+                value = CheckExpr(one.Value);
+                _wanted = outerIndexed;
+            }
 
             if (owner is null)
             {
@@ -13488,9 +13507,6 @@ public sealed partial class Binder
                 continue;
             }
 
-            MethodSymbol? setter = IndexerFor(
-                Reachable(owner, "set_Item"), index, index.Count + 1);
-
             if (setter is null)
             {
                 Error(one, $"'{owner.Name}' has no indexer to write through");
@@ -13499,14 +13515,13 @@ public sealed partial class Binder
 
             for (int i = 0; i < index.Count; i++)
             {
-                Type key = ThroughUnmade(type, setter, setter.Params[i].Type);
+                Type key = ThroughUnmade(type, setter, ContextualParameterType(type, setter, i));
                 index[i] = Settle(one.Args[i], key, index[i]);
                 CheckAssignable(index[i], key, one.Args[i], "index");
             }
 
-            Type stored = ThroughUnmade(type, setter, setter.Params[index.Count].Type);
-            value = Settle(one.Value, stored, value);
-            CheckAssignable(value, stored, one.Value, "the value");
+            value = Settle(one.Value, stored!, value);
+            CheckAssignable(value, stored!, one.Value, "the value");
             _r.InitIndexer[one] = setter;
         }
     }

@@ -482,10 +482,26 @@ public sealed class Type : IEquatable<Type>
     /// </summary>
     public string LayoutText() => Text(false);
 
-    private string Text(bool annotations)
+    /// <summary>
+    /// THE TYPE AS THE SOURCE WRITES IT, for a diagnostic: a specialisation
+    /// by its template and the arguments it was made from -- `List<int>?`,
+    /// not the name the monomorphiser gave its copy, `List$int?`, which is
+    /// what ToString says and what the compiler's own tables key on.
+    /// </summary>
+    public string Shown() => Text(true, shown: true);
+
+    private string Text(bool annotations, bool shown = false)
     {
+        if (shown && !IsArray && Symbol is { Decl.Template: string template } made
+            && (UseArgs ?? (IReadOnlyList<Type>)made.TemplateArgTypes) is { Count: > 0 } madeFrom)
+        {
+            int dot = template.LastIndexOf('.');
+            string written = (dot < 0 ? template : template[(dot + 1)..]) + "<" + string.Join(", ", madeFrom.Select(a => a.Text(annotations, shown))) + ">"
+                + new string('*', PointerDepth);
+            return Nullable && (annotations || !IsReference) ? written + "?" : written;
+        }
         string s = IsArray
-            ? Element!.Text(annotations) + string.Concat(Enumerable.Repeat("[]", ArrayRank))
+            ? Element!.Text(annotations, shown) + string.Concat(Enumerable.Repeat("[]", ArrayRank))
             : Symbol?.Name ?? ParamName ?? Prim switch
             {
                 Prim.Void => "void", Prim.Bool => "bool",
@@ -499,7 +515,7 @@ public sealed class Type : IEquatable<Type>
 
         if (Args.Count > 0)
         {
-            s += "<" + string.Join(", ", Args.Select(a => a.Text(annotations))) + ">";
+            s += "<" + string.Join(", ", Args.Select(a => a.Text(annotations, shown))) + ">";
         }
 
         s += new string('*', PointerDepth);

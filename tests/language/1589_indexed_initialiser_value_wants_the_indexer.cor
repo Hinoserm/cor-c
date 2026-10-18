@@ -1,0 +1,52 @@
+// test: indexed_initialiser_value_wants_the_indexer
+// expect-exit: 0
+// expect-output:
+// 2 0
+// 5
+// 2 9
+// 7
+// 8 5
+// 3n 0 True
+// 8 8
+// 3
+//
+// `[key] = value` in an initialiser stores through the indexer, and the value
+// is what the indexer stores, as an assignment's is its target's: a `new()`,
+// a bare `default` and a lambda are told that type. The value was checked
+// before the indexer was found, wanting nothing, so `["a"] = new() { 1, 2 }`
+// of a Dictionary<string, List<int>> was refused ("the type of 'new()' cannot
+// be worked out here"). And the type is the one written: a Dictionary<int,
+// List<int>?> stores a List<int>?, which a null may be -- not the List<int>
+// its specialisation's indexer says.
+using System;
+using System.Collections.Generic;
+
+struct S { public int A; public string N; }
+sealed class P { public int X; public List<int> L = new(); public Dictionary<string, int> M = new(); }
+
+static class Program
+{
+    static int Main()
+    {
+        var d = new Dictionary<string, List<int>> { ["a"] = new() { 1, 2 }, ["b"] = new() };
+        Console.WriteLine(d["a"].Count + " " + d["b"].Count);
+        var e = new Dictionary<int, P> { [1] = new() { X = 5 } };
+        Console.WriteLine(e[1].X);
+        var p = new P { L = { 3, 4 }, M = { ["k"] = 9 } };
+        Console.WriteLine(p.L.Count + " " + p.M["k"]);
+        P q = new() { L = new() { 7 } };
+        Console.WriteLine(q.L[0]);
+        var f = new Dictionary<string, Func<int, int>> { ["twice"] = x => x * 2, ["inc"] = x => x + 1 };
+        Console.WriteLine(f["twice"](4) + " " + f["inc"](4));
+        var g = new Dictionary<int, S> { [1] = new() { A = 3, N = "n" }, [2] = default };
+        Console.WriteLine(g[1].A + g[1].N + " " + g[2].A + " " + (g[2].N is null));
+        bool flag = true;
+        var h = new Dictionary<int, List<int>?> { [1] = flag ? new() { 8 } : null };
+        var h2 = new Dictionary<int, List<int>?> { [1] = flag ? new List<int> { 8 } : null, [2] = null };
+        Console.WriteLine(h[1]![0] + " " + h2[1]![0]);
+        int[] arr = new int[3];
+        var i = new Dictionary<int, int[]> { [0] = arr };
+        Console.WriteLine(i[0].Length);
+        return 0;
+    }
+}
