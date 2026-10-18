@@ -1107,6 +1107,13 @@ public sealed partial class Binder
     /// <summary>Whether a name resolves to a type from where it was written.</summary>
     private bool IsTypeName(string name) => FindType(name, out _);
 
+    /// <summary>The type a member access's qualifier names, by its whole path, or by its last part as the flat table keys it.</summary>
+    private TypeSymbol? QualifierType(Expr qualifier)
+    {
+        if (Spelt(qualifier) is string path && path.Contains('.') && _r.Types.TryGetValue(path, out TypeSymbol? whole)) return whole;
+        return qualifier is MemberExpr { Name: string last } && _r.Types.TryGetValue(last, out TypeSymbol? byLast) ? byLast : null;
+    }
+
     /// <summary>
     /// Whether a pattern's bare name that is both a constant and a type is the
     /// constant. C# looks through the enclosing types' members -- a constant
@@ -18670,8 +18677,13 @@ public sealed partial class Binder
         // the flat table the qualifier read as a namespace and SHA256 as the
         // class of that name (test 2011). A namespace has no members, so a
         // type that answers the name is what the source meant.
+        // THE QUALIFIER BY ITS WHOLE PATH TOO: `System.Threading.Tasks.
+        // TaskFactory.Shared` is the factory's static field, and TaskFactory,
+        // keyed by its namespace, was no type by its last part alone -- so the
+        // qualifier read as a namespace, and a program's own class Shared was
+        // the library's line's answer (1261, 1313).
         if (NamespaceOnly(m.Target)
-            && !(m.Target is MemberExpr { Name: string last } && _r.Types.TryGetValue(last, out TypeSymbol? lastType)
+            && !(QualifierType(m.Target) is TypeSymbol lastType
                  && (lastType.FindField(m.Name) is not null || lastType.FindMethods("get_", m.Name).Count > 0
                      || lastType.FindMethods(m.Name).Count > 0 || FindConstant(lastType, m.Name) is not null
                      || lastType.Kind == TypeKind.Enum && lastType.EnumValues.ContainsKey(m.Name))))
@@ -18687,8 +18699,10 @@ public sealed partial class Binder
 
             // AND THEN THE LAST PART ALONE, for the namespaces this compiler
             // models as nothing at all: `System.Text.StringBuilder` is a
-            // StringBuilder declared in the global namespace here.
-            if (_r.Types.TryGetValue(m.Name, out TypeSymbol? qualified))
+            // StringBuilder declared in the global namespace here. Never a
+            // program's type in the library's code, which knows none of them.
+            if (_r.Types.TryGetValue(m.Name, out TypeSymbol? qualified)
+                && !(BindingLibrary && qualified.Decl is { } declared && IsProgramSource(declared)))
             {
                 _r.Resolved[m] = new TypeNameSym(qualified);
                 return Type.Plain(qualified, Prim.Void);
