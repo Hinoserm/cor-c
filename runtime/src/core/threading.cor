@@ -4449,6 +4449,13 @@ static class Monitor
     static nint _depthGate;
     static Dictionary<long, int>? _depths;
 
+    // .NET'S LockContentionCount: each time taking a lock found it another
+    // thread's and had to wait for it -- counted once a taking, however long
+    // the wait, and not for a lock taken free or already this thread's.
+    static long _contentions;
+
+    public static long LockContentionCount => Interlocked.Read(ref _contentions);
+
     static long Owner()
     {
         long me = Platform.MonitorOwner();
@@ -4466,6 +4473,8 @@ static class Monitor
 
         if (me == 0)
         {
+            if (Sys.Cas(word, 0, Held) == 0) return;
+            Interlocked.Increment(ref _contentions);
             while (Sys.Cas(word, 0, Held) != 0) { Sys.Pause(); }
             return;
         }
@@ -4579,6 +4588,8 @@ static class Monitor
             long now = Clock.Now();
             if (deadline < 0)
             {
+                // ANOTHER'S, AND WAITED FOR: one contention, as Enter counts.
+                Interlocked.Increment(ref _contentions);
                 deadline = now + (long)millisecondsTimeout * 1000000;
             }
             if (now >= deadline)
@@ -4643,6 +4654,7 @@ static class Monitor
     /// waited on: the sleeper that took it cannot know it was the last.
     static void Contend(long word, long me)
     {
+        Interlocked.Increment(ref _contentions);
         int spins = 0;
 
         while (true)
