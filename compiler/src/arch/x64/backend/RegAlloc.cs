@@ -254,11 +254,18 @@ internal static class Roles
 /// <summary>
 /// Linear-scan register allocation over the fourteen allocatable general
 /// registers and the sixteen XMM registers, the x86 allocator's method with
-/// two classes: an interval is the hull of the positions its register is
-/// live at, the registers the selector named are busy exactly where they
-/// are live, and a register nobody can have is spilled to an eight-byte slot
-/// -- read in place where the instruction takes memory, else reloaded into a
-/// short interval of its own.
+/// two classes: an interval is the positions its register is live at, holes
+/// and all, and another interval may share its register in the holes; the
+/// registers the selector named are busy exactly where they are live, and a
+/// register nobody can have is spilled to an eight-byte slot -- read in
+/// place where the instruction takes memory, else reloaded into a short
+/// interval of its own.
+///
+/// HOLES, NOT HULLS. An interval that was the hull of its positions crossed
+/// every call laid out inside it, live there or not -- the call to
+/// DivideByZero on a division's cold path between a dividend's uses -- and a
+/// value that never lives across a call took a callee-saved register, and
+/// with it a save and a restore in the prologue and the epilogue.
 ///
 /// Positions: instruction i owns 4i .. 4i+3 -- reloads at 4i, reads at
 /// 4i+1, writes at 4i+2, spill stores at 4i+3.
@@ -287,6 +294,12 @@ internal sealed class Allocator
         public bool Short;
         public int Instr;
         public int Reg = -1;
+        /// <summary>
+        /// Where a whole register's value is live, sorted and disjoint, within
+        /// Start..End; null for one live over all of it (a short interval, or
+        /// one with no hole).
+        /// </summary>
+        public List<(int S, int E)>? Ranges;
     }
 
     private readonly record struct Occurrence(int Instr, int Operand, Roles.Role Role, bool InMem);
@@ -297,6 +310,11 @@ internal sealed class Allocator
     private readonly List<Occurrence>[] _occ;
     private readonly int[] _start;
     private readonly int[] _end;
+    // The run of live positions being grown, as the backward walk marks them,
+    // and the runs before it once a second begins apart from it.
+    private readonly int[] _runS;
+    private readonly int[] _runE;
+    private readonly List<(int S, int E)>?[] _ranges;
     private readonly int[][] _busy = new int[Physical][];
     private readonly int[] _assigned;
     private readonly int[] _spilledFrom;
@@ -320,6 +338,9 @@ internal sealed class Allocator
         _occ = new List<Occurrence>[_n];
         _start = new int[_n];
         _end = new int[_n];
+        _runS = new int[_n];
+        _runE = new int[_n];
+        _ranges = new List<(int S, int E)>?[_n];
         _assigned = new int[_n];
         _spilledFrom = new int[_n];
         _slot = new int[_n];
@@ -329,6 +350,7 @@ internal sealed class Allocator
             _occ[v] = new List<Occurrence>();
             _start[v] = int.MaxValue;
             _end[v] = -1;
+            _runS[v] = -1;
             _assigned[v] = -1;
             _spilledFrom[v] = int.MaxValue;
         }
@@ -439,6 +461,20 @@ internal sealed class Allocator
         {
             _start[reg] = Math.Min(_start[reg], pos);
             _end[reg] = Math.Max(_end[reg], pos);
+            // The walk is backward within a block, marking an instruction's
+            // late pair before its early one, so a run grows downward.
+            int runS = _runS[reg];
+            if (runS >= 0 && pos >= runS - 2 && pos <= _runE[reg] + 1)
+            {
+                _runS[reg] = Math.Min(runS, pos);
+                _runE[reg] = Math.Max(_runE[reg], pos);
+            }
+            else
+            {
+                if (runS >= 0) (_ranges[reg] ??= new List<(int S, int E)>()).Add((runS, _runE[reg]));
+                _runS[reg] = pos;
+                _runE[reg] = pos;
+            }
         }
     }
 
@@ -549,6 +585,32 @@ internal sealed class Allocator
             }
         }
 
+        for (int v = Physical; v < _n; v++)
+        {
+            List<(int S, int E)>? list = _ranges[v];
+            // One run and no list: its span, which a null Ranges means.
+            if (list is null)
+            {
+                continue;
+            }
+            list.Add((_runS[v], _runE[v]));
+            list.Sort();
+            int w = 0;
+            for (int k = 1; k < list.Count; k++)
+            {
+                if (list[k].S <= list[w].E + 1)
+                {
+                    list[w] = (list[w].S, Math.Max(list[w].E, list[k].E));
+                }
+                else
+                {
+                    list[++w] = list[k];
+                }
+            }
+            list.RemoveRange(w + 1, list.Count - w - 1);
+            if (list.Count == 1) _ranges[v] = null;
+        }
+
         for (int r = 0; r < Physical; r++)
         {
             int[] arr = _busy[r];
@@ -576,7 +638,7 @@ internal sealed class Allocator
         {
             if (_end[v] >= 0)
             {
-                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v] });
+                Enqueue(new Interval { VReg = v, Start = _start[v], End = _end[v], Ranges = _ranges[v] });
             }
         }
 
@@ -609,19 +671,83 @@ internal sealed class Allocator
     private int[] PreferenceFor(int vreg) => IsFloat(vreg) ? FloatPreference : IntPreference;
 
     private bool Allocatable(int reg, Interval iv)
-        => (reg >= MReg.XmmBase) == IsFloat(iv.VReg) && reg != (int)Gpr.Rsp && reg != (int)Gpr.Rbp
-           && !Busy(reg, iv.Start, iv.End);
+    {
+        if ((reg >= MReg.XmmBase) != IsFloat(iv.VReg) || reg == (int)Gpr.Rsp || reg == (int)Gpr.Rbp)
+        {
+            return false;
+        }
+        if (iv.Ranges is null)
+        {
+            return !Busy(reg, iv.Start, iv.End);
+        }
+        foreach ((int s, int e) in iv.Ranges)
+        {
+            if (Busy(reg, s, e))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Whether two intervals are live at a common position: a hole in one may hold the other.</summary>
+    private static bool Overlaps(Interval a, Interval b)
+    {
+        if (a.End < b.Start || b.End < a.Start)
+        {
+            return false;
+        }
+        if (a.Ranges is null)
+        {
+            return b.Ranges is null || Touches(b.Ranges, a.Start, a.End);
+        }
+        if (b.Ranges is null)
+        {
+            return Touches(a.Ranges, b.Start, b.End);
+        }
+        List<(int S, int E)> ra = a.Ranges, rb = b.Ranges;
+        int x = 0, y = 0;
+        while (x < ra.Count && y < rb.Count)
+        {
+            if (ra[x].E < rb[y].S) x++;
+            else if (rb[y].E < ra[x].S) y++;
+            else return true;
+        }
+        return false;
+    }
+
+    /// <summary>Whether sorted ranges meet the positions start..end.</summary>
+    private static bool Touches(List<(int S, int E)> ranges, int start, int end)
+    {
+        int lo = 0, hi = ranges.Count;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (ranges[mid].E < start) lo = mid + 1; else hi = mid;
+        }
+        return lo < ranges.Count && ranges[lo].S <= end;
+    }
+
+    /// <summary>Whether a placed interval other than `except` holds the register where `iv` is live.</summary>
+    private bool Taken(int reg, Interval iv, Interval? except = null)
+    {
+        foreach (Interval a in _active)
+        {
+            if (a != except && a.Reg == reg && Overlaps(a, iv)) return true;
+        }
+        return false;
+    }
 
     private int FreeRegister(Interval iv)
     {
         int hint = Hint(iv);
-        if (hint >= 0 && Allocatable(hint, iv) && _active.All(a => a.Reg != hint))
+        if (hint >= 0 && Allocatable(hint, iv) && !Taken(hint, iv))
         {
             return hint;
         }
         foreach (int r in PreferenceFor(iv.VReg))
         {
-            if (Allocatable(r, iv) && _active.All(a => a.Reg != r))
+            if (Allocatable(r, iv) && !Taken(r, iv))
             {
                 return r;
             }
@@ -674,22 +800,35 @@ internal sealed class Allocator
     private int MakeRoom(Interval cur)
     {
         int at = cur.Start / 4;
-        Interval? victim = null;
+        List<Interval>? victims = null;
+        int victimReg = -1;
         int victimNext = -1;
-        foreach (Interval a in _active)
+        // A register is had by evicting everything placed in it that is live
+        // where the current interval is; the others sit in its holes.
+        foreach (int r in PreferenceFor(cur.VReg))
         {
-            if (a.Short || !Allocatable(a.Reg, cur))
+            if (!Allocatable(r, cur))
             {
                 continue;
             }
-            int next = NextUse(a.VReg, at);
-            if (next <= cur.Start)
+            List<Interval> group = new();
+            bool held = false;
+            int next = int.MaxValue;
+            foreach (Interval a in _active)
+            {
+                if (a.Reg != r || !Overlaps(a, cur)) continue;
+                if (a.Short) { held = true; break; }
+                group.Add(a);
+                next = Math.Min(next, NextUse(a.VReg, at));
+            }
+            if (held || group.Count == 0 || next <= cur.Start)
             {
                 continue;
             }
             if (next > victimNext)
             {
-                victim = a;
+                victims = group;
+                victimReg = r;
                 victimNext = next;
             }
         }
@@ -697,20 +836,21 @@ internal sealed class Allocator
         if (!cur.Short)
         {
             int curNext = NextUseAfterStart(cur);
-            if (victim is null || curNext > victimNext)
+            if (victims is null || curNext > victimNext)
             {
                 Spill(cur.VReg, at);
                 return -1;
             }
         }
 
-        if (victim is null)
+        if (victims is null)
         {
             // Nothing can wait: take the register of something read right
             // here whose every appearance here can be its spill slot instead.
             foreach (Interval a in _active)
             {
-                if (a.Short || !Allocatable(a.Reg, cur) || _remat[a.VReg] is not null)
+                if (a.Short || !Allocatable(a.Reg, cur) || _remat[a.VReg] is not null || !Overlaps(a, cur)
+                    || Taken(a.Reg, cur, a))
                 {
                     continue;
                 }
@@ -730,20 +870,24 @@ internal sealed class Allocator
                 }
                 if (foldable)
                 {
-                    victim = a;
+                    victims = new() { a };
+                    victimReg = a.Reg;
                     break;
                 }
             }
         }
 
-        if (victim is null)
+        if (victims is null)
         {
             throw new InvalidOperationException($"{_m.Source.Name}: no register for v{cur.VReg} at instruction {at}");
         }
 
-        _active.Remove(victim);
-        Spill(victim.VReg, at);
-        return victim.Reg;
+        foreach (Interval victim in victims)
+        {
+            _active.Remove(victim);
+            Spill(victim.VReg, at);
+        }
+        return victimReg;
     }
 
     private int NextUseAfterStart(Interval cur)

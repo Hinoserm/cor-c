@@ -387,6 +387,8 @@ public sealed class X64Backend : IBackend
         {
             AddressFold.Run(m);
             Allocator.Run(m);
+            Layout.Run(m);
+            LoopRotate.Run(m);
             Peephole.Run(m);
         }
         catch (InvalidOperationException e)

@@ -1,0 +1,64 @@
+// test: a division's cold paths take no callee-saved register, and a loop's test is at its bottom
+// expect-exit: 0
+// expect-output:
+// div 33 -100 -2147483648 7
+// rem 1 0 -1
+// long -333333333333 9223372036854775807
+// sum 18
+// caught divide overflow
+// expect-no-asm-x86-64: Div: %rbx %r12 %r13 %r14 %r15
+// expect-no-asm-x86-64: Rem: %rbx %r12 %r13 %r14 %r15
+// expect-no-asm-x86-64: DivLong: %rbx %r12 %r13 %r14 %r15
+// expect-no-asm-x86-64: Sum: %rbx %r12 %r13 %r14 %r15 jmp
+// expect-no-asm-x86: Div: pop
+// expect-no-asm-x86: Rem: pop
+// expect-no-asm-x86: Sum: jmp
+//
+// A signed division has two cold paths, a divisor of nought and the most
+// negative value over minus one, each a call that never returns. The
+// x86-64 allocator gave every value one interval from its first position to
+// its last, laid out as lowering made the blocks: the dividend's spanned the
+// call on the cold path between its uses, which clobbers every caller-saved
+// register, so it took RBX -- and the divisor R12, the quotient R13 -- with
+// their saves and restores, for a value never live across a call. Its
+// intervals have holes now, as the i386 allocator's do, and the blocks are
+// laid out as that backend lays them, so the test falls through to the
+// divide, and a loop's test is copied to its bottom: no jump in the lap.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Div(int a, int b) { return a / b; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Rem(int a, int b) { return a % b; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static long DivLong(long a, long b) { return a / b; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Sum(int[] xs)
+    {
+        int s = 0;
+        for (int i = 0; i < xs.Length; i++) s += xs[i] / 3;
+        return s;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        int seven = 7, minus = -1;
+        Host.Line("div " + Div(231, seven) + " " + Div(100, minus) + " " + Div(int.MinValue, 1) + " " + Div(49, seven));
+        Host.Line("rem " + Rem(15, seven) + " " + Rem(5, minus) + " " + Rem(-15, seven - 5));
+        Host.Line("long " + DivLong(-1000000000000, 3) + " " + DivLong(long.MinValue + 1, minus));
+        Host.Line("sum " + Sum(new int[] { 9, 12, 33 }));
+        try
+        {
+            Host.Line("no " + Div(int.MinValue, minus));
+        }
+        catch (OverflowException)
+        {
+            Host.Line("caught divide overflow");
+        }
+        Host.Done(0);
+        return 0;
+    }
+}
