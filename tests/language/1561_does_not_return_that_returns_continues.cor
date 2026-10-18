@@ -1,0 +1,60 @@
+// test: does_not_return_that_returns_continues
+// expect-exit: 0
+// expect-compile-warning: 1561_does_not_return_that_returns_continues.cor(28,5): warning CS8763
+// expect-output:
+// 249500
+// caught
+// after: 249505
+//
+// [DoesNotReturn] (System.Diagnostics.CodeAnalysis) informs null analysis
+// only, never the code: a method marked with it that does return draws C#'s
+// CS8763, and at run time the call simply returns and the code after it
+// runs. A call in a loop, with an array made just before it, hit a trap.
+
+using System;
+using System.Diagnostics.CodeAnalysis;
+
+sealed class Boom : Exception { }
+
+static class Program
+{
+    static long s_sum;
+
+    [DoesNotReturn]
+    static void MaybeFail(int k)
+    {
+        if (k < 0) throw new Boom();
+        s_sum += k;
+    }
+
+    static long Run(int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            if ((i & 1) == 0)
+            {
+                int[] a = new int[64];
+                a[3] = i;
+                MaybeFail(a[3]);
+            }
+        }
+        return s_sum;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Run(1000));
+        try
+        {
+            MaybeFail(-1);
+            Console.WriteLine("not reached");
+        }
+        catch (Boom)
+        {
+            Console.WriteLine("caught");
+        }
+        MaybeFail(5);
+        Console.WriteLine("after: " + s_sum);
+        return 0;
+    }
+}

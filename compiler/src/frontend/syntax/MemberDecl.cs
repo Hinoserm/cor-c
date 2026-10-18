@@ -153,4 +153,5 @@ internal sealed class MemberRare
     public List<(string Name, string Method)>? LocalGenerics;
     public Dictionary<string, string>? Rehosted;
     public int Captures = -1;
+    public int EndLine, EndCol;
 }

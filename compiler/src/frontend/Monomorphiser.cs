@@ -257,7 +257,7 @@ public sealed class Monomorphiser
             ExplicitInterface = null, Line = made.Line, Col = made.Col,
             LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
             Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
-            AutoAccessor = made.AutoAccessor,
+            AutoAccessor = made.AutoAccessor, NeverReturnsByText = made.NeverReturnsByText, End = made.End,
         };
         if (made.Attributes.Count > 0) plain.WritableAttributes.AddRange(made.Attributes);
         plain.WritableParams.AddRange(made.Params);
@@ -2944,7 +2944,8 @@ public sealed class Monomorphiser
                 // that its own T is not a known type.
                 if (md.TypeParams.Count > 0) made.WritableTypeParams.AddRange(md.TypeParams);
                 // And its attributes: [DoesNotReturn] is read off the
-                // declaration by the checker (Binder.NeverReturns).
+                // declaration by the checker (Binder.NeverReturns,
+                // Binder.CheckDoesNotReturn).
                 if (md.Attributes.Count > 0) made.WritableAttributes.AddRange(md.Attributes);
 
                 foreach (Param p in md.Params)
@@ -2975,6 +2976,11 @@ public sealed class Monomorphiser
                 made.AutoAccessor = md.AutoAccessor;
                 made.File = md.File;
                 made.TemplateIndex = md.TemplateIndex;
+                // What its text says of it and where it ends, read off the
+                // template's text and the same for every copy
+                // (MethodDecl.NeverReturnsByText, Binder.CheckDoesNotReturn).
+                made.NeverReturnsByText = md.NeverReturnsByText;
+                made.End = md.End;
 
                 // A HOISTED GENERIC LOCAL FUNCTION stays one: its written
                 // name, the names it calls by, and how many of its parameters

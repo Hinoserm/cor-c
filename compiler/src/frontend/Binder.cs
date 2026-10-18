@@ -1346,6 +1346,7 @@ public sealed partial class Binder
         // copy's body left unchecked until used is checked then (WantBody).
         b._r.OnMethodReferenced(b.WantBody);
         b._r.BodyWantedLate = b.WantBody;
+        b._r.NeverReturns = b.CallNeverReturns;
         b.Run(unit);
         // The declarations' tables carry straight on into the bodies': a copy
         // of every one, the original then dropped, was a unit's whole binding
@@ -5755,6 +5756,9 @@ public sealed partial class Binder
             EnterFunctionBody(lambda: false);
             CheckBlock(md.Body);
             LeaveFunctionBody();
+            // Its calls resolved: CS8763 where it is marked [DoesNotReturn]
+            // and can return, as C# has it.
+            CheckDoesNotReturn(md);
             PopScope();
             SettleGenericCaptures();
             SettleCapturedCells();
@@ -16683,13 +16687,14 @@ public sealed partial class Binder
     /// <summary>
     /// Whether a statement ends in a call to a method declared
     /// `[DoesNotReturn]` (System.Diagnostics.CodeAnalysis): the null state
-    /// after it is never reached. Asked after the statement is checked, so the
-    /// call has been resolved.
+    /// after it is never reached, as C#'s null analysis trusts the mark.
+    /// Asked after the statement is checked, so the call has been resolved.
+    /// What the code after such a call does is the code generator's to work
+    /// out, and the mark plays no part in it (Binder.CallNeverReturns).
     /// </summary>
     private bool NeverReturns(Stmt s) => s switch
     {
-        ExprStmt { Expr: Expr e } => Called(e) is { Decl: not null } m
-            && m.Decl.Attributes.Any(a => a.Target.Length == 0 && a.Name is "DoesNotReturn" or "DoesNotReturnAttribute"),
+        ExprStmt { Expr: Expr e } => Called(e) is { Decl: not null } m && MarkedDoesNotReturn(m.Decl),
         Block b => b.Statements.Count > 0 && (Leaves(b.Statements[^1]) || NeverReturns(b.Statements[^1])),
         IfStmt i => i.Else != null && (Leaves(i.Then) || NeverReturns(i.Then)) && (Leaves(i.Else) || NeverReturns(i.Else)),
         _ => false,

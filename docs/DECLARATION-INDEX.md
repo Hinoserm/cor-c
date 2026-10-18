@@ -75,7 +75,14 @@ declaration indexing is not a substitute for compilation diagnostics.
 
 The source lexer resolves conditional directives, including file-local defines.
 Stored declaration spellings contain only active tokens, with original literal
-spellings preserved and implementation bodies replaced by declaration markers.
+spellings preserved and implementation bodies replaced by declaration markers:
+`{}` for a block body, `default` for an expression body, and `{ throw null ; }`
+or `throw null` for a method whose body's text says it never returns (its last
+statement a throw or a loop with no way out, nothing in it returning). That one
+fact about a body travels because code more than one unit compiles -- a generic
+copy calling the method -- is generated from it, and the copies the link keeps
+one of must agree: the unit reading the marker reads the same of the method as
+the unit that compiles its body (Parser.NeverReturnsByText).
 They are generated metadata, never handwritten replacement headers or executable
 method implementations. Every fragment retains its own namespace, using imports
 and aliases; partial fragments must not borrow another file's scope.
@@ -86,15 +93,17 @@ location records use UTF-16 character offsets, matching the parser's string
 indices. Source fingerprints cover complete file text; declaration fingerprints
 cover declaration tokens and lexical scope but exclude omitted bodies and source
 positions. A body-only change therefore invalidates implementation users without
-changing an otherwise identical declaration fingerprint. Template-shape
-fingerprints cover the tokens of the bodies a template is imported with (a
-generic type's, a type's nested in one, a generic method's) without literal
-values or positions: a unit that imports a template and copies none of its
-bodies still reads them for the names they mention, and depends on that and
-nothing more of them. A unit's receipt flags each key it loaded with what of it
-the unit depends on (UnitDependencies.Dependence): the declaration alone; the
-declaration and the whole file's text, where the unit copied one of the key's
-bodies; or the declaration and the template shape.
+changing an otherwise identical declaration fingerprint -- unless it changes
+whether the body's text says the method never returns, which changes its marker
+and so the declaration. Template-shape fingerprints cover the tokens of the
+bodies a template is imported with (a generic type's, a type's nested in one, a
+generic method's) without literal values or positions: a unit that imports a
+template and copies none of its bodies still reads them for the names they
+mention, and depends on that and nothing more of them. A unit's receipt flags
+each key it loaded with what of it the unit depends on
+(UnitDependencies.Dependence): the declaration alone; the declaration and the
+whole file's text, where the unit copied one of the key's bodies; or the
+declaration and the template shape.
 
 The CDEC payload starts with uint32 magic CDEC and version 2. Four int32-length
 strict UTF-8 strings follow: source path, declaration spelling, namespace and

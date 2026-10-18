@@ -1,0 +1,81 @@
+// The other unit of 1565, compiled apart from its callers: a [DoesNotReturn]
+// method that comes back and one that never does, two unmarked ones that
+// never return, and a generic shelf this unit and the other each make a
+// copy of for int.
+
+using System;
+using System.Diagnostics.CodeAnalysis;
+
+public sealed class UnitBoom : Exception { public int K; public UnitBoom(int k) { K = k; } }
+
+public static class Checks
+{
+    public static long Sum;
+
+    [DoesNotReturn]
+    public static void MaybeFail(int k)
+    {
+        if (k < 0) throw new UnitBoom(k);
+        Sum += k;
+    }
+
+    [DoesNotReturn]
+    public static void Fail(int k) => throw new UnitBoom(k);
+
+    // Never returns, which only Fail's body proves: its own text ends in a
+    // call, and the other unit sees no more of it than that.
+    public static void Stop(int k) { Fail(k + 1000); }
+
+    // Never returns, as its own text says: a loop with no way out ends it.
+    public static void Halt(int k)
+    {
+        if (k >= 0) throw new UnitBoom(k + 2000);
+        while (true) { }
+    }
+
+    // This unit's own use of Shelf<int>, so that it holds a copy of it too.
+    public static long Total()
+    {
+        Shelf<int> shelf = new Shelf<int>();
+        for (int i = 0; i < 10; i++) shelf.Put(i);
+        Func<int, int> get = shelf.Getter();
+        long total = 0;
+        for (int i = 0; i < shelf.Count; i++) total += shelf.At(i) + shelf.Near(i) + get(i);
+        return total;
+    }
+}
+
+// Compiled in both units for int: the link keeps one copy and refuses two
+// that differ, so both must say the same of Stop and Halt.
+public sealed class Shelf<T>
+{
+    T[] _items = new T[16];
+    int _count;
+
+    public int Count => _count;
+
+    public void Put(T item)
+    {
+        if (_count == _items.Length) Checks.Stop(_count);
+        _items[_count++] = item;
+    }
+
+    public T At(int i)
+    {
+        if ((uint)i >= (uint)_count) Checks.Stop(i);
+        return _items[i];
+    }
+
+    public T Near(int i)
+    {
+        if ((uint)i >= (uint)_count) Checks.Halt(i);
+        return _items[i];
+    }
+
+    // The lambda's body is the copy's as well: the copy is certified with it.
+    public Func<int, T> Getter() => i =>
+    {
+        if ((uint)i >= (uint)_count) Checks.Stop(i);
+        return _items[i];
+    };
+}

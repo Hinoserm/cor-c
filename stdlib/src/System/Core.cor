@@ -7529,11 +7529,13 @@ abstract class Encoding {
 /// THE THROWS OF THE HOT MEMBERS, out of line, as .NET's ThrowHelper: a
 /// member with a throw in it is never inlined (an unwind cannot be), so the
 /// indexer of every list was a call. Each is a call that does not return.
-/// Every one of these throws. [DoesNotReturn] says so to the code generator
-/// as well as the checker (Lowering.CallDirect): a call to one ends its block,
-/// so what is live across it -- a loop's index and sum, around the check in
-/// List's indexer -- need not survive a call that never comes back, and is
-/// not moved out of the registers a call clobbers for its sake.
+/// Every one of these throws, and its text says so: the code generator, which
+/// works that out itself (Binder.CallNeverReturns), ends the block after a
+/// call to one, in a generic copy as anywhere, so what is live across it -- a
+/// loop's index and sum, around the check in List's indexer -- need not
+/// survive a call that never comes back, and is not moved out of the
+/// registers a call clobbers for its sake. [DoesNotReturn] is .NET's, for
+/// the null analysis of what calls them, and plays no part in that.
 static class ThrowHelper {
     [DoesNotReturn]
     public static void IndexOutOfRange() {

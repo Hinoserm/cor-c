@@ -1,0 +1,87 @@
+// test: does_not_return_paths_that_return
+// expect-exit: 0
+// expect-compile-warning: 1564_does_not_return_paths_that_return.cor(36,5): warning CS8763
+// expect-compile-warning: 1564_does_not_return_paths_that_return.cor(39,71): warning CS8763
+// expect-compile-warning: 1564_does_not_return_paths_that_return.cor(44,21): warning CS8763
+// expect-compile-warning: 1564_does_not_return_paths_that_return.cor(56,5): warning CS8763
+// expect-compile-warning: 1564_does_not_return_paths_that_return.cor(59,76): warning CS8763
+// expect-compile-warning: 1564_does_not_return_paths_that_return.cor(86,39): warning CS8763
+// expect-output:
+// swallowed
+// after swallow
+// after breaks
+// after early
+// after switch
+// after instance 5
+// after generic hello
+// done
+//
+// Each of these [DoesNotReturn] methods has a path that comes back -- a
+// catch that swallows the throw, a loop that breaks, a return, a switch
+// section that breaks, a test that passes -- and C# warns (CS8763) and lets
+// the caller go on.
+
+using System;
+using System.Diagnostics.CodeAnalysis;
+
+sealed class Boom : Exception { }
+
+static class Program
+{
+    [DoesNotReturn]
+    static void Swallow()
+    {
+        try { throw new Boom(); }
+        catch (Boom) { Console.WriteLine("swallowed"); }
+    }
+
+    [DoesNotReturn]
+    static void Breaks(int n) { while (true) { if (n-- == 0) break; } }
+
+    [DoesNotReturn]
+    static void Early(int k)
+    {
+        if (k == 0) return;
+        throw new Boom();
+    }
+
+    [DoesNotReturn]
+    static void Switch(int k)
+    {
+        switch (k)
+        {
+            case 0: throw new Boom();
+            default: break;
+        }
+    }
+
+    [DoesNotReturn]
+    static void NotNull<T>(T value) { if (value == null) throw new Boom(); }
+
+    static int Main()
+    {
+        Swallow();
+        Console.WriteLine("after swallow");
+        Breaks(3);
+        Console.WriteLine("after breaks");
+        Early(0);
+        Console.WriteLine("after early");
+        Switch(1);
+        Console.WriteLine("after switch");
+        Counter c = new Counter();
+        c.Bump(5);
+        Console.WriteLine("after instance " + c.N);
+        NotNull("hello");
+        Console.WriteLine("after generic hello");
+        Console.WriteLine("done");
+        return 0;
+    }
+}
+
+sealed class Counter
+{
+    public int N;
+
+    [DoesNotReturn]
+    public void Bump(int k) { N += k; }
+}

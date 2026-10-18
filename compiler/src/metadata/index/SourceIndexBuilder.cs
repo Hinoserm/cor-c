@@ -144,7 +144,16 @@ public static class SourceIndexBuilder
                         { bodyIndex++; wroteBody = false; }
                         if (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].From)
                         {
-                            if (!wroteBody) declaration.Append(bodies[bodyIndex].Block ? "{} " : "default ");
+                            // A BODY WHOSE TEXT SAYS IT NEVER RETURNS STAYS ONE
+                            // THAT SAYS SO (Parser.NeverReturningBodies): a unit
+                            // reading this reads the same of the method as the
+                            // unit that compiles it, and code both compile -- a
+                            // generic copy calling it -- comes out the same in
+                            // both. An edit that lets it return changes the
+                            // declaration, and what was compiled against it.
+                            bool never = parser.NeverReturningBodies.Contains(bodies[bodyIndex].From);
+                            if (!wroteBody)
+                                declaration.Append(bodies[bodyIndex].Block ? (never ? "{ throw null ; } " : "{} ") : (never ? "throw null " : "default "));
                             wroteBody = true;
                             if (bodies[bodyIndex].Template)
                             {

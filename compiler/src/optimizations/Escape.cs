@@ -5442,8 +5442,8 @@ continue;
     /// concatenation inlined round a loop -- was given back only at the slot's
     /// renewal or a return, and a throw per lap left one each time. The
     /// object does not escape, so with the frame gone it is dead at the
-    /// block's last call -- unless that call is handed it, a [DoesNotReturn]
-    /// helper reading what it was given, where it stays. The slot is emptied
+    /// block's last call -- unless that call is handed it, a helper that
+    /// never returns reading what it was given, where it stays. The slot is emptied
     /// after, as a return's free leaves nothing behind either.
     /// </summary>
     private void ReleaseAtThrows(Function f, FrameSlot slot, Instr made, OwnedRecord record)

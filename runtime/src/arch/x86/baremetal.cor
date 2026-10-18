@@ -756,6 +756,10 @@ static class Platform
     /// which is how a test harness reads the result. On real hardware the
     /// port is nothing, the write goes nowhere, and the halt below is the
     /// whole of it.
+    ///
+    /// [DoesNotReturn], as .NET's own exit is, for C#'s null analysis; the
+    /// loop at its end is what proves it (Binder.CallNeverReturns).
+    [DoesNotReturn]
     public static void Exit(int code)
     {
         if (ExitHook != 0)
@@ -831,6 +835,7 @@ static partial class Os
     }
 
     /// Stops the program with `code`, which is what returning from Main does.
+    [DoesNotReturn]
     public static void Exit(int code)
     {
         Platform.Exit(code);

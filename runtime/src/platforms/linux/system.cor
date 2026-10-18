@@ -1204,6 +1204,9 @@ static class Platform
 
     /// Ends the whole process. exit_group rather than exit, so that the day
     /// this runtime has threads, exiting means what a C program means by it.
+    /// [DoesNotReturn], as .NET's own exit is, for C#'s null analysis: a
+    /// method marked so that ends calling this one is not warned of (CS8763).
+    [DoesNotReturn]
     public static void Exit(int code)
     {
         // Buffered console output reaches the terminal before the process
@@ -1221,8 +1224,11 @@ static class Platform
         }
         Sys.Syscall(Call.ExitGroup, code, 0, 0);
         // The kernel does not return from that; if it somehow did, the plain
-        // exit is the next best thing, and after that there is nothing.
-        Sys.Syscall(Call.Exit, code, 0, 0);
+        // exit is the next best thing, and after that there is nothing --
+        // asked again for ever rather than returned from, so that this, and
+        // Os.Exit and Environment.Exit over it, is proved never to return
+        // and the code after a call to one is none (Binder.CallNeverReturns).
+        while (true) Sys.Syscall(Call.Exit, code, 0, 0);
     }
 
     /// One write(2): how many bytes the kernel took, or -errno. The runtime
@@ -1257,6 +1263,7 @@ static class Platform
 ///     kernel; Linux left argc and argv on the stack at entry.
 static partial class Os
 {
+    [DoesNotReturn]
     public static void Exit(int code)
     {
         Platform.Exit(code);

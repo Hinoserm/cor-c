@@ -1,0 +1,98 @@
+// test: does_not_return_proved_never_returns
+// expect-exit: 0
+// expect-compile-warning: 1563_does_not_return_proved_never_returns.cor(66,5): warning CS8763
+// expect-no-compile-warning: 1563_does_not_return_proved_never_returns.cor(37,
+// expect-no-compile-warning: 1563_does_not_return_proved_never_returns.cor(40,
+// expect-no-compile-warning: 1563_does_not_return_proved_never_returns.cor(43,
+// expect-no-compile-warning: 1563_does_not_return_proved_never_returns.cor(52,
+// expect-no-compile-warning: 1563_does_not_return_proved_never_returns.cor(59,
+// expect-no-compile-warning: 1563_does_not_return_proved_never_returns.cor(73,
+// expect-no-compile-warning: 1563_does_not_return_proved_never_returns.cor(76,
+// expect-output:
+// via a: InvalidOperationException
+// loop: Boom 7
+// both a: InvalidOperationException
+// both b: Boom 0
+// try
+// finally: Boom 0
+// rethrow: Boom 9
+// generic: InvalidOperationException
+// fine
+//
+// Every path of each of these ends in a throw, a call to another method
+// that never returns, or a loop with no way out, as the compiler proves: a
+// call to one ends its path, and what follows it never runs. C# does not
+// warn about them -- but for InFinally, whose finally always throws:
+// Roslyn's null analysis does not count a finally that cannot end, and
+// says CS8763 at its closing brace, though it never returns.
+
+using System;
+using System.Diagnostics.CodeAnalysis;
+
+sealed class Boom : Exception { public int K; public Boom(int k) { K = k; } }
+
+static class Program
+{
+    [DoesNotReturn]
+    static void Fail(string m) => throw new InvalidOperationException(m);
+
+    [DoesNotReturn]
+    static void FailVia(string m) { Fail("via " + m); }
+
+    [DoesNotReturn]
+    static void Spin() { while (true) { } }
+
+    [DoesNotReturn]
+    static void LoopThenThrow(int n)
+    {
+        for (int i = 0; ; i++)
+        {
+            if (i == n) throw new Boom(i);
+        }
+    }
+
+    [DoesNotReturn]
+    static void Both(bool a)
+    {
+        if (a) Fail("a");
+        else throw new Boom(0);
+    }
+
+    [DoesNotReturn]
+    static void InFinally()
+    {
+        try { Console.WriteLine("try"); }
+        finally { throw new Boom(0); }
+    }
+
+    [DoesNotReturn]
+    static void Rethrow(int k)
+    {
+        try { throw new Boom(k); }
+        catch (Boom) { throw; }
+    }
+
+    [DoesNotReturn]
+    static void Check<T>(T value) { throw new InvalidOperationException(value!.ToString()); }
+
+    static int Main()
+    {
+        try { FailVia("a"); Console.WriteLine("not reached"); }
+        catch (Exception e) { Console.WriteLine("via a: " + e.GetType().Name); }
+        try { LoopThenThrow(7); Console.WriteLine("not reached"); }
+        catch (Boom b) { Console.WriteLine("loop: Boom " + b.K); }
+        try { Both(true); }
+        catch (Exception e) { Console.WriteLine("both a: " + e.GetType().Name); }
+        try { Both(false); }
+        catch (Boom b) { Console.WriteLine("both b: Boom " + b.K); }
+        try { InFinally(); }
+        catch (Boom b) { Console.WriteLine("finally: Boom " + b.K); }
+        try { Rethrow(9); }
+        catch (Boom b) { Console.WriteLine("rethrow: Boom " + b.K); }
+        try { Check(3); }
+        catch (Exception e) { Console.WriteLine("generic: " + e.GetType().Name); }
+        if (DateTime.Now.Year < 0) Spin();
+        Console.WriteLine("fine");
+        return 0;
+    }
+}

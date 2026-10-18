@@ -1,0 +1,130 @@
+// test: never_returns_unmarked_helpers
+// expect-exit: 0
+// expect-no-symbol: m_Program_AfterFail
+// expect-no-symbol: m_Program_AfterChain
+// expect-no-symbol: m_Program_AfterSpin
+// expect-output:
+// 42
+// failing -3
+// caught -3
+// failing -1004
+// caught -1004
+// 10
+// resumed 5
+// after virtual stop
+// halter goes on 6
+// after sealed stop
+// caught 7
+// caught 108
+// done
+//
+// The compiler works out for itself which methods never return, marked or
+// not, and nothing here is marked: Fail's last statement is a throw, Chain
+// only calls Fail, and Spin loops with no way out. A call to one ends its
+// path as a throw does, and the code after it is none -- so AfterFail,
+// AfterChain and AfterSpin, called only there, are not in the image. A
+// virtual method whose own body never returns says nothing of a call through
+// its slot, which an override answers, nor of the sealed override a call is
+// made straight to; a base call runs the base's body, and ends its path.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Boom : Exception { public int K; public Boom(int k) { K = k; } }
+
+class Stopper
+{
+    public virtual void Stop(int k) { throw new Boom(k); }
+}
+
+class Resumer : Stopper
+{
+    public override void Stop(int k) { Console.WriteLine("resumed " + k); }
+}
+
+sealed class Halter : Stopper
+{
+    public override void Stop(int k) { Console.WriteLine("halter goes on " + k); }
+}
+
+class Strict : Stopper
+{
+    public override void Stop(int k)
+    {
+        base.Stop(k + 100);
+        Console.WriteLine("not reached either");
+    }
+}
+
+static class Program
+{
+    static void Fail(int k)
+    {
+        Console.WriteLine("failing " + k);
+        throw new Boom(k);
+    }
+
+    static void Chain(int k) { Fail(k - 1000); }
+
+    static void Spin() { while (true) { } }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void AfterFail(int k) { Console.WriteLine("after fail " + k); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void AfterChain(int k) { Console.WriteLine("after chain " + k); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void AfterSpin() { Console.WriteLine("after spin"); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Check(int k)
+    {
+        if (k < 0)
+        {
+            Fail(k);
+            AfterFail(k);
+        }
+        return k * 2;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Checked(int k)
+    {
+        if (k < 0)
+        {
+            Chain(k);
+            AfterChain(k);
+        }
+        return k + 1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Wait(int k)
+    {
+        if (k > 1000000)
+        {
+            Spin();
+            AfterSpin();
+        }
+        return k;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Check(21));
+        try { Check(-3); } catch (Boom b) { Console.WriteLine("caught " + b.K); }
+        try { Checked(-4); } catch (Boom b) { Console.WriteLine("caught " + b.K); }
+        Console.WriteLine(Wait(10));
+        Stopper s = new Resumer();
+        s.Stop(5);
+        Console.WriteLine("after virtual stop");
+        Halter h = new Halter();
+        h.Stop(6);
+        Console.WriteLine("after sealed stop");
+        try { new Stopper().Stop(7); Console.WriteLine("not reached"); } catch (Boom b) { Console.WriteLine("caught " + b.K); }
+        try { ((Stopper)new Strict()).Stop(8); Console.WriteLine("not reached"); } catch (Boom b) { Console.WriteLine("caught " + b.K); }
+        Console.WriteLine("done");
+        return 0;
+    }
+}

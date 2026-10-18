@@ -1,0 +1,49 @@
+// test: does_not_return_trusts_only_what_never_returns
+// expect-exit: 0
+// expect-compile-warning: 1562_does_not_return_trusts_only_what_never_returns.cor(25,62): warning CS8763
+// expect-no-compile-warning: 1562_does_not_return_trusts_only_what_never_returns.cor(28,
+// expect-no-compile-warning: 1562_does_not_return_trusts_only_what_never_returns.cor(35,
+// expect-output:
+// outer returned
+// twice returned
+// caught 1
+// caught 2
+//
+// C# warns only where a [DoesNotReturn] method's own body can reach its end,
+// counting a call to another [DoesNotReturn] method as the end of a path:
+// Inner warns, Outer and Twice do not. But Inner does return, so Outer and
+// Twice return through it, and their callers go on.
+
+using System;
+using System.Diagnostics.CodeAnalysis;
+
+sealed class Boom : Exception { public int K; public Boom(int k) { K = k; } }
+
+static class Program
+{
+    [DoesNotReturn]
+    static void Inner(int k) { if (k > 0) throw new Boom(k); }
+
+    [DoesNotReturn]
+    static void Outer(int k) { Inner(k); }
+
+    [DoesNotReturn]
+    static void Twice(int k)
+    {
+        Outer(k);
+        Outer(k + 1);
+    }
+
+    static int Main()
+    {
+        Outer(0);
+        Console.WriteLine("outer returned");
+        Twice(-5);
+        Console.WriteLine("twice returned");
+        try { Outer(1); Console.WriteLine("not reached"); }
+        catch (Boom b) { Console.WriteLine("caught " + b.K); }
+        try { Twice(1); Console.WriteLine("not reached"); }
+        catch (Boom b) { Console.WriteLine("caught " + (b.K + 1)); }
+        return 0;
+    }
+}

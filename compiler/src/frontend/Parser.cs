@@ -75,6 +75,14 @@ public sealed class Parser
     /// fingerprints apart from the declaration.
     /// </summary>
     public List<(int From, int To, bool Block, bool Template)> OmittedBodies { get; } = new();
+
+    /// <summary>
+    /// Where each body of a method whose text says it never returns starts
+    /// (MethodDecl.NeverReturnsByText): the From of its range in
+    /// OmittedBodies when it was left out, which an index writes as
+    /// `{ throw null ; }` rather than `{}` (SourceIndexBuilder).
+    /// </summary>
+    public HashSet<int> NeverReturningBodies { get; } = new();
     private int _i;
     private string? _iteratorTarget;
     private TypeRef? _iteratorElement;
@@ -3201,13 +3209,20 @@ public sealed class Parser
     private MethodDecl FinishMethodCore(MethodDecl m, CtorInit? init)
     {
         Block? body = null;
+        // What the body's text says (NeverReturnsByText), and where the body
+        // starts, for an index that leaves it out.
+        bool neverReturns = false;
+        int bodyAt = 0;
 
         if (At(Tok.LBrace))
         {
             TypeRef? savedReturns = _returns;
 
             _returns = m.Returns;
+            int open = _i;
+            bodyAt = Cur.Pos;
             body = ReadBodyBlock(m.Returns, m.Line, m.Col);
+            neverReturns = NeverReturnsByText(open, _i - 1);
             _returns = savedReturns;
         }
         else if (Take(Tok.FatArrow))
@@ -3219,6 +3234,9 @@ public sealed class Parser
             // return: List.Add answers nothing, and returning it was reported as
             // a void method returning a value.
             Token at = Cur;
+            // `=> throw ...` is a throw expression, the whole of the body.
+            neverReturns = At(Tok.KwThrow);
+            bodyAt = at.Pos;
             Expr value = ReadBodyExpression();
 
             Expect(Tok.Semi, "';' after an expression body");
@@ -3252,13 +3270,87 @@ public sealed class Parser
             }
         }
 
-        return new MethodDecl
+        MethodDecl made = new MethodDecl
         {
             Name = m.Name, Mods = m.Mods, Returns = m.Returns, IsCtor = m.IsCtor,
             NotNullIfNotNull = m.NotNullIfNotNull,
             ExplicitInterface = m.ExplicitInterface,
             Line = m.Line, Col = m.Col, Body = body, Init = init,
         }.CopyListsFrom(m);
+        // NOT A CONSTRUCTOR'S, NOR AN ASYNC METHOD'S: a call to an async
+        // method comes back with its task at the first await or the throw,
+        // whatever its body does after.
+        if (neverReturns && !m.IsCtor && !m.Mods.HasFlag(Mods.Async))
+        {
+            made.NeverReturnsByText = true;
+            NeverReturningBodies.Add(bodyAt);
+        }
+        // WHERE IT ENDS, for CS8763 (Binder.CheckDoesNotReturn): the token
+        // just read, a closing brace or a semicolon.
+        if (body is not null && Binder.MarkedDoesNotReturn(made)) made.End = (_t[_i - 1].Line, _t[_i - 1].Col);
+        return made;
+    }
+
+    /// <summary>
+    /// WHETHER A BODY'S TEXT ALONE SAYS IT NEVER RETURNS, from its tokens --
+    /// its `{` at `open`, its `}` at `close` -- and nothing else, so that it
+    /// says the same read whole or skipped, from a source or from an index's
+    /// `{ throw null ; }`, in every unit (MethodDecl.NeverReturnsByText):
+    ///  - nothing in it returns: no `return` anywhere, a lambda's too, and no
+    ///    `yield`, whose method hands back an enumerator however its body
+    ///    ends;
+    ///  - its last statement is a throw, which every path that reaches the
+    ///    end of the body runs; or `while (true)` or `for (;;)` with no
+    ///    `break` anywhere in the body, so that nothing leaves the loop.
+    /// A `goto` cannot get past the last statement: a label after it would
+    /// be inside it, and no jump reaches into a statement from outside.
+    /// Anything else, `if (a) throw x; else throw y;` among it, is left to
+    /// the proof over the bound body (Binder.CallNeverReturns).
+    /// </summary>
+    private bool NeverReturnsByText(int open, int close)
+    {
+        // The last statement's first token: a token at the body's own depth
+        // that starts it or follows a `;` or a `}` at that depth. A `}` that
+        // ends an initialiser inside a statement makes the next token look
+        // like a start, and that token is no throw, while or for.
+        int last = -1, depth = 0;
+        bool starts = true, breaks = false;
+        for (int k = open + 1; k < close; k++)
+        {
+            Token token = _t[k];
+            if (token.Kind == Tok.KwReturn || token.Kind == Tok.Ident && token.Text == "yield") return false;
+            if (token.Kind == Tok.KwBreak) breaks = true;
+            if (depth == 0 && starts) last = k;
+            starts = false;
+            switch (token.Kind)
+            {
+                case Tok.LParen or Tok.LBracket or Tok.LBrace: depth++; break;
+                case Tok.RParen or Tok.RBracket: depth--; break;
+                case Tok.RBrace: starts = --depth == 0; break;
+                case Tok.Semi: starts = depth == 0; break;
+            }
+        }
+        if (last < 0) return false;
+        if (_t[last].Kind == Tok.KwThrow) return true;
+        if (breaks || last + 3 >= close || _t[last + 1].Kind != Tok.LParen) return false;
+        // `while (true)`, which a do-while's `while (true);` reads as too:
+        // without a break that loop never ends either.
+        if (_t[last].Kind == Tok.KwWhile) return _t[last + 2].Kind == Tok.KwTrue && _t[last + 3].Kind == Tok.RParen;
+        if (_t[last].Kind != Tok.KwFor) return false;
+        // `for (...; ; ...)`: nothing between the first `;` and the second.
+        int nested = 0;
+        for (int k = last + 2; k < close; k++)
+        {
+            switch (_t[k].Kind)
+            {
+                case Tok.LParen or Tok.LBracket or Tok.LBrace: nested++; break;
+                case Tok.RParen or Tok.RBracket or Tok.RBrace:
+                    if (nested-- == 0) return false;
+                    break;
+                case Tok.Semi when nested == 0: return _t[k + 1].Kind == Tok.Semi;
+            }
+        }
+        return false;
     }
 
     /// `T this[params] { get { } set { } }` -- a property called Item that takes

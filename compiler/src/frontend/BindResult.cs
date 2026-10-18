@@ -157,6 +157,15 @@ public sealed partial class BindResult
     /// </summary>
     internal Action<MethodSymbol>? BodyWantedLate { get; set; }
 
+    /// <summary>
+    /// Whether a call to a method never returns (Binder.CallNeverReturns):
+    /// asked with true from code another unit may compile as well, which
+    /// only the method's text answers, and with false from code that is this
+    /// compile's alone, which the bodies it bound answer. Lowering ends the
+    /// block after such a call; after any other, the code goes on.
+    /// </summary>
+    internal Func<MethodSymbol, bool, bool>? NeverReturns { get; set; }
+
     public CallTargets Calls { get; }
     /// <summary>A delegate += or -=: the synthesised Combine or Remove call that replaces it, already bound.</summary>
     public Dictionary<AssignExpr, CallExpr> DelegateCompounds { get; } = new(ReferenceEqualityComparer.Instance);

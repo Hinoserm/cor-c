@@ -116,16 +116,28 @@ public sealed partial class Lowering
             && !m.Name.StartsWith("get_", StringComparison.Ordinal))
             _m.CallsCollector = true;
         VReg? made = _e.Call(CallLabel(m), returns, args.ToArray());
-        // A CALL THAT NEVER COMES BACK ENDS ITS BLOCK: a method declared
-        // [DoesNotReturn] (ThrowHelper's, Environment.Exit) is followed by
-        // nothing. Left to fall through, the path past it joined the code
-        // after, every value live there was live across the call, and the
-        // register allocator moved a loop's index and sum out of the
-        // registers a call clobbers, into ones it saves or onto the stack,
-        // for a throw that never returns to use them -- List's indexer
+        // A CALL THAT NEVER COMES BACK ENDS ITS BLOCK: a method proved never
+        // to return (Binder.CallNeverReturns) -- ThrowHelper's, which only
+        // throw, Environment.Exit, whose calls end in a loop round exit(2) --
+        // is followed by nothing. Left to fall through, the path past it
+        // joined the code after, every value live there was live across the
+        // call, and the register allocator moved a loop's index and sum out
+        // of the registers a call clobbers, into ones it saves or onto the
+        // stack, for a throw that never returns to use them -- List's indexer
         // inlined into a loop spilled its counter in every lap.
-        if (returns == IrType.Void && buffer is null && m.Decl is { } declared
-            && declared.Attributes.Any(a => a.Target.Length == 0 && a.Name is "DoesNotReturn" or "DoesNotReturnAttribute"))
+        //
+        // PROVED, NOT DECLARED: [DoesNotReturn] informs C#'s null analysis
+        // and nothing else, and a method marked with it that does return
+        // returns to code that goes on (it ended the program here once).
+        // And IN CODE ANOTHER UNIT MAY COMPILE TOO, by the callee's text
+        // alone, which every unit reads alike: a generic copy the link keeps
+        // one of (Function.Coalescible), and what is not exported -- a
+        // lambda's body, an async method's MoveNext -- which a copy's
+        // certificate takes in with it (DefinitionSemantics). The library
+        // proves more of its own methods than a program compiled against its
+        // declarations can, and two copies of List<int>'s indexer that
+        // differed were refused.
+        if (returns == IrType.Void && buffer is null && _b.NeverReturns?.Invoke(m, _f.Coalescible || !_f.Exported) == true)
         {
             _e.Emit(Opcode.Trap, null);
             _e.Unreachable();

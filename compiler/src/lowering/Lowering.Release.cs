@@ -75,6 +75,10 @@ public sealed partial class Lowering
             ReturnChildren(children);
         }
 
+        // WHETHER IT NEVER RETURNS, settled while its body is there to say:
+        // a caller lowered after it asks (Binder.CallNeverReturns), and an
+        // emptied body would answer that it runs off its end.
+        _b.NeverReturns?.Invoke(m, false);
         foreach (Node n in _released) _b.Forget(n);
         _released.Clear();
         body.WritableStatements.Clear();

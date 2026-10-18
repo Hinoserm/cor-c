@@ -1,0 +1,67 @@
+// test: does_not_return_across_units
+// units: tests/language/support/1565_does_not_return_unit.cor
+// expect-exit: 0
+// expect-compile-warning: 1565_does_not_return_unit.cor(20,5): warning CS8763
+// expect-output:
+// 249500
+// caught -1
+// caught 7
+// after: 249505
+// shelf 90 135
+// caught 1009
+// caught 2009
+// caught 1007
+// caught 1003
+//
+// A [DoesNotReturn] method of another unit that comes back comes back to
+// its caller here, as in C#; one that never does still ends the path. This
+// unit sees only the other's declarations, not what its bodies do -- and
+// Shelf<int>, which both units compile, must come out of both the same:
+// the other unit proves Stop never returns from Fail's body, which this
+// one never reads, so neither copy, nor the lambda it makes, may lean on
+// that, while Halt's text says it of itself in both.
+
+using System;
+
+static class Program
+{
+    static long Run(int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            if ((i & 1) == 0)
+            {
+                int[] a = new int[64];
+                a[3] = i;
+                Checks.MaybeFail(a[3]);
+            }
+        }
+        return Checks.Sum;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Run(1000));
+        try { Checks.MaybeFail(-1); Console.WriteLine("not reached"); }
+        catch (UnitBoom b) { Console.WriteLine("caught " + b.K); }
+        try { Checks.Fail(7); Console.WriteLine("not reached"); }
+        catch (UnitBoom b) { Console.WriteLine("caught " + b.K); }
+        Checks.MaybeFail(5);
+        Console.WriteLine("after: " + Checks.Sum);
+        Shelf<int> shelf = new Shelf<int>();
+        for (int i = 0; i < 5; i++) shelf.Put(i * i);
+        Func<int, int> get = shelf.Getter();
+        long seen = 0;
+        for (int i = 0; i < shelf.Count; i++) seen += shelf.At(i) + shelf.Near(i) + get(i);
+        Console.WriteLine("shelf " + seen + " " + Checks.Total());
+        try { shelf.At(9); Console.WriteLine("not reached"); }
+        catch (UnitBoom b) { Console.WriteLine("caught " + b.K); }
+        try { shelf.Near(9); Console.WriteLine("not reached"); }
+        catch (UnitBoom b) { Console.WriteLine("caught " + b.K); }
+        try { get(7); Console.WriteLine("not reached"); }
+        catch (UnitBoom b) { Console.WriteLine("caught " + b.K); }
+        try { Checks.Stop(3); Console.WriteLine("not reached"); }
+        catch (UnitBoom b) { Console.WriteLine("caught " + b.K); }
+        return 0;
+    }
+}

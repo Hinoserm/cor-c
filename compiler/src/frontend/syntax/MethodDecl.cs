@@ -22,6 +22,18 @@ public sealed class MethodDecl : MemberDecl
     public bool AutoAccessor { get; set; }
     // Declared beside AutoAccessor so the two bytes share a word.
     public bool IsCtor { get; init; }
+
+    /// <summary>
+    /// WHETHER ITS TEXT ALONE SAYS IT NEVER RETURNS (Parser.NeverReturnsByText):
+    /// its body is `=> throw ...`, or its last statement is a throw or a loop
+    /// with no way out and nothing in it returns. Read off the body's tokens
+    /// whether the body was parsed or skipped, and kept by the declaration
+    /// index for a body it leaves out (SourceIndexBuilder), so every unit
+    /// that sees the method says the same of it -- what code more than one
+    /// unit compiles goes by (Binder.CallNeverReturns).
+    /// </summary>
+    // And this one beside them both.
+    public bool NeverReturnsByText { get; set; }
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<TypeParam> NoTypeParams = new();
     private List<TypeParam>? _typeParams;
@@ -125,6 +137,18 @@ public sealed class MethodDecl : MemberDecl
     /// <summary>To write: made on first use.</summary>
     public Dictionary<string, string> WritableRehosted => Rare.Rehosted ??= new(StringComparer.Ordinal);
     private static readonly Dictionary<string, string> NoRehosted = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Where its last token is -- a block body's closing brace, an expression
+    /// body's semicolon -- kept for a method marked [DoesNotReturn] alone:
+    /// where C# reports CS8763 when its end can be reached
+    /// (Binder.CheckDoesNotReturn). (0, 0) where it is not kept.
+    /// </summary>
+    public (int Line, int Col) End
+    {
+        get => _rare is null ? (0, 0) : (_rare.EndLine, _rare.EndCol);
+        set { if (value != (0, 0) || _rare is not null) { Rare.EndLine = value.Line; Rare.EndCol = value.Col; } }
+    }
 
     /// <summary>What a hoisted function names its parent by: unique for a hoisted one, by place for a member.</summary>
     public string HoistKey => HoistedName is not null ? Name : Name + "@" + Line + ":" + Col;
