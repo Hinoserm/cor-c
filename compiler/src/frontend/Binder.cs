@@ -14796,7 +14796,10 @@ public sealed partial class Binder
                     // assignment: its pointee's Prim is no number of its own.
                     bool ok = target.IsPointer || value.IsPointer
                         ? target.IsPointer && a.Op is BinOp.Add or BinOp.Sub && !value.IsPointer && !value.IsNullableValue && value.IsInteger
-                        : target.IsNumeric && value.IsNumeric;
+                        : target.IsNumeric && value.IsNumeric
+                          // `n += null` over an int?: empty after (Combine).
+                          || target.IsNumeric && target.IsNullableValue && value.Prim == Prim.NullLiteral
+                             && a.Op is not (BinOp.AndAlso or BinOp.OrElse or BinOp.Coalesce);
 
                     // `bool` supports the non-short-circuiting bitwise pair in
                     // C#, including their compound-assignment forms. This is
@@ -22185,6 +22188,26 @@ public sealed partial class Binder
             case BinOp.Rem:
             default:
             {
+                // A NUMBER AND THE LITERAL null is the lifted operator's empty
+                // answer (C#'s CS0458 case): `n + null` is an int? that holds
+                // nothing, the number evaluated all the same.
+                if (l.Prim == Prim.NullLiteral != (r.Prim == Prim.NullLiteral)
+                    && (l.Prim == Prim.NullLiteral ? r : l) is { IsNumeric: true } number && !number.IsPointer)
+                {
+                    Type empty = Promote(number.IsNullableValue ? number.Underlying : number).AsNullable();
+                    if (RefOf(empty) is TypeRef emptyRef)
+                    {
+                        PatternExpr always = new()
+                        {
+                            Subject = l.Prim == Prim.NullLiteral ? b.Right : b.Left,
+                            Test = new CastExpr { Type = emptyRef, Operand = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = b.Line, Col = b.Col }, Line = b.Line, Col = b.Col },
+                            Line = b.Line, Col = b.Col, File = b.File,
+                        };
+                        _r.Rewrites[b] = always;
+                        return CheckExpr(always);
+                    }
+                }
+
                 if (!l.IsNumeric || !r.IsNumeric)
                 {
                     Error(b, $"'{l}' and '{r}' are not both numbers");

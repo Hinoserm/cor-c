@@ -3598,6 +3598,13 @@ public sealed partial class Lowering
     /// </summary>
     private VReg Combine(Node at, BinOp op, VReg left, Type leftType, Expr rightExpr, Type rightType, Type resultType)
     {
+        // `n += null`: the lifted operator's empty answer.
+        if (rightType.Prim == Prim.NullLiteral && resultType.IsNullableValue)
+        {
+            Eval(rightExpr);
+            return NullableEmpty(at, resultType);
+        }
+
         // `p += n` steps n elements, as `p + n` does.
         if (leftType.IsPointer && op is BinOp.Add or BinOp.Sub && rightType.IsInteger && !rightType.IsPointer)
         {
