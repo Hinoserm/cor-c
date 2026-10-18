@@ -10256,6 +10256,10 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 
     /// What it holds, in an array of no more room than that, as .NET's
     /// TrimExcess gives back its spare capacity (kept at 90% full or more).
+    /// The array it had goes back as Grow's does (OutgrownStorage): left
+    /// behind, a queue held in a static and trimmed each lap left its old
+    /// array to the collector every lap, the compiler's own free of a
+    /// replaced field being only for an owner one function holds alone.
     public void TrimExcess() {
         if (count >= (int)(items.Length * 0.9)) { return; }
         T[] kept = new T[count];
@@ -10264,8 +10268,10 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
             if (at >= items.Length) { at = at - items.Length; }
             kept[i] = items[at];
         }
+        T[] old = items;
         items = kept;
         head = 0;
+        OutgrownStorage.Release(old);
     }
 
     public void Enqueue(T value) {

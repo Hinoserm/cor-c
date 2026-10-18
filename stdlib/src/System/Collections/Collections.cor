@@ -940,6 +940,9 @@ class PriorityQueue<TElement, TPriority> {
         Resize(grown);
     }
 
+    // THE ARRAYS ARE THE QUEUE'S ALONE, read only through it, so the two it
+    // outgrew or trimmed go back after the stores that replace them, as
+    // Queue's and Stack's do (OutgrownStorage, the self-replacing free).
     private void Resize(int length) {
         TElement[] moreElements = new TElement[length];
         TPriority[] morePriorities = new TPriority[length];
@@ -947,8 +950,12 @@ class PriorityQueue<TElement, TPriority> {
             moreElements[i] = elements[i];
             morePriorities[i] = priorities[i];
         }
+        TElement[] oldElements = elements;
+        TPriority[] oldPriorities = priorities;
         elements = moreElements;
         priorities = morePriorities;
+        OutgrownStorage.Release(oldElements);
+        OutgrownStorage.Release(oldPriorities);
     }
 
     // The last node taken off the end and sifted down from the root.
