@@ -1,0 +1,75 @@
+// test: struct_owner_fields_freed_without_a_descriptor
+// expect-exit: 0
+// expect-output:
+// lambda S1 T1 S1
+// loop 4950
+// made 3 3
+// nested 6 hi
+// caught nan
+//
+// A STRUCT'S FIELDS FREED WITH THE STRUCT. A struct made where it dies -- in
+// a frame slot, or a block a fresh function hands back -- has no descriptor
+// in its first word, which is a field of its own: the owned objects in its
+// reference fields are given back with it without reading one. A constructor
+// that can throw kept the struct from being folded away, and the free that
+// read its first field as a descriptor faulted.
+
+using System;
+using System.Collections.Generic;
+
+struct S
+{
+    private readonly int a;
+    private readonly int[] b;
+    public S(double v)
+    {
+        if (double.IsNaN(v)) { throw new OverflowException("nan"); }
+        a = (int)v; b = new int[a + 1];
+    }
+    public int Size => b.Length;
+    public override string ToString() => "S" + a;
+}
+
+struct T
+{
+    private readonly int a;
+    private readonly int[] b;
+    public T(double v) { a = (int)v; b = new int[1]; }
+    public override string ToString() => "T" + a;
+}
+
+struct Pair
+{
+    public int Count;
+    public List<string> Names;
+    public Pair(int n)
+    {
+        if (n < 0) { throw new ArgumentOutOfRangeException(nameof(n)); }
+        Count = n; Names = new List<string>();
+        for (int i = 0; i < n; i++) Names.Add("n" + i);
+    }
+}
+
+static class Program
+{
+    static string Call(Func<string> f) => f();
+    static S Make(double v) => new S(v);
+    static Pair Pair2(int n) => new Pair(n);
+
+    static void Main()
+    {
+        Console.WriteLine("lambda " + Call(() => new S(1.0).ToString()) + " " + Call(() => new T(1.0).ToString()) + " " + new S(1.0));
+        int sum = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            S s = new S(i);
+            sum += s.Size - 1;
+        }
+        Console.WriteLine("loop " + sum);
+        Console.WriteLine("made " + Make(2.0).Size + " " + Call(() => Make(2.0).Size.ToString()));
+        Pair p = Pair2(6);
+        Console.WriteLine("nested " + Call(() => Pair2(6).Names.Count.ToString()) + " " + (p.Names[0] == "n0" ? "hi" : "no"));
+        try { Console.WriteLine(Call(() => new S(double.NaN).ToString())); }
+        catch (OverflowException e) { Console.WriteLine("caught " + e.Message); }
+    }
+}

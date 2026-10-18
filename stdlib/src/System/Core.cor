@@ -3496,6 +3496,10 @@ static class BitConverter {
     public static double Int64BitsToDouble(long value) { return Sys.FromBits(value); }
     public static int SingleToInt32Bits(float value) { return Sys.SingleBits(value); }
     public static float Int32BitsToSingle(int value) { return Sys.FromSingleBits(value); }
+    public static ulong DoubleToUInt64Bits(double value) { return (ulong)Sys.Bits(value); }
+    public static double UInt64BitsToDouble(ulong value) { return Sys.FromBits((long)value); }
+    public static uint SingleToUInt32Bits(float value) { return (uint)Sys.SingleBits(value); }
+    public static float UInt32BitsToSingle(uint value) { return Sys.FromSingleBits((int)value); }
 
     /// TRUE, and it is a fact about the processor rather than a choice: every
     /// machine this compiler targets stores the little end first. A program
@@ -4683,6 +4687,14 @@ static class PictureFormat {
         return Written(format, false, false, digits, digits.Length);
     }
 
+    /// The same for a whole number given as its decimal digits, which is all
+    /// a BigInteger can give: no machine word holds one.
+    public static string OfDigits(bool negative, string digits, string format) {
+        bool zero = String.Compare(digits, "0") == 0;
+
+        return Written(format, negative && !zero, false, zero ? "" : digits, zero ? 0 : digits.Length);
+    }
+
     /// An unsigned number's digits, which String.FromInt cannot give: a ulong
     /// above long.MaxValue would come back negative.
     private static string Decimal(ulong value) {
@@ -5358,10 +5370,11 @@ static class NumberRead {
     // how many of them count (an integer's trailing zeros do not, a float's
     // fraction's trailing zeros are trimmed), `scale` where the point falls
     // -- the number is 0.DIGITS x 10^scale -- and `tail` whether a digit past
-    // the buffer was not zero.
+    // the buffer was not zero. BigInteger reads through it too, with a buffer
+    // as long as the text so that no digit is ever past it.
     const int StateSign = 1, StateParens = 2, StateDigits = 4, StateNonZero = 8, StateDecimal = 16, StateCurrency = 32;
 
-    static bool Scan(string s, int style, bool integer, char[] digits, out int count, out int scale, out bool negative, out bool tail) {
+    internal static bool Scan(string s, int style, bool integer, char[] digits, out int count, out int scale, out bool negative, out bool tail) {
         count = 0;
         scale = 0;
         negative = false;
@@ -6183,6 +6196,12 @@ static class IntPtr {
     public static nint MinValue => nint.MinValue;
     public static nint Add(nint pointer, int offset) { return pointer + offset; }
     public static nint Subtract(nint pointer, int offset) { return pointer - offset; }
+
+    // A word's width of digits: "X" of a negative one is eight digits on a
+    // 32-bit machine and sixteen on a 64-bit one, as .NET's nint gives it.
+    public static string ToString(this nint value, string format) {
+        return NumberFormat.Of((long)value, (int)WordSize.Bytes * 8, format);
+    }
 }
 
 /// System.UIntPtr's statics: `nuint` is UIntPtr (C# 11).
@@ -6193,6 +6212,10 @@ static class UIntPtr {
     public static nuint MinValue => 0;
     public static nuint Add(nuint pointer, int offset) { return pointer + (nuint)offset; }
     public static nuint Subtract(nuint pointer, int offset) { return pointer - (nuint)offset; }
+
+    public static string ToString(this nuint value, string format) {
+        return NumberFormat.OfUnsigned((ulong)value, format);
+    }
 }
 
 static class UInt64 {

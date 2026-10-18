@@ -10684,7 +10684,9 @@ public sealed partial class Binder
         if (had.IsInteger && !had.Nullable)
         {
             // ulong.ToString() is not long.ToString(): see String.FromUInt.
-            bool unsigned = had.Prim is Prim.U64 || (had.Prim is Prim.NUInt && Target.Current.WordSize == 8);
+            // A nuint goes there whatever its width: it widens to ulong and
+            // to no long.
+            bool unsigned = had.Prim is Prim.U64 or Prim.NUInt;
 
             return Call("String", unsigned ? "FromUInt" : "FromInt", call, spelt.Target);
         }
@@ -14957,7 +14959,20 @@ public sealed partial class Binder
                 // without this the zero stayed an int, `uint | int` widened to
                 // long to hold both, and the flags word would not go back into
                 // the uint it came from.
-                if (a2.IsInteger && b2.IsInteger && !a2.Equals(b2))
+                // AN ENUM AGAINST A CONSTANT NOUGHT IS THE ENUM, the one
+                // constant C# converts to every enum (10.2.4), and the enum
+                // goes to no number by itself: `c ? 0 : Color.Blue` is a
+                // Color, Red when c holds. Any other number against an enum
+                // is no conversion at all and is refused below.
+                bool enumA = a2.Symbol is { Kind: TypeKind.Enum } && !a2.IsNullableValue;
+                bool enumB = b2.Symbol is { Kind: TypeKind.Enum } && !b2.IsNullableValue;
+                if (enumA != enumB)
+                {
+                    if (enumA && b2.IsInteger && ConstantValue(c2.Else, _thisType) is 0) return a2;
+                    if (enumB && a2.IsInteger && ConstantValue(c2.Then, _thisType) is 0) return b2;
+                }
+
+                if (a2.IsInteger && b2.IsInteger && !a2.Equals(b2) && !enumA && !enumB)
                 {
                     if (ConstantValue(c2.Else, _thisType) is long otherwise && Fits(otherwise, a2))
                     {
@@ -14985,8 +15000,42 @@ public sealed partial class Binder
                         {
                             CheckAssignable(had, whole, arm, "arm");
                         }
+                        // AND AN ARM THAT REACHES THE WHOLE ONLY BY A
+                        // USER-DEFINED CONVERSION is converted by its operator,
+                        // as an assignment converts it: `n == 0 ? 1 : big` is a
+                        // BigInteger, and its 1 must become one rather than be
+                        // read as one. The operator may be on either side:
+                        // `c ? meters : 1.5` is a double by Meters' operator to
+                        // double, and the struct must not be read as one either.
+                        else if (!had.IsError && !whole.IsError && (whole.Symbol is not null || had.Symbol is not null)
+                                 && !StandardConvertible(had, whole) && !Variant(had, whole))
+                        {
+                            CheckAssignable(had, whole, arm, "arm");
+                        }
+                        // AND A STRING ARM OF A SEQUENCE-TYPED WHOLE gives up
+                        // its characters as an assignment has it give them:
+                        // `c ? "abc" : list` as an IEnumerable<char> was the
+                        // string handed over as the sequence it is not here.
+                        else if (had.Prim == Prim.String && !had.IsArray && !whole.IsArray
+                                 && ArrayFace(Type.ArrayOf(Type.Char), whole) is not null)
+                        {
+                            CheckAssignable(had, whole, arm, "arm");
+                        }
                     }
                     return whole;
+                }
+
+                // TWO TYPES THAT EACH CONVERT TO THE OTHER, one way at least by
+                // a user-defined operator, give no natural type (C# 12.18), and
+                // the conditional is the type it is wanted as: `Two w = c ? two
+                // : 9` keeps its Two whole and converts only the 9, where taking
+                // the first direction would send the Two out to an int and back.
+                if (_wanted is { IsError: false, IsVoid: false } either && !a2.Equals(b2)
+                    && (either.Equals(a2) || either.Equals(b2))
+                    && Convertible(a2, b2) && Convertible(b2, a2)
+                    && (!StandardConvertible(a2, b2) || !StandardConvertible(b2, a2)))
+                {
+                    return Joined(either);
                 }
 
                 if (Convertible(a2, b2))
@@ -15163,6 +15212,12 @@ public sealed partial class Binder
                 // view that answers Count and the indexer is made here as it is
                 // where the conversion is implicit.
                 ArrayBecomes(cast.Operand, operand, wanted);
+                // So is `(IEnumerable<char>)text`: the string gives up its
+                // characters as it does where it is assigned.
+                if (operand.Prim == Prim.String && !operand.IsArray && !wanted.IsArray && ArrayFace(Type.ArrayOf(Type.Char), wanted) is not null)
+                {
+                    CheckAssignable(operand, wanted, cast.Operand, "cast");
+                }
                 return wanted;
             }
 
@@ -18564,8 +18619,12 @@ public sealed partial class Binder
             return null;
         if (value.Symbol is TypeSymbol shape)
         {
-            if (Reachable(shape, "ToString").Any(m => !m.Static && TakesFormat(m, 0))) return null;
-            if (AllInterfaces(shape).Any(i => i.Name == "IFormattable"))
+            // AN IFormattable IS FORMATTED AS ONE, by ToString(format, null),
+            // where it has a ToString(string) beside it too: .NET's handler
+            // asks the interface, and the two may answer differently.
+            bool isFormattable = AllInterfaces(shape).Any(i => i.Name == "IFormattable");
+            if (!isFormattable && Reachable(shape, "ToString").Any(m => !m.Static && TakesFormat(m, 0))) return null;
+            if (isFormattable)
             {
                 CallExpr formattable = new()
                 {
@@ -21617,9 +21676,16 @@ public sealed partial class Binder
                     return l.IsNullableValue ? l.Underlying : l.AsNonNullable();
                 }
 
+                // A RIGHT THAT GETS THERE BY A DECLARED CONVERSION is made by
+                // it: `nn ?? 9` over a BigInteger? is 9 as a BigInteger, not
+                // the int read as one.
                 if (l.IsNullableValue && !r.Nullable && !r.IsNullableValue
                     && Convertible(r, l.Underlying))
                 {
+                    if (!r.IsError && !StandardConvertible(r, l.Underlying) && !Variant(r, l.Underlying))
+                    {
+                        CheckAssignable(r, l.Underlying, b.Right, "??");
+                    }
                     return l.Underlying;
                 }
 
@@ -21633,6 +21699,10 @@ public sealed partial class Binder
                     if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left) && !Convertible(left, right))
                     {
                         CoalesceView(b.Right, right, left);
+                        if (!right.IsError && !right.IsArray && !StandardConvertible(right, left) && !Variant(right, left))
+                        {
+                            CheckAssignable(right, left, b.Right, "??");
+                        }
                         return r.Nullable ? l : left;
                     }
                     if (Convertible(left, right))
@@ -21904,6 +21974,23 @@ public sealed partial class Binder
                 {
                     Error(b, $"'{l}' and '{r}' are not both numbers");
                     return Type.Error;
+                }
+
+                // AN ENUM STEPPED BY A NUMBER IS THE ENUM (C# 12.10.5 and
+                // 12.10.6): `e + 1`, `1 + e` and `e - 1` are each an E, and
+                // `e - f` of one enum is the distance between them in its
+                // underlying type. Read as numbers, `Color.Red + 1` printed 1.
+                if (b.Op is BinOp.Add or BinOp.Sub && !l.IsNullableValue && !r.IsNullableValue)
+                {
+                    TypeSymbol? leftEnum = l.Symbol is { Kind: TypeKind.Enum } le ? le : null;
+                    TypeSymbol? rightEnum = r.Symbol is { Kind: TypeKind.Enum } re ? re : null;
+                    // The number must go to the enum's underlying type as it is.
+                    bool Steps(TypeSymbol of, Type by, Expr at) => by.IsInteger && by.Symbol is null
+                        && (StandardConvertible(by, new Type { Prim = of.EnumUnderlying })
+                            || ConstantValue(at, _thisType) is long k && Fits(k, new Type { Prim = of.EnumUnderlying }));
+                    if (leftEnum is not null && rightEnum is null && Steps(leftEnum, r, b.Right)) return l;
+                    if (b.Op == BinOp.Add && rightEnum is not null && leftEnum is null && Steps(rightEnum, l, b.Left)) return r;
+                    if (b.Op == BinOp.Sub && leftEnum is not null && ReferenceEquals(leftEnum, rightEnum)) return new Type { Prim = leftEnum.EnumUnderlying };
                 }
 
                 // LIFTED, as C# lifts every arithmetic operator: an `int?`

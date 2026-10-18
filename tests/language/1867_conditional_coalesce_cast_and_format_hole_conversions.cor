@@ -1,0 +1,88 @@
+// test: conditional_coalesce_cast_and_format_hole_conversions
+// expect-exit: 0
+// expect-output:
+// enum Red Green Blue
+// chars a-b-c x a-b-c
+// coalesce 18 70 3.5
+// holes P[E3]6 F[X]6 T6
+// native 5 -3 -0003 0005
+// steps Green Blue Green 1 -2 C 0 2 Blue Int32 Byte Small
+//
+// THE CONVERSIONS C# MAKES BETWEEN AN OPERAND AND WHAT IT BECOMES, where the
+// operand alone does not say: a constant nought against an enum is the enum
+// (`c ? 0 : Color.Blue` is Red, not 0); a string arm, or a cast, of a
+// sequence-typed whole gives up its characters; the right of `??` reaching
+// the left's type by a declared conversion is made by it (`nn ?? 9` over a
+// BigInteger? is 9 as one); an IFormattable in a format hole is formatted
+// by ToString(format, null) beside its ToString(string); and nint and nuint
+// take their format in a hole and in ToString. An enum stepped by a number
+// is the enum, wrapped to its width (`e + 56` on a byte enum at 200 is 0),
+// and the distance between two of one enum its underlying type.
+
+using System;
+using System.Collections.Generic;
+using System.Numerics;
+
+enum Color { Red, Green, Blue }
+enum Small : byte { A = 1, B = 200, C = 255 }
+
+sealed class Money
+{
+    public int C;
+    public Money(int c) { C = c; }
+    public static implicit operator Money(int c) => new Money(c * 10);
+}
+
+struct Meters
+{
+    public double V;
+    public Meters(double v) { V = v; }
+    public static implicit operator Meters(int v) => new Meters(v + 0.5);
+}
+
+struct Toy : IFormattable
+{
+    private long v;
+    public Toy(long x) { v = x; }
+    public override string ToString() { return "T" + v; }
+    public string ToString(string? format) { return "F[" + format + "]" + v; }
+    public string ToString(string? format, IFormatProvider? provider) { return "P[" + format + "]" + v; }
+}
+
+static class Program
+{
+    static bool yes = DateTime.Now.Year > 2000;
+    static Money? None() => null;
+
+    static void Main()
+    {
+        var first = yes ? 0 : Color.Blue;
+        var second = !yes ? Color.Blue : 0;
+        Color third = yes ? Color.Blue : 0;
+        Console.WriteLine("enum " + first + " " + (second + 1) + " " + third);
+
+        List<char> list = new List<char> { 'x' };
+        IEnumerable<char> s1 = yes ? "abc" : list;
+        IEnumerable<char> s2 = !yes ? "abc" : list;
+        IEnumerable<char> s3 = yes ? (IEnumerable<char>)"abc" : list;
+        Console.WriteLine("chars " + string.Join("-", s1) + " " + string.Join("-", s2) + " " + string.Join("-", s3));
+
+        BigInteger? nn = null;
+        Meters? nm = null;
+        Console.WriteLine("coalesce " + (nn ?? 9) * 2 + " " + (None() ?? 7).C + " " + (nm ?? 3).V);
+
+        Toy z = new Toy(6);
+        Console.WriteLine("holes " + $"{z:E3}" + " " + z.ToString("X") + " " + z);
+
+        nuint u = 5;
+        nint i = -3;
+        Console.WriteLine("native " + u.ToString() + " " + i + " " + $"{i:D4}" + " " + u.ToString("X4"));
+
+        Color c = Color.Red;
+        Small b = Small.B, a = Small.A, top = Small.C;
+        c += 1; c++;
+        Console.WriteLine("steps " + (Color.Red + 1) + " " + (2 + Color.Red) + " " + (Color.Blue - 1) + " " + (Color.Blue - Color.Green)
+            + " " + (Color.Red - Color.Blue) + " " + (b + 55) + " " + (b + 56) + " " + (a - top) + " " + c
+            + " " + (Color.Blue - Color.Red).GetType().Name + " " + (top - a).GetType().Name + " " + (b + 1).GetType().Name);
+    }
+}

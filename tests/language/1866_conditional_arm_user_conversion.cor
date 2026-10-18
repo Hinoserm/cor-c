@@ -1,0 +1,59 @@
+// test: conditional_arm_user_conversion
+// expect-exit: 0
+// expect-output:
+// [int 10] 10m
+// 2.5m
+// [int 7] 7m
+// [int 3] Show(3m)
+// [int 0] 0m 2.5m
+// [double 1.5] 1.5m
+// <yes>
+// [int 4] 4m 2.5m
+// 1
+//
+// AN ARM THAT REACHES THE CONDITIONAL'S TYPE ONLY BY A USER-DEFINED IMPLICIT
+// CONVERSION is converted by its operator (C# 12.18): `c ? 1 : meters` is a
+// Meters, and the 1 goes through op_Implicit(int) exactly once, when its arm
+// runs. The type was worked out and the arm left as it was, so the int's bits
+// were read as the struct and its string field followed as an address --
+// `n == 0 ? 1 : big` over a BigInteger faulted. Nested, as an argument, as a
+// return, against a double operator, a class's operator from string, and in
+// a lambda.
+
+using System;
+struct Meters {
+    public double Value;
+    public string Unit;
+    public Meters(double v) { Value = v; Unit = "m"; }
+    public static implicit operator Meters(int v) { Console.Write("[int " + v + "] "); return new Meters(v); }
+    public static implicit operator Meters(double v) { Console.Write("[double " + v + "] "); return new Meters(v); }
+    public override string ToString() { return Value + Unit; }
+}
+class Label {
+    public string Text;
+    public Label(string t) { Text = t; }
+    public static implicit operator Label(string s) { return new Label("<" + s + ">"); }
+    public override string ToString() { return Text; }
+}
+class P {
+    static int calls;
+    static int Next() { calls++; return calls * 10; }
+    static string Show(Meters m) { return "Show(" + m + ")"; }
+    static Meters Pick(bool c, Meters m) { return c ? 0 : m; }
+    static void Main() {
+        Meters far = new Meters(2.5);
+        for (int i = 0; i < 3; i++) {
+            Meters m = i == 0 ? Next() : i == 1 ? far : 7;
+            Console.WriteLine(m);
+        }
+        Console.WriteLine(Show(calls > 0 ? 3 : far));
+        Console.WriteLine(Pick(true, far) + " " + Pick(false, far));
+        Meters h = calls > 100 ? far : 1.5;
+        Console.WriteLine(h);
+        Label l = calls > 0 ? "yes" : new Label("no");
+        Console.WriteLine(l);
+        Func<bool, Meters> f = b => b ? 4 : far;
+        Console.WriteLine(f(true) + " " + f(false));
+        Console.WriteLine(calls);
+    }
+}

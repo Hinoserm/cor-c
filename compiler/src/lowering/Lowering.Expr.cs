@@ -4421,7 +4421,16 @@ public sealed partial class Lowering
         Type rightPromoted = RightOperandPromotion(b.Op, right, promoted);
         VReg lv = EvalAs(b.Left, promoted);
         VReg rv = EvalAs(b.Right, rightPromoted);
-        return Arith(b, b.Op, lv, rv, promoted);
+        VReg made = Arith(b, b.Op, lv, rv, promoted);
+
+        // AN ENUM'S STEP IS ITS WIDTH: `e + 56` on a byte enum at 200 is 0,
+        // C#'s (E)(U)(x + y), and the distance between two is a U too.
+        if (b.Op is BinOp.Add or BinOp.Sub && !whole.IsNullableValue
+            && (whole.Symbol is { Kind: TypeKind.Enum } || left.Symbol is { Kind: TypeKind.Enum } && right.Symbol is { Kind: TypeKind.Enum }))
+        {
+            return Convert(b, made, ResultTypeOf(b.Op, promoted), whole);
+        }
+        return made;
     }
 
     private (VReg, VReg) SameWidth(VReg l, VReg r)
@@ -4465,7 +4474,8 @@ public sealed partial class Lowering
         }
         else if (!_b.Boxes.Contains(b.Right))
         {
-            r = Convert(b, r, right, result);
+            // From what a declared conversion made of it, where one did.
+            r = Convert(b, r, Evaluated(b.Right), result);
         }
         _e.CopyTo(dest, R(r));
         _e.Jump(end);

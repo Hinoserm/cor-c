@@ -42,7 +42,7 @@ and runs, unchanged, on Linux or on CORSAC/OS. Consequences:
 | `lib/io-streams.cor` | System.IO | StringReader/Writer, BufferedStream, BinaryReader/Writer, EndOfStreamException, InvalidDataException |
 | `lib/time.cor` | System, System.Diagnostics | DateOnly, TimeOnly, Stopwatch |
 | `lib/values.cor` | System | Guid, Version, Lazy, Tuple (2-4) and Tuple.Create |
-| `lib/numerics.cor` | System.Numerics | BigInteger (the static-method half; C# spells the rest with operators) |
+| `lib/numerics.cor` | System.Numerics | BigInteger (operators, conversions, bytes, formats and parsing as .NET's), BitOperations |
 
 The compiler links these by default for every Linux program
 (`compiler/Driver.cs`, `DefaultLibraries`); `tests/lang/run.sh` names

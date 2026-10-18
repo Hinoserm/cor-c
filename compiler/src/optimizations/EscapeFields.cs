@@ -957,9 +957,23 @@ public sealed partial class Escape
             }
             if (clean.Count == 0 && later.Count == 0) continue;
 
+            // AN OWNER WITH NO DESCRIPTOR -- a struct's block or frame slot,
+            // its fields from the first word -- has nothing FreeField may
+            // read for its element map (Runtime.OwnsArrayElements), and a
+            // struct's first field read as one faulted. Its fields' objects
+            // go by FreeOwnedReplaced, which reads only what it frees, and
+            // none is left to the link, whose sites are FreeField's.
+            bool described = Described(f, r);
+            if (!described)
+            {
+                if (!_headerlessFreer) continue;
+                later.Clear();
+                if (clean.Count == 0) continue;
+            }
+
             // A field the link decides is freed through a symbol of its own,
             // which the link makes Runtime.FreeField or Runtime.KeepField.
-            List<(long Offset, string Callee)> frees = clean.Select(o => (o, FieldFreer)).ToList();
+            List<(long Offset, string Callee)> frees = clean.Select(o => (o, described ? FieldFreer : OwnedReplacedFreer)).ToList();
             if (later.Count > 0)
             {
                 List<(string Symbol, long Offset)> sites = later.Select(o => (FieldSiteSymbol(f), o)).ToList();
@@ -1062,9 +1076,69 @@ public sealed partial class Escape
     private static void AppendFieldFree(Function f, List<Instr> output, VReg owner, long offset, int line, string callee = FieldFreer)
     {
         VReg argument = Word(f, output, owner, line, "fieldOwner");
+        // An owner with no descriptor (OwnFields): what the field holds, read
+        // here and given back as a replaced owned field's is.
+        if (callee == OwnedReplacedFreer)
+        {
+            VReg held = f.NewReg(IrTypes.Word, "fieldheld");
+            output.Add(new Instr { Op = Opcode.Load, Dest = held, Offset = offset, Size = IrTypes.Word.Bytes(), Operands = { RegOperand.Of(argument) }, Line = line });
+            output.Add(new Instr { Op = Opcode.Call, Callee = OwnedReplacedFreer,
+                Operands = { RegOperand.Of(held), new ImmOperand(0, IrTypes.Word) }, Line = line });
+            return;
+        }
         output.Add(new Instr { Op = Opcode.Call, Callee = callee,
             Operands = { RegOperand.Of(argument), new ImmOperand(offset, IrTypes.Word) }, Line = line });
     }
+
+    /// <summary>
+    /// Whether what a record owns starts with its type's descriptor: a class's
+    /// object or an array, stamped where it is made; not a struct's block or
+    /// frame slot. A fresh callee's object is asked of what makes it there,
+    /// and an owner not known to have one is taken to have none.
+    /// </summary>
+    private bool Described(Function f, OwnedRecord r)
+    {
+        if (r.Slot is not null && r.SlotAddress is not null)
+        {
+            HashSet<VReg> names = Derivations(f, new[] { r.Root, r.SlotAddress });
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count == 2 && i.Operands[1] is SymOperand { Name: var table } && IsDescriptor(table)
+                        && (i.Operands[0] is SlotOperand { Slot: var into } && into == r.Slot || i.Operands[0] is RegOperand { Reg: var at } && names.Contains(at)))
+                        return true;
+            return false;
+        }
+        if (r.FreshCallee is string callee)
+        {
+            if (callee == OpaqueCallee || _module is null) return false;
+            // Made once for the run, before any function asks: the module's
+            // functions do not change while it is here.
+            lock (_freshOrigins)
+                _functionsByName ??= _module.Functions.GroupBy(g => g.Name, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+            return FreshDescribed(callee, 0);
+        }
+        return StampOf(f, r.Root) is not null;
+    }
+
+    private bool FreshDescribed(string callee, int depth)
+    {
+        if (depth > 8 || _functionsByName is null || !_freshOrigins.TryGetValue(callee, out HashSet<Instr>? origins) || origins.Count == 0) return false;
+        if (!_functionsByName.TryGetValue(callee, out Function? maker)) return false;
+        foreach (Instr o in origins)
+        {
+            if (o is { Op: Opcode.Call, Callee: { } next } && !IsAllocator(next))
+            {
+                if (!FreshDescribed(next, depth + 1)) return false;
+            }
+            else if (o.Dest is null || StampOf(maker, o.Dest) is null)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Dictionary<string, Function>? _functionsByName;
 
     /// <summary>The registers holding what the given ones hold, or an address inside it.</summary>
     private static HashSet<VReg> Derivations(Function f, IEnumerable<VReg> roots)

@@ -3,25 +3,33 @@
 // SIGN AND MAGNITUDE, the magnitude in 32-bit limbs with the LEAST significant
 // first, because that is the order arithmetic carries in. Zero has sign 0 and
 // no limbs, and no other value has a leading zero limb -- one canonical form,
-// so comparison never has to think about padding.
+// so comparison never has to think about padding. default(BigInteger) is zero
+// with no array at all, which is why the limbs are read through Mag.
 //
-// WHAT IS MISSING AND WHY: .NET spells arithmetic on this type with operators
-// (a + b, a / b, (long)a) and the compiler does not yet bind `operator`, so
-// only the static methods .NET also documents are here -- BigInteger.Add,
-// Multiply, Divide, Pow and the rest. The day operators land, the operators
-// are three lines each over these.
+// TWO'S COMPLEMENT WHERE .NET SHOWS ONE. The bitwise operators, the shifts,
+// ToByteArray and the "X" and "B" formats treat a negative number as though
+// it had infinitely many leading one bits, which is how .NET defines them.
+// They work on a two's-complement copy made for the purpose, wide enough for
+// the sign to survive; the stored form never changes.
+//
+// .NET'S SMALL FORM. .NET keeps a value whose magnitude is below 2^31 in one
+// int and everything else in an array, and a few of its answers show the
+// seam: which message a narrowing conversion's OverflowException carries,
+// what LeadingZeroCount counts, what ">>>" shifts in. Small names that range
+// here so those answers come out the same.
 
-struct BigInteger {
-    private int sign;       // -1, 0 or 1
-    private uint[] limbs;   // least significant first; no leading zeros
+readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<BigInteger>, IFormattable {
+    private readonly int sign;       // -1, 0 or 1
+    private readonly uint[] limbs;   // least significant first; no leading zeros
 
     public BigInteger(int value) {
         sign = value < 0 ? -1 : (value > 0 ? 1 : 0);
+        limbs = Make(value < 0 ? (ulong)(0 - (long)value) : (ulong)value);
+    }
 
-        long wide = value < 0 ? -(long)value : (long)value;
-
-        limbs = wide == 0 ? new uint[0] : new uint[1];
-        if (wide != 0) { limbs[0] = (uint)wide; }
+    public BigInteger(uint value) {
+        sign = value == 0 ? 0 : 1;
+        limbs = Make(value);
     }
 
     public BigInteger(long value) {
@@ -34,6 +42,78 @@ struct BigInteger {
         limbs = Make(wide);
     }
 
+    public BigInteger(ulong value) {
+        sign = value == 0 ? 0 : 1;
+        limbs = Make(value);
+    }
+
+    public BigInteger(float value) : this((double)value) { }
+
+    /// THE WHOLE PART, truncated towards zero as .NET truncates it; infinity
+    /// and NaN have none, and .NET refuses each in its own words.
+    public BigInteger(double value) {
+        if (!double.IsFinite(value)) {
+            if (double.IsNaN(value)) { throw new OverflowException("The value is not a number."); }
+            throw new OverflowException("BigInteger cannot represent infinity.");
+        }
+
+        long bits = BitConverter.DoubleToInt64Bits(value);
+        int exponent = (int)((bits >> 52) & 0x7FF);
+
+        // A biased exponent of zero is zero or a subnormal, all below one.
+        if (exponent == 0) {
+            sign = 0;
+            limbs = new uint[0];
+            return;
+        }
+
+        uint[] whole = Make(((ulong)bits & 0xFFFFFFFFFFFFFUL) | 0x10000000000000UL);
+        int shift = exponent - 1075;
+
+        whole = shift >= 0 ? ShiftMagLeft(whole, shift) : ShiftMagRight(whole, 0 - shift);
+        sign = whole.Length == 0 ? 0 : (bits < 0 ? -1 : 1);
+        limbs = whole;
+    }
+
+    public BigInteger(byte[] value) : this(new ReadOnlySpan<byte>(value ?? throw new ArgumentNullException("value"))) { }
+
+    /// TWO'S COMPLEMENT BYTES, least significant first unless isBigEndian
+    /// says otherwise; the top bit of the last byte is the sign unless
+    /// isUnsigned says there is none. No bytes at all is zero.
+    public BigInteger(ReadOnlySpan<byte> value, bool isUnsigned = false, bool isBigEndian = false) {
+        int count = value.Length;
+        uint[] made = new uint[(count + 3) / 4];
+
+        for (int i = 0; i < count; i++) {
+            uint b = value[isBigEndian ? count - 1 - i : i];
+
+            made[i / 4] = made[i / 4] | (b << (8 * (i % 4)));
+        }
+
+        bool negative = count > 0 && !isUnsigned && (value[isBigEndian ? 0 : count - 1] & 0x80) != 0;
+
+        if (negative) {
+            // The sign carried up through the rest of the top limb, and the
+            // whole turned back into a magnitude.
+            if (count % 4 != 0) { made[made.Length - 1] = made[made.Length - 1] | (0xFFFFFFFF << (8 * (count % 4))); }
+            Complement(made);
+        }
+
+        uint[] tidy = Trim(made);
+
+        sign = tidy.Length == 0 ? 0 : (negative ? -1 : 1);
+        limbs = tidy;
+    }
+
+    // A value from a sign and a magnitude, with the sign forced to zero when
+    // the magnitude is -- the canonical form the rest of the file relies on.
+    private BigInteger(int mark, uint[] magnitude) {
+        uint[] tidy = Trim(magnitude);
+
+        sign = tidy.Length == 0 ? 0 : mark;
+        limbs = tidy;
+    }
+
     public static BigInteger Zero => new BigInteger(0);
     public static BigInteger One => new BigInteger(1);
     public static BigInteger MinusOne => new BigInteger(-1);
@@ -43,114 +123,143 @@ struct BigInteger {
     public bool IsOne => sign == 1 && limbs.Length == 1 && limbs[0] == 1;
     public bool IsEven => sign == 0 || (limbs[0] & 1) == 0;
 
-    /// Not .NET members: the parts, so that one BigInteger can read another's
-    /// state. Privacy is per instance here rather than per type, which is the
-    /// one thing that stops these being private.
-    public int SignPart => sign;
-    public uint[] Limbs => limbs;
+    public bool IsPowerOfTwo {
+        get {
+            if (sign != 1) { return false; }
+
+            int top = limbs.Length - 1;
+
+            for (int i = 0; i < top; i++) {
+                if (limbs[i] != 0) { return false; }
+            }
+            return BitOperations.IsPow2(limbs[top]);
+        }
+    }
+
+    // The magnitude, never null.
+    private uint[] Mag => limbs ?? new uint[0];
+
+    // .NET's small form: a magnitude below 2^31.
+    private bool Small => sign == 0 || (limbs.Length == 1 && limbs[0] < 0x80000000);
+
+    private static BigInteger Of(int mark, uint[] magnitude) { return new BigInteger(mark, magnitude); }
 
     // ---- the arithmetic ---------------------------------------------------
 
-    public static BigInteger Add(BigInteger left, BigInteger right) {
-        if (left.SignPart == 0) { return right; }
-        if (right.SignPart == 0) { return left; }
+    public static BigInteger operator +(BigInteger left, BigInteger right) {
+        if (left.sign == 0) { return right; }
+        if (right.sign == 0) { return left; }
 
-        if (left.SignPart == right.SignPart) {
-            return Of(left.SignPart, AddMag(left.Limbs, right.Limbs));
+        if (left.sign == right.sign) {
+            return Of(left.sign, AddMag(left.limbs, right.limbs));
         }
 
-        int order = CompareMag(left.Limbs, right.Limbs);
+        int order = CompareMag(left.limbs, right.limbs);
 
         if (order == 0) { return Zero; }
-        if (order > 0) {
-            return Of(left.SignPart, SubMag(left.Limbs, right.Limbs));
-        }
-        return Of(right.SignPart, SubMag(right.Limbs, left.Limbs));
+        if (order > 0) { return Of(left.sign, SubMag(left.limbs, right.limbs)); }
+        return Of(right.sign, SubMag(right.limbs, left.limbs));
     }
 
-    public static BigInteger Subtract(BigInteger left, BigInteger right) {
-        return Add(left, Negate(right));
+    public static BigInteger operator -(BigInteger left, BigInteger right) { return left + (-right); }
+
+    public static BigInteger operator -(BigInteger value) { return Of(0 - value.sign, value.Mag); }
+    public static BigInteger operator +(BigInteger value) { return value; }
+    public static BigInteger operator ++(BigInteger value) { return value + One; }
+    public static BigInteger operator --(BigInteger value) { return value - One; }
+
+    public static BigInteger operator *(BigInteger left, BigInteger right) {
+        if (left.sign == 0 || right.sign == 0) { return Zero; }
+        return Of(left.sign * right.sign, MulMag(left.limbs, right.limbs));
     }
 
-    public static BigInteger Negate(BigInteger value) {
-        return Of(0 - value.SignPart, value.Limbs);
-    }
-
-    public static BigInteger Abs(BigInteger value) {
-        return Of(value.SignPart < 0 ? 1 : value.SignPart, value.Limbs);
-    }
-
-    public static BigInteger Multiply(BigInteger left, BigInteger right) {
-        if (left.SignPart == 0 || right.SignPart == 0) { return Zero; }
-        return Of(left.SignPart * right.SignPart, MulMag(left.Limbs, right.Limbs));
-    }
-
-    /// TRUNCATED TOWARDS ZERO, and the remainder takes the sign of the
-    /// DIVIDEND -- C#'s rule for `/` and `%` on the built-in integers, which
-    /// BigInteger follows so that a calculation does not change answer when a
-    /// number outgrows a long.
-    public static BigInteger Divide(BigInteger dividend, BigInteger divisor) {
-        BigInteger rest = Zero;
+    public static BigInteger operator /(BigInteger dividend, BigInteger divisor) {
+        BigInteger rest;
 
         return DivRem(dividend, divisor, out rest);
     }
 
-    public static BigInteger Remainder(BigInteger dividend, BigInteger divisor) {
-        BigInteger rest = Zero;
+    public static BigInteger operator %(BigInteger dividend, BigInteger divisor) {
+        BigInteger rest;
 
         DivRem(dividend, divisor, out rest);
         return rest;
     }
 
+    public static BigInteger Add(BigInteger left, BigInteger right) { return left + right; }
+    public static BigInteger Subtract(BigInteger left, BigInteger right) { return left - right; }
+    public static BigInteger Multiply(BigInteger left, BigInteger right) { return left * right; }
+    public static BigInteger Divide(BigInteger dividend, BigInteger divisor) { return dividend / divisor; }
+    public static BigInteger Remainder(BigInteger dividend, BigInteger divisor) { return dividend % divisor; }
+    public static BigInteger Negate(BigInteger value) { return -value; }
+
+    public static BigInteger Abs(BigInteger value) { return value.sign < 0 ? -value : value; }
+
+    /// TRUNCATED TOWARDS ZERO, and the remainder takes the sign of the
+    /// DIVIDEND -- C#'s rule for `/` and `%` on the built-in integers, which
+    /// BigInteger follows so that a calculation does not change answer when a
+    /// number outgrows a long.
     public static BigInteger DivRem(BigInteger dividend, BigInteger divisor, out BigInteger remainder) {
-        if (divisor.SignPart == 0) { throw new DivideByZeroException(); }
+        if (divisor.sign == 0) { throw new DivideByZeroException(); }
 
-        uint[] quotient = new uint[0];
-        uint[] rest = new uint[0];
+        uint[] quotient;
+        uint[] rest;
 
-        DivModMag(dividend.Limbs, divisor.Limbs, out quotient, out rest);
+        DivModMag(dividend.Mag, divisor.Mag, out quotient, out rest);
 
-        remainder = Of(dividend.SignPart, rest);
-        return Of(dividend.SignPart * divisor.SignPart, quotient);
+        remainder = Of(dividend.sign, rest);
+        return Of(dividend.sign * divisor.sign, quotient);
+    }
+
+    public static (BigInteger Quotient, BigInteger Remainder) DivRem(BigInteger left, BigInteger right) {
+        BigInteger remainder;
+        BigInteger quotient = DivRem(left, right, out remainder);
+
+        return (quotient, remainder);
     }
 
     /// A NEGATIVE EXPONENT THROWS, which is .NET's behaviour: the result would
     /// not be an integer and BigInteger has nowhere to put it.
     public static BigInteger Pow(BigInteger value, int exponent) {
-        if (exponent < 0) { throw new ArgumentOutOfRangeException("exponent"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(exponent, "exponent");
 
         BigInteger result = One;
         BigInteger factor = value;
         int left = exponent;
 
         while (left > 0) {
-            if ((left & 1) == 1) { result = Multiply(result, factor); }
-            factor = Multiply(factor, factor);
+            if ((left & 1) == 1) { result = result * factor; }
             left = left >> 1;
+            if (left > 0) { factor = factor * factor; }
         }
         return result;
     }
 
     /// Exponentiation with everything kept small by reducing as it goes, which
-    /// is the only way a cryptographic exponent finishes this century.
+    /// is the only way a cryptographic exponent finishes this century. The
+    /// work is on magnitudes, the modulus's sign ignored as .NET ignores it;
+    /// the answer is negative when the value is and the exponent is odd.
     public static BigInteger ModPow(BigInteger value, BigInteger exponent, BigInteger modulus) {
-        if (exponent.SignPart < 0) { throw new ArgumentOutOfRangeException("exponent"); }
-        if (modulus.SignPart == 0) { throw new DivideByZeroException(); }
+        // .NET CHECKS THE EXPONENT'S SIGN, and names that in its message.
+        ArgumentOutOfRangeException.ThrowIfNegative(exponent.Sign, "exponent");
+        if (modulus.sign == 0) { throw new DivideByZeroException(); }
 
-        BigInteger result = One;
-        BigInteger factor = Remainder(value, modulus);
-        BigInteger left = exponent;
-        BigInteger two = new BigInteger(2);
+        BigInteger size = Abs(modulus);
+        BigInteger result = One % size;
+        BigInteger factor = Abs(value) % size;
+        uint[] bits = exponent.Mag;
 
-        while (left.SignPart > 0) {
-            BigInteger bit = Zero;
-            BigInteger half = DivRem(left, two, out bit);
+        for (int i = 0; i < bits.Length; i++) {
+            uint word = bits[i];
 
-            if (!bit.IsZero) { result = Remainder(Multiply(result, factor), modulus); }
-            factor = Remainder(Multiply(factor, factor), modulus);
-            left = half;
+            for (int b = 0; b < 32; b++) {
+                if ((word & 1) == 1) { result = result * factor % size; }
+                word = word >> 1;
+                if (word == 0 && i == bits.Length - 1) { break; }
+                factor = factor * factor % size;
+            }
         }
-        return result;
+        return value.sign < 0 && !exponent.IsEven ? -result : result;
     }
 
     /// NON-NEGATIVE ALWAYS, and gcd(0, 0) is 0 -- .NET's contract.
@@ -159,7 +268,7 @@ struct BigInteger {
         BigInteger b = Abs(right);
 
         while (!b.IsZero) {
-            BigInteger rest = Remainder(a, b);
+            BigInteger rest = a % b;
 
             a = b;
             b = rest;
@@ -167,34 +276,594 @@ struct BigInteger {
         return a;
     }
 
-    public static int Compare(BigInteger left, BigInteger right) {
-        if (left.SignPart != right.SignPart) { return left.SignPart < right.SignPart ? -1 : 1; }
-        if (left.SignPart == 0) { return 0; }
+    // ---- logarithms -------------------------------------------------------
 
-        int order = CompareMag(left.Limbs, right.Limbs);
+    public static double Log(BigInteger value) { return Log(value, Math.E); }
+    public static double Log10(BigInteger value) { return Log(value, 10.0); }
 
-        return left.SignPart > 0 ? order : 0 - order;
+    /// .NET'S FORMULA, to the bit: the logarithm of the top 64 bits as a
+    /// double, plus the bits below them counted in the base. NaN for a
+    /// negative number and for the bases that have no logarithm.
+    public static double Log(BigInteger value, double baseValue) {
+        if (value.sign < 0 || baseValue == 1.0) { return double.NaN; }
+        if (baseValue == double.PositiveInfinity) { return value.IsOne ? 0.0 : double.NaN; }
+        if (baseValue == 0.0 && !value.IsOne) { return double.NaN; }
+        if (value.Small) { return Math.Log((double)(int)value, baseValue); }
+
+        long bitLength;
+        ulong top = TopBits(value.limbs, out bitLength);
+
+        return Math.Log((double)top, baseValue) + (double)(bitLength - 64) / Math.Log(baseValue, 2.0);
     }
 
-    public int CompareTo(BigInteger other) { return Compare(this, other); }
-    public bool Equals(BigInteger other) { return Compare(this, other) == 0; }
+    // The highest 64 bits of a magnitude of two limbs or more, the top bit
+    // set when there are enough of them, and the magnitude's length in bits.
+    private static ulong TopBits(uint[] magnitude, out long bitLength) {
+        int length = magnitude.Length;
+        ulong high = magnitude[length - 1];
+        ulong middle = length > 1 ? magnitude[length - 2] : 0;
+        ulong low = length > 2 ? magnitude[length - 3] : 0;
+        int zeros = BitOperations.LeadingZeroCount((uint)high);
 
-    public int GetHashCode() {
-        long h = sign;
+        bitLength = (long)length * 32 - zeros;
 
-        for (int i = 0; i < limbs.Length; i++) { h = h * 31 + limbs[i]; }
-        return (int)(h ^ (h >> 32));
+        ulong made = (high << (32 + zeros)) | (middle << zeros);
+
+        if (zeros > 0) { made = made | (low >> (32 - zeros)); }
+        return made;
+    }
+
+    // ---- comparison -------------------------------------------------------
+
+    public static int Compare(BigInteger left, BigInteger right) { return left.CompareTo(right); }
+
+    public int CompareTo(BigInteger other) {
+        if (sign != other.sign) { return sign < other.sign ? -1 : 1; }
+        if (sign == 0) { return 0; }
+
+        int order = CompareMag(limbs, other.limbs);
+
+        return sign > 0 ? order : 0 - order;
+    }
+
+    public int CompareTo(long other) { return CompareTo(new BigInteger(other)); }
+    public int CompareTo(ulong other) { return CompareTo(new BigInteger(other)); }
+
+    public int CompareTo(object? obj) {
+        if (obj == null) { return 1; }
+        if (obj is BigInteger other) { return CompareTo(other); }
+        throw new ArgumentException("The parameter must be a BigInteger.", "obj");
+    }
+
+    public bool Equals(BigInteger other) { return CompareTo(other) == 0; }
+    public bool Equals(long other) { return CompareTo(new BigInteger(other)) == 0; }
+    public bool Equals(ulong other) { return CompareTo(new BigInteger(other)) == 0; }
+    public override bool Equals(object? obj) { return obj is BigInteger other && Equals(other); }
+
+    /// The value itself in the small form, as .NET hashes it there.
+    public override int GetHashCode() {
+        if (Small) { return (int)this; }
+
+        int h = sign;
+
+        for (int i = 0; i < limbs.Length; i++) { h = h * 31 + (int)limbs[i]; }
+        return h;
+    }
+
+    public static bool operator ==(BigInteger left, BigInteger right) { return left.Equals(right); }
+    public static bool operator !=(BigInteger left, BigInteger right) { return !left.Equals(right); }
+    public static bool operator <(BigInteger left, BigInteger right) { return left.CompareTo(right) < 0; }
+    public static bool operator <=(BigInteger left, BigInteger right) { return left.CompareTo(right) <= 0; }
+    public static bool operator >(BigInteger left, BigInteger right) { return left.CompareTo(right) > 0; }
+    public static bool operator >=(BigInteger left, BigInteger right) { return left.CompareTo(right) >= 0; }
+
+    // .NET's overloads with long and ulong, which are what `big < 0` binds to.
+    public static bool operator ==(BigInteger left, long right) { return left.Equals(right); }
+    public static bool operator !=(BigInteger left, long right) { return !left.Equals(right); }
+    public static bool operator <(BigInteger left, long right) { return left.CompareTo(right) < 0; }
+    public static bool operator <=(BigInteger left, long right) { return left.CompareTo(right) <= 0; }
+    public static bool operator >(BigInteger left, long right) { return left.CompareTo(right) > 0; }
+    public static bool operator >=(BigInteger left, long right) { return left.CompareTo(right) >= 0; }
+    public static bool operator ==(long left, BigInteger right) { return right.Equals(left); }
+    public static bool operator !=(long left, BigInteger right) { return !right.Equals(left); }
+    public static bool operator <(long left, BigInteger right) { return right.CompareTo(left) > 0; }
+    public static bool operator <=(long left, BigInteger right) { return right.CompareTo(left) >= 0; }
+    public static bool operator >(long left, BigInteger right) { return right.CompareTo(left) < 0; }
+    public static bool operator >=(long left, BigInteger right) { return right.CompareTo(left) <= 0; }
+    public static bool operator ==(BigInteger left, ulong right) { return left.Equals(right); }
+    public static bool operator !=(BigInteger left, ulong right) { return !left.Equals(right); }
+    public static bool operator <(BigInteger left, ulong right) { return left.CompareTo(right) < 0; }
+    public static bool operator <=(BigInteger left, ulong right) { return left.CompareTo(right) <= 0; }
+    public static bool operator >(BigInteger left, ulong right) { return left.CompareTo(right) > 0; }
+    public static bool operator >=(BigInteger left, ulong right) { return left.CompareTo(right) >= 0; }
+    public static bool operator ==(ulong left, BigInteger right) { return right.Equals(left); }
+    public static bool operator !=(ulong left, BigInteger right) { return !right.Equals(left); }
+    public static bool operator <(ulong left, BigInteger right) { return right.CompareTo(left) > 0; }
+    public static bool operator <=(ulong left, BigInteger right) { return right.CompareTo(left) >= 0; }
+    public static bool operator >(ulong left, BigInteger right) { return right.CompareTo(left) < 0; }
+    public static bool operator >=(ulong left, BigInteger right) { return right.CompareTo(left) <= 0; }
+
+    public static BigInteger Max(BigInteger left, BigInteger right) { return left.CompareTo(right) < 0 ? right : left; }
+    public static BigInteger Min(BigInteger left, BigInteger right) { return left.CompareTo(right) <= 0 ? left : right; }
+
+    public static BigInteger Clamp(BigInteger value, BigInteger min, BigInteger max) {
+        if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); }
+        if (value < min) { return min; }
+        if (value > max) { return max; }
+        return value;
+    }
+
+    /// The larger magnitude; of two equal ones, the positive.
+    public static BigInteger MaxMagnitude(BigInteger x, BigInteger y) {
+        int order = CompareMag(x.Mag, y.Mag);
+
+        if (order > 0) { return x; }
+        if (order == 0) { return x.sign >= 0 ? x : y; }
+        return y;
+    }
+
+    /// The smaller magnitude; of two equal ones, the negative.
+    public static BigInteger MinMagnitude(BigInteger x, BigInteger y) {
+        int order = CompareMag(x.Mag, y.Mag);
+
+        if (order < 0) { return x; }
+        if (order == 0) { return x.sign >= 0 ? y : x; }
+        return y;
+    }
+
+    /// The value with the sign of `sign`, zero counting as positive.
+    public static BigInteger CopySign(BigInteger value, BigInteger sign) {
+        return (value.sign < 0) != (sign.sign < 0) ? -value : value;
+    }
+
+    public static bool IsNegative(BigInteger value) { return value.sign < 0; }
+    public static bool IsPositive(BigInteger value) { return value.sign >= 0; }
+    public static bool IsEvenInteger(BigInteger value) { return value.IsEven; }
+    public static bool IsOddInteger(BigInteger value) { return !value.IsEven; }
+    public static bool IsPow2(BigInteger value) { return value.IsPowerOfTwo; }
+
+    // ---- bits -------------------------------------------------------------
+
+    /// The fewest bits that hold the value in two's complement, less the sign
+    /// bit: a negative power of two needs one fewer than its magnitude.
+    public long GetBitLength() {
+        if (sign == 0) { return 0; }
+
+        long length = (long)limbs.Length * 32 - BitOperations.LeadingZeroCount(limbs[limbs.Length - 1]);
+
+        return sign < 0 && IsPowerOfTwoMag(limbs) ? length - 1 : length;
+    }
+
+    /// Floor of the base-2 logarithm, and zero for zero, as .NET answers.
+    public static BigInteger Log2(BigInteger value) {
+        if (value.sign < 0) { throw new ArgumentOutOfRangeException("value", "Non-negative number required."); }
+        if (value.sign == 0) { return Zero; }
+        return new BigInteger(value.GetBitLength() - 1);
+    }
+
+    /// Thirty-two for zero and for nothing else: the count is of the 32-bit
+    /// word in the small form, and of the magnitude beyond it.
+    public static BigInteger TrailingZeroCount(BigInteger value) {
+        if (value.sign == 0) { return new BigInteger(32); }
+
+        long count = 0;
+        int at = 0;
+
+        while (value.limbs[at] == 0) {
+            count = count + 32;
+            at = at + 1;
+        }
+        return new BigInteger(count + BitOperations.TrailingZeroCount(value.limbs[at]));
+    }
+
+    /// Of the 32-bit word in the small form; of the top limb beyond it, where
+    /// a negative number has none.
+    public static BigInteger LeadingZeroCount(BigInteger value) {
+        if (value.sign < 0) { return Zero; }
+        if (value.sign == 0) { return new BigInteger(32); }
+        if (value.Small) { return new BigInteger(BitOperations.LeadingZeroCount(value.limbs[0])); }
+        return new BigInteger(BitOperations.LeadingZeroCount(value.limbs[value.limbs.Length - 1]));
+    }
+
+    /// The set bits of the two's complement in as many limbs as the
+    /// magnitude has -- one for the small form.
+    public static BigInteger PopCount(BigInteger value) {
+        uint[] bits = Twos(value, value.Mag.Length == 0 ? 1 : value.Mag.Length);
+        long count = 0;
+
+        for (int i = 0; i < bits.Length; i++) { count = count + BitOperations.PopCount(bits[i]); }
+        return new BigInteger(count);
+    }
+
+    public static BigInteger operator &(BigInteger left, BigInteger right) {
+        int length = Wider(left, right);
+        uint[] a = Twos(left, length);
+        uint[] b = Twos(right, length);
+
+        for (int i = 0; i < length; i++) { a[i] = a[i] & b[i]; }
+        return FromTwos(a);
+    }
+
+    public static BigInteger operator |(BigInteger left, BigInteger right) {
+        int length = Wider(left, right);
+        uint[] a = Twos(left, length);
+        uint[] b = Twos(right, length);
+
+        for (int i = 0; i < length; i++) { a[i] = a[i] | b[i]; }
+        return FromTwos(a);
+    }
+
+    public static BigInteger operator ^(BigInteger left, BigInteger right) {
+        int length = Wider(left, right);
+        uint[] a = Twos(left, length);
+        uint[] b = Twos(right, length);
+
+        for (int i = 0; i < length; i++) { a[i] = a[i] ^ b[i]; }
+        return FromTwos(a);
+    }
+
+    /// -(x + 1), which is what flipping infinitely many bits comes to.
+    public static BigInteger operator ~(BigInteger value) { return -(value + One); }
+
+    /// A NEGATIVE COUNT SHIFTS THE OTHER WAY, as .NET's does.
+    public static BigInteger operator <<(BigInteger value, int shift) {
+        if (shift == 0) { return value; }
+        if (shift == int.MinValue) { return value >> int.MaxValue >> 1; }
+        if (shift < 0) { return value >> (0 - shift); }
+        return Of(value.sign, ShiftMagLeft(value.Mag, shift));
+    }
+
+    /// AN ARITHMETIC SHIFT, the floor of the value over 2^shift: a negative
+    /// number is -(((|v| - 1) >> shift) + 1), which is what shifting its two's
+    /// complement with the sign bit copied in gives.
+    public static BigInteger operator >>(BigInteger value, int shift) {
+        if (shift == 0) { return value; }
+        if (shift == int.MinValue) { return value << int.MaxValue << 1; }
+        if (shift < 0) { return value << (0 - shift); }
+        if (value.sign >= 0) { return Of(value.sign, ShiftMagRight(value.Mag, shift)); }
+
+        uint[] one = Make(1);
+
+        return Of(-1, AddMag(ShiftMagRight(SubMag(value.limbs, one), shift), one));
+    }
+
+    /// A LOGICAL SHIFT OF THE TWO'S COMPLEMENT, which for a negative number
+    /// .NET takes in the fewest 32-bit limbs that hold it: zeros come in at
+    /// the top of that width, and a shift past it all is -1.
+    public static BigInteger operator >>>(BigInteger value, int shiftAmount) {
+        if (shiftAmount == 0) { return value; }
+        if (shiftAmount == int.MinValue) { return value << int.MaxValue << 1; }
+        if (shiftAmount < 0) { return value << (0 - shiftAmount); }
+        if (value.sign >= 0) { return value >> shiftAmount; }
+
+        int width = Width(value);
+
+        if ((long)shiftAmount >= 32L * width) { return MinusOne; }
+
+        uint[] bits = Twos(value, width);
+        int words = shiftAmount / 32;
+        int rest = shiftAmount % 32;
+        uint[] made = new uint[width - words];
+
+        for (int i = words; i < width; i++) {
+            uint part = bits[i] >> rest;
+
+            if (rest != 0 && i + 1 < width) { part = part | (bits[i + 1] << (32 - rest)); }
+            made[i - words] = part;
+        }
+        return FromTwos(made);
+    }
+
+    /// A ROTATION OF THE TWO'S COMPLEMENT in the width ">>>" takes it in: the
+    /// bits that leave one end come in at the other. A negative number stays
+    /// negative only when a set bit comes round to the top; a positive one is
+    /// read back unsigned, as .NET reads it.
+    public static BigInteger RotateLeft(BigInteger value, int rotateAmount) {
+        int width = Width(value);
+        int amount = (int)(rotateAmount % (32L * width));
+
+        if (amount == 0) { return value; }
+        return Rotated(value, width, amount > 0 ? amount : 32 * width + amount);
+    }
+
+    public static BigInteger RotateRight(BigInteger value, int rotateAmount) {
+        int width = Width(value);
+        int amount = (int)(rotateAmount % (32L * width));
+
+        if (amount == 0) { return value; }
+        return Rotated(value, width, amount > 0 ? 32 * width - amount : 0 - amount);
+    }
+
+    // The two's complement in `width` limbs turned left by `amount` bits, less
+    // than the width.
+    private static BigInteger Rotated(BigInteger value, int width, int amount) {
+        uint[] bits = Twos(value, width);
+        uint[] made = new uint[width];
+        int words = amount / 32;
+        int rest = amount % 32;
+
+        for (int i = 0; i < width; i++) {
+            uint part = bits[(i - words + width) % width];
+
+            if (rest != 0) { part = (part << rest) | (bits[(i - words - 1 + 2 * width) % width] >> (32 - rest)); }
+            made[i] = part;
+        }
+        if (value.sign < 0 && (made[width - 1] & 0x80000000) != 0) {
+            Complement(made);
+            return Of(-1, made);
+        }
+        return Of(1, made);
+    }
+
+    // THE WIDTH .NET GIVES A VALUE'S TWO'S COMPLEMENT for ">>>" and the
+    // rotations: the magnitude's limbs, one for zero, and a limb more for a
+    // negative number whose top bit is set -- unless it is exactly -2^(32k-1),
+    // whose top bit is its sign already.
+    private static int Width(BigInteger value) {
+        if (value.sign == 0) { return 1; }
+
+        int width = value.limbs.Length;
+        uint top = value.limbs[width - 1];
+
+        if (value.sign < 0 && top >= 0x80000000 && !(top == 0x80000000 && IsPowerOfTwoMag(value.limbs))) { width = width + 1; }
+        return width;
+    }
+
+    // ---- conversions ------------------------------------------------------
+
+    public static implicit operator BigInteger(sbyte value) { return new BigInteger((int)value); }
+    public static implicit operator BigInteger(byte value) { return new BigInteger((int)value); }
+    public static implicit operator BigInteger(short value) { return new BigInteger((int)value); }
+    public static implicit operator BigInteger(ushort value) { return new BigInteger((int)value); }
+    public static implicit operator BigInteger(char value) { return new BigInteger((int)value); }
+    public static implicit operator BigInteger(int value) { return new BigInteger(value); }
+    public static implicit operator BigInteger(uint value) { return new BigInteger(value); }
+    public static implicit operator BigInteger(long value) { return new BigInteger(value); }
+    public static implicit operator BigInteger(ulong value) { return new BigInteger(value); }
+    public static implicit operator BigInteger(nint value) { return new BigInteger((long)value); }
+    public static implicit operator BigInteger(nuint value) { return new BigInteger((ulong)value); }
+
+    public static implicit operator BigInteger(UInt128 value) {
+        uint[] made = new uint[4];
+
+        made[0] = (uint)value.Lower;
+        made[1] = (uint)(value.Lower >> 32);
+        made[2] = (uint)value.Upper;
+        made[3] = (uint)(value.Upper >> 32);
+        return Of(1, made);
+    }
+
+    public static explicit operator BigInteger(float value) { return new BigInteger(value); }
+    public static explicit operator BigInteger(double value) { return new BigInteger(value); }
+
+    /// THE NARROWING CONVERSIONS THROW .NET'S MESSAGES, which differ by the
+    /// form the value is in: past a type's range in the small form the
+    /// failure is a checked cast of an int, with the plain overflow message;
+    /// beyond it, the message names the type. The narrow types go through
+    /// int as .NET's do.
+    public static explicit operator int(BigInteger value) {
+        uint[] magnitude = value.Mag;
+
+        if (magnitude.Length == 0) { return 0; }
+        if (magnitude.Length > 1) { throw NumberRead.TooBig("an Int32"); }
+        if (value.sign > 0) {
+            if (magnitude[0] > 0x7FFFFFFF) { throw new OverflowException(); }
+            return (int)magnitude[0];
+        }
+        if (magnitude[0] > 0x80000000) { throw NumberRead.TooBig("an Int32"); }
+        return (int)(0 - (long)magnitude[0]);
+    }
+
+    public static explicit operator sbyte(BigInteger value) { return (sbyte)Narrow((int)value, -128, 127); }
+    public static explicit operator byte(BigInteger value) { return (byte)Narrow((int)value, 0, 255); }
+    public static explicit operator short(BigInteger value) { return (short)Narrow((int)value, -32768, 32767); }
+    public static explicit operator ushort(BigInteger value) { return (ushort)Narrow((int)value, 0, 65535); }
+    public static explicit operator char(BigInteger value) { return (char)Narrow((int)value, 0, 65535); }
+
+    public static explicit operator uint(BigInteger value) {
+        if (value.Small) { return (uint)Narrow((int)value, 0, int.MaxValue); }
+        if (value.limbs.Length > 1 || value.sign < 0) { throw NumberRead.TooBig("a UInt32"); }
+        return value.limbs[0];
+    }
+
+    public static explicit operator long(BigInteger value) {
+        if (value.Small) { return (int)value; }
+        if (value.limbs.Length > 2) { throw NumberRead.TooBig("an Int64"); }
+
+        ulong magnitude = Wide(value.limbs);
+
+        if (value.sign > 0) {
+            if (magnitude > 0x7FFFFFFFFFFFFFFFUL) { throw NumberRead.TooBig("an Int64"); }
+            return (long)magnitude;
+        }
+        if (magnitude > 0x8000000000000000UL) { throw NumberRead.TooBig("an Int64"); }
+        return (long)(~magnitude + 1);
+    }
+
+    public static explicit operator ulong(BigInteger value) {
+        if (value.Small) { return (ulong)Narrow((int)value, 0, int.MaxValue); }
+        if (value.limbs.Length > 2 || value.sign < 0) { throw NumberRead.TooBig("a UInt64"); }
+        return Wide(value.limbs);
+    }
+
+    /// As wide as the machine's pointer: through int on a 32-bit machine and
+    /// long on a 64-bit one, as .NET converts.
+    public static explicit operator nint(BigInteger value) {
+        if (IntPtr.Size == 8) { return (nint)(long)value; }
+        return (nint)(int)value;
+    }
+
+    public static explicit operator nuint(BigInteger value) {
+        if (UIntPtr.Size == 8) { return (nuint)(ulong)value; }
+        return (nuint)(uint)value;
+    }
+
+    public static explicit operator UInt128(BigInteger value) {
+        if (value.Small) { return (UInt128)(uint)Narrow((int)value, 0, int.MaxValue); }
+        if (value.limbs.Length > 4 || value.sign < 0) { throw NumberRead.TooBig("a UInt128"); }
+
+        uint[] made = new uint[4];
+
+        for (int i = 0; i < value.limbs.Length; i++) { made[i] = value.limbs[i]; }
+        return new UInt128(((ulong)made[3] << 32) | made[2], ((ulong)made[1] << 32) | made[0]);
+    }
+
+    /// TRUNCATED, NOT ROUNDED: .NET takes the top 64 bits of the magnitude
+    /// and drops what does not fit in a double's 53, and so does this.
+    /// Infinity past double.MaxValue.
+    public static explicit operator double(BigInteger value) {
+        if (value.Small) { return (double)(int)value; }
+        if (value.limbs.Length > 32) { return value.sign > 0 ? double.PositiveInfinity : double.NegativeInfinity; }
+
+        long bitLength;
+        ulong top = TopBits(value.limbs, out bitLength);
+        int exponent = (int)bitLength - 64;
+        int shift = BitOperations.LeadingZeroCount(top) - 11;
+
+        top = shift >= 0 ? top << shift : top >> (0 - shift);
+        exponent = exponent - shift + 1075;
+
+        ulong bits = exponent >= 2047 ? 0x7FF0000000000000UL : (top & 0xFFFFFFFFFFFFFUL) | ((ulong)exponent << 52);
+
+        if (value.sign < 0) { bits = bits | 0x8000000000000000UL; }
+        return BitConverter.Int64BitsToDouble((long)bits);
+    }
+
+    public static explicit operator float(BigInteger value) { return (float)(double)value; }
+
+    // A checked narrowing of an int: the plain overflow message outside the range.
+    private static int Narrow(int value, int lowest, int highest) {
+        if (value < lowest || value > highest) { throw new OverflowException(); }
+        return value;
+    }
+
+    private static ulong Wide(uint[] magnitude) {
+        return magnitude.Length > 1 ? ((ulong)magnitude[1] << 32) | magnitude[0] : magnitude[0];
+    }
+
+    // ---- bytes ------------------------------------------------------------
+
+    public byte[] ToByteArray() { return Bytes(false, false); }
+
+    public byte[] ToByteArray(bool isUnsigned = false, bool isBigEndian = false) { return Bytes(isUnsigned, isBigEndian); }
+
+    public int GetByteCount(bool isUnsigned = false) { return Bytes(isUnsigned, false).Length; }
+
+    /// The bytes ToByteArray would make, when the destination holds them;
+    /// otherwise false, and nothing written.
+    public bool TryWriteBytes(Span<byte> destination, out int bytesWritten, bool isUnsigned = false, bool isBigEndian = false) {
+        byte[] made = Bytes(isUnsigned, isBigEndian);
+
+        if (destination.Length < made.Length) {
+            bytesWritten = 0;
+            return false;
+        }
+        for (int i = 0; i < made.Length; i++) { destination[i] = made[i]; }
+        bytesWritten = made.Length;
+        return true;
+    }
+
+    /// THE SHORTEST TWO'S COMPLEMENT, least significant byte first: as many
+    /// bytes as hold the value with its sign bit, so 128 is two bytes and
+    /// -128 one. Unsigned, a positive number needs no sign bit and a negative
+    /// one has no representation at all.
+    private byte[] Bytes(bool isUnsigned, bool isBigEndian) {
+        if (sign == 0) { return new byte[1]; }
+        if (isUnsigned && sign < 0) { throw new OverflowException("Negative values do not have an unsigned representation."); }
+
+        uint[] bits = Twos(this, limbs.Length + 1);
+        int count = bits.Length * 4;
+        byte[] all = new byte[count];
+
+        for (int i = 0; i < count; i++) { all[i] = (byte)(bits[i / 4] >> (8 * (i % 4))); }
+
+        int fill = sign < 0 ? 0xFF : 0;
+
+        while (count > 1 && all[count - 1] == fill && (isUnsigned || (all[count - 2] & 0x80) == (fill & 0x80))) {
+            count = count - 1;
+        }
+
+        byte[] made = new byte[count];
+
+        for (int i = 0; i < count; i++) { made[i] = all[isBigEndian ? count - 1 - i : i]; }
+        return made;
     }
 
     // ---- text -------------------------------------------------------------
 
-    /// BASE TEN, with a leading '-' for a negative number, which is what .NET
-    /// prints. Nine digits come out at a time because 10^9 is the largest power
-    /// of ten a 32-bit limb divides by without a wider intermediate.
-    public string ToString() {
-        if (sign == 0) { return "0"; }
+    public override string ToString() { return Format(this, null); }
+    public string ToString(IFormatProvider? provider) { return Format(this, null); }
+    public string ToString(string? format) { return Format(this, format); }
+    public string ToString(string? format, IFormatProvider? provider) { return Format(this, format); }
 
-        uint[] left = limbs;
+    /// What ToString(format) writes, into the destination when it fits there.
+    public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = Format(this, format.Length == 0 ? null : format.ToString());
+
+        if (text.Length > destination.Length) {
+            charsWritten = 0;
+            return false;
+        }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
+    /// .NET's formats under the invariant culture, the only one this machine
+    /// has. "D", "G" and "R" are the decimal digits, zero-padded to the
+    /// precision; "X" and "B" the two's complement; "C", "E", "F", "N" and "P"
+    /// round the digits as .NET's number buffer does; anything else is a
+    /// picture, as for any other integer.
+    private static string Format(BigInteger value, string? format) {
+        string spec = format ?? "";
+        int precision = -1;
+        char kind = Specifier(spec, out precision);
+
+        if (kind == 'X' || kind == 'x') { return Hex(value, kind, precision); }
+        if (kind == 'B' || kind == 'b') { return Binary(value, precision); }
+
+        string digits = Decimal(value.Mag);
+        bool negative = value.sign < 0;
+
+        if (kind == (char)0) { return PictureFormat.OfDigits(negative, digits, spec); }
+
+        if (kind == 'D' || kind == 'd' || kind == 'G' || kind == 'g' || kind == 'R' || kind == 'r') {
+            string padded = precision > digits.Length ? String.Concat(String.Repeat('0', precision - digits.Length), digits) : digits;
+
+            return negative ? String.Concat("-", padded) : padded;
+        }
+        return Rounded(digits, negative, kind, precision);
+    }
+
+    /// .NET'S ParseFormatSpecifier: a letter and the number after it, 'G'
+    /// for no format at all, and a NUL for a picture.
+    private static char Specifier(string format, out int precision) {
+        precision = -1;
+        if (format.Length == 0) { return 'G'; }
+
+        char kind = format[0];
+
+        if (!((kind >= 'A' && kind <= 'Z') || (kind >= 'a' && kind <= 'z'))) { return (char)0; }
+
+        int made = 0;
+
+        for (int i = 1; i < format.Length; i++) {
+            char c = format[i];
+
+            if (c < '0' || c > '9') { return (char)0; }
+            if (made >= 100000000) { throw new FormatException("Format specifier was invalid."); }
+            made = made * 10 + (c - '0');
+        }
+        if (format.Length > 1) { precision = made; }
+        return kind;
+    }
+
+    // BASE TEN, nine digits at a time because 10^9 is the largest power of ten
+    // a 32-bit limb divides by without a wider intermediate.
+    private static string Decimal(uint[] magnitude) {
+        if (magnitude.Length == 0) { return "0"; }
+
+        uint[] left = magnitude;
         List<string> groups = new List<string>();
 
         while (left.Length > 0) {
@@ -207,51 +876,384 @@ struct BigInteger {
 
         StringBuilder made = new StringBuilder();
 
-        if (sign < 0) { made.Append('-'); }
         made.Append(groups[groups.Count - 1]);
-
         for (int i = groups.Count - 2; i >= 0; i--) {
             made.Append(String.PadLeft(groups[i], 9, '0'));
         }
         return made.ToString();
     }
 
-    public static BigInteger Parse(string text) {
-        BigInteger made = Zero;
+    /// The two's complement in hexadecimal, from the shortest bytes: the top
+    /// byte takes one digit when one digit still shows the sign -- 0 to 7 for
+    /// a positive number, 8 to F for a negative one -- which is why 30! prints
+    /// with a leading 0 and -1 is "F".
+    private static string Hex(BigInteger value, char kind, int precision) {
+        string alphabet = kind == 'x' ? "0123456789abcdef" : "0123456789ABCDEF";
+        byte[] bytes = value.ToByteArray();
+        StringBuilder made = new StringBuilder();
+        int at = bytes.Length - 1;
+        int head = bytes[at];
 
-        if (!TryParse(text, out made)) {
-            throw new FormatException("The value could not be parsed.");
+        if (head > 0xF7 || head < 0x08) {
+            made.Append(alphabet[head & 0xF]);
+            at = at - 1;
         }
+        for (; at >= 0; at--) {
+            made.Append(alphabet[bytes[at] >> 4]);
+            made.Append(alphabet[bytes[at] & 0xF]);
+        }
+
+        string text = made.ToString();
+
+        if (precision > text.Length) {
+            char pad = value.sign >= 0 ? '0' : (kind == 'x' ? 'f' : 'F');
+
+            text = String.Concat(String.Repeat(pad, precision - text.Length), text);
+        }
+        return text;
+    }
+
+    /// The two's complement in binary, with one sign bit and no more.
+    private static string Binary(BigInteger value, int precision) {
+        byte[] bytes = value.ToByteArray();
+        int head = bytes[bytes.Length - 1];
+        int used = 9 - (BitOperations.LeadingZeroCount((uint)(value.sign >= 0 ? head : (~head & 0xFF))) - 24);
+        int total = used + 8 * (bytes.Length - 1);
+        StringBuilder made = new StringBuilder();
+
+        if (precision > total) { made.Append(String.Repeat(value.sign >= 0 ? '0' : '1', precision - total)); }
+        for (int b = used - 1; b >= 0; b--) { made.Append((char)('0' + ((head >> b) & 1))); }
+        for (int at = bytes.Length - 2; at >= 0; at--) {
+            for (int b = 7; b >= 0; b--) { made.Append((char)('0' + ((bytes[at] >> b) & 1))); }
+        }
+        return made.ToString();
+    }
+
+    /// .NET'S NumberToString for "C", "E", "F", "N" and "P", over the digits
+    /// as its number buffer holds an integer: every digit, the point after
+    /// the last, and none at all for zero. Each rounds half away from zero at
+    /// the place the precision names, then writes what is left.
+    private static string Rounded(string digits, bool negative, char kind, int precision) {
+        string held = digits == "0" ? "" : digits;
+        int scale = held.Length;
+        StringBuilder made = new StringBuilder();
+
+        if (kind == 'C' || kind == 'c') {
+            int places = precision < 0 ? 2 : precision;
+
+            held = Round(held, scale + places, ref scale, ref negative);
+            made.Append(negative ? "(¤" : "¤");
+            Fixed(made, held, scale, places, true);
+            if (negative) { made.Append(')'); }
+            return made.ToString();
+        }
+
+        if (kind == 'F' || kind == 'f' || kind == 'N' || kind == 'n') {
+            int places = precision < 0 ? 2 : precision;
+
+            held = Round(held, scale + places, ref scale, ref negative);
+            if (negative) { made.Append('-'); }
+            Fixed(made, held, scale, places, kind == 'N' || kind == 'n');
+            return made.ToString();
+        }
+
+        if (kind == 'E' || kind == 'e') {
+            int count = (precision < 0 ? 6 : precision) + 1;
+
+            held = Round(held, count, ref scale, ref negative);
+            if (negative) { made.Append('-'); }
+            made.Append(held.Length > 0 ? held[0] : '0');
+            if (count != 1) { made.Append('.'); }
+            for (int i = 1; i < count; i++) { made.Append(i < held.Length ? held[i] : '0'); }
+
+            // THREE DIGITS OF EXPONENT AT LEAST, signed either way: "E+032".
+            int exponent = held.Length > 0 ? scale - 1 : 0;
+
+            made.Append(kind);
+            made.Append(exponent < 0 ? '-' : '+');
+            made.Append(String.PadLeft(String.FromInt(exponent < 0 ? 0 - exponent : exponent), 3, '0'));
+            return made.ToString();
+        }
+
+        if (kind == 'P' || kind == 'p') {
+            int places = precision < 0 ? 2 : precision;
+
+            scale = scale + 2;
+            held = Round(held, scale + places, ref scale, ref negative);
+            if (negative) { made.Append('-'); }
+            Fixed(made, held, scale, places, true);
+            made.Append(" %");
+            return made.ToString();
+        }
+
+        throw new FormatException("Format specifier was invalid.");
+    }
+
+    // .NET's RoundNumber: the digits cut at `at`, rounded up when the first
+    // one cut is 5 or more, and trailing zeros dropped; nothing left is zero,
+    // which has no sign.
+    private static string Round(string held, int at, ref int scale, ref bool negative) {
+        int length = at < held.Length ? (at < 0 ? 0 : at) : held.Length;
+        char[] made = new char[held.Length + 1];
+
+        for (int i = 0; i < held.Length; i++) { made[i] = held[i]; }
+
+        if (length == at && length < held.Length && held[length] >= '5') {
+            while (length > 0 && made[length - 1] == '9') { length = length - 1; }
+            if (length > 0) {
+                made[length - 1] = (char)(made[length - 1] + 1);
+            } else {
+                scale = scale + 1;
+                made[0] = '1';
+                length = 1;
+            }
+        } else {
+            while (length > 0 && made[length - 1] == '0') { length = length - 1; }
+        }
+
+        if (length == 0) {
+            negative = false;
+            scale = 0;
+        }
+        return String.FromChars(made, 0, length);
+    }
+
+    // The whole digits -- zeros where the held ones run out -- in threes when
+    // grouped, then the point and `places` zeros: an integer has no fraction.
+    private static void Fixed(StringBuilder made, string held, int scale, int places, bool grouped) {
+        if (scale > 0) {
+            for (int i = 0; i < scale; i++) {
+                if (grouped && i > 0 && (scale - i) % 3 == 0) { made.Append(','); }
+                made.Append(i < held.Length ? held[i] : '0');
+            }
+        } else {
+            made.Append('0');
+        }
+        if (places > 0) {
+            made.Append('.');
+            made.Append(String.Repeat('0', places));
+        }
+    }
+
+    // ---- parsing ----------------------------------------------------------
+
+    public static BigInteger Parse(string value) { return Parse(value, NumberStyles.Integer, null); }
+    public static BigInteger Parse(string value, NumberStyles style) { return Parse(value, style, null); }
+    public static BigInteger Parse(string value, IFormatProvider? provider) { return Parse(value, NumberStyles.Integer, provider); }
+
+    public static BigInteger Parse(string value, NumberStyles style, IFormatProvider? provider) {
+        if (value == null) { throw new ArgumentNullException("value"); }
+
+        BigInteger made;
+
+        // ONE MESSAGE FOR BOTH FAILURES, as .NET has: text that is no number
+        // and a number too large to hold are each "could not be parsed".
+        int status = Read(value, style, out made);
+        if (status == NumberRead.Format) { throw new FormatException("The value could not be parsed."); }
+        if (status == NumberRead.Overflow) { throw new OverflowException("The value could not be parsed."); }
         return made;
     }
 
-    public static bool TryParse(string? text, out BigInteger value) {
+    public static BigInteger Parse(ReadOnlySpan<char> value, NumberStyles style = NumberStyles.Integer, IFormatProvider? provider = null) {
+        return Parse(value.ToString(), style, provider);
+    }
+
+    public static BigInteger Parse(ReadOnlySpan<char> s, IFormatProvider? provider) { return Parse(s.ToString(), NumberStyles.Integer, provider); }
+
+    public static bool TryParse(string? value, out BigInteger result) { return TryParse(value, NumberStyles.Integer, null, out result); }
+    public static bool TryParse(string? s, IFormatProvider? provider, out BigInteger result) { return TryParse(s, NumberStyles.Integer, provider, out result); }
+
+    /// False and zero where Parse would throw for the text; a style .NET
+    /// refuses still throws.
+    public static bool TryParse(string? value, NumberStyles style, IFormatProvider? provider, out BigInteger result) {
         // .NET's answer for no string at all: false, and the default.
-        if (text is null) { value = default; return false; }
-        value = Zero;
-        if (text == null || text.Length == 0) { return false; }
+        if (value is null) {
+            CheckStyle(style);
+            result = default;
+            return false;
+        }
+        if (Read(value, style, out result) == NumberRead.Ok) { return true; }
+        result = default;
+        return false;
+    }
 
-        int at = 0;
-        int mark = 1;
+    public static bool TryParse(ReadOnlySpan<char> value, out BigInteger result) { return TryParse(value.ToString(), NumberStyles.Integer, null, out result); }
+    public static bool TryParse(ReadOnlySpan<char> s, IFormatProvider? provider, out BigInteger result) { return TryParse(s.ToString(), NumberStyles.Integer, provider, out result); }
 
-        if (Sys.GetChar(text, 0) == (int)'-') { mark = -1; at = 1; }
-        else if (Sys.GetChar(text, 0) == (int)'+') { at = 1; }
+    public static bool TryParse(ReadOnlySpan<char> value, NumberStyles style, IFormatProvider? provider, out BigInteger result) {
+        return TryParse(value.ToString(), style, provider, out result);
+    }
 
-        if (at >= text.Length) { return false; }
+    // .NET's two refusals of a style, before any text is read: a bit no
+    // style has, and a hex specifier with anything but white space beside it.
+    private static void CheckStyle(NumberStyles style) {
+        int s = (int)style;
+        int known = (int)NumberStyles.Any | (int)NumberStyles.AllowHexSpecifier | (int)NumberStyles.AllowBinarySpecifier;
+
+        if ((s & ~known) != 0) { throw new ArgumentException("An undefined NumberStyles value is being used.", "style"); }
+        if ((s & (int)NumberStyles.AllowHexSpecifier) != 0 && (s & ~(int)NumberStyles.HexNumber) != 0) {
+            throw new ArgumentException("With the AllowHexSpecifier bit set in the enum bit field, the only other valid bits that can be combined into the enum value must be a subset of those in HexNumber.", "style");
+        }
+    }
+
+    // The value the text says, with a NumberRead status: hex and binary as
+    // two's complement, everything else through the digit buffer every
+    // number type reads with.
+    private static int Read(string text, NumberStyles style, out BigInteger result) {
+        CheckStyle(style);
+        result = Zero;
+
+        int s = (int)style;
+
+        if ((s & (int)NumberStyles.AllowHexSpecifier) != 0) { return ReadPattern(text, s, 4, out result); }
+        if ((s & (int)NumberStyles.AllowBinarySpecifier) != 0) { return ReadPattern(text, s, 1, out result); }
+        if (text.Length == 0) { return NumberRead.Format; }
+
+        char[] digits = new char[text.Length + 1];
+        int count = 0;
+        int scale = 0;
+        bool negative = false;
+        bool tail = false;
+
+        if (!NumberRead.Scan(text, s, true, digits, out count, out scale, out negative, out tail)) { return NumberRead.Format; }
+
+        // AN EXPONENT BEYOND EVERY TYPE overflows; a point that leaves a
+        // digit other than zero behind it is no integer.
+        if (scale == int.MaxValue) { return NumberRead.Overflow; }
+        if (scale < 0 || count > scale) { return NumberRead.Format; }
 
         uint[] magnitude = new uint[0];
+        int at = 0;
 
-        while (at < text.Length) {
-            int c = Sys.GetChar(text, at);
+        while (at < count) {
+            int take = count - at < 9 ? count - at : 9;
+            uint chunk = 0;
+            uint power = 1;
 
-            if (c < (int)'0' || c > (int)'9') { return false; }
-
-            magnitude = MulSmall(magnitude, 10, (uint)(c - (int)'0'));
-            at = at + 1;
+            for (int i = 0; i < take; i++) {
+                chunk = chunk * 10 + (uint)(digits[at + i] - '0');
+                power = power * 10;
+            }
+            magnitude = MulSmall(magnitude, power, chunk);
+            at = at + take;
         }
 
-        value = Of(mark, magnitude);
-        return true;
+        for (int zeros = scale - count; zeros > 0; zeros = zeros - 9) {
+            uint power = 1;
+
+            for (int i = 0; i < (zeros < 9 ? zeros : 9); i++) { power = power * 10; }
+            magnitude = MulSmall(magnitude, power, 0);
+        }
+
+        result = Of(negative ? -1 : 1, magnitude);
+        return NumberRead.Ok;
+    }
+
+    // Hex or binary digits, `per` bits each, white space trimmed where the
+    // style allows it: the TOP BIT OF THE FIRST DIGIT IS THE SIGN, so "FF" is
+    // -1 and "0FF" is 255, as .NET reads them.
+    private static int ReadPattern(string text, int style, int per, out BigInteger result) {
+        result = Zero;
+
+        int start = 0;
+        int end = text.Length;
+
+        if ((style & (int)NumberStyles.AllowLeadingWhite) != 0) {
+            while (start < end && White(text[start])) { start = start + 1; }
+        }
+        if ((style & (int)NumberStyles.AllowTrailingWhite) != 0) {
+            while (end > start && White(text[end - 1])) { end = end - 1; }
+        }
+        // AND NULS AT THE END, after the white space, as .NET's BigInteger
+        // reads hex and binary: "12\0" and "12\0 " are 0x12, "12 \0" is no
+        // number.
+        while (end > start && text[end - 1] == (char)0) { end = end - 1; }
+        if (start == end) { return NumberRead.Format; }
+
+        int total = (end - start) * per;
+        uint[] made = new uint[(total + 31) / 32];
+        int bit = 0;
+
+        for (int i = end - 1; i >= start; i--) {
+            int d = PatternDigit(text[i], per);
+
+            if (d < 0) { return NumberRead.Format; }
+            made[bit / 32] = made[bit / 32] | ((uint)d << (bit % 32));
+            bit = bit + per;
+        }
+
+        if ((PatternDigit(text[start], per) >> (per - 1)) == 0) {
+            result = Of(1, made);
+            return NumberRead.Ok;
+        }
+
+        if (total % 32 != 0) { made[made.Length - 1] = made[made.Length - 1] | (0xFFFFFFFF << (total % 32)); }
+        Complement(made);
+        result = Of(-1, made);
+        return NumberRead.Ok;
+    }
+
+    private static int PatternDigit(char c, int per) {
+        if (per == 1) { return c == '0' ? 0 : (c == '1' ? 1 : -1); }
+        if (c >= '0' && c <= '9') { return c - '0'; }
+        if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+        if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+        return -1;
+    }
+
+    private static bool White(char c) { return c == ' ' || (c >= (char)9 && c <= (char)13); }
+
+    // ---- two's complement -------------------------------------------------
+
+    // Limbs enough for two operands' two's complement with a sign limb to spare.
+    private static int Wider(BigInteger left, BigInteger right) {
+        int a = left.Mag.Length;
+        int b = right.Mag.Length;
+
+        return (a > b ? a : b) + 1;
+    }
+
+    // The two's complement in `length` limbs: the magnitude, complemented
+    // when the value is negative.
+    private static uint[] Twos(BigInteger value, int length) {
+        uint[] magnitude = value.Mag;
+        uint[] made = new uint[length];
+
+        for (int i = 0; i < magnitude.Length && i < length; i++) { made[i] = magnitude[i]; }
+        if (value.sign < 0) { Complement(made); }
+        return made;
+    }
+
+    // Two's-complement limbs back to a value, the top limb's top bit the sign.
+    private static BigInteger FromTwos(uint[] bits) {
+        if (bits.Length > 0 && (bits[bits.Length - 1] & 0x80000000) != 0) {
+            Complement(bits);
+            return Of(-1, bits);
+        }
+        return Of(1, bits);
+    }
+
+    // ~x + 1 across the limbs in place, which turns a magnitude into its two's
+    // complement and back.
+    private static void Complement(uint[] bits) {
+        ulong carry = 1;
+
+        for (int i = 0; i < bits.Length; i++) {
+            ulong sum = (ulong)(~bits[i]) + carry;
+
+            bits[i] = (uint)sum;
+            carry = sum >> 32;
+        }
+    }
+
+    // Whether a magnitude is a power of two: one bit set in all of it.
+    private static bool IsPowerOfTwoMag(uint[] magnitude) {
+        int top = magnitude.Length - 1;
+
+        for (int i = 0; i < top; i++) {
+            if (magnitude[i] != 0) { return false; }
+        }
+        return BitOperations.IsPow2(magnitude[top]);
     }
 
     // ---- the magnitude, in limbs ------------------------------------------
@@ -270,17 +1272,6 @@ struct BigInteger {
         two[0] = (uint)(value & 4294967295);
         two[1] = (uint)(value >> 32);
         return two;
-    }
-
-    // A value from a sign and a magnitude, with the sign forced to zero when
-    // the magnitude is -- the canonical form the rest of the file relies on.
-    private static BigInteger Of(int mark, uint[] magnitude) {
-        uint[] tidy = Trim(magnitude);
-        BigInteger made = new BigInteger(0);
-
-        made.sign = tidy.Length == 0 ? 0 : mark;
-        made.limbs = tidy;
-        return made;
     }
 
     private static uint[] Trim(uint[] magnitude) {
@@ -391,6 +1382,44 @@ struct BigInteger {
             rest = value % divisor;
         }
         remainder = (uint)rest;
+        return Trim(made);
+    }
+
+    // The magnitude moved up by `shift` bits. .NET REFUSES A RESULT LONGER
+    // THAN ITS LARGEST ARRAY ALLOWS with an OverflowException, which is
+    // checked before anything that size is asked for.
+    private static uint[] ShiftMagLeft(uint[] magnitude, int shift) {
+        if (magnitude.Length == 0) { return magnitude; }
+
+        int words = shift / 32;
+        int rest = shift % 32;
+
+        if ((long)magnitude.Length + words + 1 > 67108863) { throw new OverflowException(); }
+
+        uint[] made = new uint[magnitude.Length + words + 1];
+
+        for (int i = 0; i < magnitude.Length; i++) {
+            made[i + words] = made[i + words] | (magnitude[i] << rest);
+            if (rest != 0) { made[i + words + 1] = magnitude[i] >> (32 - rest); }
+        }
+        return Trim(made);
+    }
+
+    // The magnitude moved down by `shift` bits, the bits that fall off lost.
+    private static uint[] ShiftMagRight(uint[] magnitude, int shift) {
+        int words = shift / 32;
+        int rest = shift % 32;
+
+        if (words >= magnitude.Length) { return new uint[0]; }
+
+        uint[] made = new uint[magnitude.Length - words];
+
+        for (int i = 0; i < made.Length; i++) {
+            uint part = magnitude[i + words] >> rest;
+
+            if (rest != 0 && i + words + 1 < magnitude.Length) { part = part | (magnitude[i + words + 1] << (32 - rest)); }
+            made[i] = part;
+        }
         return Trim(made);
     }
 
