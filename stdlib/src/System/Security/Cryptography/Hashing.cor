@@ -1,6 +1,7 @@
 // System.Security.Cryptography's hash algorithms, as .NET has them: the
-// HashAlgorithm base with ComputeHash and the TransformBlock pair, and
-// SHA256 with Create and the one-shot HashData. What .NET Core called
+// HashAlgorithm base with ComputeHash, TryComputeHash and the TransformBlock
+// pair, and each hash with Create and the one-shot HashData, of arrays,
+// spans and streams. What .NET Core called
 // System.Security.Cryptography.Algorithms, and built over System.IO for the
 // same reason: a hash of a Stream reads the stream.
 
@@ -58,6 +59,13 @@ abstract class HashAlgorithm : ICryptoTransform, IDisposable
         HashCore(buffer, offset, count);
     }
 
+    /// More data from a span.
+    public void Append(ReadOnlySpan<byte> data)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        HashCore(data);
+    }
+
     /// The hash of everything given so far, once TransformFinalBlock has
     /// given the last of it.
     public byte[]? Hash
@@ -76,6 +84,52 @@ abstract class HashAlgorithm : ICryptoTransform, IDisposable
     protected abstract void HashCore(byte[] array, int ibStart, int cbSize);
     protected abstract byte[] HashFinal();
     public abstract void Initialize();
+
+    /// More data from a span, as .NET's: through the array form a piece at
+    /// a time, for an algorithm with no span form of its own (every one
+    /// here has).
+    protected virtual void HashCore(ReadOnlySpan<byte> source)
+    {
+        byte[] piece = new byte[source.Length < 4096 ? source.Length : 4096];
+        for (int at = 0; at < source.Length; at += piece.Length)
+        {
+            int count = source.Length - at < piece.Length ? source.Length - at : piece.Length;
+            source.Slice(at, count).CopyTo(piece);
+            HashCore(piece, 0, count);
+        }
+    }
+
+    /// The hash into a span, false when it is too short for it.
+    protected virtual bool TryHashFinal(Span<byte> destination, out int bytesWritten)
+    {
+        int size = HashSize / 8;
+        if (destination.Length < size)
+        {
+            bytesWritten = 0;
+            return false;
+        }
+        byte[] made = HashFinal();
+        new ReadOnlySpan<byte>(made).CopyTo(destination);
+        bytesWritten = made.Length;
+        return true;
+    }
+
+    /// The hash of `source` into `destination`, the algorithm then started
+    /// again; false, and nothing hashed, when the span is too short.
+    public bool TryComputeHash(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        if (destination.Length < HashSize / 8)
+        {
+            bytesWritten = 0;
+            return false;
+        }
+        HashCore(source);
+        if (!TryHashFinal(destination, out bytesWritten)) throw new InvalidOperationException("The algorithm's implementation is incorrect.");
+        _hash = null;
+        Initialize();
+        return true;
+    }
 
     public byte[] ComputeHash(byte[] buffer)
     {
@@ -180,6 +234,44 @@ abstract class SHA256 : HashAlgorithm
         Sha256Implementation made = new Sha256Implementation();
         return made.ComputeHash(source);
     }
+
+    public static byte[] HashData(ReadOnlySpan<byte> source) { return OneShot.Hash(new Sha256Implementation(), source); }
+    public static int HashData(ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new Sha256Implementation(), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new Sha256Implementation(), source, destination, out bytesWritten); }
+    public static int HashData(Stream source, Span<byte> destination) { return OneShot.Hash(new Sha256Implementation(), source, destination); }
+}
+
+/// The one-shot span and stream forms every hash class has, over a fresh
+/// algorithm object.
+static class OneShot
+{
+    public static byte[] Hash(HashAlgorithm algorithm, ReadOnlySpan<byte> source)
+    {
+        byte[] made = new byte[algorithm.HashSize / 8];
+        Try(algorithm, source, made, out int _);
+        return made;
+    }
+
+    public static int Hash(HashAlgorithm algorithm, ReadOnlySpan<byte> source, Span<byte> destination)
+    {
+        if (!Try(algorithm, source, destination, out int written)) throw new ArgumentException("Destination is too short.", nameof(destination));
+        return written;
+    }
+
+    public static bool Try(HashAlgorithm algorithm, ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
+    {
+        return algorithm.TryComputeHash(source, destination, out bytesWritten);
+    }
+
+    public static int Hash(HashAlgorithm algorithm, Stream source, Span<byte> destination)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        if (destination.Length < algorithm.HashSize / 8) throw new ArgumentException("Destination is too short.", nameof(destination));
+        if (!source.CanRead) throw new ArgumentException("Stream was not readable.", nameof(source));
+        byte[] made = algorithm.ComputeHash(source);
+        new ReadOnlySpan<byte>(made).CopyTo(destination);
+        return made.Length;
+    }
 }
 
 /// The algorithm itself: 64-byte blocks through the compression function,
@@ -224,25 +316,27 @@ sealed class Sha256Implementation : SHA256
         _length = 0;
     }
 
-    protected override void HashCore(byte[] array, int ibStart, int cbSize)
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { HashCore(new ReadOnlySpan<byte>(array, ibStart, cbSize)); }
+
+    protected override void HashCore(ReadOnlySpan<byte> source)
     {
-        _length = _length + cbSize;
-        int at = ibStart;
-        int end = ibStart + cbSize;
+        _length = _length + source.Length;
+        int at = 0;
+        int end = source.Length;
         while (at < end)
         {
-            // WHOLE BLOCKS STRAIGHT FROM THE CALLER'S ARRAY: copied a byte at
+            // WHOLE BLOCKS STRAIGHT FROM THE CALLER'S DATA: copied a byte at
             // a time into the block first, each one bounds-checked twice, the
             // copy cost a fifth of what compressing the block did.
             if (_filled == 0 && end - at >= 64)
             {
-                Compress(array, at);
+                Compress(source, at);
                 at = at + 64;
                 continue;
             }
             int take = 64 - _filled;
             if (take > end - at) take = end - at;
-            for (int i = 0; i < take; i++) _block[_filled + i] = array[at + i];
+            source.Slice(at, take).CopyTo(new Span<byte>(_block, _filled, take));
             _filled = _filled + take;
             at = at + take;
             if (_filled == 64)
@@ -292,7 +386,7 @@ sealed class Sha256Implementation : SHA256
     /// six registers. Ch and Maj in their three-operation forms, g ^ (e &
     /// (f ^ g)) and (a & b) | (c & (a | b)), the same values. The schedule's
     /// sum of K and W is made once per word, in the schedule.
-    void Compress(byte[] data, int at)
+    void Compress(ReadOnlySpan<byte> data, int at)
     {
         uint[] w = _w;
         uint[] k = K;
@@ -445,6 +539,11 @@ abstract class MD5 : HashAlgorithm
         if (source == null) throw new ArgumentNullException(nameof(source));
         return new Md5Implementation().ComputeHash(source);
     }
+
+    public static byte[] HashData(ReadOnlySpan<byte> source) { return OneShot.Hash(new Md5Implementation(), source); }
+    public static int HashData(ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new Md5Implementation(), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new Md5Implementation(), source, destination, out bytesWritten); }
+    public static int HashData(Stream source, Span<byte> destination) { return OneShot.Hash(new Md5Implementation(), source, destination); }
 }
 
 /// SHA-1 (FIPS 180-4): a 160-bit hash.
@@ -468,6 +567,11 @@ abstract class SHA1 : HashAlgorithm
         if (source == null) throw new ArgumentNullException(nameof(source));
         return new Sha1Implementation().ComputeHash(source);
     }
+
+    public static byte[] HashData(ReadOnlySpan<byte> source) { return OneShot.Hash(new Sha1Implementation(), source); }
+    public static int HashData(ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new Sha1Implementation(), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new Sha1Implementation(), source, destination, out bytesWritten); }
+    public static int HashData(Stream source, Span<byte> destination) { return OneShot.Hash(new Sha1Implementation(), source, destination); }
 }
 
 /// SHA-512 (FIPS 180-4): a 512-bit hash, over 128-byte blocks.
@@ -491,6 +595,11 @@ abstract class SHA512 : HashAlgorithm
         if (source == null) throw new ArgumentNullException(nameof(source));
         return new Sha512Implementation(false).ComputeHash(source);
     }
+
+    public static byte[] HashData(ReadOnlySpan<byte> source) { return OneShot.Hash(new Sha512Implementation(false), source); }
+    public static int HashData(ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new Sha512Implementation(false), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new Sha512Implementation(false), source, destination, out bytesWritten); }
+    public static int HashData(Stream source, Span<byte> destination) { return OneShot.Hash(new Sha512Implementation(false), source, destination); }
 }
 
 /// SHA-384 (FIPS 180-4): SHA-512 from other initial values, cut to 384 bits.
@@ -514,6 +623,11 @@ abstract class SHA384 : HashAlgorithm
         if (source == null) throw new ArgumentNullException(nameof(source));
         return new Sha512Implementation(true).ComputeHash(source);
     }
+
+    public static byte[] HashData(ReadOnlySpan<byte> source) { return OneShot.Hash(new Sha384Implementation(), source); }
+    public static int HashData(ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new Sha384Implementation(), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new Sha384Implementation(), source, destination, out bytesWritten); }
+    public static int HashData(Stream source, Span<byte> destination) { return OneShot.Hash(new Sha384Implementation(), source, destination); }
 }
 
 /// The 64-byte-block framing MD5 and SHA-1 share with SHA-256: the data in
@@ -527,16 +641,16 @@ abstract class Block64Hash
 
     public abstract void Compress();
 
-    public void Take(byte[] array, int start, int size)
+    public void Take(ReadOnlySpan<byte> data)
     {
-        Length = Length + size;
-        int at = start;
-        int end = start + size;
+        Length = Length + data.Length;
+        int at = 0;
+        int end = data.Length;
         while (at < end)
         {
             int take = 64 - Filled;
             if (take > end - at) take = end - at;
-            for (int i = 0; i < take; i++) Block[Filled + i] = array[at + i];
+            data.Slice(at, take).CopyTo(new Span<byte>(Block, Filled, take));
             Filled = Filled + take;
             at = at + take;
             if (Filled == 64)
@@ -621,7 +735,8 @@ sealed class Md5Implementation : MD5
         return copy;
     }
 
-    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _blocks.Take(array, ibStart, cbSize); }
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _blocks.Take(new ReadOnlySpan<byte>(array, ibStart, cbSize)); }
+    protected override void HashCore(ReadOnlySpan<byte> source) { _blocks.Take(source); }
 
     protected override byte[] HashFinal()
     {
@@ -700,7 +815,8 @@ sealed class Sha1Implementation : SHA1
         return copy;
     }
 
-    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _blocks.Take(array, ibStart, cbSize); }
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { _blocks.Take(new ReadOnlySpan<byte>(array, ibStart, cbSize)); }
+    protected override void HashCore(ReadOnlySpan<byte> source) { _blocks.Take(source); }
 
     protected override byte[] HashFinal()
     {
@@ -825,16 +941,18 @@ sealed class Sha512Implementation : SHA512
         return copy;
     }
 
-    protected override void HashCore(byte[] array, int ibStart, int cbSize)
+    protected override void HashCore(byte[] array, int ibStart, int cbSize) { HashCore(new ReadOnlySpan<byte>(array, ibStart, cbSize)); }
+
+    protected override void HashCore(ReadOnlySpan<byte> source)
     {
-        _length = _length + cbSize;
-        int at = ibStart;
-        int end = ibStart + cbSize;
+        _length = _length + source.Length;
+        int at = 0;
+        int end = source.Length;
         while (at < end)
         {
             int take = 128 - _filled;
             if (take > end - at) take = end - at;
-            for (int i = 0; i < take; i++) _block[_filled + i] = array[at + i];
+            source.Slice(at, take).CopyTo(new Span<byte>(_block, _filled, take));
             _filled = _filled + take;
             at = at + take;
             if (_filled == 128)
@@ -927,6 +1045,7 @@ sealed class Sha384Implementation : SHA384
     }
 
     protected override void HashCore(byte[] array, int ibStart, int cbSize) { _engine.Append(array, ibStart, cbSize); }
+    protected override void HashCore(ReadOnlySpan<byte> source) { _engine.Append(source); }
 
     protected override byte[] HashFinal() { return _engine.HashAndReset(); }
 }
@@ -1009,6 +1128,7 @@ class HMAC : KeyedHashAlgorithm
     }
 
     protected override void HashCore(byte[] array, int ibStart, int cbSize) { _inner.Append(array, ibStart, cbSize); }
+    protected override void HashCore(ReadOnlySpan<byte> source) { _inner.Append(source); }
 
     protected override byte[] HashFinal()
     {
@@ -1024,35 +1144,170 @@ class HMACMD5 : HMAC
 {
     public HMACMD5() : base(HashAlgorithmName.MD5, RandomNumberGenerator.GetBytes(64)) { }
     public HMACMD5(byte[] key) : base(HashAlgorithmName.MD5, key) { }
-    public static byte[] HashData(byte[] key, byte[] source) { return new HMACMD5(key).ComputeHash(source); }
+    public const int HashSizeInBits = 128;
+    public const int HashSizeInBytes = 16;
+
+    public static byte[] HashData(byte[] key, byte[] source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACMD5(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source) { return OneShot.Hash(new HMACMD5(key.ToArray()), source); }
+    public static int HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new HMACMD5(key.ToArray()), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new HMACMD5(key.ToArray()), source, destination, out bytesWritten); }
+
+    public static byte[] HashData(byte[] key, Stream source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACMD5(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACMD5(key.ToArray()).ComputeHash(source);
+    }
+
+    public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACMD5(key.ToArray()), source, destination); }
 }
 
 class HMACSHA1 : HMAC
 {
     public HMACSHA1() : base(HashAlgorithmName.SHA1, RandomNumberGenerator.GetBytes(64)) { }
     public HMACSHA1(byte[] key) : base(HashAlgorithmName.SHA1, key) { }
-    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA1(key).ComputeHash(source); }
+    public const int HashSizeInBits = 160;
+    public const int HashSizeInBytes = 20;
+
+    public static byte[] HashData(byte[] key, byte[] source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA1(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source) { return OneShot.Hash(new HMACSHA1(key.ToArray()), source); }
+    public static int HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new HMACSHA1(key.ToArray()), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new HMACSHA1(key.ToArray()), source, destination, out bytesWritten); }
+
+    public static byte[] HashData(byte[] key, Stream source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA1(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA1(key.ToArray()).ComputeHash(source);
+    }
+
+    public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACSHA1(key.ToArray()), source, destination); }
 }
 
 class HMACSHA256 : HMAC
 {
     public HMACSHA256() : base(HashAlgorithmName.SHA256, RandomNumberGenerator.GetBytes(64)) { }
     public HMACSHA256(byte[] key) : base(HashAlgorithmName.SHA256, key) { }
-    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA256(key).ComputeHash(source); }
+    public const int HashSizeInBits = 256;
+    public const int HashSizeInBytes = 32;
+
+    public static byte[] HashData(byte[] key, byte[] source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA256(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source) { return OneShot.Hash(new HMACSHA256(key.ToArray()), source); }
+    public static int HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new HMACSHA256(key.ToArray()), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new HMACSHA256(key.ToArray()), source, destination, out bytesWritten); }
+
+    public static byte[] HashData(byte[] key, Stream source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA256(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA256(key.ToArray()).ComputeHash(source);
+    }
+
+    public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACSHA256(key.ToArray()), source, destination); }
 }
 
 class HMACSHA384 : HMAC
 {
     public HMACSHA384() : base(HashAlgorithmName.SHA384, RandomNumberGenerator.GetBytes(128)) { }
     public HMACSHA384(byte[] key) : base(HashAlgorithmName.SHA384, key) { }
-    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA384(key).ComputeHash(source); }
+    public const int HashSizeInBits = 384;
+    public const int HashSizeInBytes = 48;
+
+    public static byte[] HashData(byte[] key, byte[] source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA384(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source) { return OneShot.Hash(new HMACSHA384(key.ToArray()), source); }
+    public static int HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new HMACSHA384(key.ToArray()), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new HMACSHA384(key.ToArray()), source, destination, out bytesWritten); }
+
+    public static byte[] HashData(byte[] key, Stream source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA384(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA384(key.ToArray()).ComputeHash(source);
+    }
+
+    public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACSHA384(key.ToArray()), source, destination); }
 }
 
 class HMACSHA512 : HMAC
 {
     public HMACSHA512() : base(HashAlgorithmName.SHA512, RandomNumberGenerator.GetBytes(128)) { }
     public HMACSHA512(byte[] key) : base(HashAlgorithmName.SHA512, key) { }
-    public static byte[] HashData(byte[] key, byte[] source) { return new HMACSHA512(key).ComputeHash(source); }
+    public const int HashSizeInBits = 512;
+    public const int HashSizeInBytes = 64;
+
+    public static byte[] HashData(byte[] key, byte[] source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA512(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source) { return OneShot.Hash(new HMACSHA512(key.ToArray()), source); }
+    public static int HashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination) { return OneShot.Hash(new HMACSHA512(key.ToArray()), source, destination); }
+    public static bool TryHashData(ReadOnlySpan<byte> key, ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten) { return OneShot.Try(new HMACSHA512(key.ToArray()), source, destination, out bytesWritten); }
+
+    public static byte[] HashData(byte[] key, Stream source)
+    {
+        if (key == null) throw new ArgumentNullException(nameof(key));
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA512(key).ComputeHash(source);
+    }
+
+    public static byte[] HashData(ReadOnlySpan<byte> key, Stream source)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        return new HMACSHA512(key.ToArray()).ComputeHash(source);
+    }
+
+    public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACSHA512(key.ToArray()), source, destination); }
 }
 
 /// A hash, or an HMAC, made a piece at a time and read when wanted: after
@@ -1099,8 +1354,8 @@ sealed class IncrementalHash : IDisposable
 
     public void AppendData(ReadOnlySpan<byte> data)
     {
-        byte[] copy = data.ToArray();
-        AppendData(copy, 0, copy.Length);
+        CheckDisposed();
+        _algorithm.Append(data);
     }
 
     public byte[] GetHashAndReset()

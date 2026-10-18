@@ -1,0 +1,74 @@
+// test: hash_one_shot_span_forms
+// expect-exit: 0
+// expect-output:
+// 900150983CD24FB0D6963F7D28E17F72
+// A9993E364706816ABA3E25717850C26C9CD0D89D
+// BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD
+// CB00753F45A35E8BB5A03D699AC65007272C32AB0EDED1631A8B605A43FF5BED8086072BA1E7CC2358BAECA134C825A7
+// DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F
+// 32 True 32 BA7816BF
+// False 0
+// ArgumentException destination
+// 32 BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD
+// F7BC83F430538424B13298E6AA6FB143EF4D59A14946175997479DBC2D1A3CD8
+// 80070713463E7749B90C2DC24911E275 16
+// True 32 248D6A61
+// 248D6A61D20638B8E5C026930C3E6039A33CE45964FF2167F6ECEDD419DB06C1
+//
+// The one-shot hashes of spans, as .NET has them on every hash class --
+// HashData(ReadOnlySpan<byte>), into a span, TryHashData and of a stream into
+// a span -- the HMACs' with a key span, HashAlgorithm.TryComputeHash, and an
+// incremental hash fed spans. Only the array and stream forms were there, so
+// `SHA256.HashData(block.AsSpan(n))` did not compile. The vectors are FIPS
+// 180-2's and RFC 2104's; the last two take a message across a block.
+
+using System;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+
+static class P
+{
+    static string Hex(ReadOnlySpan<byte> b) => Convert.ToHexString(b);
+
+    static int Main()
+    {
+        byte[] abc = Encoding.ASCII.GetBytes("xabc");
+        ReadOnlySpan<byte> s = abc.AsSpan(1);
+        Console.WriteLine(Hex(MD5.HashData(s)));
+        Console.WriteLine(Hex(SHA1.HashData(s)));
+        Console.WriteLine(Hex(SHA256.HashData(s)));
+        Console.WriteLine(Hex(SHA384.HashData(s)));
+        Console.WriteLine(Hex(SHA512.HashData(s)));
+
+        Span<byte> into = stackalloc byte[40];
+        int n = SHA256.HashData(s, into);
+        bool ok = SHA256.TryHashData(s, into, out int written);
+        Console.WriteLine(n + " " + ok + " " + written + " " + Hex(into.Slice(0, 4)));
+        Console.WriteLine(SHA256.TryHashData(s, into.Slice(0, 31), out int none) + " " + none);
+        try { SHA256.HashData(s, into.Slice(0, 31)); }
+        catch (ArgumentException e) { Console.WriteLine(e.GetType().Name + " " + e.ParamName); }
+        int fromStream = SHA256.HashData(new MemoryStream(Encoding.ASCII.GetBytes("abc")), into);
+        Console.WriteLine(fromStream + " " + Hex(into.Slice(0, 32)));
+
+        byte[] key = Encoding.ASCII.GetBytes("key");
+        byte[] fox = Encoding.ASCII.GetBytes("The quick brown fox jumps over the lazy dog");
+        Console.WriteLine(Hex(HMACSHA256.HashData(key.AsSpan(), fox.AsSpan())));
+        Console.WriteLine(Hex(HMACMD5.HashData(key, new MemoryStream(fox))) + " " + HMACMD5.HashSizeInBytes);
+
+        byte[] two = Encoding.ASCII.GetBytes("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+        using (SHA256 sha = SHA256.Create())
+        {
+            Span<byte> got = stackalloc byte[32];
+            bool done = sha.TryComputeHash(two, got, out int bytes);
+            Console.WriteLine(done + " " + bytes + " " + Hex(got.Slice(0, 4)));
+        }
+        using (IncrementalHash inc = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        {
+            inc.AppendData(two.AsSpan(0, 10));
+            inc.AppendData(two.AsSpan(10));
+            Console.WriteLine(Hex(inc.GetHashAndReset()));
+        }
+        return 0;
+    }
+}
