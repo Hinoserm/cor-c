@@ -705,7 +705,8 @@ public sealed partial class Escape : IModulePass
         Operand o = site.Operands[1];
         for (int hop = 0; hop < 8 && o is RegOperand { Reg: var r }; hop++)
         {
-            if (!s.Writes.TryGetValue(r, out WriteList ws) || ws.Count != 1) return ("*", null);
+            if (!s.Writes.TryGetValue(r, out WriteList ws)) return ("*", null);
+            if (ws.Count != 1) return JoinedVerdict(s, r, summaries);
             Instr d = ws[0];
             if (d is { Op: Opcode.Call, Callee: "__exception" } || d.Op == Opcode.Load && d.Operands is [SlotOperand { Slot: var from }] && s.CaughtSlots.Contains(from))
                 return site.DispatchType == Instr.HandedOn ? null : ReceivedVerdict(s, summaries);
@@ -723,6 +724,56 @@ public sealed partial class Escape : IModulePass
             o = d.Operands[0];
         }
         return ("*", null);
+    }
+
+    /// <summary>
+    /// A THROW OF A VARIABLE EACH ARM OF A CHOICE FILLED: `Exception made;`
+    /// set to one new exception or another by the errno, then thrown -- what
+    /// an exception-making helper is once inlined into its thrower (Interop's
+    /// errno to exception, inlined into FileStream.RawWrite). Every write,
+    /// back through the copies that carry it, must be an object made for it
+    /// (an allocation or a call that hands back a new one); those are judged
+    /// as one object, and the variable, written only with them, is that
+    /// object. Anything else written into it -- a parameter, a load, a caught
+    /// exception -- is any exception at all, as one write of it would be.
+    /// </summary>
+    private (string Type, LifetimeCondition? Unless)? JoinedVerdict(ThrowScope s, VReg thrown, Dictionary<string, bool[]> summaries)
+    {
+        List<VReg> made = new();
+        HashSet<VReg> seen = new() { thrown };
+        Stack<VReg> walk = new();
+        walk.Push(thrown);
+        Needs? needs = _hinting ? new(this) : null;
+        while (walk.TryPop(out VReg? r))
+        {
+            if (!s.Writes.TryGetValue(r, out WriteList ws) || ws.Count == 0) return ("*", null);
+            foreach (Instr d in ws)
+            {
+                if (d is { Op: Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32, Operands: [RegOperand { Reg: var from }] })
+                {
+                    if (seen.Add(from))
+                    {
+                        if (seen.Count > 64) return ("*", null);
+                        walk.Push(from);
+                    }
+                    continue;
+                }
+                if (d is { Op: Opcode.Call, Dest: { } result, Callee: { } callee } && callee != "__exception"
+                    && (IsAllocator(callee) || _fresh.Contains(callee) || _hinting && !IsIntrinsic(callee)))
+                {
+                    if (!IsAllocator(callee) && !_fresh.Contains(callee) && !needs!.AllowFresh(callee)) return ("*", null);
+                    made.Add(result);
+                    continue;
+                }
+                return ("*", null);
+            }
+        }
+        if (made.Count == 0) return ("*", null);
+        HashSet<string?> types = made.Select(m => StampedType(s.F, m)).ToHashSet();
+        string type = types.Count == 1 && types.First() is { } one ? one : "*";
+        Flow kept = Analyse(s.F, made, summaries, null, handOff: true, needs: needs);
+        if (kept.Escapes || !kept.Derived.Contains(thrown) || kept.Borrowed.Contains(thrown) || HeldPastThrow(s, kept)) return (type, null);
+        return needs is { Condition.IsTrue: false } ? (type, needs.Condition) : null;
     }
 
     /// <summary>
@@ -6779,7 +6830,10 @@ continue;
         int indirect = m.Functions.Sum(f => f.Blocks.Sum(b => b.Instrs.Count(i => i.Op == Opcode.CallIndirect)));
         Console.Error.WriteLine($"alloc report: virtual calls resolved {_indirect?.Count ?? 0} of {indirect}"
             + string.Concat((_indirect ?? new()).Values.Where(t => Switches.AllocReportOnly is { } only && t.Any(x => x.Contains(only, StringComparison.Ordinal))).Take(3).Select(t => "; [" + string.Join(", ", t) + "]"))
-            + string.Concat(m.Functions.SelectMany(f => f.Blocks.SelectMany(b => b.Instrs)).Where(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i))).Select(i => i.DispatchType).Distinct().Take(12).Select(t => "; unresolved " + t)));
+            + string.Concat(m.Functions.SelectMany(f => f.Blocks.SelectMany(b => b.Instrs).Select(i => (f, i)))
+                .Where(x => x.i.Op == Opcode.CallIndirect && x.i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(x.i)))
+                .GroupBy(x => x.i.DispatchType).Take(12)
+                .Select(g => "; unresolved " + g.Key + " in " + string.Join(", ", g.Select(x => x.f.Name + ":" + x.i.Line).Distinct().Take(6)))));
         foreach (string why in _unresolvedWhy ?? new()) Console.Error.WriteLine("alloc report: unresolved " + why);
         Console.Error.WriteLine("alloc report: thrown not just made: " + string.Join(", ", (_foreignTypes ?? new HashSet<string>()).Order(StringComparer.Ordinal).Take(20)));
         // UNBOUNDED UNWINDS ARE A COLLECTOR ON THEIR OWN, each the reason; the

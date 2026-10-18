@@ -1158,6 +1158,10 @@ public sealed partial class Lowering
 
             case DefaultExpr df:
             {
+                // A ZERO OF NO KNOWN TYPE is a checker that never told the
+                // `default` what waited for it: lowered as a null word, a
+                // struct's store copied its bytes from address 0.
+                if (_b.TypeOf(df).IsError) return Fail(df, "a default whose type was never worked out");
                 IrType t = IrTypes.Of(_b.TypeOf(df));
                 if (t.IsFloat())
                 {

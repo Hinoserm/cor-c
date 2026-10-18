@@ -7456,20 +7456,23 @@ static class Gc
         // Nothing the hook does may allocate.
         if (OutOfMemoryHook != 0) Sys.Call(OutOfMemoryHook, need, 0, 0);
         _failedNeed = need;
-        OutOfMemoryException? thrown = _outOfMemory;
         // MADE BY ANOTHER THREAD AT THIS MOMENT, the first request of all,
         // which this one raced: waited for, as a thread that is blocked, the
         // heap lock let go meanwhile, for the maker allocates it. Its maker
         // running out making it ends the process, as below.
-        if (thrown == null && _outOfMemoryMaker != 0 && _outOfMemoryMaker != Sys.ThreadBlock())
+        if (_outOfMemory == null && _outOfMemoryMaker != 0 && _outOfMemoryMaker != Sys.ThreadBlock())
         {
             if (locked) GcLock.Exit();
             GcThreads.BeginBlocking();
-            while ((thrown = _outOfMemory) == null && _outOfMemoryMaker != 0) Platform.Yield();
+            while (_outOfMemory == null && _outOfMemoryMaker != 0) Platform.Yield();
             GcThreads.EndBlocking();
             if (locked) GcLock.Enter();
-            thrown = _outOfMemory;
         }
+        // ONE READ OF THE STATIC, the value thrown: what a throw hands a
+        // catch is judged by where it came from (Escape.ThrowVerdict), and a
+        // local written in the wait as well was any exception at all, which
+        // made every catch in the program keep what it caught.
+        OutOfMemoryException? thrown = _outOfMemory;
         if (thrown == null)
         {
             if (!locked) GcLock.Enter();

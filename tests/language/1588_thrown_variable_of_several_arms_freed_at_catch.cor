@@ -1,0 +1,76 @@
+// test: thrown_variable_of_several_arms_freed_at_catch
+// expect-exit: 0
+// expect-output:
+// 422222 0 True
+// 566661 0 True 7
+//
+// An exception chosen by the arms of a choice and thrown from one variable:
+// `Exception made;` set to a new exception or another, then `throw made`,
+// which is what an exception-making helper is once inlined into its thrower
+// (Interop's errno to exception, inside FileStream.RawWrite). A throw was
+// judged by the one write of what it threw; several writes were any exception
+// at all, thrown by something not just made, and every catch in the program
+// that could take one kept what it caught -- 1489's loop of throws went to the
+// collector, in a program that wrote nothing to a file. Every write is an
+// object made for the throw here, so each catch frees what it caught. (Not a
+// catch of Exception: that may take the heap's own OutOfMemoryException, or
+// a type initializer's failure thrown again, which no catch may free.)
+using System;
+
+static class Program
+{
+    static void Write(int k)
+    {
+        int code = k & 3;
+        if (code == 0) return;
+        Exception made;
+        if (code == 1) made = new InvalidOperationException("one " + k);
+        else if (code == 2) made = new ArgumentException("two");
+        else { made = new FormatException("three"); made.HResult = 7; }
+        throw made;
+    }
+
+    static Exception Make(int code, string name)
+    {
+        Exception made;
+        if (code == 1) made = new InvalidOperationException("missing " + name);
+        else { made = new UnauthorizedAccessException("denied " + name); made.HResult = 7; }
+        return made;
+    }
+
+    static int s_hresult;
+
+    static void Open(int k)
+    {
+        if (k % 3 != 0) throw Make(k % 3, "f");
+    }
+
+    static int Main()
+    {
+        int collections = GC.CollectionCount(0);
+        long before = GC.GetTotalMemory(false);
+        long total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { Write(k); }
+            catch (InvalidOperationException e) { total += e.Message.Length; }
+            catch (ArgumentException e) { total += e.Message.Length; }
+            catch (FormatException e) { total += e.Message.Length; }
+        }
+        long grown = GC.GetTotalMemory(false) - before;
+        Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536));
+
+        collections = GC.CollectionCount(0);
+        before = GC.GetTotalMemory(false);
+        total = 0;
+        for (int k = 0; k < 100000; k++)
+        {
+            try { Open(k); }
+            catch (InvalidOperationException e) { total += e.Message.Length; }
+            catch (UnauthorizedAccessException e) { total += e.Message.Length; s_hresult = e.HResult; }
+        }
+        grown = GC.GetTotalMemory(false) - before;
+        Console.WriteLine(total + " " + (GC.CollectionCount(0) - collections) + " " + (grown < 65536) + " " + s_hresult);
+        return 0;
+    }
+}
