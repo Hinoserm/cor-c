@@ -1,0 +1,535 @@
+// test: datetime_format_info_calendars_and_cultures_as_dotnet
+// expect-exit: 0
+// expect-output:
+// AM|PM|/|:|Sunday|FirstDay
+// dddd, dd MMMM yyyy HH:mm:ss|dddd, dd MMMM yyyy|HH:mm:ss|MMMM dd|MM/dd/yyyy|HH:mm|yyyy MMMM
+// ddd, dd MMM yyyy HH':'mm':'ss 'GMT'|yyyy'-'MM'-'dd'T'HH':'mm':'ss|yyyy'-'MM'-'dd HH':'mm':'ss'Z'|Gregorian Calendar|True
+// [Sunday,Monday,Tuesday,Wednesday,Thursday,Friday,Saturday][Sun,Mon,Tue,Wed,Thu,Fri,Sat][Su,Mo,Tu,We,Th,Fr,Sa]
+// [January,February,March,April,May,June,July,August,September,October,November,December,][Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec,][January,February,March,April,May,June,July,August,September,October,November,December,][Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec,]
+// A.D. A.D. ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 2. AD 1 1 -1 -1 ArgumentNullException: Value cannot be null. (Parameter 'eraName')
+// Monday ArgumentOutOfRangeException: Valid values are between Sunday and Saturday, inclusive. (Parameter 'dayofweek')|Actual value was 7. ArgumentOutOfRangeException: Valid values are between Sunday and Saturday, inclusive. (Parameter 'dayofweek')|Actual value was -1. ArgumentOutOfRangeException: Valid values are between Sunday and Saturday, inclusive. (Parameter 'dayOfWeek')|Actual value was 9.
+// January  ArgumentOutOfRangeException: Valid values are between 1 and 13, inclusive. (Parameter 'month')|Actual value was 0. ArgumentOutOfRangeException: Valid values are between 1 and 13, inclusive. (Parameter 'month')|Actual value was 14. ArgumentOutOfRangeException: Valid values are between 1 and 13, inclusive. (Parameter 'month')|Actual value was 14.
+// [MM/dd/yyyy,yyyy-MM-dd,dddd, dd MMMM yyyy,dddd, dd MMMM yyyy HH:mm,dddd, dd MMMM yyyy hh:mm tt,dddd, dd MMMM yyyy H:mm,dddd, dd MMMM yyyy h:mm tt,dddd, dd MMMM yyyy HH:mm:ss,MM/dd/yyyy HH:mm,MM/dd/yyyy hh:mm tt,MM/dd/yyyy H:mm,MM/dd/yyyy h:mm tt,yyyy-MM-dd HH:mm,yyyy-MM-dd hh:mm tt,yyyy-MM-dd H:mm,yyyy-MM-dd h:mm tt,MM/dd/yyyy HH:mm:ss,yyyy-MM-dd HH:mm:ss,MMMM dd,MMMM dd,yyyy'-'MM'-'dd'T'HH':'mm':'ss.fffffffK,yyyy'-'MM'-'dd'T'HH':'mm':'ss.fffffffK,ddd, dd MMM yyyy HH':'mm':'ss 'GMT',ddd, dd MMM yyyy HH':'mm':'ss 'GMT',yyyy'-'MM'-'dd'T'HH':'mm':'ss,HH:mm,hh:mm tt,H:mm,h:mm tt,HH:mm:ss,yyyy'-'MM'-'dd HH':'mm':'ss'Z',dddd, dd MMMM yyyy HH:mm:ss,yyyy MMMM,yyyy MMMM]
+// d [MM/dd/yyyy,yyyy-MM-dd]
+// D [dddd, dd MMMM yyyy]
+// f [dddd, dd MMMM yyyy HH:mm,dddd, dd MMMM yyyy hh:mm tt,dddd, dd MMMM yyyy H:mm,dddd, dd MMMM yyyy h:mm tt]
+// F [dddd, dd MMMM yyyy HH:mm:ss]
+// g [MM/dd/yyyy HH:mm,MM/dd/yyyy hh:mm tt,MM/dd/yyyy H:mm,MM/dd/yyyy h:mm tt,yyyy-MM-dd HH:mm,yyyy-MM-dd hh:mm tt,yyyy-MM-dd H:mm,yyyy-MM-dd h:mm tt]
+// G [MM/dd/yyyy HH:mm:ss,yyyy-MM-dd HH:mm:ss]
+// m [MMMM dd]
+// M [MMMM dd]
+// o [yyyy'-'MM'-'dd'T'HH':'mm':'ss.fffffffK]
+// O [yyyy'-'MM'-'dd'T'HH':'mm':'ss.fffffffK]
+// r [ddd, dd MMM yyyy HH':'mm':'ss 'GMT']
+// R [ddd, dd MMM yyyy HH':'mm':'ss 'GMT']
+// s [yyyy'-'MM'-'dd'T'HH':'mm':'ss]
+// t [HH:mm,hh:mm tt,H:mm,h:mm tt]
+// T [HH:mm:ss]
+// u [yyyy'-'MM'-'dd HH':'mm':'ss'Z']
+// U [dddd, dd MMMM yyyy HH:mm:ss]
+// y [yyyy MMMM]
+// Y [yyyy MMMM]
+// ArgumentException: Format specifier 'x' was invalid. (Parameter 'format')
+// InvalidOperationException: Instance is read-only.
+// InvalidOperationException: Instance is read-only.
+// InvalidOperationException: Instance is read-only.
+// True GregorianCalendar Localized
+// True True True True True True
+// True True True True
+// False MM/dd/yyyy False False
+// False False False
+// True False True True ArgumentNullException: Value cannot be null. (Parameter 'dtfi')
+// ArgumentException: Length of the array must be 7. (Parameter 'value') | ArgumentNullException: Found a null value within an array. (Parameter 'value') | ArgumentNullException: Value cannot be null. (Parameter 'value') | ArgumentException: Length of the array must be 13. (Parameter 'value')
+// null13
+// ArgumentOutOfRangeException: Valid values are between Sunday and Saturday, inclusive. (Parameter 'value')|Actual value was 7. | ArgumentOutOfRangeException: Valid values are between FirstDay and FirstFourDayWeek, inclusive. (Parameter 'value')|Actual value was 3. | ArgumentNullException: Value cannot be null. (Parameter 'value')
+// ArgumentException: Array must not be of length zero. (Parameter 'patterns') | ArgumentNullException: Found a null value within an array. (Parameter 'patterns[1]') | ArgumentException: Format specifier 'f' was invalid. (Parameter 'format') | ArgumentNullException: Value cannot be null. (Parameter 'patterns')
+// yy-MM-dd [yy-MM-dd,dd.MM.yyyy] [yy-MM-dd HH:mm,yy-MM-dd hh:mm tt,yy-MM-dd H:mm,yy-MM-dd h:mm tt,dd.MM.yyyy HH:mm,dd.MM.yyyy hh:mm tt,dd.MM.yyyy H:mm,dd.MM.yyyy h:mm tt]
+// [dd.MM.yyyy,yy-MM-dd]
+// [x,yy-MM-dd,dd.MM.yyyy] dddd, dd MMMM yyyy HH:mm:ss
+// D! T!
+// D2 T!
+// ArgumentOutOfRangeException: Not a valid calendar for the given culture. (Parameter 'value')|Actual value was System.Globalization.GregorianCalendar. GregorianCalendar
+// System.Globalization.GregorianCalendar True SolarCalendar [1] 2049 0001-01-01T00:00:00.0000000 9999-12-31T23:59:59.9999999 0 1
+// 1 GregorianCalendar False True
+// 2024-02-29T13:45:30.2500000 2022-12-31T13:45:30.2500000 ArgumentOutOfRangeException: Valid values are between -120000 and 120000, inclusive. (Parameter 'months')|Actual value was 120001. ArgumentOutOfRangeException: Year, Month, and Day parameters describe an un-representable DateTime. 2025-01-31T13:45:30.2500000
+// 2024-02-01T13:45:30.2500000 2024-01-31T12:45:30.2500000 2024-01-31T13:50:30.2500000 2024-01-31T13:45:35.2500000 2024-01-31T13:45:30.2520000 2024-01-31T13:45:30.2480000 2024-02-14T13:45:30.2500000 ArgumentException: The result is out of the supported range for this calendar. The result should be between 01/01/0001 00:00:00 (Gregorian date) and 12/31/9999 23:59:59 (Gregorian date), inclusive. ArgumentOutOfRangeException: Value to add was out of range. (Parameter 'value')|Actual value was 1E+20. ArgumentOutOfRangeException: Value to add was out of range. (Parameter 'value')|Actual value was NaN.
+// 31 Wednesday 31 29 28 366 365 1 13 250 45 1 12 30 2024 0 True False True False
+// ArgumentOutOfRangeException: Month must be between one and twelve. (Parameter 'month')|Actual value was 13. ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 2. ArgumentOutOfRangeException: Year must be between 1 and 9999. (Parameter 'year') ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 5. ArgumentOutOfRangeException: Valid values are between 1 and 9999, inclusive. (Parameter 'year')|Actual value was 0. ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 2. ArgumentOutOfRangeException: Year must be between 1 and 9999. (Parameter 'year') ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 3.
+// ArgumentOutOfRangeException: Valid values are between 1 and 12, inclusive. (Parameter 'month')|Actual value was 13. ArgumentOutOfRangeException: Valid values are between 1 and 29, inclusive. (Parameter 'day')|Actual value was 30. ArgumentOutOfRangeException: Valid values are between 1 and 9999, inclusive. (Parameter 'year')|Actual value was 0. ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 4. ArgumentOutOfRangeException: Valid values are between 1 and 12, inclusive. (Parameter 'month')|Actual value was 0. ArgumentOutOfRangeException: Valid values are between 1 and 9999, inclusive. (Parameter 'year')|Actual value was 10000. ArgumentOutOfRangeException: Valid values are between 1 and 9999, inclusive. (Parameter 'year')|Actual value was 0. ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 9.
+// 2024-02-29T23:59:59.9990000 ArgumentOutOfRangeException: Year, Month, and Day parameters describe an un-representable DateTime. ArgumentOutOfRangeException: Hour, Minute, and Second parameters describe an un-representable DateTime. ArgumentOutOfRangeException: Valid values are between 0 and 999, inclusive. (Parameter 'millisecond') ArgumentOutOfRangeException: Era value was not valid. (Parameter 'era')|Actual value was 2.
+// 2049 1950 1999 100 ArgumentOutOfRangeException: year ('-1') must be a non-negative value. (Parameter 'year')|Actual value was -1. ArgumentOutOfRangeException: year ('10000') must be less than or equal to '9999'. (Parameter 'year')|Actual value was 10000.
+// 1930 2029 ArgumentOutOfRangeException: Valid values are between 99 and 9999, inclusive. (Parameter 'value')|Actual value was 98. ArgumentOutOfRangeException: Valid values are between 99 and 9999, inclusive. (Parameter 'value')|Actual value was 10000. InvalidOperationException: Instance is read-only.
+// Arabic ArgumentOutOfRangeException: Valid values are between Localized and TransliteratedFrench, inclusive. (Parameter 'value')|Actual value was 0. ArgumentOutOfRangeException: Valid values are between Localized and TransliteratedFrench, inclusive. (Parameter 'type')|Actual value was 13. TransliteratedFrench
+// True False False True ArgumentNullException: Value cannot be null. (Parameter 'calendar') InvalidOperationException: Instance is read-only.
+// FirstDay: 1 2 2 53 53 1 1 53 1 1 / 1 1 2 53 53 1 1 53 1 1 / 1 1 1 53 53 1 2 53 1 1 / 1 1 1 53 53 1 2 53 1 1 / 1 1 1 54 53 1 2 53 1 1 / 1 1 1 53 53 1 2 53 1 1 / 1 2 2 53 53 1 2 53 1 2 /
+// FirstFullWeek: 52 1 1 52 52 53 53 52 52 52 / 52 52 1 52 53 1 1 52 52 52 / 52 52 52 52 52 52 1 52 52 52 / 53 53 53 53 52 52 1 52 52 52 / 53 53 53 53 52 52 1 52 53 53 / 1 1 1 52 52 52 1 53 1 1 / 52 1 1 52 52 52 1 52 52 1 /
+// FirstFourDayWeek: 53 1 1 53 53 1 1 52 52 52 / 53 53 1 53 53 1 1 52 53 53 / 1 1 1 53 52 52 1 53 1 1 / 1 1 1 53 52 52 1 53 1 1 / 1 1 1 53 52 53 1 53 1 1 / 1 1 1 52 53 1 2 53 1 1 / 52 1 1 52 53 1 2 52 52 1 /
+// ArgumentOutOfRangeException: Valid values are between FirstDay and FirstFourDayWeek, inclusive. (Parameter 'rule')|Actual value was 3. ArgumentOutOfRangeException: Valid values are between Sunday and Saturday, inclusive. (Parameter 'firstDayOfWeek')|Actual value was 7.
+// 52,52,52,52,53,52,52,52,52,53,52,52,52,52,52,53,52,52,52,52,53,52,52,52,52,52,53,52,52,52,52,
+// 53/2020 53/2020 1/2021 53/2020 1/2025 1/1 52/9999 53/2026 53/2026 
+// 2021-01-04T00:00:00.0000000 2021-01-03T00:00:00.0000000 0001-01-01T00:00:00.0000000 2022-01-09T00:00:00.0000000 2021-01-03T00:00:00.0000000
+// ArgumentOutOfRangeException: Year must be between 1 and 9999. (Parameter 'year') | ArgumentOutOfRangeException: The week parameter must be in the range 1 through 53. (Parameter 'week') | ArgumentOutOfRangeException: The DayOfWeek enumeration must be in the range 0 through 6. (Parameter 'dayOfWeek') | ArgumentOutOfRangeException: Year must be between 1 and 9999. (Parameter 'year') | ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime. (Parameter 'value') | 53 2020 01/04/2021
+// d => 03-05-2024 | 03-05-2024
+// D => Dienstag, 05 March 2024 | Dienstag, 05 March 2024
+// f => Dienstag, 05 March 2024 14.07 | Dienstag, 05 March 2024 14.07
+// F => Dienstag, 05 March 2024 14.07.09 | Dienstag, 05 March 2024 14.07.09
+// g => 03-05-2024 14.07 | 03-05-2024 14.07
+// G => 03-05-2024 14.07.09 | 03-05-2024 14.07.09
+// m => March 05 | March 05
+// o => 2024-03-05T14:07:09.1230000 | 2024-03-05T14:07:09.1230000+02:00
+// r => Tue, 05 Mar 2024 14:07:09 GMT | Tue, 05 Mar 2024 12:07:09 GMT
+// s => 2024-03-05T14:07:09 | 2024-03-05T14:07:09
+// t => 14.07 | 14.07
+// T => 14.07.09 | 14.07.09
+// u => 2024-03-05 14:07:09Z | 2024-03-05 12:07:09Z
+// y => 2024 März | 2024 März
+// dd/MM/yyyy HH:mm:ss tt => 05-03-2024 14.07.09 nachm | 05-03-2024 14.07.09 nachm
+// ddd MMM => Di Mär | Di Mär
+// dddd MMMM => Dienstag März | Dienstag März
+// t tt => n nachm | n nachm
+// '/':\/\: => /./: | /./:
+// %/ => - | -
+// d MMMM => 5 March | 5 March
+// MMMM => März | März
+// dd MMM yyyy => 05 Mar 2024 | 05 Mar 2024
+// MMM d => Mar 5 | Mar 5
+// 03-05-2024 14.07.09 | 03-05-2024 14.07.09 +02:00 | 03-05-2024 14.07.09 Dienstag, 05 March 2024 | 14:07
+// d => 05.03.24 | 05.03.24
+// G => 05.03.24 14 Uhr 07 | 05.03.24 14 Uhr 07
+// g => 05.03.24 14.07 | 05.03.24 14.07
+// T => 14 Uhr 07 | 14 Uhr 07
+// F => Dienstag, 05 March 2024 14 Uhr 07 | Dienstag, 05 March 2024 14 Uhr 07
+// m => 5. March | 5. March
+// y => März 2024 | März 2024
+// 05.03.24 14 Uhr 07 | 05.03.24 14 Uhr 07 +02:00
+// d MMMM => 5 marta
+// MMMM => March
+// MMMM yyyy => March 2024
+// dd MMM => 05 mar.
+// MMM => Mar
+// ddd MMMM => Tue March
+// MMMM d => marta 5
+// D => Tuesday, 05 marta 2024
+// m => marta 05
+// d MMMM yyyy => 5 marta 2024
+// 'd' MMMM => d marta
+// d' 'MMMM => 5 marta
+// %d MMMM => 5 marta
+// 2024-03-05T14:07:09.0000000
+// 2024-03-05T00:00:00.0000000
+// 2024-03-05T00:00:00.0000000
+// 2024-03-05T00:00:00.0000000
+// 2024-03-05T00:00:00.0000000
+// 2024-03-05T00:00:00.0000000
+// 2024-03-05T00:00:00.0000000
+// TODAYT14:00:00.0000000 TODAYT14:00:00.0000000 TODAYT02:00:00.0000000 FormatException: String '2 PM' was not recognized as a valid DateTime.
+// 2024-03-05T00:00:00.0000000 2024-03-05T14:07:00.0000000 2024-03-05T00:00:00.0000000 2024-03-05T14:07:00.0000000 2024-03-05T00:00:00.0000000 TODAYT05:03:24.0000000
+// 2024-03-05T00:00:00.0000000 YYYY-03-05T00:00:00.0000000 2024-03-05T00:00:00.0000000
+// 03/05/2024 14:07:00 +02:00 03/05/2024 14:07:00 +02:00
+// 2024-03-05T00:00:00.0000000 TODAYT14:07:00.0000000
+// 2024-01-05T00:00:00.0000000 2024-01-05T00:00:00.0000000 Friday, 05 January 2024
+// Tuesday, 05 March 2024 Tuesday, 05 March 2024
+// Dienstag, 05 March 2024 2024-03-05T00:00:00.0000000
+// Tuesday, 05 March 2024
+// 05.03.2024 => | 2024-05-03T00:00:00.0000000 Unspecified | 2024-05-03T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified | 2024-05-03T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// 5. März 2024 => | FormatException: The string '5. März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '3'. | FormatException: The string '5. März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '3'. | 2024-03-05T00:00:00.0000000 Unspecified | FormatException: The string '5. März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '3'. | FormatException: The string '5. März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '3'.
+// Dienstag, 5. März 2024 14:07 => | FormatException: The string 'Dienstag, 5. März 2024 14:07' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Dienstag, 5. März 2024 14:07' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | 2024-03-05T14:07:00.0000000 Unspecified | FormatException: The string 'Dienstag, 5. März 2024 14:07' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Dienstag, 5. März 2024 14:07' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// 14:07:09 Uhr => | FormatException: The string '14:07:09 Uhr' was not recognized as a valid DateTime. There is an unknown word starting at index '9'. | FormatException: The string '14:07:09 Uhr' was not recognized as a valid DateTime. There is an unknown word starting at index '9'. | TODAYT14:07:09.0000000 Unspecified | FormatException: The string '14:07:09 Uhr' was not recognized as a valid DateTime. There is an unknown word starting at index '9'. | FormatException: The string '14:07:09 Uhr' was not recognized as a valid DateTime. There is an unknown word starting at index '9'.
+// 5 marta 2024 => | FormatException: The string '5 marta 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | FormatException: The string '5 marta 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | FormatException: The string '5 marta 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | 2024-03-05T00:00:00.0000000 Unspecified | FormatException: The string '5 marta 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '2'.
+// marta 5 => | FormatException: The string 'marta 5' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'marta 5' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'marta 5' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | YYYY-03-05T00:00:00.0000000 Unspecified | FormatException: The string 'marta 5' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// 2024-03-05 => | 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// 3/5/2024 2:07 PM => | 2024-03-05T14:07:00.0000000 Unspecified | 2024-03-05T14:07:00.0000000 Unspecified | 2024-05-03T14:07:00.0000000 Unspecified | 2024-03-05T14:07:00.0000000 Unspecified | 2024-05-03T14:07:00.0000000 Unspecified
+// 05-03-2024 14-07 => | FormatException: String '05-03-2024 14-07' was not recognized as a valid DateTime. | FormatException: String '05-03-2024 14-07' was not recognized as a valid DateTime. | FormatException: String '05-03-2024 14-07' was not recognized as a valid DateTime. | FormatException: String '05-03-2024 14-07' was not recognized as a valid DateTime. | FormatException: String '05-03-2024 14-07' was not recognized as a valid DateTime.
+// 2024-03-05 14-07-09 => | FormatException: String '2024-03-05 14-07-09' was not recognized as a valid DateTime. | FormatException: String '2024-03-05 14-07-09' was not recognized as a valid DateTime. | FormatException: String '2024-03-05 14-07-09' was not recognized as a valid DateTime. | 2024-03-05T23:07:00.0000000 Local, as UTC | FormatException: String '2024-03-05 14-07-09' was not recognized as a valid DateTime.
+// 5 Jan uary 2024 => | FormatException: The string '5 Jan uary 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '6'. | FormatException: The string '5 Jan uary 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '6'. | FormatException: The string '5 Jan uary 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '6'. | FormatException: The string '5 Jan uary 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '6'. | 2024-01-05T00:00:00.0000000 Unspecified
+// Jan  uary 5 => | FormatException: The string 'Jan  uary 5' was not recognized as a valid DateTime. There is an unknown word starting at index '5'. | FormatException: The string 'Jan  uary 5' was not recognized as a valid DateTime. There is an unknown word starting at index '5'. | FormatException: The string 'Jan  uary 5' was not recognized as a valid DateTime. There is an unknown word starting at index '5'. | FormatException: The string 'Jan  uary 5' was not recognized as a valid DateTime. There is an unknown word starting at index '5'. | 2005-01-01T00:00:00.0000000 Unspecified
+// 1月 5 2024 => | FormatException: String '1月 5 2024' was not recognized as a valid DateTime. | FormatException: String '1月 5 2024' was not recognized as a valid DateTime. | FormatException: String '1月 5 2024' was not recognized as a valid DateTime. | 2024-05-01T00:00:00.0000000 Unspecified | FormatException: String '1月 5 2024' was not recognized as a valid DateTime.
+// 12月 => | YYYY-12-01T00:00:00.0000000 Unspecified | YYYY-12-01T00:00:00.0000000 Unspecified | YYYY-12-01T00:00:00.0000000 Unspecified | YYYY-12-01T00:00:00.0000000 Unspecified | YYYY-12-01T00:00:00.0000000 Unspecified
+// 5 1月 => | 2005-01-01T00:00:00.0000000 Unspecified | 2005-01-01T00:00:00.0000000 Unspecified | 2005-01-01T00:00:00.0000000 Unspecified | 2005-01-01T00:00:00.0000000 Unspecified | 2005-01-01T00:00:00.0000000 Unspecified
+// 2 nachm. => | FormatException: The string '2 nachm.' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | FormatException: The string '2 nachm.' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | TODAYT14:00:00.0000000 Unspecified | FormatException: The string '2 nachm.' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | FormatException: The string '2 nachm.' was not recognized as a valid DateTime. There is an unknown word starting at index '2'.
+// 2 nm => | FormatException: The string '2 nm' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | FormatException: The string '2 nm' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | FormatException: The string '2 nm' was not recognized as a valid DateTime. There is an unknown word starting at index '2'. | TODAYT14:00:00.0000000 Unspecified | FormatException: The string '2 nm' was not recognized as a valid DateTime. There is an unknown word starting at index '2'.
+// vm 3 => | FormatException: The string 'vm 3' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'vm 3' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'vm 3' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: String 'vm 3' was not recognized as a valid DateTime. | FormatException: The string 'vm 3' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// März 2024 => | FormatException: The string 'März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | 2024-03-01T00:00:00.0000000 Unspecified | FormatException: The string 'März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'März 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// 2024 März => | FormatException: The string '2024 März' was not recognized as a valid DateTime. There is an unknown word starting at index '5'. | FormatException: The string '2024 März' was not recognized as a valid DateTime. There is an unknown word starting at index '5'. | 2024-03-01T00:00:00.0000000 Unspecified | FormatException: The string '2024 März' was not recognized as a valid DateTime. There is an unknown word starting at index '5'. | FormatException: The string '2024 März' was not recognized as a valid DateTime. There is an unknown word starting at index '5'.
+// 24.12. => | FormatException: String '24.12.' was not recognized as a valid DateTime. | FormatException: String '24.12.' was not recognized as a valid DateTime. | FormatException: String '24.12.' was not recognized as a valid DateTime. | YYYY-12-24T00:00:00.0000000 Unspecified | YYYY-12-24T00:00:00.0000000 Unspecified
+// 5.3.24 => | 2024-05-03T00:00:00.0000000 Unspecified | 2024-05-03T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified | 2005-03-24T00:00:00.0000000 Unspecified | 2024-03-05T00:00:00.0000000 Unspecified
+// 05.03.24 10:00 => | 2024-05-03T10:00:00.0000000 Unspecified | 2024-05-03T10:00:00.0000000 Unspecified | 2024-03-05T10:00:00.0000000 Unspecified | 2005-03-24T10:00:00.0000000 Unspecified | 2024-03-05T10:00:00.0000000 Unspecified
+// Mai => | FormatException: The string 'Mai' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Mai' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: String 'Mai' was not recognized as a valid DateTime. | FormatException: The string 'Mai' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Mai' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// Sa, 5. Okt 2024 => | FormatException: The string 'Sa, 5. Okt 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Sa, 5. Okt 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | 2024-10-05T00:00:00.0000000 Unspecified | FormatException: The string 'Sa, 5. Okt 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'. | FormatException: The string 'Sa, 5. Okt 2024' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.
+// 10:30 vorm. => | FormatException: The string '10:30 vorm.' was not recognized as a valid DateTime. There is an unknown word starting at index '6'. | FormatException: The string '10:30 vorm.' was not recognized as a valid DateTime. There is an unknown word starting at index '6'. | TODAYT10:30:00.0000000 Unspecified | FormatException: The string '10:30 vorm.' was not recognized as a valid DateTime. There is an unknown word starting at index '6'. | FormatException: The string '10:30 vorm.' was not recognized as a valid DateTime. There is an unknown word starting at index '6'.
+// d=03/05/2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; D=Tuesday, 05 March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; f=Tuesday, 05 March 2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; F=Tuesday, 05 March 2024 14:07:09 -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T14:07:09.0000000 Unspecified; g=03/05/2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; G=03/05/2024 14:07:09 -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T14:07:09.0000000 Unspecified; m=March 05 -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; t=14:07 -> TODAYT14:07:00.0000000 Unspecified / TODAYT14:07:00.0000000 Unspecified; T=14:07:09 -> TODAYT14:07:09.0000000 Unspecified / TODAYT14:07:09.0000000 Unspecified; y=2024 March -> 2024-03-01T00:00:00.0000000 Unspecified / 2024-03-01T00:00:00.0000000 Unspecified; dd MMMM yyyy=05 March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; d MMM=5 Mar -> YYYY-03-05T00:00:00.0000000 Unspecified / 2005-03-01T00:00:00.0000000 Unspecified; MMMM=March -> YYYY-03-01T00:00:00.0000000 Unspecified / FormatException; 
+// d=03/05/2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; D=Tuesday, 05 March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; f=Tuesday, 05 March 2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; F=Tuesday, 05 March 2024 14:07:09 -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T14:07:09.0000000 Unspecified; g=03/05/2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; G=03/05/2024 14:07:09 -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T14:07:09.0000000 Unspecified; m=March 05 -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; t=14:07 -> TODAYT14:07:00.0000000 Unspecified / TODAYT14:07:00.0000000 Unspecified; T=14:07:09 -> TODAYT14:07:09.0000000 Unspecified / TODAYT14:07:09.0000000 Unspecified; y=2024 March -> 2024-03-01T00:00:00.0000000 Unspecified / 2024-03-01T00:00:00.0000000 Unspecified; dd MMMM yyyy=05 March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; d MMM=5 Mar -> YYYY-03-05T00:00:00.0000000 Unspecified / 2005-03-01T00:00:00.0000000 Unspecified; MMMM=March -> YYYY-03-01T00:00:00.0000000 Unspecified / FormatException; 
+// d=05.03.2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; D=Dienstag, 5. March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; f=Dienstag, 5. March 2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; F=Dienstag, 5. March 2024 14:07:09 Uhr -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T14:07:09.0000000 Unspecified; g=05.03.2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; G=05.03.2024 14:07:09 Uhr -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T14:07:09.0000000 Unspecified; m=5. March -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; t=14:07 -> TODAYT14:07:00.0000000 Unspecified / TODAYT14:07:00.0000000 Unspecified; T=14:07:09 Uhr -> TODAYT14:07:09.0000000 Unspecified / TODAYT14:07:09.0000000 Unspecified; y=März 2024 -> 2024-03-01T00:00:00.0000000 Unspecified / 2024-03-01T00:00:00.0000000 Unspecified; dd MMMM yyyy=05 March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; d MMM=5 Mar -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; MMMM=März -> YYYY-03-01T00:00:00.0000000 Unspecified / FormatException; 
+// d=2024-03-05 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; D=Tuesday, 05 marta 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; f=Tuesday, 05 marta 2024 14-07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; F=Tuesday, 05 marta 2024 14-07-09 -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T23:07:00.0000000 Local, as UTC; g=2024-03-05 14-07 -> 2024-03-05T14:07:00.0000000 Unspecified / 2024-03-05T14:07:00.0000000 Unspecified; G=2024-03-05 14-07-09 -> 2024-03-05T14:07:09.0000000 Unspecified / 2024-03-05T23:07:00.0000000 Local, as UTC; m=5 marta -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; t=14-07 -> TODAYT14:07:00.0000000 Unspecified / TODAYT14:07:00.0000000 Unspecified; T=14-07-09 -> TODAYT14:07:09.0000000 Unspecified / TODAYT23:07:00.0000000 Local, as UTC; y=2024 March -> 2024-03-01T00:00:00.0000000 Unspecified / 2024-03-01T00:00:00.0000000 Unspecified; dd MMMM yyyy=05 marta 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; d MMM=5 mar. -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; MMMM=March -> YYYY-03-01T00:00:00.0000000 Unspecified / FormatException; 
+// d=5/3/2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; D=Tuesday, 05 March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; f=Tuesday, 05 March 2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / FormatException; F=Tuesday, 05 March 2024 14:07:09 -> 2024-03-05T14:07:09.0000000 Unspecified / FormatException; g=5/3/2024 14:07 -> 2024-03-05T14:07:00.0000000 Unspecified / FormatException; G=5/3/2024 14:07:09 -> 2024-03-05T14:07:09.0000000 Unspecified / FormatException; m=05 March -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; t=14:07 -> TODAYT14:07:00.0000000 Unspecified / FormatException; T=14:07:09 -> TODAYT14:07:09.0000000 Unspecified / FormatException; y=Mar 2024 -> 2024-03-01T00:00:00.0000000 Unspecified / 2024-03-01T00:00:00.0000000 Unspecified; dd MMMM yyyy=05 March 2024 -> 2024-03-05T00:00:00.0000000 Unspecified / 2024-03-05T00:00:00.0000000 Unspecified; d MMM=5 Mar -> YYYY-03-05T00:00:00.0000000 Unspecified / YYYY-03-05T00:00:00.0000000 Unspecified; MMMM=Mar -> YYYY-03-01T00:00:00.0000000 Unspecified / FormatException; 
+// shared True False
+// clone False False 2029
+// default moved 2029 2029 2029
+// snapshot 2029 2010
+// clone before 2029 2039
+// readonly True 2039 False InvalidOperationException: Instance is read-only.
+// invariant clone False False 2049 2049
+// 2030 1930 2030 1930
+// reset Sunday MMMM dd MM/dd/yyyy HH.mm . x / dddd, dd MMMM yyyy HH.mm
+// same kept a
+// ArgumentNullException: Value cannot be null. (Parameter 'value') | ArgumentOutOfRangeException: Not a valid calendar for the given culture. (Parameter 'value')|Actual value was System.Globalization.GregorianCalendar. | InvalidOperationException: Instance is read-only.
+// True False True InvalidOperationException: Instance is read-only. ArgumentNullException: Value cannot be null. (Parameter 'value')
+// True True True 2039 False
+//
+// DateTimeFormatInfo, Calendar, GregorianCalendar and ISOWeek as .NET 10 has
+// them: the invariant culture's names, designators, separators and patterns,
+// read-only there and in the current culture, writable in a new one or a Clone,
+// every setter's check and message; GetAllDateTimePatterns and
+// SetAllDateTimePatterns; the Gregorian calendar's arithmetic, week rules,
+// leap days and two-digit years; ISO weeks. A PROVIDER'S FORMAT INFORMATION IS
+// USED: the writer takes its patterns, names (the genitive beside a day of the
+// month), designators and separators; ParseExact reads them; Parse reads its
+// words through .NET's own table and takes the date orders from its patterns,
+// its separators one where they are the same, and its calendar's century.
+
+using System.Globalization;
+using System;
+
+static class Probe1
+{
+    static string Said(Func<object?> f)
+    {
+        try { object? o = f(); return o is string[] a ? "[" + string.Join(",", a) + "]" : (o?.ToString() ?? "null"); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace("\n", "|"); }
+    }
+
+    public static void Run()
+    {
+        DateTimeFormatInfo i = DateTimeFormatInfo.InvariantInfo;
+        Console.WriteLine(i.AMDesignator + "|" + i.PMDesignator + "|" + i.DateSeparator + "|" + i.TimeSeparator + "|" + i.FirstDayOfWeek + "|" + i.CalendarWeekRule);
+        Console.WriteLine(i.FullDateTimePattern + "|" + i.LongDatePattern + "|" + i.LongTimePattern + "|" + i.MonthDayPattern + "|" + i.ShortDatePattern + "|" + i.ShortTimePattern + "|" + i.YearMonthPattern);
+        Console.WriteLine(i.RFC1123Pattern + "|" + i.SortableDateTimePattern + "|" + i.UniversalSortableDateTimePattern + "|" + i.NativeCalendarName + "|" + i.IsReadOnly);
+        Console.WriteLine(Said(() => i.DayNames) + Said(() => i.AbbreviatedDayNames) + Said(() => i.ShortestDayNames));
+        Console.WriteLine(Said(() => i.MonthNames) + Said(() => i.AbbreviatedMonthNames) + Said(() => i.MonthGenitiveNames) + Said(() => i.AbbreviatedMonthGenitiveNames));
+        Console.WriteLine(Said(() => i.GetEraName(0)) + " " + Said(() => i.GetEraName(1)) + " " + Said(() => i.GetEraName(2)) + " " + Said(() => i.GetAbbreviatedEraName(1)) + " " + Said(() => i.GetEra("A.D.")) + " " + Said(() => i.GetEra("ad")) + " " + Said(() => i.GetEra("x")) + " " + Said(() => i.GetEra("")) + " " + Said(() => i.GetEra(null!)));
+        Console.WriteLine(Said(() => i.GetDayName(DayOfWeek.Monday)) + " " + Said(() => i.GetDayName((DayOfWeek)7)) + " " + Said(() => i.GetAbbreviatedDayName((DayOfWeek)(-1))) + " " + Said(() => i.GetShortestDayName((DayOfWeek)9)));
+        Console.WriteLine(Said(() => i.GetMonthName(1)) + " " + Said(() => i.GetMonthName(13)) + " " + Said(() => i.GetMonthName(0)) + " " + Said(() => i.GetMonthName(14)) + " " + Said(() => i.GetAbbreviatedMonthName(14)));
+        Console.WriteLine(Said(() => i.GetAllDateTimePatterns()));
+        foreach (char c in "dDfFgGmMoOrRstTuUyY") Console.WriteLine(c + " " + Said(() => i.GetAllDateTimePatterns(c)));
+        Console.WriteLine(Said(() => i.GetAllDateTimePatterns('x')));
+        Console.WriteLine(Said(() => { i.AMDesignator = "x"; return "set"; }));
+        Console.WriteLine(Said(() => { i.Calendar = new GregorianCalendar(); return "set"; }));
+        Console.WriteLine(Said(() => { i.SetAllDateTimePatterns(new[] { "x" }, 'd'); return "set"; }));
+        Console.WriteLine(Said(() => i.Calendar.IsReadOnly) + " " + Said(() => i.Calendar.GetType().Name) + " " + Said(() => ((GregorianCalendar)i.Calendar).CalendarType));
+        Console.WriteLine((DateTimeFormatInfo.CurrentInfo == i) + " " + (CultureInfo.InvariantCulture.DateTimeFormat == i) + " " + (DateTimeFormatInfo.GetInstance(null) == i) + " " + (DateTimeFormatInfo.GetInstance(CultureInfo.InvariantCulture) == i) + " " + DateTimeFormatInfo.CurrentInfo.IsReadOnly + " " + CultureInfo.CurrentCulture.DateTimeFormat.IsReadOnly);
+        Console.WriteLine((i.GetFormat(typeof(DateTimeFormatInfo)) == i) + " " + (i.GetFormat(typeof(string)) == null) + " " + (i.GetFormat(null) == null) + " " + (CultureInfo.InvariantCulture.GetFormat(typeof(DateTimeFormatInfo)) == i));
+        DateTimeFormatInfo n = new DateTimeFormatInfo();
+        Console.WriteLine(n.IsReadOnly + " " + n.ShortDatePattern + " " + n.Calendar.IsReadOnly + " " + (n.Calendar == i.Calendar));
+        DateTimeFormatInfo c2 = (DateTimeFormatInfo)i.Clone();
+        Console.WriteLine(c2.IsReadOnly + " " + c2.Calendar.IsReadOnly + " " + (c2.Calendar == i.Calendar));
+        DateTimeFormatInfo ro = DateTimeFormatInfo.ReadOnly(n);
+        Console.WriteLine(ro.IsReadOnly + " " + n.IsReadOnly + " " + ro.Calendar.IsReadOnly + " " + (DateTimeFormatInfo.ReadOnly(i) == i) + " " + Said(() => DateTimeFormatInfo.ReadOnly(null!)));
+        Console.WriteLine(Said(() => { n.DayNames = new string[6]; return "ok"; }) + " | " + Said(() => { n.DayNames = new string[7]; return "ok"; }) + " | " + Said(() => { n.DayNames = null!; return "ok"; }) + " | " + Said(() => { n.MonthNames = new string[12]; return "ok"; }));
+        Console.WriteLine(Said(() => { n.MonthNames = new[] { "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", null! }; return n.GetMonthName(13) ?? "null13"; }));
+        Console.WriteLine(Said(() => { n.FirstDayOfWeek = (DayOfWeek)7; return "ok"; }) + " | " + Said(() => { n.CalendarWeekRule = (CalendarWeekRule)3; return "ok"; }) + " | " + Said(() => { n.AMDesignator = null!; return "ok"; }));
+        Console.WriteLine(Said(() => { n.SetAllDateTimePatterns(new string[0], 'd'); return "ok"; }) + " | " + Said(() => { n.SetAllDateTimePatterns(new string[] { "a", null! }, 'd'); return "ok"; }) + " | " + Said(() => { n.SetAllDateTimePatterns(new string[] { "a" }, 'f'); return "ok"; }) + " | " + Said(() => { n.SetAllDateTimePatterns(null!, 'd'); return "ok"; }));
+        DateTimeFormatInfo m = new DateTimeFormatInfo();
+        m.SetAllDateTimePatterns(new[] { "yy-MM-dd", "dd.MM.yyyy" }, 'd');
+        Console.WriteLine(m.ShortDatePattern + " " + Said(() => m.GetAllDateTimePatterns('d')) + " " + Said(() => m.GetAllDateTimePatterns('g')));
+        m.ShortDatePattern = "dd.MM.yyyy";
+        Console.WriteLine(Said(() => m.GetAllDateTimePatterns('d')));
+        m.ShortDatePattern = "x";
+        Console.WriteLine(Said(() => m.GetAllDateTimePatterns('d')) + " " + m.FullDateTimePattern);
+        m.LongDatePattern = "D!"; m.LongTimePattern = "T!";
+        Console.WriteLine(m.FullDateTimePattern);
+        m.FullDateTimePattern = "F!"; m.LongDatePattern = "D2";
+        Console.WriteLine(m.FullDateTimePattern);
+        Console.WriteLine(Said(() => { m.Calendar = new GregorianCalendar(GregorianCalendarTypes.USEnglish); return "ok"; }) + " " + m.Calendar.GetType().Name);
+    }
+}
+
+static class Probe2
+{
+    static string Said(Func<object?> f)
+    {
+        try { object? o = f(); return o is int[] a ? "[" + string.Join(",", a) + "]" : (o is DateTime d ? d.ToString("o") : o?.ToString() ?? "null"); }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace("\n", "|"); }
+    }
+
+    public static void Run()
+    {
+        Calendar c = CultureInfo.InvariantCulture.Calendar;
+        Console.WriteLine(c.GetType().FullName + " " + c.IsReadOnly + " " + c.AlgorithmType + " " + Said(() => c.Eras) + " " + c.TwoDigitYearMax + " " + Said(() => c.MinSupportedDateTime) + " " + Said(() => c.MaxSupportedDateTime) + " " + Calendar.CurrentEra + " " + GregorianCalendar.ADEra);
+        Console.WriteLine(CultureInfo.InvariantCulture.OptionalCalendars.Length + " " + CultureInfo.InvariantCulture.OptionalCalendars[0].GetType().Name + " " + CultureInfo.InvariantCulture.OptionalCalendars[0].IsReadOnly + " " + (CultureInfo.InvariantCulture.Calendar == CultureInfo.InvariantCulture.DateTimeFormat.Calendar));
+        GregorianCalendar g = new GregorianCalendar();
+        DateTime d = new DateTime(2024, 1, 31, 13, 45, 30, 250);
+        Console.WriteLine(Said(() => g.AddMonths(d, 1)) + " " + Said(() => g.AddMonths(d, -13)) + " " + Said(() => g.AddMonths(d, 120001)) + " " + Said(() => g.AddMonths(DateTime.MaxValue, 1)) + " " + Said(() => g.AddYears(d, 1)));
+        Console.WriteLine(Said(() => g.AddDays(d, 1)) + " " + Said(() => g.AddHours(d, -1)) + " " + Said(() => g.AddMinutes(d, 5)) + " " + Said(() => g.AddSeconds(d, 5)) + " " + Said(() => g.AddMilliseconds(d, 1.5)) + " " + Said(() => g.AddMilliseconds(d, -1.5)) + " " + Said(() => g.AddWeeks(d, 2)) + " " + Said(() => g.AddDays(DateTime.MaxValue, 1)) + " " + Said(() => g.AddMilliseconds(d, 1e20)) + " " + Said(() => g.AddMilliseconds(d, double.NaN)));
+        Console.WriteLine(g.GetDayOfMonth(d) + " " + g.GetDayOfWeek(d) + " " + g.GetDayOfYear(d) + " " + g.GetDaysInMonth(2024, 2) + " " + g.GetDaysInMonth(2023, 2, 1) + " " + g.GetDaysInYear(2024) + " " + g.GetDaysInYear(2023, 0) + " " + g.GetEra(d) + " " + g.GetHour(d) + " " + g.GetMilliseconds(d) + " " + g.GetMinute(d) + " " + g.GetMonth(d) + " " + g.GetMonthsInYear(2024) + " " + g.GetSecond(d) + " " + g.GetYear(d) + " " + g.GetLeapMonth(2024) + " " + g.IsLeapYear(2024) + " " + g.IsLeapMonth(2024, 2) + " " + g.IsLeapDay(2024, 2, 29) + " " + g.IsLeapDay(2023, 2, 28));
+        Console.WriteLine(Said(() => g.GetDaysInMonth(2024, 13)) + " " + Said(() => g.GetDaysInMonth(2024, 1, 2)) + " " + Said(() => g.GetDaysInYear(0)) + " " + Said(() => g.GetDaysInYear(2024, 5)) + " " + Said(() => g.GetMonthsInYear(0)) + " " + Said(() => g.GetMonthsInYear(1, 2)) + " " + Said(() => g.IsLeapYear(0)) + " " + Said(() => g.IsLeapYear(2024, 3)));
+        Console.WriteLine(Said(() => g.IsLeapDay(2024, 13, 1)) + " " + Said(() => g.IsLeapDay(2024, 2, 30)) + " " + Said(() => g.IsLeapDay(0, 2, 1)) + " " + Said(() => g.IsLeapDay(2024, 2, 1, 4)) + " " + Said(() => g.IsLeapMonth(2024, 0)) + " " + Said(() => g.IsLeapMonth(10000, 1)) + " " + Said(() => g.GetLeapMonth(0)) + " " + Said(() => g.GetLeapMonth(1, 9)));
+        Console.WriteLine(Said(() => g.ToDateTime(2024, 2, 29, 23, 59, 59, 999)) + " " + Said(() => g.ToDateTime(2023, 2, 29, 0, 0, 0, 0)) + " " + Said(() => g.ToDateTime(2024, 1, 1, 24, 0, 0, 0)) + " " + Said(() => g.ToDateTime(2024, 1, 1, 0, 0, 0, 1000)) + " " + Said(() => g.ToDateTime(2024, 1, 1, 0, 0, 0, 0, 2)));
+        Console.WriteLine(Said(() => g.ToFourDigitYear(49)) + " " + Said(() => g.ToFourDigitYear(50)) + " " + Said(() => g.ToFourDigitYear(99)) + " " + Said(() => g.ToFourDigitYear(100)) + " " + Said(() => g.ToFourDigitYear(-1)) + " " + Said(() => g.ToFourDigitYear(10000)));
+        Console.WriteLine(Said(() => { g.TwoDigitYearMax = 2029; return g.ToFourDigitYear(30) + " " + g.ToFourDigitYear(29); }) + " " + Said(() => { g.TwoDigitYearMax = 98; return "ok"; }) + " " + Said(() => { g.TwoDigitYearMax = 10000; return "ok"; }) + " " + Said(() => { c.TwoDigitYearMax = 2000; return "ok"; }));
+        Console.WriteLine(Said(() => { g.CalendarType = GregorianCalendarTypes.Arabic; return g.CalendarType; }) + " " + Said(() => { g.CalendarType = (GregorianCalendarTypes)0; return "ok"; }) + " " + Said(() => new GregorianCalendar((GregorianCalendarTypes)13)) + " " + Said(() => new GregorianCalendar(GregorianCalendarTypes.TransliteratedFrench).CalendarType));
+        Calendar ro = Calendar.ReadOnly(g);
+        Calendar cl = (Calendar)ro.Clone();
+        Console.WriteLine(ro.IsReadOnly + " " + g.IsReadOnly + " " + cl.IsReadOnly + " " + (Calendar.ReadOnly(ro) == ro) + " " + Said(() => Calendar.ReadOnly(null!)) + " " + Said(() => { ((GregorianCalendar)ro).CalendarType = GregorianCalendarTypes.Localized; return "ok"; }));
+        foreach (CalendarWeekRule rule in new[] { CalendarWeekRule.FirstDay, CalendarWeekRule.FirstFullWeek, CalendarWeekRule.FirstFourDayWeek })
+        {
+            System.Text.StringBuilder s = new System.Text.StringBuilder(rule + ":");
+            for (int fd = 0; fd < 7; fd++)
+            {
+                foreach (DateTime t in new[] { new DateTime(2021, 1, 1), new DateTime(2021, 1, 3), new DateTime(2021, 1, 4), new DateTime(2020, 12, 31), new DateTime(2024, 12, 30), new DateTime(1, 1, 1), new DateTime(1, 1, 6), new DateTime(9999, 12, 31), new DateTime(2027, 1, 1), new DateTime(2016, 1, 2) })
+                    s.Append(" " + c.GetWeekOfYear(t, rule, (DayOfWeek)fd));
+                s.Append(" /");
+            }
+            Console.WriteLine(s);
+        }
+        Console.WriteLine(Said(() => c.GetWeekOfYear(d, (CalendarWeekRule)3, DayOfWeek.Monday)) + " " + Said(() => c.GetWeekOfYear(d, CalendarWeekRule.FirstDay, (DayOfWeek)7)));
+        System.Text.StringBuilder w = new System.Text.StringBuilder();
+        for (int y = 2000; y <= 2030; y++) w.Append(ISOWeek.GetWeeksInYear(y) + ",");
+        Console.WriteLine(w);
+        foreach (DateTime t in new[] { new DateTime(2021, 1, 1), new DateTime(2021, 1, 3), new DateTime(2021, 1, 4), new DateTime(2020, 12, 31), new DateTime(2024, 12, 30), new DateTime(1, 1, 1), new DateTime(9999, 12, 31), new DateTime(2026, 12, 31), new DateTime(2027, 1, 1) })
+            Console.Write(ISOWeek.GetWeekOfYear(t) + "/" + ISOWeek.GetYear(t) + " ");
+        Console.WriteLine();
+        Console.WriteLine(Said(() => ISOWeek.GetYearStart(2021)) + " " + Said(() => ISOWeek.GetYearEnd(2020)) + " " + Said(() => ISOWeek.GetYearStart(1)) + " " + Said(() => ISOWeek.ToDateTime(2021, 53, DayOfWeek.Sunday)) + " " + Said(() => ISOWeek.ToDateTime(2020, 53, (DayOfWeek)7)));
+        Console.WriteLine(Said(() => ISOWeek.GetWeeksInYear(0)) + " | " + Said(() => ISOWeek.ToDateTime(2021, 0, DayOfWeek.Monday)) + " | " + Said(() => ISOWeek.ToDateTime(2021, 1, (DayOfWeek)8)) + " | " + Said(() => ISOWeek.ToDateTime(10000, 1, DayOfWeek.Monday)) + " | " + Said(() => ISOWeek.GetYearEnd(9999)) + " | " + Said(() => ISOWeek.GetWeekOfYear(new DateOnly(2021, 1, 3))) + " " + Said(() => ISOWeek.GetYear(new DateOnly(2021, 1, 3))) + " " + Said(() => ISOWeek.ToDateOnly(2021, 1, DayOfWeek.Monday)));
+    }
+}
+
+static class Probe3
+{
+    static string Said(Func<object?> f)
+    {
+        try { object? o = f(); return o is DateTime d ? d.ToString("o").Replace(DateTime.Now.ToString("yyyy-MM-dd"), "TODAY").Replace(DateTime.Now.Year + "-", "YYYY-") : o?.ToString() ?? "null"; }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace("\n", "|"); }
+    }
+
+    public static void Run()
+    {
+        DateTimeFormatInfo f = new DateTimeFormatInfo();
+        f.DateSeparator = "-";
+        f.TimeSeparator = ".";
+        f.AMDesignator = "vorm";
+        f.PMDesignator = "nachm";
+        f.DayNames = new[] { "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag" };
+        f.AbbreviatedDayNames = new[] { "So", "Mo", "Di", "Mi", "Do", "Fr", "Sa" };
+        f.MonthNames = new[] { "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember", "" };
+        f.AbbreviatedMonthNames = new[] { "Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez", "" };
+        DateTime d = new DateTime(2024, 3, 5, 14, 7, 9, 123);
+        DateTimeOffset o = new DateTimeOffset(d, TimeSpan.FromHours(2));
+        foreach (string fmt in new[] { "d", "D", "f", "F", "g", "G", "m", "o", "r", "s", "t", "T", "u", "y", "dd/MM/yyyy HH:mm:ss tt", "ddd MMM", "dddd MMMM", "t tt", "'/':\\/\\:", "%/", "d MMMM", "MMMM", "dd MMM yyyy", "MMM d" })
+            Console.WriteLine(fmt + " => " + Said(() => d.ToString(fmt, f)) + " | " + Said(() => o.ToString(fmt, f)));
+        Console.WriteLine(Said(() => d.ToString(f)) + " | " + Said(() => o.ToString(f)) + " | " + string.Format(f, "{0} {0:D}", d) + " | " + Said(() => $"{d:t}") );
+        f.ShortDatePattern = "dd.MM.yy";
+        f.LongTimePattern = "HH 'Uhr' mm";
+        f.MonthDayPattern = "d. MMMM";
+        f.YearMonthPattern = "MMMM yyyy";
+        foreach (string fmt in new[] { "d", "G", "g", "T", "F", "m", "y" })
+            Console.WriteLine(fmt + " => " + Said(() => d.ToString(fmt, f)) + " | " + Said(() => o.ToString(fmt, f)));
+        Console.WriteLine(Said(() => d.ToString(f)) + " | " + Said(() => o.ToString(f)));
+        DateTimeFormatInfo gen = new DateTimeFormatInfo();
+        gen.MonthGenitiveNames = new[] { "januara", "februara", "marta", "aprila", "maja", "juna", "jula", "avgusta", "septembra", "oktobra", "novembra", "decembra", "" };
+        gen.AbbreviatedMonthGenitiveNames = new[] { "jan.", "feb.", "mar.", "apr.", "maj.", "jun.", "jul.", "avg.", "sep.", "okt.", "nov.", "dec.", "" };
+        foreach (string fmt in new[] { "d MMMM", "MMMM", "MMMM yyyy", "dd MMM", "MMM", "ddd MMMM", "MMMM d", "D", "m", "d MMMM yyyy", "'d' MMMM", "d' 'MMMM", "%d MMMM" })
+            Console.WriteLine(fmt + " => " + Said(() => d.ToString(fmt, gen)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("05-03-2024 14.07.09 nachm", "dd/MM/yyyy HH:mm:ss tt", f)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("Dienstag 5 März 2024", "dddd d MMMM yyyy", f)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("Di 5 Mär 2024", "ddd d MMM yyyy", f)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("05.03.24", "d", f)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("5 marta 2024", "d MMMM yyyy", gen)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("5 March 2024", "d MMMM yyyy", gen)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("5 mar. 2024", "d MMM yyyy", gen)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("2 nachm", "h tt", f)) + " " + Said(() => DateTime.ParseExact("2 n", "h t", f)) + " " + Said(() => DateTime.ParseExact("2 v", "h t", f)) + " " + Said(() => DateTime.ParseExact("2 PM", "h tt", f)));
+        Console.WriteLine(Said(() => DateTime.Parse("5 März 2024", f)) + " " + Said(() => DateTime.Parse("Dienstag, 5. März 2024 14.07", f)) + " " + Said(() => DateTime.Parse("05-03-2024", f)) + " " + Said(() => DateTime.Parse("2024-03-05 2.07 nachm", f)) + " " + Said(() => DateTime.Parse("March 5 2024", f)) + " " + Said(() => DateTime.Parse("05.03.24", f)));
+        Console.WriteLine(Said(() => DateTime.Parse("5 marta 2024", gen)) + " " + Said(() => DateTime.Parse("marta 5", gen)) + " " + Said(() => DateTime.Parse("5 March 2024", gen)));
+        Console.WriteLine(Said(() => DateTimeOffset.ParseExact("05-03-2024 14.07 +02:00", "dd/MM/yyyy HH:mm zzz", f)) + " " + Said(() => DateTimeOffset.Parse("05-03-2024 14.07 +02:00", f)));
+        Console.WriteLine(Said(() => DateTime.ParseExact("05/03/2024", "dd/MM/yyyy", f)) + " " + Said(() => DateTime.ParseExact("14:07", "HH:mm", f)));
+        DateTimeFormatInfo sp = new DateTimeFormatInfo();
+        sp.MonthNames = new[] { "Jan uary", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "" };
+        Console.WriteLine(Said(() => DateTime.ParseExact("5 Jan uary 2024", "d MMMM yyyy", sp)) + " " + Said(() => DateTime.Parse("5 Jan uary 2024", sp)) + " " + Said(() => new DateTime(2024, 1, 5).ToString("D", sp)));
+        CultureInfo inv = CultureInfo.InvariantCulture;
+        Console.WriteLine(Said(() => d.ToString("D", inv)) + " " + Said(() => d.ToString("D", (IFormatProvider?)null)));
+        Console.WriteLine(Said(() => d.ToString("D", new Other(f))) + " " + Said(() => DateTime.ParseExact("05-03-2024", "dd/MM/yyyy", new Other(f))));
+        Console.WriteLine(Said(() => d.ToString("D", new Other(null))));
+    }
+}
+
+class Other : IFormatProvider
+{
+    readonly DateTimeFormatInfo? _f;
+    public Other(DateTimeFormatInfo? f) { _f = f; }
+    public object? GetFormat(Type? t) => t == typeof(DateTimeFormatInfo) ? _f : null;
+}
+
+static class Probe4
+{
+    // A LOCAL READING AS ITS UNIVERSAL TIME, the same in every zone.
+    static string Show(DateTime d) { return d.Kind == DateTimeKind.Local ? d.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + " Local, as UTC" : d.ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + " " + d.Kind; }
+
+    static DateTimeFormatInfo German()
+    {
+        DateTimeFormatInfo f = new DateTimeFormatInfo();
+        f.DayNames = new[] { "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag" };
+        f.AbbreviatedDayNames = new[] { "So", "Mo", "Di", "Mi", "Do", "Fr", "Sa" };
+        f.MonthNames = new[] { "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember", "" };
+        f.AbbreviatedMonthNames = new[] { "Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez", "" };
+        f.AMDesignator = "vorm.";
+        f.PMDesignator = "nachm.";
+        f.DateSeparator = ".";
+        f.SetAllDateTimePatterns(new[] { "dd.MM.yyyy", "dd.MM.yy" }, 'd');
+        f.SetAllDateTimePatterns(new[] { "dddd, d. MMMM yyyy" }, 'D');
+        f.SetAllDateTimePatterns(new[] { "HH:mm:ss 'Uhr'" }, 'T');
+        f.MonthDayPattern = "d. MMMM";
+        f.YearMonthPattern = "MMMM yyyy";
+        return f;
+    }
+
+    static DateTimeFormatInfo Same()
+    {
+        DateTimeFormatInfo f = new DateTimeFormatInfo();
+        f.DateSeparator = "-";
+        f.TimeSeparator = "-";
+        f.MonthGenitiveNames = new[] { "januara", "februara", "marta", "aprila", "maja", "juna", "jula", "avgusta", "septembra", "oktobra", "novembra", "decembra", "" };
+        f.AbbreviatedMonthGenitiveNames = new[] { "jan.", "feb.", "mar.", "apr.", "maj.", "jun.", "jul.", "avg.", "sep.", "okt.", "nov.", "dec.", "" };
+        f.ShortDatePattern = "yyyy-MM-dd";
+        f.MonthDayPattern = "d MMMM";
+        f.AMDesignator = "vm";
+        f.PMDesignator = "nm";
+        return f;
+    }
+
+    static DateTimeFormatInfo Spaced()
+    {
+        DateTimeFormatInfo f = new DateTimeFormatInfo();
+        f.MonthNames = new[] { "Jan uary", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "" };
+        f.AbbreviatedMonthNames = new[] { "1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月", "" };
+        f.ShortDatePattern = "d/M/yyyy";
+        f.MonthDayPattern = "dd MMMM";
+        f.YearMonthPattern = "MMMM yyyy";
+        f.AMDesignator = "";
+        f.Calendar.TwoDigitYearMax = 2029;
+        return f;
+    }
+
+    public static void Run()
+    {
+        string[] all = {
+            "05.03.2024",
+            "5. März 2024",
+            "Dienstag, 5. März 2024 14:07",
+            "14:07:09 Uhr",
+            "5 marta 2024",
+            "marta 5",
+            "2024-03-05",
+            "3/5/2024 2:07 PM",
+            "05-03-2024 14-07",
+            "2024-03-05 14-07-09",
+            "5 Jan uary 2024",
+            "Jan  uary 5",
+            "1月 5 2024",
+            "12月",
+            "5 1月",
+            "2 nachm.",
+            "2 nm",
+            "vm 3",
+            "März 2024",
+            "2024 März",
+            "24.12.",
+            "5.3.24",
+            "05.03.24 10:00",
+            "Mai",
+            "Sa, 5. Okt 2024",
+            "10:30 vorm.",
+        };
+        IFormatProvider[] providers = { CultureInfo.InvariantCulture, new DateTimeFormatInfo(), German(), Same(), Spaced() };
+        string year = DateTime.Now.Year.ToString();
+        string day = DateTime.Now.ToString("MM-dd");
+        foreach (string s in all)
+        {
+            string line = s + " =>";
+            foreach (IFormatProvider p in providers)
+            {
+                string got;
+                try { got = Show(DateTime.Parse(s, p, DateTimeStyles.None)); }
+                catch (Exception e) { got = e.GetType().Name + ": " + e.Message; }
+                line += " | " + got;
+            }
+            Console.WriteLine(line.Replace(year + "-" + day, "TODAY").Replace(year, "YYYY"));
+        }
+        DateTime d = new DateTime(2024, 3, 5, 14, 7, 9);
+        foreach (IFormatProvider p in providers)
+        {
+            string w = "";
+            foreach (string f in new[] { "d", "D", "f", "F", "g", "G", "m", "t", "T", "y", "dd MMMM yyyy", "d MMM", "MMMM" })
+            {
+                string text = d.ToString(f, p);
+                string back;
+                try { back = Show(DateTime.ParseExact(text, f, p)); } catch (Exception e) { back = e.GetType().Name; }
+                string free;
+                try { free = Show(DateTime.Parse(text, p)); } catch (Exception e) { free = e.GetType().Name; }
+                w += f + "=" + text + " -> " + back + " / " + free + "; ";
+            }
+            Console.WriteLine(w.Replace(year + "-" + day, "TODAY").Replace(year, "YYYY"));
+        }
+    }
+}
+
+static class Probe5
+{
+    static string Said(Func<object?> f)
+    {
+        try { return f()?.ToString() ?? "null"; }
+        catch (Exception e) { return e.GetType().Name + ": " + e.Message.Replace("\n", "|"); }
+    }
+
+    public static void Run()
+    {
+        DateTimeFormatInfo a = new DateTimeFormatInfo();
+        DateTimeFormatInfo b = new DateTimeFormatInfo();
+        Console.WriteLine("shared " + ReferenceEquals(a.Calendar, b.Calendar) + " " + a.Calendar.IsReadOnly);
+        DateTimeFormatInfo c = (DateTimeFormatInfo)a.Clone();
+        Console.WriteLine("clone " + ReferenceEquals(c.Calendar, a.Calendar) + " " + c.Calendar.IsReadOnly + " " + c.Calendar.TwoDigitYearMax);
+        a.Calendar.TwoDigitYearMax = 2029;
+        DateTimeFormatInfo d = (DateTimeFormatInfo)b.Clone();
+        Console.WriteLine("default moved " + b.Calendar.TwoDigitYearMax + " " + d.Calendar.TwoDigitYearMax + " " + c.Calendar.TwoDigitYearMax);
+        DateTimeFormatInfo e = (DateTimeFormatInfo)d.Clone();
+        d.Calendar.TwoDigitYearMax = 2010;
+        Console.WriteLine("snapshot " + e.Calendar.TwoDigitYearMax + " " + d.Calendar.TwoDigitYearMax);
+        DateTimeFormatInfo f = new DateTimeFormatInfo();
+        DateTimeFormatInfo g = (DateTimeFormatInfo)f.Clone();
+        f.Calendar.TwoDigitYearMax = 2039;
+        Console.WriteLine("clone before " + g.Calendar.TwoDigitYearMax + " " + f.Calendar.TwoDigitYearMax);
+        DateTimeFormatInfo ro = DateTimeFormatInfo.ReadOnly(a);
+        Console.WriteLine("readonly " + ro.Calendar.IsReadOnly + " " + ro.Calendar.TwoDigitYearMax + " " + ReferenceEquals(ro.Calendar, a.Calendar) + " " + Said(() => { ro.Calendar.TwoDigitYearMax = 2000; return "set"; }));
+        DateTimeFormatInfo iclone = (DateTimeFormatInfo)DateTimeFormatInfo.InvariantInfo.Clone();
+        Console.WriteLine("invariant clone " + iclone.IsReadOnly + " " + iclone.Calendar.IsReadOnly + " " + iclone.Calendar.TwoDigitYearMax + " " + DateTimeFormatInfo.InvariantInfo.Calendar.TwoDigitYearMax);
+        Console.WriteLine(Said(() => DateTime.ParseExact("05/03/30", "dd/MM/yy", a).ToString("yyyy")) + " " + Said(() => DateTime.ParseExact("05/03/30", "dd/MM/yy", e).ToString("yyyy")) + " " + Said(() => DateTime.Parse("05/03/30", a).ToString("yyyy")) + " " + Said(() => DateTime.Parse("5 March 30", d).ToString("yyyy")));
+        DateTimeFormatInfo h = new DateTimeFormatInfo();
+        h.DayNames = new[] { "a", "b", "c", "d", "e", "f", "g" };
+        h.MonthDayPattern = "d MMMM";
+        h.ShortDatePattern = "dd.MM.yyyy";
+        h.LongTimePattern = "HH.mm";
+        h.TimeSeparator = ".";
+        h.AMDesignator = "x";
+        h.Calendar = new GregorianCalendar();
+        Console.WriteLine("reset " + h.DayNames[0] + " " + h.MonthDayPattern + " " + h.ShortDatePattern + " " + h.LongTimePattern + " " + h.TimeSeparator + " " + h.AMDesignator + " " + h.DateSeparator + " " + h.FullDateTimePattern);
+        DateTimeFormatInfo k = new DateTimeFormatInfo();
+        Calendar same = k.Calendar;
+        k.DayNames = new[] { "a", "b", "c", "d", "e", "f", "g" };
+        k.Calendar = same;
+        Console.WriteLine("same kept " + k.DayNames[0]);
+        Console.WriteLine(Said(() => { k.Calendar = null!; return "ok"; }) + " | " + Said(() => { k.Calendar = new GregorianCalendar(GregorianCalendarTypes.Arabic); return "ok"; }) + " | " + Said(() => { DateTimeFormatInfo.InvariantInfo.Calendar = new GregorianCalendar(); return "ok"; }));
+        CultureInfo inv = CultureInfo.InvariantCulture;
+        Console.WriteLine(ReferenceEquals(inv.Calendar, DateTimeFormatInfo.InvariantInfo.Calendar) + " " + ReferenceEquals(inv.OptionalCalendars[0], inv.OptionalCalendars[0]) + " " + inv.Calendar.IsReadOnly + " " + Said(() => { inv.DateTimeFormat = new DateTimeFormatInfo(); return "ok"; }) + " " + Said(() => { inv.DateTimeFormat = null!; return "ok"; }));
+        Console.WriteLine((DateTimeFormatInfo.InvariantInfo is ICloneable) + " " + (a.Calendar is ICloneable) + " " + (a.Calendar.Clone() is GregorianCalendar) + " " + ((Calendar)a.Calendar.Clone()).TwoDigitYearMax + " " + ((Calendar)Calendar.ReadOnly(a.Calendar).Clone()).IsReadOnly);
+    }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Probe1.Run();
+        Probe2.Run();
+        Probe3.Run();
+        Probe4.Run();
+        Probe5.Run();
+    }
+}

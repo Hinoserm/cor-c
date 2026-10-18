@@ -235,3 +235,16 @@ class Stopwatch {
 
     public TimeSpan Elapsed => new TimeSpan(Nanoseconds / 100);
 }
+
+namespace System.Globalization
+{
+    /// ISOWeek's DateOnly forms, beside DateOnly.
+    public static partial class ISOWeek
+    {
+        public static int GetWeekOfYear(DateOnly date) => GetWeekOfYear(date.ToDateTime(TimeOnly.MinValue));
+
+        public static int GetYear(DateOnly date) => GetYear(date.ToDateTime(TimeOnly.MinValue));
+
+        public static DateOnly ToDateOnly(int year, int week, DayOfWeek dayOfWeek) => DateOnly.FromDateTime(ToDateTime(year, week, dayOfWeek));
+    }
+}

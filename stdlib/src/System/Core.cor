@@ -381,7 +381,12 @@ static class String {
     /// A null argument is nothing at all, as .NET writes it.
     internal static string FormatArgument(object? value, string format, IFormatProvider? provider) {
         if (value == null) { return ""; }
-        if (format.Length == 0) { return "" + value; }
+        // NO FORMAT IS STILL THE PROVIDER'S, as .NET asks an IFormattable
+        // with a null format: a date under a culture's own patterns.
+        if (format.Length == 0) {
+            if (provider != null && value is IFormattable told) { return told.ToString(null, provider); }
+            return "" + value;
+        }
         if (value is int i32) { return i32.ToString(format); }
         if (value is long i64) { return i64.ToString(format); }
         if (value is double f64) { return f64.ToString(format, provider); }
@@ -6407,7 +6412,41 @@ class CultureInfo : IFormatProvider {
     public override bool Equals(object? other) { return other is CultureInfo c && c._lcid == _lcid; }
     public override int GetHashCode() { return _lcid; }
 
-    public object? GetFormat(Type? formatType) { return null; }
+    // ITS DATE FORMATS: the invariant culture's own, read-only, for the
+    // invariant culture (and so for the current one); for one made by its
+    // id, a copy of them it may change, its formatting being the invariant
+    // culture's.
+    System.Globalization.DateTimeFormatInfo? _dateTimeFormat;
+
+    public System.Globalization.DateTimeFormatInfo DateTimeFormat
+    {
+        get
+        {
+            if (_lcid == Invariant) return System.Globalization.DateTimeFormatInfo.InvariantInfo;
+            return _dateTimeFormat ??= new System.Globalization.DateTimeFormatInfo();
+        }
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value, "value");
+            if (_lcid == Invariant) throw new InvalidOperationException("Instance is read-only.");
+            _dateTimeFormat = value;
+        }
+    }
+
+    public System.Globalization.Calendar Calendar => DateTimeFormat.Calendar;
+
+    /// The calendars the culture may be given: the Gregorian, as each new.
+    public System.Globalization.Calendar[] OptionalCalendars => new System.Globalization.Calendar[] { new System.Globalization.GregorianCalendar() };
+
+    public object? GetFormat(Type? formatType)
+    {
+        return formatType == typeof(System.Globalization.DateTimeFormatInfo) ? DateTimeFormat : null;
+    }
+}
+
+/// An object that copies itself, .NET's ICloneable.
+interface ICloneable {
+    object Clone();
 }
 
 /// System.IntPtr's statics: `nint` is IntPtr (C# 11), one machine word.
@@ -19520,7 +19559,7 @@ partial struct DateTime : IFormattable {
         DateParts.CheckStyles(styles, "styles");
         if (s == null) { throw new ArgumentNullException("s"); }
 
-        DateReading r = new DateReading(s, styles, false);
+        DateReading r = new DateReading(s, styles, false, provider);
 
         if (!DateParts.Free(r)) { throw new FormatException(r.Failure); }
         return r.Value;
@@ -19541,7 +19580,7 @@ partial struct DateTime : IFormattable {
         result = default;
         if (s == null) { return false; }
 
-        DateReading r = new DateReading(s, styles, false);
+        DateReading r = new DateReading(s, styles, false, provider);
 
         if (!DateParts.Free(r)) { return false; }
         result = r.Value;
@@ -19557,7 +19596,7 @@ partial struct DateTime : IFormattable {
         if (s == null) { throw new ArgumentNullException("s"); }
         if (format == null) { throw new ArgumentNullException("format"); }
 
-        DateReading r = new DateReading(s, style, false);
+        DateReading r = new DateReading(s, style, false, provider);
 
         if (!DateParts.Exact(r, format)) { throw new FormatException(r.Failure); }
         return r.Value;
@@ -19568,7 +19607,7 @@ partial struct DateTime : IFormattable {
         if (s == null) { throw new ArgumentNullException("s"); }
         if (formats == null) { throw DateParts.NoFormats(); }
 
-        DateReading r = new DateReading(s, style, false);
+        DateReading r = new DateReading(s, style, false, provider);
 
         if (!DateParts.ExactAny(r, formats)) { throw new FormatException(r.Failure); }
         return r.Value;
@@ -19580,7 +19619,7 @@ partial struct DateTime : IFormattable {
         result = default;
         if (s == null || format == null) { return false; }
 
-        DateReading r = new DateReading(s, style, false);
+        DateReading r = new DateReading(s, style, false, provider);
 
         if (!DateParts.Exact(r, format)) { return false; }
         result = r.Value;
@@ -19593,7 +19632,7 @@ partial struct DateTime : IFormattable {
         result = default;
         if (s == null || formats == null) { return false; }
 
-        DateReading r = new DateReading(s, style, false);
+        DateReading r = new DateReading(s, style, false, provider);
 
         if (!DateParts.ExactAny(r, formats)) { return false; }
         result = r.Value;
@@ -19658,10 +19697,10 @@ partial struct DateTime : IFormattable {
     /// changes nothing.
     public string ToString(string? format) { return DateParts.Format(this, format, false, 0); }
 
-    public string ToString(IFormatProvider? provider) { return DateParts.Format(this, null, false, 0); }
+    public string ToString(IFormatProvider? provider) { return DateParts.Format(this, null, false, 0, DateTimeFormatInfo.Given(provider)); }
 
     public string ToString(string? format, IFormatProvider? provider) {
-        return DateParts.Format(this, format, false, 0);
+        return DateParts.Format(this, format, false, 0, DateTimeFormatInfo.Given(provider));
     }
 
     public string ToShortDateString() { return DateParts.Format(this, "d", false, 0); }
@@ -19913,10 +19952,10 @@ partial struct DateTimeOffset : IFormattable {
 
     public string ToString(string? format) { return DateParts.Format(DateTime, format, true, offset); }
 
-    public string ToString(IFormatProvider? formatProvider) { return DateParts.Format(DateTime, null, true, offset); }
+    public string ToString(IFormatProvider? formatProvider) { return DateParts.Format(DateTime, null, true, offset, DateTimeFormatInfo.Given(formatProvider)); }
 
     public string ToString(string? format, IFormatProvider? formatProvider) {
-        return DateParts.Format(DateTime, format, true, offset);
+        return DateParts.Format(DateTime, format, true, offset, DateTimeFormatInfo.Given(formatProvider));
     }
 
     // READ BY THE SAME READERS AS A DateTime, keeping the offset the text
@@ -19934,7 +19973,7 @@ partial struct DateTimeOffset : IFormattable {
 
         if (input == null) { throw new ArgumentNullException("input"); }
 
-        DateReading r = new DateReading(input, kept, true);
+        DateReading r = new DateReading(input, kept, true, formatProvider);
 
         if (!DateParts.Free(r)) { throw new FormatException(r.Failure); }
         return r.Moment;
@@ -19955,7 +19994,7 @@ partial struct DateTimeOffset : IFormattable {
         result = default;
         if (input == null) { return false; }
 
-        DateReading r = new DateReading(input, kept, true);
+        DateReading r = new DateReading(input, kept, true, formatProvider);
 
         if (!DateParts.Free(r)) { return false; }
         result = r.Moment;
@@ -19973,7 +20012,7 @@ partial struct DateTimeOffset : IFormattable {
         if (input == null) { throw new ArgumentNullException("input"); }
         if (format == null) { throw new ArgumentNullException("format"); }
 
-        DateReading r = new DateReading(input, kept, true);
+        DateReading r = new DateReading(input, kept, true, formatProvider);
 
         if (!DateParts.Exact(r, format)) { throw new FormatException(r.Failure); }
         return r.Moment;
@@ -19986,7 +20025,7 @@ partial struct DateTimeOffset : IFormattable {
         if (input == null) { throw new ArgumentNullException("input"); }
         if (formats == null) { throw DateParts.NoFormats(); }
 
-        DateReading r = new DateReading(input, kept, true);
+        DateReading r = new DateReading(input, kept, true, formatProvider);
 
         if (!DateParts.ExactAny(r, formats)) { throw new FormatException(r.Failure); }
         return r.Moment;
@@ -19999,7 +20038,7 @@ partial struct DateTimeOffset : IFormattable {
         result = default;
         if (input == null || format == null) { return false; }
 
-        DateReading r = new DateReading(input, kept, true);
+        DateReading r = new DateReading(input, kept, true, formatProvider);
 
         if (!DateParts.Exact(r, format)) { return false; }
         result = r.Moment;
@@ -20013,7 +20052,7 @@ partial struct DateTimeOffset : IFormattable {
         result = default;
         if (input == null || formats == null) { return false; }
 
-        DateReading r = new DateReading(input, kept, true);
+        DateReading r = new DateReading(input, kept, true, formatProvider);
 
         if (!DateParts.ExactAny(r, formats)) { return false; }
         result = r.Moment;
@@ -20205,8 +20244,13 @@ static class DateParts {
     /// is .NET's rule: "d" is the short date and not the day of the month
     /// ("%d" is that). Anything longer is a picture. No format at all is "G"
     /// for a DateTime, and for a DateTimeOffset the same with its offset.
-    public static string Format(DateTime value, string? format, bool zoned, long offset) {
-        string picture = zoned ? "MM/dd/yyyy HH:mm:ss zzz" : "MM/dd/yyyy HH:mm:ss";
+    ///
+    /// `info` is the DateTimeFormatInfo a provider gave, null for the
+    /// invariant culture's: its patterns stand for the standard formats, and
+    /// its names, designators and separators are written.
+    public static string Format(DateTime value, string? format, bool zoned, long offset, DateTimeFormatInfo? info = null) {
+        string picture = info == null ? (zoned ? "MM/dd/yyyy HH:mm:ss zzz" : "MM/dd/yyyy HH:mm:ss")
+                                      : (zoned ? info.DateTimeOffsetPattern : info.GeneralLongTimePattern);
 
         if (format != null && format.Length == 1) {
             char standard = Sys.GetChar(format, 0);
@@ -20233,14 +20277,25 @@ static class DateParts {
                     value = new DateTime(utc, DateTimeKind.Utc);
                 }
             }
-            picture = Standard(standard);
+            picture = Standard(standard, info);
+            // THE FIXED FORMATS ARE THE INVARIANT CULTURE'S, names and all.
+            if (standard == 'o' || standard == 'O' || standard == 'r' || standard == 'R' || standard == 's' || standard == 'u') { info = null; }
         } else if (format != null && format.Length > 1) {
             picture = format;
         }
 
         StringBuilder made = new StringBuilder();
-        Picture(value, picture, zoned, offset, made);
+        Picture(value, picture, zoned, offset, made, info);
         return made.ToString();
+    }
+
+    /// A standard format as the picture the format information has for it;
+    /// "o", "r", "s" and "u" are the same in every culture.
+    public static string Standard(char kind, DateTimeFormatInfo? info) {
+        if (info == null || kind == 'o' || kind == 'O' || kind == 'r' || kind == 'R' || kind == 's' || kind == 'u') { return Standard(kind); }
+        string? picture = info.Standard(kind);
+        if (picture == null) { throw BadFormat(); }
+        return picture;
     }
 
     /// The standard formats as pictures, in the INVARIANT culture's shapes --
@@ -20269,7 +20324,7 @@ static class DateParts {
     /// offset); text between quotes or after a backslash as it is; '%' to make
     /// one letter a picture of its own; and anything else copied through. A
     /// field of two digits is never written wider, however many letters ask.
-    private static void Picture(DateTime value, string format, bool zoned, long offset, StringBuilder made) {
+    private static void Picture(DateTime value, string format, bool zoned, long offset, StringBuilder made, DateTimeFormatInfo? info) {
         // A TIME OF DAY WITH NO DATE -- a reading on the first day there is,
         // written by a picture that has shown no day, month or year so far --
         // takes the offset the zone has now, which is .NET's answer for a
@@ -20296,7 +20351,7 @@ static class DateParts {
             // own, written into the same text: "%d" is the day of the month.
             if (c == '%') {
                 if (at + 1 >= format.Length || Sys.GetChar(format, at + 1) == '%') { throw BadFormat(); }
-                Picture(value, String.Substring(format, at + 1, 1), zoned, offset, made);
+                Picture(value, String.Substring(format, at + 1, 1), zoned, offset, made, info);
                 at = at + 2;
                 continue;
             }
@@ -20320,12 +20375,20 @@ static class DateParts {
             }
             else if (c == 'M') {
                 if (run <= 2) { made.Append(Digits(value.Month, run)); }
+                else if (info != null) {
+                    // THE GENITIVE NAME BESIDE A DAY OF THE MONTH, as .NET
+                    // writes "5 marta" and "marta" -- when the names say
+                    // there is a genitive at all.
+                    bool genitive = (info.FormatFlags & DateTimeFormatFlags.UseGenitiveMonth) != 0 && Genitive(format, at, run);
+                    made.Append(info.MonthName(value.Month, genitive, run == 3));
+                }
                 else if (run == 3) { made.Append(String.Substring(MonthName(value.Month), 0, 3)); }
                 else { made.Append(MonthName(value.Month)); }
                 timeOnly = false;
             }
             else if (c == 'd') {
                 if (run <= 2) { made.Append(Digits(value.Day, run)); }
+                else if (info != null) { made.Append(run == 3 ? info.GetAbbreviatedDayName(value.DayOfWeek) : info.GetDayName(value.DayOfWeek)); }
                 else if (run == 3) { made.Append(String.Substring(DayName((int)value.DayOfWeek), 0, 3)); }
                 else { made.Append(DayName((int)value.DayOfWeek)); }
                 timeOnly = false;
@@ -20338,9 +20401,17 @@ static class DateParts {
                 if (run > 7) { throw BadFormat(); }
                 Fraction(value.Ticks % 10000000, run, c == 'F', true, made);
             }
+            else if (c == 't' && info != null) {
+                string designator = hour < 12 ? info.AMDesignator : info.PMDesignator;
+                if (run > 1) { made.Append(designator); }
+                else if (designator.Length >= 1) { made.Append(Sys.GetChar(designator, 0)); }
+            }
             else if (c == 't' && run == 1) { made.Append(hour < 12 ? 'A' : 'P'); }
             else if (c == 't') { made.Append(hour < 12 ? "AM" : "PM"); }
             else if (c == 'g') { made.Append("A.D."); }
+            // THE CULTURE'S SEPARATORS, one character of the picture each.
+            else if (c == ':' && info != null) { made.Append(info.TimeSeparator); run = 1; }
+            else if (c == '/' && info != null) { made.Append(info.DateSeparator); run = 1; }
             else if (c == 'z') {
                 long zone = offset;
 
@@ -20355,6 +20426,34 @@ static class DateParts {
 
             at = at + run;
         }
+    }
+
+    /// A moment in the invariant culture's "G", MM/dd/yyyy HH:mm:ss -- what
+    /// its ToString() writes -- digits only, so a message that names one
+    /// takes nothing of the zones a picture may ask for.
+    public static string Invariant(DateTime value) {
+        return Digits(value.Month, 2) + "/" + Digits(value.Day, 2) + "/" + Digits(value.Year, 4) + " "
+             + Digits(value.Hour, 2) + ":" + Digits(value.Minute, 2) + ":" + Digits(value.Second, 2);
+    }
+
+    /// .NET's IsUseGenitiveForm: whether a day of the month -- one or two
+    /// d's, no more -- is written before the month's letters at `at` or after
+    /// them.
+    private static bool Genitive(string format, int at, int run) {
+        int i = at - 1;
+        while (i >= 0 && Sys.GetChar(format, i) != 'd') { i--; }
+        if (i >= 0) {
+            int more = 0;
+            while (--i >= 0 && Sys.GetChar(format, i) == 'd') { more++; }
+            if (more <= 1) { return true; }
+        }
+        for (i = at + run; i < format.Length && Sys.GetChar(format, i) != 'd'; i++) { }
+        if (i < format.Length) {
+            int more = 0;
+            while (++i < format.Length && Sys.GetChar(format, i) == 'd') { more++; }
+            if (more <= 1) { return true; }
+        }
+        return false;
     }
 
     /// An offset as "z" (+5), "zz" (+05) or "zzz" (+05:30) writes it.
@@ -20541,6 +20640,9 @@ static class DateParts {
         return String.Concat("Cannot find a matching quote character for the character '", quote.ToString(), "'.");
     }
 
+    /// A reading refused with its own message, for the free reader.
+    public static bool Refused(DateReading r, string message) { return Fail(r, message); }
+
     private static bool Fail(DateReading r, string message) {
         r.Failure = message;
         return false;
@@ -20689,6 +20791,172 @@ static class DateParts {
         return true;
     }
 
+    // ---- names a culture's format information gives ----------------------
+
+    /// .NET's MatchSpecifiedWords: `target` at `at`, its case ignored, where
+    /// each space in it may be any run of white space in the text;
+    /// `length` the text it took.
+    internal static bool WordsAt(string text, int at, int end, string target, bool boundary, ref int length) {
+        int left = end - at;
+        length = target.Length;
+        if (length > left || !WordAt(text, at, end, target)) {
+            int from = 0;
+            int p = at;
+            int space = SpaceIn(target, from);
+            if (space < 0) { return false; }
+            while (true) {
+                int segment = space - from;
+                if (p >= end - segment) { return false; }
+                if (segment == 0) {
+                    length--;
+                } else {
+                    if (!Char.IsWhiteSpace(Sys.GetChar(text, p + segment))) { return false; }
+                    if (!WordAt(text, p, end, String.Substring(target, from, segment))) { return false; }
+                    p = p + segment + 1;
+                }
+                from = space + 1;
+                while (p < end && Char.IsWhiteSpace(Sys.GetChar(text, p))) {
+                    p++;
+                    length++;
+                }
+                space = SpaceIn(target, from);
+                if (space < 0) { break; }
+            }
+            if (from < target.Length) {
+                int rest = target.Length - from;
+                if (p > end - rest) { return false; }
+                if (!WordAt(text, p, end, String.Substring(target, from, rest))) { return false; }
+            }
+        }
+        if (boundary) {
+            int after = at + length;
+            if (after < end && Char.IsLetter(Sys.GetChar(text, after))) { return false; }
+        }
+        return true;
+    }
+
+    private static int SpaceIn(string text, int from) {
+        for (int i = from; i < text.Length; i++) {
+            char c = Sys.GetChar(text, i);
+            if (c == ' ' || c == '\u00a0' || c == '\u202f') { return i; }
+        }
+        return -1;
+    }
+
+    /// The longest of `names` at `at` longer than `longest` (.NET's
+    /// MatchLongestWords): its index, or -1.
+    private static int LongestAt(string text, int at, int end, string[] names, ref int longest) {
+        int found = -1;
+        for (int i = 0; i < names.Length; i++) {
+            string? name = names[i];
+            if (name == null) { continue; }
+            int length = name.Length;
+            if (WordsAt(text, at, end, name, false, ref length) && length > longest) {
+                longest = length;
+                found = i;
+            }
+        }
+        return found;
+    }
+
+    /// Whether a picture has a day of the month in it, one or two d's
+    /// outside quotes (.NET's FormatContainsDayOfMonthSpecifier).
+    private static bool HasDayOfMonth(string picture) {
+        bool quoted = false;
+        for (int i = 0; i < picture.Length; i++) {
+            char c = Sys.GetChar(picture, i);
+            if (c == '%' || c == '\\') { i++; continue; }
+            if (c == '"' || c == '\'') { quoted = !quoted; continue; }
+            if (!quoted && c == 'd') {
+                int run = 1;
+                while (i + 1 < picture.Length && Sys.GetChar(picture, i + 1) == 'd') { i++; run++; }
+                if (run <= 2) { return true; }
+            }
+        }
+        return false;
+    }
+
+    /// A MONTH'S NAME AT `at` IN THE CULTURE'S NAMES, as .NET's
+    /// MatchMonthName and MatchAbbreviatedMonthName read one: the longest,
+    /// its case ignored, spaces in it as any white space when the names have
+    /// them, the thirteenth when it is not empty; the genitive names too when
+    /// the picture has a day of the month. The month (1 to 13), or -1.
+    private static int MonthNameAt(DateTimeFormatInfo info, string text, ref int at, int end, bool abbreviated, string picture) {
+        if (at >= end) { return -1; }
+        string[] names = abbreviated ? info.RawAbbreviatedMonthNames : info.RawMonthNames;
+        int count = names[12] == null || names[12].Length == 0 ? 12 : 13;
+        int longest = 0;
+        int found = -1;
+        bool spaced = info.HasSpacesInMonthNames;
+        for (int i = 1; i <= count; i++) {
+            string name = names[i - 1];
+            int length = name.Length;
+            if ((spaced ? WordsAt(text, at, end, name, false, ref length) : WordAt(text, at, end, name)) && length > longest) {
+                longest = length;
+                found = i;
+            }
+        }
+        if ((info.FormatFlags & DateTimeFormatFlags.UseGenitiveMonth) != 0 && HasDayOfMonth(picture)) {
+            int genitive = LongestAt(text, at, end, abbreviated ? info.RawAbbreviatedGenitiveMonthNames : info.RawGenitiveMonthNames, ref longest);
+            if (genitive >= 0) { found = genitive + 1; }
+        }
+        if (found > 0) { at = at + longest; }
+        return found > 0 ? found : -1;
+    }
+
+    /// A day's name at `at` in the culture's names (.NET's MatchDayName and
+    /// MatchAbbreviatedDayName): the day (0 for Sunday), or -1.
+    private static int DayNameAt(DateTimeFormatInfo info, string text, ref int at, int end, bool abbreviated) {
+        if (at >= end) { return -1; }
+        string[] names = abbreviated ? info.RawAbbreviatedDayNames : info.RawDayNames;
+        int longest = 0;
+        int found = -1;
+        bool spaced = info.HasSpacesInDayNames;
+        for (int i = 0; i < 7; i++) {
+            string name = names[i];
+            int length = name.Length;
+            if ((spaced ? WordsAt(text, at, end, name, false, ref length) : WordAt(text, at, end, name)) && length > longest) {
+                longest = length;
+                found = i;
+            }
+        }
+        if (found >= 0) { at = at + longest; }
+        return found;
+    }
+
+    /// The culture's AM or PM at `at` (.NET's MatchTimeMark, and for one t
+    /// MatchAbbreviatedTimeMark: the designator's first character, its case
+    /// kept). An empty designator is said without a word.
+    private static bool TimeMarkAt(DateTimeFormatInfo info, string text, ref int at, int end, bool first, out DateReading.Mark mark) {
+        mark = DateReading.Mark.None;
+        string am = info.AMDesignator;
+        string pm = info.PMDesignator;
+        if (first) {
+            if (at >= end) { return false; }
+            char c = Sys.GetChar(text, at);
+            if (am.Length > 0 && c == Sys.GetChar(am, 0)) { mark = DateReading.Mark.AM; }
+            else if (pm.Length > 0 && c == Sys.GetChar(pm, 0)) { mark = DateReading.Mark.PM; }
+            else { return false; }
+            at = at + 1;
+            return true;
+        }
+        if (am.Length == 0) { mark = DateReading.Mark.AM; }
+        if (pm.Length == 0) { mark = DateReading.Mark.PM; }
+        if (at < end) {
+            if (am.Length > 0 && WordAt(text, at, end, am)) {
+                at = at + am.Length;
+                mark = DateReading.Mark.AM;
+                return true;
+            }
+            if (pm.Length > 0 && WordAt(text, at, end, pm)) {
+                at = at + pm.Length;
+                mark = DateReading.Mark.PM;
+                return true;
+            }
+        }
+        return mark != DateReading.Mark.None;
+    }
+
     // ---- the exact reader -----------------------------------------------
 
     /// The text read against one picture, .NET's ParseExact.
@@ -20722,6 +20990,7 @@ static class DateParts {
         string picture = format;
         string text = r.Text;
         DateTimeStyles styles = r.Styles;
+        DateTimeFormatInfo? info = r.Info;
 
         if (picture.Length == 1) {
             char kind = Sys.GetChar(picture, 0);
@@ -20738,7 +21007,10 @@ static class DateParts {
             // A DateTimeOffset read by "r" or "u" is at offset zero: their
             // quoted GMT and Z say so (Step).
             r.UtcPicture = r.ForOffset && (kind == 'r' || kind == 'R' || kind == 'u');
-            picture = Standard(kind);
+            picture = Standard(kind, info);
+            // THE FIXED FORMATS ARE READ IN THE INVARIANT CULTURE, as .NET
+            // reads them whatever the provider.
+            if (kind == 'o' || kind == 'O' || kind == 'r' || kind == 'R' || kind == 's' || kind == 'u') { info = null; }
         }
 
         bool inner = (styles & DateTimeStyles.AllowInnerWhite) != 0;
@@ -20762,13 +21034,15 @@ static class DateParts {
             // INNER WHITE SPACE IS SKIPPED BEFORE EACH PIECE, and never after
             // the last, so trailing space is still refused without its style.
             if (inner) { pos = SkipWhite(text, pos, end); }
-            if (!Step(r, picture, ref at, ref pos, end, scratch, inner, trailing)) { return false; }
+            if (!Step(r, picture, ref at, ref pos, end, scratch, inner, trailing, info)) { return false; }
         }
         if (pos < end) { return BadDateTime(r); }
 
         if (r.TwoDigitYear) {
             if (r.Year >= 100) { return BadDateTime(r); }
-            r.Year = FourDigitYear(r.Year);
+            // THE CALENDAR'S CENTURY, which may have been moved
+            // (TwoDigitYearMax); the invariant one's ends in 2049.
+            r.Year = info == null ? FourDigitYear(r.Year) : info.Calendar.ToFourDigitYear(r.Year);
         }
 
         // AN 'h' IS THE 12-HOUR CLOCK, morning unless the text says
@@ -20968,7 +21242,7 @@ static class DateParts {
     /// ONE PIECE OF THE PICTURE against the text at `pos`: .NET's
     /// ParseByFormat.
     private static bool Step(DateReading r, string picture, ref int at, ref int pos, int end,
-                             StringBuilder scratch, bool inner, bool trailing) {
+                             StringBuilder scratch, bool inner, bool trailing, DateTimeFormatInfo? info) {
         string text = r.Text;
         char letter = ' ';
         int run = 0;
@@ -21020,7 +21294,7 @@ static class DateParts {
                 // A SPACE THE TEXT DOES NOT HAVE may have been trimmed off its
                 // end: with trailing white allowed, the next piece is tried in
                 // its place.
-                if (trailing && at < picture.Length && Step(r, picture, ref at, ref pos, end, scratch, inner, trailing)) {
+                if (trailing && at < picture.Length && Step(r, picture, ref at, ref pos, end, scratch, inner, trailing, info)) {
                     return true;
                 }
                 return BadDateTime(r);
@@ -21045,6 +21319,19 @@ static class DateParts {
                 if (pos + 3 <= end && String.Substring(text, pos, 3) == "GMT") { pos = pos + 3; return true; }
                 return BadDateTime(r);
             }
+            // THE CULTURE'S SEPARATORS: ':' or the time separator, '/' or the
+            // date separator -- only the separator when it is longer and
+            // begins with the character itself.
+            if (info != null && (letter == ':' || letter == '/')) {
+                string separator = letter == ':' ? info.TimeSeparator : info.DateSeparator;
+                bool longer = separator.Length > 1 && Sys.GetChar(separator, 0) == letter;
+                if (!longer && pos < end && Sys.GetChar(text, pos) == letter) { pos = pos + 1; return true; }
+                if (pos + separator.Length <= end && String.CompareOrdinal(text, pos, separator, 0, separator.Length) == 0) {
+                    pos = pos + separator.Length;
+                    return true;
+                }
+                return BadDateTime(r);
+            }
             if (pos < end && Sys.GetChar(text, pos) == letter) { pos = pos + 1; return true; }
             return BadDateTime(r);
         }
@@ -21065,7 +21352,7 @@ static class DateParts {
             if (run <= 2) {
                 if (!Number(text, ref pos, end, least, most, out value)) { return BadDateTime(r); }
             } else {
-                value = NameAt(text, ref pos, end, true, run == 3);
+                value = info == null ? NameAt(text, ref pos, end, true, run == 3) : MonthNameAt(info, text, ref pos, end, run == 3, picture);
                 if (value < 0) { return BadDateTime(r); }
             }
             if (!Again(r, r.Month, value, letter)) { return false; }
@@ -21075,7 +21362,7 @@ static class DateParts {
             if (!Again(r, r.Day, value, letter)) { return false; }
             r.Day = value;
         } else if (letter == 'd') {
-            value = NameAt(text, ref pos, end, false, run == 3);
+            value = info == null ? NameAt(text, ref pos, end, false, run == 3) : DayNameAt(info, text, ref pos, end, run == 3);
             if (value < 0) { return BadDateTime(r); }
             if (!Again(r, r.Weekday, value, letter)) { return false; }
             r.Weekday = value;
@@ -21118,7 +21405,9 @@ static class DateParts {
             // more the whole of it, its case ignored.
             DateReading.Mark mark = DateReading.Mark.None;
 
-            if (run == 1) {
+            if (info != null) {
+                if (!TimeMarkAt(info, text, ref pos, end, run == 1, out mark)) { return BadDateTime(r); }
+            } else if (run == 1) {
                 char c = pos < end ? Sys.GetChar(text, pos) : ' ';
 
                 if (c == 'A') { mark = DateReading.Mark.AM; }
@@ -21382,10 +21671,15 @@ sealed class DateReading {
     public DateTime Value;
     public string? Failure;
 
-    public DateReading(string text, DateTimeStyles styles, bool forOffset) {
+    /// The format information the provider gave, null for the invariant
+    /// culture's: the names, designators, separators and patterns read.
+    public readonly DateTimeFormatInfo? Info;
+
+    public DateReading(string text, DateTimeStyles styles, bool forOffset, IFormatProvider? provider = null) {
         Text = text;
         Styles = styles;
         ForOffset = forOffset;
+        Info = DateTimeFormatInfo.Given(provider);
         Reset();
     }
 
@@ -21414,16 +21708,331 @@ sealed class DateReading {
     public DateTimeOffset Moment => new DateTimeOffset(Value.Ticks, new TimeSpan(Offset));
 }
 
+/// THE FREE READER'S WORDS FOR A CULTURE'S FORMAT INFORMATION, as .NET's
+/// DateTimeFormatInfo hashes them (CreateTokenHashTable): its designators,
+/// separators, the words its patterns quote, its month, day and era names,
+/// then the invariant culture's beside them -- each with its kinds (a value's
+/// in the low byte, a separator's in the high) and its number, in .NET's
+/// table of 199 with its probing, so the word a text matches first is the one
+/// .NET's matches. Made once for a DateTimeFormatInfo, and again after it
+/// changes (DateTimeFormatInfo.Tokens).
+sealed class DateTokens {
+    internal sealed class Entry {
+        public readonly string Text;
+        public int Kind;
+        public int Value;
+
+        public Entry(string text, int kind, int value) {
+            Text = text;
+            Kind = kind;
+            Value = value;
+        }
+    }
+
+    // .NET's TokenType values.
+    const int Am = 1027, Pm = 1284, MonthToken = 5, DayOfWeekToken = 7, TimeZoneToken = 8, EraToken = 9,
+              DateWordToken = 10, IgnorableSymbol = 15, SepDate = 1536, SepTime = 1792, SepYearSuff = 2048,
+              SepMonthSuff = 2304, SepDaySuff = 2560, SepHourSuff = 2816, SepMinuteSuff = 3072,
+              SepSecondSuff = 3328, SepLocalTimeMark = 3584, SepDateOrOffset = 3840;
+
+    internal const int Size = 199;
+
+    internal readonly Entry?[] Table = new Entry?[Size];
+
+    public DateTokens(DateTimeFormatInfo info) {
+        string time = info.TimeSeparator.Trim();
+        if (time != ",") { Insert(",", IgnorableSymbol, 0); }
+        if (time != ".") { Insert(".", IgnorableSymbol, 0); }
+        if (time != "시" && time != "時" && time != "时") { Insert(info.TimeSeparator, SepTime, 0); }
+        Insert(info.AMDesignator, Am, 0);
+        Insert(info.PMDesignator, Pm, 1);
+        Insert("年", SepYearSuff, 0);
+        Insert("년", SepYearSuff, 0);
+        Insert("月", SepMonthSuff, 0);
+        Insert("월", SepMonthSuff, 0);
+        Insert("日", SepDaySuff, 0);
+        Insert("일", SepDaySuff, 0);
+        Insert("時", SepHourSuff, 0);
+        Insert("时", SepHourSuff, 0);
+        Insert("分", SepMinuteSuff, 0);
+        Insert("秒", SepSecondSuff, 0);
+        Insert("-", SepDateOrOffset, 0);
+
+        bool separatorIsWord = false;
+        List<string>? words = DateWords(info);
+        if (words != null) {
+            foreach (string word in words) {
+                char first = word[0];
+                if (first == '') {
+                    MonthNames(info, word.Substring(1));
+                } else if (first == '') {
+                    string symbol = word.Substring(1);
+                    Insert(symbol, IgnorableSymbol, 0);
+                    if (info.DateSeparator.Trim() == symbol) { separatorIsWord = true; }
+                } else {
+                    Insert(word, DateWordToken, 0);
+                }
+            }
+        }
+        if (!separatorIsWord) { Insert(info.DateSeparator, SepDate, 0); }
+        MonthNames(info, "");
+        for (int month = 1; month <= 13; month++) { Insert(info.GetAbbreviatedMonthName(month), MonthToken, month); }
+        if ((info.FormatFlags & DateTimeFormatFlags.UseGenitiveMonth) != 0) {
+            for (int month = 1; month <= 13; month++) {
+                Insert(info.RawGenitiveMonthNames[month - 1], MonthToken, month);
+                Insert(info.RawAbbreviatedGenitiveMonthNames[month - 1], MonthToken, month);
+            }
+        }
+        for (int day = 0; day < 7; day++) {
+            Insert(info.GetDayName((DayOfWeek)day), DayOfWeekToken, day);
+            Insert(info.GetAbbreviatedDayName((DayOfWeek)day), DayOfWeekToken, day);
+        }
+        int eras = info.Calendar.Eras.Length;
+        for (int era = 1; era <= eras; era++) {
+            Insert(info.GetEraName(era), EraToken, era);
+            Insert(info.GetAbbreviatedEraName(era), EraToken, era);
+        }
+
+        // THE INVARIANT CULTURE'S WORDS TOO, read in every culture.
+        Insert("AM", Am, 0);
+        Insert("PM", Pm, 1);
+        for (int month = 1; month <= 12; month++) {
+            Insert(DateParts.MonthName(month), MonthToken, month);
+            Insert(DateParts.MonthName(month).Substring(0, 3), MonthToken, month);
+        }
+        for (int day = 0; day < 7; day++) {
+            Insert(DateParts.DayName(day), DayOfWeekToken, day);
+            Insert(DateParts.DayName(day).Substring(0, 3), DayOfWeekToken, day);
+        }
+        Insert("AD", EraToken, 1);
+        Insert("T", SepLocalTimeMark, 0);
+        Insert("GMT", TimeZoneToken, 0);
+        Insert("Z", TimeZoneToken, 0);
+        Insert("/", SepDate, 0);
+        Insert(":", SepTime, 0);
+    }
+
+    void MonthNames(DateTimeFormatInfo info, string postfix) {
+        for (int month = 1; month <= 13; month++) {
+            string name = info.GetMonthName(month);
+            if (name.Length > 0) { Insert(postfix.Length > 0 ? name + postfix : name, MonthToken, month); }
+            Insert(info.GetAbbreviatedMonthName(month), MonthToken, month);
+        }
+    }
+
+    internal static char Lower(char c) => Char.ToLowerInvariant(c);
+
+    /// Whether `length` characters of each are the same, case ignored.
+    internal static bool Same(string one, int at, string other, int from, int length) {
+        if (at + length > one.Length || from + length > other.Length) { return false; }
+        for (int i = 0; i < length; i++) {
+            if (Char.ToUpperInvariant(one[at + i]) != Char.ToUpperInvariant(other[from + i])) { return false; }
+        }
+        return true;
+    }
+
+    // .NET's InsertHash: a longer word before the shorter ones it begins
+    // with along its probe chain, a word already there given the other kind
+    // of token it may also be.
+    void Insert(string? word, int kind, int value) {
+        if (string.IsNullOrEmpty(word)) { return; }
+        if (Char.IsWhiteSpace(word[0]) || Char.IsWhiteSpace(word[word.Length - 1])) {
+            word = word.Trim();
+            if (word.Length == 0) { return; }
+        }
+        char c = Lower(word[0]);
+        int hash = c % Size;
+        int step = 1 + c % 197;
+        for (int i = 0; i < Size; i++) {
+            Entry? entry = Table[hash];
+            if (entry == null) {
+                Table[hash] = new Entry(word, kind, value);
+                return;
+            }
+            if (word.Length >= entry.Text.Length
+                && ((word.Length == 1 && entry.Text.Length == 1 && word[0] == entry.Text[0]) || Same(word, 0, entry.Text, 0, entry.Text.Length))) {
+                if (word.Length > entry.Text.Length) {
+                    InsertAt(word, c, kind, value, i, hash, step);
+                    return;
+                }
+                if (((entry.Kind & 0xFF) == 0 && (kind & 0xFF) != 0) || ((entry.Kind & 0xFF00) == 0 && (kind & 0xFF00) != 0)) {
+                    entry.Kind |= kind;
+                    if (value != 0) { entry.Value = value; }
+                }
+                return;
+            }
+            hash += step;
+            if (hash >= Size) { hash -= Size; }
+        }
+    }
+
+    void InsertAt(string word, char c, int kind, int value, int at, int hash, int step) {
+        Entry? moved = Table[hash];
+        Table[hash] = new Entry(word, kind, value);
+        while (++at < Size) {
+            hash += step;
+            if (hash >= Size) { hash -= Size; }
+            Entry? next = Table[hash];
+            if (next == null || Lower(next.Text[0]) == c) {
+                Table[hash] = moved;
+                if (next == null) { return; }
+                moved = next;
+            }
+        }
+    }
+
+    // ---- the words a culture's patterns quote (.NET's DateTimeFormatInfoScanner)
+
+    const int FoundYear = 1, FoundMonth = 2, FoundDay = 4, FoundAll = 7;
+
+    sealed class Scan {
+        public List<string> Words = new List<string>();
+        public int Found;
+    }
+
+    static List<string>? DateWords(DateTimeFormatInfo info) {
+        Scan scan = new Scan();
+        foreach (string pattern in info.GetAllDateTimePatterns('D')) { ScanDateWord(scan, pattern); }
+        foreach (string pattern in info.GetAllDateTimePatterns('d')) { ScanDateWord(scan, pattern); }
+        foreach (string pattern in info.GetAllDateTimePatterns('y')) { ScanDateWord(scan, pattern); }
+        ScanDateWord(scan, info.MonthDayPattern);
+        foreach (string pattern in info.GetAllDateTimePatterns('T')) { ScanDateWord(scan, pattern); }
+        foreach (string pattern in info.GetAllDateTimePatterns('t')) { ScanDateWord(scan, pattern); }
+        return scan.Words.Count > 0 ? scan.Words : null;
+    }
+
+    static int SkipNonLetters(string pattern, int at) {
+        while (at < pattern.Length) {
+            char c = pattern[at];
+            if (c == '\\') {
+                at++;
+                if (at >= pattern.Length) { break; }
+                c = pattern[at];
+                if (c == '\'') { continue; }
+            }
+            if (Char.IsLetter(c) || c == '\'' || c == '.') { break; }
+            at++;
+        }
+        return at;
+    }
+
+    static void AddWord(Scan scan, string? postfix, string word) {
+        if (word.Length == 0) { return; }
+        if (word.Length == 1) {
+            char c = word[0];
+            if (c == '.') {
+                AddIgnorable(scan, ".");
+                return;
+            }
+            if (c == '-' || c == '/' || c == '分' || c == '年' || c == '日' || c == '时' || c == '時' || c == '月'
+                || c == '秒' || c == '년' || c == '분' || c == '시' || c == '월' || c == '일' || c == '초') {
+                return;
+            }
+        }
+        if (postfix == "MMMM") {
+            string marked = "" + word;
+            if (!scan.Words.Contains(marked)) { scan.Words.Add(marked); }
+            return;
+        }
+        if (!scan.Words.Contains(word)) { scan.Words.Add(word); }
+        if (word.EndsWith('.')) {
+            string shorter = word.Substring(0, word.Length - 1);
+            if (!scan.Words.Contains(shorter)) { scan.Words.Add(shorter); }
+        }
+    }
+
+    static void AddIgnorable(Scan scan, string symbol) {
+        string marked = "" + symbol;
+        if (!scan.Words.Contains(marked)) { scan.Words.Add(marked); }
+    }
+
+    static int AddWords(Scan scan, string pattern, int at, string? postfix) {
+        int start = SkipNonLetters(pattern, at);
+        if (start != at && postfix != null) { postfix = null; }
+        at = start;
+        StringBuilder word = new StringBuilder();
+        while (at < pattern.Length) {
+            char c = pattern[at];
+            if (c == '\'') {
+                AddWord(scan, postfix, word.ToString());
+                at++;
+                break;
+            }
+            if (c == '\\') {
+                at++;
+                if (at < pattern.Length) {
+                    word.Append(pattern[at]);
+                    at++;
+                }
+                continue;
+            }
+            if (Char.IsWhiteSpace(c)) {
+                AddWord(scan, postfix, word.ToString());
+                postfix = null;
+                word.Length = 0;
+                at++;
+            } else {
+                word.Append(c);
+                at++;
+            }
+        }
+        return at;
+    }
+
+    static int Repeat(string pattern, char c, int at, out int count) {
+        count = 1;
+        while ((uint)(++at) < (uint)pattern.Length && pattern[at] == c) { count++; }
+        return at;
+    }
+
+    static void ScanDateWord(Scan scan, string pattern) {
+        scan.Found = 0;
+        int at = 0;
+        while (at < pattern.Length) {
+            char c = pattern[at];
+            int count;
+            if (c == '\'') {
+                at = AddWords(scan, pattern, at + 1, null);
+            } else if (c == 'M') {
+                at = Repeat(pattern, 'M', at, out count);
+                if (count >= 4 && (uint)at < (uint)pattern.Length && pattern[at] == '\'') {
+                    at = AddWords(scan, pattern, at + 1, "MMMM");
+                }
+                scan.Found |= FoundMonth;
+            } else if (c == 'y') {
+                at = Repeat(pattern, 'y', at, out count);
+                scan.Found |= FoundYear;
+            } else if (c == 'd') {
+                at = Repeat(pattern, 'd', at, out count);
+                if (count <= 2) { scan.Found |= FoundDay; }
+            } else if (c == '\\') {
+                at += 2;
+            } else if (c == '.') {
+                if (scan.Found == FoundAll) {
+                    AddIgnorable(scan, ".");
+                    scan.Found = 0;
+                }
+                at++;
+            } else {
+                if (scan.Found == FoundAll && !Char.IsWhiteSpace(c)) { scan.Found = 0; }
+                at++;
+            }
+        }
+    }
+}
+
 /// .NET'S FREE READER, DateTime.Parse's (DateTimeParse.TryParse): the text
 /// lexed a token at a time -- a number, a month's or a day's name, AM or PM,
 /// a zone, and the separator after each -- and the tokens walked through
 /// .NET's table of date states, where each terminal state settles a date or
 /// a time from the numbers gathered so far. A port, state for state and
-/// message for message, for the INVARIANT CULTURE, the only one this machine
-/// has: its month and day go month first (MMMM dd), its year and month year
-/// first (yyyy MMMM), its short date month, day, year (MM/dd/yyyy); its
-/// separators are '/' and ':'; and a two-digit year runs up to 2049. The
-/// fields read land in a DateReading, and DateParts.Finish makes the moment.
+/// message for message. In the INVARIANT CULTURE its month and day go month
+/// first (MMMM dd), its year and month year first (yyyy MMMM), its short date
+/// month, day, year (MM/dd/yyyy); its separators are '/' and ':'; and a
+/// two-digit year runs up to 2049. A culture's format information given by
+/// the provider says each of those instead, and its words are its own
+/// (DateTokens). The fields read land in a DateReading, and DateParts.Finish
+/// makes the moment.
 sealed class FreeDateReader {
     /// What a token is (.NET's TokenType): the low byte a token's own kind,
     /// the high byte the kind of separator it is when read as one.
@@ -21510,9 +22119,28 @@ sealed class FreeDateReader {
     bool haveMinute;
     bool haveSecond;
 
+    // THE CULTURE'S, when the provider gave format information: its words,
+    // whether its date and time separators are one, and whether a name may
+    // begin with digits.
+    readonly DateTimeFormatInfo? info;
+    readonly DateTokens? tokens;
+    readonly bool sameSeparators;
+    readonly bool digitTokens;
+
     public FreeDateReader(DateReading reading) {
         r = reading;
         text = reading.Text;
+        info = reading.Info;
+        if (info != null) {
+            DateTokens? made = info.Tokens as DateTokens;
+            if (made == null) {
+                made = new DateTokens(info);
+                info.Tokens = made;
+            }
+            tokens = made;
+            sameSeparators = String.Equals(info.DateSeparator, info.TimeSeparator);
+            digitTokens = (info.FormatFlags & DateTimeFormatFlags.UseDigitPrefixInTokens) != 0;
+        }
     }
 
     // ---- the text ---------------------------------------------------------
@@ -21583,6 +22211,23 @@ sealed class FreeDateReader {
                     type = TokenType.NumberToken;
                 } else {
                     type = TokenType.YearNumberToken;
+                }
+                // A NAME THAT BEGINS WITH DIGITS ("1月") is the name, when the
+                // culture has one.
+                if (digitTokens) {
+                    int after = index;
+                    char afterChar = current;
+                    index = start;
+                    current = Sys.GetChar(text, index);
+                    TokenType named;
+                    int namedValue;
+                    if (Tokenize(TokenType.RegularTokenMask, out named, out namedValue)) {
+                        type = named;
+                        value = namedValue;
+                    } else {
+                        index = after;
+                        current = afterChar;
+                    }
                 }
                 return;
             }
@@ -21665,6 +22310,7 @@ sealed class FreeDateReader {
     bool Tokenize(TokenType mask, out TokenType type, out int value) {
         type = TokenType.UnknownToken;
         value = 0;
+        if (tokens != null) { return TokenizeIn(tokens, mask, out type, out value); }
 
         bool letter = Char.IsLetter(current);
         int left = text.Length - index;
@@ -21685,6 +22331,53 @@ sealed class FreeDateReader {
             value = Values[i];
             Advance(word.Length);
             return true;
+        }
+        return false;
+    }
+
+    /// .NET's DateTimeFormatInfo.Tokenize over the culture's table: the first
+    /// word along the character's probe chain the text has here, its case
+    /// ignored and, for a letter, not running on into another letter; a
+    /// month's or a day's name with spaces in it also as any white space.
+    bool TokenizeIn(DateTokens table, TokenType mask, out TokenType type, out int value) {
+        type = TokenType.UnknownToken;
+        value = 0;
+        char c = current;
+        bool letter = Char.IsLetter(c);
+        if (letter) { c = DateTokens.Lower(c); }
+        int hash = c % DateTokens.Size;
+        int step = 1 + c % 197;
+        int left = text.Length - index;
+        for (int i = 0; i < DateTokens.Size; i++) {
+            DateTokens.Entry? entry = table.Table[hash];
+            if (entry == null) { break; }
+            if ((entry.Kind & (int)mask) > 0 && entry.Text.Length <= left) {
+                bool fits = true;
+                if (letter) {
+                    int end = index + entry.Text.Length;
+                    if (end > text.Length) { fits = false; }
+                    else if (end < text.Length) { fits = !Char.IsLetter(Sys.GetChar(text, end)); }
+                }
+                if (fits && ((entry.Text.Length == 1 && Sys.GetChar(text, index) == Sys.GetChar(entry.Text, 0))
+                             || DateTokens.Same(text, index, entry.Text, 0, entry.Text.Length))) {
+                    type = (TokenType)(entry.Kind & (int)mask);
+                    value = entry.Value;
+                    Advance(entry.Text.Length);
+                    return true;
+                }
+                if ((entry.Kind == (int)TokenType.MonthToken && info!.HasSpacesInMonthNames)
+                    || (entry.Kind == (int)TokenType.DayOfWeekToken && info!.HasSpacesInDayNames)) {
+                    int length = 0;
+                    if (DateParts.WordsAt(text, index, text.Length, entry.Text, true, ref length)) {
+                        type = (TokenType)(entry.Kind & (int)mask);
+                        value = entry.Value;
+                        Advance(length);
+                        return true;
+                    }
+                }
+            }
+            hash += step;
+            if (hash >= DateTokens.Size) { hash -= DateTokens.Size; }
         }
         return false;
     }
@@ -21715,6 +22408,21 @@ sealed class FreeDateReader {
                 if (state == Ds.D_YNd || state == Ds.D_YN) { return Iso8601(); }
                 return DateParts.BadDateTime(r);
             }
+            // ONE SEPARATOR FOR DATES AND TIMES: a year after what looked
+            // like a time makes it a date, and a separator the table cannot
+            // take here, or one at the end, is a space.
+            if (sameSeparators) {
+                if (dtt == Dtt.YearEnd || dtt == Dtt.YearSpace || dtt == Dtt.YearDateSep) {
+                    if (state == Ds.T_Nt) { state = Ds.D_Nd; }
+                    if (state == Ds.T_NNt) { state = Ds.D_NNd; }
+                }
+                bool atEnd = AtEnd();
+                if (Next(state, dtt) == Ds.Error || atEnd) {
+                    if (dtt == Dtt.YearDateSep) { dtt = atEnd ? Dtt.YearEnd : Dtt.YearSpace; }
+                    else if (dtt == Dtt.NumDatesep || dtt == Dtt.NumTimesep) { dtt = atEnd ? Dtt.NumEnd : Dtt.NumSpace; }
+                    else if (dtt == Dtt.MonthDatesep) { dtt = atEnd ? Dtt.MonthEnd : Dtt.MonthSpace; }
+                }
+            }
             state = Next(state, dtt);
             if (state == Ds.Error) { return DateParts.BadDateTime(r); }
             if (state > Ds.Error) {
@@ -21725,6 +22433,12 @@ sealed class FreeDateReader {
         } while (dtt != Dtt.End && dtt != Dtt.NumEnd && dtt != Dtt.MonthEnd);
 
         if (!settled) { return DateParts.BadDateTime(r); }
+        // AN EMPTY DESIGNATOR IS SAID BY SAYING NOTHING, as .NET's
+        // AdjustTimeMark has it, when the other is not empty.
+        if (timeMark == DateReading.Mark.None && info != null) {
+            if (info.AMDesignator.Length == 0 && info.PMDesignator.Length != 0) { timeMark = DateReading.Mark.AM; }
+            if (info.PMDesignator.Length == 0 && info.AMDesignator.Length != 0) { timeMark = DateReading.Mark.PM; }
+        }
         if (!AdjustHour()) { return DateParts.BadDateTime(r); }
         if (fraction > 0.0) { r.Fraction = (long)Math.Round(fraction * 10000000.0); }
         r.Weekday = dayOfWeek;
@@ -21784,7 +22498,10 @@ sealed class FreeDateReader {
                 }
                 else if (separator == TokenType.SepSpace) { dtt = Dtt.YearSpace; }
                 else if (separator == TokenType.SepDate) { dtt = Dtt.YearDateSep; }
-                else if (separator == TokenType.SepTime) { return DateParts.BadDateTime(r); }
+                else if (separator == TokenType.SepTime) {
+                    if (!sameSeparators) { return DateParts.BadDateTime(r); }
+                    dtt = Dtt.YearDateSep;
+                }
                 else if (separator == TokenType.SepDateOrOffset) {
                     // A '-' AFTER A YEAR is the date's own where the table
                     // can take one, and otherwise an offset still to read.
@@ -21837,12 +22554,15 @@ sealed class FreeDateReader {
                 }
                 AddNumber(num);
             } else if (separator == TokenType.SepTime) {
-                dtt = Dtt.NumTimesep;
+                if (sameSeparators && (state == Ds.D_Y || state == Ds.D_YN || state == Ds.D_YNd || state == Ds.D_YM || state == Ds.D_YMd)) {
+                    dtt = Dtt.NumDatesep;
+                } else {
+                    dtt = Dtt.NumTimesep;
+                }
                 AddNumber(num);
             } else if (separator == TokenType.SepYearSuff) {
-                // A two-digit year with its suffix: the invariant calendar's
-                // century.
-                num = num < 100 ? (num > 49 ? 1900 + num : 2000 + num) : num;
+                // A two-digit year with its suffix: the calendar's century.
+                if (!Year4(num, out num)) { return DateParts.BadDateTime(r); }
                 dtt = Dtt.NumDatesuff;
                 suffix = separator;
             } else if (separator == TokenType.SepMonthSuff || separator == TokenType.SepDaySuff) {
@@ -21876,7 +22596,10 @@ sealed class FreeDateReader {
             if (separator == TokenType.SepEnd) { dtt = Dtt.MonthEnd; }
             else if (separator == TokenType.SepSpace) { dtt = Dtt.MonthSpace; }
             else if (separator == TokenType.SepDate) { dtt = Dtt.MonthDatesep; }
-            else if (separator == TokenType.SepTime) { return DateParts.BadDateTime(r); }
+            else if (separator == TokenType.SepTime) {
+                if (!sameSeparators) { return DateParts.BadDateTime(r); }
+                dtt = Dtt.MonthDatesep;
+            }
             else if (separator == TokenType.SepDateOrOffset) {
                 if (Next(state, Dtt.MonthDatesep) == Ds.Error && Next(state, Dtt.MonthSpace) > Ds.Error) {
                     index = indexBefore;
@@ -22155,8 +22878,24 @@ sealed class FreeDateReader {
         return true;
     }
 
-    /// A year as the invariant calendar takes a short one.
-    static int Year4(int year) { return year < 100 ? (year > 49 ? 1900 + year : 2000 + year) : year; }
+    /// A SHORT YEAR IN THE CALENDAR'S CENTURY (.NET's TryAdjustYear): the
+    /// invariant one's ends in 2049, a culture's where its TwoDigitYearMax
+    /// says; false where the calendar refuses it.
+    bool Year4(int year, out int adjusted) {
+        adjusted = year;
+        if (year >= 100) { return true; }
+        if (info == null) {
+            adjusted = year > 49 ? 1900 + year : 2000 + year;
+            return true;
+        }
+        try {
+            adjusted = info.Calendar.ToFourDigitYear(year);
+            return true;
+        } catch (ArgumentOutOfRangeException) {
+            adjusted = -1;
+            return false;
+        }
+    }
 
     static bool ValidDay(int year, int month, int day) {
         return year >= 1 && year <= 9999 && month >= 1 && month <= 12 && day >= 1 && day <= DateParts.MonthDays(year, month);
@@ -22184,52 +22923,163 @@ sealed class FreeDateReader {
         r.YearDefault = true;
     }
 
-    // TWO NUMBERS: month and day, this year.
+    // ---- the orders a culture's patterns give ---------------------------------
+    //
+    // .NET's GetYearMonthDayOrder, GetYearMonthOrder and GetMonthDayOrder:
+    // the order of the fields in the short date (0 y-M-d, 1 M-d-y, 2 d-M-y,
+    // 3 y-d-M), the year and month (4 y-M, 5 M-y) and the month and day
+    // (6 M-d, 7 d-M), outside quotes, a day being one or two d's.
+
+    string ShortDatePattern => info == null ? "MM/dd/yyyy" : info.ShortDatePattern;
+    string MonthDayPattern => info == null ? "MMMM dd" : info.MonthDayPattern;
+    string YearMonthPattern => info == null ? "yyyy MMMM" : info.YearMonthPattern;
+
+    static int Order(string pattern, bool year, bool month, bool day) {
+        int y = -1, m = -1, d = -1;
+        int count = 0;
+        int wanted = (year ? 1 : 0) + (month ? 1 : 0) + (day ? 1 : 0);
+        bool quoted = false;
+        for (int i = 0; i < pattern.Length && count < wanted; i++) {
+            char c = Sys.GetChar(pattern, i);
+            if (c == '%' || c == '\\') { i++; continue; }
+            if (c == '"' || c == '\'') { quoted = !quoted; }
+            if (quoted) { continue; }
+            if (c == 'y' && year) {
+                y = count++;
+                while (i + 1 < pattern.Length && Sys.GetChar(pattern, i + 1) == 'y') { i++; }
+            } else if (c == 'M' && month) {
+                m = count++;
+                while (i + 1 < pattern.Length && Sys.GetChar(pattern, i + 1) == 'M') { i++; }
+            } else if (c == 'd' && day) {
+                int run = 1;
+                while (i + 1 < pattern.Length && Sys.GetChar(pattern, i + 1) == 'd') { i++; run++; }
+                if (run <= 2) { d = count++; }
+            }
+        }
+        if (year && month && day) {
+            if (y == 0 && m == 1 && d == 2) { return 0; }
+            if (m == 0 && d == 1 && y == 2) { return 1; }
+            if (d == 0 && m == 1 && y == 2) { return 2; }
+            if (y == 0 && d == 1 && m == 2) { return 3; }
+            return -1;
+        }
+        if (year) {
+            if (y == 0 && m == 1) { return 4; }
+            if (m == 0 && y == 1) { return 5; }
+            return -1;
+        }
+        if (m == 0 && d == 1) { return 6; }
+        if (d == 0 && m == 1) { return 7; }
+        return -1;
+    }
+
+    bool BadPattern(string pattern) {
+        return DateParts.Refused(r, "Could not determine the order of year, month, and date from '" + pattern + "'.");
+    }
+
+    // TWO NUMBERS: month and day this year, in the month and day's order.
     bool DayOfNN() {
         if (haveDate) { return DateParts.BadDateTime(r); }
+        int n0 = numbers[0];
+        int n1 = numbers[1];
         DefaultYear();
-        return Dated(r.Year, numbers[0], numbers[1]);
+        int order = Order(MonthDayPattern, false, true, true);
+        if (order < 0) { return BadPattern(MonthDayPattern); }
+        return order == 6 ? Dated(r.Year, n0, n1) : Dated(r.Year, n1, n0);
     }
 
-    // THREE NUMBERS: month, day and year, the short date's order.
+    // THREE NUMBERS: the short date's order.
     bool DayOfNNN() {
         if (haveDate) { return DateParts.BadDateTime(r); }
-        return Dated(Year4(numbers[2]), numbers[0], numbers[1]);
+        int n0 = numbers[0];
+        int n1 = numbers[1];
+        int n2 = numbers[2];
+        int order = Order(ShortDatePattern, true, true, true);
+        if (order < 0) { return BadPattern(ShortDatePattern); }
+        int year;
+        if (order == 0 && Year4(n0, out year)) { return Dated(year, n1, n2); }
+        if (order == 1 && Year4(n2, out year)) { return Dated(year, n0, n1); }
+        if (order == 2 && Year4(n2, out year)) { return Dated(year, n1, n0); }
+        if (order == 3 && Year4(n0, out year)) { return Dated(year, n2, n1); }
+        return DateParts.BadDateTime(r);
     }
 
-    // A MONTH AND A NUMBER: the day of that month this year.
+    // A MONTH AND A NUMBER: the day of that month this year -- or, where the
+    // day goes first and the year after the month, the year.
     bool DayOfMN() {
         if (haveDate) { return DateParts.BadDateTime(r); }
+        int order = Order(MonthDayPattern, false, true, true);
+        if (order < 0) { return BadPattern(MonthDayPattern); }
+        if (order == 7) {
+            int yearMonth = Order(YearMonthPattern, true, true, false);
+            if (yearMonth < 0) { return BadPattern(YearMonthPattern); }
+            if (yearMonth == 5) {
+                int year;
+                if (!Year4(numbers[0], out year) || !SetDate(year, rawMonth, 1)) { return DateParts.BadDateTime(r); }
+                return true;
+            }
+        }
         DefaultYear();
         if (!SetDate(r.Year, rawMonth, numbers[0])) { return DateParts.BadDateTime(r); }
         return true;
     }
 
-    // A NUMBER AND A MONTH: a year and its month, as "yyyy MMMM" reads them.
+    // A NUMBER AND A MONTH: a year and its month where the month goes before
+    // the day and the year before the month ("yyyy MMMM"); else the day.
     bool DayOfNM() {
         if (haveDate) { return DateParts.BadDateTime(r); }
-        if (!SetDate(Year4(numbers[0]), rawMonth, 1)) { return DateParts.BadDateTime(r); }
+        int order = Order(MonthDayPattern, false, true, true);
+        if (order < 0) { return BadPattern(MonthDayPattern); }
+        if (order == 6) {
+            int yearMonth = Order(YearMonthPattern, true, true, false);
+            if (yearMonth < 0) { return BadPattern(YearMonthPattern); }
+            if (yearMonth == 4) {
+                int year;
+                if (!Year4(numbers[0], out year) || !SetDate(year, rawMonth, 1)) { return DateParts.BadDateTime(r); }
+                return true;
+            }
+        }
+        DefaultYear();
+        if (!SetDate(r.Year, rawMonth, numbers[0])) { return DateParts.BadDateTime(r); }
         return true;
     }
 
-    // A MONTH AND TWO NUMBERS: day then year, or year then day if not.
+    // A MONTH AND TWO NUMBERS: day and year as the short date has them, or
+    // the other way when that is no date.
     bool DayOfMNN() {
         if (haveDate) { return DateParts.BadDateTime(r); }
-        if (ValidDay(Year4(numbers[1]), rawMonth, numbers[0])) { return Dated(Year4(numbers[1]), rawMonth, numbers[0]); }
-        if (ValidDay(Year4(numbers[0]), rawMonth, numbers[1])) { return Dated(Year4(numbers[0]), rawMonth, numbers[1]); }
+        int n0 = numbers[0];
+        int n1 = numbers[1];
+        int order = Order(ShortDatePattern, true, true, true);
+        if (order < 0) { return BadPattern(ShortDatePattern); }
+        int year;
+        if (order == 1 || order == 2) {
+            if (Year4(n1, out year) && ValidDay(year, rawMonth, n0)) { return Dated(year, rawMonth, n0); }
+            if (Year4(n0, out year) && ValidDay(year, rawMonth, n1)) { return Dated(year, rawMonth, n1); }
+        } else if (order == 0) {
+            if (Year4(n0, out year) && ValidDay(year, rawMonth, n1)) { return Dated(year, rawMonth, n1); }
+            if (Year4(n1, out year) && ValidDay(year, rawMonth, n0)) { return Dated(year, rawMonth, n0); }
+        }
         return DateParts.BadDateTime(r);
     }
 
-    // A YEAR AND TWO NUMBERS: month then day.
+    // A YEAR AND TWO NUMBERS: month then day, but day then month where the
+    // short date goes year, day, month.
     bool DayOfYNN() {
         if (haveDate) { return DateParts.BadDateTime(r); }
+        int order = Order(ShortDatePattern, true, true, true);
+        if (order == 3) { return Dated(rawYear, numbers[1], numbers[0]); }
         return Dated(rawYear, numbers[0], numbers[1]);
     }
 
-    // TWO NUMBERS AND A YEAR: month then day.
+    // TWO NUMBERS AND A YEAR: month then day where the short date has the
+    // month first or the year first, else day then month.
     bool DayOfNNY() {
         if (haveDate) { return DateParts.BadDateTime(r); }
-        return Dated(rawYear, numbers[0], numbers[1]);
+        int order = Order(ShortDatePattern, true, true, true);
+        if (order < 0) { return BadPattern(ShortDatePattern); }
+        if (order == 1 || order == 0) { return Dated(rawYear, numbers[0], numbers[1]); }
+        return Dated(rawYear, numbers[1], numbers[0]);
     }
 
     // A TIME: one number only with AM or PM, then hours and minutes, then
@@ -22252,16 +23102,25 @@ sealed class FreeDateReader {
 
     bool DateOfNDS() {
         if (r.Month == -1 || r.Year != -1) { return DateParts.BadDateTime(r); }
-        r.Year = Year4(numbers[0]);
+        int year;
+        if (!Year4(numbers[0], out year)) { return DateParts.BadDateTime(r); }
+        r.Year = year;
         r.Day = 1;
         return true;
     }
 
     bool DateOfNNDS() {
+        int year;
         if (haveYear) {
-            if (!haveMonth && !haveDay && SetDate(Year4(rawYear), numbers[0], numbers[1])) { return true; }
+            if (!haveMonth && !haveDay && Year4(rawYear, out year) && SetDate(year, numbers[0], numbers[1])) { return true; }
         } else if (haveMonth && !haveDay) {
-            if (SetDate(Year4(numbers[1]), r.Month, numbers[0])) { return true; }
+            int order = Order(ShortDatePattern, true, true, true);
+            if (order < 0) { return BadPattern(ShortDatePattern); }
+            if (order == 0) {
+                if (Year4(numbers[0], out year) && SetDate(year, r.Month, numbers[1])) { return true; }
+            } else if (Year4(numbers[1], out year) && SetDate(year, r.Month, numbers[0])) {
+                return true;
+            }
         }
         return DateParts.BadDateTime(r);
     }
@@ -24571,6 +25430,1341 @@ namespace System.Globalization
         ModifierSymbol = 27,
         OtherSymbol = 28,
         OtherNotAssigned = 29,
+    }
+}
+
+namespace System.Globalization
+{
+    /// How the first week of a year is counted, .NET's values.
+    public enum CalendarWeekRule
+    {
+        FirstDay = 0,
+        FirstFullWeek = 1,
+        FirstFourDayWeek = 2,
+    }
+
+    /// What a calendar is reckoned by, .NET's values.
+    public enum CalendarAlgorithmType
+    {
+        Unknown = 0,
+        SolarCalendar = 1,
+        LunarCalendar = 2,
+        LunisolarCalendar = 3,
+    }
+
+    /// The language a Gregorian calendar's names are in, .NET's values (its
+    /// CalendarId).
+    public enum GregorianCalendarTypes
+    {
+        Localized = 1,
+        USEnglish = 2,
+        MiddleEastFrench = 9,
+        Arabic = 10,
+        TransliteratedEnglish = 11,
+        TransliteratedFrench = 12,
+    }
+
+    /// What a DateTimeFormatInfo's names make the writer and the readers do,
+    /// .NET's flags: worked out once from the names, and again only when the
+    /// calendar changes.
+    [Flags]
+    internal enum DateTimeFormatFlags
+    {
+        None = 0,
+        UseGenitiveMonth = 1,
+        UseLeapYearMonth = 2,
+        UseSpacesInMonthNames = 4,
+        UseHebrewRule = 8,
+        UseSpacesInDayNames = 16,
+        UseDigitPrefixInTokens = 32,
+        NotInitialized = -1,
+    }
+
+    /// .NET'S CALENDAR: years, months and days reckoned one way, and the
+    /// weeks of a year counted by a rule. Its arithmetic in milliseconds
+    /// rounds half away from zero, refuses what leaves the calendar, and
+    /// says so in .NET's words. GregorianCalendar is the one this machine's
+    /// culture has.
+    public abstract class Calendar : ICloneable
+    {
+        bool _isReadOnly;
+        internal int _twoDigitYearMax = -1;
+        // A GREGORIAN CALENDAR'S GregorianCalendarTypes, kept here so a copy
+        // can be told it without asking the calendar (DateTimeFormatInfo.Clone).
+        internal int _kind;
+
+        public const int CurrentEra = 0;
+
+        protected Calendar() { }
+
+        public virtual DateTime MinSupportedDateTime => DateTime.MinValue;
+        public virtual DateTime MaxSupportedDateTime => DateTime.MaxValue;
+        public virtual CalendarAlgorithmType AlgorithmType => CalendarAlgorithmType.Unknown;
+
+        /// .NET's CalendarId: 0 for a calendar it does not know, which no
+        /// culture's DateTimeFormatInfo takes.
+        internal virtual int ID => 0;
+
+        /// The era a date with era 0 is in: the first, for every calendar
+        /// this machine knows.
+        internal int CurrentEraValue => 1;
+
+        public bool IsReadOnly => _isReadOnly;
+
+        public abstract int[] Eras { get; }
+
+        protected virtual int DaysInYearBeforeMinSupportedYear => 365;
+
+        public virtual int TwoDigitYearMax
+        {
+            get { return _twoDigitYearMax; }
+            set
+            {
+                VerifyWritable();
+                _twoDigitYearMax = value;
+            }
+        }
+
+        /// A copy that may be changed, read-only or not. Each calendar makes
+        /// its own (Copy): nothing here copies an object field for field.
+        public virtual object Clone()
+        {
+            Calendar made = Copy();
+            made._isReadOnly = false;
+            return made;
+        }
+
+        internal virtual Calendar Copy()
+        {
+            throw new NotSupportedException("Specified method is not supported.");
+        }
+
+        public static Calendar ReadOnly(Calendar calendar)
+        {
+            ArgumentNullException.ThrowIfNull(calendar);
+            if (calendar.IsReadOnly) return calendar;
+            Calendar made = calendar.Copy();
+            made._isReadOnly = true;
+            return made;
+        }
+
+        internal void VerifyWritable()
+        {
+            if (_isReadOnly) throw new InvalidOperationException("Instance is read-only.");
+        }
+
+        internal void SetReadOnlyState(bool readOnly) { _isReadOnly = readOnly; }
+
+        internal static void CheckAddResult(long ticks, DateTime minValue, DateTime maxValue)
+        {
+            if (ticks < minValue.Ticks || ticks > maxValue.Ticks)
+            {
+                throw new ArgumentException("The result is out of the supported range for this calendar. The result should be between "
+                    + DateParts.Invariant(minValue) + " (Gregorian date) and " + DateParts.Invariant(maxValue) + " (Gregorian date), inclusive.");
+            }
+        }
+
+        internal DateTime Add(DateTime time, double value, int scale)
+        {
+            double millis = value * scale + (value >= 0.0 ? 0.5 : -0.5);
+            if (!(millis > -315537897600000.0) || !(millis < 315537897600000.0))
+            {
+                throw new ArgumentOutOfRangeException("value", value, "Value to add was out of range.");
+            }
+            long ticks = time.Ticks + (long)millis * 10000;
+            CheckAddResult(ticks, MinSupportedDateTime, MaxSupportedDateTime);
+            return new DateTime(ticks);
+        }
+
+        public virtual DateTime AddMilliseconds(DateTime time, double milliseconds) => Add(time, milliseconds, 1);
+        public virtual DateTime AddDays(DateTime time, int days) => Add(time, days, 86400000);
+        public virtual DateTime AddHours(DateTime time, int hours) => Add(time, hours, 3600000);
+        public virtual DateTime AddMinutes(DateTime time, int minutes) => Add(time, minutes, 60000);
+        public abstract DateTime AddMonths(DateTime time, int months);
+        public virtual DateTime AddSeconds(DateTime time, int seconds) => Add(time, seconds, 1000);
+        public virtual DateTime AddWeeks(DateTime time, int weeks) => AddDays(time, weeks * 7);
+        public abstract DateTime AddYears(DateTime time, int years);
+
+        public abstract int GetDayOfMonth(DateTime time);
+        public abstract DayOfWeek GetDayOfWeek(DateTime time);
+        public abstract int GetDayOfYear(DateTime time);
+        public virtual int GetDaysInMonth(int year, int month) => GetDaysInMonth(year, month, CurrentEra);
+        public abstract int GetDaysInMonth(int year, int month, int era);
+        public virtual int GetDaysInYear(int year) => GetDaysInYear(year, CurrentEra);
+        public abstract int GetDaysInYear(int year, int era);
+        public abstract int GetEra(DateTime time);
+        public virtual int GetHour(DateTime time) => time.Hour;
+        public virtual double GetMilliseconds(DateTime time) => time.Millisecond;
+        public virtual int GetMinute(DateTime time) => time.Minute;
+        public abstract int GetMonth(DateTime time);
+        public virtual int GetMonthsInYear(int year) => GetMonthsInYear(year, CurrentEra);
+        public abstract int GetMonthsInYear(int year, int era);
+        public virtual int GetSecond(DateTime time) => time.Second;
+
+        // THE WEEK OF THE YEAR, by .NET's three rules: the week holding the
+        // year's first day; the first week wholly in the year; the first with
+        // four of its days in it. A day before the year's first week is in the
+        // last week of the year before.
+        internal int GetFirstDayWeekOfYear(DateTime time, int firstDayOfWeek)
+        {
+            int dayOfYear = GetDayOfYear(time) - 1;
+            int offset = ((int)GetDayOfWeek(time) - dayOfYear % 7 - firstDayOfWeek + 14) % 7;
+            return (dayOfYear + offset) / 7 + 1;
+        }
+
+        int GetWeekOfYearFullDays(DateTime time, int firstDayOfWeek, int fullDays)
+        {
+            int dayOfYear = GetDayOfYear(time) - 1;
+            int dayForJan1 = (int)GetDayOfWeek(time) - dayOfYear % 7;
+            int offset = (firstDayOfWeek - dayForJan1 + 14) % 7;
+            if (offset != 0 && offset >= fullDays) offset -= 7;
+            int day = dayOfYear - offset;
+            if (day >= 0) return day / 7 + 1;
+            if (time <= MinSupportedDateTime.AddDays(dayOfYear)) return GetWeekOfYearOfMinSupportedDateTime(firstDayOfWeek, fullDays);
+            return GetWeekOfYearFullDays(time.AddDays(-(dayOfYear + 1)), firstDayOfWeek, fullDays);
+        }
+
+        int GetWeekOfYearOfMinSupportedDateTime(int firstDayOfWeek, int minimumDaysInFirstWeek)
+        {
+            int dayOfYear = GetDayOfYear(MinSupportedDateTime) - 1;
+            int dayOfWeekOfFirstDay = (int)GetDayOfWeek(MinSupportedDateTime) - dayOfYear % 7;
+            int offset = (firstDayOfWeek + 7 - dayOfWeekOfFirstDay) % 7;
+            if (offset == 0 || offset >= minimumDaysInFirstWeek) return 1;
+            int daysInYearBefore = DaysInYearBeforeMinSupportedYear - 1;
+            int dayOfWeekOfFirstDayOfYearBefore = dayOfWeekOfFirstDay - 1 - daysInYearBefore % 7;
+            int daysInInitialPartialWeek = (firstDayOfWeek - dayOfWeekOfFirstDayOfYearBefore + 14) % 7;
+            int day = daysInYearBefore - daysInInitialPartialWeek;
+            if (daysInInitialPartialWeek >= minimumDaysInFirstWeek) day += 7;
+            return day / 7 + 1;
+        }
+
+        public virtual int GetWeekOfYear(DateTime time, CalendarWeekRule rule, DayOfWeek firstDayOfWeek)
+        {
+            if (firstDayOfWeek < DayOfWeek.Sunday || firstDayOfWeek > DayOfWeek.Saturday)
+            {
+                throw new ArgumentOutOfRangeException("firstDayOfWeek", firstDayOfWeek, "Valid values are between Sunday and Saturday, inclusive.");
+            }
+            if (rule == CalendarWeekRule.FirstDay) return GetFirstDayWeekOfYear(time, (int)firstDayOfWeek);
+            if (rule == CalendarWeekRule.FirstFullWeek) return GetWeekOfYearFullDays(time, (int)firstDayOfWeek, 7);
+            if (rule == CalendarWeekRule.FirstFourDayWeek) return GetWeekOfYearFullDays(time, (int)firstDayOfWeek, 4);
+            throw new ArgumentOutOfRangeException("rule", rule, "Valid values are between FirstDay and FirstFourDayWeek, inclusive.");
+        }
+
+        public abstract int GetYear(DateTime time);
+        public virtual bool IsLeapDay(int year, int month, int day) => IsLeapDay(year, month, day, CurrentEra);
+        public abstract bool IsLeapDay(int year, int month, int day, int era);
+        public virtual bool IsLeapMonth(int year, int month) => IsLeapMonth(year, month, CurrentEra);
+        public abstract bool IsLeapMonth(int year, int month, int era);
+        public virtual int GetLeapMonth(int year) => GetLeapMonth(year, CurrentEra);
+
+        public virtual int GetLeapMonth(int year, int era)
+        {
+            if (!IsLeapYear(year, era)) return 0;
+            int months = GetMonthsInYear(year, era);
+            for (int month = 1; month <= months; month++)
+            {
+                if (IsLeapMonth(year, month, era)) return month;
+            }
+            return 0;
+        }
+
+        public virtual bool IsLeapYear(int year) => IsLeapYear(year, CurrentEra);
+        public abstract bool IsLeapYear(int year, int era);
+
+        public virtual DateTime ToDateTime(int year, int month, int day, int hour, int minute, int second, int millisecond)
+            => ToDateTime(year, month, day, hour, minute, second, millisecond, CurrentEra);
+
+        public abstract DateTime ToDateTime(int year, int month, int day, int hour, int minute, int second, int millisecond, int era);
+
+        /// A two-digit year in the century TwoDigitYearMax ends; any other
+        /// as it is.
+        public virtual int ToFourDigitYear(int year)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(year);
+            if (year < 100)
+            {
+                int max = TwoDigitYearMax;
+                return (max / 100 - (year > max % 100 ? 1 : 0)) * 100 + year;
+            }
+            return year;
+        }
+    }
+
+    /// The Gregorian calendar, the one in which DateTime itself counts: one
+    /// era, A.D., with two-digit years up to 2049.
+    public class GregorianCalendar : Calendar
+    {
+        public const int ADEra = 1;
+
+        static Calendar? s_default;
+
+        public GregorianCalendar() : this(GregorianCalendarTypes.Localized) { }
+
+        public GregorianCalendar(GregorianCalendarTypes type)
+        {
+            if (type < GregorianCalendarTypes.Localized || type > GregorianCalendarTypes.TransliteratedFrench)
+            {
+                throw new ArgumentOutOfRangeException("type", type, "Valid values are between Localized and TransliteratedFrench, inclusive.");
+            }
+            _kind = (int)type;
+        }
+
+        /// The one a culture's DateTimeFormatInfo starts with, as .NET's.
+        internal static Calendar GetDefaultInstance() => s_default ??= new GregorianCalendar();
+
+        /// The shared one if it has been made, for a copy of it as it stands.
+        internal static Calendar? Existing => s_default;
+
+        internal override Calendar Copy()
+        {
+            GregorianCalendar made = new GregorianCalendar((GregorianCalendarTypes)_kind);
+            made._twoDigitYearMax = _twoDigitYearMax;
+            return made;
+        }
+
+        public override DateTime MinSupportedDateTime => DateTime.MinValue;
+        public override DateTime MaxSupportedDateTime => DateTime.MaxValue;
+        public override CalendarAlgorithmType AlgorithmType => CalendarAlgorithmType.SolarCalendar;
+
+        public virtual GregorianCalendarTypes CalendarType
+        {
+            get { return (GregorianCalendarTypes)_kind; }
+            set
+            {
+                VerifyWritable();
+                if (value < GregorianCalendarTypes.Localized || value > GregorianCalendarTypes.TransliteratedFrench)
+                {
+                    throw new ArgumentOutOfRangeException("value", value, "Valid values are between Localized and TransliteratedFrench, inclusive.");
+                }
+                _kind = (int)value;
+            }
+        }
+
+        internal override int ID => _kind;
+
+        public override int[] Eras => new int[] { ADEra };
+
+        public override int TwoDigitYearMax
+        {
+            get
+            {
+                if (_twoDigitYearMax == -1) _twoDigitYearMax = 2049;
+                return _twoDigitYearMax;
+            }
+            set
+            {
+                VerifyWritable();
+                if (value < 99 || value > 9999)
+                {
+                    throw new ArgumentOutOfRangeException("value", value, "Valid values are between 99 and 9999, inclusive.");
+                }
+                _twoDigitYearMax = value;
+            }
+        }
+
+        static void CheckEra(int era)
+        {
+            if (era != CurrentEra && era != ADEra) throw new ArgumentOutOfRangeException("era", era, "Era value was not valid.");
+        }
+
+        static void CheckYear(int year)
+        {
+            if (year < 1 || year > 9999) throw new ArgumentOutOfRangeException("year", year, "Valid values are between 1 and 9999, inclusive.");
+        }
+
+        static void CheckMonth(int month)
+        {
+            if (month < 1 || month > 12) throw new ArgumentOutOfRangeException("month", month, "Valid values are between 1 and 12, inclusive.");
+        }
+
+        /// Days from the first of January of year 1, or .NET's refusal.
+        internal static long GetAbsoluteDate(int year, int month, int day)
+        {
+            if (year >= 1 && year <= 9999 && month >= 1 && month <= 12 && day >= 1 && day <= DateParts.MonthDays(year, month))
+            {
+                return DateParts.DaysFrom(year, month, day);
+            }
+            throw new ArgumentOutOfRangeException(null, "Year, Month, and Day parameters describe an un-representable DateTime.");
+        }
+
+        public override DateTime AddMonths(DateTime time, int months)
+        {
+            if (months < -120000 || months > 120000)
+            {
+                throw new ArgumentOutOfRangeException("months", months, "Valid values are between -120000 and 120000, inclusive.");
+            }
+            int year = time.Year;
+            int month = time.Month;
+            int day = time.Day;
+            int at = month - 1 + months;
+            if (at >= 0)
+            {
+                month = at % 12 + 1;
+                year += at / 12;
+            }
+            else
+            {
+                month = 12 + (at + 1) % 12;
+                year += (at - 11) / 12;
+            }
+            // The year may have left the calendar: GetAbsoluteDate says so.
+            int last = year >= 1 && year <= 9999 ? DateParts.MonthDays(year, month) : 31;
+            if (day > last) day = last;
+            long ticks = GetAbsoluteDate(year, month, day) * 864000000000 + time.Ticks % 864000000000;
+            CheckAddResult(ticks, MinSupportedDateTime, MaxSupportedDateTime);
+            return new DateTime(ticks);
+        }
+
+        public override DateTime AddYears(DateTime time, int years) => AddMonths(time, years * 12);
+        public override int GetDayOfMonth(DateTime time) => time.Day;
+        public override DayOfWeek GetDayOfWeek(DateTime time) => time.DayOfWeek;
+        public override int GetDayOfYear(DateTime time) => time.DayOfYear;
+
+        public override int GetDaysInMonth(int year, int month, int era)
+        {
+            CheckEra(era);
+            return DateTime.DaysInMonth(year, month);
+        }
+
+        public override int GetDaysInYear(int year, int era)
+        {
+            CheckEra(era);
+            return DateTime.IsLeapYear(year) ? 366 : 365;
+        }
+
+        public override int GetEra(DateTime time) => ADEra;
+        public override int GetMonth(DateTime time) => time.Month;
+
+        public override int GetMonthsInYear(int year, int era)
+        {
+            CheckEra(era);
+            CheckYear(year);
+            return 12;
+        }
+
+        public override int GetYear(DateTime time) => time.Year;
+
+        public override bool IsLeapDay(int year, int month, int day, int era)
+        {
+            CheckMonth(month);
+            CheckEra(era);
+            CheckYear(year);
+            int days = GetDaysInMonth(year, month);
+            if (day < 1 || day > days) throw new ArgumentOutOfRangeException("day", day, "Valid values are between 1 and " + days + ", inclusive.");
+            return IsLeapYear(year) && month == 2 && day == 29;
+        }
+
+        public override int GetLeapMonth(int year, int era)
+        {
+            CheckEra(era);
+            CheckYear(year);
+            return 0;
+        }
+
+        public override bool IsLeapMonth(int year, int month, int era)
+        {
+            CheckEra(era);
+            CheckYear(year);
+            CheckMonth(month);
+            return false;
+        }
+
+        public override bool IsLeapYear(int year, int era)
+        {
+            CheckEra(era);
+            return DateTime.IsLeapYear(year);
+        }
+
+        public override DateTime ToDateTime(int year, int month, int day, int hour, int minute, int second, int millisecond, int era)
+        {
+            CheckEra(era);
+            return new DateTime(year, month, day, hour, minute, second, millisecond);
+        }
+
+        public override int ToFourDigitYear(int year)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(year);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(year, 9999);
+            return base.ToFourDigitYear(year);
+        }
+    }
+
+    /// THE ISO 8601 WEEK-NUMBERING YEAR, .NET's ISOWeek: weeks from Monday,
+    /// the first the one with the year's first Thursday, so 52 or 53 of them
+    /// and a year that may start in December or end in January.
+    public static partial class ISOWeek
+    {
+        public static int GetWeekOfYear(DateTime date)
+        {
+            int week = GetWeekNumber(date);
+            if (week < 1) return GetWeeksInYear(date.Year - 1);
+            if (week > 52 && GetWeeksInYear(date.Year) == 52) return 1;
+            return week;
+        }
+
+        public static int GetYear(DateTime date)
+        {
+            int week = GetWeekNumber(date);
+            int year = date.Year;
+            if (week < 1) year--;
+            else if (week > 52 && GetWeeksInYear(year) == 52) year++;
+            return year;
+        }
+
+        public static DateTime GetYearStart(int year) => ToDateTime(year, 1, DayOfWeek.Monday);
+
+        public static DateTime GetYearEnd(int year) => ToDateTime(year, GetWeeksInYear(year), DayOfWeek.Sunday);
+
+        public static int GetWeeksInYear(int year)
+        {
+            if (year < 1 || year > 9999) throw new ArgumentOutOfRangeException("year", "Year must be between 1 and 9999.");
+            return P((uint)year) == 4 || P((uint)(year - 1)) == 3 ? 53 : 52;
+        }
+
+        static uint P(uint y)
+        {
+            uint century = y / 100;
+            return (y + y / 4 - century + century / 4) % 7;
+        }
+
+        public static DateTime ToDateTime(int year, int week, DayOfWeek dayOfWeek)
+        {
+            if (year < 1 || year > 9999) throw new ArgumentOutOfRangeException("year", "Year must be between 1 and 9999.");
+            if (week < 1 || week > 53) throw new ArgumentOutOfRangeException("week", "The week parameter must be in the range 1 through 53.");
+            // SEVEN IS SUNDAY TOO, as .NET lets it be.
+            if (dayOfWeek < DayOfWeek.Sunday || (int)dayOfWeek > 7) throw new ArgumentOutOfRangeException("dayOfWeek", "The DayOfWeek enumeration must be in the range 0 through 6.");
+            DateTime jan4 = new DateTime(year, 1, 4);
+            int correction = Weekday(jan4.DayOfWeek) + 3;
+            int ordinal = week * 7 + Weekday(dayOfWeek) - correction;
+            return jan4.AddTicks((ordinal - 4) * 864000000000);
+        }
+
+        static int GetWeekNumber(DateTime date) => (int)((uint)(date.DayOfYear - Weekday(date.DayOfWeek) + 10) / 7u);
+
+        static int Weekday(DayOfWeek dayOfWeek) => dayOfWeek == DayOfWeek.Sunday ? 7 : (int)dayOfWeek;
+    }
+}
+
+namespace System.Globalization
+{
+    /// .NET'S DateTimeFormatInfo: the names, designators, separators and
+    /// patterns a date is written and read with. The invariant culture's --
+    /// the only culture this machine has -- is InvariantInfo, read-only; a
+    /// new one, or a Clone, may be changed, and the writer and both readers
+    /// then use what it says. Every setter checks what .NET's checks, with
+    /// .NET's messages.
+    public sealed class DateTimeFormatInfo : IFormatProvider, ICloneable
+    {
+        static DateTimeFormatInfo? s_invariant;
+
+        bool _isReadOnly;
+
+        // THE CALENDAR IS MADE WHEN FIRST ASKED FOR, as Making says: the
+        // culture's shared Gregorian, a read-only copy of it, or a copy of
+        // one's own -- so a culture nobody asks the calendar of makes none,
+        // and an image that never reads one carries no calendar.
+        Calendar? _calendar;
+        Making _making;
+        // A CLONE'S CALENDAR is a copy of the one it was cloned from, made
+        // when first asked for, with what that one said when the clone was
+        // made: its two-digit century and its kind. Copied there and then,
+        // the copy -- a call any calendar answers -- was the reason every
+        // image that names a format provider carried every calendar's code.
+        Calendar? _copyOf;
+        int _copyTwoDigitYearMax;
+        int _copyKind;
+
+        enum Making { Shared, ReadOnlyCopy, Copy }
+
+        string _amDesignator = "AM";
+        string _pmDesignator = "PM";
+        string _dateSeparator = "/";
+        string _timeSeparator = ":";
+        int _firstDayOfWeek;
+        int _calendarWeekRule;
+
+        // NAMES AND PATTERNS NOT SET ARE THE INVARIANT CULTURE'S
+        // (InvariantDates), read through the accessors below.
+        string? _fullDateTimePattern;
+        string? _longDatePattern;
+        string? _longTimePattern;
+        string? _shortDatePattern;
+        string? _shortTimePattern;
+        string? _monthDayPattern;
+        string? _yearMonthPattern;
+        string? _generalShortTimePattern;
+        string? _generalLongTimePattern;
+        string? _dateTimeOffsetPattern;
+
+        string[]? _allShortDatePatterns;
+        string[]? _allLongDatePatterns;
+        string[]? _allShortTimePatterns;
+        string[]? _allLongTimePatterns;
+        string[]? _allYearMonthPatterns;
+
+        string[]? _dayNames;
+        string[]? _abbreviatedDayNames;
+        string[]? _shortestDayNames;
+        string[]? _monthNames;
+        string[]? _abbreviatedMonthNames;
+        string[]? _genitiveMonthNames;
+        string[]? _abbreviatedGenitiveMonthNames;
+
+        string[] ShortDates => _allShortDatePatterns ?? InvariantDates.ShortDates;
+        string[] LongDates => _allLongDatePatterns ?? InvariantDates.LongDates;
+        string[] ShortTimes => _allShortTimePatterns ?? InvariantDates.ShortTimes;
+        string[] LongTimes => _allLongTimePatterns ?? InvariantDates.LongTimes;
+        string[] YearMonths => _allYearMonthPatterns ?? InvariantDates.YearMonths;
+        internal string[] RawDayNames => _dayNames ?? InvariantDates.DayNames;
+        internal string[] RawAbbreviatedDayNames => _abbreviatedDayNames ?? InvariantDates.AbbreviatedDayNames;
+        string[] RawShortestDayNames => _shortestDayNames ?? InvariantDates.ShortestDayNames;
+        internal string[] RawMonthNames => _monthNames ?? InvariantDates.MonthNames;
+        internal string[] RawAbbreviatedMonthNames => _abbreviatedMonthNames ?? InvariantDates.AbbreviatedMonthNames;
+        internal string[] RawGenitiveMonthNames => _genitiveMonthNames ?? InvariantDates.MonthNames;
+        internal string[] RawAbbreviatedGenitiveMonthNames => _abbreviatedGenitiveMonthNames ?? InvariantDates.AbbreviatedMonthNames;
+
+        int _formatFlags = (int)DateTimeFormatFlags.NotInitialized;
+
+        // THE FREE READER'S WORDS for these names (FreeDateReader's table),
+        // made when it first reads with them and dropped whenever a name, a
+        // designator, a separator or a pattern changes, as .NET drops its
+        // token hash.
+        internal object? Tokens;
+
+        /// The invariant culture's, which may be changed.
+        public DateTimeFormatInfo()
+        {
+        }
+
+        /// The invariant culture's, read-only: what InvariantCulture and the
+        /// current culture answer, and what a null provider means.
+        public static DateTimeFormatInfo InvariantInfo
+        {
+            get
+            {
+                DateTimeFormatInfo? made = s_invariant;
+                if (made == null)
+                {
+                    made = new DateTimeFormatInfo();
+                    made._making = Making.ReadOnlyCopy;
+                    made._isReadOnly = true;
+                    s_invariant = made;
+                }
+                return made;
+            }
+        }
+
+        public static DateTimeFormatInfo CurrentInfo => CultureInfo.CurrentCulture.DateTimeFormat;
+
+        /// What a provider says to format a date with, as .NET asks it: a
+        /// culture's, the provider itself, what its GetFormat answers, or the
+        /// current culture's.
+        public static DateTimeFormatInfo GetInstance(IFormatProvider? provider)
+        {
+            if (provider == null) return CurrentInfo;
+            if (provider is CultureInfo culture) return culture.DateTimeFormat;
+            if (provider is DateTimeFormatInfo info) return info;
+            return provider.GetFormat(typeof(DateTimeFormatInfo)) as DateTimeFormatInfo ?? CurrentInfo;
+        }
+
+        /// The provider's, or null when it is the invariant culture's own --
+        /// so the writer and the readers keep their invariant paths.
+        internal static DateTimeFormatInfo? Given(IFormatProvider? provider)
+        {
+            if (provider == null) return null;
+            DateTimeFormatInfo info = GetInstance(provider);
+            return ReferenceEquals(info, s_invariant) ? null : info;
+        }
+
+        public object? GetFormat(Type? formatType) => formatType == typeof(DateTimeFormatInfo) ? this : null;
+
+        /// A copy that may be changed, its calendar a copy too.
+        public object Clone()
+        {
+            DateTimeFormatInfo made = Copy();
+            // A COPY OF THE CALENDAR, writable: of the one made, or of the
+            // shared one when that is what this one would make -- as it
+            // stands now -- or a fresh Gregorian.
+            Calendar? from = _calendar ?? (_making == Making.Shared ? GregorianCalendar.Existing : null);
+            made._calendar = null;
+            made._making = Making.Copy;
+            made._copyOf = from;
+            if (from != null)
+            {
+                made._copyTwoDigitYearMax = from._twoDigitYearMax;
+                made._copyKind = from._kind;
+            }
+            made._isReadOnly = false;
+            return made;
+        }
+
+        public static DateTimeFormatInfo ReadOnly(DateTimeFormatInfo dtfi)
+        {
+            ArgumentNullException.ThrowIfNull(dtfi);
+            if (dtfi.IsReadOnly) return dtfi;
+            DateTimeFormatInfo made = dtfi.Copy();
+            Calendar from = dtfi.Calendar;
+            made._calendar = Calendar.ReadOnly(from);
+            made._making = Making.ReadOnlyCopy;
+            made._copyOf = null;
+            made._isReadOnly = true;
+            return made;
+        }
+
+        // Field for field, as .NET's MemberwiseClone: the arrays shared, as
+        // they are there (a setter replaces an array, it never writes one).
+        DateTimeFormatInfo Copy()
+        {
+            DateTimeFormatInfo made = new DateTimeFormatInfo();
+            made._calendar = _calendar;
+            made._making = _making;
+            made._copyOf = _copyOf;
+            made._copyTwoDigitYearMax = _copyTwoDigitYearMax;
+            made._copyKind = _copyKind;
+            made._amDesignator = _amDesignator;
+            made._pmDesignator = _pmDesignator;
+            made._dateSeparator = _dateSeparator;
+            made._timeSeparator = _timeSeparator;
+            made._firstDayOfWeek = _firstDayOfWeek;
+            made._calendarWeekRule = _calendarWeekRule;
+            made._fullDateTimePattern = _fullDateTimePattern;
+            made._longDatePattern = _longDatePattern;
+            made._longTimePattern = _longTimePattern;
+            made._shortDatePattern = _shortDatePattern;
+            made._shortTimePattern = _shortTimePattern;
+            made._monthDayPattern = _monthDayPattern;
+            made._yearMonthPattern = _yearMonthPattern;
+            made._generalShortTimePattern = _generalShortTimePattern;
+            made._generalLongTimePattern = _generalLongTimePattern;
+            made._dateTimeOffsetPattern = _dateTimeOffsetPattern;
+            made._allShortDatePatterns = _allShortDatePatterns;
+            made._allLongDatePatterns = _allLongDatePatterns;
+            made._allShortTimePatterns = _allShortTimePatterns;
+            made._allLongTimePatterns = _allLongTimePatterns;
+            made._allYearMonthPatterns = _allYearMonthPatterns;
+            made._dayNames = _dayNames;
+            made._abbreviatedDayNames = _abbreviatedDayNames;
+            made._shortestDayNames = _shortestDayNames;
+            made._monthNames = _monthNames;
+            made._abbreviatedMonthNames = _abbreviatedMonthNames;
+            made._genitiveMonthNames = _genitiveMonthNames;
+            made._abbreviatedGenitiveMonthNames = _abbreviatedGenitiveMonthNames;
+            made._formatFlags = _formatFlags;
+            made.Tokens = Tokens;
+            return made;
+        }
+
+        public bool IsReadOnly => _isReadOnly;
+
+        void Writable()
+        {
+            if (_isReadOnly) throw new InvalidOperationException("Instance is read-only.");
+        }
+
+        void Changed()
+        {
+            Tokens = null;
+            _formatFlags = (int)DateTimeFormatFlags.NotInitialized;
+        }
+
+        static string Given(string value)
+        {
+            ArgumentNullException.ThrowIfNull(value, "value");
+            return value;
+        }
+
+        public Calendar Calendar
+        {
+            get
+            {
+                Calendar? made = _calendar;
+                if (made == null)
+                {
+                    if (_making == Making.Shared) made = GregorianCalendar.GetDefaultInstance();
+                    // THE INVARIANT CULTURE'S IS ITS OWN, read-only and as made:
+                    // .NET takes it before any program can move the shared one.
+                    else if (_making == Making.ReadOnlyCopy) made = Calendar.ReadOnly(new GregorianCalendar());
+                    else if (_copyOf != null)
+                    {
+                        made = _copyOf.Copy();
+                        made._twoDigitYearMax = _copyTwoDigitYearMax;
+                        made._kind = _copyKind;
+                        _copyOf = null;
+                    }
+                    else made = new GregorianCalendar();
+                    _calendar = made;
+                }
+                return made;
+            }
+            set
+            {
+                Writable();
+                ArgumentNullException.ThrowIfNull(value, "value");
+                if (ReferenceEquals(value, Calendar)) return;
+                // THE CULTURE'S CALENDARS ONLY: the invariant culture has the
+                // Gregorian, localized.
+                if (value.ID != (int)GregorianCalendarTypes.Localized)
+                {
+                    throw new ArgumentOutOfRangeException("value", value, "Not a valid calendar for the given culture.");
+                }
+                // A NEW CALENDAR TAKES THE CULTURE'S NAMES AND DATE PATTERNS
+                // AGAIN, as .NET's reloads them for it: what was set for the
+                // old one is gone, but the designators, the time separator
+                // and the time patterns written stay.
+                _calendar = value;
+                _monthDayPattern = null;
+                _dayNames = null;
+                _abbreviatedDayNames = null;
+                _shortestDayNames = null;
+                _monthNames = null;
+                _abbreviatedMonthNames = null;
+                _genitiveMonthNames = null;
+                _abbreviatedGenitiveMonthNames = null;
+                _allShortDatePatterns = null;
+                _allLongDatePatterns = null;
+                _allShortTimePatterns = null;
+                _allLongTimePatterns = null;
+                _allYearMonthPatterns = null;
+                _dateSeparator = "/";
+                _fullDateTimePattern = null;
+                _longDatePattern = null;
+                _shortDatePattern = null;
+                _yearMonthPattern = null;
+                _generalShortTimePattern = null;
+                _generalLongTimePattern = null;
+                _dateTimeOffsetPattern = null;
+                Changed();
+            }
+        }
+
+        public string AMDesignator
+        {
+            get { return _amDesignator; }
+            set { Writable(); _amDesignator = Given(value); Changed(); }
+        }
+
+        public string PMDesignator
+        {
+            get { return _pmDesignator; }
+            set { Writable(); _pmDesignator = Given(value); Changed(); }
+        }
+
+        public string DateSeparator
+        {
+            get { return _dateSeparator; }
+            set { Writable(); _dateSeparator = Given(value); Changed(); }
+        }
+
+        public string TimeSeparator
+        {
+            get { return _timeSeparator; }
+            set { Writable(); _timeSeparator = Given(value); Changed(); }
+        }
+
+        public DayOfWeek FirstDayOfWeek
+        {
+            get { return (DayOfWeek)_firstDayOfWeek; }
+            set
+            {
+                Writable();
+                if (value < DayOfWeek.Sunday || value > DayOfWeek.Saturday)
+                {
+                    throw new ArgumentOutOfRangeException("value", value, "Valid values are between Sunday and Saturday, inclusive.");
+                }
+                _firstDayOfWeek = (int)value;
+            }
+        }
+
+        public CalendarWeekRule CalendarWeekRule
+        {
+            get { return (CalendarWeekRule)_calendarWeekRule; }
+            set
+            {
+                Writable();
+                if (value < CalendarWeekRule.FirstDay || value > CalendarWeekRule.FirstFourDayWeek)
+                {
+                    throw new ArgumentOutOfRangeException("value", value, "Valid values are between FirstDay and FirstFourDayWeek, inclusive.");
+                }
+                _calendarWeekRule = (int)value;
+            }
+        }
+
+        public string FullDateTimePattern
+        {
+            get { return _fullDateTimePattern ??= LongDatePattern + " " + LongTimePattern; }
+            set { Writable(); _fullDateTimePattern = Given(value); }
+        }
+
+        public string LongDatePattern
+        {
+            get { return _longDatePattern ??= LongDates[0]; }
+            set
+            {
+                Writable();
+                _longDatePattern = Given(value);
+                Changed();
+                _fullDateTimePattern = null;
+            }
+        }
+
+        public string LongTimePattern
+        {
+            get { return _longTimePattern ??= LongTimes[0]; }
+            set
+            {
+                Writable();
+                _longTimePattern = Given(value);
+                Changed();
+                _fullDateTimePattern = null;
+                _generalLongTimePattern = null;
+                _dateTimeOffsetPattern = null;
+            }
+        }
+
+        public string MonthDayPattern
+        {
+            get { return _monthDayPattern ?? "MMMM dd"; }
+            set { Writable(); _monthDayPattern = Given(value); }
+        }
+
+        public string ShortDatePattern
+        {
+            get { return _shortDatePattern ??= ShortDates[0]; }
+            set
+            {
+                Writable();
+                _shortDatePattern = Given(value);
+                Changed();
+                _generalLongTimePattern = null;
+                _generalShortTimePattern = null;
+                _dateTimeOffsetPattern = null;
+            }
+        }
+
+        public string ShortTimePattern
+        {
+            get { return _shortTimePattern ??= ShortTimes[0]; }
+            set
+            {
+                Writable();
+                _shortTimePattern = Given(value);
+                Changed();
+                _generalShortTimePattern = null;
+            }
+        }
+
+        public string YearMonthPattern
+        {
+            get { return _yearMonthPattern ??= YearMonths[0]; }
+            set { Writable(); _yearMonthPattern = Given(value); Changed(); }
+        }
+
+        public string RFC1123Pattern => "ddd, dd MMM yyyy HH':'mm':'ss 'GMT'";
+        public string SortableDateTimePattern => "yyyy'-'MM'-'dd'T'HH':'mm':'ss";
+        public string UniversalSortableDateTimePattern => "yyyy'-'MM'-'dd HH':'mm':'ss'Z'";
+        public string NativeCalendarName => "Gregorian Calendar";
+
+        /// "G": the short date and the long time.
+        internal string GeneralLongTimePattern => _generalLongTimePattern ??= ShortDatePattern + " " + LongTimePattern;
+
+        /// "g": the short date and the short time.
+        internal string GeneralShortTimePattern => _generalShortTimePattern ??= ShortDatePattern + " " + ShortTimePattern;
+
+        /// A DateTimeOffset written with no format: "G" with its offset after
+        /// the time, unless the long time already shows one (a z outside
+        /// quotes).
+        internal string DateTimeOffsetPattern
+        {
+            get
+            {
+                if (_dateTimeOffsetPattern == null)
+                {
+                    string time = LongTimePattern;
+                    bool zone = false;
+                    bool quoted = false;
+                    char quote = '\'';
+                    for (int i = 0; !zone && i < time.Length; i++)
+                    {
+                        char c = time[i];
+                        if (c == 'z') zone = !quoted;
+                        else if (c == '\'' || c == '"')
+                        {
+                            if (quoted && quote == c) quoted = false;
+                            else if (!quoted) { quote = c; quoted = true; }
+                        }
+                        else if (c == '%' || c == '\\') i++;
+                    }
+                    _dateTimeOffsetPattern = zone ? ShortDatePattern + " " + time : ShortDatePattern + " " + time + " zzz";
+                }
+                return _dateTimeOffsetPattern;
+            }
+        }
+
+        // ---- the names ------------------------------------------------------
+
+        static string[] Names(string[] value, int length)
+        {
+            ArgumentNullException.ThrowIfNull(value, "value");
+            if (value.Length != length) throw new ArgumentException("Length of the array must be " + length + ".", "value");
+            // A MONTH LIST'S THIRTEENTH may be null, as .NET's check stops
+            // one short of it.
+            int checkedTo = length == 13 ? 12 : length;
+            for (int i = 0; i < checkedTo; i++)
+            {
+                if (value[i] == null) throw new ArgumentNullException("value", "Found a null value within an array.");
+            }
+            return value;
+        }
+
+        public string[] DayNames
+        {
+            get { return (string[])RawDayNames.Clone(); }
+            set { Writable(); _dayNames = Names(value, 7); Changed(); }
+        }
+
+        public string[] AbbreviatedDayNames
+        {
+            get { return (string[])RawAbbreviatedDayNames.Clone(); }
+            set { Writable(); _abbreviatedDayNames = Names(value, 7); Changed(); }
+        }
+
+        public string[] ShortestDayNames
+        {
+            get { return (string[])RawShortestDayNames.Clone(); }
+            set { Writable(); _shortestDayNames = Names(value, 7); }
+        }
+
+        public string[] MonthNames
+        {
+            get { return (string[])RawMonthNames.Clone(); }
+            set { Writable(); _monthNames = Names(value, 13); Changed(); }
+        }
+
+        public string[] AbbreviatedMonthNames
+        {
+            get { return (string[])RawAbbreviatedMonthNames.Clone(); }
+            set { Writable(); _abbreviatedMonthNames = Names(value, 13); Changed(); }
+        }
+
+        public string[] MonthGenitiveNames
+        {
+            get { return (string[])RawGenitiveMonthNames.Clone(); }
+            set { Writable(); _genitiveMonthNames = Names(value, 13); Changed(); }
+        }
+
+        public string[] AbbreviatedMonthGenitiveNames
+        {
+            get { return (string[])RawAbbreviatedGenitiveMonthNames.Clone(); }
+            set { Writable(); _abbreviatedGenitiveMonthNames = Names(value, 13); Changed(); }
+        }
+
+        static void Day(DayOfWeek day, string name)
+        {
+            if ((uint)day >= 7u) throw new ArgumentOutOfRangeException(name, day, "Valid values are between Sunday and Saturday, inclusive.");
+        }
+
+        static void Month(int month, string[] names)
+        {
+            if ((uint)(month - 1) >= (uint)names.Length) throw new ArgumentOutOfRangeException("month", month, "Valid values are between 1 and 13, inclusive.");
+        }
+
+        public string GetDayName(DayOfWeek dayofweek)
+        {
+            Day(dayofweek, "dayofweek");
+            return RawDayNames[(int)dayofweek];
+        }
+
+        public string GetAbbreviatedDayName(DayOfWeek dayofweek)
+        {
+            Day(dayofweek, "dayofweek");
+            return RawAbbreviatedDayNames[(int)dayofweek];
+        }
+
+        public string GetShortestDayName(DayOfWeek dayOfWeek)
+        {
+            Day(dayOfWeek, "dayOfWeek");
+            return RawShortestDayNames[(int)dayOfWeek];
+        }
+
+        public string GetMonthName(int month)
+        {
+            string[] names = RawMonthNames;
+            Month(month, names);
+            return names[month - 1];
+        }
+
+        public string GetAbbreviatedMonthName(int month)
+        {
+            string[] names = RawAbbreviatedMonthNames;
+            Month(month, names);
+            return names[month - 1];
+        }
+
+        /// A month's name in the case a day beside it asks for (.NET's
+        /// MonthNameStyles.Genitive), or its own.
+        internal string MonthName(int month, bool genitive, bool abbreviated)
+        {
+            string[] names = genitive ? (abbreviated ? RawAbbreviatedGenitiveMonthNames : RawGenitiveMonthNames)
+                                      : (abbreviated ? RawAbbreviatedMonthNames : RawMonthNames);
+            if ((uint)(month - 1) >= (uint)names.Length) throw new ArgumentOutOfRangeException("month", month, "Valid values are between 1 and " + names.Length + ", inclusive.");
+            return names[month - 1];
+        }
+
+
+        // ---- eras -----------------------------------------------------------
+
+        internal string[] EraNames => new string[] { "A.D." };
+        internal string[] AbbreviatedEraNames => new string[] { "AD" };
+        internal string[] AbbreviatedEnglishEraNames => new string[] { "AD" };
+
+        public int GetEra(string eraName)
+        {
+            ArgumentNullException.ThrowIfNull(eraName);
+            if (eraName.Length == 0) return -1;
+            if (String.Compare(eraName, "A.D.", StringComparison.OrdinalIgnoreCase) == 0) return 1;
+            if (String.Compare(eraName, "AD", StringComparison.OrdinalIgnoreCase) == 0) return 1;
+            return -1;
+        }
+
+        public string GetEraName(int era)
+        {
+            if (era == 0) era = 1;
+            if (era != 1) throw new ArgumentOutOfRangeException("era", era, "Era value was not valid.");
+            return "A.D.";
+        }
+
+        public string GetAbbreviatedEraName(int era)
+        {
+            if (era == 0) era = 1;
+            if (era != 1) throw new ArgumentOutOfRangeException("era", era, "Era value was not valid.");
+            return "AD";
+        }
+
+        // ---- the patterns ---------------------------------------------------
+
+        static string[] Merged(string[] patterns, string first)
+        {
+            if (first == patterns[0]) return (string[])patterns.Clone();
+            int at = 0;
+            while (at < patterns.Length && first != patterns[at]) at++;
+            string[] made;
+            if (at < patterns.Length)
+            {
+                made = (string[])patterns.Clone();
+                made[at] = made[0];
+            }
+            else
+            {
+                made = new string[patterns.Length + 1];
+                Array.Copy(patterns, 0, made, 1, patterns.Length);
+            }
+            made[0] = first;
+            return made;
+        }
+
+        static string[] Combined(string[] dates, string[] times)
+        {
+            string[] made = new string[dates.Length * times.Length];
+            int at = 0;
+            for (int i = 0; i < dates.Length; i++)
+            {
+                for (int j = 0; j < times.Length; j++) made[at++] = dates[i] + " " + times[j];
+            }
+            return made;
+        }
+
+        public string[] GetAllDateTimePatterns()
+        {
+            List<string> all = new List<string>();
+            foreach (char format in "dDfFgGmMoOrRstTuUyY")
+            {
+                foreach (string pattern in GetAllDateTimePatterns(format)) all.Add(pattern);
+            }
+            return all.ToArray();
+        }
+
+        public string[] GetAllDateTimePatterns(char format)
+        {
+            switch (format)
+            {
+                case 'd': return Merged(ShortDates, ShortDatePattern);
+                case 'D': return Merged(LongDates, LongDatePattern);
+                case 'f': return Combined(Merged(LongDates, LongDatePattern), Merged(ShortTimes, ShortTimePattern));
+                case 'F':
+                case 'U': return Combined(Merged(LongDates, LongDatePattern), Merged(LongTimes, LongTimePattern));
+                case 'g': return Combined(Merged(ShortDates, ShortDatePattern), Merged(ShortTimes, ShortTimePattern));
+                case 'G': return Combined(Merged(ShortDates, ShortDatePattern), Merged(LongTimes, LongTimePattern));
+                case 'm':
+                case 'M': return new string[] { MonthDayPattern };
+                case 'o':
+                case 'O': return new string[] { "yyyy'-'MM'-'dd'T'HH':'mm':'ss.fffffffK" };
+                case 'r':
+                case 'R': return new string[] { RFC1123Pattern };
+                case 's': return new string[] { SortableDateTimePattern };
+                case 't': return Merged(ShortTimes, ShortTimePattern);
+                case 'T': return Merged(LongTimes, LongTimePattern);
+                case 'u': return new string[] { UniversalSortableDateTimePattern };
+                case 'y':
+                case 'Y': return Merged(YearMonths, YearMonthPattern);
+            }
+            throw new ArgumentException("Format specifier '" + format + "' was invalid.", "format");
+        }
+
+        public void SetAllDateTimePatterns(string[] patterns, char format)
+        {
+            Writable();
+            ArgumentNullException.ThrowIfNull(patterns);
+            if (patterns.Length == 0) throw new ArgumentException("Array must not be of length zero.", "patterns");
+            for (int i = 0; i < patterns.Length; i++)
+            {
+                if (patterns[i] == null) throw new ArgumentNullException("patterns[" + i + "]", "Found a null value within an array.");
+            }
+            switch (format)
+            {
+                case 'd':
+                    _allShortDatePatterns = patterns;
+                    ShortDatePattern = patterns[0];
+                    return;
+                case 'D':
+                    _allLongDatePatterns = patterns;
+                    LongDatePattern = patterns[0];
+                    return;
+                case 't':
+                    _allShortTimePatterns = patterns;
+                    ShortTimePattern = patterns[0];
+                    return;
+                case 'T':
+                    _allLongTimePatterns = patterns;
+                    LongTimePattern = patterns[0];
+                    return;
+                case 'y':
+                case 'Y':
+                    _allYearMonthPatterns = patterns;
+                    YearMonthPattern = patterns[0];
+                    return;
+            }
+            throw new ArgumentException("Format specifier '" + format + "' was invalid.", "format");
+        }
+
+        /// A standard format as the picture it stands for here (.NET's
+        /// ExpandStandardFormatToCustomPattern); null for a letter that is
+        /// none.
+        internal string? Standard(char kind)
+        {
+            switch (kind)
+            {
+                case 'd': return ShortDatePattern;
+                case 'D': return LongDatePattern;
+                case 'f': return LongDatePattern + " " + ShortTimePattern;
+                case 'F':
+                case 'U': return FullDateTimePattern;
+                case 'g': return GeneralShortTimePattern;
+                case 'G': return GeneralLongTimePattern;
+                case 'm':
+                case 'M': return MonthDayPattern;
+                case 'o':
+                case 'O': return "yyyy'-'MM'-'dd'T'HH':'mm':'ss.fffffffK";
+                case 'r':
+                case 'R': return RFC1123Pattern;
+                case 's': return SortableDateTimePattern;
+                case 't': return ShortTimePattern;
+                case 'T': return LongTimePattern;
+                case 'u': return UniversalSortableDateTimePattern;
+                case 'y':
+                case 'Y': return YearMonthPattern;
+            }
+            return null;
+        }
+
+        // ---- what the names make the writer and the readers do --------------
+
+        internal DateTimeFormatFlags FormatFlags
+        {
+            get
+            {
+                if (_formatFlags == (int)DateTimeFormatFlags.NotInitialized)
+                {
+                    DateTimeFormatFlags flags = DateTimeFormatFlags.None;
+                    string[] months = RawMonthNames, genitive = RawGenitiveMonthNames;
+                    string[] abbreviated = RawAbbreviatedMonthNames, abbreviatedGenitive = RawAbbreviatedGenitiveMonthNames;
+                    if (!SameNames(months, genitive) || !SameNames(abbreviated, abbreviatedGenitive))
+                    {
+                        flags |= DateTimeFormatFlags.UseGenitiveMonth;
+                    }
+                    if (DigitFirst(months) || DigitFirst(genitive) || DigitFirst(abbreviated) || DigitFirst(abbreviatedGenitive))
+                    {
+                        flags |= DateTimeFormatFlags.UseDigitPrefixInTokens;
+                    }
+                    if (Spaced(months) || Spaced(genitive) || Spaced(abbreviated) || Spaced(abbreviatedGenitive))
+                    {
+                        flags |= DateTimeFormatFlags.UseSpacesInMonthNames;
+                    }
+                    if (Spaced(RawDayNames) || Spaced(RawAbbreviatedDayNames)) flags |= DateTimeFormatFlags.UseSpacesInDayNames;
+                    _formatFlags = (int)flags;
+                }
+                return (DateTimeFormatFlags)_formatFlags;
+            }
+        }
+
+        internal bool HasSpacesInMonthNames => (FormatFlags & DateTimeFormatFlags.UseSpacesInMonthNames) != 0;
+        internal bool HasSpacesInDayNames => (FormatFlags & DateTimeFormatFlags.UseSpacesInDayNames) != 0;
+
+        static bool SameNames(string[] one, string[] other)
+        {
+            if (one.Length != other.Length) return false;
+            for (int i = 0; i < one.Length; i++)
+            {
+                if (one[i] != other[i]) return false;
+            }
+            return true;
+        }
+
+        static bool Spaced(string[] names)
+        {
+            foreach (string name in names)
+            {
+                if (name == null) continue;
+                for (int i = 0; i < name.Length; i++)
+                {
+                    if (Char.IsWhiteSpace(name[i])) return true;
+                }
+            }
+            return false;
+        }
+
+        // A NAME THAT STARTS WITH DIGITS and goes on with something else, as
+        // .NET's scanner counts it -- digits then 月 or 월 alone are no prefix.
+        static bool DigitFirst(string[] names)
+        {
+            foreach (string name in names)
+            {
+                if (name == null || name.Length == 0 || name[0] < '0' || name[0] > '9') continue;
+                int at = 1;
+                while (at < name.Length && name[at] >= '0' && name[at] <= '9') at++;
+                if (at == name.Length) return false;
+                if (at == name.Length - 1 && (name[at] == '月' || name[at] == '월')) return false;
+                if (at == name.Length - 4 && name[at] == '\'' && name[at + 1] == ' ' && name[at + 2] == '月' && name[at + 3] == '\'') return false;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /// THE INVARIANT CULTURE'S NAMES AND PATTERNS, the ones a
+    /// DateTimeFormatInfo has until it is told others; shared, as an array a
+    /// setter is given replaces this one and none is ever written.
+    static class InvariantDates
+    {
+        internal static readonly string[] ShortDates = { "MM/dd/yyyy", "yyyy-MM-dd" };
+        internal static readonly string[] LongDates = { "dddd, dd MMMM yyyy" };
+        internal static readonly string[] ShortTimes = { "HH:mm", "hh:mm tt", "H:mm", "h:mm tt" };
+        internal static readonly string[] LongTimes = { "HH:mm:ss" };
+        internal static readonly string[] YearMonths = { "yyyy MMMM" };
+        internal static readonly string[] DayNames = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+        internal static readonly string[] AbbreviatedDayNames = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+        internal static readonly string[] ShortestDayNames = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
+        internal static readonly string[] MonthNames = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "" };
+        internal static readonly string[] AbbreviatedMonthNames = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "" };
     }
 }
 
