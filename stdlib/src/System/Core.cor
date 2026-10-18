@@ -8126,13 +8126,6 @@ readonly struct Memory<T> {
 
     public T[] ToArray() { return Span.ToArray(); }
 
-    /// Memory of characters is the string they make; any other is .NET's
-    /// description of it: "System.Memory<Int32>[3]".
-    public string ToString() {
-        if (typeof(T) != typeof(char)) { return "System.Memory<" + typeof(T).Name + ">[" + count + "]"; }
-        return Span.ToString();
-    }
-
     /// The array, start and length, for a reader that works in those.
     internal T[]? Array => items;
     internal int Start => from;
@@ -8188,12 +8181,6 @@ readonly struct ReadOnlyMemory<T> {
     }
 
     public T[] ToArray() { return Span.ToArray(); }
-
-    /// As Memory's: characters are their string, anything else described.
-    public string ToString() {
-        if (typeof(T) != typeof(char)) { return "System.ReadOnlyMemory<" + typeof(T).Name + ">[" + count + "]"; }
-        return Span.ToString();
-    }
 
     internal T[]? Array => items;
     internal int Start => from;

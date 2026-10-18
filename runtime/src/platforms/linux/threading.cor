@@ -662,32 +662,6 @@ class Thread
         _managedId = NextManagedId();
     }
 
-    /// The thread already running that asks for itself and was not started
-    /// here: claimed, alive, and nobody's to count among the foreground ones.
-    Thread(long block)
-    {
-        _done = 0;
-        _lock = 1;
-        _block = block;
-        _id = Native.CurrentThreadId();
-        _adopted = true;
-    }
-
-    /// The thread this code is running on, as .NET's.
-    public static Thread CurrentThread
-    {
-        get
-        {
-            Thread? made = _current;
-            if (made == null)
-            {
-                made = new Thread(Sys.ThreadBlock());
-                _current = made;
-            }
-            return made;
-        }
-    }
-
     /// THE THREAD'S CURRENT CULTURES, as .NET's: on the thread itself,
     /// CultureInfo's current ones; set on a thread not started yet, the ones
     /// it starts with. Any other thread's are refused, read or set.
@@ -766,6 +740,7 @@ class Thread
     {
         _done = 0;
         _lock = 1;
+        _block = Sys.ThreadBlock();
         _id = kernelId;
         _adopted = true;
         _background = !first;
