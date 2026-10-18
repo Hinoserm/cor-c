@@ -221,12 +221,17 @@ internal static class InterfaceForms
 
         Dictionary<string, bool> conflicted = new(StringComparer.Ordinal);
         // A partial class's parts together: one names an interface, another
-        // a second construction of it.
-        foreach (List<Declared> parts in named.Values)
+        // a second construction of it. NEVER A LIBRARY'S CLASS WITH A
+        // PROGRAM'S: no type has parts in both, and a program's class named
+        // as one of the library's (Named, beside System.Threading's) is a
+        // class of its own, whose conflicts are the program's. Read as one,
+        // the program's IName<int> was numbered among the library's slots,
+        // which moved every library class's virtuals one up in that unit.
+        foreach (IGrouping<bool, Declared> side in named.Values
+                     .SelectMany(parts => parts.Where(d => d.Kind is TypeKind.Class or TypeKind.Struct).GroupBy(d => d.Library)))
         {
-            if (!parts.Any(d => d.Kind is TypeKind.Class or TypeKind.Struct)) continue;
-            List<Declared> classes = parts.Where(d => d.Kind is TypeKind.Class or TypeKind.Struct).ToList();
-            bool library = classes.Any(d => d.Library);
+            List<Declared> classes = side.ToList();
+            bool library = side.Key;
             // Its own type parameters may be anything.
             Dictionary<string, string?> own = new(StringComparer.Ordinal);
             foreach (string p in classes[0].TypeParams) own[p] = null;

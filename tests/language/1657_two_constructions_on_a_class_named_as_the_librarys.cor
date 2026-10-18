@@ -1,0 +1,51 @@
+// test: two_constructions_on_a_class_named_as_the_librarys
+// expect-exit: 0
+// expect-output:
+// index int string
+// named int string
+// last 3
+// message m (Parameter 'p')
+//
+// A program's class with the name of one of the class library's -- Index,
+// System's struct, and Named, a class of System.Threading's -- implementing
+// two constructions of the program's own interface. The search for forms
+// read such a class together with the library's namesake, as two parts of
+// one partial class, and took its conflict for the library's: compiled
+// apart from the library, the program's IName<int> was numbered among the
+// library's slots, every library class's virtuals one above the library's
+// own numbers, and the link refused ArgumentException's two layouts. The
+// library's Index is still the library's (^1), and a library class's
+// virtual is still called through its slot.
+
+using System;
+
+interface IName<T> { string Name(T value); }
+
+class Index : IName<int>, IName<string>
+{
+    public string Name(int value) { return "int"; }
+    public string Name(string value) { return "string"; }
+}
+
+class Named : IName<int>, IName<string>
+{
+    public string Name(int value) { return "int"; }
+    public string Name(string value) { return "string"; }
+}
+
+static class Program
+{
+    static string Ask<T>(IName<T> name, T value) { return name.Name(value); }
+
+    static void Main()
+    {
+        Index index = new Index();
+        Console.WriteLine("index " + ((IName<int>)index).Name(1) + " " + ((IName<string>)index).Name("a"));
+        Named named = new Named();
+        Console.WriteLine("named " + Ask<int>(named, 1) + " " + Ask<string>(named, "a"));
+        int[] numbers = { 1, 2, 3 };
+        Console.WriteLine("last " + numbers[^1]);
+        Exception thrown = new ArgumentException("m", "p");
+        Console.WriteLine("message " + thrown.Message);
+    }
+}
