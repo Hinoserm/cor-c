@@ -24025,69 +24025,146 @@ namespace System.Buffers
 
 namespace System.Buffers.Text
 {
-    /// .NET's Utf8Formatter: numbers and booleans written as UTF-8 digits
-    /// straight into a span. Formats 'G' and 'D' (decimal, a precision is a
-    /// minimum digit count), 'N' is not taken, and 'X'/'x' (hexadecimal).
+    /// .NET's Utf8Formatter: a value as .NET's invariant text of it, in UTF-8,
+    /// straight into a span -- false, and nothing written, when it does not
+    /// fit. An integer takes G and R (neither with a precision, which .NET
+    /// refuses as NotSupportedException), D, N and X; a float and a double G,
+    /// E, F, N, P, C and R; a Guid D (its default), N, B and P; a TimeSpan c
+    /// (its default), t, T, G and g; a date G (its default), O, R and l, R in
+    /// lower case; a boolean G and l. Anything else is .NET's FormatException.
     public static class Utf8Formatter
     {
         public static bool TryFormat(bool value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
         {
-            bool lower = format.Symbol == 'l';
-            ReadOnlySpan<byte> text = value ? (lower ? "true"u8 : "True"u8) : (lower ? "false"u8 : "False"u8);
-            if (text.Length > destination.Length) { bytesWritten = 0; return false; }
-            for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
-            bytesWritten = text.Length;
-            return true;
+            char f = format.Symbol;
+            if (!(format.IsDefault || f == 'G' || f == 'l')) { throw BadFormat(); }
+            return Text(value ? (f == 'l' ? "true" : "True") : (f == 'l' ? "false" : "False"), destination, out bytesWritten);
         }
 
-        public static bool TryFormat(int value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 32, destination, out bytesWritten, format); }
-        public static bool TryFormat(long value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 64, destination, out bytesWritten, format); }
-        public static bool TryFormat(short value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 16, destination, out bytesWritten, format); }
-        public static bool TryFormat(sbyte value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Signed(value, 8, destination, out bytesWritten, format); }
-        public static bool TryFormat(uint value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
-        public static bool TryFormat(ulong value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
-        public static bool TryFormat(ushort value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
-        public static bool TryFormat(byte value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Unsigned(value, destination, out bytesWritten, format); }
+        public static bool TryFormat(int value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(long value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(short value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(sbyte value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(uint value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(ulong value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(ushort value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(byte value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(IntegerFormat(format)), destination, out bytesWritten); }
+        public static bool TryFormat(double value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(FloatFormat(format), CultureInfo.InvariantCulture), destination, out bytesWritten); }
+        public static bool TryFormat(float value, Span<byte> destination, out int bytesWritten, StandardFormat format = default) { return Text(value.ToString(FloatFormat(format), CultureInfo.InvariantCulture), destination, out bytesWritten); }
 
-        // Hexadecimal of a signed value is its two's complement at its width, as .NET's.
-        static bool Signed(long value, int bits, Span<byte> destination, out int written, StandardFormat format)
+        public static bool TryFormat(Guid value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
         {
             char f = format.Symbol;
-            if (f == 'X' || f == 'x')
-            {
-                ulong bitsOf = bits == 64 ? (ulong)value : (ulong)value & ((1UL << bits) - 1);
-                return Unsigned(bitsOf, destination, out written, format);
-            }
-            if (value >= 0) { return Unsigned((ulong)value, destination, out written, format); }
-            if (destination.Length < 1) { written = 0; return false; }
-            destination[0] = (byte)'-';
-            ulong magnitude = (ulong)(0 - value);
-            if (!Unsigned(magnitude, destination.Slice(1), out int digits, format)) { written = 0; return false; }
-            written = digits + 1;
-            return true;
+            if (!(format.IsDefault || f == 'D' || f == 'N' || f == 'B' || f == 'P')) { throw BadFormat(); }
+            return Text(value.ToString(format.IsDefault ? "D" : f.ToString()), destination, out bytesWritten);
         }
 
-        static bool Unsigned(ulong value, Span<byte> destination, out int written, StandardFormat format)
+        public static bool TryFormat(TimeSpan value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
         {
             char f = format.Symbol;
-            bool hex = f == 'X' || f == 'x';
-            if (!(f == '\0' || f == 'G' || f == 'g' || f == 'D' || f == 'd' || hex)) throw new FormatException("Format specifier was invalid.");
-            int least = format.HasPrecision ? format.Precision : 1;
-            // The digits least first, then written forwards.
-            int count = 0;
-            ulong v = value;
-            ulong radix = hex ? 16UL : 10UL;
-            do { count++; v = v / radix; } while (v != 0);
-            int total = count > least ? count : least;
-            if (total > destination.Length) { written = 0; return false; }
-            v = value;
-            for (int i = total - 1; i >= 0; i--)
-            {
-                int d = (int)(v % radix);
-                v = v / radix;
-                destination[i] = (byte)(d < 10 ? '0' + d : (f == 'x' ? 'a' : 'A') + d - 10);
+            string text;
+            if (format.IsDefault || f == 'c' || f == 't' || f == 'T') { text = Span(value, 'c'); }
+            else if (f == 'G' || f == 'g') { text = Span(value, f); }
+            else { throw BadFormat(); }
+            return Text(text, destination, out bytesWritten);
+        }
+
+        // A TimeSpan in .NET's three standard forms, invariant: c is
+        // [-][d.]hh:mm:ss[.fffffff], g [-][d:]h:mm:ss[.FFFFFFF] and G
+        // [-]d:hh:mm:ss.fffffff.
+        static string Span(TimeSpan value, char form)
+        {
+            long ticks = value.Ticks;
+            StringBuilder made = new StringBuilder();
+            ulong rest = ticks < 0 ? (ulong)(-(ticks + 1)) + 1 : (ulong)ticks;
+            if (ticks < 0) { made.Append('-'); }
+            ulong fraction = rest % 10000000;
+            ulong seconds = rest / 10000000;
+            ulong days = seconds / 86400;
+            ulong hours = seconds / 3600 % 24;
+            ulong minutes = seconds / 60 % 60;
+            ulong secs = seconds % 60;
+            if (form == 'c') {
+                if (days != 0) { made.Append(days).Append('.'); }
+                made.Append(hours.ToString("00")).Append(':').Append(minutes.ToString("00")).Append(':').Append(secs.ToString("00"));
+                if (fraction != 0) { made.Append('.').Append(fraction.ToString("0000000")); }
+            } else if (form == 'g') {
+                if (days != 0) { made.Append(days).Append(':'); }
+                made.Append(hours).Append(':').Append(minutes.ToString("00")).Append(':').Append(secs.ToString("00"));
+                if (fraction != 0) { made.Append('.').Append(fraction.ToString("0000000").TrimEnd('0')); }
+            } else {
+                made.Append(days).Append(':').Append(hours.ToString("00")).Append(':').Append(minutes.ToString("00")).Append(':').Append(secs.ToString("00"));
+                made.Append('.').Append(fraction.ToString("0000000"));
             }
-            written = total;
+            return made.ToString();
+        }
+
+        public static bool TryFormat(DateTime value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
+        {
+            char f = format.Symbol;
+            string text;
+            if (format.IsDefault || f == 'G') { text = value.ToString("MM/dd/yyyy HH:mm:ss"); }
+            else if (f == 'O') { text = value.ToString("O"); }
+            else if (f == 'R') { text = value.ToString("R"); }
+            else if (f == 'l') { text = value.ToString("R").ToLowerInvariant(); }
+            else { throw BadFormat(); }
+            return Text(text, destination, out bytesWritten);
+        }
+
+        /// A DateTimeOffset's default is G with its offset after it; asked
+        /// for G by name, the offset is left off, as .NET leaves it.
+        public static bool TryFormat(DateTimeOffset value, Span<byte> destination, out int bytesWritten, StandardFormat format = default)
+        {
+            char f = format.Symbol;
+            string text;
+            if (format.IsDefault) { text = value.ToString(); }
+            else if (f == 'G') { text = value.DateTime.ToString("MM/dd/yyyy HH:mm:ss"); }
+            else if (f == 'O') { text = value.ToString("O"); }
+            else if (f == 'R') { text = value.UtcDateTime.ToString("R"); }
+            else if (f == 'l') { text = value.UtcDateTime.ToString("R").ToLowerInvariant(); }
+            else { throw BadFormat(); }
+            return Text(text, destination, out bytesWritten);
+        }
+
+        // A StandardFormat as the format string the value's own ToString takes:
+        // the letter and its precision, or nothing for the default.
+        static string FormatText(StandardFormat format)
+        {
+            if (format.IsDefault) { return ""; }
+            return format.HasPrecision ? format.Symbol.ToString() + (int)format.Precision : format.Symbol.ToString();
+        }
+
+        static string IntegerFormat(StandardFormat format)
+        {
+            if (format.IsDefault) { return ""; }
+            char f = format.Symbol;
+            if (f == 'G' || f == 'g' || f == 'R' || f == 'r')
+            {
+                if (format.HasPrecision) { throw new NotSupportedException("The 'G' format combined with a precision is not supported."); }
+                return "";
+            }
+            if (f == 'D' || f == 'd' || f == 'N' || f == 'n' || f == 'X' || f == 'x') { return FormatText(format); }
+            throw BadFormat();
+        }
+
+        static string FloatFormat(StandardFormat format)
+        {
+            if (format.IsDefault) { return ""; }
+            char f = (char)(format.Symbol | (char)0x20);
+            if (f == 'g' || f == 'e' || f == 'f' || f == 'n' || f == 'p' || f == 'c' || f == 'r') { return FormatText(format); }
+            throw BadFormat();
+        }
+
+        static FormatException BadFormat() { return new FormatException("Format specifier was invalid."); }
+
+        // The text as its UTF-8 bytes: the currency sign of the invariant
+        // culture, U+00A4, is two of them.
+        static bool Text(string text, Span<byte> destination, out int written)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(text);
+            if (bytes.Length > destination.Length) { written = 0; return false; }
+            for (int i = 0; i < bytes.Length; i++) { destination[i] = bytes[i]; }
+            written = bytes.Length;
             return true;
         }
     }

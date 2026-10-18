@@ -1,0 +1,79 @@
+// test: utf8formatter_every_type_and_format_as_dotnet
+// expect-exit: 0
+// expect-output:
+// int => [1,234,567.00 00ff -00042 42 FFFF 7]
+// int more => [-1,234,567.00 18446744073709551615 -128]
+// double => [1234.57 1.235E+003 0.1 1.5 NaN -1E+300 0.1]
+// guid => [00112233-4455-6677-8899-aabbccddeeff 00112233445566778899aabbccddeeff {00112233-4455-6677-8899-aabbccddeeff} (00112233-4455-6677-8899-aabbccddeeff)]
+// timespan => [01:02:05.5000000 1:2:03:04.05 1:02:03:04.0500000 -00:00:01.2345678 0:00:00 3.00:00:00]
+// date => [05/06/2024 07:08:09 2024-05-06T07:08:09.0000000 Mon, 06 May 2024 07:08:09 GMT mon, 06 may 2024 07:08:09 gmt]
+// offset => [05/06/2024 07:08:09 +02:00 05/06/2024 07:08:09 2024-05-06T07:08:09.0000000+02:00 Mon, 06 May 2024 05:08:09 GMT]
+// bool => [True false True]
+// small => [fail 0 1.50 fail 0]
+// int g precision => NotSupportedException: The 'G' format combined with a precision is not supported.
+// int r => [-1234 -5 FF]
+// int e => FormatException: Format specifier was invalid.
+// double more => [(¤1,234.50) -1.234500E+003 -1234.5678 1E+20 50 % 2.5]
+// double d => FormatException: Format specifier was invalid.
+// guid lower => FormatException: Format specifier was invalid.
+// date g => FormatException: Format specifier was invalid.
+// date G2 => [01/01/0001 00:00:00]
+// bad int => FormatException: Format specifier was invalid.
+// bad bool => FormatException: Format specifier was invalid.
+// bad span => FormatException: Format specifier was invalid.
+// bad date => FormatException: Format specifier was invalid.
+//
+// Utf8Formatter writes what .NET's writes: a number by every format its own
+// TryFormat takes -- N with groups, F, E, P, X with a width, and the
+// defaults -- a float and a double as their shortest text, a Guid in its
+// five forms, a TimeSpan in c, g and G, a date in G, O, R and l, a
+// DateTimeOffset with its offset by default and without it as G, and a
+// boolean; false with nothing written when the text does not fit; .NET's
+// FormatException for a format the type has none of, and its
+// NotSupportedException for an integer's G with a precision.
+
+using System;
+using System.Buffers;
+using System.Buffers.Text;
+using System.Text;
+
+static class Program
+{
+    static void T(string label, Func<object> f)
+    {
+        try { Console.WriteLine(label + " => [" + f() + "]"); }
+        catch (Exception e) { Console.WriteLine(label + " => " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    static string U(Func<byte[], (bool, int)> f)
+    {
+        var buf = new byte[80];
+        var (ok, n) = f(buf);
+        return ok ? Encoding.UTF8.GetString(buf, 0, n) : "fail " + n;
+    }
+
+    static void Main()
+    {
+        T("int", () => U(b => (Utf8Formatter.TryFormat(1234567, b, out int n, new StandardFormat('N', 2)), n)) + " " + U(b => (Utf8Formatter.TryFormat(255, b, out int n, new StandardFormat('x', 4)), n)) + " " + U(b => (Utf8Formatter.TryFormat(-42L, b, out int n, new StandardFormat('D', 5)), n)) + " " + U(b => (Utf8Formatter.TryFormat(42u, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat((short)-1, b, out int n, new StandardFormat('X')), n)) + " " + U(b => (Utf8Formatter.TryFormat((byte)7, b, out int n, new StandardFormat('G')), n)));
+        T("int more", () => U(b => (Utf8Formatter.TryFormat(-1234567, b, out int n, new StandardFormat('N')), n)) + " " + U(b => (Utf8Formatter.TryFormat(ulong.MaxValue, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(sbyte.MinValue, b, out int n), n)));
+        T("double", () => U(b => (Utf8Formatter.TryFormat(1234.5678, b, out int n, new StandardFormat('F', 2)), n)) + " " + U(b => (Utf8Formatter.TryFormat(1234.5678, b, out int n, new StandardFormat('E', 3)), n)) + " " + U(b => (Utf8Formatter.TryFormat(0.1, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(1.5f, b, out int n, new StandardFormat('G')), n)) + " " + U(b => (Utf8Formatter.TryFormat(double.NaN, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(-1e300, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(0.1f, b, out int n), n)));
+        T("guid", () => { var g = new Guid("00112233-4455-6677-8899-aabbccddeeff"); return U(b => (Utf8Formatter.TryFormat(g, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(g, b, out int n, new StandardFormat('N')), n)) + " " + U(b => (Utf8Formatter.TryFormat(g, b, out int n, new StandardFormat('B')), n)) + " " + U(b => (Utf8Formatter.TryFormat(g, b, out int n, new StandardFormat('P')), n)); });
+        T("timespan", () => U(b => (Utf8Formatter.TryFormat(TimeSpan.FromSeconds(3725.5), b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(TimeSpan.FromMilliseconds(93784050), b, out int n, new StandardFormat('g')), n)) + " " + U(b => (Utf8Formatter.TryFormat(TimeSpan.FromMilliseconds(93784050), b, out int n, new StandardFormat('G')), n)) + " " + U(b => (Utf8Formatter.TryFormat(TimeSpan.FromTicks(-12345678), b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(TimeSpan.Zero, b, out int n, new StandardFormat('g')), n)) + " " + U(b => (Utf8Formatter.TryFormat(TimeSpan.FromDays(3), b, out int n, new StandardFormat('t')), n)));
+        T("date", () => { var d = new DateTime(2024, 5, 6, 7, 8, 9); return U(b => (Utf8Formatter.TryFormat(d, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(d, b, out int n, new StandardFormat('O')), n)) + " " + U(b => (Utf8Formatter.TryFormat(d, b, out int n, new StandardFormat('R')), n)) + " " + U(b => (Utf8Formatter.TryFormat(d, b, out int n, new StandardFormat('l')), n)); });
+        T("offset", () => { var o = new DateTimeOffset(new DateTime(2024, 5, 6, 7, 8, 9), TimeSpan.FromHours(2)); return U(b => (Utf8Formatter.TryFormat(o, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(o, b, out int n, new StandardFormat('G')), n)) + " " + U(b => (Utf8Formatter.TryFormat(o, b, out int n, new StandardFormat('O')), n)) + " " + U(b => (Utf8Formatter.TryFormat(o, b, out int n, new StandardFormat('R')), n)); });
+        T("bool", () => U(b => (Utf8Formatter.TryFormat(true, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(false, b, out int n, new StandardFormat('l')), n)) + " " + U(b => (Utf8Formatter.TryFormat(true, b, out int n, new StandardFormat('G')), n)));
+        T("small", () => U(b => (Utf8Formatter.TryFormat(123456, b.AsSpan(0, 3), out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(1.5, b, out int n, new StandardFormat('N')), n)) + " " + U(b => (Utf8Formatter.TryFormat(true, b.AsSpan(0, 2), out int n), n)));
+        T("int g precision", () => U(b => (Utf8Formatter.TryFormat(-1234, b, out int n, new StandardFormat('G', 2)), n)));
+        T("int r", () => U(b => (Utf8Formatter.TryFormat(-1234, b, out int n, new StandardFormat('R')), n)) + " " + U(b => (Utf8Formatter.TryFormat(-5, b, out int n, new StandardFormat('N', 0)), n)) + " " + U(b => (Utf8Formatter.TryFormat(255, b, out int n, new StandardFormat('X', 0)), n)));
+        T("int e", () => U(b => (Utf8Formatter.TryFormat(12, b, out int n, new StandardFormat('E', 2)), n)));
+        T("double more", () => U(b => (Utf8Formatter.TryFormat(-1234.5, b, out int n, new StandardFormat('C')), n)) + " " + U(b => (Utf8Formatter.TryFormat(-1234.5f, b, out int n, new StandardFormat('E')), n)) + " " + U(b => (Utf8Formatter.TryFormat(-1234.5678, b, out int n, new StandardFormat('G', 0)), n)) + " " + U(b => (Utf8Formatter.TryFormat(1e20, b, out int n), n)) + " " + U(b => (Utf8Formatter.TryFormat(0.5, b, out int n, new StandardFormat('P', 0)), n)) + " " + U(b => (Utf8Formatter.TryFormat(2.5, b, out int n, new StandardFormat('R')), n)));
+        T("double d", () => U(b => (Utf8Formatter.TryFormat(1.5, b, out int n, new StandardFormat('D')), n)));
+        T("guid lower", () => U(b => (Utf8Formatter.TryFormat(new Guid(), b, out int n, new StandardFormat('d')), n)));
+        T("date g", () => U(b => (Utf8Formatter.TryFormat(DateTime.MinValue, b, out int n, new StandardFormat('g')), n)));
+        T("date G2", () => U(b => (Utf8Formatter.TryFormat(DateTime.MinValue, b, out int n, new StandardFormat('G', 2)), n)));
+        T("bad int", () => U(b => (Utf8Formatter.TryFormat(5, b, out int n, new StandardFormat('Q')), n)));
+        T("bad bool", () => U(b => (Utf8Formatter.TryFormat(true, b, out int n, new StandardFormat('x')), n)));
+        T("bad span", () => U(b => (Utf8Formatter.TryFormat(TimeSpan.Zero, b, out int n, new StandardFormat('x')), n)));
+        T("bad date", () => U(b => (Utf8Formatter.TryFormat(DateTime.MinValue, b, out int n, new StandardFormat('x')), n)));
+    }
+}
