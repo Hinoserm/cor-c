@@ -14832,6 +14832,12 @@ static class GcLock
         return at == 0 ? 0 : Sys.Peek(at + Epoch);
     }
 
+    /// The control words when something has made them, else 0.
+    public static long WordsIfMade()
+    {
+        return _words;
+    }
+
     public static long Words()
     {
         if (_words == 0)
@@ -15565,12 +15571,16 @@ static class GcThreads
         Sys.AtomicSwap(_stackCopies, NoCopy);
     }
 
-    /// Whether `block` owes the round that is open.
+    /// Whether `block` owes the round that is open. NO CONTROL WORDS, NO
+    /// ROUND: before anything has made them no collection has asked
+    /// anything, and making them here -- for a blocking call before the
+    /// first allocation, which ends asking this -- would want memory a
+    /// bare-metal image may not have been given yet ("no heap").
     public static bool Owes(long block)
     {
-        long at = GcLock.Words();
+        long at = GcLock.WordsIfMade();
 
-        return block != 0 && Pending() > 0
+        return at != 0 && block != 0 && Pending() > 0
             && Sys.Peek(block + Tls.Epoch) != Sys.Peek(at + GcLock.Epoch)
             && !GcLock.IsCollector(block);
     }

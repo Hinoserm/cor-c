@@ -196,10 +196,12 @@ static class Platform
     public static long UnmapHook;
 
     /// Memory given back: to the hook, which returns its frames. Nothing
-    /// from before the hook can be given back, and is not.
+    /// from before the hook can be given back, and is not: the bump
+    /// region's, from where it began (_start) to its end -- what it handed
+    /// out lies below _at, and is the region's all the same.
     public static void Unmap(long at, long bytes)
     {
-        if (UnmapHook != 0 && (at < _at || at >= _limit))
+        if (UnmapHook != 0 && (at < _start || at >= _limit))
         {
             Sys.Call(UnmapHook, at, bytes, 0);
         }
