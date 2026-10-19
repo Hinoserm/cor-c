@@ -1,0 +1,46 @@
+// test: a list pattern on a nullable member reads it as not null past its own null test
+// expect-exit: 0
+// expect-output:
+// pair True
+// front True
+// rest True 1
+// text True
+// list True
+// local True
+// null False
+//
+// A list pattern tests its subject for null, then its count and its
+// elements. A subject the pattern hoisted -- a member of an element, as
+// `h[0].Sites` is -- or any member at all is no local the binder narrows
+// by that test, and every element, count and slice warned CS8602 or
+// CS8604 that the subject might be null, which C# does not: the linker's
+// own tests (`request.Imports[1].RegionSites is [0, 2]`) failed to build
+// with warnings as errors. The subject is read past the test as `x!`.
+#nullable enable
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    sealed class Holder { public int[]? Sites; public string? Text; public List<int>? Items; }
+
+    static Holder[] Make() => new[]
+    {
+        new Holder { Sites = new[] { 0, 2 }, Text = "ab", Items = new List<int> { 5, 6, 7 } },
+        new Holder(),
+    };
+
+    static int Main()
+    {
+        Holder[] h = Make();
+        int[]? local = h[0].Sites;
+        Console.WriteLine("pair " + (h[0].Sites is [0, 2]));
+        Console.WriteLine("front " + (h[0].Sites is [0, ..]));
+        Console.WriteLine("rest " + (h[0].Sites is [_, .. var rest] && rest.Length == 1) + " " + (h[0].Sites is [_, .. var r] ? r.Length : -1));
+        Console.WriteLine("text " + (h[0].Text is ['a', ..]));
+        Console.WriteLine("list " + (h[0].Items is [5, .., 7]));
+        Console.WriteLine("local " + (local is [0, 2]));
+        Console.WriteLine("null " + (h[1].Sites is [..] || h[1].Text is [] || h[1].Items is [_, ..]));
+        return 0;
+    }
+}

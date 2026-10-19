@@ -1106,14 +1106,16 @@ internal sealed class RegionEscape
     private void ReportTables()
     {
         if (!MemReport || Progress is null) return;
-        long holders = 0, holderObjects = 0;
-        foreach (int[]?[]? h in _holders) if (h is not null) { holders++; holderObjects += h.Length; }
-        long summaries = 0, objects = 0, cells = 0, results = 0, typed = 0;
+        long holders = 0, holderObjects = 0, holderOrigins = 0;
+        foreach (int[]?[]? h in _holders)
+            if (h is not null) { holders++; holderObjects += h.Length; foreach (int[]? o in h) holderOrigins += o?.Length ?? 0; }
+        long summaries = 0, objects = 0, cells = 0, results = 0, typed = 0, shapes = 0, shapeBytes = 0;
         foreach (Summary? x in _summaries)
         {
             if (x is null || x.IsUnknown) continue;
             summaries++; objects += x.Objects.Count; cells += x.Cells.Count; results += x.Result.Count;
             typed += (x.Fields?.Count ?? 0) + (x.CellFamilies?.Count ?? 0);
+            if (x.Shape is { Sites: { } sites } shape) { shapes++; shapeBytes += sites.Bytes + (shape.HeldSites?.Bytes ?? 0) + 4L * (shape.ReadHolders?.Length ?? 0); }
         }
         long read = 0, applied = 0;
         foreach (int[]? r in _sitesReadOf) read += r?.Length ?? 0;
@@ -1121,7 +1123,7 @@ internal sealed class RegionEscape
         long standInSites = 0;
         long standInBytes = 0;
         if (_assumed is not null) foreach (Assumed a in _assumed.Values) { standInSites += a.Sites.Count + a.HeldSites.Count; standInBytes += a.Sites.Bytes + a.HeldSites.Bytes; }
-        Progress($"escape graphs: tables: {holders} holders ({holderObjects} objects); {summaries} summaries ({objects} objects, {cells} cells, {results} results, {typed} field marks); "
+        Progress($"escape graphs: tables: {holders} holders ({holderObjects} objects, {holderOrigins} origins); {summaries} summaries ({objects} objects, {cells} cells, {results} results, {typed} field marks; {shapes} shapes in {shapeBytes >> 20} MB); "
             + $"{_assumed?.Count ?? 0} stand-ins ({standInSites} sites in {standInBytes >> 20} MB), {_standIns.Count} built; {_merged.Count} merged summaries; "
             + $"{_bitsByOrigins.Count} origin bit sets; {_components.Count} components ({read} sites read, {applied} stand-ins applied); "
             + $"{_globalRefs.Count} global, {_rootedRefs.Count} rooted origins; {TotalBlobs} blobs made; heap {GC.GetTotalMemory(false) >> 20} MB");
@@ -1180,6 +1182,34 @@ internal sealed class RegionEscape
         else { InclusionPool = InclusionPerRound; long heap = MemReport ? GC.GetTotalMemory(false) : 0; Order(); ReportMemTop(1); if (MemReport) Progress?.Invoke($"escape graphs: solved in order, heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - heap)})"); }
         Close();
         ReportTables();
+        Release();
+    }
+
+    /// <summary>
+    /// THE ROUNDS' OWN TABLES LET GO once they are done, before the judge
+    /// asks: every shape, the stand-ins and what they were read for and
+    /// covered by, the merged summaries, what each component read and
+    /// applied, the walks' marks. The judge reads only the answers --
+    /// Escaping, LoopHeld, Global, Unseen -- and walks the holders
+    /// (BitsOf); the tests ask the summaries. All of that stays.
+    /// </summary>
+    private void Release()
+    {
+        foreach (Summary? s in _summaries) if (s is not null) s.Shape = null;
+        _readersOf = Array.Empty<List<(Shaped, long)>?>();
+        _assumed?.Clear();
+        _standIns.Clear();
+        _standInsOf.Clear();
+        _merged.Clear();
+        _appliedOf.Clear();
+        _sitesReadOf.Clear();
+        _solvedAt.Clear();
+        _globalOf.Clear(); _rootedOf.Clear(); _unseenOf.Clear(); _unseenRootOf.Clear();
+        _componentOf = null; _callees = null;
+        _sitePasses.Clear();
+        _originsAt = Array.Empty<long>();
+        _refSeen = Array.Empty<int[]?>();
+        _holderSeen = Array.Empty<int>();
     }
 
     /// <summary>For a report, per round: stand-ins grown in shape or in their sites alone, made, and why components were solved again.</summary>
@@ -1604,9 +1634,26 @@ internal sealed class RegionEscape
         foreach (int h in standIns)
         {
             if (h >= _readersOf.Length) Array.Resize(ref _readersOf, Math.Max(h + 1, _readersOf.Length * 2));
-            (_readersOf[h] ??= new()).Add((known, known.Version));
+            List<(Shaped Shape, long Version)> readers = _readersOf[h] ??= new();
+            // WHAT NO LONGER MATCHES IS LET GO, as the list doubles: each
+            // shape worked out again names itself again, and one read for an
+            // older version, or of a summary replaced, marks nothing.
+            if (readers.Count >= 64 && (readers.Count & (readers.Count - 1)) == 0)
+                readers.RemoveAll(e => e.Shape.Version != e.Version);
+            readers.Add((known, known.Version));
         }
         return shape;
+    }
+
+    // A replaced summary's shape: its sets let go, and no entry naming it
+    // as it was matches it again.
+    private static void Forget(Shaped shape)
+    {
+        shape.Version = -1;
+        shape.Bits = null;
+        shape.Sites = shape.HeldSites = null;
+        shape.ReadHolders = null;
+        shape.ReadStandIns = Array.Empty<int>();
     }
 
     // By stand-in holder: the shapes whose sites were read from it, each as
@@ -1951,6 +1998,12 @@ internal sealed class RegionEscape
             return;
         }
         int holder = before is null && (_holders.Count <= f || _holders[f] is null) ? f : NewHolder();
+        // THE SUMMARY REPLACED TAKES ITS SHAPE WITH IT: nothing asks it again,
+        // but the stand-ins it was read for (_readersOf) and covered by
+        // (Assumed.Covered) still named its shape, every set worked out of it
+        // kept till they grew -- for good, once nothing grew. Its version
+        // gone, no entry naming it matches it again.
+        if (before?.Shape is { } old) Forget(old);
         s.Compact();
         Register(_summaries[f] = s, holder);
         _changedAt[f] = _tick;
@@ -1977,7 +2030,7 @@ internal sealed class RegionEscape
             // a shape names itself to it afresh.
             foreach ((Shaped shape, long version) in readers)
                 if (shape.Version == version) shape.StandInStale = true;
-            readers.Clear();
+            _readersOf[holder] = null;
         }
         _holderFirst = null;
         _escapingBits = null;
@@ -3450,13 +3503,17 @@ internal sealed class RegionEscape
             return _passes[(o, guard)] = passes;
         }
 
-        // Kept as sets: an object of a stand-in's is most of the program's sites.
-        private readonly Dictionary<int, SiteSet> _objectSites = new();
+        // Kept as sets, by the origins: an object of a stand-in's is most of
+        // the program's sites, and each object made of one has origins of
+        // its own alike (an object's origins never change once it is made).
+        private readonly Dictionary<int[], SiteSet> _objectSites = new(TargetsComparer.Instance);
 
         private SiteSet SitesOfObject(int o)
         {
-            if (_objectSites.TryGetValue(o, out SiteSet? known)) return known;
-            return _objectSites[o] = _origins[o].Length == 0 ? SiteSet.Empty : _owner.SiteSetOf(_origins[o]);
+            int[] origins = _origins[o];
+            if (origins.Length == 0) return SiteSet.Empty;
+            if (!_objectSites.TryGetValue(origins, out SiteSet? known)) _objectSites[origins] = known = _owner.SiteSetOf(origins);
+            return known;
         }
 
         private static int Offset(int at, int offset) => at == Any || offset == Any ? Any : at + offset <= FarthestField ? at + offset : Any;
@@ -3682,6 +3739,19 @@ internal sealed class RegionEscape
         // Per object and word: never read as a reference (every site it may be says so).
         private readonly Dictionary<long, bool> _noReference = new();
 
+        // An origin's sites, walked once a graph: asked for every word of
+        // every object it is among, one of a stand-in's was most of the
+        // program's sites walked and sorted again each time. No holder a
+        // graph reads changes while it is solved, and what the walk reads
+        // is the component's already.
+        private readonly Dictionary<int, SiteSet> _refSites = new();
+
+        private SiteSet SitesOfRef(int r)
+        {
+            if (!_refSites.TryGetValue(r, out SiteSet? sites)) _refSites[r] = sites = _owner.SiteSetOf(new[] { r });
+            return sites;
+        }
+
         private bool NoReference(int o, int at)
         {
             if (_kind[o] != Kind.Made || _origins[o].Length == 0 || _owner.NoReference is not { } rule) return false;
@@ -3697,9 +3767,9 @@ internal sealed class RegionEscape
                     if (!rule(-r - 1, at)) { none = false; break; }
                     continue;
                 }
-                int[] sites = _owner.SitesOf(new[] { r });
-                bool refused = sites.Length == 0;
-                foreach (int site in sites)
+                SiteSet sites = SitesOfRef(r);
+                bool refused = sites.Count == 0;
+                foreach (int site in sites.Sites())
                     if (!rule(site, at)) { refused = true; break; }
                 if (refused) { none = false; break; }
             }

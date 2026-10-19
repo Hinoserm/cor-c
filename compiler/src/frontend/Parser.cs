@@ -6041,9 +6041,10 @@ public sealed class Parser
     {
         // An element only when its index is as simple as its array: `a[i++]`
         // read twice moved i twice.
+        // A list pattern's element reads its subject past the null test (`x!`).
         return subject is NameExpr or LiteralExpr or SubjectExpr
                        or MemberExpr { Target: NameExpr or ThisExpr }
-                       or IndexExpr { Target: NameExpr, Args: [NameExpr or LiteralExpr] };
+                       or IndexExpr { Target: NameExpr or SuppressExpr { Operand: NameExpr }, Args: [NameExpr or LiteralExpr] };
     }
 
     private Expr ParseValuePattern(Expr subject, Token at)
@@ -7213,9 +7214,15 @@ public sealed class Parser
         {
             Op = BinOp.AndAlso, Left = left, Right = right, Line = at.Line, Col = at.Col,
         };
+        // PAST THE NULL TEST THE SUBJECT IS NOT NULL, and is read so: its
+        // count, its elements and its slice. A subject the pattern hoisted,
+        // or a member of an element, is no local the binder narrows by the
+        // test, and `h.Sites is [0, 2]` on an `int[]?` warned that the
+        // subject might be null where it was just found not to be.
+        Expr held = new SuppressExpr { Operand = subject, Line = at.Line, Col = at.Col };
         MemberExpr Count() => new()
         {
-            Target = subject, Name = "Length", Else = "Count", Guarded = true, Line = at.Line, Col = at.Col,
+            Target = held, Name = "Length", Else = "Count", Guarded = true, Line = at.Line, Col = at.Col,
         };
 
         // THE SHAPE FIRST: how many elements, and where the slice is.
@@ -7270,7 +7277,7 @@ public sealed class Parser
                 }
                 IndexExpr between = new()
                 {
-                    Target = subject, Line = at.Line, Col = at.Col,
+                    Target = held, Line = at.Line, Col = at.Col,
                 };
                 between.Args.Add(new RangeExpr
                 {
@@ -7292,7 +7299,7 @@ public sealed class Parser
                       Line = at.Line, Col = at.Col,
                   }
                 : Number(position);
-            IndexExpr item = new() { Target = subject, Line = at.Line, Col = at.Col };
+            IndexExpr item = new() { Target = held, Line = at.Line, Col = at.Col };
             item.Args.Add(place);
             built = And(built, ParseIsPattern(item, at));
         }
