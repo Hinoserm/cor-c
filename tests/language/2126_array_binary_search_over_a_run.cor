@@ -1,0 +1,24 @@
+// test: Array.BinarySearch over a run of the array, as .NET's
+// expect-exit: 0
+// expect-output:
+// 2 -5 -3 5
+// ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// ArgumentOutOfRangeException: index
+//
+// .NET's BinarySearch(array, index, length, value) searches the run of
+// length elements from index and answers its place, or the complement of
+// where the value would go; the class library had only the whole-array
+// forms, and the region solver's value sets were refused at the compiler's
+// self-compile.
+using System;
+static class Program
+{
+    static int Main()
+    {
+        int[] a = { 1, 3, 5, 7, 9, 11 };
+        Console.WriteLine(Array.BinarySearch(a, 1, 3, 5) + " " + Array.BinarySearch(a, 1, 3, 9) + " " + Array.BinarySearch(a, 2, 4, 2) + " " + Array.BinarySearch(a, 0, 6, 11));
+        try { Array.BinarySearch(a, 4, 3, 1); } catch (ArgumentException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+        try { Array.BinarySearch(a, -1, 3, 1); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.GetType().Name + ": " + e.ParamName); }
+        return 0;
+    }
+}

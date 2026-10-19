@@ -11253,7 +11253,9 @@ public sealed partial class Binder
             };
         }
 
-        if (had.Prim is Prim.Bool)
+        // A bool, not a bool?: a nullable one is Nullable's own ToString,
+        // the empty string without a value, as a nullable number's is.
+        if (had.Prim is Prim.Bool && !had.Nullable)
         {
             return Call("String", "FromBool", call, spelt.Target);
         }
