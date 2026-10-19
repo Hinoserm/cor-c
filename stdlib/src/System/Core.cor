@@ -22250,12 +22250,29 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     /// .NET's UnionWith takes an IEnumerable<T>; the HashSet overload below is
     /// the same work without the interface call per element.
     public void UnionWith(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
         foreach (T each in other) { Add(each); }
     }
 
+    /// What the other holds taken out, as .NET's: nothing from an empty set,
+    /// everything when it is this one.
     public void ExceptWith(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        if (count == 0) { return; }
+        if ((object)other == (object)this) { Clear(); return; }
         foreach (T each in other) { Remove(each); }
     }
+
+    // Whether two sets compare their members alike, as .NET's
+    // EqualityComparersAreEqual asks: the same comparer, or both the default.
+    private bool SameComparer(HashSet<T> other) {
+        if (compares != other.compares) { return false; }
+        if (by == null) { return other.by == null; }
+        return other.by != null && by.Equals(other.by);
+    }
+
+    // A member's place in the order, which .NET's entry index is.
+    private int PositionOf(int slot) { return placeOf is { } places ? places[slot] : slot; }
 
     /// WHETHER THE TWO SHARE ANYTHING AT ALL, which is what .NET's Overlaps
     /// answers and is cheaper than intersecting to find out.
@@ -22285,29 +22302,75 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         foreach (T value in other) { Add(value); }
     }
 
-    public void IntersectWith(HashSet<T> other) {
-        List<T> remove = new List<T>();
-        foreach (T value in this) {
-            if (!other.Contains(value)) { remove.Add(value); }
-        }
-        foreach (T value in remove) { Remove(value); }
-    }
+    public void IntersectWith(HashSet<T> other) { IntersectWith((IEnumerable<T>)other); }
 
+    /// Only what the other holds kept, the way .NET's keeps it: nothing done
+    /// for an empty set or for this one itself; an empty collection clears
+    /// it; another set compared alike is asked of each member in the order,
+    /// and anything else marks what it holds, the rest taken out in the
+    /// order -- each place freed in that order, which is what the next
+    /// members added fill.
     public void IntersectWith(IEnumerable<T> other) {
-        HashSet<T> keep = new HashSet<T>(other, by);
-        IntersectWith(keep);
+        if (other == null) { throw new ArgumentNullException("other"); }
+        if (count == 0 || (object)other == (object)this) { return; }
+        if (other is ICollection<T> sized) {
+            if (sized.Count == 0) { Clear(); return; }
+            if (other is HashSet<T> set && SameComparer(set)) {
+                for (int n = 0; n < ordered; n++) {
+                    int i = SlotAt(n);
+                    if (i >= 0 && !set.Contains(items[i])) { Remove(items[i]); }
+                }
+                return;
+            }
+        }
+        bool[] found = new bool[mask + 1];
+        foreach (T each in other) {
+            int i = Find(each);
+            if (i >= 0) { found[i] = true; }
+        }
+        for (int n = 0; n < ordered; n++) {
+            int i = SlotAt(n);
+            if (i >= 0 && !found[i]) { Remove(items[i]); }
+        }
     }
 
     bool ICollection<T>.IsReadOnly => false;
 
     void ICollection<T>.Add(T item) { Add(item); }
 
-    /// What is in one of the two and not both, left here.
+    /// What is in one of the two and not both, left here, as .NET's leaves
+    /// it: into an empty set, what the other holds; from this set itself,
+    /// nothing. Another set compared alike takes out each it shares and adds
+    /// each it does not, in its order; anything else ADDS FIRST -- each new
+    /// one as it comes -- and marks the members it met that were there
+    /// before, which are taken out after, in the order.
     public void SymmetricExceptWith(IEnumerable<T> other) {
         if (other == null) { throw new ArgumentNullException("other"); }
-        HashSet<T> theirs = new HashSet<T>(other, by);
-        foreach (T value in theirs) {
-            if (!Remove(value)) { Add(value); }
+        if (count == 0) { UnionWith(other); return; }
+        if ((object)other == (object)this) { Clear(); return; }
+        if (other is HashSet<T> set && SameComparer(set)) {
+            foreach (T value in set) {
+                if (!Remove(value)) { Add(value); }
+            }
+            return;
+        }
+        int originalCount = count;
+        HashSet<int> added = new HashSet<int>();
+        HashSet<int> dropping = new HashSet<int>();
+        foreach (T value in other) {
+            int i = Find(value);
+            if (i < 0) {
+                Add(value);
+                added.Add(PositionOf(Find(value)));
+                continue;
+            }
+            int at = PositionOf(i);
+            if (at < originalCount && !added.Contains(at)) { dropping.Add(at); }
+        }
+        for (int n = 0; n < originalCount; n++) {
+            if (!dropping.Contains(n)) { continue; }
+            int i = SlotAt(n);
+            if (i >= 0) { Remove(items[i]); }
         }
     }
 
