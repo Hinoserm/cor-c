@@ -1,0 +1,40 @@
+// test: `a ?? b` over an object and a string is an object, its text its ToString's
+// expect-exit: 0
+// expect-output:
+// <Money()><Plain><null>
+// <Money()><Plain>
+// [Money()] [7] [text]
+// object Money()
+//
+// C# types `a ?? b` as the left's type when the right converts to it, and
+// as the right's only otherwise: over an `object?` and a string literal it
+// is an object. Taken for a string, because an object here converts to a
+// string as well, `"<" + (arg ?? "null") + ">"` was concatenated as text
+// -- the Money object's own words read out as characters.
+using System;
+
+sealed class Money
+{
+    public override string ToString() { return "Money()"; }
+}
+
+sealed class Plain { public override string ToString() { return "Plain"; } }
+
+static class Program
+{
+    static string Show(object? arg) { return "<" + (arg ?? "null") + ">"; }
+
+    static string Boxed(object? arg) { return "[" + (arg ?? "none") + "]"; }
+
+    static int Main()
+    {
+        Console.WriteLine(Show(new Money()) + Show(new Plain()) + Show(null));
+        object? held = new Money();
+        string? none = null;
+        Console.WriteLine("<" + (held ?? none) + "><" + ((object?)new Plain() ?? "x") + ">");
+        Console.WriteLine(Boxed(new Money()) + " " + Boxed(7) + " " + Boxed("text"));
+        var which = held ?? "fallback";
+        Console.WriteLine((which.GetType() == typeof(Money) ? "object " : "string ") + which);
+        return 0;
+    }
+}

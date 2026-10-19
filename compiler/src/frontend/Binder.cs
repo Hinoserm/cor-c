@@ -23047,11 +23047,15 @@ public sealed partial class Binder
 
                 // C#'s RULE for the rest: the left's type when the right
                 // converts to it, and otherwise the right's when the left
-                // converts to that.
+                // converts to that. THE LEFT'S FIRST, even where the left
+                // would convert to the right too: `arg ?? "null"` over an
+                // `object?` is an object, and taken for a string it was
+                // concatenated as one -- the object's own words read out as
+                // characters.
                 {
                     Type left = l.AsNonNullable();
                     Type right = r.AsNonNullable();
-                    if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left) && !Convertible(left, right))
+                    if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left))
                     {
                         if (!right.IsError && !right.IsArray && !StandardConvertible(right, left) && !Variant(right, left))
                         {
