@@ -718,18 +718,34 @@ public sealed class RegionTypes
     private void Solve()
     {
         for (int f = 0; f < _functions.Count; f++) Instantiate(f);
-        // Every object exists now (a site's or a slot's constraint makes it):
-        // each root called blind is handed those it may run on.
-        foreach (int f in _typedRoots)
+        // EACH ROOT CALLED BLIND IS HANDED EVERY OBJECT IT MAY RUN ON, as the
+        // objects come: those the constraints made, and then those a copy
+        // makes as the solve goes (TypedIn, ArrayAt, UntypedMade in an
+        // instance made for a `this` of its own). Handed only the first, a
+        // root never got an object a copy made later, and a call on its
+        // `this` was narrowed short of what it runs.
+        int seeded = 2;
+        bool outsideSeeded = false;
+        bool SeedRoots()
         {
-            int self = Node(f, 0);
-            for (int o = 2; o < _objects.Count; o++)
-                if (_objects[o].Table is { } table ? Receives!(f, table, _objects[o].At) : _untypedMade.Contains(o)) Add(self, o << 1);
-            // An object of such a type laid down in data -- a constant one
-            // among them -- or made by code with no IR: the unknown object.
-            _source = -1; _sourceWhy = _functions[f].Name + " has a this made outside";
-            if (ThisMadeOutside?.Invoke(f) != false) Add(self, Top);
+            int upTo = _objects.Count;
+            if (upTo == seeded && outsideSeeded) return false;
+            foreach (int f in _typedRoots)
+            {
+                int self = Node(f, 0);
+                for (int o = seeded; o < upTo; o++)
+                    if (_objects[o].Table is { } table ? Receives!(f, table, _objects[o].At) : _untypedMade.Contains(o)) Add(self, o << 1);
+                // An object of such a type laid down in data -- a constant one
+                // among them -- or made by code with no IR: the unknown object.
+                if (outsideSeeded) continue;
+                _source = -1; _sourceWhy = _functions[f].Name + " has a this made outside";
+                if (ThisMadeOutside?.Invoke(f) != false) Add(self, Top);
+            }
+            seeded = upTo;
+            outsideSeeded = true;
+            return true;
         }
+        SeedRoots();
         Settle();
         // A receiver nothing reached runs every target: never fewer for want
         // of a type the solve did not see it get. Each so bound may reach
@@ -737,6 +753,11 @@ public sealed class RegionTypes
         for (bool more = true; more;)
         {
             more = false;
+            if (SeedRoots())
+            {
+                Settle();
+                more = true;
+            }
             for (int c = 0; c < _calls.Count; c++)
             {
                 if (_full[c]) continue;

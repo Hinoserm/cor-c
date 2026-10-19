@@ -75,6 +75,20 @@ public sealed record X86CodeGenerationContract(string Cpu, string Tune, string F
         }
     }
 
+    /// <summary>Two units whose instruction permissions differ, or null when every unit's are one.</summary>
+    public static (string First, string FirstCpu, string Second, string SecondCpu)? Disagreeing(IEnumerable<(string Name, ObjectFile Object)> inputs)
+    {
+        (string Name, X86CodeGenerationContract Contract)? first = null;
+        foreach (var input in inputs)
+        {
+            if (Read(input.Object) is not { } contract) continue;
+            if (first is not { } had) { first = (input.Name, contract); continue; }
+            if (contract.Features != had.Contract.Features || contract.Fpu != had.Contract.Fpu || (contract.Cpu == "k8") != (had.Contract.Cpu == "k8"))
+                return (had.Name, had.Contract.Cpu, input.Name, contract.Cpu);
+        }
+        return null;
+    }
+
     public static void ValidateRegeneration(ObjectFile original, ObjectFile regenerated)
     {
         if (Read(original) != Read(regenerated))

@@ -173,6 +173,13 @@ public static class ObjectLinkCommand
         TargetContract.Validate(inputs);
         X86CodeGenerationContract? selected = cpuArguments.Count == 0 ? null : Lang.X86.X86Cpu.Parse(cpuArguments).Contract;
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
+        // NO PROCESSOR NAMED, NONE CHOSEN FOR IT: units made for different
+        // ones -- a runtime compiled for the 486 in a 386's kernel -- linked
+        // into an image that ran CMPXCHG where the 386 has none, and nothing
+        // said so. They agree, or the link is told which processor it is for.
+        else if (X86CodeGenerationContract.Disagreeing(inputs) is { } disagreeing)
+            return Fail(disagreeing.First + " and " + disagreeing.Second + " were compiled for different processors (" + disagreeing.FirstCpu + ", "
+                + disagreeing.SecondCpu + "): name the image's with --cpu");
         ManagedLayoutContract.Validate(inputs);
         // Before the link-time optimiser regenerates any unit: the notes are
         // the units' own, and the IR archive's digest covers them.
