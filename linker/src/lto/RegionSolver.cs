@@ -61,6 +61,9 @@ public static class RegionSolver
     /// collection (RegionPointsTo.OverHeap).
     /// </summary>
     public const long HeapBudget = 1L << 30;
+
+    /// <summary>The most allocation sites a 32-bit linker solves regions for (GraphSteps).</summary>
+    public const int MostSites32 = 40_000;
     /// <summary>The most objects and calls walked judging the boundaries, before giving up.</summary>
     public const long JudgeBudget = 200_000_000;
 
@@ -587,6 +590,15 @@ public static class RegionSolver
                 }
                 sites += _functions[f].Sites.Length;
             }
+            // A PROGRAM PAST WHAT A 32-BIT LINKER'S ADDRESS SPACE HOLDS gets no
+            // regions, given up before any graph is made: the compiler's own
+            // link, 76,506 sites, was at 2.6 GB before the receiver types and
+            // at the ceiling once the escape graphs were built, the collector
+            // thrashing there -- for 47 sites in a region when a 64-bit link
+            // finished it. By the program's size, so a link answers alike
+            // every time (+regionsoff: given up whatever the size).
+            if (_report?.Contains("+regionsoff") == true || IntPtr.Size == 4 && sites > MostSites32)
+                return GiveUp(sites + " sites, past what a 32-bit linker holds (" + MostSites32 + ")");
             int[]?[][] targets = new int[]?[count][];
             string?[][] keys = new string?[count][];
             for (int f = 0; f < count; f++)
