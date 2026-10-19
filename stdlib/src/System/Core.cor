@@ -12483,8 +12483,17 @@ class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T> {
 
     // ITS SOURCE BUFFERED BY A LIST, not by Enumerable.ToArray: the two
     // calling each other were a cycle, and every sequence ToArray was handed
-    // was taken to escape through it.
-    private T[] Buffered() { return new List<T>(source).ToArray(); }
+    // was taken to escape through it. A COLLECTION COPIED ONCE, straight into
+    // an array its size, as .NET's buffer copies one: through a list it was
+    // copied twice.
+    private T[] Buffered() {
+        if (source is ICollection<T> collection) {
+            T[] copied = new T[collection.Count];
+            collection.CopyTo(copied, 0);
+            return copied;
+        }
+        return new List<T>(source).ToArray();
+    }
 
     // ONE ELEMENT IS SORTED TOO, as .NET's MoveNext sorts whatever is not
     // empty: its key at every level is asked for once.

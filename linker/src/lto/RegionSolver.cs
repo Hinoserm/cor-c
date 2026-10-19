@@ -783,11 +783,19 @@ public static class RegionSolver
             void Reach(int g) { if (!reached[g]) { reached[g] = true; next.Enqueue(g); } }
             HashSet<string> made = new(StringComparer.Ordinal), allowed = new(StringComparer.Ordinal);
             Dictionary<string, List<int>> waiting = new(StringComparer.Ordinal);
+            // WHETHER A TYPE MADE OUTSIDE MAY RUN IT, asked once a method: the
+            // answer is the image's (every stamp outside against every holder),
+            // and asked again at each of a method's targets -- eight million of
+            // them in the compiler's own link -- it was most of eleven minutes.
+            Dictionary<string, bool> outside = new(StringComparer.Ordinal);
+            // A function waiting on its method's type, put on its list once.
+            bool[] queued = new bool[count];
             bool Allowed(int g)
             {
                 string name = _functions[g].Name;
                 if (allowed.Contains(name)) return true;
-                if (madeOutside(name) != false) { allowed.Add(name); return true; }
+                if (!outside.TryGetValue(name, out bool may)) outside[name] = may = madeOutside(name) != false;
+                if (may) { allowed.Add(name); return true; }
                 return false;
             }
             void Make(string table)
@@ -810,6 +818,8 @@ public static class RegionSolver
                     foreach (int g in those)
                     {
                         if (!virtualCall || Allowed(g)) { Reach(g); continue; }
+                        if (queued[g]) continue;
+                        queued[g] = true;
                         string name = _functions[g].Name;
                         (waiting.TryGetValue(name, out List<int>? list) ? list : waiting[name] = new()).Add(g);
                     }
