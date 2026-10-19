@@ -1,0 +1,41 @@
+// test: Task.Run, StartNew and ContinueWith over a reference type make tasks of that type
+// expect-exit: 0
+// expect-output:
+// x True
+// c True
+// y True
+// z True
+// s True
+// after True
+// then 2 True
+//
+// The task each made came from a static of Task<T> -- Made -- and a
+// generic class over references runs one shared copy, whose statics have
+// no object to say what T is: Task.Run(() => "x") was a Task of the
+// machine word, which a List<Task<string>> refused with
+// ArrayTypeMismatchException and `is Task<string>` denied. The task is
+// made by a generic method instead (Task.Unstarted), copied per result
+// type, and ContinueWith's by its caller.
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int Main()
+    {
+        List<Task<string>> tasks = new();
+        tasks.Add(Task.Run(() => "x"));
+        tasks.Add(Task.Run(() => "c", CancellationToken.None));
+        tasks.Add(Task.FromResult("y"));
+        tasks.Add(Task.Factory.StartNew(() => "z"));
+        tasks.Add(Task.Factory.StartNew(o => (string)o!, "s"));
+        Task first = Task.Run(() => 1);
+        tasks.Add(first.ContinueWith(t => "after"));
+        tasks.Add(Task.Run(() => 2).ContinueWith(t => "then " + t.Result));
+        Task.WaitAll(tasks.ToArray());
+        foreach (Task<string> t in tasks) Console.WriteLine(t.Result + " " + ((object)t is Task<string>));
+        return 0;
+    }
+}

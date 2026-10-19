@@ -610,7 +610,7 @@ class Task
                                                System.Threading.Tasks.TaskContinuationOptions continuationOptions)
     {
         if (continuationFunction == null) throw new ArgumentNullException("continuationFunction");
-        return Continuation<TResult>.Then(this, () => continuationFunction(this), null, cancellationToken, continuationOptions);
+        return Continuation<TResult>.Then(this, () => continuationFunction(this), Task.Unstarted<TResult>(ContinuationRules.Creation(continuationOptions), null), cancellationToken, continuationOptions);
     }
 
     public Task<TResult> ContinueWith<TResult>(Func<Task, object?, TResult> continuationFunction, object? state)
@@ -635,7 +635,7 @@ class Task
                                                System.Threading.Tasks.TaskContinuationOptions continuationOptions)
     {
         if (continuationFunction == null) throw new ArgumentNullException("continuationFunction");
-        return Continuation<TResult>.Then(this, () => continuationFunction(this, state), state, cancellationToken, continuationOptions);
+        return Continuation<TResult>.Then(this, () => continuationFunction(this, state), Task.Unstarted<TResult>(ContinuationRules.Creation(continuationOptions), state), cancellationToken, continuationOptions);
     }
 
     /// WHAT A DELEGATE'S EXCEPTION DOES TO THE TASK IT RAN FOR, as .NET's
@@ -1533,6 +1533,19 @@ class Task
 
     // ---- the .NET generic factories ---------------------------------------
 
+    /// A TASK TO BE RUN, made with the options and state .NET reports of it:
+    /// a generic METHOD, copied for each result type, so the task is a Task
+    /// of that type. Made in a static of Task<T>, whose copy over references
+    /// is one shared copy with no object to say what T is, every Task.Run of
+    /// a string was a Task of the machine word -- refused by a
+    /// List<Task<string>>, and no Task<string> to `is`.
+    internal static Task<T> Unstarted<T>(System.Threading.Tasks.TaskCreationOptions options, object? state)
+    {
+        Task<T> t = new Task<T>();
+        t.SetCreation(options, state);
+        return t;
+    }
+
     public static Task<T> FromResult<T>(T result)
     {
         Task<T> t = new Task<T>();
@@ -1543,7 +1556,7 @@ class Task
     public static Task<T> Run<T>(Func<T> function)
     {
         if (function == null) throw new ArgumentNullException("function");
-        Task<T> t = Task<T>.Made(System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, null);
+        Task<T> t = Task.Unstarted<T>(System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, null);
         Scheduler.Post(new RunFunction<T>(function, t));
         return t;
     }
@@ -1551,7 +1564,7 @@ class Task
     public static Task<T> Run<T>(Func<T> function, CancellationToken cancellationToken)
     {
         if (function == null) throw new ArgumentNullException("function");
-        Task<T> t = Task<T>.Made(System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, null);
+        Task<T> t = Task.Unstarted<T>(System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, null);
         Scheduler.Post(new RunFunctionCancelable<T>(function, t, cancellationToken));
         return t;
     }
@@ -1713,14 +1726,6 @@ class Task<T> : Task
         FinishSuccess();
     }
 
-    /// A task to be run, made with the options and state .NET reports of it.
-    public static new Task<T> Made(System.Threading.Tasks.TaskCreationOptions options, object? state)
-    {
-        Task<T> t = new Task<T>();
-        t.SetCreation(options, state);
-        return t;
-    }
-
     /// The factory Task<T>.Factory.StartNew starts tasks through.
     public static new System.Threading.Tasks.TaskFactory<T> Factory => new System.Threading.Tasks.TaskFactory<T>();
 
@@ -1791,7 +1796,7 @@ class Task<T> : Task
                                                      System.Threading.Tasks.TaskContinuationOptions continuationOptions)
     {
         if (continuationFunction == null) throw new ArgumentNullException("continuationFunction");
-        return Continuation<TNewResult>.Then(this, () => continuationFunction(this), null, cancellationToken, continuationOptions);
+        return Continuation<TNewResult>.Then(this, () => continuationFunction(this), Task.Unstarted<TNewResult>(ContinuationRules.Creation(continuationOptions), null), cancellationToken, continuationOptions);
     }
 
     public Task<TNewResult> ContinueWith<TNewResult>(Func<Task<T>, object?, TNewResult> continuationFunction, object? state)
@@ -1816,7 +1821,7 @@ class Task<T> : Task
                                                      System.Threading.Tasks.TaskContinuationOptions continuationOptions)
     {
         if (continuationFunction == null) throw new ArgumentNullException("continuationFunction");
-        return Continuation<TNewResult>.Then(this, () => continuationFunction(this, state), state, cancellationToken, continuationOptions);
+        return Continuation<TNewResult>.Then(this, () => continuationFunction(this, state), Task.Unstarted<TNewResult>(ContinuationRules.Creation(continuationOptions), state), cancellationToken, continuationOptions);
     }
 }
 
@@ -2167,10 +2172,13 @@ class Continuation<TResult> : Action
         _options = options;
     }
 
-    public static Task<TResult> Then(Task antecedent, Func<TResult> body, object? state, CancellationToken token,
+    // THE TASK MADE BY THE CALLER (Task.Unstarted), a generic method copied
+    // for its result's type: made here, in a static of a class whose copy
+    // over references is shared, it was a Task of the machine word, and a
+    // List<Task<string>> refused it.
+    public static Task<TResult> Then(Task antecedent, Func<TResult> body, Task<TResult> next, CancellationToken token,
                                      System.Threading.Tasks.TaskContinuationOptions options)
     {
-        Task<TResult> next = Task<TResult>.Made(ContinuationRules.Creation(options), state);
         Continuation<TResult> made = new Continuation<TResult>(antecedent, body, next, token, options);
         if (!ContinuationRules.Lazy(options)) made._start = TaskStart.For(next, token);
         antecedent.AddContinuation(made);
@@ -6115,7 +6123,7 @@ namespace System.Threading.Tasks
         {
             if (function == null) throw new ArgumentNullException("function");
             CheckCreation(creationOptions);
-            Task<TResult> t = Task<TResult>.Made(creationOptions, null);
+            Task<TResult> t = Task.Unstarted<TResult>(creationOptions, null);
             Scheduler.Post(new RunFunctionCancelable<TResult>(function, t, cancellationToken));
             return t;
         }
@@ -6140,7 +6148,7 @@ namespace System.Threading.Tasks
         {
             if (function == null) throw new ArgumentNullException("function");
             CheckCreation(creationOptions);
-            Task<TResult> t = Task<TResult>.Made(creationOptions, state);
+            Task<TResult> t = Task.Unstarted<TResult>(creationOptions, state);
             Scheduler.Post(new RunStateFunction<TResult>(function, state, t, cancellationToken));
             return t;
         }
