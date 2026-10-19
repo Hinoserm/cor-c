@@ -56,9 +56,9 @@ public static class RegionSolver
     /// <summary>The most nodes, locations held, and locations made, before giving up.</summary>
     public const int NodeBudget = 6_000_000, HeldBudget = 40_000_000, LocationBudget = 4_000_000;
     /// <summary>
-    /// And the most heap the solve may grow by, whatever holds it: edges,
-    /// watchers, pairs of copies. A reading over it is believed only after a
-    /// collection (RegionPointsTo.OverHeap).
+    /// And the most the solve may hold, whatever holds it -- locations held,
+    /// edges, nodes, locations -- counted at what each takes (OverHeap), the
+    /// same on every machine.
     /// </summary>
     public const long HeapBudget = 1L << 30;
 
@@ -402,14 +402,12 @@ public static class RegionSolver
         private readonly List<MemCopyRecord> _memcopyRecords = new();
         private readonly List<Binding> _bindings = new();
         private readonly Queue<int> _work = new();
-        private long _held, _steps, _edgesSinceCollapse;
+        private long _held, _steps, _edgesSinceCollapse, _edges;
         private bool _over;
         // For a report: the node being carried on (~node: one saturating),
         // and per object, what first put it where nobody follows.
         private int _from = -1;
         private readonly Dictionary<int, int> _escapedFrom = new();
-        private readonly long _heapAtStart = GC.GetTotalMemory(false);
-        private long _heapLimit = HeapBudget;
 
         public Solver(IReadOnlyList<RegionHints> units, Dictionary<string, string[]> virtuals, Func<string, long, string?> methodAt,
             string entry, IReadOnlySet<string> foreign, string? report, Func<int, string, bool>? live, int depth,
@@ -1075,14 +1073,14 @@ public static class RegionSolver
         // Past the heap budget. Counted without a collection, the heap is
         // garbage too: what is still held after one decides, and the next
         // look waits for garbage to pile up again.
+        //
+        // COUNTED, NOT READ OFF THE HEAP, as RegionPointsTo's is: a location
+        // held, an edge, a node and a location made, each at what it takes.
+        // The heap read was the whole process's, garbage and other work
+        // included, so where the solve gave up hung on what else the link
+        // held and on the collector -- not the same on two machines.
         private bool OverHeap()
-        {
-            if (GC.GetTotalMemory(false) - _heapAtStart <= _heapLimit) return false;
-            long live = GC.GetTotalMemory(true) - _heapAtStart;
-            if (live > HeapBudget) return true;
-            _heapLimit = Math.Max(HeapBudget, live + HeapBudget / 4);
-            return false;
-        }
+            => 12 * _held + 48 * _edges + 96L * _parent.Count + 64L * _locationObject.Count > HeapBudget;
 
         private static long Key(int function, int context) => ((long)function << 32) | (uint)(context + 1);
 
@@ -1434,6 +1432,7 @@ public static class RegionSolver
                 }
             }
             edges.Add((to, shift));
+            _edges++;
             if (shift == 0) _edgesSinceCollapse++;
             if (_pts[from] is not { } pts) return;
             int carried = _from;
