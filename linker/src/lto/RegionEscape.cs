@@ -1164,7 +1164,7 @@ internal sealed class RegionEscape
                     + $"{solved} of {_components.Count} components solved"
                     + (round == 1 ? "" : $" ({AgainForCallee} for a callee's summary, {AgainForStandIn} for a stand-in, {AgainForSites} for sites they read)")
                     + $", {StraightToUnified} straight to unification, largest cycle {LargestCycle}, {Work} carried, {System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds:F0} ms"
-                    + (MemReport ? $", heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - roundHeap)} this round)" : ""));
+                    + (MemReport ? $", heap {GC.GetTotalMemory(false) >> 20} MB ({Megabytes(GC.GetTotalMemory(false) - roundHeap)} this round), {GC.GetTotalMemory(true) >> 20} MB live" : ""));
                 ReportMemTop(round);
                 if (ReportStandIns) DescribeStandIns();
                 if (round == MostRounds)

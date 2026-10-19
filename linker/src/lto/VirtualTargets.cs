@@ -335,6 +335,8 @@ public static class VirtualTargets
         public readonly Dictionary<string, int> ByName = new(StringComparer.Ordinal);
         // How many descriptors carry each name: a local one may be several.
         private readonly Dictionary<string, int> _named = new(StringComparer.Ordinal);
+        // Every definition of each name, in the order the objects define them.
+        private readonly Dictionary<string, List<int>> _definitions = new(StringComparer.Ordinal);
         private readonly Dictionary<int, List<(long Offset, string Symbol, long Addend)>> _relocs = new();
         // The tables a descriptor's display and interface list point at are
         // data symbols of their own, not descriptors: found by name anywhere.
@@ -384,6 +386,8 @@ public static class VirtualTargets
             {
                 ByName.TryAdd(_descriptors[d].Name, d);
                 _named[_descriptors[d].Name] = _named.GetValueOrDefault(_descriptors[d].Name) + 1;
+                if (!_definitions.TryGetValue(_descriptors[d].Name, out List<int>? defined)) _definitions[_descriptors[d].Name] = defined = new();
+                defined.Add(d);
             }
             if (Switches.TraceVirtuals)
             {
@@ -682,10 +686,35 @@ public static class VirtualTargets
             return _ancestry[d] = found;
         }
 
+        /// <summary>
+        /// Whether an object stamped with <paramref name="descriptor"/> is a
+        /// <paramref name="type"/>: true, false, or null where it cannot say.
+        /// </summary>
+        //
+        // A NAME DEFINED MORE THAN ONCE IS EACH OF ITS DEFINITIONS': a local
+        // descriptor -- a method group's delegate type, a closure's -- that
+        // two units each lay down, one of which a static delegate stamps in
+        // data. Its stamp is one of them: the type if any of them is, not if
+        // none is. Taken for unknown, it was "may be" of every type, and as
+        // stamped outside the IR it made every method a descriptor holds one
+        // an object made outside may run: the reachable types narrowed none
+        // of the compiler's own 25,409 virtual calls.
         public bool? IsA(string descriptor, string type)
         {
             if (type == "t_object") return true;
-            if (_named.GetValueOrDefault(descriptor) != 1 || !ByName.TryGetValue(descriptor, out int d)) return null;
+            if (!_definitions.TryGetValue(descriptor, out List<int>? definitions)) return null;
+            bool? answer = false;
+            foreach (int d in definitions)
+            {
+                bool? one = IsA(d, descriptor, type);
+                if (one == true) return true;
+                if (one is null) answer = null;
+            }
+            return answer;
+        }
+
+        private bool? IsA(int d, string descriptor, string type)
+        {
             if (Ancestors(d).Contains(type)) return true;
             // A shared generic's face is each instantiation of the generic
             // (Targets): a Func<string> lambda is a Func<__canon> to the one
@@ -701,12 +730,21 @@ public static class VirtualTargets
             return MayAnswer(descriptor, type) ? null : false;
         }
 
+        // Each definition of the name holding the same method there, that
+        // one (IsA); else none can be said.
         public string? MethodAt(string descriptor, long offset)
         {
-            if (_named.GetValueOrDefault(descriptor) != 1 || !ByName.TryGetValue(descriptor, out int d)) return null;
-            foreach (var (at, symbol, addend) in Relocs(d))
-                if (at == offset) return addend == 0 && _functions.Contains(symbol) ? symbol : null;
-            return null;
+            if (!_definitions.TryGetValue(descriptor, out List<int>? definitions)) return null;
+            string? method = null;
+            foreach (int d in definitions)
+            {
+                string? one = null;
+                foreach (var (at, symbol, addend) in Relocs(d))
+                    if (at == offset) { one = addend == 0 && _functions.Contains(symbol) ? symbol : null; break; }
+                if (one is null || method is not null && method != one) return null;
+                method = one;
+            }
+            return method;
         }
 
         /// <summary>
