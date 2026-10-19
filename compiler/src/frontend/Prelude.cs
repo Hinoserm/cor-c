@@ -406,6 +406,9 @@ public static class Prelude
     public const string StringType = "String";
     public const string ConcatMethod = "Concat";
     public const string CompareMethod = "Compare";
+
+    /// <summary>The template path of the class library's IEquatable&lt;T&gt;, declared at its top level: what its family is hashed from (CanonShape.FamilyOf).</summary>
+    public const string EquatableTemplate = "IEquatable";
     public const string FromIntMethod = "FromInt";
     public const string FromUIntMethod = "FromUInt";
     public const string FromBoolMethod = "FromBool";

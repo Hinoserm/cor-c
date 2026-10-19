@@ -480,7 +480,7 @@ public sealed partial class Lowering
                 _e.CopyTo(same, Imm(1, IrType.I32));
                 _e.Branch(_e.Binary(Opcode.Eq, R(one), R(two), IrType.I32), done, ask);
                 _e.SetBlock(ask);
-                if (SharedEquatable(_b.TypeOf(call.Args[0])) is { } shape)
+                if (SharedKey(_b.TypeOf(call.Args[0])) && RuntimeMethod("ShapedAs", 3 + CanonShape.MostArguments) is MethodSymbol shaped)
                 {
                     // A SHARED COPY'S T, which only its object's type context
                     // says: by T's typed Equals where the key is an IEquatable
@@ -489,17 +489,33 @@ public sealed partial class Lowering
                     // .NET's EqualityComparer<T>.Default chooses for that T.
                     // Asked of the key's descriptor alone, a Point was
                     // compared by its typed Equals in a HashSet<IShape> or a
-                    // List<object>, where .NET's asks Equals(object).
+                    // List<object>, where .NET's asks Equals(object). The
+                    // same code in every unit: the interface asked by its
+                    // family alone, which a unit naming no IEquatable at all
+                    // computes as the rest do.
                     Block maybe = _f.NewBlock("keqmaybe"), other = _f.NewBlock("keqother");
                     Block typed = _f.NewBlock("keqtyped"), plain = _f.NewBlock("keqplain");
                     VReg desc = _e.Binary(Opcode.Sub, _e.Load(IrTypes.Word, one, 0), _t.DescriptorBytes);
                     VReg flags = Numbered(_e, _e.Load(IrType.I32, desc, DescFlags * _t.WordSize));
                     _e.Branch(_e.Binary(Opcode.And, flags, TypeFlagEquatable), maybe, plain);
                     _e.SetBlock(maybe);
-                    Operand wanted = RunTimeDescriptor(shape.Args[0], statics: false);
-                    _e.Branch(_e.Binary(Opcode.Eq, R(desc), wanted, IrType.I32), typed, other);
+                    Operand wanted = RunTimeDescriptor(_b.TypeOf(call.Args[0]), statics: false);
+                    VReg wantedReg = wanted is RegOperand held ? held.Reg : _e.Const(((ImmOperand)wanted).Value, IrTypes.Word);
+                    _e.Branch(_e.Binary(Opcode.Eq, R(desc), R(wantedReg), IrType.I32), typed, other);
                     _e.SetBlock(other);
-                    _e.Branch(ShapeTest(shape, one, null), typed, plain);
+                    Require(shaped);
+                    VReg isObject = _e.Binary(Opcode.Eq, R(wantedReg), R(_e.Address(ObjectDescriptor())), IrType.I32);
+                    VReg objectBit = IrTypes.Word == IrType.I32 ? isObject : _e.Unary(Opcode.ZExt32, R(isObject), IrTypes.Word);
+                    VReg shapeWord = _e.Binary(Opcode.Or, Imm(1 | FaceOfShape, IrTypes.Word), R(_e.Binary(Opcode.Shl, objectBit, ShapeObjectShift)), IrTypes.Word);
+                    List<VReg> words = new()
+                    {
+                        one, _e.Const(CanonShape.FamilyOf(Prelude.EquatableTemplate, 1), IrTypes.Word), shapeWord, wantedReg,
+                        _e.Const(0, IrTypes.Word), _e.Const(0, IrTypes.Word), _e.Const(0, IrTypes.Word),
+                    };
+                    Operand[] shapedArgs = new Operand[words.Count];
+                    for (int i = 0; i < words.Count; i++) shapedArgs[i] = R(AsParam(words[i], shaped.Params[i].Type));
+                    VReg answer = _e.Call(CallLabel(shaped), IrTypes.Of(shaped.Returns), shapedArgs)!;
+                    _e.Branch(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32), typed, plain);
                     _e.SetBlock(typed);
                     _e.CopyTo(same, R(_e.Call(KeyEqualsStub(null), IrType.I32, R(one), R(two))!));
                     _e.Jump(done);
@@ -1056,26 +1072,13 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// IEquatable of a shared copy's T, as a shape the runtime can ask an
-    /// object about (ShapeTest): for a table's equality of keys of that T in
-    /// the class's own instance code, where the object's type context says
-    /// what T is. Null elsewhere, and where the program names no IEquatable
-    /// of anything -- then no class is one, and nothing is to tell apart.
+    /// Whether a table's key of this type is a shared copy's T in the class's
+    /// own instance code, where the object's type context says what T is
+    /// (RunTimeDescriptor).
     /// </summary>
-    private CanonShape? SharedEquatable(Type of)
-    {
-        if (of is not { CanonParam: >= 0, IsArray: false, IsPointer: false } || _this is null
-            || _method is not { Static: false } running || !SharedCopy(running.Owner))
-        {
-            return null;
-        }
-        _equatableFace ??= _b.Types.Values.FirstOrDefault(t => t.Kind == TypeKind.Interface
-            && t.Decl is { Specialised: true, Template: string template, TemplateArgs.Count: 1 }
-            && (template == "IEquatable" || template.EndsWith(".IEquatable", StringComparison.Ordinal)));
-        return _equatableFace is { } face ? new CanonShape { Interface = face, Args = new List<Type> { of } } : null;
-    }
-
-    private TypeSymbol? _equatableFace;
+    private bool SharedKey(Type of)
+        => of is { CanonParam: >= 0, IsArray: false, IsPointer: false } && _this is not null
+        && _method is { Static: false } running && SharedCopy(running.Owner);
 
     /// <summary>A key question asked of two values (one for a hash) of a type that is not nullable.</summary>
     private VReg KeyOfValue(string question, VReg x, VReg? y, Type value)

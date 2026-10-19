@@ -863,7 +863,13 @@ public sealed class CanonShape
         {
             return null;
         }
-        string key = template + "`" + decl.TemplateArgs.Count;
+        return FamilyOf(template, decl.TemplateArgs.Count);
+    }
+
+    /// <summary>The same, by a template's path and arity: what a unit naming none of its instantiations still computes alike.</summary>
+    public static long FamilyOf(string template, int arity)
+    {
+        string key = template + "`" + arity;
         ulong hash = 14695981039346656037UL;
         foreach (char c in key)
         {

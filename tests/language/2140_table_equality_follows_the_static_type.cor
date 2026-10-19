@@ -16,18 +16,19 @@
 // array object -1
 // array point 0
 // leaf True 1
+// derived set 1 True True
 // leaf object False
 //
 // .NET's default comparer for T asks T's IEquatable<T> when T is one, and
 // Equals(object) otherwise: a Point that is IEquatable<Point> is no
-// IEquatable<object>, <IShape> or <Base>. Asked of the object's descriptor
-// whatever T was, a Point was compared by its typed Equals through every
-// table over its interfaces and bases -- and object[]'s IndexOf too. Where
-// the code names T it asks as .NET's does; in a shared copy, whose T only
-// its object's type context says, the key is asked whether it is an
-// IEquatable of that T -- its own class T, or one implementing it
-// (Runtime.ShapedAs) -- before its typed Equals is.
-//
+// IEquatable<object>, <IShape> or <Base>, while a Square is an
+// IEquatable<Shape2> by its base. Asked of the object's descriptor whatever
+// T was, a Point was compared by its typed Equals through every table over
+// its interfaces and bases -- and object[]'s IndexOf too. Where the code
+// names T it asks as .NET's does; in a shared copy, whose T only its
+// object's type context says, the key is asked whether it is an IEquatable
+// of that T -- its own class T, or one implementing it (Runtime.ShapedAs,
+// by the family alone, the same in every unit) -- before its typed Equals.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -41,6 +42,13 @@ class Point : Base, IShape, IEquatable<Point>
     public int Area => N;
     public bool Equals(Point? other) => other is not null && other.N == N;
 }
+class Shape2 : IEquatable<Shape2>
+{
+    public int N; public Shape2(int n) { N = n; }
+    public bool Equals(Shape2? other) => other is not null && other.N == N;
+    public override int GetHashCode() => N;
+}
+class Square : Shape2 { public Square(int n) : base(n) { } }
 sealed class Leaf : IEquatable<Leaf>
 {
     public int N; public Leaf(int n) { N = n; }
@@ -68,6 +76,7 @@ static class Program
         Console.WriteLine("array object " + Array.IndexOf(new object[] { a }, b));
         Console.WriteLine("array point " + Array.IndexOf(new[] { a }, b));
         Console.WriteLine("leaf " + EqualityComparer<Leaf>.Default.Equals(new Leaf(2), new Leaf(2)) + " " + new HashSet<Leaf> { new Leaf(2), new Leaf(2) }.Count);
+        Console.WriteLine("derived set " + new HashSet<Shape2> { new Square(3), new Square(3) }.Count + " " + new List<Shape2> { new Square(4) }.Contains(new Square(4)) + " " + EqualityComparer<Shape2>.Default.Equals(new Square(5), new Square(5)));
         Console.WriteLine("leaf object " + EqualityComparer<object>.Default.Equals(new Leaf(2), new Leaf(2)));
         return 0;
     }
