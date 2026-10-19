@@ -73,6 +73,9 @@ static class String {
     // without these bodies takes each for a fresh block by name
     // (Escape.AlwaysFresh), and the lifetime pass frees what it made.
     public static string Concat(string a, string b) {
+        // A null is nothing, as .NET's Concat takes it; `a + b` hands none.
+        if (a == null) { a = ""; }
+        if (b == null) { b = ""; }
         int la = a.Length;
         int lb = b.Length;
         string result = Sys.NewChars(la + lb);
@@ -462,10 +465,10 @@ static class String {
         // other way of reading a string is checked by the machine; this one has
         // to ask for it.
         if (start < 0 || count < 0 || start > s.Length - count) {
-            // .NET's four refusals, in its order and its words.
-            if (start < 0) { throw new ArgumentOutOfRangeException("startIndex", "StartIndex cannot be less than zero."); }
+            // .NET's four refusals, in its order and .NET 10's words.
+            ArgumentOutOfRangeException.ThrowIfNegative(start, "startIndex");
             if (start > s.Length) { throw new ArgumentOutOfRangeException("startIndex", "startIndex cannot be larger than length of string."); }
-            if (count < 0) { throw new ArgumentOutOfRangeException("length", "Length cannot be less than zero."); }
+            ArgumentOutOfRangeException.ThrowIfNegative(count, "length");
             throw new ArgumentOutOfRangeException("length", "Index and length must refer to a location within the string.");
         }
 
@@ -479,11 +482,9 @@ static class String {
     // The Unicode simple case mappings (the runtime's UnicodeCase), which is
     // what .NET's Invariant versions apply: "not the current culture's rule",
     // and every script's letters, a surrogate pair's among them.
-    // WHAT `new string(c, n)` MEANS. C# spells it as a constructor and a string
-    // here is a primitive with no class to put one on, so the compiler turns
-    // that construction into this call -- see Binder. The name is .NET's:
-    // string.Repeat does not exist there, but this is the constructor's body
-    // and nothing else calls it by name.
+    // A CHARACTER REPEATED, none for a count of zero or less: the library's
+    // own formatting asks it so. `new string(c, n)` is FromChars(c, n), which
+    // refuses a negative count first, as .NET's constructor does.
     public static string Repeat(char c, int count) {
         if (count <= 0) { return ""; }
 
@@ -527,6 +528,13 @@ static class String {
         return FromChars(one);
     }
 
+    /// `new string(c, n)`, refused below zero as .NET's constructor is
+    /// (Repeat, which the library's own formatting asks, takes that as none).
+    public static string FromChars(char c, int count) {
+        ArgumentOutOfRangeException.ThrowIfNegative(count, "count");
+        return Repeat(c, count);
+    }
+
     public static string FromChars(char[] chars) {
         if (chars == null) { return ""; }
 
@@ -554,10 +562,11 @@ static class String {
     }
 
     public static string FromChars(char[] chars, int start, int length) {
-        if (chars == null) { throw new ArgumentNullException("chars"); }
-        if (start < 0 || length < 0 || start + length > chars.Length) {
-            throw new ArgumentOutOfRangeException("start");
-        }
+        // .NET's refusals, in its order and words.
+        if (chars == null) { throw new ArgumentNullException("value"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(start, "startIndex");
+        ArgumentOutOfRangeException.ThrowIfNegative(length, "length");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(start, chars.Length - length, "startIndex");
         if (length == 0) { return ""; }
 
         string made = Sys.NewChars(length);
@@ -649,6 +658,7 @@ static class String {
     // .NET's names and .NET's answers, ordinal throughout.
 
     public static bool EndsWith(string s, string suffix) {
+        if (suffix == null) { throw new ArgumentNullException("value"); }
         if (suffix.Length > s.Length) { return false; }
         return Sys.StringEqual(s, s.Length - suffix.Length, suffix, 0, suffix.Length);
     }
@@ -697,7 +707,8 @@ static class String {
 
     public static string Substring(string s, int start) {
         if ((uint)start > (uint)s.Length) {
-            throw new ArgumentOutOfRangeException("startIndex", start < 0 ? "StartIndex cannot be less than zero." : "startIndex cannot be larger than length of string.");
+            ArgumentOutOfRangeException.ThrowIfNegative(start, "startIndex");
+            throw new ArgumentOutOfRangeException("startIndex", "startIndex cannot be larger than length of string.");
         }
         return Substring(s, start, s.Length - start);
     }
@@ -785,13 +796,13 @@ static class String {
     }
 
     public static string PadLeft(string s, int width, char with) {
-        if (width < 0) { throw new ArgumentOutOfRangeException("totalWidth", "Non-negative number required."); }
+        ArgumentOutOfRangeException.ThrowIfNegative(width, "totalWidth");
         if (s.Length >= width) { return s; }
         return Concat(Repeat(with, width - s.Length), s);
     }
 
     public static string PadRight(string s, int width, char with) {
-        if (width < 0) { throw new ArgumentOutOfRangeException("totalWidth", "Non-negative number required."); }
+        ArgumentOutOfRangeException.ThrowIfNegative(width, "totalWidth");
         if (s.Length >= width) { return s; }
         return Concat(s, Repeat(with, width - s.Length));
     }
@@ -909,6 +920,7 @@ static class String {
     }
 
     public static bool StartsWith(string s, string prefix) {
+        if (prefix == null) { throw new ArgumentNullException("value"); }
         if (prefix.Length > s.Length) { return false; }
         return Sys.StringEqual(s, 0, prefix, 0, prefix.Length);
     }
@@ -1080,6 +1092,19 @@ static class String {
     }
 
     public static string Join(char separator, params string?[] value) { return Join(String.FromChar(separator), value); }
+
+    /// `count` of them from `startIndex`, checked as .NET checks them.
+    public static string Join(string? separator, string?[] value, int startIndex, int count) {
+        if (value == null) { throw new ArgumentNullException("value"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex, "startIndex");
+        ArgumentOutOfRangeException.ThrowIfNegative(count, "count");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(startIndex, value.Length - count, "startIndex");
+        string?[] run = new string?[count];
+        Array.Copy(value, startIndex, run, 0, count);
+        return Joined(separator, run);
+    }
+
+    public static string Join(char separator, string?[] value, int startIndex, int count) { return Join(String.FromChar(separator), value, startIndex, count); }
 
     public static string Join(char separator, params object?[] values) { return Join(String.FromChar(separator), values); }
 
@@ -1315,7 +1340,7 @@ static class String {
             return a == null ? -1 : 1;
         }
         if (length < 0) { throw new ArgumentOutOfRangeException("length", "Count cannot be less than zero."); }
-        if (indexA < 0 || indexB < 0) { throw new ArgumentOutOfRangeException(indexA < 0 ? "indexA" : "indexB", "Non-negative number required."); }
+        if (indexA < 0 || indexB < 0) { throw new ArgumentOutOfRangeException(indexA < 0 ? "indexA" : "indexB", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
         int left = Math.Min(length, a.Length - indexA);
         int right = Math.Min(length, b.Length - indexB);
         if (left < 0 || right < 0) { throw new ArgumentOutOfRangeException(left < 0 ? "indexA" : "indexB", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
@@ -1470,23 +1495,26 @@ static class String {
 
     // ---- cutting and splicing ---------------------------------------------
 
+    // .NET 10'S REFUSALS, in its order and words: its range guards where it
+    // has them, the older messages where it kept them.
     public static string Remove(string s, int start) {
         if ((uint)start > (uint)s.Length) {
-            throw new ArgumentOutOfRangeException("startIndex", start < 0 ? "StartIndex cannot be less than zero." : "startIndex must be less than length of string.");
+            throw new ArgumentOutOfRangeException("startIndex", start < 0 ? "StartIndex cannot be less than zero." : "startIndex cannot be larger than length of string.");
         }
         return Substring(s, 0, start);
     }
 
     public static string Remove(string s, int start, int count) {
-        if (start < 0) { throw new ArgumentOutOfRangeException("startIndex", "StartIndex cannot be less than zero."); }
-        if (count < 0) { throw new ArgumentOutOfRangeException("count", "Count cannot be less than zero."); }
-        if (count > s.Length - start) { throw new ArgumentOutOfRangeException("count", "Index and count must refer to a location within the string."); }
+        ArgumentOutOfRangeException.ThrowIfNegative(start, "startIndex");
+        ArgumentOutOfRangeException.ThrowIfNegative(count, "count");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, s.Length - start, "count");
         return Concat(Substring(s, 0, start), Substring(s, start + count, s.Length - start - count));
     }
 
+    // The place compared unsigned, as .NET compares it: -1 is 4294967295.
     public static string Insert(string s, int at, string value) {
         if (value == null) { throw new ArgumentNullException("value"); }
-        if ((uint)at > (uint)s.Length) { throw new ArgumentOutOfRangeException("startIndex"); }
+        ArgumentOutOfRangeException.ThrowIfGreaterThan((long)(uint)at, (long)s.Length, "startIndex");
         return Concat(Substring(s, 0, at), Concat(value, Substring(s, at, s.Length - at)));
     }
 
@@ -1517,7 +1545,17 @@ static class String {
         return made;
     }
 
+    // CHECKED BEFORE ANY READ, in .NET's order and words: Sys.GetChar reads
+    // the string's memory and knows nothing of where it ends.
     public static char[] ToCharArray(string s, int start, int count) {
+        if ((uint)start > (uint)s.Length || start > s.Length - count) {
+            ArgumentOutOfRangeException.ThrowIfGreaterThan((long)(uint)start, (long)s.Length, "startIndex");
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(start, s.Length - count, "startIndex");
+        }
+        if (count <= 0) {
+            ArgumentOutOfRangeException.ThrowIfNegative(count, "length");
+            return Array.Empty<char>();
+        }
         char[] made = new char[count];
 
         for (int i = 0; i < count; i++) { made[i] = Sys.GetChar(s, start + i); }
@@ -1528,10 +1566,15 @@ static class String {
     // characters from sourceIndex on into the array, as .NET copies them. A
     // range that is not wholly in the string and in the array is
     // ArgumentOutOfRangeException, before anything is copied.
+    // .NET's refusals in its order: the count against what is left after
+    // sourceIndex is refused under sourceIndex's name, as .NET's is.
     public static void CopyTo(string s, int sourceIndex, char[] destination, int destinationIndex, int count) {
-        if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
-        if (sourceIndex < 0 || sourceIndex > s.Length - count) { throw new ArgumentOutOfRangeException("sourceIndex"); }
-        if (destinationIndex < 0 || destinationIndex > destination.Length - count) { throw new ArgumentOutOfRangeException("destinationIndex"); }
+        if (destination == null) { throw new ArgumentNullException("destination"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(count, "count");
+        ArgumentOutOfRangeException.ThrowIfNegative(sourceIndex, "sourceIndex");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, s.Length - sourceIndex, "sourceIndex");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(destinationIndex, destination.Length - count, "destinationIndex");
+        ArgumentOutOfRangeException.ThrowIfNegative(destinationIndex, "destinationIndex");
 
         for (int i = 0; i < count; i++) { destination[destinationIndex + i] = Sys.GetChar(s, sourceIndex + i); }
     }
@@ -7845,6 +7888,8 @@ class UTF8Encoding : Encoding {
 
     public override byte[] GetPreamble() { return emitIdentifier ? new byte[] { 0xEF, 0xBB, 0xBF } : new byte[0]; }
 
+    protected override string FallbackName => throwOnInvalid ? "System.Text.EncoderExceptionFallback" : "System.Text.EncoderReplacementFallback";
+
     public override int GetByteCount(string s) {
         if (s == null) { throw new ArgumentNullException("s"); }
         if (throwOnInvalid) { RefuseLoneSurrogates(s); }
@@ -7861,14 +7906,8 @@ class UTF8Encoding : Encoding {
     /// writing every name of a compiler's archive made a byte array for each.
     public override int GetBytes(string s, int charIndex, int charCount, byte[] bytes, int byteIndex) {
         if (throwOnInvalid) { return base.GetBytes(s, charIndex, charCount, bytes, byteIndex); }
-        if (s == null) { throw new ArgumentNullException("s"); }
-        if (bytes == null) { throw new ArgumentNullException("bytes"); }
-        if (charIndex < 0 || charCount < 0) { throw new ArgumentOutOfRangeException(charIndex < 0 ? "charIndex" : "charCount", "Non-negative number required."); }
-        if (charIndex > s.Length - charCount) { throw new ArgumentOutOfRangeException("s", "Index and count must refer to a location within the string."); }
-        if (byteIndex < 0 || byteIndex > bytes.Length) { throw new ArgumentOutOfRangeException("byteIndex", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
-        if (Utf8Transcoder.ByteCount(s, charIndex, charCount) > bytes.Length - byteIndex) {
-            throw new ArgumentException("The output byte buffer is too small to contain the encoded data.", "bytes");
-        }
+        CheckText(s, charIndex, charCount, bytes, byteIndex);
+        if (Utf8Transcoder.ByteCount(s, charIndex, charCount) > bytes.Length - byteIndex) { throw TooSmall(); }
         return Utf8Transcoder.Encode(s, charIndex, charCount, bytes, byteIndex);
     }
 
@@ -7927,8 +7966,12 @@ class ASCIIEncoding : Encoding {
         return made;
     }
 
+    // .NET's ASCII names the range byteIndex and byteCount here, and its
+    // GetBytes(string, ...) the string "chars".
+    protected override string TextName => "chars";
+
     public override string GetString(byte[] bytes, int at, int count) {
-        CheckRange(bytes, at, count);
+        CheckRange(bytes, at, count, "byteIndex", "byteCount");
         string made = Sys.NewChars(count);
 
         for (int i = 0; i < count; i++) {
@@ -8279,6 +8322,7 @@ class UnicodeEncoding : Encoding {
     public override int CodePage => big ? 1201 : 1200;
     public override string WebName => big ? "utf-16BE" : "utf-16";
     public override string EncodingName => big ? "Unicode (Big-Endian)" : "Unicode";
+    protected override bool Guarded => true;
 
     private bool big;
     private bool mark;
@@ -8407,6 +8451,7 @@ class UTF32Encoding : Encoding {
     public override int CodePage => big ? 12001 : 12000;
     public override string WebName => big ? "utf-32BE" : "utf-32";
     public override string EncodingName => big ? "Unicode (UTF-32 Big-Endian)" : "Unicode (UTF-32)";
+    protected override bool Guarded => true;
 
     private bool big;
     private bool mark;
@@ -8527,6 +8572,7 @@ class CodePageEncoding : Encoding {
     public override string WebName => page == 1252 ? "windows-1252" : page == 437 ? "IBM437" : "iso-8859-1";
     public override string EncodingName => page == 1252 ? "Western European (Windows)" : page == 437 ? "OEM United States" : "Western European (ISO)";
     public override bool IsSingleByte => true;
+    protected override string FallbackName => page == 28591 ? "System.Text.EncoderLatin1BestFitFallback" : "System.Text.InternalEncoderBestFitFallback";
 
     /// The byte a character is on this page, or -1.
     int ByteOf(int character) {
@@ -8652,25 +8698,38 @@ abstract class Encoding {
     public abstract int GetByteCount(string s);
     public abstract string GetString(byte[] bytes, int index, int count);
 
-    public virtual byte[] GetBytes(char[] chars) { return GetBytes(new string(chars)); }
-    public virtual byte[] GetBytes(char[] chars, int index, int count) { return GetBytes(new string(chars, index, count)); }
+    public virtual byte[] GetBytes(char[] chars) {
+        if (chars == null) { throw NoArray("chars"); }
+        return GetBytes(new string(chars));
+    }
+    public virtual byte[] GetBytes(char[] chars, int index, int count) {
+        CheckChars(chars, index, count, "index", "count");
+        return GetBytes(new string(chars, index, count));
+    }
     public byte[] GetBytes(string s, int index, int count) { return GetBytes(s.Substring(index, count)); }
 
     /// Into a byte array the caller owns; answers how many bytes were written.
     public virtual int GetBytes(string s, int charIndex, int charCount, byte[] bytes, int byteIndex) {
+        CheckText(s, charIndex, charCount, bytes, byteIndex);
         byte[] made = GetBytes(s.Substring(charIndex, charCount));
-        if (byteIndex < 0 || byteIndex > bytes.Length - made.Length) {
-            throw new ArgumentException("The output byte buffer is too small to contain the encoded data.", "bytes");
-        }
+        if (made.Length > bytes.Length - byteIndex) { throw TooSmall(); }
         Array.Copy(made, 0, bytes, byteIndex, made.Length);
         return made.Length;
     }
     public virtual int GetBytes(char[] chars, int charIndex, int charCount, byte[] bytes, int byteIndex) {
+        if (bytes == null) { throw NoArray("bytes"); }
+        CheckChars(chars, charIndex, charCount, "charIndex", "charCount");
         return GetBytes(new string(chars, charIndex, charCount), 0, charCount, bytes, byteIndex);
     }
 
-    public virtual int GetByteCount(char[] chars) { return GetByteCount(new string(chars)); }
-    public virtual int GetByteCount(char[] chars, int index, int count) { return GetByteCount(new string(chars, index, count)); }
+    public virtual int GetByteCount(char[] chars) {
+        if (chars == null) { throw NoArray("chars"); }
+        return GetByteCount(new string(chars));
+    }
+    public virtual int GetByteCount(char[] chars, int index, int count) {
+        CheckChars(chars, index, count, "index", "count");
+        return GetByteCount(new string(chars, index, count));
+    }
 
     public virtual string GetString(byte[] bytes) {
         if (bytes == null) { throw new ArgumentNullException("bytes"); }
@@ -8680,7 +8739,10 @@ abstract class Encoding {
 
     /// The UTF-16 code units the bytes decode to.
     public virtual char[] GetChars(byte[] bytes) { return GetChars(bytes, 0, bytes.Length); }
-    public virtual char[] GetChars(byte[] bytes, int index, int count) { return GetString(bytes, index, count).ToCharArray(); }
+    public virtual char[] GetChars(byte[] bytes, int index, int count) {
+        CheckRange(bytes, index, count);
+        return GetString(bytes, index, count).ToCharArray();
+    }
 
     /// Into a char array the caller owns; answers how many chars were written.
     public virtual int GetChars(byte[] bytes, int byteIndex, int byteCount, char[] chars, int charIndex) {
@@ -8703,10 +8765,57 @@ abstract class Encoding {
 
     // ---- what the encodings share ---------------------------------------
 
-    protected static void CheckRange(byte[] bytes, int index, int count) {
-        if (bytes == null) { throw new ArgumentNullException("bytes"); }
-        if (index < 0 || count < 0) { throw new ArgumentOutOfRangeException(index < 0 ? "index" : "count", "Non-negative number required."); }
-        if (index > bytes.Length - count) { throw new ArgumentOutOfRangeException("bytes", "Index and count must refer to a location within the buffer."); }
+    // .NET'S TWO WAYS OF REFUSING AN ARGUMENT: the UTF-8, ASCII and Latin-1
+    // encoders' own helpers -- "Array cannot be null.", "Non-negative number
+    // required." -- and the range guards UTF-16 and UTF-32 use, which name
+    // the value (Guarded).
+    protected virtual bool Guarded => false;
+
+    /// The fallback a refusal for too little room names, as .NET's encoder's.
+    protected virtual string FallbackName => "System.Text.EncoderReplacementFallback";
+
+    /// Where GetBytes(string, ...) refuses its string: "s" (ASCII's "chars").
+    protected virtual string TextName => "s";
+
+    protected ArgumentNullException NoArray(string name) {
+        return Guarded ? new ArgumentNullException(name) : new ArgumentNullException(name, "Array cannot be null.");
+    }
+
+    protected void NotNegative(int index, int count, string indexName, string countName) {
+        if (Guarded) {
+            ArgumentOutOfRangeException.ThrowIfNegative(index, indexName);
+            ArgumentOutOfRangeException.ThrowIfNegative(count, countName);
+        }
+        else if (index < 0 || count < 0) {
+            throw new ArgumentOutOfRangeException(index < 0 ? indexName : countName, "Non-negative number required.");
+        }
+    }
+
+    protected void CheckRange(byte[] bytes, int index, int count) { CheckRange(bytes, index, count, "index", "count"); }
+
+    protected void CheckRange(byte[] bytes, int index, int count, string indexName, string countName) {
+        if (bytes == null) { throw NoArray("bytes"); }
+        NotNegative(index, count, indexName, countName);
+        if (bytes.Length - index < count) { throw new ArgumentOutOfRangeException("bytes", "Index and count must refer to a location within the buffer."); }
+    }
+
+    protected void CheckChars(char[] chars, int index, int count, string indexName, string countName) {
+        if (chars == null) { throw NoArray("chars"); }
+        NotNegative(index, count, indexName, countName);
+        if (chars.Length - index < count) { throw new ArgumentOutOfRangeException("chars", "Index and count must refer to a location within the buffer."); }
+    }
+
+    /// Where GetBytes(string, ..., bytes, byteIndex) may write, checked first.
+    protected void CheckText(string s, int charIndex, int charCount, byte[] bytes, int byteIndex) {
+        if (s == null) { throw NoArray(TextName); }
+        if (bytes == null) { throw NoArray("bytes"); }
+        NotNegative(charIndex, charCount, "charIndex", "charCount");
+        if (s.Length - charIndex < charCount) { throw new ArgumentOutOfRangeException(TextName, "Index and count must refer to a location within the string."); }
+        if ((uint)byteIndex > (uint)bytes.Length) { throw new ArgumentOutOfRangeException("byteIndex", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
+    }
+
+    protected ArgumentException TooSmall() {
+        return new ArgumentException("The output byte buffer is too small to contain the encoded data, encoding codepage '" + CodePage + "' and fallback '" + FallbackName + "'.", "bytes");
     }
 
     /// Characters, not code units: a surrogate pair is one, and so is an
@@ -8882,9 +8991,8 @@ struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
 
     public bool Contains(T item) { return IndexOf(item) >= 0; }
 
-    public void CopyTo(T[] destination, int index) {
-        for (int i = 0; i < count; i++) { destination[index + i] = array![offset + i]; }
-    }
+    // Array.Copy's, as .NET's segment copies.
+    public void CopyTo(T[] destination, int index) { Array.Copy(array!, offset, destination, index, count); }
 
     bool ICollection<T>.IsReadOnly => true;
     void ICollection<T>.Add(T item) { throw new NotSupportedException(); }
@@ -9006,10 +9114,10 @@ readonly struct Memory<T> {
 
     public Memory(T[]? array, int start, int length) {
         if (array == null) {
-            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException("start"); }
+            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException(); }
         }
         else if (start < 0 || length < 0 || start > array.Length - length) {
-            throw new ArgumentOutOfRangeException("start");
+            throw new ArgumentOutOfRangeException();
         }
         items = array;
         from = start;
@@ -9062,10 +9170,10 @@ readonly struct ReadOnlyMemory<T> {
 
     public ReadOnlyMemory(T[]? array, int start, int length) {
         if (array == null) {
-            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException("start"); }
+            if (start != 0 || length != 0) { throw new ArgumentOutOfRangeException(); }
         }
         else if (start < 0 || length < 0 || start > array.Length - length) {
-            throw new ArgumentOutOfRangeException("start");
+            throw new ArgumentOutOfRangeException();
         }
         items = array;
         from = start;
@@ -11341,13 +11449,16 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
         for (int i = 0; i < count; i++) { into[i] = items[i]; }
     }
 
-    public void CopyTo(T[] into) {
-        for (int i = 0; i < count; i++) { into[i] = items[i]; }
-    }
+    // ARRAY.COPY'S, as .NET's list copies: its refusals in its words.
+    public void CopyTo(T[] into) { Array.Copy(items, 0, into, 0, count); }
 
     // .NET's third overload: where in the destination to start writing.
-    public void CopyTo(T[] into, int at) {
-        for (int i = 0; i < count; i++) { into[at + i] = items[i]; }
+    public void CopyTo(T[] into, int at) { Array.Copy(items, 0, into, at, count); }
+
+    /// `howMany` from `index` on, the run checked against the list first.
+    public void CopyTo(int index, T[] into, int at, int howMany) {
+        if (count - index < howMany) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
+        Array.Copy(items, index, into, at, howMany);
     }
 
     // A COPY, not a view: .NET's ToArray hands back an array of its own, so
@@ -11986,6 +12097,14 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         count = 0;
     }
 
+    /// Room for `capacity` before the first growth.
+    public Queue(int capacity) {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity, "capacity");
+        items = new T[capacity];
+        head = 0;
+        count = 0;
+    }
+
     /// A collection's count is the room, as .NET copies one into an array of
     /// its size; anything else grows as Enqueue grows it.
     public Queue(IEnumerable<T> collection) : this() {
@@ -12091,7 +12210,11 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         return made;
     }
 
+    // .NET's refusals: a place past the array, its value not named, then too little room.
     public void CopyTo(T[] target, int at) {
+        if (target == null) { throw new ArgumentNullException("array"); }
+        if (at < 0 || at > target.Length) { throw new ArgumentOutOfRangeException("arrayIndex", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
+        if (target.Length - at < count) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
         for (int i = 0; i < count; i++) { target[at + i] = this[i]; }
     }
 
@@ -12465,7 +12588,18 @@ class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
 /// sorted by those keys: a comparison never calls a selector, and the
 /// selectors' calls are .NET's in number and order. A tie at every level
 /// goes to the earlier element, which is what keeps the sort stable.
-class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T> {
+/// AN ORDERING'S FIRST OR LAST IN ONE WALK, asked by First and Last
+/// (OrderedSequence.Edge). Through an interface, not a type test and a
+/// cast: the lifetime rules read a call on what First was handed by its
+/// fields' word offsets, whatever the object, and a cast's call reading an
+/// ordering's fields made every source's -- a Select's list among them --
+/// taken by First. A call through this is one the link answers by the
+/// orderings the program makes, and a program that orders none pays nothing.
+interface IOrderedEdge<T> {
+    T Edge(bool wantLast, Func<T, bool>? predicate, out bool found);
+}
+
+class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T>, IOrderedEdge<T> {
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     private IEnumerable<T> source;
@@ -12514,6 +12648,46 @@ class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T> {
         }
     }
 
+    /// .NET'S FIRST AND LAST OF AN ORDERING (OrderedIterator.TryGetFirst,
+    /// TryGetLast): one walk that keeps the element sorting first or last,
+    /// and no sort. One level compares each key with the kept one's
+    /// (SortLevel.TakesAlone); levels of a ThenBy keep a key each, and a
+    /// later level's is asked for only on a tie before it (CompareElement).
+    /// Last with a predicate walks so at any depth, a key asked only of what
+    /// passes; First with one sorts (.NET's). The source walked here and
+    /// only here, as Count walks it: the levels are handed elements, never
+    /// the sequence, so a call of First keeps nothing of what it is asked.
+    public T Edge(bool wantLast, Func<T, bool>? predicate, out bool found) {
+        SortLevel<T>? first = null;
+        for (SortLevel<T>? level = last; level != null; level = level.before) { first = level.Fresh(first); }
+        bool alone = last.before == null && predicate == null;
+        using (IEnumerator<T> walk = source.GetEnumerator()) {
+            T value = default(T)!;
+            bool any = false;
+            while (!any) {
+                if (!walk.MoveNext()) { found = false; return default(T)!; }
+                value = walk.Current;
+                any = predicate == null || predicate(value);
+            }
+            first!.SetElement(value);
+            while (walk.MoveNext()) {
+                T x = walk.Current;
+                if (predicate != null && !predicate(x)) { continue; }
+                // .NET'S CachingComparer: a tie keeps the earlier for First
+                // and takes the later for Last, as a stable sort orders them.
+                bool take;
+                if (alone) { take = first.TakesAlone(x, wantLast); }
+                else {
+                    int c = first.CompareElement(x, !wantLast);
+                    take = wantLast ? c >= 0 : c < 0;
+                }
+                if (take) { value = x; }
+            }
+            found = true;
+            return value;
+        }
+    }
+
     // THE ELEMENTS' PLACES IN SORTED ORDER: this walk's levels made from the
     // pattern, the last first so each knows the one after it, every key
     // asked for, and the places sorted by .NET's introspective sort, as its
@@ -12549,6 +12723,25 @@ abstract class SortLevel<T> : IComparer<int> {
     public abstract int CompareAnyKeys(int a, int b);
 
     public int Compare(int a, int b) { return CompareAnyKeys(a, b); }
+
+    /// Whether an element is the new first or last in this one level's
+    /// order: its key compared with the kept one's, the new key first, and
+    /// taken (and kept) ascending where it is less (First) or not more
+    /// (Last), descending where it is more (First) or not less (Last) -- the
+    /// sign tested, never turned, as .NET's single-key TryGetFirst and
+    /// TryGetLast test it.
+    public abstract bool TakesAlone(T element, bool wantLast);
+
+    /// The element kept: this level's key of it, then the next level's
+    /// (.NET's CachingComparer.SetElement).
+    public abstract void SetElement(T element);
+
+    /// An element against the one kept: by this level's key, the new one
+    /// first ascending and second descending; on a tie by the next level's.
+    /// The key is kept where the element sorts before the kept one and
+    /// `cacheLower`, or not before it and not `cacheLower`, with the next
+    /// level's then (.NET's CachingComparer.Compare).
+    public abstract int CompareElement(T element, bool cacheLower);
 }
 
 /// A level by a key, OrderBy's and ThenBy's and their descending forms,
@@ -12594,6 +12787,34 @@ sealed class KeyLevel<T, K> : SortLevel<T> {
         }
         return down != (c > 0) ? 1 : -1;
     }
+
+    private K kept;
+
+    public override bool TakesAlone(T element, bool wantLast) {
+        K key = of(element);
+        int c = by.Compare(key, kept);
+        bool take = down ? (wantLast ? c <= 0 : c > 0) : (wantLast ? c >= 0 : c < 0);
+        if (take) { kept = key; }
+        return take;
+    }
+
+    public override void SetElement(T element) {
+        kept = of(element);
+        SortLevel<T>? then = next;
+        if (then != null) { then.SetElement(element); }
+    }
+
+    public override int CompareElement(T element, bool cacheLower) {
+        K key = of(element);
+        int c = down ? by.Compare(kept, key) : by.Compare(key, kept);
+        SortLevel<T>? then = next;
+        if (c == 0 && then != null) { return then.CompareElement(element, cacheLower); }
+        if (cacheLower == c < 0) {
+            kept = key;
+            if (then != null) { then.SetElement(element); }
+        }
+        return c;
+    }
 }
 
 /// A level by the element itself, Order's and OrderDescending's: .NET's
@@ -12629,6 +12850,32 @@ sealed class ElementLevel<T> : SortLevel<T> {
             return then.CompareAnyKeys(a, b);
         }
         return down != (c > 0) ? 1 : -1;
+    }
+
+    private T kept;
+
+    public override bool TakesAlone(T element, bool wantLast) {
+        int c = by.Compare(element, kept);
+        bool take = down ? (wantLast ? c <= 0 : c > 0) : (wantLast ? c >= 0 : c < 0);
+        if (take) { kept = element; }
+        return take;
+    }
+
+    public override void SetElement(T element) {
+        kept = element;
+        SortLevel<T>? then = next;
+        if (then != null) { then.SetElement(element); }
+    }
+
+    public override int CompareElement(T element, bool cacheLower) {
+        int c = down ? by.Compare(kept, element) : by.Compare(element, kept);
+        SortLevel<T>? then = next;
+        if (c == 0 && then != null) { return then.CompareElement(element, cacheLower); }
+        if (cacheLower == c < 0) {
+            kept = element;
+            if (then != null) { then.SetElement(element); }
+        }
+        return c;
     }
 }
 
@@ -13354,10 +13601,19 @@ static class Enumerable {
         return null;
     }
 
+    // AN ORDERING'S FIRST OR LAST IN ONE WALK, as .NET takes OrderBy's: no
+    // sort, each key asked once (OrderedSequence.Edge, IOrderedEdge). With a
+    // predicate only Last walks so; First sorts and asks the predicate in
+    // order.
     public static T First<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
         // A list is asked for its first, as .NET asks any IList.
         if (source is IList<T> list) { if (list.Count > 0) { return list[0]; } throw NoElements(); }
+        if (source is IOrderedEdge<T> ordered) {
+            T edge = ordered.Edge(false, null, out bool found);
+            if (found) { return edge; }
+            throw NoElements();
+        }
         foreach (T item in source) { return item; }
         throw NoElements();
     }
@@ -13377,6 +13633,10 @@ static class Enumerable {
     public static T FirstOrDefault<T>(this IEnumerable<T> source, T defaultValue) {
         NotNull(source, "source");
         if (source is IList<T> list) { return list.Count > 0 ? list[0] : defaultValue; }
+        if (source is IOrderedEdge<T> ordered) {
+            T edge = ordered.Edge(false, null, out bool found);
+            return found ? edge : defaultValue;
+        }
         foreach (T item in source) { return item; }
         return defaultValue;
     }
@@ -13405,6 +13665,11 @@ static class Enumerable {
         if (Items(source, out int count) is { } items) { if (count > 0) { return items[count - 1]; } throw NoElements(); }
         if (source is IList<T> list) { if (list.Count > 0) { return list[list.Count - 1]; } throw NoElements(); }
         if (source is IReadOnlyList<T> view) { if (view.Count > 0) { return view[view.Count - 1]; } throw NoElements(); }
+        if (source is IOrderedEdge<T> ordered) {
+            T edge = ordered.Edge(true, null, out bool any);
+            if (any) { return edge; }
+            throw NoElements();
+        }
         bool found = false;
         T last = default(T)!;
         foreach (T item in source) { found = true; last = item; }
@@ -13426,6 +13691,11 @@ static class Enumerable {
             for (int i = view.Count - 1; i >= 0; i--) { T item = view[i]; if (predicate(item)) { return item; } }
             throw NoMatch();
         }
+        if (source is IOrderedEdge<T> ordered) {
+            T edge = ordered.Edge(true, predicate, out bool any);
+            if (any) { return edge; }
+            throw NoMatch();
+        }
         bool found = false;
         T last = default(T)!;
         foreach (T item in source) { if (predicate(item)) { found = true; last = item; } }
@@ -13440,6 +13710,10 @@ static class Enumerable {
         if (Items(source, out int count) is { } items) { return count > 0 ? items[count - 1] : defaultValue; }
         if (source is IList<T> list) { return list.Count > 0 ? list[list.Count - 1] : defaultValue; }
         if (source is IReadOnlyList<T> view) { return view.Count > 0 ? view[view.Count - 1] : defaultValue; }
+        if (source is IOrderedEdge<T> ordered) {
+            T edge = ordered.Edge(true, null, out bool found);
+            return found ? edge : defaultValue;
+        }
         T last = defaultValue;
         foreach (T item in source) { last = item; }
         return last;
@@ -13460,6 +13734,10 @@ static class Enumerable {
         if (source is IReadOnlyList<T> view) {
             for (int i = view.Count - 1; i >= 0; i--) { T item = view[i]; if (predicate(item)) { return item; } }
             return defaultValue;
+        }
+        if (source is IOrderedEdge<T> ordered) {
+            T edge = ordered.Edge(true, predicate, out bool found);
+            return found ? edge : defaultValue;
         }
         T last = defaultValue;
         foreach (T item in source) { if (predicate(item)) { last = item; } }
@@ -17671,9 +17949,11 @@ static class Array {
     }
 
     /// From `startIndex` to the end.
+    // .NET'S REFUSALS IN ITS WORDS: a start past the end (or, from the end,
+    // at it), then a count running off the array.
     public static int IndexOf<T>(T[] items, T value, int startIndex) {
         if (items == null) throw new ArgumentNullException("array");
-        if (startIndex < 0 || startIndex > items.Length) throw new ArgumentOutOfRangeException("startIndex");
+        if (startIndex < 0 || startIndex > items.Length) throw new ArgumentOutOfRangeException("startIndex", "Index was out of range. Must be non-negative and less than or equal to the size of the collection.");
         return IndexOf(items, value, startIndex, items.Length - startIndex);
     }
 
@@ -17682,8 +17962,8 @@ static class Array {
     /// range inside the array.
     public static int IndexOf<T>(T[] items, T value, int startIndex, int count) {
         if (items == null) throw new ArgumentNullException("array");
-        if (startIndex < 0 || startIndex > items.Length) throw new ArgumentOutOfRangeException("startIndex");
-        if (count < 0 || count > items.Length - startIndex) throw new ArgumentOutOfRangeException("count");
+        if (startIndex < 0 || startIndex > items.Length) throw new ArgumentOutOfRangeException("startIndex", "Index was out of range. Must be non-negative and less than or equal to the size of the collection.");
+        if (count < 0 || count > items.Length - startIndex) throw new ArgumentOutOfRangeException("count", "Count must be positive and count must refer to a location within the string/array/collection.");
         for (int i = startIndex; i < startIndex + count; i++) {
             if (Same(items[i], value)) { return i; }
         }
@@ -17711,17 +17991,12 @@ static class Array {
         }
     }
 
-    public static void CopyTo<T>(this T[] items, T[] into) {
-        for (int i = 0; i < items.Length; i++) { into[i] = items[i]; }
-    }
+    // ARRAY.COPY'S, as .NET's array copies itself: its refusals in its words.
+    public static void CopyTo<T>(this T[] items, T[] into) { Array.Copy(items, 0, into, 0, items.Length); }
 
-    public static void CopyTo<T>(this T[] items, T[] into, int at) {
-        for (int i = 0; i < items.Length; i++) { into[at + i] = items[i]; }
-    }
+    public static void CopyTo<T>(this T[] items, T[] into, int at) { Array.Copy(items, 0, into, at, items.Length); }
 
-    public static void CopyTo<T>(this T[] items, Span<T> into) {
-        for (int i = 0; i < items.Length; i++) { into[i] = items[i]; }
-    }
+    public static void CopyTo<T>(this T[] items, Span<T> into) { new ReadOnlySpan<T>(items).CopyTo(into); }
 
     // .NET's MemoryExtensions.AsMemory: an array's window as a Memory.
     public static Memory<T> AsMemory<T>(this T[]? items) { return new Memory<T>(items); }
@@ -17771,12 +18046,12 @@ static class Array {
     public static int LastIndexOf<T>(T[] items, T value, int startIndex, int count) {
         if (items == null) throw new ArgumentNullException("array");
         if (items.Length == 0) {
-            if (startIndex != -1 && startIndex != 0) throw new ArgumentOutOfRangeException("startIndex");
-            if (count != 0) throw new ArgumentOutOfRangeException("count");
+            if (startIndex != -1 && startIndex != 0) throw new ArgumentOutOfRangeException("startIndex", "Index was out of range. Must be non-negative and less than the size of the collection.");
+            if (count != 0) throw new ArgumentOutOfRangeException("count", "Count must be positive and count must refer to a location within the string/array/collection.");
             return -1;
         }
-        if (startIndex < 0 || startIndex >= items.Length) throw new ArgumentOutOfRangeException("startIndex");
-        if (count < 0 || startIndex - count + 1 < 0) throw new ArgumentOutOfRangeException("count");
+        if (startIndex < 0 || startIndex >= items.Length) throw new ArgumentOutOfRangeException("startIndex", "Index was out of range. Must be non-negative and less than the size of the collection.");
+        if (count < 0 || startIndex - count + 1 < 0) throw new ArgumentOutOfRangeException("count", "Count must be positive and count must refer to a location within the string/array/collection.");
         for (int i = startIndex; i > startIndex - count; i--) {
             if (Same(items[i], value)) { return i; }
         }
@@ -17800,6 +18075,9 @@ static class Array {
         Sorting.Introspective<T>(items, 0, items.Length, new ComparisonComparer<T>(by));
     }
 
+    /// A run of it in the default order.
+    public static void Sort<T>(T[] items, int index, int howMany) { Sort<T>(items, index, howMany, null); }
+
     /// A run of it, checked as .NET checks one; null is the default order.
     public static void Sort<T>(T[] items, int index, int howMany, IComparer<T>? by) {
         if (items == null) { throw new ArgumentNullException("array"); }
@@ -17822,9 +18100,15 @@ static class Array {
         PairSorting<TKey, TValue>.Introspective(keys, items, 0, keys.Length, by ?? Comparer<TKey>.Default);
     }
 
-    public static void Reverse<T>(T[] items) { Reverse(items, 0, items.Length); }
+    public static void Reverse<T>(T[] items) {
+        if (items == null) { throw new ArgumentNullException("array"); }
+        Reverse(items, 0, items.Length);
+    }
 
     public static void Reverse<T>(T[] items, int index, int howMany) {
+        if (items == null) { throw new ArgumentNullException("array"); }
+        if (index < 0 || howMany < 0) { throw new ArgumentOutOfRangeException(howMany < 0 ? "length" : "index", "Non-negative number required."); }
+        if (items.Length - index < howMany) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
         int left = index;
         int right = index + howMany - 1;
 
@@ -17840,14 +18124,15 @@ static class Array {
     /// .NET's Array.Copy, which is allowed to overlap -- so the direction is
     /// chosen from which way the block is moving rather than always forwards.
     ///
-    /// .NET's refusals first, in its order: no array, a negative length or
-    /// start, then a range that runs off either array.
+    /// .NET's refusals first, in its order and .NET 10's words: no array, a
+    /// negative length or a start below the lower bound (its range guards),
+    /// then a range that runs off either array.
     public static void Copy<T>(T[] from, int fromAt, T[] into, int intoAt, int howMany) {
         if (from == null) { throw new ArgumentNullException("sourceArray"); }
         if (into == null) { throw new ArgumentNullException("destinationArray"); }
-        if (howMany < 0) { throw new ArgumentOutOfRangeException("length", "Non-negative number required."); }
-        if (fromAt < 0) { throw new ArgumentOutOfRangeException("sourceIndex", "Number was less than the array's lower bound in the first dimension."); }
-        if (intoAt < 0) { throw new ArgumentOutOfRangeException("destinationIndex", "Number was less than the array's lower bound in the first dimension."); }
+        ArgumentOutOfRangeException.ThrowIfNegative(howMany, "length");
+        ArgumentOutOfRangeException.ThrowIfLessThan(fromAt, 0, "sourceIndex");
+        ArgumentOutOfRangeException.ThrowIfLessThan(intoAt, 0, "destinationIndex");
         if ((uint)(fromAt + howMany) > (uint)from.Length) {
             throw new ArgumentException("Source array was not long enough. Check the source index, length, and the array's lower bounds.", "sourceArray");
         }
@@ -17866,11 +18151,12 @@ static class Array {
     }
 
     /// The 64-bit forms .NET has beside them: the same copy, positions and
-    /// length as longs, each of which has to be a position an array has.
+    /// length as longs, each of which has to be an int -- a negative one is
+    /// refused by the int form, in its words, as .NET's narrows them.
     public static void Copy<T>(T[] from, long fromAt, T[] into, long intoAt, long howMany) {
-        if (fromAt < 0 || fromAt > int.MaxValue) { throw new ArgumentOutOfRangeException("sourceIndex", "Arrays larger than 2GB are not supported."); }
-        if (intoAt < 0 || intoAt > int.MaxValue) { throw new ArgumentOutOfRangeException("destinationIndex", "Arrays larger than 2GB are not supported."); }
-        if (howMany < 0 || howMany > int.MaxValue) { throw new ArgumentOutOfRangeException("length", "Arrays larger than 2GB are not supported."); }
+        if (fromAt != (int)fromAt) { throw new ArgumentOutOfRangeException("sourceIndex", "Arrays larger than 2GB are not supported."); }
+        if (intoAt != (int)intoAt) { throw new ArgumentOutOfRangeException("destinationIndex", "Arrays larger than 2GB are not supported."); }
+        if (howMany != (int)howMany) { throw new ArgumentOutOfRangeException("length", "Arrays larger than 2GB are not supported."); }
         Copy(from, (int)fromAt, into, (int)intoAt, (int)howMany);
     }
 
@@ -18006,7 +18292,7 @@ static class Array {
     /// really happens is a new one and an assignment over the caller's
     /// variable. .NET's signature says so and this one says the same.
     public static void Resize<T>(ref T[]? items, int size) {
-        if (size < 0) { throw new ArgumentOutOfRangeException("newSize"); }
+        if (size < 0) { throw new ArgumentOutOfRangeException("newSize", "Non-negative number required."); }
         // NO ARRAY YET is an empty one, as .NET has it: one of the size asked.
         if (items is null) { items = new T[size]; return; }
         T[] made = new T[size];
@@ -18970,8 +19256,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         IEnumerator<K> IEnumerable<K>.GetEnumerator() { return GetEnumerator(); }
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
         public bool Contains(K item) => over.ContainsKey(item);
-        public void CopyTo(K[] array, int arrayIndex) {
-            foreach (K key in this) { array[arrayIndex] = key; arrayIndex = arrayIndex + 1; }
+        public void CopyTo(K[] array, int index) {
+            CopyRoom(array, index, over.Count);
+            foreach (K key in this) { array[index] = key; index = index + 1; }
         }
         public void Add(K item) { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
         public void Clear() { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
@@ -19025,8 +19312,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         IEnumerator<V> IEnumerable<V>.GetEnumerator() { return GetEnumerator(); }
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
         public bool Contains(V item) => over.ContainsValue(item);
-        public void CopyTo(V[] array, int arrayIndex) {
-            foreach (V value in this) { array[arrayIndex] = value; arrayIndex = arrayIndex + 1; }
+        public void CopyTo(V[] array, int index) {
+            CopyRoom(array, index, over.Count);
+            foreach (V value in this) { array[index] = value; index = index + 1; }
         }
         public void Add(V item) { throw new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
         public void Clear() { throw new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
@@ -19089,14 +19377,21 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         return TryGetValue(item.Key, out V found) && EqualityComparer<V>.Default.Equals(found, item.Value);
     }
 
-    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex) {
-        if (array == null) { throw new ArgumentNullException("array"); }
-        if (arrayIndex < 0 || arrayIndex > array.Length) { throw new ArgumentOutOfRangeException("arrayIndex"); }
-        if (array.Length - arrayIndex < Count) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
+    void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int index) {
+        CopyRoom(array, index, Count);
         foreach (KeyValuePair<K, V> pair in this) {
-            array[arrayIndex] = pair;
-            arrayIndex = arrayIndex + 1;
+            array[index] = pair;
+            index = index + 1;
         }
+    }
+
+    // .NET'S REFUSALS FOR THE TABLE'S COPIES, its views' too: a place below
+    // zero or past the array in one ("Non-negative number required."), then
+    // too little room.
+    private static void CopyRoom<E>(E[] array, int index, int count) {
+        if (array == null) { throw new ArgumentNullException("array"); }
+        if ((uint)index > (uint)array.Length) { throw new ArgumentOutOfRangeException("index", "Non-negative number required."); }
+        if (array.Length - index < count) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
     }
 
     bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item) {
@@ -22052,7 +22347,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     /// capacity constructor: the table made at the size Dictionary's makes
     /// for as many -- a power of two, three-quarters of which holds them.
     public HashSet(int capacity) : this() {
-        ArgumentOutOfRangeException.ThrowIfNegative(capacity, "capacity");
+        if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
         int want = capacity * 4 / 3 + 1;
         int size = 16;
 
@@ -22555,8 +22850,8 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
 
     public void CopyTo(T[] array, int arrayIndex, int count) {
         if (array == null) { throw new ArgumentNullException("array"); }
-        if (arrayIndex < 0) { throw new ArgumentOutOfRangeException("arrayIndex"); }
-        if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(arrayIndex, "arrayIndex");
+        ArgumentOutOfRangeException.ThrowIfNegative(count, "count");
         if (arrayIndex > array.Length || count > array.Length - arrayIndex) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
         int copied = 0;
         foreach (T value in this) {
@@ -22979,8 +23274,8 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public void CopyTo(T[] array, int index, int count) {
         if (array == null) { throw new ArgumentNullException("array"); }
-        if (index < 0) { throw new ArgumentOutOfRangeException("index"); }
-        if (count < 0) { throw new ArgumentOutOfRangeException("count"); }
+        ArgumentOutOfRangeException.ThrowIfNegative(index, "index");
+        ArgumentOutOfRangeException.ThrowIfNegative(count, "count");
         if (index > array.Length || count > array.Length - index) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
         int copied = 0;
         foreach (T value in this) {
@@ -23005,12 +23300,9 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         return taken;
     }
 
-    public void CopyTo(T[] array) { CopyTo(array, 0); }
+    public void CopyTo(T[] array) { CopyTo(array, 0, Count); }
 
-    public void CopyTo(T[] array, int index) {
-        Sync();
-        for (int i = 0; i < items.Count; i++) { array[index + i] = items[i]; }
-    }
+    public void CopyTo(T[] array, int index) { CopyTo(array, index, Count); }
 
     /// The members last to first, as .NET's: walked as they are when the walk
     /// begins, and refused, as a walk forwards is, once the set has changed.

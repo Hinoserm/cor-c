@@ -1,0 +1,89 @@
+// test: sorted_list_views_as_dotnet
+// expect-exit: 0
+// expect-output:
+// names KeyList ValueList SortedListKeyEnumerator SortedListValueEnumerator
+// is False False False
+// same True
+// copy _,a,b,c
+// copynull ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// copyneg ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex')
+// Actual value was -1.
+// copyshort ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// vcopyshort ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// index ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')
+// Actual value was 3.
+// vindex ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')
+// Actual value was -1.
+// indexofnull ArgumentNullException: Value cannot be null. (Parameter 'key')
+// containsnull ArgumentNullException: Value cannot be null. (Parameter 'key')
+// indexof 1 -1 2 -1
+// set NotSupportedException: Mutating a key collection derived from a dictionary is not allowed.
+// vset NotSupportedException: This operation is not supported on SortedList nested types because they require modifying the original SortedList.
+// add NotSupportedException: This operation is not supported on SortedList nested types because they require modifying the original SortedList.
+// vinsert NotSupportedException: This operation is not supported on SortedList nested types because they require modifying the original SortedList.
+// vremoveat NotSupportedException: This operation is not supported on SortedList nested types because they require modifying the original SortedList.
+// current before InvalidOperationException: Enumeration has either not started or has already finished.
+// current a
+// modified InvalidOperationException: Collection was modified after the enumerator was instantiated.
+// reset InvalidOperationException: Collection was modified after the enumerator was instantiated.
+// current after InvalidOperationException: Enumeration has either not started or has already finished.
+// current disposed InvalidOperationException: Enumeration has either not started or has already finished.
+// linq d 2
+//
+// SortedList's Keys and Values are .NET's KeyList and ValueList: lists that
+// are not read-only lists, copied by Array.Copy (its refusals), refusing a
+// place with its value named, and walked by SortedListKeyEnumerator and
+// SortedListValueEnumerator.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + " ok"); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    static void Main()
+    {
+        SortedList<string, int> sl = new() { ["c"] = 3, ["a"] = 1, ["b"] = 2 };
+        IList<string> keys = sl.Keys; IList<int> values = sl.Values;
+        Console.WriteLine("names " + keys.GetType().Name + " " + values.GetType().Name + " " + keys.GetEnumerator().GetType().Name + " " + values.GetEnumerator().GetType().Name);
+        Console.WriteLine("is " + (keys is IReadOnlyList<string>) + " " + (values is IReadOnlyList<int>) + " " + (keys is IReadOnlyCollection<string>));
+        Console.WriteLine("same " + ReferenceEquals(sl.Keys, sl.Keys));
+        string[] into = new string[4];
+        keys.CopyTo(into, 1);
+        Console.WriteLine("copy " + string.Join(",", into.Select(x => x ?? "_")));
+        Try("copynull", () => keys.CopyTo(null!, 0));
+        Try("copyneg", () => keys.CopyTo(into, -1));
+        Try("copyshort", () => keys.CopyTo(into, 2));
+        Try("vcopyshort", () => values.CopyTo(new int[2], 0));
+        Try("index", () => Console.WriteLine(keys[3]));
+        Try("vindex", () => Console.WriteLine(values[-1]));
+        Try("indexofnull", () => Console.WriteLine(keys.IndexOf(null!)));
+        Try("containsnull", () => Console.WriteLine(keys.Contains(null!)));
+        Console.WriteLine("indexof " + keys.IndexOf("b") + " " + keys.IndexOf("q") + " " + values.IndexOf(3) + " " + values.IndexOf(9));
+        Try("set", () => keys[0] = "z");
+        Try("vset", () => values[0] = 9);
+        Try("add", () => keys.Add("z"));
+        Try("vinsert", () => values.Insert(0, 1));
+        Try("vremoveat", () => values.RemoveAt(0));
+        var e = keys.GetEnumerator();
+        Try("current before", () => Console.WriteLine(((System.Collections.IEnumerator)e).Current));
+        e.MoveNext();
+        Console.WriteLine("current " + e.Current);
+        sl["d"] = 4;
+        Try("modified", () => e.MoveNext());
+        Try("reset", () => e.Reset());
+        var v = values.GetEnumerator();
+        while (v.MoveNext()) { }
+        Try("current after", () => Console.WriteLine(((System.Collections.IEnumerator)v).Current));
+        v.Dispose();
+        Try("current disposed", () => Console.WriteLine(((System.Collections.IEnumerator)v).Current));
+        Console.WriteLine("linq " + sl.Keys.Last() + " " + sl.Values.ElementAt(1));
+    }
+}

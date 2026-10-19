@@ -59,14 +59,14 @@ public static class IrReachability
                 && archives.TryGetValue(reference.Origin, out IrArchive? own) && copies[reference.Origin].Add(reference.Symbol)
                 && (own.Entries.TryGetValue("F:" + reference.Symbol, out IrArchiveEntry? copy)
                     || own.Entries.TryGetValue("D:" + reference.Symbol, out copy)))
-                foreach (string dependency in copy.References)
-                    if (Kept(reference.Origin, reference.Symbol, dependency)) pending.Push((reference.Origin, dependency));
+                foreach (string named in copy.References)
+                    if (IrArchiveEntry.Named(named) is var dependency && Kept(reference.Origin, reference.Symbol, dependency)) pending.Push((reference.Origin, dependency));
             if (owner is null || !archives.TryGetValue(owner, out IrArchive? archive)) continue;
             string key = "F:" + reference.Symbol;
             if (!archive.Entries.ContainsKey(key)) key = "D:" + reference.Symbol;
             if (!archive.Entries.TryGetValue(key, out IrArchiveEntry? definition) || !retained[owner].Add(key)) continue;
-            foreach (string dependency in definition.References)
-                if (Kept(owner, reference.Symbol, dependency)) pending.Push((owner, dependency));
+            foreach (string named in definition.References)
+                if (IrArchiveEntry.Named(named) is var dependency && Kept(owner, reference.Symbol, dependency)) pending.Push((owner, dependency));
         }
         return retained;
     }

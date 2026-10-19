@@ -505,17 +505,20 @@ public static class VirtualTargets
                 {
                     if (section.Kind == SectionKind.Note) continue;
                     List<(long Start, long End)>? ranges = skipped.GetValueOrDefault(section);
-                    // The functions the link drops, by where they lie in the
-                    // section: only those the unit's IR holds and the link did
-                    // not keep. A function the late passes made after the IR
+                    // The functions the unit's IR holds, by where they lie in
+                    // the section: those the link drops make nothing, and
+                    // those it keeps are counted by their IR below, which
+                    // tells a descriptor only compared with from one stamped
+                    // (IrArchiveEntry.ComparedOnly) -- their code's relocations
+                    // do not. A function the late passes made after the IR
                     // was archived (a constant-specialised copy) is never in
-                    // the kept set, kept or not, and counts as before.
+                    // the IR, kept or not, and counts as before.
                     List<(long Start, long End)>? dropped = null;
                     if (kept is not null && its is not null)
                     {
                         foreach (Symbol symbol in obj.Symbols)
                             if (symbol.IsDefined && symbol.IsFunction && symbol.Size > 0 && ReferenceEquals(symbol.Section, section)
-                                && its.Entries.ContainsKey("F:" + symbol.Name) && !kept.Contains("F:" + symbol.Name))
+                                && its.Entries.ContainsKey("F:" + symbol.Name))
                                 (dropped ??= new()).Add((symbol.Offset, symbol.Offset + symbol.Size));
                         dropped?.Sort((a, b) => a.Start.CompareTo(b.Start));
                     }

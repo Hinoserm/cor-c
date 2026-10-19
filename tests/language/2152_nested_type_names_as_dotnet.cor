@@ -1,0 +1,53 @@
+// test: nested_type_names_as_dotnet
+// expect-exit: 0
+// expect-output:
+// KeyCollection | System.Collections.Generic.Dictionary`2+KeyCollection
+// Enumerator | System.Collections.Generic.Dictionary`2+ValueCollection+Enumerator
+// Enumerator | System.Collections.Generic.List`1+Enumerator
+// Inner | Space.Outer`1+Inner
+// Deeper`1 | Space.Outer`1+Deeper`1
+// Deepest | Space.Outer`1+Deeper`1+Deepest
+// Value | Space.Outer`1+Value
+// Inside | Space.Plain+Inside
+// InsideOf`1 | Space.Plain+InsideOf`1
+// KeyCollection | System.Collections.Generic.SortedDictionary`2+KeyCollection
+// Inner KeyCollection
+//
+// A type nested in a generic one is named as .NET names it: Name its own
+// arity only (KeyCollection, Deeper`1), FullName each outer type with the
+// arity it adds, joined by +, in its namespace --
+// Dictionary`2+KeyCollection, Outer`1+Deeper`1+Deepest.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+namespace Space
+{
+    class Outer<T>
+    {
+        public class Inner { }
+        public class Deeper<U> { public class Deepest { } }
+        public struct Value { }
+    }
+    class Plain { public class Inside { } public class InsideOf<V> { } }
+}
+
+static class Program
+{
+    static void Show(object o) { Type t = o.GetType(); Console.WriteLine(t.Name + " | " + t.FullName?.Split('[')[0]); }
+    static void Main()
+    {
+        Show(new Dictionary<string, int>().Keys);
+        Show(new Dictionary<string, int>().Values.GetEnumerator());
+        Show(new List<int>().GetEnumerator());
+        Show(new Space.Outer<string>.Inner());
+        Show(new Space.Outer<int>.Deeper<string>());
+        Show(new Space.Outer<int>.Deeper<string>.Deepest());
+        Show(new Space.Outer<int>.Value());
+        Show(new Space.Plain.Inside());
+        Show(new Space.Plain.InsideOf<int>());
+        Show(new SortedDictionary<int, int>().Keys);
+        Console.WriteLine(typeof(Space.Outer<string>.Inner).Name + " " + typeof(Dictionary<int, int>.KeyCollection).Name);
+    }
+}

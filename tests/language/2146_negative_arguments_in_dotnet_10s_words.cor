@@ -1,0 +1,124 @@
+// test: negative_arguments_in_dotnet_10s_words
+// expect-exit: 0
+// expect-output:
+// padleft ArgumentOutOfRangeException: totalWidth ('-1') must be a non-negative value. (Parameter 'totalWidth') | Actual value was -1.
+// padright ArgumentOutOfRangeException: totalWidth ('-1') must be a non-negative value. (Parameter 'totalWidth') | Actual value was -1.
+// compareordinal ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'indexA')
+// compareordinalB ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'indexB')
+// getbytes ArgumentOutOfRangeException: Non-negative number required. (Parameter 'charIndex')
+// getbytescount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'charCount')
+// getstring ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// getstringcount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'count')
+// asciigetstring ArgumentOutOfRangeException: Non-negative number required. (Parameter 'byteIndex')
+// segment ArgumentOutOfRangeException: Non-negative number required. (Parameter 'offset')
+// segmentcount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'count')
+// removerange ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// removerangecount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'count')
+// listcap ArgumentOutOfRangeException: Non-negative number required. (Parameter 'capacity')
+// getrange ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// getrangecount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'count')
+// reverse ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// sortrange ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// binsearchlist ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// ensurecap ArgumentOutOfRangeException: Non-negative number required. (Parameter 'capacity')
+// log2 ArgumentOutOfRangeException: Non-negative number required. (Parameter 'value')
+// index ArgumentOutOfRangeException: Non-negative number required. (Parameter 'value')
+// arraysort ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// arraysortlen ArgumentOutOfRangeException: Non-negative number required. (Parameter 'length')
+// binsearch ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// binsearchlen ArgumentOutOfRangeException: Non-negative number required. (Parameter 'length')
+// arrayreverse ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// arrayclear IndexOutOfRangeException: Index was outside the bounds of the array.
+// arrayindexof ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'startIndex')
+// arraycopyto ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -1.
+// sbappend ArgumentOutOfRangeException: startIndex ('-1') must be a non-negative value. (Parameter 'startIndex') | Actual value was -1.
+// sbinsert ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'index')
+// sbremove ArgumentOutOfRangeException: startIndex ('-1') must be a non-negative value. (Parameter 'startIndex') | Actual value was -1.
+// substring ArgumentOutOfRangeException: startIndex ('-1') must be a non-negative value. (Parameter 'startIndex') | Actual value was -1.
+// substringlen ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') | Actual value was -1.
+// remove ArgumentOutOfRangeException: StartIndex cannot be less than zero. (Parameter 'startIndex')
+// indexofstart ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'startIndex')
+// insert ArgumentOutOfRangeException: startIndex ('4294967295') must be less than or equal to '3'. (Parameter 'startIndex') | Actual value was 4294967295.
+// stringctor ArgumentOutOfRangeException: count ('-1') must be a non-negative value. (Parameter 'count') | Actual value was -1.
+// listinsert ArgumentOutOfRangeException: Index must be within the bounds of the List. (Parameter 'index')
+// listcopy ArgumentOutOfRangeException: sourceIndex ('-1') must be greater than or equal to '0'. (Parameter 'sourceIndex') | Actual value was -1.
+// queuecap ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') | Actual value was -1.
+// stackcap ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') | Actual value was -1.
+// dictcap ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'capacity')
+// hashcap ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'capacity')
+// sbcap ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') | Actual value was -1.
+// span ArgumentOutOfRangeException: Specified argument was out of the range of valid values.
+// memory ArgumentOutOfRangeException: Specified argument was out of the range of valid values.
+// take ArgumentOutOfRangeException: Specified argument was out of the range of valid values.
+//
+// Each refusal of a negative argument in the words .NET 10 has for it: the
+// older Non-negative number required where it kept it, its range guards
+// where it moved to them, PadLeft's and CompareOrdinal's among the changed.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+static class Program
+{
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + " ok"); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message.Replace("\n", " | ")); }
+    }
+
+    static void Main()
+    {
+        Try("padleft", () => "ab".PadLeft(-1));
+        Try("padright", () => "ab".PadRight(-1, 'x'));
+        Try("compareordinal", () => string.CompareOrdinal("ab", -1, "cd", 0, 1));
+        Try("compareordinalB", () => string.CompareOrdinal("ab", 0, "cd", -1, 1));
+        Try("getbytes", () => Encoding.UTF8.GetBytes("abc", -1, 1, new byte[4], 0));
+        Try("getbytescount", () => Encoding.UTF8.GetBytes("abc", 0, -1, new byte[4], 0));
+        Try("getstring", () => Encoding.UTF8.GetString(new byte[4], -1, 1));
+        Try("getstringcount", () => Encoding.UTF8.GetString(new byte[4], 0, -1));
+        Try("asciigetstring", () => Encoding.ASCII.GetString(new byte[4], -1, 1));
+        Try("segment", () => new ArraySegment<int>(new int[3], -1, 1));
+        Try("segmentcount", () => new ArraySegment<int>(new int[3], 0, -1));
+        List<int> l = new() { 1, 2, 3 };
+        Try("removerange", () => l.RemoveRange(-1, 1));
+        Try("removerangecount", () => l.RemoveRange(0, -1));
+        Try("listcap", () => new List<int>(-1));
+        Try("getrange", () => l.GetRange(-1, 1));
+        Try("getrangecount", () => l.GetRange(0, -1));
+        Try("reverse", () => l.Reverse(-1, 1));
+        Try("sortrange", () => l.Sort(-1, 1, null));
+        Try("binsearchlist", () => l.BinarySearch(-1, 1, 2, null));
+        Try("ensurecap", () => l.EnsureCapacity(-1));
+        Try("log2", () => Int128.Log2(-1));
+        Try("index", () => new Index(-1));
+        Try("arraysort", () => Array.Sort(new int[3], -1, 1));
+        Try("arraysortlen", () => Array.Sort(new int[3], 0, -1));
+        Try("binsearch", () => Array.BinarySearch(new int[3], -1, 1, 2));
+        Try("binsearchlen", () => Array.BinarySearch(new int[3], 0, -1, 2));
+        Try("arrayreverse", () => Array.Reverse(new int[3], -1, 1));
+        Try("arrayclear", () => Array.Clear(new int[3], -1, 1));
+        Try("arrayindexof", () => Array.IndexOf(new int[3], 0, -1));
+        Try("arraycopyto", () => new int[3].CopyTo(new int[3], -1));
+        Try("sbappend", () => new StringBuilder().Append("abc", -1, 1));
+        Try("sbinsert", () => new StringBuilder("ab").Insert(-1, "x"));
+        Try("sbremove", () => new StringBuilder("ab").Remove(-1, 1));
+        Try("substring", () => "abc".Substring(-1));
+        Try("substringlen", () => "abc".Substring(0, -1));
+        Try("remove", () => "abc".Remove(-1));
+        Try("indexofstart", () => "abc".IndexOf('a', -1));
+        Try("insert", () => "abc".Insert(-1, "x"));
+        Try("stringctor", () => new string('a', -1));
+        Try("listinsert", () => l.Insert(-1, 0));
+        Try("listcopy", () => l.CopyTo(-1, new int[3], 0, 1));
+        Try("queuecap", () => new Queue<int>(-1));
+        Try("stackcap", () => new Stack<int>(-1));
+        Try("dictcap", () => new Dictionary<int, int>(-1));
+        Try("hashcap", () => new HashSet<int>(-1));
+        Try("sbcap", () => new StringBuilder(-1));
+        Try("span", () => new Span<int>(new int[3], -1, 1));
+        Try("memory", () => new Memory<int>(new int[3], -1, 1));
+        Try("take", () => "abc".AsSpan().Slice(-1));
+    }
+}

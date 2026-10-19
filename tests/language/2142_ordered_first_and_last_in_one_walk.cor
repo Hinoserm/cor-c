@@ -1,0 +1,147 @@
+// test: ordered_first_and_last_in_one_walk
+// expect-exit: 0
+// expect-output:
+// first 11 keys 10 thens 8
+// last 38 keys 10 thens 3
+// firstdesc 38 keys 10 thens 3
+// lastdesc 19 keys 10 thens 8
+// firstwhere 15 keys 10 asked 2
+// lastwhere 38 keys 4 asked 10
+// firstnone -1 keys 10
+// emptyfirst -5 0 keys 0
+// threw Sequence contains no elements
+// threw Sequence contains no elements
+// threw Sequence contains no matching element
+// cmpfirst 11 12:31,15:12,11:12,33:11,19:11,14:11,12:11,38:11,17:11
+// cmplastdesc 11 12:31,15:12,11:12,33:11,19:11,14:11,12:11,38:11,17:11
+// cmplast 38 12:31,15:31,11:31,33:31,19:33,14:33,12:33,38:33,17:38
+// descfirst 38 12:31,15:31,11:31,33:31,19:33,14:33,12:33,38:33,17:38
+// descfirstX 38 12:31,15:31,11:31,33:31,19:33,14:33,12:33,38:33,17:38
+// desclastX 11 12:31,15:12,11:12,33:11,19:11,14:11,12:11,38:11,17:11
+// thenfirst 19 12:15,15:11,15:19,19:14,19:12,19:17
+// thenlast 31 31:33,31:38
+// orderdesc 38 12:31,15:31,11:31,33:31,19:33,14:33,12:33,38:33,17:38
+// orderlast 38 12:31,15:31,11:31,33:31,19:33,14:33,12:33,38:33,17:38
+// orderthen 38 12:31,15:31,11:31,33:31,19:33,14:33,12:33,38:33,17:38
+// lastwheredesc 14 31:15,15:33,15:19,15:14,14:38,14:17
+// firstOD 11 9
+// lastOD 7 0
+// one 4 0
+// then keys 33 2
+// strings null c
+// tiefirst a tielast ee
+// tiedescfirst bb tiedesclast f
+// tiethen a ee
+// listfirst 9 keys 4
+// walked first 11 10
+// count 10 keys 0
+// sorted 19,17,15,14,12,12,11,38,33,31 keys 10
+//
+// .NET takes an ordering's First and Last in one walk, not a sort: one
+// level compares each element's key with the kept one's, the new key first,
+// testing the sign (an int.MinValue answer is never turned); levels of a
+// ThenBy keep a key each and ask a later level's only on a tie, descending
+// ones with the kept key first. Last with a predicate walks so too, asking
+// a key only of what passes; First with one, and FirstOrDefault with one,
+// sort and then ask the predicate in order. Ties keep the earlier element
+// for First and take the later for Last, as the stable sort orders them.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Logged : IComparer<int>
+{
+    public List<string> Seen = new();
+    public bool Extreme;
+    public int Compare(int x, int y)
+    {
+        Seen.Add(x + ":" + y);
+        int c = x.CompareTo(y);
+        return Extreme ? (c < 0 ? int.MinValue : c > 0 ? int.MaxValue : 0) : c;
+    }
+}
+
+static class Program
+{
+    static int keys, thens;
+    static int Key(int x) { keys++; return x / 10; }
+    static int Then(int x) { thens++; return x % 10; }
+    static string Log(Logged l) { return string.Join(",", l.Seen); }
+
+    static IEnumerable<int> Walk(int[] items, Counter walked) { foreach (int i in items) { walked.N++; yield return i; } }
+
+    static void Main()
+    {
+        int[] items = { 31, 12, 15, 11, 33, 19, 14, 12, 38, 17 };
+        keys = thens = 0;
+        Console.WriteLine("first " + items.OrderBy(Key).ThenBy(Then).First() + " keys " + keys + " thens " + thens);
+        keys = thens = 0;
+        Console.WriteLine("last " + items.OrderBy(Key).ThenBy(Then).Last() + " keys " + keys + " thens " + thens);
+        keys = thens = 0;
+        Console.WriteLine("firstdesc " + items.OrderByDescending(Key).ThenByDescending(Then).First() + " keys " + keys + " thens " + thens);
+        keys = thens = 0;
+        Console.WriteLine("lastdesc " + items.OrderByDescending(Key).ThenBy(Then).Last() + " keys " + keys + " thens " + thens);
+        keys = 0; int asked = 0;
+        Console.WriteLine("firstwhere " + items.OrderBy(Key).First(x => { asked++; return x % 2 == 1; }) + " keys " + keys + " asked " + asked);
+        keys = 0; asked = 0;
+        Console.WriteLine("lastwhere " + items.OrderBy(Key).Last(x => { asked++; return x % 2 == 0; }) + " keys " + keys + " asked " + asked);
+        keys = 0;
+        Console.WriteLine("firstnone " + items.OrderBy(Key).FirstOrDefault(x => x > 100, -1) + " keys " + keys);
+        keys = 0;
+        Console.WriteLine("emptyfirst " + new int[0].OrderBy(Key).FirstOrDefault(-5) + " " + new int[0].OrderBy(Key).LastOrDefault() + " keys " + keys);
+        try { new List<int>().OrderBy(Key).First(); } catch (InvalidOperationException e) { Console.WriteLine("threw " + e.Message); }
+        try { new List<int>().OrderBy(Key).ThenBy(Then).Last(); } catch (InvalidOperationException e) { Console.WriteLine("threw " + e.Message); }
+        try { new List<int>().OrderBy(Key).Last(x => true); } catch (InvalidOperationException e) { Console.WriteLine("threw " + e.Message); }
+        Logged up = new();
+        Console.WriteLine("cmpfirst " + items.OrderBy(x => x, up).First() + " " + Log(up));
+        Logged down = new();
+        Console.WriteLine("cmplastdesc " + items.OrderByDescending(x => x, down).Last() + " " + Log(down));
+        Logged lastUp = new();
+        Console.WriteLine("cmplast " + items.OrderBy(x => x, lastUp).Last() + " " + Log(lastUp));
+        Logged a = new();
+        Console.WriteLine("descfirst " + items.OrderByDescending(x => x, a).First() + " " + Log(a));
+        Logged b = new() { Extreme = true };
+        Console.WriteLine("descfirstX " + items.OrderByDescending(x => x, b).First() + " " + Log(b));
+        Logged c = new() { Extreme = true };
+        Console.WriteLine("desclastX " + items.OrderByDescending(x => x, c).Last() + " " + Log(c));
+        Logged f = new();
+        Console.WriteLine("thenfirst " + items.OrderBy(x => x / 10).ThenByDescending(x => x, f).First() + " " + Log(f));
+        Logged g = new();
+        Console.WriteLine("thenlast " + items.OrderBy(x => x / 10).ThenByDescending(x => x, g).Last() + " " + Log(g));
+        Logged h = new();
+        Console.WriteLine("orderdesc " + items.OrderDescending(h).First() + " " + Log(h));
+        Logged i = new();
+        Console.WriteLine("orderlast " + items.Order(i).Last() + " " + Log(i));
+        Logged o = new();
+        Console.WriteLine("orderthen " + items.Order(o).ThenBy(x => -x).Last() + " " + Log(o));
+        Logged j = new();
+        Console.WriteLine("lastwheredesc " + items.OrderByDescending(x => x, j).Last(x => x > 13) + " " + Log(j));
+        Logged k = new();
+        Console.WriteLine("firstOD " + items.OrderBy(x => x, k).FirstOrDefault() + " " + k.Seen.Count);
+        Logged l = new();
+        Console.WriteLine("lastOD " + items.OrderBy(x => x, l).LastOrDefault(x => x < 0, 7) + " " + l.Seen.Count);
+        Logged m = new();
+        Console.WriteLine("one " + new[] { 4 }.OrderBy(x => x, m).First() + " " + m.Seen.Count);
+        int t = 0;
+        Console.WriteLine("then keys " + items.OrderBy(x => x / 10).ThenBy(x => { t++; return x; }).Last(x => x % 2 == 1) + " " + t);
+        string?[] s = { "b", null, "a", "c" };
+        Console.WriteLine("strings " + (s.OrderBy(x => x).First() ?? "null") + " " + s.OrderBy(x => x).Last());
+        string[] words = { "bb", "a", "cc", "d", "ee", "f" };
+        Console.WriteLine("tiefirst " + words.OrderBy(w => w.Length).First() + " tielast " + words.OrderBy(w => w.Length).Last());
+        Console.WriteLine("tiedescfirst " + words.OrderByDescending(w => w.Length).First() + " tiedesclast " + words.OrderByDescending(w => w.Length).Last());
+        Console.WriteLine("tiethen " + words.OrderBy(w => w.Length).ThenBy(w => 0).First() + " " + words.OrderBy(w => w.Length).ThenBy(w => 0).Last());
+        List<int> list = new() { 5, 3, 9, 1 };
+        keys = 0;
+        Console.WriteLine("listfirst " + list.OrderBy(x => { keys++; return -x; }).First() + " keys " + keys);
+        Counter walked = new();
+        Console.WriteLine("walked first " + Walk(items, walked).OrderBy(x => x).First() + " " + walked.N);
+        keys = 0;
+        Console.WriteLine("count " + items.OrderBy(Key).Count() + " keys " + keys);
+        keys = 0;
+        Console.WriteLine("sorted " + string.Join(",", items.OrderBy(Key).ThenByDescending(Then)) + " keys " + keys);
+    }
+}
+
+class Counter { public int N; }

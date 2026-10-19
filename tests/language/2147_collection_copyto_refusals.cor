@@ -1,0 +1,222 @@
+// test: collection_copyto_refusals
+// expect-exit: 0
+// expect-output:
+// list null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// list neg ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -1.
+// list past ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// list short ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// list end ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// list fits ok
+// list into 0,0,1,2,3
+// list one null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// list one short ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// list four ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// list four neg count ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') | Actual value was -1.
+// list four neg index ArgumentOutOfRangeException: sourceIndex ('-1') must be greater than or equal to '0'. (Parameter 'sourceIndex') | Actual value was -1.
+// list four null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// array null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// array neg ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -1.
+// array past ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// array short ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// array end ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// array fits ok
+// array into 0,0,1,2,3
+// queue null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// queue neg ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'arrayIndex')
+// queue past ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'arrayIndex')
+// queue short ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// queue end ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// queue fits ok
+// queue into 0,0,1,2,3
+// stack null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// stack neg ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'arrayIndex') | Actual value was -1.
+// stack past ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'arrayIndex') | Actual value was 6.
+// stack short ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// stack end ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// stack fits ok
+// stack into 0,0,3,2,1
+// hashset null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// hashset neg ArgumentOutOfRangeException: arrayIndex ('-1') must be a non-negative value. (Parameter 'arrayIndex') | Actual value was -1.
+// hashset past ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// hashset short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// hashset end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// hashset fits ok
+// hashset into 0,0,1,2,3
+// hashset count neg ArgumentOutOfRangeException: count ('-1') must be a non-negative value. (Parameter 'count') | Actual value was -1.
+// hashset count big ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// hashset count less ok
+// sortedset null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// sortedset neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// sortedset past ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sortedset short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sortedset end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sortedset fits ok
+// sortedset into 0,0,1,2,3
+// sortedset count neg ArgumentOutOfRangeException: count ('-1') must be a non-negative value. (Parameter 'count') | Actual value was -1.
+// sortedset count big ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// linkedlist null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// linkedlist neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// linkedlist past ArgumentOutOfRangeException: Must be less than or equal to the size of the collection. (Parameter 'index') | Actual value was 6.
+// linkedlist short ArgumentException: Insufficient space in the target location to copy the information.
+// linkedlist end ArgumentException: Insufficient space in the target location to copy the information.
+// linkedlist fits ok
+// linkedlist into 0,0,1,2,3
+// dictkeys null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// dictkeys neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// dictkeys past ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// dictkeys short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// dictkeys end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// dictkeys fits ok
+// dictkeys into 0,0,1,2,3
+// dictvalues null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// dictvalues neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// dictvalues past ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// dictvalues short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// dictvalues end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// dictvalues fits ok
+// dictvalues into 0,0,10,20,30
+// dictpairs null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// dictpairs neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// dictpairs past ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// dictpairs short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// dictpairs end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// dictpairs fits ok
+// dictpairs into [0, 0],[0, 0],[1, 10],[2, 20],[3, 30]
+// sdkeys null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// sdkeys neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// sdkeys past ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdkeys short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdkeys end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdkeys fits ok
+// sdkeys into 0,0,1,2,3
+// sdvalues null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// sdvalues neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// sdvalues past ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdvalues short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdvalues end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdvalues fits ok
+// sdvalues into 0,0,10,20,30
+// sdpairs null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// sdpairs neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// sdpairs past ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdpairs short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdpairs end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// sdpairs fits ok
+// sdpairs into [0, 0],[0, 0],[1, 10],[2, 20],[3, 30]
+// slkeys null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// slkeys neg ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -1.
+// slkeys past ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// slkeys short ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// slkeys end ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// slkeys fits ok
+// slkeys into 0,0,1,2,3
+// slpairs null ArgumentNullException: Value cannot be null. (Parameter 'array')
+// slpairs neg ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'arrayIndex') | Actual value was -1.
+// slpairs past ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'arrayIndex') | Actual value was 6.
+// slpairs short ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// slpairs end ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// slpairs fits ok
+// slpairs into [0, 0],[0, 0],[1, 10],[2, 20],[3, 30]
+// readonly null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// readonly neg ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -1.
+// readonly past ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// readonly short ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// readonly end ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// readonly fits ok
+// readonly into 0,0,1,2,3
+// segment null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// segment neg ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -1.
+// segment past ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// segment short ok
+// segment end ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// segment fits ok
+// segment into 0,0,2,3,0
+// span short ArgumentException: Destination is too short. (Parameter 'destination')
+// queue cap ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') | Actual value was -1.
+// queue cap ok 0
+// 3,1,2,0
+// array sort range ok
+// array sort range neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// array sort range len ArgumentOutOfRangeException: Non-negative number required. (Parameter 'length')
+// array sort range past ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// list index ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')
+// list set ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index')
+//
+// Every collection's CopyTo refuses as its .NET counterpart does: List's,
+// an array's, a segment's and ReadOnlyCollection's through Array.Copy;
+// Queue's and Stack's, HashSet's and SortedSet's, LinkedList's and the
+// dictionaries' views each in their own words. Array.Sort over a run,
+// List.CopyTo over a run and Queue's capacity are there too.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+
+static class Program
+{
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + " ok"); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message.Replace("\n", " | ")); }
+    }
+
+    static void Bad<T>(string name, Action<T[]?, int> copy)
+    {
+        Try(name + " null", () => copy(null, 0));
+        Try(name + " neg", () => copy(new T[5], -1));
+        Try(name + " past", () => copy(new T[5], 6));
+        Try(name + " short", () => copy(new T[5], 3));
+        Try(name + " end", () => copy(new T[3], 3));
+        T[] fits = new T[5];
+        Try(name + " fits", () => copy(fits, 2));
+        Console.WriteLine(name + " into " + string.Join(",", fits));
+    }
+
+    static void Main()
+    {
+        int[] three = { 1, 2, 3 };
+        List<int> list = new(three);
+        Bad<int>("list", (a, i) => list.CopyTo(a!, i));
+        Try("list one null", () => list.CopyTo(null!));
+        Try("list one short", () => list.CopyTo(new int[2]));
+        Try("list four", () => list.CopyTo(1, new int[5], 0, 3));
+        Try("list four neg count", () => list.CopyTo(0, new int[5], 0, -1));
+        Try("list four neg index", () => list.CopyTo(-1, new int[5], 0, 1));
+        Try("list four null", () => list.CopyTo(0, null!, 0, 1));
+        Bad<int>("array", (a, i) => three.CopyTo(a!, i));
+        Bad<int>("queue", (a, i) => new Queue<int>(three).CopyTo(a!, i));
+        Bad<int>("stack", (a, i) => new Stack<int>(three).CopyTo(a!, i));
+        Bad<int>("hashset", (a, i) => new HashSet<int>(three).CopyTo(a!, i));
+        Try("hashset count neg", () => new HashSet<int>(three).CopyTo(new int[5], 0, -1));
+        Try("hashset count big", () => new HashSet<int>(three).CopyTo(new int[5], 3, 3));
+        Try("hashset count less", () => new HashSet<int>(three).CopyTo(new int[5], 4, 1));
+        Bad<int>("sortedset", (a, i) => new SortedSet<int>(three).CopyTo(a!, i));
+        Try("sortedset count neg", () => new SortedSet<int>(three).CopyTo(new int[5], 0, -1));
+        Try("sortedset count big", () => new SortedSet<int>(three).CopyTo(new int[5], 3, 3));
+        Bad<int>("linkedlist", (a, i) => new LinkedList<int>(three).CopyTo(a!, i));
+        Dictionary<int, int> d = three.ToDictionary(x => x, x => x * 10);
+        Bad<int>("dictkeys", (a, i) => d.Keys.CopyTo(a!, i));
+        Bad<int>("dictvalues", (a, i) => d.Values.CopyTo(a!, i));
+        Bad<KeyValuePair<int, int>>("dictpairs", (a, i) => ((ICollection<KeyValuePair<int, int>>)d).CopyTo(a!, i));
+        SortedDictionary<int, int> sd = new(d);
+        Bad<int>("sdkeys", (a, i) => sd.Keys.CopyTo(a!, i));
+        Bad<int>("sdvalues", (a, i) => sd.Values.CopyTo(a!, i));
+        Bad<KeyValuePair<int, int>>("sdpairs", (a, i) => sd.CopyTo(a!, i));
+        SortedList<int, int> sl = new(d);
+        Bad<int>("slkeys", (a, i) => sl.Keys.CopyTo(a!, i));
+        Bad<KeyValuePair<int, int>>("slpairs", (a, i) => ((ICollection<KeyValuePair<int, int>>)sl).CopyTo(a!, i));
+        Bad<int>("readonly", (a, i) => new ReadOnlyCollection<int>(list).CopyTo(a!, i));
+        Bad<int>("segment", (a, i) => new ArraySegment<int>(three, 1, 2).CopyTo(a!, i));
+        Try("span short", () => three.AsSpan().CopyTo(new int[2]));
+        Try("queue cap", () => new Queue<int>(-1));
+        Console.WriteLine("queue cap ok " + new Queue<int>(10).Count);
+        Try("array sort range", () => { int[] s = { 3, 1, 2, 0 }; Array.Sort(s, 1, 2); Console.WriteLine(string.Join(",", s)); });
+        Try("array sort range neg", () => Array.Sort(new int[3], -1, 1));
+        Try("array sort range len", () => Array.Sort(new int[3], 0, -1));
+        Try("array sort range past", () => Array.Sort(new int[3], 2, 2));
+        Try("list index", () => Console.WriteLine(list[3]));
+        Try("list set", () => list[-1] = 3);
+    }
+}

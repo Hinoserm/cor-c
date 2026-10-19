@@ -1,0 +1,69 @@
+// test: string_edges_as_dotnet
+// expect-exit: 0
+// expect-output:
+// copyto5 ArgumentOutOfRangeException: sourceIndex ('3') must be less than or equal to '2'. (Parameter 'sourceIndex') | Actual value was 3.
+// copyto null ArgumentNullException: Value cannot be null. (Parameter 'destination')
+// copyto dneg ArgumentOutOfRangeException: destinationIndex ('-1') must be a non-negative value. (Parameter 'destinationIndex') | Actual value was -1.
+// endswith null ArgumentNullException: Value cannot be null. (Parameter 'value')
+// contains null ArgumentNullException: Value cannot be null. (Parameter 'value')
+// indexof null ArgumentNullException: Value cannot be null. (Parameter 'value')
+// startswith null ord ArgumentNullException: Value cannot be null. (Parameter 'value')
+// ctor null ArgumentNullException: Value cannot be null. (Parameter 'value')
+// ctor null arr ok
+// concat a null ok a
+// concat null b ok b
+// join nullsep ok ab
+// join nullarr ArgumentNullException: Value cannot be null. (Parameter 'value')
+// join empty ok
+// join one ok ,c
+// tochararray 0 -1 ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') | Actual value was -1.
+// tochararray 3 0 ok 0
+// tochararray 1 2 ok bc
+// remove 3 ok abc
+// remove 3 0 ok abc
+// insert 3 ok abcx
+// lastindexof empty ok -1
+//
+// String edges as .NET has them: CopyTo's count refused under sourceIndex's
+// name, a null searched for refused as value, Concat taking a null as
+// nothing, Join over a run with a null separator, and the empty runs at the
+// end that are allowed.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static void Try(string what, Func<object?> a)
+    {
+        try { object? r = a(); Console.WriteLine((what + " ok " + r).TrimEnd()); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message.Replace("\n", " | ")); }
+    }
+
+    static void Main()
+    {
+        string s = "abc";
+        Try("copyto5", () => { s.CopyTo(1, new char[5], 0, 3); return null; });
+        Try("copyto null", () => { s.CopyTo(0, null!, 0, 1); return null; });
+        Try("copyto dneg", () => { s.CopyTo(0, new char[5], -1, 1); return null; });
+        Try("endswith null", () => s.EndsWith((string)null!));
+        Try("contains null", () => s.Contains((string)null!));
+        Try("indexof null", () => s.IndexOf((string)null!));
+        Try("startswith null ord", () => s.StartsWith(null!, StringComparison.Ordinal));
+        Try("ctor null", () => new string((char[])null!, 0, 0));
+        Try("ctor null arr", () => new string((char[])null!));
+        Try("concat a null", () => string.Concat("a", null));
+        Try("concat null b", () => string.Concat(null, "b"));
+        Try("join nullsep", () => string.Join(null, new[] { "a", "b" }, 0, 2));
+        Try("join nullarr", () => string.Join(",", (string[])null!, 0, 0));
+        Try("join empty", () => string.Join(",", new[] { "a", "b" }, 1, 0));
+        Try("join one", () => string.Join(",", new[] { "a", null, "c" }, 1, 2));
+        Try("tochararray 0 -1", () => s.ToCharArray(0, -1).Length);
+        Try("tochararray 3 0", () => s.ToCharArray(3, 0).Length);
+        Try("tochararray 1 2", () => new string(s.ToCharArray(1, 2)));
+        Try("remove 3", () => s.Remove(3));
+        Try("remove 3 0", () => s.Remove(3, 0));
+        Try("insert 3", () => s.Insert(3, "x"));
+        Try("lastindexof empty", () => "".LastIndexOf('a', 0));
+    }
+}

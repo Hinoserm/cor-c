@@ -1,0 +1,61 @@
+// test: array_copy_refusals_in_dotnet_10s_words
+// expect-exit: 0
+// expect-output:
+// nullsrc ArgumentNullException: Value cannot be null. (Parameter 'sourceArray')
+// nulldst ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// neglen ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') | Actual value was -1.
+// negsrc ArgumentOutOfRangeException: sourceIndex ('-1') must be greater than or equal to '0'. (Parameter 'sourceIndex') | Actual value was -1.
+// negdst ArgumentOutOfRangeException: destinationIndex ('-2') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -2.
+// shortsrc ArgumentException: Source array was not long enough. Check the source index, length, and the array's lower bounds. (Parameter 'sourceArray')
+// shortdst ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// negall ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') | Actual value was -1.
+// short2 ArgumentException: Source array was not long enough. Check the source index, length, and the array's lower bounds. (Parameter 'sourceArray')
+// neg2 ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') | Actual value was -1.
+// long negsrc ArgumentOutOfRangeException: sourceIndex ('-1') must be greater than or equal to '0'. (Parameter 'sourceIndex') | Actual value was -1.
+// long big ArgumentOutOfRangeException: Arrays larger than 2GB are not supported. (Parameter 'length')
+// long neglen ArgumentOutOfRangeException: length ('-1') must be a non-negative value. (Parameter 'length') | Actual value was -1.
+// copyto neg ArgumentOutOfRangeException: destinationIndex ('-1') must be greater than or equal to '0'. (Parameter 'destinationIndex') | Actual value was -1.
+// copyto short ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// copyto null ArgumentNullException: Value cannot be null. (Parameter 'destinationArray')
+// ok ok
+// empty at end ok
+//
+// Array.Copy refuses in .NET 10's words: a negative length by the
+// non-negative guard, a start below the lower bound by the greater-or-equal
+// one, the long forms only past an int's range; an array's CopyTo refuses
+// as Array.Copy does.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + " ok"); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message.Replace("\n", " | ")); }
+    }
+
+    static void Main()
+    {
+        int[] a = new int[4], b = new int[4];
+        Try("nullsrc", () => Array.Copy(null!, 0, b, 0, 1));
+        Try("nulldst", () => Array.Copy(a, 0, null!, 0, 1));
+        Try("neglen", () => Array.Copy(a, 0, b, 0, -1));
+        Try("negsrc", () => Array.Copy(a, -1, b, 0, 1));
+        Try("negdst", () => Array.Copy(a, 0, b, -2, 1));
+        Try("shortsrc", () => Array.Copy(a, 3, b, 0, 2));
+        Try("shortdst", () => Array.Copy(a, 0, b, 3, 2));
+        Try("negall", () => Array.Copy(a, -1, b, -1, -1));
+        Try("short2", () => Array.Copy(a, b, 5));
+        Try("neg2", () => Array.Copy(a, b, -1));
+        Try("long negsrc", () => Array.Copy(a, -1L, b, 0L, 1L));
+        Try("long big", () => Array.Copy(a, 0L, b, 0L, 3000000000L));
+        Try("long neglen", () => Array.Copy(a, 0L, b, 0L, -1L));
+        Try("copyto neg", () => a.CopyTo(b, -1));
+        Try("copyto short", () => a.CopyTo(b, 1));
+        Try("copyto null", () => a.CopyTo(null!, 0));
+        Try("ok", () => Array.Copy(a, 0, b, 0, 4));
+        Try("empty at end", () => Array.Copy(a, 4, b, 4, 0));
+    }
+}

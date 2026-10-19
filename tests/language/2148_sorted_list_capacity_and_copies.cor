@@ -1,0 +1,99 @@
+// test: sorted_list_capacity_and_copies
+// expect-exit: 0
+// expect-output:
+// fromdict [a, 1],[b, 2] cap 2
+// fromdict dup ArgumentException: An item with the same key has already been added. Key: a
+// fromdict null ArgumentNullException: Value cannot be null. (Parameter 'dictionary')
+// sd fromdict dup ArgumentException: An item with the same key has already been added. Key: [a, 4]
+// sd fromdict null ArgumentNullException: Value cannot be null. (Parameter 'dictionary')
+// sd fromdict [A, 1],[a, 4],[b, 2],[c, 3]
+// cap neg ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') | Actual value was -1.
+// cap neg cmp ArgumentOutOfRangeException: capacity was less than the current size. (Parameter 'value') | Actual value was -1.
+// cap 10 3 0
+// cap small ArgumentOutOfRangeException: capacity was less than the current size. (Parameter 'value') | Actual value was 4.
+// cap set 5
+// cap grown 10
+// trimmed 6
+// grown 4 4 4 4 8
+// getkey ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index') | Actual value was 6.
+// getkey neg ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index') | Actual value was -1.
+// getvalue ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index') | Actual value was 6.
+// setvalue ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index') | Actual value was 6.
+// removeat ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index') | Actual value was 6.
+// removeat neg ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection. (Parameter 'index') | Actual value was -1.
+// indexofkey null ArgumentNullException: Value cannot be null. (Parameter 'key')
+// missing KeyNotFoundException: The given key 'q' was not present in the dictionary.
+// add dup ArgumentException: An item with the same key has already been added. Key: a (Parameter 'key')
+// add null ArgumentNullException: Value cannot be null. (Parameter 'key')
+// setvalue modifies InvalidOperationException: Collection was modified after the enumerator was instantiated.
+// trim modifies ok
+// cap same modifies ok
+//
+// SortedList made from a dictionary (sorted together, a duplicate under the
+// comparer refused by the later key), with a capacity, Capacity set and
+// grown by doubling, TrimExcess at .NET's 90 percent, and its places
+// refused with their values; SortedDictionary made from a dictionary
+// refuses a duplicate naming the pair.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Folded : IComparer<string>
+{
+    public int Compare(string? x, string? y) => string.Compare(x, y, StringComparison.OrdinalIgnoreCase);
+}
+
+static class Program
+{
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + " ok"); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message.Replace("\n", " | ")); }
+    }
+
+    static void Main()
+    {
+        Dictionary<string, int> d = new() { ["b"] = 2, ["A"] = 1, ["c"] = 3, ["a"] = 4 };
+        SortedList<string, int> sl = new(new Dictionary<string, int> { ["b"] = 2, ["a"] = 1 });
+        Console.WriteLine("fromdict " + string.Join(",", sl) + " cap " + sl.Capacity);
+        Try("fromdict dup", () => new SortedList<string, int>(d, new Folded()));
+        Try("fromdict null", () => new SortedList<string, int>((IDictionary<string, int>)null!));
+        Try("sd fromdict dup", () => new SortedDictionary<string, int>(d, new Folded()));
+        Try("sd fromdict null", () => new SortedDictionary<string, int>((IDictionary<string, int>)null!));
+        Console.WriteLine("sd fromdict " + string.Join(",", new SortedDictionary<string, int>(d)));
+        Try("cap neg", () => new SortedList<int, int>(-1));
+        Try("cap neg cmp", () => new SortedList<int, int>(-1, null));
+        SortedList<int, int> c = new(10);
+        Console.WriteLine("cap " + c.Capacity + " " + new SortedList<int, int>(3, null).Capacity + " " + new SortedList<int, int>().Capacity);
+        for (int i = 0; i < 5; i++) c.Add(i, i);
+        Try("cap small", () => c.Capacity = 4);
+        c.Capacity = 5; Console.WriteLine("cap set " + c.Capacity);
+        c.Add(9, 9); Console.WriteLine("cap grown " + c.Capacity);
+        c.TrimExcess(); Console.WriteLine("trimmed " + c.Capacity);
+        SortedList<int, int> g = new();
+        List<int> grown = new();
+        for (int i = 0; i < 5; i++) { g.Add(i, i); grown.Add(g.Capacity); }
+        Console.WriteLine("grown " + string.Join(" ", grown));
+        Try("getkey", () => c.GetKeyAtIndex(6));
+        Try("getkey neg", () => c.GetKeyAtIndex(-1));
+        Try("getvalue", () => c.GetValueAtIndex(6));
+        Try("setvalue", () => c.SetValueAtIndex(6, 0));
+        Try("removeat", () => c.RemoveAt(6));
+        Try("removeat neg", () => c.RemoveAt(-1));
+        Try("indexofkey null", () => sl.IndexOfKey(null!));
+        Try("missing", () => Console.WriteLine(sl["q"]));
+        Try("add dup", () => sl.Add("a", 3));
+        Try("add null", () => sl.Add(null!, 3));
+        var e = sl.GetEnumerator();
+        sl.SetValueAtIndex(0, 7);
+        Try("setvalue modifies", () => e.MoveNext());
+        c.TrimExcess();
+        var e2 = c.GetEnumerator();
+        c.TrimExcess();
+        Try("trim modifies", () => e2.MoveNext());
+        c.Capacity = c.Capacity;
+        Try("cap same modifies", () => e2.MoveNext());
+    }
+}

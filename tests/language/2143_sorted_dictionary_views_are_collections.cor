@@ -1,0 +1,90 @@
+// test: sorted_dictionary_views_are_collections
+// expect-exit: 0
+// expect-output:
+// keys False True True False
+// values False True True False
+// names KeyCollection ValueCollection Enumerator
+// same True True
+// walk 1,2,3 a,b,c 3 3
+// linq 3 b True False
+// copy 0,1,2,3,0
+// copynull ArgumentNullException: Value cannot be null. (Parameter 'array')
+// copyneg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index')
+// Actual value was -1.
+// copyshort ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// copybig ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// vcopyneg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index')
+// Actual value was -1.
+// vcopyshort ArgumentException: Destination array is not long enough to copy all the items in the collection. Check array index and length.
+// vcopynull ArgumentNullException: Value cannot be null. (Parameter 'array')
+// add NotSupportedException: Mutating a key collection derived from a dictionary is not allowed.
+// vadd NotSupportedException: Mutating a value collection derived from a dictionary is not allowed.
+// vremove NotSupportedException: Mutating a value collection derived from a dictionary is not allowed.
+// vclear NotSupportedException: Mutating a value collection derived from a dictionary is not allowed.
+// ro True True
+// contains True True
+// ctor ArgumentNullException: Value cannot be null. (Parameter 'dictionary')
+// ctor walk 0,1,2,3 4
+// cleared 0 0
+// modified InvalidOperationException: Collection was modified after the enumerator was instantiated.
+// sortedlist True KeyList ValueList
+//
+// SortedDictionary's Keys and Values are .NET's KeyCollection and
+// ValueCollection: collections, not lists (no index, is IList false), with
+// a struct Enumerator each, Contains public on the keys alone, CopyTo
+// checked as .NET checks it, and a public constructor over the map.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static void Try(string what, Action a)
+    {
+        try { a(); Console.WriteLine(what + " ok"); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    static void Main()
+    {
+        SortedDictionary<int, string> sd = new() { [3] = "c", [1] = "a", [2] = "b" };
+        object keys = sd.Keys, values = sd.Values;
+        Console.WriteLine("keys " + (keys is IList<int>) + " " + (keys is ICollection<int>) + " " + (keys is IReadOnlyCollection<int>) + " " + (keys is IReadOnlyList<int>));
+        Console.WriteLine("values " + (values is IList<string>) + " " + (values is ICollection<string>) + " " + (values is IReadOnlyCollection<string>) + " " + (values is IReadOnlyList<string>));
+        Console.WriteLine("names " + keys.GetType().Name + " " + values.GetType().Name + " " + sd.Keys.GetEnumerator().GetType().Name);
+        Console.WriteLine("same " + ReferenceEquals(sd.Keys, sd.Keys) + " " + ReferenceEquals(sd.Values, sd.Values));
+        Console.WriteLine("walk " + string.Join(",", sd.Keys) + " " + string.Join(",", sd.Values) + " " + sd.Keys.Count + " " + sd.Values.Count);
+        Console.WriteLine("linq " + sd.Keys.Last() + " " + sd.Values.ElementAt(1) + " " + sd.Keys.Contains(2) + " " + sd.Values.Contains("q"));
+        int[] into = new int[5];
+        sd.Keys.CopyTo(into, 1);
+        Console.WriteLine("copy " + string.Join(",", into));
+        Try("copynull", () => sd.Keys.CopyTo(null!, 0));
+        Try("copyneg", () => sd.Keys.CopyTo(into, -1));
+        Try("copyshort", () => sd.Keys.CopyTo(into, 3));
+        Try("copybig", () => sd.Keys.CopyTo(into, 6));
+        string[] vinto = new string[3];
+        Try("vcopyneg", () => sd.Values.CopyTo(vinto, -1));
+        Try("vcopyshort", () => sd.Values.CopyTo(vinto, 1));
+        Try("vcopynull", () => sd.Values.CopyTo(null!, 0));
+        Try("add", () => ((ICollection<int>)sd.Keys).Add(4));
+        Try("vadd", () => ((ICollection<string>)sd.Values).Add("d"));
+        Try("vremove", () => ((ICollection<string>)sd.Values).Remove("a"));
+        Try("vclear", () => ((ICollection<string>)sd.Values).Clear());
+        Console.WriteLine("ro " + ((ICollection<int>)sd.Keys).IsReadOnly + " " + ((ICollection<string>)sd.Values).IsReadOnly);
+        Console.WriteLine("contains " + ((ICollection<int>)sd.Keys).Contains(3) + " " + ((ICollection<string>)sd.Values).Contains("b"));
+        Try("ctor", () => new SortedDictionary<int, string>.KeyCollection(null!));
+        var made = new SortedDictionary<int, string>.KeyCollection(sd);
+        sd.Add(0, "z");
+        Console.WriteLine("ctor walk " + string.Join(",", made) + " " + made.Count);
+        sd.Clear();
+        Console.WriteLine("cleared " + made.Count + " " + sd.Keys.Count);
+        var e = sd.Values.GetEnumerator();
+        sd[5] = "e";
+        Try("modified", () => e.MoveNext());
+        var sl = new SortedList<int, int> { [2] = 1 };
+        Console.WriteLine("sortedlist " + (sl.Keys is IList<int>) + " " + sl.Keys.GetType().Name + " " + sl.Values.GetType().Name);
+    }
+}

@@ -1,0 +1,171 @@
+// test: encoding_refusals_by_family
+// expect-exit: 0
+// expect-output:
+// utf8 getstring neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// utf8 getstring negcount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'count')
+// utf8 getstring past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// utf8 getstring null ArgumentNullException: Array cannot be null. (Parameter 'bytes')
+// utf8 getchars neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// utf8 getchars past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// utf8 getcharcount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// utf8 getcharcount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// utf8 getbytecount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// utf8 getbytecount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// utf8 getbytecount null ArgumentNullException: Array cannot be null. (Parameter 'chars')
+// utf8 getbytes arr neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// utf8 getbytes arr past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// utf8 getbytes s neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'charIndex')
+// utf8 getbytes s past ArgumentOutOfRangeException: Index and count must refer to a location within the string. (Parameter 's')
+// utf8 getbytes s idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// utf8 getbytes s short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '65001' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// utf8 getbytes s null ArgumentNullException: Array cannot be null. (Parameter 's')
+// utf8 getbytes c short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '65001' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// utf8 getbytes c idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// ascii getstring neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'byteIndex')
+// ascii getstring negcount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'byteCount')
+// ascii getstring past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// ascii getstring null ArgumentNullException: Array cannot be null. (Parameter 'bytes')
+// ascii getchars neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// ascii getchars past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// ascii getcharcount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// ascii getcharcount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// ascii getbytecount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// ascii getbytecount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// ascii getbytecount null ArgumentNullException: Array cannot be null. (Parameter 'chars')
+// ascii getbytes arr neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// ascii getbytes arr past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// ascii getbytes s neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'charIndex')
+// ascii getbytes s past ArgumentOutOfRangeException: Index and count must refer to a location within the string. (Parameter 'chars')
+// ascii getbytes s idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// ascii getbytes s short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '20127' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// ascii getbytes s null ArgumentNullException: Array cannot be null. (Parameter 'chars')
+// ascii getbytes c short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '20127' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// ascii getbytes c idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// unicode getstring neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// unicode getstring negcount ArgumentOutOfRangeException: count ('-1') must be a non-negative value. (Parameter 'count') | Actual value was -1.
+// unicode getstring past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// unicode getstring null ArgumentNullException: Value cannot be null. (Parameter 'bytes')
+// unicode getchars neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// unicode getchars past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// unicode getcharcount neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// unicode getcharcount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// unicode getbytecount neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// unicode getbytecount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// unicode getbytecount null ArgumentNullException: Value cannot be null. (Parameter 'chars')
+// unicode getbytes arr neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// unicode getbytes arr past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// unicode getbytes s neg ArgumentOutOfRangeException: charIndex ('-1') must be a non-negative value. (Parameter 'charIndex') | Actual value was -1.
+// unicode getbytes s past ArgumentOutOfRangeException: Index and count must refer to a location within the string. (Parameter 's')
+// unicode getbytes s idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// unicode getbytes s short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '1200' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// unicode getbytes s null ArgumentNullException: Value cannot be null. (Parameter 's')
+// unicode getbytes c short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '1200' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// unicode getbytes c idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// latin1 getstring neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// latin1 getstring negcount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'count')
+// latin1 getstring past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// latin1 getstring null ArgumentNullException: Array cannot be null. (Parameter 'bytes')
+// latin1 getchars neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// latin1 getchars past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// latin1 getcharcount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// latin1 getcharcount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// latin1 getbytecount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// latin1 getbytecount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// latin1 getbytecount null ArgumentNullException: Array cannot be null. (Parameter 'chars')
+// latin1 getbytes arr neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// latin1 getbytes arr past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// latin1 getbytes s neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'charIndex')
+// latin1 getbytes s past ArgumentOutOfRangeException: Index and count must refer to a location within the string. (Parameter 's')
+// latin1 getbytes s idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// latin1 getbytes s short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '28591' and fallback 'System.Text.EncoderLatin1BestFitFallback'. (Parameter 'bytes')
+// latin1 getbytes s null ArgumentNullException: Array cannot be null. (Parameter 's')
+// latin1 getbytes c short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '28591' and fallback 'System.Text.EncoderLatin1BestFitFallback'. (Parameter 'bytes')
+// latin1 getbytes c idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// utf32 getstring neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// utf32 getstring negcount ArgumentOutOfRangeException: count ('-1') must be a non-negative value. (Parameter 'count') | Actual value was -1.
+// utf32 getstring past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// utf32 getstring null ArgumentNullException: Value cannot be null. (Parameter 'bytes')
+// utf32 getchars neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// utf32 getchars past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// utf32 getcharcount neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// utf32 getcharcount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// utf32 getbytecount neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// utf32 getbytecount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// utf32 getbytecount null ArgumentNullException: Value cannot be null. (Parameter 'chars')
+// utf32 getbytes arr neg ArgumentOutOfRangeException: index ('-1') must be a non-negative value. (Parameter 'index') | Actual value was -1.
+// utf32 getbytes arr past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// utf32 getbytes s neg ArgumentOutOfRangeException: charIndex ('-1') must be a non-negative value. (Parameter 'charIndex') | Actual value was -1.
+// utf32 getbytes s past ArgumentOutOfRangeException: Index and count must refer to a location within the string. (Parameter 's')
+// utf32 getbytes s idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// utf32 getbytes s short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '12000' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// utf32 getbytes s null ArgumentNullException: Value cannot be null. (Parameter 's')
+// utf32 getbytes c short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '12000' and fallback 'System.Text.EncoderReplacementFallback'. (Parameter 'bytes')
+// utf32 getbytes c idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// strict getstring neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// strict getstring negcount ArgumentOutOfRangeException: Non-negative number required. (Parameter 'count')
+// strict getstring past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// strict getstring null ArgumentNullException: Array cannot be null. (Parameter 'bytes')
+// strict getchars neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// strict getchars past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// strict getcharcount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// strict getcharcount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'bytes')
+// strict getbytecount neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// strict getbytecount past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// strict getbytecount null ArgumentNullException: Array cannot be null. (Parameter 'chars')
+// strict getbytes arr neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index')
+// strict getbytes arr past ArgumentOutOfRangeException: Index and count must refer to a location within the buffer. (Parameter 'chars')
+// strict getbytes s neg ArgumentOutOfRangeException: Non-negative number required. (Parameter 'charIndex')
+// strict getbytes s past ArgumentOutOfRangeException: Index and count must refer to a location within the string. (Parameter 's')
+// strict getbytes s idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+// strict getbytes s short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '65001' and fallback 'System.Text.EncoderExceptionFallback'. (Parameter 'bytes')
+// strict getbytes s null ArgumentNullException: Array cannot be null. (Parameter 's')
+// strict getbytes c short ArgumentException: The output byte buffer is too small to contain the encoded data, encoding codepage '65001' and fallback 'System.Text.EncoderExceptionFallback'. (Parameter 'bytes')
+// strict getbytes c idx ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than or equal to the size of the collection. (Parameter 'byteIndex')
+//
+// Each encoding refuses as .NET's does: UTF-8, ASCII and Latin-1 by their
+// own helpers (Array cannot be null, Non-negative number required; ASCII's
+// byteIndex, byteCount and chars), UTF-16 and UTF-32 by the range guards,
+// and too small a buffer naming the code page and the encoder's fallback.
+// Expected output from .NET 10.
+
+using System;
+using System.Text;
+
+static class Program
+{
+    static void Try(string what, Func<object?> a)
+    {
+        try { object? r = a(); Console.WriteLine(what + " ok " + r); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message.Replace("\n", " | ")); }
+    }
+
+    static void Main()
+    {
+        (string, Encoding)[] all = { ("utf8", Encoding.UTF8), ("ascii", Encoding.ASCII), ("unicode", Encoding.Unicode), ("latin1", Encoding.Latin1), ("utf32", Encoding.UTF32), ("strict", new UTF8Encoding(false, true)) };
+        foreach ((string n, Encoding e) in all)
+        {
+            byte[] b = new byte[4];
+            char[] c = { 'a', 'b' };
+            Try(n + " getstring neg", () => e.GetString(b, -1, 1));
+            Try(n + " getstring negcount", () => e.GetString(b, 0, -1));
+            Try(n + " getstring past", () => e.GetString(b, 2, 3));
+            Try(n + " getstring null", () => e.GetString(null!, 0, 0));
+            Try(n + " getchars neg", () => e.GetChars(b, -1, 1));
+            Try(n + " getchars past", () => e.GetChars(b, 2, 3));
+            Try(n + " getcharcount neg", () => e.GetCharCount(b, -1, 1));
+            Try(n + " getcharcount past", () => e.GetCharCount(b, 2, 3));
+            Try(n + " getbytecount neg", () => e.GetByteCount(c, -1, 1));
+            Try(n + " getbytecount past", () => e.GetByteCount(c, 1, 2));
+            Try(n + " getbytecount null", () => e.GetByteCount((char[])null!, 0, 0));
+            Try(n + " getbytes arr neg", () => e.GetBytes(c, -1, 1));
+            Try(n + " getbytes arr past", () => e.GetBytes(c, 1, 2));
+            Try(n + " getbytes s neg", () => e.GetBytes("ab", -1, 1, b, 0));
+            Try(n + " getbytes s past", () => e.GetBytes("ab", 1, 2, b, 0));
+            Try(n + " getbytes s idx", () => e.GetBytes("ab", 0, 2, b, 5));
+            Try(n + " getbytes s short", () => e.GetBytes("ab", 0, 2, new byte[1], 0));
+            Try(n + " getbytes s null", () => e.GetBytes((string)null!, 0, 0, b, 0));
+            Try(n + " getbytes c short", () => e.GetBytes(c, 0, 2, new byte[1], 0));
+            Try(n + " getbytes c idx", () => e.GetBytes(c, 0, 2, b, -1));
+        }
+    }
+}

@@ -80,7 +80,9 @@ public static class IrUnitCodec
                 && !calls.Any(locals.Contains)
                 && !instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>().Any(address => locals.Contains(address.Name));
             string[] references = calls.Concat(instructions.SelectMany(instruction => instruction.Operands).OfType<SymOperand>()
-                .Select(address => address.Name)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+                .Select(address => address.Name)).Distinct(StringComparer.Ordinal)
+                .Select(name => ComparedOnly(instructions, name) ? Lto.IrArchiveEntry.ComparedOnly + name : name)
+                .Order(StringComparer.Ordinal).ToArray();
             byte[] body = IrFunctionCodec.Write(function, module.KeepCalls);
             // Held packed until the object is written (IrArchiveRecord.Packed).
             records.Add(IrArchiveRecord.Packed("F:" + function.Name, importable, instructions.Length, calls, body, references, IrFunctionCodec.DecodeCost(function, body.Length)));
@@ -100,6 +102,41 @@ public static class IrUnitCodec
     }
 
     private static readonly HashSet<string> NoneKept = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// WHETHER A FUNCTION NAMES A DESCRIPTOR ONLY TO COMPARE WITH IT
+    /// (IrArchiveEntry.ComparedOnly): every use of it an operand of an integer
+    /// comparison, or copied into a register only such comparisons read --
+    /// `GetType() == typeof(X)` in First, asking whether its source is an
+    /// ordering. Such a function makes no X; counted as making one, every
+    /// virtual call X's methods implement had them as targets, in every
+    /// program that asked.
+    /// </summary>
+    private static bool ComparedOnly(Instr[] instructions, string name)
+    {
+        if (!(name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b')) return false;
+        HashSet<VReg>? held = null;
+        bool any = false;
+        foreach (Instr i in instructions)
+            foreach (Operand o in i.Operands)
+            {
+                if (o is not SymOperand s || s.Name != name) continue;
+                any = true;
+                if (IrInfo.IsIntCompare(i.Op)) continue;
+                if (i.Op == Opcode.Copy && i.Operands.Count == 1 && i.Dest is not null) { (held ??= new()).Add(i.Dest); continue; }
+                return false;
+            }
+        if (!any) return false;
+        if (held is null) return true;
+        foreach (Instr i in instructions)
+        {
+            if (i.Dest is not null && held.Contains(i.Dest) && !(i.Op == Opcode.Copy && i.Operands.Count == 1 && i.Operands[0] is SymOperand { Name: var n } && n == name)) return false;
+            if (IrInfo.IsIntCompare(i.Op)) continue;
+            foreach (Operand o in i.Operands)
+                if (o is RegOperand r && held.Contains(r.Reg)) return false;
+        }
+        return true;
+    }
 
     /// <summary>A unit's settings record alone, without its functions: what a link reads of every unit before it plans.</summary>
     public static (Settings? Settings, bool StackMaps) ReadSettings(IrArchive archive)
