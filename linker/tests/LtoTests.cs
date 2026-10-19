@@ -108,6 +108,17 @@ public static class LtoTests
         TargetContract.Validate(new[] { ("bare", bare), ("bare2", bare2) });
         bare2.Section(TargetContract.SectionName).Bytes[4] = 9;
         Reject(() => TargetContract.Validate(new[] { ("bare2", bare2) }));
+        // A unit storing references without the store sequences is no unit of
+        // an image whose others store through them; assembly claims nothing.
+        ObjectFile sequenced = Function(44), plain = Function(45), sequenced2 = Function(46), assembled = Function(47);
+        new TargetContract(1, storeSequences: true).Attach(sequenced);
+        new TargetContract(1).Attach(plain);
+        new TargetContract(1, storeSequences: true).Attach(sequenced2);
+        new TargetContract(TargetContract.NoTlsClaim).Attach(assembled);
+        Reject(() => TargetContract.Validate(new[] { ("sequenced", sequenced), ("plain", plain) }));
+        TargetContract.Validate(new[] { ("sequenced", sequenced), ("assembled", assembled), ("sequenced2", sequenced2) });
+        Require(TargetContract.MadeWithStoreSequences(ElfReader.ReadObject(ElfWriter.WriteObject(sequenced)).Section(TargetContract.SectionName).Bytes.ToArray()),
+            "store sequences read back from the contract");
         ObjectFile layoutA = Caller(), layoutB = Function(42);
         ManagedLayoutContract.Attach(layoutA, new[] { new ManagedTypeLayout("type:Example", new byte[32]) });
         ManagedLayoutContract.Attach(layoutB, new[] { new ManagedTypeLayout("type:Example", new byte[32]) });

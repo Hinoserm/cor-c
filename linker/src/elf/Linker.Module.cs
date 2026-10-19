@@ -65,12 +65,15 @@ public static partial class Linker
             Section? contract = obj.Sections.FirstOrDefault(section => section.Name == TargetContract.SectionName);
             if (contract is null || kernel.Abi is null) continue;
             byte[] mine = contract.Content(), theirs = kernel.Abi;
-            if (mine.Length != 28 || theirs.Length != 28) throw new ElfFormatException(name + ": unsupported native ABI contract");
+            if (mine.Length != TargetContract.Size || theirs.Length != TargetContract.Size) throw new ElfFormatException(name + ": unsupported native ABI contract");
             if (!mine.AsSpan(8, 12).SequenceEqual(theirs.AsSpan(8, 12)))
                 errors.Add(name + ": not built for the kernel's machine (" + kernel.Name + ")");
             uint tls = BinaryPrimitives.ReadUInt32LittleEndian(mine.AsSpan(20)), kernelTls = BinaryPrimitives.ReadUInt32LittleEndian(theirs.AsSpan(20));
             if (tls != TargetContract.NoTlsClaim && kernelTls != TargetContract.NoTlsClaim && tls != kernelTls)
                 errors.Add(name + ": finds its thread block other than " + kernel.Name + " does (compile it as the kernel was: --tls-gs or not)");
+            if (tls != TargetContract.NoTlsClaim && kernelTls != TargetContract.NoTlsClaim && TargetContract.MadeWithStoreSequences(mine) != TargetContract.MadeWithStoreSequences(theirs))
+                errors.Add(name + ": stores references " + (TargetContract.MadeWithStoreSequences(mine) ? "through" : "without") + " the store sequences, which "
+                    + kernel.Name + " does " + (TargetContract.MadeWithStoreSequences(theirs) ? "through" : "without") + " (compile it as the kernel was: --store-sequences or not)");
         }
         if (errors.Count != 0) throw new LinkException(errors);
         if (kernel.Cpu is not null)

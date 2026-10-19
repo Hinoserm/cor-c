@@ -16,7 +16,19 @@ public sealed class TargetContract
     /// results. Two images of different modes cannot be linked together.
     /// </summary>
     public bool LongMode { get; }
+    /// <summary>
+    /// Every reference store made through the image's store sequences
+    /// (--store-sequences): the stubs a kernel's handshake never stops a
+    /// thread inside. One unit made without them, linked into an image made
+    /// with them, stores with the barrier's test and the store as two
+    /// instructions, and a thread sent to the collector's handshake between
+    /// the two loses the reference it stores to the mark. Every unit of an
+    /// image agrees, and a module agrees with its kernel.
+    /// </summary>
+    public bool StoreSequences { get; }
     public const uint I386Machine = 486, I386Convention = 1;
+    /// <summary>The contract's bytes.</summary>
+    public const int Size = 32;
 
     /// <summary>
     /// The TLS model of an object that makes no claim about one: hand-written
@@ -26,9 +38,10 @@ public sealed class TargetContract
     /// </summary>
     public const uint NoTlsClaim = 3;
     public const uint Amd64Machine = 0x8664, Amd64Convention = 2;
-    public TargetContract(uint tlsModel, bool requiresManagedLayouts = false, bool requiresCodeGenerationContract = false, bool longMode = false)
+    public TargetContract(uint tlsModel, bool requiresManagedLayouts = false, bool requiresCodeGenerationContract = false, bool longMode = false, bool storeSequences = false)
     {
         LongMode = longMode;
+        StoreSequences = storeSequences;
         if (tlsModel > NoTlsClaim) throw new ElfFormatException("unsupported TLS/platform contract");
         TlsModel = tlsModel;
         RequiresManagedLayouts = requiresManagedLayouts;
@@ -37,7 +50,7 @@ public sealed class TargetContract
     public void Attach(ObjectFile obj)
     {
         if (obj.Sections.Any(s => s.Name == SectionName)) throw new ElfFormatException("duplicate target contract");
-        byte[] bytes = new byte[28];
+        byte[] bytes = new byte[Size];
         "CABI"u8.CopyTo(bytes);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 3);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(8), LongMode ? 8u : 4u); // Pointer bytes.
@@ -46,6 +59,8 @@ public sealed class TargetContract
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), LongMode ? Amd64Convention : I386Convention);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(20), TlsModel);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(24), (RequiresManagedLayouts ? 1u : 0u) | (RequiresCodeGenerationContract ? 2u : 0u));
+        // How its code was made: its reference stores through the store sequences.
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(28), StoreSequences ? 1u : 0u);
         Section section = new(SectionName, SectionKind.Note);
         section.Bytes.AddRange(bytes);
         obj.Sections.Add(section);
@@ -55,7 +70,7 @@ public sealed class TargetContract
     {
         foreach (Section s in obj.Sections)
         {
-            if (s.Name == SectionName && s.Bytes.Count == 28)
+            if (s.Name == SectionName && s.Bytes.Count == Size)
             {
                 byte[] bytes = s.Bytes.ToArray();
                 return BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(8)) == 8
@@ -65,11 +80,15 @@ public sealed class TargetContract
         return false;
     }
 
+    /// <summary>Whether a contract's code was made with the store sequences.</summary>
+    public static bool MadeWithStoreSequences(byte[] contract) => (BinaryPrimitives.ReadUInt32LittleEndian(contract.AsSpan(28)) & 1) != 0;
+
     public static void Validate(IEnumerable<(string Name, ObjectFile Object)> inputs)
     {
         uint? model = null;
         uint? pointer = null;
-        string owner = "", pointerOwner = "";
+        bool? sequences = null;
+        string owner = "", pointerOwner = "", sequencesOwner = "";
         foreach (var input in inputs)
         {
             _ = X86CodeGenerationContract.Read(input.Object);
@@ -77,7 +96,7 @@ public sealed class TargetContract
             if (contracts.Length == 0) continue; // Neutral native/assembly objects.
             if (contracts.Length != 1) throw new ElfFormatException(input.Name + ": duplicate target contract");
             byte[] bytes = contracts[0].Bytes.ToArray();
-            if (bytes.Length != 28 || !bytes.AsSpan(0, 4).SequenceEqual("CABI"u8)
+            if (bytes.Length != Size || !bytes.AsSpan(0, 4).SequenceEqual("CABI"u8)
                 || BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4)) != 3)
                 throw new ElfFormatException(input.Name + ": unsupported native ABI contract");
             uint bytesPerPointer = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(8));
@@ -99,7 +118,15 @@ public sealed class TargetContract
             if ((required & 1) != 0 && !input.Object.Sections.Any(section => section.Name == ManagedLayoutContract.SectionName))
                 throw new ElfFormatException(input.Name + ": required managed layout contract is missing");
             if (current > NoTlsClaim) throw new ElfFormatException(input.Name + ": unsupported TLS/platform contract");
+            if ((BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28)) & ~1u) != 0) throw new ElfFormatException(input.Name + ": unknown code flags in its native ABI contract");
+            // Assembly makes no claim: it stores through no barrier of the compiler's.
             if (current == NoTlsClaim) continue;
+            bool made = MadeWithStoreSequences(bytes);
+            if (sequences is not null && made != sequences)
+                throw new LinkException(new[] { input.Name + ": its reference stores are made " + (made ? "through" : "without") + " the store sequences, and "
+                    + sequencesOwner + "'s " + (made ? "without" : "through") + " them (compile every unit with --store-sequences, or none)" });
+            sequences = made;
+            sequencesOwner = input.Name;
             if (model is not null && current != model)
                 throw new LinkException(new[] { input.Name + ": TLS/platform contract conflicts with " + owner });
             model = current;

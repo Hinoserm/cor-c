@@ -1248,7 +1248,8 @@ public static class Driver
         ObjectFile obj = backend.Generate(module, backendErrors);
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
-        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode).Attach(obj);
+        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode,
+            storeSequences: module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore)).Attach(obj);
         // The C libraries its [DllImport]s call, for the link to need.
         NativeLibraries.Attach(obj, module.NativeLibraries);
         ManagedLayoutContract.Attach(obj, layouts);

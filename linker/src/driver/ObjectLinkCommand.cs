@@ -226,7 +226,7 @@ public static class ObjectLinkCommand
                 byte[]? abi = null, cpu = null;
                 foreach (Section section in input.Item2.Sections)
                 {
-                    if (section.Name == TargetContract.SectionName && section.Size == 28
+                    if (section.Name == TargetContract.SectionName && section.Size == TargetContract.Size
                         && System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(section.Content().AsSpan(20)) != TargetContract.NoTlsClaim)
                         abi = section.Content();
                     if (section.Name == X86CodeGenerationContract.SectionName) cpu = section.Content();
