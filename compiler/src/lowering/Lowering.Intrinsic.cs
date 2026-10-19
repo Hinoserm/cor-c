@@ -329,7 +329,9 @@ public sealed partial class Lowering
                 ReferenceBarrier(place, value);
                 CardMarkAhead(place, value);
                 VReg old = _e.Reg(IrTypes.Word);
-                if (swap) _e.Emit(Opcode.AtomicSwap, old, R(at), R(value));
+                // Both through EmitAtomic: on a 386 the exchange is the
+                // runtime's routine under the lock the compare-exchange takes.
+                if (swap) EmitAtomic(Opcode.AtomicSwap, old, R(at), R(value));
                 else EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
                 CardMark(place, value);
                 return Widen(old);

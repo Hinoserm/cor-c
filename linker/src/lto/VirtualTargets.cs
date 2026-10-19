@@ -625,7 +625,14 @@ public static class VirtualTargets
             if (HoldersOf(method) is not { } holders) return null;
             foreach (string stamped in outside)
                 foreach (int h in holders)
-                    if (stamped == _descriptors[h].Name || IsA(stamped, _descriptors[h].Name) != false) return true;
+                    if (stamped == _descriptors[h].Name || IsA(stamped, _descriptors[h].Name) != false)
+                    {
+                        if (Switches.TraceVirtuals)
+                            Console.Error.WriteLine("virtual made outside " + method + ": " + stamped + " as " + _descriptors[h].Name
+                                + " (" + (stamped == _descriptors[h].Name ? "itself" : IsA(stamped, _descriptors[h].Name)?.ToString() ?? "unknown")
+                                + ", named " + _named.GetValueOrDefault(stamped) + ")");
+                        return true;
+                    }
             return false;
         }
 

@@ -1,0 +1,47 @@
+// test: a 386's reference exchange takes the lock its compare-exchange takes
+// flags-x86: --cpu=386 --fpu=387 --store-sequences
+// expect-exit: 0
+// expect-output:
+// exchanged a then b
+// exchanged b then c
+// compared c then d
+// expect-asm-x86: SwapName: __corsac_refxchg
+// expect-asm-x86: CompareName: __corsac_refcas
+// expect-bytes-x86: __corsac_refxchg: 83 3d [s_Runtime_Marking] 00 74 0f 51 52 52 50 e8 (m_Runtime_WriteBarrierExchange_2_V$NInt_V$NInt) 83 c4 08 5a 59 c3 51 89 c1 89 d0 9c 53 31 db 66 8c cb 83 e3 03 51 8b 4c 24 08 c1 e9 0c 83 e1 03 39 cb 59 77 07 fa 87 01 5b 9d eb 1b bb 01 00 00 00 87 1d [s_Runtime_Atomics386] 85 db 75 f1 87 01 31 db 87 1d [s_Runtime_Atomics386] 5b 9d 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3
+//
+// On a 386 a reference's compare-exchange (__corsac_refcas) reads and
+// writes the slot with interrupts off where its code may turn them off,
+// and else under the runtime's 386 lock (Runtime.Atomics386). Its exchange
+// (__corsac_refxchg) was a bare XCHG, and one landing between the
+// compare-exchange's read and its write -- another thread's, in a ring-1
+// service or a process -- was lost under its store: what the ints' exchange
+// did before AtomicSwap386. The exchange takes the same choice and the same
+// lock. Run as a process, as here, it takes the lock.
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+class Holder
+{
+    public string? Name;
+}
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] static string? SwapName(Holder h, string value) { return Interlocked.Exchange(ref h.Name, value); }
+    [MethodImpl(MethodImplOptions.NoInlining)] static string? CompareName(Holder h, string value, string expected) { return Interlocked.CompareExchange(ref h.Name, value, expected); }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Holder h = new Holder();
+        h.Name = "a";
+        Host.Line("exchanged " + SwapName(h, "b") + " then " + h.Name);
+        Host.Line("exchanged " + SwapName(h, "c") + " then " + h.Name);
+        string? was = CompareName(h, "d", "c");
+        Host.Line("compared " + was + " then " + h.Name);
+        Host.Done(0);
+        return 0;
+    }
+}
