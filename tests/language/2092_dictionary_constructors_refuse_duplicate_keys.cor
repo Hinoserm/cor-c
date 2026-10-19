@@ -1,0 +1,61 @@
+// test: a dictionary made from pairs or from another table adds each entry, refusing a duplicate
+// expect-exit: 0
+// expect-output:
+// list ArgumentException: An item with the same key has already been added. Key: a
+// array ArgumentException: An item with the same key has already been added. Key: b
+// walked ArgumentException: An item with the same key has already been added. Key: x
+// copy a,A 1,2
+// folded copy ArgumentException: An item with the same key has already been added. Key: A
+// distinct p,q 1,2
+//
+// .NET's constructors from a sequence or a table call AddRange, which calls
+// Add for every entry (a Dictionary of the same comparer excepted, which
+// holds no duplicates). Here they stored through the indexer, and the later
+// value of a repeated key quietly replaced the earlier one.
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static IEnumerable<KeyValuePair<string, int>> Walked()
+    {
+        yield return new KeyValuePair<string, int>("x", 1);
+        yield return new KeyValuePair<string, int>("x", 2);
+    }
+
+    static void Try(string what, Func<Dictionary<string, int>> make)
+    {
+        try
+        {
+            Dictionary<string, int> made = make();
+            Console.WriteLine(what + " " + string.Join(",", made.Keys) + " " + string.Join(",", made.Values));
+        }
+        catch (ArgumentException e)
+        {
+            Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message);
+        }
+    }
+
+    static int Main()
+    {
+        List<KeyValuePair<string, int>> list = new List<KeyValuePair<string, int>>
+        {
+            new KeyValuePair<string, int>("a", 1), new KeyValuePair<string, int>("b", 2), new KeyValuePair<string, int>("a", 3),
+        };
+        Try("list", () => new Dictionary<string, int>(list));
+        KeyValuePair<string, int>[] array = { new KeyValuePair<string, int>("b", 1), new KeyValuePair<string, int>("b", 2) };
+        Try("array", () => new Dictionary<string, int>(array));
+        Try("walked", () => new Dictionary<string, int>(Walked()));
+        Dictionary<string, int> exact = new Dictionary<string, int>(StringComparer.Ordinal);
+        exact["a"] = 1;
+        exact["A"] = 2;
+        Try("copy", () => new Dictionary<string, int>(exact));
+        Try("folded copy", () => new Dictionary<string, int>(exact, StringComparer.OrdinalIgnoreCase));
+        List<KeyValuePair<string, int>> distinct = new List<KeyValuePair<string, int>>
+        {
+            new KeyValuePair<string, int>("p", 1), new KeyValuePair<string, int>("q", 2),
+        };
+        Try("distinct", () => new Dictionary<string, int>(distinct));
+        return 0;
+    }
+}

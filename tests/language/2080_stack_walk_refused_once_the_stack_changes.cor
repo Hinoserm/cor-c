@@ -1,0 +1,90 @@
+// test: stack_walk_refused_once_the_stack_changes
+// expect-exit: 0
+// expect-output:
+// push 3 Collection was modified after the enumerator was instantiated. 4
+// pop Collection was modified after the enumerator was instantiated. 3
+// peek ok 3,2,1
+// clear Collection was modified after the enumerator was instantiated. 0
+// trypop empty False moved False
+// clear empty Collection was modified after the enumerator was instantiated.
+// before 0
+// current 6
+// moved Collection was modified after the enumerator was instantiated.
+// after 0 False
+// boxed 5
+// boxed reset 0 True 5
+// reset Collection was modified after the enumerator was instantiated.
+// disposed 9 False 0
+// empty False []
+//
+// A Stack walked as .NET 10 walks one, in System.Collections' words: every
+// Push, Pop and Clear (of an empty stack too) refuses the walk at the next
+// MoveNext, even one already finished, and at Reset; Peek, TryPeek,
+// Contains and a TryPop of nothing do not. Current is never an exception:
+// default before the first and after the last, and still the last taken
+// once disposed.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var s = new Stack<int>(new[] { 1, 2, 3 });
+        string seen = "";
+        string why = Run(() => { foreach (int x in s) { seen += x; s.Push(x); } });
+        Console.WriteLine("push " + seen + " " + why + " " + s.Count);
+        why = Run(() => { foreach (int x in s) s.Pop(); });
+        Console.WriteLine("pop " + why + " " + s.Count);
+        why = Run(() => { foreach (int x in s) { s.Peek(); s.TryPeek(out int top); s.Contains(x); } });
+        Console.WriteLine("peek " + why + " " + string.Join(",", s));
+        why = Run(() => { foreach (int x in s) s.Clear(); });
+        Console.WriteLine("clear " + why + " " + s.Count);
+
+        var none = s.GetEnumerator();
+        bool popped = s.TryPop(out int nothing);
+        string r;
+        try { r = "moved " + none.MoveNext(); } catch (InvalidOperationException ex) { r = ex.Message; }
+        Console.WriteLine("trypop empty " + popped + " " + r);
+        s.Clear();
+        try { r = "moved " + none.MoveNext(); } catch (InvalidOperationException ex) { r = ex.Message; }
+        Console.WriteLine("clear empty " + r);
+
+        s.Push(5); s.Push(6);
+        var e = s.GetEnumerator();
+        Console.WriteLine("before " + e.Current);
+        e.MoveNext();
+        s.Pop();
+        Console.WriteLine("current " + e.Current);
+        try { e.MoveNext(); Console.WriteLine("moved ok"); } catch (InvalidOperationException ex) { Console.WriteLine("moved " + ex.Message); }
+
+        var f = s.GetEnumerator();
+        while (f.MoveNext()) { }
+        Console.WriteLine("after " + f.Current + " " + f.MoveNext());
+
+        IEnumerator boxed = ((IEnumerable)s).GetEnumerator();
+        boxed.MoveNext();
+        Console.WriteLine("boxed " + boxed.Current);
+        boxed.Reset();
+        Console.WriteLine("boxed reset " + boxed.Current + " " + boxed.MoveNext() + " " + boxed.Current);
+        s.Push(9);
+        try { boxed.Reset(); Console.WriteLine("reset ok"); } catch (InvalidOperationException ex) { Console.WriteLine("reset " + ex.Message); }
+
+        var g = s.GetEnumerator();
+        g.MoveNext();
+        g.Dispose();
+        Console.WriteLine("disposed " + g.Current + " " + g.MoveNext() + " " + g.Current);
+
+        var empty = new Stack<string>();
+        var ee = empty.GetEnumerator();
+        Console.WriteLine("empty " + ee.MoveNext() + " [" + ee.Current + "]");
+        return 0;
+    }
+}

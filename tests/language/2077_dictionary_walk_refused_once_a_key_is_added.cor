@@ -1,0 +1,126 @@
+// test: dictionary_walk_refused_once_a_key_is_added
+// expect-exit: 0
+// expect-output:
+// add a Collection was modified; enumeration operation may not execute.
+// overwrite 32 10 260
+// remove abz 3
+// emptied 0
+// clear r 0
+// current k=7 False
+// before Enumeration has either not started or has already finished.
+// first [m, 5]
+// after Enumeration has either not started or has already finished.
+// reset Collection was modified; enumeration operation may not execute.
+// moved Collection was modified; enumeration operation may not execute.
+// keys m Collection was modified; enumeration operation may not execute.
+// tryadd 3
+// values 11 100
+// values add Collection was modified; enumeration operation may not execute. 4
+// trim kept m;n;o;w100;
+// trim shrank Collection was modified; enumeration operation may not execute.
+// order 0,9,2,3,4
+// squeezed 0,9,3,5
+// ensure 3 ok Collection was modified; enumeration operation may not execute. 11
+//
+// A Dictionary walked as .NET 10 walks one: a key added under it is an
+// InvalidOperationException at the next MoveNext and at Reset; a value
+// replaced, a key removed and the table cleared are not, and Current stays
+// the pair MoveNext took. Through the non-generic interface it stands on
+// nothing before the first and after the last. Keys and Values the same.
+// TrimExcess and EnsureCapacity refuse a walk only when .NET's table would
+// be remade -- its primes, not this table's slots -- and a TrimExcess that
+// remakes nothing leaves a removed key's place for the next one added.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var d = new Dictionary<string, int> { ["a"] = 1, ["b"] = 2, ["c"] = 3 };
+        string seen = "";
+        string why = Run(() => { foreach (var kv in d) { seen += kv.Key; if (kv.Key == "a") d["z"] = 26; } });
+        Console.WriteLine("add " + seen + " " + why);
+
+        int sum = 0;
+        foreach (var kv in d) { d[kv.Key] = kv.Value * 10; sum += kv.Value; }
+        Console.WriteLine("overwrite " + sum + " " + d["a"] + " " + d["z"]);
+
+        string kept = "";
+        foreach (var kv in d) { if (kv.Key == "b") d.Remove("c"); kept += kv.Key; }
+        Console.WriteLine("remove " + kept + " " + d.Count);
+
+        foreach (var kv in d) d.Remove(kv.Key);
+        Console.WriteLine("emptied " + d.Count);
+
+        d["p"] = 1; d["q"] = 2; d["r"] = 3;
+        string cleared = "";
+        foreach (var kv in d) { cleared += kv.Key; d.Clear(); }
+        Console.WriteLine("clear " + cleared + " " + d.Count);
+
+        d["k"] = 7;
+        var e = d.GetEnumerator();
+        e.MoveNext();
+        d.Remove("k");
+        Console.WriteLine("current " + e.Current.Key + "=" + e.Current.Value + " " + e.MoveNext());
+
+        d["m"] = 5;
+        IEnumerator boxed = ((IEnumerable)d).GetEnumerator();
+        Console.WriteLine("before " + Run(() => Console.WriteLine("got " + boxed.Current)));
+        boxed.MoveNext();
+        Console.WriteLine("first " + boxed.Current);
+        boxed.MoveNext();
+        Console.WriteLine("after " + Run(() => Console.WriteLine("got " + boxed.Current)));
+        d["n"] = 6;
+        Console.WriteLine("reset " + Run(() => boxed.Reset()));
+        Console.WriteLine("moved " + Run(() => { boxed.MoveNext(); }));
+
+        string keys = "";
+        why = Run(() => { foreach (string k in d.Keys) { keys += k; d.TryAdd("o", 0); } });
+        Console.WriteLine("keys " + keys + " " + why);
+
+        int refused = 0;
+        foreach (string k in d.Keys) { if (!d.TryAdd(k, 99)) refused++; }
+        Console.WriteLine("tryadd " + refused);
+
+        int total = 0;
+        foreach (int v in d.Values) { total += v; d["m"] = 100; }
+        Console.WriteLine("values " + total + " " + d["m"]);
+
+        why = Run(() => { foreach (int v in d.Values) d["w" + v] = v; });
+        Console.WriteLine("values add " + why + " " + d.Count);
+
+        string walked = "";
+        foreach (var kv in d) { walked += kv.Key + ";"; d.TrimExcess(); }
+        Console.WriteLine("trim kept " + walked);
+
+        d.Remove("n"); d.Remove("o");
+        why = Run(() => { foreach (var kv in d) d.TrimExcess(); });
+        Console.WriteLine("trim shrank " + why);
+
+        var f = new Dictionary<int, int>();
+        for (int i = 0; i < 5; i++) f[i] = i;
+        f.Remove(1);
+        f.TrimExcess();
+        f[9] = 9;
+        Console.WriteLine("order " + string.Join(",", f.Keys));
+        f.Remove(4); f.Remove(2);
+        f.TrimExcess();
+        f[5] = 5;
+        Console.WriteLine("squeezed " + string.Join(",", f.Keys));
+
+        var g = new Dictionary<int, int> { [1] = 1, [2] = 2 };
+        int had = g.EnsureCapacity(2);
+        string same = Run(() => { foreach (var kv in g) g.EnsureCapacity(3); });
+        string grown = Run(() => { foreach (var kv in g) g.EnsureCapacity(10); });
+        Console.WriteLine("ensure " + had + " " + same + " " + grown + " " + g.EnsureCapacity(0));
+        return 0;
+    }
+}

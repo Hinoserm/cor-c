@@ -20,36 +20,16 @@
 // storage order; a caller who writes `foreach` over a stack expects to see
 // what Pop would hand back, in that sequence.
 
-class StackEnumerator<T> : IEnumerator<T> {
-    // The non-generic IEnumerator's members, as .NET's enumerators have them.
-    object? IEnumerator.Current => Current;
-    public void Reset() { at = over.Count; }
-
-    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
-    public void Dispose() { }
-
-    private Stack<T> over;
-    private int at;
-
-    public StackEnumerator(Stack<T> stack) {
-        over = stack;
-        at = stack.Count;
-    }
-
-    public T Current => over.ElementFromTop(over.Count - 1 - at);
-
-    public bool MoveNext() {
-        at = at - 1;
-        return at >= 0;
-    }
-}
-
 class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     private T[] items;
     private int count;
+    // WHAT CHANGED IT LAST, counted: every Push and Pop and every Clear (of
+    // an empty stack too) move it on, and an enumerator that finds it moved
+    // throws, as .NET's does.
+    private int version;
 
     public Stack() {
         items = new T[8];
@@ -76,10 +56,12 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         if (count == items.Length) { Grow(); }
         items[count] = value;
         count = count + 1;
+        version = version + 1;
     }
 
     public T Pop() {
         if (count == 0) { throw new InvalidOperationException("Stack empty."); }
+        version = version + 1;
         count = count - 1;
         T value = items[count];
         items[count] = default(T)!;
@@ -116,11 +98,10 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     public void Clear() {
         for (int i = 0; i < count; i++) { items[i] = default(T)!; }
         count = 0;
+        version = version + 1;
     }
 
-    /// The element `depth` places below the top, which is what the enumerator
-    /// walks. Not a .NET member: an enumerator written outside the class has
-    /// no other way to read the store.
+    /// The element `depth` places below the top. Not a .NET member.
     public T ElementFromTop(int depth) { return items[count - 1 - depth]; }
 
     /// TOP FIRST, like the enumeration, which is what .NET's ToArray gives.
@@ -136,20 +117,44 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 
     /// .NET's own: a struct, so a foreach over one allocates nothing and does
     /// not hand the collection to an object on the heap (which the lifetime
-    /// rules take for its escape).
+    /// rules take for its escape). As .NET's: Current is the element the last
+    /// MoveNext took -- default before the first and after the last, never an
+    /// exception, and still the last one taken once disposed -- and a stack
+    /// changed since the walk began is an InvalidOperationException at the
+    /// next MoveNext or Reset. `at` is where the last one was taken: the count
+    /// before the first, -1 once finished, as .NET's index is.
     public struct Enumerator : IEnumerator<T>, IDisposable {
         private readonly Stack<T> over;
+        private readonly int version;
         private int at;
-        internal Enumerator(Stack<T> walked) { over = walked; at = walked.Count; }
-        public T Current => over.ElementFromTop(over.Count - 1 - at);
-        object? IEnumerator.Current => Current;
-        public bool MoveNext() { at = at - 1; return at >= 0; }
-        public void Reset() { at = over.Count; }
-        public void Dispose() { }
+        private T current;
+        internal Enumerator(Stack<T> walked) { over = walked; version = walked.version; at = walked.count; current = default(T)!; }
+        public T Current => current;
+        object? IEnumerator.Current => current;
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            int next = at - 1;
+            if (next >= 0) {
+                current = over.items[next];
+                at = next;
+                return true;
+            }
+            current = default(T)!;
+            at = -1;
+            return false;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            at = over.count;
+            current = default(T)!;
+        }
+        public void Dispose() { at = -1; }
     }
 
     public Enumerator GetEnumerator() { return new Enumerator(this); }
-    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new StackEnumerator<T>(this); }
+
+    // Through the interface, as .NET's explicit implementation: the struct, boxed.
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return GetEnumerator(); }
 
     // THE ARRAY IS THE STACK'S ALONE -- ToArray and CopyTo copy out of it,
     // the enumerators read through the stack -- so at its region's top it
@@ -203,39 +208,6 @@ class LinkedListNode<T> {
     public LinkedListNode<T>? Previous => prev;
 }
 
-class LinkedListEnumerator<T> : IEnumerator<T> {
-    // The non-generic IEnumerator's members, as .NET's enumerators have them.
-    object? IEnumerator.Current => Current;
-    public void Reset() { at = null; started = false; }
-
-    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
-    public void Dispose() { }
-
-    private LinkedList<T> over;
-    private LinkedListNode<T>? at;
-    private bool started;
-
-    public LinkedListEnumerator(LinkedList<T> list) {
-        over = list;
-        at = null;
-        started = false;
-    }
-
-    /// MoveNext answered true to get here, so there is a node; C# spells
-    /// that with the '!' rather than a test nobody can fail.
-    public T Current => at!.Value;
-
-    public bool MoveNext() {
-        if (!started) {
-            started = true;
-            at = over.First;
-        } else if (at != null) {
-            at = at.Next;
-        }
-        return at != null;
-    }
-}
-
 class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -247,6 +219,9 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
     private LinkedListNode<T>? head;
     private LinkedListNode<T>? tail;
     private int count;
+    // WHAT CHANGED IT LAST, counted: every node put in or taken out and every
+    // Clear move it on, as .NET's; a node's Value written does not.
+    private int version;
 
     public LinkedList() {
         head = null;
@@ -271,6 +246,7 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
         if (head != null) { head.prev = node; } else { tail = node; }
         head = node;
         count = count + 1;
+        version = version + 1;
     }
 
     public LinkedListNode<T> AddLast(T value) {
@@ -286,6 +262,7 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
         if (tail != null) { tail.next = node; } else { head = node; }
         tail = node;
         count = count + 1;
+        version = version + 1;
     }
 
     public LinkedListNode<T> AddAfter(LinkedListNode<T> node, T value) {
@@ -302,6 +279,7 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
         if (node.next != null) { node.next!.prev = fresh; } else { tail = fresh; }
         node.next = fresh;
         count = count + 1;
+        version = version + 1;
     }
 
     public LinkedListNode<T> AddBefore(LinkedListNode<T> node, T value) {
@@ -318,6 +296,7 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
         if (node.prev != null) { node.prev!.next = fresh; } else { head = fresh; }
         node.prev = fresh;
         count = count + 1;
+        version = version + 1;
     }
 
     public LinkedListNode<T>? Find(T value) {
@@ -346,6 +325,7 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
         node.next = null;
         node.prev = null;
         count = count - 1;
+        version = version + 1;
     }
 
     /// True when a node holding that value was there, which is .NET's contract:
@@ -379,6 +359,7 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
         head = null;
         tail = null;
         count = 0;
+        version = version + 1;
     }
 
     public void CopyTo(T[] target, int index) {
@@ -389,7 +370,48 @@ class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
         }
     }
 
-    public IEnumerator<T> GetEnumerator() { return new LinkedListEnumerator<T>(this); }
+    /// .NET's LinkedList<T>.Enumerator: a struct, from the head the list had
+    /// when it was made. Current is the value the last MoveNext took, and
+    /// stays the last one after the end, as .NET's does; a list changed since
+    /// the walk began is an InvalidOperationException at the next MoveNext or
+    /// Reset.
+    public struct Enumerator : IEnumerator<T>, IDisposable {
+        private readonly LinkedList<T> over;
+        private readonly int version;
+        private LinkedListNode<T>? node;
+        private int at;
+        private T current;
+        internal Enumerator(LinkedList<T> list) { over = list; version = list.version; node = list.head; at = 0; current = default(T)!; }
+        public T Current => current;
+        object? IEnumerator.Current {
+            get {
+                if (at == 0 || at == over.count + 1) { ThrowHelper.EnumerationNotRunning(); }
+                return current;
+            }
+        }
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            LinkedListNode<T>? here = node;
+            if (here == null) {
+                at = over.count + 1;
+                return false;
+            }
+            at = at + 1;
+            current = here.Value;
+            node = here.next;
+            return true;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            current = default(T)!;
+            node = over.head;
+            at = 0;
+        }
+        public void Dispose() { }
+    }
+
+    public Enumerator GetEnumerator() { return new Enumerator(this); }
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return GetEnumerator(); }
 
     // A node already in a list cannot be added to another, and a node from
     // another list cannot be used as a position in this one. .NET's wording
@@ -420,6 +442,12 @@ class SortedPairs<K, V> {
     internal List<K> keys;
     internal List<V> values;
     internal IComparer<K> order;
+    // WHAT CHANGED THE MAP LAST, counted, as .NET's SortedList and
+    // SortedDictionary count it: an insert, a removal, a value replaced and a
+    // clearing (of an empty map too) move it on, and so do SortedDictionary's
+    // changes that change nothing (Touch). An enumerator of the map, of its
+    // keys or of its values that finds it moved throws.
+    internal int version;
 
     public SortedPairs(IComparer<K> comparer) {
         keys = new List<K>();
@@ -447,35 +475,235 @@ class SortedPairs<K, V> {
     public void Insert(int at, K key, V value) {
         keys.Insert(at, key);
         values.Insert(at, value);
+        version = version + 1;
     }
 
     public void RemoveAt(int at) {
         keys.RemoveAt(at);
         values.RemoveAt(at);
+        version = version + 1;
     }
+
+    /// A value replaced where it is: a change, as both of .NET's count it.
+    public void SetValue(int at, V value) {
+        values[at] = value;
+        version = version + 1;
+    }
+
+    public void Clear() {
+        keys.Clear();
+        values.Clear();
+        version = version + 1;
+    }
+
+    /// A change that changes nothing, as SortedDictionary's tree counts one:
+    /// a key added that was there, or a removal asked of a map that holds
+    /// anything. Its insertion and its removal turn the tree over on the way
+    /// down before they know.
+    public void Touch() { version = version + 1; }
 }
 
+/// .NET's SortedList<K, V>.Enumerator, handed out as an IEnumerator as .NET
+/// hands out its own: the pair the last MoveNext took, default before the
+/// first and after the last, and a list changed since the walk began an
+/// InvalidOperationException at the next MoveNext or Reset. Through the
+/// non-generic interface, before the first or after the last, there is
+/// nothing to box; Dispose sets it back to before the first, as .NET's.
 class SortedPairsEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
-    // The non-generic IEnumerator's members, as .NET's enumerators have them.
-    object? IEnumerator.Current => Current;
-    public void Reset() { at = -1; }
-
-    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
-    public void Dispose() { }
-
-    private SortedPairs<K, V> over;
+    private readonly SortedPairs<K, V> over;
+    private readonly int version;
     private int at;
+    private K key;
+    private V value;
 
     public SortedPairsEnumerator(SortedPairs<K, V> pairs) {
         over = pairs;
-        at = -1;
+        version = pairs.version;
+        at = 0;
+        key = default(K)!;
+        value = default(V)!;
     }
 
-    public KeyValuePair<K, V> Current => new KeyValuePair<K, V>(over.keys[at], over.values[at]);
+    public KeyValuePair<K, V> Current => new KeyValuePair<K, V>(key, value);
+
+    object? IEnumerator.Current {
+        get {
+            if (at == 0 || at == over.keys.Count + 1) { ThrowHelper.EnumerationNotRunning(); }
+            return new KeyValuePair<K, V>(key, value);
+        }
+    }
 
     public bool MoveNext() {
-        at = at + 1;
-        return at < over.keys.Count;
+        if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+        if ((uint)at < (uint)over.keys.Count) {
+            key = over.keys[at];
+            value = over.values[at];
+            at = at + 1;
+            return true;
+        }
+        at = over.keys.Count + 1;
+        key = default(K)!;
+        value = default(V)!;
+        return false;
+    }
+
+    public void Reset() {
+        if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+        at = 0;
+        key = default(K)!;
+        value = default(V)!;
+    }
+
+    public void Dispose() {
+        at = 0;
+        key = default(K)!;
+        value = default(V)!;
+    }
+}
+
+/// A SORTED MAP'S KEYS, as .NET's SortedList hands out its KeyList and
+/// SortedDictionary its KeyCollection: the map's own, in order, never a
+/// copy and never written through -- a write is refused in the words the
+/// map's kind refuses it in (`tree` for SortedDictionary's). A walk of them
+/// is refused once the map has changed, as the map's own is.
+sealed class SortedKeys<K, V> : IList<K>, IReadOnlyList<K> {
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    private readonly SortedPairs<K, V> over;
+    private readonly bool tree;
+
+    internal SortedKeys(SortedPairs<K, V> pairs, bool tree) { over = pairs; this.tree = tree; }
+
+    public int Count => over.keys.Count;
+    public K this[int index] => over.keys[index];
+    public bool Contains(K item) { return over.Search(item) >= 0; }
+    public int IndexOf(K item) {
+        int at = over.Search(item);
+        return at >= 0 ? at : -1;
+    }
+    public void CopyTo(K[] array, int arrayIndex) {
+        for (int i = 0; i < over.keys.Count; i++) { array[arrayIndex + i] = over.keys[i]; }
+    }
+    public IEnumerator<K> GetEnumerator() { return new SortedSideEnumerator<K, V, K>(over, over.keys, tree); }
+
+    bool ICollection<K>.IsReadOnly => true;
+    // The key at a place written: refused in the key collection's words by
+    // both of .NET's -- SortedList's KeyList says so too.
+    K IList<K>.this[int index] {
+        get { return over.keys[index]; }
+        set { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
+    }
+    void ICollection<K>.Add(K item) { throw Refused(); }
+    void ICollection<K>.Clear() { throw Refused(); }
+    bool ICollection<K>.Remove(K item) { throw Refused(); }
+    void IList<K>.Insert(int index, K item) { throw Refused(); }
+    void IList<K>.RemoveAt(int index) { throw Refused(); }
+
+    private NotSupportedException Refused() {
+        return new NotSupportedException(tree ? "Mutating a key collection derived from a dictionary is not allowed." : "This operation is not supported on SortedList nested types because they require modifying the original SortedList.");
+    }
+}
+
+/// A sorted map's values in the order of their keys, as SortedKeys its keys.
+sealed class SortedValues<K, V> : IList<V>, IReadOnlyList<V> {
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    private readonly SortedPairs<K, V> over;
+    private readonly bool tree;
+
+    internal SortedValues(SortedPairs<K, V> pairs, bool tree) { over = pairs; this.tree = tree; }
+
+    public int Count => over.values.Count;
+    public V this[int index] => over.values[index];
+    public bool Contains(V item) { return IndexOf(item) >= 0; }
+    public int IndexOf(V item) {
+        IEqualityComparer<V> same = EqualityComparer<V>.Default;
+        for (int i = 0; i < over.values.Count; i++) {
+            if (same.Equals(over.values[i], item)) { return i; }
+        }
+        return -1;
+    }
+    public void CopyTo(V[] array, int arrayIndex) {
+        for (int i = 0; i < over.values.Count; i++) { array[arrayIndex + i] = over.values[i]; }
+    }
+    public IEnumerator<V> GetEnumerator() { return new SortedSideEnumerator<K, V, V>(over, over.values, tree); }
+
+    bool ICollection<V>.IsReadOnly => true;
+    V IList<V>.this[int index] {
+        get { return over.values[index]; }
+        set { throw Refused(); }
+    }
+    void ICollection<V>.Add(V item) { throw Refused(); }
+    void ICollection<V>.Clear() { throw Refused(); }
+    bool ICollection<V>.Remove(V item) { throw Refused(); }
+    void IList<V>.Insert(int index, V item) { throw Refused(); }
+    void IList<V>.RemoveAt(int index) { throw Refused(); }
+
+    private NotSupportedException Refused() {
+        return new NotSupportedException(tree ? "Mutating a value collection derived from a dictionary is not allowed." : "This operation is not supported on SortedList nested types because they require modifying the original SortedList.");
+    }
+}
+
+/// A walk of a sorted map's keys or of its values (`side`), as .NET's
+/// enumerators of them: what the last MoveNext took, refused to go on once
+/// the map has changed. A SortedList's says it stands on nothing until its
+/// first MoveNext and after its last, and is set back by Dispose; a
+/// SortedDictionary's (`tree`) says so whenever MoveNext has not just taken
+/// one, and Dispose leaves it as it is.
+sealed class SortedSideEnumerator<K, V, E> : IEnumerator<E> {
+    private readonly SortedPairs<K, V> over;
+    private readonly List<E> side;
+    private readonly bool tree;
+    private readonly int version;
+    private int at;
+    private bool taken;
+    private E current;
+
+    internal SortedSideEnumerator(SortedPairs<K, V> pairs, List<E> walked, bool tree) {
+        over = pairs;
+        side = walked;
+        this.tree = tree;
+        version = pairs.version;
+        at = 0;
+        taken = false;
+        current = default(E)!;
+    }
+
+    public E Current => current;
+
+    object? IEnumerator.Current {
+        get {
+            if (tree ? !taken : (at == 0 || at == side.Count + 1)) { ThrowHelper.EnumerationNotRunning(); }
+            return current;
+        }
+    }
+
+    public bool MoveNext() {
+        if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+        if ((uint)at < (uint)side.Count) {
+            current = side[at];
+            at = at + 1;
+            taken = true;
+            return true;
+        }
+        at = side.Count + 1;
+        taken = false;
+        current = default(E)!;
+        return false;
+    }
+
+    public void Reset() {
+        if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+        at = 0;
+        taken = false;
+        current = default(E)!;
+    }
+
+    public void Dispose() {
+        if (tree) { return; }
+        at = 0;
+        taken = false;
+        current = default(E)!;
     }
 }
 
@@ -489,8 +717,8 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
     IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
 
-    ICollection<K> IDictionary<K, V>.Keys => Keys.AsReadOnly();
-    ICollection<V> IDictionary<K, V>.Values => Values.AsReadOnly();
+    ICollection<K> IDictionary<K, V>.Keys => Keys;
+    ICollection<V> IDictionary<K, V>.Values => Values;
     bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
 
     void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { Add(item.Key, item.Value); }
@@ -521,9 +749,13 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     public int Count => pairs.keys.Count;
     public IComparer<K> Comparer => pairs.order;
 
-    /// The keys in order, and the values in the order of their keys.
-    public List<K> Keys => pairs.keys;
-    public List<V> Values => pairs.values;
+    /// The keys in order, and the values in the order of their keys: views
+    /// of the list, as .NET's KeyList and ValueList, never written through,
+    /// whose walks are refused once the list has changed.
+    public IList<K> Keys => keyView ??= new SortedKeys<K, V>(pairs, false);
+    public IList<V> Values => valueView ??= new SortedValues<K, V>(pairs, false);
+    private SortedKeys<K, V>? keyView;
+    private SortedValues<K, V>? valueView;
 
     /// A DUPLICATE KEY THROWS, which is Add's contract and the difference from
     /// the indexer's setter -- that one replaces.
@@ -541,7 +773,7 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         }
         set {
             int at = pairs.Search(key);
-            if (at >= 0) { pairs.values[at] = value; } else { pairs.Insert(~at, key, value); }
+            if (at >= 0) { pairs.SetValue(at, value); } else { pairs.Insert(~at, key, value); }
         }
     }
 
@@ -574,7 +806,7 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     public K GetKeyAtIndex(int index) { return pairs.keys[index]; }
     public V GetValueAtIndex(int index) { return pairs.values[index]; }
-    public void SetValueAtIndex(int index, V value) { pairs.values[index] = value; }
+    public void SetValueAtIndex(int index, V value) { pairs.SetValue(index, value); }
 
     public bool Remove(K key) {
         int at = pairs.Search(key);
@@ -590,10 +822,7 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         pairs.RemoveAt(index);
     }
 
-    public void Clear() {
-        pairs.keys.Clear();
-        pairs.values.Clear();
-    }
+    public void Clear() { pairs.Clear(); }
 
     public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return new SortedPairsEnumerator<K, V>(pairs); }
 }
@@ -606,8 +835,8 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
 
-    ICollection<K> IDictionary<K, V>.Keys => Keys.AsReadOnly();
-    ICollection<V> IDictionary<K, V>.Values => Values.AsReadOnly();
+    ICollection<K> IDictionary<K, V>.Keys => Keys;
+    ICollection<V> IDictionary<K, V>.Values => Values;
     bool ICollection<KeyValuePair<K, V>>.IsReadOnly => false;
 
     void ICollection<KeyValuePair<K, V>>.Add(KeyValuePair<K, V> item) { Add(item.Key, item.Value); }
@@ -638,14 +867,25 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
 
     public int Count => pairs.keys.Count;
     public IComparer<K> Comparer => pairs.order;
-    public List<K> Keys => pairs.keys;
-    public List<V> Values => pairs.values;
+    /// Its keys and its values, as .NET's KeyCollection and ValueCollection:
+    /// views of the map in key order, never written through, whose walks are
+    /// refused once the map has changed.
+    public SortedKeys<K, V> Keys => keyView ??= new SortedKeys<K, V>(pairs, true);
+    public SortedValues<K, V> Values => valueView ??= new SortedValues<K, V>(pairs, true);
+    private SortedKeys<K, V>? keyView;
+    private SortedValues<K, V>? valueView;
     IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
     IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
 
+    /// A DUPLICATE KEY THROWS, and is a change all the same, as .NET's tree
+    /// counts it: its insertion turns the tree over on the way down before
+    /// it finds the key there.
     public void Add(K key, V value) {
         int at = pairs.Search(key);
-        if (at >= 0) { throw new ArgumentException("An item with the same key has already been added."); }
+        if (at >= 0) {
+            pairs.Touch();
+            throw new ArgumentException("An item with the same key has already been added.");
+        }
         pairs.Insert(~at, key, value);
     }
 
@@ -657,7 +897,7 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
         }
         set {
             int at = pairs.Search(key);
-            if (at >= 0) { pairs.values[at] = value; } else { pairs.Insert(~at, key, value); }
+            if (at >= 0) { pairs.SetValue(at, value); } else { pairs.Insert(~at, key, value); }
         }
     }
 
@@ -678,19 +918,61 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
         return true;
     }
 
+    /// A removal asked of a map that holds anything is a change, found or
+    /// not, as .NET's tree counts it.
     public bool Remove(K key) {
         int at = pairs.Search(key);
-        if (at < 0) { return false; }
+        if (at < 0) {
+            if (pairs.keys.Count > 0) { pairs.Touch(); }
+            return false;
+        }
         pairs.RemoveAt(at);
         return true;
     }
 
-    public void Clear() {
-        pairs.keys.Clear();
-        pairs.values.Clear();
+    public void Clear() { pairs.Clear(); }
+
+    /// .NET's SortedDictionary<K, V>.Enumerator: a struct, the pair the last
+    /// MoveNext took, default before the first and after the last, and a map
+    /// changed since the walk began an InvalidOperationException at the next
+    /// MoveNext or Reset.
+    public struct Enumerator : IEnumerator<KeyValuePair<K, V>>, IDisposable {
+        private readonly SortedPairs<K, V> over;
+        private readonly int version;
+        private int at;
+        private bool taken;
+        private KeyValuePair<K, V> current;
+        internal Enumerator(SortedPairs<K, V> pairs) { over = pairs; version = pairs.version; at = 0; taken = false; current = default; }
+        public KeyValuePair<K, V> Current => current;
+        object? IEnumerator.Current {
+            get {
+                if (!taken) { ThrowHelper.EnumerationNotRunning(); }
+                return current;
+            }
+        }
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            if (at < over.keys.Count) {
+                current = new KeyValuePair<K, V>(over.keys[at], over.values[at]);
+                at = at + 1;
+                taken = true;
+                return true;
+            }
+            taken = false;
+            current = default;
+            return false;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            at = 0;
+            taken = false;
+            current = default;
+        }
+        public void Dispose() { }
     }
 
-    public IEnumerator<KeyValuePair<K, V>> GetEnumerator() { return new SortedPairsEnumerator<K, V>(pairs); }
+    public Enumerator GetEnumerator() { return new Enumerator(pairs); }
+    IEnumerator<KeyValuePair<K, V>> IEnumerable<KeyValuePair<K, V>>.GetEnumerator() { return GetEnumerator(); }
 }
 
 // ---- PriorityQueue --------------------------------------------------------

@@ -1,0 +1,101 @@
+// test: queue_walk_refused_once_the_queue_changes
+// expect-exit: 0
+// expect-output:
+// enqueue 1 Collection was modified; enumeration operation may not execute. 4
+// dequeue Collection was modified; enumeration operation may not execute. 3
+// peek ok 2,3,1
+// clear Collection was modified; enumeration operation may not execute. 0
+// clear empty Collection was modified; enumeration operation may not execute.
+// trydequeue empty False False
+// before 0
+// current 5
+// moved Collection was modified; enumeration operation may not execute.
+// after 0 False
+// boxed before 0
+// boxed 6
+// boxed reset 0 True 6
+// reset Collection was modified; enumeration operation may not execute.
+// disposed 0 False
+// trim Collection was modified; enumeration operation may not execute.
+// trim again ok
+// trim small ok
+//
+// A Queue walked as .NET 10 walks one, in the core library's words: every
+// Enqueue, Dequeue and Clear (of an empty queue too) refuses the walk at the
+// next MoveNext or Reset; Peek, TryPeek, Contains and a TryDequeue of
+// nothing do not. Current is never an exception: default before the first,
+// after the last and once disposed. TrimExcess refuses a walk only when it
+// remakes the array, by .NET's room: none, then four, then twice.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var q = new Queue<int>(new[] { 1, 2, 3 });
+        string seen = "";
+        string why = Run(() => { foreach (int x in q) { seen += x; q.Enqueue(x); } });
+        Console.WriteLine("enqueue " + seen + " " + why + " " + q.Count);
+        why = Run(() => { foreach (int x in q) q.Dequeue(); });
+        Console.WriteLine("dequeue " + why + " " + q.Count);
+        why = Run(() => { foreach (int x in q) { q.Peek(); q.TryPeek(out int head); q.Contains(x); } });
+        Console.WriteLine("peek " + why + " " + string.Join(",", q));
+        why = Run(() => { foreach (int x in q) q.Clear(); });
+        Console.WriteLine("clear " + why + " " + q.Count);
+
+        var none = q.GetEnumerator();
+        q.Clear();
+        string r = "ok";
+        try { none.MoveNext(); } catch (InvalidOperationException ex) { r = ex.Message; }
+        Console.WriteLine("clear empty " + r);
+
+        bool took = q.TryDequeue(out int nothing);
+        var still = q.GetEnumerator();
+        q.TryDequeue(out nothing);
+        Console.WriteLine("trydequeue empty " + took + " " + still.MoveNext());
+
+        q.Enqueue(5); q.Enqueue(6);
+        var e = q.GetEnumerator();
+        Console.WriteLine("before " + e.Current);
+        e.MoveNext();
+        q.Dequeue();
+        Console.WriteLine("current " + e.Current);
+        try { e.MoveNext(); Console.WriteLine("moved ok"); } catch (InvalidOperationException ex) { Console.WriteLine("moved " + ex.Message); }
+
+        var f = q.GetEnumerator();
+        while (f.MoveNext()) { }
+        Console.WriteLine("after " + f.Current + " " + f.MoveNext());
+
+        IEnumerator boxed = ((IEnumerable)q).GetEnumerator();
+        Console.WriteLine("boxed before " + boxed.Current);
+        boxed.MoveNext();
+        Console.WriteLine("boxed " + boxed.Current);
+        boxed.Reset();
+        Console.WriteLine("boxed reset " + boxed.Current + " " + boxed.MoveNext() + " " + boxed.Current);
+        q.Enqueue(8);
+        try { boxed.Reset(); Console.WriteLine("reset ok"); } catch (InvalidOperationException ex) { Console.WriteLine("reset " + ex.Message); }
+
+        var g = q.GetEnumerator();
+        g.MoveNext();
+        g.Dispose();
+        Console.WriteLine("disposed " + g.Current + " " + g.MoveNext());
+
+        var t = new Queue<int>();
+        for (int i = 0; i < 5; i++) t.Enqueue(i);
+        t.Dequeue();
+        Console.WriteLine("trim " + Run(() => { foreach (int x in t) t.TrimExcess(); }));
+        Console.WriteLine("trim again " + Run(() => { foreach (int x in t) t.TrimExcess(); }));
+        var small = new Queue<int>();
+        small.Enqueue(1); small.Enqueue(2); small.Enqueue(3);
+        Console.WriteLine("trim small " + Run(() => { foreach (int x in small) small.TrimExcess(); }));
+        return 0;
+    }
+}

@@ -1,0 +1,82 @@
+// test: linked_list_walk_refused_once_the_list_changes
+// expect-exit: 0
+// expect-output:
+// add 1 Collection was modified after the enumerator was instantiated. 4
+// value 7 10
+// remove missing ok
+// remove Collection was modified after the enumerator was instantiated. 3
+// add before Collection was modified after the enumerator was instantiated. 2,3,0,1
+// cleared current 2
+// cleared Collection was modified after the enumerator was instantiated.
+// clear empty Collection was modified after the enumerator was instantiated.
+// before 0
+// after 5
+// boxed before Enumeration has either not started or has already finished.
+// boxed after Enumeration has either not started or has already finished.
+// boxed reset 4
+// reset Collection was modified after the enumerator was instantiated.
+//
+// A LinkedList walked as .NET 10 walks one: every node put in or taken out
+// and every Clear (of an empty list too) refuses the walk; a node's Value
+// written and a Remove that finds nothing do not. Current stays the last
+// value taken, after the end too; through the non-generic interface it
+// stands on nothing before the first and after the last.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var list = new LinkedList<int>();
+        list.AddLast(1); list.AddLast(2); list.AddLast(3);
+        string seen = "";
+        string why = Run(() => { foreach (int x in list) { seen += x; list.AddLast(x); } });
+        Console.WriteLine("add " + seen + " " + why + " " + list.Count);
+
+        int sum = 0;
+        foreach (int x in list) { sum += x; list.First!.Value = 10; }
+        Console.WriteLine("value " + sum + " " + list.First!.Value);
+
+        why = Run(() => { foreach (int x in list) { list.Remove(99); list.Find(x); list.Contains(x); } });
+        Console.WriteLine("remove missing " + why);
+        why = Run(() => { foreach (int x in list) list.Remove(x); });
+        Console.WriteLine("remove " + why + " " + list.Count);
+        why = Run(() => { foreach (int x in list) list.AddBefore(list.Last!, 0); });
+        Console.WriteLine("add before " + why + " " + string.Join(",", list));
+
+        var e = list.GetEnumerator();
+        e.MoveNext();
+        list.Clear();
+        Console.WriteLine("cleared current " + e.Current);
+        try { e.MoveNext(); Console.WriteLine("cleared ok"); } catch (InvalidOperationException ex) { Console.WriteLine("cleared " + ex.Message); }
+
+        var none = list.GetEnumerator();
+        list.Clear();
+        try { none.MoveNext(); Console.WriteLine("clear empty ok"); } catch (InvalidOperationException ex) { Console.WriteLine("clear empty " + ex.Message); }
+
+        list.AddLast(4); list.AddLast(5);
+        var f = list.GetEnumerator();
+        Console.WriteLine("before " + f.Current);
+        while (f.MoveNext()) { }
+        Console.WriteLine("after " + f.Current);
+
+        IEnumerator boxed = ((IEnumerable)list).GetEnumerator();
+        try { Console.WriteLine("got " + boxed.Current); } catch (InvalidOperationException ex) { Console.WriteLine("boxed before " + ex.Message); }
+        while (boxed.MoveNext()) { }
+        try { Console.WriteLine("got " + boxed.Current); } catch (InvalidOperationException ex) { Console.WriteLine("boxed after " + ex.Message); }
+        boxed.Reset();
+        boxed.MoveNext();
+        Console.WriteLine("boxed reset " + boxed.Current);
+        list.RemoveFirst();
+        try { boxed.Reset(); Console.WriteLine("reset ok"); } catch (InvalidOperationException ex) { Console.WriteLine("reset " + ex.Message); }
+        return 0;
+    }
+}

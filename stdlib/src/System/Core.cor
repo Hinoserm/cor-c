@@ -376,18 +376,30 @@ static class String {
         return Format(provider, format, new object?[] { arg0, arg1, arg2 });
     }
 
-    /// ONE ARGUMENT, WRITTEN. The format string after the colon belongs to the
-    /// VALUE's type -- "X4" to a number, "yyyy-MM-dd" to a date -- which is
-    /// what IFormattable means in .NET; here the type is asked for directly,
-    /// because a boxed value knows what it is and there is no interface
-    /// dispatch to do it through.
-    /// A null argument is nothing at all, as .NET writes it.
-    internal static string FormatArgument(object? value, string format, IFormatProvider? provider) {
+    /// ONE ARGUMENT, WRITTEN, in the order .NET's composite formatting asks:
+    /// the provider's ICustomFormatter first when it gave one, for every
+    /// argument, null among them; what that answers null for, or every
+    /// argument when there is none, by the value's own IFormattable.ToString
+    /// -- the format null when the hole gives none, never ToString() for an
+    /// IFormattable -- and anything else by its ToString. A boxed number is
+    /// asked for directly, because a boxed value knows what it is and there
+    /// is no interface dispatch to do it through. A null argument the custom
+    /// formatter did not write is nothing at all, as .NET writes it.
+    internal static string FormatArgument(object? value, string format, IFormatProvider? provider, ICustomFormatter? custom) {
+        if (custom != null) {
+            string? made = custom.Format(format.Length == 0 ? null : format, value, provider);
+            if (made != null) { return made; }
+        }
         if (value == null) { return ""; }
-        // NO FORMAT IS STILL THE PROVIDER'S, as .NET asks an IFormattable
-        // with a null format: a date under a culture's own patterns.
+        // NO FORMAT IS STILL AN IFormattable's, asked with a null one under
+        // whatever provider there is, none included: a type's ToString() and
+        // its ToString(null, provider) may answer differently, and .NET asks
+        // the second. A boxed number's box answers it (FormatBoxed).
         if (format.Length == 0) {
-            if (provider != null && value is IFormattable told) { return told.ToString(null, provider); }
+            if (value is IFormattable told) {
+                string? said = told.ToString(null, provider);
+                return said ?? "";
+            }
             return "" + value;
         }
         if (value is int i32) { return i32.ToString(format, provider); }
@@ -400,7 +412,10 @@ static class String {
         if (value is ushort u16) { return u16.ToString(format, provider); }
         if (value is byte u8) { return u8.ToString(format, provider); }
         if (value is sbyte i8) { return i8.ToString(format, provider); }
-        if (value is IFormattable formattable) { return formattable.ToString(format, provider); }
+        if (value is IFormattable formattable) {
+            string? written = formattable.ToString(format, provider);
+            return written ?? "";
+        }
         return "" + value;
     }
 
@@ -8745,6 +8760,22 @@ static class ThrowHelper {
         throw new InvalidOperationException("Collection was modified; enumeration operation may not execute.");
     }
 
+    // THE SAME IN System.Collections' WORDS, which .NET's collections of that
+    // assembly throw -- Stack, LinkedList, SortedSet, SortedList,
+    // SortedDictionary, PriorityQueue -- where the core library's List,
+    // Dictionary, HashSet and Queue throw the one above.
+    [DoesNotReturn]
+    public static void CollectionModifiedAfterEnumerator() {
+        throw new InvalidOperationException("Collection was modified after the enumerator was instantiated.");
+    }
+
+    // AN ENUMERATOR ASKED THROUGH THE NON-GENERIC INTERFACE where it stands on
+    // nothing: before its first MoveNext, or after the one that answered false.
+    [DoesNotReturn]
+    public static void EnumerationNotRunning() {
+        throw new InvalidOperationException("Enumeration has either not started or has already finished.");
+    }
+
     // THE KEY'S TEXT, NOT THE KEY: made where the key's own type is known
     // (Dictionary's KeyText), so the throw holds a string made for it and
     // never the key. Handed the key as an object, its ToString was every
@@ -8760,6 +8791,14 @@ static class ThrowHelper {
     [DoesNotReturn]
     public static void DuplicateKey(string? key) {
         throw new ArgumentException("An item with the same key has already been added. Key: " + key);
+    }
+
+    // A NULL KEY, which a table refuses at every entry before it looks at
+    // anything else, as .NET's refuses it
+    // (ThrowArgumentNullException(ExceptionArgument.key)).
+    [DoesNotReturn]
+    public static void KeyNull() {
+        throw new ArgumentNullException("key");
     }
 }
 
@@ -11874,32 +11913,6 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
 // specialising a generic discovers more generics to specialise, which is
 // exactly the shape a queue is for.
 
-/// .NET spells this Queue<T>.Enumerator. HEAD FIRST, which is the order the
-/// queue hands things out in and not the order the ring stores them in.
-class QueueEnumerator<T> : IEnumerator<T> {
-    // The non-generic IEnumerator's members, as .NET's enumerators have them.
-    object? IEnumerator.Current => Current;
-    public void Reset() { at = -1; }
-
-    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
-    public void Dispose() { }
-
-    private Queue<T> over;
-    private int at;
-
-    public QueueEnumerator(Queue<T> queue) {
-        over = queue;
-        at = -1;
-    }
-
-    public T Current => over[at];
-
-    public bool MoveNext() {
-        at = at + 1;
-        return at < over.Count;
-    }
-}
-
 class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -11907,14 +11920,24 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     private T[] items;
     private int head;
     private int count;
+    // WHAT CHANGED IT LAST, counted: every Enqueue and Dequeue, every Clear
+    // (of an empty queue too) and a TrimExcess that remakes the array move it
+    // on, and an enumerator that finds it moved throws, as .NET's does.
+    private int version;
 
+    // NO ROOM UNTIL THE FIRST, then four, then twice that, as .NET's queue
+    // grows: the room is what decides whether TrimExcess remakes the array,
+    // and so whether a walk is refused after it.
     public Queue() {
-        items = new T[8];
+        items = new T[0];
         head = 0;
         count = 0;
     }
 
+    /// A collection's count is the room, as .NET copies one into an array of
+    /// its size; anything else grows as Enqueue grows it.
     public Queue(IEnumerable<T> collection) : this() {
+        if (collection is ICollection<T> sized) { items = new T[sized.Count]; }
         foreach (T item in collection) { Enqueue(item); }
     }
 
@@ -11928,6 +11951,7 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     /// replaced field being only for an owner one function holds alone.
     public void TrimExcess() {
         if (count >= (int)(items.Length * 0.9)) { return; }
+        version = version + 1;
         T[] kept = new T[count];
         for (int i = 0; i < count; i++) {
             int at = head + i;
@@ -11952,6 +11976,7 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 
         items[at] = value;
         count = count + 1;
+        version = version + 1;
     }
 
     public T Dequeue() {
@@ -11965,6 +11990,7 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         if (head == items.Length) { head = 0; }
 
         count = count - 1;
+        version = version + 1;
         return taken;
     }
 
@@ -11977,6 +12003,7 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
         for (int i = 0; i < count; i++) { items[(head + i) % items.Length] = default(T)!; }
         head = 0;
         count = 0;
+        version = version + 1;
     }
 
     /// THE NON-THROWING PAIR, which is what a worker loop draining a queue
@@ -12017,20 +12044,46 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 
     /// .NET's own: a struct, so a foreach over one allocates nothing and does
     /// not hand the collection to an object on the heap (which the lifetime
-    /// rules take for its escape).
+    /// rules take for its escape). HEAD FIRST, which is the order the queue
+    /// hands things out in and not the order the ring stores them in. As
+    /// .NET's: Current is the element the last MoveNext took -- default before
+    /// the first, after the last and once disposed, never an exception -- and
+    /// a queue changed since the walk began is an InvalidOperationException
+    /// at the next MoveNext or Reset. `at` is -1 before the first and -2 once
+    /// finished, as .NET's index is.
     public struct Enumerator : IEnumerator<T>, IDisposable {
         private readonly Queue<T> over;
+        private readonly int version;
         private int at;
-        internal Enumerator(Queue<T> walked) { over = walked; at = -1; }
-        public T Current => over[at];
-        object? IEnumerator.Current => Current;
-        public bool MoveNext() { at = at + 1; return at < over.Count; }
-        public void Reset() { at = -1; }
-        public void Dispose() { }
+        private T current;
+        internal Enumerator(Queue<T> walked) { over = walked; version = walked.version; at = -1; current = default(T)!; }
+        public T Current => current;
+        object? IEnumerator.Current => current;
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            int next = at + 1;
+            if ((uint)next < (uint)over.count) {
+                at = next;
+                current = over[next];
+                return true;
+            }
+            at = -2;
+            current = default(T)!;
+            return false;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            at = -1;
+            current = default(T)!;
+        }
+        public void Dispose() { at = -2; current = default(T)!; }
     }
 
     public Enumerator GetEnumerator() { return new Enumerator(this); }
-    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new QueueEnumerator<T>(this); }
+
+    // Through the interface, as .NET's explicit implementation: the struct,
+    // boxed, as List's and Dictionary's are.
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return GetEnumerator(); }
 
     /// Not a .NET member: the i-th element in queue order, which the
     /// enumerator and the copies above need and the ring makes non-obvious.
@@ -12047,8 +12100,11 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // wrap arithmetic above stays simple. Copying in queue order rather than
     // storage order is what makes that true.
     private void Grow() {
-        // Doubled; from nothing (an empty queue trimmed), four.
-        T[] bigger = new T[items.Length == 0 ? 4 : items.Length * 2];
+        // Doubled, and four more at least, as .NET's: from nothing (an empty
+        // queue trimmed), four; from three, seven.
+        int grown = items.Length * 2;
+        if (grown < items.Length + 4) { grown = items.Length + 4; }
+        T[] bigger = new T[grown];
 
         for (int i = 0; i < count; i++) {
             int at = head + i;
@@ -12262,6 +12318,12 @@ class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
 
     private List<Grouping<K, T>> groups;
     private Dictionary<K, Grouping<K, T>> byKey;
+    // THE NULL KEY'S GROUP, KEPT APART: a table refuses null as a key, and
+    // .NET's lookup gives null a group of its own, hashed as 0 without the
+    // comparer being asked (Lookup.InternalGetHashCode) -- so a comparer
+    // whose hash throws for null, StringComparer.Ordinal's among them, never
+    // sees it here either.
+    private Grouping<K, T>? nulls;
 
     internal Lookup(IEqualityComparer<K>? comparer) {
         groups = new List<Grouping<K, T>>();
@@ -12272,20 +12334,48 @@ class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
 
     public IEnumerable<T> this[K key] {
         get {
+            if (key == null) {
+                Grouping<K, T>? held = nulls;
+                if (held != null) { return held; }
+                return Array.Empty<T>();
+            }
             if (byKey.TryGetValue(key, out Grouping<K, T>? found) && found != null) { return found; }
             return Array.Empty<T>();
         }
     }
 
-    public bool Contains(K key) { return byKey.ContainsKey(key); }
+    public bool Contains(K key) {
+        if (key == null) { return nulls != null; }
+        return byKey.ContainsKey(key);
+    }
 
     internal void Add(K key, T value) {
-        if (!byKey.TryGetValue(key, out Grouping<K, T>? found) || found == null) {
+        Grouping<K, T>? found;
+        if (key == null) {
+            found = nulls;
+            if (found == null) {
+                found = new Grouping<K, T>(key);
+                nulls = found;
+                groups.Add(found);
+            }
+        } else if (!byKey.TryGetValue(key, out found) || found == null) {
             found = new Grouping<K, T>(key);
             byKey.Add(key, found);
             groups.Add(found);
         }
-        found.Add(value);
+        found!.Add(value);
+    }
+
+    /// THE LOOKUP A JOIN MATCHES AGAINST, as .NET's CreateForJoin makes it:
+    /// an element whose key is null is left out, so no outer key -- null or
+    /// not -- matches it.
+    internal static Lookup<K, T> ForJoin(IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? comparer) {
+        Lookup<K, T> made = new Lookup<K, T>(comparer);
+        foreach (T item in source) {
+            K key = keySelector(item);
+            if (key != null) { made.Add(key, item); }
+        }
+        return made;
     }
 
     public IEnumerator<IGrouping<K, T>> GetEnumerator() {
@@ -12298,65 +12388,176 @@ class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
     }
 }
 
-/// A SORT NOT YET DONE: the source and the keys it sorts by, the sort run
-/// when the sequence is walked. Stable, as .NET's OrderBy is, so ThenBy
-/// orders what its predecessors left equal and equal elements keep their
-/// source order.
+/// A SORT NOT YET DONE: the source and the levels it sorts by -- OrderBy's
+/// first, then each ThenBy's -- the sort run when the sequence is walked, as
+/// .NET's OrderedIterator runs its EnumerableSorter. Every level's key is
+/// asked of every element ONCE, in source order, level by level (all of
+/// OrderBy's, then all of the first ThenBy's), and the elements' places are
+/// sorted by those keys: a comparison never calls a selector, and the
+/// selectors' calls are .NET's in number and order. A tie at every level
+/// goes to the earlier element, which is what keeps the sort stable.
 class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T> {
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     private IEnumerable<T> source;
-    private IComparer<T> order;
+    // THE PATTERN EACH WALK MAKES ITS OWN LEVELS FROM (SortLevel.Fresh): a
+    // level holds the keys of the walk that made it, so two walks at once,
+    // or one inside another, keep theirs apart. The last level, each naming
+    // the one before it (SortLevel.before), OrderBy's first of all.
+    private SortLevel<T> last;
 
-    internal OrderedSequence(IEnumerable<T> source, IComparer<T> order) {
+    internal OrderedSequence(IEnumerable<T> source, SortLevel<T> last) {
         this.source = source;
-        this.order = order;
+        this.last = last;
     }
+
+    /// What it sorts, which is what Count counts (Enumerable.Count).
+    internal IEnumerable<T> Source => source;
 
     public IOrderedEnumerable<T> CreateOrderedEnumerable<K>(Func<T, K> keySelector, IComparer<K>? comparer, bool descending) {
         if (keySelector == null) { throw new ArgumentNullException("keySelector"); }
-        return new OrderedSequence<T>(source, new ThenComparer<T>(order, new KeyComparer<T, K>(keySelector, descending, comparer)));
+        KeyLevel<T, K> then = new KeyLevel<T, K>(keySelector, comparer, descending);
+        then.before = last;
+        return new OrderedSequence<T>(source, then);
     }
 
+    // ONE ELEMENT IS SORTED TOO, as .NET's MoveNext sorts whatever is not
+    // empty: its key at every level is asked for once.
     public IEnumerator<T> GetEnumerator() {
         T[] items = Enumerable.ToArray(source);
-        Sorting.Sort<T>(items, 0, items.Length, order);
-        for (int i = 0; i < items.Length; i++) { yield return items[i]; }
+        if (items.Length != 0) {
+            int[] map = SortedMap(items);
+            for (int i = 0; i < map.Length; i++) { yield return items[map[i]]; }
+        }
+    }
+
+    /// WHAT ToArray AND ToList MAKE OF IT, as .NET's ordered sequence makes
+    /// it: one element or none is the source as it is, and no key is asked
+    /// for -- where a walk of one element asks for each of its keys.
+    internal T[] ToArray() {
+        T[] items = Enumerable.ToArray(source);
+        if (items.Length <= 1) { return items; }
+        int[] map = SortedMap(items);
+        T[] sorted = new T[items.Length];
+        for (int i = 0; i < map.Length; i++) { sorted[i] = items[map[i]]; }
+        return sorted;
+    }
+
+    // THE ELEMENTS' PLACES IN SORTED ORDER: this walk's levels made from the
+    // pattern, the last first so each knows the one after it, every key
+    // asked for, and the places sorted by .NET's introspective sort, as its
+    // EnumerableSorter sorts its map (Span<int>.Sort).
+    private int[] SortedMap(T[] items) {
+        SortLevel<T>? first = null;
+        for (SortLevel<T>? level = last; level != null; level = level.before) { first = level.Fresh(first); }
+        first!.ComputeKeys(items);
+        int[] map = new int[items.Length];
+        for (int i = 0; i < map.Length; i++) { map[i] = i; }
+        Sorting.Introspective<int>(map, 0, map.Length, first);
+        return map;
     }
 }
 
-class ThenComparer<T> : IComparer<T> {
-    private IComparer<T> first;
-    private IComparer<T> second;
+/// ONE LEVEL OF AN ORDERING, as .NET's EnumerableSorter is one: the keys of
+/// the walk it was made for, and the level after it, asked when two keys
+/// tie. As a comparer it orders two places of that walk.
+abstract class SortLevel<T> : IComparer<int> {
+    internal SortLevel<T>? next;
+    // In the pattern: the level before this one, none for OrderBy's.
+    internal SortLevel<T>? before;
 
-    public ThenComparer(IComparer<T> first, IComparer<T> second) {
-        this.first = first;
-        this.second = second;
-    }
+    /// This level as the pattern holds it, made for one walk, `after` the
+    /// level that follows it.
+    public abstract SortLevel<T> Fresh(SortLevel<T>? after);
 
-    public int Compare(T a, T b) {
-        int sign = first.Compare(a, b);
-        return sign != 0 ? sign : second.Compare(a, b);
-    }
+    /// Every element's key at this level, in source order, then the next
+    /// level's: .NET's ComputeKeys.
+    public abstract void ComputeKeys(T[] elements);
+
+    /// Two places in the order of their keys: .NET's CompareAnyKeys.
+    public abstract int CompareAnyKeys(int a, int b);
+
+    public int Compare(int a, int b) { return CompareAnyKeys(a, b); }
 }
 
-/// Two elements in the order of what `of` takes from them, by the comparer
-/// named or the key's own order (Comparer<K>.Default), reversed when
-/// descending.
-class KeyComparer<T, K> : IComparer<T> {
-    private Func<T, K> of;
-    private bool down;
-    private IComparer<K> by;
+/// A level by a key, OrderBy's and ThenBy's and their descending forms,
+/// compared by the comparer named or the key's own order
+/// (Comparer<K>.Default).
+sealed class KeyLevel<T, K> : SortLevel<T> {
+    private readonly Func<T, K> of;
+    private readonly IComparer<K> by;
+    private readonly bool down;
+    private K[]? keys;
 
-    public KeyComparer(Func<T, K> key, bool descending, IComparer<K>? comparer) {
+    public KeyLevel(Func<T, K> key, IComparer<K>? comparer, bool descending) {
         of = key;
-        down = descending;
         by = comparer ?? Comparer<K>.Default;
+        down = descending;
     }
 
-    public int Compare(T a, T b) {
-        int sign = by.Compare(of(a), of(b));
-        return down ? 0 - sign : sign;
+    public override SortLevel<T> Fresh(SortLevel<T>? after) {
+        KeyLevel<T, K> made = new KeyLevel<T, K>(of, by, down);
+        made.next = after;
+        return made;
+    }
+
+    public override void ComputeKeys(T[] elements) {
+        K[] made = new K[elements.Length];
+        for (int i = 0; i < made.Length; i++) { made[i] = of(elements[i]); }
+        keys = made;
+        SortLevel<T>? then = next;
+        if (then != null) { then.ComputeKeys(elements); }
+    }
+
+    // A TIE GOES TO THE NEXT LEVEL, and past the last to the earlier
+    // element. DESCENDING TURNS THE SIGN WITHOUT NEGATING IT, as .NET's
+    // CompareAnyKeys turns it: `0 - sign` of int.MinValue is int.MinValue,
+    // and a comparer that answered it had that pair sorted ascending.
+    public override int CompareAnyKeys(int a, int b) {
+        K[] held = keys!;
+        int c = by.Compare(held[a], held[b]);
+        if (c == 0) {
+            SortLevel<T>? then = next;
+            if (then == null) { return a - b; }
+            return then.CompareAnyKeys(a, b);
+        }
+        return down != (c > 0) ? 1 : -1;
+    }
+}
+
+/// A level by the element itself, Order's and OrderDescending's: .NET's
+/// identity key, whose elements are their own keys and which asks nothing.
+sealed class ElementLevel<T> : SortLevel<T> {
+    private readonly IComparer<T> by;
+    private readonly bool down;
+    private T[]? keys;
+
+    public ElementLevel(IComparer<T>? comparer, bool descending) {
+        by = comparer ?? Comparer<T>.Default;
+        down = descending;
+    }
+
+    public override SortLevel<T> Fresh(SortLevel<T>? after) {
+        ElementLevel<T> made = new ElementLevel<T>(by, down);
+        made.next = after;
+        return made;
+    }
+
+    public override void ComputeKeys(T[] elements) {
+        keys = elements;
+        SortLevel<T>? then = next;
+        if (then != null) { then.ComputeKeys(elements); }
+    }
+
+    public override int CompareAnyKeys(int a, int b) {
+        T[] held = keys!;
+        int c = by.Compare(held[a], held[b]);
+        if (c == 0) {
+            SortLevel<T>? then = next;
+            if (then == null) { return a - b; }
+            return then.CompareAnyKeys(a, b);
+        }
+        return down != (c > 0) ? 1 : -1;
     }
 }
 
@@ -12867,28 +13068,28 @@ static class Enumerable {
 
     public static IOrderedEnumerable<T> OrderBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
         NotNull(source, "source"); NotNull(keySelector, "keySelector");
-        return new OrderedSequence<T>(source, new KeyComparer<T, K>(keySelector, false, comparer));
+        return new OrderedSequence<T>(source, new KeyLevel<T, K>(keySelector, comparer, false));
     }
 
     public static IOrderedEnumerable<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> keySelector) { return OrderByDescending(source, keySelector, null); }
 
     public static IOrderedEnumerable<T> OrderByDescending<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? comparer) {
         NotNull(source, "source"); NotNull(keySelector, "keySelector");
-        return new OrderedSequence<T>(source, new KeyComparer<T, K>(keySelector, true, comparer));
+        return new OrderedSequence<T>(source, new KeyLevel<T, K>(keySelector, comparer, true));
     }
 
     public static IOrderedEnumerable<T> Order<T>(this IEnumerable<T> source) { return Order(source, null); }
 
     public static IOrderedEnumerable<T> Order<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
         NotNull(source, "source");
-        return new OrderedSequence<T>(source, comparer ?? Comparer<T>.Default);
+        return new OrderedSequence<T>(source, new ElementLevel<T>(comparer, false));
     }
 
     public static IOrderedEnumerable<T> OrderDescending<T>(this IEnumerable<T> source) { return OrderDescending(source, null); }
 
     public static IOrderedEnumerable<T> OrderDescending<T>(this IEnumerable<T> source, IComparer<T>? comparer) {
         NotNull(source, "source");
-        return new OrderedSequence<T>(source, new KeyComparer<T, T>(x => x, true, comparer));
+        return new OrderedSequence<T>(source, new ElementLevel<T>(comparer, true));
     }
 
     public static IOrderedEnumerable<T> ThenBy<T, K>(this IOrderedEnumerable<T> source, Func<T, K> keySelector) { return ThenBy(source, keySelector, null); }
@@ -12957,38 +13158,77 @@ static class Enumerable {
     }
 
     public static IEnumerable<R> Join<T, U, K, R>(this IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, U, R> resultSelector) {
-        NotNull(outer, "outer"); NotNull(inner, "inner"); NotNull(outerKeySelector, "outerKeySelector");
-        NotNull(innerKeySelector, "innerKeySelector"); NotNull(resultSelector, "resultSelector");
-        return JoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector);
+        return Join(outer, inner, outerKeySelector, innerKeySelector, resultSelector, (IEqualityComparer<K>?)null);
     }
 
-    private static IEnumerable<R> JoinIterator<T, U, K, R>(IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, U, R> resultSelector) {
-        ILookup<K, U> matches = ToLookup(inner, innerKeySelector, (IEqualityComparer<K>?)null);
-        foreach (T item in outer) {
-            foreach (U match in matches[outerKeySelector(item)]) { yield return resultSelector(item, match); }
+    public static IEnumerable<R> Join<T, U, K, R>(this IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, U, R> resultSelector, IEqualityComparer<K>? comparer) {
+        NotNull(outer, "outer"); NotNull(inner, "inner"); NotNull(outerKeySelector, "outerKeySelector");
+        NotNull(innerKeySelector, "innerKeySelector"); NotNull(resultSelector, "resultSelector");
+        return JoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector, comparer);
+    }
+
+    // AS .NET's JOIN WALKS THEM: the inner sequence is read only once the
+    // outer one has an element; an inner element whose key is null matches
+    // nothing (Lookup.ForJoin); and when no inner element can match, no outer
+    // key is asked for and the rest of the outer sequence is not read.
+    private static IEnumerable<R> JoinIterator<T, U, K, R>(IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, U, R> resultSelector, IEqualityComparer<K>? comparer) {
+        using (IEnumerator<T> walk = outer.GetEnumerator()) {
+            if (walk.MoveNext()) {
+                Lookup<K, U> matches = Lookup<K, U>.ForJoin(inner, innerKeySelector, comparer);
+                if (matches.Count != 0) {
+                    bool more = true;
+                    while (more) {
+                        T item = walk.Current;
+                        foreach (U match in matches[outerKeySelector(item)]) { yield return resultSelector(item, match); }
+                        more = walk.MoveNext();
+                    }
+                }
+            }
         }
     }
 
     public static IEnumerable<R> GroupJoin<T, U, K, R>(this IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, IEnumerable<U>, R> resultSelector) {
-        NotNull(outer, "outer"); NotNull(inner, "inner"); NotNull(outerKeySelector, "outerKeySelector");
-        NotNull(innerKeySelector, "innerKeySelector"); NotNull(resultSelector, "resultSelector");
-        return GroupJoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector);
+        return GroupJoin(outer, inner, outerKeySelector, innerKeySelector, resultSelector, (IEqualityComparer<K>?)null);
     }
 
-    private static IEnumerable<R> GroupJoinIterator<T, U, K, R>(IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, IEnumerable<U>, R> resultSelector) {
-        ILookup<K, U> matches = ToLookup(inner, innerKeySelector, (IEqualityComparer<K>?)null);
-        foreach (T item in outer) { yield return resultSelector(item, matches[outerKeySelector(item)]); }
+    public static IEnumerable<R> GroupJoin<T, U, K, R>(this IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, IEnumerable<U>, R> resultSelector, IEqualityComparer<K>? comparer) {
+        NotNull(outer, "outer"); NotNull(inner, "inner"); NotNull(outerKeySelector, "outerKeySelector");
+        NotNull(innerKeySelector, "innerKeySelector"); NotNull(resultSelector, "resultSelector");
+        return GroupJoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector, comparer);
+    }
+
+    // As Join's: the inner sequence read once the outer one has an element,
+    // and an inner element whose key is null in no group, so an outer key
+    // that is null is given an empty one.
+    private static IEnumerable<R> GroupJoinIterator<T, U, K, R>(IEnumerable<T> outer, IEnumerable<U> inner, Func<T, K> outerKeySelector, Func<U, K> innerKeySelector, Func<T, IEnumerable<U>, R> resultSelector, IEqualityComparer<K>? comparer) {
+        using (IEnumerator<T> walk = outer.GetEnumerator()) {
+            if (walk.MoveNext()) {
+                Lookup<K, U> matches = Lookup<K, U>.ForJoin(inner, innerKeySelector, comparer);
+                bool more = true;
+                while (more) {
+                    T item = walk.Current;
+                    yield return resultSelector(item, matches[outerKeySelector(item)]);
+                    more = walk.MoveNext();
+                }
+            }
+        }
     }
 
     // ---- conversions (immediate) -------------------------------------------
 
     public static List<T> ToList<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
+        // AN ORDERED SEQUENCE MAKES ITS OWN, as .NET's does: one element or
+        // none is not sorted, and no key is asked for it (OrderedSequence
+        // .ToArray). Asked by its exact type, as Items asks a List's.
+        if (source.GetType() == typeof(OrderedSequence<T>)) { return new List<T>(((OrderedSequence<T>)source).ToArray()); }
         return new List<T>(source);
     }
 
     public static T[] ToArray<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
+        // An ordered sequence makes its own, as ToList's (OrderedSequence.ToArray).
+        if (source.GetType() == typeof(OrderedSequence<T>)) { return ((OrderedSequence<T>)source).ToArray(); }
         // A collection straight into an array its size, as .NET's does.
         if (source is ICollection<T> collection) {
             T[] copied = new T[collection.Count];
@@ -13306,6 +13546,9 @@ static class Enumerable {
     public static int Count<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
         if (source is IReadOnlyCollection<T> collection) { return collection.Count; }
+        // AN ORDERED SEQUENCE IS COUNTED BY ITS SOURCE, as .NET's counts it:
+        // nothing is sorted and no key is asked for.
+        if (source.GetType() == typeof(OrderedSequence<T>)) { return Count(((OrderedSequence<T>)source).Source); }
         int count = 0;
         using (IEnumerator<T> walk = source.GetEnumerator()) { while (walk.MoveNext()) { count = checked(count + 1); } }
         return count;
@@ -17945,6 +18188,50 @@ interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     bool TryGetValue(K key, out V value);
 }
 
+/// .NET's TABLE SIZES (its HashHelpers): the primes a Dictionary's or a
+/// HashSet's entries are made in. The slots here are powers of two and hold
+/// no such number, so each table keeps the one .NET's would have (`room`):
+/// it is what decides whether TrimExcess and EnsureCapacity change anything,
+/// and a change is what refuses a walk.
+static class HashSizes {
+    static readonly int[] Primes = new int[] {
+        3, 7, 11, 17, 23, 29, 37, 47, 59, 71, 89, 107, 131, 163, 197, 239, 293, 353, 431, 521, 631, 761, 919,
+        1103, 1327, 1597, 1931, 2333, 2801, 3371, 4049, 4861, 5839, 7013, 8419, 10103, 12143, 14591,
+        17519, 21023, 25229, 30293, 36353, 43627, 52361, 62851, 75431, 90523, 108631, 130363, 156437,
+        187751, 225307, 270371, 324449, 389357, 467237, 560689, 672827, 807403, 968897, 1162687, 1395263,
+        1674319, 2009191, 2411033, 2893249, 3471899, 4166287, 4999559, 5999471, 7199369
+    };
+
+    /// The least of them at or above `min`; past them, the least odd number
+    /// from it that is prime and not one more than a multiple of 101.
+    internal static int Prime(int min) {
+        for (int i = 0; i < Primes.Length; i++) {
+            if (Primes[i] >= min) { return Primes[i]; }
+        }
+        for (int n = min | 1; n < int.MaxValue; n = n + 2) {
+            if (IsPrime(n) && (n - 1) % 101 != 0) { return n; }
+        }
+        return min;
+    }
+
+    /// What a full table grows to: the prime past twice it, or the largest
+    /// array .NET makes a table of.
+    internal static int Expanded(int size) {
+        int doubled = 2 * size;
+        if ((uint)doubled > (uint)0x7FFFFFC3 && 0x7FFFFFC3 > size) { return 0x7FFFFFC3; }
+        return Prime(doubled);
+    }
+
+    private static bool IsPrime(int n) {
+        if ((n & 1) == 0) { return n == 2; }
+        int limit = (int)Math.Sqrt(n);
+        for (int d = 3; d <= limit; d = d + 2) {
+            if (n % d == 0) { return false; }
+        }
+        return true;
+    }
+}
+
 class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
     // A TABLE MADE WITH NO CAPACITY STARTS AT FOUR SLOTS, and grows as it
     // fills: the compiler's own symbols make tens of thousands of tables
@@ -17965,6 +18252,16 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     private int filled;       // used and erased together: what a probe walks past
     private int count;
     private int mask;
+    // WHAT CHANGED IT LAST, counted, as List's: a key added, and the table
+    // grown or trimmed by request (EnsureCapacity, TrimExcess), move it on,
+    // and an enumerator that finds it moved throws, as .NET's does. A value
+    // replaced, a key removed and the table cleared do not, as they have not
+    // in .NET since Core 3.0: a walk goes on past them.
+    private int version;
+    // THE ROOM .NET's TABLE WOULD HAVE, its entries' length: none until the
+    // first key or a capacity asked, then a prime (HashSizes), grown when
+    // every entry made is in use and none is free.
+    private int room;
 
     // The comparer this table was given, or null for the machine word. .NET
     // spells the default EqualityComparer<T>.Default and picks it per element
@@ -18117,6 +18414,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         while (size < want) { size = size * 2; }
 
         mask = size - 1;
+        // .NET's makes its entries at once for a capacity asked: a prime at
+        // least that large.
+        if (capacity > 0) { room = HashSizes.Prime(capacity); }
     }
 
     public Dictionary(IEqualityComparer<K> comparer) {
@@ -18136,29 +18436,44 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // The self-hosted assembler uses this to turn its relative code-label map
     // into the address-valued map for its second pass.  Starting from the
     // ordinary comparer constructor preserves the table invariants, then
-    // reinserting each occupied entry makes the copy independent of the
-    // source table's capacity and probe history.
+    // adding each occupied entry makes the copy independent of the source
+    // table's capacity and probe history.
+    //
+    // ADDED, NOT STORED, as .NET's AddRange adds each entry: two keys the
+    // source holds apart and this comparer calls the same are .NET's
+    // duplicate-key ArgumentException, where the indexer kept the later one's
+    // value without a word.
     public Dictionary(Dictionary<K, V> source, IEqualityComparer<K> comparer)
         : this(comparer) {
+        if (source == null) { throw new ArgumentNullException("dictionary"); }
+        // Room for them at once, as .NET's copy is made with the count.
+        if (source.Count > 0) { room = HashSizes.Prime(source.Count); }
         for (int n = 0; source.SlotAt(n) != -2; n++) {
             int i = source.SlotAt(n);
-            if (i >= 0) { this[source.keys[i]] = source.values[i]; }
+            if (i >= 0) { Add(source.keys[i], source.values[i]); }
         }
     }
 
     /// A COPY OF ANOTHER TABLE, which is .NET's Dictionary(IDictionary<K,V>)
     /// and the shortest way to fork a map before changing one of the forks.
+    /// Added an entry at a time, as the one above: a source keyed by another
+    /// comparer may hold two keys the default one calls the same.
     public Dictionary(Dictionary<K, V> source) : this() {
+        if (source == null) { throw new ArgumentNullException("dictionary"); }
+        if (source.Count > 0) { room = HashSizes.Prime(source.Count); }
         for (int n = 0; source.SlotAt(n) != -2; n++) {
             int i = source.SlotAt(n);
-            if (i >= 0) { this[source.keys[i]] = source.values[i]; }
+            if (i >= 0) { Add(source.keys[i], source.values[i]); }
         }
     }
 
     /// The same from any sequence of pairs, which .NET added in Core 2.0 and
-    /// is what a LINQ query hands back.
+    /// is what a LINQ query hands back. A key the sequence gives twice is
+    /// .NET's duplicate-key ArgumentException, as Add's.
     public Dictionary(IEnumerable<KeyValuePair<K, V>> collection) : this() {
-        foreach (KeyValuePair<K, V> pair in collection) { this[pair.Key] = pair.Value; }
+        if (collection == null) { throw new ArgumentNullException("collection"); }
+        if (collection is ICollection<KeyValuePair<K, V>> sized && sized.Count > 0) { room = HashSizes.Prime(sized.Count); }
+        foreach (KeyValuePair<K, V> pair in collection) { Add(pair.Key, pair.Value); }
     }
 
     public int Count => count;
@@ -18202,10 +18517,10 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         if (how == ByReference) { return Sys.EqualValues(a, b); }
         // StringComparer.Ordinal's Equals is String.Equals once neither is
         // null, and String.Equals answers null as it does (the same
-        // reference, or not equal). `b` was hashed by the ordinal comparer
-        // to get here, which throws for null, so it is a string -- asked of
-        // the descriptor all the same, because that is what folds the whole
-        // path away in a value-typed copy, where a string never gets here.
+        // reference, or not equal). `b` is never null -- every entry refuses
+        // a null key (Find) -- so it is a string, asked of the descriptor all
+        // the same, because that is what folds the whole path away in a
+        // value-typed copy, where a string never gets here.
         if (how == ByText && Sys.IsString(b)) {
             string held = Sys.As<string>(a), asked = Sys.As<string>(b);
             return (object)held == (object)asked || String.Equals(held, asked);
@@ -18242,8 +18557,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         }
         // ReferenceEqualityComparer.GetHashCode: the word, cut to an int.
         else if (how == ByReference) { h = (int)Sys.HashValue(key); }
-        // StringComparer.Ordinal's: the string's own. A null key goes on to
-        // the comparer, whose ArgumentNullException is the one it threw.
+        // StringComparer.Ordinal's: the string's own. No key here is null:
+        // every entry of the table refuses null before it hashes (Find, the
+        // indexer's store, Add, TryAdd).
         else if (how == ByText && Sys.IsString(key)) { h = Runtime.StringHashCode(Sys.As<string>(key)); }
         else { h = by!.GetHashCode(key); }
         return Mixed(h);
@@ -18294,10 +18610,8 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // was Put and Get(key, fallback) -- our own spelling, and two more places
     // the compiler's own source could not compile here.
     //
-    // Reading a key that is not there answers default(V) rather than throwing,
-    // which is the one place this deliberately differs from .NET: there are no
-    // exceptions to throw from a library this low, and a caller that cares uses
-    // TryGetValue, which is what a caller that cares uses in C# anyway.
+    // Reading a key that is not there throws KeyNotFoundException, as .NET's
+    // does; a caller that may miss uses TryGetValue.
     public V this[K key] {
         get {
             int i = Find(key);
@@ -18305,6 +18619,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             return values[i];
         }
         set {
+            // A NULL KEY IS REFUSED BEFORE THE TABLE IS MADE OR GROWN, as
+            // .NET's TryInsert refuses it before it initializes.
+            if (key == null) { ThrowHelper.KeyNull(); }
             // Grow at three quarters: linear probing degrades sharply above.
             //
             // BY WHAT IS FILLED, NOT BY WHAT IS HELD: an erased slot ends no
@@ -18340,6 +18657,11 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     // is the word and its keys the same when the words are, which is all
     // ReferenceEqualityComparer says. Anything else asks them as before.
     private int Find(K key) {
+        // A NULL KEY IS REFUSED FIRST, an empty table's answer and all, as
+        // .NET's FindValue refuses it: the indexer's read, ContainsKey,
+        // TryGetValue and Remove each come through here once, and a copy
+        // for a value-typed K folds the test away (a value is never null).
+        if (key == null) { ThrowHelper.KeyNull(); }
         if (hashes == null) { return -1; }
         bool text = Texts(key);
         bool words = compares == ByReference;
@@ -18414,8 +18736,20 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         values[i] = value;
         hashes[i] = full;
         count = count + 1;
+        Entered();
         Placed(i);
         return true;
+    }
+
+    // ONE ENTRY MORE, as .NET's insert makes one: the version moved on, and
+    // the room made -- three to begin with -- or grown to the prime past
+    // twice it when no freed entry is there to take and every one made is in
+    // use. Asked before the slot is placed, while `vacancies` and `ordered`
+    // are still what .NET's free count and count are.
+    private void Entered() {
+        version = version + 1;
+        if (room == 0) { room = HashSizes.Prime(0); }
+        if (vacancies == 0 && ordered == room) { room = HashSizes.Expanded(room); }
     }
 
     /// A key already there is an error, as in .NET: the indexer is how a value
@@ -18426,6 +18760,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     /// be made or grown first goes the way it went, looked up before it is
     /// grown -- a key already there grows nothing -- and stored after.
     public void Add(K key, V value) {
+        if (key == null) { ThrowHelper.KeyNull(); }
         if (hashes == null || Crowded()) {
             if (ContainsKey(key)) ThrowHelper.DuplicateKey(KeyText(key));
             this[key] = value;
@@ -18439,6 +18774,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     /// is the whole of why it exists: a first-writer-wins table is one call.
     /// One probe, as Add's.
     public bool TryAdd(K key, V value) {
+        if (key == null) { ThrowHelper.KeyNull(); }
         if (hashes == null || Crowded()) {
             if (ContainsKey(key)) { return false; }
             this[key] = value;
@@ -18474,23 +18810,45 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     /// .NET's Dictionary<TKey, TValue>.Enumerator: a struct, so that walking a
     /// table with foreach allocates nothing, in the order things went in.
+    /// As .NET's: Current is the pair taken by the last MoveNext, and a table
+    /// changed since the walk began -- a key added, or the table grown or
+    /// trimmed by request -- is an InvalidOperationException at the next
+    /// MoveNext or Reset. A value replaced, a key removed or the table cleared
+    /// is not: the walk goes on over what is there. `at` is the next place in
+    /// the order, 0 before the first and one past the end after the last, as
+    /// .NET's index is.
     public struct Enumerator : IEnumerator<KeyValuePair<K, V>>, IDisposable {
         private readonly Dictionary<K, V> over;
+        private readonly int version;
         private int at;
-        private int slot;
-        internal Enumerator(Dictionary<K, V> table) { over = table; at = -1; slot = -1; }
-        public KeyValuePair<K, V> Current => new KeyValuePair<K, V>(over.keys[slot], over.values[slot]);
-        object? IEnumerator.Current => Current;
-        public bool MoveNext() {
-            at = at + 1;
-            slot = over.SlotAt(at);
-            while (slot == -1) {
-                at = at + 1;
-                slot = over.SlotAt(at);
+        private KeyValuePair<K, V> current;
+        internal Enumerator(Dictionary<K, V> table) { over = table; version = table.version; at = 0; current = default; }
+        public KeyValuePair<K, V> Current => current;
+        object? IEnumerator.Current {
+            get {
+                if (at == 0 || at == over.ordered + 1) { ThrowHelper.EnumerationNotRunning(); }
+                return current;
             }
-            return slot >= 0;
         }
-        public void Reset() { at = -1; slot = -1; }
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            while ((uint)at < (uint)over.ordered) {
+                int slot = over.SlotAt(at);
+                at = at + 1;
+                if (slot >= 0) {
+                    current = new KeyValuePair<K, V>(over.keys[slot], over.values[slot]);
+                    return true;
+                }
+            }
+            at = over.ordered + 1;
+            current = default;
+            return false;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            at = 0;
+            current = default;
+        }
         public void Dispose() { }
     }
 
@@ -18524,23 +18882,39 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         public bool Remove(K item) { throw new NotSupportedException("a dictionary's keys are read-only"); }
     }
 
+    /// As Enumerator's walk, the key alone.
     public struct KeyEnumerator : IEnumerator<K>, IDisposable {
         private readonly Dictionary<K, V> over;
+        private readonly int version;
         private int at;
-        private int slot;
-        internal KeyEnumerator(Dictionary<K, V> table) { over = table; at = -1; slot = -1; }
-        public K Current => over.keys[slot];
-        object? IEnumerator.Current => Current;
-        public bool MoveNext() {
-            at = at + 1;
-            slot = over.SlotAt(at);
-            while (slot == -1) {
-                at = at + 1;
-                slot = over.SlotAt(at);
+        private K current;
+        internal KeyEnumerator(Dictionary<K, V> table) { over = table; version = table.version; at = 0; current = default(K)!; }
+        public K Current => current;
+        object? IEnumerator.Current {
+            get {
+                if (at == 0 || at == over.ordered + 1) { ThrowHelper.EnumerationNotRunning(); }
+                return current;
             }
-            return slot >= 0;
         }
-        public void Reset() { at = -1; slot = -1; }
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            while ((uint)at < (uint)over.ordered) {
+                int slot = over.SlotAt(at);
+                at = at + 1;
+                if (slot >= 0) {
+                    current = over.keys[slot];
+                    return true;
+                }
+            }
+            at = over.ordered + 1;
+            current = default(K)!;
+            return false;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            at = 0;
+            current = default(K)!;
+        }
         public void Dispose() { }
     }
 
@@ -18563,23 +18937,39 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         public bool Remove(V item) { throw new NotSupportedException("a dictionary's values are read-only"); }
     }
 
+    /// As Enumerator's walk, the value alone.
     public struct ValueEnumerator : IEnumerator<V>, IDisposable {
         private readonly Dictionary<K, V> over;
+        private readonly int version;
         private int at;
-        private int slot;
-        internal ValueEnumerator(Dictionary<K, V> table) { over = table; at = -1; slot = -1; }
-        public V Current => over.values[slot];
-        object? IEnumerator.Current => Current;
-        public bool MoveNext() {
-            at = at + 1;
-            slot = over.SlotAt(at);
-            while (slot == -1) {
-                at = at + 1;
-                slot = over.SlotAt(at);
+        private V current;
+        internal ValueEnumerator(Dictionary<K, V> table) { over = table; version = table.version; at = 0; current = default(V)!; }
+        public V Current => current;
+        object? IEnumerator.Current {
+            get {
+                if (at == 0 || at == over.ordered + 1) { ThrowHelper.EnumerationNotRunning(); }
+                return current;
             }
-            return slot >= 0;
         }
-        public void Reset() { at = -1; slot = -1; }
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            while ((uint)at < (uint)over.ordered) {
+                int slot = over.SlotAt(at);
+                at = at + 1;
+                if (slot >= 0) {
+                    current = over.values[slot];
+                    return true;
+                }
+            }
+            at = over.ordered + 1;
+            current = default(V)!;
+            return false;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            at = 0;
+            current = default(V)!;
+        }
         public void Dispose() { }
     }
 
@@ -18711,20 +19101,40 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
     public void TrimExcess(int capacity) {
         if (capacity < count) { throw new ArgumentOutOfRangeException("capacity"); }
+        // ONLY WHEN .NET's WOULD: its entries are remade when the prime for
+        // the capacity is below the room it has, and not otherwise -- then
+        // nothing changes, the free places stay free and a walk goes on.
+        // Remade, the version moves on and the order is squeezed, as .NET
+        // copies its entries into new ones: the places of removed members
+        // go, and with them the free list, so what is added next goes at the
+        // end.
+        int prime = HashSizes.Prime(capacity);
+        if (prime >= room) { return; }
+        version = version + 1;
+        room = prime;
         if (keys == null) { return; }
         int want = capacity * 4 / 3 + 1;
         int size = 16;
         while (size < want) { size = size * 2; }
         if (size < mask + 1) { Rehash(size); }
-        // AND THE ORDER IS SQUEEZED, as .NET's TrimExcess copies its entries
-        // into a new array: the places of removed members go, and with them
-        // the free list, so what is added next goes at the end. .NET does it
-        // whenever its prime size for the count is below what it has, which
-        // a table with anything to trim always is; the slots here are powers
-        // of two and often stay as they were, so the order is squeezed every
-        // time. Kept, the old places were filled first and the walk differed.
         vacancies = 0;
         Tidy();
+    }
+
+    /// ROOM FOR `capacity` ENTRIES, as .NET's: the room it has when that is
+    /// enough, else the prime for it, the version moved on -- .NET's walk
+    /// refuses a table grown under it by request. The slots are made for as
+    /// many at once, as the capacity constructor makes them.
+    public int EnsureCapacity(int capacity) {
+        if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
+        if (room >= capacity) { return room; }
+        version = version + 1;
+        room = HashSizes.Prime(capacity);
+        int want = capacity * 4 / 3 + 1;
+        int size = mask + 1;
+        while (size < want) { size = size * 2; }
+        if (hashes == null) { mask = size - 1; } else if (size > mask + 1) { Rehash(size); }
+        return room;
     }
 
     // The table remade at `size` slots, every entry in the place it had.
@@ -19218,6 +19628,15 @@ class TypeInitializationException : SystemException
 interface IFormattable
 {
     string ToString(string? format, IFormatProvider? formatProvider);
+}
+
+/// What a provider hands composite formatting to write every argument its
+/// own way, .NET's ICustomFormatter: String.Format and AppendFormat ask the
+/// provider for one (GetFormat(typeof(ICustomFormatter))) once, and an
+/// argument it answers null for is written as if there were none.
+interface ICustomFormatter
+{
+    string Format(string? format, object? arg, IFormatProvider? formatProvider);
 }
 
 /// One of the arguments was not acceptable. C#'s, spelled C#'s way.
@@ -20386,6 +20805,11 @@ class StringBuilder : IOwnsStorage {
     /// offset. String.Format is this, into a new builder.
     internal StringBuilder AppendFormatHelper(IFormatProvider? provider, string format, object?[] args) {
         if (format == null) { throw new ArgumentNullException("format"); }
+        // THE PROVIDER'S CUSTOM FORMATTER, asked for once before the first
+        // hole is read, as .NET asks it, and CAST: a provider that answers
+        // something else for it is .NET's InvalidCastException.
+        ICustomFormatter? custom = null;
+        if (provider != null) { custom = (ICustomFormatter?)provider.GetFormat(typeof(ICustomFormatter)); }
         const int IndexLimit = 1000000;
         const int WidthLimit = 1000000;
         int pos = 0;
@@ -20458,7 +20882,7 @@ class StringBuilder : IOwnsStorage {
             if ((uint)index >= (uint)args.Length) {
                 throw new FormatException("Index (zero based) must be greater than or equal to zero and less than the size of the argument list.");
             }
-            string text = String.FormatArgument(args[index], itemFormat, provider);
+            string text = String.FormatArgument(args[index], itemFormat, provider, custom);
             if (width <= text.Length) {
                 Append(text);
             } else if (leftJustify) {
@@ -21379,38 +21803,6 @@ class StringBuilder : IOwnsStorage {
 //
 // .NET's API: Add returns whether it was new, Contains, Remove, Count, Clear.
 
-// .NET spells this HashSet<T>.Enumerator; see ListEnumerator for why it is not
-// written inside the class.
-class HashSetEnumerator<T> : IEnumerator<T> {
-    // The non-generic IEnumerator's members, as .NET's enumerators have them.
-    object? IEnumerator.Current => Current;
-    public void Reset() { at = -1; }
-
-    // IEnumerator<T> is an IDisposable; walking holds nothing to let go of.
-    public void Dispose() { }
-
-    private HashSet<T> over;
-    private int at;
-    private int slot;
-
-    public HashSetEnumerator(HashSet<T> set) {
-        over = set;
-        at = -1;
-    }
-
-    public T Current => over.items[slot];
-
-    public bool MoveNext() {
-        at = at + 1;
-        slot = over.SlotAt(at);
-        while (slot == -1) {
-            at = at + 1;
-            slot = over.SlotAt(at);
-        }
-        return slot >= 0;
-    }
-}
-
 class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // As Dictionary's: four slots to begin with (SmallestTable).
     private const int SmallestTable = 4;
@@ -21447,6 +21839,13 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     private int count;
     private int filled;     // used and erased together: what a probe has to walk past
     private int mask;
+    // WHAT CHANGED IT LAST, counted, as Dictionary's: a member added, and the
+    // set trimmed by request, move it on; a removal and a clearing do not, as
+    // in .NET, nor does EnsureCapacity, which .NET's set does where its
+    // entries are.
+    private int version;
+    // The room .NET's set would have, as Dictionary's `room`.
+    private int room;
 
     // IN THE ORDER THINGS WENT IN, which is the order .NET's walks them in
     // while nothing has been removed, and what a program that fills a table
@@ -21563,13 +21962,14 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
 
         while (size < want) { size = size * 2; }
         mask = size - 1;
+        if (capacity > 0) { room = HashSizes.Prime(capacity); }
     }
 
     /// Both: sized once, members compared the comparer's way.
     public HashSet(int capacity, IEqualityComparer<T>? comparer) : this(capacity) { by = comparer; compares = Comparing(comparer); }
 
     public HashSet(IEnumerable<T> source) : this() {
-        foreach (T value in source) { Add(value); }
+        Fill(source);
     }
 
     /// Equality by `comparer` -- StringComparer.OrdinalIgnoreCase,
@@ -21579,7 +21979,19 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     public HashSet(IEnumerable<T> source, IEqualityComparer<T>? comparer) : this() {
         by = comparer;
         compares = Comparing(comparer);
+        Fill(source);
+    }
+
+    // FROM A SEQUENCE, as .NET's set is made from one: room at once for a
+    // collection's count, the members added, and the room trimmed to them
+    // when it is more than three times what they hold -- a collection of
+    // many equal ones. (.NET copies a HashSet of the same comparer whole,
+    // its free places with it; this adds its members, so what is added to
+    // the copy afterwards may be walked in another order.)
+    private void Fill(IEnumerable<T> source) {
+        if (source is ICollection<T> sized && sized.Count > 0) { room = HashSizes.Prime(sized.Count); }
         foreach (T value in source) { Add(value); }
+        if (count > 0 && room / count > 3) { TrimExcess(); }
     }
 
     public int Count => count;
@@ -21588,7 +22000,9 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     public IEqualityComparer<T> Comparer => by ?? EqualityComparer<T>.Default;
 
     // As Dictionary's Same, path for path, and with the same reasons: `a`
-    // the member a slot holds, `b` the value asked about.
+    // the member a slot holds, `b` the value asked about -- which, unlike a
+    // table's key, may be null: it hashed as 0 (FullHash), and the comparer
+    // is asked whether it equals a member of that hash, as .NET's set asks.
     private bool Same(T a, T b) {
         int how = compares;
         if (how == ByDefault) {
@@ -21626,6 +22040,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         }
         else if (how == ByReference) { h = (int)Sys.HashValue(value); }
         else if (how == ByText && Sys.IsString(value)) { h = Runtime.StringHashCode(Sys.As<string>(value)); }
+        // A NULL MEMBER HASHES AS 0 WITHOUT THE COMPARER, as .NET's set hashes
+        // it (`item != null ? comparer.GetHashCode(item) : 0`): a comparer is
+        // asked the hash of a value only, and StringComparer's throws for
+        // null. Its Equals is still asked, of the members of the same hash.
+        else if (value == null) { h = 0; }
         else { h = by!.GetHashCode(value); }
         return Mixed(h);
     }
@@ -21697,8 +22116,16 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         items[i] = value;
         hashes[i] = full;
         count = count + 1;
+        Entered();
         Placed(i);
         return true;
+    }
+
+    // ONE MEMBER MORE, as Dictionary's Entered counts an entry.
+    private void Entered() {
+        version = version + 1;
+        if (room == 0) { room = HashSizes.Prime(0); }
+        if (vacancies == 0 && ordered == room) { room = HashSizes.Expanded(room); }
     }
 
     public bool Contains(T value) { return Find(value) >= 0; }
@@ -21741,31 +22168,51 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     /// .NET's HashSet<T>.Enumerator: a struct, so a foreach over a set
     /// allocates nothing -- and the set it walks is not handed to an object
     /// on the heap, which the lifetime rules took for the set escaping: every
-    /// snapshot set that was walked once went to the collector.
+    /// snapshot set that was walked once went to the collector. Dictionary's
+    /// walk, as .NET's: Current is the member the last MoveNext took, and a
+    /// member added, or the set trimmed, since the walk began is an
+    /// InvalidOperationException at the next MoveNext or Reset; a removal or
+    /// a clearing is not.
     public struct Enumerator : IEnumerator<T>, IDisposable {
         private readonly HashSet<T> over;
+        private readonly int version;
         private int at;
-        private int slot;
-        internal Enumerator(HashSet<T> set) { over = set; at = -1; slot = -1; }
-        public T Current => over.items[slot];
-        object? IEnumerator.Current => Current;
-        public bool MoveNext() {
-            at = at + 1;
-            slot = over.SlotAt(at);
-            while (slot == -1) {
-                at = at + 1;
-                slot = over.SlotAt(at);
+        private T current;
+        internal Enumerator(HashSet<T> set) { over = set; version = set.version; at = 0; current = default(T)!; }
+        public T Current => current;
+        object? IEnumerator.Current {
+            get {
+                if (at == 0 || at == over.ordered + 1) { ThrowHelper.EnumerationNotRunning(); }
+                return current;
             }
-            return slot >= 0;
         }
-        public void Reset() { at = -1; slot = -1; }
+        public bool MoveNext() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            while ((uint)at < (uint)over.ordered) {
+                int slot = over.SlotAt(at);
+                at = at + 1;
+                if (slot >= 0) {
+                    current = over.items[slot];
+                    return true;
+                }
+            }
+            at = over.ordered + 1;
+            current = default(T)!;
+            return false;
+        }
+        public void Reset() {
+            if (version != over.version) { ThrowHelper.CollectionModified(); }
+            at = 0;
+            current = default(T)!;
+        }
         public void Dispose() { }
     }
 
     public Enumerator GetEnumerator() { return new Enumerator(this); }
 
-    // Through the interface: an object, since an interface's enumerator is one.
-    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return new HashSetEnumerator<T>(this); }
+    // Through the interface, as .NET's explicit implementation: the struct,
+    // boxed, as List's and Dictionary's are.
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return GetEnumerator(); }
 
     public bool Remove(T value) {
         int i = Find(value);
@@ -21922,13 +22369,20 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         }
     }
 
+    /// EACH MEMBER ASKED IN TURN AND TAKEN OUT AT ONCE, as .NET's: the walk is
+    /// of the order itself, not an enumerator, so a predicate that adds to
+    /// the set is no change under a walk, and one that asks the set sees the
+    /// members already taken out gone.
     public int RemoveWhere(Predicate<T> match) {
-        List<T> remove = new List<T>();
-        foreach (T value in this) {
-            if (match(value)) { remove.Add(value); }
+        if (match == null) { throw new ArgumentNullException("match"); }
+        int removed = 0;
+        for (int n = 0; n < ordered; n++) {
+            int i = SlotAt(n);
+            if (i < 0) { continue; }
+            T value = items[i];
+            if (match(value) && Remove(value)) { removed = removed + 1; }
         }
-        foreach (T value in remove) { Remove(value); }
-        return remove.Count;
+        return removed;
     }
 
     private void Grow() {
@@ -21943,21 +22397,36 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     public void TrimExcess() { TrimExcess(count); }
 
     public void TrimExcess(int capacity) {
-        if (capacity < count) { throw new ArgumentOutOfRangeException("capacity"); }
+        ArgumentOutOfRangeException.ThrowIfLessThan(capacity, count, "capacity");
+        // ONLY WHEN .NET's WOULD, as Dictionary's: remade, the version moves
+        // on and the order is squeezed, the free list with it; not remade,
+        // nothing changes and a walk goes on.
+        int prime = HashSizes.Prime(capacity);
+        if (prime >= room) { return; }
+        version = version + 1;
+        room = prime;
         if (items == null) { return; }
         int want = capacity * 4 / 3 + 1;
         int size = 16;
         while (size < want) { size = size * 2; }
         if (size < mask + 1) { Rehash(size); }
-        // AND THE ORDER IS SQUEEZED, as .NET's TrimExcess copies its entries
-        // into a new array: the places of removed members go, and with them
-        // the free list, so what is added next goes at the end. .NET does it
-        // whenever its prime size for the count is below what it has, which
-        // a table with anything to trim always is; the slots here are powers
-        // of two and often stay as they were, so the order is squeezed every
-        // time. Kept, the old places were filled first and the walk differed.
         vacancies = 0;
         Tidy();
+    }
+
+    /// ROOM FOR `capacity` MEMBERS, as .NET's: the room it has when that is
+    /// enough, else the prime for it. The version stays as it was: .NET's set
+    /// grows its entries where they are and a walk goes on, where
+    /// Dictionary's refuses one.
+    public int EnsureCapacity(int capacity) {
+        if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
+        if (room >= capacity) { return room; }
+        room = HashSizes.Prime(capacity);
+        int want = capacity * 4 / 3 + 1;
+        int size = mask + 1;
+        while (size < want) { size = size * 2; }
+        if (hashes == null) { mask = size - 1; } else if (size > mask + 1) { Rehash(size); }
+        return room;
     }
 
     // The table remade at `size` slots, every member in the place it had.
@@ -22033,6 +22502,26 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     // them never added to, and each was a list too.
     static readonly List<T> NoItems = new List<T>();
     private IComparer<T> by;
+    // WHAT CHANGED IT LAST, counted on the set a view is of: Add moves it on
+    // always -- .NET's insertion turns the tree over on its way down before
+    // it knows whether it adds -- Remove whenever there is anything to remove
+    // from, found or not, Clear always, and an enumerator of the set or of
+    // any view of it that finds it moved throws, as .NET's does.
+    private int version;
+
+    // The count a view and the set it is of share: the set's own.
+    private int Version => parent == null ? version : parent.Version;
+
+    private void Changed() {
+        if (parent != null) { parent.Changed(); return; }
+        version = version + 1;
+    }
+
+    // .NET's test of whether two sets keep one order: the same comparer, or
+    // one that says it is equal to it.
+    private bool SameOrder(SortedSet<T> other) {
+        return ReferenceEquals(by, other.by) || by.Equals(other.by);
+    }
 
     // A VIEW (GetViewBetween) is a set over a range of another: it holds no
     // members of its own, reads the parent's that fall between its bounds as
@@ -22110,6 +22599,9 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
             if (!InRange(value)) { throw new ArgumentOutOfRangeException("item"); }
             return parent.Add(value);
         }
+        // A CHANGE WHETHER IT ADDS OR NOT, as .NET's: a walk of the set is
+        // refused after any Add.
+        version = version + 1;
         int at = Find(value);
         if (at >= 0) { return false; }
         if (ReferenceEquals(items, NoItems)) { items = new List<T>(); }
@@ -22119,6 +22611,10 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public bool Remove(T value) {
         if (parent != null) { return InRange(value) && parent.Remove(value); }
+        // A CHANGE WHENEVER THERE IS ANYTHING TO REMOVE FROM, found or not,
+        // as .NET's: its removal turns the tree over on the way down.
+        if (items.Count == 0) { return false; }
+        version = version + 1;
         int at = Find(value);
         if (at < 0) { return false; }
         items.RemoveAt(at);
@@ -22134,17 +22630,62 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
             return;
         }
         if (!ReferenceEquals(items, NoItems)) { items.Clear(); }
+        version = version + 1;
     }
 
+    /// What the other holds added. Into an empty set from another sorted set,
+    /// or from one by the same order holding more than half as many as this,
+    /// .NET rebuilds the set at once, a change whatever it adds; from
+    /// anything else each is added that is not there, and only an addition
+    /// is a change. A view adds each, refusing one outside its range.
     public void UnionWith(IEnumerable<T> other) {
-        foreach (T item in other) { Add(item); }
+        if (other == null) { throw new ArgumentNullException("other"); }
+        SortedSet<T>? sorted = other as SortedSet<T>;
+        if (parent == null && sorted != null && (Count == 0 || (SameOrder(sorted) && sorted.Count > Count / 2))) {
+            // Read out first: .NET merges from the two as they are, so the
+            // other may be a view of this one.
+            List<T> theirs = new List<T>(sorted);
+            foreach (T item in theirs) { if (!Contains(item)) { Add(item); } }
+            version = version + 1;
+            return;
+        }
+        foreach (T item in other) {
+            if (!Contains(item)) { Add(item); }
+        }
     }
 
+    /// What the other holds taken out, as .NET's: nothing from an empty set,
+    /// everything when it is this one. Another sorted set by the same order
+    /// has each of its members between this one's least and greatest
+    /// removed, there or not, and walked as it is; anything else has only
+    /// what is in range and here removed.
     public void ExceptWith(IEnumerable<T> other) {
-        foreach (T item in other) { Remove(item); }
+        if (other == null) { throw new ArgumentNullException("other"); }
+        if (Count == 0) { return; }
+        if ((object)other == (object)this) { Clear(); return; }
+        T min = Min;
+        T max = Max;
+        if (other is SortedSet<T> sorted && SameOrder(sorted)) {
+            if (by.Compare(sorted.Max, min) >= 0 && by.Compare(sorted.Min, max) <= 0) {
+                foreach (T item in sorted) {
+                    if (by.Compare(item, min) < 0) { continue; }
+                    if (by.Compare(item, max) > 0) { break; }
+                    Remove(item);
+                }
+            }
+            return;
+        }
+        foreach (T item in other) {
+            if (by.Compare(item, min) >= 0 && by.Compare(item, max) <= 0 && Contains(item)) { Remove(item); }
+        }
     }
 
+    /// Only what the other holds kept. Nothing done for an empty set or for
+    /// this one itself; anything else rebuilds the set, a change whatever it
+    /// keeps, as .NET's.
     public void IntersectWith(IEnumerable<T> other) {
+        if (other == null) { throw new ArgumentNullException("other"); }
+        if (Count == 0 || (object)other == (object)this) { return; }
         SortedSet<T> keep = new SortedSet<T>(by);
         foreach (T item in other) {
             if (Contains(item)) { keep.Add(item); }
@@ -22152,9 +22693,11 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         if (parent != null) {
             Sync();
             foreach (T value in items) { if (!keep.Contains(value)) { parent.Remove(value); } }
+            Changed();
             return;
         }
         items = keep.items;
+        version = version + 1;
     }
 
     public bool SetEquals(IEnumerable<T> other) {
@@ -22196,9 +22739,13 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public void SymmetricExceptWith(IEnumerable<T> other) {
         if (other == null) { throw new ArgumentNullException("other"); }
-        SortedSet<T> theirs = new SortedSet<T>(other, by);
+        if (Count == 0) { UnionWith(other); return; }
+        if ((object)other == (object)this) { Clear(); return; }
+        // A sorted set by the same order is walked as it is, as .NET's walks
+        // it; anything else is sorted first, each value of it taken once.
+        IEnumerable<T> theirs = other is SortedSet<T> sorted && SameOrder(sorted) ? sorted : new SortedSet<T>(other, by);
         foreach (T value in theirs) {
-            if (!Remove(value)) { Add(value); }
+            if (Contains(value)) { Remove(value); } else { Add(value); }
         }
     }
 
@@ -22240,6 +22787,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     }
 
     public int RemoveWhere(Predicate<T> match) {
+        if (match == null) { throw new ArgumentNullException("match"); }
         if (parent != null) {
             Sync();
             int removed = 0;
@@ -22247,7 +22795,10 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
             return removed;
         }
         if (ReferenceEquals(items, NoItems)) { return 0; }
-        return items.RemoveAll(item => match(item));
+        int taken = items.RemoveAll(item => match(item));
+        // A removal is a change, as each of .NET's is.
+        if (taken > 0) { version = version + 1; }
+        return taken;
     }
 
     public void CopyTo(T[] array) { CopyTo(array, 0); }
@@ -22257,29 +22808,65 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         for (int i = 0; i < items.Count; i++) { array[index + i] = items[i]; }
     }
 
+    /// The members last to first, as .NET's: walked as they are when the walk
+    /// begins, and refused, as a walk forwards is, once the set has changed.
     public IEnumerable<T> Reverse() {
-        List<T> backwards = new List<T>();
         Sync();
-        for (int i = items.Count - 1; i >= 0; i--) { backwards.Add(items[i]); }
-        return backwards;
+        List<T> walked = items;
+        int was = Version;
+        int at = walked.Count;
+        while (true) {
+            if (was != Version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            if (at == 0) { yield break; }
+            at = at - 1;
+            yield return walked[at];
+        }
     }
 
     /// .NET's own: a struct, so a foreach over one allocates nothing and does
     /// not hand the collection to an object on the heap (which the lifetime
-    /// rules take for its escape).
+    /// rules take for its escape). As .NET's: Current is the member the last
+    /// MoveNext took, default before the first and after the last; a set
+    /// changed since the walk began -- or, for a view, the set it is of -- is
+    /// an InvalidOperationException at the next MoveNext or Reset.
     public struct Enumerator : IEnumerator<T>, IDisposable {
+        private readonly SortedSet<T> owner;
         private readonly List<T> over;
+        private readonly int version;
         private int at;
-        internal Enumerator(List<T> walked) { over = walked; at = -1; }
-        public T Current => over[at];
-        object? IEnumerator.Current => Current;
-        public bool MoveNext() { at = at + 1; return at < over.Count; }
-        public void Reset() { at = -1; }
+        private bool taken;
+        private T current;
+        internal Enumerator(SortedSet<T> set, List<T> walked) { owner = set; over = walked; version = set.Version; at = 0; taken = false; current = default(T)!; }
+        public T Current => current;
+        object? IEnumerator.Current {
+            get {
+                if (!taken) { ThrowHelper.EnumerationNotRunning(); }
+                return current;
+            }
+        }
+        public bool MoveNext() {
+            if (version != owner.Version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            if (at < over.Count) {
+                current = over[at];
+                at = at + 1;
+                taken = true;
+                return true;
+            }
+            taken = false;
+            current = default(T)!;
+            return false;
+        }
+        public void Reset() {
+            if (version != owner.Version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
+            at = 0;
+            taken = false;
+            current = default(T)!;
+        }
         public void Dispose() { }
     }
 
-    public Enumerator GetEnumerator() { Sync(); return new Enumerator(items); }
-    IEnumerator<T> IEnumerable<T>.GetEnumerator() { Sync(); return new ListEnumerator<T>(items); }
+    public Enumerator GetEnumerator() { Sync(); return new Enumerator(this, items); }
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() { return GetEnumerator(); }
 }
 
 // ---- ordering -------------------------------------------------------------

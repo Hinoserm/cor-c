@@ -1,0 +1,94 @@
+// test: sorted_list_walks_refused_once_the_list_changes
+// expect-exit: 0
+// expect-output:
+// overwrite a Collection was modified after the enumerator was instantiated. 2
+// set at index Collection was modified after the enumerator was instantiated. 5
+// remove missing ok
+// add duplicate ok
+// remove at Collection was modified after the enumerator was instantiated. 2
+// clear Collection was modified after the enumerator was instantiated. 0
+// before [, 0]
+// current [x, 24]
+// moved Collection was modified after the enumerator was instantiated.
+// after [, 0]
+// boxed after Enumeration has either not started or has already finished.
+// boxed reset Enumeration has either not started or has already finished.
+// again [y, 25]
+// disposed Enumeration has either not started or has already finished.
+// disposed current [, 0]
+// keys y Collection was modified after the enumerator was instantiated.
+// values ok
+// values add Collection was modified after the enumerator was instantiated. 3
+// keys add This operation is not supported on SortedList nested types because they require modifying the original SortedList.
+// index w 2 2 True
+//
+// A SortedList walked as .NET 10 walks one: an insert, a removal, a value
+// replaced by the indexer or SetValueAtIndex, and Clear refuse the walk; a
+// removal of nothing and a duplicate Add do not. Current is the pair
+// MoveNext took; Dispose sets the walk back to before the first. Keys and
+// Values are views of the list, refused as the list's own walk is and
+// refusing a write in .NET's words.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var sl = new SortedList<string, int> { ["b"] = 2, ["a"] = 1, ["c"] = 3 };
+        string seen = "";
+        string why = Run(() => { foreach (var kv in sl) { seen += kv.Key; sl[kv.Key] = kv.Value + 1; } });
+        Console.WriteLine("overwrite " + seen + " " + why + " " + sl["a"]);
+        why = Run(() => { foreach (var kv in sl) sl.SetValueAtIndex(0, 5); });
+        Console.WriteLine("set at index " + why + " " + sl["a"]);
+        why = Run(() => { foreach (var kv in sl) { sl.Remove("zz"); sl.ContainsKey(kv.Key); sl.IndexOfValue(kv.Value); } });
+        Console.WriteLine("remove missing " + why);
+        why = Run(() => { foreach (var kv in sl) { try { sl.Add("a", 0); } catch (ArgumentException) { } } });
+        Console.WriteLine("add duplicate " + why);
+        why = Run(() => { foreach (var kv in sl) sl.RemoveAt(sl.Count - 1); });
+        Console.WriteLine("remove at " + why + " " + sl.Count);
+        why = Run(() => { foreach (var kv in sl) sl.Clear(); });
+        Console.WriteLine("clear " + why + " " + sl.Count);
+
+        sl["x"] = 24; sl["y"] = 25;
+        var e = sl.GetEnumerator();
+        Console.WriteLine("before " + e.Current);
+        e.MoveNext();
+        sl.Remove("x");
+        Console.WriteLine("current " + e.Current);
+        try { e.MoveNext(); Console.WriteLine("moved ok"); } catch (InvalidOperationException ex) { Console.WriteLine("moved " + ex.Message); }
+
+        var f = sl.GetEnumerator();
+        while (f.MoveNext()) { }
+        Console.WriteLine("after " + f.Current);
+        try { Console.WriteLine("got " + ((IEnumerator)f).Current); } catch (InvalidOperationException ex) { Console.WriteLine("boxed after " + ex.Message); }
+        f.Reset();
+        try { Console.WriteLine("got " + ((IEnumerator)f).Current); } catch (InvalidOperationException ex) { Console.WriteLine("boxed reset " + ex.Message); }
+        f.MoveNext();
+        Console.WriteLine("again " + ((IEnumerator)f).Current);
+        f.Dispose();
+        try { Console.WriteLine("got " + ((IEnumerator)f).Current); } catch (InvalidOperationException ex) { Console.WriteLine("disposed " + ex.Message); }
+        Console.WriteLine("disposed current " + f.Current);
+
+        sl["z"] = 26;
+        string keys = "";
+        why = Run(() => { foreach (string k in sl.Keys) { keys += k; sl[k] = 0; } });
+        Console.WriteLine("keys " + keys + " " + why);
+        why = Run(() => { foreach (int v in sl.Values) sl.Remove("nope"); });
+        Console.WriteLine("values " + why);
+        why = Run(() => { foreach (int v in sl.Values) sl.Add("w", v); });
+        Console.WriteLine("values add " + why + " " + sl.Count);
+        string refused;
+        try { sl.Keys.Add("q"); refused = "added"; } catch (NotSupportedException ex) { refused = ex.Message; }
+        Console.WriteLine("keys add " + refused);
+        Console.WriteLine("index " + sl.Keys[0] + " " + sl.Keys.IndexOf("z") + " " + sl.Values.IndexOf(26) + " " + sl.Keys.Contains("y"));
+        return 0;
+    }
+}

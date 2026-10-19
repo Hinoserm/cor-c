@@ -1,0 +1,59 @@
+// test: a set and a lookup hash null as 0 without asking the comparer, as .NET's do
+// expect-exit: 0
+// expect-output:
+// ordinal add True True False
+// ordinal contains True 2
+// ordinal remove True False 1
+// folded True True 2
+// custom 2 True True
+// distinct a,null,b
+// distinctby a,null,A,b
+// except a,A
+// tohashset 4
+// groupby a:1,null:2,A:1,b:1
+// lookup 3 2 2 True
+// custom groupby ab:2,null:1
+//
+// .NET's HashSet hashes `item != null ? comparer.GetHashCode(item) : 0`
+// and its Lookup `(key is null) ? 0 : comparer.GetHashCode(key)`: null is
+// a member and a key of its own whatever the comparer, and a comparer
+// whose GetHashCode throws for null (StringComparer's, ByLength's) is never
+// handed it. Here StringComparer.Ordinal threw ArgumentNullException.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class ByLength : IEqualityComparer<string>
+{
+    public bool Equals(string? a, string? b) { return (a == null ? -1 : a.Length) == (b == null ? -1 : b.Length); }
+    public int GetHashCode(string s) { return s.Length + 100; }
+}
+
+static class Program
+{
+    static string Show(string? s) { return s ?? "null"; }
+
+    static int Main()
+    {
+        string none = null!;
+        HashSet<string> ordinal = new HashSet<string>(StringComparer.Ordinal);
+        Console.WriteLine("ordinal add " + ordinal.Add("a") + " " + ordinal.Add(none) + " " + ordinal.Add(none));
+        Console.WriteLine("ordinal contains " + ordinal.Contains(none) + " " + ordinal.Count);
+        Console.WriteLine("ordinal remove " + ordinal.Remove(none) + " " + ordinal.Contains(none) + " " + ordinal.Count);
+        HashSet<string> folded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "A", none };
+        Console.WriteLine("folded " + folded.Contains("a") + " " + folded.Contains(none) + " " + folded.Count);
+        HashSet<string> byLength = new HashSet<string>(new ByLength()) { "ab", none, "cd" };
+        Console.WriteLine("custom " + byLength.Count + " " + byLength.Contains(none) + " " + byLength.Contains("xy"));
+        string[] words = { "a", none, "A", none, "b" };
+        Console.WriteLine("distinct " + string.Join(",", words.Distinct(StringComparer.OrdinalIgnoreCase).Select(w => Show(w))));
+        Console.WriteLine("distinctby " + string.Join(",", words.DistinctBy(w => w, StringComparer.Ordinal).Select(w => Show(w))));
+        Console.WriteLine("except " + string.Join(",", words.Except(new[] { none, "b" }, StringComparer.Ordinal).Select(w => Show(w))));
+        Console.WriteLine("tohashset " + words.ToHashSet(StringComparer.Ordinal).Count);
+        Console.WriteLine("groupby " + string.Join(",", words.GroupBy(w => w, StringComparer.Ordinal).Select(g => Show(g.Key) + ":" + g.Count())));
+        ILookup<string, string> lookup = words.ToLookup(w => w, StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine("lookup " + lookup.Count + " " + lookup[none].Count() + " " + lookup["A"].Count() + " " + lookup.Contains(none));
+        string[] sized = { "ab", none, "cd" };
+        Console.WriteLine("custom groupby " + string.Join(",", sized.GroupBy(w => w, new ByLength()).Select(g => Show(g.Key) + ":" + g.Count())));
+        return 0;
+    }
+}

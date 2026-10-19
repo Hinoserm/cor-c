@@ -1,0 +1,73 @@
+// test: a dictionary refuses a null key at every entry, as .NET's does
+// expect-exit: 0
+// expect-output:
+// add ArgumentNullException key
+// set ArgumentNullException key
+// get ArgumentNullException key
+// trygetvalue ArgumentNullException key
+// containskey ArgumentNullException key
+// remove ArgumentNullException key
+// remove out ArgumentNullException key
+// tryadd ArgumentNullException key
+// getvalueordefault ArgumentNullException key
+// keys contains ArgumentNullException key
+// pair add ArgumentNullException key
+// filled containskey ArgumentNullException key
+// ordinal add ArgumentNullException key
+// nullable add ArgumentNullException key
+// todictionary ArgumentNullException key
+// count 0 1 0
+// zero zero
+// Value cannot be null. (Parameter 'key')
+//
+// .NET's Dictionary tests the key against null first in FindValue,
+// TryInsert and Remove, empty table or not, and throws ArgumentNullException
+// named "key"; every public member reaches one of the three. The table here
+// took null as a key by the default comparer. A value-typed key is never
+// null (0 is a key like any other); an int? without a value is null.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static void Try(string what, Action act)
+    {
+        try { act(); Console.WriteLine(what + " returned"); }
+        catch (ArgumentNullException e) { Console.WriteLine(what + " " + e.GetType().Name + " " + e.ParamName); }
+    }
+
+    static int Main()
+    {
+        string none = null!;
+        Dictionary<string, int> empty = new Dictionary<string, int>();
+        Try("add", () => empty.Add(none, 1));
+        Try("set", () => empty[none] = 1);
+        Try("get", () => { int v = empty[none]; });
+        Try("trygetvalue", () => empty.TryGetValue(none, out int v));
+        Try("containskey", () => empty.ContainsKey(none));
+        Try("remove", () => empty.Remove(none));
+        Try("remove out", () => empty.Remove(none, out int v));
+        Try("tryadd", () => empty.TryAdd(none, 1));
+        Try("getvalueordefault", () => empty.GetValueOrDefault(none));
+        Try("keys contains", () => empty.Keys.Contains(none));
+        Try("pair add", () => ((ICollection<KeyValuePair<string, int>>)empty).Add(new KeyValuePair<string, int>(none, 1)));
+        Dictionary<string, int> filled = new Dictionary<string, int>();
+        filled["a"] = 1;
+        Try("filled containskey", () => filled.ContainsKey(none));
+        Dictionary<string, int> ordinal = new Dictionary<string, int>(StringComparer.Ordinal);
+        Try("ordinal add", () => ordinal.Add(none, 1));
+        Dictionary<int?, string> nullable = new Dictionary<int?, string>();
+        int? noNumber = null;
+        Try("nullable add", () => nullable.Add(noNumber, "x"));
+        string[] keys = { "a", none };
+        Try("todictionary", () => keys.ToDictionary(k => k));
+        Console.WriteLine("count " + empty.Count + " " + filled.Count + " " + ordinal.Count);
+        Dictionary<int, string> numbers = new Dictionary<int, string>();
+        int zero = 0;
+        numbers[zero] = "zero";
+        Console.WriteLine("zero " + numbers[zero]);
+        Console.WriteLine(new ArgumentNullException("key").Message);
+        return 0;
+    }
+}

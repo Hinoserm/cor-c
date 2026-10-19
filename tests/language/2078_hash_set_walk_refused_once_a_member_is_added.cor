@@ -1,0 +1,96 @@
+// test: hash_set_walk_refused_once_a_member_is_added
+// expect-exit: 0
+// expect-output:
+// add 1 Collection was modified; enumeration operation may not execute.
+// add again 4
+// remove 1;2;11; 3
+// clear 1 0
+// set ops 5; 1
+// symmetric add Collection was modified; enumeration operation may not execute. 2
+// current 5 5 True 40 False 0
+// before Enumeration has either not started or has already finished. 0
+// after Enumeration has either not started or has already finished. 0
+// reset Collection was modified; enumeration operation may not execute. / Collection was modified; enumeration operation may not execute.
+// trim kept 0234 0,9,2,3,4
+// trim shrank Collection was modified; enumeration operation may not execute. 0,9,3,5
+//
+// A HashSet walked as .NET 10 walks one: a member added under it refuses the
+// walk; a member already there, a removal, a clearing, and ExceptWith,
+// IntersectWith, RemoveWhere and a SymmetricExceptWith that only removes do
+// not. Current stays the member MoveNext took. TrimExcess refuses a walk
+// only when .NET's set would be remade.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var s = new HashSet<int> { 1, 2, 3 };
+        string seen = "";
+        string why = Run(() => { foreach (int x in s) { seen += x; s.Add(x + 10); } });
+        Console.WriteLine("add " + seen + " " + why);
+
+        int again = 0;
+        foreach (int x in s) { if (!s.Add(x)) again++; }
+        Console.WriteLine("add again " + again);
+
+        string kept = "";
+        foreach (int x in s) { s.Remove(3); kept += x + ";"; }
+        Console.WriteLine("remove " + kept + " " + s.Count);
+
+        string cleared = "";
+        foreach (int x in s) { cleared += x; s.Clear(); }
+        Console.WriteLine("clear " + cleared + " " + s.Count);
+
+        s.UnionWith(new[] { 5, 6, 7, 8 });
+        string ops = "";
+        foreach (int x in s)
+        {
+            s.ExceptWith(new[] { 6 });
+            s.IntersectWith(new[] { 5, 7, 8, 9 });
+            s.RemoveWhere(y => y == 8);
+            s.UnionWith(new[] { 5 });
+            s.SymmetricExceptWith(new[] { 7, 7 });
+            ops += x + ";";
+        }
+        Console.WriteLine("set ops " + ops + " " + s.Count);
+
+        why = Run(() => { foreach (int x in s) s.SymmetricExceptWith(new[] { 40 }); });
+        Console.WriteLine("symmetric add " + why + " " + s.Count);
+
+        var e = s.GetEnumerator();
+        e.MoveNext();
+        int first = e.Current;
+        s.Remove(first);
+        Console.WriteLine("current " + first + " " + e.Current + " " + e.MoveNext() + " " + e.Current + " " + e.MoveNext() + " " + e.Current);
+
+        IEnumerator<int> it = ((IEnumerable<int>)s).GetEnumerator();
+        Console.WriteLine("before " + Run(() => Console.WriteLine("got " + ((IEnumerator)it).Current)) + " " + it.Current);
+        it.MoveNext();
+        it.MoveNext();
+        Console.WriteLine("after " + Run(() => Console.WriteLine("got " + ((IEnumerator)it).Current)) + " " + it.Current);
+        s.Add(50);
+        Console.WriteLine("reset " + Run(() => it.Reset()) + " / " + Run(() => { it.MoveNext(); }));
+
+        var t = new HashSet<int>();
+        for (int i = 0; i < 5; i++) t.Add(i);
+        t.Remove(1);
+        string walked = "";
+        foreach (int x in t) { walked += x; t.TrimExcess(); }
+        t.Add(9);
+        Console.WriteLine("trim kept " + walked + " " + string.Join(",", t));
+        t.Remove(4); t.Remove(2);
+        why = Run(() => { foreach (int x in t) t.TrimExcess(); });
+        t.Add(5);
+        Console.WriteLine("trim shrank " + why + " " + string.Join(",", t));
+        return 0;
+    }
+}

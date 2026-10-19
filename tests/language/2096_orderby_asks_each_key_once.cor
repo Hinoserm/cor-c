@@ -1,0 +1,76 @@
+// test: OrderBy and ThenBy ask each element's key once per level, in source order, as .NET's EnumerableSorter
+// expect-exit: 0
+// expect-output:
+// list 1,2,3 k3 k1 k2
+// thenby 0.5 1.1 1.2 p1 p0 p1 s2 s5 s1
+// one foreach 7 calls one7 two7
+// one list 7 calls 0
+// one array 7 calls 0
+// count 3 calls 0
+// none foreach 0 calls 0
+// stable a1,a2,b1,b2 b1,b2,a1,a2
+// extreme 3,2,1 1,2,3
+// order 3,2,1 1,2,3
+//
+// .NET computes every level's keys once (ComputeKeys: all of OrderBy's in
+// source order, then all of ThenBy's) and sorts the places by them; a walk
+// of one element still sorts it, where ToList and ToArray of one element
+// return it unsorted and Count counts the source. Descending turns the sign
+// (`_descending != (c > 0) ? 1 : -1`). Here the selector ran at every
+// comparison, never for one element, and `0 - int.MinValue` sorted
+// descending as ascending.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static readonly List<string> asked = new List<string>();
+
+    static int Key(string tag, int value)
+    {
+        asked.Add(tag + value);
+        return value;
+    }
+
+    static string Calls()
+    {
+        string said = asked.Count == 0 ? "0" : string.Join(" ", asked);
+        asked.Clear();
+        return said;
+    }
+
+    static int Main()
+    {
+        int[] data = { 3, 1, 2 };
+        List<int> listed = data.OrderBy(v => Key("k", v)).ToList();
+        Console.WriteLine("list " + string.Join(",", listed) + " " + Calls());
+
+        (int A, int B)[] pairs = { (1, 2), (0, 5), (1, 1) };
+        List<string> shown = new List<string>();
+        foreach (var pair in pairs.OrderBy(q => Key("p", q.A)).ThenBy(q => Key("s", q.B))) { shown.Add(pair.A + "." + pair.B); }
+        Console.WriteLine("thenby " + string.Join(" ", shown) + " " + Calls());
+
+        int[] one = { 7 };
+        IOrderedEnumerable<int> single = one.OrderBy(v => Key("one", v)).ThenBy(v => Key("two", v));
+        string walked = "";
+        foreach (int v in single) { walked = walked + v; }
+        Console.WriteLine("one foreach " + walked + " calls " + Calls());
+        Console.WriteLine("one list " + string.Join(",", single.ToList()) + " calls " + Calls());
+        Console.WriteLine("one array " + string.Join(",", single.ToArray()) + " calls " + Calls());
+        Console.WriteLine("count " + data.OrderBy(v => Key("c", v)).Count() + " calls " + Calls());
+        int[] empty = { };
+        int seen = 0;
+        foreach (int v in empty.OrderBy(w => Key("e", w))) { seen = seen + 1; }
+        Console.WriteLine("none foreach " + seen + " calls " + Calls());
+
+        string[] tags = { "b1", "a1", "b2", "a2" };
+        Console.WriteLine("stable " + string.Join(",", tags.OrderBy(t => t[0])) + " " + string.Join(",", tags.OrderByDescending(t => t[0])));
+
+        IComparer<int> extreme = Comparer<int>.Create((a, b) => a < b ? int.MinValue : a > b ? int.MaxValue : 0);
+        int[] three = { 2, 3, 1 };
+        Console.WriteLine("extreme " + string.Join(",", three.OrderByDescending(v => v, extreme)) + " " + string.Join(",", three.OrderBy(v => v, extreme)));
+        Console.WriteLine("order " + string.Join(",", three.OrderDescending(extreme)) + " " + string.Join(",", three.Order(extreme)));
+        return 0;
+    }
+}

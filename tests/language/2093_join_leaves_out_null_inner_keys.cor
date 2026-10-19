@@ -1,0 +1,53 @@
+// test: Join and GroupJoin match no null key, and read the inner sequence only when the outer has an element
+// expect-exit: 0
+// expect-output:
+// join a=1,b=3
+// groupjoin a:1,null:0,b:1
+// folded A=1
+// lookup a:1,null:2,b:1 2 True
+// empty outer 0 0
+// empty lookup 0 0
+//
+// .NET builds a join's lookup with Lookup.CreateForJoin, which leaves out
+// every inner element whose key is null, and only once the outer sequence
+// has an element; with nothing to match, no outer key is asked for. Here a
+// null outer key matched every null inner one. ToLookup itself keeps null
+// as a key of its own.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Item
+{
+    public readonly string Key;
+    public readonly int Value;
+    public Item(string key, int value) { Key = key; Value = value; }
+}
+
+static class Program
+{
+    static string Show(string? s) { return s ?? "null"; }
+
+    static int Main()
+    {
+        string none = null!;
+        string[] outer = { "a", none, "b" };
+        Item[] inner = { new Item("a", 1), new Item(none, 2), new Item("b", 3), new Item(none, 4) };
+        Console.WriteLine("join " + string.Join(",", outer.Join(inner, o => o, i => i.Key, (o, i) => Show(o) + "=" + i.Value)));
+        Console.WriteLine("groupjoin " + string.Join(",", outer.GroupJoin(inner, o => o, i => i.Key, (o, g) => Show(o) + ":" + g.Count())));
+        string[] shouted = { "A", none };
+        Console.WriteLine("folded " + string.Join(",", shouted.Join(inner, o => o, i => i.Key, (o, i) => Show(o) + "=" + i.Value, StringComparer.OrdinalIgnoreCase)));
+        ILookup<string, Item> lookup = inner.ToLookup(i => i.Key);
+        Console.WriteLine("lookup " + string.Join(",", lookup.Select(g => Show(g.Key) + ":" + g.Count())) + " " + lookup[none].Count() + " " + lookup.Contains(none));
+        int innerAsked = 0;
+        string[] nothing = { };
+        IEnumerable<string> unread = nothing.Join(inner, o => o, i => { innerAsked = innerAsked + 1; return i.Key; }, (o, i) => o);
+        Console.WriteLine("empty outer " + unread.Count() + " " + innerAsked);
+        int outerAsked = 0;
+        string[] two = { "x", "y" };
+        Item[] onlyNull = { new Item(none, 9) };
+        IEnumerable<string> unmatched = two.Join(onlyNull, o => { outerAsked = outerAsked + 1; return o; }, i => i.Key, (o, i) => o);
+        Console.WriteLine("empty lookup " + unmatched.Count() + " " + outerAsked);
+        return 0;
+    }
+}

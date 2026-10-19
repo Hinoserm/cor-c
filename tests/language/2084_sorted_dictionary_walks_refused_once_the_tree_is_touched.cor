@@ -1,0 +1,82 @@
+// test: sorted_dictionary_walks_refused_once_the_tree_is_touched
+// expect-exit: 0
+// expect-output:
+// overwrite 1 Collection was modified after the enumerator was instantiated. a!
+// remove missing Collection was modified after the enumerator was instantiated.
+// add duplicate Collection was modified after the enumerator was instantiated.
+// read 3
+// before [0, ]
+// current [1, a!]
+// moved Collection was modified after the enumerator was instantiated.
+// after [0, ]
+// boxed before Enumeration has either not started or has already finished.
+// boxed [2, b]
+// reset Collection was modified after the enumerator was instantiated.
+// keys 2 Collection was modified after the enumerator was instantiated.
+// values Collection was modified after the enumerator was instantiated.
+// keys add Mutating a key collection derived from a dictionary is not allowed.
+// values clear Mutating a value collection derived from a dictionary is not allowed.
+// views 2,3,9 z,c,i 3
+//
+// A SortedDictionary walked as .NET 10 walks its tree: a value replaced,
+// a key added -- even one already there, which throws -- a removal asked of
+// a map that holds anything, found or not, and Clear refuse the walk;
+// lookups do not. Keys and Values are views of the map, refused as its own
+// walk is and refusing a write in .NET's words.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var sd = new SortedDictionary<int, string> { [2] = "b", [1] = "a", [3] = "c" };
+        string seen = "";
+        string why = Run(() => { foreach (var kv in sd) { seen += kv.Key; sd[kv.Key] = kv.Value + "!"; } });
+        Console.WriteLine("overwrite " + seen + " " + why + " " + sd[1]);
+        why = Run(() => { foreach (var kv in sd) sd.Remove(99); });
+        Console.WriteLine("remove missing " + why);
+        why = Run(() => { foreach (var kv in sd) { try { sd.Add(1, "x"); } catch (ArgumentException) { } } });
+        Console.WriteLine("add duplicate " + why);
+        int found = 0;
+        foreach (var kv in sd) { if (sd.ContainsKey(kv.Key) && sd.TryGetValue(kv.Key, out string? v) && sd.ContainsValue(v)) found++; }
+        Console.WriteLine("read " + found);
+
+        var e = sd.GetEnumerator();
+        Console.WriteLine("before " + e.Current);
+        e.MoveNext();
+        sd.Remove(1);
+        Console.WriteLine("current " + e.Current);
+        try { e.MoveNext(); Console.WriteLine("moved ok"); } catch (InvalidOperationException ex) { Console.WriteLine("moved " + ex.Message); }
+
+        var f = sd.GetEnumerator();
+        while (f.MoveNext()) { }
+        Console.WriteLine("after " + f.Current);
+        IEnumerator boxed = ((IEnumerable)sd).GetEnumerator();
+        try { Console.WriteLine("got " + boxed.Current); } catch (InvalidOperationException ex) { Console.WriteLine("boxed before " + ex.Message); }
+        boxed.MoveNext();
+        Console.WriteLine("boxed " + boxed.Current);
+        sd[9] = "i";
+        try { boxed.Reset(); Console.WriteLine("reset ok"); } catch (InvalidOperationException ex) { Console.WriteLine("reset " + ex.Message); }
+
+        string keys = "";
+        why = Run(() => { foreach (int k in sd.Keys) { keys += k; sd[k] = "z"; } });
+        Console.WriteLine("keys " + keys + " " + why);
+        why = Run(() => { foreach (string w in sd.Values) sd.Remove(-1); });
+        Console.WriteLine("values " + why);
+        string refused;
+        try { ((ICollection<int>)sd.Keys).Add(5); refused = "added"; } catch (NotSupportedException ex) { refused = ex.Message; }
+        Console.WriteLine("keys add " + refused);
+        try { ((ICollection<string>)sd.Values).Clear(); refused = "cleared"; } catch (NotSupportedException ex) { refused = ex.Message; }
+        Console.WriteLine("values clear " + refused);
+        Console.WriteLine("views " + string.Join(",", sd.Keys) + " " + string.Join(",", sd.Values) + " " + sd.Keys.Count);
+        return 0;
+    }
+}

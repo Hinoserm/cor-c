@@ -1,0 +1,105 @@
+// test: sorted_set_walk_refused_once_the_tree_is_touched
+// expect-exit: 0
+// expect-output:
+// add present 1 Collection was modified after the enumerator was instantiated.
+// remove missing Collection was modified after the enumerator was instantiated.
+// read 3
+// current 1
+// moved Collection was modified after the enumerator was instantiated.
+// clear empty Collection was modified after the enumerator was instantiated.
+// remove from empty False
+// before 0
+// after 0
+// boxed before Enumeration has either not started or has already finished.
+// boxed 2
+// boxed after Enumeration has either not started or has already finished.
+// reset Collection was modified after the enumerator was instantiated.
+// view Collection was modified after the enumerator was instantiated.
+// through view Collection was modified after the enumerator was instantiated. 6
+// reverse 9 Collection was modified after the enumerator was instantiated.
+// union present ok
+// union sorted Collection was modified after the enumerator was instantiated.
+// except missing ok
+// except sorted Collection was modified after the enumerator was instantiated.
+// intersect Collection was modified after the enumerator was instantiated. 5
+// intersect self ok
+// remove where none ok
+// symmetric empty ok
+//
+// A SortedSet walked as .NET 10 walks its tree: Add refuses a walk whether
+// it adds or not, Remove whenever the set holds anything, found or not,
+// Clear always. A view's walk is refused by a change to the set it is of,
+// and Reverse is a walk refused as one forwards is. Each set operation
+// refuses a walk exactly when .NET's touches the tree.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static string Run(Action body)
+    {
+        try { body(); return "ok"; }
+        catch (InvalidOperationException e) { return e.Message; }
+    }
+
+    static int Main()
+    {
+        var s = new SortedSet<int> { 3, 1, 2 };
+        string seen = "";
+        string why = Run(() => { foreach (int x in s) { seen += x; s.Add(x); } });
+        Console.WriteLine("add present " + seen + " " + why);
+        why = Run(() => { foreach (int x in s) s.Remove(99); });
+        Console.WriteLine("remove missing " + why);
+        int n = 0;
+        foreach (int x in s) { if (s.Contains(x) && s.Min == 1 && s.Max == 3) n++; }
+        Console.WriteLine("read " + n);
+
+        var e = s.GetEnumerator();
+        e.MoveNext();
+        s.Remove(1);
+        Console.WriteLine("current " + e.Current);
+        try { e.MoveNext(); Console.WriteLine("moved ok"); } catch (InvalidOperationException ex) { Console.WriteLine("moved " + ex.Message); }
+
+        var empty = new SortedSet<int>();
+        var none = empty.GetEnumerator();
+        empty.Clear();
+        try { none.MoveNext(); Console.WriteLine("clear empty ok"); } catch (InvalidOperationException ex) { Console.WriteLine("clear empty " + ex.Message); }
+        var still = empty.GetEnumerator();
+        empty.Remove(5);
+        Console.WriteLine("remove from empty " + still.MoveNext());
+
+        var f = s.GetEnumerator();
+        Console.WriteLine("before " + f.Current);
+        while (f.MoveNext()) { }
+        Console.WriteLine("after " + f.Current);
+        IEnumerator boxed = ((IEnumerable)s).GetEnumerator();
+        try { Console.WriteLine("got " + boxed.Current); } catch (InvalidOperationException ex) { Console.WriteLine("boxed before " + ex.Message); }
+        boxed.MoveNext();
+        Console.WriteLine("boxed " + boxed.Current);
+        while (boxed.MoveNext()) { }
+        try { Console.WriteLine("got " + boxed.Current); } catch (InvalidOperationException ex) { Console.WriteLine("boxed after " + ex.Message); }
+        s.Add(2);
+        try { boxed.Reset(); Console.WriteLine("reset ok"); } catch (InvalidOperationException ex) { Console.WriteLine("reset " + ex.Message); }
+
+        var big = new SortedSet<int> { 1, 2, 3, 4, 5, 6 };
+        var view = big.GetViewBetween(2, 4);
+        why = Run(() => { foreach (int x in view) big.Add(9); });
+        Console.WriteLine("view " + why);
+        why = Run(() => { foreach (int x in big) view.Remove(3); });
+        Console.WriteLine("through view " + why + " " + big.Count);
+        string back = "";
+        why = Run(() => { foreach (int x in big.Reverse()) { back += x; big.Remove(x); } });
+        Console.WriteLine("reverse " + back + " " + why);
+
+        Console.WriteLine("union present " + Run(() => { foreach (int x in big) big.UnionWith(new[] { 1, 2 }); }));
+        Console.WriteLine("union sorted " + Run(() => { foreach (int x in big) big.UnionWith(new SortedSet<int> { 1, 2, 4 }); }));
+        Console.WriteLine("except missing " + Run(() => { foreach (int x in big) big.ExceptWith(new[] { 7, 8 }); }));
+        Console.WriteLine("except sorted " + Run(() => { foreach (int x in big) big.ExceptWith(new SortedSet<int> { 3 }); }));
+        Console.WriteLine("intersect " + Run(() => { foreach (int x in big) big.IntersectWith(new[] { 1, 2, 4, 5, 6 }); }) + " " + big.Count);
+        Console.WriteLine("intersect self " + Run(() => { foreach (int x in big) big.IntersectWith(big); }));
+        Console.WriteLine("remove where none " + Run(() => { foreach (int x in big) big.RemoveWhere(y => y > 100); }));
+        Console.WriteLine("symmetric empty " + Run(() => { foreach (int x in big) big.SymmetricExceptWith(new int[0]); }));
+        return 0;
+    }
+}

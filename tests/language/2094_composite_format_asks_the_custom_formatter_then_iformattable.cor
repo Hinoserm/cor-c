@@ -1,0 +1,81 @@
+// test: string.Format and AppendFormat ask the provider's ICustomFormatter, then IFormattable with a null format
+// expect-exit: 0
+// expect-output:
+// plain Money(null,null)
+// format Money(C2,null)
+// colon Money(null,null)
+// culture Money(null,CultureInfo)
+// object Plain
+// padded [  Plain] [Plain  ]
+// custom <null:Money()> ff <null:null> <null:t> Money(pass,Shouting)
+// asked 1
+// builder <x:Money()>|Money(pass,Shouting)
+// asked 2
+// careless InvalidCastException
+//
+// .NET's AppendFormatHelper casts provider.GetFormat(typeof(ICustomFormatter))
+// once, before the first hole; asks it of every argument, null included,
+// with a null format where the hole has none; and formats what it answers
+// null for as an IFormattable by ToString(format-or-null, provider), else
+// by ToString(). Here `{0}` called Money's ToString() and no custom
+// formatter was ever asked.
+using System;
+using System.Globalization;
+using System.Text;
+
+sealed class Money : IFormattable
+{
+    public override string ToString() { return "Money()"; }
+    public string ToString(string? format, IFormatProvider? provider)
+    {
+        return "Money(" + (format ?? "null") + "," + (provider == null ? "null" : provider.GetType().Name) + ")";
+    }
+}
+
+sealed class Plain { public override string ToString() { return "Plain"; } }
+
+sealed class Shouting : IFormatProvider, ICustomFormatter
+{
+    public int Asked;
+    public object? GetFormat(Type? formatType)
+    {
+        if (formatType == typeof(ICustomFormatter)) { Asked = Asked + 1; return this; }
+        return null;
+    }
+    public string Format(string? format, object? arg, IFormatProvider? formatProvider)
+    {
+        if (arg is int || format == "pass") { return null!; }
+        return "<" + (format ?? "null") + ":" + (arg ?? "null") + ">";
+    }
+}
+
+sealed class Careless : IFormatProvider
+{
+    public object? GetFormat(Type? formatType) { return this; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Money m = new Money();
+        Plain p = new Plain();
+        Console.WriteLine("plain " + string.Format("{0}", m));
+        Console.WriteLine("format " + string.Format("{0:C2}", m));
+        Console.WriteLine("colon " + string.Format("{0:}", m));
+        Console.WriteLine("culture " + string.Format(CultureInfo.InvariantCulture, "{0}", m));
+        Console.WriteLine("object " + string.Format("{0}", p));
+        Console.WriteLine("padded " + string.Format("[{0,7}] [{0,-7}]", p));
+        Shouting s = new Shouting();
+        int n = 255;
+        Console.WriteLine("custom " + string.Format(s, "{0} {1:x} {2} {3} {0:pass}", m, n, null, "t"));
+        Console.WriteLine("asked " + s.Asked);
+        StringBuilder b = new StringBuilder();
+        b.AppendFormat(s, "{0:x}|{1:pass}", m, m);
+        Console.WriteLine("builder " + b.ToString());
+        Console.WriteLine("asked " + s.Asked);
+        try { Console.WriteLine("careless " + string.Format(new Careless(), "{0}", n)); }
+        catch (InvalidCastException e) { Console.WriteLine("careless " + e.GetType().Name); }
+        return 0;
+    }
+}
