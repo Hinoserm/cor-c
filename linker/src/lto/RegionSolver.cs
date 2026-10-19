@@ -464,6 +464,11 @@ public static class RegionSolver
                 _over = true;
                 return GiveUp("too much to hold");
             }
+            catch (RegionEscape.WorkSpent)
+            {
+                _over = true;
+                return GiveUp("past the link's work budget (" + (_escape?.WorkBudget ?? 0) + " locations carried)");
+            }
         }
 
         /// <summary>
@@ -693,6 +698,8 @@ public static class RegionSolver
             // The link's pool of inclusion work past each component's own bound, and each one's most of it (millions).
             if (_report?.FirstOrDefault(w => w.StartsWith("+pool=", StringComparison.Ordinal)) is { } poolOf && long.TryParse(poolOf[6..], out long pool))
                 _escape.InclusionPerRound = pool * 1_000_000;
+            if (_report?.FirstOrDefault(w => w.StartsWith("+workbudget=", StringComparison.Ordinal)) is { } workOf && long.TryParse(workOf[12..], out long work))
+                _escape.WorkBudget = work * 1_000_000;
             if (_report?.FirstOrDefault(w => w.StartsWith("+cap=", StringComparison.Ordinal)) is { } capOf && long.TryParse(capOf[5..], out long cap))
                 _escape.InclusionCap = cap * 1_000_000;
             _escape.ReportStandIns = _report?.Contains("+standins") == true;

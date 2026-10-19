@@ -579,7 +579,10 @@ public sealed class RegionTypes
     /// </summary>
     public bool Prune()
     {
-        _budget = Budget >= 0 ? Budget : Math.Clamp(30L * _pts.Count, 2_000_000, 20_000_000);
+        // AT MOST A FIFTH AS MUCH IN A 32-BIT LINKER: the compiler's own link
+        // gave up at twenty million values carried all the same, and its
+        // native linker ran out of memory on the way there.
+        _budget = Budget >= 0 ? Budget : Math.Clamp(30L * _pts.Count, 2_000_000, IntPtr.Size == 4 ? 4_000_000 : 20_000_000);
         try { Solve(); }
         catch (OverBudget) { GaveUp = true; return false; }
         Objects = _objects.Count;

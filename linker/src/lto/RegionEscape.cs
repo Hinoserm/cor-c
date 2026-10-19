@@ -110,6 +110,20 @@ internal sealed class RegionEscape
     /// </summary>
     public long InclusionPool = 400_000_000, InclusionCap = 40_000_000;
     /// <summary>
+    /// THE WHOLE RUN'S WORK, in locations carried over every round, past
+    /// which the engine stops and nothing is made in a region (WorkSpent,
+    /// RegionSolver.Budgeted): in a 32-bit linker, what its address space
+    /// holds. The compiler's own link carried 126 million in its first round
+    /// alone with 6 GB of heap, and the native linker ran out of memory
+    /// before the engine began -- for 47 sites in regions in the end, of
+    /// 76,506. Counted in work done, in the order solved, so a link answers
+    /// alike every time (--region-report +workbudget=M: millions).
+    /// </summary>
+    public long WorkBudget = IntPtr.Size == 4 ? 24_000_000 : long.MaxValue;
+    public long TotalWork;
+    /// <summary>The run's work budget spent: the engine stops.</summary>
+    public sealed class WorkSpent : Exception { }
+    /// <summary>
     /// PAST THIS MANY LOCATIONS OFFERED, A COMPONENT IS NOT FOLLOWED, however
     /// little it carries. The budget above is asked only once a component
     /// carries past its own bound; the compiler's binder cycle of 78 carried
@@ -4412,6 +4426,7 @@ internal sealed class RegionEscape
                 // a new delta, carried in its turn.
                 _deltaBuf[n] = null; _deltaLen[n] = 0;
                 _owner.Work += count;
+                if ((_owner.TotalWork += count) > _owner.WorkBudget) throw new WorkSpent();
                 if ((_carried += count) > _mostCarried && (_mostAdds == long.MaxValue || _adds > _mostAdds) && !MoreWork() || OverWorked || Overflowed) { Overflowed = true; return; }
                 if (_big && _owner.Progress is not null && (_carried & ~0xFFFFFL) != ((_carried - count) & ~0xFFFFFL))
                     _owner.Progress($"escape graphs:   cycle solve: {Describe()}, heap {GC.GetTotalMemory(false) >> 20} MB");
