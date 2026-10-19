@@ -352,7 +352,7 @@ public static partial class Linker
         // and its clear ran from __bss_start round through the wrap.
         if (end >= 1UL << 32)
         {
-            throw new LinkException(new[] { $"the image runs from 0x{layout.LoadAddress:x} to 0x{end:x}, to four gigabytes or past; an i386 image cannot be there" });
+            throw new LinkException(new[] { $"the image runs from 0x{layout.LoadAddress:x} to 0x{end:x}, up to or past four gigabytes; an i386 image cannot be there" });
         }
     }
 
