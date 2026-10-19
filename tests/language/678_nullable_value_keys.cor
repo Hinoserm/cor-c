@@ -6,7 +6,7 @@
 // comparer True False True True
 // hash True
 // set 2 True True
-// map one none
+// map one key
 // list 1 2 -1
 // order null,1,3
 //
@@ -38,8 +38,11 @@ static class Program
         Console.WriteLine("hash " + (eq.GetHashCode(some) == eq.GetHashCode(same)));
         HashSet<Def?> set = new() { some, same, none };
         Console.WriteLine("set " + set.Count + " " + set.Contains(new Def("a", 4)) + " " + set.Contains(null));
-        Dictionary<Def?, string> map = new() { [some] = "one", [none] = "none" };
-        Console.WriteLine("map " + map[same] + " " + map[null]);
+        // A table refuses a key with no value, as .NET's: it is null.
+        Dictionary<Def?, string> map = new() { [some] = "one" };
+        string refused;
+        try { map[none] = "none"; refused = "taken"; } catch (ArgumentNullException e) { refused = e.ParamName!; }
+        Console.WriteLine("map " + map[same] + " " + refused);
         List<Def?> list = new() { other, some, none };
         Console.WriteLine("list " + list.IndexOf(same) + " " + list.IndexOf(null) + " " + list.IndexOf(new Def("z", 0)));
         List<int?> numbers = new() { 3, null, 1 };
