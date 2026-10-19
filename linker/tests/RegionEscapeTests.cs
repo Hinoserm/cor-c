@@ -52,6 +52,7 @@ public static class RegionEscapeTests
         ("a wide call on a place past eight leaky targets keeps them apart together", ManyLeaky),
         ("a coarse summary keeps each field of a parameter apart", CoarseByField),
         ("a method called blind runs on objects of its own class", BlindThis),
+        ("a receiver's value set answers as a set of every value added, rising", ValueSets),
     };
 
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
@@ -1494,6 +1495,40 @@ public static class RegionEscapeTests
     /// class, an It, the call on `this` at 8 runs RunA alone, and the call on
     /// the other parameter, anything still, both.
     /// </summary>
+    /// <summary>
+    /// RegionTypes' sets of values, a list while few and bits from the least
+    /// word held past that: grown upwards and downwards, past the list's
+    /// size, each answering Contains and ToArray (rising) as a sorted set of
+    /// what went in does, and Add whether it was new.
+    /// </summary>
+    private static void ValueSets()
+    {
+        uint seed = 12345;
+        int Next(int below) { seed = seed * 1103515245 + 12345; return (int)((seed >> 8) % (uint)below); }
+        bool alike = true;
+        for (int round = 0; round < 200 && alike; round++)
+        {
+            ValueSet set = new();
+            SortedSet<int> want = new();
+            int spread = round % 4 == 0 ? 50 : round % 4 == 1 ? 5000 : round % 4 == 2 ? 200000 : 64;
+            int adds = 1 + Next(round < 100 ? 12 : 300);
+            for (int i = 0; i < adds && alike; i++)
+            {
+                int v = round % 5 == 0 ? spread - 1 - i * 7 % spread : Next(spread);
+                if (v < 0) v = -v;
+                alike &= set.Add(v) == want.Add(v);
+                alike &= set.Count == want.Count;
+            }
+            for (int probe = 0; probe < 64 && alike; probe++)
+            {
+                int v = Next(spread + 128);
+                alike &= set.Contains(v) == want.Contains(v);
+            }
+            alike &= set.ToArray().SequenceEqual(want);
+        }
+        Check(alike, "every set alike its sorted set: Add, Count, Contains and the values rising");
+    }
+
     private static void BlindThis()
     {
         foreach (bool typed in new[] { true, false })

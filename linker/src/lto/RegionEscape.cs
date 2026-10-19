@@ -112,14 +112,15 @@ internal sealed class RegionEscape
     /// <summary>
     /// THE WHOLE RUN'S WORK, in locations carried over every round, past
     /// which the engine stops and nothing is made in a region (WorkSpent,
-    /// RegionSolver.Budgeted): in a 32-bit linker, what its address space
-    /// holds. The compiler's own link carried 126 million in its first round
-    /// alone with 6 GB of heap, and the native linker ran out of memory
-    /// before the engine began -- for 47 sites in regions in the end, of
-    /// 76,506. Counted in work done, in the order solved, so a link answers
+    /// RegionSolver.Budgeted): none by default, on every host. What a solve
+    /// holds is its component's graph, let go when the component is solved,
+    /// and the rounds' tables, which no longer grow with it (SiteSet,
+    /// Release): the work a run does is time, not memory, and a budget that
+    /// a 32-bit linker kept and a 64-bit one did not made two images of one
+    /// program. Counted in work done, in the order solved, so a link answers
     /// alike every time (--region-report +workbudget=M: millions).
     /// </summary>
-    public long WorkBudget = IntPtr.Size == 4 ? 24_000_000 : long.MaxValue;
+    public long WorkBudget = long.MaxValue;
     public long TotalWork;
     /// <summary>The run's work budget spent: the engine stops.</summary>
     public sealed class WorkSpent : Exception { }

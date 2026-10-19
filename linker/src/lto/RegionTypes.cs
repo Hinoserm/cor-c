@@ -579,10 +579,9 @@ public sealed class RegionTypes
     /// </summary>
     public bool Prune()
     {
-        // AT MOST A FIFTH AS MUCH IN A 32-BIT LINKER: the compiler's own link
-        // gave up at twenty million values carried all the same, and its
-        // native linker ran out of memory on the way there.
-        _budget = Budget >= 0 ? Budget : Math.Clamp(30L * _pts.Count, 2_000_000, IntPtr.Size == 4 ? 4_000_000 : 20_000_000);
+        // THE SAME BUDGET ON EVERY HOST: one a 32-bit linker kept smaller gave
+        // its program other targets, and other code, than a 64-bit one gave.
+        _budget = Budget >= 0 ? Budget : Math.Clamp(30L * _pts.Count, 2_000_000, 20_000_000);
         try { Solve(); }
         catch (OverBudget) { GaveUp = true; return false; }
         Objects = _objects.Count;
@@ -773,42 +772,100 @@ public sealed class RegionTypes
 }
 
 /// <summary>
-/// WHAT A NODE HOLDS, as bits: value v at bit v, the words grown as far as
-/// the largest value held. A value is an object shifted left one with its
-/// address-into bit (RegionTypes.ObjectOf), so a whole program's few tens of
-/// thousands of objects are a few kilobytes at most, where a hash set of
-/// ints took some ninety bytes a value: the compiler's own link held fifty
-/// million of them in four and a half gigabytes, and was not a tenth done.
+/// WHAT A NODE HOLDS: a few values as a sorted list, and past that as bits
+/// from the word of the least it holds to the word of the greatest. A value
+/// is an object shifted left one with its address-into bit
+/// (RegionTypes.ObjectOf), so a whole program's few tens of thousands of
+/// objects are a few kilobytes at most, where a hash set of ints took some
+/// ninety bytes a value: the compiler's own link held fifty million of them
+/// in four and a half gigabytes, and was not a tenth done.
+///
+/// NOT FROM BIT ZERO, AND NOT AS BITS AT ALL WHILE FEW: one value high in
+/// the numbering was a bitmap of every value below it, and most nodes hold
+/// one or two -- the compiler's own link, natively, ran out of memory on
+/// them. Either way the values are read out rising, as they were, so the
+/// solve walks them in the same order.
 /// </summary>
 internal sealed class ValueSet : IEnumerable<int>
 {
+    private const int SmallMost = 8;
+    // While few: the values rising. Past SmallMost: null, and the bits.
+    private int[]? _small = Array.Empty<int>();
     private ulong[] _words = Array.Empty<ulong>();
+    // The word the bits begin at.
+    private int _base;
     public int Count { get; private set; }
 
     public bool Add(int value)
     {
+        if (_small is { } small)
+        {
+            int at = Array.BinarySearch(small, 0, Count, value);
+            if (at >= 0) return false;
+            at = ~at;
+            if (Count < SmallMost)
+            {
+                if (Count == small.Length) Array.Resize(ref small, Math.Max(2, small.Length * 2));
+                Array.Copy(small, at, small, at + 1, Count - at);
+                small[at] = value;
+                _small = small;
+                Count++;
+                return true;
+            }
+            // As bits from here on: the list's values, then this one.
+            _small = null;
+            int count = Count;
+            Count = 0;
+            for (int i = 0; i < count; i++) SetBit(small[i]);
+        }
+        return SetBit(value);
+    }
+
+    private bool SetBit(int value)
+    {
         int word = value >> 6;
-        if (word >= _words.Length) Array.Resize(ref _words, Math.Max(word + 1, Math.Min(_words.Length * 2, word + 64)));
+        if (_words.Length == 0)
+        {
+            _base = word;
+            _words = new ulong[4];
+        }
+        else if (word < _base)
+        {
+            // Grown downwards: the words held moved up past the new ones.
+            int more = Math.Max(_base - word, Math.Min(_words.Length, _base));
+            ulong[] grown = new ulong[_words.Length + more];
+            Array.Copy(_words, 0, grown, more, _words.Length);
+            _words = grown;
+            _base = _base - more;
+        }
+        int at = word - _base;
+        if (at >= _words.Length) Array.Resize(ref _words, Math.Max(at + 1, Math.Min(_words.Length * 2, at + 64)));
         ulong bit = 1UL << (value & 63);
-        if ((_words[word] & bit) != 0) return false;
-        _words[word] |= bit;
+        if ((_words[at] & bit) != 0) return false;
+        _words[at] |= bit;
         Count++;
         return true;
     }
 
     public bool Contains(int value)
     {
-        int word = value >> 6;
-        return word < _words.Length && (_words[word] & 1UL << (value & 63)) != 0;
+        if (_small is { } small) return Array.BinarySearch(small, 0, Count, value) >= 0;
+        int at = (value >> 6) - _base;
+        return at >= 0 && at < _words.Length && (_words[at] & 1UL << (value & 63)) != 0;
     }
 
     public int[] ToArray()
     {
         int[] values = new int[Count];
-        int at = 0;
+        if (_small is { } small)
+        {
+            Array.Copy(small, values, Count);
+            return values;
+        }
+        int n = 0;
         for (int w = 0; w < _words.Length; w++)
             for (ulong bits = _words[w]; bits != 0; bits &= bits - 1)
-                values[at++] = (w << 6) | System.Numerics.BitOperations.TrailingZeroCount(bits);
+                values[n++] = ((_base + w) << 6) | System.Numerics.BitOperations.TrailingZeroCount(bits);
         return values;
     }
 
