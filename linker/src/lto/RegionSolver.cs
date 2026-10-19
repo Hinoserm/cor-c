@@ -402,7 +402,7 @@ public static class RegionSolver
         private readonly List<MemCopyRecord> _memcopyRecords = new();
         private readonly List<Binding> _bindings = new();
         private readonly Queue<int> _work = new();
-        private long _held, _steps, _edgesSinceCollapse, _edges;
+        private long _held, _steps, _edgesSinceCollapse, _edgesMade;
         private bool _over;
         // For a report: the node being carried on (~node: one saturating),
         // and per object, what first put it where nobody follows.
@@ -1080,7 +1080,7 @@ public static class RegionSolver
         // included, so where the solve gave up hung on what else the link
         // held and on the collector -- not the same on two machines.
         private bool OverHeap()
-            => 12 * _held + 48 * _edges + 96L * _parent.Count + 64L * _locationObject.Count > HeapBudget;
+            => 12 * _held + 48 * _edgesMade + 96L * _parent.Count + 64L * _locationObject.Count > HeapBudget;
 
         private static long Key(int function, int context) => ((long)function << 32) | (uint)(context + 1);
 
@@ -1432,7 +1432,7 @@ public static class RegionSolver
                 }
             }
             edges.Add((to, shift));
-            _edges++;
+            _edgesMade++;
             if (shift == 0) _edgesSinceCollapse++;
             if (_pts[from] is not { } pts) return;
             int carried = _from;
