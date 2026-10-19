@@ -3630,6 +3630,30 @@ public sealed class Monomorphiser
                             continue;
                         }
                     }
+                    // `T t => ...` OVER ONE OF THE SHARED COPY'S OWN PARAMETERS,
+                    // the same guard over `is T` (Canon): T the word, the arm
+                    // tested nothing and matched anything, null and a boxed
+                    // int among them for a T of string.
+                    else if (arm.Type is { Args.Count: 0, ArrayRank: 0, PointerDepth: 0 } bare && !arm.Discard && arm.Value is null
+                             && _canonParams is not null && _canonParams.ContainsKey(bare.Name))
+                    {
+                        IsExpr test = Canon(new IsExpr
+                        {
+                            Operand = new SubjectExpr { Line = arm.Line, Col = arm.Col },
+                            Type = copied.Type!, Binding = arm.Binding, Line = arm.Line, Col = arm.Col,
+                        }, new IsExpr { Operand = new SubjectExpr(), Type = bare }, bare, arrayToo: false);
+                        if (test.CanonSlot >= 0)
+                        {
+                            made.Arms.Add(new SwitchArm
+                            {
+                                Discard = true,
+                                When = copied.When is null ? test
+                                     : new BinaryExpr { Op = BinOp.AndAlso, Left = test, Right = copied.When, Line = arm.Line, Col = arm.Col },
+                                Result = copied.Result, Fallback = copied.Fallback, Line = arm.Line, Col = arm.Col,
+                            });
+                            continue;
+                        }
+                    }
                     made.Arms.Add(copied);
                 }
                 return made;
@@ -3820,10 +3844,12 @@ public sealed class Monomorphiser
             case CastExpr cast:
             {
                 CastExpr made = new() { Type = Sub(cast.Type, map), Operand = Rewrite(cast.Operand, map), Line = cast.Line, Col = cast.Col };
-                // Only a cast to a constructed type over the parameters: a
-                // cast to T itself is the word it always was.
+                // A cast to a constructed type over the parameters, AND TO T
+                // ITSELF, as `x is T` asks it: left the word it is, `(T)o`
+                // over an object holding a boxed int, T a string, handed the
+                // int back as a string of its bytes (Lowering's CastExpr).
                 Shaped(made, cast, cast.Type, map);
-                return cast.CanonSlot >= 0 || cast.Type.Args.Count > 0 ? Canon(made, cast, cast.Type, arrayToo: false) : made;
+                return Canon(made, cast, cast.Type, arrayToo: false);
             }
 
             case IsExpr isx:

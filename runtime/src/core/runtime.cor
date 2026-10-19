@@ -4904,6 +4904,15 @@ static class Runtime
         throw new InvalidCastException(type, wanted);
     }
 
+    /// A FAILED CAST TO A TYPE ONLY RUN TIME KNOWS -- a shared copy's T --
+    /// both read off their descriptors (Lowering.CastFailedTo), the wanted
+    /// one named as Type.ToString writes it, as the compiler writes a type
+    /// it knows.
+    public static void InvalidCastToType(Type type, Type wanted)
+    {
+        throw new InvalidCastException(type, String.TypeText(wanted.FullName));
+    }
+
     /// A NULL DEREFERENCE, thrown as .NET throws it. The fault handler
     /// (Platform.Fault) makes the faulting thread call this as if from the
     /// instruction that read or wrote the null page, with the frame it was in

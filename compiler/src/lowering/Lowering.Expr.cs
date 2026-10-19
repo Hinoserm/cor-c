@@ -999,6 +999,31 @@ public sealed partial class Lowering
                     return v;
                 }
 
+                // `(T)x` IN A SHARED COPY, T one of its class's parameters: to
+                // what T is for the object at hand (CanonEntry), as `x is T`
+                // asks, null passing, the object's own type the quick answer.
+                // Left unchecked, a boxed int cast to a T of string was read
+                // as one.
+                if (cast.CanonSlot >= 0 && cast.Type is { Args.Count: 0, ArrayRank: 0, PointerDepth: 0 } && to.Prim == Prim.Any
+                    && !to.IsArray && HeldByReference(from))
+                {
+                    Block tCheck = _f.NewBlock("tcastck");
+                    Block tAsk = _f.NewBlock("tcastask");
+                    Block tOk = _f.NewBlock("tcastok");
+                    Block tBad = _f.NewBlock("tcastbad");
+                    _e.Branch(v, tCheck, tOk);
+                    _e.SetBlock(tCheck);
+                    VReg wantedT = CanonEntry(cast);
+                    VReg ownT = _e.Binary(Opcode.Sub, _e.Load(IrTypes.Word, v, 0), _t.DescriptorBytes);
+                    _e.Branch(_e.Binary(Opcode.Eq, R(ownT), R(wantedT), IrType.I32), tOk, tAsk);
+                    _e.SetBlock(tAsk);
+                    _e.Branch(DescribedTest(v, wantedT), tOk, tBad);
+                    _e.SetBlock(tBad);
+                    CastFailedTo(v, wantedT, to);
+                    _e.SetBlock(tOk);
+                    return v;
+                }
+
                 // `(string)o` ASKS TOO: a string has no TypeSymbol to test against,
                 // so the cast took no branch at all, and a boxed int handed to
                 // `(string)o` came back as a string of its bytes -- no
@@ -2601,6 +2626,27 @@ public sealed partial class Lowering
         }
         _e.Emit(Opcode.Trap, null);
         _e.Unreachable();
+    }
+
+    /// <summary>
+    /// The end of a cast to a type only run time knows (a shared copy's T):
+    /// InvalidCastException naming both types, the wanted one read off the
+    /// descriptor that answered the test (Runtime.InvalidCastToType), or as
+    /// CastFailed says it where the runtime has no such routine.
+    /// </summary>
+    private void CastFailedTo(VReg obj, VReg wanted, Type fallback)
+    {
+        if (RuntimeMethod("InvalidCastToType", 2) is MethodSymbol between)
+        {
+            Require(between);
+            VReg vt = _e.Load(IrTypes.Word, obj, 0);
+            VReg descriptor = _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
+            _e.Call(CallLabel(between), IrType.Void, R(descriptor), R(wanted));
+            _e.Emit(Opcode.Trap, null);
+            _e.Unreachable();
+            return;
+        }
+        CastFailed(obj, fallback);
     }
 
     /// <summary>A type as Type.ToString writes it: its full name, a generic's arguments without their assemblies.</summary>

@@ -1,0 +1,75 @@
+// test: a shared generic copy's (T)x and its T t arm ask what T is, as .NET's do
+// expect-exit: 0
+// expect-output:
+// string ok text
+// string null (null)
+// string int InvalidCastException: Unable to cast object of type 'System.Int32' to type 'System.String'.
+// animal cat cat
+// animal string InvalidCastException: Unable to cast object of type 'System.String' to type 'Animal'.
+// comparable string x
+// comparable cat InvalidCastException: Unable to cast object of type 'Cat' to type 'System.IComparable'.
+// arm string T hi
+// arm int other 5
+// arm null null
+// arm when long T hi
+// arm when short T h
+// arm when int other
+// animal arm T cat
+// animal arm string other z
+// is True False False
+//
+// A class over references runs one copy, T the machine word, and reads
+// what T is from the object's type context. `x is T` asked it; `(T)x`
+// did not, so a boxed int put in a Store<string> came back from Get as a
+// string of its bytes, and a switch arm `T t =>` tested nothing and
+// matched every object and null. The cast now asks the context, the
+// object's own type its quick answer, null passing, and fails as .NET's
+// does naming both types; the arm is a guard over `is T`.
+using System;
+using System.Collections.Generic;
+
+class Store<T>
+{
+    private object? held;
+    public void Put(object? o) { held = o; }
+    public T Get() => (T)held!;
+    public string Arm(object? o) => o switch { T t => "T " + t, null => "null", _ => "other " + o };
+    public string ArmWhen(object? o) => o switch { T t when t.ToString()!.Length > 1 => "long T " + t, T t => "T " + t, _ => "other" };
+    public bool Is(object? o) => o is T;
+}
+
+class Animal { public override string ToString() => "animal"; }
+class Cat : Animal { public override string ToString() => "cat"; }
+
+static class Program
+{
+    static void Try(string what, Func<object?> f)
+    {
+        try { Console.WriteLine(what + " " + (f() ?? "(null)")); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    static int Main()
+    {
+        Store<string> s = new();
+        s.Put("text"); Try("string ok", () => s.Get());
+        s.Put(null); Try("string null", () => s.Get());
+        s.Put(42); Try("string int", () => s.Get());
+        Store<Animal> a = new();
+        a.Put(new Cat()); Try("animal cat", () => a.Get());
+        a.Put("no"); Try("animal string", () => a.Get());
+        Store<IComparable> c = new();
+        c.Put("x"); Try("comparable string", () => c.Get());
+        c.Put(new Cat()); Try("comparable cat", () => c.Get());
+        Try("arm string", () => s.Arm("hi"));
+        Try("arm int", () => s.Arm(5));
+        Try("arm null", () => s.Arm(null));
+        Try("arm when", () => s.ArmWhen("hi"));
+        Try("arm when short", () => s.ArmWhen("h"));
+        Try("arm when int", () => s.ArmWhen(55));
+        Try("animal arm", () => a.Arm(new Cat()));
+        Try("animal arm string", () => a.Arm("z"));
+        Try("is", () => s.Is("a") + " " + s.Is(1) + " " + s.Is(null));
+        return 0;
+    }
+}
