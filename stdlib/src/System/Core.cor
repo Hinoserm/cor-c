@@ -18103,22 +18103,20 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
     /// .NET's StringComparer is an IComparer<string> as well as an equality
     /// comparer, which is what makes `names.OrderBy(n => n, StringComparer
     /// .Ordinal)` an ordinary line.
-    /// Null before every string, as .NET's comparers put it.
+    /// Null before every string, as .NET's comparers put it. WHAT .NET's
+    /// ANSWER, not only its sign: Ordinal is String.CompareOrdinal ("a"
+    /// against "abc" is -98, the terminator read against the 'b'), and
+    /// OrdinalIgnoreCase the difference of the first two folded characters
+    /// that differ -- whole characters, a pair's code point, not its units
+    /// (U+E000 against U+1F600 is -71168) -- or of what is left of each.
     public int Compare(string? a, string? b) {
-        if (a == null || b == null) { return String.Compare(a, b); }
-        if (!fold) { return String.Compare(a, b); }
+        if (a == null || b == null || !fold) { return String.CompareOrdinal(a, b); }
         int i = 0, j = 0;
         while (i < a.Length && j < b.Length) {
             int x = String.OrdinalFolded(a, ref i), y = String.OrdinalFolded(b, ref j);
-            if (x == y) { continue; }
-            // As units compare: a pair's leading unit sorts below U+E000.
-            int ux = x > 0xFFFF ? 0xD800 + ((x - 0x10000) >> 10) : x;
-            int uy = y > 0xFFFF ? 0xD800 + ((y - 0x10000) >> 10) : y;
-            if (ux != uy) { return ux < uy ? -1 : 1; }
-            return x < y ? -1 : 1;
+            if (x != y) { return x - y; }
         }
-        int ra = a.Length - i, rb = b.Length - j;
-        return ra == rb ? 0 : ra < rb ? -1 : 1;
+        return (a.Length - i) - (b.Length - j);
     }
 
     // FNV-1a over the code units, which is what makes a table of strings work
