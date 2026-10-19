@@ -186,6 +186,9 @@ public sealed class RegionHints
         return result;
     }
 
+    /// <summary>An array of `count` elements read; the one empty array where none is.</summary>
+    private static T[] Room<T>(int count) => count == 0 ? Array.Empty<T>() : new T[count];
+
     public static RegionHints Read(byte[] bytes)
     {
         using MemoryStream stream = new(bytes, writable: false);
@@ -257,11 +260,11 @@ public sealed class RegionHints
                 if (parameters < 0 || nodes <= parameters || nodes > RegionFunction.NodeLimit || slots < 0 || slots > RegionFunction.NodeLimit)
                     throw new ElfFormatException("Invalid region hint function");
                 // Each a parameter, in order, once.
-                int[] numbers = new int[Count()];
+                int[] numbers = Room<int>(Count());
                 for (int k = 0; k < numbers.Length; k++)
                     if ((numbers[k] = Int()) < 0 || numbers[k] >= parameters || k > 0 && numbers[k] <= numbers[k - 1])
                         throw new ElfFormatException("Invalid region hint function");
-                RegionSite[] sites = new RegionSite[Count()];
+                RegionSite[] sites = Room<RegionSite>(Count());
                 for (int s = 0; s < sites.Length; s++)
                 {
                     byte bits = reader.ReadByte();
@@ -270,9 +273,9 @@ public sealed class RegionHints
                     if (bits > 5 || table < -1 || table >= names.Length) throw new ElfFormatException("Invalid region hint stamp");
                     sites[s] = new RegionSite((bits & 1) != 0, line, table < 0 ? null : names[table], at, (RegionWords)(bits >> 1));
                 }
-                string[] symbols = new string[Count()];
+                string[] symbols = Room<string>(Count());
                 for (int s = 0; s < symbols.Length; s++) symbols[s] = Name();
-                string[] families = new string[Count()];
+                string[] families = Room<string>(Count());
                 for (int s = 0; s < families.Length; s++) families[s] = Name();
                 // In order, each once; Any (every slot) first where it is one.
                 long[] blindSlots = Array.Empty<long>();
@@ -286,7 +289,11 @@ public sealed class RegionHints
                 RegionFunction function = new(name, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, parameters, nodes, slots, sites)
                     { Main = (flags & 8) != 0, CallsThroughMethod = (flags & 16) != 0, NumberParams = numbers, Symbols = symbols, Families = families, BlindSlots = blindSlots };
                 bool Node(int n) => n >= 0 && n < nodes;
-                for (int k = Count(); k > 0; k--)
+                // Each list made the size it is read to be: grown by doubling,
+                // its spare room would be a third of the link's constraints.
+                int constraintCount = Count();
+                function.Constraints.Capacity = constraintCount;
+                for (int k = constraintCount; k > 0; k--)
                 {
                     RegionConstraint c = new((RegionConstraintKind)reader.ReadByte(), Int(), Int(), Var());
                     if (c.Kind is RegionConstraintKind.Load or RegionConstraintKind.Store)
@@ -307,12 +314,14 @@ public sealed class RegionHints
                     if (!valid) throw new ElfFormatException("Invalid region hint constraint");
                     function.Constraints.Add(c);
                 }
-                for (int k = Count(); k > 0; k--)
+                int callCount = Count();
+                function.Calls.Capacity = callCount;
+                for (int k = callCount; k > 0; k--)
                 {
                     int callee = Int();
                     string? named = callee == -1 ? null : callee >= 0 && callee < names.Length ? names[callee] : throw new ElfFormatException("Invalid region hint call");
                     int dest = Int();
-                    int[] arguments = new int[Count()];
+                    int[] arguments = Room<int>(Count());
                     for (int a = 0; a < arguments.Length; a++) arguments[a] = Int();
                     if (dest < -1 || dest >= nodes || arguments.Any(a => a < -1 || a >= nodes)) throw new ElfFormatException("Invalid region hint call");
                     function.Calls.Add(new RegionCall(named, dest, arguments));
@@ -320,7 +329,7 @@ public sealed class RegionHints
                 // Indices each below its bound: a call's, a site's, a node's, a slot's.
                 int[] Ints(int bound)
                 {
-                    int[] values = new int[Count()];
+                    int[] values = Room<int>(Count());
                     for (int k = 0; k < values.Length; k++)
                         if ((values[k] = Int()) < 0 || values[k] >= bound) throw new ElfFormatException("Invalid region hint loop");
                     return values;
@@ -335,7 +344,7 @@ public sealed class RegionHints
                         Ints(nodes), Ints(nodes), Ints(slots)));
                 }
                 // Each loop's parent before it; each site and call in one of them, or none, or past knowing.
-                RegionRepeat[] repeats = new RegionRepeat[Count()];
+                RegionRepeat[] repeats = Room<RegionRepeat>(Count());
                 for (int k = 0; k < repeats.Length; k++)
                 {
                     RegionRepeat r = new(Int(), Int(), Var());
@@ -343,11 +352,11 @@ public sealed class RegionHints
                     repeats[k] = r;
                 }
                 bool InLoop(int at) => at >= RegionFunction.Throwing && at < repeats.Length;
-                long[] siteBytes = new long[sites.Length];
-                int[] siteLoops = new int[sites.Length];
+                long[] siteBytes = Room<long>(sites.Length);
+                int[] siteLoops = Room<int>(sites.Length);
                 for (int s = 0; s < sites.Length; s++)
                     if ((siteBytes[s] = Var()) < 0 || !InLoop(siteLoops[s] = Int())) throw new ElfFormatException("Invalid region hint repeat");
-                int[] callLoops = new int[function.Calls.Count];
+                int[] callLoops = Room<int>(function.Calls.Count);
                 for (int k = 0; k < callLoops.Length; k++)
                     if (!InLoop(callLoops[k] = Int())) throw new ElfFormatException("Invalid region hint repeat");
                 function.Repeats = repeats; function.SiteBytes = siteBytes; function.SiteLoops = siteLoops; function.CallLoops = callLoops;

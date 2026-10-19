@@ -160,7 +160,10 @@ public sealed class HeapRecords
             }
             string[] NameList()
             {
-                string[] list = new string[Count(4)];
+                // Most lists are empty: one array for all of them, not one each.
+                int count = Count(4);
+                if (count == 0) return Array.Empty<string>();
+                string[] list = new string[count];
                 for (int i = 0; i < list.Length; i++) list[i] = Name();
                 return list;
             }
@@ -175,7 +178,9 @@ public sealed class HeapRecords
             {
                 HeapFunction function = new(Name()) { Async = reader.ReadBoolean(), KeepsAwaited = reader.ReadBoolean() };
                 function.LatchSets.AddRange(NameList()); function.LatchBreaks.AddRange(NameList());
-                for (int e = Count(23); e > 0; e--)
+                int events = Count(23);
+                function.Events.Capacity = events;
+                for (int e = events; e > 0; e--)
                 {
                     byte kind = reader.ReadByte();
                     if (kind > (byte)HeapEventKind.Store) throw new ElfFormatException("Invalid heap event");

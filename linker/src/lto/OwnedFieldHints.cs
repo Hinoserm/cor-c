@@ -253,7 +253,14 @@ public sealed class OwnedFieldHints
             if (at < 0 || at >= names.Length) throw new ElfFormatException("Invalid owned-field hint name index");
             return names[at];
         }
-        string[] NameArray() { string[] result = new string[Count(4)]; for (int i = 0; i < result.Length; i++) result[i] = Name(); return result; }
+        string[] NameArray()
+        {
+            int count = Count(4);
+            if (count == 0) return Array.Empty<string>();
+            string[] result = new string[count];
+            for (int i = 0; i < result.Length; i++) result[i] = Name();
+            return result;
+        }
         void NameSet(SortedSet<string> into) { foreach (string name in NameArray()) if (!into.Add(name)) throw new ElfFormatException("Duplicate owned-field hint name"); }
         void Pairs(SortedSet<(string, int)> into)
         {
