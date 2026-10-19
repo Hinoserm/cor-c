@@ -135,24 +135,31 @@ public static class InterruptNotes
         if (handlers.Count == 0) return errors;
         // What each method reaches, once: the allocation and the method that
         // makes it, or null for nothing.
+        // NOTHING FOUND PAST A METHOD STILL BEING WALKED IS NO ANSWER YET
+        // (Binder.AllocatesThrough): kept only once its cycle is closed, so
+        // the answer for one is the same whichever handler asked it first.
         Dictionary<string, (string What, Fact Where)?> known = new(StringComparer.Ordinal);
-        HashSet<string> visiting = new(StringComparer.Ordinal);
-        (string What, Fact Where)? Reaches(Fact f)
+        Dictionary<string, int> visiting = new(StringComparer.Ordinal);
+        (string What, Fact Where)? Reaches(Fact f, ref int low)
         {
             if (known.TryGetValue(f.Name, out var had)) return had;
-            if (!visiting.Add(f.Name)) return null;
+            if (visiting.TryGetValue(f.Name, out int open)) { low = Math.Min(low, open); return null; }
+            int depth = visiting.Count;
+            visiting[f.Name] = depth;
+            int reached = int.MaxValue;
             (string What, Fact Where)? found = f.Allocates is string what ? (what, f) : null;
             if (found is null)
             {
                 foreach (string call in f.Calls)
                 {
                     if (!facts.TryGetValue(call, out Fact? callee)) continue;
-                    (string What, Fact Where)? deeper = Reaches(callee);
+                    (string What, Fact Where)? deeper = Reaches(callee, ref reached);
                     if (deeper.HasValue) { found = deeper; break; }
                 }
             }
             visiting.Remove(f.Name);
-            known[f.Name] = found;
+            if (found.HasValue || reached >= depth) known[f.Name] = found;
+            low = Math.Min(low, reached);
             return found;
         }
         HashSet<string> said = new(StringComparer.Ordinal);
@@ -167,7 +174,8 @@ public static class InterruptNotes
             foreach (string call in handler.Calls)
             {
                 if (!facts.TryGetValue(call, out Fact? callee)) continue;
-                (string What, Fact Where)? found = Reaches(callee);
+                int low = int.MaxValue;
+                (string What, Fact Where)? found = Reaches(callee, ref low);
                 if (!found.HasValue) continue;
                 string inner = ReferenceEquals(found.Value.Where, callee) ? "" : $" (in '{found.Value.Where.Display}', which it reaches)";
                 errors.Add($"'{handler.Display}' is an interrupt handler and must not allocate: '{callee.Display}' {found.Value.What}{inner}");

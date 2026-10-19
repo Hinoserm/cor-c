@@ -1,0 +1,38 @@
+// test: an interrupt handler reaching an allocation through another handler's cycle refused
+// expect-compile-error: 'Second.OnIrq' is an interrupt handler and must not allocate: 'First.B' joins strings
+// A calls B and then D, which allocates; B calls A. Walking First's
+// handler, B met A still being walked, found nothing, and was kept as
+// allocating nothing -- though it reaches D through A -- so Second's
+// handler, which calls B and was checked after, passed. What a method
+// reaches is kept only once nothing above it is still being walked.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+class First : IIrqHandler
+{
+    public static string S = "";
+    public void OnIrq(long n) { A(n); }
+    public static void A(long n) { if (n > 0) B(n - 1); D(n); }
+    public static void B(long n) { if (n > 5) A(n); }
+    public static void D(long n) { if (n > 100) S = "d" + n; }
+}
+
+class Second : IIrqHandler
+{
+    public void OnIrq(long n) { First.B(n); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        new First().OnIrq(1);
+        new Second().OnIrq(1);
+        return 0;
+    }
+}

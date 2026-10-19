@@ -1,0 +1,35 @@
+// test: an interrupt handler calling an override of a sealed class refused
+// expect-compile-error: must not allocate: 'Label.ToString' joins strings
+// On a receiver nothing derives from -- a struct, a sealed class -- the
+// override called is the one that runs, bound as surely as a static
+// method; the check passed by every override as virtual, and an allocation
+// in one a handler called went unsaid.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+sealed class Label
+{
+    public long N;
+    public override string ToString() => "irq " + N;
+}
+
+class Tape : IIrqHandler
+{
+    public string Said = "";
+    public Label L = new Label();
+    public void OnIrq(long n) { Said = L.ToString(); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        new Tape().OnIrq(1);
+        return 0;
+    }
+}

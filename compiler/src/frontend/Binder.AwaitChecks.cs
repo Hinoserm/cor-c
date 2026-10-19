@@ -1039,8 +1039,10 @@ public sealed partial class Binder
             {
                 continue;
             }
-            HashSet<MethodSymbol> visiting = new(ReferenceEqualityComparer.Instance) { m };
-            (Node Site, string What, MethodSymbol Where)? found = AllocatesThrough(callee, bodies, allocates, visiting);
+            Dictionary<MethodSymbol, int> visiting = new(ReferenceEqualityComparer.Instance);
+            visiting[m] = 0;
+            int low = int.MaxValue;
+            (Node Site, string What, MethodSymbol Where)? found = AllocatesThrough(callee, bodies, allocates, visiting, ref low);
             if (found.HasValue && _asyncSafetyReported.Add(call))
             {
                 (Node site, string what, MethodSymbol reached) = found.Value;
@@ -1136,18 +1138,38 @@ public sealed partial class Binder
         return $"{owner}`{ownerArity}.{m.Name}`{d.TypeParams.Count}({string.Join(",", d.Params.Select(p => (p.IsRef || p.IsOut ? "ref " : "") + p.Type))})";
     }
 
-    /// <summary>The first allocation a method makes, itself or in what it calls directly with a body in this unit.</summary>
+    /// <summary>
+    /// The first allocation a method makes, itself or in what it calls
+    /// directly with a body in this unit. `visiting` holds the methods being
+    /// walked, each at its depth; `low` takes the shallowest of them the
+    /// walk met again.
+    /// </summary>
+    //
+    // NOTHING FOUND PAST A METHOD STILL BEING WALKED IS NO ANSWER YET: A
+    // calling B calling A, then D, which allocates -- B met A open, found
+    // nothing, and was kept as allocating nothing, though it reaches D
+    // through A. A handler calling B, checked later, passed, and whether it
+    // did hung on which handler was checked first. Kept only once nothing
+    // above it is open (its own cycle closed with it).
     private (Node Site, string What, MethodSymbol Where)? AllocatesThrough(MethodSymbol m, Dictionary<MethodSymbol, MethodDecl> bodies,
-        Dictionary<MethodSymbol, (Node Site, string What, MethodSymbol Where)?> allocates, HashSet<MethodSymbol> visiting)
+        Dictionary<MethodSymbol, (Node Site, string What, MethodSymbol Where)?> allocates, Dictionary<MethodSymbol, int> visiting, ref int low)
     {
         if (allocates.TryGetValue(m, out var known))
         {
             return known;
         }
-        if (!bodies.TryGetValue(m, out MethodDecl? d) || !visiting.Add(m))
+        if (!bodies.TryGetValue(m, out MethodDecl? d))
         {
             return null;
         }
+        if (visiting.TryGetValue(m, out int open))
+        {
+            low = Math.Min(low, open);
+            return null;
+        }
+        int depth = visiting.Count;
+        visiting[m] = depth;
+        int reached = int.MaxValue;
         (Node Site, string What, MethodSymbol Where)? found = null;
         if (m.Async)
         {
@@ -1172,7 +1194,7 @@ public sealed partial class Binder
             {
                 if (bodies.ContainsKey(callee))
                 {
-                    (Node Site, string What, MethodSymbol Where)? deeper = AllocatesThrough(callee, bodies, allocates, visiting);
+                    (Node Site, string What, MethodSymbol Where)? deeper = AllocatesThrough(callee, bodies, allocates, visiting, ref reached);
                     if (deeper.HasValue)
                     {
                         found = deeper;
@@ -1182,7 +1204,8 @@ public sealed partial class Binder
             }
         }
         visiting.Remove(m);
-        allocates[m] = found;
+        if (found.HasValue || reached >= depth) allocates[m] = found;
+        low = Math.Min(low, reached);
         return found;
     }
 
@@ -1200,6 +1223,14 @@ public sealed partial class Binder
     {
         static bool Direct(MethodSymbol m)
             => m.Static || (!m.Virtual && !m.Abstract && !m.Override && m.Owner.Kind != TypeKind.Interface);
+        // AN OVERRIDE ON A RECEIVER NOTHING DERIVES FROM is the one that
+        // runs: a struct's or a sealed class's own `ToString` called on one
+        // of its values. Every override was passed by as virtual, and an
+        // allocation in one an interrupt handler called went unsaid.
+        bool BoundOn(CallExpr c, MethodSymbol m)
+            => !m.Abstract && (m.Virtual || m.Override) && c.Target is MemberExpr { Target: { } receiver }
+               && _r.ExprType.TryGetValue(receiver, out Type? on) && !on.IsArray && on.Symbol is { } owner && ReferenceEquals(owner, m.Owner)
+               && (owner.Kind == TypeKind.Struct || owner.Decl?.Mods.HasFlag(Mods.Sealed) == true);
         MethodSymbol? Initialiser(TypeSymbol? owner)
             => owner is null || ReferenceEquals(owner, within) ? null
              : owner.FindMethods("StaticInit$").FirstOrDefault(i => i.Static && i.Params.Count == 0);
@@ -1207,7 +1238,7 @@ public sealed partial class Binder
         {
             if (n is CallExpr c)
             {
-                if (_r.Calls.TryGetValue(c, out MethodSymbol? m) && Direct(m) && !_r.Invocations.ContainsKey(c))
+                if (_r.Calls.TryGetValue(c, out MethodSymbol? m) && (Direct(m) || BoundOn(c, m)) && !_r.Invocations.ContainsKey(c))
                 {
                     yield return (c, m);
                     if (m.Static && Initialiser(m.Owner) is { } init) yield return (c, init);
@@ -1275,6 +1306,13 @@ public sealed partial class Binder
                     break;
                 case AssignExpr { Op: BinOp.Add } compound when _r.TypeOf(compound.Target).Prim == Prim.String:
                     yield return (n, "joins strings");
+                    break;
+                // The class library's own allocations, which no `new` names:
+                // a string's characters (Sys.NewChars, behind Concat, Substring,
+                // every number's text) and a block of a size (Sys.Allocate).
+                case CallExpr made when _r.Calls.TryGetValue(made, out MethodSymbol? intrinsic) && intrinsic.Owner.Name == Prelude.TypeName
+                    && intrinsic.Decl?.File == "<prelude>" && intrinsic.Name is "NewChars" or "Allocate":
+                    yield return (n, intrinsic.Name == "NewChars" ? "makes a string" : "allocates a block");
                     break;
                 case CallExpr call when _r.Calls.TryGetValue(call, out MethodSymbol? callee) && callee.Async:
                     yield return (n, $"calls async '{callee.Owner.Name}.{callee.Name}', which makes a state machine");

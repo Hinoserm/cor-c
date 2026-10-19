@@ -1,0 +1,35 @@
+// test: an interrupt handler calling a struct's override refused
+// expect-compile-error: must not allocate: 'Mark.ToString' joins strings
+// On a receiver nothing derives from -- a struct, a sealed class -- the
+// override called is the one that runs, bound as surely as a static
+// method; the check passed by every override as virtual, and an allocation
+// in one a handler called went unsaid.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+struct Mark
+{
+    public long N;
+    public override string ToString() => "mark " + N;
+}
+
+class Drum : IIrqHandler
+{
+    public string Said = "";
+    public Mark M;
+    public void OnIrq(long n) { Said = M.ToString(); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        new Drum().OnIrq(2);
+        return 0;
+    }
+}

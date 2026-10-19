@@ -1,0 +1,36 @@
+// test: an interrupt handler calling the class library's string making refused
+// expect-compile-error: must not allocate: 'String.Concat' makes a string
+// A string's characters are made by Sys.NewChars, behind Concat, Substring
+// and every number's text, which no `new` names: the check counted only
+// `new`, `+` and interpolation, and a handler calling string.Concat passed
+// -- here and in the facts a library unit leaves for the link.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+class Disc : IIrqHandler
+{
+    public string Said = "";
+    public long Count;
+
+    public void OnIrq(long n)
+    {
+        Count++;
+        Said = string.Concat("a", Said);
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Disc d = new Disc();
+        d.OnIrq(14);
+        Console.WriteLine(d.Count);
+        return 0;
+    }
+}
