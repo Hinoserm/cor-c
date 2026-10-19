@@ -4790,7 +4790,10 @@ public sealed partial class Lowering
 
         _e.SetBlock(miss);
         VReg r = Eval(b.Right);
-        if (right.Prim != Prim.String && left.Prim == Prim.String)
+        // MADE TEXT ONLY WHERE THE WHOLE IS: `s ?? o` over a string and an
+        // object is an object (Binder's rule), and the object was made the
+        // string of its ToString -- a boxed 42 came back as "42".
+        if (right.Prim != Prim.String && result.Prim == Prim.String)
         {
             r = Stringify(b.Right, r, right);
         }
