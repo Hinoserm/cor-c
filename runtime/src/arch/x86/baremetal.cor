@@ -202,6 +202,18 @@ static class Platform
         if (end > 0x100000000 - RegionPage) end = 0x100000000 - RegionPage;
 #endif
         long held = LockRegion();
+        // ONCE, OR AGAIN ONLY BEFORE ANYTHING WAS HANDED OUT: the chunks the
+        // first region gave are the collector's, and a second region over
+        // or beside them would hand the same memory out twice, or send the
+        // old chunks to an UnmapHook that never mapped them.
+        if (_limit != 0 && _at != _start)
+        {
+            UnlockRegion(held);
+            string text = "heap: Platform.SetHeap was called again after the heap was used\n";
+            long units = Sys.StringData(text);
+            for (int i = 0; i < text.Length; i++) WriteBytes(2, units + i * 2, 1);
+            Exit(137);
+        }
         _at = (start + RegionPage - 1) & -RegionPage;
         _start = _at;
         _limit = end & -RegionPage;

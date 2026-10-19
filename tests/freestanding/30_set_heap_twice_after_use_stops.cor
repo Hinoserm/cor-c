@@ -1,0 +1,40 @@
+// test: a heap set again after it was used stops the image, and set again before is taken
+// expect-exit: 137
+// expect-output:
+// first 8
+// used 3
+//
+// Platform.SetHeap hands the runtime the memory there is. Called again
+// before anything was allocated, the second region is taken; called again
+// once the heap has handed out chunks, those chunks are the
+// collector's, and a second region over or beside them would hand the same
+// memory out twice: the image stops, as with no heap at all. Above ring 0,
+// as here, run as a process, it stops by the system's exit, where the halt
+// it ended in was a fault.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        long bytes = 1024 * 1024;
+#if TARGET_64BIT
+        const long Mmap = 9;
+#else
+        const long Mmap = 192;
+#endif
+        long a = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
+        long b = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
+        Platform.SetHeap(a, a + bytes);
+        Platform.SetHeap(b, b + bytes);
+        int[] first = new int[8];
+        Host.Line("first " + first.Length);
+        int[] used = new int[3];
+        Host.Line("used " + used.Length);
+        Platform.SetHeap(a, a + bytes);
+        Host.Line("set again");
+        Host.Done(0);
+        return 0;
+    }
+}
