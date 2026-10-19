@@ -1,0 +1,45 @@
+// test: the precise total allocated never goes down, whatever another thread's buffers do
+// expect-exit: 0
+// expect-output:
+// rising True
+//
+// GC.GetTotalAllocatedBytes(true) counts every thread's buffers as they
+// stand, and another thread's counts the whole class list charged to it
+// at its refill, whose unused bytes come off as its classes are retired
+// when it ends. .NET's total never goes down; the runtime keeps the
+// highest it has answered. Threads that make a few objects and end, read
+// before, during and after each.
+using System;
+using System.Threading;
+
+static class Program
+{
+    static object? s_kept;
+
+    static int Main()
+    {
+        bool rising = true;
+        long last = GC.GetTotalAllocatedBytes(true);
+        for (int round = 0; round < 40; round++)
+        {
+            Thread t = new Thread(() =>
+            {
+                // A few objects of each of several sizes: a class list or more charged.
+                object[] few = new object[24];
+                for (int i = 0; i < few.Length; i++) few[i] = (i % 3) switch { 0 => new object(), 1 => new int[i], _ => new long[2 * i] };
+                s_kept = few[round % few.Length];
+            });
+            t.Start();
+            long during = GC.GetTotalAllocatedBytes(true);
+            if (during < last) rising = false;
+            last = during;
+            t.Join();
+            long after = GC.GetTotalAllocatedBytes(true);
+            if (after < last) rising = false;
+            last = after;
+        }
+        Console.WriteLine("rising " + rising);
+        GC.KeepAlive(s_kept);
+        return 0;
+    }
+}

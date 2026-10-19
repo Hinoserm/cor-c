@@ -567,6 +567,8 @@ public static class RegionSolver
         /// </summary>
         private RegionFacts?[]? GraphSteps()
         {
+            // For a report: what the link holds before any region is solved.
+            if (_report is not null) Log($"heap before the regions: {GC.GetTotalMemory(true) >> 20} MB live");
             NewObject(-1, -1, -1, 0);                               // Global
             _siteNumber.Add(-1);
             int count = _functions.Count;

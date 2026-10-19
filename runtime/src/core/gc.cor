@@ -2510,7 +2510,12 @@ static class Gc
     /// they stand: what GC.GetTotalAllocatedBytes(true) answers, with no
     /// collection, as .NET's. THE TOTAL AND THE OTHERS' BUFFERS READ IN ONE
     /// HOLD OF THE LOCK: read in two, a buffer retired between them was in
-    /// neither, and a second answer could be less than the first.
+    /// neither, and a second answer could be less than the first. AND NEVER
+    /// LESS THAN ONE GIVEN BEFORE, as .NET's never is: another thread's
+    /// buffer counts the whole class list charged at its refill, whose
+    /// unused bytes come off when its classes are retired (RetireClasses) --
+    /// the thread ends, or is stopped short -- and the total went down by
+    /// them. The highest answer is kept, under the lock.
     public static long AllocatedPrecisely
     {
         get
@@ -2519,9 +2524,16 @@ static class Gc
             long total = _allocated + GcThreads.OthersInBuffersLocked();
             GcLock.Exit();
             long made = total + InBuffer(Sys.ThreadBlock()) - OwnListBytes();
-            return made > 0 ? made : 0;
+            if (made < 0) made = 0;
+            GcLock.Enter();
+            if (made < _saidPrecisely) made = _saidPrecisely;
+            else _saidPrecisely = made;
+            GcLock.Exit();
+            return made;
         }
     }
+
+    static long _saidPrecisely;
 
     /// What `block`'s current allocation buffer has handed out so far.
     static long InBuffer(long block)

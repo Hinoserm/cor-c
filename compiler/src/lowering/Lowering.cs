@@ -739,6 +739,27 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// NO ARGUMENTS, LAID DOWN IN DATA: a freestanding Main taking them runs
+    /// before anything has given the runtime a heap (Platform.SetHeap), and
+    /// the empty array made for it in the entry stopped the image with "no
+    /// heap" before Main's first line. One array object of no elements, as
+    /// the heap would hold it, which nothing can write and nothing frees
+    /// (StaticArrayData).
+    /// </summary>
+    private string EmptyArgs(Type element)
+    {
+        int stride = ElementStride(element);
+        int w = _t.WordSize;
+        byte[] block = new byte[(_t.ArrayHeaderBytes + w + w - 1) / w * w];
+        WriteWord(block, _t.ArrayCountOffset, 0);
+        const string sym = "sa_entry_args";
+        DataItem item = new(sym, block) { Align = _t.Align64, Exported = false, NoReferences = true };
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
+        _m.Data.Add(item);
+        return sym;
+    }
+
+    /// <summary>
     /// A STATIC ARRAY OF CONSTANTS AS DATA (FieldDecl.StaticData): the array
     /// object laid down exactly as the heap would hold it -- the vtable of its
     /// sequence descriptor, the count, the elements -- in the writable data
@@ -1003,7 +1024,7 @@ public sealed partial class Lowering
 
         if (all is null)
         {
-            return AllocateArray(entry.Decl!, _e.Const(0, IrType.I32), element);
+            return _e.Address(EmptyArgs(element));
         }
 
         Require(all);

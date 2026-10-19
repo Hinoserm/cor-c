@@ -488,8 +488,21 @@ static class Platform
     public static void Revoked()
     {
         if (RevokedHook != 0) Sys.Call(RevokedHook, 0, 0, 0);
+        if (!RingZero()) Sys.Syscall(ExitCall, 1, 0, 0);
         while (true) Sys.Hlt();
     }
+
+    // RING 0 ALONE MAY HALT. A ring-1 service, or a process, that comes to
+    // the end with no hook leaves through its system's exit -- a ring-1
+    // image's Sys.Syscall is its kernel's gate (--ring1-syscalls) -- where
+    // HLT, and an OUT past its IOPL, was a general-protection fault.
+    public static bool RingZero() => (Sys.ReadCodeSegment() & 3) == 0;
+
+#if TARGET_64BIT
+    const long ExitCall = 60;
+#else
+    const long ExitCall = 1;
+#endif
 
     public static long Nanos() => Clock.Now();
 
@@ -915,6 +928,10 @@ static class Platform
         {
             Sys.Call(ExitHook, code, 0, 0);
         }
+        if (!RingZero())
+        {
+            Sys.Syscall(ExitCall, code, 0, 0);
+        }
 
         Sys.PortOut8(Port.DebugExit, code & 0xFF);
         Sys.Cli();
@@ -982,13 +999,22 @@ static class Platform
     /// come in on this processor while the lock is held, and find it held
     /// by the code it interrupted, and wait for ever -- then the word taken
     /// by exchange, a pause a turn, against another processor's holder.
-    /// Answers what Leave is handed.
+    /// WHERE INTERRUPTS STAY ON -- a ring-1 service with IOPL 0, a process --
+    /// the holder may be a thread of this processor that was preempted, and
+    /// the time is offered to it (Yield) every so many turns, where the
+    /// spin burnt whole time slices while it waited to run. Answers what
+    /// Leave is handed.
     public static long HandlerLockEnter(long at)
     {
         long flags = Sys.ReadFlags();
         bool may = (Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3);
         if (may) Sys.Cli();
-        while (Sys.AtomicSwap(at, 1) != 0) Sys.Pause();
+        int turns = 0;
+        while (Sys.AtomicSwap(at, 1) != 0)
+        {
+            Sys.Pause();
+            if (!may && (++turns & 63) == 0) Yield();
+        }
         return may ? flags : 0;
     }
 
@@ -1074,6 +1100,12 @@ static partial class Os
     /// program with no scheduler means.
     public static void Idle()
     {
+        // Above ring 0 the time is offered instead (Platform.RingZero).
+        if (!Platform.RingZero())
+        {
+            Platform.Yield();
+            return;
+        }
         Sys.Hlt();
     }
 
@@ -1133,8 +1165,15 @@ static partial class Os
 /// loaded (65536, every 54.9 ms, in mode 3) -- or from what StartClock
 /// loads, once a kernel wants a tick. Read by latching, and the wraps are
 /// counted by noticing the count went up: which works only if Now() is
-/// called at least once a period, and it is, because the only thing that
-/// waits on this clock is a loop that calls Now().
+/// called at least once a period -- half a period in mode 3, 27.5 ms --
+/// and it is, because the only thing that waits on this clock is a loop
+/// that calls Now().
+///
+/// IN MODE 3 THE COUNT FALLS BY TWO A TICK, from the reload to nothing
+/// twice a period (the square wave's two halves): counted as ticks, the
+/// clock ran twice as fast as time until StartClock, and every timeout
+/// taken before it -- a loader's wait, Task.Delay, Monitor.Wait -- was
+/// half as long. The mode is read back from the 8254 at the first look.
 static class Clock
 {
     const int Control = 0x43;
@@ -1148,6 +1187,7 @@ static class Clock
     static long _tickedTicks;            // PIT ticks of the periods the kernel's interrupts counted
     static long _latest;                 // the last time answered: never less again
     static bool _interrupts;
+    static bool _squareWave;             // channel 0 in mode 3: the count falls by two a tick
 
     /// The 8254 is one device and its latch-then-two-reads one operation:
     /// an interrupt handler or another processor reading between them reads
@@ -1167,6 +1207,16 @@ static class Clock
         int lo = Sys.PortIn8(Channel0);
         int hi = Sys.PortIn8(Channel0);
         return lo | (hi << 8);
+    }
+
+    /// Whether channel 0 runs in mode 3, the square wave (or 7, its other
+    /// spelling): the read-back command latches its status alone, whose bits
+    /// 1 to 3 are the mode.
+    static bool SquareWave()
+    {
+        Sys.PortOut8(Control, 0xE2);    // read back: status, not count, of channel 0
+        int status = Sys.PortIn8(Channel0);
+        return ((status >> 1) & 3) == 3;
     }
 
     /// PIT ticks as nanoseconds, in two steps so that no product overflows:
@@ -1196,6 +1246,7 @@ static class Clock
             if (_last < 0)
             {
                 _last = c;
+                _squareWave = SquareWave();
             }
             // The counter counts DOWN, so what elapsed is last minus now; a
             // negative answer means it reloaded in between, and the period
@@ -1204,6 +1255,11 @@ static class Clock
             if (delta < 0)
             {
                 delta = delta + _reload;
+            }
+            // In mode 3 what fell is two a tick.
+            if (_squareWave)
+            {
+                delta = delta / 2;
             }
             _elapsedTicks = _elapsedTicks + delta;
             _last = c;
@@ -1344,12 +1400,17 @@ static class Native
         }
     }
 
+    // A KERNEL'S SLEEPERS ARE WOKEN BY ITS HOOK (Platform.WakeHook), as the
+    // collector's are: a Monitor's Pulse on one processor otherwise reached a
+    // waiter halted on another only at its next tick.
     public static void Wake(long at, long count)
     {
+        Platform.Wake(at, count);
     }
 
     public static void WakeAll(long at)
     {
+        Platform.Wake(at, int.MaxValue);
     }
 
     public static long CurrentThreadId()
