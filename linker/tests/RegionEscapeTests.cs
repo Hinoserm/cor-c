@@ -53,6 +53,7 @@ public static class RegionEscapeTests
         ("a coarse summary keeps each field of a parameter apart", CoarseByField),
         ("a method called blind runs on objects of its own class", BlindThis),
         ("a receiver's value set answers as a set of every value added, rising", ValueSets),
+        ("a set of sites, as a list or as bits, answers as a sorted set of them", SiteSets),
     };
 
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
@@ -1487,19 +1488,11 @@ public static class RegionEscapeTests
     }
 
     /// <summary>
-    /// A METHOD CALLED BLIND (RegionTypes.TypedThis). ItMoveNext is rooted
-    /// -- some call reads it out of a descriptor -- and calls the slot on
-    /// what its `this` holds at 8, and on its other parameter. Main makes an
-    /// It holding an A at 8 and an Other holding a B at 8. Its `this` the
-    /// unknown object, both calls ran RunA and RunB; an object of its own
-    /// class, an It, the call on `this` at 8 runs RunA alone, and the call on
-    /// the other parameter, anything still, both.
-    /// </summary>
-    /// <summary>
-    /// RegionTypes' sets of values, a list while few and bits from the least
-    /// word held past that: grown upwards and downwards, past the list's
-    /// size, each answering Contains and ToArray (rising) as a sorted set of
-    /// what went in does, and Add whether it was new.
+    /// RegionTypes' sets of values, a list while few and 64-value blocks past
+    /// that: grown upwards and downwards, past the list's size, the unknown
+    /// object's 0 beside values far up the numbering, each answering Contains
+    /// and ToArray (rising) as a sorted set of what went in does, and Add
+    /// whether it was new.
     /// </summary>
     private static void ValueSets()
     {
@@ -1514,7 +1507,7 @@ public static class RegionEscapeTests
             int adds = 1 + Next(round < 100 ? 12 : 300);
             for (int i = 0; i < adds && alike; i++)
             {
-                int v = round % 5 == 0 ? spread - 1 - i * 7 % spread : Next(spread);
+                int v = round % 5 == 0 ? spread - 1 - i * 7 % spread : round % 7 == 0 && i % 3 == 0 ? 0 : Next(spread);
                 if (v < 0) v = -v;
                 alike &= set.Add(v) == want.Add(v);
                 alike &= set.Count == want.Count;
@@ -1529,6 +1522,67 @@ public static class RegionEscapeTests
         Check(alike, "every set alike its sorted set: Add, Count, Contains and the values rising");
     }
 
+    /// <summary>
+    /// The escape engine's sets of sites (SiteSet), a sorted list while that
+    /// is the smaller and a bit a site past it: made from a sorted list, from
+    /// any order and from a walk's words, joined and compared in every pairing
+    /// of the two forms, each answering Has, Count, IsSubsetOf, Union, the
+    /// walk's bits and its sites (rising) as a sorted set of the same does.
+    /// </summary>
+    private static void SiteSets()
+    {
+        uint seed = 777;
+        int Next(int below) { seed = seed * 1103515245 + 12345; return (int)((seed >> 8) % (uint)below); }
+        bool alike = true;
+        for (int round = 0; round < 300 && alike; round++)
+        {
+            int universe = round % 3 == 0 ? 64 : round % 3 == 1 ? 1000 : 76506;
+            SortedSet<int> MakeWant()
+            {
+                SortedSet<int> want = new();
+                int count = Next(round % 2 == 0 ? 20 : universe / 8 + 2);
+                for (int i = 0; i < count; i++) want.Add(Next(universe));
+                return want;
+            }
+            SortedSet<int> a = MakeWant(), b = MakeWant();
+            SiteSet x = round % 4 == 0 ? SiteSet.OfSorted(a.ToArray(), universe) : SiteSet.Of(a.Reverse(), universe);
+            // b by a walk: its words set as SitesOf sets them, touched in any order.
+            ulong[] walk = new ulong[(universe + 63) >> 6];
+            List<int> touched = new();
+            int walked = SiteSet.OfSorted(b.ToArray(), universe).OrIntoWalk(walk, touched);
+            SiteSet y = SiteSet.OfWalk(walk, touched, walked, universe);
+            alike &= walked == b.Count;
+            alike &= x.Count == a.Count && y.Count == b.Count;
+            alike &= x.ToArray().SequenceEqual(a) && y.Sites().SequenceEqual(b);
+            for (int probe = 0; probe < 64 && alike; probe++)
+            {
+                int v = Next(universe);
+                alike &= x.Has(v) == a.Contains(v) && y.Has(v) == b.Contains(v);
+            }
+            alike &= x.IsSubsetOf(y) == a.IsSubsetOf(b) && y.IsSubsetOf(x) == b.IsSubsetOf(a);
+            SortedSet<int> both = new(a);
+            both.UnionWith(b);
+            SiteSet u = SiteSet.Union(x, y, universe);
+            alike &= u.Count == both.Count && u.ToArray().SequenceEqual(both);
+            alike &= x.IsSubsetOf(u) && y.IsSubsetOf(u);
+            ulong[] bits = new ulong[(universe + 63) >> 6];
+            u.OrInto(bits);
+            int set = 0;
+            foreach (ulong w in bits) set += System.Numerics.BitOperations.PopCount(w);
+            alike &= set == both.Count;
+        }
+        Check(alike, "every set alike its sorted set: made three ways, Has, Count, IsSubsetOf, Union and the sites rising");
+    }
+
+    /// <summary>
+    /// A METHOD CALLED BLIND (RegionTypes.TypedThis). ItMoveNext is rooted
+    /// -- some call reads it out of a descriptor -- and calls the slot on
+    /// what its `this` holds at 8, and on its other parameter. Main makes an
+    /// It holding an A at 8 and an Other holding a B at 8. Its `this` the
+    /// unknown object, both calls ran RunA and RunB; an object of its own
+    /// class, an It, the call on `this` at 8 runs RunA alone, and the call on
+    /// the other parameter, anything still, both.
+    /// </summary>
     private static void BlindThis()
     {
         foreach (bool typed in new[] { true, false })

@@ -500,7 +500,7 @@ static class Platform
     public static void Revoked()
     {
         if (RevokedHook != 0) Sys.Call(RevokedHook, 0, 0, 0);
-        if (!RingZero()) Sys.Syscall(ExitCall, 1, 0, 0);
+        if (!RingZero()) Leave(1);
         while (true) Sys.Hlt();
     }
 
@@ -510,11 +510,29 @@ static class Platform
     // HLT, and an OUT past its IOPL, was a general-protection fault.
     public static bool RingZero() => (Sys.ReadCodeSegment() & 3) == 0;
 
+    // EXIT_GROUP, the whole program's end in Linux's numbers, which a ring-1
+    // gate takes too: exit (1, 60) ends the calling thread alone.
 #if TARGET_64BIT
-    const long ExitCall = 60;
+    const long ExitCall = 231;
 #else
-    const long ExitCall = 1;
+    const long ExitCall = 252;
 #endif
+
+    /// The end above ring 0: the system's exit, and should it come back --
+    /// a gate that has no exit -- the time offered for ever. NEVER AN OUT,
+    /// a CLI or a HLT up here: with IOPL 1 the debug port's write was
+    /// allowed and ended a whole QEMU machine for one service, and the halt
+    /// after it a general-protection fault.
+    [DoesNotReturn]
+    private static void Leave(int code)
+    {
+        Sys.Syscall(ExitCall, code, 0, 0);
+        while (true)
+        {
+            Yield();
+            Sys.Pause();
+        }
+    }
 
     public static long Nanos() => Clock.Now();
 
@@ -942,7 +960,7 @@ static class Platform
         }
         if (!RingZero())
         {
-            Sys.Syscall(ExitCall, code, 0, 0);
+            Leave(code);
         }
 
         Sys.PortOut8(Port.DebugExit, code & 0xFF);

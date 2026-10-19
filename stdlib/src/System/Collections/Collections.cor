@@ -39,6 +39,7 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     /// STARTED FROM A SEQUENCE, which .NET pushes in the order it walks: the
     /// last one walked is the first one popped.
     public Stack(IEnumerable<T> collection) : this() {
+        if (collection == null) { throw new ArgumentNullException("collection"); }
         foreach (T each in collection) { Push(each); }
     }
 
@@ -465,6 +466,8 @@ class SortedPairs<K, V> {
     /// Array.BinarySearch's convention, and the reason IndexOfKey can return
     /// the insertion point without a second search.
     public int Search(K key) {
+        // NO NULL KEY, as neither of .NET's takes one, asked or added.
+        if (key == null) { ThrowHelper.KeyNull(); }
         if (!searchedAsArray) { return Bisect(key); }
         try { return Bisect(key); }
         catch (Exception e) { throw new InvalidOperationException("Failed to compare two elements in the array.", e); }
@@ -774,14 +777,14 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     /// the indexer's setter -- that one replaces.
     public void Add(K key, V value) {
         int at = pairs.Search(key);
-        if (at >= 0) { throw new ArgumentException("An item with the same key has already been added."); }
+        if (at >= 0) { throw new ArgumentException("An item with the same key has already been added. Key: " + key, "key"); }
         pairs.Insert(~at, key, value);
     }
 
     public V this[K key] {
         get {
             int at = pairs.Search(key);
-            if (at < 0) { throw new KeyNotFoundException("The given key was not present in the dictionary."); }
+            if (at < 0) { throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary."); }
             return pairs.values[at];
         }
         set {
@@ -897,7 +900,8 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
         int at = pairs.Search(key);
         if (at >= 0) {
             pairs.Touch();
-            throw new ArgumentException("An item with the same key has already been added.");
+            // The pair named, as .NET's tree names the item it refused.
+            throw new ArgumentException("An item with the same key has already been added. Key: " + new KeyValuePair<K, V>(key, value));
         }
         pairs.Insert(~at, key, value);
     }
@@ -905,7 +909,7 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
     public V this[K key] {
         get {
             int at = pairs.Search(key);
-            if (at < 0) { throw new KeyNotFoundException("The given key was not present in the dictionary."); }
+            if (at < 0) { throw new KeyNotFoundException("The given key '" + key + "' was not present in the dictionary."); }
             return pairs.values[at];
         }
         set {

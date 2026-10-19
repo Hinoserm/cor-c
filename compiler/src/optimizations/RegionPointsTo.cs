@@ -3113,8 +3113,11 @@ public sealed class RegionPointsTo : IModulePass
         {
             if (_pts.Count > NodeBudget || _held > HeldBudget) return false;
             if ((_steps & 63) == 0 && OverHeap()) return false;
+            // The heap the host's, so said only where a report was asked:
+            // what a build prints is the same on every host.
             if (++_steps % 500_000 == 0)
-                Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting, {_held} held, {_edgeCount} edges, {_watcherCount} watchers, heap {GC.GetTotalMemory(false) >> 20} MB");
+                Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting, {_held} held, {_edgeCount} edges, {_watcherCount} watchers"
+                    + (Report is not null ? $", heap {GC.GetTotalMemory(false) >> 20} MB" : ""));
             if (_edgeCount >= _nextMerge) MergeCycles();
             // A node merged into another since it was queued: its delta went too.
             if (_delta[node] is not { } delta) continue;

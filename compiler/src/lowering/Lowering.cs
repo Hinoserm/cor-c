@@ -753,6 +753,10 @@ public sealed partial class Lowering
         byte[] block = new byte[(_t.ArrayHeaderBytes + w + w - 1) / w * w];
         WriteWord(block, _t.ArrayCountOffset, 0);
         const string sym = "sa_entry_args";
+        // ONCE AN OBJECT: the C library's main and the entry each run Main's
+        // call (EmitRunMain), and a second item of the name was a duplicate
+        // symbol the writer refused.
+        if (_m.Data.Any(d => d.Name == sym)) return sym;
         DataItem item = new(sym, block) { Align = _t.Align64, Exported = false, NoReferences = true };
         item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
         _m.Data.Add(item);

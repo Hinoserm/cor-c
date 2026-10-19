@@ -772,28 +772,32 @@ public sealed class RegionTypes
 }
 
 /// <summary>
-/// WHAT A NODE HOLDS: a few values as a sorted list, and past that as bits
-/// from the word of the least it holds to the word of the greatest. A value
-/// is an object shifted left one with its address-into bit
-/// (RegionTypes.ObjectOf), so a whole program's few tens of thousands of
-/// objects are a few kilobytes at most, where a hash set of ints took some
-/// ninety bytes a value: the compiler's own link held fifty million of them
-/// in four and a half gigabytes, and was not a tenth done.
+/// WHAT A NODE HOLDS: a few values as a sorted list, and past that as the
+/// 64-value blocks it has any of, by their place, rising. A value is an
+/// object shifted left one with its address-into bit (RegionTypes.ObjectOf),
+/// so a whole program's few tens of thousands of objects are a few
+/// kilobytes at most, where a hash set of ints took some ninety bytes a
+/// value: the compiler's own link held fifty million of them in four and a
+/// half gigabytes, and was not a tenth done.
 ///
-/// NOT FROM BIT ZERO, AND NOT AS BITS AT ALL WHILE FEW: one value high in
-/// the numbering was a bitmap of every value below it, and most nodes hold
-/// one or two -- the compiler's own link, natively, ran out of memory on
-/// them. Either way the values are read out rising, as they were, so the
-/// solve walks them in the same order.
+/// NOT FROM BIT ZERO, NOR FROM THE LEAST VALUE HELD: one value high in the
+/// numbering was a bitmap of every value below it, and the unknown object
+/// is value 0 -- held beside a few late objects, by many nodes, a window
+/// from the least word to the greatest was most of the numbering again.
+/// A block is twelve bytes and holds at least one value, so what the sets
+/// hold is bounded by the values carried, which the solve counts against
+/// its budget the same on every host. Either way the values are read out
+/// rising, as they were, so the solve walks them in the same order.
 /// </summary>
 internal sealed class ValueSet : IEnumerable<int>
 {
     private const int SmallMost = 8;
-    // While few: the values rising. Past SmallMost: null, and the bits.
+    // While few: the values rising. Past SmallMost: null, and the blocks.
     private int[]? _small = Array.Empty<int>();
-    private ulong[] _words = Array.Empty<ulong>();
-    // The word the bits begin at.
-    private int _base;
+    // The blocks held, rising by their place (a value's word), and their bits.
+    private int[] _keys = Array.Empty<int>();
+    private ulong[] _bits = Array.Empty<ulong>();
+    private int _blocks;
     public int Count { get; private set; }
 
     public bool Add(int value)
@@ -812,37 +816,43 @@ internal sealed class ValueSet : IEnumerable<int>
                 Count++;
                 return true;
             }
-            // As bits from here on: the list's values, then this one.
+            // As blocks from here on: the list's values, then this one.
             _small = null;
             int count = Count;
             Count = 0;
+            _keys = new int[4];
+            _bits = new ulong[4];
             for (int i = 0; i < count; i++) SetBit(small[i]);
         }
         return SetBit(value);
     }
 
+    private int Find(int key) => Array.BinarySearch(_keys, 0, _blocks, key);
+
     private bool SetBit(int value)
     {
-        int word = value >> 6;
-        if (_words.Length == 0)
-        {
-            _base = word;
-            _words = new ulong[4];
-        }
-        else if (word < _base)
-        {
-            // Grown downwards: the words held moved up past the new ones.
-            int more = Math.Max(_base - word, Math.Min(_words.Length, _base));
-            ulong[] grown = new ulong[_words.Length + more];
-            Array.Copy(_words, 0, grown, more, _words.Length);
-            _words = grown;
-            _base = _base - more;
-        }
-        int at = word - _base;
-        if (at >= _words.Length) Array.Resize(ref _words, Math.Max(at + 1, Math.Min(_words.Length * 2, at + 64)));
+        int key = value >> 6;
         ulong bit = 1UL << (value & 63);
-        if ((_words[at] & bit) != 0) return false;
-        _words[at] |= bit;
+        // The last block first: most values come rising.
+        int at = _blocks > 0 && _keys[_blocks - 1] == key ? _blocks - 1 : _blocks > 0 && _keys[_blocks - 1] < key ? ~_blocks : Find(key);
+        if (at >= 0)
+        {
+            if ((_bits[at] & bit) != 0) return false;
+            _bits[at] |= bit;
+            Count++;
+            return true;
+        }
+        at = ~at;
+        if (_blocks == _keys.Length)
+        {
+            Array.Resize(ref _keys, _keys.Length * 2);
+            Array.Resize(ref _bits, _bits.Length * 2);
+        }
+        Array.Copy(_keys, at, _keys, at + 1, _blocks - at);
+        Array.Copy(_bits, at, _bits, at + 1, _blocks - at);
+        _keys[at] = key;
+        _bits[at] = bit;
+        _blocks++;
         Count++;
         return true;
     }
@@ -850,8 +860,8 @@ internal sealed class ValueSet : IEnumerable<int>
     public bool Contains(int value)
     {
         if (_small is { } small) return Array.BinarySearch(small, 0, Count, value) >= 0;
-        int at = (value >> 6) - _base;
-        return at >= 0 && at < _words.Length && (_words[at] & 1UL << (value & 63)) != 0;
+        int at = Find(value >> 6);
+        return at >= 0 && (_bits[at] & 1UL << (value & 63)) != 0;
     }
 
     public int[] ToArray()
@@ -863,9 +873,9 @@ internal sealed class ValueSet : IEnumerable<int>
             return values;
         }
         int n = 0;
-        for (int w = 0; w < _words.Length; w++)
-            for (ulong bits = _words[w]; bits != 0; bits &= bits - 1)
-                values[n++] = ((_base + w) << 6) | System.Numerics.BitOperations.TrailingZeroCount(bits);
+        for (int b = 0; b < _blocks; b++)
+            for (ulong bits = _bits[b]; bits != 0; bits &= bits - 1)
+                values[n++] = (_keys[b] << 6) | System.Numerics.BitOperations.TrailingZeroCount(bits);
         return values;
     }
 

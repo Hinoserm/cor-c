@@ -138,15 +138,21 @@ public static class InterruptNotes
         // NOTHING FOUND PAST A METHOD STILL BEING WALKED IS NO ANSWER YET
         // (Binder.AllocatesThrough): kept only once its cycle is closed, so
         // the answer for one is the same whichever handler asked it first.
+        // A METHOD STAYS OPEN UNTIL ITS CYCLE CLOSES, as Tarjan's walk keeps
+        // it: let go with no answer, every other way into it walked it again,
+        // and a dense cycle that allocates nothing was walked once a path --
+        // exponentially many times.
         Dictionary<string, (string What, Fact Where)?> known = new(StringComparer.Ordinal);
-        Dictionary<string, int> visiting = new(StringComparer.Ordinal);
+        Dictionary<string, int> open = new(StringComparer.Ordinal);
+        List<string> stack = new();
+        int met = 0;
         (string What, Fact Where)? Reaches(Fact f, ref int low)
         {
             if (known.TryGetValue(f.Name, out var had)) return had;
-            if (visiting.TryGetValue(f.Name, out int open)) { low = Math.Min(low, open); return null; }
-            int depth = visiting.Count;
-            visiting[f.Name] = depth;
-            int reached = int.MaxValue;
+            if (open.TryGetValue(f.Name, out int number)) { low = Math.Min(low, number); return null; }
+            int mine = met++, at = stack.Count, reached = mine;
+            open[f.Name] = mine;
+            stack.Add(f.Name);
             (string What, Fact Where)? found = f.Allocates is string what ? (what, f) : null;
             if (found is null)
             {
@@ -157,8 +163,19 @@ public static class InterruptNotes
                     if (deeper.HasValue) { found = deeper; break; }
                 }
             }
-            visiting.Remove(f.Name);
-            if (found.HasValue || reached >= depth) known[f.Name] = found;
+            // An allocation found is this one's answer; the methods still open
+            // above it reach it too, and are let go to find their own. A cycle
+            // closed here with none is every member's answer.
+            if (found.HasValue || reached == mine)
+            {
+                if (found.HasValue) known[f.Name] = found;
+                for (int i = at; i < stack.Count; i++)
+                {
+                    open.Remove(stack[i]);
+                    if (!found.HasValue) known[stack[i]] = null;
+                }
+                stack.RemoveRange(at, stack.Count - at);
+            }
             low = Math.Min(low, reached);
             return found;
         }

@@ -1033,16 +1033,20 @@ public sealed partial class Binder
                 ? $"'{name}' is an interrupt handler and cannot await: it runs with interrupts off on the interrupt stack (complete a task and let its continuation run, instead)"
                 : $"'{name}' is an interrupt handler and must not allocate: here it {what}");
         }
+        // WHAT FINDS NOTHING WHILE THIS HANDLER IS LEFT OUT -- the walk's root,
+        // open at 0 and never walked -- reaching it again: so for the rest of
+        // this handler's check, and no other's (AllocatesThrough).
+        HashSet<MethodSymbol> clean = new(ReferenceEqualityComparer.Instance);
         foreach ((Node call, MethodSymbol callee) in DirectCalls(d.Body!, m.Owner))
         {
             if (!bodies.ContainsKey(callee) || ReferenceEquals(callee, m))
             {
                 continue;
             }
-            Dictionary<MethodSymbol, int> visiting = new(ReferenceEqualityComparer.Instance);
-            visiting[m] = 0;
+            HandlerWalk walk = new(m);
             int low = int.MaxValue;
-            (Node Site, string What, MethodSymbol Where)? found = AllocatesThrough(callee, bodies, allocates, visiting, ref low);
+            (Node Site, string What, MethodSymbol Where)? found = AllocatesThrough(callee, bodies, allocates, walk, clean, ref low);
+            foreach (MethodSymbol open in walk.Stack) clean.Add(open);
             if (found.HasValue && _asyncSafetyReported.Add(call))
             {
                 (Node site, string what, MethodSymbol reached) = found.Value;
@@ -1139,20 +1143,35 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// One handler's walk (AllocatesThrough): the methods open in it, each by
+    /// the number it was met at -- the handler 0, never walked -- and those
+    /// still open, in the order they were met.
+    /// </summary>
+    private sealed class HandlerWalk
+    {
+        public readonly Dictionary<MethodSymbol, int> Open = new(ReferenceEqualityComparer.Instance);
+        public readonly List<MethodSymbol> Stack = new();
+        public int Met = 1;
+        public HandlerWalk(MethodSymbol handler) { Open[handler] = 0; }
+    }
+
+    /// <summary>
     /// The first allocation a method makes, itself or in what it calls
-    /// directly with a body in this unit. `visiting` holds the methods being
-    /// walked, each at its depth; `low` takes the shallowest of them the
-    /// walk met again.
+    /// directly with a body in this unit. `walk` holds the methods open, each
+    /// by its number; `low` takes the least of them the walk met again.
+    /// `clean`, what found nothing but by the handler.
     /// </summary>
     //
     // NOTHING FOUND PAST A METHOD STILL BEING WALKED IS NO ANSWER YET: A
     // calling B calling A, then D, which allocates -- B met A open, found
     // nothing, and was kept as allocating nothing, though it reaches D
     // through A. A handler calling B, checked later, passed, and whether it
-    // did hung on which handler was checked first. Kept only once nothing
-    // above it is open (its own cycle closed with it).
+    // did hung on which handler was checked first. Kept only once its own
+    // cycle is closed. AND A METHOD STAYS OPEN UNTIL THEN, as Tarjan's walk
+    // keeps it: let go with no answer, every other way into it walked it
+    // again, and a dense cycle allocating nothing was walked once a path.
     private (Node Site, string What, MethodSymbol Where)? AllocatesThrough(MethodSymbol m, Dictionary<MethodSymbol, MethodDecl> bodies,
-        Dictionary<MethodSymbol, (Node Site, string What, MethodSymbol Where)?> allocates, Dictionary<MethodSymbol, int> visiting, ref int low)
+        Dictionary<MethodSymbol, (Node Site, string What, MethodSymbol Where)?> allocates, HandlerWalk walk, HashSet<MethodSymbol> clean, ref int low)
     {
         if (allocates.TryGetValue(m, out var known))
         {
@@ -1162,14 +1181,20 @@ public sealed partial class Binder
         {
             return null;
         }
-        if (visiting.TryGetValue(m, out int open))
+        if (walk.Open.TryGetValue(m, out int open))
         {
             low = Math.Min(low, open);
             return null;
         }
-        int depth = visiting.Count;
-        visiting[m] = depth;
-        int reached = int.MaxValue;
+        // Nothing but by the handler, which is open at 0.
+        if (clean.Contains(m))
+        {
+            low = 0;
+            return null;
+        }
+        int mine = walk.Met++, at = walk.Stack.Count, reached = mine;
+        walk.Open[m] = mine;
+        walk.Stack.Add(m);
         (Node Site, string What, MethodSymbol Where)? found = null;
         if (m.Async)
         {
@@ -1194,7 +1219,7 @@ public sealed partial class Binder
             {
                 if (bodies.ContainsKey(callee))
                 {
-                    (Node Site, string What, MethodSymbol Where)? deeper = AllocatesThrough(callee, bodies, allocates, visiting, ref reached);
+                    (Node Site, string What, MethodSymbol Where)? deeper = AllocatesThrough(callee, bodies, allocates, walk, clean, ref reached);
                     if (deeper.HasValue)
                     {
                         found = deeper;
@@ -1203,8 +1228,19 @@ public sealed partial class Binder
                 }
             }
         }
-        visiting.Remove(m);
-        if (found.HasValue || reached >= depth) allocates[m] = found;
+        // An allocation found is this one's answer; the methods still open
+        // above it reach it too, and are let go to find their own. A cycle
+        // closed here with none is every member's answer.
+        if (found.HasValue || reached == mine)
+        {
+            if (found.HasValue) allocates[m] = found;
+            for (int i = at; i < walk.Stack.Count; i++)
+            {
+                walk.Open.Remove(walk.Stack[i]);
+                if (!found.HasValue) allocates[walk.Stack[i]] = null;
+            }
+            walk.Stack.RemoveRange(at, walk.Stack.Count - at);
+        }
         low = Math.Min(low, reached);
         return found;
     }
@@ -1226,11 +1262,27 @@ public sealed partial class Binder
         // AN OVERRIDE ON A RECEIVER NOTHING DERIVES FROM is the one that
         // runs: a struct's or a sealed class's own `ToString` called on one
         // of its values. Every override was passed by as virtual, and an
-        // allocation in one an interrupt handler called went unsaid.
-        bool BoundOn(CallExpr c, MethodSymbol m)
-            => !m.Abstract && (m.Virtual || m.Override) && c.Target is MemberExpr { Target: { } receiver }
-               && _r.ExprType.TryGetValue(receiver, out Type? on) && !on.IsArray && on.Symbol is { } owner && ReferenceEquals(owner, m.Owner)
-               && (owner.Kind == TypeKind.Struct || owner.Decl?.Mods.HasFlag(Mods.Sealed) == true);
+        // allocation in one an interrupt handler called went unsaid. THE
+        // NEAREST IN ITS CHAIN, inherited too: a sealed leaf of a class that
+        // overrides runs the class's, and the call names that or the one it
+        // overrides. Overloads told apart by their parameters' count, as the
+        // slot is; an abstract one found is no body, and nothing is taken.
+        MethodSymbol? BoundOn(CallExpr c, MethodSymbol m)
+        {
+            if (!(m.Virtual || m.Override) || c.Target is not MemberExpr { Target: { } receiver }
+                || !_r.ExprType.TryGetValue(receiver, out Type? on) || on.IsArray || on.Symbol is not { } owner
+                || !(owner.Kind == TypeKind.Struct || owner.Decl?.Mods.HasFlag(Mods.Sealed) == true))
+            {
+                return null;
+            }
+            for (TypeSymbol? t = owner; t is not null; t = t.Base)
+            {
+                if (ReferenceEquals(t, m.Owner)) return m.Abstract ? null : m;
+                if (t.Methods.FirstOrDefault(x => x.Override && x.Name == m.Name && x.Params.Count == m.Params.Count) is { } nearer)
+                    return nearer.Abstract ? null : nearer;
+            }
+            return null;
+        }
         MethodSymbol? Initialiser(TypeSymbol? owner)
             => owner is null || ReferenceEquals(owner, within) ? null
              : owner.FindMethods("StaticInit$").FirstOrDefault(i => i.Static && i.Params.Count == 0);
@@ -1238,10 +1290,11 @@ public sealed partial class Binder
         {
             if (n is CallExpr c)
             {
-                if (_r.Calls.TryGetValue(c, out MethodSymbol? m) && (Direct(m) || BoundOn(c, m)) && !_r.Invocations.ContainsKey(c))
+                if (_r.Calls.TryGetValue(c, out MethodSymbol? m) && !_r.Invocations.ContainsKey(c)
+                    && (Direct(m) ? m : BoundOn(c, m)) is { } runs)
                 {
-                    yield return (c, m);
-                    if (m.Static && Initialiser(m.Owner) is { } init) yield return (c, init);
+                    yield return (c, runs);
+                    if (runs.Static && Initialiser(runs.Owner) is { } init) yield return (c, init);
                 }
                 continue;
             }

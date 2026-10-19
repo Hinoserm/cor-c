@@ -1,0 +1,48 @@
+// test: a ?? whose right is an object is an object, as C# types it
+// expect-exit: 0
+// expect-output:
+// object 42
+// object t
+// v=42
+// object 42
+// object 7
+// object x
+// string y
+// int 3
+// Int32
+//
+// C#'s ?? takes the left's type when the right converts to it implicitly,
+// and object converts implicitly to object alone. The machine word's rule
+// here takes an object anywhere, so s ?? o over a string and an object was
+// typed string -- a boxed int handed to Kind(string) and its GetType a
+// String -- and n ?? o over an int? was an int, the reference read as the
+// number. Both are object.
+using System;
+
+static class Program
+{
+    static string Kind(object? x) => "object " + x;
+    static string Kind(string? x) => "string " + x;
+    static string Kind(int x) => "int " + x;
+
+    static int Main()
+    {
+        string? s = null;
+        string? t = "t";
+        object o = 42;
+        int? n = null;
+        int? m = 7;
+        Console.WriteLine(Kind(s ?? o));
+        Console.WriteLine(Kind(t ?? o));
+        Console.WriteLine("v=" + (s ?? o));
+        Console.WriteLine(Kind(n ?? o));
+        Console.WriteLine(Kind(m ?? o));
+        object? p = null;
+        Console.WriteLine(Kind(p ?? "x"));
+        Console.WriteLine(Kind(s ?? "y"));
+        Console.WriteLine(Kind(n ?? 3));
+        var both = s ?? o;
+        Console.WriteLine(both.GetType().Name);
+        return 0;
+    }
+}

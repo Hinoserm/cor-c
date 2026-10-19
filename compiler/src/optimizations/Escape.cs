@@ -5686,9 +5686,24 @@ continue;
                 continue;
             }
             // BEFORE THE CALL WHEN THE CALL CANNOT BE READING IT (see below).
-            bool readsPrevious = false;
-            foreach (Operand o in call.Operands)
-                if (o is RegOperand arg && flow.Derived.Contains(arg.Reg)) readsPrevious = true;
+            // AND NOT AT ALL WHEN IT MAY KEEP WHAT IT READS: `first =
+            // level.Fresh(first)` hands last lap's result to the call that
+            // makes this lap's, which stores it in the object it returns --
+            // given back after the call, the old one was freed under the new
+            // one's field, and the next walk of the chain read freed memory.
+            bool readsPrevious = false, keepsPrevious = false;
+            for (int a = 0; a < call.Operands.Count; a++)
+            {
+                if (call.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
+                readsPrevious = true;
+                if (KeepsArgument(call, a, summaries)) keepsPrevious = true;
+            }
+            if (keepsPrevious)
+            {
+                if (tracing) Console.Error.WriteLine($"fresh {f.Name}: {call} keeps its own last result");
+                _liveAtMaking.Add(call);
+                continue;
+            }
             chosen.Add((b, call, readsPrevious, flow.Derived));
         }
         UseIndex? uses = chosen.Count == 0 ? null : AnalysisCache.Kept(f, AnalysisCache.UseIndex, MakeUseIndex);
@@ -5796,6 +5811,26 @@ continue;
                 foreach (VReg source in sources)
                     if (used.Add(source)) work.Push(source);
         return used;
+    }
+
+    /// <summary>
+    /// Whether a call may keep what it is handed as operand `a` past its
+    /// return -- in the object it hands back (Held), anywhere else, or as
+    /// that object itself (ReturnsFirst): a callee with no summary keeps all,
+    /// and a virtual call keeps what any override it reaches keeps.
+    /// </summary>
+    private static bool KeepsArgument(Instr call, int a, Dictionary<string, bool[]> summaries)
+    {
+        static bool Keeps(Dictionary<string, bool[]> summaries, string callee, int p)
+            => p == 0 && ReturnsFirst(callee) || !summaries.TryGetValue(callee, out bool[]? summary) || p >= summary.Length || summary[p];
+        if (call.Op == Opcode.Call) return call.Callee is not { } callee || Keeps(summaries, callee, a);
+        if (call.Op == Opcode.CallIndirect)
+        {
+            // Operand 0 is the method; the arguments follow.
+            return a == 0 || _indirect is null || !_indirect.TryGetValue(call, out string[]? targets) || targets.Length == 0
+                || targets.Any(t => Keeps(summaries, t, a - 1));
+        }
+        return true;
     }
 
     private bool OwnFreshResult(Function f, Block b, Instr call, bool readsPrevious, bool repeats = true)

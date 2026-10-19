@@ -83,8 +83,11 @@ internal static class PipelineAnalyses
             h = h * 31 + id;
             // Whether it is a landing pad, as a step of its own: added to the
             // serial, a pad's print was the next block's, serials being
-            // consecutive.
-            g = (g * 31 + id) * 2 + (b.IsLandingPad ? 1 : 0);
+            // consecutive. AN ODD STEP, as every other is: doubled, each
+            // block shifted the print's bits up one, and a block sixty-four
+            // from the end was gone from it -- a branch of an early block
+            // retargeted in a long function kept a stale graph.
+            g = (g * 31 + id) * 3 + (b.IsLandingPad ? 1 : 0);
             List<Instr> instrs = b.Instrs;
             int count = instrs.Count;
             for (int k = 0; k < count; k++)

@@ -11570,9 +11570,16 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     /// Null is the default order, as .NET has it.
     public void Sort(IComparer<T>? by) { SortRange(0, count, by ?? Comparer<T>.Default); }
 
-    public void Sort(Comparison<T> by) { SortRange(0, count, new ComparisonComparer<T>(by)); }
+    public void Sort(Comparison<T> by) {
+        if (by == null) { throw new ArgumentNullException("comparison"); }
+        SortRange(0, count, new ComparisonComparer<T>(by));
+    }
 
-    public void Sort(int index, int howMany, IComparer<T> by) { SortRange(index, howMany, by); }
+    /// A run of it, checked as .NET checks one; null is the default order.
+    public void Sort(int index, int howMany, IComparer<T>? by) {
+        CheckRange(index, howMany);
+        SortRange(index, howMany, by ?? Comparer<T>.Default);
+    }
 
     /// .NET'S INTROSPECTIVE SORT, WRITTEN HERE rather than called in Sorting,
     /// and not by preference: List<T> is compiled ONCE over the machine word,
@@ -11583,8 +11590,9 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     /// Sorting.Introspective, and this is the same algorithm step for step:
     /// not stable, as .NET's is not, so equal elements come out where .NET
     /// puts them.
+    // A CHANGE ONCE SORTED, as .NET counts it: a sort its comparer stopped
+    // leaves the list's enumerators running.
     private void SortRange(int from, int howMany, IComparer<T> by) {
-        version = version + 1;
         if (howMany > 1) {
             int log = 0;
             for (int n = howMany; n > 1; n = n >> 1) { log = log + 1; }
@@ -11592,6 +11600,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
             try { IntroSortRange(from, howMany, 2 * (log + 1), by); }
             catch (Exception e) { throw Sorting.Failed(e, by); }
         }
+        version = version + 1;
     }
 
     private void IntroSortRange(int lo, int size, int depthLimit, IComparer<T> by) {
@@ -11918,6 +11927,7 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     /// A collection's count is the room, as .NET copies one into an array of
     /// its size; anything else grows as Enqueue grows it.
     public Queue(IEnumerable<T> collection) : this() {
+        if (collection == null) { throw new ArgumentNullException("collection"); }
         if (collection is ICollection<T> sized) { items = new T[sized.Count]; }
         foreach (T item in collection) { Enqueue(item); }
     }
@@ -12270,7 +12280,10 @@ interface IOrderedEnumerable<T> : IEnumerable<T> {
     IOrderedEnumerable<T> CreateOrderedEnumerable<K>(Func<T, K> keySelector, IComparer<K>? comparer, bool descending);
 }
 
-class Grouping<K, T> : IGrouping<K, T>, IReadOnlyList<T>, IEnumerable<T> {
+/// A GROUP IS A READ-ONLY LIST, as .NET's Grouping is an IList: Count()
+/// reads its count and `g is IList<T>` holds, where only a read-only list's
+/// members were here and every count walked the group.
+class Grouping<K, T> : IGrouping<K, T>, IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -12289,6 +12302,19 @@ class Grouping<K, T> : IGrouping<K, T>, IReadOnlyList<T>, IEnumerable<T> {
     internal void Add(T value) { items.Add(value); }
 
     public IEnumerator<T> GetEnumerator() { return new ListEnumerator<T>(items); }
+
+    // ---- the list's reading half; its writing half refused, as .NET's ----
+    static NotSupportedException ReadOnly() { return new NotSupportedException("Collection is read-only."); }
+    bool ICollection<T>.IsReadOnly => true;
+    T IList<T>.this[int index] { get { return items[index]; } set { throw ReadOnly(); } }
+    int IList<T>.IndexOf(T item) { return items.IndexOf(item); }
+    bool ICollection<T>.Contains(T item) { return items.Contains(item); }
+    void ICollection<T>.CopyTo(T[] array, int arrayIndex) { items.CopyTo(array, arrayIndex); }
+    void ICollection<T>.Add(T item) { throw ReadOnly(); }
+    void ICollection<T>.Clear() { throw ReadOnly(); }
+    bool ICollection<T>.Remove(T item) { throw ReadOnly(); }
+    void IList<T>.Insert(int index, T item) { throw ReadOnly(); }
+    void IList<T>.RemoveAt(int index) { throw ReadOnly(); }
 }
 
 /// THE WHOLE GROUPING, KEPT: what ToLookup makes, and what GroupBy walks.
@@ -13454,8 +13480,25 @@ static class Enumerable {
 
     public static bool Any<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
-        if (source is IReadOnlyCollection<T> collection) { return collection.Count != 0; }
+        if (Sized(source) is int count) { return count != 0; }
+        // An ordered sequence over a collection is answered by its count, as
+        // .NET's is: nothing sorted, no key asked for (Count).
+        IEnumerable<T> counted = source;
+        while (counted.GetType() == typeof(OrderedSequence<T>)) { counted = ((OrderedSequence<T>)counted).Source; }
+        if (!ReferenceEquals(counted, source) && Sized(counted) is int sized) { return sized != 0; }
         using (IEnumerator<T> walk = source.GetEnumerator()) { return walk.MoveNext(); }
+    }
+
+    /// A SEQUENCE'S COUNT WHERE .NET READS ONE without walking it: an
+    /// ICollection<T>'s, and a Queue's or a Stack's, which are .NET's
+    /// non-generic ICollection and this library's read-only collections.
+    /// Any other read-only collection is walked, as .NET walks one: its
+    /// Count is the type's own to say, and a user's may do anything.
+    private static int? Sized<T>(IEnumerable<T> source) {
+        if (source is ICollection<T> collection) { return collection.Count; }
+        if (source is Queue<T> queue) { return queue.Count; }
+        if (source is Stack<T> stack) { return stack.Count; }
+        return null;
     }
 
     public static bool Any<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
@@ -13518,16 +13561,18 @@ static class Enumerable {
 
     public static int Count<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
-        if (source is IReadOnlyCollection<T> collection) { return collection.Count; }
+        if (Sized(source) is int count) { return count; }
         // AN ORDERED SEQUENCE IS COUNTED BY ITS SOURCE, as .NET's counts it:
         // nothing is sorted and no key is asked for. Its source counted here,
         // not by a call of this one: a Count that called itself was a cycle,
         // and every sequence any Count was asked of was taken to escape.
-        IEnumerable<T> counted = source.GetType() == typeof(OrderedSequence<T>) ? ((OrderedSequence<T>)source).Source : source;
-        if (!ReferenceEquals(counted, source) && counted is IReadOnlyCollection<T> sized) { return sized.Count; }
-        int count = 0;
-        using (IEnumerator<T> walk = counted.GetEnumerator()) { while (walk.MoveNext()) { count = checked(count + 1); } }
-        return count;
+        // A CHAIN OF THEM to the first: OrderBy's of a ThenBy's sorts none.
+        IEnumerable<T> counted = source;
+        while (counted.GetType() == typeof(OrderedSequence<T>)) { counted = ((OrderedSequence<T>)counted).Source; }
+        if (!ReferenceEquals(counted, source) && Sized(counted) is int sized) { return sized; }
+        int walked = 0;
+        using (IEnumerator<T> walk = counted.GetEnumerator()) { while (walk.MoveNext()) { walked = checked(walked + 1); } }
+        return walked;
     }
 
     public static int Count<T>(this IEnumerable<T> source, Func<T, bool> predicate) {
@@ -17678,11 +17723,17 @@ static class Array {
     }
 
     public static void Sort<T>(T[] items, Comparison<T> by) {
+        if (items == null) { throw new ArgumentNullException("array"); }
+        if (by == null) { throw new ArgumentNullException("comparison"); }
         Sorting.Introspective<T>(items, 0, items.Length, new ComparisonComparer<T>(by));
     }
 
-    public static void Sort<T>(T[] items, int index, int howMany, IComparer<T> by) {
-        Sorting.Introspective<T>(items, index, howMany, by);
+    /// A run of it, checked as .NET checks one; null is the default order.
+    public static void Sort<T>(T[] items, int index, int howMany, IComparer<T>? by) {
+        if (items == null) { throw new ArgumentNullException("array"); }
+        if (index < 0 || howMany < 0) { throw new ArgumentOutOfRangeException(howMany < 0 ? "length" : "index", "Non-negative number required."); }
+        if (items.Length - index < howMany) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
+        Sorting.Introspective<T>(items, index, howMany, by ?? Comparer<T>.Default);
     }
 
     /// KEYS AND THEIR ITEMS SORTED TOGETHER, as .NET's Array.Sort(keys, items):
@@ -17695,7 +17746,7 @@ static class Array {
     public static void Sort<TKey, TValue>(TKey[] keys, TValue[]? items, IComparer<TKey>? by) {
         if (keys == null) { throw new ArgumentNullException("keys"); }
         if (items == null) { Sort<TKey>(keys, by); return; }
-        if (items.Length < keys.Length) { throw new ArgumentException("The items array is shorter than the keys array."); }
+        if (items.Length < keys.Length) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
         PairSorting<TKey, TValue>.Introspective(keys, items, 0, keys.Length, by ?? Comparer<TKey>.Default);
     }
 
@@ -21939,7 +21990,13 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     }
 
     /// Both: sized once, members compared the comparer's way.
-    public HashSet(int capacity, IEqualityComparer<T>? comparer) : this(capacity) { by = comparer; compares = Comparing(comparer); }
+    public HashSet(int capacity, IEqualityComparer<T>? comparer) : this(capacity) { by = Effective(comparer); compares = Comparing(by); }
+
+    // THE DEFAULT GIVEN IS NO COMPARER, as .NET keeps none for it: a set
+    // made with EqualityComparer<T>.Default compares as one made with none,
+    // and a copy of either is the other's whole.
+    private static IEqualityComparer<T>? Effective(IEqualityComparer<T>? comparer)
+        => (object?)comparer == (object)EqualityComparer<T>.Default ? null : comparer;
 
     public HashSet(IEnumerable<T> source) : this() {
         Fill(source);
@@ -21947,11 +22004,11 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
 
     /// Equality by `comparer` -- StringComparer.OrdinalIgnoreCase,
     /// ReferenceEqualityComparer -- or, given null, the default.
-    public HashSet(IEqualityComparer<T>? comparer) : this() { by = comparer; compares = Comparing(comparer); }
+    public HashSet(IEqualityComparer<T>? comparer) : this() { by = Effective(comparer); compares = Comparing(by); }
 
     public HashSet(IEnumerable<T> source, IEqualityComparer<T>? comparer) : this() {
-        by = comparer;
-        compares = Comparing(comparer);
+        by = Effective(comparer);
+        compares = Comparing(by);
         Fill(source);
     }
 
@@ -21962,6 +22019,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // its free places with it; this adds its members, so what is added to
     // the copy afterwards may be walked in another order.)
     private void Fill(IEnumerable<T> source) {
+        if (source == null) { throw new ArgumentNullException("collection"); }
         if (source is HashSet<T> set && SameComparer(set)) { CopyFrom(set); return; }
         if (source is ICollection<T> sized && sized.Count > 0) { room = HashSizes.Prime(sized.Count); }
         foreach (T value in source) { Add(value); }
@@ -22358,7 +22416,9 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
             }
             return;
         }
-        int originalCount = count;
+        // The places used, freed ones too, as .NET's _count: a member at a
+        // place past the live count was never taken out.
+        int originalCount = ordered;
         HashSet<int> added = new HashSet<int>();
         HashSet<int> dropping = new HashSet<int>();
         foreach (T value in other) {
@@ -22630,6 +22690,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     public SortedSet(IEnumerable<T> collection) : this(collection, null) { }
 
     public SortedSet(IEnumerable<T> collection, IComparer<T>? comparer) : this(comparer) {
+        if (collection == null) { throw new ArgumentNullException("collection"); }
         foreach (T item in collection) { Add(item); }
     }
 
@@ -22708,9 +22769,15 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         SortedSet<T>? sorted = other as SortedSet<T>;
         if (parent == null && sorted != null && (Count == 0 || (SameOrder(sorted) && sorted.Count > Count / 2))) {
             // Read out first: .NET merges from the two as they are, so the
-            // other may be a view of this one.
+            // other may be a view of this one. A MERGE KEEPS THEIRS of two
+            // that compare alike, as .NET's takes the other's at a tie; an
+            // empty set is the other's copy.
             List<T> theirs = new List<T>(sorted);
-            foreach (T item in theirs) { if (!Contains(item)) { Add(item); } }
+            bool merging = Count != 0;
+            foreach (T item in theirs) {
+                int at = Find(item);
+                if (at < 0) { Add(item); } else if (merging) { items[at] = item; }
+            }
             version = version + 1;
             return;
         }
@@ -23284,8 +23351,12 @@ static class Sorting {
 /// items)): step for step the same as Sorting's, every key moved with its
 /// item, as .NET's ArraySortHelper<TKey, TValue> does it.
 static class PairSorting<TKey, TValue> {
+    // What a comparer throws, wrapped as Sorting's sort wraps it (Sorting.Failed).
     public static void Introspective(TKey[] keys, TValue[] items, int from, int count, IComparer<TKey> by) {
-        if (count > 1) { IntroSort(keys, items, from, count, 2 * (Log2(count) + 1), by); }
+        if (count > 1) {
+            try { IntroSort(keys, items, from, count, 2 * (Log2(count) + 1), by); }
+            catch (Exception e) { throw Sorting.Failed(e, by); }
+        }
     }
 
     private static int Log2(int n) {
@@ -23347,9 +23418,9 @@ static class PairSorting<TKey, TValue> {
         int right = hi - 1;
         while (left < right) {
             left = left + 1;
-            while (by.Compare(keys[lo + left], pivot) < 0) { left = left + 1; }
+            while (Sorting.Within(left, size) && by.Compare(keys[lo + left], pivot) < 0) { left = left + 1; }
             right = right - 1;
-            while (by.Compare(pivot, keys[lo + right]) < 0) { right = right - 1; }
+            while (Sorting.Within(right, size) && by.Compare(pivot, keys[lo + right]) < 0) { right = right - 1; }
             if (left >= right) { break; }
             Swap(keys, items, lo + left, lo + right);
         }

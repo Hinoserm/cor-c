@@ -1,0 +1,116 @@
+// test: sorts check their ranges, sorted maps refuse null keys and name duplicates, and Count reads a collection's count, as .NET's do
+// expect-exit: 0
+// expect-output:
+// symmetric 2,3
+// symmetric add 9,3
+// list sort past ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// list sort null 1,2,3
+// list sort negative ArgumentOutOfRangeException: Non-negative number required. (Parameter 'index') |index
+// list sort no comparison ArgumentNullException: Value cannot be null. (Parameter 'comparison') |comparison
+// array sort past ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// array sort negative length ArgumentOutOfRangeException: Non-negative number required. (Parameter 'length') |length
+// array sort range null 3,1,2,0
+// array sort no comparison ArgumentNullException: Value cannot be null. (Parameter 'comparison') |comparison
+// pair throwing InvalidOperationException: Failed to compare two elements in the array.
+// pair liar ArgumentException: Unable to sort because the IComparer.Compare() method returns inconsistent results. Either a value does not compare equal to itself, or one value repeatedly compared to another value yields different results. IComparer: 'Liar'.
+// pair short ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// sorted dictionary dup ArgumentException: An item with the same key has already been added. Key: [1, b]
+// sorted list dup ArgumentException: An item with the same key has already been added. Key: 1 (Parameter 'key') |key
+// sorted dictionary missing KeyNotFoundException: The given key '2' was not present in the dictionary.
+// sorted list missing KeyNotFoundException: The given key '2' was not present in the dictionary.
+// [Count]count collection 2
+// [walk]count read-only 2
+// [Count]any collection True
+// [walk]any read-only True
+// union tie A,b,c
+// union tie list a,b,c
+// explicit default 9,2,3
+// sorted list null key ArgumentNullException: Value cannot be null. (Parameter 'key') |key
+// sorted dictionary null key ArgumentNullException: Value cannot be null. (Parameter 'key') |key
+// sorted list null get ArgumentNullException: Value cannot be null. (Parameter 'key') |key
+// hash set null source ArgumentNullException: Value cannot be null. (Parameter 'collection') |collection
+// queue null source ArgumentNullException: Value cannot be null. (Parameter 'collection') |collection
+// stack null source ArgumentNullException: Value cannot be null. (Parameter 'collection') |collection
+// sorted set null source ArgumentNullException: Value cannot be null. (Parameter 'collection') |collection
+//
+// HashSet.SymmetricExceptWith counted the members, not the places used,
+// and kept those past the count; List.Sort and Array.Sort over a run
+// checked nothing and took no null comparer for the default; a pair sort
+// gave its comparer's failure bare; SortedList and SortedDictionary took
+// a null key and named no duplicate or missing key; Count and Any read
+// IReadOnlyCollection where .NET reads ICollection; a SortedSet merge kept
+// its own member of a tie where .NET keeps the other's; HashSet took an
+// explicit default comparer for another; and a null source was a
+// NullReferenceException where .NET names the collection.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Throwing : IComparer<int> { public int Compare(int a, int b) => throw new FormatException("bad"); }
+sealed class Liar : IComparer<int> { public int Compare(int a, int b) => -1; }
+
+sealed class Bag : ICollection<int>
+{
+    public int Count { get { Console.Write("[Count]"); return 2; } }
+    public bool IsReadOnly => true;
+    public IEnumerator<int> GetEnumerator() { Console.Write("[walk]"); yield return 1; yield return 2; }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    public void Add(int i) { }
+    public void Clear() { }
+    public bool Contains(int i) => false;
+    public void CopyTo(int[] a, int i) { }
+    public bool Remove(int i) => false;
+}
+
+sealed class ReadOnlyBag : IReadOnlyCollection<int>
+{
+    public int Count { get { Console.Write("[Count]"); return 2; } }
+    public IEnumerator<int> GetEnumerator() { Console.Write("[walk]"); yield return 1; yield return 2; }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+static class Program
+{
+    static void Try(string what, Func<object?> f)
+    {
+        try { Console.WriteLine(what + " " + f()); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message + (e is ArgumentException a && a.ParamName != null ? " |" + a.ParamName : "")); }
+    }
+
+    static int Main()
+    {
+        Try("symmetric", () => { var s = new HashSet<int> { 1, 2, 3, 4 }; s.Remove(1); s.SymmetricExceptWith(new List<int> { 4 }); return string.Join(",", s); });
+        Try("symmetric add", () => { var s = new HashSet<int> { 1, 2, 3, 4 }; s.Remove(2); s.SymmetricExceptWith(new List<int> { 4, 9, 1 }); return string.Join(",", s); });
+        Try("list sort past", () => { var l = new List<int> { 5, 4, 3 }; l.Sort(1, 3, Comparer<int>.Default); return string.Join(",", l); });
+        Try("list sort null", () => { var l = new List<int> { 3, 1, 2 }; l.Sort(0, 3, null); return string.Join(",", l); });
+        Try("list sort negative", () => { var l = new List<int> { 3, 1, 2 }; l.Sort(-1, 2, null); return string.Join(",", l); });
+        Try("list sort no comparison", () => { var l = new List<int> { 3, 1, 2 }; l.Sort((Comparison<int>)null!); return 0; });
+        Try("array sort past", () => { int[] a = { 3, 2, 1 }; Array.Sort(a, 1, 5, Comparer<int>.Default); return 0; });
+        Try("array sort negative length", () => { int[] a = { 3, 2, 1 }; Array.Sort(a, 0, -1, Comparer<int>.Default); return 0; });
+        Try("array sort range null", () => { int[] a = { 3, 2, 1, 0 }; Array.Sort(a, 1, 2, null); return string.Join(",", a); });
+        Try("array sort no comparison", () => { int[] a = { 3, 2, 1 }; Array.Sort(a, (Comparison<int>)null!); return 0; });
+        Try("pair throwing", () => { Array.Sort(new[] { 3, 1, 2 }, new[] { "c", "a", "b" }, new Throwing()); return 0; });
+        Try("pair liar", () => { Array.Sort(Enumerable.Range(0, 40).ToArray(), new int[40], new Liar()); return 0; });
+        Try("pair short", () => { Array.Sort(new[] { 3, 1, 2 }, new[] { "c" }); return 0; });
+        Try("sorted dictionary dup", () => { var sd = new SortedDictionary<int, string> { [1] = "a" }; sd.Add(1, "b"); return 0; });
+        Try("sorted list dup", () => { var sl = new SortedList<int, string> { [1] = "a" }; sl.Add(1, "b"); return 0; });
+        Try("sorted dictionary missing", () => new SortedDictionary<int, string> { [1] = "a" }[2]);
+        Try("sorted list missing", () => new SortedList<int, string> { [1] = "a" }[2]);
+        Try("count collection", () => new Bag().Count());
+        Try("count read-only", () => new ReadOnlyBag().Count());
+        Try("any collection", () => new Bag().Any());
+        Try("any read-only", () => new ReadOnlyBag().Any());
+        Try("union tie", () => { var a = new SortedSet<string>(StringComparer.OrdinalIgnoreCase) { "a", "c" }; a.UnionWith(new SortedSet<string>(StringComparer.OrdinalIgnoreCase) { "A", "b" }); return string.Join(",", a); });
+        Try("union tie list", () => { var a = new SortedSet<string>(StringComparer.OrdinalIgnoreCase) { "a", "c" }; a.UnionWith(new List<string> { "A", "b" }); return string.Join(",", a); });
+        Try("explicit default", () => { var a = new HashSet<int>(EqualityComparer<int>.Default) { 1, 2, 3 }; a.Remove(1); var b = new HashSet<int>(a); b.Add(9); return string.Join(",", b); });
+        Try("sorted list null key", () => { var sl = new SortedList<string, int>(); sl.Add(null!, 1); return sl.Count; });
+        Try("sorted dictionary null key", () => { var sd = new SortedDictionary<string, int>(); sd.Add(null!, 1); return sd.Count; });
+        Try("sorted list null get", () => new SortedList<string, int>().ContainsKey(null!));
+        Try("hash set null source", () => new HashSet<int>((IEnumerable<int>)null!).Count);
+        Try("queue null source", () => new Queue<int>((IEnumerable<int>)null!).Count);
+        Try("stack null source", () => new Stack<int>((IEnumerable<int>)null!).Count);
+        Try("sorted set null source", () => new SortedSet<int>((IEnumerable<int>)null!).Count);
+        return 0;
+    }
+}

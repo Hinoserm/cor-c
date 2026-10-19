@@ -8013,6 +8013,15 @@ public sealed partial class Binder
         return op.Returns;
     }
 
+    /// <summary>
+    /// Whether `from` reaches `to` only by the machine word's rule
+    /// (StandardConvertible), which takes an object anywhere: object itself,
+    /// not dynamic, converts implicitly to object alone, and C#'s choices
+    /// between two types (`??`) ask for that conversion.
+    /// </summary>
+    private static bool OnlyAsObject(Type from, Type to)
+        => from.Prim == Prim.Any && !from.Dynamic && !from.IsArray && !from.IsPointer && from.ParamName is null && to.Prim != Prim.Any;
+
     private bool StandardConvertible(Type from, Type to)
     {
         // Anything is a machine word, which is the whole point of this type.
@@ -13891,13 +13900,18 @@ public sealed partial class Binder
                         // put an (int, int) p's block where two longs are read.
                         // A FIELD OF THE SHAPE CARRIES NO NULLABILITY of its own --
                         // `(string? Prefix, string Local)` and `(string, string)`
-                        // are one shape -- so a reference field is taken as one
-                        // that may hold null: the element's conversion is checked,
-                        // and no warning is made up for a `?` the shape forgot.
+                        // are one shape -- so each element is checked against
+                        // its item AS THE TARGET WROTE IT (Type.UseArgs): `(null,
+                        // 1)` as a (string, int) is warned of, and an array of
+                        // `string?` given where `string?[]` was written is not.
+                        // A target that wrote none takes a reference field as
+                        // one that may hold null: the conversion is checked, and
+                        // no warning is made up for a `?` the shape forgot.
+                        IReadOnlyList<Type>? written = outerWanted?.UseArgs is { } used && used.Count == elements.Count ? used : null;
                         for (int i = 0; i < elements.Count; i++)
                         {
-                            Type field = want.Fields[i].Type;
-                            if (field.IsReference && !field.Nullable) field = field.AsNullable();
+                            Type field = written?[i] ?? want.Fields[i].Type;
+                            if (written is null && field.IsReference && !field.Nullable) field = field.AsNullable();
                             CheckAssignable(elements[i], field, tup.Items[i], What.Element(i + 1));
                         }
                         elements = want.Fields.Select(f => f.Type).ToList();
@@ -23038,7 +23052,7 @@ public sealed partial class Binder
                 // it: `nn ?? 9` over a BigInteger? is 9 as a BigInteger, not
                 // the int read as one.
                 if (l.IsNullableValue && !r.Nullable && !r.IsNullableValue
-                    && Convertible(r, l.Underlying))
+                    && Convertible(r, l.Underlying) && !OnlyAsObject(r, l.Underlying))
                 {
                     if (!r.IsError && !StandardConvertible(r, l.Underlying) && !Variant(r, l.Underlying))
                     {
@@ -23053,11 +23067,14 @@ public sealed partial class Binder
                 // would convert to the right too: `arg ?? "null"` over an
                 // `object?` is an object, and taken for a string it was
                 // concatenated as one -- the object's own words read out as
-                // characters.
+                // characters. AN OBJECT CONVERTS TO OBJECT ALONE (OnlyAsObject):
+                // `s ?? o` over a string and an object is an object, and
+                // `n ?? o` over an int? one too, where both were the left's --
+                // a boxed int read as text, or its address as the number.
                 {
                     Type left = l.AsNonNullable();
                     Type right = r.AsNonNullable();
-                    if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left))
+                    if (!l.IsNullableValue && r.Prim != Prim.NullLiteral && !right.Equals(left) && Convertible(right, left) && !OnlyAsObject(right, left))
                     {
                         if (!right.IsError && !right.IsArray && !StandardConvertible(right, left) && !Variant(right, left))
                         {

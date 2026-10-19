@@ -1,0 +1,82 @@
+// test: a fresh result handed back to the call that made it, and kept in that call's new one, is not freed under it
+// expect-exit: 0
+// expect-output:
+// total 500
+//
+// `first = level.Fresh(first)` round a loop: each lap's call is handed
+// last lap's result and stores it in the object it returns. The escape
+// pass owned the call's result in a frame slot and, the call being handed
+// the old one, gave the old one back after the call -- the x = Grow(x)
+// shape, right where the callee copies and lets go, wrong where it keeps:
+// the chain's next link was freed under it, and the walk read freed
+// memory. LINQ's OrderBy(...).ThenBy(...).ToList() was this loop, and the
+// compiler built natively stopped on it. A call that may keep what it is
+// handed of its own last result (Escape.KeepsArgument) is not owned.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+abstract class Level
+{
+    internal Level? next;
+    internal Level? before;
+    public abstract Level Fresh(Level? after);
+    public abstract int Compute(int[] e);
+}
+
+sealed class KL<K> : Level
+{
+    private readonly Func<int, K> of;
+    private K[]? keys;
+    public KL(Func<int, K> of) { this.of = of; }
+    public override Level Fresh(Level? after) { KL<K> m = new KL<K>(of); m.next = after; return m; }
+    public override int Compute(int[] e)
+    {
+        K[] made = new K[e.Length];
+        for (int i = 0; i < made.Length; i++) made[i] = of(e[i]);
+        keys = made;
+        Level? then = next;
+        return made.Length + (then != null ? then.Compute(e) : 0);
+    }
+}
+
+sealed class Seq : IEnumerable<int>
+{
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    private IEnumerable<int> source;
+    private Level last;
+    public Seq(IEnumerable<int> source, Level last) { this.source = source; this.last = last; }
+    public Seq Then<K>(Func<int, K> key) { KL<K> t = new KL<K>(key); t.before = last; return new Seq(source, t); }
+    public IEnumerator<int> GetEnumerator() { foreach (int x in source) yield return x; }
+    internal int[] ToArray()
+    {
+        int[] items = System.Linq.Enumerable.ToArray(source);
+        Level? first = null;
+        for (Level? l = last; l != null; l = l.before) first = l.Fresh(first);
+        GC.Collect();
+        int n = first!.Compute(items);
+        return new int[n];
+    }
+}
+
+static class Program
+{
+    static List<int> MyToList(IEnumerable<int> s)
+    {
+        if (s.GetType() == typeof(Seq)) return new List<int>(((Seq)s).ToArray());
+        return new List<int>(s);
+    }
+
+    static int Main()
+    {
+        int[] data = { 3, 1, 2, 5, 4 };
+        int total = 0;
+        for (int round = 0; round < 50; round++)
+        {
+            Seq seq = new Seq(data, new KL<int>(x => x % 2)).Then(x => "k" + x);
+            total += MyToList(seq).Count;
+        }
+        Console.WriteLine("total " + total);
+        return 0;
+    }
+}
