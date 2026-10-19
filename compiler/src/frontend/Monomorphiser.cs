@@ -200,7 +200,7 @@ public sealed class Monomorphiser
     }
 
     public static MethodDecl Specialise(MethodDecl template, IReadOnlyList<TypeRef> args, string name,
-                                        HashSet<string>? valueTypes = null)
+                                        HashSet<string>? valueTypes = null, bool classDictionary = false)
     {
         Monomorphiser m = new("<specialise>");
         m._byValueAlso = valueTypes;
@@ -224,7 +224,13 @@ public sealed class Monomorphiser
             }
         }
 
-        if (m._shapeParams is not null) m._needs = new List<TypeRef>();
+        // A DICTIONARY, too, for a canonical class's generic method's copy
+        // (ClassDictionary): what it makes over the class's parameters and
+        // its own together, which only its caller can name for each
+        // instantiation of the class.
+        if (m._shapeParams is not null || SharedMethodCopy(name) > 0) m._needs = new List<TypeRef>();
+        m._classDictionary = classDictionary && m._needs is not null;
+        m._classShape = m._classDictionary && !template.Mods.HasFlag(Mods.Static);
         MethodDecl made = (MethodDecl)m.RewriteMember(template, map, template.Name);
 
         made.WritableTypeParams.Clear();
@@ -274,8 +280,25 @@ public sealed class Monomorphiser
     /// code fills from that class's type context (Binder, CallExpr.HiddenNeeds).
     /// The same rewrite Specialise makes, so the same list in the same order.
     /// </summary>
-    public static List<TypeRef> CopyNeedsOf(MethodDecl template, IReadOnlyList<TypeRef> args)
-        => Specialise(template, args, "<needs>").CopyNeeds ?? new List<TypeRef>();
+    public static List<TypeRef> CopyNeedsOf(MethodDecl template, IReadOnlyList<TypeRef> args, bool classDictionary = false)
+        => Specialise(template, args, classDictionary ? "<needs>" + HiddenTypeArgumentsMark + args.Count : "<needs>",
+            null, classDictionary).CopyNeeds ?? new List<TypeRef>();
+
+    /// <summary>
+    /// WHETHER A COPY OF A GENERIC METHOD OF `owner` TAKES A DICTIONARY WITH
+    /// EVERY ARGUMENT KNOWN: a canonical class copy's generic method, whose
+    /// class arguments only run time knows, so `new Derived<T, K>()` in it is
+    /// its caller's to name for each instantiation (NeedDictionary). The
+    /// exclusions hidden arguments have: a generic virtual method (dispatch
+    /// hands nothing more), async, an iterator.
+    /// </summary>
+    public static bool ClassDictionary(TypeDecl? owner, MethodDecl template)
+        => owner is { CanonMadeWritten: not null } && template.TypeParams.Count > 0
+        && (template.Mods & (Mods.Virtual | Mods.Override | Mods.Abstract | Mods.Async)) == 0
+        && template.ExplicitInterface is null && template.Body is not { Iterator: true };
+
+    /// <summary>A dictionary entry's identity: its spelling, which keeps __canon(0) and an erased __canon apart.</summary>
+    internal static string NeedKey(TypeRef r) => Spelling(r);
 
     /// <summary>The name a specialised method gets, readable on purpose.</summary>
     public static string MethodName(string baseName, IReadOnlyList<TypeRef> args)
@@ -301,10 +324,10 @@ public sealed class Monomorphiser
     /// (SharedMethodCopy). A copy over object called with object meant is
     /// the plain one, as it always was.
     /// </summary>
-    public static string CopyName(string baseName, IReadOnlyList<TypeRef> args, int member)
+    public static string CopyName(string baseName, IReadOnlyList<TypeRef> args, int member, bool dictionary = false)
     {
         string name = MethodName(baseName, args) + "$" + member;
-        return Interned.Name(args.Any(a => a.CanonIndex <= -2) ? name + HiddenTypeArgumentsMark + args.Count : name);
+        return Interned.Name(dictionary || args.Any(a => a.CanonIndex <= -2) ? name + HiddenTypeArgumentsMark + args.Count : name);
     }
 
     /// <summary>Whether a type is, or holds, a word only run time knows (__canon, or an argument marked as one).</summary>
@@ -1481,12 +1504,12 @@ public sealed class Monomorphiser
             foreach (CallExpr call in calls)
             {
                 if (call.HiddenNeedBase >= 0 || call.HiddenNeeds is not { Count: > 0 } needs) continue;
-                List<string> keys = needs.Select(n => n.ToString()).ToList();
+                List<string> keys = needs.Select(NeedKey).ToList();
                 int at = -1;
                 for (int start = 0; start + keys.Count <= written.Count && at < 0; start++)
                 {
                     bool same = true;
-                    for (int k = 0; k < keys.Count && same; k++) same = written[start + k].ToString() == keys[k];
+                    for (int k = 0; k < keys.Count && same; k++) same = NeedKey(written[start + k]) == keys[k];
                     if (same) at = start;
                 }
                 if (at < 0)
@@ -1563,6 +1586,12 @@ public sealed class Monomorphiser
     /// <summary>The shared method copy's dictionary as it is found (MethodDecl.CopyNeeds), or null outside one.</summary>
     private List<TypeRef>? _needs;
 
+    /// <summary>A canonical class's generic method's copy (ClassDictionary): its dictionary names types over the class's parameters and its own.</summary>
+    private bool _classDictionary;
+
+    /// <summary>The same, of an instance method: a class test over them is asked of the object, the class's from `this` (Shaped).</summary>
+    private bool _classShape;
+
     /// <summary>
     /// A TYPE A SHARED METHOD COPY MAKES OVER ITS OWN TYPE PARAMETERS THAT ONLY
     /// RUN TIME KNOWS -- `new List<U>()`, `new U[n]`, `typeof(Box<U>)` --
@@ -1575,25 +1604,29 @@ public sealed class Monomorphiser
     /// </summary>
     private int Need(TypeRef written, bool array)
     {
-        if (_needs is null || _shapeParams is null || written.PointerDepth != 0 || written.ArrayRank != 0) return -1;
-        bool any = false;
+        if (_needs is null || written.PointerDepth != 0 || written.ArrayRank != 0) return -1;
+        bool hidden = false, own = false, ofClass = false;
         if (written.Args.Count == 0)
         {
-            if (!array || !_shapeParams.ContainsKey(written.Name)) return -1;
-            any = true;
+            if (!array || _shapeParams?.ContainsKey(written.Name) != true) return -1;
+            hidden = true;
         }
         foreach (TypeRef a in written.Args)
         {
             if (a.PointerDepth != 0 || a.ArrayRank != 0 || a.Args.Count != 0) return -1;
-            if (_shapeParams.ContainsKey(a.Name)) any = true;
-            else if (_methodParams.Contains(a.Name)) return -1;
+            if (_shapeParams?.ContainsKey(a.Name) == true) hidden = true;
+            // A METHOD PARAMETER THE COPY KNOWS beside the class's that only
+            // run time knows: Derived<T, K> at K = string is the caller's to
+            // name for each T (ClassDictionary). Anywhere else the copy's own.
+            else if (_methodParams.Contains(a.Name)) { if (!_classDictionary) return -1; own = true; }
+            else if (a.Name == CanonName && a.CanonIndex >= 0) ofClass = true;
         }
-        if (!any) return -1;
+        if (!hidden && !(_classDictionary && ofClass && own)) return -1;
         TypeRef need = array
             ? new TypeRef { Name = written.Name, Arguments = written.Args.ToList(), ArrayRank = 1, Line = written.Line, Col = written.Col }
             : written;
-        string key = need.ToString();
-        int at = _needs.FindIndex(n => n.ToString() == key);
+        string key = NeedKey(need);
+        int at = _needs.FindIndex(n => NeedKey(n) == key);
         if (at < 0)
         {
             at = _needs.Count;
@@ -1631,28 +1664,30 @@ public sealed class Monomorphiser
             made.ShapeArgs = SubAll(kept, map);
             return;
         }
-        if (_shapeParams is null || written.Args.Count == 0 || written.Args.Count > CanonShape.MostArguments
+        if (_shapeParams is null && !_classShape || written.Args.Count == 0 || written.Args.Count > CanonShape.MostArguments
             || written.ArrayRank != 0 || written.PointerDepth != 0)
         {
             return;
         }
-        bool any = false;
+        bool any = false, ofClass = false, own = false, deep = false;
         foreach (TypeRef a in written.Args)
         {
-            if (a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0 && _shapeParams.ContainsKey(a.Name))
-            {
-                any = true;
-            }
-            else if (MentionsShaped(a))
-            {
-                return;
-            }
+            bool bare = a.Args.Count == 0 && a.ArrayRank == 0 && a.PointerDepth == 0;
+            if (bare && _shapeParams?.ContainsKey(a.Name) == true) any = true;
+            else if (MentionsShaped(a)) return;
+            else if (bare && a.Name == CanonName && a.CanonIndex >= 0) ofClass = true;
+            else if (bare && _methodParams.Contains(a.Name)) own = true;
+            else if (MentionsClassCanon(a)) deep = true;
         }
-        if (any)
+        // `o is Derived<T, K>` in a canonical class's copy at K = string:
+        // asked of the object, T read from `this` (Lowering.ShapeOf).
+        if (any || _classShape && ofClass && own && !deep)
         {
             made.ShapeArgs = SubAll(written.Args, map);
         }
     }
+
+    private static bool MentionsClassCanon(TypeRef a) => a.Name == CanonName && a.CanonIndex >= 0 || a.Args.Any(MentionsClassCanon);
 
     private bool MentionsShaped(TypeRef a)
         => _shapeParams is not null && (_shapeParams.ContainsKey(a.Name) || a.Args.Any(MentionsShaped));
@@ -3515,6 +3550,7 @@ public sealed class Monomorphiser
                 made.HiddenNeedBase = c.HiddenNeedBase;
                 made.CanonSelf = c.CanonSelf is null ? null : new ThisExpr { Line = c.Line, Col = c.Col };
                 made.HiddenNeedMap = c.HiddenNeedMap;
+                made.HiddenNeedClassMap = c.HiddenNeedClassMap;
                 made.NeedClass = c.NeedClass;
                 made.NeedCopy = c.NeedCopy;
                 made.ResultTupleNames = c.ResultTupleNames is null ? null : new List<string>(c.ResultTupleNames);

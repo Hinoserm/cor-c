@@ -1,0 +1,23 @@
+// The other unit of 2156_shared_generic_method_needs_across_units: a shared
+// class whose generic method makes over the class's T, a plain method that
+// makes a List of T, and a caller of the plain one.
+using System.Collections.Generic;
+
+namespace NeedUnits;
+
+public static class Util
+{
+    public static object MakeList<U>() => new List<U>();
+    public static object MakeMap<U>() => new Dictionary<U, U>();
+}
+
+public class Holder<T>
+{
+    public object Make<K>() => Util.MakeMap<T>();
+    public object Plain() => Util.MakeList<T>();
+}
+
+public static class Side
+{
+    public static object Build() => new Holder<string>().Plain();
+}

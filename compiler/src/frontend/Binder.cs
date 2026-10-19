@@ -21694,16 +21694,21 @@ public sealed partial class Binder
             }
             // On the call, for the round that binds it to the copy (CallExpr.HiddenTypeArgs).
             c.HiddenTypeArgs = hidden;
-            if (hidden is not null)
+            // A CANONICAL CLASS'S COPY TAKES A DICTIONARY whatever its
+            // arguments (Monomorphiser.ClassDictionary): what it makes over
+            // the class's parameters and its own, named by this call.
+            bool dictionary = spelt.Count == best.TypeParams.Count && Monomorphiser.ClassDictionary(best.Owner.Decl, generic);
+            if (hidden is not null || dictionary)
             {
                 int index = generic.TemplateIndex >= 0 ? generic.TemplateIndex : best.Owner.Decl?.Members.IndexOf(generic) ?? -1;
-                string copyName = Monomorphiser.CopyName(generic.Name, spelt, index);
-                NoteCopyNeeds(c, generic, spelt, hidden, best.Owner.Methods.FirstOrDefault(m => m.Name == copyName));
+                string copyName = Monomorphiser.CopyName(generic.Name, spelt, index, dictionary);
+                NoteCopyNeeds(c, best, generic, spelt, hidden ?? Enumerable.Repeat(-1, spelt.Count).ToArray(), copyName);
             }
             // A CLASS PARAMETER HANDED ON is read through the class's `this`
             // (CallExpr.CanonSelf): in a lambda, a closure's own `this` has
-            // no type context, and the copy was handed 0.
-            if (hidden is not null && hidden.Any(k => k >= 0) && c.CanonSelf is null
+            // no type context, and the copy was handed 0. So is a dictionary
+            // placed in the class's type context.
+            if ((hidden is not null && hidden.Any(k => k >= 0) || c.NeedClass is not null) && c.CanonSelf is null
                 && _member is MethodDecl { } instance && !instance.Mods.HasFlag(Mods.Static) && _thisType?.Decl is { CanonMadeWritten: not null })
             {
                 c.CanonSelf = new ThisExpr { Line = c.Line, Col = c.Col };
@@ -21727,7 +21732,7 @@ public sealed partial class Binder
                     member = declaring.Members.IndexOf(generic);
                 }
 
-                string wanted = Monomorphiser.CopyName(generic.Name, spelt, member);
+                string wanted = Monomorphiser.CopyName(generic.Name, spelt, member, dictionary);
                 MethodSymbol? existing = best.Owner.Methods
                     .FirstOrDefault(m => m.Name == wanted);
 
@@ -21840,26 +21845,58 @@ public sealed partial class Binder
     /// method copy's own hidden argument handed on finds no dictionary here,
     /// and its callee makes what it always made.
     /// </summary>
-    private void NoteCopyNeeds(CallExpr c, MethodDecl generic, List<TypeRef> spelt, int[] hidden, MethodSymbol? existing)
+    private void NoteCopyNeeds(CallExpr c, MethodSymbol best, MethodDecl generic, List<TypeRef> spelt, int[] hidden, string copyName)
     {
         if (c.HiddenNeedMap is not null || generic.Body is null) return;
         if (_member is not MethodDecl { } caller) return;
+        // WHAT RUNS IS WHAT IS HANDED THE DICTIONARY (Lowering.Canonical): on
+        // a word-shaped instantiation the canonical class's copy
+        // (Frontend.CanonicalTwin), sized and spelt by the canonical template
+        // -- not the instantiation's copy, never checked, whose dictionary
+        // never grows. Its __canon(i) is the receiver's argument i.
+        MethodDecl template = generic;
+        MethodSymbol? running = best.Owner.Methods.FirstOrDefault(m => m.Name == copyName);
+        bool ofClass = best.Owner.Decl is { CanonMadeWritten: not null };
+        List<TypeRef?>? classMap = null;
+        if (best.Owner.Decl is { Canon: string canon } sharing && running?.Decl is not { OwnCode: true })
+        {
+            if (!_r.Types.TryGetValue(canon, out TypeSymbol? shared) || shared.Decl is not TypeDecl sharedDecl
+                || sharedDecl.MembersMade.OfType<MethodDecl>().FirstOrDefault(m => m.Name == generic.Name
+                       && m.TypeParams.Count == generic.TypeParams.Count
+                       && (generic.TemplateIndex < 0 || m.TemplateIndex == generic.TemplateIndex)) is not MethodDecl origin)
+                return;
+            template = origin;
+            running = shared.Methods.FirstOrDefault(m => m.Name == copyName);
+            ofClass = true;
+            classMap = sharing.TemplateArgs.Select(a => Monomorphiser.MentionsCanon(a) ? null : a).ToList();
+        }
+        List<string>? classNames = _thisType?.Decl is { CanonMadeWritten: not null, TemplateParams: { } cp }
+            ? cp.Select(p => p.Name).ToList() : null;
+        // ITS OWN CLASS THROUGH `this`: the callee's __canon(i) is the
+        // caller's parameter i. Any other receiver of the canonical type may
+        // be another instantiation; its __canon(i) stays unknown (erased).
+        bool self = ofClass && classMap is null && classNames is not null && ReferenceEquals(best.Owner, _thisType)
+            && c.Target is NameExpr or MemberExpr { Target: ThisExpr };
         TypeDecl? canonical = null;
         List<string>? names = null;
-        // FROM A SHARED CLASS'S INSTANCE CODE: every hidden argument one of
-        // its parameters, the needs kept in its type context.
-        if (hidden.All(k => k >= -1) && !caller.Mods.HasFlag(Mods.Static)
-            && _thisType?.Decl is { CanonMadeWritten: not null, TemplateParams: { } classParams } home && hidden.All(k => k < classParams.Count))
+        // FROM INSTANCE CODE EVERY UNIT BINDS -- not a copy (LocalCopy), which
+        // only the units wanting it have: its needs in the class's type
+        // context would lay the table out differently unit by unit.
+        if (!caller.LocalCopy && classNames is not null && hidden.All(k => k >= -1 && k < classNames.Count)
+            && !caller.Mods.HasFlag(Mods.Static) && _thisType!.Decl is { } home)
         {
             canonical = home;
-            names = classParams.Select(p => p.Name).ToList();
+            names = classNames;
+            if (self) classMap = classNames.Select(n => (TypeRef?)new TypeRef { Name = n, Line = c.Line, Col = c.Col }).ToList();
         }
-        // FROM A SHARED METHOD COPY: every hidden argument one of its own,
-        // the needs kept in its dictionary, which its own callers fill.
-        else if (hidden.All(k => k == -1 || k <= -2) && caller.CopyParams is { } own && caller.CopyNeeds is not null
-            && hidden.All(k => k == -1 || -2 - k < own.Count))
+        // FROM A COPY WITH A DICTIONARY: its hidden parameters by name, its
+        // class's as __canon(i), for its own callers to name.
+        else if (caller.CopyParams is { } own && caller.CopyNeeds is not null
+            && hidden.All(k => k == -1 || k <= -2 && -2 - k < own.Count || k >= 0 && classNames is not null && k < classNames.Count))
         {
             names = own;
+            if (self) classMap = Enumerable.Range(0, classNames!.Count).Select(i => (TypeRef?)new TypeRef
+                { Name = Monomorphiser.CanonName, CanonIndex = i, Line = c.Line, Col = c.Col }).ToList();
         }
         else
         {
@@ -21869,51 +21906,70 @@ public sealed partial class Binder
         for (int i = 0; i < generic.TypeParams.Count && i < spelt.Count; i++)
         {
             map[generic.TypeParams[i].Name] = hidden[i] == -1 ? spelt[i]
-                : new TypeRef { Name = names[hidden[i] >= 0 ? hidden[i] : -2 - hidden[i]], Line = c.Line, Col = c.Col };
+                : hidden[i] <= -2 ? new TypeRef { Name = names[-2 - hidden[i]], Line = c.Line, Col = c.Col }
+                : canonical is not null ? new TypeRef { Name = names[hidden[i]], Line = c.Line, Col = c.Col }
+                : new TypeRef { Name = Monomorphiser.CanonName, CanonIndex = hidden[i], Line = c.Line, Col = c.Col };
         }
         c.HiddenNeedMap = map;
+        c.HiddenNeedClassMap = classMap;
         c.NeedClass = canonical;
         c.NeedCopy = canonical is null ? caller : null;
         // What the copy needs: its own list where it is made already -- what
-        // its calls added (below) with it -- or what its template makes.
-        List<TypeRef>? needs = existing?.Decl is MethodDecl { CopyNeeds: { } made } ? made : null;
+        // its calls added with it -- or what its template makes.
+        List<TypeRef>? needs = running?.Decl is MethodDecl { CopyNeeds: { } made } ? made : null;
         if (needs is null)
         {
-            string key = string.Join(",", hidden);
-            if (!_copyNeeds.TryGetValue((generic, key), out needs))
+            string key = string.Join(",", hidden) + (ofClass ? "|class" : "");
+            if (!_copyNeeds.TryGetValue((template, key), out needs))
             {
-                needs = Monomorphiser.CopyNeedsOf(generic, spelt);
-                _copyNeeds[(generic, key)] = needs;
+                needs = Monomorphiser.CopyNeedsOf(template, spelt, ofClass);
+                _copyNeeds[(template, key)] = needs;
             }
         }
         PlaceCopyNeeds(c, needs);
     }
 
     /// <summary>
+    /// A call's dictionary spelt over its caller's names (CallExpr.HiddenNeedMap):
+    /// the callee's own parameters as the call binds them, and its class's,
+    /// __canon(i), as the call knows them (HiddenNeedClassMap) -- else an
+    /// erased __canon of no place, which no later caller reads as its own.
+    /// </summary>
+    private static List<TypeRef> SpeltFor(CallExpr c, List<TypeRef> needs)
+    {
+        Dictionary<string, TypeRef> map = c.HiddenNeedMap!;
+        static TypeRef Ranked(TypeRef to, TypeRef t) => t.ArrayRank == 0 ? to : new TypeRef
+            { Name = to.Name, Arguments = to.Args.ToList(), CanonIndex = to.CanonIndex, ArrayRank = t.ArrayRank + to.ArrayRank, Line = t.Line, Col = t.Col };
+        TypeRef Over(TypeRef t)
+        {
+            if (t.Args.Count == 0 && t.Name == Monomorphiser.CanonName && t.CanonIndex >= 0)
+                return Ranked(c.HiddenNeedClassMap is { } cm && t.CanonIndex < cm.Count && cm[t.CanonIndex] is { } known
+                    ? known : new TypeRef { Name = Monomorphiser.CanonName, Line = t.Line, Col = t.Col }, t);
+            if (t.Args.Count == 0 && map.TryGetValue(t.Name, out TypeRef? to)) return Ranked(to, t);
+            if (t.Args.Count == 0) return t;
+            return new TypeRef { Name = t.Name, Arguments = t.Args.Select(Over).ToList(), ArrayRank = t.ArrayRank, Line = t.Line, Col = t.Col };
+        }
+        return needs.Select(Over).ToList();
+    }
+
+    /// <summary>
     /// A call's dictionary placed where its caller keeps it (NoteCopyNeeds):
-    /// spelt over the caller's parameters (CallExpr.HiddenNeedMap), then in a
-    /// shared class's type context by the next expansion (Monomorphiser.
-    /// PlaceNeeds), or in the calling copy's own dictionary now, as one run --
-    /// the run already there, or at its end, which grows it and sends that
-    /// copy's own callers round again (CopyNeedsGrown).
+    /// spelt over the caller's parameters (SpeltFor), then in a shared
+    /// class's type context by the next expansion (Monomorphiser.PlaceNeeds),
+    /// or in the calling copy's own dictionary now, as one run -- the run
+    /// already there, or at its end, which grows it and sends that copy's own
+    /// callers round again (CopyNeedsGrown).
     /// </summary>
     private void PlaceCopyNeeds(CallExpr c, List<TypeRef> needs)
     {
-        if (c.HiddenNeedMap is not { } map) return;
+        if (c.HiddenNeedMap is null) return;
         if (needs.Count == 0)
         {
             c.HiddenNeeds = null;
             c.HiddenNeedBase = -1;
             return;
         }
-        TypeRef Over(TypeRef t)
-        {
-            if (t.Args.Count == 0 && map.TryGetValue(t.Name, out TypeRef? to))
-                return t.ArrayRank == 0 ? to : new TypeRef { Name = to.Name, Arguments = to.Args.ToList(), ArrayRank = t.ArrayRank + to.ArrayRank, Line = t.Line, Col = t.Col };
-            if (t.Args.Count == 0) return t;
-            return new TypeRef { Name = t.Name, Arguments = t.Args.Select(Over).ToList(), ArrayRank = t.ArrayRank, Line = t.Line, Col = t.Col };
-        }
-        List<TypeRef> spelt = needs.Select(Over).ToList();
+        List<TypeRef> spelt = SpeltFor(c, needs);
         c.HiddenNeeds = spelt;
         c.HiddenNeedBase = -1;
         if (c.NeedClass is { } home)
@@ -21923,12 +21979,12 @@ public sealed partial class Binder
         }
         else if (c.NeedCopy?.CopyNeeds is { } dictionary)
         {
-            List<string> keys = spelt.Select(n => n.ToString()).ToList();
+            List<string> keys = spelt.Select(Monomorphiser.NeedKey).ToList();
             int at = -1;
             for (int start = 0; start + keys.Count <= dictionary.Count && at < 0; start++)
             {
                 bool same = true;
-                for (int k = 0; k < keys.Count && same; k++) same = dictionary[start + k].ToString() == keys[k];
+                for (int k = 0; k < keys.Count && same; k++) same = Monomorphiser.NeedKey(dictionary[start + k]) == keys[k];
                 if (same) at = start;
             }
             if (at < 0)
@@ -21942,6 +21998,12 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>The copy a call runs (Lowering.Canonical): the canonical class's twin of a word-shaped instantiation's, unless that one is its own code.</summary>
+    private MethodDecl? RunningDecl(MethodSymbol called)
+        => called.Decl is { OwnCode: true } ? called.Decl
+         : called.Owner.Decl?.Canon is string canon && _r.Types.TryGetValue(canon, out TypeSymbol? shared)
+           && shared.Methods.FirstOrDefault(m => m.Name == called.Name) is { Decl: MethodDecl twin } ? twin : called.Decl;
+
     /// <summary>
     /// A call bound to a shared method copy whose dictionary has grown since
     /// the call's was placed (a call in its body to another such copy,
@@ -21949,13 +22011,17 @@ public sealed partial class Binder
     /// </summary>
     private void CopyNeedsGrown(CallExpr c, MethodSymbol called)
     {
-        if (c.HiddenNeedMap is null || called.Decl is not MethodDecl { CopyNeeds: { } needs }) return;
+        if (c.HiddenNeedMap is null || RunningDecl(called) is not MethodDecl { CopyNeeds: { } needs }) return;
         // THE HOME AS IT IS NOW: a later round may have made the class's
         // declaration again, and what is placed on the one it replaced is
         // placed nowhere.
         if (c.NeedClass is not null && _thisType?.Decl is { CanonMadeWritten: not null } now) c.NeedClass = now;
         if (c.NeedCopy is not null && _member is MethodDecl { CopyNeeds: not null } caller) c.NeedCopy = caller;
-        if ((c.HiddenNeeds?.Count ?? 0) != needs.Count)
+        // THE WHOLE RUN COMPARED, not its length: an entry that changed
+        // spelling (a __canon now known) is another dictionary.
+        bool same = needs.Count == 0 ? c.HiddenNeeds is null
+            : c.HiddenNeeds is { } had && had.Select(Monomorphiser.NeedKey).SequenceEqual(SpeltFor(c, needs).Select(Monomorphiser.NeedKey));
+        if (!same)
         {
             PlaceCopyNeeds(c, needs);
             return;
@@ -21984,7 +22050,13 @@ public sealed partial class Binder
         if (node.ShapeArgs is not { Count: > 0 } written || tested.IsArray || tested.IsPointer
             || tested.Symbol is not { Kind: TypeKind.Interface or TypeKind.Class } face
             || face.Decl is not { Specialised: true, Template: not null } decl
-            || decl.TemplateArgs.Count != written.Count || written.Count > CanonShape.MostArguments)
+            || decl.TemplateArgs.Count != written.Count || written.Count > CanonShape.MostArguments
+            // A CLASS ASKED OVER A CLASS'S OWN PARAMETER only where every
+            // instantiation runs the one shared code: an object of a copy of
+            // its own (Derived<string, int>) answering yes would be run as
+            // Derived<__canon, int>.
+            || face.Kind == TypeKind.Class && written.Any(a => a.Name == Monomorphiser.CanonName && a.CanonIndex >= 0)
+               && decl.Canon is null && Monomorphiser.CanonNameOf(decl.Template!, decl.TemplateArgs.Count) != face.Name)
         {
             _r.Shapes.Remove(node);
             return;

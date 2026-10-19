@@ -1,0 +1,27 @@
+// test: generic_virtual_method_of_a_shared_class_makes_its_own_instantiation
+// expect-exit: 0
+// expect-output:
+// True True True True
+//
+// A generic virtual method's override in a shared class, reached through
+// its base on a concrete instantiation, makes Derived<T, K> over that
+// instantiation's T: the override's copy for each K is the instantiation's
+// own code.
+// Expected output from .NET 10.
+
+using System;
+
+abstract class Base<T> { }
+sealed class Derived<T, K> : Base<T> { }
+abstract class Shape<T> { public abstract object Make<K>(); }
+sealed class Square<T> : Shape<T> { public override object Make<K>() => new Derived<T, K>(); }
+static class Program
+{
+    static int Main()
+    {
+        Shape<string> s = new Square<string>();
+        object a = s.Make<int>(), b = s.Make<Exception>();
+        Console.WriteLine((a is Base<string>) + " " + (a is Derived<string, int>) + " " + (b is Base<string>) + " " + (b is Derived<string, Exception>));
+        return 0;
+    }
+}

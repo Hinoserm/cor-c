@@ -1,0 +1,24 @@
+// The other unit of 2158_shared_generic_needs_laid_alike_whatever_the_round:
+// a shared class whose two methods reach shared method copies, one through
+// another copy, and a caller of the first.
+using System.Collections.Generic;
+
+namespace OrderUnits;
+
+public static class Util
+{
+    public static object Inner<U>() => new List<U>();
+    public static object Outer<U>() => Inner<U>();
+    public static object Direct<U>() => new Dictionary<U, string>();
+}
+
+public class Holder<T>
+{
+    public object A() => Util.Outer<T>();
+    public object B() => Util.Direct<T>();
+}
+
+public static class Side
+{
+    public static object Build() => new Holder<string>().A();
+}

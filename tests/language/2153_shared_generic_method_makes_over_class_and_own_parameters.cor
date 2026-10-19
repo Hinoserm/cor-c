@@ -1,0 +1,71 @@
+// test: shared_generic_method_makes_over_class_and_own_parameters
+// expect-exit: 0
+// expect-output:
+// make True True True True True True Derived`2
+// kind True True
+// many True True
+// is True False True
+// static True True
+// stores 3
+// self True True True Derived`2
+// twice True True True
+// word True True
+// viastatic True
+// typeof True
+// array True
+// isword True False
+//
+// A generic method of a generic class makes Derived<T, K> over its class's
+// T and its own K, as .NET makes it, however it is reached: on a concrete
+// receiver (the instantiation's own copy, MethodDecl.OwnCode); from the
+// class's shared code with K its T, another generic method, a concrete K, a
+// static's, typeof, an array and a type test (a dictionary its caller
+// fills, Monomorphiser.ClassDictionary).
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+abstract class Base<T> { }
+sealed class Derived<T, K> : Base<T> { }
+class Holder<T>
+{
+    public object Make<K>() => new Derived<T, K>();
+    public object Self() => Make<T>();
+    public object Twice<K>() => Make<K>();
+    public object SelfTwice() => Twice<T>();
+    public object MakeWord() => Make<Exception>();
+    public static object MakeStatic<K>() => new Derived<T, K>();
+    public object ViaStatic() => MakeStatic<Exception>();
+    public Type Kind<K>() => typeof(Derived<T, K>);
+    public Type KindWord() => Kind<Exception>();
+    public object Many<K>() => new Derived<T, K>[1];
+    public object ManyWord() => Many<Exception>();
+    public bool Is<K>(object o) => o is Derived<T, K>;
+    public bool IsWord(object o) => Is<Exception>(o);
+    public bool Test(object o) => o is Base<T>;
+}
+static class Program
+{
+    static int Main()
+    {
+        Holder<string> h = new Holder<string>();
+        object m = h.Make<int>(), n = h.Make<string>(), x = h.Make<Exception>();
+        Console.WriteLine("make " + (m is Base<string>) + " " + (m is Derived<string, int>) + " " + (n is Derived<string, string>) + " " + (x is Derived<string, Exception>) + " " + h.Test(m) + " " + h.Test(n) + " " + m.GetType().Name);
+        Console.WriteLine("kind " + (h.Kind<int>() == typeof(Derived<string, int>)) + " " + (h.Kind<Exception>() == typeof(Derived<string, Exception>)));
+        Console.WriteLine("many " + (h.Many<int>() is Derived<string, int>[]) + " " + (h.Many<object>() is Derived<string, object>[]));
+        Console.WriteLine("is " + h.Is<int>(new Derived<string, int>()) + " " + h.Is<int>(new Derived<object, int>()) + " " + h.Is<Exception>(new Derived<string, Exception>()));
+        Console.WriteLine("static " + (Holder<string>.MakeStatic<int>() is Derived<string, int>) + " " + (Holder<string>.MakeStatic<Exception>() is Derived<string, Exception>));
+        List<Base<string>> all = new() { (Base<string>)m, (Base<string>)n, (Base<string>)x };
+        Console.WriteLine("stores " + all.Count);
+        object a = h.Self(), b = h.SelfTwice(), w = h.MakeWord();
+        Console.WriteLine("self " + (a is Base<string>) + " " + (a is Derived<string, string>) + " " + h.Test(a) + " " + a.GetType().Name);
+        Console.WriteLine("twice " + (b is Base<string>) + " " + (b is Derived<string, string>) + " " + h.Test(b));
+        Console.WriteLine("word " + (w is Base<string>) + " " + (w is Derived<string, Exception>));
+        Console.WriteLine("viastatic " + (h.ViaStatic() is Derived<string, Exception>));
+        Console.WriteLine("typeof " + (h.KindWord() == typeof(Derived<string, Exception>)));
+        Console.WriteLine("array " + (h.ManyWord() is Derived<string, Exception>[]));
+        Console.WriteLine("isword " + h.IsWord(new Derived<string, Exception>()) + " " + h.IsWord(new Derived<object, Exception>()));
+        return 0;
+    }
+}

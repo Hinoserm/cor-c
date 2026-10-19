@@ -1,0 +1,27 @@
+// test: shared_generic_method_needs_across_units
+// units: tests/language/support/2156_need_units.cor
+// expect-exit: 0
+// expect-output:
+// True True True Dictionary`2
+//
+// Needs a generic method's copy places in its shared class's type context
+// come only from instance code every unit binds: from a copy only some units
+// make (LocalCopy), the class's table was laid out differently in each, and
+// the link refused t_Holder$string (or read another unit's entry). Expected
+// output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using NeedUnits;
+
+class Bin<U> { public object Go() => new Holder<string>().Make<U>(); }
+
+static class P
+{
+    static int Main()
+    {
+        object a = new Bin<Exception>().Go(), b = Side.Build(), c = new Holder<string>().Make<int>();
+        Console.WriteLine((a is Dictionary<string, string>) + " " + (b is List<string>) + " " + (c is Dictionary<string, string>) + " " + a.GetType().Name);
+        return 0;
+    }
+}

@@ -1688,7 +1688,10 @@ public sealed partial class Lowering
             Type element = type.Element ?? Type.I32;
             VReg count = EvalAs(nw.ArraySize, Type.I32);
             return AllocateArray(nw, count, element, nw.CanonSlot >= 0 ? CanonArrayDescriptor(nw, element)
+                // Not an array of a class a copy of its own makes (Derived<__canon,
+                // int>): its elements are the objects the same code makes.
                 : nw.NeedSlot >= 0 && _needDictionary is not null && HeldByReference(element)
+                  && (element.Symbol is not { Kind: TypeKind.Class } held || SharedCopy(held))
                     ? NeedOr(nw.NeedSlot, () => _e.Address(SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element)))
                     : null);
         }
@@ -2867,7 +2870,7 @@ public sealed partial class Lowering
         if (call.NeedCopy is not null)
         {
             if (call.HiddenNeedBase < 0 || call.HiddenNeeds is not { Count: > 0 } run || _needDictionary is null
-                || !_b.Calls.TryGetValue(call, out MethodSymbol? copyCallee) || copyCallee.Decl is not MethodDecl { CopyNeeds: { } copyAsked }
+                || !_b.Calls.TryGetValue(call, out MethodSymbol? copyCallee) || Canonical(copyCallee).Decl is not MethodDecl { CopyNeeds: { } copyAsked }
                 || copyAsked.Count != run.Count)
             {
                 return Imm(0, IrTypes.Word);
@@ -2895,7 +2898,8 @@ public sealed partial class Lowering
         // ONLY A RUN THE COPY READS WHOLE: a dictionary shorter than what the
         // copy now asks of it (its needs grown since the call was placed,
         // Binder.NoteCopyNeeds) would hand it what lies past the run.
-        if (_b.Calls.TryGetValue(call, out MethodSymbol? callee) && callee.Decl is MethodDecl { CopyNeeds: var asked }
+        // THE COPY THAT RUNS (Canonical), whose dictionary is read.
+        if (_b.Calls.TryGetValue(call, out MethodSymbol? callee) && Canonical(callee).Decl is MethodDecl { CopyNeeds: var asked }
             && (asked?.Count ?? 0) != needs.Count)
         {
             return Imm(0, IrTypes.Word);

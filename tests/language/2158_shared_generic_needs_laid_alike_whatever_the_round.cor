@@ -1,0 +1,31 @@
+// test: shared_generic_needs_laid_alike_whatever_the_round
+// units: tests/language/support/2158_order_units.cor
+// expect-exit: 0
+// expect-output:
+// True True True True
+//
+// Where a shared class's needs are laid in its type context depends only on
+// which calls need what, not on the round each unit first met the class in:
+// a unit binding Holder's bodies before Outer's dictionary grew laid them
+// out otherwise than one binding them after. Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using OrderUnits;
+
+class Early<V> { public object Go() => Util.Outer<V>(); }
+
+static class Late
+{
+    public static object Make<Z>() => new Holder<Z>().B();
+    public static object Twice<Y>() => Make<Y>();
+}
+
+static class P
+{
+    static int Main()
+    {
+        Console.WriteLine((new Early<Exception>().Go() is List<Exception>) + " " + (Side.Build() is List<string>) + " " + (Late.Twice<string>() is Dictionary<string, string>) + " " + (new Holder<string>().B() is Dictionary<string, string>));
+        return 0;
+    }
+}

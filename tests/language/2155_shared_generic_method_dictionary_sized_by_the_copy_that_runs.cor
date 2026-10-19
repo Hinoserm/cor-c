@@ -1,0 +1,32 @@
+// test: shared_generic_method_dictionary_sized_by_the_copy_that_runs
+// expect-exit: 0
+// expect-output:
+// True True True True Dictionary`2
+// True True True
+//
+// A generic method of a word-shaped instantiation reached from other shared
+// code runs the canonical class's copy; its dictionary is sized and spelt
+// by that copy, whose needs grow, not by the instantiation's, which never
+// runs (Binder.RunningDecl): handed a run of the caller's too short, it
+// read past it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+abstract class Base<T> { }
+sealed class Derived<T, K> : Base<T> { }
+static class Util { public static object MakeMap<U>() => new Dictionary<U, U>(); }
+class Holder<T> { public object[] Pair<K>() => new object[] { new List<K>(), Util.MakeMap<K>(), new Derived<T, K>() }; }
+class Bin<U> { public object[] Go() => new Holder<string>().Pair<U>(); }
+static class Program
+{
+    static int Main()
+    {
+        object[] got = new Bin<Exception>().Go();
+        Console.WriteLine((got[0] is List<Exception>) + " " + (got[1] is Dictionary<Exception, Exception>) + " " + (got[2] is Base<string>) + " " + (got[2] is Derived<string, Exception>) + " " + got[1].GetType().Name);
+        object[] twice = new Bin<ArgumentException>().Go();
+        Console.WriteLine((twice[0] is List<ArgumentException>) + " " + (twice[1] is Dictionary<ArgumentException, ArgumentException>) + " " + (twice[2] is Derived<string, ArgumentException>));
+        return 0;
+    }
+}

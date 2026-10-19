@@ -632,7 +632,7 @@ public static class Frontend
 
                     if (origin is not null)
                     {
-                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted, values);
+                        Lang.MethodDecl twin = Lang.Monomorphiser.Specialise(origin, args, wanted, values, classDictionary: true);
                         shared.BodiesCopied();
 
                         twin.File = origin.File;
@@ -686,12 +686,16 @@ public static class Frontend
             // The member's position says which overload it came from.
             // A SHARED METHOD COPY'S NAME SAYS SO (Monomorphiser.CopyName),
             // as the binder spelt it.
-            string wanted = Lang.Monomorphiser.CopyName(template.Name, args, owner.Members.IndexOf(template));
+            // A CANONICAL CLASS'S COPY TAKES A DICTIONARY whatever its
+            // arguments (Monomorphiser.ClassDictionary).
+            string wanted = Lang.Monomorphiser.CopyName(template.Name, args, owner.Members.IndexOf(template),
+                Lang.Monomorphiser.ClassDictionary(owner, template));
             bool own = OwnCode(owner, args);
 
             if (!owner.Members.Any(m => m.Name == wanted))
             {
-                Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
+                Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values,
+                    classDictionary: owner.CanonMadeWritten is not null);
 
                 copy.File = template.File;
                 copy.OwnCode = own;
@@ -758,7 +762,8 @@ public static class Frontend
                 continue;
             }
 
-            Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
+            Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values,
+                classDictionary: owner.CanonMadeWritten is not null);
 
             copy.File = template.File;
             copy.OwnCode = OwnCode(owner, args);

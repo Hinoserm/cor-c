@@ -131,6 +131,12 @@ public sealed class CallExpr : Expr
     /// <summary>Where HiddenNeeds are kept: the calling canonical class's type context, or the calling copy's own dictionary.</summary>
     public TypeDecl? NeedClass { get; set; }
     public MethodDecl? NeedCopy { get; set; }
+    /// <summary>
+    /// What the callee's dictionary's __canon(i) -- its class's parameter i --
+    /// is at this call: a type the call knows, the caller's own parameter, or
+    /// null, erased (Binder.SpeltFor).
+    /// </summary>
+    public List<TypeRef?>? HiddenNeedClassMap { get; set; }
 
     // The method the checker bound this call to (BindResult.Calls), and which
     // binding bound it (NodeBinding): read back only by that binding.
