@@ -11007,6 +11007,59 @@ class ListEnumerator<T> : IEnumerator<T> {
     }
 }
 
+/// OFTYPE'S AND CAST'S WALK (Enumerable.OfType, Cast): every item of a
+/// sequence of objects that is an R, or each one cast to an R, walked anew
+/// for each enumerator as the iterators were. A CLASS OVER R, so that in the
+/// one copy every R over references shares, `is R` and `(R)` read what R is
+/// from the object's type context; an iterator there was the copy over
+/// object, and kept every item.
+sealed class TypedWalk<R> : IEnumerable<R> {
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+    private readonly IEnumerable source;
+    private readonly bool casts;
+
+    public TypedWalk(IEnumerable source, bool casts) {
+        this.source = source;
+        this.casts = casts;
+    }
+
+    public IEnumerator<R> GetEnumerator() { return new TypedWalker<R>(source.GetEnumerator(), casts); }
+}
+
+/// One walk of a TypedWalk: what the source's walk gives, tested or cast.
+/// Reset is refused, as an iterator's is; Dispose disposes the source's
+/// walk, as the foreach over it did.
+sealed class TypedWalker<R> : IEnumerator<R> {
+    object? IEnumerator.Current => Current;
+    private readonly IEnumerator walk;
+    private readonly bool casts;
+    private R current;
+
+    public TypedWalker(IEnumerator walk, bool casts) {
+        this.walk = walk;
+        this.casts = casts;
+        current = default(R)!;
+    }
+
+    public R Current => current;
+
+    public bool MoveNext() {
+        while (walk.MoveNext()) {
+            object? item = walk.Current;
+            if (casts) { current = (R)item!; return true; }
+            if (item is R typed) { current = typed; return true; }
+        }
+        current = default(R)!;
+        return false;
+    }
+
+    public void Reset() { throw new NotSupportedException("Specified method is not supported."); }
+
+    public void Dispose() {
+        if (walk is IDisposable done) { done.Dispose(); }
+    }
+}
+
 /// What a collection expression with a spread becomes. `[a, ..rest, b]` is
 /// written by the compiler as a chain of these over the collection being
 /// built -- a List (Gather, Add, AddRange) for an array or an interface
@@ -12770,23 +12823,19 @@ static class Enumerable {
         foreach (T item in source) { foreach (C each in collectionSelector(item)) { yield return resultSelector(item, each); } }
     }
 
+    // A WALK THAT ASKS WHAT R IS, a class over R (TypedWalk): an iterator
+    // method called from a shared copy with an R only run time knows was
+    // the copy over object, which takes no hidden argument -- OfType kept
+    // every item there was and handed it on as an R, and Cast checked none.
     public static IEnumerable<R> OfType<R>(this IEnumerable source) {
         NotNull(source, "source");
-        return OfTypeIterator<R>(source);
-    }
-
-    private static IEnumerable<R> OfTypeIterator<R>(IEnumerable source) {
-        foreach (object? item in source) { if (item is R typed) { yield return typed; } }
+        return new TypedWalk<R>(source, false);
     }
 
     public static IEnumerable<R> Cast<R>(this IEnumerable source) {
         NotNull(source, "source");
         if (source is IEnumerable<R> already) { return already; }
-        return CastIterator<R>(source);
-    }
-
-    private static IEnumerable<R> CastIterator<R>(IEnumerable source) {
-        foreach (object? item in source) { yield return (R)item!; }
+        return new TypedWalk<R>(source, true);
     }
 
     // ---- partitioning (deferred) --------------------------------------------

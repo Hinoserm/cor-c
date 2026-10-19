@@ -1,0 +1,53 @@
+// test: OfType and Cast called from a shared generic copy keep and check what R is
+// expect-exit: 0
+// expect-output:
+// count 2
+// joined a,b
+// typed True
+// cast Unable to cast object of type 'System.Int32' to type 'System.String'.
+// cast ok x||y
+// ints 1,3
+// reset NotSupportedException
+// cast ints Unable to cast object of type 'System.String' to type 'System.Int32'.
+//
+// From a class over references, OfType<T> is called with a T only run
+// time knows, and the call reaches the shared copy, which is handed T's
+// descriptor; but OfType walked through an iterator method, which takes
+// no such argument, so the walk was the copy over object -- every item
+// kept, a boxed int handed on as a string -- and Cast checked nothing.
+// The walk is a class over R now (TypedWalk), which reads what R is.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+class Bag<T>
+{
+    public List<object> All = new();
+    public int Count() => All.OfType<T>().Count();
+    public string Joined() => string.Join(",", All.OfType<T>());
+    public List<T> Cast() => All.Cast<T>().ToList();
+    public bool Typed() => (object)All.OfType<T>() is IEnumerable<T>;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Bag<string> b = new();
+        b.All.Add("a"); b.All.Add(1); b.All.Add("b"); b.All.Add(null!); b.All.Add(2.5);
+        Console.WriteLine("count " + b.Count());
+        Console.WriteLine("joined " + b.Joined());
+        Console.WriteLine("typed " + b.Typed());
+        try { Console.WriteLine("cast " + b.Cast().Count); } catch (InvalidCastException e) { Console.WriteLine("cast " + e.Message); }
+        Bag<string> c = new(); c.All.Add("x"); c.All.Add(null!); c.All.Add("y");
+        Console.WriteLine("cast ok " + string.Join("|", c.Cast()));
+        IEnumerable list = new List<object> { 1, "two", 3 };
+        Console.WriteLine("ints " + string.Join(",", list.OfType<int>()));
+        IEnumerator<int> e2 = list.OfType<int>().GetEnumerator();
+        e2.MoveNext();
+        try { e2.Reset(); Console.WriteLine("reset ok"); } catch (NotSupportedException ex) { Console.WriteLine("reset " + ex.GetType().Name); }
+        try { Console.WriteLine("cast ints " + list.Cast<int>().Sum()); } catch (InvalidCastException ex) { Console.WriteLine("cast ints " + ex.Message); }
+        return 0;
+    }
+}
