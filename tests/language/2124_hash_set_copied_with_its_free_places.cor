@@ -1,0 +1,53 @@
+// test: a HashSet made from another compared alike keeps its free places, as .NET's copies it
+// expect-exit: 0
+// expect-output:
+// copy w,y,z
+// ordinal p,u,t,s
+// other comparer p,s,t,u
+// shrunk 38,39,100,101
+// tohashset p,v,s
+//
+// .NET's HashSet constructor from another HashSet with an equal comparer
+// copies its entries whole (ConstructFrom), the freed places and their
+// free list with them, unless that would be more than twice the room the
+// members need; what is added to the copy then goes where it would have in
+// the original. The copy here re-added each member, squeezed, and the
+// next one added came last.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static string Show(HashSet<string> s) => string.Join(",", s);
+
+    static int Main()
+    {
+        var a = new HashSet<string> { "x", "y", "z" };
+        a.Remove("x");
+        var b = new HashSet<string>(a);
+        b.Add("w");
+        Console.WriteLine("copy " + Show(b));
+
+        var c = new HashSet<string>(StringComparer.Ordinal) { "p", "q", "r", "s" };
+        c.Remove("q"); c.Remove("r");
+        var d = new HashSet<string>(c, StringComparer.Ordinal);
+        d.Add("t"); d.Add("u");
+        Console.WriteLine("ordinal " + Show(d));
+        var e = new HashSet<string>(c, StringComparer.OrdinalIgnoreCase);
+        e.Add("t"); e.Add("u");
+        Console.WriteLine("other comparer " + Show(e));
+
+        var big = new HashSet<int>();
+        for (int i = 0; i < 40; i++) big.Add(i);
+        for (int i = 0; i < 38; i++) big.Remove(i);
+        var small = new HashSet<int>(big);
+        small.Add(100); small.Add(101);
+        Console.WriteLine("shrunk " + string.Join(",", small));
+
+        var f = c.ToHashSet(StringComparer.Ordinal);
+        f.Add("v");
+        Console.WriteLine("tohashset " + Show(f));
+        return 0;
+    }
+}

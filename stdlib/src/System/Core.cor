@@ -21987,9 +21987,38 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // its free places with it; this adds its members, so what is added to
     // the copy afterwards may be walked in another order.)
     private void Fill(IEnumerable<T> source) {
+        if (source is HashSet<T> set && SameComparer(set)) { CopyFrom(set); return; }
         if (source is ICollection<T> sized && sized.Count > 0) { room = HashSizes.Prime(sized.Count); }
         foreach (T value in source) { Add(value); }
         if (count > 0 && room / count > 3) { TrimExcess(); }
+    }
+
+    // ANOTHER SET COMPARED ALIKE IS COPIED WHOLE, as .NET's ConstructFrom
+    // copies it -- its free places and the order they are filled in with
+    // it, so what is added to the copy goes where it would in the other --
+    // unless .NET's would be made smaller: past twice what it holds, the
+    // members are added afresh, in order, into the room they need.
+    private void CopyFrom(HashSet<T> other) {
+        if (other.count == 0) { return; }
+        if (HashSizes.Expanded(other.count + 1) >= other.room) {
+            items = (T[])other.items.Clone();
+            hashes = (int[])other.hashes.Clone();
+            count = other.count;
+            filled = other.filled;
+            mask = other.mask;
+            room = other.room;
+            order = other.order is { } list ? (int[])list.Clone() : null;
+            placeOf = other.placeOf is { } places ? (int[])places.Clone() : null;
+            ordered = other.ordered;
+            vacant = other.vacant is { } free ? (int[])free.Clone() : null;
+            vacancies = other.vacancies;
+            return;
+        }
+        room = HashSizes.Prime(other.count);
+        for (int n = 0; n < other.ordered; n++) {
+            int i = other.SlotAt(n);
+            if (i >= 0) { Add(other.items[i]); }
+        }
     }
 
     public int Count => count;
