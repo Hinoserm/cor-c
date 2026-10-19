@@ -12426,26 +12426,19 @@ class OrderedSequence<T> : IOrderedEnumerable<T>, IEnumerable<T> {
         return new OrderedSequence<T>(source, then);
     }
 
+    // ITS SOURCE BUFFERED BY A LIST, not by Enumerable.ToArray: the two
+    // calling each other were a cycle, and every sequence ToArray was handed
+    // was taken to escape through it.
+    private T[] Buffered() { return new List<T>(source).ToArray(); }
+
     // ONE ELEMENT IS SORTED TOO, as .NET's MoveNext sorts whatever is not
     // empty: its key at every level is asked for once.
     public IEnumerator<T> GetEnumerator() {
-        T[] items = Enumerable.ToArray(source);
+        T[] items = Buffered();
         if (items.Length != 0) {
             int[] map = SortedMap(items);
             for (int i = 0; i < map.Length; i++) { yield return items[map[i]]; }
         }
-    }
-
-    /// WHAT ToArray AND ToList MAKE OF IT, as .NET's ordered sequence makes
-    /// it: one element or none is the source as it is, and no key is asked
-    /// for -- where a walk of one element asks for each of its keys.
-    internal T[] ToArray() {
-        T[] items = Enumerable.ToArray(source);
-        if (items.Length <= 1) { return items; }
-        int[] map = SortedMap(items);
-        T[] sorted = new T[items.Length];
-        for (int i = 0; i < map.Length; i++) { sorted[i] = items[map[i]]; }
-        return sorted;
     }
 
     // THE ELEMENTS' PLACES IN SORTED ORDER: this walk's levels made from the
@@ -13223,17 +13216,16 @@ static class Enumerable {
 
     public static List<T> ToList<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
-        // AN ORDERED SEQUENCE MAKES ITS OWN, as .NET's does: one element or
-        // none is not sorted, and no key is asked for it (OrderedSequence
-        // .ToArray). Asked by its exact type, as Items asks a List's.
-        if (source.GetType() == typeof(OrderedSequence<T>)) { return new List<T>(((OrderedSequence<T>)source).ToArray()); }
+        // NOT ASKED WHETHER IT IS AN ORDERED SEQUENCE, which .NET's asks so as
+        // to leave one element unsorted and its keys unasked: the lifetime
+        // rules took every sequence handed here for one, its fields for an
+        // ordered sequence's, and a list a Where walked went to the collector
+        // (1210). One element is sorted, its keys asked once a level.
         return new List<T>(source);
     }
 
     public static T[] ToArray<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
-        // An ordered sequence makes its own, as ToList's (OrderedSequence.ToArray).
-        if (source.GetType() == typeof(OrderedSequence<T>)) { return ((OrderedSequence<T>)source).ToArray(); }
         // A collection straight into an array its size, as .NET's does.
         if (source is ICollection<T> collection) {
             T[] copied = new T[collection.Count];
@@ -13552,10 +13544,13 @@ static class Enumerable {
         NotNull(source, "source");
         if (source is IReadOnlyCollection<T> collection) { return collection.Count; }
         // AN ORDERED SEQUENCE IS COUNTED BY ITS SOURCE, as .NET's counts it:
-        // nothing is sorted and no key is asked for.
-        if (source.GetType() == typeof(OrderedSequence<T>)) { return Count(((OrderedSequence<T>)source).Source); }
+        // nothing is sorted and no key is asked for. Its source counted here,
+        // not by a call of this one: a Count that called itself was a cycle,
+        // and every sequence any Count was asked of was taken to escape.
+        IEnumerable<T> counted = source.GetType() == typeof(OrderedSequence<T>) ? ((OrderedSequence<T>)source).Source : source;
+        if (!ReferenceEquals(counted, source) && counted is IReadOnlyCollection<T> sized) { return sized.Count; }
         int count = 0;
-        using (IEnumerator<T> walk = source.GetEnumerator()) { while (walk.MoveNext()) { count = checked(count + 1); } }
+        using (IEnumerator<T> walk = counted.GetEnumerator()) { while (walk.MoveNext()) { count = checked(count + 1); } }
         return count;
     }
 
