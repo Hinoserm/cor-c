@@ -185,13 +185,15 @@ public static class ElfReader
     /// WHAT A LINK LEAVES IN THE FILE: a unit's IR, and the notes the link
     /// reads once or twice and takes out before the image is laid out -- the
     /// lifetime and region hints, the managed layouts, the coalescing
-    /// contract. Held in memory, the compiler's own link kept 170 MB of
-    /// notes, half of what its objects took, from the first phase to the last.
+    /// contract, the interrupt checks' facts. Held in memory, the compiler's
+    /// own link kept 170 MB of notes, half of what its objects took, from
+    /// the first phase to the last -- and 512 MB more of interrupt facts,
+    /// for a program with no interrupt handler.
     /// </summary>
     internal static bool LeftInFile(string name)
         => name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName or Corsac.Lang.Lto.HeapRecords.SectionName
             or Corsac.Lang.Lto.RegionHints.SectionName or ManagedLayoutContract.SectionName
-            or Corsac.Lang.Lto.CoalescingContract.SectionName;
+            or Corsac.Lang.Lto.CoalescingContract.SectionName or Corsac.Lang.Lto.InterruptNotes.SectionName;
 
     /// <summary>
     /// An object read from a file that stays where it is while the object is

@@ -20,7 +20,9 @@ namespace Corsac.Lang.Lto;
 public static class InterruptNotes
 {
     public const string SectionName = ".corsac.irq";
-    const int Version = 1;
+    // 2: the handlers counted in the header, so a link with none reads no
+    // more of the facts than that.
+    const int Version = 2;
 
     /// <summary>
     /// One method: its symbol, its name as written, whether it is an
@@ -43,17 +45,20 @@ public static class InterruptNotes
         // INTO AN ARRAY OF ITS EXACT SIZE, counted first: a large unit's facts
         // are megabytes, and a stream grown by doubling to them, then copied
         // out, left several times that to the collector.
-        long size = 8;
+        long size = 12;
+        int handlers = 0;
         foreach (Fact f in facts)
         {
             size += Written(f.Name) + Written(f.Display) + 1 + Written(f.Allocates ?? "") + 4;
             foreach (string call in f.Calls) size += Written(call);
+            if (f.Handler) handlers++;
         }
         byte[] bytes = new byte[checked((int)size)];
         using MemoryStream stream = new(bytes);
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
         {
             writer.Write(Version);
+            writer.Write(handlers);
             writer.Write(facts.Count);
             foreach (Fact f in facts)
             {
@@ -87,6 +92,17 @@ public static class InterruptNotes
         obj.Sections.Add(section);
     }
 
+    /// <summary>How many interrupt handlers the object's facts name: its header's count alone, read.</summary>
+    public static int HandlerCount(ObjectFile obj)
+    {
+        Section? section = obj.Sections.FirstOrDefault(s => s.Name == SectionName);
+        if (section is null) return 0;
+        using Stream stream = section.OpenRead();
+        using BinaryReader reader = new(stream, Encoding.UTF8);
+        if (reader.ReadInt32() != Version) throw new ElfFormatException("Unknown " + SectionName + " version");
+        return reader.ReadInt32();
+    }
+
     /// <summary>The object's facts, or null when it carries none.</summary>
     public static List<Fact>? Read(ObjectFile obj)
     {
@@ -95,6 +111,7 @@ public static class InterruptNotes
         using Stream stream = section.OpenRead();
         using BinaryReader reader = new(stream, Encoding.UTF8);
         if (reader.ReadInt32() != Version) throw new ElfFormatException("Unknown " + SectionName + " version");
+        reader.ReadInt32();
         int count = reader.ReadInt32();
         List<Fact> facts = new(count);
         for (int i = 0; i < count; i++)
@@ -119,9 +136,15 @@ public static class InterruptNotes
     /// </summary>
     public static List<string> Check(IEnumerable<ObjectFile> objects)
     {
+        // NO HANDLER ANYWHERE, NOTHING TO WALK: each object's header says how
+        // many it has, and a link of none -- every program but a kernel's --
+        // reads no fact. Read whole, the compiler's own link parsed half a
+        // gigabyte of facts it had no handler to ask about.
+        List<ObjectFile> all = objects.ToList();
+        if (all.All(obj => HandlerCount(obj) == 0)) return new List<string>();
         Dictionary<string, Fact> facts = new(StringComparer.Ordinal);
         List<Fact> handlers = new();
-        foreach (ObjectFile obj in objects)
+        foreach (ObjectFile obj in all)
         {
             List<Fact>? read = Read(obj);
             if (read is null) continue;
