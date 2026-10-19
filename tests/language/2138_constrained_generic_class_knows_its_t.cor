@@ -1,0 +1,52 @@
+// test: a generic class whose parameter is constrained to a type answers for its own T, not the constraint
+// expect-exit: 0
+// expect-output:
+// mine 2 True
+// names Ann,Ann
+// first Ann
+// ids c,c
+// cast Unable to cast object of type 'Order' to type 'Customer'.
+// max pear
+//
+// A class over references shared one copy, and a parameter constrained to
+// a type stood on its constraint there, so that `x.Id` over a T : IEntity
+// was an interface call; but what that copy asked of T at run time it
+// asked of IEntity: Repo<Customer>.Mine kept the Order too, and its Name
+// was read off an Order. Such a class is copied per argument now.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+interface IEntity { string Id { get; } }
+class Customer : IEntity { public string Id => "c"; public string Name = "Ann"; }
+class Order : IEntity { public string Id => "o"; }
+
+class Repo<T> where T : IEntity
+{
+    public List<IEntity> All = new();
+    public List<T> Mine() => All.OfType<T>().ToList();
+    public T? First() { foreach (IEntity e in All) if (e is T t) return t; return default; }
+    public T Cast(int i) => (T)All[i];
+    public string Ids() => string.Join(",", Mine().Select(m => m.Id));
+}
+
+class Shapes<T> where T : class, IComparable<T>
+{
+    public T Max(T a, T b) => a.CompareTo(b) >= 0 ? a : b;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Repo<Customer> r = new();
+        r.All.Add(new Customer()); r.All.Add(new Order()); r.All.Add(new Customer());
+        Console.WriteLine("mine " + r.Mine().Count + " " + ((object)r.Mine() is List<Customer>));
+        Console.WriteLine("names " + string.Join(",", r.Mine().Select(c => c.Name)));
+        Console.WriteLine("first " + r.First()?.Name);
+        Console.WriteLine("ids " + r.Ids());
+        try { Console.WriteLine("cast " + r.Cast(1).Name); } catch (InvalidCastException e) { Console.WriteLine("cast " + e.Message); }
+        Console.WriteLine("max " + new Shapes<string>().Max("pear", "apple"));
+        return 0;
+    }
+}

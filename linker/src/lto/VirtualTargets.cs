@@ -436,15 +436,7 @@ public static class VirtualTargets
             if (_made is not null) return _made;
             Made made = new() { Defined = _named.Count };
             int w = _word;
-            // What each object defines, by name, for its descriptors' tables.
-            Dictionary<ObjectFile, Dictionary<string, Symbol>> defined = new();
-            Dictionary<string, Symbol> DefinedIn(ObjectFile obj)
-            {
-                if (defined.TryGetValue(obj, out var known)) return known;
-                Dictionary<string, Symbol> names = new(StringComparer.Ordinal);
-                foreach (Symbol symbol in obj.Symbols) if (symbol.IsDefined && !symbol.IsFunction) names.TryAdd(symbol.Name, symbol);
-                return defined[obj] = names;
-            }
+            Dictionary<string, Symbol> DefinedIn(ObjectFile obj) => OwnData(obj);
             // Per section, the ranges whose relocations make nothing, and
             // each descriptor's self word.
             Dictionary<Section, List<(long Start, long End)>> skipped = new();
@@ -660,9 +652,25 @@ public static class VirtualTargets
             return _slots = slots;
         }
 
-        private IEnumerable<string> TableEntries(string table)
+        // What each object defines, by name, for its descriptors' tables.
+        private readonly Dictionary<ObjectFile, Dictionary<string, Symbol>> _ownData = new();
+        private Dictionary<string, Symbol> OwnData(ObjectFile obj)
         {
-            if (!_tables.TryGetValue(table, out var at)) yield break;
+            if (_ownData.TryGetValue(obj, out var known)) return known;
+            Dictionary<string, Symbol> names = new(StringComparer.Ordinal);
+            foreach (Symbol symbol in obj.Symbols) if (symbol.IsDefined && !symbol.IsFunction) names.TryAdd(symbol.Name, symbol);
+            return _ownData[obj] = names;
+        }
+
+        // A DESCRIPTOR'S TABLES ARE ITS OWN OBJECT'S FIRST: a display or an
+        // interface list is local to the unit that laid the descriptor down,
+        // and a local descriptor two units define is each unit's -- read by
+        // name anywhere, every definition had the first unit's ancestry.
+        private IEnumerable<string> TableEntries(int d, string table)
+        {
+            (Section Section, long Offset, long Size) at;
+            if (OwnData(_descriptorObjects[d]).TryGetValue(table, out Symbol? own)) at = (own.Section!, own.Offset, own.Size);
+            else if (!_tables.TryGetValue(table, out at)) yield break;
             foreach (Relocation r in at.Section.Relocs)
                 if (r.Offset >= at.Offset && (at.Size == 0 || r.Offset < at.Offset + at.Size)) yield return r.Symbol;
         }
@@ -678,7 +686,7 @@ public static class VirtualTargets
                 int at = pending.Pop();
                 foreach (var (offset, symbol, _) in Relocs(at))
                     if (offset == Display * _word || offset == Interfaces * _word)
-                        foreach (string up in TableEntries(symbol))
+                        foreach (string up in TableEntries(at, symbol))
                             if ((up.StartsWith("t_", StringComparison.Ordinal) || up.StartsWith("i_", StringComparison.Ordinal)) && found.Add(up)
                                 && ByName.TryGetValue(up, out int upper))
                                 pending.Push(upper);

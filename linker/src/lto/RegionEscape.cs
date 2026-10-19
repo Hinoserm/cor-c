@@ -591,6 +591,30 @@ internal sealed class RegionEscape
     /// through LINQ, and the compiler's own link spent most of its time
     /// here. The same walk, in the same order, to the same answer.
     /// </summary>
+    /// <summary>
+    /// The sites the given origins may be, FOR A REPORT: walked as SitesOf
+    /// walks them with no read recorded. Recorded, a report's walk while a
+    /// solve was reading (a unified class's holders, a why's paths) made the
+    /// component read more than its solve did -- past MostRead, every change
+    /// in place solved it again -- so a run asking for a report solved what
+    /// one asking for none did not, and drew the inclusion pool otherwise.
+    /// </summary>
+    internal int[] ReportSitesOf(int[] origins)
+    {
+        HashSet<int>? reading = _reading, shapeReading = _shapeReading;
+        bool readingAll = _readingAll, shapeReadingAll = _shapeReadingAll;
+        _reading = null;
+        _shapeReading = null;
+        try { return SitesOf(origins); }
+        finally
+        {
+            _reading = reading;
+            _shapeReading = shapeReading;
+            _readingAll = readingAll;
+            _shapeReadingAll = shapeReadingAll;
+        }
+    }
+
     public int[] SitesOf(int[] origins)
     {
         Walk(origins);
@@ -4341,7 +4365,7 @@ internal sealed class RegionEscape
             while (steps.Count < 12 && seen.Add(node))
             {
                 string name = _cellName is not null && _cellName.TryGetValue(node, out var cell)
-                    ? $"cell {(cell.O == 0 ? "of the unknown object" : Describe(cell.O) + " sites " + string.Join(",", _owner.SitesOf(_origins[cell.O]).Take(6).Select(_owner.SiteName)))} +{StepText(cell.Offset)}"
+                    ? $"cell {(cell.O == 0 ? "of the unknown object" : Describe(cell.O) + " sites " + string.Join(",", _owner.ReportSitesOf(_origins[cell.O]).Take(6).Select(_owner.SiteName)))} +{StepText(cell.Offset)}"
                       + (StepFamily(cell.Offset) is int fam and >= 0 ? " " + _owner.FamilyName(fam) : "")
                     : $"node {node}";
                 (int From, string How) via = default;
@@ -4372,7 +4396,7 @@ internal sealed class RegionEscape
             _applying = callee + " (" + targets.Length + " targets" + (targets.Length >= 1 ? " " + _owner._functions[targets[0]].Name : "") + ")";
             if (_owner.Why is null || _owner.Progress is null || _owner.WhyFunction?.Invoke(f) != true) return;
             var leaks = applied.Cells.Where(c => c.From == 0).Select(c => applied.Objects[c.To]).Select(o => o.Kind + " " + o.Param + " [" + string.Join(",", o.Path.Select(Step)) + "]"
-                + (o.Kind == Kind.Made && o.Origins.Length > 0 ? " (sites " + string.Join(",", _owner.SitesOf(o.Origins).Take(8)) + ")" : ""));
+                + (o.Kind == Kind.Made && o.Origins.Length > 0 ? " (sites " + string.Join(",", _owner.ReportSitesOf(o.Origins).Take(8)) + ")" : ""));
             if (applied.IsUnknown || leaks.Any())
                 _owner.Progress($"escape graphs why: in {_owner._functions[f].Name}: call {callee} ({targets.Length} targets{(targets.Length == 1 ? " " + _owner._functions[targets[0]].Name : "")}) {(applied.IsUnknown ? "is the unknown call" : "leaks " + string.Join("; ", leaks))}");
         }
@@ -5036,7 +5060,7 @@ internal sealed class RegionEscape
                                 int to = _locObject[loc];
                                 if (!seen.Add(to)) continue;
                                 next.Enqueue((to, at.O));
-                                foreach (int site in _owner.SitesOf(_origins[to]))
+                                foreach (int site in _owner.ReportSitesOf(_origins[to]))
                                     if (why(site)) _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}{(_members.Length > 1 ? " (cycle of " + _members.Length + ")" : "")}: site {site} reached from {(at.O == 0 ? "the unknown object" : Describe(at.O))} +{StepText(offset)} as {Describe(to)}, saturated {_saturatedCount}");
                             }
                 // WHICH OF ITS OWN NODES MAY BE THE UNKNOWN OBJECT.
@@ -5053,7 +5077,7 @@ internal sealed class RegionEscape
                         foreach (var (node, from, how) in _unknownOrder.Where(r => r.From >= 0 || !r.How.Contains("last summary")).Take(40))
                         {
                             string name = _cellName is not null && _cellName.TryGetValue(node, out var cell)
-                                ? $"cell {(cell.O == 0 ? "of the unknown object" : Describe(cell.O) + " sites " + string.Join(",", _owner.SitesOf(_origins[cell.O]).Take(4).Select(_owner.SiteName)))} +{StepText(cell.Offset)}"
+                                ? $"cell {(cell.O == 0 ? "of the unknown object" : Describe(cell.O) + " sites " + string.Join(",", _owner.ReportSitesOf(_origins[cell.O]).Take(4).Select(_owner.SiteName)))} +{StepText(cell.Offset)}"
                                   + (StepFamily(cell.Offset) is int fam and >= 0 ? " " + _owner.FamilyName(fam) : "")
                                 : $"node {node}";
                             _owner.Progress?.Invoke($"escape graphs why: in {_owner._functions[f].Name}: unknown, in order: {name} {how}{(from >= 0 ? " from node " + from : "")}");
@@ -5097,7 +5121,7 @@ internal sealed class RegionEscape
                             if (Pts(st.Value) is not { } values) continue;
                             List<int> asked = new();
                             foreach (int loc in values)
-                                foreach (int site in _owner.SitesOf(_origins[_locObject[loc]]))
+                                foreach (int site in _owner.ReportSitesOf(_origins[_locObject[loc]]))
                                     if (why(site)) asked.Add(site);
                             if (asked.Count == 0) continue;
                             string value = st.Value - _base[m] >= 0 && st.Value - _base[m] < _owner._functions[f].Nodes ? "node " + (st.Value - _base[m]) : "made node " + st.Value + " (applying " + AppliedFor(st.Value) + ")";
@@ -5156,10 +5180,10 @@ internal sealed class RegionEscape
                     {
                         foreach (int node in loop.Live)
                             if (OriginsHeld(m, new[] { node }, Array.Empty<int>()) is { Length: > 0 } byNode)
-                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: node {node} live where a lap ends holds {string.Join(", ", _owner.SitesOf(byNode).Select(_owner.SiteName))}; written by {string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C))}");
+                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: node {node} live where a lap ends holds {string.Join(", ", _owner.ReportSitesOf(byNode).Select(_owner.SiteName))}; written by {string.Join("; ", function.Constraints.Where(c => c.A == node).Select(c => c.Kind + " " + c.B + " " + c.C))}");
                         for (int slot = 0; slot < function.Slots; slot++)
                             if (OriginsHeld(m, Array.Empty<int>(), new[] { slot }) is { Length: > 0 } bySlot)
-                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: slot {slot} holds {string.Join(", ", _owner.SitesOf(bySlot).Select(_owner.SiteName))}");
+                                _owner.Progress?.Invoke($"escape graphs why: {_owner._functions[f].Name} loop at block {loop.Header}: slot {slot} holds {string.Join(", ", _owner.ReportSitesOf(bySlot).Select(_owner.SiteName))}");
                     }
                 }
                 _owner.LoopHeld[f] = held;
@@ -5194,7 +5218,7 @@ internal sealed class RegionEscape
             int told = 0;
             while (next.TryDequeue(out int o) && told < 40)
             {
-                foreach (int site in _owner.SitesOf(_origins[o]))
+                foreach (int site in _owner.ReportSitesOf(_origins[o]))
                 {
                     if (!asked(site) || told >= 40) continue;
                     told++;
@@ -5924,7 +5948,7 @@ internal sealed class RegionEscape
                 _owner._globalRefs.UnionWith(Info(_global).All);
                 // Kept only in the global class: no caller's answer names it.
                 _owner._unseenRefs.UnionWith(Info(_global).All);
-                _owner.Progress?.Invoke($"escape graphs: unified global class reaches {Info(_global).All.Length} origins ({_owner.SitesOf(Info(_global).All).Length} sites); {_globalClasses!.Count} of {_parent.Count} classes");
+                _owner.Progress?.Invoke($"escape graphs: unified global class reaches {Info(_global).All.Length} origins ({_owner.ReportSitesOf(Info(_global).All).Length} sites); {_globalClasses!.Count} of {_parent.Count} classes");
             }
             bool rooted = _owner._rooted[f];
             if (_owner._wanted[f] || rooted)

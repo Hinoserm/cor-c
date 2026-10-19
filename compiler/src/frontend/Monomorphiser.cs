@@ -1195,9 +1195,15 @@ public sealed class Monomorphiser
     /// parameterless constructor in the program kept for it. A generic
     /// METHOD is copied per argument already; shared code cannot hand a
     /// `new()` parameter a word, its own parameter being `new()` too.
+    ///
+    /// NOR WHEN ONE IS CONSTRAINED TO A TYPE (`where T : IEntity`): the shared
+    /// copy stood such a T on its constraint, so what its code asked of T at
+    /// run time it asked of the constraint -- `OfType<T>()` kept every
+    /// IEntity, a `(T)x` passed any IEntity, and a Repo<Customer> handed an
+    /// Order back as a Customer. A copy per argument knows its T.
     /// </summary>
     private static bool Shareable(TypeDecl template)
-        => !template.TypeParams.Any(p => p.Struct || p.New || p.Unmanaged || p.Made) && !HasStaticState(template);
+        => !template.TypeParams.Any(p => p.Struct || p.New || p.Unmanaged || p.Made || p.Constraints.Count > 0) && !HasStaticState(template);
 
     /// <summary>
     /// A GENERIC TYPE'S STATICS ARE EACH INSTANTIATION'S OWN in C#: EmptyArray
@@ -1243,28 +1249,15 @@ public sealed class Monomorphiser
             // one that met Wrap<__canon> first.
             _claimedByRef[name] = template.Kind is not (TypeKind.Struct or TypeKind.Enum);
 
-            // A CONSTRAINED PARAMETER STANDS ON ITS CONSTRAINT IN THIS COPY.
-            //
-            // `class Bag<T> where T : IShape` calling `x.Area()` has to compile
-            // HERE as well as in the copies made per type argument, and with T
-            // a bare machine word there was nothing to call: the checker said
-            // 'object' has no member 'Area', and a generic class with an
-            // interface constraint could not be written at all. Standing T on
-            // IShape makes it an interface call on a word, which is right for
-            // every type argument the constraint admits.
-            //
-            // The NAME is still the all-__canon one, because that is what a
-            // consumer asks for and what this copy exists to answer.
-            //
-            // Only a constraint naming a plain reference type: a value type is
-            // not word-shaped and never shares this copy, and a constraint with
-            // type arguments of its own would need those substituted too.
+            // NO CONSTRAINED PARAMETER REACHES THIS COPY: a template with one
+            // is copied per argument (Shareable), where `x.Area()` over a T
+            // constrained to IShape is a call on what T is. Stood on its
+            // constraint here, T answered as the constraint at run time.
             // EACH __canon KNOWS WHICH PARAMETER IT IS (TypeRef.CanonIndex),
             // so that a generic method called with it is handed the argument
             // the object's type context holds (Monomorphiser.CopyName).
             List<TypeRef> bodyArgs = template.TypeParams
-                .Select((p, i) => Constraining(p)
-                          ?? new TypeRef { Name = CanonName, CanonIndex = i, Line = template.Line, Col = template.Col })
+                .Select((p, i) => new TypeRef { Name = CanonName, CanonIndex = i, Line = template.Line, Col = template.Col })
                 .ToList();
 
             // External when it came from a library: the code is in that
@@ -1273,20 +1266,6 @@ public sealed class Monomorphiser
             _pending.Enqueue(new Job(template, bodyArgs, name, template.External, null));
         }
         return name;
-    }
-
-    /// <summary>The constraint a shared copy may stand a type parameter on, or null.</summary>
-    private TypeRef? Constraining(TypeParam p)
-    {
-        foreach (TypeRef c in p.Constraints)
-        {
-            if (c.Args.Count == 0 && c.ArrayRank == 0 && c.PointerDepth == 0
-                && _byRef.Contains(c.Name))
-            {
-                return new TypeRef { Name = c.Name, Line = c.Line, Col = c.Col };
-            }
-        }
-        return null;
     }
 
     /// <summary>The type parameters of the template being copied, by name: what each is constrained to (`new()`).</summary>

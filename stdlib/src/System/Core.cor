@@ -13481,11 +13481,10 @@ static class Enumerable {
     public static bool Any<T>(this IEnumerable<T> source) {
         NotNull(source, "source");
         if (Sized(source) is int count) { return count != 0; }
-        // An ordered sequence over a collection is answered by its count, as
-        // .NET's is: nothing sorted, no key asked for (Count).
-        IEnumerable<T> counted = source;
-        while (counted.GetType() == typeof(OrderedSequence<T>)) { counted = ((OrderedSequence<T>)counted).Source; }
-        if (!ReferenceEquals(counted, source) && Sized(counted) is int sized) { return sized != 0; }
+        // NOT ASKED WHETHER IT IS AN ORDERED SEQUENCE, which .NET's answers
+        // by its source's count: the lifetime rules took the fields of every
+        // sequence handed here for an ordered sequence's, and a list a Where
+        // walked went to the collector (1211). It is walked to its first.
         using (IEnumerator<T> walk = source.GetEnumerator()) { return walk.MoveNext(); }
     }
 
