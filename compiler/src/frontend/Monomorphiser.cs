@@ -2106,6 +2106,15 @@ public sealed class Monomorphiser
             if (canon == mangled)
             {
                 canon = null;               // this IS the canonical copy
+                // MADE OVER ITS OWN PARAMETERS, each __canon the place it is
+                // (TypeRef.CanonIndex), as Canonicalise makes it -- not over
+                // the use that named it first: `Comparer<__canon>` written in
+                // a Dictionary's shared copy over its V carries V's place, 1,
+                // and the copy made from that read its T at the type
+                // context's second entry, in one unit and not in another.
+                args = template.TypeParams
+                    .Select((p, i) => new TypeRef { Name = CanonName, CanonIndex = i, Line = template.Line, Col = template.Col })
+                    .ToList();
             }
         }
 
