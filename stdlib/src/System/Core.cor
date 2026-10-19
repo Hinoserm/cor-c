@@ -11588,7 +11588,9 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
         if (howMany > 1) {
             int log = 0;
             for (int n = howMany; n > 1; n = n >> 1) { log = log + 1; }
-            IntroSortRange(from, howMany, 2 * (log + 1), by);
+            // What a comparer throws, .NET's sort helper wraps (Sorting.Failed).
+            try { IntroSortRange(from, howMany, 2 * (log + 1), by); }
+            catch (Exception e) { throw Sorting.Failed(e, by); }
         }
     }
 
@@ -11644,11 +11646,14 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
         SwapAt(lo + middle, lo + hi - 1);
         int left = 0;
         int right = hi - 1;
+        // A SCAN STOPS AT ITS PARTITION'S ENDS, as .NET's over its span: a
+        // comparer that never says stop ran on into the next partition, or
+        // the list's spare room, and swapped from there.
         while (left < right) {
             left = left + 1;
-            while (by.Compare(items[lo + left], pivot) < 0) { left = left + 1; }
+            while (Sorting.Within(left, size) && by.Compare(items[lo + left], pivot) < 0) { left = left + 1; }
             right = right - 1;
-            while (by.Compare(pivot, items[lo + right]) < 0) { right = right - 1; }
+            while (Sorting.Within(right, size) && by.Compare(pivot, items[lo + right]) < 0) { right = right - 1; }
             if (left >= right) { break; }
             SwapAt(lo + left, lo + right);
         }
@@ -23116,8 +23121,26 @@ static class Sorting {
     // out (this compiler, sorting its output) writes what it writes on .NET.
     public static void Introspective<T>(T[] items, int from, int count, IComparer<T> by) {
         if (count > 1) {
-            IntroSort(items, from, count, 2 * (Log2(count) + 1), by);
+            try { IntroSort(items, from, count, 2 * (Log2(count) + 1), by); }
+            catch (Exception e) { throw Failed(e, by); }
         }
+    }
+
+    /// WHAT A SORT'S COMPARER THREW, as .NET's sort helper says it: an index
+    /// run off the partition (Within) is a comparer that answers no order at
+    /// all, and anything else the comparer's own failure, kept as the inner.
+    internal static Exception Failed(Exception e, object by) {
+        if (e is IndexOutOfRangeException) {
+            return new ArgumentException("Unable to sort because the IComparer.Compare() method returns inconsistent results. Either a value does not compare equal to itself, or one value repeatedly compared to another value yields different results. IComparer: '" + by + "'.");
+        }
+        return new InvalidOperationException("Failed to compare two elements in the array.", e);
+    }
+
+    /// A partition's place in it, or the IndexOutOfRangeException .NET's span
+    /// throws for one off its ends.
+    internal static bool Within(int at, int size) {
+        if ((uint)at >= (uint)size) { throw new IndexOutOfRangeException(); }
+        return true;
     }
 
     private static int Log2(int n) {
@@ -23178,11 +23201,12 @@ static class Sorting {
         Swap(keys, lo + middle, lo + hi - 1);
         int left = 0;
         int right = hi - 1;
+        // A scan stops at its partition's ends (Within), as .NET's over its span.
         while (left < right) {
             left = left + 1;
-            while (by.Compare(keys[lo + left], pivot) < 0) { left = left + 1; }
+            while (Within(left, size) && by.Compare(keys[lo + left], pivot) < 0) { left = left + 1; }
             right = right - 1;
-            while (by.Compare(pivot, keys[lo + right]) < 0) { right = right - 1; }
+            while (Within(right, size) && by.Compare(pivot, keys[lo + right]) < 0) { right = right - 1; }
             if (left >= right) { break; }
             Swap(keys, lo + left, lo + right);
         }

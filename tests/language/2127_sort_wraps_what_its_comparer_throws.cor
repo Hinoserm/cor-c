@@ -1,0 +1,56 @@
+// test: a sort wraps what its comparer throws as .NET's sort helper does, and stops a scan at its partition
+// expect-exit: 0
+// expect-output:
+// list InvalidOperationException: Failed to compare two elements in the array. / FormatException: bad
+// list comparer InvalidOperationException: Failed to compare two elements in the array. / FormatException: bad 3
+// array InvalidOperationException: Failed to compare two elements in the array. / FormatException: bad 3
+// array range InvalidOperationException: Failed to compare two elements in the array. / FormatException: bad 1
+// orderby InvalidOperationException: Failed to compare two elements in the array. / FormatException: bad 3
+// liar array ArgumentException: Unable to sort because the IComparer.Compare() method return
+// liar list ArgumentException: Unable to sort because the IComparer.Compare() method return
+// one sorted
+//
+// .NET's sort helper turns any exception its comparer throws into an
+// InvalidOperationException ("Failed to compare two elements in the
+// array.") holding it, and an index run off the partition -- a comparer
+// that never says stop -- into an ArgumentException naming an inconsistent
+// comparer: List.Sort, Array.Sort and OrderBy alike. The raw exception
+// came out here, and a scan with no stop ran on past its partition.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Throwing : IComparer<int>
+{
+    public int Compare(int a, int b) => throw new FormatException("bad " + a);
+}
+
+sealed class Liar : IComparer<int>
+{
+    public int Compare(int a, int b) => -1;
+}
+
+static class Program
+{
+    static void Try(string what, Action act)
+    {
+        try { act(); Console.WriteLine(what + " sorted"); }
+        catch (InvalidOperationException e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message + " / " + e.InnerException!.GetType().Name + ": " + e.InnerException.Message); }
+        catch (ArgumentException e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message.Substring(0, 60)); }
+    }
+
+    static int Main()
+    {
+        Try("list", () => new List<int> { 2, 1 }.Sort((a, b) => throw new FormatException("bad")));
+        Try("list comparer", () => new List<int> { 3, 1, 2 }.Sort(new Throwing()));
+        Try("array", () => Array.Sort(new[] { 3, 1, 2 }, new Throwing()));
+        Try("array range", () => Array.Sort(new[] { 3, 1, 2, 9 }, 1, 2, new Throwing()));
+        Try("orderby", () => new[] { 3, 1, 2 }.OrderBy(x => x, new Throwing()).ToList());
+        int[] many = Enumerable.Range(0, 40).Reverse().ToArray();
+        Try("liar array", () => Array.Sort(many, new Liar()));
+        List<int> listed = Enumerable.Range(0, 40).ToList();
+        Try("liar list", () => listed.Sort(new Liar()));
+        Try("one", () => new List<int> { 5 }.Sort(new Throwing()));
+        return 0;
+    }
+}
