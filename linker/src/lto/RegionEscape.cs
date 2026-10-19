@@ -435,6 +435,21 @@ internal sealed class RegionEscape
 
     private int NewHolder() => Math.Max(_holders.Count, _functions.Count);
 
+    // Per stand-in's holder: its made objects' sites, as sets (Built). Their
+    // origins in _holders are empty: a walk meeting one takes the set.
+    private SiteSet?[]?[] _setsOf = Array.Empty<SiteSet?[]?>();
+
+    private SiteSet? SetOf(int r)
+    {
+        int h = r >> IndexBits;
+        if (r < 0 || h >= _setsOf.Length || _setsOf[h] is not { } sets) return null;
+        int k = r & ((1 << IndexBits) - 1);
+        return k < sets.Length ? sets[k] : null;
+    }
+
+    // How many sites there are: what a site set is a set of.
+    private int SiteCount => Global.Length;
+
     private int[]? OriginsOf(int r)
     {
         if (r < 0 || (r >> IndexBits) >= _holders.Count || _holders[r >> IndexBits] is not { } h) return null;
@@ -514,7 +529,10 @@ internal sealed class RegionEscape
         }
         foreach (int r in origins) Visit(r);
         while (_next.TryPop(out int r))
+        {
             foreach (int c in OriginsOf(r)!) Visit(c);
+            if (SetOf(r) is { } set) foreach (int site in set.Sites()) Visit(Leaf(site));
+        }
         return _bitsByOrigins[origins] = bits;
     }
 
@@ -559,41 +577,68 @@ internal sealed class RegionEscape
         string kind = h < _functions.Count && _summaries[h] is { IsUnknown: false } s && k < s.Objects.Count ? s.Objects[k].Kind.ToString() : "object";
         int[]? below = OriginsOf(r);
         if (below is null) return $"{kind} {k} of {holder} (unregistered)";
+        if (SetOf(r) is { } set) return $"{kind} {k} of {holder}, of {set.Count} sites";
         if (below.Length == 0) return $"{kind} {k} of {holder}, of no origin (a constant or a frame slot)";
         return $"{kind} {k} of {holder}" + (depth <= 0 ? "" : " < " + string.Join(" | ", below.Take(3).Select(x => Lineage(x, depth - 1))));
     }
 
     /// <summary>
     /// The sites the given origins may be. WALKED BY STAMPS, NOT SETS: each
-    /// walk numbered, a site, an object of a holder and a holder seen by it
-    /// marked with its number, and the sites it found sorted once -- where
-    /// every call made two hash sets and a stack and sorted through LINQ,
-    /// and the compiler's own link spent most of its time here. The same
-    /// walk, in the same order, to the same answer.
+    /// walk numbered, an object of a holder and a holder seen by it marked
+    /// with its number, a site found a bit of one array, read out in order
+    /// once -- where every call made two hash sets and a stack and sorted
+    /// through LINQ, and the compiler's own link spent most of its time
+    /// here. The same walk, in the same order, to the same answer.
     /// </summary>
     public int[] SitesOf(int[] origins)
     {
+        Walk(origins);
+        _walkWords.Sort();
+        int[] found = new int[_walkCount];
+        int at = 0;
+        foreach (int w in _walkWords)
+            for (ulong word = _walkBits[w]; word != 0; word &= word - 1)
+                found[at++] = (w << 6) | System.Numerics.BitOperations.TrailingZeroCount(word);
+        ClearWalk();
+        return found;
+    }
+
+    /// <summary>The sites some origins may be, as a set to keep (a shape's).</summary>
+    private SiteSet SiteSetOf(int[] origins)
+    {
+        Walk(origins);
+        SiteSet found = SiteSet.OfWalk(_walkBits, _walkWords, _walkCount, SiteCount);
+        ClearWalk();
+        return found;
+    }
+
+    // The walk itself: its sites left set in _walkBits, in the words named
+    // in _walkWords, _walkCount of them. A LEAF IS TAKEN AS IT IS MET, a bit
+    // of its site's; a stand-in's made object takes its whole set at once
+    // (SetOf), a word at a time, where its sites were each a leaf to push.
+    private void Walk(int[] origins)
+    {
         if (++_walk == int.MaxValue)
         {
-            Array.Clear(_siteSeen);
             Array.Clear(_holderSeen);
             foreach (int[]? seen in _refSeen) if (seen is not null) Array.Clear(seen);
             _walk = 1;
         }
-        if (_siteSeen.Length < Global.Length) _siteSeen = new int[Global.Length];
+        if (_walkBits.Length < (SiteCount + 63) >> 6) _walkBits = new ulong[(SiteCount + 63) >> 6];
         if (_holderSeen.Length < _holders.Count)
         {
             Array.Resize(ref _holderSeen, _holders.Count);
             Array.Resize(ref _refSeen, _holders.Count);
         }
         Stack<int> next = _walkNext;
-        List<int> sites = _walkSites;
         next.Clear();
-        sites.Clear();
-        foreach (int r in origins) if (FirstSeen(r)) next.Push(r);
+        foreach (int r in origins)
+        {
+            if (r < 0) AddSite(-r - 1);
+            else if (FirstSeen(r)) next.Push(r);
+        }
         while (next.TryPop(out int r))
         {
-            if (r < 0) { sites.Add(-r - 1); continue; }
             // Read by the component being solved: solved again if it changes (Again).
             int holder = r >> IndexBits;
             if (holder < _holderSeen.Length && _holderSeen[holder] != _walk)
@@ -606,24 +651,37 @@ internal sealed class RegionEscape
                     else if (!_shapeReadingAll && _shapeReading.Add(holder) && _shapeReading.Count > MostRead) _shapeReadingAll = true;
                 }
             }
-            if (OriginsOf(r) is { } below) foreach (int c in below) if (FirstSeen(c)) next.Push(c);
+            if (OriginsOf(r) is { } below)
+                foreach (int c in below)
+                {
+                    if (c < 0) AddSite(-c - 1);
+                    else if (FirstSeen(c)) next.Push(c);
+                }
+            if (SetOf(r) is { } set) _walkCount += set.OrIntoWalk(_walkBits, _walkWords);
         }
-        int[] found = sites.ToArray();
-        Array.Sort(found);
-        return found;
     }
 
-    // Whether this walk meets origin r for the first time: a leaf by its
-    // site, an object by its holder and index.
+    private void AddSite(int site)
+    {
+        int w = site >> 6;
+        ulong bit = 1UL << (site & 63), old = _walkBits[w];
+        if ((old & bit) != 0) return;
+        if (old == 0) _walkWords.Add(w);
+        _walkBits[w] = old | bit;
+        _walkCount++;
+    }
+
+    private void ClearWalk()
+    {
+        foreach (int w in _walkWords) _walkBits[w] = 0;
+        _walkWords.Clear();
+        _walkCount = 0;
+    }
+
+    // Whether this walk meets the object r names for the first time: by its
+    // holder and index.
     private bool FirstSeen(int r)
     {
-        if (r < 0)
-        {
-            int site = -r - 1;
-            if (_siteSeen[site] == _walk) return false;
-            _siteSeen[site] = _walk;
-            return true;
-        }
         int holder = r >> IndexBits, k = r & ((1 << IndexBits) - 1);
         if (holder >= _refSeen.Length)
         {
@@ -642,11 +700,12 @@ internal sealed class RegionEscape
     }
 
     private int _walk;
-    private int[] _siteSeen = Array.Empty<int>();
     private int[] _holderSeen = Array.Empty<int>();
     private int[]?[] _refSeen = Array.Empty<int[]?>();
     private readonly Stack<int> _walkNext = new();
-    private readonly List<int> _walkSites = new();
+    private ulong[] _walkBits = Array.Empty<ulong>();
+    private readonly List<int> _walkWords = new();
+    private int _walkCount;
 
     // After every function: what is global, down to sites -- what the unknown
     // object reaches, and what functions called from where nobody follows hand back.
@@ -725,6 +784,7 @@ internal sealed class RegionEscape
                 continue;
             }
             if (OriginsOf(r) is { } below) foreach (int c in below) if (seen.Add(c)) next.Push(c);
+            if (SetOf(r) is { } set) foreach (int site in set.Sites()) if (seen.Add(Leaf(site))) next.Push(Leaf(site));
         }
     }
 
@@ -1059,9 +1119,10 @@ internal sealed class RegionEscape
         foreach (int[]? r in _sitesReadOf) read += r?.Length ?? 0;
         foreach (Assumed[] a in _appliedOf) applied += a.Length;
         long standInSites = 0;
-        if (_assumed is not null) foreach (Assumed a in _assumed.Values) standInSites += a.Sites.Length + a.HeldSites.Length;
+        long standInBytes = 0;
+        if (_assumed is not null) foreach (Assumed a in _assumed.Values) { standInSites += a.Sites.Count + a.HeldSites.Count; standInBytes += a.Sites.Bytes + a.HeldSites.Bytes; }
         Progress($"escape graphs: tables: {holders} holders ({holderObjects} objects); {summaries} summaries ({objects} objects, {cells} cells, {results} results, {typed} field marks); "
-            + $"{_assumed?.Count ?? 0} stand-ins ({standInSites} sites), {_standIns.Count} built; {_merged.Count} merged summaries; "
+            + $"{_assumed?.Count ?? 0} stand-ins ({standInSites} sites in {standInBytes >> 20} MB), {_standIns.Count} built; {_merged.Count} merged summaries; "
             + $"{_bitsByOrigins.Count} origin bit sets; {_components.Count} components ({read} sites read, {applied} stand-ins applied); "
             + $"{_globalRefs.Count} global, {_rootedRefs.Count} rooted origins; {TotalBlobs} blobs made; heap {GC.GetTotalMemory(false) >> 20} MB");
     }
@@ -1208,9 +1269,9 @@ internal sealed class RegionEscape
     {
         public readonly int[] Targets;
         public readonly ulong[] Bits = new ulong[ShapeWords];
-        public int[] Sites = Array.Empty<int>();
+        public SiteSet Sites = SiteSet.Empty;
         /// <summary>The sites of what its targets make that the unknown object reaches (HeldClass).</summary>
-        public int[] HeldSites = Array.Empty<int>();
+        public SiteSet HeldSites = SiteSet.Empty;
         public bool Widened;
         // Its holder, its own for good (-1 until first built), and the tick
         // its shape last grew at (Again).
@@ -1239,14 +1300,14 @@ internal sealed class RegionEscape
             // StandInMade, what the unknown object reaches of it at
             // StandInHeld -- what a Ref names, whatever the shape grows to
             // (rounds keep a stand-in's holder) -- then the rest it uses.
+            // Their sites are the holder's sets (Built), not origins.
             foreach (int cls in BuildOrder)
             {
                 if (cls != 1 && cls != HeldClass && !Uses(cls)) continue;
                 index[cls] = s.Objects.Count;
                 s.Objects.Add(cls switch
                 {
-                    1 => (Kind.Made, -1, Array.Empty<int>(), Leaves(Sites)),
-                    HeldClass => (Kind.Made, -1, Array.Empty<int>(), Leaves(HeldSites)),
+                    1 or HeldClass => (Kind.Made, -1, Array.Empty<int>(), Array.Empty<int>()),
                     2 => (Kind.Deep, -1, Array.Empty<int>(), Array.Empty<int>()),
                     _ => (cls - 3) % 2 == 0 ? (Kind.Place, (cls - 3) / 2, Array.Empty<int>(), Array.Empty<int>()) : (Kind.Deep, (cls - 3) / 2, DeepBelow, Array.Empty<int>()),
                 });
@@ -1303,7 +1364,7 @@ internal sealed class RegionEscape
                     + (_summaries[t]!.MadeCoarse ? ", coarse" : "");
                 held.Add($"U>arg by {leaking.Count}: " + string.Join(", ", leaking.Take(4).Select(t => _functions[t].Name + " (" + Tag(t) + ")")));
             }
-            Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Length} sites, {a.HeldSites.Length} held; " + string.Join(" ", held));
+            Progress?.Invoke($"escape graphs:   {targets.Length} targets ({_functions[targets[0]].Name}): {a.Sites.Count} sites, {a.HeldSites.Count} held; " + string.Join(" ", held));
         }
     }
 
@@ -1348,7 +1409,7 @@ internal sealed class RegionEscape
         {
             _assumed[targets] = a = new Assumed(targets);
             MadeStandIns++;
-            if (WidenFirst) { a.Widened = true; a.Sites = Beneath(targets).Order().ToArray(); }
+            if (WidenFirst) { a.Widened = true; a.Sites = SiteSet.Of(Beneath(targets), SiteCount); }
             // Covering what is solved already: nothing has applied it yet,
             // so none of that is growth anything is solved again for.
             long shapes = GrewShape, origins = GrewOrigins;
@@ -1392,6 +1453,11 @@ internal sealed class RegionEscape
                 _standInHolders.Add(a.Holder);
             }
             Register(s, a.Holder);
+            // Its made objects' sites, as sets: what a walk takes them as.
+            if (a.Holder >= _setsOf.Length) Array.Resize(ref _setsOf, Math.Max(a.Holder + 1, _setsOf.Length * 2));
+            SiteSet?[] sets = _setsOf[a.Holder] ??= new SiteSet?[StandInHeld + 1];
+            sets[StandInMade] = a.Sites;
+            sets[StandInHeld] = a.HeldSites;
         }
         return _standIns[a.Targets] = s;
     }
@@ -1407,45 +1473,31 @@ internal sealed class RegionEscape
     private bool Cover(Assumed a, Summary summary, bool widen)
     {
         if (Has(a.Bits, UnknownBit)) return false;
-        (ulong[] bits, int[] sites, int[] heldSites) = ShapeOf(summary);
+        (ulong[] bits, SiteSet sites, SiteSet heldSites) = ShapeOf(summary);
         bool shape = false;
         for (int w = 0; w < ShapeWords; w++) if ((bits[w] & ~a.Bits[w]) != 0) shape = true;
-        // Whether `of` has a site `had` lacks: both sorted, one walk.
-        static bool Beyond(int[] of, int[] had)
-        {
-            int i = 0;
-            foreach (int site in of)
-            {
-                while (i < had.Length && had[i] < site) i++;
-                if (i >= had.Length || had[i] != site) return true;
-            }
-            return false;
-        }
-        bool more = Beyond(sites, a.Sites);
-        bool moreHeld = Beyond(heldSites, a.HeldSites);
+        bool more = !sites.IsSubsetOf(a.Sites);
+        bool moreHeld = !heldSites.IsSubsetOf(a.HeldSites);
         bool widening = widen && !a.Widened;
         if (!shape && !more && !moreHeld && !widening) return false;
         for (int w = 0; w < ShapeWords; w++) a.Bits[w] |= bits[w];
         if (more || widening)
         {
-            int had = a.Sites.Length;
+            int had = a.Sites.Count;
+            a.Sites = SiteSet.Union(a.Sites, sites, SiteCount);
             // Widened, every site beneath its targets is taken at once as
             // what they make, not as what the unknown object holds: those it
             // holds still grow a site at a time, and are finitely many.
             if (widening)
             {
-                SortedSet<int> all = new(a.Sites);
-                all.UnionWith(sites);
                 a.Widened = true;
-                all.UnionWith(Beneath(a.Targets));
-                a.Sites = all.ToArray();
+                a.Sites = SiteSet.Union(a.Sites, SiteSet.Of(Beneath(a.Targets), SiteCount), SiteCount);
             }
-            else a.Sites = Union(a.Sites, sites);
-            more = a.Sites.Length > had;
+            more = a.Sites.Count > had;
         }
         if (moreHeld)
         {
-            a.HeldSites = Union(a.HeldSites, heldSites);
+            a.HeldSites = SiteSet.Union(a.HeldSites, heldSites, SiteCount);
             more = true;
         }
         if (shape) { a.ChangedAt = _tick; GrewShape++; }
@@ -1459,38 +1511,13 @@ internal sealed class RegionEscape
         return shape || more;
     }
 
-    /// <summary>Two sorted lists of distinct sites as one, sorted and distinct: one walk, where a sorted set was made of each.</summary>
-    private static int[] Union(int[] had, int[] more)
-    {
-        int[] all = new int[had.Length + more.Length];
-        int i = 0, j = 0, n = 0;
-        while (i < had.Length && j < more.Length)
-        {
-            if (had[i] < more[j]) all[n++] = had[i++];
-            else if (had[i] > more[j]) all[n++] = more[j++];
-            else { all[n++] = had[i++]; j++; }
-        }
-        while (i < had.Length) all[n++] = had[i++];
-        while (j < more.Length) all[n++] = more[j++];
-        if (n < all.Length) Array.Resize(ref all, n);
-        return all;
-    }
-
-    /// <summary>Sorted distinct sites as their leaves, sorted: a leaf falls as its site rises, so it is the list reversed.</summary>
-    private static int[] Leaves(int[] sites)
-    {
-        int[] leaves = new int[sites.Length];
-        for (int i = 0; i < sites.Length; i++) leaves[i] = Leaf(sites[sites.Length - 1 - i]);
-        return leaves;
-    }
-
     // A summary as a stand-in's shape: which classes hold which, and the
     // sites its made objects may be, apart for what the unknown object
     // reaches (HeldClass) -- the sites as the holders say now.
-    private (ulong[] Bits, int[] Sites, int[] HeldSites) Shape(Summary s, bool withSites = true)
+    private (ulong[] Bits, SiteSet Sites, SiteSet HeldSites) Shape(Summary s, bool withSites = true)
     {
         ulong[] bits = new ulong[ShapeWords];
-        if (s.IsUnknown) { Set(bits, UnknownBit); return (bits, Array.Empty<int>(), Array.Empty<int>()); }
+        if (s.IsUnknown) { Set(bits, UnknownBit); return (bits, SiteSet.Empty, SiteSet.Empty); }
         HashSet<int> leaked = s.Leaked();
         int Class(int k)
         {
@@ -1503,11 +1530,11 @@ internal sealed class RegionEscape
         }
         foreach (var c in s.Cells) Set(bits, Class(c.From) * Classes + Class(c.To));
         foreach (var r in s.Result) Set(bits, ResultBits + Class(r.To));
-        if (!withSites) return (bits, Array.Empty<int>(), Array.Empty<int>());
+        if (!withSites) return (bits, SiteSet.Empty, SiteSet.Empty);
         List<int> origins = new(), heldOrigins = new();
         for (int k = 0; k < s.Objects.Count; k++)
             if (s.Objects[k].Kind == Kind.Made) (Class(k) == HeldClass ? heldOrigins : origins).AddRange(s.Objects[k].Origins);
-        if (origins.Count == 0 && heldOrigins.Count == 0) return (bits, Array.Empty<int>(), Array.Empty<int>());
+        if (origins.Count == 0 && heldOrigins.Count == 0) return (bits, SiteSet.Empty, SiteSet.Empty);
         // Not what the component being solved reads: a stand-in's sites
         // are its holder's, and that is what an applier reads. What the
         // walks read is the shape's own (ShapeOf): the holders whose origins
@@ -1517,8 +1544,8 @@ internal sealed class RegionEscape
         _shapeReading = new();
         _shapeStandIns = new();
         _shapeReadingAll = false;
-        int[] sites = origins.Count == 0 ? Array.Empty<int>() : SitesOf(origins.ToArray());
-        int[] heldSites = heldOrigins.Count == 0 ? Array.Empty<int>() : SitesOf(heldOrigins.ToArray());
+        SiteSet sites = origins.Count == 0 ? SiteSet.Empty : SiteSetOf(origins.ToArray());
+        SiteSet heldSites = heldOrigins.Count == 0 ? SiteSet.Empty : SiteSetOf(heldOrigins.ToArray());
         _shapeRead = _shapeReadingAll ? null : _shapeReading.ToArray();
         _shapeReadStandIns = _shapeStandIns.ToArray();
         _shapeReading = null;
@@ -1551,7 +1578,7 @@ internal sealed class RegionEscape
     // shape for stale, and a round that grew one stand-in in place walked
     // every summary's sites again -- the compiler's own link spent most of
     // an hour in SitesOf.
-    private (ulong[] Bits, int[] Sites, int[] HeldSites) ShapeOf(Summary s)
+    private (ulong[] Bits, SiteSet Sites, SiteSet HeldSites) ShapeOf(Summary s)
     {
         Shaped known = ShapedOf(s);
         if (known.Bits is not null && known.Sites is not null && Fresh(known)) return (known.Bits, known.Sites, known.HeldSites!);
@@ -1648,7 +1675,7 @@ internal sealed class RegionEscape
     {
         public long Generation;
         public ulong[]? Bits;
-        public int[]? Sites, HeldSites;
+        public SiteSet? Sites, HeldSites;
         public long At;
         // The holders the sites were read from; null when too many to keep.
         // The stand-ins' among them apart, every one.
@@ -1727,6 +1754,7 @@ internal sealed class RegionEscape
         Array.Clear(LoopHeld);
         Array.Clear(_changedAt);
         _holders.Clear();
+        _setsOf = Array.Empty<SiteSet?[]?>();
         _globalRefs.Clear();
         _rootedRefs.Clear();
         _unseenRefs.Clear();
@@ -3416,18 +3444,19 @@ internal sealed class RegionEscape
         private bool Passes(int o, int guard)
         {
             if (_passes.TryGetValue((o, guard), out bool known)) return known;
-            int[] sites = SitesOfObject(o);
-            bool passes = sites.Length == 0;
-            foreach (int site in sites) if (_owner.SitePasses(site, guard)) { passes = true; break; }
+            SiteSet sites = SitesOfObject(o);
+            bool passes = sites.Count == 0;
+            foreach (int site in sites.Sites()) if (_owner.SitePasses(site, guard)) { passes = true; break; }
             return _passes[(o, guard)] = passes;
         }
 
-        private readonly Dictionary<int, int[]> _objectSites = new();
+        // Kept as sets: an object of a stand-in's is most of the program's sites.
+        private readonly Dictionary<int, SiteSet> _objectSites = new();
 
-        private int[] SitesOfObject(int o)
+        private SiteSet SitesOfObject(int o)
         {
-            if (_objectSites.TryGetValue(o, out int[]? known)) return known;
-            return _objectSites[o] = _origins[o].Length == 0 ? Array.Empty<int>() : _owner.SitesOf(_origins[o]);
+            if (_objectSites.TryGetValue(o, out SiteSet? known)) return known;
+            return _objectSites[o] = _origins[o].Length == 0 ? SiteSet.Empty : _owner.SiteSetOf(_origins[o]);
         }
 
         private static int Offset(int at, int offset) => at == Any || offset == Any ? Any : at + offset <= FarthestField ? at + offset : Any;
@@ -3952,7 +3981,7 @@ internal sealed class RegionEscape
             }
             if (_owner.Why is not null && _owner.Progress is { } say && _owner.WhyFunction?.Invoke(v.F) == true)
                 say($"escape graphs why: in {_owner._functions[v.F].Name}: call {v.Callee} runs any of its {v.Inside.Length + v.Outside.Length} targets on {Describe(o)} +{_locOffset[loc]}"
-                    + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
+                    + (_kind[o] == Kind.Made ? " (sites " + string.Join(",", SitesOfObject(o).Sites().Take(8)) + "; made from " + string.Join(", ", _origins[o].Take(3).Select(r => _owner.Lineage(r, 4))) + ")" : ""));
             foreach (int g in v.Inside) Receives(g, loc);
             if (v.Outside.Length > 0) Add(Group(v, v.Outside), loc);
         }
@@ -4170,9 +4199,9 @@ internal sealed class RegionEscape
         {
             if (v.Classes.TryGetValue(o, out int[]? known)) return known;
             if (_membersOf.ContainsKey(o)) return v.Classes[o] = BlobTargets(v, o);
-            int[] sites = SitesOfObject(o);
-            SortedSet<int>? runs = sites.Length == 0 ? null : new();
-            foreach (int site in sites)
+            SiteSet sites = SitesOfObject(o);
+            SortedSet<int>? runs = sites.Count == 0 ? null : new();
+            foreach (int site in sites.Sites())
             {
                 if (_owner.RunsOn(v.F, v.K, site) is not { } those) { runs = null; break; }
                 runs!.UnionWith(those);
