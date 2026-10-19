@@ -116,7 +116,13 @@ public sealed class RegionTypes
     private readonly List<HashSet<int>> _boundInst = new();
     private readonly List<bool> _full = new();
     private readonly List<HashSet<int>> _bound = new();
+    // WHAT A CALL RUNS ON A DESCRIPTOR, by the descriptor and its table's
+    // place (_kinds numbers each pair once): the answer is the descriptor's,
+    // and kept per object -- each instance of a type its own -- the
+    // compiler's own link held one for every call and every object its
+    // receiver met, and a native linker ran out of memory growing it.
     private readonly Dictionary<(int, int, int), int[]?> _dispatched = new();
+    private readonly Dictionary<(string, long), int> _kinds = new();
 
     private long _steps;
     /// <summary>Past this many values carried, the pass gives up and prunes nothing.</summary>
@@ -530,7 +536,9 @@ public sealed class RegionTypes
             if (o <= 1 || _objects[o].Table is not { } table) every = o == 0 ? "the unknown object" : o == 1 ? "a constant" : "an untyped object";
             else
             {
-                if (!_dispatched.TryGetValue((f, k, o), out runs)) _dispatched[(f, k, o)] = runs = _dispatch(f, k, table, _objects[o].At);
+                long at = _objects[o].At;
+                if (!_kinds.TryGetValue((table, at), out int kind)) _kinds[(table, at)] = kind = _kinds.Count;
+                if (!_dispatched.TryGetValue((f, k, kind), out runs)) _dispatched[(f, k, kind)] = runs = _dispatch(f, k, table, at);
                 if (runs is null) every = "an object of " + table + " that runs any";
             }
             if (every is not null)
