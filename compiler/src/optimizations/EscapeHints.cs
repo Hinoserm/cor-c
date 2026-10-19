@@ -379,6 +379,12 @@ public sealed partial class Escape
         // read here depended on which unit that thread had run last (LinkFacts.Unit).
         HashSet<string>? returnsFirstBefore = _returnsFirst, bodiesBefore = _bodies;
         _returnsFirst = facts.ReturnsFirst; _bodies = facts.Bodies;
+        // NOR WHAT THIS THREAD WORKED OUT BEFORE: which closures a callee only
+        // invokes (an earlier function's, of whatever unit the thread last
+        // ran), and the reach graph of this function as it stood before the
+        // inliner between the two runs here changed it.
+        Dictionary<string, bool[]>? invokeOnlyBefore = _invokeOnly;
+        _invokeOnly = null; _reachGraphs = null;
         _copies = facts.Copies; _typeItems = facts.TypeItems;
         // ANOTHER UNIT'S FUNCTION, READ FOR THE TYPE OF WHAT THIS ONE HANDS IT (LinkTyped).
         pass._linkCallees = callees; pass._linkOwn = facts.Bodies; pass._linkSummaries = summaries;
@@ -398,6 +404,7 @@ public sealed partial class Escape
         {
             _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _stampItems = null;
             _returnsFirst = returnsFirstBefore; _bodies = bodiesBefore;
+            _invokeOnly = invokeOnlyBefore; _reachGraphs = null;
             _typedFieldsOf = null; _typedKeeps = false;
         }
         // A READ OF AN OWNED FIELD was judged, by the unit and then the link,

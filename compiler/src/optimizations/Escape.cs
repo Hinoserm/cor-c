@@ -111,6 +111,11 @@ public sealed partial class Escape : IModulePass
         }
         _defined.UnionWith(byName.Keys);
         _byName = byName;
+        // THIS RUN'S OWN: what an earlier run on this thread answered of a
+        // function of the same name is no answer here -- a backend at the link
+        // regenerated units one after another on one thread, in whatever order
+        // its plans came, and kept a closure local by another unit's answer.
+        _invokeOnly = null;
         _returnsFirst = new(StringComparer.Ordinal);
         _held = new(StringComparer.Ordinal);
         _heldStamps = new(StringComparer.Ordinal);

@@ -79,7 +79,7 @@ internal static class PipelineAnalyses
         for (int n = 0; n < blocks.Count; n++)
         {
             Block b = blocks[n];
-            int id = RuntimeHelpers.GetHashCode(b);
+            int id = b.Serial;
             h = h * 31 + id;
             g = g * 31 + id + (b.IsLandingPad ? 1 : 0);
             List<Instr> instrs = b.Instrs;
@@ -87,7 +87,7 @@ internal static class PipelineAnalyses
             for (int k = 0; k < count; k++)
             {
                 Instr i = instrs[k];
-                h = h * 31 + RuntimeHelpers.GetHashCode(i);
+                h = h * 31 + i.Serial;
                 if (i.Dest is { } d) h = h * 31 + d.Id;
                 if (i.TargetBlocks is { } targets)
                 {
@@ -95,14 +95,14 @@ internal static class PipelineAnalyses
                     bool edges = k == count - 1 && i.IsTerminator || i.Op == Opcode.LabelAddr;
                     for (int t = 0; t < targets.Length; t++)
                     {
-                        int target = RuntimeHelpers.GetHashCode(targets[t]);
+                        int target = targets[t].Serial;
                         h = h * 31 + target;
                         if (edges) g = g * 37 + target;
                     }
                 }
                 if (i.Default is { } fallback)
                 {
-                    int target = RuntimeHelpers.GetHashCode(fallback);
+                    int target = fallback.Serial;
                     h = h * 31 + target;
                     if (k == count - 1 && i.IsTerminator) g = g * 37 + target;
                 }

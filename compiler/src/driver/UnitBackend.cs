@@ -24,6 +24,14 @@ public sealed class UnitBackend : IUnitBackend
     public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
         LifetimeFacts? facts = null, IrArchive? archive = null)
     {
+        // EACH UNIT AS IN A PROCESS OF ITS OWN (ProjectCompile.ForgetUnit): a
+        // backend at the link regenerates the units its plans hand it one
+        // after another, in an order the link's scheduling decides, and what
+        // the thread kept of the last one -- the escape pass's answers of
+        // functions by name -- made the next unit's code depend on which unit
+        // came before it.
+        Corsac.Lang.Interned.Forget();
+        Escape.ForgetThread();
         _lifetimes = 0;
         // Where the unit's time went, for corc link --timings (LinkTimings).
         long started = Environment.TickCount64, decoded = started, lateDone = started;
@@ -165,6 +173,10 @@ public sealed class UnitBackend : IUnitBackend
         }
         Function Load(int index)
         {
+            // THE WORKER'S THREAD AS NEW: whichever functions it loaded before
+            // this one -- a batch's width and its lanes come from the machine's
+            // free memory -- leave it nothing this one's code is made of.
+            Escape.ForgetThread();
             Devirtualize devirtualize = new();
             Function header = module.Functions[index];
             Function function;

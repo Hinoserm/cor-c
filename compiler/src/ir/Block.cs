@@ -5,6 +5,14 @@ namespace Corsac.Lang.Ir;
 
 public sealed class Block
 {
+    /// <summary>
+    /// A number no other block or instruction of the process ever has: what
+    /// the pipeline's analyses are fingerprinted by (PipelineAnalyses). Not
+    /// an identity hash, which a native process takes from the address, and
+    /// a block made where a freed one was hashed as that one.
+    /// </summary>
+    public readonly int Serial = Instr.NextSerial();
+
     public string Label { get; }
     public List<Instr> Instrs { get; } = new();
 

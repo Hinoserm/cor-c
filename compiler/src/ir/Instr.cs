@@ -29,6 +29,17 @@ public sealed class Instr : OperandList
 
     private const byte SignedFlag = 1, NumberFlag = 2, RegionSiteFlag = 4, BigOffsetFlag = 8, BigSizeFlag = 16;
 
+    /// <summary>
+    /// A number no other instruction or block of the process ever has: what
+    /// the pipeline's analyses are fingerprinted by (PipelineAnalyses). An
+    /// identity hash is the address in a native process, and an instruction
+    /// made where a freed one was hashed as that one: an analysis of the
+    /// function as it was was taken for one of it as it is.
+    /// </summary>
+    public readonly int Serial = NextSerial();
+    private static int _serials;
+    internal static int NextSerial() => Interlocked.Increment(ref _serials);
+
     private InstrRare Rare => _rare ??= new();
 
     public Opcode Op { get => _op; init => _op = value; }
