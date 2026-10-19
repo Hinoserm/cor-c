@@ -95,6 +95,8 @@ static partial class Environment
 
     public static string? GetEnvironmentVariable(string name)
     {
+        // Null refused by .NET's name for it.
+        if (name == null) throw new ArgumentNullException("variable");
         string[] all = Environ();
         for (int i = 0; i < all.Length; i++)
         {
@@ -141,9 +143,11 @@ static partial class Environment
         for (int i = 0; i < all.Length; i++)
         {
             int eq = all[i].IndexOf('=');
+            // The FIRST of a name given twice, as .NET's reading of the
+            // block keeps it -- and as GetEnvironmentVariable answers.
             if (eq > 0)
             {
-                vars[all[i].Substring(0, eq)] = all[i].Substring(eq + 1);
+                vars.TryAdd(all[i].Substring(0, eq), all[i].Substring(eq + 1));
             }
         }
         return vars;
@@ -371,14 +375,44 @@ static partial class Environment
         }
     }
 
+    /// WHO THE PROCESS RUNS AS: its effective uid's name in the password
+    /// file, as .NET looks it up (getpwuid_r), "" for a uid it does not list
+    /// -- not $USER, which whatever started the process set to anything.
+    /// Where the platform has no users (EffectiveUserId -1), the variable is
+    /// all there is.
     public static string UserName
     {
         get
         {
-            string? user = GetEnvironmentVariable("USER");
-            return user == null ? "" : user;
+            long uid = Os.EffectiveUserId();
+            if (uid < 0)
+            {
+                string? user = GetEnvironmentVariable("USER");
+                return user == null ? "" : user;
+            }
+            string[] lines;
+            try { lines = System.IO.File.ReadAllLines("/etc/passwd"); }
+            catch (Exception) { return ""; }
+            string wanted = uid.ToString();
+            foreach (string line in lines)
+            {
+                // name:password:uid:gid:...
+                int first = line.IndexOf(':');
+                if (first <= 0) continue;
+                int second = line.IndexOf(':', first + 1);
+                if (second < 0) continue;
+                int third = line.IndexOf(':', second + 1);
+                if (third < 0) continue;
+                if (third - second - 1 == wanted.Length && string.CompareOrdinal(line, second + 1, wanted, 0, wanted.Length) == 0)
+                    return line.Substring(0, first);
+            }
+            return "";
         }
     }
+
+    /// .NET's on Unix: the machine's name, the domain it is in being none
+    /// the process can ask.
+    public static string UserDomainName => MachineName;
 
     /// The name this machine goes by on the network, as its platform knows
     /// it (Os.NodeName: uname(2)'s nodename on Linux, where .NET reads it);
@@ -387,8 +421,11 @@ static partial class Environment
     {
         get
         {
+            // The host's name up to its first dot, as .NET's MachineName.
             string? name = Os.NodeName();
-            return name == null || name.Length == 0 ? "localhost" : name;
+            if (name == null || name.Length == 0) return "localhost";
+            int dot = name.IndexOf('.');
+            return dot > 0 ? name.Substring(0, dot) : name;
         }
     }
 

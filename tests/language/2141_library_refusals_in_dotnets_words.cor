@@ -1,0 +1,79 @@
+// test: numbers, dictionary views, sequences, lists, segments, ordinal compares and the environment refuse in .NET's words
+// expect-exit: 0
+// expect-output:
+// sbyte ArgumentException: Object must be of type SByte.
+// short ArgumentException: Object must be of type Int16.
+// ushort ArgumentException: Object must be of type UInt16.
+// uint ArgumentException: Object must be of type UInt32.
+// long ArgumentException: Object must be of type Int64.
+// int ArgumentException: Object must be of type Int32.
+// byte ArgumentException: Object must be of type Byte.
+// double ArgumentException: Object must be of type Double.
+// float ArgumentException: Object must be of type Single.
+// ulong ArgumentException: Object must be of type UInt64.
+// decimal ArgumentException: Object must be of type Decimal.
+// keys add NotSupportedException: Mutating a key collection derived from a dictionary is not allowed.
+// values add NotSupportedException: Mutating a value collection derived from a dictionary is not allowed.
+// keys remove NotSupportedException: Mutating a key collection derived from a dictionary is not allowed.
+// keys clear NotSupportedException: Mutating a key collection derived from a dictionary is not allowed.
+// elementat ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'index')
+// elementat negative ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'index')
+// list capacity ArgumentOutOfRangeException: Non-negative number required. (Parameter 'capacity')
+// capacity set ArgumentOutOfRangeException: capacity was less than the current size. (Parameter 'value')
+// segment ArgumentException: Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.
+// segment negative ArgumentOutOfRangeException: Non-negative number required. (Parameter 'offset')
+// compare ordinal null -1
+// compare ordinal both null 0
+// compare ordinal second null 1
+// env null ArgumentNullException: Value cannot be null. (Parameter 'variable')
+// sorted set first a,b
+//
+// A number's CompareTo(object) said "object must be an Int32"; a
+// dictionary's key and value views, ElementAt past a walk, List's capacity
+// and an ArraySegment named no reason or the wrong one; CompareOrdinal over
+// a run read a null string; GetEnvironmentVariable(null) was a
+// NullReferenceException. Each says what .NET 10 says.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static void Try(string what, Func<object?> f)
+    {
+        try { Console.WriteLine(what + " " + f()); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    static int Main()
+    {
+        Try("sbyte", () => ((sbyte)1).CompareTo((object)"x"));
+        Try("short", () => ((short)1).CompareTo((object)"x"));
+        Try("ushort", () => ((ushort)1).CompareTo((object)"x"));
+        Try("uint", () => 1u.CompareTo((object)"x"));
+        Try("long", () => 1L.CompareTo((object)"x"));
+        Try("int", () => 1.CompareTo((object)"x"));
+        Try("byte", () => ((byte)1).CompareTo((object)"x"));
+        Try("double", () => 1.0.CompareTo((object)"x"));
+        Try("float", () => 1f.CompareTo((object)"x"));
+        Try("ulong", () => 1UL.CompareTo((object)"x"));
+        Try("decimal", () => 1m.CompareTo((object)"x"));
+        Dictionary<int, int> d = new() { { 1, 2 } };
+        Try("keys add", () => { ((ICollection<int>)d.Keys).Add(3); return 0; });
+        Try("values add", () => { ((ICollection<int>)d.Values).Add(3); return 0; });
+        Try("keys remove", () => ((ICollection<int>)d.Keys).Remove(1));
+        Try("keys clear", () => { ((ICollection<int>)d.Keys).Clear(); return 0; });
+        Try("elementat", () => Enumerable.Range(0, 3).Select(x => x).ElementAt(5));
+        Try("elementat negative", () => Enumerable.Range(0, 3).Select(x => x).ElementAt(-1));
+        Try("list capacity", () => new List<int>(-1).Count);
+        Try("capacity set", () => { var l = new List<int> { 1, 2 }; l.Capacity = 1; return 0; });
+        Try("segment", () => new ArraySegment<int>(new int[3], 2, 5).Count);
+        Try("segment negative", () => new ArraySegment<int>(new int[3], -1, 1).Count);
+        Try("compare ordinal null", () => string.CompareOrdinal(null, 0, "abc", 0, 2));
+        Try("compare ordinal both null", () => string.CompareOrdinal(null, 0, null, 0, 2));
+        Try("compare ordinal second null", () => string.CompareOrdinal("abc", 0, null, 0, 2));
+        Try("env null", () => Environment.GetEnvironmentVariable(null!));
+        Try("sorted set first", () => string.Join(",", new SortedSet<string>(new[] { "a", "A", "b" }, StringComparer.OrdinalIgnoreCase)));
+        return 0;
+    }
+}

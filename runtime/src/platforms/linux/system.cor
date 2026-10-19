@@ -1387,6 +1387,9 @@ static partial class Os
         return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
     }
 
+    /// geteuid(2): who the process acts as, which Environment.UserName names.
+    public static long EffectiveUserId() { return Sys.Syscall(Call.Geteuid, 0, 0, 0); }
+
     /// uname(2)'s nodename, or null when the call fails.
     public static string? NodeName()
     {

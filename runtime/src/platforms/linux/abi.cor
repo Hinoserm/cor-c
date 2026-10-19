@@ -47,6 +47,7 @@ static class Call
     public const long Kill = 62;
     public const long Getppid = 110;
     public const long Getuid = 102;
+    public const long Geteuid = 107;
     public const long Getgid = 104;
     public const long Setpgid = 109;
     public const long Getpgid = 121;
@@ -175,6 +176,7 @@ static class Call
     public const long Kill = 37;        // (pid, signal)
     public const long Getppid = 64;
     public const long Getuid = 199;     // getuid32; the 16-bit getuid (24) truncates
+    public const long Geteuid = 201;    // geteuid32
     public const long Getgid = 200;     // getgid32
     public const long Setpgid = 57;     // (pid, pgid)
     public const long Getpgid = 132;    // (pid) -> the group it is in

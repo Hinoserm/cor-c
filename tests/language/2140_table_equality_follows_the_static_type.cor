@@ -1,0 +1,74 @@
+// test: EqualityComparer<T>.Default and the tables over object, an interface or a base class ask Equals(object), as .NET's do
+// expect-exit: 0
+// expect-output:
+// point True
+// object False
+// shape False
+// base False
+// dictionary object False
+// dictionary point True
+// set shape 2
+// set base 2
+// set point 1
+// distinct object 2
+// list object False
+// list shape -1
+// array object -1
+// array point 0
+// leaf True 1
+// leaf object False
+//
+// .NET's default comparer for T asks T's IEquatable<T> when T is one, and
+// Equals(object) otherwise: a Point that is IEquatable<Point> is no
+// IEquatable<object>, <IShape> or <Base>. Asked of the object's descriptor
+// whatever T was, a Point was compared by its typed Equals through every
+// table over its interfaces and bases -- and object[]'s IndexOf too. Where
+// the code names T it asks as .NET's does; in a shared copy, whose T only
+// its object's type context says, the key is asked whether it is an
+// IEquatable of that T -- its own class T, or one implementing it
+// (Runtime.ShapedAs) -- before its typed Equals is.
+//
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+interface IShape { int Area { get; } }
+
+class Base { public int N; public Base(int n) { N = n; } public override int GetHashCode() => N; }
+class Point : Base, IShape, IEquatable<Point>
+{
+    public Point(int n) : base(n) { }
+    public int Area => N;
+    public bool Equals(Point? other) => other is not null && other.N == N;
+}
+sealed class Leaf : IEquatable<Leaf>
+{
+    public int N; public Leaf(int n) { N = n; }
+    public bool Equals(Leaf? other) => other is not null && other.N == N;
+    public override int GetHashCode() => N;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Point a = new Point(1), b = new Point(1);
+        Console.WriteLine("point " + EqualityComparer<Point>.Default.Equals(a, b));
+        Console.WriteLine("object " + EqualityComparer<object>.Default.Equals(a, b));
+        Console.WriteLine("shape " + EqualityComparer<IShape>.Default.Equals(a, b));
+        Console.WriteLine("base " + EqualityComparer<Base>.Default.Equals(a, b));
+        Console.WriteLine("dictionary object " + new Dictionary<object, int> { { a, 1 } }.ContainsKey(b));
+        Console.WriteLine("dictionary point " + new Dictionary<Point, int> { { a, 1 } }.ContainsKey(b));
+        Console.WriteLine("set shape " + new HashSet<IShape> { a, b }.Count);
+        Console.WriteLine("set base " + new HashSet<Base> { a, b }.Count);
+        Console.WriteLine("set point " + new HashSet<Point> { a, b }.Count);
+        Console.WriteLine("distinct object " + new object[] { a, b }.Distinct().Count());
+        Console.WriteLine("list object " + new List<object> { a }.Contains(b));
+        Console.WriteLine("list shape " + new List<IShape> { a }.IndexOf(b));
+        Console.WriteLine("array object " + Array.IndexOf(new object[] { a }, b));
+        Console.WriteLine("array point " + Array.IndexOf(new[] { a }, b));
+        Console.WriteLine("leaf " + EqualityComparer<Leaf>.Default.Equals(new Leaf(2), new Leaf(2)) + " " + new HashSet<Leaf> { new Leaf(2), new Leaf(2) }.Count);
+        Console.WriteLine("leaf object " + EqualityComparer<object>.Default.Equals(new Leaf(2), new Leaf(2)));
+        return 0;
+    }
+}

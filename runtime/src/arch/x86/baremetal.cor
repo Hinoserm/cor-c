@@ -1176,6 +1176,9 @@ static partial class Os
     /// No name on a network: nothing has given the machine one.
     public static string? NodeName() { return null; }
 
+    /// No users: -1, and Environment.UserName reads what the image was given.
+    public static long EffectiveUserId() { return -1; }
+
     /// Nanoseconds on the machine's one clock, whichever clock is asked for:
     /// with no operating system there is no wall clock apart from it.
     public static long Nanos(int clock) { return Platform.Nanos(); }

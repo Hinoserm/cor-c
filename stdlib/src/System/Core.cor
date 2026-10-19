@@ -1308,11 +1308,17 @@ static class String {
 
     /// At most length characters of each, from those indices, compared by
     /// code unit; a shorter remainder sorts first, as .NET has it.
-    public static int CompareOrdinal(string a, int indexA, string b, int indexB, int length) {
-        if (length < 0 || indexA < 0 || indexB < 0) { throw new ArgumentOutOfRangeException("length"); }
+    public static int CompareOrdinal(string? a, int indexA, string? b, int indexB, int length) {
+        // Null before anything, and equal to null, as .NET's: asked first.
+        if (a == null || b == null) {
+            if ((object?)a == (object?)b) { return 0; }
+            return a == null ? -1 : 1;
+        }
+        if (length < 0) { throw new ArgumentOutOfRangeException("length", "Count cannot be less than zero."); }
+        if (indexA < 0 || indexB < 0) { throw new ArgumentOutOfRangeException(indexA < 0 ? "indexA" : "indexB", "Non-negative number required."); }
         int left = Math.Min(length, a.Length - indexA);
         int right = Math.Min(length, b.Length - indexB);
-        if (left < 0 || right < 0) { throw new ArgumentOutOfRangeException("indexA"); }
+        if (left < 0 || right < 0) { throw new ArgumentOutOfRangeException(left < 0 ? "indexA" : "indexB", "Index was out of range. Must be non-negative and less than or equal to the size of the collection."); }
         int common = Math.Min(left, right);
         for (int i = 0; i < common; i++) {
             int difference = a[indexA + i] - b[indexB + i];
@@ -6434,7 +6440,7 @@ static class SByte {
     public static int CompareTo(sbyte value, object? other) {
         if (other == null) return 1;
         if (other is sbyte number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an SByte");
+        throw new ArgumentException("Object must be of type SByte.");
     }
     public static sbyte MaxValue => sbyte.MaxValue;
     public static sbyte MinValue => sbyte.MinValue;
@@ -6527,7 +6533,7 @@ static class Int16 {
     public static int CompareTo(short value, object? other) {
         if (other == null) return 1;
         if (other is short number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an Int16");
+        throw new ArgumentException("Object must be of type Int16.");
     }
     public static short MaxValue => short.MaxValue;
     public static short MinValue => short.MinValue;
@@ -6620,7 +6626,7 @@ static class UInt16 {
     public static int CompareTo(ushort value, object? other) {
         if (other == null) return 1;
         if (other is ushort number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an UInt16");
+        throw new ArgumentException("Object must be of type UInt16.");
     }
     public static ushort MaxValue => ushort.MaxValue;
     public static ushort MinValue => 0;
@@ -6713,7 +6719,7 @@ static class UInt32 {
     public static int CompareTo(uint value, object? other) {
         if (other == null) return 1;
         if (other is uint number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an UInt32");
+        throw new ArgumentException("Object must be of type UInt32.");
     }
     public static uint MaxValue => uint.MaxValue;
     public static uint MinValue => 0;
@@ -6806,7 +6812,7 @@ static class Int64 {
     public static int CompareTo(long value, object? other) {
         if (other == null) return 1;
         if (other is long number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an Int64");
+        throw new ArgumentException("Object must be of type Int64.");
     }
     // THE LIMITS, UNDER THE TYPE'S OWN NAME. `long.MaxValue` is answered by the
     // compiler, which knows the keyword; `Int64.MaxValue` is the same constant
@@ -6902,7 +6908,7 @@ static class Int32 {
     public static int CompareTo(int value, object? other) {
         if (other == null) return 1;
         if (other is int number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an Int32");
+        throw new ArgumentException("Object must be of type Int32.");
     }
     public static int MaxValue => int.MaxValue;
     public static int MinValue => int.MinValue;
@@ -7275,7 +7281,7 @@ static class UInt64 {
     public static int CompareTo(ulong value, object? other) {
         if (other == null) return 1;
         if (other is ulong number) return CompareTo(value, number);
-        throw new ArgumentException("object must be a UInt64");
+        throw new ArgumentException("Object must be of type UInt64.");
     }
     public static ulong MaxValue => ulong.MaxValue;
     public static ulong MinValue => 0;
@@ -7368,7 +7374,7 @@ static class Byte {
     public static int CompareTo(byte value, object? other) {
         if (other == null) return 1;
         if (other is byte number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an Byte");
+        throw new ArgumentException("Object must be of type Byte.");
     }
     public static byte MaxValue => byte.MaxValue;
     public static byte MinValue => 0;
@@ -7464,7 +7470,7 @@ static class Double {
     public static int CompareTo(double value, object? other) {
         if (other == null) return 1;
         if (other is double number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an Double");
+        throw new ArgumentException("Object must be of type Double.");
     }
 
     /// What `d.ToString()` answers: the general format, as string
@@ -7678,7 +7684,7 @@ static class Single {
     public static int CompareTo(float value, object? other) {
         if (other == null) return 1;
         if (other is float number) return CompareTo(value, number);
-        throw new ArgumentException("object must be an Single");
+        throw new ArgumentException("Object must be of type Single.");
     }
 
     public static string ToString(this float value) { return DoubleFormat.ShortestSingle(value); }
@@ -8822,8 +8828,11 @@ struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
 
     public ArraySegment(T[] array, int offset, int count) {
         ArgumentNullException.ThrowIfNull(array);
-        if (offset < 0 || count < 0 || array.Length - offset < count) {
-            throw new ArgumentOutOfRangeException(offset < 0 ? "offset" : "count");
+        // As .NET refuses one: a negative offset or count by name, a run past
+        // the end as offset and length out of bounds.
+        if (offset < 0 || count < 0) { throw new ArgumentOutOfRangeException(offset < 0 ? "offset" : "count", "Non-negative number required."); }
+        if (array.Length - offset < count) {
+            throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.");
         }
         this.array = array;
         this.offset = offset;
@@ -11499,7 +11508,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     /// .NET's constructor that says how much to expect, so a list built in a
     /// loop of known length grows no times at all.
     public List(int capacity) {
-        if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
+        if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity", "Non-negative number required."); }
         if (capacity > 0) { items = new T[capacity]; }
         count = 0;
     }
@@ -11528,7 +11537,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
     public int Capacity {
         get { return items == null ? 0 : items.Length; }
         set {
-            if (value < count) { throw new ArgumentOutOfRangeException("value"); }
+            if (value < count) { throw new ArgumentOutOfRangeException("value", "capacity was less than the current size."); }
             if (value == Capacity) { return; }
             T[] old = items;
             if (value == 0) { items = null!; Outgrown(old); return; }
@@ -13520,7 +13529,8 @@ static class Enumerable {
                 index = index - 1;
             }
         }
-        throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection.");
+        // Past a walk's end, .NET's plain refusal; a list's is its indexer's (above).
+        throw new ArgumentOutOfRangeException("index");
     }
 
     public static T? ElementAtOrDefault<T>(this IEnumerable<T> source, int index) {
@@ -13589,8 +13599,13 @@ static class Enumerable {
 
     /// A collection is asked itself, as .NET asks it: its own Contains, with
     /// its own comparer -- a set's, a list's search.
+    // AN ARRAY SEARCHED AS A SPAN, as .NET 10's Contains searches one: by
+    // EqualityComparer<T>.Default, an IEquatable class's typed Equals --
+    // where the array's own ICollection<T>.Contains, .NET's as this one's,
+    // asks Equals(object). A collection asks its own Contains.
     public static bool Contains<T>(this IEnumerable<T> source, T value) {
         NotNull(source, "source");
+        if (source is T[] array) { return Array.IndexOf(array, value) >= 0; }
         if (source is ICollection<T> collection) { return collection.Contains(value); }
         return Contains(source, value, null);
     }
@@ -18958,9 +18973,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         public void CopyTo(K[] array, int arrayIndex) {
             foreach (K key in this) { array[arrayIndex] = key; arrayIndex = arrayIndex + 1; }
         }
-        public void Add(K item) { throw new NotSupportedException("a dictionary's keys are read-only"); }
-        public void Clear() { throw new NotSupportedException("a dictionary's keys are read-only"); }
-        public bool Remove(K item) { throw new NotSupportedException("a dictionary's keys are read-only"); }
+        public void Add(K item) { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
+        public void Clear() { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
+        public bool Remove(K item) { throw new NotSupportedException("Mutating a key collection derived from a dictionary is not allowed."); }
     }
 
     /// As Enumerator's walk, the key alone.
@@ -19013,9 +19028,9 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
         public void CopyTo(V[] array, int arrayIndex) {
             foreach (V value in this) { array[arrayIndex] = value; arrayIndex = arrayIndex + 1; }
         }
-        public void Add(V item) { throw new NotSupportedException("a dictionary's values are read-only"); }
-        public void Clear() { throw new NotSupportedException("a dictionary's values are read-only"); }
-        public bool Remove(V item) { throw new NotSupportedException("a dictionary's values are read-only"); }
+        public void Add(V item) { throw new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
+        public void Clear() { throw new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
+        public bool Remove(V item) { throw new NotSupportedException("Mutating a value collection derived from a dictionary is not allowed."); }
     }
 
     /// As Enumerator's walk, the value alone.

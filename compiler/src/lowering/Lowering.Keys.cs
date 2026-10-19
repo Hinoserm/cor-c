@@ -257,6 +257,12 @@ public sealed partial class Lowering
     /// </summary>
     private string KeyEqualsStub(Type? of = null, bool table = true)
     {
+        // A TABLE OVER OBJECT ITSELF asks Equals(object), as .NET's
+        // EqualityComparer<object>.Default does: an IEquatable<Point> is no
+        // IEquatable<object>, and a Point's typed Equals is not its answer.
+        // Only a type argument the code cannot name -- a shared copy's T,
+        // spelt object -- is asked of the descriptor at run time.
+        if (table && of is { Prim: Prim.Any, IsArray: false, IsPointer: false, CanonParam: -1, ParamName: null }) table = false;
         if (of is { Prim: Prim.String, IsArray: false, IsPointer: false })
         {
             return StringKeyEquals();
@@ -320,7 +326,14 @@ public sealed partial class Lowering
         }
 
         e.SetBlock(ask);
-        if (table && EquatableSlot is int typedSlot && !(narrow is { Kind: TypeKind.Class } && !GenericCopy(narrow) && TypedEquals(narrow) is null && Sealed(narrow)))
+        // A CLASS OR AN INTERFACE THE CODE NAMES is IEquatable of itself or is
+        // asked Equals(object), as EqualityComparer<T>.Default chooses for
+        // that T: a class whose subclass is IEquatable of the subclass, or an
+        // interface a Point implements beside IEquatable<Point>, is no
+        // IEquatable<T>. A generic copy's -- what it is over may be -- asks
+        // the descriptor, as an unknown T does.
+        bool named = narrow is not null && !GenericCopy(narrow);
+        if (table && EquatableSlot is int typedSlot && !(named && TypedEquals(narrow!) is null))
         {
             // AN IEQUATABLE CLASS BY ITS TYPED Equals: known of a class whose
             // chain declares it, asked of the descriptor otherwise.
