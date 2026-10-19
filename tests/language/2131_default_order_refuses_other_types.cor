@@ -1,0 +1,67 @@
+// test: a string, a box and a tuple refuse to be ordered beside another type, in .NET's words
+// expect-exit: 0
+// expect-output:
+// text plain ArgumentException: Object must be of type String.
+// plain text ArgumentException: Object must be of type String.
+// int text ArgumentException: Object must be of type Int32.
+// text int ArgumentException: Object must be of type String.
+// int long ArgumentException: Object must be of type Int32.
+// int int -1
+// double int ArgumentException: Object must be of type Double.
+// enum int ArgumentException: Object must be the same type as the enum. The type passed in was 'System.Int32'; the enum type was 'Hue'.
+// enum enum 1
+// char text ArgumentException: Object must be of type Char.
+// bool int ArgumentException: Object must be of type Boolean.
+// tuple text ArgumentException: Argument must be of type System.ValueTuple`2[System.Int32,System.Int32]. (Parameter 'other')
+// text text -1
+// int null 1
+// icomparable ArgumentException: Object must be of type String.
+// icomparable int ArgumentException: Object must be of type Int32.
+// icomparable null 1
+// sort mixed InvalidOperationException: Failed to compare two elements in the array.
+//
+// Comparer<object>.Default over a string and something that is not one
+// read the other object's fields as characters and answered their order;
+// String.CompareTo(object) refuses it ("Object must be of type String."),
+// from either side. An enum names the other's type in its refusal, and a
+// tuple names its own as Type.ToString writes it.
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+class Plain { public int N; public Plain(int n) { N = n; } }
+enum Hue { Red, Green }
+
+static class Program
+{
+    static void Try(string what, Func<object?> f)
+    {
+        try { Console.WriteLine(what + " " + f()); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message); }
+    }
+
+    static int Main()
+    {
+        Plain p = new Plain(1);
+        IComparer<object> c = Comparer<object>.Default;
+        Try("text plain", () => c.Compare("x", p));
+        Try("plain text", () => c.Compare(p, "x"));
+        Try("int text", () => c.Compare(1, "x"));
+        Try("text int", () => c.Compare("x", 1));
+        Try("int long", () => c.Compare(1, 1L));
+        Try("int int", () => c.Compare(1, 2));
+        Try("double int", () => c.Compare(1.5, 2));
+        Try("enum int", () => c.Compare(Hue.Green, 1));
+        Try("enum enum", () => c.Compare(Hue.Green, Hue.Red));
+        Try("char text", () => c.Compare('a', "a"));
+        Try("bool int", () => c.Compare(true, 1));
+        Try("tuple text", () => c.Compare((1, 2), "x"));
+        Try("text text", () => c.Compare("a", "b"));
+        Try("int null", () => c.Compare(1, null));
+        Try("icomparable", () => ((IComparable)"x").CompareTo(p));
+        Try("icomparable int", () => ((IComparable)5).CompareTo("x"));
+        Try("icomparable null", () => ((IComparable)5).CompareTo(null));
+        Try("sort mixed", () => { var l = new List<object> { "b", 1 }; l.Sort(); return l.Count; });
+        return 0;
+    }
+}

@@ -1,0 +1,78 @@
+// test: the default comparer refuses two objects neither of which has an order, as .NET's does
+// expect-exit: 0
+// expect-output:
+// compare ArgumentException: At least one object must implement IComparable.
+// same 0
+// null first -1
+// null second 1
+// object ArgumentException: At least one object must implement IComparable.
+// one ordered -1
+// ordered first 1
+// struct ArgumentException: At least one object must implement IComparable.
+// struct same ArgumentException: At least one object must implement IComparable.
+// list sort InvalidOperationException: Failed to compare two elements in the array. / ArgumentException: At least one object must implement IComparable.
+// one sort 1
+// array sort InvalidOperationException: Failed to compare two elements in the array. / ArgumentException: At least one object must implement IComparable.
+// orderby 2
+// max ArgumentException: At least one object must implement IComparable.
+// min ArgumentException: At least one object must implement IComparable.
+// sorted set ArgumentException: At least one object must implement IComparable.
+// sorted dictionary ArgumentException: At least one object must implement IComparable.
+// sorted list InvalidOperationException: Failed to compare two elements in the array. / ArgumentException: At least one object must implement IComparable.
+// binary search InvalidOperationException: Failed to compare two elements in the array. / ArgumentException: At least one object must implement IComparable.
+// tuple ArgumentException: At least one object must implement IComparable.
+// tuple struct ArgumentException: At least one object must implement IComparable.
+// array ArgumentException: At least one object must implement IComparable.
+//
+// Comparer<T>.Default over a class, a struct or an array with no
+// CompareTo throws ArgumentException ("At least one object must implement
+// IComparable.") unless one of the two is null, they are the same object,
+// or the other one has an order (asked, its answer turned round); a sort,
+// a binary search and SortedList hold it in InvalidOperationException,
+// SortedSet, SortedDictionary, Min and Max throw it bare. Here two such
+// objects were ordered by their addresses, and a struct without an order
+// compared equal to every other.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Plain { public int N; public Plain(int n) { N = n; } }
+struct Bare { public int N; }
+class Ordered : IComparable { public int N; public Ordered(int n) { N = n; } public int CompareTo(object? o) => o is Ordered x ? N.CompareTo(x.N) : 1; }
+
+static class Program
+{
+    static void Try(string what, Func<object?> f)
+    {
+        try { Console.WriteLine(what + " " + f()); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + ": " + e.Message + (e.InnerException is { } i ? " / " + i.GetType().Name + ": " + i.Message : "")); }
+    }
+
+    static int Main()
+    {
+        Plain a = new Plain(1), b = new Plain(2);
+        Try("compare", () => Comparer<Plain>.Default.Compare(a, b));
+        Try("same", () => Comparer<Plain>.Default.Compare(a, a));
+        Try("null first", () => Comparer<Plain>.Default.Compare(null, a));
+        Try("null second", () => Comparer<Plain>.Default.Compare(a, null));
+        Try("object", () => Comparer<object>.Default.Compare(a, b));
+        Try("one ordered", () => Comparer<object>.Default.Compare(a, new Ordered(3)));
+        Try("ordered first", () => Comparer<object>.Default.Compare(new Ordered(3), a));
+        Try("struct", () => Comparer<Bare>.Default.Compare(new Bare { N = 1 }, new Bare { N = 2 }));
+        Try("struct same", () => Comparer<Bare>.Default.Compare(new Bare { N = 1 }, new Bare { N = 1 }));
+        Try("list sort", () => { var l = new List<Plain> { b, a }; l.Sort(); return l.Count; });
+        Try("one sort", () => { var l = new List<Plain> { b }; l.Sort(); return l.Count; });
+        Try("array sort", () => { var l = new[] { b, a }; Array.Sort(l); return l.Length; });
+        Try("orderby", () => new[] { b, a }.OrderBy(x => x).Count());
+        Try("max", () => new[] { b, a }.Max()?.N);
+        Try("min", () => new[] { b, a }.Min()?.N);
+        Try("sorted set", () => new SortedSet<Plain> { a, b }.Count);
+        Try("sorted dictionary", () => new SortedDictionary<Plain, int> { { a, 1 }, { b, 2 } }.Count);
+        Try("sorted list", () => new SortedList<Plain, int> { { a, 1 }, { b, 2 } }.Count);
+        Try("binary search", () => Array.BinarySearch(new[] { a, b }, b));
+        Try("tuple", () => (a, 1).CompareTo((b, 1)));
+        Try("tuple struct", () => (new Bare(), 1).CompareTo((new Bare(), 2)));
+        Try("array", () => Comparer<int[]>.Default.Compare(new int[1], new int[1]));
+        return 0;
+    }
+}

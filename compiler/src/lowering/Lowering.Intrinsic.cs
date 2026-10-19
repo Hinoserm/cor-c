@@ -564,7 +564,8 @@ public sealed partial class Lowering
                     VReg x = ToWord(Arg(call, target, 0)), y = ToWord(Arg(call, target, 1));
                     bool boxed;
                     MethodSymbol? order = StructCompareTo(shape, out boxed);
-                    if (order is null) return _e.Const(0, IrType.I32);
+                    // None of its own: refused, as .NET's default comparer refuses it.
+                    if (order is null) { RefuseUnordered(); return _e.Const(0, IrType.I32); }
                     Require(order);
                     VReg other = boxed ? Box(call, y, Type.Plain(shape, Prim.Void)) : y;
                     VReg said = CallDirect(order, IrTypes.Of(order.Returns), new List<Operand> { R(x), R(other) })!;
@@ -675,6 +676,10 @@ public sealed partial class Lowering
                 _e.Call(which, IrType.Void);
                 return Void();
             }
+            case "DoublePrecision":
+                // On i386 alone, as the entry asks it (Lowering.EntryStub).
+                if (Target.Current.WordSize == 4) _e.Call(MachineIntrinsics.DoublePrecision, IrType.Void);
+                return Void();
             case "Lidt":
             case "Lgdt":
             case "Invlpg":
@@ -1036,7 +1041,8 @@ public sealed partial class Lowering
                 default:
                 {
                     MethodSymbol? order = StructCompareTo(shape, out bool boxed);
-                    if (order is null) return _e.Const(0, IrType.I32);
+                    // None of its own: refused, as .NET's default comparer refuses it.
+                    if (order is null) { RefuseUnordered(); return _e.Const(0, IrType.I32); }
                     Require(order);
                     VReg other = boxed ? Box(null!, ToWord(y!), Type.Plain(shape, Prim.Void)) : ToWord(y!);
                     VReg said = CallDirect(order, IrTypes.Of(order.Returns), new List<Operand> { R(ToWord(x)), R(other) })!;

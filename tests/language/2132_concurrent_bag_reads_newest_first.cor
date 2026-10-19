@@ -1,0 +1,45 @@
+// test: a ConcurrentBag is read newest first, as .NET's one thread's bag is
+// expect-exit: 0
+// expect-output:
+// bag 5,4,3,2,1,0
+// bag array 5,4,3,2,1,0
+// bag took 5 left 4,3,2,1,0
+// bag peek 4
+// bag from c,b,a
+// queue 1,2,3
+// stack 3,2,1
+// stack range 9,8,7,3,2,1
+//
+// .NET's bag keeps a list per thread and reads it from its head, where
+// the thread last added: one thread's 0..5 enumerate 5,4,3,2,1,0, and a
+// bag made from a list holds it backwards. Read oldest first here, it
+// gave every enumeration, ToArray and CopyTo the other way round.
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static int Main()
+    {
+        ConcurrentBag<int> bag = new ConcurrentBag<int>();
+        for (int i = 0; i < 6; i++) bag.Add(i);
+        Console.WriteLine("bag " + string.Join(",", bag));
+        Console.WriteLine("bag array " + string.Join(",", bag.ToArray()));
+        bag.TryTake(out int took);
+        Console.WriteLine("bag took " + took + " left " + string.Join(",", bag));
+        bag.TryPeek(out int peeked);
+        Console.WriteLine("bag peek " + peeked);
+        ConcurrentBag<string> fromList = new ConcurrentBag<string>(new[] { "a", "b", "c" });
+        Console.WriteLine("bag from " + string.Join(",", fromList));
+
+        ConcurrentQueue<int> q = new ConcurrentQueue<int>(new[] { 1, 2, 3 });
+        Console.WriteLine("queue " + string.Join(",", q));
+        ConcurrentStack<int> st = new ConcurrentStack<int>(new[] { 1, 2, 3 });
+        Console.WriteLine("stack " + string.Join(",", st));
+        st.PushRange(new[] { 7, 8, 9 });
+        Console.WriteLine("stack range " + string.Join(",", st));
+        return 0;
+    }
+}

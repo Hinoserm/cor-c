@@ -1,0 +1,37 @@
+// test: Sys.DoublePrecision tells a kernel-started processor's x87 to round doubles once
+// expect-exit: 0
+// expect-output:
+// once 3FF0000000000001
+// expect-asm-x86: Started: fnstcw fldcw
+// expect-no-asm-x86-64: Started: fnstcw fldcw
+//
+// The image's entry sets the x87's precision to a double's 53 bits; a
+// processor a kernel starts itself, and a thread whose FPU it begins with
+// FNINIT, start at the extended format's 64, where each double rounds twice
+// (28). Sys.DoublePrecision is the entry's setting for those: on i386 the
+// control word read, its precision field made 53 bits and loaded; in long
+// mode, whose doubles are SSE2's, nothing.
+
+using System;
+
+static class Program
+{
+    static string H(double d) { return BitConverter.DoubleToInt64Bits(d).ToString("X16"); }
+
+    static double Started(double tiny)
+    {
+        Sys.DoublePrecision();
+        return 1.0 + tiny;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        // 2^-53 + 2^-105: past the halfway point of a double's last place,
+        // which a single rounding sees and a second one to even loses.
+        double tiny = BitConverter.Int64BitsToDouble(0x3CA0000000000001);
+        Host.Line("once " + H(Started(tiny)));
+        Host.Done(0);
+        return 0;
+    }
+}

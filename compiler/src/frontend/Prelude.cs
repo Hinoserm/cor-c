@@ -770,6 +770,14 @@ public static class Prelude
             public static void Sti() { }
             public static void Hlt() { }
 
+            // The x87 told to round to a double's 53 bits, as the image's
+            // entry tells it (MachineIntrinsics.DoublePrecision): for a
+            // processor or a thread a kernel starts itself, whose FPU begins
+            // at the extended format's 64 bits after a reset or FNINIT and
+            // rounds every double twice. Nothing in long mode, whose doubles
+            // are SSE2's, nor without an FPU.
+            public static void DoublePrecision() { }
+
             // The descriptor tables. Each takes the address of a six-byte
             // pseudo-descriptor -- a 16-bit limit then a 32-bit base -- that
             // the caller has already built in memory.

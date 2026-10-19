@@ -1143,7 +1143,17 @@ public sealed partial class Lowering
         return null;
     }
 
-    /// <summary>A class with no order of its own: by where it is, which is at least stable.</summary>
+    /// <summary>What .NET's default comparer says of two objects neither of which has an order.</summary>
+    private const string NotComparable = "At least one object must implement IComparable.";
+
+    /// <summary>
+    /// A CLASS WITH NO ORDER OF ITS OWN -- an array, a struct's box without
+    /// one -- as .NET's Comparer.Default has it: itself equal to itself and
+    /// after null; past that the other one is asked and its answer turned
+    /// round, a string as String.CompareTo(object) refusing it, and where
+    /// the other has no order either, both are refused. By where each lived
+    /// it was an order .NET never gives, and sorting such objects sorted.
+    /// </summary>
     private string ObjectCompareStub()
     {
         const string name = "__object_compareto";
@@ -1158,11 +1168,48 @@ public sealed partial class Lowering
             f.Params.Add(a);
             f.Params.Add(b);
             Builder e = new(f, f.NewBlock("entry"));
+            Block same = f.NewBlock("ocsame"), differ = f.NewBlock("ocdiffer"), after = f.NewBlock("ocafter");
+            Block some = f.NewBlock("ocsome"), slotted = f.NewBlock("ocslot"), flat = f.NewBlock("ocflat");
+            Block text = f.NewBlock("octext"), ask = f.NewBlock("ocask"), none = f.NewBlock("ocnone");
 
-            EmitOrder(f, e, a, b, unsigned: true);
+            e.Branch(e.Binary(Opcode.Eq, a, b), same, differ);
+            e.SetBlock(same);
+            e.Ret(new ImmOperand(0, IrType.I32));
+            e.SetBlock(differ);
+            e.Branch(b, some, after);
+            e.SetBlock(after);
+            e.Ret(new ImmOperand(1, IrType.I32));
+
+            // A string or an array has no slots to ask (KeyCompareStub).
+            e.SetBlock(some);
+            VReg vt = e.Load(IrTypes.Word, b, 0);
+            VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
+            e.Branch(e.Binary(Opcode.And, flags, 1), flat, slotted);
+            e.SetBlock(flat);
+            e.Branch(e.Binary(Opcode.And, flags, 2), text, none);
+            e.SetBlock(text);
+            Refuse(e, "Object must be of type String.");
+
+            e.SetBlock(slotted);
+            VReg fn = e.Load(IrTypes.Word, vt, (long)_b.CompareSlot * _t.WordSize);
+            e.Branch(e.Binary(Opcode.Eq, fn, e.Address(name)), none, ask);
+            e.SetBlock(ask);
+            VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(b), R(a) })!;
+            e.Block.Instrs[^1].DispatchType = KeyDispatch(null);
+            e.Ret(RegOperand.Of(e.Binary(Opcode.Sub, Imm(0, IrType.I32), R(answered), IrType.I32)));
+
+            e.SetBlock(none);
+            Refuse(e, NotComparable);
             _m.Functions.Add(f);
         }
         return name;
+    }
+
+    /// <summary>A struct with no order of its own compared by the default order: refused, as .NET refuses it.</summary>
+    private void RefuseUnordered()
+    {
+        Refuse(_e, NotComparable);
+        _e.SetBlock(_f.NewBlock("afterrefused"));
     }
 
     /// <summary>Returns -1, 0 or 1 for two registers of one width.</summary>
@@ -1186,8 +1233,10 @@ public sealed partial class Lowering
 
     /// <summary>
     /// The default order of two keys, as .NET's default comparer has it: null
-    /// before anything, strings as text, and otherwise the first one's own
-    /// CompareTo through the shared slot. `of` as KeyEqualsStub's.
+    /// before anything, strings as text (anything else beside one refused),
+    /// an array as an object with no order (ObjectCompareStub), and otherwise
+    /// the first one's own CompareTo through the shared slot. `of` as
+    /// KeyEqualsStub's.
     /// </summary>
     private string KeyCompareStub(Type? of = null)
     {
@@ -1230,7 +1279,8 @@ public sealed partial class Lowering
         }
         else if (array)
         {
-            e.Jump(word);
+            // An array has no order (ObjectCompareStub).
+            e.Ret(RegOperand.Of(e.Call(ObjectCompareStub(), IrType.I32, R(a), R(b))!));
         }
         else
         {
@@ -1246,13 +1296,29 @@ public sealed partial class Lowering
             {
                 Block flat = f.NewBlock("kcflat");
                 Block texts = f.NewBlock("kctext");
+                Block arrays = f.NewBlock("kcarray");
+                Block bothText = f.NewBlock("kctexts");
+                Block notText = f.NewBlock("kcnottext");
+                Block slotted = f.NewBlock("kcslotted");
                 VReg flags = Numbered(e, e.Load(IrType.I32, vt, -_t.DescriptorBytes + DescFlags * _t.WordSize));
 
                 e.Branch(e.Binary(Opcode.And, flags, 1), flat, ask);
                 e.SetBlock(flat);
-                e.Branch(e.Binary(Opcode.And, flags, 2), texts, word);
+                e.Branch(e.Binary(Opcode.And, flags, 2), texts, arrays);
+                // A STRING ORDERS ONLY STRINGS: anything else is refused as
+                // String.CompareTo(object) refuses it. Read as text, an
+                // object's fields were characters and its order theirs.
                 e.SetBlock(texts);
+                VReg theirs = Numbered(e, e.Load(IrType.I32, e.Load(IrTypes.Word, b, 0), -_t.DescriptorBytes + DescFlags * _t.WordSize));
+                e.Branch(e.Binary(Opcode.And, theirs, 1), slotted, notText);
+                e.SetBlock(slotted);
+                e.Branch(e.Binary(Opcode.And, theirs, 2), bothText, notText);
+                e.SetBlock(bothText);
                 TextOrder(e, a, b, word);
+                e.SetBlock(notText);
+                Refuse(e, "Object must be of type String.");
+                e.SetBlock(arrays);
+                e.Ret(RegOperand.Of(e.Call(ObjectCompareStub(), IrType.I32, R(a), R(b))!));
             }
 
             e.SetBlock(ask);
@@ -1326,7 +1392,7 @@ public sealed partial class Lowering
     /// <summary>
     /// Two values in Comparer&lt;T&gt;.Default's order, as -1, 0 or 1: an object
     /// by its CompareTo (null first), a nullable value with no value first
-    /// and then by its value, a struct by its own CompareTo (none: equal), a
+    /// and then by its value, a struct by its own CompareTo (none: refused), a
     /// float with NaN before everything and equal to itself, an integer by
     /// its value, signed or not.
     /// </summary>
@@ -1356,6 +1422,10 @@ public sealed partial class Lowering
                 VReg them = boxed ? BoxValue(at, y, of) : y;
                 VReg said = CallDirect(own, IrType.I32, new List<Operand> { R(x), R(them) })!;
                 _e.CopyTo(order, R(said.Type == IrType.I32 ? said : _e.Unary(Opcode.Trunc64, R(said), IrType.I32)));
+            }
+            else
+            {
+                RefuseUnordered();
             }
         }
         else if (of.Prim is Prim.F32 or Prim.F64)

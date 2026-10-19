@@ -448,17 +448,29 @@ class SortedPairs<K, V> {
     // changes that change nothing (Touch). An enumerator of the map, of its
     // keys or of its values that finds it moved throws.
     internal int version;
+    // SEARCHED AS Array.BinarySearch SEARCHES, SortedList's keys are: what
+    // the comparer throws comes out held in the InvalidOperationException a
+    // sort's failure is (Sorting.Search). SortedDictionary's tree asks its
+    // comparer bare, and its failures come out as they were thrown.
+    private readonly bool searchedAsArray;
 
-    public SortedPairs(IComparer<K> comparer) {
+    public SortedPairs(IComparer<K> comparer, bool searchedAsArray) {
         keys = new List<K>();
         values = new List<V>();
         order = comparer;
+        this.searchedAsArray = searchedAsArray;
     }
 
     /// The index of the key, or the ones' complement of where it would go --
     /// Array.BinarySearch's convention, and the reason IndexOfKey can return
     /// the insertion point without a second search.
     public int Search(K key) {
+        if (!searchedAsArray) { return Bisect(key); }
+        try { return Bisect(key); }
+        catch (Exception e) { throw new InvalidOperationException("Failed to compare two elements in the array.", e); }
+    }
+
+    private int Bisect(K key) {
         int low = 0;
         int high = keys.Count - 1;
 
@@ -743,8 +755,9 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
     }
     private SortedPairs<K, V> pairs;
 
-    public SortedList() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
-    public SortedList(IComparer<K> comparer) { pairs = new SortedPairs<K, V>(comparer); }
+    public SortedList() { pairs = new SortedPairs<K, V>(Comparer<K>.Default, true); }
+    /// Keys ordered by `comparer`, or by their own order given null, as .NET's.
+    public SortedList(IComparer<K>? comparer) { pairs = new SortedPairs<K, V>(comparer ?? Comparer<K>.Default, true); }
 
     public int Count => pairs.keys.Count;
     public IComparer<K> Comparer => pairs.order;
@@ -861,9 +874,9 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
     }
     private SortedPairs<K, V> pairs;
 
-    public SortedDictionary() { pairs = new SortedPairs<K, V>(Comparer<K>.Default); }
+    public SortedDictionary() { pairs = new SortedPairs<K, V>(Comparer<K>.Default, false); }
     /// Keys ordered by `comparer`, or by their own order given null, as .NET's.
-    public SortedDictionary(IComparer<K>? comparer) { pairs = new SortedPairs<K, V>(comparer ?? Comparer<K>.Default); }
+    public SortedDictionary(IComparer<K>? comparer) { pairs = new SortedPairs<K, V>(comparer ?? Comparer<K>.Default, false); }
 
     public int Count => pairs.keys.Count;
     public IComparer<K> Comparer => pairs.order;
@@ -1582,7 +1595,10 @@ namespace System.Collections.Concurrent
     }
 
     /// An unordered collection: what is taken is whatever the bag gives,
-    /// last added first here, as .NET's does for the thread that added it.
+    /// last added first here, as .NET's does for the thread that added it --
+    /// and it is read in that order too, newest first, as .NET's one thread's
+    /// list is: a bag of 0..5 enumerates 5,4,3,2,1,0, and one made from a
+    /// list holds it backwards.
     class ConcurrentBag<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
     {
     // The non-generic IEnumerable's, as .NET's collections have it.
@@ -1655,13 +1671,19 @@ namespace System.Collections.Concurrent
 
         public T[] ToArray()
         {
-            lock (_gate) { return _items.ToArray(); }
+            lock (_gate)
+            {
+                int count = _items.Count;
+                T[] all = new T[count];
+                for (int i = 0; i < count; i++) { all[i] = _items[count - 1 - i]; }
+                return all;
+            }
         }
 
         public void CopyTo(T[] array, int index)
         {
             if (array == null) { throw new ArgumentNullException("array"); }
-            lock (_gate) { _items.CopyTo(array, index); }
+            ToArray().CopyTo(array, index);
         }
 
         public IEnumerator<T> GetEnumerator()

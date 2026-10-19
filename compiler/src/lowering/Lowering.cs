@@ -3065,10 +3065,10 @@ public sealed partial class Lowering
                 VReg other = Unboxed(f.Params[1], wrong);
                 e.Ret(R(e.Call(TupleCompare(shape), IrType.I32, R(self), R(other))!));
                 e.SetBlock(wrong);
-                if (RuntimeMethod("ArgumentFailure", 0) is MethodSymbol fail)
+                if (RuntimeMethod("ArgumentFailure", 1) is MethodSymbol fail)
                 {
                     Require(fail);
-                    e.Call(CallLabel(fail), IrType.Void);
+                    e.Call(CallLabel(fail), IrType.Void, R(e.Address(InternString(ShortTypeName(Type.Plain(shape, Prim.Void))))));
                 }
                 e.Emit(Opcode.Trap, null);
                 e.Unreachable();

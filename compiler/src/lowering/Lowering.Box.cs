@@ -531,9 +531,20 @@ public sealed partial class Lowering
         e.Branch(e.Binary(Opcode.Eq, e.Load(IrTypes.Word, self, 0), e.Load(IrTypes.Word, other, 0)), same, wrong);
         e.SetBlock(wrong);
         string type = BoxName(of);
-        Refuse(e, of.Symbol is { Kind: TypeKind.Enum }
-            ? "Object must be the same type as the enum. The enum type was '" + type + "'."
-            : "Object must be of type " + type[(type.LastIndexOf('.') + 1)..] + ".");
+        // AN ENUM'S NAMES THE OTHER'S TYPE TOO, read off it (Runtime.EnumCompareRefused).
+        if (of.Symbol is { Kind: TypeKind.Enum } && RuntimeMethod("EnumCompareRefused", 2) is MethodSymbol enumRefused)
+        {
+            Require(enumRefused);
+            e.Call(CallLabel(enumRefused), IrType.Void, R(other), R(e.Address(InternString(type))));
+            e.Emit(Opcode.Trap, null);
+            e.Unreachable();
+        }
+        else
+        {
+            Refuse(e, of.Symbol is { Kind: TypeKind.Enum }
+                ? "Object must be the same type as the enum. The enum type was '" + type + "'."
+                : "Object must be of type " + type[(type.LastIndexOf('.') + 1)..] + ".");
+        }
         e.SetBlock(same);
         EmitValueOrder(f, e, of, BoxedValue(e, self, of), BoxedValue(e, other, of));
         _m.Functions.Add(f);
@@ -704,10 +715,10 @@ public sealed partial class Lowering
         e.SetBlock(some);
         e.Branch(e.Binary(Opcode.Eq, e.Load(IrTypes.Word, self, 0), e.Load(IrTypes.Word, other, 0)), same, wrong);
         e.SetBlock(wrong);
-        if (RuntimeMethod("ArgumentFailure", 0) is MethodSymbol fail)
+        if (RuntimeMethod("ArgumentFailure", 1) is MethodSymbol fail)
         {
             Require(fail);
-            e.Call(CallLabel(fail), IrType.Void);
+            e.Call(CallLabel(fail), IrType.Void, R(e.Address(InternString(ShortTypeName(Type.Plain(shape, Prim.Void))))));
         }
         e.Emit(Opcode.Trap, null);
         e.Unreachable();

@@ -4309,11 +4309,20 @@ static class Runtime
         throw new ArgumentException(message);
     }
 
-    /// A boxed tuple compared with a box of another type: ValueTuple's
-    /// CompareTo(object) refuses it so.
-    public static void ArgumentFailure()
+    /// An enum compared through IComparable with something not of its type:
+    /// Enum.CompareTo(object) names both types, the other's read off it.
+    public static void EnumCompareRefused(object other, string enumType)
     {
-        throw new ArgumentException("Argument must be of type ValueTuple.", "other");
+        throw new ArgumentException("Object must be the same type as the enum. The type passed in was '"
+            + String.TypeText(other.GetType().FullName) + "'; the enum type was '" + enumType + "'.");
+    }
+
+    /// A boxed tuple compared with a box of another type: ValueTuple's
+    /// CompareTo(object) refuses it so, naming its own type as Type.ToString
+    /// writes it -- System.ValueTuple`2[System.Int32,System.String].
+    public static void ArgumentFailure(string tuple)
+    {
+        throw new ArgumentException("Argument must be of type " + tuple + ".", "other");
     }
 
     // ---- array covariance ------------------------------------------------
