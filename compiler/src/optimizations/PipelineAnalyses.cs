@@ -81,7 +81,10 @@ internal static class PipelineAnalyses
             Block b = blocks[n];
             int id = b.Serial;
             h = h * 31 + id;
-            g = g * 31 + id + (b.IsLandingPad ? 1 : 0);
+            // Whether it is a landing pad, as a step of its own: added to the
+            // serial, a pad's print was the next block's, serials being
+            // consecutive.
+            g = (g * 31 + id) * 2 + (b.IsLandingPad ? 1 : 0);
             List<Instr> instrs = b.Instrs;
             int count = instrs.Count;
             for (int k = 0; k < count; k++)

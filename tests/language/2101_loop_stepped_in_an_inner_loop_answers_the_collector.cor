@@ -1,0 +1,78 @@
+// test: a loop whose counter is stepped in an inner loop answers the collector
+// expect-exit: 0
+// expect-output:
+// spinning 2
+// collected True
+// done True
+//
+// A loop is passed over as counted when every lap passes a test of a
+// counter stepped by a constant a lap, and the step was taken for one a
+// lap wherever its block dominated the loop's latches -- which the body of
+// an inner do-while does, run as many times a lap as it goes round.
+// `while (i != n) { int j = 0; do { i++; } while (++j < 2); }` steps i by
+// twos, never meeting an odd n, and `i < top` by twos with top the largest
+// int wraps past it. Each was taken for counted, its inner loop counted
+// too, and spun by a thread of its own with no poll it kept the main
+// thread's collection waiting for ever.
+using System;
+using System.Threading;
+static class Program
+{
+    static volatile bool s_done;
+    static int s_spinning;
+    static long s_laps;
+    static int s_odd = 7;
+    static int s_top = int.MaxValue;
+
+    static void Started() => Interlocked.Increment(ref s_spinning);
+    static void Lapped(long laps) => Interlocked.Add(ref s_laps, laps);
+
+    static void PastAnOddBound()
+    {
+        int n = s_odd;
+        Started();
+        long laps = 0;
+        int i = 0;
+        while (i != n)
+        {
+            int j = 0;
+            do { i++; } while (++j < 2);
+            if (s_done) break;
+            laps++;
+        }
+        Lapped(laps);
+    }
+
+    static void PastTheTop()
+    {
+        int top = s_top;
+        Started();
+        long laps = 0;
+        int i = 0;
+        while (i < top)
+        {
+            int j = 0;
+            do { i++; } while (++j < 2);
+            if (s_done) break;
+            laps++;
+        }
+        Lapped(laps);
+    }
+
+    static int Main()
+    {
+        Thread[] threads = { new Thread(PastAnOddBound), new Thread(PastTheTop) };
+        foreach (Thread t in threads) t.Start();
+        while (Volatile.Read(ref s_spinning) < threads.Length) Thread.Yield();
+        Console.WriteLine("spinning " + Volatile.Read(ref s_spinning));
+        int before = GC.CollectionCount(0);
+        int[][] kept = new int[64][];
+        for (int i = 0; i < 20000; i++) kept[i % 64] = new int[256];
+        GC.Collect();
+        Console.WriteLine("collected " + (GC.CollectionCount(0) > before));
+        s_done = true;
+        foreach (Thread t in threads) t.Join();
+        Console.WriteLine("done " + (Interlocked.Read(ref s_laps) > 0));
+        return 0;
+    }
+}

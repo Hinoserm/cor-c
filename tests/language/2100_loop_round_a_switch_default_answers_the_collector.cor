@@ -1,0 +1,61 @@
+// test: a loop that goes round only by a switch's default answers the collector
+// expect-exit: 0
+// expect-output:
+// spinning 1
+// collected True
+// done 3
+//
+// A collection waits for every running thread to answer at a safepoint;
+// a loop answers at its back edge (BackEdgePolls) unless it is counted and
+// ends by itself. `for (;;)` round a switch over 1 to 4, every case a
+// return, is a jump table whose default -- a value out of the table's
+// range, 0 among them -- is the only edge back to the loop's header. The
+// graph counts a default as an edge (Cfg), so the loop was found, but its
+// poll was put on the table's targets alone; spun by a thread of its own
+// while the state was 0, it kept the main thread's collection waiting for
+// ever.
+using System;
+using System.Threading;
+static class Program
+{
+    static int s_state;
+    static int s_spinning;
+    static int s_got;
+
+    static int Spin()
+    {
+        for (;;)
+        {
+            switch (Volatile.Read(ref s_state))
+            {
+                case 1: return 1;
+                case 2: return 2;
+                case 3: return 3;
+                case 4: return 4;
+            }
+        }
+    }
+
+    static void Spinner()
+    {
+        Interlocked.Increment(ref s_spinning);
+        Volatile.Write(ref s_got, Spin());
+    }
+
+    static int Main()
+    {
+        Thread t = new Thread(Spinner);
+        t.Start();
+        while (Volatile.Read(ref s_spinning) < 1) Thread.Yield();
+        Console.WriteLine("spinning " + Volatile.Read(ref s_spinning));
+        int before = GC.CollectionCount(0);
+        int[][] kept = new int[64][];
+        for (int i = 0; i < 20000; i++) kept[i % 64] = new int[256];
+        GC.Collect();
+        Console.WriteLine("collected " + (GC.CollectionCount(0) > before));
+        Volatile.Write(ref s_state, 3);
+        t.Join();
+        Console.WriteLine("done " + Volatile.Read(ref s_got));
+        return 0;
+    }
+}

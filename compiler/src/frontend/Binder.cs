@@ -13874,20 +13874,29 @@ public sealed partial class Binder
 
                     if (fits)
                     {
-                        // AN ELEMENT REACHING ITS FIELD BY A USER-DEFINED
-                        // CONVERSION IS CONVERTED, as an assignment converts it
-                        // (CheckAssignable): the construction's field inits are
-                        // checked nowhere else, and `(long.MinValue, 7)` made a
-                        // (decimal, decimal) of the integers themselves -- the
-                        // long copied as the decimal's address. The compiler's
-                        // own Binder.DecimalCast was refused at its link.
+                        // EACH ELEMENT CONVERTED AS AN ASSIGNMENT CONVERTS IT, by
+                        // CheckAssignable itself: the construction's field inits
+                        // are checked nowhere else. An element reaching its field
+                        // by a user-defined conversion -- `(long.MinValue, 7)` made
+                        // a (decimal, decimal) of the integers themselves, the long
+                        // copied as the decimal's address, and the compiler's own
+                        // Binder.DecimalCast was refused at its link -- and one
+                        // already rewritten, a declared `+`'s call or a cast's
+                        // operator, whose result the conversion is hung on: `(a +
+                        // b, 2)` as a (decimal, int) stored the Cents the `+` made
+                        // as the decimal. And an element of another tuple shape is
+                        // rebuilt in its field's: `(p, 3)` as a ((long, long), int)
+                        // put an (int, int) p's block where two longs are read.
+                        // A FIELD OF THE SHAPE CARRIES NO NULLABILITY of its own --
+                        // `(string? Prefix, string Local)` and `(string, string)`
+                        // are one shape -- so a reference field is taken as one
+                        // that may hold null: the element's conversion is checked,
+                        // and no warning is made up for a `?` the shape forgot.
                         for (int i = 0; i < elements.Count; i++)
                         {
                             Type field = want.Fields[i].Type;
-                            if (!elements[i].IsError && !field.IsError && !StandardConvertible(elements[i], field) && !Variant(elements[i], field)
-                                && !_r.Rewrites.ContainsKey(tup.Items[i])
-                                && UserConversion(elements[i], field, explicitToo: false, IntegerConstant(tup.Items[i], elements[i])) is { } op)
-                                ConvertByOperator(tup.Items[i], op);
+                            if (field.IsReference && !field.Nullable) field = field.AsNullable();
+                            CheckAssignable(elements[i], field, tup.Items[i], What.Element(i + 1));
                         }
                         elements = want.Fields.Select(f => f.Type).ToList();
                     }

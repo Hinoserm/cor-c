@@ -269,7 +269,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>The method a shared helper was asked for in, set aside while it is built.</summary>
-    private readonly record struct HelperContext(MethodSymbol? Method, VReg[]? TypeArgs, bool InBarrier);
+    private readonly record struct HelperContext(MethodSymbol? Method, VReg[]? TypeArgs, bool InBarrier, int CheckedDepth);
 
     /// <summary>
     /// A SHARED HELPER IS BUILT AS NOBODY'S: every unit that needs one makes
@@ -283,10 +283,12 @@ public sealed partial class Lowering
     /// </summary>
     private HelperContext EnterHelper()
     {
-        HelperContext saved = new(_method, _typeArgs, _inBarrier);
+        // And no `checked` of the asker's: a shared helper's arithmetic is unchecked.
+        HelperContext saved = new(_method, _typeArgs, _inBarrier, _checkedDepth);
         _method = null;
         _typeArgs = null;
         _inBarrier = false;
+        _checkedDepth = 0;
         return saved;
     }
 
@@ -295,6 +297,7 @@ public sealed partial class Lowering
         _method = saved.Method;
         _typeArgs = saved.TypeArgs;
         _inBarrier = saved.InBarrier;
+        _checkedDepth = saved.CheckedDepth;
     }
 
     /// <summary>How an element is passed, as a refusal is named by it: its machine type.</summary>

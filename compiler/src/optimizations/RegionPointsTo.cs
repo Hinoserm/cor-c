@@ -67,10 +67,15 @@ public sealed class RegionPointsTo : IModulePass
     // location held in a set of more than a few is one bit (LocSet).
     private const long HeldBudget = 40_000_000;
     private long _held;
-    // And past this much more heap than the compile had when the pass began,
-    // whatever holds it: edges, watchers, pairs of copies.
+    // AND PAST THIS MUCH OF WHAT THE SOLVE HOLDS, COUNTED, NOT READ OFF THE
+    // HEAP: edges, watchers, nodes and objects, each at what it takes. The
+    // heap read was the whole process's -- another compile's in the same
+    // process, a collection that had not come yet -- so where a solve gave
+    // up hung on what else ran, and a program compiled two ways answered
+    // two ways. Counted in the order the solve does its work, it gives up
+    // at the same step on every machine.
     private const long HeapBudget = 200L * 1024 * 1024;
-    private long _heapAtStart, _heapLimit = HeapBudget;
+    private long _watcherCount;
 
     private Module _m = null!;
     private Dictionary<string, Function> _byName = null!;
@@ -264,12 +269,6 @@ public sealed class RegionPointsTo : IModulePass
         _data = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data) _data[d.Name] = d;
 
-        // WHAT THE COMPILE HOLDS, after a collection: counted without one, the
-        // garbage the passes before left uncollected was taken for the
-        // compile's own, and the budget below grew by it -- a few dozen
-        // megabytes alone, hundreds beside thirty other compiles, where 1321
-        // went on past its budget to the heap's hard limit and died.
-        _heapAtStart = GC.GetTotalMemory(true);
         NewObject(null, null, -1, null, 0);          // Global
 
         try
@@ -2416,6 +2415,7 @@ public sealed class RegionPointsTo : IModulePass
     {
         node = Find(node);
         (_watchers[node] ??= new()).Add(act);
+        _watcherCount++;
         foreach (int id in _pts[node].Ids()) act(_locs[id]);
     }
 
@@ -3089,21 +3089,23 @@ public sealed class RegionPointsTo : IModulePass
 
     private bool Solve()
     {
-        try { return SolveSteps(); }
-        catch (OverBudget) { return false; }
+        bool done;
+        try { done = SolveSteps(); }
+        catch (OverBudget) { done = false; }
+        // For a report: what the solve held, counted and as the heap has it.
+        if (Report is not null)
+            Console.Error.WriteLine($"regions: solve {(done ? "done" : "given up")}: {_pts.Count} nodes, {_objects.Count} objects, {_held} held, {_edgeCount} edges, {_watcherCount} watchers, {_steps} steps; counted {Spent() >> 20} MB, heap {GC.GetTotalMemory(true) >> 20} MB live");
+        return done;
     }
 
-    // Past the heap budget. Counted without a collection, the heap is garbage
-    // too: what is still held after one decides, and the next look waits for
-    // garbage to pile up again.
-    private bool OverHeap()
-    {
-        if (GC.GetTotalMemory(false) - _heapAtStart <= _heapLimit) return false;
-        long live = GC.GetTotalMemory(true) - _heapAtStart;
-        if (live > HeapBudget) return true;
-        _heapLimit = Math.Max(HeapBudget, live + HeapBudget / 4);
-        return false;
-    }
+    // Past the budget (HeapBudget): a location held, an edge, a watcher (a
+    // closure in a list), a node's sets and an object, at what each takes.
+    private bool OverHeap() => Spent() > HeapBudget;
+
+    // The weights are what the heap held a unit of each where the heap was
+    // read: test 1321's solve, given up at 352,117 nodes when its heap had
+    // grown by the budget, counts that much here.
+    private long Spent() => 12 * _held + 72 * _edgeCount + 144 * _watcherCount + 144L * _pts.Count + 240L * _objects.Count;
 
     private bool SolveSteps()
     {
@@ -3112,7 +3114,7 @@ public sealed class RegionPointsTo : IModulePass
             if (_pts.Count > NodeBudget || _held > HeldBudget) return false;
             if ((_steps & 63) == 0 && OverHeap()) return false;
             if (++_steps % 500_000 == 0)
-                Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting");
+                Console.Error.WriteLine($"regions: step {_steps}: {_pts.Count} nodes, {_copies.Count} copies, {_objects.Count} objects, {_work.Count} waiting, {_held} held, {_edgeCount} edges, {_watcherCount} watchers, heap {GC.GetTotalMemory(false) >> 20} MB");
             if (_edgeCount >= _nextMerge) MergeCycles();
             // A node merged into another since it was queued: its delta went too.
             if (_delta[node] is not { } delta) continue;

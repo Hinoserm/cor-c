@@ -1,0 +1,32 @@
+// test: tuple literal elements of another tuple shape rebuilt in their fields'
+// expect-exit: 0
+// expect-output:
+// local ((3, -4), 3) -1
+// return ((-2147483648, 2147483647), 7)
+// argument 3 -4 5
+// boxed ((3, -4), 6)
+//
+// A tuple-typed element whose shape is not its field's -- an (int, int)
+// where a (long, long) or an (object, object) is wanted -- converts element
+// by element, which for a value of another layout is a new tuple built
+// from its items (CheckAssignable's rebuild). The literal's elements were
+// converted only by a user-defined operator, and the (int, int)'s block
+// went into the field as it was: two longs, or two references, read from
+// eight bytes.
+using System;
+static class Program
+{
+    static ((long Lo, long Hi) Range, int N) Widen((int, int) p) => (p, 7);
+    static string Show(((long, long) P, int N) t) => t.P.Item1 + " " + t.P.Item2 + " " + t.N;
+    static int Main()
+    {
+        (int, int) p = (3, -4);
+        ((long, long), int) t = (p, 3);
+        Console.WriteLine("local " + t + " " + (t.Item1.Item1 + t.Item1.Item2));
+        Console.WriteLine("return " + Widen((int.MinValue, int.MaxValue)));
+        Console.WriteLine("argument " + Show((p, 5)));
+        ((object, object) O, int N) o = (p, 6);
+        Console.WriteLine("boxed " + o);
+        return 0;
+    }
+}

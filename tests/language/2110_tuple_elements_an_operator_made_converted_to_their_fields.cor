@@ -1,0 +1,44 @@
+// test: tuple literal elements an operator made converted to their fields
+// expect-exit: 0
+// expect-output:
+// local 13.49 2
+// return (13.49, 2)
+// argument 13.49 3
+// cast (12.34, 4)
+// negated (-10.50, 5)
+//
+// A tuple literal's element reaching its field by a user-defined conversion
+// is converted as an assignment converts it (1597), and so is one already
+// rewritten: a declared `+`'s or `-`'s call, or a cast's explicit operator,
+// each answering a Cents that only Cents's implicit operator makes a
+// decimal. The conversion hangs on that call, as CheckAssignable hangs it
+// for `decimal d = a + b;`; passed over for having a rewrite, the Cents was
+// stored where the decimal's bytes belong.
+using System;
+struct Cents
+{
+    public long V;
+    public static Cents operator +(Cents a, Cents b) => new() { V = a.V + b.V };
+    public static Cents operator -(Cents c) => new() { V = -c.V };
+    public static explicit operator Cents(long v) => new() { V = v };
+    public static implicit operator decimal(Cents c) => c.V * 0.01m;
+}
+static class Program
+{
+    static (decimal Total, int N) Sum(Cents a, Cents b) => (a + b, 2);
+    static string Show((decimal Total, int N) t) => t.Total + " " + t.N;
+    static int Main()
+    {
+        Cents a = new() { V = 1050 };
+        Cents b = new() { V = 299 };
+        (decimal Total, int N) t = (a + b, 2);
+        Console.WriteLine("local " + t.Total + " " + t.N);
+        Console.WriteLine("return " + Sum(a, b));
+        Console.WriteLine("argument " + Show((a + b, 3)));
+        (decimal Total, int N) c = ((Cents)1234L, 4);
+        Console.WriteLine("cast " + c);
+        (decimal Total, int N) m = (-a, 5);
+        Console.WriteLine("negated " + m);
+        return 0;
+    }
+}

@@ -825,6 +825,8 @@ public sealed partial class Lowering
 
         Function savedF = _f;
         Builder savedE = _e;
+        // Built as nobody's (EnterHelper): no failure block, rule or `checked` of the asker's.
+        Block? savedFail = _boundsFail; _boundsFail = null; HelperContext context = EnterHelper();
         _f = f;
         _e = e;
 
@@ -864,6 +866,7 @@ public sealed partial class Lowering
 
         _f = savedF;
         _e = savedE;
+        _boundsFail = savedFail; LeaveHelper(context);
         _m.Functions.Add(f);
         return label;
     }

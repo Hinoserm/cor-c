@@ -49,7 +49,10 @@ public static class BackEdgePolls
         if (f.Name.StartsWith("__", StringComparison.Ordinal)) return 0;
         foreach (string prefix in Collector)
             if (f.Name.StartsWith(prefix, StringComparison.Ordinal)) return 0;
-        if (f.Blocks.Count < 2) return 0;
+        // ONE BLOCK LOOPS ONLY TO ITSELF, which its own last instruction
+        // names, as a target or a switch's default: any other function of one
+        // block has no loop, and no graph is made for it.
+        if (f.Blocks.Count == 0 || f.Blocks.Count == 1 && !GoesTo(f.Blocks[0], f.Blocks[0])) return 0;
         Cfg cfg = new(f);
         HashSet<Block> reached = cfg.Reachable();
         // Each loop by its header: the blocks with an edge back to it, which
@@ -75,7 +78,17 @@ public static class BackEdgePolls
         // An edge back to a block on a depth-first walk's path that is no
         // such edge is polled, counted or not: no body to count it by.
         List<(Block From, Block To)> retreating = Retreating(f, cfg);
-        if (latches is null && retreating.Count == 0) return 0;
+        // AND A WAY ROUND THROUGH A THROW, which no edge of the graph is: an
+        // unwind reaches its landing pad by the handler's record (Cfg), so a
+        // loop whose every lap throws to a catch inside it -- `while (!done)
+        // { try { throw; } catch { } }` in a catch -- has no edge back for
+        // either search to find. Arriving at a pad takes its record off the
+        // chain, and only a handler's opening, the LabelAddr that puts a pad's
+        // address in a record, puts one back; so every such lap passes a pad
+        // from which an opening is reached, and a poll at the head of each of
+        // those pads is on every one of them.
+        List<Block> rejoining = Rejoining(f, cfg);
+        if (latches is null && retreating.Count == 0 && rejoining.Count == 0) return 0;
         HashSet<VReg>? lengths = null;
         int made = 0;
         if (latches is not null)
@@ -83,34 +96,62 @@ public static class BackEdgePolls
             {
                 if (header.Instrs.Count > 0 && header.Instrs[0].Op == Opcode.Phi) continue;
                 HashSet<Block> body = Body(cfg, header, backs);
-                if (Counted(f, cfg, body, backs, ref lengths)) continue;
+                if (Counted(f, cfg, header, body, backs, ref lengths)) continue;
                 foreach (Block latch in backs) made += PollEdges(f, latch, header);
             }
         foreach ((Block from, Block to) in retreating) made += PollEdges(f, from, to);
+        foreach (Block pad in rejoining) made += PollPad(f, pad);
         return made;
     }
 
-    /// <summary>Every edge of `from`'s last instruction to `to` made to pass a poll first; how many.</summary>
+    /// <summary>
+    /// Every edge of `from`'s last instruction to `to` made to pass a poll
+    /// first, a switch's default among them; how many polls: one, every
+    /// slot that names `to` sent to it, or none.
+    /// </summary>
     private static int PollEdges(Function f, Block from, Block to)
     {
         if (to.Instrs.Count > 0 && to.Instrs[0].Op == Opcode.Phi) return 0;
-        int made = 0;
         Instr last = from.Instrs[^1];
-        for (int t = 0; t < last.Targets.Count; t++)
+        // The targets, then the default, as the graph counts its edges (Cfg).
+        // `for (;;) switch (state) { case 1: return 1; ... case 4: return 4; }`
+        // is a table of returns whose default, every value out of its range,
+        // is the only way back to the header: polled on its targets alone,
+        // the loop spun with no poll while the state was 0. One poll for
+        // them all, where a table's every gap names the header too.
+        Block? test = null;
+        for (int t = 0; t <= last.Targets.Count; t++)
         {
-            if (!ReferenceEquals(last.Targets[t], to)) continue;
-            Block test = f.NewBlock("poll");
-            Block call = f.NewBlock("polled");
-            Builder e = new(f, test);
-            VReg asked = e.Load(IrTypes.Word, new SymOperand(Asking), 0, IrTypes.Word.Bytes());
-            e.Branch(asked, call, to);
-            e.SetBlock(call);
-            e.Call(Poll, IrType.Void);
-            e.Jump(to);
-            last.SetTarget(t, test);
-            made++;
+            bool target = t < last.Targets.Count;
+            if (!ReferenceEquals(target ? last.Targets[t] : last.Default, to)) continue;
+            test ??= Polled(f, to);
+            if (target) last.SetTarget(t, test);
+            else last.Default = test;
         }
-        return made;
+        return test is null ? 0 : 1;
+    }
+
+    /// <summary>A block that reads the word and, while a round is open, calls the poll, going on to `to` either way.</summary>
+    private static Block Polled(Function f, Block to)
+    {
+        Block test = f.NewBlock("poll");
+        Block call = f.NewBlock("polled");
+        Builder e = new(f, test);
+        VReg asked = e.Load(IrTypes.Word, new SymOperand(Asking), 0, IrTypes.Word.Bytes());
+        e.Branch(asked, call, to);
+        e.SetBlock(call);
+        e.Call(Poll, IrType.Void);
+        e.Jump(to);
+        return test;
+    }
+
+    /// <summary>Whether `from`'s last instruction goes to `to`, by a target or a switch's default.</summary>
+    private static bool GoesTo(Block from, Block to)
+    {
+        if (from.Terminator is not { } end) return false;
+        for (int t = 0; t <= end.Targets.Count; t++)
+            if (ReferenceEquals(t < end.Targets.Count ? end.Targets[t] : end.Default, to)) return true;
+        return false;
     }
 
     /// <summary>
@@ -152,6 +193,53 @@ public static class BackEdgePolls
         return found;
     }
 
+    /// <summary>
+    /// The landing pads from which the opening of a handler is reached, in
+    /// the pad's own block or past it by the graph's edges: an opening is a
+    /// LabelAddr, which puts a pad's address in a record, and the pads are
+    /// found walking back from every one.
+    /// </summary>
+    private static List<Block> Rejoining(Function f, Cfg cfg)
+    {
+        List<Block> found = new();
+        HashSet<Block>? reaching = null;
+        Stack<Block>? walk = null;
+        foreach (Block open in f.Blocks)
+            foreach (Instr i in open.Instrs)
+                if (i.Op == Opcode.LabelAddr)
+                {
+                    (reaching ??= new HashSet<Block>()).Add(open);
+                    (walk ??= new Stack<Block>()).Push(open);
+                    break;
+                }
+        if (reaching is null || walk is null) return found;
+        while (walk.TryPop(out Block? at))
+            foreach (Block p in cfg.Preds(at))
+                if (reaching.Add(p)) walk.Push(p);
+        foreach (Block pad in f.Blocks)
+            if (pad.IsLandingPad && reaching.Contains(pad)) found.Add(pad);
+        return found;
+    }
+
+    /// <summary>
+    /// A poll at the head of landing pad `pad`, once its exception is taken
+    /// (`__exception`): the unwinder hands that over in the register a call
+    /// answers in, and the poll's call would overwrite it. What follows goes
+    /// to a block of its own, which the poll goes on to. How many polls:
+    /// none where a block after the pad starts with phis, which name it.
+    /// </summary>
+    private static int PollPad(Function f, Block pad)
+    {
+        foreach (Block s in pad.Successors)
+            if (s.Instrs.Count > 0 && s.Instrs[0].Op == Opcode.Phi) return 0;
+        int at = pad.Instrs.FindIndex(i => i is { Op: Opcode.Call, Callee: "__exception" }) + 1;
+        Block rest = f.NewBlock("caught");
+        rest.Instrs.AddRange(pad.Instrs.GetRange(at, pad.Instrs.Count - at));
+        pad.Instrs.RemoveRange(at, pad.Instrs.Count - at);
+        new Builder(f, pad).Jump(Polled(f, rest));
+        return 1;
+    }
+
     /// <summary>The loop's blocks: the header and every block that reaches a latch without passing it.</summary>
     private static HashSet<Block> Body(Cfg cfg, Block header, List<Block> backs)
     {
@@ -166,10 +254,10 @@ public static class BackEdgePolls
     }
 
     /// <summary>
-    /// Whether every lap passes, in a block that dominates every latch, a
+    /// Whether every lap passes, in a block made once a lap (EveryLap), a
     /// branch out of the loop on a compare, made every lap, of a counter with
     /// a bound the loop never writes, the counter written in the loop once,
-    /// in a block that dominates every latch too, to itself plus or minus a
+    /// in a block made once a lap too, to itself plus or minus a
     /// constant -- a step TOWARD the way out that cannot pass it. A counter
     /// stepped away from its bound, or past it (`i != 7` by twos, `i &lt; n`
     /// by twos with n the largest int), held to a bound every value may meet
@@ -178,7 +266,7 @@ public static class BackEdgePolls
     /// heat death of the machine, and passed over it would keep every other
     /// thread's collection waiting for as long as it ran.
     /// </summary>
-    private static bool Counted(Function f, Cfg cfg, HashSet<Block> body, List<Block> backs, ref HashSet<VReg>? lengths)
+    private static bool Counted(Function f, Cfg cfg, Block header, HashSet<Block> body, List<Block> backs, ref HashSet<VReg>? lengths)
     {
         Dictionary<VReg, List<(Block Block, Instr Write)>> writes = new();
         foreach (Block b in body)
@@ -188,7 +276,33 @@ public static class BackEdgePolls
                     if (!writes.TryGetValue(d, out var list)) writes[d] = list = new();
                     list.Add((b, i));
                 }
-        bool EveryLap(Block b) => backs.All(latch => cfg.Dominates(b, latch));
+        // MADE ONCE A LAP: in a block that dominates every latch and is on no
+        // way round inside the loop that does not pass its header. A block of
+        // an inner loop is made as many times a lap as that loop goes round,
+        // and a counter it steps by one is stepped by a multiple of one a lap
+        // of this loop: `while (i != n) { int j = 0; do { i++; } while (++j <
+        // 2); }` steps i by twos, past every odd n, and was taken for counted
+        // -- its inner loop counted too, and no poll on either.
+        Dictionary<Block, bool>? once = null;
+        bool EveryLap(Block b)
+        {
+            if (!backs.All(latch => cfg.Dominates(b, latch))) return false;
+            if (ReferenceEquals(b, header)) return true;
+            once ??= new();
+            if (once.TryGetValue(b, out bool single)) return single;
+            HashSet<Block> passed = new();
+            Stack<Block> walk = new();
+            foreach (Block s0 in cfg.Succs(b)) walk.Push(s0);
+            single = true;
+            while (single && walk.TryPop(out Block? at))
+            {
+                if (ReferenceEquals(at, b)) single = false;
+                else if (!ReferenceEquals(at, header) && body.Contains(at) && passed.Add(at))
+                    foreach (Block s1 in cfg.Succs(at)) walk.Push(s1);
+            }
+            once[b] = single;
+            return single;
+        }
         // A bound the loop never writes, or an array's length read in it of
         // an array it never writes: a length never changes (`i < a.Length`,
         // read each lap where nothing hoisted it).

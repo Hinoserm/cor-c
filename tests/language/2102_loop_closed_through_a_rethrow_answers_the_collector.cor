@@ -1,0 +1,56 @@
+// test: a loop whose every lap closes through a rethrow answers the collector
+// expect-exit: 0
+// expect-output:
+// spinning 1
+// collected True
+// done True
+//
+// A lap that goes round only by a throw: the rethrow unwinds to the inner
+// catch, whose landing pad is a root of the graph of its own with no edge
+// into it (Cfg), and the catch's end goes back to the loop's header. The
+// header dominates nothing past the pad, so no edge back to it was any
+// loop's, and the walk from the roots never found it on its path either.
+// A rethrow makes nothing and polls nothing, and spun by a thread of its
+// own the loop kept the main thread's collection waiting for ever.
+using System;
+using System.Threading;
+static class Program
+{
+    static volatile bool s_done;
+    static int s_spinning;
+    static long s_laps;
+    static readonly InvalidOperationException s_kept = new InvalidOperationException("kept");
+
+    static void Rethrowing()
+    {
+        Interlocked.Increment(ref s_spinning);
+        long laps = 0;
+        try { throw s_kept; }
+        catch (InvalidOperationException)
+        {
+            while (!s_done)
+            {
+                try { throw; }
+                catch (InvalidOperationException) { laps++; }
+            }
+        }
+        Interlocked.Add(ref s_laps, laps);
+    }
+
+    static int Main()
+    {
+        Thread t = new Thread(Rethrowing);
+        t.Start();
+        while (Volatile.Read(ref s_spinning) < 1) Thread.Yield();
+        Console.WriteLine("spinning " + Volatile.Read(ref s_spinning));
+        int before = GC.CollectionCount(0);
+        int[][] kept = new int[64][];
+        for (int i = 0; i < 20000; i++) kept[i % 64] = new int[256];
+        GC.Collect();
+        Console.WriteLine("collected " + (GC.CollectionCount(0) > before));
+        s_done = true;
+        t.Join();
+        Console.WriteLine("done " + (Interlocked.Read(ref s_laps) > 0));
+        return 0;
+    }
+}
