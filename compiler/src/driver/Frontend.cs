@@ -646,6 +646,17 @@ public static class Frontend
             return false;
         }
 
+        // THE INSTANTIATION'S OWN CODE: a generic method's copy on a
+        // word-shaped instantiation, every argument known -- no __canon in
+        // the receiver's arguments or the method's -- so `new Derived<T, K>()`
+        // in it is Derived<string, K>, made over what T is. Compiled as its
+        // own (MethodDecl.OwnCode), never sent to a twin over __canon. Not
+        // over an erased argument (Holder<List<__canon>>): that copy's casts
+        // to T would be unchecked words.
+        static bool OwnCode(Lang.TypeDecl owner, List<Lang.TypeRef> args)
+            => owner.Canon is not null && owner.Kind != Lang.TypeKind.Interface
+            && !owner.TemplateArgs.Any(Lang.Monomorphiser.MentionsCanon) && !args.Any(Lang.Monomorphiser.MentionsCanon);
+
         // WHOSE MEMBER IS IT? The template is a member of exactly one
         // declaration, and the copy goes beside it so the call reaches it the
         // same way -- same receiver, same static class. Found by a map made
@@ -676,12 +687,14 @@ public static class Frontend
             // A SHARED METHOD COPY'S NAME SAYS SO (Monomorphiser.CopyName),
             // as the binder spelt it.
             string wanted = Lang.Monomorphiser.CopyName(template.Name, args, owner.Members.IndexOf(template));
+            bool own = OwnCode(owner, args);
 
             if (!owner.Members.Any(m => m.Name == wanted))
             {
                 Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
 
                 copy.File = template.File;
+                copy.OwnCode = own;
                 // A BODY OF THE OWNER'S TEMPLATE IS THIS UNIT'S NOW, and the
                 // unit's receipt depends on its text (TypeDecl.BodiesUsed).
                 owner.BodiesCopied();
@@ -715,7 +728,9 @@ public static class Frontend
             // so its body is written over __canon rather than over Person, and
             // it is given the same name so the redirect -- which matches on
             // index and name together -- finds it.
-            made |= CanonicalTwin(owner, template, args, wanted);
+            // NOT FOR AN INSTANTIATION'S OWN CODE (OwnCode), which is laid
+            // down beside it.
+            if (!own) made |= CanonicalTwin(owner, template, args, wanted);
 
             // AND THE CALL NAMES THE COPY. The receiver and the arguments are
             // untouched; only which member is being asked for changes.
@@ -746,13 +761,14 @@ public static class Frontend
             Lang.MethodDecl copy = Lang.Monomorphiser.Specialise(template, args, wanted, values);
 
             copy.File = template.File;
+            copy.OwnCode = OwnCode(owner, args);
             owner.BodiesCopied();
             copy.LocalCopy = true;
             copy.Fresh = true;
             owner.Members.Add(copy);
             RehostLocals(owner, template, copy, args, values);
             made = true;
-            made |= CanonicalTwin(owner, template, args, wanted);
+            if (!copy.OwnCode) made |= CanonicalTwin(owner, template, args, wanted);
         }
         return made;
     }
@@ -810,6 +826,7 @@ public static class Frontend
             made.Scope = m.Scope;
             made.Namespace = m.Namespace;
             made.LocalCopy = true;
+            made.OwnCode = copy.OwnCode;
             made.Fresh = true;
             made.HoistedIn = m.HoistedIn == template.HoistKey ? copy.HoistKey : renamed[m.HoistedIn!];
             made.WritableRehosted.Clear();

@@ -34,6 +34,14 @@ public sealed class MethodDecl : MemberDecl
     /// </summary>
     // And this one beside them both.
     public bool NeverReturnsByText { get; set; }
+    /// <summary>
+    /// A generic method's copy on a word-shaped instantiation with every
+    /// argument known, the class's and the method's (Frontend.Specialise):
+    /// compiled as that instantiation's own code, not sent to the canonical
+    /// class's twin (Lowering.Canonical), so `new Derived&lt;T, K&gt;()` in it
+    /// is Derived&lt;string, K&gt; for Holder&lt;string&gt;.
+    /// </summary>
+    public bool OwnCode { get; set; }
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<TypeParam> NoTypeParams = new();
     private List<TypeParam>? _typeParams;

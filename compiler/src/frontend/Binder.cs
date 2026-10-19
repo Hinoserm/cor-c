@@ -5919,7 +5919,9 @@ public sealed partial class Binder
             // bodies is both redundant and wrong for nullable type arguments,
             // whose source-level annotations differ although their machine
             // representation and instructions are identical.
-            if (sym.Decl?.Canon is not null)
+            // AN INSTANTIATION'S OWN CODE (MethodDecl.OwnCode) is checked
+            // as its own: no other body is compiled for it.
+            if (sym.Decl?.Canon is not null && !md.OwnCode)
             {
                 continue;
             }
@@ -10002,7 +10004,7 @@ public sealed partial class Binder
         // Not a generic local function's: its closure holds the variables
         // that one captured where it was converted, which are no other's.
         if (chosen is not null && candidates.All(m => m.Decl is not MethodDecl { HoistedName: not null }))
-            made.GroupIdentity = ClosureIdentity.Of(chosen) + (receiver is null ? "" : "$bound");
+            made.GroupIdentity = ClosureIdentity.Of(chosen, wanted.Symbol?.Key ?? wanted.ToString()) + (receiver is null ? "" : "$bound");
         if (receiver is not null) _boundTargets[made] = receiver;
 
         for (int i = 0; i < invoke.Params.Count; i++)
@@ -14029,7 +14031,7 @@ public sealed partial class Binder
             case NewExpr { Type: { Name: "string" or "String", ArrayRank: 0 }, Args.Count: 2 } text
                 when _r.Types.ContainsKey("String"):
             {
-                CallExpr repeat = Call("String", "Repeat", text, text.Args.ToArray());
+                CallExpr repeat = Call("String", "FromChars", text, text.Args.ToArray());
                 _r.Rewrites[text] = repeat;
                 return CheckExpr(repeat);
             }

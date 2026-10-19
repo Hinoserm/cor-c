@@ -939,7 +939,8 @@ public sealed partial class Lowering
         => m.Decl is null
         && m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner) && ConcreteShape(m.Owner)
         || m.Decl?.Body != null && m.Decl.File != "<prelude>"
-        && !IsExternal(m) && (m.Decl?.LocalCopy == true || (m.Decl?.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true)) && m.Owner.Decl?.Canon is null
+        && !IsExternal(m) && (m.Decl?.LocalCopy == true || (m.Decl?.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true))
+        && (m.Owner.Decl?.Canon is null || m.Decl?.OwnCode == true)
         && m.Owner.Decl?.TypeParams.Count is null or 0
         && m.Decl?.TypeParams.Count is null or 0;
 
@@ -951,6 +952,8 @@ public sealed partial class Lowering
     /// </summary>
     private MethodSymbol Canonical(MethodSymbol m)
     {
+        // AN INSTANTIATION'S OWN CODE (MethodDecl.OwnCode) is its own.
+        if (m.Decl is { OwnCode: true }) return m;
         if (m.Owner.Decl?.Canon is not string canon || m.Decl is null)
         {
             return m;
@@ -1900,14 +1903,9 @@ public sealed partial class Lowering
         if (t.Decl is { Specialised: true, Template: string template } made && t.TemplateArgTypes.Count == made.TemplateArgs.Count
             && t.TemplateArgTypes.Count > 0 && t.TemplateArgTypes.All(a => !a.IsError && a.ParamName is null))
         {
-            string bare = template.Contains('.') ? template[(template.LastIndexOf('.') + 1)..] : template;
-            string home = made.Namespace.Length > 0 ? made.Namespace : SystemType(t) ? LibraryHome(bare) : "";
-            string? madeOuter = made.Outer is null ? null : made.Outer == TypeDecl.ProgramHome ? null : TypeDecl.Unaside(made.Outer);
-            string within = madeOuter is { Length: > 0 } o && !(home.Length > 0 && (o == home || o.StartsWith(home + ".", StringComparison.Ordinal)))
-                ? o.Replace('.', '+') + "+" : "";
-            if (home.Length > 0 && madeOuter is { Length: > 0 } inside && inside.StartsWith(home + ".", StringComparison.Ordinal))
-                within = inside[(home.Length + 1)..].Replace('.', '+') + "+";
-            string head = (home.Length > 0 ? home + "." : "") + within + bare + "`" + t.TemplateArgTypes.Count;
+            string[] parts = NestedParts(template, made.Namespace);
+            string home = made.Namespace.Length > 0 ? made.Namespace : SystemType(t) ? LibraryHome(parts[0]) : "";
+            string head = (home.Length > 0 ? home + "." : "") + NestedHead(parts, made.Namespace, t.TemplateArgTypes.Count);
             return head + "[" + string.Join(",", t.TemplateArgTypes.Select(a => "[" + QualifiedName(a) + "]")) + "]";
         }
         if (t.Decl is not TypeDecl d || d.Specialised || t.Structural)
@@ -1936,6 +1934,42 @@ public sealed partial class Lowering
         string nested = outer.Length > 0 ? outer.Replace('.', '+') + "+" + t.Name : t.Name;
         return space.Length > 0 ? space + "." + nested : nested;
     }
+
+    /// <summary>A template's path past its namespace (and the program's home): the types it is nested in, then itself.</summary>
+    private static string[] NestedParts(string template, string space)
+    {
+        string path = TypeDecl.Unaside(template);
+        if (space.Length > 0 && path.StartsWith(space + ".", StringComparison.Ordinal)) path = path[(space.Length + 1)..];
+        if (path.StartsWith(TypeDecl.ProgramHome + ".", StringComparison.Ordinal)) path = path[(TypeDecl.ProgramHome.Length + 1)..];
+        return path.Split('.');
+    }
+
+    /// <summary>
+    /// A NESTED SPECIALISATION AS .NET'S FullName SPELLS IT: each type it is
+    /// nested in, then itself, joined by `+`, each with the arity of the
+    /// parameters it adds -- Dictionary`2+KeyCollection, Outer`1+Deeper`1+
+    /// Deepest, Plain+InsideOf`1 -- where its arguments, the outer types'
+    /// first, all follow the last (TypeDecl.OuterParams). A top-level one is
+    /// its name and its arity: List`1.
+    /// </summary>
+    private string NestedHead(string[] parts, string space, int arity)
+    {
+        int[] own = new int[parts.Length];
+        int total = arity;
+        for (int i = parts.Length - 1; i >= 0; i--)
+        {
+            string path = (space.Length > 0 ? space + "." : "") + string.Join(".", parts, 0, i + 1);
+            int outer = i == 0 ? 0 : OuterParamsOf(path, total);
+            own[i] = total - outer;
+            total = outer;
+        }
+        return string.Join("+", parts.Select((part, i) => own[i] > 0 ? part + "`" + own[i] : part));
+    }
+
+    /// <summary>How many of a declared generic type's parameters its outer types give it; 0 where it is not found.</summary>
+    private int OuterParamsOf(string path, int arity)
+        => (_b.Types.TryGetValue(arity > 0 ? path + "`" + arity : path, out TypeSymbol? open) || _b.Types.TryGetValue(path, out open))
+            && open.Decl is { } declared ? declared.OuterParams : 0;
 
     /// <summary>
     /// A tuple's name as .NET spells it: System.ValueTuple`2[[System.Int32,

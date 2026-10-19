@@ -307,6 +307,14 @@ public sealed class Monomorphiser
         return Interned.Name(args.Any(a => a.CanonIndex <= -2) ? name + HiddenTypeArgumentsMark + args.Count : name);
     }
 
+    /// <summary>Whether a type is, or holds, a word only run time knows (__canon, or an argument marked as one).</summary>
+    public static bool MentionsCanon(TypeRef r)
+    {
+        if (r.CanonIndex != -1 || r.Name.Contains(CanonName, StringComparison.Ordinal)) return true;
+        foreach (TypeRef a in r.Args) if (MentionsCanon(a)) return true;
+        return false;
+    }
+
     /// <summary>How many hidden type arguments a method copy takes (CopyName): 0 for any other method.</summary>
     public static int SharedMethodCopy(string name)
     {
@@ -3019,6 +3027,7 @@ public sealed class Monomorphiser
                 // for exactly one round and the call went back to being an
                 // import of a symbol nothing provides.
                 made.LocalCopy = md.LocalCopy;
+                made.OwnCode = md.OwnCode;
                 made.Fresh = md.Fresh;
                 made.AutoAccessor = md.AutoAccessor;
                 made.PartialWithoutBody = md.PartialWithoutBody;

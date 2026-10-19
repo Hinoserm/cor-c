@@ -1,0 +1,53 @@
+// test: method_group_as_two_delegate_types
+// expect-exit: 0
+// expect-output:
+// func True pred True False False
+// any True findindex 1 exists True where 1
+// convert 2,-400,6 select 2,-400,6 8 10
+// equal True True False
+// bound True False 2 1 True 1 2
+//
+// One method converted to two delegate types is two delegates, each its own
+// type's: the closure class a method group becomes is named for the
+// delegate too. Shared, a Func and a Predicate of one method had the class
+// made first, and the other was called through a slot it does not have (the
+// native linker's region engine, Array.FindIndex(path, IsGuard) beside
+// path.Any(IsGuard), crashed so). Equal delegates of one method and type
+// stay equal.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Box
+{
+    public int Limit;
+    public bool Over(int x) => x > Limit;
+}
+
+static class Program
+{
+    static bool IsGuard(int s) => s < -100;
+    static int Twice(int s) => s * 2;
+
+    static void Main()
+    {
+        int[] path = { 1, -200, 3 };
+        Func<int, bool> f = IsGuard;
+        Predicate<int> p = IsGuard;
+        Console.WriteLine("func " + f(-300) + " pred " + p(-300) + " " + f(5) + " " + p(5));
+        Console.WriteLine("any " + path.Any(IsGuard) + " findindex " + Array.FindIndex(path, IsGuard) + " exists " + Array.Exists(path, IsGuard) + " where " + path.Count(IsGuard));
+        Converter<int, int> c = Twice;
+        Func<int, int> g = Twice;
+        Console.WriteLine("convert " + string.Join(",", Array.ConvertAll(path, Twice)) + " select " + string.Join(",", path.Select(Twice)) + " " + c(4) + " " + g(5));
+        Func<int, bool> f2 = IsGuard;
+        Predicate<int> p2 = IsGuard;
+        Console.WriteLine("equal " + f.Equals(f2) + " " + p.Equals(p2) + " " + Equals(f, p));
+        Box b = new() { Limit = 2 };
+        Func<int, bool> bf = b.Over;
+        Predicate<int> bp = b.Over;
+        List<int> l = new(path);
+        Console.WriteLine("bound " + bf(3) + " " + bp(1) + " " + l.FindIndex(b.Over) + " " + l.Count(b.Over) + " " + l.Exists(b.Over) + " " + l.RemoveAll(b.Over) + " " + l.Count);
+    }
+}
