@@ -1,0 +1,67 @@
+// test: linq_from_shared_code_keeps_t
+// expect-exit: 0
+// expect-output:
+// where True
+// store 1
+// take True
+// select True
+// enumerator True
+// twice True
+// twice thing False
+// ints True
+// typed True
+// sorted True True
+// distinct True
+// b,d
+//
+// LINQ called from a shared generic class's code answers sequences of its
+// instantiation, as .NET's: Where, Take, Select, OfType, OrderBy and
+// Distinct over Repo<string>'s list, and a generic iterator method, are
+// IEnumerable<string>. An iterator's shared method copy keeps its hidden
+// type arguments and dictionary in its machine, which its caller's type
+// context stamps as that instantiation's (MethodDecl.MachineNeed); a type
+// argument inferred from IEnumerable<U> keeps U's mark (Binder.MarksCanon).
+// Over object each was an IEnumerable<object>, which a
+// List<IEnumerable<string>> refused.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public IEnumerable<T> Evens() => Items.Where((x, i) => i % 2 == 1);
+    public IEnumerable<T> Firsts() => Items.Take(1);
+    public IEnumerable<T> Same() => Items.Select(x => x);
+    public IEnumerable<T> Twice() => Program.Twice(Items[0]);
+    public IEnumerable<int> Lengths() => Items.Select(x => x!.GetHashCode());
+    public IEnumerable<T> Typed() => Items.OfType<T>();
+    public IEnumerable<T> Sorted() => Items.OrderBy(x => x);
+    public IEnumerable<T> Distinct() => Items.Distinct();
+}
+class Thing { }
+static class Program
+{
+    public static IEnumerable<U> Twice<U>(U x) { yield return x; yield return x; }
+    static int Main()
+    {
+        Repo<string> r = new(); foreach (string s in new[] { "a", "b", "c", "d" }) r.Items.Add(s);
+        Console.WriteLine("where " + ((object)r.Evens() is IEnumerable<string>));
+        List<IEnumerable<string>> l = new(); l.Add(r.Evens());
+        Console.WriteLine("store " + l.Count);
+        Console.WriteLine("take " + ((object)r.Firsts() is IEnumerable<string>));
+        Console.WriteLine("select " + ((object)r.Same() is IEnumerable<string>));
+        Console.WriteLine("enumerator " + ((object)r.Evens().GetEnumerator() is IEnumerator<string>));
+        Console.WriteLine("twice " + ((object)r.Twice() is IEnumerable<string>));
+        Repo<Thing> t = new(); t.Items.Add(new Thing());
+        Console.WriteLine("twice thing " + ((object)t.Twice() is IEnumerable<string>));
+        Console.WriteLine("ints " + ((object)r.Lengths() is IEnumerable<int>));
+        Console.WriteLine("typed " + ((object)r.Typed() is IEnumerable<string>));
+        Console.WriteLine("sorted " + ((object)r.Sorted() is IEnumerable<string>) + " " + ((object)r.Sorted() is IOrderedEnumerable<string>));
+        Console.WriteLine("distinct " + ((object)r.Distinct() is IEnumerable<string>));
+        Console.WriteLine(string.Join(",", l[0]));
+        return 0;
+    }
+}

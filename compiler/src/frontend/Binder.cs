@@ -12538,6 +12538,10 @@ public sealed partial class Binder
         return Convertible(got, want) && Convertible(want, got);
     }
 
+    /// <summary>Whether a use-site argument is, or holds, a word only run time knows (Type.CanonParam).</summary>
+    private static bool MarksCanon(Type t)
+        => t.CanonParam != -1 && t.Prim == Prim.Any && t.Symbol is null || t.UseArgs is { } inner && inner.Any(MarksCanon);
+
     private bool Unify(MethodSymbol m, Type want, Type got, Dictionary<string, Type> bound)
     {
         if (want.ParamName is string name && m.TypeParams.Contains(name))
@@ -12673,9 +12677,13 @@ public sealed partial class Binder
         // Infer from this use of a constructed type before consulting its
         // shared physical declaration. Tuple names inside List<T> belong to
         // the receiver, not the first List specialisation with that shape.
+        // AND A WORD ONLY RUN TIME KNOWS among its arguments (Type.CanonParam):
+        // IEnumerable<U> in a shared method copy binds T to that U, mark and
+        // all, so the call it makes hands it on (an iterator's WhereIndexed
+        // from Where) -- the declaration's argument is the word, unmarked.
         if (want.Symbol is { } useTarget && want.Args.Count > 0
             && got.UseArgs is { Count: > 0 } useArguments
-            && HasTupleUse(got)
+            && (HasTupleUse(got) || useArguments.Any(MarksCanon))
             && got.Symbol?.Decl?.Template is string useTemplateName
             && FindType(Arity(useTemplateName, useArguments.Count), out TypeSymbol? useTemplate)
             && useTemplate?.Decl is TypeDecl useDeclaration
@@ -21801,12 +21809,13 @@ public sealed partial class Binder
             // argument (Lowering.HiddenTypeArguments), so that its tests of
             // an interface over it ask the object at hand. Not a generic
             // virtual method, whose copies are reached by a dispatch that
-            // passes nothing more, and not an iterator or an async method,
-            // whose bodies run in a state machine the hidden arguments do not
-            // reach: those stay the copy over object, as every call was.
+            // passes nothing more, and not an async method, whose body runs in
+            // a state machine the hidden arguments do not reach: that stays
+            // the copy over object, as every call was. AN ITERATOR'S DO: its
+            // machine keeps them (Lowering.IteratorPieces, HiddenOffsets), and
+            // is stamped as its caller's instantiation (MethodDecl.MachineNeed).
             int[]? hidden = null;
-            if (spelt.Count == best.TypeParams.Count && !best.GenericVirtual && !best.Async
-                && generic.Body is not { Iterator: true })
+            if (spelt.Count == best.TypeParams.Count && !best.GenericVirtual && !best.Async)
             {
                 for (int i = 0; i < spelt.Count; i++)
                 {
@@ -22042,6 +22051,9 @@ public sealed partial class Binder
         }
         c.HiddenNeedMap = map;
         c.HiddenNeedClassMap = classMap;
+        // WHICH COPY RUNS, for an entry standing for its machine ("copy",
+        // MethodDecl.MachineNeed): named so in what the caller places.
+        c.NeedCallee = (running?.Owner ?? best.Owner).Key + "::" + copyName;
         c.NeedClass = canonical;
         c.NeedCopy = canonical is null ? caller : null;
         // What the copy needs: its own list where it is made already -- what
@@ -22077,7 +22089,8 @@ public sealed partial class Binder
                     ? known : new TypeRef { Name = Monomorphiser.CanonName, Line = t.Line, Col = t.Col }, t);
             if (t.Args.Count == 0 && map.TryGetValue(t.Name, out TypeRef? to)) return Ranked(to, t);
             if (t.Args.Count == 0) return t;
-            return new TypeRef { Name = t.Name, Arguments = t.Args.Select(Over).ToList(), ArrayRank = t.ArrayRank, Line = t.Line, Col = t.Col, MadeFor = t.MadeFor };
+            return new TypeRef { Name = t.Name, Arguments = t.Args.Select(Over).ToList(), ArrayRank = t.ArrayRank, Line = t.Line, Col = t.Col,
+                MadeFor = t.MadeFor == "copy" && c.NeedCallee is string callee ? "copy:" + callee : t.MadeFor };
         }
         return needs.Select(Over).ToList();
     }

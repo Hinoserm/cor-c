@@ -233,6 +233,17 @@ public sealed class Monomorphiser
         m._classShape = m._classDictionary && !template.Mods.HasFlag(Mods.Static);
         MethodDecl made = (MethodDecl)m.RewriteMember(template, map, template.Name);
 
+        // AN ITERATOR'S MACHINE OVER WHAT ONLY RUN TIME KNOWS: one more entry
+        // of the dictionary, its face as written, marked as the machine of
+        // the copy its caller names (Binder.SpeltFor), which the caller's
+        // type context holds as that instantiation's (Lowering.MachineVariant).
+        if (m._needs is not null && m._shapeParams is not null && template.Body is { Iterator: true }
+            && template.Returns is { Args.Count: > 0, ArrayRank: 0, PointerDepth: 0 } returns)
+        {
+            TypeRef machineFace = new() { Name = returns.Name, Arguments = returns.Args.ToList(), Line = returns.Line, Col = returns.Col, MadeFor = "copy" };
+            made.MachineNeed = m.Need(machineFace, array: false);
+        }
+
         made.WritableTypeParams.Clear();
         made.Name = name;
         // ONE LIST FOR EVERY ROUND'S COPY OF IT, empty or not: the binder adds
@@ -270,6 +281,7 @@ public sealed class Monomorphiser
         plain.WritableParams.AddRange(made.Params);
         plain.CopyNeeds = made.CopyNeeds;
         plain.CopyParams = made.CopyParams;
+        plain.MachineNeed = made.MachineNeed;
         return plain;
     }
 
@@ -3219,6 +3231,7 @@ public sealed class Monomorphiser
                 CanonMachine(made, md);
                 made.CanonTaskSlot = md.CanonTaskSlot;
                 CanonTask(made, md, map);
+                made.MachineNeed = md.MachineNeed;
                 made.Fresh = md.Fresh;
                 made.AutoAccessor = md.AutoAccessor;
                 made.PartialWithoutBody = md.PartialWithoutBody;
@@ -3708,6 +3721,7 @@ public sealed class Monomorphiser
                 made.CanonSelf = c.CanonSelf is null ? made.CanonSelf : new ThisExpr { Context = true, Line = c.Line, Col = c.Col };
                 made.HiddenNeedMap = c.HiddenNeedMap;
                 made.HiddenNeedClassMap = c.HiddenNeedClassMap;
+                made.NeedCallee = c.NeedCallee;
                 made.NeedClass = c.NeedClass;
                 made.NeedCopy = c.NeedCopy;
                 made.ResultTupleNames = c.ResultTupleNames is null ? null : new List<string>(c.ResultTupleNames);

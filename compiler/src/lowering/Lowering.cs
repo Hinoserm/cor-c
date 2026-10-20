@@ -2464,6 +2464,20 @@ public sealed partial class Lowering
                     }
                     continue;
                 }
+                // A SHARED METHOD COPY'S MACHINE AS THIS INSTANTIATION'S
+                // (MethodDecl.MachineNeed): the copy named by its owner's key
+                // and its name ("copy:Owner::Name"), its variant over the face.
+                if (written is not null && k < written.Count && written[k].MadeFor is string copyFor && copyFor.StartsWith("copy", StringComparison.Ordinal))
+                {
+                    if (!CanonicalCopy(chain[d]) && made[k] is { Kind: TypeKind.Interface } face && copyFor.StartsWith("copy:", StringComparison.Ordinal)
+                        && copyFor.IndexOf("::", StringComparison.Ordinal) is int split and > 5
+                        && _b.Types.Values.FirstOrDefault(t => t.Key == copyFor[5..split]) is { } owner
+                        && owner.Methods.FirstOrDefault(x => x.Name == copyFor[(split + 2)..]) is { Decl: MethodDecl copyDecl } copy
+                        && copyDecl.MachineNeed >= 0
+                        && MachineVariant(copy, copyDecl, face) is string variant)
+                        table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, variant, 0));
+                    continue;
+                }
                 // AN ITERATOR'S MACHINE AS THIS INSTANTIATION'S (MachineVariant):
                 // the canonical copy's own table holds 0, its machine as it is.
                 if (written is not null && k < written.Count && written[k].MadeFor is string madeFor && madeFor.StartsWith("iter:", StringComparison.Ordinal))

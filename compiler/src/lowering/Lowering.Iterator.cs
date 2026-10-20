@@ -35,7 +35,7 @@ public sealed partial class Lowering
     /// <summary>One iterator's pieces.</summary>
     private sealed record IteratorMethod(
         MethodSymbol Method, MethodDecl Decl, TypeSymbol Machine, MethodSymbol MoveNext,
-        string SizeSymbol, int[] ParamOffsets, Type Element, bool Enumerable);
+        string SizeSymbol, int[] ParamOffsets, Type Element, bool Enumerable, int[] HiddenOffsets);
 
     private readonly Dictionary<MethodSymbol, IteratorMethod> _iterators = new();
 
@@ -119,6 +119,12 @@ public sealed partial class Lowering
             offsets[i] = at;
             at += 8;
         }
+        // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS AND DICTIONARY
+        // (Monomorphiser.CopyName), kept as its parameters are: what its body
+        // asks of them runs in MoveNext.
+        int hidden = Monomorphiser.SharedMethodCopy(m.Name);
+        int[] hiddenAt = new int[hidden == 0 ? 0 : hidden + 1];
+        for (int i = 0; i < hiddenAt.Length; i++) { hiddenAt[i] = at; at += 8; }
         if (IsStructValue(element) && StructOf(element).HeldInline)
         {
             at = (at + 7) / 8 * 8;
@@ -133,7 +139,7 @@ public sealed partial class Lowering
         WriteWord(initial, 0, at);
         _m.Data.Add(new DataItem(size, initial) { Align = _t.WordSize, Exported = false });
 
-        IteratorMethod made = new(m, decl, machine, body, size, offsets, element, enumerable);
+        IteratorMethod made = new(m, decl, machine, body, size, offsets, element, enumerable, hiddenAt);
         _iterators[body] = made;
         return made;
     }
@@ -182,6 +188,15 @@ public sealed partial class Lowering
             _f.Params.Add(r);
             args.Add(r);
         }
+        // Its hidden type arguments, then its dictionary, as CallDirect passes them.
+        VReg[] hiddenArgs = new VReg[it.HiddenOffsets.Length];
+        for (int i = 0; i < hiddenArgs.Length; i++)
+        {
+            hiddenArgs[i] = _f.NewReg(IrTypes.Word, i < hiddenArgs.Length - 1 ? "targ" + i : "tdict");
+            hiddenArgs[i].Number = true;
+            _f.Params.Add(hiddenArgs[i]);
+        }
+        if (hiddenArgs.Length > 0) _needDictionary = hiddenArgs[^1];
 
         VReg machine = AllocateDynamic(decl, Numbered(_e, _e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
         // AN ITERATOR OF SHARED CODE (MethodDecl.CanonMachineSlot): stamped
@@ -189,6 +204,9 @@ public sealed partial class Lowering
         // machine's own vtable where the table has none (another unit's).
         if (self is not null && decl.CanonMachineSlot >= 0 && SharedCopy(m.Owner))
             _e.StoreDescribed(machine, VtableOf(it.Machine), VariantVtable(ContextEntryOrZero(self, m.Owner, decl.CanonMachineSlot), VtableOf(it.Machine)), _t.WordSize);
+        // A shared method copy's: the variant its caller's dictionary holds.
+        else if (decl.MachineNeed >= 0 && _needDictionary is not null)
+            _e.StoreDescribed(machine, VtableOf(it.Machine), VariantVtable(NeedEntry(decl.MachineNeed), VtableOf(it.Machine)), _t.WordSize);
         else
             _e.Store(R(machine), VtableOf(it.Machine), 0, _t.WordSize);
         _e.Store(R(machine), Imm(it.Enumerable ? -2 : 0, IrType.I32), IterStateField, 4);
@@ -204,6 +222,8 @@ public sealed partial class Lowering
                 CardMarkAt(R(machine), it.ParamOffsets[i]);
             }
         }
+        // Descriptors and tables: static data, no card to mark.
+        for (int i = 0; i < hiddenArgs.Length; i++) _e.Store(R(machine), R(hiddenArgs[i]), it.HiddenOffsets[i], _t.WordSize);
         _e.Ret(R(machine));
         _m.Functions.Add(_f);
         if (ContextStatic(m)) ContextStub(m);
@@ -329,12 +349,12 @@ public sealed partial class Lowering
                     e.SetBlock(fresh);
                     VReg copy = AllocateDynamic(it.Decl, Numbered(e, e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
                     // The same identity as the one asked (a variant, CanonMachineSlot).
-                    if (it.Decl.CanonMachineSlot >= 0)
+                    if (it.Decl.CanonMachineSlot >= 0 || it.Decl.MachineNeed >= 0)
                         e.StoreDescribed(copy, VtableOf(it.Machine), e.Load(IrTypes.Word, self, 0), _t.WordSize);
                     else
                         e.Store(R(copy), VtableOf(it.Machine), 0, _t.WordSize);
                     e.Store(R(copy), R(e.Load(IrTypes.Word, self, IterReceiverField)), IterReceiverField, _t.WordSize);
-                    foreach (int offset in it.ParamOffsets)
+                    foreach (int offset in it.ParamOffsets.Concat(it.HiddenOffsets))
                     {
                         e.Store(R(copy), R(e.Load(IrType.I64, self, offset, 8)), offset, 8);
                     }
@@ -455,6 +475,14 @@ public sealed partial class Lowering
         if (HasThis(m))
         {
             _this = _e.Load(IrTypes.Word, machine, IterReceiverField);
+        }
+        // A SHARED METHOD COPY'S HIDDEN ARGUMENTS, as its kickoff kept them:
+        // `new List<U>()` and `x is IList<U>` in the body ask with the real U.
+        if (it.HiddenOffsets.Length > 0)
+        {
+            _typeArgs = new VReg[it.HiddenOffsets.Length - 1];
+            for (int i = 0; i < _typeArgs.Length; i++) _typeArgs[i] = Numbered(_e, _e.Load(IrTypes.Word, machine, it.HiddenOffsets[i]));
+            _needDictionary = Numbered(_e, _e.Load(IrTypes.Word, machine, it.HiddenOffsets[^1]));
         }
 
         _params = new VReg[m.Params.Count];

@@ -146,6 +146,8 @@ public sealed class CallExpr : Expr
     public int ContextSlot { get; set; } = -1;
     /// <summary>The same from a shared method copy (Monomorphiser.CanonContextCall): its dictionary's entry; -1 for none.</summary>
     public int ContextNeed { get; set; } = -1;
+    /// <summary>The copy a call with a dictionary runs, by its owner's key and its name (Binder.NoteCopyNeeds): what its machine's entry names.</summary>
+    public string? NeedCallee { get; set; }
 
     // The method the checker bound this call to (BindResult.Calls), and which
     // binding bound it (NodeBinding): read back only by that binding.
