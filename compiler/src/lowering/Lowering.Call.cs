@@ -151,6 +151,9 @@ public sealed partial class Lowering
     /// </summary>
     private (MethodSymbol Method, Type Receiver)? _structReceiver;
 
+    /// <summary>A shared struct's static called through its type's name, whose arguments CallDirect does not know (EmitCall).</summary>
+    private MethodSymbol? _structQualified;
+
     /// <summary>Notes what `m` is called on, where `m` is a shared struct's member.</summary>
     private void HintStruct(MethodSymbol m, Type? on)
     {
@@ -243,6 +246,8 @@ public sealed partial class Lowering
         _pendingContext = null;
         Type? held = _structReceiver is { } hint && ReferenceEquals(hint.Method, m) ? hint.Receiver : null;
         _structReceiver = null;
+        bool qualified = _structQualified is { } named && ReferenceEquals(named, m);
+        _structQualified = null;
         if (Canonical(m) is var canonical && TakesContext(canonical))
         {
             // An entry read from this code's context or dictionary first: a
@@ -259,6 +264,10 @@ public sealed partial class Lowering
                 // context; the canonical copy's where that holds none.
                 : held is not null && StructContext(canonical) && !Binder.OwnUse(held, canonical.Owner)
                     ? StructContextEntry(canonical, held) is VReg entryHeld ? R(EntryOr(entryHeld, ContextToken(canonical.Owner))) : R(_e.Address(ContextToken(canonical.Owner)))
+                // A STATIC OF IT NAMED BY ITS TYPE (`Pair<B, A>.Make()`), whose
+                // arguments nothing here reads: the canonical copy's, never this
+                // code's own instantiation, which may not be the one named.
+                : qualified && StructContext(canonical) ? R(_e.Address(ContextToken(canonical.Owner)))
                 : ContextHere(canonical.Owner) is { } here ? R(here)
                 : R(_e.Address(ContextToken(canonical.Owner)));
             args = new List<Operand>(args);
@@ -702,7 +711,11 @@ public sealed partial class Lowering
         _pendingContext = call.ContextSlot >= 0 && call.CanonSelf is { } contextSelf && _b.TypeOf(contextSelf).Symbol is { } contextOwner
             && SharedContext(contextOwner) ? (target, ContextEntryOrZero(Eval(contextSelf), contextOwner, call.ContextSlot))
             : call.ContextNeed >= 0 && _needDictionary is not null ? (target, NeedEntry(call.ContextNeed)) : null;
-        if (call.Target is MemberExpr { Target: var structOn }) HintStruct(target, _b.TypeOf(structOn));
+        if (call.Target is MemberExpr { Target: var structOn })
+        {
+            HintStruct(target, _b.TypeOf(structOn));
+            if (target.Static && target.Owner.Kind == TypeKind.Struct) _structQualified = target;
+        }
         VReg? result = CallMethod(target, receiver, args, viaBase, through);
         return result ?? _e.Const(0, IrTypes.Word);
     }

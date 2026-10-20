@@ -172,6 +172,7 @@ public sealed partial class Lowering
         _pendingTypeArgs = null;
         _pendingContext = null;
         _structReceiver = null;
+        _structQualified = null;
         _heapStructs.Clear();
         _returnType = null;
         _boundsFail = null;
