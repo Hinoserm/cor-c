@@ -5754,8 +5754,9 @@ public sealed partial class Lowering
                 return _e.Address(InternString(shape.Name));
             }
 
-            Require(own);
-            return _e.Call(CallLabel(own), IrTypes.Word, R(v))!;
+            // Through CallDirect: a shared struct's is handed its context.
+            HintStruct(own, type);
+            return CallDirect(own, IrTypes.Word, new List<Operand> { R(v) })!;
         }
 
         if (!type.IsInteger && type.Prim != Prim.Bool && !type.IsFloat
