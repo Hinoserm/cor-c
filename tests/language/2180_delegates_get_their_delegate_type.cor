@@ -1,0 +1,41 @@
+// test: delegates_get_their_delegate_type
+// expect-exit: 0
+// expect-output:
+// Func`2 True Action
+// Func`2 Predicate`1 Func`2 True
+// Func`2 True
+// Func`2 True String List`1
+//
+// GetType() of a delegate -- a lambda's, a method group's, a multicast's,
+// one made in shared code -- is its delegate type (Func`2, Action,
+// Predicate`1), as .NET's, not the class the compiler makes of it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Repo<T>
+{
+    public Func<T, T> Same() => x => x;
+}
+
+static class P
+{
+    static int Twice(int x) => 2 * x;
+
+    static int Main()
+    {
+        Func<int, int> f = x => x + 1;
+        Action a = () => { };
+        Func<int, int> g = Twice;
+        Predicate<string> p = string.IsNullOrEmpty;
+        Func<int, int> both = f + g;
+        Console.WriteLine(f.GetType().Name + " " + (f.GetType() == typeof(Func<int, int>)) + " " + a.GetType().Name);
+        Console.WriteLine(g.GetType().Name + " " + p.GetType().Name + " " + both.GetType().Name + " " + (both.GetType() == typeof(Func<int, int>)));
+        Func<string, string> s = new Repo<string>().Same();
+        Console.WriteLine(s.GetType().Name + " " + (s.GetType() == typeof(Func<string, string>)));
+        object o = f;
+        Console.WriteLine(o.GetType().Name + " " + (o.GetType() == f.GetType()) + " " + "x".GetType().Name + " " + new List<int>().GetType().Name);
+        return 0;
+    }
+}

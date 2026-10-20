@@ -1,0 +1,62 @@
+// test: shared_method_copies_hold_structs_over_hidden_arguments
+// expect-exit: 0
+// expect-output:
+// string spans True String[] ArrayTypeMismatchException
+// string boxes True False
+// string tests True False
+// string named True
+// thing spans True Thing[] ArrayTypeMismatchException
+// thing boxes True False
+// thing tests True False
+// thing named True
+//
+// A shared method copy holding a shared struct over its hidden argument --
+// Span<U>, KeyValuePair<U, U>, KeyValuePair<U, int> tested, KeyValuePair<U,
+// string> by typeof -- is handed that instantiation's context through its
+// dictionary: the array Span<U>.ToArray makes, the boxes it makes and
+// tests, and typeof, are its caller's instantiation's.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+static class Util
+{
+    public static object Spans<U>(U[] a) => new Span<U>(a).ToArray();
+    public static object Boxes<U>(U a) => new KeyValuePair<U, U>(a, a);
+    public static bool Tests<U>(object o) => o is KeyValuePair<U, int>;
+    public static Type Named<U>(U a) => typeof(KeyValuePair<U, string>);
+}
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public object S() => Util.Spans(Items.ToArray());
+    public object B() => Util.Boxes(Items[0]);
+    public bool Te(object o) => Util.Tests<T>(o);
+    public Type N() => Util.Named(Items[0]);
+}
+
+class Thing { }
+
+static class P
+{
+    static void Show<T>(Repo<T> r, string name, object pairOfT, object pairOfObject)
+    {
+        object[] made = (object[])r.S(); string stored;
+        try { made[0] = new object(); stored = "stored"; } catch (ArrayTypeMismatchException) { stored = "ArrayTypeMismatchException"; }
+        Console.WriteLine(name + " spans " + (r.S() is T[]) + " " + r.S().GetType().Name + " " + stored);
+        Console.WriteLine(name + " boxes " + (r.B() is KeyValuePair<T, T>) + " " + (r.B() is KeyValuePair<object, object>));
+        Console.WriteLine(name + " tests " + r.Te(pairOfT) + " " + r.Te(pairOfObject));
+        Console.WriteLine(name + " named " + (r.N() == typeof(KeyValuePair<T, string>)));
+    }
+
+    static int Main()
+    {
+        Repo<string> r = new(); r.Items.Add("a");
+        Show(r, "string", new KeyValuePair<string, int>("a", 1), new KeyValuePair<object, int>("a", 1));
+        Repo<Thing> t = new(); t.Items.Add(new Thing());
+        Show(t, "thing", new KeyValuePair<Thing, int>(new Thing(), 1), new KeyValuePair<object, int>(new Thing(), 1));
+        return 0;
+    }
+}

@@ -1,0 +1,22 @@
+// The other unit of 2178_shared_struct_copies_across_units: a shared struct
+// whose members ask their type arguments, and a shared class holding one
+// over its own T and handing out one over its arguments swapped.
+namespace PairUnits;
+
+public struct Pair<A, B>
+{
+    public A First; public B Second;
+    public Pair(A a, B b) { First = a; Second = b; }
+    public A[] Firsts(int n) { A[] made = new A[n]; for (int i = 0; i < n; i++) made[i] = First; return made; }
+    public bool SecondIs(object o) => o is B;
+    public override string ToString() => "(" + typeof(A).Name + ", " + typeof(B).Name + ")";
+}
+
+public class Holder<T>
+{
+    private Pair<T, string> held;
+    public Holder(T t) { held = new Pair<T, string>(t, "s"); }
+    public object Boxed() => held;
+    public T[] Firsts() => held.Firsts(2);
+    public Pair<string, T> Swapped() => new Pair<string, T>(held.Second, held.First);
+}

@@ -1,0 +1,40 @@
+// test: shared_method_copies_test_and_unbox_structs_over_hidden_arguments
+// expect-exit: 0
+// expect-output:
+// True False 1 -1
+// True False 5 -1
+//
+// In a shared method copy, o is KeyValuePair<U, int> and (KeyValuePair<U,
+// int>)o test the box against the caller's instantiation, as o is List<U>
+// and (List<U>)o test the object: a KeyValuePair<object, int> is no
+// KeyValuePair<string, int>.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+static class Util
+{
+    public static bool IsList<U>(object o) => o is List<U>;
+    public static int CastCount<U>(object o) { try { return ((List<U>)o).Count; } catch (InvalidCastException) { return -1; } }
+    public static bool IsPair<U>(object o) => o is KeyValuePair<U, int>;
+    public static int PairValue<U>(object o) { try { return ((KeyValuePair<U, int>)o).Value; } catch (InvalidCastException) { return -1; } }
+}
+class Repo<T>
+{
+    public bool L(object o) => Util.IsList<T>(o);
+    public int C(object o) => Util.CastCount<T>(o);
+    public bool P(object o) => Util.IsPair<T>(o);
+    public int V(object o) => Util.PairValue<T>(o);
+}
+static class Prog
+{
+    static int Main()
+    {
+        Repo<string> r = new();
+        object ls = new List<string> { "a" }, lo = new List<object> { "a" };
+        object ps = new KeyValuePair<string, int>("a", 5), po = new KeyValuePair<object, int>("a", 6);
+        Console.WriteLine(r.L(ls) + " " + r.L(lo) + " " + r.C(ls) + " " + r.C(lo));
+        Console.WriteLine(r.P(ps) + " " + r.P(po) + " " + r.V(ps) + " " + r.V(po));
+        return 0;
+    }
+}

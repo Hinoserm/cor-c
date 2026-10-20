@@ -1,0 +1,31 @@
+// test: shared_struct_copies_across_units
+// units: tests/language/support/2178_pair_units.cor
+// expect-exit: 0
+// expect-output:
+// Item[] True False (Item, String)
+// True (Item, String) Item[]
+// (String, Item) True False
+//
+// A shared struct and a shared class holding one over its T, in another
+// unit: the struct's members, box and the instantiation the class hands out
+// are the instantiations named in this one. Expected output from .NET 10.
+
+using System;
+using PairUnits;
+
+class Item { }
+
+static class P
+{
+    static int Main()
+    {
+        Pair<Item, string> p = new(new Item(), "x");
+        Console.WriteLine(p.Firsts(1).GetType().Name + " " + p.SecondIs("y") + " " + p.SecondIs(new Item()) + " " + p);
+        Holder<Item> h = new(new Item());
+        object b = h.Boxed();
+        Console.WriteLine((b is Pair<Item, string>) + " " + b + " " + h.Firsts().GetType().Name);
+        Pair<string, Item> s = h.Swapped();
+        Console.WriteLine(s + " " + s.SecondIs(new Item()) + " " + s.SecondIs("z"));
+        return 0;
+    }
+}
