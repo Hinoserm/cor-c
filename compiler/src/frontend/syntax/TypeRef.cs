@@ -146,6 +146,18 @@ public sealed class TypeRef : Node
     /// </summary>
     public int InnerNullable { get => _rare?.InnerNullable ?? 0; init { if (value != 0) Rare.InnerNullable = value; } }
 
+    /// <summary>
+    /// What a type-context or dictionary entry stands for when it is not the
+    /// type's descriptor: "context", the token a static member of that
+    /// instantiation is handed (Lowering.ContextToken). Never merged with a
+    /// plain entry of the same type (Monomorphiser.EntryKey).
+    /// </summary>
+    public string? MadeFor
+    {
+        get => _rare?.MadeFor;
+        set { if (value is not null) Rare.MadeFor = value; else if (_rare is not null) _rare.MadeFor = null; }
+    }
+
     /// <summary>How many stars follow the name: <c>byte*</c> is one.</summary>
     public int PointerDepth { get => GetByte(8, true); init => SetByte(8, true, value); }
 
@@ -250,4 +262,5 @@ internal sealed class TypeRefRare
     public int ArrayRank;
     public int PointerDepth;
     public int CanonIndex;
+    public string? MadeFor;
 }

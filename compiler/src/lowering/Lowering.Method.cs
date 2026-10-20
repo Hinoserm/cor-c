@@ -109,6 +109,8 @@ public sealed partial class Lowering
 
     /// <summary>The hidden arguments the next direct call of this method passes (EmitCall, CallDirect).</summary>
     private (MethodSymbol Method, List<Operand> Args)? _pendingTypeArgs;
+    /// <summary>A call's context read from the caller's type context (CallExpr.ContextSlot), for CallDirect.</summary>
+    private (MethodSymbol Method, VReg Context)? _pendingContext;
 
     /// <summary>Struct values known to be blocks of the heap, which a store into the heap may keep as they are.</summary>
     private readonly HashSet<VReg> _heapStructs = new();
@@ -165,6 +167,7 @@ public sealed partial class Lowering
         _typeArgs = null;
         _needDictionary = null;
         _pendingTypeArgs = null;
+        _pendingContext = null;
         _heapStructs.Clear();
         _returnType = null;
         _boundsFail = null;

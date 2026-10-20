@@ -300,6 +300,9 @@ public sealed class Monomorphiser
     /// <summary>A dictionary entry's identity: its spelling, which keeps __canon(0) and an erased __canon apart.</summary>
     internal static string NeedKey(TypeRef r) => Spelling(r);
 
+    /// <summary>A type-context entry's identity: a plain entry its text, a marked one (TypeRef.MadeFor) apart.</summary>
+    internal static string EntryKey(TypeRef t) => t.MadeFor is null ? t.ToString() : "<" + t.MadeFor + ">" + t.ToString();
+
     /// <summary>The name a specialised method gets, readable on purpose.</summary>
     public static string MethodName(string baseName, IReadOnlyList<TypeRef> args)
         => MangledName(baseName, args.ToList());
@@ -1426,8 +1429,8 @@ public sealed class Monomorphiser
             if (a.Args.Count == 0 && a.ArrayRank == 0 && _canonParams.ContainsKey(a.Name)) continue;
             if (!IsWord(Sub(a, map))) return made;
         }
-        string key = written.ToString();
-        int at = _canonMade.FindIndex(t => t.ToString() == key);
+        string key = EntryKey(written);
+        int at = _canonMade.FindIndex(t => EntryKey(t) == key);
         if (at < 0)
         {
             at = _canonMade.Count;
@@ -1437,6 +1440,63 @@ public sealed class Monomorphiser
         made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
         _canonMarked = true;
         return made;
+    }
+
+    /// <summary>
+    /// A STATIC MEMBER OF ANOTHER SHARED CLASS CALLED OVER THIS COPY'S
+    /// PARAMETERS -- `Maker<T>.Make()` in Shelf<T> -- handed that
+    /// instantiation's context (Binder.ContextStatic): an entry of this
+    /// copy's type context, marked so (TypeRef.MadeFor) that each sharing
+    /// instantiation's table holds its token there (Lowering.TypeContext).
+    /// </summary>
+    private void CanonContextCall(CallExpr made, CallExpr source)
+    {
+        if (source.ContextSlot >= 0)
+        {
+            made.ContextSlot = source.ContextSlot;
+            _canonMarked = true;
+            return;
+        }
+        if (source.ContextNeed >= 0)
+        {
+            made.ContextNeed = source.ContextNeed;
+            return;
+        }
+        // FROM A SHARED METHOD COPY, over its own type parameters only run
+        // time knows: an entry of its dictionary (Need), the token its caller
+        // finds for what they are.
+        if (_needs is not null && source.Target is MemberExpr { Target: NameExpr { TypeArgs.Count: > 0 } called })
+        {
+            // No template table here (Specialise): whether the class shares
+            // its code is the lowering's to ask, which hands the entry only to
+            // a static that takes a context (ContextStatic).
+            TypeRef asked = new() { Name = called.Name, Arguments = called.TypeArgs.ToList(), Line = called.Line, Col = called.Col, MadeFor = "context" };
+            if (Need(asked, array: false) is int slot and >= 0) made.ContextNeed = slot;
+            return;
+        }
+        if (!_canonSelf || _canonParams is null || _canonMade is null
+            || source.Target is not MemberExpr { Target: NameExpr { TypeArgs.Count: > 0 } named }) return;
+        TypeRef written = new() { Name = named.Name, Arguments = named.TypeArgs.ToList(), Line = named.Line, Col = named.Col };
+        if (!OverCanonParams(written)) return;
+        string name = GenericPath(written.Name, written.Args.Count, source) ?? Path(written.Name);
+        if (!_generic.TryGetValue(Arity(name, written.Args.Count), out TypeDecl? template)
+            || template.Kind != TypeKind.Class || !Shareable(template) || template.TypeParams.Any(p => p.Struct)) return;
+        foreach (TypeRef a in written.Args)
+        {
+            if (a.Args.Count == 0 && a.ArrayRank == 0 && _canonParams.ContainsKey(a.Name)) continue;
+            return;
+        }
+        written.MadeFor = "context";
+        string key = EntryKey(written);
+        int at = _canonMade.FindIndex(t => EntryKey(t) == key);
+        if (at < 0)
+        {
+            at = _canonMade.Count;
+            _canonMade.Add(written);
+        }
+        made.ContextSlot = 2 * _canonParams.Count + at;
+        made.CanonSelf ??= new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
+        _canonMarked = true;
     }
 
     /// <summary>
@@ -1473,8 +1533,8 @@ public sealed class Monomorphiser
         {
             return made;
         }
-        string key = written.ToString();
-        int at = _canonMade.FindIndex(t => t.ToString() == key);
+        string key = EntryKey(written);
+        int at = _canonMade.FindIndex(t => EntryKey(t) == key);
         if (at < 0)
         {
             at = _canonMade.Count;
@@ -2461,6 +2521,7 @@ public sealed class Monomorphiser
             PointerDepth = r.PointerDepth,
             Line = r.Line, Col = r.Col,
         };
+        made.MadeFor = r.MadeFor;
 
         // A specialised name carries its arguments in the name, so the argument
         // list must not survive or the binder will look for a generic again.
@@ -2796,6 +2857,7 @@ public sealed class Monomorphiser
             s.Append(t.Name).Append('|').Append(t.ArrayRank).Append(',').Append(t.PointerDepth).Append(',')
              .Append(t.Nullable ? '?' : '-').Append(t.ElementNullable ? '?' : '-').Append(',').Append(t.InnerNullable)
              .Append(',').Append(t.CanonIndex);
+            if (t.MadeFor is { } madeFor) s.Append('{').Append(madeFor).Append('}');
             if (t.TupleNames is { } names) s.Append('(').Append(string.Join(",", names)).Append(')');
             s.Append('<');
             foreach (TypeRef a in t.Args) Spell(a);
@@ -3541,6 +3603,7 @@ public sealed class Monomorphiser
                 }
                 else target = Rewrite(c.Target, map);
                 CallExpr made = new() { Target = target, FormatHole = c.FormatHole, Line = c.Line, Col = c.Col };
+                CanonContextCall(made, c);
 
                 foreach (Expr a in c.Args)
                 {
@@ -3559,7 +3622,7 @@ public sealed class Monomorphiser
                 made.HiddenTypeArgs = c.HiddenTypeArgs;
                 made.HiddenNeeds = c.HiddenNeeds;
                 made.HiddenNeedBase = c.HiddenNeedBase;
-                made.CanonSelf = c.CanonSelf is null ? null : new ThisExpr { Context = true, Line = c.Line, Col = c.Col };
+                made.CanonSelf = c.CanonSelf is null ? made.CanonSelf : new ThisExpr { Context = true, Line = c.Line, Col = c.Col };
                 made.HiddenNeedMap = c.HiddenNeedMap;
                 made.HiddenNeedClassMap = c.HiddenNeedClassMap;
                 made.NeedClass = c.NeedClass;

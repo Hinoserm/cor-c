@@ -1,0 +1,43 @@
+// test: shared_code_calls_another_shared_classes_static
+// expect-exit: 0
+// expect-output:
+// True String[]
+// True Exception[] False
+// 1
+//
+// Shared code calling another shared class's static over its own parameters
+// hands that static the context of what they are: Shelf<T>'s
+// Maker<T>.Make() reads it from Shelf's type context
+// (Monomorphiser.CanonContextCall, a context token entry), and a generic
+// method's Maker<U>.Make() from its dictionary. Before, both made a
+// Maker<object>, which a List<Maker<string>> refused.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Maker<T>
+{
+    public static object Make() => new Maker<T>();
+    public static T[] Many(int n) => new T[n];
+}
+class Shelf<T>
+{
+    public object Get() => Maker<T>.Make();
+    public object Many() => Maker<T>.Many(2);
+}
+static class Util { public static object Via<U>() => Maker<U>.Make(); public static object ViaMany<U>() => Maker<U>.Many(1); }
+class Holder<T> { public object Get() => Util.Via<T>(); public object Many() => Util.ViaMany<T>(); }
+
+static class P
+{
+    static void Main()
+    {
+        Shelf<string> s = new();
+        Holder<Exception> h = new();
+        Console.WriteLine((s.Get() is Maker<string>) + " " + s.Many().GetType().Name);
+        Console.WriteLine((h.Get() is Maker<Exception>) + " " + h.Many().GetType().Name + " " + (h.Get() is Maker<string>));
+        List<Maker<string>> l = new() { (Maker<string>)s.Get() };
+        Console.WriteLine(l.Count);
+    }
+}

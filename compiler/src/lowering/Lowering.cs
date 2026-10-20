@@ -2399,7 +2399,13 @@ public sealed partial class Lowering
                     }
                     continue;
                 }
-                if (made[k] is { Kind: TypeKind.Class } cls)
+                // A shared class's static's context (Monomorphiser.CanonContextCall):
+                // this instantiation's token.
+                if (made[k] is { Kind: TypeKind.Class } held && written is not null && k < written.Count && written[k].MadeFor == "context")
+                {
+                    table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, ContextToken(held), 0));
+                }
+                else if (made[k] is { Kind: TypeKind.Class } cls)
                 {
                     table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, ClassDescriptor(cls), 0));
                 }

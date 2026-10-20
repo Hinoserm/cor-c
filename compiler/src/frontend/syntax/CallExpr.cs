@@ -137,6 +137,15 @@ public sealed class CallExpr : Expr
     /// null, erased (Binder.SpeltFor).
     /// </summary>
     public List<TypeRef?>? HiddenNeedClassMap { get; set; }
+    /// <summary>
+    /// A static member of another shared class called over the canonical
+    /// copy's parameters (Monomorphiser.CanonContextCall): the entry of the
+    /// caller's type context holding that instantiation's context token; -1
+    /// for none.
+    /// </summary>
+    public int ContextSlot { get; set; } = -1;
+    /// <summary>The same from a shared method copy (Monomorphiser.CanonContextCall): its dictionary's entry; -1 for none.</summary>
+    public int ContextNeed { get; set; } = -1;
 
     // The method the checker bound this call to (BindResult.Calls), and which
     // binding bound it (NodeBinding): read back only by that binding.

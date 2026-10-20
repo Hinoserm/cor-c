@@ -132,6 +132,9 @@
 // segment fits ok
 // segment into 0,0,2,3,0
 // span short ArgumentException: Destination is too short. (Parameter 'destination')
+// empty list ok
+// empty list past ArgumentException: Destination array was not long enough. Check the destination index, length, and the array's lower bounds. (Parameter 'destinationArray')
+// default segment InvalidOperationException: The underlying array is null.
 // queue cap ArgumentOutOfRangeException: capacity ('-1') must be a non-negative value. (Parameter 'capacity') | Actual value was -1.
 // queue cap ok 0
 // 3,1,2,0
@@ -145,8 +148,10 @@
 // Every collection's CopyTo refuses as its .NET counterpart does: List's,
 // an array's, a segment's and ReadOnlyCollection's through Array.Copy;
 // Queue's and Stack's, HashSet's and SortedSet's, LinkedList's and the
-// dictionaries' views each in their own words. Array.Sort over a run,
-// List.CopyTo over a run and Queue's capacity are there too.
+// dictionaries' views each in their own words. An empty list, whose storage
+// is made at its first element, copies nothing from the one empty array.
+// Array.Sort over a run, List.CopyTo over a run and Queue's capacity are
+// there too.
 // Expected output from .NET 10.
 
 using System;
@@ -210,6 +215,9 @@ static class Program
         Bad<int>("readonly", (a, i) => new ReadOnlyCollection<int>(list).CopyTo(a!, i));
         Bad<int>("segment", (a, i) => new ArraySegment<int>(three, 1, 2).CopyTo(a!, i));
         Try("span short", () => three.AsSpan().CopyTo(new int[2]));
+        Try("empty list", () => { new List<int>().CopyTo(new int[0]); new List<string>().CopyTo(new string[2], 2); new List<int>().CopyTo(0, new int[1], 1, 0); });
+        Try("empty list past", () => new List<int>().CopyTo(new int[1], 2));
+        Try("default segment", () => default(ArraySegment<int>).CopyTo(new int[1], 0));
         Try("queue cap", () => new Queue<int>(-1));
         Console.WriteLine("queue cap ok " + new Queue<int>(10).Count);
         Try("array sort range", () => { int[] s = { 3, 1, 2, 0 }; Array.Sort(s, 1, 2); Console.WriteLine(string.Join(",", s)); });

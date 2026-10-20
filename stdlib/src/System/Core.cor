@@ -8992,7 +8992,10 @@ struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     public bool Contains(T item) { return IndexOf(item) >= 0; }
 
     // Array.Copy's, as .NET's segment copies.
-    public void CopyTo(T[] destination, int index) { Array.Copy(array!, offset, destination, index, count); }
+    public void CopyTo(T[] destination, int index) {
+        if (array == null) { throw new InvalidOperationException("The underlying array is null."); }
+        Array.Copy(array, offset, destination, index, count);
+    }
 
     bool ICollection<T>.IsReadOnly => true;
     void ICollection<T>.Add(T item) { throw new NotSupportedException(); }
@@ -11449,16 +11452,18 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
         for (int i = 0; i < count; i++) { into[i] = items[i]; }
     }
 
-    // ARRAY.COPY'S, as .NET's list copies: its refusals in its words.
-    public void CopyTo(T[] into) { Array.Copy(items, 0, into, 0, count); }
+    // ARRAY.COPY'S, as .NET's list copies: its refusals in its words. Its
+    // storage made only at its first element, an empty list's is the one
+    // empty array.
+    public void CopyTo(T[] into) { Array.Copy(items ?? Array.Empty<T>(), 0, into, 0, count); }
 
     // .NET's third overload: where in the destination to start writing.
-    public void CopyTo(T[] into, int at) { Array.Copy(items, 0, into, at, count); }
+    public void CopyTo(T[] into, int at) { Array.Copy(items ?? Array.Empty<T>(), 0, into, at, count); }
 
     /// `howMany` from `index` on, the run checked against the list first.
     public void CopyTo(int index, T[] into, int at, int howMany) {
         if (count - index < howMany) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
-        Array.Copy(items, index, into, at, howMany);
+        Array.Copy(items ?? Array.Empty<T>(), index, into, at, howMany);
     }
 
     // A COPY, not a view: .NET's ToArray hands back an array of its own, so

@@ -522,9 +522,11 @@ public static class VirtualTargets
                                 (dropped ??= new()).Add((symbol.Offset, symbol.Offset + symbol.Size));
                         dropped?.Sort((a, b) => a.Start.CompareTo(b.Start));
                     }
+                    List<(long Start, long End)>? tokens = Tokens(obj, section);
                     foreach (Relocation r in section.Relocs)
                     {
                         if (dropped is not null && InsideAny(dropped, r.Offset)) continue;
+                        if (tokens is not null && tokens.Any(t => r.Offset >= t.Start && r.Offset < t.End)) continue;
                         if (!IsDescriptor(r.Symbol))
                         {
                             if (r.Symbol.StartsWith('.'))
@@ -550,6 +552,7 @@ public static class VirtualTargets
                     bool function = entry.Key.StartsWith("F:", StringComparison.Ordinal);
                     if (!function && !entry.Key.StartsWith("D:", StringComparison.Ordinal) && !entry.Key.StartsWith("S:", StringComparison.Ordinal)) continue;
                     string own = entry.Key[2..];
+                    if (own.StartsWith("tk_", StringComparison.Ordinal)) continue;
                     // Kept by its key (IrReachability keeps F: and D: records);
                     // a shadow (S:) is never a record it keeps, and counts.
                     if (kept is not null && entry.Key[0] != 'S' && !kept.Contains(entry.Key)) continue;
@@ -614,9 +617,28 @@ public static class VirtualTargets
             foreach (var (_, obj) in _inputs)
                 foreach (Section section in obj.Sections)
                     if (section.Kind != SectionKind.Note && (section.Kind != SectionKind.Code || !archived.Contains(obj)))
+                    {
+                        List<(long Start, long End)>? tokens = Tokens(obj, section);
                         foreach (Relocation r in section.Relocs)
-                            if (r.Addend > 0 && IsDescriptor(r.Symbol)) outside.Add(r.Symbol);
+                            if (r.Addend > 0 && IsDescriptor(r.Symbol) && !(tokens is not null && tokens.Any(t => r.Offset >= t.Start && r.Offset < t.End)))
+                                outside.Add(r.Symbol);
+                    }
             return outside;
+        }
+
+        /// <summary>
+        /// WHERE A SECTION HOLDS CONTEXT TOKENS (Lowering.ContextToken, "tk_"):
+        /// a header naming a class's methods, handed to that class's statics
+        /// as their context and never called through. No object of the class,
+        /// and so not one it makes or one stamped outside the IR.
+        /// </summary>
+        private static List<(long Start, long End)>? Tokens(ObjectFile obj, Section section)
+        {
+            List<(long, long)>? found = null;
+            foreach (Symbol symbol in obj.Symbols)
+                if (symbol.IsDefined && ReferenceEquals(symbol.Section, section) && symbol.Name.StartsWith("tk_", StringComparison.Ordinal))
+                    (found ??= new()).Add((symbol.Offset, symbol.Offset + Math.Max(symbol.Size, 1)));
+            return found;
         }
 
         public bool? MadeOutside(string method, HashSet<string> outside)

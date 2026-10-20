@@ -108,6 +108,39 @@ public sealed partial class Lowering
         return null;
     }
 
+    /// <summary>Entry `slot` of `self`'s type context at `owner`'s depth; 0 where the table is shorter (another unit's).</summary>
+    private VReg ContextEntryOrZero(VReg self, TypeSymbol owner, int slot)
+    {
+        int w = _t.WordSize;
+        VReg vt = _e.Load(IrTypes.Word, self, 0);
+        VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
+        VReg table = _e.Load(IrTypes.Word, context, (long)owner.Depth * w);
+        VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
+        VReg result = _f.NewReg(IrTypes.Word, "ctxentry");
+        Block read = _f.NewBlock("ctxread"), end = _f.NewBlock("ctxend");
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Branch(_e.Binary(Opcode.LtU, Imm(slot, IrTypes.Word), R(count), IrType.I32), read, end);
+        _e.SetBlock(read);
+        _e.CopyTo(result, R(_e.Load(IrTypes.Word, table, (long)(slot + 1) * w)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>`entry` where it is not 0, else the address of `own`.</summary>
+    private VReg EntryOr(VReg entry, string own)
+    {
+        VReg result = _f.NewReg(IrTypes.Word, "entryor");
+        Block mine = _f.NewBlock("entryown"), end = _f.NewBlock("entryend");
+        _e.CopyTo(result, R(entry));
+        _e.Branch(entry, end, mine);
+        _e.SetBlock(mine);
+        _e.CopyTo(result, R(_e.Address(own)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
     /// <summary>A direct call by label; the callee is marked reachable.</summary>
     private VReg? CallDirect(MethodSymbol m, IrType returns, List<Operand> args)
     {
@@ -141,9 +174,15 @@ public sealed partial class Lowering
         // arguments; from shared code, the context this code has (ContextHere),
         // which the caller's own instantiation's is.
         string label = CallLabel(m);
+        (MethodSymbol Method, VReg Context)? read = _pendingContext is { } p && ReferenceEquals(p.Method, m) ? p : null;
+        _pendingContext = null;
         if (Canonical(m) is var canonical && ContextStatic(canonical))
         {
-            Operand context = m.Owner.Decl?.Canon is not null ? R(_e.Address(ContextToken(m.Owner)))
+            // An entry read from this code's context or dictionary first: a
+            // shared method copy names the class over object, which is not
+            // what its caller's type argument was.
+            Operand context = read is { } entry ? R(EntryOr(entry.Context, ContextToken(m.Owner.Decl?.Canon is not null ? m.Owner : canonical.Owner)))
+                : m.Owner.Decl?.Canon is not null ? R(_e.Address(ContextToken(m.Owner)))
                 : ContextHere(canonical.Owner) is { } here ? R(here) : R(_e.Address(ContextToken(canonical.Owner)));
             args = new List<Operand>(args);
             args.Insert(0, context);
@@ -579,6 +618,11 @@ public sealed partial class Lowering
         // Read after the arguments, which may make calls of their own.
         int hiddenCount = Monomorphiser.SharedMethodCopy(target.Name);
         _pendingTypeArgs = hiddenCount > 0 ? (target, HiddenTypeArguments(call, hiddenCount)) : null;
+        // ANOTHER SHARED CLASS'S STATIC'S CONTEXT, from this code's type context
+        // (Monomorphiser.CanonContextCall).
+        _pendingContext = call.ContextSlot >= 0 && call.CanonSelf is { } contextSelf && _b.TypeOf(contextSelf).Symbol is { } contextOwner
+            && SharedCopy(contextOwner) ? (target, ContextEntryOrZero(Eval(contextSelf), contextOwner, call.ContextSlot))
+            : call.ContextNeed >= 0 && _needDictionary is not null ? (target, NeedEntry(call.ContextNeed)) : null;
         VReg? result = CallMethod(target, receiver, args, viaBase, through);
         return result ?? _e.Const(0, IrTypes.Word);
     }

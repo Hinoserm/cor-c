@@ -22010,7 +22010,7 @@ public sealed partial class Binder
                     ? known : new TypeRef { Name = Monomorphiser.CanonName, Line = t.Line, Col = t.Col }, t);
             if (t.Args.Count == 0 && map.TryGetValue(t.Name, out TypeRef? to)) return Ranked(to, t);
             if (t.Args.Count == 0) return t;
-            return new TypeRef { Name = t.Name, Arguments = t.Args.Select(Over).ToList(), ArrayRank = t.ArrayRank, Line = t.Line, Col = t.Col };
+            return new TypeRef { Name = t.Name, Arguments = t.Args.Select(Over).ToList(), ArrayRank = t.ArrayRank, Line = t.Line, Col = t.Col, MadeFor = t.MadeFor };
         }
         return needs.Select(Over).ToList();
     }
