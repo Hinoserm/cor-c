@@ -1781,6 +1781,20 @@ public sealed class Monomorphiser
     /// (Binder.SpeltFor, PlaceNeeds), one word to the copy whatever U is.
     /// Written as the template writes it; the same type twice is one entry.
     /// </summary>
+    /// <summary>
+    /// The dictionary entry a test or a cast of a STRUCT over a shared method
+    /// copy's hidden arguments compares a box against (IsExpr.NeedSlot); -1
+    /// for any other type, whose test asks the object (Shaped) and whose
+    /// entry would make an instantiation nothing reads.
+    /// </summary>
+    private int StructNeed(TypeRef written, Node at)
+    {
+        if (_needs is null || written.Args.Count == 0 || written.ArrayRank != 0 || written.PointerDepth != 0) return -1;
+        string name = GenericPath(written.Name, written.Args.Count, at) ?? Path(written.Name);
+        return _generic.TryGetValue(Arity(name, written.Args.Count), out TypeDecl? template) && template.Kind == TypeKind.Struct
+            ? Need(written, array: false) : -1;
+    }
+
     private int Need(TypeRef written, bool array)
     {
         if (_needs is null || written.PointerDepth != 0 || written.ArrayRank != 0) return -1;
@@ -4101,7 +4115,7 @@ public sealed class Monomorphiser
                 CastExpr made = new() { Type = Sub(cast.Type, map), Operand = Rewrite(cast.Operand, map), Line = cast.Line, Col = cast.Col };
                 // IN A SHARED METHOD COPY, its dictionary's entry (Need): a box
                 // of a struct over the hidden arguments is unboxed against it.
-                made.NeedSlot = cast.NeedSlot >= 0 ? cast.NeedSlot : cast.Type is { Args.Count: > 0, ArrayRank: 0 } ? Need(cast.Type, array: false) : -1;
+                made.NeedSlot = cast.NeedSlot >= 0 ? cast.NeedSlot : StructNeed(cast.Type, cast);
                 // A cast to a constructed type over the parameters, AND TO T
                 // ITSELF, as `x is T` asks it: left the word it is, `(T)o`
                 // over an object holding a boxed int, T a string, handed the
@@ -4113,7 +4127,7 @@ public sealed class Monomorphiser
             case IsExpr isx:
             {
                 IsExpr made = new() { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col };
-                made.NeedSlot = isx.NeedSlot >= 0 ? isx.NeedSlot : isx.Type is { Args.Count: > 0, ArrayRank: 0 } ? Need(isx.Type, array: false) : -1;
+                made.NeedSlot = isx.NeedSlot >= 0 ? isx.NeedSlot : StructNeed(isx.Type, isx);
                 Shaped(made, isx, isx.Type, map);
                 return Canon(made, isx, isx.Type, arrayToo: false);
             }

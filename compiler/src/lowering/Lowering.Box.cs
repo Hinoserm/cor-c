@@ -730,7 +730,9 @@ public sealed partial class Lowering
     private string BoxInterfaceStub(MethodSymbol m, string name)
     {
         string target = CallLabel(m);
-        string label = "__box_call_" + Safe(name) + "_" + target;
+        // A SHARED STRUCT'S, one for every instantiation sharing its code: the
+        // box it is called on is its member's context (StructContext).
+        string label = Canonical(m) is var shared && StructContext(shared) ? "__box_call_" + BodyLabel(shared) : "__box_call_" + Safe(name) + "_" + target;
         if (_boxStubs.Contains(label)) return label;
         _boxStubs.Add(label);
         Require(m);
@@ -909,7 +911,17 @@ public sealed partial class Lowering
     /// <summary>A boxed value rendered the way the library renders its type.</summary>
     private string BoxToString(Type of, string name, string key)
     {
+        // A STRUCT OF SHARED CODE says its own ToString through its box -- one
+        // routine for every instantiation, the box its context -- or, having
+        // none, the name its box's descriptor holds: one routine for all.
+        if (BoxedBlock(of) && of.Symbol is { } shape && !IsTupleShape(shape) && SharedStruct(shape))
+        {
+            MethodSymbol? said = shape.FindMethods("ToString").FirstOrDefault(m => !m.Static && m.Params.Count == 0);
+            if (said is null) return NamedBoxToString();
+            if (Canonical(said) is var sharedSaid && StructContext(sharedSaid)) key = "shared_" + BodyLabel(sharedSaid);
+        }
         string label = "__box_tostring_" + Safe(key);
+        if (!_structHelpers.Add(label)) return label;
         Function f = new(label, IrTypes.Word) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
@@ -965,10 +977,34 @@ public sealed partial class Lowering
         return label;
     }
 
+    /// <summary>A box's ToString that says the name its descriptor holds (DescName): every shared struct's with no ToString of its own.</summary>
+    private string NamedBoxToString()
+    {
+        const string label = "__box_tostring_named";
+        if (!_structHelpers.Add(label)) return label;
+        Function f = new(label, IrTypes.Word) { Coalescible = true };
+        VReg self = f.NewReg(IrTypes.Word, "this");
+        f.Params.Add(self);
+        Builder e = new(f, f.NewBlock("entry"));
+        VReg desc = e.Binary(Opcode.Sub, e.Load(IrTypes.Word, self, 0), _t.DescriptorBytes);
+        e.Ret(RegOperand.Of(e.Load(IrTypes.Word, desc, DescName * _t.WordSize)));
+        _m.Functions.Add(f);
+        return label;
+    }
+
+    /// <summary>The canonical copy a shared struct's instantiation runs the code of, or null for any other type.</summary>
+    private TypeSymbol? SharedStructCanon(TypeSymbol s)
+        => s.Kind == TypeKind.Struct && s.Decl?.Canon is string canon && _b.Types.TryGetValue(canon, out TypeSymbol? shared) ? shared : null;
+
     /// <summary>Two boxes are equal when they hold the same type and the same value.</summary>
     private string BoxEquals(Type of, string name)
     {
+        // AN INSTANTIATION OF SHARED CODE compares as its canonical copy does:
+        // the same fields at the same places, its own Equals handed the box.
+        if (BoxedBlock(of) && of.Symbol is { } sharing && SharedStructCanon(sharing) is { } canonEquals)
+            return BoxEquals(Type.Plain(canonEquals, Prim.Void), BoxKey(Type.Plain(canonEquals, Prim.Void)));
         string label = "__box_equals_" + Safe(name);
+        if (!_structHelpers.Add(label)) return label;
         Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
         VReg other = f.NewReg(IrTypes.Word, "other");

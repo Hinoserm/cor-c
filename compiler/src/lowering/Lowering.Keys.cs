@@ -1472,7 +1472,11 @@ public sealed partial class Lowering
     /// <summary>A boxed value's hash: the value, so that equal boxes hash alike.</summary>
     private string BoxHash(Type of, string name)
     {
+        // An instantiation of shared code hashes as its canonical copy does (BoxEquals).
+        if (BoxedBlock(of) && of.Symbol is { } sharing && SharedStructCanon(sharing) is { } canonHash)
+            return BoxHash(Type.Plain(canonHash, Prim.Void), BoxKey(Type.Plain(canonHash, Prim.Void)));
         string label = "__box_hash_" + Safe(name);
+        if (!_structHelpers.Add(label)) return label;
         Function f = new(label, IrType.I32) { Coalescible = true };
         VReg self = f.NewReg(IrTypes.Word, "this");
 
