@@ -1710,7 +1710,9 @@ public sealed partial class Binder
             }
             return;
         }
-        if (_member is MethodDecl { LocalCopy: true } || t.Symbol?.Decl?.CanonMadeWritten is null) return;
+        // The canonical copy, or a copy sharing its code spelt over these
+        // words and others (KeyValuePair<T, string> in a Holder<T>).
+        if (_member is MethodDecl { LocalCopy: true } || !SharedStructUse(t)) return;
         TypeSymbol? home = IsClosure(_thisType) ? _lexicalType : _thisType;
         if (home?.Decl is not { CanonMadeWritten: { } written, TemplateParams: { } ps } homeDecl || ReferenceEquals(home, t.Symbol) && OwnUse(t, home)) return;
         if (FaceOverParams(t.AsNonNullable(), ps, home.Key) is not TypeRef face) return;

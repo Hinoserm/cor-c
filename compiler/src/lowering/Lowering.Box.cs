@@ -119,8 +119,13 @@ public sealed partial class Lowering
         if (of is { IsArray: false, IsPointer: false, UseArgs.Count: > 0 } && of.Symbol is { Kind: TypeKind.Struct, Decl.Canon: not null } sharing
             && CopyStructContext(of) is VReg copyToken)
             return _e.Load(IrTypes.Word, EntryOr(copyToken, ContextToken(sharing)), 0);
-        if (of is not { IsArray: false, IsPointer: false } || of.Symbol is not { Kind: TypeKind.Struct } held || !CanonicalCopy(held))
-            return null;
+        if (of is not { IsArray: false, IsPointer: false } || of.Symbol is not { Kind: TypeKind.Struct } held) return null;
+        // A COPY SHARING ITS CODE spelt over this code's words and others
+        // (KeyValuePair<T, string> in a Holder<T>): its token in this code's
+        // type context.
+        if (!CanonicalCopy(held))
+            return held.Decl?.Canon is not null && of.UseArgs is { Count: > 0 } && StructContextOf(of) is VReg sharerToken
+                ? _e.Load(IrTypes.Word, EntryOr(sharerToken, ContextToken(held)), 0) : null;
         // Its own `this` names no arguments: its own instantiation.
         if (Binder.OwnUse(of, held) && ContextHere(held) is VReg own) return _e.Load(IrTypes.Word, own, 0);
         if (of.UseArgs is not { Count: > 0 } || Binder.OwnUse(of, held) && ReferenceEquals(_method?.Owner, held)) return null;
@@ -133,10 +138,24 @@ public sealed partial class Lowering
     /// struct over the copy's hidden arguments, IsExpr.NeedSlot), a shared
     /// struct's through this code's context (StructBoxVtable), else its own.
     /// </summary>
-    private VReg StructWanted(Type want, int needSlot)
+    private VReg StructWanted(Type want, Node? at)
     {
-        if (needSlot >= 0 && _needDictionary is not null && want.Symbol is { Kind: TypeKind.Struct } && !want.IsArray)
-            return _e.Binary(Opcode.Add, NeedOr(needSlot, () => _e.Address(BoxDescriptor(want))), _t.DescriptorBytes);
+        if (want.Symbol is { Kind: TypeKind.Struct } && !want.IsArray)
+        {
+            int needSlot = at is IsExpr { NeedSlot: >= 0 } needIs ? needIs.NeedSlot : at is CastExpr { NeedSlot: >= 0 } needCast ? needCast.NeedSlot : -1;
+            if (needSlot >= 0 && _needDictionary is not null)
+                return _e.Binary(Opcode.Add, NeedOr(needSlot, () => _e.Address(BoxDescriptor(want))), _t.DescriptorBytes);
+            // A SHARED CLASS'S CODE: its type context's entry for the struct's
+            // box (Monomorphiser.CanonTested), its own where the table has none.
+            VReg? entry = at switch
+            {
+                IsExpr { CanonSlot: >= 0, CanonSelf: not null } tested => CanonTypeEntry(tested),
+                CastExpr { CanonSlot: >= 0, CanonSelf: not null } cast => CanonTypeEntry(cast),
+                _ => null,
+            };
+            if (entry is not null)
+                return _e.Binary(Opcode.Add, EntryOr(entry, BoxDescriptor(want)), _t.DescriptorBytes);
+        }
         return StructBoxVtable(want) ?? _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
     }
 
@@ -192,7 +211,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg Unbox(Node at, VReg obj, Type want)
     {
-        int needSlot = at is CastExpr { NeedSlot: >= 0 } needCast ? needCast.NeedSlot : -1;
+
         Block check = _f.NewBlock("unbck");
         Block ok = _f.NewBlock("unbok");
         Block bad = _f.NewBlock("unbbad");
@@ -215,7 +234,7 @@ public sealed partial class Lowering
         }
         _e.SetBlock(check);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = StructWanted(want, needSlot);
+        VReg wanted = StructWanted(want, at);
         int kind = BoxKind(want);
         bool integral = kind is >= 1 and <= 10;
         if (integral)
@@ -263,7 +282,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>Whether a value of this type, held in an object, is a box of that type.</summary>
-    private VReg BoxTest(VReg obj, Type want, int needSlot = -1)
+    private VReg BoxTest(VReg obj, Type want, Node? at = null)
     {
         VReg result = _f.NewReg(IrType.I32, "isbox");
         Block some = _f.NewBlock("bxsome");
@@ -272,7 +291,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = StructWanted(want, needSlot);
+        VReg wanted = StructWanted(want, at);
         _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
         _e.Jump(end);
         _e.SetBlock(end);

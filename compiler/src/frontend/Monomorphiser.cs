@@ -1618,8 +1618,9 @@ public sealed class Monomorphiser
             return made;
         }
         string name = GenericPath(written.Name, written.Args.Count, source) ?? Path(written.Name);
+        // A STRUCT too (`o is KeyValuePair<T, int>`): its entry is its box's.
         if (!_generic.TryGetValue(Arity(name, written.Args.Count), out TypeDecl? template)
-            || template.Kind is not (TypeKind.Class or TypeKind.Interface))
+            || template.Kind is not (TypeKind.Class or TypeKind.Interface or TypeKind.Struct))
         {
             return made;
         }

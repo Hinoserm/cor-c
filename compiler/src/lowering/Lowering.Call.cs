@@ -257,6 +257,11 @@ public sealed partial class Lowering
                 // A SHARED METHOD COPY'S over its hidden arguments: its dictionary's entry.
                 : held is not null && StructContext(canonical) && CopyStructContext(held) is VReg copyHeld
                     ? R(EntryOr(copyHeld, ContextToken(m.Owner.Decl?.Canon is not null ? m.Owner : canonical.Owner)))
+                // A COPY SHARING ITS CODE spelt over this shared code's words
+                // and others (KeyValuePair<T, string> in a Holder<T>): its
+                // instantiation's, from this code's type context.
+                : held is not null && StructContext(canonical) && m.Owner.Decl?.Canon is not null && StructContextOf(held) is VReg sharerHeld
+                    ? R(EntryOr(sharerHeld, ContextToken(m.Owner)))
                 : m.Owner.Decl?.Canon is not null ? R(_e.Address(ContextToken(m.Owner)))
                 // A SHARED STRUCT THIS SHARED CODE HOLDS OVER ITS PARAMETERS --
                 // another's, or its own over them otherwise (Pair<B, A> in

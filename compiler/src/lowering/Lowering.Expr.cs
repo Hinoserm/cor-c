@@ -3317,7 +3317,7 @@ public sealed partial class Lowering
         }
         // `x is ICollection<T>` IN A SHARED COPY: of what that type is for
         // the object at hand (CanonTest), bound as the type it is written.
-        if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && HeldByReference(_b.TypeOf(isx.Operand)))
+        if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && HeldByReference(_b.TypeOf(isx.Operand)) && !_b.TestedStructs.ContainsKey(isx))
         {
             Type? written = _b.TestedArrays.TryGetValue(isx, out Type? array0) ? array0
                           : _b.TestedTypes.TryGetValue(isx, out TypeSymbol? tested0) ? Type.Plain(tested0, Prim.Void)
@@ -3494,7 +3494,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg BoxPattern(Node at, VReg obj, Type boxed, int? slot)
     {
-        VReg is_ = BoxTest(obj, boxed, at is IsExpr { NeedSlot: >= 0 } needIs ? needIs.NeedSlot : -1);
+        VReg is_ = BoxTest(obj, boxed, at);
 
         if (slot is not int held)
         {
