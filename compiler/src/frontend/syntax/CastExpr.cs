@@ -12,9 +12,9 @@ public sealed class CastExpr : Expr, ICanonSlot, ICanonShape
     public Expr? CanonSelf { get; set; }
 
     /// <summary>
-    /// In a shared method copy, the dictionary entry of the constructed type
-    /// as written (NewExpr.NeedSlot): what a box of a struct over the copy's
-    /// hidden arguments is tested or unboxed against (Lowering.BoxTest), or -1.
+    /// In a shared method copy, the dictionary entry of a struct over its
+    /// hidden arguments (Binder.NoteStructBox): what its box is tested or
+    /// unboxed against (Lowering.BoxTest), or -1.
     /// </summary>
     public int NeedSlot { get; set; } = -1;
 

@@ -1762,6 +1762,37 @@ public sealed partial class Binder
         return RefOf(t);
     }
 
+    /// <summary>
+    /// A STRUCT OVER A SHARED METHOD COPY'S HIDDEN ARGUMENTS TESTED OR UNBOXED --
+    /// `o is KeyValuePair<U, int>` -- by the box of the caller's instantiation:
+    /// an entry of the copy's dictionary for it, which its callers fill with
+    /// that box's descriptor (IsExpr.NeedSlot, Lowering.StructWanted). Only a
+    /// struct: another type's test asks the object, and an entry for it would
+    /// make an instantiation nothing reads.
+    /// </summary>
+    private void NoteStructBox(Expr e)
+    {
+        Type? tested = e switch
+        {
+            IsExpr isx when _r.TestedStructs.TryGetValue(isx, out Type? s) => s,
+            CastExpr cast => _r.TypeOf(cast),
+            _ => null,
+        };
+        if (tested is not { Symbol.Kind: TypeKind.Struct, IsArray: false, IsNullableValue: false } || !Marked(tested, 0)
+            || _member is not MethodDecl { CopyNeeds: { } needs, CopyParams: { } own }
+            || SpellHidden(tested, own, 0) is not TypeRef face)
+            return;
+        string key = Monomorphiser.NeedKey(face);
+        int at = needs.FindIndex(n => Monomorphiser.NeedKey(n) == key);
+        if (at < 0)
+        {
+            at = needs.Count;
+            needs.Add(face);
+            _r.Reexpand = true;
+        }
+        if (e is IsExpr tests) tests.NeedSlot = at; else ((CastExpr)e).NeedSlot = at;
+    }
+
     /// <summary>A use of a canonical copy over its own parameters in order -- Pair<A, B> in Pair's code, not Pair<B, A> -- its own instantiation's.</summary>
     internal static bool OwnUse(Type t, TypeSymbol home)
     {
@@ -14110,6 +14141,7 @@ public sealed partial class Binder
         _r.ExprType[e] = t;
         if (_inBodies) ForceBody(t);
         if (_inBodies && t.UseArgs is { Count: > 0 } && SharedStructUse(t)) NoteStructContext(t);
+        if (_inBodies && e is IsExpr or CastExpr && _member is MethodDecl { CopyNeeds: not null }) NoteStructBox(e);
         // An event, read from outside the type that declares it, is refused
         // here, wherever the read is: a call of it, a ?.Invoke, an assignment
         // to it, or a plain read (EventFromOutside).
