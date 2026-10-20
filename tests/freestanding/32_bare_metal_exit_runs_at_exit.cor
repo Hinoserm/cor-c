@@ -1,0 +1,28 @@
+// test: the bare-metal exit runs what the program left for its end first
+// expect-exit: 3
+// expect-output:
+// main
+// at exit
+//
+// Runtime.OnExit leaves a function to run as the program ends -- Console's
+// buffered output is flushed so. Linux's Exit ran it; the bare-metal one,
+// which a ring-1 service and a kernel end through, did not, and a service
+// that printed through Console and returned lost its last lines. Exit runs
+// it before the exit hook and the system's exit.
+
+static class Program
+{
+    static void Said()
+    {
+        Host.Line("at exit");
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Runtime.OnExit(Sys.AddressOf(Said));
+        Host.Line("main");
+        Platform.Exit(3);
+        return 0;
+    }
+}

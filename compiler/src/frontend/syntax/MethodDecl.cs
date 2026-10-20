@@ -42,6 +42,13 @@ public sealed class MethodDecl : MemberDecl
     /// is Derived&lt;string, K&gt; for Holder&lt;string&gt;.
     /// </summary>
     public bool OwnCode { get; set; }
+    /// <summary>
+    /// An iterator of a canonical class copy's code: the entry of the type
+    /// context holding its machine as the instantiation's own (a variant
+    /// listing IEnumerable&lt;string&gt;, Lowering.MachineVariant), which the
+    /// kickoff stamps the machine with; -1 for none.
+    /// </summary>
+    public int CanonMachineSlot { get; set; } = -1;
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<TypeParam> NoTypeParams = new();
     private List<TypeParam>? _typeParams;

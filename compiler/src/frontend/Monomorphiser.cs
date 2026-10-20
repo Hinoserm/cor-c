@@ -1443,6 +1443,35 @@ public sealed class Monomorphiser
     }
 
     /// <summary>
+    /// AN ITERATOR OF THE CANONICAL COPY'S CODE makes a machine over its
+    /// parameters: one entry of the type context, its face as written and
+    /// marked as this method's (TypeRef.MadeFor), which each sharing
+    /// instantiation's table fills with a variant of the machine listing
+    /// that instantiation's faces (Lowering.MachineVariant). Over object it
+    /// was an IEnumerable&lt;object&gt; for every List of strings.
+    /// </summary>
+    private void CanonMachine(MethodDecl made, MethodDecl source)
+    {
+        if (made.CanonMachineSlot >= 0 || !_canonSelf || _canonParams is null || _canonMade is null
+            || source.Body is not { Iterator: true } || source.Returns is not { Args.Count: > 0, ArrayRank: 0, PointerDepth: 0 } face
+            || !OverCanonParams(face)) return;
+        TypeRef entry = new()
+        {
+            Name = face.Name, Arguments = face.Args.ToList(), Line = face.Line, Col = face.Col,
+            MadeFor = "iter:" + source.Name + "(" + string.Join(",", source.Params.Select(p => p.Type.ToString())) + ")",
+        };
+        string key = EntryKey(entry);
+        int at = _canonMade.FindIndex(t => EntryKey(t) == key);
+        if (at < 0)
+        {
+            at = _canonMade.Count;
+            _canonMade.Add(entry);
+        }
+        made.CanonMachineSlot = 2 * _canonParams.Count + at;
+        _canonMarked = true;
+    }
+
+    /// <summary>
     /// A STATIC MEMBER OF ANOTHER SHARED CLASS CALLED OVER THIS COPY'S
     /// PARAMETERS -- `Maker<T>.Make()` in Shelf<T> -- handed that
     /// instantiation's context (Binder.ContextStatic): an entry of this
@@ -3136,6 +3165,8 @@ public sealed class Monomorphiser
                 // import of a symbol nothing provides.
                 made.LocalCopy = md.LocalCopy;
                 made.OwnCode = md.OwnCode;
+                made.CanonMachineSlot = md.CanonMachineSlot;
+                CanonMachine(made, md);
                 made.Fresh = md.Fresh;
                 made.AutoAccessor = md.AutoAccessor;
                 made.PartialWithoutBody = md.PartialWithoutBody;

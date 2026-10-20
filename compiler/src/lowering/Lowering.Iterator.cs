@@ -184,7 +184,13 @@ public sealed partial class Lowering
         }
 
         VReg machine = AllocateDynamic(decl, Numbered(_e, _e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
-        _e.Store(R(machine), VtableOf(it.Machine), 0, _t.WordSize);
+        // AN ITERATOR OF SHARED CODE (MethodDecl.CanonMachineSlot): stamped
+        // with the variant its instantiation's type context holds, the
+        // machine's own vtable where the table has none (another unit's).
+        if (self is not null && decl.CanonMachineSlot >= 0 && SharedCopy(m.Owner))
+            _e.StoreDescribed(machine, VtableOf(it.Machine), VariantVtable(ContextEntryOrZero(self, m.Owner, decl.CanonMachineSlot), VtableOf(it.Machine)), _t.WordSize);
+        else
+            _e.Store(R(machine), VtableOf(it.Machine), 0, _t.WordSize);
         _e.Store(R(machine), Imm(it.Enumerable ? -2 : 0, IrType.I32), IterStateField, 4);
         if (self is not null)
         {
@@ -202,8 +208,81 @@ public sealed partial class Lowering
         _m.Functions.Add(_f);
         if (ContextStatic(m)) ContextStub(m);
 
+        MachineMembers(it);
+    }
+
+    private readonly HashSet<TypeSymbol> _machinesLowered = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A machine's MoveNext and its other members, once in a unit: its kickoff's, or a variant's (MachineVariant).</summary>
+    private void MachineMembers(IteratorMethod it)
+    {
+        if (!_machinesLowered.Add(it.Machine)) return;
         Require(it.MoveNext);
+        string wasIn = _in;
+        _in = it.Method.Owner.Decl?.File ?? _in;
         EmitIteratorMembers(it);
+        _in = wasIn;
+    }
+
+    /// <summary>The vtable an entry's descriptor gives (its methods, DescriptorBytes on), `own` where the entry is 0.</summary>
+    private VReg VariantVtable(VReg descriptor, SymOperand own)
+    {
+        VReg result = _f.NewReg(IrTypes.Word, "variantvt");
+        Block have = _f.NewBlock("varhave"), mine = _f.NewBlock("varown"), end = _f.NewBlock("varend");
+        _e.Branch(descriptor, have, mine);
+        _e.SetBlock(have);
+        _e.CopyTo(result, R(_e.Binary(Opcode.Add, descriptor, _t.DescriptorBytes)));
+        _e.Jump(end);
+        _e.SetBlock(mine);
+        _e.CopyTo(result, own);
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    private readonly Dictionary<(TypeSymbol, TypeSymbol), TypeSymbol> _variants = new();
+
+    /// <summary>
+    /// A CLASS SHARED CODE MAKES, AS ONE INSTANTIATION'S: every member, slot,
+    /// field and size the machine has -- the same vtable -- and its faces
+    /// over that instantiation's arguments, so `is IEnumerable<string>`
+    /// answers yes and a List of IEnumerable<string> holds it. Named as the
+    /// machine is, a key of its own.
+    /// </summary>
+    private TypeSymbol Variant(TypeSymbol of, IReadOnlyList<TypeSymbol> faces)
+    {
+        if (_variants.TryGetValue((of, faces[0]), out TypeSymbol? had)) return had;
+        TypeSymbol made = new()
+        {
+            Name = of.Name, Key = of.Key + "$$" + TypeKey(faces[0]), Kind = TypeKind.Class, Decl = of.Decl,
+            Base = of.Base, InstanceSize = of.InstanceSize, InlineDecided = true, DelegateGroup = of.DelegateGroup,
+        };
+        made.WritableFields.AddRange(of.Fields);
+        made.WritableMethods.AddRange(of.Methods);
+        foreach ((int slot, MethodSymbol m) in of.InterfaceImplementations) made.WritableInterfaceImplementations[slot] = m;
+        made.WritableInterfaces.AddRange(faces);
+        if (_inlineCurrent.TryGetValue(of, out int current)) _inlineCurrent[made] = current;
+        return _variants[(of, faces[0])] = made;
+    }
+
+    /// <summary>
+    /// The descriptor of an iterator's machine as `face`'s instantiation
+    /// makes it (MethodDecl.CanonMachineSlot): a variant listing face, and
+    /// for an enumerable its enumerator face too. Null where it cannot be
+    /// said, or once the unit's functions are all lowered -- the table then
+    /// holds 0 and the machine is its own.
+    /// </summary>
+    private string? MachineVariant(MethodSymbol m, MethodDecl decl, TypeSymbol face)
+    {
+        if (_workDrained || IteratorPieces(m, decl) is not IteratorMethod it) return null;
+        List<TypeSymbol> faces = new() { face };
+        if (it.Enumerable)
+        {
+            if (face.Methods.FirstOrDefault(x => x.Name == "GetEnumerator" && x.Params.Count == 0)?.Returns.Symbol is not { } enumerator) return null;
+            faces.Add(enumerator);
+        }
+        MachineMembers(it);
+        return ClassDescriptor(Variant(it.Machine, faces));
     }
 
     /// <summary>
@@ -249,7 +328,11 @@ public sealed partial class Lowering
                     e.Ret(R(self));
                     e.SetBlock(fresh);
                     VReg copy = AllocateDynamic(it.Decl, Numbered(e, e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
-                    e.Store(R(copy), VtableOf(it.Machine), 0, _t.WordSize);
+                    // The same identity as the one asked (a variant, CanonMachineSlot).
+                    if (it.Decl.CanonMachineSlot >= 0)
+                        e.StoreDescribed(copy, VtableOf(it.Machine), e.Load(IrTypes.Word, self, 0), _t.WordSize);
+                    else
+                        e.Store(R(copy), VtableOf(it.Machine), 0, _t.WordSize);
                     e.Store(R(copy), R(e.Load(IrTypes.Word, self, IterReceiverField)), IterReceiverField, _t.WordSize);
                     foreach (int offset in it.ParamOffsets)
                     {

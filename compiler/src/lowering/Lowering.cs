@@ -671,6 +671,7 @@ public sealed partial class Lowering
         }
 
         SealFunctions();
+        _workDrained = true;
         NoteUnlowered();
 
         TypeSymbol? runtimeOwner = _b.Types.Values.FirstOrDefault(t => t.Name == RuntimeType);
@@ -2342,6 +2343,9 @@ public sealed partial class Lowering
     /// canonical copy's own objects answer object. Null for a class with no
     /// shared copy in its chain, whose word stays zero and is never read.
     /// </summary>
+    /// <summary>Whether every function the unit lowers is lowered: nothing required after it would be.</summary>
+    private bool _workDrained;
+
     private string? TypeContext(TypeSymbol t, List<TypeSymbol> chain)
     {
         if (!chain.Any(SharedCopy) && !chain.Any(ClassIdentified))
@@ -2387,6 +2391,17 @@ public sealed partial class Lowering
             List<TypeRef>? written = chain[d].Decl?.CanonMade;
             for (int k = 0; k < made.Count; k++)
             {
+                // AN ITERATOR'S MACHINE AS THIS INSTANTIATION'S (MachineVariant):
+                // the canonical copy's own table holds 0, its machine as it is.
+                if (written is not null && k < written.Count && written[k].MadeFor is string madeFor && madeFor.StartsWith("iter:", StringComparison.Ordinal))
+                {
+                    if (!CanonicalCopy(chain[d]) && made[k] is { Kind: TypeKind.Interface } face
+                        && chain[d].Decl?.Canon is string canonName && _b.Types.TryGetValue(canonName, out TypeSymbol? canonical)
+                        && canonical.Methods.FirstOrDefault(x => x.Decl is MethodDecl { CanonMachineSlot: var s } && s == 2 * args.Count + k) is { Decl: MethodDecl iterating } maker
+                        && MachineVariant(maker, iterating, face) is string variant)
+                        table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, variant, 0));
+                    continue;
+                }
                 // An array of a constructed type the shared code tests for
                 // (Monomorphiser.CanonTested): that array's descriptor.
                 if (written is not null && k < written.Count && written[k].ArrayRank == 1)

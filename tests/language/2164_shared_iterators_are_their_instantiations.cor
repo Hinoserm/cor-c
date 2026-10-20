@@ -1,0 +1,79 @@
+// test: shared_iterators_are_their_instantiations
+// expect-exit: 0
+// expect-output:
+// is True
+// object True
+// other False
+// enumerator True
+// again True
+// store 1
+// derived True
+// generic derived True
+// lists True
+// pairs True
+// cursor True
+// thing False
+// static True z,z
+// mismatch ArrayTypeMismatchException
+// a,b a!,b!
+// reverse q,p True
+//
+// An iterator of a shared generic class's code -- instance or static,
+// enumerable or enumerator, over T, List<T> or KeyValuePair<T, int>,
+// reached through a derived class -- is an IEnumerable of its
+// instantiation, as .NET's: its machine is stamped with a variant the
+// instantiation's type context holds, its faces over the arguments
+// (Lowering.MachineVariant). Over object it was an IEnumerable<object>,
+// which a List<IEnumerable<string>> refused; SortedSet.Reverse's among them.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public IEnumerable<T> Walk() { foreach (T x in Items) yield return x; }
+    public IEnumerator<T> Cursor() { foreach (T x in Items) yield return x; }
+    public IEnumerable<List<T>> Lists() { yield return Items; }
+    public IEnumerable<KeyValuePair<T, int>> Pairs() { int i = 0; foreach (T x in Items) yield return new KeyValuePair<T, int>(x, i++); }
+    public static IEnumerable<T> Twice(T x) { yield return x; yield return x; }
+}
+class Names : Repo<string> { }
+class Wrapped<U> : Repo<List<U>> { }
+class Thing { }
+
+static class Program
+{
+    static int Main()
+    {
+        Repo<string> r = new();
+        r.Items.Add("a"); r.Items.Add("b");
+        object w = r.Walk();
+        Console.WriteLine("is " + (w is IEnumerable<string>));
+        Console.WriteLine("object " + (w is IEnumerable<object>));
+        Console.WriteLine("other " + (w is IEnumerable<Thing>));
+        IEnumerable<string> e = r.Walk();
+        object first = e.GetEnumerator(), second = e.GetEnumerator();
+        Console.WriteLine("enumerator " + (first is IEnumerator<string>));
+        Console.WriteLine("again " + (second is IEnumerator<string>));
+        List<IEnumerable<string>> l = new();
+        l.Add(r.Walk());
+        Console.WriteLine("store " + l.Count);
+        Console.WriteLine("derived " + ((object)new Names().Walk() is IEnumerable<string>));
+        Console.WriteLine("generic derived " + ((object)new Wrapped<string>().Walk() is IEnumerable<List<string>>));
+        Console.WriteLine("lists " + ((object)r.Lists() is IEnumerable<List<string>>));
+        Console.WriteLine("pairs " + ((object)r.Pairs() is IEnumerable<KeyValuePair<string, int>>));
+        Console.WriteLine("cursor " + ((object)r.Cursor() is IEnumerator<string>));
+        Console.WriteLine("thing " + ((object)new Repo<Thing>().Walk() is IEnumerable<string>));
+        Console.WriteLine("static " + ((object)Repo<string>.Twice("z") is IEnumerable<string>) + " " + string.Join(",", Repo<string>.Twice("z")));
+        try { object[] things = new IEnumerable<Thing>[1]; things[0] = r.Walk(); Console.WriteLine("mismatch none"); }
+        catch (Exception x) { Console.WriteLine("mismatch " + x.GetType().Name); }
+        Console.WriteLine(string.Join(",", l[0]) + " " + string.Join(",", r.Walk().Select(x => x + "!")));
+        SortedSet<string> set = new() { "q", "p" };
+        List<IEnumerable<string>> back = new() { set.Reverse() };
+        Console.WriteLine("reverse " + string.Join(",", back[0]) + " " + ((object)set.Reverse() is IEnumerable<string>));
+        return 0;
+    }
+}

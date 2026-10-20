@@ -954,6 +954,11 @@ static class Platform
     [DoesNotReturn]
     public static void Exit(int code)
     {
+        // WHAT THE PROGRAM LEFT TO BE DONE AT ITS END FIRST (Runtime.AtExit),
+        // as Linux's Exit does: buffered console output reaches its device,
+        // and the collector says what it counted. A ring-1 service that
+        // printed and returned from Main lost its last lines.
+        Runtime.AtExit();
         if (ExitHook != 0)
         {
             Sys.Call(ExitHook, code, 0, 0);
