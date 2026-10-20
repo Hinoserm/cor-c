@@ -1,0 +1,41 @@
+// test: arrays_with_elements_and_struct_tests_through_interfaces
+// expect-exit: 0
+// expect-output:
+// String[] String String[] String
+// ArrayTypeMismatchException
+// True True 1
+// True True False
+// 7
+// some
+// Int32 String
+//
+// new U[] { u } in a shared method copy is an array of the caller's U, as
+// new U[n] is; an interface holding a boxed struct is that struct to is,
+// generic or not; and a conditional of an object and a string is an object,
+// as C#'s natural type has it.
+// Expected output from .NET 10.
+
+using System; using System.Collections; using System.Collections.Generic; using System.Runtime.CompilerServices;
+static class Util { [MethodImpl(MethodImplOptions.NoInlining)] public static U[] One<U>(U u) => new U[] { u }; public static Type Of<U>(U u) => typeof(U); }
+struct SPair<A, B> { public A First; public SPair(A a) { First = a; } public A[] Firsts() => Util.One(First); public Type Named() => Util.Of(First); }
+class CPair<A, B> { public A First; public CPair(A a) { First = a; } public A[] Firsts() => Util.One(First); public Type Named() => Util.Of(First); }
+struct Plain : IEnumerator { public object Current => 1; public bool MoveNext() => false; public void Reset() { } }
+static class P {
+    static void Main() {
+        SPair<string, Exception> s = new("s"); CPair<string, Exception> c = new("c");
+        Console.WriteLine(s.Firsts().GetType().Name + " " + s.Named().Name + " " + c.Firsts().GetType().Name + " " + c.Named().Name);
+        object[] held = c.Firsts(); string stored;
+        try { held[0] = 5; stored = "stored"; } catch (ArrayTypeMismatchException) { stored = "ArrayTypeMismatchException"; }
+        Console.WriteLine(stored);
+        IEnumerator i = new Plain();
+        object o = i;
+        Console.WriteLine((i is Plain) + " " + (o is Plain) + " " + (i is Plain p ? p.Current : "none"));
+        Stack<string> stack = new(); stack.Push("x");
+        IEnumerator e = ((IEnumerable)stack).GetEnumerator();
+        Console.WriteLine((e is Stack<string>.Enumerator) + " " + ((object)e is Stack<string>.Enumerator) + " " + (e is Stack<object>.Enumerator));
+        object x = 7; bool yes = e is not null;
+        Console.WriteLine(yes ? x : "none");
+        Console.WriteLine(yes ? "some" : x);
+        Console.WriteLine((yes ? x : "none").GetType().Name + " " + (!yes ? x : "none").GetType().Name);
+    }
+}

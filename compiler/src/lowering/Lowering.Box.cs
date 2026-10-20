@@ -105,13 +105,40 @@ public sealed partial class Lowering
 
     private readonly Dictionary<string, string> _boxes = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// THE BOX'S FIRST WORD OF A SHARED STRUCT THIS SHARED CODE HOLDS OVER ITS
+    /// PARAMETERS (StructContext): its own instantiation's, from the context
+    /// it was handed; another's -- Pair<B, A> in Pair's code, KeyValuePair<K, V>
+    /// in a Dictionary's -- from its token in this code's type context. Null
+    /// for any other type, whose box is named.
+    /// </summary>
+    private VReg? StructBoxVtable(Type of)
+    {
+        if (of is not { IsArray: false, IsPointer: false } || of.Symbol is not { Kind: TypeKind.Struct } held || !CanonicalCopy(held))
+            return null;
+        // Its own `this` names no arguments: its own instantiation.
+        if (Binder.OwnUse(of, held) && ContextHere(held) is VReg own) return _e.Load(IrTypes.Word, own, 0);
+        if (of.UseArgs is not { Count: > 0 } || Binder.OwnUse(of, held) && ReferenceEquals(_method?.Owner, held)) return null;
+        return StructContextOf(of) is VReg token ? _e.Load(IrTypes.Word, EntryOr(token, ContextToken(held)), 0) : null;
+    }
+
     /// <summary>A value copied onto the heap behind an object header.</summary>
     private VReg BoxValue(Node at, VReg value, Type of)
     {
         int payload = _t.ObjectHeaderBytes;
         int bytes = BoxPayload(of);
         VReg obj = Allocate(at, payload + Math.Max(_t.WordSize, bytes), described: true);
-        _e.Store(R(obj), new SymOperand(BoxDescriptor(of), _t.DescriptorBytes), 0, _t.WordSize);
+        // A SHARED STRUCT'S OWN CODE BOXING ITS OWN TYPE (StructContext): the
+        // box of the instantiation it runs for, whose first word its context
+        // holds; stamped for the analyses as the canonical copy's box.
+        if (StructBoxVtable(of) is VReg boxVtable)
+        {
+            _e.StoreDescribed(obj, new SymOperand(BoxDescriptor(of), _t.DescriptorBytes), boxVtable, _t.WordSize);
+        }
+        else
+        {
+            _e.Store(R(obj), new SymOperand(BoxDescriptor(of), _t.DescriptorBytes), 0, _t.WordSize);
+        }
 
         // A STRUCT IS A BLOCK, and the register holding one holds its address:
         // the bytes are copied in behind the header, which is what makes the
@@ -169,7 +196,7 @@ public sealed partial class Lowering
         }
         _e.SetBlock(check);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
+        VReg wanted = StructBoxVtable(want) ?? _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
         int kind = BoxKind(want);
         bool integral = kind is >= 1 and <= 10;
         if (integral)
@@ -226,7 +253,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
+        VReg wanted = StructBoxVtable(want) ?? _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
         _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
         _e.Jump(end);
         _e.SetBlock(end);
@@ -370,6 +397,15 @@ public sealed partial class Lowering
             foreach (TypeSymbol face in implemented) InterfaceDescriptor(face);
             implemented.Sort((a, b) => string.CompareOrdinal(InterfaceDescriptor(a), InterfaceDescriptor(b)));
         }
+        // A SHARED STRUCT'S BOX HOLDS ITS INSTANTIATION'S TYPE CONTEXT
+        // (StructContext), as a class's descriptor does: what the struct's
+        // members read through the context they are handed -- the box, or a
+        // token whose first word is the box's.
+        if (shape is not null && SharedStruct(shape) && TypeContext(shape, new List<TypeSymbol> { shape }) is string boxContext)
+        {
+            item.Relocs.Add(new DataReloc(DescTypeContext * w, boxContext, 0));
+        }
+
         DataItem faces = new("bf_" + Safe(key), new byte[(implemented.Count + 1) * w]) { ReadOnly = true, Exported = false };
         for (int i = 0; i < implemented.Count; i++) faces.Relocs.Add(new DataReloc(i * w, InterfaceDescriptor(implemented[i]), 0));
         _m.Data.Add(faces);
@@ -685,6 +721,13 @@ public sealed partial class Lowering
         }
         Builder e = new(f, f.NewBlock("entry"));
         args.Insert(0, e.Binary(Opcode.Add, self, _t.ObjectHeaderBytes));
+        // A SHARED STRUCT'S MEMBER is handed the box as its context
+        // (StructContext): its first word is the instantiation's.
+        if (Canonical(m) is var canonical && StructContext(canonical))
+        {
+            args.Insert(0, self);
+            target = BodyLabel(canonical);
+        }
         VReg? result = e.Call(target, returns, args);
         e.Ret(result is null ? null : RegOperand.Of(result));
         _m.Functions.Add(f);
@@ -853,7 +896,9 @@ public sealed partial class Lowering
             if (own is not null)
             {
                 Require(own);
-                e.Ret(RegOperand.Of(e.Call(CallLabel(own), IrTypes.Word, R(inside))!));
+                e.Ret(RegOperand.Of(Canonical(own) is var ownCanonical && StructContext(ownCanonical)
+                    ? e.Call(BodyLabel(ownCanonical), IrTypes.Word, R(self), R(inside))!
+                    : e.Call(CallLabel(own), IrTypes.Word, R(inside))!));
             }
             else if (IsTupleShape(of.Symbol!))
             {
@@ -919,7 +964,9 @@ public sealed partial class Lowering
             if (own is not null && own.Params[0].Type.Symbol == of.Symbol)
             {
                 Require(own);
-                e.Ret(RegOperand.Of(e.Call(CallLabel(own), IrType.I32, R(mine2), R(theirs2))!));
+                e.Ret(RegOperand.Of(Canonical(own) is var ownCanonical && StructContext(ownCanonical)
+                    ? e.Call(BodyLabel(ownCanonical), IrType.I32, R(self), R(mine2), R(theirs2))!
+                    : e.Call(CallLabel(own), IrType.I32, R(mine2), R(theirs2))!));
                 e.SetBlock(no);
                 e.Ret(new ImmOperand(0, IrType.I32));
                 _m.Functions.Add(f);

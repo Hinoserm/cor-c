@@ -100,10 +100,13 @@ public sealed partial class Lowering
             for (; t is not null; t = t.Base) if (ReferenceEquals(t, owner)) return true;
             return false;
         }
+        // A shared struct member's own context (StructContext).
+        if (_structContext is not null && _method is not null && ReferenceEquals(_method.Owner, owner)) return _structContext;
         if (_this is null || _method is null || !HasThis(_method)) return null;
         if (Derives(_method.Owner, owner)) return _this;
+        // A struct's `$this` in a closure is a copy of the struct, no context.
         foreach (FieldSymbol f in _method.Owner.Fields)
-            if (f.Name is "$context" or "$this" && !f.Static && Derives(f.Type.Symbol, owner))
+            if ((f.Name == "$context" || f.Name == "$this" && owner.Kind != TypeKind.Struct) && !f.Static && Derives(f.Type.Symbol, owner))
                 return _e.Load(IrTypes.Word, _this, f.Offset);
         return null;
     }
@@ -114,7 +117,7 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         VReg vt = _e.Load(IrTypes.Word, self, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)owner.Depth * w);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w);
         VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
         VReg result = _f.NewReg(IrTypes.Word, "ctxentry");
         Block read = _f.NewBlock("ctxread"), end = _f.NewBlock("ctxend");
@@ -139,6 +142,40 @@ public sealed partial class Lowering
         _e.Jump(end);
         _e.SetBlock(end);
         return result;
+    }
+
+    /// <summary>
+    /// The static type of what a shared struct's member is called on (or
+    /// made as), with the words it holds (Type.UseArgs), for CallDirect to
+    /// find its context by (StructContextEntry); for that member only.
+    /// </summary>
+    private (MethodSymbol Method, Type Receiver)? _structReceiver;
+
+    /// <summary>Notes what `m` is called on, where `m` is a shared struct's member.</summary>
+    private void HintStruct(MethodSymbol m, Type? on)
+    {
+        if (on is not null && m.Owner.Kind == TypeKind.Struct && on.UseArgs is { Count: > 0 }) _structReceiver = (m, on);
+    }
+
+    /// <summary>
+    /// The context entry this shared code's type context holds for a shared
+    /// struct over its parameters (Binder.NoteStructContext): the struct
+    /// spelt over them, marked "context"; null where it holds none.
+    /// </summary>
+    private VReg? StructContextEntry(MethodSymbol canonical, Type held)
+        => StructContext(canonical) ? StructContextOf(held) : null;
+
+    /// <summary>The token of a shared struct held over this code's parameters, from its type context (StructContextEntry); null where it has none.</summary>
+    private VReg? StructContextOf(Type held)
+    {
+        if (_method?.Owner is not { } home || ContextSelf is not { } self || !SharedContext(home)
+            || home.Decl is not { CanonMadeWritten: { } written, TemplateParams: { } ps, TemplateArgs.Count: int parameters }
+            || Binder.FaceOverParams(held.AsNonNullable(), ps, home.Key) is not TypeRef face)
+            return null;
+        face.MadeFor = "context";
+        string key = Monomorphiser.EntryKey(face);
+        int at = written.FindIndex(w => Monomorphiser.EntryKey(w) == key);
+        return at < 0 ? null : ContextEntryOrZero(self, home, 2 * parameters + at);
     }
 
     /// <summary>A direct call by label; the callee is marked reachable.</summary>
@@ -176,14 +213,23 @@ public sealed partial class Lowering
         string label = CallLabel(m);
         (MethodSymbol Method, VReg Context)? read = _pendingContext is { } p && ReferenceEquals(p.Method, m) ? p : null;
         _pendingContext = null;
-        if (Canonical(m) is var canonical && ContextStatic(canonical))
+        Type? held = _structReceiver is { } hint && ReferenceEquals(hint.Method, m) ? hint.Receiver : null;
+        _structReceiver = null;
+        if (Canonical(m) is var canonical && TakesContext(canonical))
         {
             // An entry read from this code's context or dictionary first: a
             // shared method copy names the class over object, which is not
             // what its caller's type argument was.
             Operand context = read is { } entry ? R(EntryOr(entry.Context, ContextToken(m.Owner.Decl?.Canon is not null ? m.Owner : canonical.Owner)))
                 : m.Owner.Decl?.Canon is not null ? R(_e.Address(ContextToken(m.Owner)))
-                : ContextHere(canonical.Owner) is { } here ? R(here) : R(_e.Address(ContextToken(canonical.Owner)));
+                // A SHARED STRUCT THIS SHARED CODE HOLDS OVER ITS PARAMETERS --
+                // another's, or its own over them otherwise (Pair<B, A> in
+                // Pair's) -- its instantiation's token, from this code's type
+                // context; the canonical copy's where that holds none.
+                : held is not null && StructContext(canonical) && !Binder.OwnUse(held, canonical.Owner)
+                    ? StructContextEntry(canonical, held) is VReg entryHeld ? R(EntryOr(entryHeld, ContextToken(canonical.Owner))) : R(_e.Address(ContextToken(canonical.Owner)))
+                : ContextHere(canonical.Owner) is { } here ? R(here)
+                : R(_e.Address(ContextToken(canonical.Owner)));
             args = new List<Operand>(args);
             args.Insert(0, context);
             label = BodyLabel(canonical);
@@ -390,6 +436,7 @@ public sealed partial class Lowering
         // a base.Method() call in EmitCall -- otherwise an override that
         // reads/writes base.Prop calls back into itself through the vtable.
         bool viaBase = target is BaseExpr;
+        if (target is not null) HintStruct(accessor, _b.TypeOf(target));
         VReg? r = CallMethod(accessor, recv, args, viaBase);
         return r ?? _e.Const(0, IrTypes.Word);
     }
@@ -423,6 +470,7 @@ public sealed partial class Lowering
             args.Add(R(EvalAs(extra, p)));
         }
         bool viaBase = on is BaseExpr;
+        HintStruct(target, _b.TypeOf(on));
         return CallMethod(target, receiver, args, viaBase) ?? _e.Const(0, IrTypes.Word);
     }
 
@@ -621,8 +669,9 @@ public sealed partial class Lowering
         // ANOTHER SHARED CLASS'S STATIC'S CONTEXT, from this code's type context
         // (Monomorphiser.CanonContextCall).
         _pendingContext = call.ContextSlot >= 0 && call.CanonSelf is { } contextSelf && _b.TypeOf(contextSelf).Symbol is { } contextOwner
-            && SharedCopy(contextOwner) ? (target, ContextEntryOrZero(Eval(contextSelf), contextOwner, call.ContextSlot))
+            && SharedContext(contextOwner) ? (target, ContextEntryOrZero(Eval(contextSelf), contextOwner, call.ContextSlot))
             : call.ContextNeed >= 0 && _needDictionary is not null ? (target, NeedEntry(call.ContextNeed)) : null;
+        if (call.Target is MemberExpr { Target: var structOn }) HintStruct(target, _b.TypeOf(structOn));
         VReg? result = CallMethod(target, receiver, args, viaBase, through);
         return result ?? _e.Const(0, IrTypes.Word);
     }

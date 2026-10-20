@@ -1,0 +1,35 @@
+// test: boxes_shared_code_makes_are_their_instantiations
+// expect-exit: 0
+// expect-output:
+// True 1 True
+// True True
+// True a
+// True
+// True True
+// True True
+// InvalidCastException
+// True True False
+//
+// Structs boxed inside shared code -- a Dictionary's KeyValuePair<K, V> and
+// enumerators, SortedDictionary's, SortedList's, a class's KeyValuePair<A,
+// B> and <B, A> -- are boxes of their instantiations, found through the
+// shared code's type context.
+// Expected output from .NET 10.
+
+using System; using System.Collections; using System.Collections.Generic;
+class Bimap<A, B> { public object Forward(A a, B b) => new KeyValuePair<A, B>(a, b); public object Backward(A a, B b) => new KeyValuePair<B, A>(b, a); }
+static class P { static void Main() {
+    Dictionary<string, string> d = new() { ["a"] = "1" };
+    foreach (object e in (IEnumerable)d) Console.WriteLine((e is KeyValuePair<string, string>) + " " + ((KeyValuePair<string, string>)e).Value + " " + (e.GetType() == typeof(KeyValuePair<string, string>)));
+    IEnumerator walk = ((IEnumerable)d).GetEnumerator();
+    Console.WriteLine((walk is IEnumerator<KeyValuePair<string, string>>) + " " + (walk is Dictionary<string, string>.Enumerator));
+    IEnumerator keys = ((IEnumerable)d.Keys).GetEnumerator(); keys.MoveNext();
+    Console.WriteLine((keys is IEnumerator<string>) + " " + keys.Current);
+    Console.WriteLine(((IEnumerable<string>)new List<string> { "x" }).GetEnumerator() is List<string>.Enumerator);
+    foreach (object e in (IEnumerable)new SortedDictionary<string, string> { ["b"] = "2" }) Console.WriteLine((e is KeyValuePair<string, string>) + " " + (e.GetType() == typeof(KeyValuePair<string, string>)));
+    foreach (object e in (IEnumerable)new SortedList<string, string> { ["c"] = "3" }) Console.WriteLine((e is KeyValuePair<string, string>) + " " + (e.GetType() == typeof(KeyValuePair<string, string>)));
+    object other = new KeyValuePair<string, object>("k", "v");
+    try { Console.WriteLine(((KeyValuePair<string, string>)other).Value); } catch (InvalidCastException) { Console.WriteLine("InvalidCastException"); }
+    Bimap<string, Exception> m = new();
+    Console.WriteLine((m.Forward("k", new Exception()) is KeyValuePair<string, Exception>) + " " + (m.Backward("k", new Exception()) is KeyValuePair<Exception, string>) + " " + (m.Backward("k", new Exception()) is KeyValuePair<string, Exception>));
+} }

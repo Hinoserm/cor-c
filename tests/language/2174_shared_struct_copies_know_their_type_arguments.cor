@@ -1,0 +1,42 @@
+// test: shared_struct_copies_know_their_type_arguments
+// expect-exit: 0
+// expect-output:
+// String[] ArrayTypeMismatchException
+// System.ReadOnlySpan<String>[1] System.Span<String>[1] System.Memory<String>[1] System.ReadOnlyMemory<String>[1]
+// String[] String[] String[]
+// String[] Exception[] String String[]
+// True False InvalidCastException
+// List`1 True
+// True False True
+//
+// A generic struct shared over reference words is handed its
+// instantiation's context (a token whose first word is its box's, or the
+// box itself): new T[], typeof(T), (T)o, o is T, new List<T>, boxing itself
+// and the arrays Span and Memory make are its instantiation's, not object's.
+// Expected output from .NET 10.
+
+using System; using System.Collections.Generic;
+struct Box<T> {
+    public T Item; public Box(T item) { Item = item; }
+    public T[] Make(int n) => new T[n];
+    public static T[] None() => new T[0];
+    public Type Arg() => typeof(T);
+    public bool Is(object o) => o is T;
+    public T Cast(object o) => (T)o;
+    public List<T> Listed() => new List<T> { Item };
+    public object Boxed() => this;
+}
+static class P { static void Main() {
+    string[] a = new[] { "x" }.AsSpan().ToArray(); object[] o = a; string stored;
+    try { o[0] = 1; stored = "stored"; } catch (ArrayTypeMismatchException) { stored = "ArrayTypeMismatchException"; }
+    Console.WriteLine(a.GetType().Name + " " + stored);
+    Console.WriteLine(new ReadOnlySpan<string>(a).ToString() + " " + new Span<string>(a).ToString() + " " + new Memory<string>(a).ToString() + " " + new ReadOnlyMemory<string>(a).ToString());
+    Console.WriteLine(new Memory<string>(a).ToArray().GetType().Name + " " + new ReadOnlyMemory<string>(a).Span.ToArray().GetType().Name + " " + new ArraySegment<string>(a).ToArray().GetType().Name);
+    Box<string> b = new("s"); Func<int, string[]> made = b.Make;
+    Console.WriteLine(b.Make(2).GetType().Name + " " + Box<Exception>.None().GetType().Name + " " + b.Arg().Name + " " + made(1).GetType().Name);
+    string cast; try { cast = b.Cast(5).Length.ToString(); } catch (InvalidCastException) { cast = "InvalidCastException"; }
+    Console.WriteLine(b.Is("t") + " " + b.Is(new object()) + " " + cast);
+    Console.WriteLine(b.Listed().GetType().Name + " " + (((object)b.Listed()) is List<string>));
+    object boxed = b.Boxed();
+    Console.WriteLine((boxed is Box<string>) + " " + (boxed is Box<object>) + " " + (boxed.GetType() == typeof(Box<string>)));
+} }

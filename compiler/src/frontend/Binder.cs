@@ -1632,7 +1632,7 @@ public sealed partial class Binder
         // The class whose `this` is at hand: the method's own, or -- in a
         // lambda -- the one its closure captured, instance or context.
         TypeSymbol? at = _thisType is null ? null
-            : !IsClosure(_thisType) ? (_method is { Static: false } || ContextStatic(_method) ? _thisType : null)
+            : !IsClosure(_thisType) ? (_method is { Static: false } || HasContext(_method) ? _thisType : null)
             : _capturedThisField is not null ? _capturedThisType
             : _capturedContextField?.Type.Symbol;
         if (lam.CanonOrdinal >= 0 && lam.CanonFace is null && at?.Decl is { CanonMadeWritten: not null, TemplateParams: { } ps } home
@@ -1656,7 +1656,7 @@ public sealed partial class Binder
     /// every machine word in it says which it is (Type.CanonParam, carried in
     /// UseArgs); null where any word's place is unknown, or none is one.
     /// </summary>
-    private static TypeRef? FaceOverParams(Type wanted, IReadOnlyList<TypeParam> ps, string home)
+    internal static TypeRef? FaceOverParams(Type wanted, IReadOnlyList<TypeParam> ps, string home)
     {
         bool any = false;
         TypeRef? Spell(Type a, int depth)
@@ -1681,8 +1681,55 @@ public sealed partial class Binder
         return any ? face : null;
     }
 
+    /// <summary>
+    /// A SHARED STRUCT HELD BY SHARED CODE OVER ITS OWN PARAMETERS --
+    /// Memory<T>'s Span<T>, a Dictionary's KeyValuePair<K, V> -- whose members
+    /// are handed that instantiation's context: an entry of this code's type
+    /// context, marked "context", which each instantiation fills with the
+    /// struct's token (TypeDecl.NeedContexts, Lowering.StructContextEntry).
+    /// Not the code's own struct, whose context is its own; not a copy only
+    /// some units make (LocalCopy), whose entries would lay the table out
+    /// differently unit by unit.
+    /// </summary>
+    private void NoteStructContext(Type t)
+    {
+        if (_member is MethodDecl { LocalCopy: true } || _thisType is null) return;
+        TypeSymbol? home = IsClosure(_thisType) ? _lexicalType : _thisType;
+        if (home?.Decl is not { CanonMadeWritten: { } written, TemplateParams: { } ps } homeDecl || ReferenceEquals(home, t.Symbol) && OwnUse(t, home)) return;
+        if (FaceOverParams(t.AsNonNullable(), ps, home.Key) is not TypeRef face) return;
+        face.MadeFor = "context";
+        string key = Monomorphiser.EntryKey(face);
+        if (written.Any(w => Monomorphiser.EntryKey(w) == key) || homeDecl.NeedContexts?.Any(w => Monomorphiser.EntryKey(w) == key) == true) return;
+        (homeDecl.NeedContexts ??= new()).Add(face);
+        _r.Reexpand = true;
+    }
+
+    /// <summary>A use of a canonical copy over its own parameters in order -- Pair<A, B> in Pair's code, not Pair<B, A> -- its own instantiation's.</summary>
+    internal static bool OwnUse(Type t, TypeSymbol home)
+    {
+        if (t.UseArgs is not { } use) return true;
+        for (int i = 0; i < use.Count; i++)
+            if (use[i] is not { Prim: Prim.Any, Symbol: null } word || word.CanonParam != i || word.CanonOwner is string owner && owner != home.Key) return false;
+        return true;
+    }
+
     internal static bool ContextStatic(MethodSymbol? m)
         => m is { Static: true, IsCtor: false, Async: false } && m.Owner is { Kind: TypeKind.Class, Decl.CanonMadeWritten: not null };
+
+    /// <summary>
+    /// A MEMBER OF A SHARED STRUCT'S CANONICAL COPY, static or not, a
+    /// constructor too: handed its instantiation's context first, as a
+    /// context static is (Lowering.TakesContext) -- a token whose first word
+    /// is the instantiation's box's, or the box itself -- since a struct
+    /// value has no header to read a type context from. Not an iterator's or
+    /// an async member's, whose machine keeps no context (Monomorphiser).
+    /// </summary>
+    internal static bool StructContext(MethodSymbol? m)
+        => m is { Async: false } && m.Owner is { Kind: TypeKind.Struct, Decl.CanonMadeWritten: not null }
+        && m.Decl is not MethodDecl { Body.Iterator: true };
+
+    /// <summary>Whether a method is handed a context: a context static's, a shared struct member's.</summary>
+    internal static bool HasContext(MethodSymbol? m) => ContextStatic(m) || StructContext(m);
 
     /// <summary>
     /// The source type lexically enclosing a generated closure.
@@ -5503,6 +5550,9 @@ public sealed partial class Binder
                 }
             }
             ForceBody(resolved);
+            // A shared struct written over this code's parameters -- a cast,
+            // a test, typeof, a local -- has its context here (NoteStructContext).
+            if (resolved.UseArgs is { Count: > 0 } && resolved.Symbol is { Kind: TypeKind.Struct, Decl.CanonMadeWritten: not null }) NoteStructContext(resolved);
         }
         return resolved;
     }
@@ -8959,7 +9009,7 @@ public sealed partial class Binder
         // A CONTEXT STATIC'S holds its context ($context), which no other's
         // has; one in a lambda inside one holds it from that lambda's field, a
         // source no other place has, and is a class of its own.
-        bool contextGroup = !bound && lam.GroupIdentity is not null && ContextStatic(_method) && _capturedContextField is null;
+        bool contextGroup = !bound && lam.GroupIdentity is not null && HasContext(_method) && _capturedContextField is null;
         if (contextGroup) name2 += "$Context";
         else if (!bound && lam.GroupIdentity is not null && _capturedContextField is not null) name2 = $"Lambda${_closureOwner}${_closures++}";
         if (!bound && lam.GroupIdentity is not null && _groupClosures.TryGetValue(name2, out ClosureInfo? sharedClosure)
@@ -9035,10 +9085,11 @@ public sealed partial class Binder
         // THE CONTEXT, in a lambda of a context static or of one inside it: a
         // field of its own the compiler's `this` reads (_capturedContextField).
         FieldSymbol? contextField = null;
-        if (!bound && (_capturedContextField is not null || ContextStatic(_method) && _thisType is not null))
+        if (!bound && (_capturedContextField is not null || HasContext(_method) && _thisType is not null))
         {
+            // A shared struct's member's context is no `this` of it (StructContext).
             Sym contextSource = _capturedContextField is { } outerContext ? new FieldSym(outerContext)
-                : new ThisSym(Type.Plain(_thisType!, Prim.Void));
+                : new ThisSym(Type.Plain(_thisType!, Prim.Void)) { Context = StructContext(_method) };
             contextField = new FieldSymbol
             {
                 Name = "$context", Type = _capturedContextField?.Type ?? Type.Plain(_thisType!, Prim.Void), Owner = closure, Offset = at,
@@ -13996,6 +14047,7 @@ public sealed partial class Binder
         }
         _r.ExprType[e] = t;
         if (_inBodies) ForceBody(t);
+        if (_inBodies && t.UseArgs is { Count: > 0 } && t.Symbol is { Kind: TypeKind.Struct, Decl.CanonMadeWritten: not null }) NoteStructContext(t);
         // An event, read from outside the type that declares it, is refused
         // here, wherever the read is: a call of it, a ?.Invoke, an assignment
         // to it, or a plain read (EventFromOutside).
@@ -14201,7 +14253,7 @@ public sealed partial class Binder
                     Error(e, "'this' is not available in a static method");
                     return Type.Error;
                 }
-                if (e is ThisExpr { Context: true } && _thisType is not null && ContextStatic(_method))
+                if (e is ThisExpr { Context: true } && _thisType is not null && HasContext(_method))
                 {
                     return Type.Plain(_thisType, Prim.Void);
                 }
@@ -15990,6 +16042,18 @@ public sealed partial class Binder
                     return Joined(either);
                 }
 
+                // AN `object` ARM IS THE WHOLE'S TYPE against any other: every
+                // type converts to object, and object to none but by a cast
+                // (C# 12.18) -- `b ? x : "none"` over an object x is an object,
+                // and taken for the string the other arm is, Console.WriteLine
+                // printed the int x held as the characters of a string.
+                bool objectA = a2 is { Prim: Prim.Any, Symbol: null, IsArray: false, CanonParam: -1, Dynamic: false };
+                bool objectB = b2 is { Prim: Prim.Any, Symbol: null, IsArray: false, CanonParam: -1, Dynamic: false };
+                if (objectA != objectB)
+                {
+                    return objectA ? Joined(a2) : Joined(b2);
+                }
+
                 if (Convertible(a2, b2))
                 {
                     return Joined(b2);
@@ -16629,6 +16693,8 @@ public sealed partial class Binder
                 }
 
                 _r.TypeOfs[to] = named.Symbol;
+                // A shared struct over this code's parameters: its box by its context.
+                if (named.Symbol.Kind == TypeKind.Struct && named.UseArgs is { Count: > 0 }) _r.StructTypeOfs[to] = named;
                 return Type.TypeHandle;
             }
 
@@ -16817,6 +16883,8 @@ public sealed partial class Binder
                 if (tested.Symbol is { } testedSymbol)
                 {
                     _r.TestedTypes[isx] = testedSymbol;
+                    // A struct as written, with the words it holds (Lowering.StructBoxVtable).
+                    if (testedSymbol.Kind == TypeKind.Struct && !tested.IsArray) _r.TestedStructs[isx] = tested.AsNonNullable();
                     NoteShape(isx, tested);
                 }
                 else if (tested.IsArray)
@@ -21965,7 +22033,7 @@ public sealed partial class Binder
             // no type context, and the copy was handed 0. So is a dictionary
             // placed in the class's type context.
             if ((hidden is not null && hidden.Any(k => k >= 0) || c.NeedClass is not null) && c.CanonSelf is null
-                && _member is MethodDecl { } instance && (!instance.Mods.HasFlag(Mods.Static) || ContextStatic(_method) || _capturedContextField is not null) && _thisType?.Decl is { CanonMadeWritten: not null })
+                && _member is MethodDecl { } instance && (!instance.Mods.HasFlag(Mods.Static) || HasContext(_method) || _capturedContextField is not null) && _thisType?.Decl is { CanonMadeWritten: not null })
             {
                 c.CanonSelf = new ThisExpr { Context = true, Line = c.Line, Col = c.Col };
                 CheckExpr(c.CanonSelf);
@@ -22140,7 +22208,7 @@ public sealed partial class Binder
         // only the units wanting it have: its needs in the class's type
         // context would lay the table out differently unit by unit.
         if (!caller.LocalCopy && classNames is not null && hidden.All(k => k >= -1 && k < classNames.Count || k == CallExpr.MadeHiddenArg)
-            && (!caller.Mods.HasFlag(Mods.Static) || ContextStatic(_method)) && _thisType!.Decl is { } home)
+            && (!caller.Mods.HasFlag(Mods.Static) || HasContext(_method)) && _thisType!.Decl is { } home)
         {
             canonical = home;
             names = classNames;

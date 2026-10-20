@@ -389,6 +389,13 @@ public sealed class TypeDecl : Node
     public List<CallExpr>? NeedCalls { get; set; }
     /// <summary>A canonical copy's lambdas whose closures its type context is to hold as each instantiation's (LambdaExpr.CanonFace), for the next expansion to place.</summary>
     public List<LambdaExpr>? NeedLambdas { get; set; }
+    /// <summary>
+    /// The shared structs this canonical copy's code holds over its parameters
+    /// (Binder.NoteStructContext), each spelt over them and marked "context":
+    /// for the next expansion to place among CanonMadeWritten (PlaceNeeds),
+    /// whose entry each instantiation fills with that struct's token.
+    /// </summary>
+    public List<TypeRef>? NeedContexts { get; set; }
 
     /// <summary>
     /// Those classes for this copy's own arguments: what its objects' type

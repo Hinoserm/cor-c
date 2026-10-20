@@ -31,6 +31,8 @@ public sealed partial class Lowering
     private readonly Dictionary<int, LocalDecl> _slotDecl = new();
 
     private VReg? _this;
+    /// <summary>A shared struct member's context (StructContext): a token whose first word is its instantiation's box's.</summary>
+    private VReg? _structContext;
     private VReg[] _params = Array.Empty<VReg>();
     private FrameSlot?[] _paramSlots = Array.Empty<FrameSlot>();
 
@@ -161,6 +163,7 @@ public sealed partial class Lowering
         _openHandlers.Clear();
         _openCatches.Clear();
         _this = null;
+        _structContext = null;
         _returnBlock = null;
         _returnValue = null;
         _resultBuffer = null;
@@ -168,6 +171,7 @@ public sealed partial class Lowering
         _needDictionary = null;
         _pendingTypeArgs = null;
         _pendingContext = null;
+        _structReceiver = null;
         _heapStructs.Clear();
         _returnType = null;
         _boundsFail = null;
@@ -270,7 +274,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(ContextStatic(m) ? BodyLabel(m) : Label(m), ReturnIr(m))
+        _f = new Function(TakesContext(m) ? BodyLabel(m) : Label(m), ReturnIr(m))
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
@@ -290,6 +294,15 @@ public sealed partial class Lowering
         int declared = m.Params.Count;
         _params = new VReg[declared];
         _paramSlots = new FrameSlot?[declared];
+
+        // A SHARED STRUCT MEMBER'S CONTEXT first (StructContext), before its
+        // `this`, the struct's address, as CallDirect passes it.
+        if (StructContext(m))
+        {
+            _structContext = _f.NewReg(IrTypes.Word, "context");
+            _structContext.Number = true;
+            _f.Params.Add(_structContext);
+        }
 
         // A context static's context too (ContextStatic), first as `this` is.
         if (HasThis(m))
@@ -462,7 +475,7 @@ public sealed partial class Lowering
         }
 
         _m.Functions.Add(_f);
-        if (ContextStatic(m)) ContextStub(m);
+        if (TakesContext(m)) ContextStub(m);
         _method = null;
         _decl = null;
     }
@@ -1600,6 +1613,9 @@ public sealed partial class Lowering
                     return new MemPlace(new SlotOperand(ps), 0, p.Type);
                 }
                 return new RegPlace(_params[p.Index], p.Type);
+
+            case ThisSym { Context: true } t when _structContext is not null:
+                return new RegPlace(_structContext, t.Type);
 
             case ThisSym t:
                 return new RegPlace(_this!, t.Type);

@@ -867,7 +867,9 @@ public sealed class Monomorphiser
             // THE SHARED COPY OF A CLASS reads what its type arguments are from
             // the object it runs for (ICanonSlot). Known by its name: it is
             // queued by Canonicalise, or by a use written over __canon.
-            _canonParams = job.Template.Kind == TypeKind.Class && job.Canon is null
+            // A STRUCT'S, from the context its members are handed (Binder.
+            // StructContext): a struct value has no header to read one from.
+            _canonParams = job.Template.Kind is TypeKind.Class or TypeKind.Struct && job.Canon is null
                 && job.Name == CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count) ? CanonParams(job.Template) : null;
             _canonMade = _canonParams is null ? null : new List<TypeRef>();
             _canonLambdas = 0;
@@ -915,7 +917,7 @@ public sealed class Monomorphiser
                 _canonMadeOf[job.Name] = _canonMade;
             }
             List<TypeRef>? written = _canonMade
-                ?? (job.Canon is not null && job.Template.Kind == TypeKind.Class
+                ?? (job.Canon is not null && job.Template.Kind is TypeKind.Class or TypeKind.Struct
                     ? _canonMadeOf.GetValueOrDefault(job.Canon) ?? _made.GetValueOrDefault(job.Canon)?.CanonMadeWritten
                     : null);
             if (written is { Count: > 0 })
@@ -1659,6 +1661,17 @@ public sealed class Monomorphiser
                 }
                 canonical.NeedLambdas = null;
             }
+            // A SHARED STRUCT HELD OVER ITS PARAMETERS (TypeDecl.NeedContexts):
+            // one entry each, its instantiation's context token.
+            if (canonical.NeedContexts is { Count: > 0 } contexts)
+            {
+                foreach (TypeRef face in contexts)
+                {
+                    string key = EntryKey(face);
+                    if (!written.Any(t => EntryKey(t) == key)) written.Add(face);
+                }
+                canonical.NeedContexts = null;
+            }
             if (canonical.NeedCalls is not { Count: > 0 } calls) continue;
             foreach (CallExpr call in calls)
             {
@@ -1692,7 +1705,7 @@ public sealed class Monomorphiser
         {
             foreach (TypeDecl sharing in unit.Types)
             {
-                if (sharing.Kind != TypeKind.Class) continue;
+                if (sharing.Kind is not (TypeKind.Class or TypeKind.Struct)) continue;
                 TypeDecl? canonical = sharing.CanonMadeWritten is not null ? sharing
                     : sharing.Canon is string name && canonicals.TryGetValue(name, out TypeDecl? found) ? found : null;
                 if (canonical?.CanonMadeWritten is not { } written || (sharing.CanonMade?.Count ?? 0) >= written.Count
@@ -3073,8 +3086,16 @@ public sealed class Monomorphiser
                 // the context: it keeps the copy over object's answers, as
                 // every static did. An iterator's machine keeps it as an
                 // instance iterator's keeps its receiver.
+                // A SHARED STRUCT'S MEMBERS, static or not, constructors too, are
+                // handed their instantiation's context (Binder.StructContext):
+                // but an iterator or an async member, whose machine keeps a
+                // copy of the struct and no context, keeps the copy over
+                // object's answers, as every one did.
+                bool machine = members[i] is MethodDecl { Body.Iterator: true } or PropertyDecl { Getter.Iterator: true }
+                    || members[i] is MethodDecl asyncMember && asyncMember.Mods.HasFlag(Mods.Async);
                 _canonSelf = _canonParams is not null
-                    && (!members[i].Mods.HasFlag(Mods.Static)
+                    && (d.Kind == TypeKind.Struct ? !machine
+                        : !members[i].Mods.HasFlag(Mods.Static)
                         || members[i] is MethodDecl { IsCtor: false } staticMethod && !staticMethod.Mods.HasFlag(Mods.Async)
                         || members[i] is PropertyDecl);
                 _canonMarked = false;
@@ -3984,8 +4005,10 @@ public sealed class Monomorphiser
                 // IN A SHARED METHOD COPY, its dictionary's entry (Need).
                 if (nw.Utf8Bytes is null && !nw.Collection && (nw.ArraySize is not null || nw.Args.Count >= 0))
                 {
+                    // An array given its elements (`new U[] { u }`) as one given
+                    // its length.
                     made.NeedSlot = nw.NeedSlot >= 0 ? nw.NeedSlot
-                        : nw.ArraySize is not null ? Need(nw.Type, array: true)
+                        : nw.ArraySize is not null || nw.Elements is not null && nw.Type is { Name.Length: > 0 } ? Need(nw.Type, array: true)
                         : nw.Elements is null && nw.Type.Args.Count > 0 ? Need(nw.Type, array: false) : -1;
                 }
                 // An array of a type parameter: its element, as written.

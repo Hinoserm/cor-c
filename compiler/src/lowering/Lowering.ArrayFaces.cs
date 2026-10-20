@@ -269,7 +269,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>The method a shared helper was asked for in, set aside while it is built.</summary>
-    private readonly record struct HelperContext(MethodSymbol? Method, VReg[]? TypeArgs, bool InBarrier, int CheckedDepth);
+    private readonly record struct HelperContext(MethodSymbol? Method, VReg[]? TypeArgs, bool InBarrier, int CheckedDepth, VReg? StructContext);
 
     /// <summary>
     /// A SHARED HELPER IS BUILT AS NOBODY'S: every unit that needs one makes
@@ -284,9 +284,10 @@ public sealed partial class Lowering
     private HelperContext EnterHelper()
     {
         // And no `checked` of the asker's: a shared helper's arithmetic is unchecked.
-        HelperContext saved = new(_method, _typeArgs, _inBarrier, _checkedDepth);
+        HelperContext saved = new(_method, _typeArgs, _inBarrier, _checkedDepth, _structContext);
         _method = null;
         _typeArgs = null;
+        _structContext = null;
         _inBarrier = false;
         _checkedDepth = 0;
         return saved;
@@ -296,6 +297,7 @@ public sealed partial class Lowering
     {
         _method = saved.Method;
         _typeArgs = saved.TypeArgs;
+        _structContext = saved.StructContext;
         _inBarrier = saved.InBarrier;
         _checkedDepth = saved.CheckedDepth;
     }

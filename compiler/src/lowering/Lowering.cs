@@ -2405,7 +2405,7 @@ public sealed partial class Lowering
 
     private string? TypeContext(TypeSymbol t, List<TypeSymbol> chain)
     {
-        if (!chain.Any(SharedCopy) && !chain.Any(ClassIdentified))
+        if (!chain.Any(SharedContext) && !chain.Any(ClassIdentified))
         {
             return null;
         }
@@ -2421,7 +2421,7 @@ public sealed partial class Lowering
             // Named "k_", no descriptor's prefix: named "t_", the link indexed
             // the record as one more class (VirtualTargets.IsDescriptor).
             string? identity = ClassIdentified(chain[d]) ? ShapeRecord(chain[d], "k_" + ClassDescriptor(chain[d])[2..]) : null;
-            if (!SharedCopy(chain[d]))
+            if (!SharedContext(chain[d]))
             {
                 if (identity is not null)
                 {
@@ -2503,7 +2503,7 @@ public sealed partial class Lowering
                 }
                 // A shared class's static's context (Monomorphiser.CanonContextCall):
                 // this instantiation's token.
-                if (made[k] is { Kind: TypeKind.Class } held && written is not null && k < written.Count && written[k].MadeFor == "context")
+                if (made[k] is { Kind: TypeKind.Class or TypeKind.Struct } held && written is not null && k < written.Count && written[k].MadeFor == "context")
                 {
                     table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, ContextToken(held), 0));
                 }
@@ -2549,6 +2549,29 @@ public sealed partial class Lowering
         => s.Kind == TypeKind.Class && s.Decl is { Specialised: true } d
         && (d.Canon is not null || CanonicalCopy(s));
 
+    /// <summary>Whether a struct runs a canonical copy's code, its members handed a context (Binder.StructContext).</summary>
+    private static bool SharedStruct(TypeSymbol s)
+        => s.Kind == TypeKind.Struct && s.Decl is { Specialised: true } d
+        && (d.Canon is not null || CanonicalCopy(s));
+
+    /// <summary>Whose code reads a type context: a shared class's, through its objects, or a shared struct's, through the context its members are handed.</summary>
+    private static bool SharedContext(TypeSymbol s) => SharedCopy(s) || SharedStruct(s);
+
+    /// <summary>Where a type context holds a type's table: a class's at its depth, a struct's (a box's) first.</summary>
+    private static int ContextDepth(TypeSymbol s) => s.Kind == TypeKind.Struct ? 0 : s.Depth;
+
+    /// <summary>A shared struct member's (Binder.StructContext).</summary>
+    private static bool StructContext(MethodSymbol m) => Binder.StructContext(m);
+
+    /// <summary>Whether a method's body is handed a context first, under its own label (BodyLabel): a context static's, a shared struct member's.</summary>
+    private static bool TakesContext(MethodSymbol m) => ContextStatic(m) || StructContext(m);
+
+    /// <summary>
+    /// What this code reads its type context through: a shared struct
+    /// member's context, else its `this` where it has one.
+    /// </summary>
+    private VReg? ContextSelf => _structContext ?? (_method is { } running && HasThis(running) ? _this : null);
+
     /// <summary>
     /// A STATIC MEMBER OF A CANONICAL CLASS COPY, but a constructor or an
     /// async method (Binder.ContextStatic): its body -- an iterator's
@@ -2578,7 +2601,8 @@ public sealed partial class Lowering
         string sym = "tk_" + TypeKey(t);
         if (!_contextTokens.Add(sym)) return sym;
         DataItem item = new(sym, new byte[_t.ObjectHeaderBytes]) { Align = _t.WordSize, ReadOnly = true, Coalescible = true, NoReferences = true };
-        item.Relocs.Add(new DataReloc(0, ClassDescriptor(t), _t.DescriptorBytes));
+        // A STRUCT'S IS ITS BOX'S (StructContext): the first word a box of it has.
+        item.Relocs.Add(new DataReloc(0, t.Kind == TypeKind.Struct ? BoxDescriptor(Type.Plain(t, Prim.Void)) : ClassDescriptor(t), _t.DescriptorBytes));
         _m.Data.Add(item);
         return sym;
     }

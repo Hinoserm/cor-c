@@ -1077,8 +1077,8 @@ public sealed partial class Lowering
     /// (RunTimeDescriptor).
     /// </summary>
     private bool SharedKey(Type of)
-        => of is { CanonParam: >= 0, IsArray: false, IsPointer: false } && _this is not null
-        && _method is { } running && HasThis(running) && SharedCopy(running.Owner)
+        => of is { CanonParam: >= 0, IsArray: false, IsPointer: false } && ContextSelf is not null
+        && _method is { } running && SharedContext(running.Owner)
         && (of.CanonOwner is not string owner || owner == running.Owner.Key);
 
     /// <summary>A key question asked of two values (one for a hash) of a type that is not nullable.</summary>

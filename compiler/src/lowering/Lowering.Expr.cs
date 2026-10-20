@@ -1073,6 +1073,10 @@ public sealed partial class Lowering
                 return Convert(cast, v, from, to);
             }
 
+            case ThisExpr { Context: true } when _structContext is not null:
+                // A shared struct member's context (StructContext), not the struct.
+                return _structContext;
+
             case ThisExpr:
                 // In a closure's body: the instance it captured, from its field.
                 if (_b.Resolved.TryGetValue(e, out Sym? captured) && captured is FieldSym { Field.Static: false } thisField && _this is not null)
@@ -1175,6 +1179,10 @@ public sealed partial class Lowering
                 _e.SetBlock(runTimeEnd);
                 return runTimeResult;
             }
+
+            // A SHARED STRUCT OVER THIS CODE'S PARAMETERS: its box, by its context.
+            case TypeOfExpr to when _b.StructTypeOfs.TryGetValue(to, out Type? structOf) && StructBoxVtable(structOf) is VReg structVt:
+                return _e.Binary(Opcode.Sub, structVt, _t.DescriptorBytes);
 
             case TypeOfExpr to when _b.TypeOfs.TryGetValue(to, out TypeSymbol? named):
                 return _e.Address(named.Kind is TypeKind.Enum or TypeKind.Struct
@@ -1329,6 +1337,20 @@ public sealed partial class Lowering
                 return _e.Const(0, IrTypes.Word);
         }
     }
+
+    /// <summary>
+    /// The descriptor an array made in shared code is stamped with, by its
+    /// length or its elements alike: its type context's entry (CanonSlot), a
+    /// shared method copy's dictionary entry (NeedSlot), or null for its own.
+    /// </summary>
+    private VReg? ArrayMadeDescriptor(NewExpr nw, Type element)
+        => nw.CanonSlot >= 0 ? CanonArrayDescriptor(nw, element)
+        // Not an array of a class a copy of its own makes (Derived<__canon,
+        // int>): its elements are the objects the same code makes.
+        : nw.NeedSlot >= 0 && _needDictionary is not null && HeldByReference(element)
+          && (element.Symbol is not { Kind: TypeKind.Class } held || SharedCopy(held))
+            ? NeedOr(nw.NeedSlot, () => _e.Address(SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element)))
+            : null;
 
     private VReg Fail(Node at, string message)
     {
@@ -1689,7 +1711,7 @@ public sealed partial class Lowering
         {
             Type element = type.Element ?? Type.I32;
             VReg count = _e.Const(written.Count, IrType.I32);
-            VReg array = AllocateArray(nw, count, element, nw.CanonSlot >= 0 ? CanonArrayDescriptor(nw, element) : null);
+            VReg array = AllocateArray(nw, count, element, ArrayMadeDescriptor(nw, element));
             int stride = ElementStride(element);
             for (int i = 0; i < written.Count; i++)
             {
@@ -1703,13 +1725,7 @@ public sealed partial class Lowering
         {
             Type element = type.Element ?? Type.I32;
             VReg count = EvalAs(nw.ArraySize, Type.I32);
-            return AllocateArray(nw, count, element, nw.CanonSlot >= 0 ? CanonArrayDescriptor(nw, element)
-                // Not an array of a class a copy of its own makes (Derived<__canon,
-                // int>): its elements are the objects the same code makes.
-                : nw.NeedSlot >= 0 && _needDictionary is not null && HeldByReference(element)
-                  && (element.Symbol is not { Kind: TypeKind.Class } held || SharedCopy(held))
-                    ? NeedOr(nw.NeedSlot, () => _e.Address(SequenceDescriptor(ElementKey(element), ElementStride(element), isString: false, elementType: element)))
-                    : null);
+            return AllocateArray(nw, count, element, ArrayMadeDescriptor(nw, element));
         }
 
         // `new object()`: a header and nothing else, the thing to lock on.
@@ -1797,6 +1813,7 @@ public sealed partial class Lowering
             else
                 for (int i = 0; i < nw.Args.Count; i++)
                     args.Add(R(EvalAs(nw.Args[i], ctor.Params[i])));
+            HintStruct(ctor, _b.TypeOf(nw));
             CallDirect(ctor, IrType.Void, args);
         }
 
@@ -2040,7 +2057,7 @@ public sealed partial class Lowering
         // A LAMBDA OF SHARED CODE (LambdaExpr.CanonEntry): its closure as the
         // instantiation's, from its type context -- the variant's static
         // object where it captures nothing; its own where the table has none.
-        VReg? entry = lam.CanonEntry >= 0 && lam.CanonSelf is not null && _b.TypeOf(lam.CanonSelf).Symbol is { } home && SharedCopy(home)
+        VReg? entry = lam.CanonEntry >= 0 && lam.CanonSelf is not null && _b.TypeOf(lam.CanonSelf).Symbol is { } home && SharedContext(home)
             && home.Decl?.TemplateArgs.Count is int parameters
             ? ContextEntryOrZero(Eval(lam.CanonSelf), home, 2 * parameters + lam.CanonEntry) : null;
         if (made.Captures.Count == 0)
@@ -2718,7 +2735,7 @@ public sealed partial class Lowering
         VReg self = Eval(at.CanonSelf!);
         VReg vt = _e.Load(IrTypes.Word, self, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)shared.Depth * w);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(shared) * w);
         return _e.Load(IrTypes.Word, table, (long)(at.CanonSlot + 1) * w);
     }
 
@@ -2734,7 +2751,7 @@ public sealed partial class Lowering
         VReg obj = Eval(at.CanonSelf!);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(self) * w);
         VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
         VReg result = _f.NewReg(IrTypes.Word, "madevt");
         Block read = _f.NewBlock("maderead");
@@ -2812,7 +2829,7 @@ public sealed partial class Lowering
         VReg obj = Eval(at.CanonSelf!);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)self.Depth * w);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(self) * w);
         VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
         VReg result = _f.NewReg(IrTypes.Word, "canonty");
         Block read = _f.NewBlock("canontyread");
@@ -2856,7 +2873,7 @@ public sealed partial class Lowering
         int[]? given = call.HiddenTypeArgs;
         // THE CLASS'S `this`, where the call names it (CallExpr.CanonSelf): a
         // lambda's body reads it from its closure.
-        (VReg This, TypeSymbol Owner)? self = call.CanonSelf is { } named && _b.TypeOf(named).Symbol is { } owner && SharedCopy(owner)
+        (VReg This, TypeSymbol Owner)? self = call.CanonSelf is { } named && _b.TypeOf(named).Symbol is { } owner && SharedContext(owner)
             ? (Eval(named), owner) : null;
         Operand dictionary = NeedDictionary(call, self);
         // A TYPE MADE OVER THE CALLER'S WORDS (CallExpr.HiddenMade): its
@@ -2896,7 +2913,7 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         VReg vt = _e.Load(IrTypes.Word, self, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)owner.Depth * w);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w);
         return _e.Load(IrTypes.Word, table, (long)(entry + 1) * w);
     }
 
@@ -2932,10 +2949,10 @@ public sealed partial class Lowering
             _e.SetBlock(done);
             return R(handed);
         }
-        VReg? from = self?.This ?? _this;
-        TypeSymbol? owner = self?.Owner ?? (_method is { } running && HasThis(running) ? running.Owner : null);
+        VReg? from = self?.This ?? ContextSelf;
+        TypeSymbol? owner = self?.Owner ?? (ContextSelf is not null ? _method?.Owner : null);
         if (call.HiddenNeedBase < 0 || call.HiddenNeeds is not { Count: > 0 } needs
-            || from is null || owner is null || !SharedCopy(owner)
+            || from is null || owner is null || !SharedContext(owner)
             || owner.Decl?.TemplateArgs.Count is not int parameters)
         {
             return Imm(0, IrTypes.Word);
@@ -2953,7 +2970,7 @@ public sealed partial class Lowering
         int start = 2 * parameters + call.HiddenNeedBase;
         VReg vt = _e.Load(IrTypes.Word, from, 0);
         VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-        VReg table = _e.Load(IrTypes.Word, context, (long)owner.Depth * w);
+        VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(owner) * w);
         VReg count = Numbered(_e, _e.Load(IrTypes.Word, table, 0));
         VReg result = _f.NewReg(IrTypes.Word, "tdictarg");
         result.Number = true;
@@ -3024,15 +3041,15 @@ public sealed partial class Lowering
         {
             // Only its own class's word (Type.CanonOwner): another's parameter
             // k is not this table's entry k.
-            if (_this is null || _method is not { } running || !HasThis(running) || !SharedCopy(running.Owner)
+            if (ContextSelf is not { } contextSelf || _method is not { } running || !SharedContext(running.Owner)
                 || t.CanonOwner is string owner && owner != running.Owner.Key)
             {
                 return Imm(0, IrTypes.Word);
             }
             int w = _t.WordSize;
-            VReg vt = _e.Load(IrTypes.Word, _this, 0);
+            VReg vt = _e.Load(IrTypes.Word, contextSelf, 0);
             VReg context = _e.Load(IrTypes.Word, vt, (long)DescTypeContext * w - _t.DescriptorBytes);
-            VReg table = _e.Load(IrTypes.Word, context, (long)running.Owner.Depth * w);
+            VReg table = _e.Load(IrTypes.Word, context, (long)ContextDepth(running.Owner) * w);
             return R(_e.Load(IrTypes.Word, table, (long)(2 * t.CanonParam + 1) * w));
         }
         return statics && ShapeDescriptor(t) is string named ? R(_e.Address(named)) : Imm(0, IrTypes.Word);
@@ -3414,9 +3431,12 @@ public sealed partial class Lowering
         // descriptor of its own, so the test is that descriptor and nothing
         // else -- `(object)(short)5 is int` is false in C#, and there is no
         // widening on the way out of a box.
-        if (_b.TypeOf(isx.Operand).Prim == Prim.Any
-            && isx.Type is { Args.Count: 0, ArrayRank: 0 }
-            && ValueTypeNamed(isx, isx.Type.Name) is { } boxed)
+        // AN INTERFACE HOLDS ONE TOO: `e is List<string>.Enumerator` over an
+        // IEnumerator, a generic struct as written (TestedStructs).
+        if ((_b.TypeOf(isx.Operand).Prim == Prim.Any || _b.TypeOf(isx.Operand).Symbol is { Kind: TypeKind.Interface })
+            && isx.Type is { ArrayRank: 0 }
+            && (_b.TestedStructs.TryGetValue(isx, out Type? testedStruct) ? testedStruct
+                : isx.Type.Args.Count == 0 ? ValueTypeNamed(isx, isx.Type.Name) : null) is { } boxed)
         {
             return BoxPattern(isx, obj, boxed,
                               _b.PatternSlot.TryGetValue(isx, out int held) ? held : null);
@@ -4055,6 +4075,7 @@ public sealed partial class Lowering
             }
             List<Operand> getArgs = new() { R(receiver) };
             getArgs.AddRange(indices);
+            HintStruct(getter, _b.TypeOf(ix.Target));
             VReg current = CallMethod(getter, receiver, getArgs, ix.Target is BaseExpr)!;
             VReg result = declared is not null ? DeclaredOperator(a, declared, current, targetType)
                 : targetType.Prim == Prim.String && op == BinOp.Add
@@ -4063,6 +4084,7 @@ public sealed partial class Lowering
             List<Operand> setArgs = new() { R(receiver) };
             setArgs.AddRange(indices);
             setArgs.Add(R(result));
+            HintStruct(setter, _b.TypeOf(ix.Target));
             CallMethod(setter, receiver, setArgs, ix.Target is BaseExpr);
             return result;
         }
@@ -4126,6 +4148,7 @@ public sealed partial class Lowering
         ParamSymbol vp = setter.Params[^1];
         VReg value = EvalAs(a.Value, vp);
         args.Add(R(value));
+        HintStruct(setter, _b.TypeOf(index.Target));
         CallMethod(setter, receiver, args, index.Target is BaseExpr);
         return value;
     }

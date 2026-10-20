@@ -401,6 +401,10 @@ public sealed partial class BindResult
 
     /// <summary>`typeof(T)` of a type argument only run time knows (Type.CanonParam): its descriptor as run time finds it (Lowering.RunTimeDescriptor).</summary>
     public Dictionary<TypeOfExpr, Type> RunTimeTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>typeof a shared struct written over shared code's parameters: its box found through the code's context (Lowering.StructBoxVtable).</summary>
+    public Dictionary<TypeOfExpr, Type> StructTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>`x is S` of a struct S, as written: its box, tested (Lowering.EmitIs).</summary>
+    public Dictionary<IsExpr, Type> TestedStructs { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The calls that are GetType(), which is not a declared method.</summary>
     public HashSet<CallExpr> GetTypes { get; } = new(ReferenceEqualityComparer.Instance);

@@ -1,0 +1,28 @@
+// test: shared_struct_copies_over_permuted_arguments
+// expect-exit: 0
+// expect-output:
+// True String[] Exception[]
+// String[] Exception[]
+// True
+//
+// Pair<A, B>'s own code holding a Pair<B, A>: that one's members and box
+// are Pair<B, A>'s, not the code's own instantiation's; a generic method
+// handed A from it makes A[].
+// Expected output from .NET 10.
+
+using System; using System.Runtime.CompilerServices; using System.Threading.Tasks;
+static class Util { [MethodImpl(MethodImplOptions.NoInlining)] public static U[] One<U>(U u) => new U[] { u }; }
+struct Pair<A, B> {
+    public A First; public B Second;
+    public Pair(A a, B b) { First = a; Second = b; }
+    public Pair<B, A> Swap() => new Pair<B, A>(Second, First);
+    public object BoxSwapped() => Swap();
+    public B[] Seconds() => new B[] { Second };
+    public A[] Firsts() => Util.One(First);
+}
+static class P { static void Main() {
+    Pair<string, Exception> p = new("s", new Exception());
+    Console.WriteLine((p.BoxSwapped() is Pair<Exception, string>) + " " + p.Swap().Seconds().GetType().Name + " " + p.Seconds().GetType().Name);
+    Console.WriteLine(p.Firsts().GetType().Name + " " + p.Swap().Firsts().GetType().Name);
+    Console.WriteLine(new ValueTask<string>("x").AsTask() is Task<string>);
+} }
