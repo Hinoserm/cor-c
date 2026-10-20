@@ -4098,6 +4098,9 @@ public sealed class Monomorphiser
             case CastExpr cast:
             {
                 CastExpr made = new() { Type = Sub(cast.Type, map), Operand = Rewrite(cast.Operand, map), Line = cast.Line, Col = cast.Col };
+                // IN A SHARED METHOD COPY, its dictionary's entry (Need): a box
+                // of a struct over the hidden arguments is unboxed against it.
+                made.NeedSlot = cast.NeedSlot >= 0 ? cast.NeedSlot : cast.Type is { Args.Count: > 0, ArrayRank: 0 } ? Need(cast.Type, array: false) : -1;
                 // A cast to a constructed type over the parameters, AND TO T
                 // ITSELF, as `x is T` asks it: left the word it is, `(T)o`
                 // over an object holding a boxed int, T a string, handed the
@@ -4109,6 +4112,7 @@ public sealed class Monomorphiser
             case IsExpr isx:
             {
                 IsExpr made = new() { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col };
+                made.NeedSlot = isx.NeedSlot >= 0 ? isx.NeedSlot : isx.Type is { Args.Count: > 0, ArrayRank: 0 } ? Need(isx.Type, array: false) : -1;
                 Shaped(made, isx, isx.Type, map);
                 return Canon(made, isx, isx.Type, arrayToo: false);
             }

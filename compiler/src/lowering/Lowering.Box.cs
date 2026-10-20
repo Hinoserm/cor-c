@@ -127,6 +127,19 @@ public sealed partial class Lowering
         return StructContextOf(of) is VReg token ? _e.Load(IrTypes.Word, EntryOr(token, ContextToken(held)), 0) : null;
     }
 
+    /// <summary>
+    /// The first word a box of `want` has, as a test or an unboxing compares it:
+    /// a shared method copy's dictionary entry for it where it has one (a
+    /// struct over the copy's hidden arguments, IsExpr.NeedSlot), a shared
+    /// struct's through this code's context (StructBoxVtable), else its own.
+    /// </summary>
+    private VReg StructWanted(Type want, int needSlot)
+    {
+        if (needSlot >= 0 && _needDictionary is not null && want.Symbol is { Kind: TypeKind.Struct } && !want.IsArray)
+            return _e.Binary(Opcode.Add, NeedOr(needSlot, () => _e.Address(BoxDescriptor(want))), _t.DescriptorBytes);
+        return StructBoxVtable(want) ?? _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
+    }
+
     /// <summary>A value copied onto the heap behind an object header.</summary>
     private VReg BoxValue(Node at, VReg value, Type of)
     {
@@ -179,6 +192,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg Unbox(Node at, VReg obj, Type want)
     {
+        int needSlot = at is CastExpr { NeedSlot: >= 0 } needCast ? needCast.NeedSlot : -1;
         Block check = _f.NewBlock("unbck");
         Block ok = _f.NewBlock("unbok");
         Block bad = _f.NewBlock("unbbad");
@@ -201,7 +215,7 @@ public sealed partial class Lowering
         }
         _e.SetBlock(check);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = StructBoxVtable(want) ?? _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
+        VReg wanted = StructWanted(want, needSlot);
         int kind = BoxKind(want);
         bool integral = kind is >= 1 and <= 10;
         if (integral)
@@ -249,7 +263,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>Whether a value of this type, held in an object, is a box of that type.</summary>
-    private VReg BoxTest(VReg obj, Type want)
+    private VReg BoxTest(VReg obj, Type want, int needSlot = -1)
     {
         VReg result = _f.NewReg(IrType.I32, "isbox");
         Block some = _f.NewBlock("bxsome");
@@ -258,7 +272,7 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg vt = _e.Load(IrTypes.Word, obj, 0);
-        VReg wanted = StructBoxVtable(want) ?? _e.Address(BoxDescriptor(want), _t.DescriptorBytes);
+        VReg wanted = StructWanted(want, needSlot);
         _e.CopyTo(result, R(_e.Binary(Opcode.Eq, R(vt), R(wanted), IrType.I32)));
         _e.Jump(end);
         _e.SetBlock(end);

@@ -11,6 +11,13 @@ public sealed class IsExpr : Expr, ICanonSlot, ICanonShape
     /// <summary>The `this` that entry is read through (ICanonSlot).</summary>
     public Expr? CanonSelf { get; set; }
 
+    /// <summary>
+    /// In a shared method copy, the dictionary entry of the constructed type
+    /// as written (NewExpr.NeedSlot): what a box of a struct over the copy's
+    /// hidden arguments is tested or unboxed against (Lowering.BoxTest), or -1.
+    /// </summary>
+    public int NeedSlot { get; set; } = -1;
+
     public required Expr Operand { get; init; }
     public required TypeRef Type { get; init; }
     /// <summary>Set for <c>x is Foo f</c>.</summary>

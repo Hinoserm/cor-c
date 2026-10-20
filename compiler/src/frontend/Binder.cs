@@ -1693,10 +1693,11 @@ public sealed partial class Binder
     /// </summary>
     private void NoteStructContext(Type t)
     {
-        if (_member is MethodDecl { LocalCopy: true } || _thisType is null) return;
+        if (_thisType is null) return;
         // IN A SHARED METHOD COPY, over its own hidden arguments: an entry of
         // its dictionary, which each caller fills with that instantiation's
-        // token (Lowering.CopyStructContext).
+        // token (Lowering.CopyStructContext). A copy only some units make
+        // (LocalCopy) too: its body, and so this list, is the same in each.
         if (_member is MethodDecl { CopyNeeds: { } needs, CopyParams: { } own } && SpellHidden(t.AsNonNullable(), own, 0) is TypeRef hiddenFace
             && Marked(t, 0))
         {
@@ -1709,7 +1710,7 @@ public sealed partial class Binder
             }
             return;
         }
-        if (t.Symbol?.Decl?.CanonMadeWritten is null) return;
+        if (_member is MethodDecl { LocalCopy: true } || t.Symbol?.Decl?.CanonMadeWritten is null) return;
         TypeSymbol? home = IsClosure(_thisType) ? _lexicalType : _thisType;
         if (home?.Decl is not { CanonMadeWritten: { } written, TemplateParams: { } ps } homeDecl || ReferenceEquals(home, t.Symbol) && OwnUse(t, home)) return;
         if (FaceOverParams(t.AsNonNullable(), ps, home.Key) is not TypeRef face) return;

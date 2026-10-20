@@ -3494,7 +3494,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg BoxPattern(Node at, VReg obj, Type boxed, int? slot)
     {
-        VReg is_ = BoxTest(obj, boxed);
+        VReg is_ = BoxTest(obj, boxed, at is IsExpr { NeedSlot: >= 0 } needIs ? needIs.NeedSlot : -1);
 
         if (slot is not int held)
         {
