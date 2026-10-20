@@ -15,6 +15,26 @@ public sealed partial class Binder
     private Type ContextualResult(Type receiver, TypeSymbol owner, string name, Type fallback,
         MethodSymbol? member, int parameter = -1)
     {
+        Type result = ContextualResultCore(receiver, owner, name, fallback, member, parameter);
+        // RE-DERIVED ONLY FOR ITS WORDS (HasWordMark) and naming no made copy
+        // -- a template with its arguments, which no copy spells -- it is the
+        // member as declared: words read as the member's class's own are
+        // refused where they would be read as this code's (Type.CanonOwner).
+        if (!ReferenceEquals(result, fallback) && Unmade(result) && !Unmade(fallback)
+            && !HasTupleUse(receiver) && !HasReferenceMark(receiver, 0))
+            return fallback;
+        return result;
+
+        static bool Unmade(Type t)
+        {
+            while (t.IsArray && t.Element is Type element) t = element;
+            return t.Args.Count > 0 && t.Symbol?.Decl is { TypeParams.Count: > 0 };
+        }
+    }
+
+    private Type ContextualResultCore(Type receiver, TypeSymbol owner, string name, Type fallback,
+        MethodSymbol? member, int parameter = -1)
+    {
         if (owner.Decl?.Template is not string templateName)
             return fallback;
         if (ReferenceEquals(receiver.Symbol, owner) && !HasContextualUse(receiver)) return fallback;

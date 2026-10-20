@@ -12936,11 +12936,15 @@ public sealed partial class Binder
         // Func<T, bool>[] read through a use over its T is the copy's own
         // Func$__canon$bool[], not the Func$object$bool[] a copy over object
         // made. Where nothing made that one, the spelling over object.
+        // An array of them too: __canon[] as the copy spells R = T[].
         List<TypeRef>? overWords = null;
         for (int i = 0; i < closed.Count; i++)
         {
-            if (closed[i] is { Prim: Prim.Any, Symbol: null, CanonParam: >= 0, IsArray: false, PointerDepth: 0 })
-                (overWords ??= new List<TypeRef>(args))[i] = new TypeRef { Name = Monomorphiser.CanonName, Nullable = args[i].Nullable };
+            Type word = closed[i];
+            int rank = 0;
+            while (word.IsArray && word.Element is Type element) { word = element; rank++; }
+            if (word is { Prim: Prim.Any, Symbol: null, CanonParam: >= 0, IsArray: false, PointerDepth: 0 })
+                (overWords ??= new List<TypeRef>(args))[i] = new TypeRef { Name = Monomorphiser.CanonName, ArrayRank = rank, Nullable = args[i].Nullable };
         }
         if (overWords is not null
             && _r.Types.TryGetValue(Monomorphiser.MangledName(Bare(template.Key), SpecialisationKeys(overWords, closed)), out TypeSymbol? sharedOver))
