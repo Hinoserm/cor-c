@@ -3079,6 +3079,14 @@ static class Runtime
             AllocSamples.Dump();
             Gc.SayStats();
         }
+        ExitHandler();
+    }
+
+    /// What the program left to be run at its end (OnExit), alone: the
+    /// bare-metal exit's part of AtExit, which has no statistics to say and
+    /// pulls in nothing of the collector's.
+    public static void ExitHandler()
+    {
         long f = _atExit;
 
         if (f != 0)
