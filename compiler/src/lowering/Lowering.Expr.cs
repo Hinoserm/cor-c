@@ -948,7 +948,9 @@ public sealed partial class Lowering
                 _e.Branch(_e.Binary(Opcode.And, flags, TypeFlagDelegateObject), asDelegate, typed);
                 _e.SetBlock(asDelegate);
                 Require(delegateType);
-                _e.CopyTo(typeOf, R(_e.Call(CallLabel(delegateType), IrTypes.Word, R(obj))!));
+                // The descriptor's address, a long the runtime answers in: a word here.
+                VReg answered = _e.Call(CallLabel(delegateType), IrTypes.Of(delegateType.Returns), R(obj))!;
+                _e.CopyTo(typeOf, R(answered.Type == IrTypes.Word ? answered : _e.Unary(Opcode.Trunc64, answered)));
                 _e.Jump(typed);
                 _e.SetBlock(typed);
                 return typeOf;
