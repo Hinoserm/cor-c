@@ -16429,7 +16429,7 @@ public sealed partial class Binder
                         return Type.Error;
                     }
 
-                    return waiting.IsReference ? waiting.AsNullable() : waiting;
+                    return waiting.IsReference && !df.Forgiven ? waiting.AsNullable() : waiting;
                 }
 
                 Type of = Resolve(df.Type, _thisType);

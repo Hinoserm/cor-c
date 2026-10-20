@@ -1,0 +1,49 @@
+// test: bare_default_forgiven
+// expect-exit: 0
+// expect-output:
+// take True
+// ctor True 0
+// pick -1 1
+// echo True 0
+// named none
+// local True 2 True
+// lambda True
+//
+// A bare default! is the zero of whatever waits for it, as default is, and
+// promised not null: an argument (to a constructor, a generic method, a
+// parameter's default), a local, an element, a lambda's result. Wrapped in
+// its ! it was hidden from the call's overloads and inference, and refused
+// as a default whose type was never worked out.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Wrap<T>
+{
+    public T Value;
+    public Wrap(T v) { Value = v; }
+    public T Get() => Value;
+}
+
+static class Program
+{
+    static void Take(string s) { Console.WriteLine("take " + (s == null)); }
+    static int Pick(int a, string b) => a + (b?.Length ?? -1);
+    static T Echo<T>(T x) => x;
+    static string Named(string s = default!) => s ?? "none";
+
+    static void Main()
+    {
+        Take(default!);
+        Console.WriteLine("ctor " + (new Wrap<string>(default!).Value == null) + " " + new Wrap<int>(default!).Value);
+        Console.WriteLine("pick " + Pick(default!, default!) + " " + Pick(2, default!));
+        Console.WriteLine("echo " + (Echo<string>(default!) == null) + " " + Echo<int>(default!));
+        Console.WriteLine("named " + Named());
+        string s = default!;
+        List<string> l = new() { default!, "x" };
+        Console.WriteLine("local " + (s == null) + " " + l.Count + " " + (l[0] == null));
+        Func<string> f = () => default!;
+        Console.WriteLine("lambda " + (f() == null));
+    }
+}

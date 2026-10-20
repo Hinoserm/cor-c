@@ -9049,7 +9049,9 @@ public sealed class Parser
             if (At(Tok.Bang) && Ahead().Kind is not (Tok.Assign or Tok.End))
             {
                 _i++;
-                e = new SuppressExpr { Operand = e, Line = at.Line, Col = at.Col };
+                e = e is DefaultExpr { Type.Name.Length: 0 } bare
+                    ? new DefaultExpr { Type = bare.Type, Forgiven = true, Line = bare.Line, Col = bare.Col }
+                    : new SuppressExpr { Operand = e, Line = at.Line, Col = at.Col };
                 continue;
             }
 

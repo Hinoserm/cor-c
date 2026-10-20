@@ -3729,6 +3729,7 @@ public sealed class Monomorphiser
                     OfTypeParameter = df.OfTypeParameter
                         || (df.Type.Args.Count == 0 && df.Type.ArrayRank == 0
                             && df.Type.PointerDepth == 0 && map.ContainsKey(df.Type.Name)),
+                    Forgiven = df.Forgiven,
                     Line = df.Line, Col = df.Col,
                 };
 

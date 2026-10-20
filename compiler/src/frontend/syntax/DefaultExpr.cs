@@ -27,4 +27,13 @@ public sealed class DefaultExpr : Expr
     /// parameter is recorded before the name is replaced.
     /// </summary>
     public bool OfTypeParameter { get; init; }
+
+    /// <summary>
+    /// A BARE `default!`: the zero of whatever waits for it, promised not
+    /// null. Kept a bare default rather than wrapped in the `!` -- a call's
+    /// overloads and its type inference look for a bare default among its
+    /// arguments, and `Take(default!)` was refused as a default whose type
+    /// was never worked out.
+    /// </summary>
+    public bool Forgiven { get; init; }
 }
