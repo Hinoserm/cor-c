@@ -1,0 +1,78 @@
+// test: shared_copies_make_nested_types_over_hidden_arguments
+// expect-exit: 0
+// expect-output:
+// string own True True
+// string flat True True
+// string made True True
+// string box True True
+// string arr True True
+// string all True True
+// string copied True True
+// string each True True
+// thing own True False
+// thing flat True False
+// thing made True False
+// thing box True False
+// thing arr True False
+// thing all True False
+// thing copied True False
+// thing each True False
+// awaited 1 a 1
+// each a
+//
+// A shared method copy making a type over its hidden argument at any depth
+// -- List<List<U>>, Box<List<U>>, List<U[]>, Task<U[]>, a machine over
+// List<U> -- makes its caller's instantiation; the Task<List<T>> it answers
+// converts to the shared class's own Task<List<T>>.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public object Own() => new List<List<T>>();
+    public object Flat() => Program.Flat(Items);
+    public object Made() => Program.Make(Items);
+    public object Boxed() => Program.Box(Items);
+    public object Arr() => Program.Arr(Items);
+    public Task<List<T>> All() => Program.WrapAsync(Items);
+    public Task<T[]> Copied() => Program.ArrAsync(Items);
+    public IEnumerable<List<T>> Each() => Program.Each(Items);
+}
+class Thing { }
+class Box<V> { public V? Value; }
+static class Program
+{
+    public static object Flat<U>(List<U> x) => new List<U>();
+    public static object Make<U>(List<U> x) => new List<List<U>>();
+    public static object Box<U>(List<U> x) => new Box<List<U>>();
+    public static object Arr<U>(List<U> x) => new List<U[]>();
+    public static async Task<List<U>> WrapAsync<U>(List<U> x) { await Task.Yield(); return x; }
+    public static async Task<U[]> ArrAsync<U>(List<U> x) { await Task.Yield(); return x.ToArray(); }
+    public static IEnumerable<List<U>> Each<U>(List<U> x) { yield return x; }
+    static void Show<T>(Repo<T> r, string name)
+    {
+        Console.WriteLine(name + " own " + (r.Own() is List<List<T>>) + " " + (r.Own() is List<List<string>>));
+        Console.WriteLine(name + " flat " + (r.Flat() is List<T>) + " " + (r.Flat() is List<string>));
+        Console.WriteLine(name + " made " + (r.Made() is List<List<T>>) + " " + (r.Made() is List<List<string>>));
+        Console.WriteLine(name + " box " + (r.Boxed() is Box<List<T>>) + " " + (r.Boxed() is Box<List<string>>));
+        Console.WriteLine(name + " arr " + (r.Arr() is List<T[]>) + " " + (r.Arr() is List<string[]>));
+        Console.WriteLine(name + " all " + ((object)r.All() is Task<List<T>>) + " " + ((object)r.All() is Task<List<string>>));
+        Console.WriteLine(name + " copied " + ((object)r.Copied() is Task<T[]>) + " " + ((object)r.Copied() is Task<string[]>));
+        Console.WriteLine(name + " each " + (r.Each() is IEnumerable<List<T>>) + " " + (r.Each() is IEnumerable<List<string>>));
+    }
+    static async Task<int> Run()
+    {
+        Repo<string> r = new(); r.Items.Add("a");
+        Show(r, "string");
+        Repo<Thing> t = new(); t.Items.Add(new Thing());
+        Show(t, "thing");
+        Console.WriteLine("awaited " + (await r.All()).Count + " " + (await r.Copied())[0] + " " + (await t.Copied()).Length);
+        foreach (List<string> l in r.Each()) Console.WriteLine("each " + l[0]);
+        return 0;
+    }
+    static int Main() => Run().GetAwaiter().GetResult();
+}

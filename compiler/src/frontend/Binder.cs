@@ -8354,7 +8354,7 @@ public sealed partial class Binder
         // with those parameters is. The same routine and layout, named as the
         // monomorphiser names it with every word `__canon`, at any depth: a
         // PriorityQueue built from (element, priority) pairs met it in a foreach.
-        if (InCanonicalCopy && (SameCanonical(from, to) || SameCanonical(to, from)))
+        if (InCanonicalCopy && (SameCanonical(from, to) || SameCanonical(to, from) || SameMadeCanonical(from, to)))
         {
             return true;
         }
@@ -8375,6 +8375,33 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// TWO COPIES SPELT OVER WORDS TWO WAYS, inside a canonical copy:
+    /// `Task$List_object`, what a generic call's copy over object answers, and
+    /// `Task$List___canon`, what this code declares -- one template over the
+    /// same arguments once every reference among them, at any depth, is the
+    /// word (__canon) it is here.
+    /// </summary>
+    private static bool SameMadeCanonical(Type a, Type b)
+        => !a.IsArray && !b.IsArray && a.Args.Count == 0 && b.Args.Count == 0 && a.Symbol is not null && b.Symbol is not null
+        && !ReferenceEquals(a.Symbol, b.Symbol) && a.Symbol.Decl?.Template is string ta && ta == b.Symbol.Decl?.Template
+        && CanonicalSpelling(a) is string sa && sa == CanonicalSpelling(b);
+
+    private static string? CanonicalSpelling(Type t)
+    {
+        if (t.Symbol is not { Decl: { Specialised: true, Template: string template } d } s
+            || d.TemplateArgs.Count == 0 || s.TemplateArgTypes.Count != d.TemplateArgs.Count) return null;
+        List<TypeRef> args = new(s.TemplateArgTypes.Count);
+        foreach (Type a in s.TemplateArgTypes)
+        {
+            if (a.Symbol is { Decl.Specialised: true } && CanonicalSpelling(a) is string inner) { args.Add(new TypeRef { Name = inner }); continue; }
+            if (RefOf(a) is not TypeRef r) return null;
+            args.Add(r.PointerDepth == 0 && r.Args.Count == 0 && r.Name is "object" or "Object" or "System.Object" or Monomorphiser.CanonName
+                ? new TypeRef { Name = Monomorphiser.CanonName, ArrayRank = r.ArrayRank } : r);
+        }
+        return Monomorphiser.MangledName(template, args);
+    }
+
+    /// <summary>
     /// Whether `spelt`, a template with its arguments, names the copy `made`
     /// is, inside a canonical copy: its name as Monomorphiser.MangledName
     /// gives it with every reference argument -- object, or __canon -- the
@@ -8390,17 +8417,39 @@ public sealed partial class Binder
         List<TypeRef> args = new(spelt.Args.Count);
         foreach (Type a in spelt.Args)
         {
-            if (RefOf(a) is not TypeRef r) return false;
-            args.Add(AsCanonical(r));
+            if (CanonicalRef(a, 0) is not TypeRef r) return false;
+            args.Add(r);
         }
         string name = template.Decl?.Outer is string outer ? outer + "." + template.Name : template.Name;
         return Monomorphiser.MangledName(name, args) == copy.Name;
 
+        // AN ARGUMENT MADE OVER WORDS ITSELF -- List$object inside
+        // Task<List$object>, what a generic call's copy answers -- is spelt
+        // as its template over __canon, as the copy's own name spells it.
+        static TypeRef? CanonicalRef(Type a, int depth)
+        {
+            if (depth < 8 && !a.IsArray && a.PointerDepth == 0
+                && a.Symbol is { Decl: { Specialised: true, Template: string madeFrom } d } s
+                && d.TemplateArgs.Count > 0 && s.TemplateArgTypes.Count == d.TemplateArgs.Count)
+            {
+                List<TypeRef> inner = new(s.TemplateArgTypes.Count);
+                foreach (Type t in s.TemplateArgTypes)
+                {
+                    if (CanonicalRef(t, depth + 1) is not TypeRef one) return RefOf(a) is TypeRef plain ? AsCanonical(plain) : null;
+                    inner.Add(one);
+                }
+                return new TypeRef { Name = madeFrom, Arguments = inner, Nullable = a.Nullable };
+            }
+            return RefOf(a) is TypeRef r ? AsCanonical(r) : null;
+        }
+
         static TypeRef AsCanonical(TypeRef r)
         {
-            if (r.ArrayRank == 0 && r.PointerDepth == 0 && r.Args.Count == 0 && r.Name is "object" or "Object" or "System.Object" or Monomorphiser.CanonName)
+            // An array of them, too: object[] in a copy over object, __canon[]
+            // in what this code declares -- the same array of words.
+            if (r.PointerDepth == 0 && r.Args.Count == 0 && r.Name is "object" or "Object" or "System.Object" or Monomorphiser.CanonName)
             {
-                return new TypeRef { Name = Monomorphiser.CanonName, Line = r.Line, Col = r.Col };
+                return new TypeRef { Name = Monomorphiser.CanonName, ArrayRank = r.ArrayRank, Line = r.Line, Col = r.Col };
             }
             if (r.Args.Count == 0) return r;
             return new TypeRef
@@ -21809,13 +21858,13 @@ public sealed partial class Binder
             // argument (Lowering.HiddenTypeArguments), so that its tests of
             // an interface over it ask the object at hand. Not a generic
             // virtual method, whose copies are reached by a dispatch that
-            // passes nothing more, and not an async method, whose body runs in
-            // a state machine the hidden arguments do not reach: that stays
-            // the copy over object, as every call was. AN ITERATOR'S DO: its
-            // machine keeps them (Lowering.IteratorPieces, HiddenOffsets), and
-            // is stamped as its caller's instantiation (MethodDecl.MachineNeed).
+            // passes nothing more. AN ITERATOR'S AND AN ASYNC METHOD'S BODY
+            // RUNS IN A MACHINE, which keeps them (Lowering.IteratorPieces,
+            // Lowering.AsyncPieces: HiddenOffsets); the machine or the task is
+            // stamped as its caller's instantiation (MethodDecl.MachineNeed,
+            // MethodDecl.TaskNeed).
             int[]? hidden = null;
-            if (spelt.Count == best.TypeParams.Count && !best.GenericVirtual && !best.Async)
+            if (spelt.Count == best.TypeParams.Count && !best.GenericVirtual)
             {
                 for (int i = 0; i < spelt.Count; i++)
                 {

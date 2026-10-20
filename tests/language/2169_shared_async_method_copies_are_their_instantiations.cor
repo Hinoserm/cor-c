@@ -1,0 +1,43 @@
+// test: shared_async_method_copies_are_their_instantiations
+// expect-exit: 0
+// expect-output:
+// echo True
+// echo thing False True
+// value a
+// all True 1
+//
+// A generic async method shared over reference words, called from a shared
+// class's code: its machine keeps the hidden type arguments and dictionary,
+// and its Task<X> is the caller's instantiation, Task<List<T>> as well as
+// Task<T>.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public Task<T> Echo() => Program.EchoAsync(Items[0]);
+    public Task<List<T>> All() => Program.WrapAsync(Items);
+}
+class Thing { }
+static class Program
+{
+    public static async Task<U> EchoAsync<U>(U x) { await Task.Yield(); return x; }
+    public static async Task<List<U>> WrapAsync<U>(List<U> x) { await Task.Yield(); return x; }
+    static async Task<int> Run()
+    {
+        Repo<string> r = new(); r.Items.Add("a");
+        object e = r.Echo();
+        Console.WriteLine("echo " + (e is Task<string>));
+        Repo<Thing> t = new(); t.Items.Add(new Thing());
+        Console.WriteLine("echo thing " + ((object)t.Echo() is Task<string>) + " " + ((object)t.Echo() is Task<Thing>));
+        List<Task<string>> l = new() { r.Echo() };
+        Console.WriteLine("value " + await l[0]);
+        Console.WriteLine("all " + ((object)r.All() is Task<List<string>>) + " " + (await r.All()).Count);
+        return 0;
+    }
+    static int Main() => Run().GetAwaiter().GetResult();
+}

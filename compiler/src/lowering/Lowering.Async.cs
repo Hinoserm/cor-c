@@ -40,7 +40,11 @@ public sealed partial class Lowering
     private sealed record AsyncMethod(
         MethodSymbol Method, MethodDecl Decl, TypeSymbol StateMachine,
         MethodSymbol MoveNext, string SizeSymbol, int[] ParamOffsets, Type Result,
-        ValueTaskShape? Value = null);
+        ValueTaskShape? Value = null, int[]? HiddenOffsets = null)
+    {
+        /// <summary>A shared method copy's hidden type arguments and dictionary, where the machine keeps them (Monomorphiser.CopyName).</summary>
+        public int[] Hidden => HiddenOffsets ?? System.Array.Empty<int>();
+    }
 
     /// <summary>
     /// An `async ValueTask` or `async ValueTask&lt;T&gt;` method's extra pieces:
@@ -159,6 +163,11 @@ public sealed partial class Lowering
             offsets[i] = at;
             at += 8;
         }
+        // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS AND DICTIONARY, kept as
+        // its parameters are: what its body asks of them runs in Invoke.
+        int hidden = Monomorphiser.SharedMethodCopy(m.Name);
+        int[] hiddenAt = new int[hidden == 0 ? 0 : hidden + 1];
+        for (int i = 0; i < hiddenAt.Length; i++) { hiddenAt[i] = at; at += 8; }
 
         Type result = AsyncResultType(m.Returns);
         ValueTaskShape? value = null;
@@ -175,7 +184,7 @@ public sealed partial class Lowering
         WriteWord(initial, 0, at);
         _m.Data.Add(new DataItem(size, initial) { Align = _t.WordSize, Exported = false });
 
-        AsyncMethod made = new(m, decl, machine, moveNext, size, offsets, result, value);
+        AsyncMethod made = new(m, decl, machine, moveNext, size, offsets, result, value, hiddenAt);
         _moveNext[moveNext] = made;
         return made;
     }
@@ -269,6 +278,7 @@ public sealed partial class Lowering
             _f.Params.Add(r);
             args.Add(r);
         }
+        VReg[] hiddenArgs = HiddenParams(am);
 
         // The machine's size is decided after optimisation, when the
         // transform knows what has to survive a suspension, so it is read
@@ -292,6 +302,8 @@ public sealed partial class Lowering
         {
             StoreNewReference(machine, self, ReceiverField);
         }
+        // Descriptors and tables: static data, no card to mark.
+        for (int i = 0; i < hiddenArgs.Length; i++) _e.Store(R(machine), R(hiddenArgs[i]), am.Hidden[i], _t.WordSize);
         for (int i = 0; i < args.Count; i++)
         {
             _e.Store(R(machine), R(args[i]), am.ParamOffsets[i], args[i].Type.Bytes());
@@ -365,6 +377,7 @@ public sealed partial class Lowering
             _f.Params.Add(r);
             args.Add(r);
         }
+        VReg[] hiddenArgs = HiddenParams(am);
         // The ValueTask is answered through the caller's buffer (Buffered).
         VReg answer = _f.NewReg(IrTypes.Word, "retbuf");
         _f.Params.Add(answer);
@@ -401,6 +414,8 @@ public sealed partial class Lowering
         {
             StoreNewReference(machine, self, ReceiverField);
         }
+        // Descriptors and tables: static data, no card to mark.
+        for (int i = 0; i < hiddenArgs.Length; i++) _e.Store(R(machine), R(hiddenArgs[i]), am.Hidden[i], _t.WordSize);
         for (int i = 0; i < args.Count; i++)
         {
             _e.Store(R(machine), R(args[i]), am.ParamOffsets[i], args[i].Type.Bytes());
@@ -458,6 +473,10 @@ public sealed partial class Lowering
         _e = new Builder(_f, _f.NewBlock("entry"));
         VReg machine = _f.NewReg(IrTypes.Word, "machine");
         _f.Params.Add(machine);
+        // A shared method copy's dictionary, as its kickoff kept it: the
+        // kickoff's own register belongs to the kickoff.
+        VReg? kickoffDictionary = _needDictionary;
+        _needDictionary = am.Hidden.Length > 0 ? Numbered(_e, _e.Load(IrTypes.Word, machine, am.Hidden[^1])) : null;
 
         Block moving = _f.NewBlock("moving");
         Block staying = _f.NewBlock("staying");
@@ -488,6 +507,7 @@ public sealed partial class Lowering
             _e.Store(R(machine), R(task), TaskField, _t.WordSize);
         }
         _e.Ret(R(heap));
+        _needDictionary = kickoffDictionary;
 
         _m.Functions.Add(_f);
         _f = kickoff;
@@ -500,11 +520,30 @@ public sealed partial class Lowering
     /// context, read through `receiver`; null for any other method.
     /// </summary>
     private Func<VReg>? TaskStamp(AsyncMethod am, VReg? receiver)
-        => receiver is null ? null : TaskStamp(am, () => receiver);
+        => receiver is null ? TaskNeedStamp(am) : TaskStamp(am, () => receiver);
 
     private Func<VReg>? TaskStamp(AsyncMethod am, Func<VReg> receiver)
         => am.Decl.CanonTaskSlot >= 0 && !am.Method.Static && SharedCopy(am.Method.Owner)
-            ? () => ContextEntryOrZero(receiver(), am.Method.Owner, am.Decl.CanonTaskSlot) : null;
+            ? () => ContextEntryOrZero(receiver(), am.Method.Owner, am.Decl.CanonTaskSlot)
+            : TaskNeedStamp(am);
+
+    /// <summary>A shared method copy's: its dictionary's entry for its Task&lt;X&gt; (MethodDecl.TaskNeed), 0 for the copy's own.</summary>
+    private Func<VReg>? TaskNeedStamp(AsyncMethod am)
+        => am.Decl.TaskNeed >= 0 && _needDictionary is not null ? () => NeedEntry(am.Decl.TaskNeed) : null;
+
+    /// <summary>A shared method copy's hidden type arguments, then its dictionary, as CallDirect passes them; its dictionary this function's.</summary>
+    private VReg[] HiddenParams(AsyncMethod am)
+    {
+        VReg[] hiddenArgs = new VReg[am.Hidden.Length];
+        for (int i = 0; i < hiddenArgs.Length; i++)
+        {
+            hiddenArgs[i] = _f.NewReg(IrTypes.Word, i < hiddenArgs.Length - 1 ? "targ" + i : "tdict");
+            hiddenArgs[i].Number = true;
+            _f.Params.Add(hiddenArgs[i]);
+        }
+        if (hiddenArgs.Length > 0) _needDictionary = hiddenArgs[^1];
+        return hiddenArgs;
+    }
 
     /// <summary>`new T()` for a class with a parameterless constructor, or null with an error; stamped with `described`'s descriptor where it gives one.</summary>
     private VReg? NewObject(Node at, Type type, Func<VReg>? described = null)
@@ -573,6 +612,13 @@ public sealed partial class Lowering
         if (!m.Static)
         {
             _this = _e.Load(IrTypes.Word, machine, ReceiverField);
+        }
+        // A SHARED METHOD COPY'S HIDDEN ARGUMENTS, as its kickoff kept them.
+        if (am.Hidden.Length > 0)
+        {
+            _typeArgs = new VReg[am.Hidden.Length - 1];
+            for (int i = 0; i < _typeArgs.Length; i++) _typeArgs[i] = Numbered(_e, _e.Load(IrTypes.Word, machine, am.Hidden[i]));
+            _needDictionary = Numbered(_e, _e.Load(IrTypes.Word, machine, am.Hidden[^1]));
         }
 
         _params = new VReg[m.Params.Count];

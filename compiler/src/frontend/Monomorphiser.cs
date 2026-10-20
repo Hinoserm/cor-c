@@ -243,6 +243,16 @@ public sealed class Monomorphiser
             TypeRef machineFace = new() { Name = returns.Name, Arguments = returns.Args.ToList(), Line = returns.Line, Col = returns.Col, MadeFor = "copy" };
             made.MachineNeed = m.Need(machineFace, array: false);
         }
+        // AN ASYNC METHOD'S TASK, likewise: its Task<X> over what only run
+        // time knows, which the kickoff stamps the task with. Over object it
+        // was a Task<object>, which a Task<string> refused.
+        if (m._needs is not null && m._shapeParams is not null && template.Mods.HasFlag(Mods.Async) && template.Body is not null
+            && template.Returns is { Args.Count: 1, ArrayRank: 0, PointerDepth: 0 } awaited
+            && (awaited.Name.Contains('.') ? awaited.Name[(awaited.Name.LastIndexOf('.') + 1)..] : awaited.Name) is "Task" or "ValueTask")
+        {
+            TypeRef taskFace = new() { Name = "Task", Arguments = awaited.Args.ToList(), Line = awaited.Line, Col = awaited.Col };
+            made.TaskNeed = m.Need(taskFace, array: false);
+        }
 
         made.WritableTypeParams.Clear();
         made.Name = name;
@@ -282,6 +292,7 @@ public sealed class Monomorphiser
         plain.CopyNeeds = made.CopyNeeds;
         plain.CopyParams = made.CopyParams;
         plain.MachineNeed = made.MachineNeed;
+        plain.TaskNeed = made.TaskNeed;
         return plain;
     }
 
@@ -1747,11 +1758,10 @@ public sealed class Monomorphiser
     /// A TYPE A SHARED METHOD COPY MAKES OVER ITS OWN TYPE PARAMETERS THAT ONLY
     /// RUN TIME KNOWS -- `new List<U>()`, `new U[n]`, `typeof(Box<U>)` --
     /// given an entry of the copy's dictionary (NewExpr.NeedSlot): over object
-    /// it is List of object, which no caller meant. Each argument the
-    /// parameter itself or a type with no arguments of its own; one made over
-    /// U (`List<Wrap<U>>`) would have to be spelt where the caller can read
-    /// it, and stays the copy's own, as before. Written as the template writes
-    /// it; the same type twice is one entry.
+    /// it is List of object, which no caller meant. At any depth --
+    /// `List<List<U>>`, `Task<U[]>` -- as its callers spell it over theirs
+    /// (Binder.SpeltFor, PlaceNeeds), one word to the copy whatever U is.
+    /// Written as the template writes it; the same type twice is one entry.
     /// </summary>
     private int Need(TypeRef written, bool array)
     {
@@ -1762,16 +1772,19 @@ public sealed class Monomorphiser
             if (!array || _shapeParams?.ContainsKey(written.Name) != true) return -1;
             hidden = true;
         }
-        foreach (TypeRef a in written.Args)
+        bool Over(TypeRef a)
         {
-            if (a.PointerDepth != 0 || a.ArrayRank != 0 || a.Args.Count != 0) return -1;
+            if (a.PointerDepth != 0) return false;
+            if (a.Args.Count > 0) return a.Args.All(Over);
             if (_shapeParams?.ContainsKey(a.Name) == true) hidden = true;
             // A METHOD PARAMETER THE COPY KNOWS beside the class's that only
             // run time knows: Derived<T, K> at K = string is the caller's to
             // name for each T (ClassDictionary). Anywhere else the copy's own.
-            else if (_methodParams.Contains(a.Name)) { if (!_classDictionary) return -1; own = true; }
+            else if (_methodParams.Contains(a.Name)) { if (!_classDictionary) return false; own = true; }
             else if (a.Name == CanonName && a.CanonIndex >= 0) ofClass = true;
+            return true;
         }
+        if (!written.Args.All(Over)) return -1;
         if (!hidden && !(_classDictionary && ofClass && own)) return -1;
         TypeRef need = array
             ? new TypeRef { Name = written.Name, Arguments = written.Args.ToList(), ArrayRank = 1, Line = written.Line, Col = written.Col }
@@ -3232,6 +3245,7 @@ public sealed class Monomorphiser
                 made.CanonTaskSlot = md.CanonTaskSlot;
                 CanonTask(made, md, map);
                 made.MachineNeed = md.MachineNeed;
+                made.TaskNeed = md.TaskNeed;
                 made.Fresh = md.Fresh;
                 made.AutoAccessor = md.AutoAccessor;
                 made.PartialWithoutBody = md.PartialWithoutBody;

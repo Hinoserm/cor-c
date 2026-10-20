@@ -53,6 +53,8 @@ public sealed class MethodDecl : MemberDecl
     public int CanonTaskSlot { get; set; } = -1;
     /// <summary>An iterator's shared method copy: the entry of its dictionary standing for its machine as its caller's instantiation (Lowering.MachineVariant); -1 for none.</summary>
     public int MachineNeed { get; set; } = -1;
+    /// <summary>An async shared method copy: the entry of its dictionary for its Task&lt;X&gt; as its caller's instantiation (Lowering.TaskNeedStamp); -1 for none.</summary>
+    public int TaskNeed { get; set; } = -1;
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<TypeParam> NoTypeParams = new();
     private List<TypeParam>? _typeParams;
