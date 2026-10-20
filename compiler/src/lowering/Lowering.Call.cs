@@ -87,6 +87,27 @@ public sealed partial class Lowering
     private MemPlace RefCallPlace(CallExpr call, MethodSymbol m)
         => new(R(EmitCall(call)), 0, m.Returns, false, IsStructValue(m.Returns));
 
+    /// <summary>
+    /// The context of `owner`'s instantiation this code runs in, where it has
+    /// one: its own `this` in an instance method or a context static of the
+    /// class or of one derived from it; in a closure, the context or the
+    /// instance it captured. Null anywhere else.
+    /// </summary>
+    private VReg? ContextHere(TypeSymbol owner)
+    {
+        static bool Derives(TypeSymbol? t, TypeSymbol owner)
+        {
+            for (; t is not null; t = t.Base) if (ReferenceEquals(t, owner)) return true;
+            return false;
+        }
+        if (_this is null || _method is null || !HasThis(_method)) return null;
+        if (Derives(_method.Owner, owner)) return _this;
+        foreach (FieldSymbol f in _method.Owner.Fields)
+            if (f.Name is "$context" or "$this" && !f.Static && Derives(f.Type.Symbol, owner))
+                return _e.Load(IrTypes.Word, _this, f.Offset);
+        return null;
+    }
+
     /// <summary>A direct call by label; the callee is marked reachable.</summary>
     private VReg? CallDirect(MethodSymbol m, IrType returns, List<Operand> args)
     {
@@ -115,7 +136,20 @@ public sealed partial class Lowering
         if (_f is { FromLibrary: false } && m.Owner.Name is "Gc" or "HeapChunks" or "GcLock" or "GcRoots" or "GcThreads"
             && !m.Name.StartsWith("get_", StringComparison.Ordinal))
             _m.CallsCollector = true;
-        VReg? made = _e.Call(CallLabel(m), returns, args.ToArray());
+        // A CONTEXT STATIC (ContextStatic): its body, handed the context of
+        // the instantiation called -- its token, for one named by its own
+        // arguments; from shared code, the context this code has (ContextHere),
+        // which the caller's own instantiation's is.
+        string label = CallLabel(m);
+        if (Canonical(m) is var canonical && ContextStatic(canonical))
+        {
+            Operand context = m.Owner.Decl?.Canon is not null ? R(_e.Address(ContextToken(m.Owner)))
+                : ContextHere(canonical.Owner) is { } here ? R(here) : R(_e.Address(ContextToken(canonical.Owner)));
+            args = new List<Operand>(args);
+            args.Insert(0, context);
+            label = BodyLabel(canonical);
+        }
+        VReg? made = _e.Call(label, returns, args.ToArray());
         // A CALL THAT NEVER COMES BACK ENDS ITS BLOCK: a method proved never
         // to return (Binder.CallNeverReturns) -- ThrowHelper's, which only
         // throw, Environment.Exit, whose calls end in a loop round exit(2) --

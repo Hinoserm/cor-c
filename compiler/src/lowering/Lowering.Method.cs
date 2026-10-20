@@ -267,7 +267,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(Label(m), ReturnIr(m))
+        _f = new Function(ContextStatic(m) ? BodyLabel(m) : Label(m), ReturnIr(m))
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
@@ -279,7 +279,7 @@ public sealed partial class Lowering
 
         if (m.Static && !m.IsCtor)
         {
-            Entries[$"{m.Owner.Name}.{m.Name}"] = _f.Name;
+            Entries[$"{m.Owner.Name}.{m.Name}"] = Label(m);
         }
 
         // Parameters: `this` first, then the declared ones, each a register
@@ -288,7 +288,8 @@ public sealed partial class Lowering
         _params = new VReg[declared];
         _paramSlots = new FrameSlot?[declared];
 
-        if (!m.Static)
+        // A context static's context too (ContextStatic), first as `this` is.
+        if (HasThis(m))
         {
             _this = _f.NewReg(IrTypes.Word, "this");
             _f.Params.Add(_this);
@@ -458,8 +459,37 @@ public sealed partial class Lowering
         }
 
         _m.Functions.Add(_f);
+        if (ContextStatic(m)) ContextStub(m);
         _method = null;
         _decl = null;
+    }
+
+    /// <summary>
+    /// A CONTEXT STATIC'S C# LABEL (ContextStatic): its body handed the
+    /// canonical copy's own context, and every argument after it as it came
+    /// -- the buffer, hidden type arguments and dictionary with them. What
+    /// names the label rather than calling it (an address taken, Entries)
+    /// gets the copy over object's answers, as every static did.
+    /// </summary>
+    private void ContextStub(MethodSymbol m)
+    {
+        Function stub = new(Label(m), ReturnIr(m))
+        {
+            SourceFile = _f.SourceFile, Line = _f.Line, Display = _f.Display, FromLibrary = _f.FromLibrary, SystemCode = _f.SystemCode,
+            SourcePath = _f.SourcePath, Coalescible = _f.Coalescible, Exported = _f.Exported,
+        };
+        Builder e = new(stub, stub.NewBlock("entry"));
+        List<Operand> args = new() { RegOperand.Of(e.Address(ContextToken(m.Owner))) };
+        foreach (VReg p in _f.Params.Skip(1))
+        {
+            VReg mine = stub.NewReg(p.Type, p.Name);
+            mine.Number = p.Number;
+            stub.Params.Add(mine);
+            args.Add(RegOperand.Of(mine));
+        }
+        VReg? result = e.Call(_f.Name, stub.Returns, args.ToArray());
+        e.Ret(result is null ? null : RegOperand.Of(result));
+        _m.Functions.Add(stub);
     }
 
     /// <summary>

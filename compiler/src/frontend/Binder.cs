@@ -1607,6 +1607,23 @@ public sealed partial class Binder
     private FieldSymbol? _capturedThisField;
 
     /// <summary>
+    /// In a lambda inside a CONTEXT STATIC (ContextStatic): the closure's
+    /// field holding the context it was handed, which the compiler's own
+    /// `this` (ThisExpr.Context) reads and nothing a program wrote does --
+    /// apart from $this, so no name is looked up through it.
+    /// </summary>
+    private FieldSymbol? _capturedContextField;
+
+    /// <summary>
+    /// A STATIC MEMBER OF A CANONICAL CLASS COPY, but a constructor or an
+    /// async method (whose machine has no place for it): handed its
+    /// instantiation's context as a hidden `this` (Lowering.HasThis), so what
+    /// it makes over the class's parameters is that instantiation's.
+    /// </summary>
+    internal static bool ContextStatic(MethodSymbol? m)
+        => m is { Static: true, IsCtor: false, Async: false } && m.Owner is { Kind: TypeKind.Class, Decl.CanonMadeWritten: not null };
+
+    /// <summary>
     /// The source type lexically enclosing a generated closure.
     ///
     /// A lambda's runtime <c>this</c> is its generated closure object, but C#
@@ -5763,7 +5780,8 @@ public sealed partial class Binder
         // each instantiation sharing it (NoteCopyNeeds), which every unit
         // laying one down must spell alike -- one that bound only what it
         // used laid down a table the link refused beside another unit's.
-        if (d.CanonMadeWritten is not null && !md.Mods.HasFlag(Mods.Static)) return false;
+        // A static one's too, which is handed the context (ContextStatic).
+        if (d.CanonMadeWritten is not null && (!md.Mods.HasFlag(Mods.Static) || !md.IsCtor)) return false;
         if (_wantedUnlisted.Remove(md)) return false;
         if (!_r.Methods.TryGetValue(md, out MethodSymbol? m)) return false;
         if (m.Virtual || m.Override || m.Abstract || m.IsCtor || m.VtableSlot >= 0) return false;
@@ -8817,8 +8835,15 @@ public sealed partial class Binder
         {
             name2 += "$Static";
         }
+        // A CONTEXT STATIC'S holds its context ($context), which no other's
+        // has; one in a lambda inside one holds it from that lambda's field, a
+        // source no other place has, and is a class of its own.
+        bool contextGroup = !bound && lam.GroupIdentity is not null && ContextStatic(_method) && _capturedContextField is null;
+        if (contextGroup) name2 += "$Context";
+        else if (!bound && lam.GroupIdentity is not null && _capturedContextField is not null) name2 = $"Lambda${_closureOwner}${_closures++}";
         if (!bound && lam.GroupIdentity is not null && _groupClosures.TryGetValue(name2, out ClosureInfo? sharedClosure)
-            && (_method is { Static: true } ? sharedClosure.Captures.Count == 0 : _capturedThisType is null && _thisType is not null))
+            && _capturedContextField is null
+            && (contextGroup || (_method is { Static: true } ? sharedClosure.Captures.Count == 0 : _capturedThisType is null && _thisType is not null)))
         {
             _r.Closures[lam] = sharedClosure;
             return wanted;
@@ -8886,6 +8911,22 @@ public sealed partial class Binder
                 }
             }
         }
+        // THE CONTEXT, in a lambda of a context static or of one inside it: a
+        // field of its own the compiler's `this` reads (_capturedContextField).
+        FieldSymbol? contextField = null;
+        if (!bound && (_capturedContextField is not null || ContextStatic(_method) && _thisType is not null))
+        {
+            Sym contextSource = _capturedContextField is { } outerContext ? new FieldSym(outerContext)
+                : new ThisSym(Type.Plain(_thisType!, Prim.Void));
+            contextField = new FieldSymbol
+            {
+                Name = "$context", Type = _capturedContextField?.Type ?? Type.Plain(_thisType!, Prim.Void), Owner = closure, Offset = at,
+            };
+            at += 8;
+            closure.WritableFields.Add(contextField);
+            fields.Add((contextField, contextSource));
+        }
+
         FieldSymbol? thisField = null;
 
         if (enclosingThis is not null && enclosingThisSource is not null)
@@ -9007,7 +9048,7 @@ public sealed partial class Binder
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
         if (_method is not null) (_lambdaDepth == 0 ? _methodLambdas : _innerLambdas).Add(lam);
         if (bound) _boundClosures[name2] = _r.Closures[lam];
-        else if (lam.GroupIdentity is not null) _groupClosures[name2] = _r.Closures[lam];
+        else if (lam.GroupIdentity is not null && _capturedContextField is null) _groupClosures[name2] = _r.Closures[lam];
 
         // WHAT WAS PROVED ABOUT A CAPTURE GOES IN WITH IT.
         //
@@ -9043,6 +9084,7 @@ public sealed partial class Binder
         TypeSymbol? wasLexicalType = _lexicalType;
         TypeSymbol? wasCapturedThis = _capturedThisType;
         FieldSymbol? wasCapturedThisField = _capturedThisField;
+        FieldSymbol? wasCapturedContext = _capturedContextField;
         MethodSymbol? wasMethod = _method;
         int wasSlot = _nextSlot;
         List<LocalScope> wasScopes = new(_scopes);
@@ -9064,6 +9106,7 @@ public sealed partial class Binder
         _lexicalType = wasLexicalType ?? wasThis;
         _capturedThisType = enclosingThis;
         _capturedThisField = thisField;
+        _capturedContextField = contextField;
         _method = run;
         _nextSlot = 0;
         // A LAMBDA'S RETURNS ARE ITS OWN: one inside a body whose result is
@@ -9130,6 +9173,7 @@ public sealed partial class Binder
         _lexicalType = wasLexicalType;
         _capturedThisType = wasCapturedThis;
         _capturedThisField = wasCapturedThisField;
+        _capturedContextField = wasCapturedContext;
         _method = wasMethod;
         _nextSlot = wasSlot;
         _inferredReturns = wasInferred;
@@ -13986,10 +14030,29 @@ public sealed partial class Binder
                 // instance the method was called on, which the closure holds in
                 // its hidden field: not the closure. `new Needs(this)` in a local
                 // function handed the closure where a Needs wanted an Escape.
+                // THE CONTEXT A CONTEXT STATIC'S LAMBDA HOLDS (_capturedContextField):
+                // read only by the compiler's own `this`.
+                if (e is ThisExpr { Context: true } && _capturedContextField is not null)
+                {
+                    _r.Resolved[e] = new FieldSym(_capturedContextField);
+                    return _capturedContextField.Type;
+                }
                 if (_capturedThisType is not null && _capturedThisField is not null)
                 {
                     _r.Resolved[e] = new FieldSym(_capturedThisField);
                     return Type.Plain(_capturedThisType, Prim.Void);
+                }
+                // A LAMBDA THAT HOLDS NO `this` was written in a static method
+                // (an instance method's always holds it): `this` there is no
+                // object, and was the closure itself.
+                if (_thisType is not null && IsClosure(_thisType) && e is not ThisExpr { Context: true })
+                {
+                    Error(e, "'this' is not available in a static method");
+                    return Type.Error;
+                }
+                if (e is ThisExpr { Context: true } && _thisType is not null && ContextStatic(_method))
+                {
+                    return Type.Plain(_thisType, Prim.Void);
                 }
                 if (_thisType is null || _method is { Static: true })
                 {
@@ -21709,9 +21772,9 @@ public sealed partial class Binder
             // no type context, and the copy was handed 0. So is a dictionary
             // placed in the class's type context.
             if ((hidden is not null && hidden.Any(k => k >= 0) || c.NeedClass is not null) && c.CanonSelf is null
-                && _member is MethodDecl { } instance && !instance.Mods.HasFlag(Mods.Static) && _thisType?.Decl is { CanonMadeWritten: not null })
+                && _member is MethodDecl { } instance && (!instance.Mods.HasFlag(Mods.Static) || ContextStatic(_method) || _capturedContextField is not null) && _thisType?.Decl is { CanonMadeWritten: not null })
             {
-                c.CanonSelf = new ThisExpr { Line = c.Line, Col = c.Col };
+                c.CanonSelf = new ThisExpr { Context = true, Line = c.Line, Col = c.Col };
                 CheckExpr(c.CanonSelf);
             }
 
@@ -21883,7 +21946,7 @@ public sealed partial class Binder
         // only the units wanting it have: its needs in the class's type
         // context would lay the table out differently unit by unit.
         if (!caller.LocalCopy && classNames is not null && hidden.All(k => k >= -1 && k < classNames.Count)
-            && !caller.Mods.HasFlag(Mods.Static) && _thisType!.Decl is { } home)
+            && (!caller.Mods.HasFlag(Mods.Static) || ContextStatic(_method)) && _thisType!.Decl is { } home)
         {
             canonical = home;
             names = classNames;

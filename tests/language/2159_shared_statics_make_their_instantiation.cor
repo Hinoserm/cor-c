@@ -1,0 +1,77 @@
+// test: shared_statics_make_their_instantiation
+// expect-exit: 0
+// expect-output:
+// of True True
+// is True False True
+// many String[] arg String
+// cast InvalidCastException
+// conv True 2
+// again True later True
+// maker String[] local String[]
+// walk True
+// crate True
+// factory z True
+// fromresult True
+// a:True:ax|ay
+// b:True:bz
+//
+// A static member of a shared generic class makes, tests and casts over its
+// instantiation's T, as .NET's: Wrap<string>.Of makes a Wrap<string>,
+// IsMine and AsMine ask for it, Many makes a string[], Arg is String, Cast
+// refuses an int; through an implicit conversion, from instance code
+// (Again), a lambda, a local function, an iterator and a derived class;
+// Task<T>.Factory, Task.FromResult and GroupJoin's groups. Each is handed
+// its instantiation's context as a hidden this (Binder.ContextStatic);
+// before, every one answered for object, and Cast's was an unchecked word.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+class Wrap<T>
+{
+    public T Value;
+    public Wrap(T v) { Value = v; }
+    public static Wrap<T> Of(T v) => new Wrap<T>(v);
+    public static Wrap<T> Empty => new Wrap<T>(default!);
+    public static bool IsMine(object o) => o is Wrap<T>;
+    public static Wrap<T>? AsMine(object o) => o as Wrap<T>;
+    public static T[] Many(int n) => new T[n];
+    public static Type Arg() => typeof(T);
+    public static T Cast(object o) => (T)o;
+    public static implicit operator Wrap<T>(T v) => new Wrap<T>(v);
+    public Wrap<T> Again() => Of(Value);
+    public Func<Wrap<T>> Later() => () => Of(Value);
+    public static Func<int, T[]> Maker() => n => new T[n];
+    public static T[] Local(int n) { T[] Make() => new T[n]; return Make(); }
+    public static IEnumerable<Wrap<T>> Walk(T v) { yield return new Wrap<T>(v); }
+}
+class Crate<T> : Wrap<T> { public Crate(T v) : base(v) { } public Wrap<T> Own() => Of(Value); }
+
+static class Program
+{
+    static void Main()
+    {
+        object w = Wrap<string>.Of("a");
+        Console.WriteLine("of " + (w is Wrap<string>) + " " + (Wrap<string>.Empty is Wrap<string>));
+        Console.WriteLine("is " + Wrap<string>.IsMine(w) + " " + Wrap<string>.IsMine(Wrap<object>.Of("x")) + " " + (Wrap<string>.AsMine(w) != null));
+        Console.WriteLine("many " + Wrap<string>.Many(2).GetType().Name + " arg " + Wrap<string>.Arg().Name);
+        try { Console.WriteLine(Wrap<string>.Cast(5)); } catch (InvalidCastException) { Console.WriteLine("cast InvalidCastException"); }
+        Wrap<string> conv = "b";
+        List<Wrap<string>> list = new() { conv, Wrap<string>.Of("c") };
+        Console.WriteLine("conv " + ((object)conv is Wrap<string>) + " " + list.Count);
+        Wrap<string>[] arr = new Wrap<string>[1];
+        arr[0] = Wrap<string>.Of("d");
+        Console.WriteLine("again " + ((object)Wrap<string>.Of("e").Again() is Wrap<string>) + " later " + ((object)Wrap<string>.Of("f").Later()() is Wrap<string>));
+        Console.WriteLine("maker " + Wrap<string>.Maker()(1).GetType().Name + " local " + Wrap<string>.Local(1).GetType().Name);
+        Console.WriteLine("walk " + ((object)Wrap<string>.Walk("g").First() is Wrap<string>));
+        Console.WriteLine("crate " + ((object)new Crate<string>("h").Own() is Wrap<string>));
+        Task<string> t = Task<string>.Factory.StartNew(() => "z");
+        Console.WriteLine("factory " + t.Result + " " + ((object)t is Task<string>));
+        Console.WriteLine("fromresult " + ((object)Task.FromResult("q") is Task<string>));
+        foreach (string s in new[] { "a", "b" }.GroupJoin(new[] { "ax", "ay", "bz" }, o => o, s => s.Substring(0, 1), (o, g) => o + ":" + (g is IList<string>) + ":" + string.Join("|", g)))
+            Console.WriteLine(s);
+    }
+}

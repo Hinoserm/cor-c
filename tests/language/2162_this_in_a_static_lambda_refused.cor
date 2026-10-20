@@ -1,0 +1,10 @@
+// test: this written in a static method's lambda is refused
+// expect-compile-error: 'this' is not available in a static method
+// A lambda of a static method holds no this; one written there was taken
+// for the closure itself, and Me() handed back the delegate's own object.
+// A shared class's static lambda holds its context apart ($context),
+// read by the compiler's this alone.
+
+using System;
+class Wrap<T> { public T Value = default!; public static Func<object> Me() => () => this; }
+static class P { static void Main() { Console.WriteLine(Wrap<string>.Me()()); } }

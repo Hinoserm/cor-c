@@ -1,0 +1,8 @@
+// test: this written in a shared class's static method is refused
+// expect-compile-error: 'this' is not available in a static method
+// A static member of a shared generic class is handed its instantiation's
+// context as a hidden this (ThisExpr.Context); a this the program writes
+// there is still no object, as in C#.
+
+class Wrap<T> { public T Value = default!; public static object Me() => this; }
+static class P { static void Main() { System.Console.WriteLine(Wrap<string>.Me()); } }

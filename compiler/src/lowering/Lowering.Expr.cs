@@ -2888,7 +2888,7 @@ public sealed partial class Lowering
             return R(handed);
         }
         VReg? from = self?.This ?? _this;
-        TypeSymbol? owner = self?.Owner ?? (_method is { Static: false } running ? running.Owner : null);
+        TypeSymbol? owner = self?.Owner ?? (_method is { } running && HasThis(running) ? running.Owner : null);
         if (call.HiddenNeedBase < 0 || call.HiddenNeeds is not { Count: > 0 } needs
             || from is null || owner is null || !SharedCopy(owner)
             || owner.Decl?.TemplateArgs.Count is not int parameters)
@@ -2975,7 +2975,7 @@ public sealed partial class Lowering
         }
         if (t.CanonParam >= 0)
         {
-            if (_this is null || _method is not { Static: false } running || !SharedCopy(running.Owner))
+            if (_this is null || _method is not { } running || !HasThis(running) || !SharedCopy(running.Owner))
             {
                 return Imm(0, IrTypes.Word);
             }

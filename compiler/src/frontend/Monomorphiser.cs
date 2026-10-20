@@ -1399,7 +1399,7 @@ public sealed class Monomorphiser
         if (source.CanonSlot >= 0)
         {
             made.CanonSlot = source.CanonSlot;
-            made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+            made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
             _canonMarked = true;
             return made;
         }
@@ -1434,7 +1434,7 @@ public sealed class Monomorphiser
             _canonMade.Add(written);
         }
         made.CanonSlot = 2 * _canonParams.Count + at;
-        made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+        made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
         _canonMarked = true;
         return made;
     }
@@ -1456,7 +1456,7 @@ public sealed class Monomorphiser
         if (source.CanonSlot >= 0)
         {
             made.CanonSlot = source.CanonSlot;
-            made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+            made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
             _canonMarked = true;
             return made;
         }
@@ -1481,7 +1481,7 @@ public sealed class Monomorphiser
             _canonMade.Add(written);
         }
         made.CanonSlot = 2 * _canonParams.Count + at;
-        made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+        made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
         _canonMarked = true;
         return made;
     }
@@ -1714,7 +1714,7 @@ public sealed class Monomorphiser
         if (source.CanonSlot >= 0)
         {
             made.CanonSlot = source.CanonSlot;
-            made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+            made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
             _canonMarked = true;
             return made;
         }
@@ -1751,7 +1751,7 @@ public sealed class Monomorphiser
         {
             return made;
         }
-        made.CanonSelf = new ThisExpr { Line = made.Line, Col = made.Col };
+        made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
         _canonMarked = true;
         return made;
     }
@@ -2896,7 +2896,18 @@ public sealed class Monomorphiser
             }
             else
             {
-                _canonSelf = _canonParams is not null && !members[i].Mods.HasFlag(Mods.Static);
+                // A STATIC MEMBER TOO, but a constructor: it is handed its
+                // instantiation's context as a hidden `this` (Binder.
+                // ContextStatic, Lowering.HasThis), so `new Wrap<T>()` and
+                // `(T)o` in Wrap<T>.Of ask what T is, as instance code does.
+                // Not an async method's, whose state machine has no place for
+                // the context: it keeps the copy over object's answers, as
+                // every static did. An iterator's machine keeps it as an
+                // instance iterator's keeps its receiver.
+                _canonSelf = _canonParams is not null
+                    && (!members[i].Mods.HasFlag(Mods.Static)
+                        || members[i] is MethodDecl { IsCtor: false } staticMethod && !staticMethod.Mods.HasFlag(Mods.Async)
+                        || members[i] is PropertyDecl);
                 _canonMarked = false;
                 try { copy = RewriteMember(members[i], map, name); }
                 finally { _canonSelf = false; }
@@ -3548,7 +3559,7 @@ public sealed class Monomorphiser
                 made.HiddenTypeArgs = c.HiddenTypeArgs;
                 made.HiddenNeeds = c.HiddenNeeds;
                 made.HiddenNeedBase = c.HiddenNeedBase;
-                made.CanonSelf = c.CanonSelf is null ? null : new ThisExpr { Line = c.Line, Col = c.Col };
+                made.CanonSelf = c.CanonSelf is null ? null : new ThisExpr { Context = true, Line = c.Line, Col = c.Col };
                 made.HiddenNeedMap = c.HiddenNeedMap;
                 made.HiddenNeedClassMap = c.HiddenNeedClassMap;
                 made.NeedClass = c.NeedClass;
@@ -3910,8 +3921,8 @@ public sealed class Monomorphiser
                     Line = l.Line, Col = l.Col,
                 };
 
-            case ThisExpr:
-                return new ThisExpr { Line = e.Line, Col = e.Col };
+            case ThisExpr written:
+                return new ThisExpr { Context = written.Context, Line = e.Line, Col = e.Col };
 
             case BaseExpr:
                 return new BaseExpr { Line = e.Line, Col = e.Col };

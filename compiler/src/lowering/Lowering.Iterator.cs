@@ -158,17 +158,19 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
+        _f = new Function(ContextStatic(m) ? BodyLabel(m) : Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, Exported = m.Owner.Decl?.LocalOnly != true };
         _e = new Builder(_f, _f.NewBlock("entry"));
 
         if (m.Static && !m.IsCtor)
         {
-            Entries[$"{m.Owner.Name}.{m.Name}"] = _f.Name;
+            Entries[$"{m.Owner.Name}.{m.Name}"] = Label(m);
         }
 
+        // The receiver, or a context static's context (ContextStatic): kept
+        // in the machine's receiver field either way.
         VReg? self = null;
-        if (!m.Static)
+        if (HasThis(m))
         {
             self = _f.NewReg(IrTypes.Word, "this");
             _f.Params.Add(self);
@@ -198,6 +200,7 @@ public sealed partial class Lowering
         }
         _e.Ret(R(machine));
         _m.Functions.Add(_f);
+        if (ContextStatic(m)) ContextStub(m);
 
         Require(it.MoveNext);
         EmitIteratorMembers(it);
@@ -366,7 +369,7 @@ public sealed partial class Lowering
         _e.SetBlock(start);
         _e.Store(R(machine), Imm(-1, IrType.I32), IterStateField, 4);
 
-        if (!m.Static)
+        if (HasThis(m))
         {
             _this = _e.Load(IrTypes.Word, machine, IterReceiverField);
         }

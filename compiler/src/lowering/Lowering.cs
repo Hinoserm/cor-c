@@ -2433,6 +2433,40 @@ public sealed partial class Lowering
         => s.Kind == TypeKind.Class && s.Decl is { Specialised: true } d
         && (d.Canon is not null || CanonicalCopy(s));
 
+    /// <summary>
+    /// A STATIC MEMBER OF A CANONICAL CLASS COPY, but a constructor or an
+    /// async method (Binder.ContextStatic): its body -- an iterator's
+    /// kickoff, which keeps it as its machine's receiver -- takes
+    /// its instantiation's context as a hidden `this`, first, under its own
+    /// label (BodyLabel); its C# label is a stub handing it the canonical
+    /// copy's (ContextStub).
+    /// </summary>
+    private static bool ContextStatic(MethodSymbol m)
+        => Binder.ContextStatic(m);
+
+    /// <summary>Whether a method's body has a `this`: an instance method's, or a context static's.</summary>
+    private static bool HasThis(MethodSymbol m) => !m.Static || ContextStatic(m);
+
+    /// <summary>A context static's body, under a family of labels no other has.</summary>
+    private string BodyLabel(MethodSymbol m) => "mx_" + Label(m)[2..];
+
+    private readonly HashSet<string> _contextTokens = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// AN INSTANTIATION'S CONTEXT AS AN OBJECT a context static is handed:
+    /// a header whose first word is the class's methods, as an object of it
+    /// has -- read only, the same in every unit.
+    /// </summary>
+    private string ContextToken(TypeSymbol t)
+    {
+        string sym = "tk_" + TypeKey(t);
+        if (!_contextTokens.Add(sym)) return sym;
+        DataItem item = new(sym, new byte[_t.ObjectHeaderBytes]) { Align = _t.WordSize, ReadOnly = true, Coalescible = true, NoReferences = true };
+        item.Relocs.Add(new DataReloc(0, ClassDescriptor(t), _t.DescriptorBytes));
+        _m.Data.Add(item);
+        return sym;
+    }
+
     private static bool CanonicalCopy(TypeSymbol s)
         => s.Decl is { Specialised: true, Template: string template } d && d.TemplateArgs.Count > 0
         && Monomorphiser.CanonNameOf(template, d.TemplateArgs.Count) == s.Name;
