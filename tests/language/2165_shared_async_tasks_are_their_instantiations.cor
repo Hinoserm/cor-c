@@ -1,0 +1,53 @@
+// test: shared_async_tasks_are_their_instantiations
+// expect-exit: 0
+// expect-output:
+// is True
+// store 1
+// value a
+// object False
+// thing False
+// valuetask True
+// last b
+// all True 2
+//
+// An async method of a shared generic class's code answers a Task of its
+// instantiation, as .NET's: Task<string> for Repo<string>, through a
+// ValueTask's box and over List<T> too. Its kickoff stamps the task with
+// the class entry the instantiation's type context holds
+// (MethodDecl.CanonTaskSlot); over object it was a Task<object>, which a
+// List<Task<string>> refused.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public async Task<T> FirstAsync() { await Task.Yield(); return Items[0]; }
+    public async ValueTask<T> LastAsync() { await Task.Yield(); return Items[Items.Count - 1]; }
+    public async Task<List<T>> AllAsync() { await Task.Yield(); return Items; }
+}
+class Thing { }
+static class Program
+{
+    static async Task<int> Run()
+    {
+        Repo<string> r = new(); r.Items.Add("a"); r.Items.Add("b");
+        object t = r.FirstAsync();
+        Console.WriteLine("is " + (t is Task<string>));
+        List<Task<string>> l = new(); l.Add(r.FirstAsync());
+        Console.WriteLine("store " + l.Count);
+        Console.WriteLine("value " + await l[0]);
+        Console.WriteLine("object " + (t is Task<object>));
+        Repo<Thing> other = new(); other.Items.Add(new Thing());
+        Console.WriteLine("thing " + ((object)other.FirstAsync() is Task<string>));
+        Task<string> last = r.LastAsync().AsTask();
+        Console.WriteLine("valuetask " + ((object)last is Task<string>));
+        Console.WriteLine("last " + await last);
+        Console.WriteLine("all " + ((object)r.AllAsync() is Task<List<string>>) + " " + (await r.AllAsync()).Count);
+        return 0;
+    }
+    static int Main() => Run().GetAwaiter().GetResult();
+}

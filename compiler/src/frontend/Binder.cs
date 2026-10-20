@@ -1620,6 +1620,67 @@ public sealed partial class Binder
     /// instantiation's context as a hidden `this` (Lowering.HasThis), so what
     /// it makes over the class's parameters is that instantiation's.
     /// </summary>
+    /// <summary>
+    /// A LAMBDA OF A CANONICAL CLASS COPY'S CODE (LambdaExpr.CanonOrdinal),
+    /// made where `this` is the class's: its delegate spelt over the class's
+    /// parameters, for the next expansion to place in the type context
+    /// (Monomorphiser.PlaceNeeds) and the lowering to stamp its closure with
+    /// the instantiation's variant. Its CanonSelf checked at every binding.
+    /// </summary>
+    private void CanonLambda(LambdaExpr lam, Type wanted)
+    {
+        // The class whose `this` is at hand: the method's own, or -- in a
+        // lambda -- the one its closure captured, instance or context.
+        TypeSymbol? at = _thisType is null ? null
+            : !IsClosure(_thisType) ? (_method is { Static: false } || ContextStatic(_method) ? _thisType : null)
+            : _capturedThisField is not null ? _capturedThisType
+            : _capturedContextField?.Type.Symbol;
+        if (lam.CanonOrdinal >= 0 && lam.CanonFace is null && at?.Decl is { CanonMadeWritten: not null, TemplateParams: { } ps } home
+            && FaceOverParams(wanted, ps) is TypeRef spelt)
+        {
+            spelt.MadeFor = "lambda:" + lam.CanonOrdinal;
+            lam.CanonFace = spelt;
+            lam.CanonSelf = new ThisExpr { Context = true, Line = lam.Line, Col = lam.Col };
+            CheckExpr(lam.CanonSelf);
+            (home.NeedLambdas ??= new()).Add(lam);
+            _r.Reexpand = true;
+        }
+        else if (lam.CanonSelf is { } lamSelf)
+        {
+            CheckExpr(lamSelf);
+        }
+    }
+
+    /// <summary>
+    /// A delegate spelt over a canonical copy's parameters by name, where
+    /// every machine word in it says which it is (Type.CanonParam, carried in
+    /// UseArgs); null where any word's place is unknown, or none is one.
+    /// </summary>
+    private static TypeRef? FaceOverParams(Type wanted, IReadOnlyList<TypeParam> ps)
+    {
+        bool any = false;
+        TypeRef? Spell(Type a, int depth)
+        {
+            if (depth > 8 || a.IsPointer || a.IsNullableValue || a.ArrayRank > 0) return null;
+            if (a.Prim == Prim.Any && a.Symbol is null)
+            {
+                if (a.CanonParam < 0 || a.CanonParam >= ps.Count) return null;
+                any = true;
+                return new TypeRef { Name = ps[a.CanonParam].Name };
+            }
+            if (a.Symbol is not { } s) return RefOf(a);
+            if (a.UseArgs is { Count: > 0 } use && s.Decl?.Template is string template)
+            {
+                List<TypeRef> args = new();
+                foreach (Type u in use) { if (Spell(u, depth + 1) is not TypeRef one) return null; args.Add(one); }
+                return new TypeRef { Name = template, Arguments = args };
+            }
+            return s.Name.Contains(Monomorphiser.CanonName, StringComparison.Ordinal) ? null : RefOf(a);
+        }
+        TypeRef? face = Spell(wanted.AsNonNullable(), 0);
+        return any ? face : null;
+    }
+
     internal static bool ContextStatic(MethodSymbol? m)
         => m is { Static: true, IsCtor: false, Async: false } && m.Owner is { Kind: TypeKind.Class, Decl.CanonMadeWritten: not null };
 
@@ -9046,6 +9107,7 @@ public sealed partial class Binder
         RegisterType(name2, closure);
         _r.Methods[body] = run;
         _r.Closures[lam] = new ClosureInfo(closure, fields, run);
+        CanonLambda(lam, wanted);
         if (_method is not null) (_lambdaDepth == 0 ? _methodLambdas : _innerLambdas).Add(lam);
         if (bound) _boundClosures[name2] = _r.Closures[lam];
         else if (lam.GroupIdentity is not null && _capturedContextField is null) _groupClosures[name2] = _r.Closures[lam];

@@ -49,6 +49,8 @@ public sealed class MethodDecl : MemberDecl
     /// kickoff stamps the machine with; -1 for none.
     /// </summary>
     public int CanonMachineSlot { get; set; } = -1;
+    /// <summary>An async method of a canonical class copy's instance code: the class entry of its Task&lt;X&gt; (Monomorphiser.CanonTask); -1 for none.</summary>
+    public int CanonTaskSlot { get; set; } = -1;
     // Made only when written: most have none, and a list each was the collector's.
     private static readonly List<TypeParam> NoTypeParams = new();
     private List<TypeParam>? _typeParams;

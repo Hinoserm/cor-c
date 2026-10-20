@@ -280,7 +280,8 @@ public sealed partial class Lowering
         VReg? task = null;
         if (!m.Returns.IsVoid)
         {
-            task = NewObject(decl, m.Returns);
+            // OF ITS INSTANTIATION in shared code (MethodDecl.CanonTaskSlot).
+            task = NewObject(decl, m.Returns, TaskStamp(am, self));
             if (task is not null)
             {
                 StoreNewReference(machine, task, TaskField);
@@ -468,7 +469,7 @@ public sealed partial class Lowering
         Block ready = _f.NewBlock("ready");
         _e.Branch(_e.Binary(Opcode.Ne, had, 0), ready, make);
         _e.SetBlock(make);
-        if (NewObject(am.Decl, vt.TaskType) is VReg first)
+        if (NewObject(am.Decl, vt.TaskType, TaskStamp(am, () => _e.Load(IrTypes.Word, machine, ReceiverField))) is VReg first)
         {
             StoreNewReference(machine, first, TaskField);
         }
@@ -481,7 +482,7 @@ public sealed partial class Lowering
         VReg heap = AllocateDynamic(am.Decl, size);
         _e.Emit(Opcode.MemCopy, null, R(heap), R(machine), R(size));
         _e.Store(R(heap), Imm(0, IrTypes.Word), vt.HomeField, _t.WordSize);
-        if (NewObject(am.Decl, vt.TaskType) is VReg task)
+        if (NewObject(am.Decl, vt.TaskType, TaskStamp(am, () => _e.Load(IrTypes.Word, heap, ReceiverField))) is VReg task)
         {
             StoreNewReference(heap, task, TaskField);
             _e.Store(R(machine), R(task), TaskField, _t.WordSize);
@@ -493,8 +494,20 @@ public sealed partial class Lowering
         _e = kickoffBuilder;
     }
 
-    /// <summary>`new T()` for a class with a parameterless constructor, or null with an error.</summary>
-    private VReg? NewObject(Node at, Type type)
+    /// <summary>
+    /// What an async method of shared code stamps its task with
+    /// (MethodDecl.CanonTaskSlot): the class entry of its receiver's type
+    /// context, read through `receiver`; null for any other method.
+    /// </summary>
+    private Func<VReg>? TaskStamp(AsyncMethod am, VReg? receiver)
+        => receiver is null ? null : TaskStamp(am, () => receiver);
+
+    private Func<VReg>? TaskStamp(AsyncMethod am, Func<VReg> receiver)
+        => am.Decl.CanonTaskSlot >= 0 && !am.Method.Static && SharedCopy(am.Method.Owner)
+            ? () => ContextEntryOrZero(receiver(), am.Method.Owner, am.Decl.CanonTaskSlot) : null;
+
+    /// <summary>`new T()` for a class with a parameterless constructor, or null with an error; stamped with `described`'s descriptor where it gives one.</summary>
+    private VReg? NewObject(Node at, Type type, Func<VReg>? described = null)
     {
         if (type.Symbol is not TypeSymbol sym)
         {
@@ -502,7 +515,10 @@ public sealed partial class Lowering
             return null;
         }
         VReg obj = Allocate(at, Math.Max(_t.ObjectHeaderBytes, sym.InstanceSize), described: true);
-        _e.Store(R(obj), VtableOf(sym), 0, _t.WordSize);
+        if (described is not null)
+            _e.StoreDescribed(obj, VtableOf(sym), VariantVtable(described(), VtableOf(sym)), _t.WordSize);
+        else
+            _e.Store(R(obj), VtableOf(sym), 0, _t.WordSize);
         MethodSymbol? ctor = sym.Methods.FirstOrDefault(c => c.IsCtor && c.Params.Count == 0);
         if (ctor is not null)
         {
@@ -674,7 +690,7 @@ public sealed partial class Lowering
             Block have = _f.NewBlock("fault");
             _e.Branch(_e.Binary(Opcode.Ne, task, 0), have, make);
             _e.SetBlock(make);
-            if (NewObject(decl, faulted.TaskType) is VReg made)
+            if (NewObject(decl, faulted.TaskType, TaskStamp(am, () => _e.Load(IrTypes.Word, machine, ReceiverField))) is VReg made)
             {
                 StoreNewReference(machine, made, TaskField);
                 _e.CopyTo(task, R(made));

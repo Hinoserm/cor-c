@@ -2021,12 +2021,19 @@ public sealed partial class Lowering
             }
             return block;
         }
+        // A LAMBDA OF SHARED CODE (LambdaExpr.CanonEntry): its closure as the
+        // instantiation's, from its type context -- the variant's static
+        // object where it captures nothing; its own where the table has none.
+        VReg? entry = lam.CanonEntry >= 0 && lam.CanonSelf is not null && _b.TypeOf(lam.CanonSelf).Symbol is { } home && SharedCopy(home)
+            && home.Decl?.TemplateArgs.Count is int parameters
+            ? ContextEntryOrZero(Eval(lam.CanonSelf), home, 2 * parameters + lam.CanonEntry) : null;
         if (made.Captures.Count == 0)
         {
-            return _e.Address(StaticClosure(made.Type));
+            return entry is null ? _e.Address(StaticClosure(made.Type)) : EntryOr(entry, StaticClosure(made.Type));
         }
         VReg obj = Allocate(lam, Math.Max(_t.ObjectHeaderBytes, made.Type.InstanceSize), described: true);
-        _e.Store(R(obj), VtableOf(made.Type), 0, _t.WordSize);
+        if (entry is null) _e.Store(R(obj), VtableOf(made.Type), 0, _t.WordSize);
+        else _e.StoreDescribed(obj, VtableOf(made.Type), VariantVtable(entry, VtableOf(made.Type)), _t.WordSize);
 
         foreach ((FieldSymbol f, Sym from) in made.Captures)
         {

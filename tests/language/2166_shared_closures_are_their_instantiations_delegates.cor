@@ -1,0 +1,70 @@
+// test: shared_closures_are_their_instantiations_delegates
+// expect-exit: 0
+// expect-output:
+// heard a
+// seen 1 m
+// func True
+// covariant True
+// other False
+// store 1 a
+// equal True
+// sink True
+// contra False
+// wider True
+// nested True
+// present True
+//
+// A lambda of a shared generic class's code is a delegate of its
+// instantiation, as .NET's: Func<string> for Bus<string>, covariantly a
+// Func<object>, an Action<string> not an Action<object>, nested lambdas
+// too; a List<Func<string>> holds it. Its closure is stamped with a variant
+// the instantiation's type context holds (LambdaExpr.CanonFace), a
+// capture-less one's static object the variant's own. Over object it was a
+// Func<object>, which the list refused.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Bus<T>
+{
+    private readonly List<Action<T>> _handlers = new();
+    private readonly List<Func<T>> _makers = new();
+    public List<T> Seen = new();
+    public void Listen() => _handlers.Add(x => Seen.Add(x));
+    public void Listen(Action<T> handler) => _handlers.Add(handler);
+    public void Make(T v) => _makers.Add(() => v);
+    public void Send(T v) { foreach (Action<T> h in _handlers) h(v); }
+    public Func<T> Getter() => () => Seen[0];
+    public Func<T, bool> Present() => x => x != null;
+    public Action<T> Sink() => x => Seen.Add(x);
+    public Func<Func<T>> Nested() => () => () => Seen[0];
+    public Func<T> First() => _makers[0];
+}
+class Thing { }
+static class Program
+{
+    static int Main()
+    {
+        Bus<string> b = new();
+        b.Listen();
+        b.Listen(x => Console.WriteLine("heard " + x));
+        b.Send("a");
+        b.Make("m");
+        Console.WriteLine("seen " + b.Seen.Count + " " + b.First()());
+        object f = b.Getter();
+        Console.WriteLine("func " + (f is Func<string>));
+        Console.WriteLine("covariant " + (f is Func<object>));
+        Console.WriteLine("other " + (f is Func<Thing>));
+        List<Func<string>> l = new(); l.Add(b.Getter());
+        Console.WriteLine("store " + l.Count + " " + l[0]());
+        Console.WriteLine("equal " + b.Getter().Equals(b.Getter()));
+        object s = b.Sink();
+        Console.WriteLine("sink " + (s is Action<string>));
+        Console.WriteLine("contra " + (s is Action<object>));
+        Console.WriteLine("wider " + ((object)new Bus<object>().Sink() is Action<string>));
+        Console.WriteLine("nested " + ((object)b.Nested()() is Func<string>));
+        Console.WriteLine("present " + ((object)b.Present() is Func<string, bool>));
+        return 0;
+    }
+}

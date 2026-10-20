@@ -5,6 +5,17 @@ public sealed class LambdaExpr : Expr
 {
     /// <summary>Set when this lambda stands for a method group: the identity of the method, so every conversion of the same method shares one closure class and compares equal.</summary>
     public string? GroupIdentity { get; set; }
+    /// <summary>
+    /// A LAMBDA OF A CANONICAL CLASS COPY'S CODE, by its place among the
+    /// class's (Monomorphiser): the same in every unit. With CanonFace, the
+    /// delegate it is spelt over the class's parameters (Binder), and
+    /// CanonEntry, the entry of the type context holding its closure as the
+    /// instantiation's (Lowering.ClosureVariant), read through CanonSelf.
+    /// </summary>
+    public int CanonOrdinal { get; set; } = -1;
+    public TypeRef? CanonFace { get; set; }
+    public int CanonEntry { get; set; } = -1;
+    public Expr? CanonSelf { get; set; }
 
     /// <summary>
     /// Set when this lambda stands for a LOCAL FUNCTION converted to a

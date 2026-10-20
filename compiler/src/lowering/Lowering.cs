@@ -2343,6 +2343,24 @@ public sealed partial class Lowering
     /// canonical copy's own objects answer object. Null for a class with no
     /// shared copy in its chain, whose word stays zero and is never read.
     /// </summary>
+    private Dictionary<(string, int), ClosureInfo>? _canonLambdas;
+
+    /// <summary>A canonical copy's lambda's closure, by its place among the copy's (LambdaExpr.CanonOrdinal): its key the copy's, then ".Lambda$" -- a nested one's the enclosing closures' after.</summary>
+    private ClosureInfo? LambdaOf(TypeSymbol home, int ordinal)
+    {
+        if (_canonLambdas is null)
+        {
+            _canonLambdas = new();
+            foreach ((LambdaExpr lam, ClosureInfo info) in _b.Closures)
+            {
+                if (lam.CanonOrdinal < 0 || lam.CanonFace is null) continue;
+                int dot = info.Type.Key.IndexOf(".Lambda$", StringComparison.Ordinal);
+                if (dot > 0) _canonLambdas.TryAdd((info.Type.Key[..dot], lam.CanonOrdinal), info);
+            }
+        }
+        return _canonLambdas.TryGetValue((home.Key, ordinal), out ClosureInfo? found) ? found : null;
+    }
+
     /// <summary>Whether every function the unit lowers is lowered: nothing required after it would be.</summary>
     private bool _workDrained;
 
@@ -2391,6 +2409,22 @@ public sealed partial class Lowering
             List<TypeRef>? written = chain[d].Decl?.CanonMade;
             for (int k = 0; k < made.Count; k++)
             {
+                // A LAMBDA'S CLOSURE AS THIS INSTANTIATION'S (LambdaExpr.CanonFace):
+                // a variant listing its delegate over the arguments; for one that
+                // captures nothing, the variant's static object.
+                if (written is not null && k < written.Count && written[k].MadeFor is string lambdaFor && lambdaFor.StartsWith("lambda:", StringComparison.Ordinal))
+                {
+                    if (!_workDrained && !CanonicalCopy(chain[d]) && made[k] is { Kind: TypeKind.Interface } face
+                        && chain[d].Decl?.Canon is string lambdaCanon && _b.Types.TryGetValue(lambdaCanon, out TypeSymbol? lambdaHome)
+                        && int.TryParse(lambdaFor.AsSpan("lambda:".Length), out int ordinal)
+                        && LambdaOf(lambdaHome, ordinal) is ClosureInfo closure)
+                    {
+                        TypeSymbol variant = Variant(closure.Type, new[] { face });
+                        table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w,
+                            closure.Captures.Count == 0 ? StaticClosure(variant) : ClassDescriptor(variant), 0));
+                    }
+                    continue;
+                }
                 // AN ITERATOR'S MACHINE AS THIS INSTANTIATION'S (MachineVariant):
                 // the canonical copy's own table holds 0, its machine as it is.
                 if (written is not null && k < written.Count && written[k].MadeFor is string madeFor && madeFor.StartsWith("iter:", StringComparison.Ordinal))

@@ -847,6 +847,7 @@ public sealed class Monomorphiser
             _canonParams = job.Template.Kind == TypeKind.Class && job.Canon is null
                 && job.Name == CanonNameOf(TemplatePath(job.Template), job.Template.TypeParams.Count) ? CanonParams(job.Template) : null;
             _canonMade = _canonParams is null ? null : new List<TypeRef>();
+            _canonLambdas = 0;
             TypeDecl made;
             // ITS BODIES ARE THIS UNIT'S NOW, word-shaped copy or not: the
             // receipt then depends on the template's text (TypeDecl.BodiesUsed).
@@ -1406,17 +1407,30 @@ public sealed class Monomorphiser
             _canonMarked = true;
             return made;
         }
-        TypeRef written = source.Type;
+        if (CanonClassEntry(source.Type, source, map) is not int slot) return made;
+        made.CanonSlot = slot;
+        made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
+        _canonMarked = true;
+        return made;
+    }
+
+    /// <summary>
+    /// The entry of this copy's type context for a class it makes over its
+    /// parameters (CanonMadeObject, CanonTask), or null where it has none:
+    /// a class sharing a canonical copy, every argument a word.
+    /// </summary>
+    private int? CanonClassEntry(TypeRef written, Node source, Dictionary<string, TypeRef> map)
+    {
         if (!_canonSelf || _canonParams is null || _canonMade is null || written.Args.Count == 0
             || written.ArrayRank != 0 || written.PointerDepth != 0 || !OverCanonParams(written))
         {
-            return made;
+            return null;
         }
         string name = GenericPath(written.Name, written.Args.Count, source) ?? Path(written.Name);
         if (!_generic.TryGetValue(Arity(name, written.Args.Count), out TypeDecl? template)
             || template.Kind != TypeKind.Class || !Shareable(template) || template.TypeParams.Any(p => p.Struct))
         {
-            return made;
+            return null;
         }
         // EVERY ARGUMENT A WORD, as this copy names it -- a parameter, an
         // array, a class made over one (`Holder<Wrap<T>>`): then the type made
@@ -1427,7 +1441,7 @@ public sealed class Monomorphiser
         foreach (TypeRef a in written.Args)
         {
             if (a.Args.Count == 0 && a.ArrayRank == 0 && _canonParams.ContainsKey(a.Name)) continue;
-            if (!IsWord(Sub(a, map))) return made;
+            if (!IsWord(Sub(a, map))) return null;
         }
         string key = EntryKey(written);
         int at = _canonMade.FindIndex(t => EntryKey(t) == key);
@@ -1436,10 +1450,28 @@ public sealed class Monomorphiser
             at = _canonMade.Count;
             _canonMade.Add(written);
         }
-        made.CanonSlot = 2 * _canonParams.Count + at;
-        made.CanonSelf = new ThisExpr { Context = true, Line = made.Line, Col = made.Col };
-        _canonMarked = true;
-        return made;
+        return 2 * _canonParams.Count + at;
+    }
+
+    /// <summary>
+    /// AN ASYNC METHOD OF THE CANONICAL COPY'S INSTANCE CODE makes its
+    /// Task&lt;X&gt; over its parameters (a ValueTask&lt;X&gt;'s too, when it
+    /// boxes): its class entry, which the kickoff stamps the task with
+    /// (MethodDecl.CanonTaskSlot). Over object it was a Task&lt;object&gt;,
+    /// which a List of Task&lt;string&gt; refused.
+    /// </summary>
+    private void CanonTask(MethodDecl made, MethodDecl source, Dictionary<string, TypeRef> map)
+    {
+        if (made.CanonTaskSlot >= 0 || !source.Mods.HasFlag(Mods.Async) || source.Mods.HasFlag(Mods.Static) || source.Body is null
+            || source.Returns is not { Args.Count: 1, ArrayRank: 0, PointerDepth: 0 } returns) return;
+        string bare = returns.Name.Contains('.') ? returns.Name[(returns.Name.LastIndexOf('.') + 1)..] : returns.Name;
+        if (bare is not ("Task" or "ValueTask")) return;
+        TypeRef task = new() { Name = "Task", Arguments = returns.Args.ToList(), Line = returns.Line, Col = returns.Col };
+        if (CanonClassEntry(task, source, map) is int slot)
+        {
+            made.CanonTaskSlot = slot;
+            _canonMarked = true;
+        }
     }
 
     /// <summary>
@@ -1589,7 +1621,22 @@ public sealed class Monomorphiser
     {
         foreach (TypeDecl canonical in unit.Types)
         {
-            if (canonical.NeedCalls is not { Count: > 0 } calls || canonical.CanonMadeWritten is not { } written) continue;
+            if (canonical.CanonMadeWritten is not { } written) continue;
+            // A LAMBDA'S CLOSURE AS EACH INSTANTIATION'S (LambdaExpr.CanonFace):
+            // one entry each, marked as that lambda's.
+            if (canonical.NeedLambdas is { Count: > 0 } lambdas)
+            {
+                foreach (LambdaExpr lam in lambdas)
+                {
+                    if (lam.CanonEntry >= 0 || lam.CanonFace is not { } face) continue;
+                    string key = EntryKey(face);
+                    int at = written.FindIndex(t => EntryKey(t) == key);
+                    if (at < 0) { at = written.Count; written.Add(face); }
+                    lam.CanonEntry = at;
+                }
+                canonical.NeedLambdas = null;
+            }
+            if (canonical.NeedCalls is not { Count: > 0 } calls) continue;
             foreach (CallExpr call in calls)
             {
                 if (call.HiddenNeedBase >= 0 || call.HiddenNeeds is not { Count: > 0 } needs) continue;
@@ -1674,6 +1721,9 @@ public sealed class Monomorphiser
 
     /// <summary>The shared method copy's dictionary as it is found (MethodDecl.CopyNeeds), or null outside one.</summary>
     private List<TypeRef>? _needs;
+
+    /// <summary>The lambdas of the canonical copy being made, counted in its text's order (LambdaExpr.CanonOrdinal).</summary>
+    private int _canonLambdas;
 
     /// <summary>A canonical class's generic method's copy (ClassDictionary): its dictionary names types over the class's parameters and its own.</summary>
     private bool _classDictionary;
@@ -3167,6 +3217,8 @@ public sealed class Monomorphiser
                 made.OwnCode = md.OwnCode;
                 made.CanonMachineSlot = md.CanonMachineSlot;
                 CanonMachine(made, md);
+                made.CanonTaskSlot = md.CanonTaskSlot;
+                CanonTask(made, md, map);
                 made.Fresh = md.Fresh;
                 made.AutoAccessor = md.AutoAccessor;
                 made.PartialWithoutBody = md.PartialWithoutBody;
@@ -3806,6 +3858,9 @@ public sealed class Monomorphiser
                     Async = lambda.Async, Line = lambda.Line, Col = lambda.Col,
                     Returns = lambda.Returns is null ? null : Sub(lambda.Returns, map), ReturnMods = lambda.ReturnMods,
                     TypesWritten = lambda.TypesWritten, NoSignature = lambda.NoSignature,
+                    CanonOrdinal = lambda.CanonOrdinal >= 0 ? lambda.CanonOrdinal : _canonSelf && _canonMade is not null ? _canonLambdas++ : -1,
+                    CanonFace = lambda.CanonFace, CanonEntry = lambda.CanonEntry,
+                    CanonSelf = lambda.CanonSelf is null ? null : new ThisExpr { Context = true, Line = lambda.Line, Col = lambda.Col },
                 };
                 if (lambda.Attributes.Count > 0) made.WritableAttributes.AddRange(lambda.Attributes);
                 foreach (Param p in lambda.Params)

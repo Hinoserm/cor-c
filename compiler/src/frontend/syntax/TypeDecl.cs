@@ -387,6 +387,8 @@ public sealed class TypeDecl : Node
     /// places them (Monomorphiser.PlaceNeeds).
     /// </summary>
     public List<CallExpr>? NeedCalls { get; set; }
+    /// <summary>A canonical copy's lambdas whose closures its type context is to hold as each instantiation's (LambdaExpr.CanonFace), for the next expansion to place.</summary>
+    public List<LambdaExpr>? NeedLambdas { get; set; }
 
     /// <summary>
     /// Those classes for this copy's own arguments: what its objects' type
