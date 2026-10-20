@@ -13,6 +13,13 @@ public sealed class FieldSymbol
     public bool Volatile { get; init; }
 
     /// <summary>
+    /// A closure's `$context` of a shared struct's member (Binder.StructContext):
+    /// the struct whose context the field holds -- a word, a token or a box,
+    /// typed object so a box held there is traced -- for what reads it.
+    /// </summary>
+    public Type? ContextOf { get; init; }
+
+    /// <summary>
     /// A FIELD-LIKE EVENT: `event Action? Fired;`. Inside the type that
     /// declares it, it is the field it looks like; anywhere else it may only
     /// be added to and taken from with += and -= (C#'s CS0070), which the

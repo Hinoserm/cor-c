@@ -106,7 +106,7 @@ public sealed partial class Lowering
         if (Derives(_method.Owner, owner)) return _this;
         // A struct's `$this` in a closure is a copy of the struct, no context.
         foreach (FieldSymbol f in _method.Owner.Fields)
-            if ((f.Name == "$context" || f.Name == "$this" && owner.Kind != TypeKind.Struct) && !f.Static && Derives(f.Type.Symbol, owner))
+            if ((f.Name == "$context" || f.Name == "$this" && owner.Kind != TypeKind.Struct) && !f.Static && Derives((f.ContextOf ?? f.Type).Symbol, owner))
                 return _e.Load(IrTypes.Word, _this, f.Offset);
         return null;
     }
@@ -194,9 +194,9 @@ public sealed partial class Lowering
         if (!SharedContext(home) && _this is not null)
         {
             FieldSymbol? holder = home.Fields.FirstOrDefault(f => f.Name is "$context" or "$this" && !f.Static
-                && f.Type.Symbol is { } of && SharedContext(of) && (f.Name == "$context" || of.Kind == TypeKind.Class));
+                && (f.ContextOf ?? f.Type).Symbol is { } of && SharedContext(of) && (f.Name == "$context" || of.Kind == TypeKind.Class));
             if (holder is null) return null;
-            home = holder.Type.Symbol!;
+            home = (holder.ContextOf ?? holder.Type).Symbol!;
             self = _e.Load(IrTypes.Word, _this, holder.Offset);
         }
         if (self is null || !SharedContext(home)

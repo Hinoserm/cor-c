@@ -300,8 +300,8 @@ public sealed partial class Lowering
         // `this`, the struct's address, as CallDirect passes it.
         if (StructContext(m))
         {
+            // An address: a token, or the box a box's stub hands it.
             _structContext = _f.NewReg(IrTypes.Word, "context");
-            _structContext.Number = true;
             _f.Params.Add(_structContext);
         }
 

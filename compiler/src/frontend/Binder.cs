@@ -1634,7 +1634,7 @@ public sealed partial class Binder
         TypeSymbol? at = _thisType is null ? null
             : !IsClosure(_thisType) ? (_method is { Static: false } || HasContext(_method) ? _thisType : null)
             : _capturedThisField is not null ? _capturedThisType
-            : _capturedContextField?.Type.Symbol;
+            : (_capturedContextField?.ContextOf ?? _capturedContextField?.Type)?.Symbol;
         if (lam.CanonOrdinal >= 0 && lam.CanonFace is null && at?.Decl is { CanonMadeWritten: not null, TemplateParams: { } ps } home
             && FaceOverParams(wanted, ps, at.Key) is TypeRef spelt)
         {
@@ -9145,9 +9145,13 @@ public sealed partial class Binder
             // A shared struct's member's context is no `this` of it (StructContext).
             Sym contextSource = _capturedContextField is { } outerContext ? new FieldSym(outerContext)
                 : new ThisSym(Type.Plain(_thisType!, Prim.Void)) { Context = StructContext(_method) };
+            // A STRUCT'S CONTEXT IS A WORD, no struct of it: held as an object,
+            // the struct it is the context of beside it (FieldSymbol.ContextOf).
+            bool structContext = _capturedContextField?.ContextOf is not null || _capturedContextField is null && StructContext(_method);
+            Type contextOf = _capturedContextField?.ContextOf ?? _capturedContextField?.Type ?? Type.Plain(_thisType!, Prim.Void);
             contextField = new FieldSymbol
             {
-                Name = "$context", Type = _capturedContextField?.Type ?? Type.Plain(_thisType!, Prim.Void), Owner = closure, Offset = at,
+                Name = "$context", Type = structContext ? Type.Any : contextOf, ContextOf = structContext ? contextOf : null, Owner = closure, Offset = at,
             };
             at += 8;
             closure.WritableFields.Add(contextField);
@@ -14293,7 +14297,7 @@ public sealed partial class Binder
                 if (e is ThisExpr { Context: true } && _capturedContextField is not null)
                 {
                     _r.Resolved[e] = new FieldSym(_capturedContextField);
-                    return _capturedContextField.Type;
+                    return _capturedContextField.ContextOf ?? _capturedContextField.Type;
                 }
                 if (_capturedThisType is not null && _capturedThisField is not null)
                 {
