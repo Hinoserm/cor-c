@@ -1685,6 +1685,12 @@ public sealed partial class Lowering
     // slot, not object's Equals (KeyEqualsStub).
     private const int TypeFlagEquatable = 1024;
 
+    // A CLASS WHOSE OBJECTS ARE DELEGATES -- a lambda's closure, a method
+    // group's, a multicast -- which GetType() answers with the delegate type
+    // it implements (Runtime.DelegateTypeOfObject), as .NET's Func`2 for a
+    // lambda: its own name is the compiler's. Past the box kind's bits.
+    private const int TypeFlagDelegateObject = 0x800000;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;
@@ -2607,6 +2613,16 @@ public sealed partial class Lowering
         return sym;
     }
 
+    /// <summary>Whether a class's objects are delegates: it implements a delegate type, being none.</summary>
+    private static bool DelegateObject(TypeSymbol t)
+    {
+        if (t.Decl?.IsDelegate == true) return false;
+        for (TypeSymbol? c = t; c is not null; c = c.Base)
+            foreach (TypeSymbol face in c.Interfaces)
+                if (face.Decl?.IsDelegate == true) return true;
+        return false;
+    }
+
     private static bool CanonicalCopy(TypeSymbol s)
         => s.Decl is { Specialised: true, Template: string template } d && d.TemplateArgs.Count > 0
         && Monomorphiser.CanonNameOf(template, d.TemplateArgs.Count) == s.Name;
@@ -2982,7 +2998,9 @@ public sealed partial class Lowering
         WriteWord(block, DescDepth * w, t.Depth);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
-        if (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null) WriteWord(block, DescFlags * w, TypeFlagEquatable);
+        int classFlags = (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null ? TypeFlagEquatable : 0)
+            | (t.Kind == TypeKind.Class && DelegateObject(t) ? TypeFlagDelegateObject : 0);
+        if (classFlags != 0) WriteWord(block, DescFlags * w, classFlags);
 
         // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a
         // field of one is keyed by the copy (FieldKey), and the owned-field

@@ -914,6 +914,14 @@ static class Runtime
         return d;
     }
 
+    /// A DELEGATE'S TYPE, as GetType() answers it (Lowering.TypeFlagDelegateObject):
+    /// the delegate type its closure or multicast implements, a multicast's by
+    /// its targets as SameDelegateType has it.
+    public static long DelegateTypeOfObject(object o)
+    {
+        return DelegateTypeOf(Sys.Word(Targeted(o)));
+    }
+
     static long DelegateTypeOf(long obj)
     {
         long w = WordSize.Bytes;

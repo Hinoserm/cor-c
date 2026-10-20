@@ -320,8 +320,12 @@ public sealed class Monomorphiser
         && (template.Mods & (Mods.Virtual | Mods.Override | Mods.Abstract | Mods.Async)) == 0
         && template.ExplicitInterface is null && template.Body is not { Iterator: true };
 
-    /// <summary>A dictionary entry's identity: its spelling, which keeps __canon(0) and an erased __canon apart.</summary>
-    internal static string NeedKey(TypeRef r) => Spelling(r);
+    /// <summary>
+    /// A dictionary entry's identity: its spelling, which keeps __canon(0) and
+    /// an erased __canon apart, and its mark (TypeRef.MadeFor): a struct's
+    /// context token and its box's descriptor are two entries.
+    /// </summary>
+    internal static string NeedKey(TypeRef r) => r.MadeFor is null ? Spelling(r) : "<" + r.MadeFor + ">" + Spelling(r);
 
     /// <summary>A type-context entry's identity: a plain entry its text, a marked one (TypeRef.MadeFor) apart.</summary>
     internal static string EntryKey(TypeRef t) => t.MadeFor is null ? t.ToString() : "<" + t.MadeFor + ">" + t.ToString();

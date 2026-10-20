@@ -1694,6 +1694,22 @@ public sealed partial class Binder
     private void NoteStructContext(Type t)
     {
         if (_member is MethodDecl { LocalCopy: true } || _thisType is null) return;
+        // IN A SHARED METHOD COPY, over its own hidden arguments: an entry of
+        // its dictionary, which each caller fills with that instantiation's
+        // token (Lowering.CopyStructContext).
+        if (_member is MethodDecl { CopyNeeds: { } needs, CopyParams: { } own } && SpellHidden(t.AsNonNullable(), own, 0) is TypeRef hiddenFace
+            && Marked(t, 0))
+        {
+            hiddenFace.MadeFor = "context";
+            string hiddenKey = Monomorphiser.NeedKey(hiddenFace);
+            if (!needs.Any(n => Monomorphiser.NeedKey(n) == hiddenKey))
+            {
+                needs.Add(hiddenFace);
+                _r.Reexpand = true;
+            }
+            return;
+        }
+        if (t.Symbol?.Decl?.CanonMadeWritten is null) return;
         TypeSymbol? home = IsClosure(_thisType) ? _lexicalType : _thisType;
         if (home?.Decl is not { CanonMadeWritten: { } written, TemplateParams: { } ps } homeDecl || ReferenceEquals(home, t.Symbol) && OwnUse(t, home)) return;
         if (FaceOverParams(t.AsNonNullable(), ps, home.Key) is not TypeRef face) return;
@@ -1702,6 +1718,45 @@ public sealed partial class Binder
         if (written.Any(w => Monomorphiser.EntryKey(w) == key) || homeDecl.NeedContexts?.Any(w => Monomorphiser.EntryKey(w) == key) == true) return;
         (homeDecl.NeedContexts ??= new()).Add(face);
         _r.Reexpand = true;
+    }
+
+    /// <summary>Whether a type is a shared struct's: its canonical copy, or a copy sharing its code.</summary>
+    private static bool SharedStructUse(Type t)
+        => t.Symbol is { Kind: TypeKind.Struct, Decl: { } d } && (d.CanonMadeWritten is not null || d.Canon is not null);
+
+    /// <summary>Whether a type holds a shared method copy's own hidden word (Type.CanonParam -2 - k) anywhere.</summary>
+    private static bool Marked(Type a, int depth)
+        => depth <= 8 && (a.CanonParam <= -2 && a.Prim == Prim.Any && a.Symbol is null
+            || a.IsArray && a.Element is Type e && Marked(e, depth + 1)
+            || a.UseArgs is { } use && use.Any(u => Marked(u, depth + 1)));
+
+    /// <summary>
+    /// A type over a shared method copy's own hidden words spelt over its
+    /// type parameters' names (MethodDecl.CopyParams), as its callers spell
+    /// its dictionary; null where it holds a class's word or has no spelling.
+    /// </summary>
+    internal static TypeRef? SpellHidden(Type t, IReadOnlyList<string> own, int depth)
+    {
+        if (depth > 8 || t.IsPointer || t.IsNullableValue) return null;
+        if (t.Prim == Prim.Any && t.Symbol is null && t.CanonParam != -1)
+            return t.CanonParam <= -2 && -2 - t.CanonParam < own.Count ? new TypeRef { Name = own[-2 - t.CanonParam] } : null;
+        if (t.IsArray && t.Element is Type element)
+        {
+            if (SpellHidden(element, own, depth + 1) is not TypeRef inner) return null;
+            return new TypeRef { Name = inner.Name, Arguments = inner.Args.ToList(), ArrayRank = inner.ArrayRank + 1 };
+        }
+        if (t.Symbol is { } s && t.UseArgs is { Count: > 0 } use && s.Decl?.Template is string template
+            && !s.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal))
+        {
+            List<TypeRef> args = new(use.Count);
+            foreach (Type u in use)
+            {
+                if (SpellHidden(u, own, depth + 1) is not TypeRef one) return null;
+                args.Add(one);
+            }
+            return new TypeRef { Name = template, Arguments = args };
+        }
+        return RefOf(t);
     }
 
     /// <summary>A use of a canonical copy over its own parameters in order -- Pair<A, B> in Pair's code, not Pair<B, A> -- its own instantiation's.</summary>
@@ -5552,7 +5607,7 @@ public sealed partial class Binder
             ForceBody(resolved);
             // A shared struct written over this code's parameters -- a cast,
             // a test, typeof, a local -- has its context here (NoteStructContext).
-            if (resolved.UseArgs is { Count: > 0 } && resolved.Symbol is { Kind: TypeKind.Struct, Decl.CanonMadeWritten: not null }) NoteStructContext(resolved);
+            if (resolved.UseArgs is { Count: > 0 } && SharedStructUse(resolved)) NoteStructContext(resolved);
         }
         return resolved;
     }
@@ -14047,7 +14102,7 @@ public sealed partial class Binder
         }
         _r.ExprType[e] = t;
         if (_inBodies) ForceBody(t);
-        if (_inBodies && t.UseArgs is { Count: > 0 } && t.Symbol is { Kind: TypeKind.Struct, Decl.CanonMadeWritten: not null }) NoteStructContext(t);
+        if (_inBodies && t.UseArgs is { Count: > 0 } && SharedStructUse(t)) NoteStructContext(t);
         // An event, read from outside the type that declares it, is refused
         // here, wherever the read is: a call of it, a ?.Invoke, an assignment
         // to it, or a plain read (EventFromOutside).

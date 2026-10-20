@@ -114,6 +114,11 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? StructBoxVtable(Type of)
     {
+        // A SHARED METHOD COPY'S over its hidden arguments (Span<U>, a copy
+        // sharing Span's code): its dictionary's token.
+        if (of is { IsArray: false, IsPointer: false, UseArgs.Count: > 0 } && of.Symbol is { Kind: TypeKind.Struct, Decl.Canon: not null } sharing
+            && CopyStructContext(of) is VReg copyToken)
+            return _e.Load(IrTypes.Word, EntryOr(copyToken, ContextToken(sharing)), 0);
         if (of is not { IsArray: false, IsPointer: false } || of.Symbol is not { Kind: TypeKind.Struct } held || !CanonicalCopy(held))
             return null;
         // Its own `this` names no arguments: its own instantiation.

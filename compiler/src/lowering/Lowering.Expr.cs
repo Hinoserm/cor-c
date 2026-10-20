@@ -937,7 +937,21 @@ public sealed partial class Lowering
                 // GetType(): the descriptor sits before the vtable the object points at.
                 VReg obj = Eval(on.Target);
                 VReg vt = _e.Load(IrTypes.Word, obj, 0);
-                return _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
+                VReg own = _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
+                // A DELEGATE'S IS ITS DELEGATE TYPE (TypeFlagDelegateObject), not
+                // the closure the compiler made of it.
+                if (RuntimeMethod("DelegateTypeOfObject", 1) is not MethodSymbol delegateType) return own;
+                VReg typeOf = _f.NewReg(IrTypes.Word, "gettype");
+                Block asDelegate = _f.NewBlock("gettypedelegate"), typed = _f.NewBlock("gettypeend");
+                _e.CopyTo(typeOf, R(own));
+                VReg flags = _e.Load(IrType.I32, own, DescFlags * _t.WordSize, 4);
+                _e.Branch(_e.Binary(Opcode.And, flags, TypeFlagDelegateObject), asDelegate, typed);
+                _e.SetBlock(asDelegate);
+                Require(delegateType);
+                _e.CopyTo(typeOf, R(_e.Call(CallLabel(delegateType), IrTypes.Word, R(obj))!));
+                _e.Jump(typed);
+                _e.SetBlock(typed);
+                return typeOf;
             }
 
             case CallExpr call when _b.MemberwiseClones.Contains(call) && call.Target is MemberExpr copied:

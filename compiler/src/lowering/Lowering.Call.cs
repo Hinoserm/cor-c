@@ -165,10 +165,38 @@ public sealed partial class Lowering
     private VReg? StructContextEntry(MethodSymbol canonical, Type held)
         => StructContext(canonical) ? StructContextOf(held) : null;
 
+    /// <summary>
+    /// The token of a shared struct a shared method copy holds over its own
+    /// hidden arguments, from its dictionary (Binder.NoteStructContext): the
+    /// struct spelt over the copy's parameters, marked "context"; null where
+    /// it holds none, or was handed no dictionary.
+    /// </summary>
+    private VReg? CopyStructContext(Type held)
+    {
+        if (_needDictionary is null || _method?.Decl is not MethodDecl { CopyNeeds: { } needs, CopyParams: { } own }
+            || Binder.SpellHidden(held.AsNonNullable(), own, 0) is not TypeRef face)
+            return null;
+        face.MadeFor = "context";
+        string key = Monomorphiser.NeedKey(face);
+        int at = needs.FindIndex(n => Monomorphiser.NeedKey(n) == key);
+        return at < 0 ? null : NeedEntry(at);
+    }
+
     /// <summary>The token of a shared struct held over this code's parameters, from its type context (StructContextEntry); null where it has none.</summary>
     private VReg? StructContextOf(Type held)
     {
-        if (_method?.Owner is not { } home || ContextSelf is not { } self || !SharedContext(home)
+        if (_method?.Owner is not { } home) return null;
+        VReg? self = ContextSelf;
+        // IN A LAMBDA, its class's: the context or the instance its closure holds.
+        if (!SharedContext(home) && _this is not null)
+        {
+            FieldSymbol? holder = home.Fields.FirstOrDefault(f => f.Name is "$context" or "$this" && !f.Static
+                && f.Type.Symbol is { } of && SharedContext(of) && (f.Name == "$context" || of.Kind == TypeKind.Class));
+            if (holder is null) return null;
+            home = holder.Type.Symbol!;
+            self = _e.Load(IrTypes.Word, _this, holder.Offset);
+        }
+        if (self is null || !SharedContext(home)
             || home.Decl is not { CanonMadeWritten: { } written, TemplateParams: { } ps, TemplateArgs.Count: int parameters }
             || Binder.FaceOverParams(held.AsNonNullable(), ps, home.Key) is not TypeRef face)
             return null;
@@ -221,6 +249,9 @@ public sealed partial class Lowering
             // shared method copy names the class over object, which is not
             // what its caller's type argument was.
             Operand context = read is { } entry ? R(EntryOr(entry.Context, ContextToken(m.Owner.Decl?.Canon is not null ? m.Owner : canonical.Owner)))
+                // A SHARED METHOD COPY'S over its hidden arguments: its dictionary's entry.
+                : held is not null && StructContext(canonical) && CopyStructContext(held) is VReg copyHeld
+                    ? R(EntryOr(copyHeld, ContextToken(m.Owner.Decl?.Canon is not null ? m.Owner : canonical.Owner)))
                 : m.Owner.Decl?.Canon is not null ? R(_e.Address(ContextToken(m.Owner)))
                 // A SHARED STRUCT THIS SHARED CODE HOLDS OVER ITS PARAMETERS --
                 // another's, or its own over them otherwise (Pair<B, A> in
