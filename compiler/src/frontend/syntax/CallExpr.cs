@@ -102,6 +102,17 @@ public sealed class CallExpr : Expr
     /// </summary>
     public int[]? HiddenTypeArgs { get; set; }
 
+    /// <summary>A HiddenTypeArgs entry for a type made over the caller's words, read from its run (HiddenMadeAt).</summary>
+    public const int MadeHiddenArg = int.MinValue;
+    /// <summary>
+    /// THE TYPES MADE OVER THE CALLER'S WORDS THAT THIS CALL HANDS AS HIDDEN
+    /// ARGUMENTS -- List&lt;U&gt; for FromResult's TResult -- spelt where its
+    /// dictionary is kept: placed after HiddenNeeds' callee entries in the
+    /// same run, each type argument's at HiddenMadeAt (-1 for the others).
+    /// </summary>
+    public List<TypeRef>? HiddenMade { get; set; }
+    public int[]? HiddenMadeAt { get; set; }
+
     /// <summary>
     /// WHAT THE SHARED METHOD COPY THIS CALLS MAKES OVER ITS TYPE ARGUMENTS
     /// (MethodDecl.CopyNeeds), spelt over the calling shared class's own

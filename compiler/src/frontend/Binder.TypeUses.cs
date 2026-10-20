@@ -181,7 +181,23 @@ public sealed partial class Binder
     /// and List&lt;object&gt;): the member types the checker sees at this use are
     /// worked out from it.
     /// </summary>
-    private static bool HasContextualUse(Type type) => HasTupleUse(type) || HasReferenceMark(type, 0);
+    private static bool HasContextualUse(Type type) => HasTupleUse(type) || HasReferenceMark(type, 0) || HasWordMark(type, 0);
+
+    /// <summary>
+    /// A WORD ONLY RUN TIME KNOWS among a use's arguments (Type.CanonParam):
+    /// List&lt;V&gt; in shared code is List$__canon, whose members' words are
+    /// List's own parameters; read through the use, they are this code's V.
+    /// </summary>
+    private static bool HasWordMark(Type type, int depth)
+    {
+        if (depth > 8) return false;
+        if (depth > 0 && type.CanonParam != -1 && type.Prim == Prim.Any && type.Symbol is null) return true;
+        if (type.Element is Type element && HasWordMark(element, depth + 1)) return true;
+        if (type.UseArgs is not null)
+            foreach (Type argument in type.UseArgs)
+                if (HasWordMark(argument, depth + 1)) return true;
+        return false;
+    }
 
     private static bool HasReferenceMark(Type type, int depth)
     {

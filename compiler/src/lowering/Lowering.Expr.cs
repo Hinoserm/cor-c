@@ -1141,17 +1141,28 @@ public sealed partial class Lowering
             // typeof(Box<U>) in a shared method copy: its dictionary's entry
             // (NeedEntry), or the type as the copy names it.
             case TypeOfExpr { NeedSlot: >= 0 } neededType when _needDictionary is not null && _b.TypeOfs.TryGetValue(neededType, out TypeSymbol? neededNamed):
-                return NeedOr(neededType.NeedSlot, () => _e.Address(DescriptorOf(neededNamed)));
+                // A struct by its box, as the static typeof below names it.
+                return NeedOr(neededType.NeedSlot, () => _e.Address(neededNamed.Kind is TypeKind.Enum or TypeKind.Struct
+                    ? BoxDescriptor(Type.Plain(neededNamed, Prim.Void)) : DescriptorOf(neededNamed)));
 
             // A TYPE ARGUMENT ONLY RUN TIME KNOWS (BindResult.RunTimeTypeOfs):
             // the descriptor run time finds for it, and object's where it
             // finds none -- a copy called with nothing to hand it.
             case TypeOfExpr to when _b.RunTimeTypeOfs.TryGetValue(to, out Type? runTime):
             {
-                Operand found = RunTimeDescriptor(runTime, statics: false);
+                // A struct handed in made: its hidden argument itself (RunTimeDescriptor
+                // keeps a struct's shape identity as it was).
+                Operand found = runTime is { CanonParam: <= -2, Symbol.Kind: TypeKind.Struct } && _typeArgs is { } handed && -2 - runTime.CanonParam < handed.Length
+                    ? R(handed[-2 - runTime.CanonParam]) : RunTimeDescriptor(runTime, statics: false);
+                // Where none is found: object's, or a made type's own as the copy names it.
+                VReg Fallback() => runTime.Symbol is { Kind: TypeKind.Struct } madeValue ? _e.Address(BoxDescriptor(Type.Plain(madeValue, Prim.Void)))
+                    : runTime.Symbol is { } madeOver ? _e.Address(DescriptorOf(madeOver))
+                    : _b.ArrayTypeOfs.TryGetValue(to, out Type? madeElement)
+                        ? _e.Address(SequenceDescriptor(ElementKey(madeElement), ElementStride(madeElement), isString: false, elementType: madeElement))
+                    : _e.Address(ObjectDescriptor());
                 if (found is ImmOperand)
                 {
-                    return _e.Address(ObjectDescriptor());
+                    return Fallback();
                 }
                 VReg runTimeResult = _f.NewReg(IrTypes.Word, "typeofrt");
                 Block runTimeObject = _f.NewBlock("typeofobject");
@@ -1159,7 +1170,7 @@ public sealed partial class Lowering
                 _e.CopyTo(runTimeResult, found);
                 _e.Branch(found, runTimeEnd, runTimeObject);
                 _e.SetBlock(runTimeObject);
-                _e.CopyTo(runTimeResult, R(_e.Address(ObjectDescriptor())));
+                _e.CopyTo(runTimeResult, R(Fallback()));
                 _e.Jump(runTimeEnd);
                 _e.SetBlock(runTimeEnd);
                 return runTimeResult;
@@ -2847,14 +2858,36 @@ public sealed partial class Lowering
         // lambda's body reads it from its closure.
         (VReg This, TypeSymbol Owner)? self = call.CanonSelf is { } named && _b.TypeOf(named).Symbol is { } owner && SharedCopy(owner)
             ? (Eval(named), owner) : null;
+        Operand dictionary = NeedDictionary(call, self);
+        // A TYPE MADE OVER THE CALLER'S WORDS (CallExpr.HiddenMade): its
+        // entry of the run, after the callee's own.
+        int madeFrom = (call.HiddenNeeds?.Count ?? 0) - (call.HiddenMade?.Count ?? 0);
         for (int i = 0; i < count; i++)
         {
             args.Add(given is null || i >= given.Length ? Imm(0, IrTypes.Word)
+                : given[i] == CallExpr.MadeHiddenArg ? call.HiddenMadeAt is { } at && i < at.Length && at[i] >= 0 && madeFrom >= 0 ? RunEntry(dictionary, madeFrom + at[i]) : Imm(0, IrTypes.Word)
                 : self is { } of && given[i] >= 0 ? R(ContextEntry(of.This, of.Owner, 2 * given[i]))
                 : RunTimeDescriptor(Type.CanonAny(given[i]), statics: false));
         }
-        args.Add(NeedDictionary(call, self));
+        args.Add(dictionary);
         return args;
+    }
+
+    /// <summary>Entry `index` of a run a call hands on (NeedDictionary), or 0 where it hands none.</summary>
+    private Operand RunEntry(Operand run, int index)
+    {
+        if (run is ImmOperand) return Imm(0, IrTypes.Word);
+        VReg result = _f.NewReg(IrTypes.Word, "runentry");
+        result.Number = true;
+        Block read = _f.NewBlock("runread");
+        Block end = _f.NewBlock("runend");
+        _e.CopyTo(result, Imm(0, IrTypes.Word));
+        _e.Branch(run, read, end);
+        _e.SetBlock(read);
+        _e.CopyTo(result, R(_e.Load(IrTypes.Word, run, (long)index * _t.WordSize)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return R(result);
     }
 
     /// <summary>Entry `entry` of the type context `self`'s class table holds at `owner`'s depth (TypeContext).</summary>
@@ -2883,7 +2916,7 @@ public sealed partial class Lowering
         {
             if (call.HiddenNeedBase < 0 || call.HiddenNeeds is not { Count: > 0 } run || _needDictionary is null
                 || !_b.Calls.TryGetValue(call, out MethodSymbol? copyCallee) || Canonical(copyCallee).Decl is not MethodDecl { CopyNeeds: { } copyAsked }
-                || copyAsked.Count != run.Count)
+                || copyAsked.Count != run.Count - (call.HiddenMade?.Count ?? 0))
             {
                 return Imm(0, IrTypes.Word);
             }
@@ -2912,7 +2945,7 @@ public sealed partial class Lowering
         // Binder.NoteCopyNeeds) would hand it what lies past the run.
         // THE COPY THAT RUNS (Canonical), whose dictionary is read.
         if (_b.Calls.TryGetValue(call, out MethodSymbol? callee) && Canonical(callee).Decl is MethodDecl { CopyNeeds: var asked }
-            && (asked?.Count ?? 0) != needs.Count)
+            && (asked?.Count ?? 0) != needs.Count - (call.HiddenMade?.Count ?? 0))
         {
             return Imm(0, IrTypes.Word);
         }
@@ -2980,14 +3013,19 @@ public sealed partial class Lowering
     /// </summary>
     private Operand RunTimeDescriptor(Type t, bool statics)
     {
-        if (t.CanonParam <= -2)
+        // A struct handed in made (KeyValuePair<V, K>) is no reference's identity:
+        // what a shape asks of it is what it always was.
+        if (t.CanonParam <= -2 && t.Symbol is not { Kind: TypeKind.Struct })
         {
             int k = -2 - t.CanonParam;
             return _typeArgs is not null && k < _typeArgs.Length ? R(_typeArgs[k]) : Imm(0, IrTypes.Word);
         }
         if (t.CanonParam >= 0)
         {
-            if (_this is null || _method is not { } running || !HasThis(running) || !SharedCopy(running.Owner))
+            // Only its own class's word (Type.CanonOwner): another's parameter
+            // k is not this table's entry k.
+            if (_this is null || _method is not { } running || !HasThis(running) || !SharedCopy(running.Owner)
+                || t.CanonOwner is string owner && owner != running.Owner.Key)
             {
                 return Imm(0, IrTypes.Word);
             }

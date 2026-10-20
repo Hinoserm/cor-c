@@ -2487,8 +2487,11 @@ public sealed class Monomorphiser
                 // here, and a copy that kept its shape but lost its names left
                 // `l[0].Label` reporting that the element does not exist.
                 TupleNames = bound.TupleNames is null ? null : new List<string>(bound.TupleNames),
-                // Which shared type argument it stands for, if any (CanonIndex).
+                // Which shared type argument it stands for, if any (CanonIndex),
+                // and whether it is the bound's array as a whole (its brackets
+                // the innermost).
                 CanonIndex = bound.CanonIndex,
+                CanonWhole = bound.CanonWhole,
                 Line = r.Line, Col = r.Col,
             };
             _settled.Add(substituted);
@@ -3730,6 +3733,8 @@ public sealed class Monomorphiser
                 made.Spans = c.Spans;
                 made.Source = c.Source;
                 made.HiddenTypeArgs = c.HiddenTypeArgs;
+                made.HiddenMade = c.HiddenMade;
+                made.HiddenMadeAt = c.HiddenMadeAt;
                 made.HiddenNeeds = c.HiddenNeeds;
                 made.HiddenNeedBase = c.HiddenNeedBase;
                 made.CanonSelf = c.CanonSelf is null ? made.CanonSelf : new ThisExpr { Context = true, Line = c.Line, Col = c.Col };

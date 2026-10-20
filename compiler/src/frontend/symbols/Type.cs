@@ -121,22 +121,31 @@ public sealed class Type : IEquatable<Type>
     /// </summary>
     public int CanonParam { get => _rare?.CanonParam ?? -1; init { if (value != -1) Rare.CanonParam = value; } }
 
-    /// <summary>object, as the shared type argument at `index` (CanonParam): one instance per index.</summary>
-    public static Type CanonAny(int index)
+    /// <summary>
+    /// WHOSE PARAMETER A SHARED CLASS COPY'S WORD IS (CanonParam k, k >= 0):
+    /// the key of the canonical copy it was resolved in. List's T read through
+    /// a Pair's `List<V> Items` is List's parameter 0, not Pair's; read as the
+    /// code's own it named Pair's K. Null where nothing says. Not part of
+    /// equality, as CanonParam is not.
+    /// </summary>
+    public string? CanonOwner { get => _rare?.CanonOwner; init { if (value is not null) Rare.CanonOwner = value; } }
+
+    /// <summary>object, as the shared type argument at `index` (CanonParam) of `owner`'s: one instance per pair.</summary>
+    public static Type CanonAny(int index, string? owner = null)
     {
         if (index == -1) return Any;
         lock (CanonAnys)
         {
-            if (!CanonAnys.TryGetValue(index, out Type? made))
+            if (!CanonAnys.TryGetValue((index, owner), out Type? made))
             {
-                made = new Type { Prim = Prim.Any, CanonParam = index };
-                CanonAnys[index] = made;
+                made = new Type { Prim = Prim.Any, CanonParam = index, CanonOwner = owner };
+                CanonAnys[(index, owner)] = made;
             }
             return made;
         }
     }
 
-    private static readonly Dictionary<int, Type> CanonAnys = new();
+    private static readonly Dictionary<(int, string?), Type> CanonAnys = new();
 
 
     /// <summary>
@@ -298,7 +307,21 @@ public sealed class Type : IEquatable<Type>
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
-        CanonParam = CanonParam,
+        CanonParam = CanonParam, CanonOwner = CanonOwner,
+        Dynamic = Dynamic,
+    };
+
+    /// <summary>
+    /// This type as a shared method copy's hidden type argument (CanonParam):
+    /// a type made over a caller's words -- List&lt;U&gt; handed as TResult --
+    /// which the copy is handed the descriptor of, and hands on.
+    /// </summary>
+    public Type WithCanonParam(int index) => new()
+    {
+        Prim = Prim, Symbol = Symbol, Nullable = Nullable, Element = Element,
+        ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
+        Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
+        CanonParam = index, CanonOwner = CanonOwner,
         Dynamic = Dynamic,
     };
 
@@ -307,7 +330,7 @@ public sealed class Type : IEquatable<Type>
         Prim = Prim, Symbol = Symbol, Nullable = Nullable, Element = Element,
         ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
         Names = names, PointerDepth = PointerDepth, Pointee = Pointee, UseArgs = UseArgs, Function = Function,
-        CanonParam = CanonParam,
+        CanonParam = CanonParam, CanonOwner = CanonOwner,
         Dynamic = Dynamic,
     };
 
@@ -540,6 +563,7 @@ internal sealed class TypeRare
     public FunctionPointer? Function;
     public int PointerDepth;
     public int CanonParam = -1;
+    public string? CanonOwner;
     public bool StructParam;
     public bool Dynamic;
 }

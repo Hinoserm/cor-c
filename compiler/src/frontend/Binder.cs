@@ -1203,7 +1203,7 @@ public sealed partial class Binder
     /// </summary>
     private static bool HasPublicParameterless(Type a)
     {
-        if (a.IsError || a.ParamName is not null || a.CanonParam != -1)
+        if (a.IsError || a.ParamName is not null || a.CanonParam != -1 && a.Symbol is null && !a.IsArray)
         {
             return true;
         }
@@ -1246,7 +1246,7 @@ public sealed partial class Binder
         {
             return null;
         }
-        if (t.CanonParam != -1)
+        if (t.CanonParam != -1 && t.Symbol is null && !t.IsArray)
         {
             Error(c, $"Activator.CreateInstance<{written.Name}>() over a type argument only run time knows: give the parameter it comes from the new() constraint");
             return null;
@@ -1636,7 +1636,7 @@ public sealed partial class Binder
             : _capturedThisField is not null ? _capturedThisType
             : _capturedContextField?.Type.Symbol;
         if (lam.CanonOrdinal >= 0 && lam.CanonFace is null && at?.Decl is { CanonMadeWritten: not null, TemplateParams: { } ps } home
-            && FaceOverParams(wanted, ps) is TypeRef spelt)
+            && FaceOverParams(wanted, ps, at.Key) is TypeRef spelt)
         {
             spelt.MadeFor = "lambda:" + lam.CanonOrdinal;
             lam.CanonFace = spelt;
@@ -1656,7 +1656,7 @@ public sealed partial class Binder
     /// every machine word in it says which it is (Type.CanonParam, carried in
     /// UseArgs); null where any word's place is unknown, or none is one.
     /// </summary>
-    private static TypeRef? FaceOverParams(Type wanted, IReadOnlyList<TypeParam> ps)
+    private static TypeRef? FaceOverParams(Type wanted, IReadOnlyList<TypeParam> ps, string home)
     {
         bool any = false;
         TypeRef? Spell(Type a, int depth)
@@ -1664,7 +1664,7 @@ public sealed partial class Binder
             if (depth > 8 || a.IsPointer || a.IsNullableValue || a.ArrayRank > 0) return null;
             if (a.Prim == Prim.Any && a.Symbol is null)
             {
-                if (a.CanonParam < 0 || a.CanonParam >= ps.Count) return null;
+                if (a.CanonParam < 0 || a.CanonParam >= ps.Count || a.CanonOwner is string owner && owner != home) return null;
                 any = true;
                 return new TypeRef { Name = ps[a.CanonParam].Name };
             }
@@ -3032,11 +3032,14 @@ public sealed partial class Binder
                 foreach (TypeRef each in made.Decl!.CanonMade!.Skip(made.CanonMadeTypes.Count).ToList())
                 {
                     Type resolved = Resolve(each, made);
-                    // An array of one (Monomorphiser.CanonTested) by its element:
-                    // lowering makes the array's descriptor of it.
-                    made.WritableCanonMadeTypes.Add(Unresolved(resolved) ? null
-                        : resolved.IsArray ? resolved.Element is { Symbol: { } element } inner && !inner.IsArray ? element : null
-                        : resolved.Symbol);
+                    // An array (Monomorphiser.CanonTested, a dictionary's need)
+                    // by its element, of any type and at any depth: lowering
+                    // makes the array's descriptor of it; its innermost class
+                    // is declared with this one (ForceContext).
+                    Type innermost = resolved;
+                    while (innermost.IsArray && innermost.Element is Type inner) innermost = inner;
+                    made.WritableCanonMadeTypes.Add(Unresolved(resolved) ? null : innermost.Symbol);
+                    made.WritableCanonMadeElements.Add(!Unresolved(resolved) && resolved.IsArray ? resolved.Element : null);
                 }
             }
         }
@@ -5519,6 +5522,12 @@ public sealed partial class Binder
             : r.Name is "Nullable" or "System.Nullable" && r.Args.Count == 1 && !_r.Types.ContainsKey("Nullable")
                 ? Resolve(r.Args[0], context).AsNullable()
             : ResolveCore(r, context);
+        // A SHARED METHOD COPY'S HIDDEN ARGUMENT MADE OVER ITS CALLER'S WORDS
+        // (CallExpr.MadeHiddenArg): the type it is, marked as that argument.
+        if (r.CanonIndex <= -2 && r.CanonWhole == 0 && baseType is { Symbol: not null, CanonParam: -1, PointerDepth: 0 } && !baseType.IsArray)
+        {
+            baseType = baseType.WithCanonParam(r.CanonIndex);
+        }
 
         // POINTERS FIRST, then the array: `byte*[]` is an array OF pointers,
         // which is C#'s reading and the only one that makes sense -- an array
@@ -5544,6 +5553,8 @@ public sealed partial class Binder
             for (int level = 1; level <= r.ArrayRank; level++)
             {
                 baseType = Type.ArrayOf(baseType, 1);
+                // The array handed in whole (TypeRef.CanonWhole).
+                if (level == r.CanonWhole && r.CanonIndex <= -2) baseType = baseType.WithCanonParam(r.CanonIndex);
                 if (level < r.ArrayRank && (r.InnerNullable & (1 << (level - 1))) != 0)
                 {
                     baseType = baseType.AsNullable();
@@ -5629,7 +5640,7 @@ public sealed partial class Binder
             case "string": return Type.String;
             // A SHARED METHOD COPY'S TYPE ARGUMENT is object, carrying which
             // of its type parameters it is (TypeRef.CanonIndex).
-            case "object": return Type.CanonAny(r.CanonIndex);
+            case "object": return Type.CanonAny(r.CanonWhole > 0 ? -1 : r.CanonIndex);
 
             // C#'S `dynamic`: object, with its operations bound when the
             // program runs (Type.Dynamic; Binder.Dynamic.cs).
@@ -5678,7 +5689,7 @@ public sealed partial class Binder
             //
             // And which of the copy's parameters it is, where the copy was
             // written so (TypeRef.CanonIndex, Type.CanonParam).
-            case Monomorphiser.CanonName: return Type.CanonAny(r.CanonIndex);
+            case Monomorphiser.CanonName: return Type.CanonAny(r.CanonWhole > 0 ? -1 : r.CanonIndex, r.CanonIndex >= 0 ? MarkOwner(context) : null);
 
             // A TYPE, AS A VALUE -- what typeof(T) and GetType() produce.
             //
@@ -12920,6 +12931,23 @@ public sealed partial class Binder
         // KEEPING ITS `?`: `IComparer<K>? comparer` closed over string is an
         // IComparer$string that may be null, and dropping the annotation had
         // every null a caller passed for it refused.
+        // A SHARED CLASS'S WORD (Type.CanonParam k >= 0) IS __canon in the
+        // code that has it, as that code's own declarations spell it:
+        // Func<T, bool>[] read through a use over its T is the copy's own
+        // Func$__canon$bool[], not the Func$object$bool[] a copy over object
+        // made. Where nothing made that one, the spelling over object.
+        List<TypeRef>? overWords = null;
+        for (int i = 0; i < closed.Count; i++)
+        {
+            if (closed[i] is { Prim: Prim.Any, Symbol: null, CanonParam: >= 0, IsArray: false, PointerDepth: 0 })
+                (overWords ??= new List<TypeRef>(args))[i] = new TypeRef { Name = Monomorphiser.CanonName, Nullable = args[i].Nullable };
+        }
+        if (overWords is not null
+            && _r.Types.TryGetValue(Monomorphiser.MangledName(Bare(template.Key), SpecialisationKeys(overWords, closed)), out TypeSymbol? sharedOver))
+        {
+            Type specialised = new() { Prim = Prim.Void, Symbol = sharedOver, UseArgs = closed };
+            return made.Nullable ? specialised.AsNullable() : specialised;
+        }
         if (_r.Types.TryGetValue(Monomorphiser.MangledName(Bare(template.Key), SpecialisationKeys(args, closed)), out TypeSymbol? real))
         {
             Type specialised = new()
@@ -16562,9 +16590,13 @@ public sealed partial class Binder
                 // shared method copy's, handed in as a hidden argument, or a
                 // shared class copy's where no mark reads it (ICanonSlot) --
                 // what it is for this call, and object where nothing says.
-                if (named is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 })
+                if (named is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 }
+                    || named is { CanonParam: <= -2, Symbol: { Kind: TypeKind.Class or TypeKind.Interface or TypeKind.Struct }, ArrayRank: 0, PointerDepth: 0 }
+                    || named is { CanonParam: <= -2, IsArray: true, Element: not null, PointerDepth: 0 })
                 {
                     _r.RunTimeTypeOfs[to] = named;
+                    // Where nothing is handed: the array as the copy spells it.
+                    if (named.IsArray) _r.ArrayTypeOfs[to] = named.Element!;
                     return Type.TypeHandle;
                 }
 
@@ -21864,20 +21896,32 @@ public sealed partial class Binder
             // stamped as its caller's instantiation (MethodDecl.MachineNeed,
             // MethodDecl.TaskNeed).
             int[]? hidden = null;
+            // A TYPE MADE OVER THEM -- List<U> handed to FromResult<TResult> --
+            // is a hidden argument too, its descriptor read from the caller's
+            // dictionary, where the call places it after the callee's needs
+            // (CallExpr.HiddenMade). Once a round found it cannot be placed,
+            // the copy over object it was before.
+            bool madeAllowed = c.HiddenNeedMap is null || c.HiddenMadeAt is not null;
             if (spelt.Count == best.TypeParams.Count && !best.GenericVirtual)
             {
                 for (int i = 0; i < spelt.Count; i++)
                 {
-                    if (given[i] is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 })
+                    // One handed in made (Type.WithCanonParam) is handed on as it came.
+                    // Only a word of this code's own class (Type.CanonOwner): another
+                    // class's parameter k, read through a member of it, is not this one's.
+                    int from = given[i] is { CanonParam: not -1, Prim: Prim.Any, Symbol: null, ArrayRank: 0, PointerDepth: 0 } ? OwnMark(given[i]) ? given[i].CanonParam : -1
+                        : given[i] is { CanonParam: <= -2, PointerDepth: 0 } && (given[i].Symbol is not null || given[i].IsArray) ? given[i].CanonParam
+                        : madeAllowed && MadeOverHidden(given[i]) ? CallExpr.MadeHiddenArg : -1;
+                    if (from == -1) continue;
+                    spelt[i].CanonIndex = -2 - i;
+                    // An array is the argument whole (TypeRef.CanonWhole).
+                    if (given[i].IsArray) spelt[i].CanonWhole = spelt[i].ArrayRank;
+                    if (hidden is null)
                     {
-                        spelt[i].CanonIndex = -2 - i;
-                        if (hidden is null)
-                        {
-                            hidden = new int[spelt.Count];
-                            for (int unset = 0; unset < hidden.Length; unset++) hidden[unset] = -1;
-                        }
-                        hidden[i] = given[i].CanonParam;
+                        hidden = new int[spelt.Count];
+                        for (int unset = 0; unset < hidden.Length; unset++) hidden[unset] = -1;
                     }
+                    hidden[i] = from;
                 }
             }
             // On the call, for the round that binds it to the copy (CallExpr.HiddenTypeArgs).
@@ -21890,7 +21934,27 @@ public sealed partial class Binder
             {
                 int index = generic.TemplateIndex >= 0 ? generic.TemplateIndex : best.Owner.Decl?.Members.IndexOf(generic) ?? -1;
                 string copyName = Monomorphiser.CopyName(generic.Name, spelt, index, dictionary);
-                NoteCopyNeeds(c, best, generic, spelt, hidden ?? Enumerable.Repeat(-1, spelt.Count).ToArray(), copyName);
+                if (!NoteCopyNeeds(c, best, generic, spelt, given, hidden ?? Enumerable.Repeat(-1, spelt.Count).ToArray(), copyName)
+                    && hidden is not null && hidden.Contains(CallExpr.MadeHiddenArg))
+                {
+                    // NOWHERE TO READ A MADE ONE FROM: the copy over what it is.
+                    for (int i = 0; i < hidden.Length; i++)
+                    {
+                        if (hidden[i] != CallExpr.MadeHiddenArg) continue;
+                        hidden[i] = -1;
+                        spelt[i].CanonIndex = -1;
+                        spelt[i].CanonWhole = 0;
+                    }
+                    if (hidden.All(k => k == -1)) hidden = null;
+                    c.HiddenTypeArgs = hidden;
+                    c.HiddenMade = null;
+                    c.HiddenMadeAt = null;
+                    if (hidden is not null || dictionary)
+                    {
+                        copyName = Monomorphiser.CopyName(generic.Name, spelt, index, dictionary);
+                        NoteCopyNeeds(c, best, generic, spelt, given, hidden ?? Enumerable.Repeat(-1, spelt.Count).ToArray(), copyName);
+                    }
+                }
             }
             // A CLASS PARAMETER HANDED ON is read through the class's `this`
             // (CallExpr.CanonSelf): in a lambda, a closure's own `this` has
@@ -22033,10 +22097,11 @@ public sealed partial class Binder
     /// method copy's own hidden argument handed on finds no dictionary here,
     /// and its callee makes what it always made.
     /// </summary>
-    private void NoteCopyNeeds(CallExpr c, MethodSymbol best, MethodDecl generic, List<TypeRef> spelt, int[] hidden, string copyName)
+    private bool NoteCopyNeeds(CallExpr c, MethodSymbol best, MethodDecl generic, List<TypeRef> spelt, List<Type> given, int[] hidden, string copyName)
     {
-        if (c.HiddenNeedMap is not null || generic.Body is null) return;
-        if (_member is not MethodDecl { } caller) return;
+        if (c.HiddenNeedMap is not null) return true;
+        if (generic.Body is null) return false;
+        if (_member is not MethodDecl { } caller) return false;
         // WHAT RUNS IS WHAT IS HANDED THE DICTIONARY (Lowering.Canonical): on
         // a word-shaped instantiation the canonical class's copy
         // (Frontend.CanonicalTwin), sized and spelt by the canonical template
@@ -22052,7 +22117,7 @@ public sealed partial class Binder
                 || sharedDecl.MembersMade.OfType<MethodDecl>().FirstOrDefault(m => m.Name == generic.Name
                        && m.TypeParams.Count == generic.TypeParams.Count
                        && (generic.TemplateIndex < 0 || m.TemplateIndex == generic.TemplateIndex)) is not MethodDecl origin)
-                return;
+                return false;
             template = origin;
             running = shared.Methods.FirstOrDefault(m => m.Name == copyName);
             ofClass = true;
@@ -22070,7 +22135,7 @@ public sealed partial class Binder
         // FROM INSTANCE CODE EVERY UNIT BINDS -- not a copy (LocalCopy), which
         // only the units wanting it have: its needs in the class's type
         // context would lay the table out differently unit by unit.
-        if (!caller.LocalCopy && classNames is not null && hidden.All(k => k >= -1 && k < classNames.Count)
+        if (!caller.LocalCopy && classNames is not null && hidden.All(k => k >= -1 && k < classNames.Count || k == CallExpr.MadeHiddenArg)
             && (!caller.Mods.HasFlag(Mods.Static) || ContextStatic(_method)) && _thisType!.Decl is { } home)
         {
             canonical = home;
@@ -22080,7 +22145,7 @@ public sealed partial class Binder
         // FROM A COPY WITH A DICTIONARY: its hidden parameters by name, its
         // class's as __canon(i), for its own callers to name.
         else if (caller.CopyParams is { } own && caller.CopyNeeds is not null
-            && hidden.All(k => k == -1 || k <= -2 && -2 - k < own.Count || k >= 0 && classNames is not null && k < classNames.Count))
+            && hidden.All(k => k == -1 || k == CallExpr.MadeHiddenArg || k <= -2 && -2 - k < own.Count || k >= 0 && classNames is not null && k < classNames.Count))
         {
             names = own;
             if (self) classMap = Enumerable.Range(0, classNames!.Count).Select(i => (TypeRef?)new TypeRef
@@ -22088,17 +22153,38 @@ public sealed partial class Binder
         }
         else
         {
-            return;
+            return false;
         }
         Dictionary<string, TypeRef> map = new(StringComparer.Ordinal);
+        List<TypeRef>? madeTypes = null;
+        int[]? madeAt = null;
         for (int i = 0; i < generic.TypeParams.Count && i < spelt.Count; i++)
         {
+            if (hidden[i] == CallExpr.MadeHiddenArg)
+            {
+                // A TYPE MADE OVER THEM, spelt over this caller's names as its
+                // plain hidden arguments are: the run's entry after the
+                // callee's needs that holds its descriptor.
+                List<string> spelling = names;
+                TypeRef? Mark(int k) => canonical is not null ? k >= 0 && k < spelling.Count ? new TypeRef { Name = spelling[k], Line = c.Line, Col = c.Col } : null
+                    : k <= -2 && -2 - k < spelling.Count ? new TypeRef { Name = spelling[-2 - k], Line = c.Line, Col = c.Col }
+                    : k >= 0 && classNames is not null && k < classNames.Count ? new TypeRef { Name = Monomorphiser.CanonName, CanonIndex = k, Line = c.Line, Col = c.Col }
+                    : null;
+                if (SpellOverHidden(given[i], Mark, 0) is not TypeRef madeType) return false;
+                madeAt ??= Enumerable.Repeat(-1, spelt.Count).ToArray();
+                madeAt[i] = (madeTypes ??= new()).Count;
+                madeTypes.Add(madeType);
+                map[generic.TypeParams[i].Name] = madeType;
+                continue;
+            }
             map[generic.TypeParams[i].Name] = hidden[i] == -1 ? spelt[i]
                 : hidden[i] <= -2 ? new TypeRef { Name = names[-2 - hidden[i]], Line = c.Line, Col = c.Col }
                 : canonical is not null ? new TypeRef { Name = names[hidden[i]], Line = c.Line, Col = c.Col }
                 : new TypeRef { Name = Monomorphiser.CanonName, CanonIndex = hidden[i], Line = c.Line, Col = c.Col };
         }
         c.HiddenNeedMap = map;
+        c.HiddenMade = madeTypes;
+        c.HiddenMadeAt = madeAt;
         c.HiddenNeedClassMap = classMap;
         // WHICH COPY RUNS, for an entry standing for its machine ("copy",
         // MethodDecl.MachineNeed): named so in what the caller places.
@@ -22118,6 +22204,79 @@ public sealed partial class Binder
             }
         }
         PlaceCopyNeeds(c, needs);
+        return true;
+    }
+
+    /// <summary>
+    /// A type made over words only run time knows (Type.CanonParam, in its
+    /// arguments as written, Type.UseArgs, or its element): a class (a
+    /// delegate's too), an interface or an array, whose descriptor a caller's
+    /// dictionary can hold. Not such a word itself, which is a plain hidden
+    /// argument, and not a value, a pointer or a tuple.
+    /// </summary>
+    private bool MadeOverHidden(Type t)
+    {
+        if (t.Prim == Prim.Any && t.Symbol is null || t.IsPointer || t.IsNullableValue) return false;
+        // An array of them: its descriptor as any array's.
+        if (t.IsArray) return t.Element is Type element && Marked(element, 1);
+        // A struct too (KeyValuePair<V, K>): its box's descriptor, as typeof names it.
+        if (t.Symbol is not { Kind: TypeKind.Class or TypeKind.Interface or TypeKind.Struct } s
+            || s.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal) || t.UseArgs is not { Count: > 0 }) return false;
+        return Marked(t, 0);
+
+        bool Marked(Type a, int depth)
+            => depth <= 8 && (a.CanonParam != -1 && a.Prim == Prim.Any && a.Symbol is null && OwnMark(a)
+                || a.IsArray && a.Element is Type e && Marked(e, depth + 1)
+                || a.UseArgs is { } use && use.Any(u => Marked(u, depth + 1)));
+    }
+
+    /// <summary>
+    /// The canonical class a word resolved in `context` belongs to
+    /// (Type.CanonOwner): that class, or -- in a lambda's closure -- the class
+    /// the lambda was written in.
+    /// </summary>
+    private string? MarkOwner(TypeSymbol? context)
+        => context is null ? null : IsClosure(context) && _lexicalType is { } lexical ? lexical.Key : context.Key;
+
+    /// <summary>The class whose words this code reads as its own: its own, or a lambda's lexical class.</summary>
+    private string? MarkHome() => MarkOwner(_thisType);
+
+    /// <summary>Whether a word is this code's to read (Type.CanonOwner): a shared method copy's own, or its class's.</summary>
+    private bool OwnMark(Type a) => a.CanonParam <= -2 || a.CanonOwner is not string owner || owner == MarkHome();
+
+    /// <summary>
+    /// A type made over words only run time knows, spelt over names (`mark`
+    /// for each word's place, CanonParam): its template over the spelt
+    /// arguments, an array of the spelt element; null where any word has no
+    /// name there, or the type no spelling.
+    /// </summary>
+    private TypeRef? SpellOverHidden(Type t, Func<int, TypeRef?> mark, int depth)
+    {
+        if (depth > 8 || t.IsPointer || t.IsNullableValue) return null;
+        if (t.Prim == Prim.Any && t.Symbol is null && t.CanonParam != -1) return OwnMark(t) ? mark(t.CanonParam) : null;
+        if (t.IsArray && t.Element is Type element)
+        {
+            if (SpellOverHidden(element, mark, depth + 1) is not TypeRef inner) return null;
+            return new TypeRef { Name = inner.Name, Arguments = inner.Args.ToList(), CanonIndex = inner.CanonIndex, ArrayRank = inner.ArrayRank + 1 };
+        }
+        if (t.Symbol is { } s && t.UseArgs is { Count: > 0 } use && s.Decl?.Template is string template
+            && !s.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal))
+        {
+            List<TypeRef> args = new(use.Count);
+            foreach (Type u in use)
+            {
+                if (SpellOverHidden(u, mark, depth + 1) is not TypeRef one) return null;
+                args.Add(one);
+            }
+            return new TypeRef { Name = template, Arguments = args };
+        }
+        return MadeOverHidden(t) || Foreign(t, 0) ? null : RefOf(t);
+
+        // Another class's word anywhere in it: no spelling here names it.
+        bool Foreign(Type a, int at)
+            => at <= 8 && (a.CanonParam != -1 && a.Prim == Prim.Any && a.Symbol is null && !OwnMark(a)
+                || a.IsArray && a.Element is Type e && Foreign(e, at + 1)
+                || a.UseArgs is { } use && use.Any(u => Foreign(u, at + 1)));
     }
 
     /// <summary>
@@ -22144,6 +22303,14 @@ public sealed partial class Binder
         return needs.Select(Over).ToList();
     }
 
+    /// <summary>A call's run: the callee's dictionary over the caller's names (SpeltFor), then the types made over them it is handed (CallExpr.HiddenMade).</summary>
+    private static List<TypeRef> RunOf(CallExpr c, List<TypeRef> needs)
+    {
+        List<TypeRef> run = SpeltFor(c, needs);
+        if (c.HiddenMade is { Count: > 0 } made) run.AddRange(made);
+        return run;
+    }
+
     /// <summary>
     /// A call's dictionary placed where its caller keeps it (NoteCopyNeeds):
     /// spelt over the caller's parameters (SpeltFor), then in a shared
@@ -22155,13 +22322,13 @@ public sealed partial class Binder
     private void PlaceCopyNeeds(CallExpr c, List<TypeRef> needs)
     {
         if (c.HiddenNeedMap is null) return;
-        if (needs.Count == 0)
+        List<TypeRef> spelt = RunOf(c, needs);
+        if (spelt.Count == 0)
         {
             c.HiddenNeeds = null;
             c.HiddenNeedBase = -1;
             return;
         }
-        List<TypeRef> spelt = SpeltFor(c, needs);
         c.HiddenNeeds = spelt;
         c.HiddenNeedBase = -1;
         if (c.NeedClass is { } home)
@@ -22211,8 +22378,9 @@ public sealed partial class Binder
         if (c.NeedCopy is not null && _member is MethodDecl { CopyNeeds: not null } caller) c.NeedCopy = caller;
         // THE WHOLE RUN COMPARED, not its length: an entry that changed
         // spelling (a __canon now known) is another dictionary.
-        bool same = needs.Count == 0 ? c.HiddenNeeds is null
-            : c.HiddenNeeds is { } had && had.Select(Monomorphiser.NeedKey).SequenceEqual(SpeltFor(c, needs).Select(Monomorphiser.NeedKey));
+        List<TypeRef> run = RunOf(c, needs);
+        bool same = run.Count == 0 ? c.HiddenNeeds is null
+            : c.HiddenNeeds is { } had && had.Select(Monomorphiser.NeedKey).SequenceEqual(run.Select(Monomorphiser.NeedKey));
         if (!same)
         {
             PlaceCopyNeeds(c, needs);

@@ -1,0 +1,61 @@
+// test: shared_copies_hand_on_arrays_made_over_hidden_arguments
+// expect-exit: 0
+// expect-output:
+// string made True True
+// string twice True True
+// string named True True
+// string sync True True 1
+// string jagged True True
+// string listarr True True
+// thing made True False
+// thing twice True False
+// thing named True False
+// thing sync True False 2
+// thing jagged True False
+// thing listarr True False
+//
+// An array made over what only run time knows -- T[], T[][], List<T>[] --
+// handed to a generic method from shared code is that method's hidden
+// argument whole: what it makes over it, typeof it, Task.FromResult over it
+// and a further call handing it on are the caller's instantiation.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public object ArrMade() => Program.Id(Items.ToArray());
+    public object ArrTwice() => Program.Id2(Items.ToArray());
+    public Type ArrNamed() => Program.TypeOfIt(Items.ToArray());
+    public Task<T[]> ArrSync() => Program.ArrSync(Items);
+    public object Jagged() => Program.Id(new T[][] { Items.ToArray() });
+    public object ListArr() => Program.Id(new List<T>[] { Items });
+}
+class Thing { }
+static class Program
+{
+    public static object Id<X>(X x) => new List<X>();
+    public static object Id2<X>(X x) => Id(x);
+    public static Type TypeOfIt<X>(X x) => typeof(X);
+    public static Task<U[]> ArrSync<U>(List<U> x) => Task.FromResult(x.ToArray());
+    static void Show<T>(Repo<T> r, string name)
+    {
+        Console.WriteLine(name + " made " + (r.ArrMade() is List<T[]>) + " " + (r.ArrMade() is List<string[]>));
+        Console.WriteLine(name + " twice " + (r.ArrTwice() is List<T[]>) + " " + (r.ArrTwice() is List<string[]>));
+        Console.WriteLine(name + " named " + (r.ArrNamed() == typeof(T[])) + " " + (r.ArrNamed() == typeof(string[])));
+        Console.WriteLine(name + " sync " + ((object)r.ArrSync() is Task<T[]>) + " " + ((object)r.ArrSync() is Task<string[]>) + " " + r.ArrSync().Result.Length);
+        Console.WriteLine(name + " jagged " + (r.Jagged() is List<T[][]>) + " " + (r.Jagged() is List<string[][]>));
+        Console.WriteLine(name + " listarr " + (r.ListArr() is List<List<T>[]>) + " " + (r.ListArr() is List<List<string>[]>));
+    }
+    static int Main()
+    {
+        Repo<string> r = new(); r.Items.Add("a");
+        Show(r, "string");
+        Repo<Thing> t = new(); t.Items.Add(new Thing()); t.Items.Add(new Thing());
+        Show(t, "thing");
+        return 0;
+    }
+}

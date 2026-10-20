@@ -185,6 +185,19 @@ public sealed class TypeRef : Node
     /// argument at run time. Not part of the spelling: two references
     /// differing only here name one type.
     /// </summary>
+    /// <summary>
+    /// HOW MANY OF THIS REFERENCE'S BRACKETS BELONG TO THE HIDDEN ARGUMENT
+    /// CanonIndex NAMES: 0, its base type alone (U[] is an array of U); k, an
+    /// array that is itself the argument -- string[] handed as TResult, which
+    /// the copy spells object[] -- whose element is a plain object. Not part
+    /// of the spelling, as CanonIndex is not.
+    /// </summary>
+    public int CanonWhole
+    {
+        get => _rare?.CanonWhole ?? 0;
+        set { if (value != 0 || _rare is not null) Rare.CanonWhole = value; }
+    }
+
     public int CanonIndex
     {
         get
@@ -262,5 +275,6 @@ internal sealed class TypeRefRare
     public int ArrayRank;
     public int PointerDepth;
     public int CanonIndex;
+    public int CanonWhole;
     public string? MadeFor;
 }

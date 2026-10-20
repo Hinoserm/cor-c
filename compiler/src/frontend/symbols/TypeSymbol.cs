@@ -113,6 +113,11 @@ public sealed class TypeSymbol
     public List<TypeSymbol?> WritableCanonMadeTypes => _canonMadeTypes ??= new();
     private List<TypeSymbol?>? _canonMadeTypes;
     private static readonly List<TypeSymbol?> NoCanonMadeTypes = new();
+    /// <summary>Beside CanonMadeTypes, entry for entry: an array's element as resolved (string, T[] of a T[][]), null for the rest.</summary>
+    public List<Type?> CanonMadeElements => _canonMadeElements ?? NoCanonMadeElements;
+    public List<Type?> WritableCanonMadeElements => _canonMadeElements ??= new();
+    private List<Type?>? _canonMadeElements;
+    private static readonly List<Type?> NoCanonMadeElements = new();
     /// <summary>Compiler-created closed tuple/array adapter shape, shared only after semantic certification.</summary>
     public bool Structural { get; init; }
 

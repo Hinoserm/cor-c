@@ -1,0 +1,74 @@
+// test: shared_code_reads_other_classes_parameters_through_members
+// expect-exit: 0
+// expect-output:
+// elem True False
+// arr True False
+// keys True
+// values True
+// field True False
+// method True False
+// inner True False
+// listed True False
+// first True False
+// looped True False
+// paired True False
+// swapped True True False
+//
+// Shared code of Pair<K, V> reading List<V>'s, Holder<V>'s and
+// Dictionary<V, K>'s members -- an indexer, a field, a method, foreach,
+// LINQ -- has Pair's V, not the member class's own parameter 0, which was
+// Pair's K: a generic method handed it makes the instantiation .NET makes,
+// and typeof of a KeyValuePair<V, K> handed on is that pair.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+class Holder<A> { public A? Value; public A? Get() => Value; public List<A> All = new(); }
+class Pair<K, V>
+{
+    public List<V> Items = new();
+    public Dictionary<V, K> Back = new();
+    public Holder<V> Held = new();
+    public Holder<Holder<K>> Deep = new();
+    public object Elem() => Program.Id(Items[0]);
+    public object Arr() => Program.Id(Items.ToArray());
+    public object Keys() => Program.Id(Back.Keys);
+    public object Values() => Program.Id(Back.Values);
+    public object Field() => Program.Id(Held.Value);
+    public object Method() => Program.Id(Held.Get());
+    public object Inner() => Program.Id(Deep.Value!.Value);
+    public object Listed() => Program.Id(Held.All);
+    public object First() => Program.Id(Items.First());
+    public object Looped() { object last = ""; foreach (V v in Items) last = Program.Id(v); return last; }
+    public Type Paired() => Program.TypeOfIt(Back.First());
+}
+class Thing { }
+static class Program
+{
+    public static object Id<X>(X x) => new List<X>();
+    public static Type TypeOfIt<X>(X x) => typeof(X);
+    static int Main()
+    {
+        Pair<string, Thing> p = new();
+        p.Items.Add(new Thing()); p.Back[new Thing()] = "a";
+        p.Held.Value = new Thing(); p.Held.All.Add(new Thing());
+        p.Deep.Value = new Holder<string> { Value = "b" };
+        Console.WriteLine("elem " + (p.Elem() is List<Thing>) + " " + (p.Elem() is List<string>));
+        Console.WriteLine("arr " + (p.Arr() is List<Thing[]>) + " " + (p.Arr() is List<string[]>));
+        Console.WriteLine("keys " + (p.Keys() is List<Dictionary<Thing, string>.KeyCollection>));
+        Console.WriteLine("values " + (p.Values() is List<Dictionary<Thing, string>.ValueCollection>));
+        Console.WriteLine("field " + (p.Field() is List<Thing>) + " " + (p.Field() is List<string>));
+        Console.WriteLine("method " + (p.Method() is List<Thing>) + " " + (p.Method() is List<string>));
+        Console.WriteLine("inner " + (p.Inner() is List<string>) + " " + (p.Inner() is List<Thing>));
+        Console.WriteLine("listed " + (p.Listed() is List<List<Thing>>) + " " + (p.Listed() is List<List<string>>));
+        Console.WriteLine("first " + (p.First() is List<Thing>) + " " + (p.First() is List<string>));
+        Console.WriteLine("looped " + (p.Looped() is List<Thing>) + " " + (p.Looped() is List<string>));
+        Console.WriteLine("paired " + (p.Paired() == typeof(KeyValuePair<Thing, string>)) + " " + (p.Paired() == typeof(KeyValuePair<string, Thing>)));
+        Pair<Thing, string> q = new();
+        q.Items.Add("x"); q.Held.Value = "y";
+        Console.WriteLine("swapped " + (q.Elem() is List<string>) + " " + (q.Field() is List<string>) + " " + (q.Elem() is List<Thing>));
+        return 0;
+    }
+}

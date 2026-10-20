@@ -1078,7 +1078,8 @@ public sealed partial class Lowering
     /// </summary>
     private bool SharedKey(Type of)
         => of is { CanonParam: >= 0, IsArray: false, IsPointer: false } && _this is not null
-        && _method is { } running && HasThis(running) && SharedCopy(running.Owner);
+        && _method is { } running && HasThis(running) && SharedCopy(running.Owner)
+        && (of.CanonOwner is not string owner || owner == running.Owner.Key);
 
     /// <summary>A key question asked of two values (one for a hash) of a type that is not nullable.</summary>
     private VReg KeyOfValue(string question, VReg x, VReg? y, Type value)

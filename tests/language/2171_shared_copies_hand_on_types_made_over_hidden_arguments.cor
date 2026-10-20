@@ -1,0 +1,75 @@
+// test: shared_copies_hand_on_types_made_over_hidden_arguments
+// expect-exit: 0
+// expect-output:
+// string made True True
+// string twice True True
+// string named True List`1
+// string copy True True
+// string iface True True
+// string sync True True
+// string keyed True True 1
+// thing made True False
+// thing twice True False
+// thing named True List`1
+// thing copy True False
+// thing iface True False
+// thing sync True False
+// thing keyed True False 2
+// direct True True
+//
+// A generic method called from shared code with a type made over what only
+// run time knows -- List<T>, IEnumerable<T>, Dictionary<string, T> -- is
+// handed that type's descriptor from its caller's dictionary: what it makes
+// over it, typeof it, Task.FromResult over it and a further call handing it
+// on are the caller's instantiation.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+class Repo<T>
+{
+    public List<T> Items = new();
+    public object Made() => Program.Id(Items);
+    public object Twice() => Program.Id2(Items);
+    public Type Named() => Program.TypeOfIt(Items);
+    public object FromCopy() => Program.Outer(Items);
+    public object Iface() => Program.Id((IEnumerable<T>)Items);
+    public Task<List<T>> Sync() => Program.WrapSync(Items);
+    public Task<Dictionary<string, T>> Keyed() => Program.KeyedSync(Items);
+}
+class Thing { }
+static class Program
+{
+    public static object Id<X>(X x) => new List<X>();
+    public static object Id2<X>(X x) => Id(x);
+    public static Type TypeOfIt<X>(X x) => typeof(X);
+    public static object Outer<U>(List<U> l) => Id(l);
+    public static Task<List<U>> WrapSync<U>(List<U> x) => Task.FromResult(x);
+    public static Task<Dictionary<string, U>> KeyedSync<U>(List<U> x)
+    {
+        Dictionary<string, U> d = new();
+        foreach (U u in x) d["k" + d.Count] = u;
+        return Task.FromResult(d);
+    }
+    static void Show<T>(Repo<T> r, string name)
+    {
+        Console.WriteLine(name + " made " + (r.Made() is List<List<T>>) + " " + (r.Made() is List<List<string>>));
+        Console.WriteLine(name + " twice " + (r.Twice() is List<List<T>>) + " " + (r.Twice() is List<List<string>>));
+        Console.WriteLine(name + " named " + (r.Named() == typeof(List<T>)) + " " + r.Named().Name);
+        Console.WriteLine(name + " copy " + (r.FromCopy() is List<List<T>>) + " " + (r.FromCopy() is List<List<string>>));
+        Console.WriteLine(name + " iface " + (r.Iface() is List<IEnumerable<T>>) + " " + (r.Iface() is List<IEnumerable<string>>));
+        Console.WriteLine(name + " sync " + ((object)r.Sync() is Task<List<T>>) + " " + ((object)r.Sync() is Task<List<string>>));
+        Console.WriteLine(name + " keyed " + ((object)r.Keyed() is Task<Dictionary<string, T>>) + " " + ((object)r.Keyed() is Task<Dictionary<string, string>>) + " " + r.Keyed().Result.Count);
+    }
+    static int Main()
+    {
+        Repo<string> r = new(); r.Items.Add("a");
+        Show(r, "string");
+        Repo<Thing> t = new(); t.Items.Add(new Thing()); t.Items.Add(new Thing());
+        Show(t, "thing");
+        Console.WriteLine("direct " + (Id(r.Items) is List<List<string>>) + " " + (Id2(t.Items) is List<List<Thing>>));
+        return 0;
+    }
+}

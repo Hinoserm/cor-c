@@ -2489,13 +2489,13 @@ public sealed partial class Lowering
                         table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, variant, 0));
                     continue;
                 }
-                // An array of a constructed type the shared code tests for
-                // (Monomorphiser.CanonTested): that array's descriptor.
-                if (written is not null && k < written.Count && written[k].ArrayRank == 1)
+                // An array the shared code makes or tests for (Monomorphiser.
+                // CanonTested, a dictionary's need): that array's descriptor,
+                // of whatever element -- string[], T[][] -- as typeof names it.
+                if (written is not null && k < written.Count && written[k].ArrayRank >= 1)
                 {
-                    if (made[k] is { Kind: TypeKind.Class or TypeKind.Interface } element)
+                    if (k < chain[d].CanonMadeElements.Count && chain[d].CanonMadeElements[k] is Type of)
                     {
-                        Type of = Type.Plain(element, Prim.Void);
                         table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w,
                             SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
                     }
@@ -2516,6 +2516,14 @@ public sealed partial class Lowering
                 else if (made[k] is { Kind: TypeKind.Interface } face)
                 {
                     table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, InterfaceDescriptor(face), 0));
+                }
+                // A STRUCT made over them (KeyValuePair<V, K>, a shared method
+                // copy's need or hidden argument): its box's descriptor, which
+                // is what typeof names a struct by. The canonical copy's own
+                // holds 0, its own as it is.
+                else if (made[k] is { Kind: TypeKind.Struct } value && !CanonicalCopy(chain[d]) && !value.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal))
+                {
+                    table.Relocs.Add(new DataReloc((1 + 2 * args.Count + k) * w, BoxDescriptor(Type.Plain(value, Prim.Void)), 0));
                 }
             }
             _m.Data.Add(table);
