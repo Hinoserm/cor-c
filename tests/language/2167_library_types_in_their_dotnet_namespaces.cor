@@ -1,0 +1,65 @@
+// test: library_types_in_their_dotnet_namespaces
+// expect-exit: 0
+// expect-output:
+// System.Text.StringBuilder | System.Text | StringBuilder
+// System.Text.RegularExpressions.Regex | System.Text.RegularExpressions | Regex
+// System.Text.RegularExpressions.Match | System.Text.RegularExpressions | Match
+// System.Threading.Tasks.Task`1 | System.Threading.Tasks | Task`1
+// System.Threading.CancellationTokenSource | System.Threading | CancellationTokenSource
+// System.IO.MemoryStream | System.IO | MemoryStream
+// System.Collections.BitArray | System.Collections | BitArray
+// System.Collections.Generic.LinkedList`1 | System.Collections.Generic | LinkedList`1
+// System.Diagnostics.Stopwatch | System.Diagnostics | Stopwatch
+// System.Globalization.CultureInfo | System.Globalization | CultureInfo
+// System.Threading.Tasks.TaskCanceledException | System.Threading.Tasks | TaskCanceledException
+// System.Collections.Generic.KeyNotFoundException | System.Collections.Generic | KeyNotFoundException
+// System.Threading.Tasks.TaskStatus | System.Threading.Tasks | TaskStatus
+// System.IO.FileMode | System.IO | FileMode
+// System.Collections.Generic.Queue`1 | System.Collections.Generic | Queue`1
+// System.Threading.Tasks.TaskCanceledException: x
+// System.Text System.Threading.Tasks System.Text.RegularExpressions.Regex
+//
+// The class library's types are named in .NET's namespaces, as
+// Type.FullName, Type.Namespace and an exception's ToString say them:
+// StringBuilder in System.Text, Regex and Match in
+// System.Text.RegularExpressions, Task in System.Threading.Tasks,
+// CancellationTokenSource in System.Threading, MemoryStream and FileMode in
+// System.IO, BitArray in System.Collections. Declared in no namespace here,
+// every one was named System's.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Diagnostics;
+using System.Globalization;
+
+static class Program
+{
+    static void Show(object o) { Type t = o.GetType(); Console.WriteLine(t.FullName?.Split('[')[0] + " | " + t.Namespace + " | " + t.Name); }
+    static void Main()
+    {
+        Show(new StringBuilder());
+        Show(new Regex("a"));
+        Show(new Regex("a").Match("a"));
+        Show(Task.FromResult(1));
+        Show(new CancellationTokenSource());
+        Show(new MemoryStream());
+        Show(new BitArray(2));
+        Show(new LinkedList<int>());
+        Show(new Stopwatch());
+        Show(CultureInfo.InvariantCulture);
+        Show(new TaskCanceledException());
+        Show(new KeyNotFoundException());
+        Show(TaskStatus.Running);
+        Show(FileMode.Open);
+        Show(new Queue<string>());
+        Console.WriteLine(new TaskCanceledException("x").ToString().Split('\n')[0]);
+        Console.WriteLine(typeof(StringBuilder).Namespace + " " + typeof(Task<int>).Namespace + " " + typeof(Regex).FullName);
+    }
+}

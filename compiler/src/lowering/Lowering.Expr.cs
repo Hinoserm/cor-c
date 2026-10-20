@@ -1418,7 +1418,7 @@ public sealed partial class Lowering
     private static bool IsIntrinsicMember(MemberExpr m, Type target)
         => (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
         || (m.Name == "LongLength" && target.IsArray)
-        || (m.Name is "Name" or "FullName" or "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" && target.Prim == Prim.Type);
+        || (m.Name is "Name" or "FullName" or "Namespace" or "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" && target.Prim == Prim.Type);
 
     /// <summary>
     /// Such a member of the value `obj` holds.
@@ -1450,6 +1450,11 @@ public sealed partial class Lowering
         if (m.Name == "LongLength")
             return _e.Unary(Opcode.SExt32, R(_e.Unary(Opcode.ArrayLength, R(obj), IrType.I32)), IrType.I64);
         VReg full = _e.Load(IrTypes.Word, obj, DescName * _t.WordSize);
+        if (m.Name == "Namespace")
+        {
+            MethodSymbol? space = StringMethod(m, Prelude.TypeNamespaceMethod, 1, "a type's namespace");
+            return space is null ? _e.Const(0, IrTypes.Word) : _e.Call(CallLabel(space), IrTypes.Word, R(full))!;
+        }
         if (m.Name == "FullName" || !HasStringMethod(Prelude.TypeNameMethod)) return full;
         MethodSymbol? simple = StringMethod(m, Prelude.TypeNameMethod, 1, "a type's name");
         return simple is null ? full : _e.Call(CallLabel(simple), IrTypes.Word, R(full))!;

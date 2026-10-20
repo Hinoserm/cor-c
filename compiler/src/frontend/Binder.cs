@@ -19033,6 +19033,11 @@ public sealed partial class Binder
             {
                 return Type.String;
             }
+            // ITS NAMESPACE, null for one in none (String.TypeNamespace).
+            if (m.Name == "Namespace" && target.Prim == Prim.Type)
+            {
+                return Type.String.AsNullable();
+            }
 
             // WHAT KIND OF TYPE IT IS, read from the flags of the same
             // descriptor (Lowering.IntrinsicMember).

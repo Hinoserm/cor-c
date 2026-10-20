@@ -1994,16 +1994,55 @@ public sealed partial class Lowering
     /// and its kin in System.Numerics, the rest in System -- what FullName and
     /// object.ToString say of them.
     /// </summary>
-    private static string LibraryHome(string name) => name switch
+    private static string LibraryHome(string name) => LibraryHomes.TryGetValue(name, out string? home) ? home : "System";
+
+    /// <summary>The class library's global types not in System, by .NET's namespace for each (LibraryHome).</summary>
+    private static readonly Dictionary<string, string> LibraryHomes = HomesOf(new (string, string)[]
     {
-        "Comparer" or "Dictionary" or "EqualityComparer" or "HashSet" or "ICollection" or "IComparer" or "IDictionary"
-            or "IEnumerable" or "IEnumerator" or "IEqualityComparer" or "IList" or "IReadOnlyCollection" or "IReadOnlyDictionary"
-            or "IReadOnlyList" or "IReadOnlySet" or "ISet" or "KeyValuePair" or "List" or "Queue" or "SortedSet" or "Stack"
-            or "LinkedList" or "LinkedListNode" or "SortedDictionary" or "SortedList" or "PriorityQueue" => "System.Collections.Generic",
-        "IGrouping" or "ILookup" or "IOrderedEnumerable" or "Lookup" or "Grouping" or "OrderedSequence" or "Enumerable" => "System.Linq",
-        "BigInteger" or "Complex" or "BitOperations" => "System.Numerics",
-        _ => "System",
-    };
+        ("System.Collections.Generic", "Comparer Dictionary EqualityComparer HashSet ICollection IComparer IDictionary IEnumerable IEnumerator "
+            + "IEqualityComparer IList IReadOnlyCollection IReadOnlyDictionary IReadOnlyList IReadOnlySet ISet KeyValuePair List Queue SortedSet "
+            + "Stack LinkedList LinkedListNode SortedDictionary SortedList PriorityQueue ReferenceEqualityComparer KeyNotFoundException"),
+        ("System.Collections", "BitArray"),
+        ("System.Collections.Specialized", "StringCollection"),
+        ("System.Linq", "IGrouping ILookup IOrderedEnumerable Lookup Grouping OrderedSequence Enumerable"),
+        ("System.Numerics", "BigInteger Complex BitOperations"),
+        ("System.Text", "StringBuilder Encoding UTF8Encoding ASCIIEncoding UnicodeEncoding UTF32Encoding Rune StringRuneEnumerator"),
+        ("System.Text.RegularExpressions", "RegexOptions RegexParseError RegexParseException RegexMatchTimeoutException MatchEvaluator Capture "
+            + "Group CaptureCollection GroupCollection Match MatchCollection Regex"),
+        ("System.Threading.Tasks", "Task TaskStatus TaskCompletionSource TaskCanceledException TaskFactory TaskCreationOptions "
+            + "TaskContinuationOptions TaskScheduler ValueTask TaskAsyncEnumerableExtensions"),
+        ("System.Threading", "CancellationTokenSource CancellationToken CancellationTokenRegistration Timeout Monitor ThreadPool "
+            + "SynchronizationLockException Interlocked Volatile Thread"),
+        ("System.Runtime.CompilerServices", "TaskAwaiter ConfiguredTaskAwaitable YieldAwaitable RuntimeHelpers "
+            + "ConfiguredCancelableAsyncEnumerable ConfiguredAsyncDisposable"),
+        ("System.IO", "Path File Directory FileInfo DirectoryInfo FileSystemInfo Stream FileStream MemoryStream TextWriter TextReader "
+            + "StreamWriter StreamReader FileMode FileAccess FileShare FileOptions SeekOrigin SearchOption FileAttributes DriveInfo DriveType "
+            + "UnixFileMode NotifyFilters WatcherChangeTypes FileSystemEventHandler RenamedEventHandler ErrorEventHandler FileSystemEventArgs "
+            + "RenamedEventArgs ErrorEventArgs WaitForChangedResult FileSystemWatcher"),
+        ("System.IO.Compression", "CompressionMode CompressionLevel DeflateStream ZLibStream GZipStream"),
+        ("System.IO.Hashing", "Crc32"),
+        ("System.Formats.Tar", "TarEntryFormat TarEntryType TarEntry V7TarEntry PosixTarEntry UstarTarEntry PaxTarEntry GnuTarEntry TarReader "
+            + "TarWriter TarFile"),
+        ("System.Net.Sockets", "AddressFamily SocketType ProtocolType SelectMode SocketFlags SocketShutdown SocketError SocketException Socket "
+            + "NetworkStream TcpClient TcpListener UdpClient"),
+        ("System.Net", "IPAddress IPEndPoint IPHostEntry Dns"),
+        ("System.Security.Cryptography", "RandomNumberGenerator CryptographicException HashAlgorithm SHA256 MD5 SHA1 SHA512 SHA384 "
+            + "ICryptoTransform HashAlgorithmName KeyedHashAlgorithm HMAC HMACMD5 HMACSHA1 HMACSHA256 HMACSHA384 HMACSHA512 IncrementalHash "
+            + "CryptoStreamMode CryptoStream DataProtectionScope ProtectedData"),
+        ("System.ComponentModel", "Win32Exception"),
+        ("System.Runtime.InteropServices", "Marshal CollectionsMarshal ExternalException PosixSignal PosixSignalContext PosixSignalRegistration"),
+        ("System.Diagnostics", "ProcessStartInfo Process Stopwatch"),
+        ("System.Globalization", "CultureInfo NumberStyles"),
+        ("System.Buffers.Binary", "BinaryPrimitives"),
+    });
+
+    private static Dictionary<string, string> HomesOf((string Home, string Names)[] homes)
+    {
+        Dictionary<string, string> made = new(StringComparer.Ordinal);
+        foreach ((string home, string names) in homes)
+            foreach (string name in names.Split(' ', StringSplitOptions.RemoveEmptyEntries)) made[name] = home;
+        return made;
+    }
 
     /// <summary>The identity .NET's own types are qualified with.</summary>
     private const string CoreLibrary = "System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e";

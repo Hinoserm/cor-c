@@ -239,6 +239,18 @@ static class String {
         return text + "]" + (at + 1 <= full.Length ? full.Substring(at + 1) : "");
     }
 
+    /// .NET'S Type.Namespace from a full name: what precedes the outermost
+    /// type's own name -- its arguments, an array's brackets and a nested
+    /// type's `+` path left out -- null for a type in no namespace.
+    public static string? TypeNamespace(string full) {
+        int cut = full.IndexOf('[');
+        string bare = cut < 0 ? full : full.Substring(0, cut);
+        int nested = bare.IndexOf('+');
+        if (nested >= 0) { bare = bare.Substring(0, nested); }
+        int dot = bare.LastIndexOf('.');
+        return dot < 0 ? null : bare.Substring(0, dot);
+    }
+
     public static string TypeName(string full) {
         // A GENERIC TYPE'S ARGUMENTS ARE NOT ITS NAME: System.ValueTuple`2[[
         // System.Int32, ...]] is ValueTuple`2, as .NET's Type.Name, and an

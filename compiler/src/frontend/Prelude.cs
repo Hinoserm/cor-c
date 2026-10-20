@@ -415,6 +415,8 @@ public static class Prelude
     public const string FromDoubleMethod = "FromDouble";
     public const string FromSingleMethod = "FromSingle";
     public const string TypeNameMethod = "TypeName";
+    /// <summary>String's method answering a type's namespace from its full name (Type.Namespace).</summary>
+    public const string TypeNamespaceMethod = "TypeNamespace";
     /// <summary>A type's full name as Type.ToString writes it: a generic's arguments without their assemblies.</summary>
     public const string TypeTextMethod = "TypeText";
 
