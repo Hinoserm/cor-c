@@ -1882,6 +1882,19 @@ static class SystemType
     }
 
     public static bool IsCOMObject(Type self) { return System.Runtime.InteropServices.ComClassTypes.ClsidOf(self) != null || self == typeof(System.__ComObject); }
+
+    // WHAT A TYPE ANSWERS AS THE OBJECT IT IS: its RuntimeType's answers, the
+    // one object of it (Runtime.TypeObject), so that a Type and the same Type
+    // held as an object hash and compare alike.
+    public static int GetHashCode(Type self) { return ((object)self).GetHashCode(); }
+
+    public static bool Equals(Type self, object? o) { return ((object)self).Equals(o); }
+
+    public static bool Equals(Type self, Type? o) { return self == o; }
+
+    public static Type GetType(Type self) { return ((object)self).GetType(); }
+
+    public static string ToString(Type self) { return String.TypeText(self.FullName); }
 }
 
 /// .NET's Marshal, its running-object member.

@@ -525,6 +525,46 @@ static class AllocSamples
     }
 }
 
+/// A TYPE AS AN OBJECT, .NET's System.RuntimeType: what a Type is when it is
+/// held as one -- `object o = typeof(int)`, an attribute's TypeId, a type in
+/// a list of objects. A Type is its descriptor's address everywhere else
+/// (Lowering's typeof and GetType), on which no virtual call can be made, so
+/// a Type converted to object is this, and an object cast to Type is this
+/// one's Handle (Runtime.TypeObject, TypeOfObject). ONE OBJECT A TYPE, made
+/// the first time it is asked for and kept: `(object)typeof(int) ==
+/// (object)typeof(int)`, as in .NET, and its hash and equality are an
+/// object's own, which a Type's own GetHashCode and Equals ask of it.
+sealed class RuntimeType
+{
+    internal readonly Type Handle;
+    RuntimeType? _next;
+
+    RuntimeType(Type handle) { Handle = handle; }
+
+    public override string ToString() => String.TypeText(Handle.FullName);
+
+    // EACH TYPE'S ONE OBJECT, found by its name's hash and added without a
+    // lock: two threads making one type's at once keep the first one in.
+    const int Buckets = 64;
+    static readonly RuntimeType?[] _known = new RuntimeType?[Buckets];
+
+    internal static RuntimeType? Of(Type? handle)
+    {
+        if (handle == null) return null;
+        int at = (handle.FullName.GetHashCode() & 0x7fffffff) % Buckets;
+        RuntimeType? made = null;
+        while (true)
+        {
+            RuntimeType? head = _known[at];
+            for (RuntimeType? known = head; known != null; known = known._next)
+                if (known.Handle == handle) return known;
+            made ??= new RuntimeType(handle);
+            made._next = head;
+            if (Sys.CompareExchangeReference(Sys.AddressOf(ref _known[at]), Sys.Word(head), Sys.Word(made)) == Sys.Word(head)) return made;
+        }
+    }
+}
+
 /// What stops a suspended iterator from inside when it is disposed; never
 /// seen outside MoveNext.
 sealed class IteratorStopSignal : Exception
@@ -4921,6 +4961,18 @@ static class Runtime
     /// of the object, and a loop region's way out leaves the region -- zeroing
     /// what the lap made, the object among it -- after that read and before
     /// this call (RegionPointsTo.OpenLoops).
+    /// A TYPE CONVERTED TO OBJECT: its one RuntimeType (Lowering.Convert).
+    public static object? TypeObject(Type? type) => RuntimeType.Of(type);
+
+    /// AN OBJECT CAST TO TYPE: the type a RuntimeType is, null for null, and
+    /// .NET's InvalidCastException for anything else.
+    public static Type? TypeOfObject(object? value)
+    {
+        if (value == null) return null;
+        if (value is RuntimeType type) return type.Handle;
+        throw new InvalidCastException(value.GetType(), "System.Type");
+    }
+
     public static void InvalidCastOfType(Type type, string wanted)
     {
         throw new InvalidCastException(type, wanted);

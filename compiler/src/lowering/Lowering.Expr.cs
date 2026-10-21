@@ -548,6 +548,22 @@ public sealed partial class Lowering
     /// is. Widening an unsigned narrow value is a no-op because the register
     /// is canonical; narrowing re-extends so the register stays canonical.
     /// </summary>
+    /// <summary>
+    /// A TEST FOR System.Type: of a RuntimeType, the object a Type is when it
+    /// is held as one (Runtime.TypeObject). Null for any other written type.
+    /// </summary>
+    private TypeSymbol? SystemTypeTested(TypeRef? written)
+        => written is { Name: "Type" or "System.Type", Args.Count: 0, ArrayRank: 0 } && _b.Types.TryGetValue("RuntimeType", out TypeSymbol? runtimeType)
+            ? runtimeType : null;
+
+    /// <summary>The Type a RuntimeType is, or null for null (Runtime.TypeOfObject).</summary>
+    private VReg TypeOfObject(VReg value)
+    {
+        MethodSymbol unwrap = RuntimeMethod("TypeOfObject", 1) ?? throw new InvalidOperationException("the runtime has no TypeOfObject");
+        Require(unwrap);
+        return _e.Call(CallLabel(unwrap), IrTypes.Word, R(value))!;
+    }
+
     private VReg Convert(Node at, VReg v, Type from, Type to)
     {
         if (from.IsError || to.IsError || from.Equals(to))
@@ -595,6 +611,23 @@ public sealed partial class Lowering
             && from.Prim != Prim.NullLiteral && Boxable(from))
         {
             return Box(at, Convert(at, v, from, to.Underlying), to.Underlying);
+        }
+
+        // A TYPE AS AN OBJECT IS ITS RuntimeType, the one object of it the
+        // runtime keeps (Runtime.TypeObject), and an object cast to Type the
+        // type that object is (TypeOfObject): a Type itself is its
+        // descriptor's address, which no virtual call can be made on.
+        if (from.Prim == Prim.Type && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface })
+            && RuntimeMethod("TypeObject", 1) is MethodSymbol typeObject)
+        {
+            Require(typeObject);
+            return _e.Call(CallLabel(typeObject), IrTypes.Word, R(v))!;
+        }
+        if (to.Prim == Prim.Type && (from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface })
+            && RuntimeMethod("TypeOfObject", 1) is MethodSymbol typeOfObject)
+        {
+            Require(typeOfObject);
+            return _e.Call(CallLabel(typeOfObject), IrTypes.Word, R(v))!;
         }
 
         // BOXING AND UNBOXING. A value converted to object is copied onto the
@@ -1345,6 +1378,10 @@ public sealed partial class Lowering
                 }
                 TypeSymbol? want = _b.TestedTypes.TryGetValue(asx, out TypeSymbol? resolved) ? resolved
                                  : _b.Types.TryGetValue(asx.Type.Name, out TypeSymbol? found) ? found : null;
+                if (want is null && SystemTypeTested(asx.Type) is TypeSymbol runtimeType)
+                {
+                    return TypeOfObject(AsType(v, runtimeType));
+                }
                 if (want is null)
                 {
                     Error(asx, "this type cannot be tested at run time");
@@ -3506,6 +3543,15 @@ public sealed partial class Lowering
 
         TypeSymbol? want = _b.TestedTypes.TryGetValue(isx, out TypeSymbol? resolved) ? resolved
                          : _b.Types.TryGetValue(isx.Type.Name, out TypeSymbol? found) ? found : null;
+        if (want is null && SystemTypeTested(isx.Type) is TypeSymbol runtimeType)
+        {
+            VReg isType = AsType(obj, runtimeType);
+            if (_b.PatternSlot.TryGetValue(isx, out int typeSlot))
+            {
+                BindPattern(isx, typeSlot, Type.TypeHandle, TypeOfObject(isType));
+            }
+            return _e.Binary(Opcode.Ne, R(isType), Imm(0, isType.Type), IrType.I32);
+        }
         if (want is null)
         {
             return Fail(isx, "this type cannot be tested at run time");
@@ -3633,19 +3679,31 @@ public sealed partial class Lowering
             {
                 TypeSymbol? want = _b.TestedTypes.TryGetValue(arm, out TypeSymbol? resolved) ? resolved
                                  : _b.Types.TryGetValue(arm.Type.Name, out TypeSymbol? found) ? found : null;
-                if (want is null)
+                if (want is null && SystemTypeTested(arm.Type) is TypeSymbol armType)
+                {
+                    VReg isType = AsType(subject, armType);
+                    if (_b.ArmSlot.TryGetValue(arm, out int typeSlot))
+                    {
+                        BindPattern(arm, typeSlot, Type.TypeHandle, TypeOfObject(isType));
+                    }
+                    _e.Branch(isType, body, next);
+                }
+                else if (want is null)
                 {
                     Error(arm, "this type cannot be tested at run time");
                     _e.Jump(next);
                     _e.SetBlock(next);
                     continue;
                 }
-                VReg matched = AsType(subject, want);
-                if (_b.ArmSlot.TryGetValue(arm, out int bound))
+                else
                 {
-                    BindPattern(arm, bound, Type.Plain(want, Prim.Void), matched);
+                    VReg matched = AsType(subject, want);
+                    if (_b.ArmSlot.TryGetValue(arm, out int bound))
+                    {
+                        BindPattern(arm, bound, Type.Plain(want, Prim.Void), matched);
+                    }
+                    _e.Branch(matched, body, next);
                 }
-                _e.Branch(matched, body, next);
             }
             else if (arm.Type is not null)
             {
