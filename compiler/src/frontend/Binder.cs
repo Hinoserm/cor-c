@@ -3440,7 +3440,7 @@ public sealed partial class Binder
             {
                 // A TABLE OF CONSTANTS IS DATA, not code: laid down in the
                 // image and never built (FieldDecl.StaticData).
-                if (d.TypeParams.Count == 0 && !d.Specialised && StaticArrayOf(f) is StaticArray table)
+                if (d.TypeParams.Count == 0 && !d.Specialised && (StaticArrayOf(f) ?? ZeroedArrayOf(f, d)) is StaticArray table)
                 {
                     f.StaticData = table;
                     f.Init = null;

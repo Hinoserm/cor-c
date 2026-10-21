@@ -800,12 +800,14 @@ public sealed partial class Lowering
     {
         if (f.Owner.Decl is not TypeDecl owner
             || owner.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name && d.StaticData is not null) is not { StaticData: { } table }
-            || f.Type.Element is not Type element || InlineElement(element))
+            || f.Type.Element is not Type element || InlineElement(element) && !table.Zeroed)
         {
             return null;
         }
         int w = _t.WordSize;
-        int stride = Math.Max(1, element.Size);
+        // A ZEROED ARRAY (Binder.ZeroedArrayOf) of any element, at the stride
+        // a `new` makes it at; a table's of a keyword type.
+        int stride = table.Zeroed ? ElementStride(element) : Math.Max(1, element.Size);
         int count = table.Count;
         int bytes = _t.ArrayHeaderBytes + stride * count;
         bytes = (bytes + w - 1) / w * w;
@@ -818,7 +820,7 @@ public sealed partial class Lowering
             NoReferences = table.Element != "string" && !MayHoldReference(element),
         };
         item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < count && !table.Zeroed; i++)
         {
             int at = _t.ArrayHeaderBytes + i * stride;
             switch (table.Element)

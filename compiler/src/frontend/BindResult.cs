@@ -835,7 +835,15 @@ public sealed class StaticArray
     public List<long> Integers { get; } = new();
     public List<double> Reals { get; } = new();
     public List<string?> Strings { get; } = new();
-    public int Count => Element == "string" ? Strings.Count : Element is "float" or "double" ? Reals.Count : Integers.Count;
+
+    /// <summary>
+    /// A `new T[N]` of a constant N, laid down zeroed: Length elements of
+    /// any type, every one its default -- no values listed.
+    /// </summary>
+    public bool Zeroed { get; init; }
+    public int Length { get; init; }
+
+    public int Count => Zeroed ? Length : Element == "string" ? Strings.Count : Element is "float" or "double" ? Reals.Count : Integers.Count;
 }
 
 /// <summary>

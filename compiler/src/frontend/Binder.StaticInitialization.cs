@@ -18,6 +18,74 @@ public sealed partial class Binder
     /// Null for anything else -- an enum, a named constant, an expression --
     /// which is initialised at run time as before, and checked there.
     /// </summary>
+    /// <summary>
+    /// A STATIC ARRAY OF A CONSTANT LENGTH, `static T[] x = new T[N];`: laid
+    /// down zeroed as a table is (StaticArrayOf), of any element -- every one
+    /// its default, a struct's too -- so the type initialiser makes nothing
+    /// for it. N is a C# constant expression (literals, consts, enum members,
+    /// folded); a static field is no constant, and an array as long as one
+    /// says when the type is first touched is made then. At most
+    /// ZeroedLimit bytes of elements: a larger one is the heap's, as it was,
+    /// rather than the image file's.
+    /// </summary>
+    private StaticArray? ZeroedArrayOf(FieldDecl f, TypeDecl d)
+    {
+        if (f.Init is not NewExpr { Elements: null, ArraySize: { } size, Utf8Bytes: null, Body.Inits.Count: 0, Body.Adds.Count: 0, Body.Indexes.Count: 0 } made
+            || f.Type is not { ArrayRank: > 0, PointerDepth: 0 } declared
+            || made.Type is not { PointerDepth: 0 } element
+            || element.Name != declared.Name || element.Args.Count != declared.Args.Count || element.ArrayRank + 1 != declared.ArrayRank
+            || IsThreadStatic(f)
+            || !_r.Types.TryGetValue(TypeKey(d), out TypeSymbol? owner)
+            || ConstantValue(size, owner) is not long length || length < 0)
+        {
+            return null;
+        }
+        if (ElementBytes(element, owner) is not int each || length * each > ZeroedLimit)
+        {
+            return null;
+        }
+        return new StaticArray { Element = element.ArrayRank > 0 ? "" : element.Name, Zeroed = true, Length = (int)length };
+    }
+
+    /// <summary>
+    /// The most bytes one element of a zeroed array takes: a keyword type's
+    /// own size, eight for a reference or an enum; null for a struct, whose
+    /// layout is not known yet, and a nullable value -- each left to the heap.
+    /// </summary>
+    private int? ElementBytes(TypeRef element, TypeSymbol owner)
+    {
+        if (element.ArrayRank > 0) return 8;
+        bool nullable = element.Nullable;
+        switch (element.Name)
+        {
+            case "string" or "object": return 8;
+            case "bool" or "byte" or "sbyte": return nullable ? null : 1;
+            case "char" or "short" or "ushort": return nullable ? null : 2;
+            case "int" or "uint" or "float": return nullable ? null : 4;
+            case "long" or "ulong" or "double" or "nint" or "nuint": return nullable ? null : 8;
+        }
+        if (element.Args.Count > 0 || element.Name.Length == 0) return null;
+        TypeSymbol? was = _scope;
+        _scope = owner;
+        try
+        {
+            if (!FindType(element.Name, out TypeSymbol? found) || found is null) return null;
+            return found.Kind switch
+            {
+                TypeKind.Class or TypeKind.Interface => 8,
+                TypeKind.Enum when !nullable => 8,
+                _ => found.Decl is TypeDecl { IsDelegate: true } ? 8 : null,
+            };
+        }
+        finally
+        {
+            _scope = was;
+        }
+    }
+
+    /// <summary>The most bytes of elements a zeroed static array is laid down with (ZeroedArrayOf).</summary>
+    public const int ZeroedLimit = 65536;
+
     private static StaticArray? StaticArrayOf(FieldDecl f)
     {
         // A [ThreadStatic] has no word in the image to lay the table's address
