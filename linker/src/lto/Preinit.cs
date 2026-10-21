@@ -289,7 +289,16 @@ public static class Preinit
         List<Notes> notes = Read(inputs, take: false);
         Solution? solved = Solve(inputs, notes, longMode || inputs.Any(TargetContract.IsLongMode));
         _last = solved;
+        // SAID AT THE CHECK, which may refuse the link before anything is laid down.
+        if (solved is not null) Report(solved);
         return solved;
+    }
+
+    private static void Report(Solution solved)
+    {
+        if (!Switches.PreinitReport) return;
+        Console.Error.WriteLine($"preinit: {solved.Frozen} of {solved.Candidates} statics laid down made, {solved.TypesRun} types run whole, {solved.Overrides.Count} unit data replaced");
+        foreach (string line in solved.Report) Console.Error.WriteLine("preinit: " + line);
     }
 
     private static Solution? _last;
@@ -320,7 +329,7 @@ public static class Preinit
         List<Notes> notes = Take(inputs);
         Solution? solved = _last is { } last && last.Signature == Signature(notes) ? last : null;
         _last = null;
-        solved ??= Solve(inputs, notes, longMode);
+        if (solved is null && (solved = Solve(inputs, notes, longMode)) is not null) Report(solved);
         if (solved is null) return null;
         if (solved.Overrides.Count > 0)
             foreach (ObjectFile obj in inputs)
@@ -339,11 +348,6 @@ public static class Preinit
                 throw new LinkException(new[] { "preinit: '" + local + "', a unit's own, is named by the statics laid down, and its unit was made again since" });
             Symbol at = unit.Symbols.First(x => x.IsDefined && !x.Global && x.Name == local);
             unit.Symbols.Add(new Symbol { Name = alias, Section = at.Section, Offset = at.Offset, Size = at.Size, IsFunction = at.IsFunction });
-        }
-        if (Switches.PreinitReport)
-        {
-            Console.Error.WriteLine($"preinit: {solved.Frozen} of {solved.Candidates} statics laid down made, {solved.TypesRun} types run whole, {solved.Overrides.Count} unit data replaced");
-            foreach (string line in solved.Report) Console.Error.WriteLine("preinit: " + line);
         }
         return solved.Data;
     }
