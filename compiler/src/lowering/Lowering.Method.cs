@@ -280,7 +280,9 @@ public sealed partial class Lowering
             SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
-            NoInlining = NoInlining(decl), Unjudged = decl.AutoAccessor,
+            // A TYPE'S INITIALISER BODY STAYS A ROUTINE OF ITS OWN: the link
+            // runs it in the type's place (Lto.Preinit, NotePreinitType).
+            NoInlining = NoInlining(decl) || (m.Static && decl.Name == "StaticInitBody$"), Unjudged = decl.AutoAccessor,
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
@@ -352,6 +354,7 @@ public sealed partial class Lowering
 
         // What a constructor does, told to the link while its body is held (Lto.Preinit).
         if (decl.IsCtor) NotePreinitConstructor(m, decl);
+        if (m.Static && decl.Name == "StaticInit$" && m.Params.Count == 0) NotePreinitType(m);
         ScanAddressTaken(decl.Body!);
         // AND THE CONSTRUCTOR'S `: this(...)` OR `: base(...)`, whose
         // arguments are this method's too: `: this(name, out bool unused)`

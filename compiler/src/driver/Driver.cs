@@ -990,6 +990,10 @@ public static class Driver
         // sites in the module itself, and regenerates it position-independent
         // again (IrUnitCodec.Settings.PositionIndependent, UnitBackend).
         List<Corsac.Lang.Lto.IrArchiveRecord>? linkRecords = null;
+        // A PROGRAM COMPILED WHOLE keeps its IR for its own link to run its
+        // types' initialisers (Lto.Preinit, PreinitMachine): its object
+        // carries no archive, and code generation lets each body go.
+        List<Corsac.Lang.Lto.IrArchiveRecord>? preinitRecords = null;
         // THE LINK'S HINTS AS BYTES, written when they are made: the pointer
         // constraints (RegionSummary) are an object for every site and call
         // of every function, made before the late passes and read by nothing
@@ -1071,6 +1075,8 @@ public static class Driver
             // The x86 backend puts each function's allocations in place as it
             // selects it (AllocatorFastPaths.AtCodegen): not the late passes.
             module.AllocatorsAtCodegen = Target.Current.Name == "x86";
+            if (beforeLate is null && module.Preinit is { Types.Count: > 0 })
+                beforeLate = m => preinitRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m, false, null);
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: regions);
             Phase("optimise");
             // The lifetime hints are complete once the passes are (Escape and
@@ -1246,6 +1252,7 @@ public static class Driver
         // that instruction past its function's release.
         if (x86Backend.ReleaseBodies && backend == x86Backend) module.KeepCalls.Clear();
         ObjectFile obj = backend.Generate(module, backendErrors);
+        if (preinitRecords is not null) PreinitMachine.Remember(obj, preinitRecords);
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
         new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode,

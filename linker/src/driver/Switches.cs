@@ -84,6 +84,8 @@ public static class Switches
 
     /// <summary>--report-phases: time and allocation per phase of one unit.</summary>
     public static bool ReportPhases;
+    /// <summary>--preinit-report: what the link laid down made (Lto.Preinit), and what each type it ran read of other types' mutable statics.</summary>
+    public static bool PreinitReport;
 
     /// <summary>--report-alloc: what the whole run allocated, at exit.</summary>
     public static bool ReportAlloc;
@@ -182,6 +184,7 @@ public static class Switches
         TraceWants |= Switch(taken, "--trace-wants");
         ReportUnit |= Switch(taken, "--report-unit");
         ReportPhases |= Switch(taken, "--report-phases");
+        PreinitReport |= Switch(taken, "--preinit-report");
         ReportAlloc |= Switch(taken, "--report-alloc");
         TraceSemantics = Valued(taken, "--trace-semantics") ?? TraceSemantics;
         TraceSemanticsOut = Valued(taken, "--trace-semantics-out") ?? TraceSemanticsOut;

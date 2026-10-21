@@ -24,6 +24,8 @@ public static partial class Program
 #endif
     public static int Main(string[] args)
     {
+        // What the link runs a type's initialiser with (Lto.Preinit, stage 2).
+        Corsac.Lang.Lto.Preinit.Machine = new PreinitMachine();
 #if COR_SELFHOST_BENCHMARK
         Gc.CountMarks = true;
         long started = Stopwatch.GetTimestamp();

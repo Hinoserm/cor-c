@@ -18,6 +18,7 @@ public sealed partial class Lowering
     private readonly List<Preinit.Constructor> _preinitConstructors = new();
     private readonly HashSet<string> _preinitConstructorsSeen = new(StringComparer.Ordinal);
     private readonly List<Preinit.Candidate> _preinitCandidates = new();
+    private readonly List<Preinit.TypeNote> _preinitTypes = new();
     // The candidates this unit told the link of: their storage is the link's (the statics' loop lays none down).
     private readonly HashSet<FieldSymbol> _preinitNoted = new(ReferenceEqualityComparer.Instance);
 
@@ -66,8 +67,27 @@ public sealed partial class Lowering
     /// <summary>The unit's notes, or null when it has nothing to say.</summary>
     private Preinit.Notes? PreinitNotes()
     {
-        if (_preinitCandidates.Count == 0 && _preinitConstructors.Count == 0) return null;
-        return new Preinit.Notes(_t.WordSize, _t.ArrayHeaderBytes, _t.ArrayCountOffset, _preinitConstructors.ToList(), _preinitCandidates.ToList());
+        if (_preinitCandidates.Count == 0 && _preinitConstructors.Count == 0 && _preinitTypes.Count == 0) return null;
+        return new Preinit.Notes(_t.WordSize, _t.ArrayHeaderBytes, _t.ArrayCountOffset, _preinitConstructors.ToList(), _preinitCandidates.ToList(),
+            _preinitTypes.ToList());
+    }
+
+    /// <summary>
+    /// A TYPE'S INITIALISER, TOLD TO THE LINK to run whole (Preinit, stage
+    /// 2): the StaticInit$ a touch calls, the StaticInitBody$ the link runs
+    /// in its place, the state word it sets, and whether the type is
+    /// beforefieldinit -- no static constructor written, so that .NET may
+    /// run its initialiser at startup, and the link runs it before then.
+    /// </summary>
+    private void NotePreinitType(MethodSymbol initializer)
+    {
+        TypeSymbol t = initializer.Owner;
+        if (t.Decl is not TypeDecl declared || declared.Elsewhere || declared.External) return;
+        MethodSymbol? body = t.FindMethods("StaticInitBody$").FirstOrDefault(m => m.Static && m.Params.Count == 0);
+        FieldSymbol? ready = t.Fields.FirstOrDefault(f => f.Static && f.Name == BindResult.ReadyField);
+        if (body is null || ready is null) return;
+        bool precise = declared.Members.OfType<MethodDecl>().Any(m => (m.IsCtor && m.Mods.HasFlag(Mods.Static)) || m.Name == "StaticConstructorBody$");
+        _preinitTypes.Add(new Preinit.TypeNote(TypeKey(t), CallLabel(initializer), CallLabel(body), StaticSymbol(SharedStatic(ready)), !precise));
     }
 
     /// <summary>A constructor lowered here, told to the link when it only chains and stores.</summary>
