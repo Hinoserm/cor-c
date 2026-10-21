@@ -995,6 +995,7 @@ public sealed class Parser
         List<TypeDecl> family = new() { top };
         family.AddRange(nested);
         static string PathOf(TypeDecl d) => d.Outer is null ? d.Name : d.Outer + "." + d.Name;
+        HashSet<string> declared = new(family.Select(PathOf), StringComparer.Ordinal);
         foreach (TypeDecl inner in family)
         {
             if (inner.OuterParams == 0 || inner.Outer is null) continue;
@@ -1004,9 +1005,16 @@ public sealed class Parser
             {
                 string at = PathOf(within);
                 if (at != outer && !at.StartsWith(outer + ".", StringComparison.Ordinal)) continue;
+                // A NEARER ONE OF THE NAME HIDES IT, as C#'s lookup has it:
+                // `Enumerator` inside Dictionary's KeyCollection is the
+                // collection's own, not Dictionary's -- a type between where
+                // it is written and `outer` that declares one so named.
+                bool hidden = false;
+                for (string scope = at; scope != outer && scope.StartsWith(outer + ".", StringComparison.Ordinal) && !hidden; scope = scope[..scope.LastIndexOf('.')])
+                    hidden = declared.Contains(scope + "." + inner.Name);
                 Corsac.Lang.Metadata.BodyTypeNames.Walk(within, reference =>
                 {
-                    if ((reference.Name != inner.Name && reference.Name != path) || reference.Args.Count != own) return;
+                    if ((reference.Name != inner.Name || hidden) && reference.Name != path || reference.Args.Count != own) return;
                     for (int k = inner.OuterParams - 1; k >= 0; k--)
                         reference.Arguments.Insert(0, new TypeRef { Name = inner.TypeParams[k].Name, Line = reference.Line, Col = reference.Col });
                     if (reference.Name == inner.Name) reference.Name = path;
