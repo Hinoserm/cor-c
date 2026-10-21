@@ -1,0 +1,37 @@
+// test: tables_alone_in_a_unit
+// units: tests/language/support/2184_table_units.cor
+// expect-exit: 0
+// expect-output:
+// 55
+// one A
+//
+// A unit of static tables and little else, compiled on its own: the tables'
+// array types are first named as their data is laid down, and the
+// routines their descriptors bring may add a static to the set being laid
+// down (the kernel's build stopped there). Expected output from .NET 10.
+
+using System;
+using TableUnits;
+
+// Tables alone: nothing else in this unit stores a reference, so the first
+// card the unit marks is in a routine its tables' array types bring.
+static class Tables
+{
+    static readonly long[] Weights = { 3, 5, 7, 11 };
+    static readonly ushort[] Codes = { 0x1E, 0x30, 0x2E };
+    static readonly string[] Names = { "esc", "one", "two" };
+
+    public static long Weight(int i) => Weights[i];
+    public static int Code(int i) => Codes[i];
+    public static string Name(int i) => Names[i];
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Tables.Weight(2) + Tables.Code(1));
+        Console.WriteLine(Tables.Name(1) + " " + Labels.Of(Tables.Code(0)));
+        return 0;
+    }
+}

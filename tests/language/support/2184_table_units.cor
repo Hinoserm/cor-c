@@ -1,0 +1,7 @@
+// The other unit of 2184_tables_alone_in_a_unit.
+namespace TableUnits;
+
+public static class Labels
+{
+    public static string Of(int code) => code == 0x1E ? "A" : "?";
+}

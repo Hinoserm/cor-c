@@ -689,8 +689,17 @@ public sealed partial class Lowering
             _m.Data.Add(new DataItem(ThreadBlockSelf, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
         }
 
-        foreach (FieldSymbol f in _statics)
+        // STATICS MADE WHILE THE STATICS ARE LAID DOWN, laid down in turn: a
+        // table laid down as data (StaticArrayData) may be the first of its
+        // array type the unit names, and its descriptor builds the sequence
+        // interfaces' routines then (ArrayFaces) -- one storing a reference
+        // marks a card, and the card table's static was new to a unit of
+        // tables alone, added to the set being walked.
+        HashSet<FieldSymbol> laid = new();
+        for (List<FieldSymbol> next = _statics.ToList(); next.Count > 0; next = _statics.Where(f => !laid.Contains(f)).ToList())
+        foreach (FieldSymbol f in next)
         {
+            laid.Add(f);
             // Another shared object's static, reached by its symbol.
             if (f.Owner.Decl?.Elsewhere == true)
             {
