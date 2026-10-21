@@ -6396,7 +6396,7 @@ static class Gc
         {
             _outOfMemoryMade = true;
             _outOfMemoryMaker = Sys.ThreadBlock();
-            OutOfMemoryException made = new OutOfMemoryException(null);
+            OutOfMemoryException made = new OutOfMemoryException(true);
             made.Reserve$(new long[Runtime.TraceDepth]);
             _outOfMemory = made;
             _outOfMemoryMaker = 0;

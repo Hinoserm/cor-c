@@ -1875,7 +1875,7 @@ static class Runtime
             _manualAt = _manualAt + ((ManualBinCount * w + w + 15) & (0 - 16));
             // The exception out of memory throws, made as the heap begins,
             // as the collector's is (Gc.ThrowOutOfMemory).
-            OutOfMemoryException made = new OutOfMemoryException(null);
+            OutOfMemoryException made = new OutOfMemoryException(true);
             made.Reserve$(new long[TraceDepth]);
             _manualOutOfMemory = made;
         }
