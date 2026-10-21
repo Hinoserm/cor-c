@@ -521,9 +521,14 @@ public sealed class PreinitWorld
             case Ptr { Region.Symbol: string s } p: return (s, p.Offset, null);
             case Code { Local: ObjectFile own } c: return (Alias(own, c.Label), c.Offset, null);
             case Code c: return (c.Label, c.Offset, null);
+            // A RELOCATION NEVER READ THROUGH is written as the unit wrote it,
+            // by its name: what the unit's own data named, the link finds, or
+            // says it cannot -- as stage 1's recipes always named theirs.
             case Unresolved u:
             {
-                Val resolved = Address(u.Symbol, u.Addend, u.From);
+                Val resolved;
+                try { resolved = Address(u.Symbol, u.Addend, u.From); }
+                catch (Refused) { return (u.Symbol, u.Addend, null); }
                 return resolved is Unresolved ? (u.Symbol, u.Addend, null) : Target(resolved);
             }
             default: throw new InvalidOperationException("preinit: an address the link cannot write: " + v);
