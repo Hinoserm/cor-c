@@ -893,6 +893,21 @@ public static class Frontend
     /// </summary>
     private static void MergePartialTypes(Lang.CompilationUnit unit, HashSet<string> classLibrary)
     {
+        // ANY SOURCE OF THE COMPILER'S LIBRARY ROOT IS THE CLASS LIBRARY'S, the
+        // class library's and the runtime's alike, whichever of them this
+        // target's default set names: a ring-1 kernel compiles io.cor and
+        // Linux's files.cor as units of its own beside Core.cor and
+        // baremetal.cor, and DateTime's two parts, and Os's, were taken for
+        // two types each -- the part in the default set the library's, the
+        // other the program's -- and declared twice in every unit.
+        string? root = Driver.LibraryRoot();
+        string[] trees = root is null ? Array.Empty<string>() : new[]
+        {
+            Path.Combine(Path.GetFullPath(root), "stdlib", "src") + Path.DirectorySeparatorChar,
+            Path.Combine(Path.GetFullPath(root), "runtime", "src") + Path.DirectorySeparatorChar,
+        };
+        bool UnderLibraryRoot(string path) => trees.Any(tree => path.StartsWith(tree, StringComparison.Ordinal));
+
         Dictionary<string, Lang.TypeDecl> first = new(StringComparer.Ordinal);
         List<Lang.TypeDecl> merged = new();
 
@@ -906,7 +921,7 @@ public static class Frontend
             // parts kept them from each other, and both were declared twice.
             bool libraryPart = classLibrary.Count == 0
                 ? part.FromLibrary
-                : part.File == "<prelude>" || part.SourcePath is string at && classLibrary.Contains(at);
+                : part.File == "<prelude>" || part.SourcePath is string at && (classLibrary.Contains(at) || UnderLibraryRoot(at));
             string key = Lang.Binder.TypeKey(part) + (libraryPart ? "\0library" : "");
 
             if (!first.TryGetValue(key, out Lang.TypeDecl? into))

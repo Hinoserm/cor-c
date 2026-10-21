@@ -1597,7 +1597,7 @@ public static class Driver
     private static readonly object libraryRootGate = new();
 
     /// <summary>Where the compiler's own library sources live, found once.</summary>
-    private static string? LibraryRoot()
+    internal static string? LibraryRoot()
     {
         lock (libraryRootGate)
         {
