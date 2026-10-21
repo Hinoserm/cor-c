@@ -4916,11 +4916,17 @@ public sealed partial class Lowering
         }
 
         // References, pointers, bools, enums and Type values compare as words.
+        // A TYPE BESIDE AN OBJECT is the object it is (C#'s reference
+        // equality, the Type converted): `boxed == typeof(T)` compares two
+        // RuntimeTypes, one object a type, as .NET's two RuntimeTypes.
         if (b.Op is BinOp.Eq or BinOp.Ne or BinOp.Lt or BinOp.Gt or BinOp.Le or BinOp.Ge
             && !(left.IsNumeric && right.IsNumeric))
         {
-            VReg l = Eval(b.Left);
-            VReg r = Eval(b.Right);
+            bool typeAsObject = b.Op is BinOp.Eq or BinOp.Ne
+                && (left.Prim == Prim.Type && (right.Prim == Prim.Any || right.Symbol is { Kind: TypeKind.Interface })
+                    || right.Prim == Prim.Type && (left.Prim == Prim.Any || left.Symbol is { Kind: TypeKind.Interface }));
+            VReg l = typeAsObject && left.Prim == Prim.Type ? Convert(b.Left, Eval(b.Left), left, Type.Any) : Eval(b.Left);
+            VReg r = typeAsObject && right.Prim == Prim.Type ? Convert(b.Right, Eval(b.Right), right, Type.Any) : Eval(b.Right);
             (l, r) = SameWidth(l, r);
             bool unsigned = left.IsPointer || right.IsPointer || left.IsReference || right.IsReference;
             return Compare(b.Op, l, r, unsigned, floating: false);
