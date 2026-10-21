@@ -1195,6 +1195,7 @@ public sealed class Inline : IParallelModulePass
         // And what the objects linked in beside this one name (--with): an
         // entry stub's write to a static, its call into the program.
         foreach (string name in m.ObjectNames) Reach(name);
+        foreach (string name in m.PreinitNames) Reach(name);
         // AND EVERY MODULE INITIALISER (Module.Initializers): nothing in the
         // IR calls one -- a function the link makes does, the program's
         // start's or a shared object's DT_INIT.

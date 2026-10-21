@@ -79,9 +79,20 @@ public sealed partial class Binder
     {
         SuppressExpr suppressed => PreinitShape(suppressed.Operand),
         NewExpr { Utf8Bytes: null } => true,
-        CallExpr { Target: MemberExpr { Name: "ToArray", Target: NewExpr { Utf8Bytes: not null } }, Args.Count: 0 } => true,
+        CallExpr { Target: MemberExpr { Name: "ToArray", Target: { } span }, Args.Count: 0 } when Utf8Of(span) is not null => true,
         NameExpr or MemberExpr => true,
         _ => false,
+    };
+
+    /// <summary>
+    /// A `"text"u8` literal's bytes: the parser's ReadOnlySpan<byte> over an
+    /// array marked Utf8Bytes, or that array itself.
+    /// </summary>
+    internal static byte[]? Utf8Of(Expr e) => e switch
+    {
+        NewExpr { Utf8Bytes: { } bytes } => bytes,
+        NewExpr { Args: [NewExpr { Utf8Bytes: { } bytes }] } => bytes,
+        _ => null,
     };
 
     /// <summary>An initialiser that reads nothing: a literal, forgiven or negated, which no later field can be seen through.</summary>

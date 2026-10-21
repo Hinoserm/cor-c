@@ -57,6 +57,14 @@ public sealed class Module
     public HashSet<string> ObjectNames { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// What the link's preinitialisation names (Lto.Preinit): the strings and
+    /// descriptors the objects it lays down point at, which nothing in the IR
+    /// may reach. Kept by the unit's reach, and nothing else -- unlike
+    /// ObjectNames, it says nothing of what the image writes.
+    /// </summary>
+    public HashSet<string> PreinitNames { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// The module is the whole image: the driver links it itself into an
     /// executable, with no shared object, kernel or separately compiled unit
     /// beside it, so every instruction that can write one of its statics is

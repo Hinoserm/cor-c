@@ -285,7 +285,7 @@ public sealed class Monomorphiser
             LocalCopy = made.LocalCopy, File = made.File, TemplateIndex = made.TemplateIndex,
             Scope = made.Scope, Namespace = made.Namespace, OwnedImplementation = made.OwnedImplementation,
             AutoAccessor = made.AutoAccessor, NeverReturnsByText = made.NeverReturnsByText, End = made.End,
-            PartialWithoutBody = made.PartialWithoutBody,
+            PartialWithoutBody = made.PartialWithoutBody, PreinitField = made.PreinitField,
         };
         if (made.Attributes.Count > 0) plain.WritableAttributes.AddRange(made.Attributes);
         plain.WritableParams.AddRange(made.Params);
@@ -3159,6 +3159,8 @@ public sealed class Monomorphiser
                     Init = f.Init is null ? null : Rewrite(f.Init, map),
                     DeclaredInit = f.DeclaredInit is null ? null : Rewrite(f.DeclaredInit, map),
                     StaticData = f.StaticData,
+                    // A candidate for the link to lay down made, as its step says (Lto.Preinit).
+                    Preinit = f.Preinit,
                     VtableSlotHint = f.VtableSlotHint,
                     Line = f.Line, Col = f.Col,
                 };
@@ -3229,6 +3231,8 @@ public sealed class Monomorphiser
                     ExplicitInterfaceArgs = md.ExplicitInterfaceArgs?.Select(a => Sub(a, map)).ToList(),
                     // A shared method copy's dictionary, made again in a later round.
                     CopyNeeds = md.CopyNeeds, CopyParams = md.CopyParams,
+                    // A static's step, made again in every round with what it is for (Lto.Preinit).
+                    PreinitField = md.PreinitField,
                     Line = md.Line, Col = md.Col,
                 };
 

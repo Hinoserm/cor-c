@@ -159,7 +159,7 @@ public sealed partial class Lowering
             case LiteralExpr { Kind: Lit.Null }:
                 return new Preinit.Null();
             case LiteralExpr { Kind: Lit.Str } text:
-                return new Preinit.Address(PreinitString(text.Text), 0);
+                return new Preinit.Address(Keep(PreinitString(text.Text)), 0);
             case NameExpr or MemberExpr when _b.Resolved.TryGetValue(e, out Sym? sym):
                 switch (sym)
                 {
@@ -169,8 +169,8 @@ public sealed partial class Lowering
                         return new Preinit.StaticOf(StaticSymbol(field));
                 }
                 break;
-            case CallExpr { Target: MemberExpr { Name: "ToArray", Target: NewExpr { Utf8Bytes: { } bytes } }, Args.Count: 0 }:
-                return new Preinit.Elements(SequenceDescriptor(ElementKey(Type.U8), 1, isString: false, elementType: Type.U8), _t.DescriptorBytes, 1,
+            case CallExpr { Target: MemberExpr { Name: "ToArray", Target: { } span }, Args.Count: 0 } when Binder.Utf8Of(span) is { } bytes:
+                return new Preinit.Elements(Keep(SequenceDescriptor(ElementKey(Type.U8), 1, isString: false, elementType: Type.U8)), _t.DescriptorBytes, 1,
                     bytes.Select(b => (Preinit.Recipe)new Preinit.Bits(b)).ToArray());
             case CallExpr call when _b.Calls.TryGetValue(call, out MethodSymbol? helper) && call.Args.Count == 0
                                     && helper.Decl is MethodDecl { Name: var name, Body.Statements: [ReturnStmt { Value: { } returned }] } && name.StartsWith("FieldInit$", StringComparison.Ordinal):
@@ -193,7 +193,7 @@ public sealed partial class Lowering
         {
             if (InlineElement(element)) return new Preinit.Opaque();
             int stride = ElementStride(element);
-            string vtable = SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element);
+            string vtable = Keep(SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element));
             if (made.Elements is { } written)
                 return new Preinit.Elements(vtable, _t.DescriptorBytes, stride, written.Select(w => RecipeOf(w, within, of, depth + 1)).ToArray());
             if (made.ArraySize is { } size && Fold.TryConst(size, out long length, NamedConstant) && length >= 0 && length <= int.MaxValue)
@@ -206,8 +206,19 @@ public sealed partial class Lowering
         if (ctor is null && made.Args.Count == 0) ctor = ImplicitConstructor(sym);
         if (ctor is null && made.Args.Count != 0 || made.ArgumentOrder.Count != 0) return new Preinit.Opaque();
         Preinit.Recipe[] args = made.Args.Select(a => RecipeOf(a, within, of, depth + 1)).ToArray();
-        return new Preinit.Make(ctor is null ? "" : CallLabel(ctor), ClassDescriptor(sym), _t.DescriptorBytes,
+        return new Preinit.Make(ctor is null ? "" : CallLabel(ctor), Keep(ClassDescriptor(sym)), _t.DescriptorBytes,
             Math.Max(_t.ObjectHeaderBytes, sym.InstanceSize), args);
+    }
+
+    /// <summary>
+    /// A SYMBOL A RECIPE NAMES IS KEPT (Module.PreinitNames): nothing in the
+    /// IR may reach a string or a descriptor the link lays down an object
+    /// over, and the unit's reach (Opt.Inline) dropped it.
+    /// </summary>
+    private string Keep(string symbol)
+    {
+        _m.PreinitNames.Add(symbol);
+        return symbol;
     }
 
     /// <summary>

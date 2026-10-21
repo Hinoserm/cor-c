@@ -259,6 +259,8 @@ public static class Preinit
         // Each type's candidates as solved: the value laid down, or null for one run at run time.
         private readonly Dictionary<string, Value?> _solved = new(StringComparer.Ordinal);
         private readonly HashSet<string> _solving = new(StringComparer.Ordinal);
+        // The types whose candidates are being solved, for a read of one's own or another's statics.
+        private readonly HashSet<string> _owners = new(StringComparer.Ordinal);
         private readonly List<Frozen> _objects = new();
         private long _bytes;
 
@@ -294,7 +296,7 @@ public static class Preinit
         private void SolveOwner(string owner)
         {
             List<Candidate> list = _byOwner[owner];
-            if (list.All(c => _solved.ContainsKey(c.Storage))) return;
+            if (list.All(c => _solved.ContainsKey(c.Storage)) || !_owners.Add(owner)) return;
             bool open = true;
             foreach (Candidate c in list)
             {
@@ -313,6 +315,7 @@ public static class Preinit
                 _solved[c.Storage] = value;
                 open &= value is not null;
             }
+            _owners.Remove(owner);
         }
 
         private Value? Evaluate(Recipe recipe, Value[] arguments, int depth)
@@ -327,7 +330,11 @@ public static class Preinit
                 case StaticOf s:
                 {
                     if (!_byStorage.TryGetValue(s.Storage, out Candidate? other) || !other.ReadOnly || _solving.Contains(s.Storage)) return null;
-                    SolveOwner(other.Owner);
+                    // A TYPE BEING SOLVED, its own or one whose candidate led
+                    // here: what is settled already -- its earlier fields, in
+                    // the order they run -- and nothing for a later one, which
+                    // its initialiser would read as null.
+                    if (!_owners.Contains(other.Owner)) SolveOwner(other.Owner);
                     return _solved.GetValueOrDefault(s.Storage) is Made made ? made : null;
                 }
                 case Zeroed z:
