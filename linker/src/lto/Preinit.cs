@@ -265,7 +265,16 @@ public static class Preinit
     /// of other types' mutable statics (Report).
     /// </summary>
     public sealed record Solution(ObjectFile? Data, HashSet<string> FrozenSteps, int Frozen, int Candidates,
-        HashSet<string> Overrides, int TypesRun, List<string> Report, List<(ObjectFile Unit, string Local, string Alias)> Aliases, string Signature);
+        HashSet<string> Overrides, int TypesRun, List<string> Report, List<(ObjectFile Unit, string Local, string Alias)> Aliases, string Signature,
+        HashSet<string> Named);
+
+    /// <summary>
+    /// WHAT THE LAID-DOWN DATA NAMES, for the link-time optimiser to keep
+    /// (IrLinkOptimizer's roots): a descriptor or a routine only an object
+    /// made at the link reaches is reached all the same, and a unit made again
+    /// that dropped it left the data naming nothing.
+    /// </summary>
+    public static IReadOnlyCollection<string> LastNamed => _last?.Named ?? (IReadOnlyCollection<string>)System.Array.Empty<string>();
 
     /// <summary>
     /// The same solve, the notes left where they are: what the interrupt
@@ -686,7 +695,9 @@ public static class Preinit
                     data.Relocs.Add(new Relocation((int)(at + offset), symbol ?? names[o!], addend, _longMode ? RelocKind.Abs64 : RelocKind.Abs32));
                 }
             obj.Sections.Add(data);
-            return new Solution(obj, frozenSteps, frozen, _byStorage.Count, overrides, typesRun, world.Report, world.Aliases, Signature(_notes));
+            HashSet<string> named = new(StringComparer.Ordinal);
+            foreach (Relocation r in data.Relocs) if (!r.Symbol.StartsWith("preinit$", StringComparison.Ordinal)) named.Add(r.Symbol);
+            return new Solution(obj, frozenSteps, frozen, _byStorage.Count, overrides, typesRun, world.Report, world.Aliases, Signature(_notes), named);
         }
 
         private static void Pad(Section data, int align)
