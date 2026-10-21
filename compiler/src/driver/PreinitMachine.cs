@@ -94,7 +94,13 @@ public sealed class PreinitMachine : Preinit.IMachine
             return null;
         }
         var (f, unit) = FunctionOf(label) ?? throw new Refused("'" + label + "' has no IR the link can run");
-        return Execute(w, f, unit, args, depth);
+        // WHERE IT WAS REFUSED, the innermost routine named: the report's
+        // reader goes to that code, not to the type's initialiser at large.
+        try { return Execute(w, f, unit, args, depth); }
+        catch (Refused refused) when (!refused.Message.Contains(" (in '", StringComparison.Ordinal))
+        {
+            throw new Refused(refused.Message + " (in '" + (f.Display ?? f.Name) + "')");
+        }
     }
 
     private static bool Is(string label, string owner, string name)

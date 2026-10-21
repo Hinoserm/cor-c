@@ -464,8 +464,10 @@ public sealed class PreinitWorld
         System.Array.Fill(d.Region.Bytes, value, at, n);
     }
 
-    // The collector's state, read by every reference store's barrier test: which way the store goes, never what it stores.
-    private static readonly HashSet<string> Collector = new(StringComparer.Ordinal) { "s_Runtime_Marking", "s_Runtime_Cards" };
+    // THE COLLECTOR'S STATE, read by every reference store's barrier test and
+    // by a free put in place in its caller (List.Grow's): which way the store
+    // or the free goes, never what the program holds.
+    private static readonly HashSet<string> Collector = new(StringComparer.Ordinal) { "s_Runtime_Marking", "s_Runtime_Cards", "s_Gc_IgnoredFrees" };
 
     /// <summary>
     /// WHAT A RUN MAY READ, as NativeAOT's preinitialisation may: the image's
