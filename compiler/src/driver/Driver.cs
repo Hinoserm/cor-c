@@ -1256,6 +1256,7 @@ public static class Driver
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
         // What the link checks interrupt handlers' calls into other units by.
         if (module.InterruptFacts is { } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
+        if (module.Preinit is { } preinit) Corsac.Lang.Lto.Preinit.Attach(obj, preinit);
 
         // WHAT THIS PROGRAM'S SETTINGS ARE, for the kernel to read out of the
         // file rather than out of the running process -- which is why the
@@ -1336,7 +1337,7 @@ public static class Driver
         // 14.7 KB .corsac.irq.
         if (!args.Contains("--obj") && (kernel is not null || shared))
         {
-            List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj });
+            List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj }, Corsac.Lang.Lto.Preinit.Peek(new[] { obj }, longMode: false)?.FrozenSteps);
             if (handlerErrors.Count > 0) throw new LinkException(handlerErrors);
             Corsac.Lang.Lto.UsesNotes.Strip(new[] { obj });
             Corsac.Lang.Lto.InterruptNotes.Strip(new[] { obj });
@@ -1408,7 +1409,7 @@ public static class Driver
         if (Value(args, "--unused-report") is string unusedReport) Corsac.Lang.Lto.UnusedReport.Write(link, entry, unusedReport);
         // Every interrupt handler, through every object linked here
         // (InterruptNotes): what each unit's compile could not follow.
-        List<string> interruptErrors = Corsac.Lang.Lto.InterruptNotes.Check(link.Select(input => input.Item2));
+        List<string> interruptErrors = Corsac.Lang.Lto.InterruptNotes.Check(link.Select(input => input.Item2), Corsac.Lang.Lto.Preinit.Peek(link.Select(input => input.Item2), longMode: false)?.FrozenSteps);
         // REFUSED, every path listed (InterruptNotes.EveryAllocation): the
         // kernel's handlers reach no allocation since the wake predicate
         // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's

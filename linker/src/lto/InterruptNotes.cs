@@ -134,7 +134,7 @@ public static class InterruptNotes
     /// describes -- assembled code, a unit compiled without facts -- are not
     /// followed.
     /// </summary>
-    public static List<string> Check(IEnumerable<ObjectFile> objects)
+    public static List<string> Check(IEnumerable<ObjectFile> objects, IReadOnlySet<string>? neverRun = null)
     {
         // NO HANDLER ANYWHERE, NOTHING TO WALK: each object's header says how
         // many it has, and a link of none -- every program but a kernel's --
@@ -154,6 +154,9 @@ public static class InterruptNotes
                 if (f.Handler) handlers.Add(f);
             }
         }
+        // A STATIC THE LINK LAYS DOWN MADE (Preinit) is never made at run
+        // time: its type's initialiser skips the step that would make it.
+        if (neverRun is not null) foreach (string step in neverRun) facts.Remove(step);
         List<string> errors = new();
         if (handlers.Count == 0) return errors;
         // What each method reaches, once: the allocation and the method that

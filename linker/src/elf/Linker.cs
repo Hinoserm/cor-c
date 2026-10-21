@@ -148,6 +148,9 @@ public static partial class Linker
         // types. TargetContract.Validate has already refused a mixture.
         bool isLongMode = longMode ?? inputs.Any(i => TargetContract.IsLongMode(i.Object));
         inputs.Add(new Input("the program's initialisers", ProgramInitializers(inputs, isLongMode)));
+        // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
+        // storage and flag, defined by no unit.
+        if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), isLongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
         if (isLongMode && loadAddress == DefaultLoadAddress)
         {
             loadAddress = Elf.DefaultLoadAddress64;
@@ -243,6 +246,9 @@ public static partial class Linker
         // run from the base.
         Layout layout = new(baseAddress) { LongMode = longMode ?? inputs.Any(i => TargetContract.IsLongMode(i.Object)) };
         inputs.Add(new Input("the program's initialisers", ProgramInitializers(inputs, layout.LongMode)));
+        // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
+        // storage and flag, defined by no unit.
+        if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), layout.LongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
         layout.ArrangeStatic();
         AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);

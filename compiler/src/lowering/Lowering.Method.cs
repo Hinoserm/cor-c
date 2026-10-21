@@ -350,6 +350,8 @@ public sealed partial class Lowering
             _f.Params.Add(_needDictionary);
         }
 
+        // What a constructor does, told to the link while its body is held (Lto.Preinit).
+        if (decl.IsCtor) NotePreinitConstructor(m, decl);
         ScanAddressTaken(decl.Body!);
         // AND THE CONSTRUCTOR'S `: this(...)` OR `: base(...)`, whose
         // arguments are this method's too: `: this(name, out bool unused)`
@@ -445,6 +447,13 @@ public sealed partial class Lowering
         }
         else
         {
+            // A STATIC'S STEP (Lto.Preinit): told to the link, and left at
+            // once where the link laid the field down made.
+            if (decl.PreinitField is string preinit)
+            {
+                NotePreinitCandidate(m, decl, preinit);
+                PreinitGuard(m, preinit);
+            }
             EmitStmt(decl.Body!);
         }
 

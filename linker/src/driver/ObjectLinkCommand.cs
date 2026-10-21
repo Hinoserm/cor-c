@@ -186,7 +186,7 @@ public static class ObjectLinkCommand
         if (unusedReport is not null) UnusedReport.Write(inputs, entry, unusedReport);
         // EVERY INTERRUPT HANDLER, THROUGH EVERY UNIT: what no one unit's
         // compile could follow (InterruptNotes).
-        List<string> interruptErrors = InterruptNotes.Check(inputs.Select(input => input.Item2));
+        List<string> interruptErrors = InterruptNotes.Check(inputs.Select(input => input.Item2), Preinit.Peek(inputs.Select(input => input.Item2), longMode: false)?.FrozenSteps);
         // REFUSED, every path listed (InterruptNotes.EveryAllocation): the
         // kernel's handlers reach no allocation since the wake predicate
         // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's

@@ -170,6 +170,9 @@ public sealed class Module
     /// <summary>The unit's interrupt facts, for the link's check of handlers across units (Lto.InterruptNotes). Null: none kept.</summary>
     public byte[]? InterruptFacts { get; set; }
 
+    /// <summary>What the unit's static initialisers and constructors make, for the link to lay statics down made (Lto.Preinit). Null: nothing to say.</summary>
+    public Corsac.Lang.Lto.Preinit.Notes? Preinit { get; set; }
+
     /// <summary>
     /// The link's answer, for a unit it regenerates: which parameters of the
     /// functions the unit calls, and of its own, escape, solved over every

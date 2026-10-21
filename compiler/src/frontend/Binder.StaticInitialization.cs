@@ -83,6 +83,48 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>
+    /// WHAT THE LINK MIGHT MAKE (Lto.Preinit): an object or an array made,
+    /// `"..."u8.ToArray()`, or another static read -- the shapes a recipe can
+    /// be (Lowering.Preinit), anything else certainly not one.
+    /// </summary>
+    private static bool PreinitShape(Expr initial) => initial switch
+    {
+        SuppressExpr suppressed => PreinitShape(suppressed.Operand),
+        NewExpr { Utf8Bytes: null } => true,
+        CallExpr { Target: MemberExpr { Name: "ToArray", Target: NewExpr { Utf8Bytes: not null } }, Args.Count: 0 } => true,
+        NameExpr or MemberExpr => true,
+        _ => false,
+    };
+
+    /// <summary>An initialiser that reads nothing: a literal, forgiven or negated, which no later field can be seen through.</summary>
+    private static bool PreinitConstant(Expr initial) => initial switch
+    {
+        LiteralExpr => true,
+        SuppressExpr suppressed => PreinitConstant(suppressed.Operand),
+        UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot or UnOp.Plus } unary => PreinitConstant(unary.Operand),
+        _ => false,
+    };
+
+    /// <summary>Whether a static of this declared type holds a reference: an array, a class, an interface, a delegate, a string or an object.</summary>
+    private bool ReferenceField(TypeRef declared, TypeSymbol owner)
+    {
+        if (declared.PointerDepth > 0) return false;
+        if (declared.ArrayRank > 0) return true;
+        if (declared.Name is "string" or "object") return true;
+        TypeSymbol? was = _scope;
+        _scope = owner;
+        try
+        {
+            Type resolved = Resolve(declared, owner);
+            return resolved.Symbol is { } sym && (sym.Kind is TypeKind.Class or TypeKind.Interface || sym.Decl is TypeDecl { IsDelegate: true });
+        }
+        finally
+        {
+            _scope = was;
+        }
+    }
+
     /// <summary>The most bytes of elements a zeroed static array is laid down with (ZeroedArrayOf).</summary>
     public const int ZeroedLimit = 65536;
 

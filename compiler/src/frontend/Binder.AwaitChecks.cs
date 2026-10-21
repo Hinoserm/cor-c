@@ -248,18 +248,23 @@ public sealed partial class Binder
             }
 
             Dictionary<MethodSymbol, (Node Site, string What, MethodSymbol Where)?> allocates = new(ReferenceEqualityComparer.Instance);
+            bool anyHandler = false;
             foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
             {
                 if (!IsInterruptHandler(m))
                 {
                     continue;
                 }
+                anyHandler = true;
                 _in = d.File is { Length: > 0 } own ? own : m.Owner.Decl?.File ?? _in;
                 _member = d;
                 CheckInterruptHandler(m, d, bodies, allocates);
             }
 
-            if (CollectInterruptFacts)
+            // AND A WHOLE PROGRAM WITH A HANDLER keeps them too: the check
+            // above leaves a static's step to the link's (Lto.Preinit), which
+            // reads them.
+            if (CollectInterruptFacts || anyHandler)
             {
                 List<Corsac.Lang.Lto.InterruptNotes.Fact> interrupts = InterruptFactsOf();
                 _r.InterruptFacts = interrupts.Count > 0 ? Corsac.Lang.Lto.InterruptNotes.Encode(interrupts) : null;
@@ -1133,7 +1138,7 @@ public sealed partial class Binder
     /// meet by it; by this they do. A method no declaration wrote is known
     /// by its label.
     /// </summary>
-    private static string DefinitionName(MethodSymbol m)
+    internal static string DefinitionName(MethodSymbol m)
     {
         if (m.Decl is not MethodDecl d) return Corsac.Lang.Lower.Lowering.Label(m);
         System.Text.StringBuilder owner = new();
@@ -1223,6 +1228,10 @@ public sealed partial class Binder
         {
             foreach ((Node _, MethodSymbol callee) in DirectCalls(d.Body!, m.Owner))
             {
+                // A STATIC'S STEP IS THE LINK'S TO JUDGE: it never runs where
+                // the link lays the field down made (Lto.Preinit), and the
+                // link's check knows which it laid down.
+                if (callee.Decl is MethodDecl { PreinitField: not null }) continue;
                 if (bodies.ContainsKey(callee))
                 {
                     (Node Site, string What, MethodSymbol Where)? deeper = AllocatesThrough(callee, bodies, allocates, walk, clean, ref reached);

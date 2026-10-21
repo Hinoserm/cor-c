@@ -3427,6 +3427,11 @@ public sealed partial class Binder
 
         List<Stmt> body = new();
         List<MethodDecl> initializerMethods = new();
+        // CANDIDATES FOR THE LINK TO LAY DOWN MADE (Lto.Preinit), until the
+        // first initialiser that is neither one nor a constant: that one may
+        // read a later field, null then in .NET.
+        bool candidates = d.TypeParams.Count == 0 && !d.Specialised;
+        _r.Types.TryGetValue(TypeKey(d), out TypeSymbol? candidateOwner);
 
         foreach (MemberDecl m in d.Members)
         {
@@ -3453,6 +3458,34 @@ public sealed partial class Binder
                 initial = p.Init; type = p.Type; field = "<" + p.Name + ">"; p.Init = null;
             }
             else continue;
+
+            // A STATIC THE LINK MAY MAKE: its initialiser a step of its own,
+            // which runs unless the link laid the field down made.
+            if (candidates && candidateOwner is not null && m is FieldDecl candidate && !IsThreadStatic(candidate)
+                && PreinitShape(initial) && ReferenceField(candidate.Type, candidateOwner))
+            {
+                candidate.Preinit = true;
+                string step = "Preinit$" + field;
+                initializerMethods.Add(new MethodDecl
+                {
+                    Name = step, Mods = Mods.Static | Mods.Private, Returns = new TypeRef { Name = "void" },
+                    Body = new Block { WritableStatements = { new ExprStmt
+                    {
+                        Expr = new AssignExpr
+                        {
+                            Target = new NameExpr { Name = field, Line = m.Line, Col = m.Col },
+                            Value = InitializerMethods.Value(d, m, type, Retarget(initial, type), initializerMethods),
+                            Line = m.Line, Col = m.Col,
+                        },
+                        Line = m.Line, Col = m.Col,
+                    } } },
+                    OwnedImplementation = m.OwnedImplementation, PreinitField = field,
+                    File = m.File, Scope = m.Scope, Namespace = m.Namespace, Line = m.Line, Col = m.Col,
+                });
+                body.Add(new ExprStmt { Expr = new CallExpr { Target = new NameExpr { Name = step, Line = m.Line, Col = m.Col }, Line = m.Line, Col = m.Col }, Line = m.Line, Col = m.Col });
+                continue;
+            }
+            if (!PreinitConstant(initial)) candidates = false;
 
             // EACH INITIALISER ITS OWN SCOPE, as C# has it: two of them that
             // each name a pattern's match `t` -- Escape's PromoteTrace and

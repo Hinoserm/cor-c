@@ -167,4 +167,5 @@ internal sealed class MemberRare
     public Dictionary<string, string>? Rehosted;
     public int Captures = -1;
     public int EndLine, EndCol;
+    public string? PreinitField;
 }

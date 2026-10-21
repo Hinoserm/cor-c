@@ -232,6 +232,7 @@ public sealed partial class Lowering
         Lowering l = new(bound, file, library);
         l.Run(unit);
         l._m.InterruptFacts = bound.InterruptFacts;
+        l._m.Preinit = l.PreinitNotes();
         // The frees the lifetime passes may add (Escape), by the label they
         // call: declared is enough, the body may be another unit's.
         foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("ShadeObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
@@ -713,6 +714,9 @@ public sealed partial class Lowering
         foreach (FieldSymbol f in next)
         {
             laid.Add(f);
+            // A candidate the link was told of (Lto.Preinit): the link's
+            // storage, a word it lays the object in or leaves empty.
+            if (_preinitNoted.Contains(f)) continue;
             // Another shared object's static, reached by its symbol.
             if (f.Owner.Decl?.Elsewhere == true)
             {
@@ -1648,20 +1652,7 @@ public sealed partial class Lowering
             return sym;
         }
 
-        byte[] block = new byte[_t.ArrayHeaderBytes + 2 * text.Length];
-        WriteWord(block, _t.ArrayCountOffset, text.Length);
-        // ITS HASH, WRITTEN IN NOW: a literal is read-only data, and the
-        // runtime keeps a string's hash in these four bytes the first time it
-        // is asked (Runtime.StringHashCode) -- which must find it already here.
-        uint hash = 2166136261;
-        foreach (char unit in text) hash = (hash ^ unit) * 16777619;
-        if (hash == 0) hash = 1;
-        for (int i = 0; i < 4; i++) block[_t.ArrayCountOffset + 4 + i] = (byte)(hash >> (8 * i));
-        for (int i = 0; i < text.Length; i++)
-        {
-            block[_t.ArrayHeaderBytes + 2 * i] = (byte)text[i];
-            block[_t.ArrayHeaderBytes + 2 * i + 1] = (byte)(text[i] >> 8);
-        }
+        byte[] block = StringBlock(text);
 
         // Named and registered BEFORE the descriptor is asked for, because the
         // descriptor's own name is a string and asking for it comes back here.
@@ -1676,6 +1667,26 @@ public sealed partial class Lowering
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(0, StringDescriptor(), _t.DescriptorBytes));
         return sym;
+    }
+
+    /// <summary>A literal's object as the data holds it: the count, its hash, its UTF-16 units.</summary>
+    private byte[] StringBlock(string text)
+    {
+        byte[] block = new byte[_t.ArrayHeaderBytes + 2 * text.Length];
+        WriteWord(block, _t.ArrayCountOffset, text.Length);
+        // ITS HASH, WRITTEN IN NOW: a literal is read-only data, and the
+        // runtime keeps a string's hash in these four bytes the first time it
+        // is asked (Runtime.StringHashCode) -- which must find it already here.
+        uint hash = 2166136261;
+        foreach (char unit in text) hash = (hash ^ unit) * 16777619;
+        if (hash == 0) hash = 1;
+        for (int i = 0; i < 4; i++) block[_t.ArrayCountOffset + 4 + i] = (byte)(hash >> (8 * i));
+        for (int i = 0; i < text.Length; i++)
+        {
+            block[_t.ArrayHeaderBytes + 2 * i] = (byte)text[i];
+            block[_t.ArrayHeaderBytes + 2 * i + 1] = (byte)(text[i] >> 8);
+        }
+        return block;
     }
 
     private void WriteWord(byte[] into, int at, long value)

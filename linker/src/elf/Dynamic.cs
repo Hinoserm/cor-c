@@ -177,6 +177,9 @@ public static partial class Linker
             dyn.InitName = ModuleInitName;
         }
         else if (!dyn.Shared) inputs.Add(new Input("the program's initialisers", ProgramInitializers(inputs, isLongMode)));
+        // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
+        // storage and flag, defined by no unit.
+        if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), isLongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
         Layout layout = new(loadAddress) { Dyn = dyn, LongMode = isLongMode };
         TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));

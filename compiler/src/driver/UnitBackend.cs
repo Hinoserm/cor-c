@@ -387,7 +387,10 @@ public sealed class UnitBackend : IUnitBackend
                        // A module's unit: the kernel's stamp it was compiled
                        // against, what it says of itself and its initialisers,
                        // which its link reads after this (Linker.LinkModule).
-                       or KernelExports.StampSection or ModuleInfo.SectionName or ModuleInfo.InitializerSection))
+                       or KernelExports.StampSection or ModuleInfo.SectionName or ModuleInfo.InitializerSection
+                       // And what its static initialisers and constructors do, for the
+                       // link to lay statics down made (Preinit).
+                       or Corsac.Lang.Lto.Preinit.SectionName))
         {
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
             // A layout a link left in its file (ElfReader.LeftInFile) stays

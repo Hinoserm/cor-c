@@ -82,6 +82,13 @@ public sealed class MethodDecl : MemberDecl
     public CtorInit? Init { get => _rare?.Init; init { if (value is not null) Rare.Init = value; } }
 
     /// <summary>
+    /// A STATIC'S STEP (Binder.StaticInitialisers): the field of the type
+    /// whose initialiser this runs, unless the link laid the field down made
+    /// (Lto.Preinit), which its flag says.
+    /// </summary>
+    public string? PreinitField { get => _rare?.PreinitField; init { if (value is not null) Rare.PreinitField = value; } }
+
+    /// <summary>
     /// The parameter this method's result is null only for, named by
     /// <c>[return: NotNullIfNotNull(nameof(path))]</c>.
     ///

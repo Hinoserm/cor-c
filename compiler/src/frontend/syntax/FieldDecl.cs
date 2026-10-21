@@ -28,6 +28,13 @@ public sealed class FieldDecl : MemberDecl
     public StaticArray? StaticData { get; set; }
 
     /// <summary>
+    /// A STATIC THE LINK MAY LAY DOWN MADE (Lto.Preinit): its initialiser is
+    /// a step of its own (MethodDecl.PreinitField), and its storage the
+    /// link's, so lowering lays none down.
+    /// </summary>
+    public bool Preinit { get; set; }
+
+    /// <summary>
     /// What it was WRITTEN as, which is not the same question as what code
     /// runs. <see cref="Init"/> is moved into a constructor or a StaticInit$
     /// and then cleared, so anything asking about the declaration rather than

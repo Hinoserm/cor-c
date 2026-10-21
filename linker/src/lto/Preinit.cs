@@ -1,5 +1,6 @@
 using System.Text;
 using Corsac.Lang.Elf;
+using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.Lto;
 
@@ -302,7 +303,7 @@ public static class Preinit
                 if (open)
                 {
                     _solving.Add(c.Storage);
-                    value = Evaluate(c.Value, Array.Empty<Value>(), 0);
+                    value = Evaluate(c.Value, System.Array.Empty<Value>(), 0);
                     _solving.Remove(c.Storage);
                     // A field's storage is a word: a number laid down is the initialiser's
                     // job no more than a constant's, and nothing allocates for one.
@@ -374,7 +375,7 @@ public static class Preinit
                     {
                         Value[] given = new Value[chain.Arguments.Length];
                         for (int i = 0; i < given.Length; i++)
-                            if (Evaluate(chain.Arguments[i], arguments, depth + 1) is not Value v) return false; else given[i] = v;
+                            if (Evaluate(chain.Arguments[i], arguments, depth + 1) is not Value argument) return false; else given[i] = argument;
                         if (!Run(chain.Constructor, made, given, depth + 1)) return false;
                         break;
                     }
