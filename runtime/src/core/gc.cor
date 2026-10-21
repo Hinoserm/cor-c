@@ -4262,9 +4262,10 @@ static class Gc
         // POINTER IS NO ROOM: a round takes the limit away -- 0 under a live
         // pointer -- to send this thread to the slow path, and the room
         // counted from it wrapped to all there is: the thread bumped on past
-        // its buffer over whatever lay beyond (739).
+        // its buffer over whatever lay beyond (739). AN EXACT FIT IS ROOM
+        // (BufferFits).
         nuint limit = (nuint)Sys.Peek(tb + (nint)Tls.AllocLimit);
-        if (limit < block || (nuint)need + (nuint)Smallest > limit - block)
+        if (limit < block || (nuint)need != limit - block && (nuint)need + (nuint)Smallest > limit - block)
         {
             Sys.Poke(tb + (nint)Tls.InAlloc, 0);
             return (nint)AllocSlow(bytes, kind);
@@ -4276,6 +4277,17 @@ static class Gc
         Sys.Poke((nint)next - (nint)FooterBytes, need);
         Sys.Poke(tb + (nint)Tls.InAlloc, 0);
         return (nint)block + (nint)HeaderBytes;
+    }
+
+    /// WHETHER A BUFFER BUMPED TO `next` STILL HOLDS: what is left past it
+    /// must be nothing, or a free block at least (Retire stamps it so). An
+    /// exact fit refused sent the request to the slow path, which retired
+    /// the buffer and its last hole's worth with it -- a recycled hole that
+    /// held two requests answered one, its other half passed over until the
+    /// next collection, and the heap grew for the request instead (737).
+    static bool BufferFits(long next, long limit)
+    {
+        return next == limit || next + Smallest <= limit;
     }
 
     static long AllocKindUnguarded(long bytes, long kind)
@@ -4328,7 +4340,7 @@ static class Gc
         // every thread queued behind whichever was collecting -- and put the
         // object in that hole's chunk, young for the next minor cycle to
         // walk. Holes are reused as buffers are refilled (AllocSlow).
-        if (bytes < 0 || bytes > MaxRequest || next + Smallest > Sys.Peek(tb + Tls.AllocLimit))
+        if (bytes < 0 || bytes > MaxRequest || !BufferFits(next, Sys.Peek(tb + Tls.AllocLimit)))
         {
             Sys.Poke(tb + Tls.InAlloc, 0);
             return AllocSlow(bytes, kind);
@@ -6499,7 +6511,7 @@ static class Gc
         // request at a time, which is what it has left. The small holes stay
         // for the requests too large for a buffer, and for the sweep to join.
         bool room = Sys.Peek(tb + Tls.AllocPtr) != 0
-            && Sys.Peek(tb + Tls.AllocPtr) + need + Smallest <= Sys.Peek(tb + Tls.AllocLimit);
+            && BufferFits(Sys.Peek(tb + Tls.AllocPtr) + need, Sys.Peek(tb + Tls.AllocLimit));
         bool tight = HeapChunks.SoftCap != 0 && HeapChunks.HeapBytes + BufferBytes > HeapChunks.SoftCap
             || HeapCeiling != 0 && HeapChunks.HeapBytes + BufferBytes > HeapCeiling;
         if (need + Smallest <= BufferBytes
