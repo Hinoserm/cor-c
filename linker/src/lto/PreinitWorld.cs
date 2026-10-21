@@ -224,9 +224,20 @@ public sealed class PreinitWorld
     /// </summary>
     public List<TypeEntry> Commit()
     {
+        // WHAT THE RUN LEAVES, not all it wrote: the data and storage it
+        // changed and the objects they reach. A temporary it made and dropped
+        // -- a span over a literal on its way to ToArray -- is laid down by
+        // nobody, whatever it named.
+        HashSet<Region> kept = new(ReferenceEqualityComparer.Instance);
+        Stack<Region> walk = new();
         foreach (var saved in _undo)
-            foreach (Val v in saved.Region.Refs.Values)
+            if (saved.Region.Kind is RegionKind.Data or RegionKind.Storage && kept.Add(saved.Region)) walk.Push(saved.Region);
+        while (walk.TryPop(out Region? r))
+            foreach (int offset in r.Refs.Keys.ToList())
             {
+                Val v;
+                try { v = Resolve(r, offset, r.Refs[offset]); }
+                catch (Refused refused) { Rollback(); throw new Refused("'" + r + "' keeps " + refused.Message); }
                 string? why = v switch
                 {
                     Ptr { Region.Kind: RegionKind.Frame or RegionKind.Thread } => "an address of a stack or a thread",
@@ -234,9 +245,12 @@ public sealed class PreinitWorld
                     Code { Local: ObjectFile own } c when MadeAgain(own) => "'" + c.Label + "', a unit's own",
                     _ => null,
                 };
-                if (why is null) continue;
-                Rollback();
-                throw new Refused("'" + saved.Region + "' keeps " + why);
+                if (why is not null)
+                {
+                    Rollback();
+                    throw new Refused("'" + r + "' keeps " + why);
+                }
+                if (v is Ptr { Region.Kind: RegionKind.Heap } heap && kept.Add(heap.Region)) walk.Push(heap.Region);
             }
         foreach (var saved in _undo) saved.Region.Written = true;
         List<TypeEntry> made = _entered.ToList();

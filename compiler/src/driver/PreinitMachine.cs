@@ -128,15 +128,19 @@ public sealed class PreinitMachine : Preinit.IMachine
             }
         }
         if (!label.StartsWith("m_Runtime_", StringComparison.Ordinal) && !label.StartsWith("m_Gc_", StringComparison.Ordinal)) return false;
-        foreach (string alloc in new[] { "Alloc", "AllocLeaf", "AllocObject", "AllocRegion", "AllocRegionSized" })
+        foreach (string alloc in new[] { "Alloc", "AllocLeaf", "AllocObject", "AllocRegion", "AllocRegionSized", "AllocNear", "AllocFast", "AllocFastSized" })
             if (Is(label, "Runtime", alloc) || Is(label, "Gc", alloc))
             {
                 if (args.Length == 0 || args[0] is not Num bytes) throw new Refused("an allocation of no known size");
                 result = w.Allocate(bytes.Bits);
                 return true;
             }
-        foreach (string nothing in new[] { "Free", "FreeField", "FreeReplaced", "WriteBarrier", "WriteBarrierValues", "CardMark", "CardMarkObject", "ShadeObject" })
+        // THE LIFETIME RULES' FREES AND REGIONS, as the compiler's late passes
+        // write them into a unit's runtime: nothing to a world with no heap.
+        foreach (string nothing in new[] { "Free", "FreeField", "FreeReplaced", "FreeOwnedReplaced", "KeepField", "FreeOwnedElements", "FreeArrayElements",
+                     "OwnElements", "FreeStorageInFrame", "RegionLeave", "RegionCatch", "WriteBarrier", "WriteBarrierValues", "CardMark", "CardMarkObject", "ShadeObject" })
             if (Is(label, "Runtime", nothing) || Is(label, "Gc", nothing)) return true;
+        if (Is(label, "Runtime", "RegionEnter") || Is(label, "Runtime", "RegionLoop")) { result = new Num(0); return true; }
         foreach (string thrown in new[] { "Capture", "Unhandled", "NullFault", "IndexOutOfRange", "Overflow", "DivideByZero", "InvalidCast", "InvalidCastTo",
                      "InvalidCastOfType", "InvalidCastToType", "ArgumentFailure", "NoValue", "NullUnboxed", "Exit", "ThreadStaticCell", "EnterTypeInitialization" })
             if (Is(label, "Runtime", thrown)) throw new Refused("'" + label + "'");
