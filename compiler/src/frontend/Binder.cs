@@ -548,6 +548,22 @@ public sealed partial class Binder
         return !Sole(name, out _);
     }
 
+    /// <summary>
+    /// WHAT AN ASYNC BODY'S LOWERING CALLS, though no source need name it:
+    /// AsyncRuntime -- the flow kept around the first step, an async void's
+    /// unhandled exception, an async Main's runner -- and Action, the
+    /// continuation it registers (Lowering.AsyncRuntimeMethod). Asked for
+    /// where an async method or lambda is bound, as a Main taking arguments
+    /// asks for Environment: declarations come from the index as they are
+    /// named, and a unit of a project that never wrote `AsyncRuntime` did not
+    /// have the one another unit of the project declares (the kernel's).
+    /// </summary>
+    private void AsyncNeeds()
+    {
+        FindType("AsyncRuntime", out _);
+        FindType("Action", out _);
+    }
+
     private bool FindType(string name, out TypeSymbol? sym)
     {
         // The checker's own name for one of the library's types (LibraryType).
@@ -6192,6 +6208,7 @@ public sealed partial class Binder
             {
                 FindType("Environment", out _);
             }
+            if (_method.Async) AsyncNeeds();
             _closureOwner = ClosureIdentity.Of(_method);
             _closures = 0;
             _nextSlot = 0;
@@ -14165,6 +14182,7 @@ public sealed partial class Binder
     {
         // Something may suspend in this unit (CheckAsyncSafety): an await, or an async lambda's body.
         if (e is AwaitExpr or LambdaExpr { Async: true }) _mayAwait = true;
+        if (e is LambdaExpr { Async: true }) AsyncNeeds();
         switch (e)
         {
             // A TUPLE, WRITTEN OUT. Its type is its elements' types, which is
