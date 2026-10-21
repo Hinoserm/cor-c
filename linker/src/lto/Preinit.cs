@@ -649,6 +649,16 @@ public static class Preinit
             foreach (PreinitWorld.Region r in roots) Reach(r);
             while (walk.TryPop(out PreinitWorld.Region? o)) Reach(o);
 
+            // WHAT IT COSTS THE IMAGE, the objects of four kilobytes and more by
+            // the type that made them: each was a boot's allocation before, and
+            // is file and memory both now.
+            if (Switches.PreinitReport)
+            {
+                foreach (var made in objects.Where(o => o.Bytes.Length >= 4096).GroupBy(o => o.Maker ?? "?").OrderByDescending(g => g.Sum(o => o.Bytes.Length)))
+                    world.Report.Add(made.Key + " lays down " + made.Count() + " objects of " + made.Sum(o => o.Bytes.Length) + " bytes");
+                world.Report.Add("objects laid down: " + objects.Count + ", " + objects.Sum(o => (long)o.Bytes.Length) + " bytes; unit data replaced: "
+                    + world.Overridden.Sum(r => (long)r.Bytes.Length) + " bytes");
+            }
             ObjectFile obj = new();
             Section data = new(".data", SectionKind.Data) { Align = 16 };
             Dictionary<PreinitWorld.Region, string> names = new(ReferenceEqualityComparer.Instance);
