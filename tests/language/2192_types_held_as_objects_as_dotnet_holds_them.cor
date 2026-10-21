@@ -1,0 +1,83 @@
+// test: types_held_as_objects_as_dotnet_holds_them
+// expect-exit: 0
+// expect-output:
+// System.Int32
+// System.Int32 System.Int32
+// True
+// Int32 System.Int32
+// True False True True
+// True
+// True False
+// RuntimeType RuntimeType
+// named Int32
+// type String; string x; other
+// 1 2 2
+// System.Int32 System.String[]
+// True GateAttribute
+// 2 String True 1
+// System.Int32,System.String
+// 2
+// System.Int32 System.Int32
+// True
+// cast: Unable to cast object of type 'System.String' to type 'System.Type'.
+//
+// A Type held as an object is its RuntimeType, one object a type: printed,
+// compared, hashed, asked its type, tested for and cast back, a
+// dictionary's object key, an object array's element, an attribute's
+// TypeId; a List<Type> and a Dictionary<Type, int>, string.Join over types,
+// and a cast of a string to Type refused as .NET refuses it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+sealed class GateAttribute : Attribute
+{
+    public int Level;
+}
+
+static class Program
+{
+    static object Boxed(Type t) => t;
+
+    static string Describe(object o) => o switch
+    {
+        Type t => "type " + t.Name,
+        string s => "string " + s,
+        _ => "other",
+    };
+
+    static void Main()
+    {
+        Type t = typeof(int);
+        object o = Boxed(typeof(int));
+        Console.WriteLine(o);
+        Console.WriteLine(o.ToString() + " " + t.ToString());
+        Console.WriteLine(o is Type);
+        Console.WriteLine(((Type)o).Name + " " + (o as Type)!.FullName);
+        Console.WriteLine(o.Equals(typeof(int)) + " " + o.Equals(typeof(long)) + " " + t.Equals(o) + " " + t.Equals(typeof(int)));
+        Console.WriteLine(o.GetHashCode() == t.GetHashCode());
+        Console.WriteLine(ReferenceEquals(o, Boxed(typeof(int))) + " " + ReferenceEquals(o, Boxed(typeof(long))));
+        Console.WriteLine(o.GetType().Name + " " + t.GetType().Name);
+        if (o is Type named) Console.WriteLine("named " + named.Name);
+        Console.WriteLine(Describe(typeof(string)) + "; " + Describe("x") + "; " + Describe(3));
+        Dictionary<object, int> d = new Dictionary<object, int>();
+        d[typeof(int)] = 1;
+        d[typeof(string)] = 2;
+        Console.WriteLine(d[typeof(int)] + " " + d[typeof(string)] + " " + d.Count);
+        object[] arr = { typeof(int), typeof(string[]) };
+        Console.WriteLine(arr[0] + " " + arr[1]);
+        Attribute a = new GateAttribute();
+        Console.WriteLine(a.TypeId.Equals(typeof(GateAttribute)) + " " + a.TypeId);
+        List<Type> l = new List<Type> { typeof(int), typeof(string) };
+        Console.WriteLine(l.Count + " " + l[1].Name + " " + l.Contains(typeof(string)) + " " + l.IndexOf(typeof(string)));
+        Console.WriteLine(string.Join(",", l));
+        Dictionary<Type, int> byType = new Dictionary<Type, int> { [typeof(int)] = 1, [typeof(string)] = 2 };
+        Console.WriteLine(byType[typeof(string)]);
+        Console.WriteLine($"{typeof(int)} {l[0]}");
+        object notType = "s";
+        Console.WriteLine((notType as Type) == null);
+        try { Type bad = (Type)notType; Console.WriteLine(bad.Name); }
+        catch (InvalidCastException e) { Console.WriteLine("cast: " + e.Message); }
+    }
+}
