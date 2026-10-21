@@ -453,7 +453,7 @@ internal static class OwnedElements
     /// are none of it: a ValueCollection handed back by Values was taken for
     /// a Dictionary, and its Count for the table's.
     /// </summary>
-    private static readonly string[] Nested = { "Enumerator$", "KeyCollection$", "KeyEnumerator$", "ValueCollection$", "ValueEnumerator$" };
+    private static readonly string[] Nested = { "Enumerator$", "KeyCollection$", "ValueCollection$" };
 
     private static bool IsNested(string name, int at)
     {
@@ -833,8 +833,8 @@ internal static class OwnedElements
     /// <summary>The enumerator a Dictionary view's GetEnumerator makes, by its methods' prefix; null for another callee.</summary>
     private static string? ViewEnumerator(string callee)
     {
-        if (callee.StartsWith("m_Dictionary$ValueCollection$", StringComparison.Ordinal)) return "m_Dictionary$ValueEnumerator$";
-        if (callee.StartsWith("m_Dictionary$KeyCollection$", StringComparison.Ordinal)) return "m_Dictionary$KeyEnumerator$";
+        if (callee.StartsWith("m_Dictionary$ValueCollection$", StringComparison.Ordinal)) return "m_Dictionary$ValueCollection$Enumerator$";
+        if (callee.StartsWith("m_Dictionary$KeyCollection$", StringComparison.Ordinal)) return "m_Dictionary$KeyCollection$Enumerator$";
         return null;
     }
 
