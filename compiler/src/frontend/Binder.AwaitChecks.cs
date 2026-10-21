@@ -1097,6 +1097,12 @@ public sealed partial class Binder
                 foreach ((Node site, string what) in AllocationsIn(d.Body!))
                 {
                     if (site is AwaitExpr) continue;
+                    // NOT THE WRAPPER EVERY TYPE INITIALISER HAS, as the check
+                    // within the unit skips it (AllocatesThrough): the
+                    // TypeInitializationException made only if it throws.
+                    // Written down, every handler that touched a type across
+                    // units was refused for it at the link.
+                    if (m.Name == "StaticInit$" && site.Line == 0) continue;
                     allocates = $"{what} at {file}:{site.Line}";
                     break;
                 }
