@@ -899,6 +899,14 @@ internal static class OwnedElements
     /// GetEnumerator's answer, or null when a use is not one of those; the
     /// enumerator's calls added to `calls` when it is given.
     /// </summary>
+    /// <summary>
+    /// A callee as its member is named, and how many operands lead its own: a
+    /// shared struct's member (and a shared class's static) is called at its
+    /// body, `mx_`, handed its context first (Lowering.TakesContext).
+    /// </summary>
+    internal static (string Name, int Lead) Member(string callee)
+        => callee.StartsWith("mx_", StringComparison.Ordinal) ? ("m_" + callee[3..], 1) : (callee, 0);
+
     internal static HashSet<VReg>? Walker(Function f, Defs defs, string kind, Instr get, List<(Block B, Instr Call, Role Role)>? calls,
         string? enumerator = null, bool reads = true, IReadOnlySet<Instr>? ignore = null)
     {
@@ -946,15 +954,16 @@ internal static class OwnedElements
                 if (count == 0 && addresses == 0) continue;
                 if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && (walker.Contains(i.Dest) || address.Contains(i.Dest))) continue;
                 if (ReferenceEquals(i, get) && count == 0 && addresses == 1 && at == -1) continue;
-                if (i.Op != Opcode.Call || i.Callee is not { } callee || count != 1 || addresses != 0) return null;
-                if (callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(callee)) continue;
-                if (at == 0 && i.Operands.Count == 2 && enumerator is null && kind == "Dictionary" && callee.StartsWith(prefix, StringComparison.Ordinal)
+                if (i.Op != Opcode.Call || i.Callee is not { } calledAt || count != 1 || addresses != 0) return null;
+                if (calledAt == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(calledAt)) continue;
+                (string callee, int lead) = Member(calledAt);
+                if (at == lead && i.Operands.Count == 2 + lead && enumerator is null && kind == "Dictionary" && callee.StartsWith(prefix, StringComparison.Ordinal)
                     && callee.EndsWith("_get_Current_0", StringComparison.Ordinal))
                 {
                     if (!Pair(f, defs, b, i, calls, ignore)) return null;
                     continue;
                 }
-                if (at != 0 || i.Operands.Count != 1 || !callee.StartsWith(prefix, StringComparison.Ordinal)) return null;
+                if (at != lead || i.Operands.Count != 1 + lead || !callee.StartsWith(prefix, StringComparison.Ordinal)) return null;
                 if (callee.EndsWith("_MoveNext_0", StringComparison.Ordinal) || callee.EndsWith("_Dispose_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
                 else if (callee.EndsWith("_get_Current_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: reads)));
                 else return null;
@@ -1041,9 +1050,10 @@ internal static class OwnedElements
                 if (i.Op == Opcode.MemCopy && answers == 1 && pairs == 1 && pairAt == 0 && addresses == 0) continue;
                 // The frame slot's block zeroed as it is made.
                 if (i.Op == Opcode.MemSet && answers + addresses == 0 && pairs == 1 && pairAt == 0 && frames.Count > 0) continue;
-                if (i.Op != Opcode.Call || i.Callee is not { } callee || answers + addresses != 0 || pairs != 1) return false;
-                if (callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(callee)) continue;
-                if (pairAt != 0 || i.Operands.Count != 1 || !callee.StartsWith("m_KeyValuePair$", StringComparison.Ordinal)) return false;
+                if (i.Op != Opcode.Call || i.Callee is not { } calledAt || answers + addresses != 0 || pairs != 1) return false;
+                if (calledAt == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(calledAt)) continue;
+                (string callee, int lead) = Member(calledAt);
+                if (pairAt != lead || i.Operands.Count != 1 + lead || !callee.StartsWith("m_KeyValuePair$", StringComparison.Ordinal)) return false;
                 if (callee.EndsWith("_get_Value_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: true)));
                 else if (callee.EndsWith("_get_Key_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
                 else return false;
