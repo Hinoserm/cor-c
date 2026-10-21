@@ -2711,32 +2711,32 @@ partial struct DateTime
 
 /// The machine's zone and clock, for what stdlib/src/System/Core.cor writes of
 /// a local reading's offset and reads of a date with no day: TimeZoneInfo.Local
-/// and DateTime.UtcNow, installed the first time anything there asks.
-static partial class LocalZone
+/// and DateTime.UtcNow, given to LocalZone as this library is loaded -- its
+/// module initialiser, which a program built with it runs before Main.
+static unsafe class LocalZoneQuestions
 {
-    static LocalZone()
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Install()
     {
-        offsetAt = OffsetAt;
-        offsetNow = OffsetNow;
-        clock = ReadClock;
+        LocalZone.Install$(&OffsetAt, &OffsetNow, &ReadClock);
     }
 
-    static DateTime ReadClock()
+    static long ReadClock()
     {
-        return DateTime.UtcNow;
+        return DateTime.UtcNow.Ticks;
     }
 
-    static TimeSpan OffsetAt(DateTime when)
+    static long OffsetAt(long ticks, int kind)
     {
-        return TimeZoneInfo.Local.GetUtcOffset(when);
+        return TimeZoneInfo.Local.GetUtcOffset(new DateTime(ticks, (DateTimeKind)kind)).Ticks;
     }
 
     /// Asked of the UTC clock, not the local one: in the hour repeated when
     /// daylight time ends, the local reading alone cannot say which of the
     /// two offsets is the one in force.
-    static TimeSpan OffsetNow()
+    static long OffsetNow()
     {
-        return TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow);
+        return TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).Ticks;
     }
 }
 

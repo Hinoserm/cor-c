@@ -25457,36 +25457,49 @@ partial struct DateTime : IFormattable {
 /// "z" and "K" of a picture, "o" on a local time, ToBinary, the
 /// DateTimeOffset made from a DateTime, and the readers, which also need today
 /// for a date the text leaves out. NOTHING HERE CAN READ A ZONE OR A CLOCK --
-/// the tz database and the clock are the system library's, in IO -- so that
-/// library's half of this class installs the three questions when the class
-/// is first touched. A build without it (the kernel) installs nothing, and
-/// there local time is UTC and there is no today.
-static partial class LocalZone {
-    private static Func<DateTime, TimeSpan>? offsetAt;
-    private static Func<TimeSpan>? offsetNow;
-    private static Func<DateTime>? clock;
+/// the tz database and the clock are the system library's, System.IO -- so
+/// that library gives the three questions as it is loaded (Install$, from its
+/// module initialiser), before Main in a program built with it. A build
+/// without it (the kernel) gives none, and there local time is UTC and there
+/// is no today. One class, in this library alone: a partial class split with
+/// System.IO's was a type across two assemblies, and this library called the
+/// static constructor only that one defined.
+static unsafe class LocalZone {
+    // AS FUNCTION POINTERS OVER TICKS, which giving makes nothing: a
+    // freestanding image runs its module initialisers before Main, before
+    // the kernel has given it a heap.
+    private static delegate*<long, int, long> offsetAt;   // a reading's ticks and kind: ticks east of UTC
+    private static delegate*<long> offsetNow;
+    private static delegate*<long> clock;                   // UTC ticks
+
+    /// The three questions, from the library that can answer them.
+    public static void Install$(delegate*<long, int, long> at, delegate*<long> now, delegate*<long> reads) {
+        offsetAt = at;
+        offsetNow = now;
+        clock = reads;
+    }
 
     /// Ticks east of UTC at `when`: at the moment, for a UTC reading, and
     /// for any other at the local reading, as TimeZoneInfo.GetUtcOffset says.
     public static long At(DateTime when) {
-        Func<DateTime, TimeSpan>? ask = offsetAt;
+        delegate*<long, int, long> ask = offsetAt;
 
-        return ask == null ? 0 : ask(when).Ticks;
+        return ask == null ? 0 : ask(when.Ticks, (int)when.Kind);
     }
 
     /// Ticks east of UTC as the clock reads now.
     public static long Now() {
-        Func<TimeSpan>? ask = offsetNow;
+        delegate*<long> ask = offsetNow;
 
-        return ask == null ? 0 : ask().Ticks;
+        return ask == null ? 0 : ask();
     }
 
     /// THE MOMENT NOW, as a UTC reading, for the date a text leaves out --
     /// and with no clock installed, the first moment there is.
     public static DateTime Clock() {
-        Func<DateTime>? ask = clock;
+        delegate*<long> ask = clock;
 
-        return ask == null ? new DateTime(0, DateTimeKind.Utc) : ask();
+        return new DateTime(ask == null ? 0 : ask(), DateTimeKind.Utc);
     }
 }
 
