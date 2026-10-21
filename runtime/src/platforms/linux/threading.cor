@@ -2868,7 +2868,7 @@ namespace System.Threading
                         return open[i];
                     }
                 }
-                NamedMutexFiles? files = NamedMutexFiles.Open(scope, bare, create, options.CurrentUserOnly, out createdNew);
+                NamedMutexFiles? files = NamedMutexFiles.Open(scope, bare, name, create, options.CurrentUserOnly, out createdNew);
                 if (files == null)
                 {
                     return null;
@@ -2933,10 +2933,10 @@ namespace System.Threading
             _file = file;
         }
 
-        public static NamedMutexFiles? Open(string scope, string name, bool create, bool userOnly, out bool createdNew)
+        public static NamedMutexFiles? Open(string scope, string name, string written, bool create, bool userOnly, out bool createdNew)
         {
             createdNew = false;
-            string dir = System.IO.Path.GetTempPath() + ".corsac-names/" + scope + "/";
+            string dir = TempDirectory() + ".corsac-names/" + scope + "/";
             Made(dir, userOnly);
             string file = dir + Escaped(name);
             int users;
@@ -2947,7 +2947,7 @@ namespace System.Threading
                 if (users < 0)
                 {
                     if (users == -Err.NoEnt && !create) return null;
-                    throw Interop.GetExceptionForIoErrno(users, file);
+                    throw OpenFailed(written);
                 }
                 alone = Os.Flock(users, Exclusive | NoWait) == 0;
                 if (alone && !create)
@@ -2971,7 +2971,7 @@ namespace System.Threading
             if (owner < 0)
             {
                 Os.Close(users);
-                throw Interop.GetExceptionForIoErrno(owner, file);
+                throw OpenFailed(written);
             }
             if (alone)
             {
@@ -2980,6 +2980,26 @@ namespace System.Threading
                 createdNew = true;
             }
             return new NamedMutexFiles(users, owner, file);
+        }
+
+        // THE TEMPORARY DIRECTORY AS .NET'S NATIVE LAYER FINDS IT for its
+        // named mutexes: TMPDIR as the process started with it, or /tmp/ --
+        // Path.GetTempPath's rule, read below System.IO, which is a library
+        // above this one.
+        static string TempDirectory()
+        {
+            string? dir = Os.StartingVariable("TMPDIR");
+            if (dir == null || dir.Length == 0) return "/tmp/";
+            return dir.EndsWith("/") ? dir : dir + "/";
+        }
+
+        // A FILE OF THE NAME THAT CANNOT BE OPENED, as .NET reports a named
+        // mutex whose shared file its native layer cannot open: the Win32
+        // error ERROR_OPEN_FAILED in an IOException naming the mutex as it
+        // was written (Win32Marshal), whatever the system said.
+        static System.IO.IOException OpenFailed(string written)
+        {
+            return new System.IO.IOException("The system cannot open the device or file specified. : '" + written + "'.", unchecked((int)0x8007006E));
         }
 
         // Whether the descriptor is still the file at `path`.
@@ -2996,7 +3016,7 @@ namespace System.Threading
         static void Made(string dir, bool userOnly)
         {
             int at = 0;
-            string top = System.IO.Path.GetTempPath();
+            string top = TempDirectory();
             while (true)
             {
                 at = dir.IndexOf('/', Math.Max(at, top.Length));

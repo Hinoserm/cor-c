@@ -1387,6 +1387,23 @@ static partial class Os
         return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
     }
 
+    /// A VARIABLE OF THE ENVIRONMENT THE PROCESS STARTED WITH, as getenv(3)
+    /// reads it, or null: what .NET's native layer reads where the runtime
+    /// needs one -- a named mutex's temporary directory -- not
+    /// System.Environment's, which a library above this one keeps and
+    /// SetEnvironmentVariable changes.
+    public static string? StartingVariable(string name)
+    {
+        long at = EnvironAddress();
+        for (long entry = Sys.Peek(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.Peek(at))
+        {
+            int i = 0;
+            while (i < name.Length && Sys.PeekByte(entry + i) == name[i]) i = i + 1;
+            if (i == name.Length && Sys.PeekByte(entry + i) == '=') return FromC(entry + i + 1);
+        }
+        return null;
+    }
+
     /// geteuid(2): who the process acts as, which Environment.UserName names.
     public static long EffectiveUserId() { return Sys.Syscall(Call.Geteuid, 0, 0, 0); }
 

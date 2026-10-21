@@ -20448,6 +20448,7 @@ class IOException : SystemException
     public IOException() : base("I/O error occurred.") { }
     public IOException(string? message) : base(message) { }
     public IOException(string? message, Exception? inner) : base(message, inner) { }
+    public IOException(string? message, int hresult) : base(message) { HResult = hresult; }
 }
 }
 
