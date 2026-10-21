@@ -915,17 +915,23 @@ static class Runtime
     }
 
     /// A DELEGATE'S TYPE, as GetType() answers it (Lowering.TypeFlagDelegateObject):
-    /// the delegate type its closure or multicast implements, a multicast's by
-    /// its targets as SameDelegateType has it.
-    public static long DelegateTypeOfObject(object o)
+    /// the delegate type its closure's or multicast's class implements, read
+    /// off the descriptor alone -- handed the object, every object GetType
+    /// was asked of (a LINQ source's `GetType() == typeof(List<T>)`) looked
+    /// kept by this call, and nothing freed it.
+    public static long DelegateTypeOfDescriptor(long desc)
     {
-        return DelegateTypeOf(Sys.Word(Targeted(o)));
+        return DelegateFace(desc & WordSize.AddressMask);
     }
 
     static long DelegateTypeOf(long obj)
     {
+        return DelegateFace((Sys.Peek(obj) & WordSize.AddressMask) - 12 * WordSize.Bytes);
+    }
+
+    static long DelegateFace(long desc)
+    {
         long w = WordSize.Bytes;
-        long desc = (Sys.Peek(obj) & WordSize.AddressMask) - 12 * w;
         long faces = Sys.Peek(desc + 4 * w) & WordSize.AddressMask;
         if (faces != 0)
         {

@@ -940,7 +940,7 @@ public sealed partial class Lowering
                 VReg own = _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
                 // A DELEGATE'S IS ITS DELEGATE TYPE (TypeFlagDelegateObject), not
                 // the closure the compiler made of it.
-                if (RuntimeMethod("DelegateTypeOfObject", 1) is not MethodSymbol delegateType) return own;
+                if (RuntimeMethod("DelegateTypeOfDescriptor", 1) is not MethodSymbol delegateType) return own;
                 VReg typeOf = _f.NewReg(IrTypes.Word, "gettype");
                 Block asDelegate = _f.NewBlock("gettypedelegate"), typed = _f.NewBlock("gettypeend");
                 _e.CopyTo(typeOf, R(own));
@@ -948,8 +948,22 @@ public sealed partial class Lowering
                 _e.Branch(_e.Binary(Opcode.And, flags, TypeFlagDelegateObject), asDelegate, typed);
                 _e.SetBlock(asDelegate);
                 Require(delegateType);
+                // A MULTICAST'S, its first target's (TypeFlagMulticastObject):
+                // by loads, the object handed to no call.
+                VReg delegateDesc = _f.NewReg(IrTypes.Word, "delegatedesc");
+                Block multicast = _f.NewBlock("gettypemulti"), described = _f.NewBlock("gettypeface");
+                _e.CopyTo(delegateDesc, R(own));
+                _e.Branch(_e.Binary(Opcode.And, flags, TypeFlagMulticastObject), multicast, described);
+                _e.SetBlock(multicast);
+                VReg items = _e.Load(IrTypes.Word, obj, _t.ObjectHeaderBytes);
+                VReg first = _e.Load(IrTypes.Word, items, _t.ArrayHeaderBytes);
+                _e.CopyTo(delegateDesc, R(_e.Binary(Opcode.Sub, _e.Load(IrTypes.Word, first, 0), _t.DescriptorBytes)));
+                _e.Jump(described);
+                _e.SetBlock(described);
+                // By the descriptor alone, a number: the object is handed to nothing.
                 // The descriptor's address, a long the runtime answers in: a word here.
-                VReg answered = _e.Call(CallLabel(delegateType), IrTypes.Of(delegateType.Returns), R(obj))!;
+                VReg descriptorWord = IrTypes.Word == IrType.I64 ? delegateDesc : _e.Unary(Opcode.ZExt32, R(delegateDesc), IrType.I64);
+                VReg answered = _e.Call(CallLabel(delegateType), IrTypes.Of(delegateType.Returns), R(descriptorWord))!;
                 _e.CopyTo(typeOf, R(answered.Type == IrTypes.Word ? answered : _e.Unary(Opcode.Trunc64, answered)));
                 _e.Jump(typed);
                 _e.SetBlock(typed);

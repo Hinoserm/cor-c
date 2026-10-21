@@ -1691,6 +1691,12 @@ public sealed partial class Lowering
     // lambda: its own name is the compiler's. Past the box kind's bits.
     private const int TypeFlagDelegateObject = 0x800000;
 
+    // A MULTICAST DELEGATE'S CLASS: its type is its first target's (as
+    // Runtime.SameDelegateType has it), read through its Items, the first
+    // field: one made in a generic delegate's shared code is of that code's
+    // canonical class.
+    private const int TypeFlagMulticastObject = 0x1000000;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;
@@ -2623,6 +2629,11 @@ public sealed partial class Lowering
         return false;
     }
 
+    /// <summary>Whether a class is a multicast delegate's (Parser's __Multicast), its Items first behind the header.</summary>
+    private bool MulticastObject(TypeSymbol t)
+        => DelegateObject(t) && t.Interfaces.Any(i => i.Name == "IMulticastDelegate")
+        && t.FindField("Items") is { Static: false } items && items.Offset == _t.ObjectHeaderBytes;
+
     private static bool CanonicalCopy(TypeSymbol s)
         => s.Decl is { Specialised: true, Template: string template } d && d.TemplateArgs.Count > 0
         && Monomorphiser.CanonNameOf(template, d.TemplateArgs.Count) == s.Name;
@@ -2999,7 +3010,8 @@ public sealed partial class Lowering
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
         int classFlags = (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null ? TypeFlagEquatable : 0)
-            | (t.Kind == TypeKind.Class && DelegateObject(t) ? TypeFlagDelegateObject : 0);
+            | (t.Kind == TypeKind.Class && DelegateObject(t) ? TypeFlagDelegateObject : 0)
+            | (t.Kind == TypeKind.Class && MulticastObject(t) ? TypeFlagMulticastObject : 0);
         if (classFlags != 0) WriteWord(block, DescFlags * w, classFlags);
 
         // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a
