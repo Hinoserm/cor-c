@@ -215,16 +215,29 @@ public sealed class PreinitWorld
         _made = 0;
     }
 
-    /// <summary>The run kept: the types it made are made, unless a word it leaves holds a stack's or a thread's address.</summary>
+    /// <summary>
+    /// The run kept: the types it made are made -- unless a word it leaves
+    /// holds a stack's or a thread's address, which the image cannot, or a
+    /// unit's own symbol in a unit the link-time optimiser may make again
+    /// before the data is laid down (one carrying IR): the alias it would be
+    /// named by has nowhere to go then.
+    /// </summary>
     public List<TypeEntry> Commit()
     {
         foreach (var saved in _undo)
             foreach (Val v in saved.Region.Refs.Values)
-                if (v is Ptr { Region.Kind: RegionKind.Frame or RegionKind.Thread })
+            {
+                string? why = v switch
                 {
-                    Rollback();
-                    throw new Refused("'" + saved.Region + "' keeps an address of a stack or a thread");
-                }
+                    Ptr { Region.Kind: RegionKind.Frame or RegionKind.Thread } => "an address of a stack or a thread",
+                    Ptr { Region.Local: ObjectFile own } p when MadeAgain(own) => "'" + p.Region + "', a unit's own",
+                    Code { Local: ObjectFile own } c when MadeAgain(own) => "'" + c.Label + "', a unit's own",
+                    _ => null,
+                };
+                if (why is null) continue;
+                Rollback();
+                throw new Refused("'" + saved.Region + "' keeps " + why);
+            }
         foreach (var saved in _undo) saved.Region.Written = true;
         List<TypeEntry> made = _entered.ToList();
         foreach (TypeEntry t in made) t.Frozen = true;
@@ -232,6 +245,9 @@ public sealed class PreinitWorld
         _transaction = -1;
         return made;
     }
+
+    /// <summary>Whether the link-time optimiser may make a unit again: it carries its IR.</summary>
+    private static bool MadeAgain(ObjectFile unit) => unit.Sections.Any(section => section.Name == IrArchive.SectionName);
 
     public void Rollback()
     {
