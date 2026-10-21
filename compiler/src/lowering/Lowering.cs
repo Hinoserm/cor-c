@@ -738,6 +738,9 @@ public sealed partial class Lowering
             }
             if (StaticArrayData(f) is string table)
             {
+                // The field's word and the table it names: the table's elements are written as any array's are.
+                NoteStatic(StaticSymbol(f), f, ReadOnlyStatic(f));
+                NoteStatic(table, f, readOnly: false);
                 // A `static readonly` table's field is never written again, so
                 // its word is read-only data and every load of it folds to the
                 // table's address (ReadOnlyFold). Unless the type has a static
@@ -756,6 +759,7 @@ public sealed partial class Lowering
                 _m.Data.Add(holder);
                 continue;
             }
+            NoteStatic(StaticSymbol(f), f, ReadOnlyStatic(f));
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
                 Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),

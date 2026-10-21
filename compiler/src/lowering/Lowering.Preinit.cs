@@ -19,6 +19,7 @@ public sealed partial class Lowering
     private readonly HashSet<string> _preinitConstructorsSeen = new(StringComparer.Ordinal);
     private readonly List<Preinit.Candidate> _preinitCandidates = new();
     private readonly List<Preinit.TypeNote> _preinitTypes = new();
+    private readonly List<Preinit.StaticNote> _preinitStatics = new();
     // The candidates this unit told the link of: their storage is the link's (the statics' loop lays none down).
     private readonly HashSet<FieldSymbol> _preinitNoted = new(ReferenceEqualityComparer.Instance);
 
@@ -60,6 +61,7 @@ public sealed partial class Lowering
         Preinit.Recipe recipe = value is null ? new Preinit.Opaque() : RecipeOf(value, t, null, 0);
         _preinitCandidates.Add(new Preinit.Candidate(TypeKey(t), order, StaticSymbol(f), PreinitFlag(f), Binder.DefinitionName(step),
             _t.WordSize, written.Mods.HasFlag(Mods.Readonly), recipe));
+        NoteStatic(StaticSymbol(f), f, written.Mods.HasFlag(Mods.Readonly));
         _preinitNoted.Add(f);
         return true;
     }
@@ -69,8 +71,22 @@ public sealed partial class Lowering
     {
         if (_preinitCandidates.Count == 0 && _preinitConstructors.Count == 0 && _preinitTypes.Count == 0) return null;
         return new Preinit.Notes(_t.WordSize, _t.ArrayHeaderBytes, _t.ArrayCountOffset, _preinitConstructors.ToList(), _preinitCandidates.ToList(),
-            _preinitTypes.ToList());
+            _preinitTypes.ToList(), _preinitStatics.ToList(), StringDescriptorName);
     }
+
+    /// <summary>The strings' descriptor's name (StringDescriptor), asked of no unit that never made one.</summary>
+    private const string StringDescriptorName = "q_string";
+
+    /// <summary>
+    /// A STATIC'S STORAGE, TOLD TO THE LINK with its type and whether it is
+    /// readonly: a run of one type's initialiser may read another's only so
+    /// (PreinitWorld.MayRead), and writes only its own.
+    /// </summary>
+    private void NoteStatic(string symbol, FieldSymbol f, bool readOnly)
+        => _preinitStatics.Add(new Preinit.StaticNote(symbol, TypeKey(f.Owner), readOnly));
+
+    /// <summary>Whether a static is written only by its type's initialiser: declared readonly.</summary>
+    private bool ReadOnlyStatic(FieldSymbol f) => FieldDeclOf(f) is FieldDecl { } d && d.Mods.HasFlag(Mods.Readonly);
 
     /// <summary>
     /// A TYPE'S INITIALISER, TOLD TO THE LINK to run whole (Preinit, stage
@@ -87,7 +103,8 @@ public sealed partial class Lowering
         FieldSymbol? ready = t.Fields.FirstOrDefault(f => f.Static && f.Name == BindResult.ReadyField);
         if (body is null || ready is null) return;
         bool precise = declared.Members.OfType<MethodDecl>().Any(m => (m.IsCtor && m.Mods.HasFlag(Mods.Static)) || m.Name == "StaticConstructorBody$");
-        _preinitTypes.Add(new Preinit.TypeNote(TypeKey(t), CallLabel(initializer), CallLabel(body), StaticSymbol(SharedStatic(ready)), !precise));
+        _preinitTypes.Add(new Preinit.TypeNote(TypeKey(t), CallLabel(initializer), CallLabel(body), StaticSymbol(SharedStatic(ready)), !precise,
+            Binder.DefinitionName(initializer), Binder.DefinitionName(body)));
     }
 
     /// <summary>A constructor lowered here, told to the link when it only chains and stores.</summary>

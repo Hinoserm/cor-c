@@ -81,14 +81,23 @@ public static class Preinit
     /// <summary>
     /// A TYPE WHOSE WHOLE INITIALISER THE LINK MAY RUN (stage 2): its key, its
     /// StaticInit$ (what a touch calls), its StaticInitBody$ (what the link
-    /// runs), its state word, and whether it is beforefieldinit -- no static
-    /// constructor of its own, so .NET may run its initialiser at startup.
+    /// runs), its state word, whether it is beforefieldinit -- no static
+    /// constructor of its own, so .NET may run its initialiser at startup --
+    /// and the two routines' names as the interrupt facts give them.
     /// </summary>
-    public sealed record TypeNote(string Owner, string Initializer, string Body, string Ready, bool BeforeFieldInit);
+    public sealed record TypeNote(string Owner, string Initializer, string Body, string Ready, bool BeforeFieldInit,
+        string InitializerFact, string BodyFact);
 
-    /// <summary>A unit's notes: the target's array layout, its constructors, its candidates and its types.</summary>
+    /// <summary>
+    /// A STATIC'S STORAGE AND WHOSE IT IS: its symbol (a field's word, a
+    /// table laid down for one), its type's key, and whether it is readonly
+    /// -- what a run may read of another type's (PreinitWorld).
+    /// </summary>
+    public sealed record StaticNote(string Symbol, string Owner, bool ReadOnly);
+
+    /// <summary>A unit's notes: the target's array layout, its constructors, its candidates, its types, its statics and its strings' descriptor.</summary>
     public sealed record Notes(int WordSize, int ArrayHeaderBytes, int ArrayCountOffset, List<Constructor> Constructors, List<Candidate> Candidates,
-        List<TypeNote> Types);
+        List<TypeNote> Types, List<StaticNote> Statics, string StringDescriptor);
 
     /// <summary>
     /// WHAT RUNS A ROUTINE OVER THE WORLD: the compiler's, which reads each
@@ -146,7 +155,14 @@ public static class Preinit
             foreach (TypeNote t in notes.Types)
             {
                 writer.Write(t.Owner); writer.Write(t.Initializer); writer.Write(t.Body); writer.Write(t.Ready); writer.Write(t.BeforeFieldInit);
+                writer.Write(t.InitializerFact); writer.Write(t.BodyFact);
             }
+            writer.Write(notes.Statics.Count);
+            foreach (StaticNote st in notes.Statics)
+            {
+                writer.Write(st.Symbol); writer.Write(st.Owner); writer.Write(st.ReadOnly);
+            }
+            writer.Write(notes.StringDescriptor);
         }
         Section section = new(SectionName, SectionKind.Note) { Align = 1 };
         section.Bytes.AddRange(stream.ToArray());
@@ -228,8 +244,12 @@ public static class Preinit
                         reader.ReadInt32(), reader.ReadBoolean(), Read(reader)));
                 List<TypeNote> types = new();
                 for (int i = reader.ReadInt32(); i > 0; i--)
-                    types.Add(new TypeNote(reader.ReadString(), reader.ReadString(), reader.ReadString(), reader.ReadString(), reader.ReadBoolean()));
-                all.Add(new Notes(word, header, countAt, constructors, candidates, types));
+                    types.Add(new TypeNote(reader.ReadString(), reader.ReadString(), reader.ReadString(), reader.ReadString(), reader.ReadBoolean(),
+                        reader.ReadString(), reader.ReadString()));
+                List<StaticNote> statics = new();
+                for (int i = reader.ReadInt32(); i > 0; i--)
+                    statics.Add(new StaticNote(reader.ReadString(), reader.ReadString(), reader.ReadBoolean()));
+                all.Add(new Notes(word, header, countAt, constructors, candidates, types, statics, reader.ReadString()));
             }
             if (take) obj.Sections.RemoveAll(s => s.Name == SectionName);
         }
@@ -245,26 +265,35 @@ public static class Preinit
     /// of other types' mutable statics (Report).
     /// </summary>
     public sealed record Solution(ObjectFile? Data, HashSet<string> FrozenSteps, int Frozen, int Candidates,
-        HashSet<string> Overrides, int TypesRun, List<string> Report);
+        HashSet<string> Overrides, int TypesRun, List<string> Report, List<(ObjectFile Unit, string Local, string Alias)> Aliases, string Signature);
 
-    /// <summary>The same solve, the notes left where they are: what the interrupt check asks before the link lays anything down.</summary>
+    /// <summary>
+    /// The same solve, the notes left where they are: what the interrupt
+    /// check asks before the link lays anything down -- and what the link
+    /// then lays down. ONE SOLVE A LINK: the link-time optimiser may make
+    /// units again between the check and the laying down, and what the
+    /// check was told is never made at run time must be what is laid down.
+    /// </summary>
     public static Solution? Peek(IEnumerable<ObjectFile> objects, bool longMode)
     {
         List<ObjectFile> inputs = objects.ToList();
-        Solution? solved = Solve(inputs, Read(inputs, take: false), longMode);
-        _last = (inputs, longMode, solved);
+        List<Notes> notes = Read(inputs, take: false);
+        Solution? solved = Solve(inputs, notes, longMode || inputs.Any(TargetContract.IsLongMode));
+        _last = solved;
         return solved;
     }
 
-    // THE PEEK'S SOLVE, KEPT for the link that follows it over the same
-    // inputs: running every initialiser twice was the link's time twice.
-    private static (List<ObjectFile> Inputs, bool LongMode, Solution? Solved)? _last;
+    private static Solution? _last;
 
     private static Solution? Solve(List<ObjectFile> inputs, List<Notes> notes, bool longMode)
     {
         if (notes.Count == 0 || notes.All(n => n.Candidates.Count == 0 && n.Types.Count == 0)) return null;
         return new Solver(notes, longMode, inputs).Run();
     }
+
+    /// <summary>What a link's notes name: the same for the units as compiled and as made again.</summary>
+    private static string Signature(List<Notes> notes)
+        => string.Join("\n", notes.SelectMany(n => n.Candidates.Select(c => c.Storage).Concat(n.Types.Select(t => t.Owner))).Distinct().Order(StringComparer.Ordinal));
 
     /// <summary>
     /// The link's data for these inputs, added as an input of its own: every
@@ -273,17 +302,16 @@ public static class Preinit
     /// unit's own definition of it renamed out of the way, so that every
     /// reference finds the link's. Every image a link makes asks, a
     /// program's and a shared object's alike: a unit's candidate storage is
-    /// defined nowhere else.
+    /// defined nowhere else. The check's solve when there was one over the
+    /// same notes; a solve of its own otherwise.
     /// </summary>
     public static ObjectFile? Lay(IEnumerable<ObjectFile> objects, bool longMode)
     {
         List<ObjectFile> inputs = objects.ToList();
-        Solution? solved = _last is { } last && last.LongMode == longMode && last.Inputs.Count == inputs.Count
-                           && last.Inputs.Zip(inputs).All(p => ReferenceEquals(p.First, p.Second))
-            ? last.Solved : null;
         List<Notes> notes = Take(inputs);
-        solved ??= Solve(inputs, notes, longMode);
+        Solution? solved = _last is { } last && last.Signature == Signature(notes) ? last : null;
         _last = null;
+        solved ??= Solve(inputs, notes, longMode);
         if (solved is null) return null;
         if (solved.Overrides.Count > 0)
             foreach (ObjectFile obj in inputs)
@@ -293,6 +321,16 @@ public static class Preinit
                     if (!s.IsDefined || !solved.Overrides.Contains(s.Name)) continue;
                     obj.Symbols[i] = new Symbol { Name = s.Name + "\u0001preinit-replaced", Section = s.Section, Offset = s.Offset, Size = s.Size, IsFunction = s.IsFunction, Global = false };
                 }
+        // A UNIT'S OWN SYMBOL the link's data names, given a name every unit
+        // reaches, at the same place -- in that unit, which the link must
+        // still have: one made again since the solve is another object.
+        foreach ((ObjectFile unit, string local, string alias) in solved.Aliases)
+        {
+            if (!inputs.Any(o => ReferenceEquals(o, unit)))
+                throw new LinkException(new[] { "preinit: '" + local + "', a unit's own, is named by the statics laid down, and its unit was made again since" });
+            Symbol at = unit.Symbols.First(x => x.IsDefined && !x.Global && x.Name == local);
+            unit.Symbols.Add(new Symbol { Name = alias, Section = at.Section, Offset = at.Offset, Size = at.Size, IsFunction = at.IsFunction });
+        }
         if (Switches.PreinitReport)
         {
             Console.Error.WriteLine($"preinit: {solved.Frozen} of {solved.Candidates} statics laid down made, {solved.TypesRun} types run whole, {solved.Overrides.Count} unit data replaced");
@@ -334,6 +372,8 @@ public static class Preinit
         private long _bytes;
         private readonly List<ObjectFile> _inputs;
         private readonly Dictionary<string, TypeNote> _types = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, StaticNote> _statics = new(StringComparer.Ordinal);
+        private string? _stringDescriptor;
 
         public Solver(List<Notes> notes, bool longMode, List<ObjectFile> inputs)
         {
@@ -355,6 +395,8 @@ public static class Preinit
                     (_byOwner.TryGetValue(c.Owner, out List<Candidate>? list) ? list : _byOwner[c.Owner] = new()).Add(c);
                 }
                 foreach (TypeNote t in n.Types) _types.TryAdd(t.Owner, t);
+                foreach (StaticNote st in n.Statics) _statics.TryAdd(st.Symbol, st);
+                _stringDescriptor ??= n.StringDescriptor;
             }
             foreach (List<Candidate> list in _byOwner.Values) list.Sort((a, b) => a.Order.CompareTo(b.Order));
         }
@@ -381,8 +423,8 @@ public static class Preinit
                         {
                             typesRun++;
                             if (Switches.PreinitReport) world.Report.Add(made.Note.Owner + " made at the link");
-                            frozenSteps.Add(made.Note.Initializer);
-                            frozenSteps.Add(made.Note.Body);
+                            frozenSteps.Add(made.Note.InitializerFact);
+                            frozenSteps.Add(made.Note.BodyFact);
                             if (_byOwner.TryGetValue(made.Note.Owner, out List<Candidate>? steps)) foreach (Candidate c in steps) frozenSteps.Add(c.Step);
                         }
                     }
@@ -403,34 +445,35 @@ public static class Preinit
         /// </summary>
         private PreinitWorld World()
         {
-            PreinitWorld world = new(_inputs, _word, _countAt, _longMode);
+            PreinitWorld world = new(_inputs, _word, _countAt, _longMode) { StringDescriptor = _stringDescriptor };
+            foreach (StaticNote st in _statics.Values) world.AddStatic(st);
+            foreach (TypeNote t in _types.Values) world.AddType(t);
             Dictionary<Frozen, PreinitWorld.Region> regions = new(ReferenceEqualityComparer.Instance);
-            PreinitWorld.Region RegionOf(Frozen f)
+            PreinitWorld.Region RegionOf(Frozen f, string owner)
             {
                 if (regions.TryGetValue(f, out PreinitWorld.Region? had)) return had;
-                PreinitWorld.Region region = world.Adopt((byte[])f.Bytes.Clone());
+                PreinitWorld.Region region = world.Adopt((byte[])f.Bytes.Clone(), owner);
                 regions[f] = region;
-                foreach ((int offset, Value target) in f.References) region.Refs[offset] = Of(target);
+                foreach ((int offset, Value target) in f.References) region.Refs[offset] = Of(target, owner);
                 return region;
             }
-            PreinitWorld.Val Of(Value v) => v switch
+            PreinitWorld.Val Of(Value v, string owner) => v switch
             {
-                Made m => new PreinitWorld.Ptr(RegionOf(m.Object), 0),
+                Made m => new PreinitWorld.Ptr(RegionOf(m.Object, owner), 0),
                 At a => PreinitWorld.Lazy(a.Symbol, a.Addend),
                 Number n => new PreinitWorld.Num(n.Bits),
                 _ => new PreinitWorld.Num(0),
             };
             foreach (Candidate c in _byStorage.Values.OrderBy(c => c.Storage, StringComparer.Ordinal))
             {
-                PreinitWorld.Region storage = world.DefineStorage(c.Storage, c.Width);
-                PreinitWorld.Region flag = world.DefineStorage(c.Flag, 1);
+                PreinitWorld.Region storage = world.DefineStorage(c.Storage, c.Width, c.Owner);
+                PreinitWorld.Region flag = world.DefineStorage(c.Flag, 1, c.Owner);
                 if (_solved.GetValueOrDefault(c.Storage) is Made m)
                 {
-                    storage.Refs[0] = Of(m);
+                    storage.Refs[0] = Of(m, c.Owner);
                     flag.Bytes[0] = 1;
                 }
             }
-            foreach (TypeNote t in _types.Values) world.AddType(t);
             return world;
         }
 
@@ -620,7 +663,7 @@ public static class Preinit
             {
                 // As wide as the field, aligned as the statics' own are (to its size, at most eight).
                 Pad(data, System.Math.Min(8, c.Width >= 8 ? 8 : c.Width >= 4 ? 4 : c.Width >= 2 ? 2 : 1));
-                PreinitWorld.Region storage = world.DefineStorage(c.Storage, c.Width);
+                PreinitWorld.Region storage = world.DefineStorage(c.Storage, c.Width, c.Owner);
                 obj.Symbols.Add(new Symbol { Name = c.Storage, Section = data, Offset = data.Bytes.Count, Size = c.Width });
                 placed.Add((data.Bytes.Count, storage));
                 data.Bytes.AddRange(storage.Bytes);
@@ -632,7 +675,7 @@ public static class Preinit
             }
             foreach (Candidate c in _byStorage.Values.OrderBy(c => c.Storage, StringComparer.Ordinal))
             {
-                PreinitWorld.Region flag = world.DefineStorage(c.Flag, 1);
+                PreinitWorld.Region flag = world.DefineStorage(c.Flag, 1, c.Owner);
                 obj.Symbols.Add(new Symbol { Name = c.Flag, Section = data, Offset = data.Bytes.Count, Size = 1 });
                 data.Bytes.Add(flag.Bytes[0]);
             }
@@ -643,7 +686,7 @@ public static class Preinit
                     data.Relocs.Add(new Relocation((int)(at + offset), symbol ?? names[o!], addend, _longMode ? RelocKind.Abs64 : RelocKind.Abs32));
                 }
             obj.Sections.Add(data);
-            return new Solution(obj, frozenSteps, frozen, _byStorage.Count, overrides, typesRun, world.Report);
+            return new Solution(obj, frozenSteps, frozen, _byStorage.Count, overrides, typesRun, world.Report, world.Aliases, Signature(_notes));
         }
 
         private static void Pad(Section data, int align)

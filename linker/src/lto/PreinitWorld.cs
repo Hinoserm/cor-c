@@ -11,13 +11,19 @@ namespace Corsac.Lang.Lto;
 /// an address. A machine (Preinit.Machine, the compiler's) runs the IR over
 /// it; what a run that finishes leaves is laid down as the image's data.
 ///
-/// AS IF THE INITIALISER RAN AT STARTUP: a type with no static constructor of
-/// its own is beforefieldinit in .NET, and its initialiser may run at any time
-/// before its statics are first touched -- at startup among them. So one is
-/// run here over the statics as they stand when the image starts, the types
-/// it touches made first as they would be, and its writes to another type's
-/// statics (a gate registering its name) are kept with it. A type with a
-/// static constructor runs at its first touch exactly, and is never run here.
+/// ONLY WHERE NOTHING COULD TELL: a type with no static constructor of its
+/// own is beforefieldinit in .NET, and may be made at any time before its
+/// statics are first touched; .NET makes it at the first touch, and a run
+/// here must leave what that would have left, whenever that is. So, as
+/// NativeAOT preinitialises: a run writes only what its own type holds --
+/// its statics and the objects it makes -- and reads, beyond those and the
+/// image's read-only data, only another type's readonly statics, once that
+/// type is made, and strings. A counter of another type's bumped (1030), a
+/// name registered with another type's table, a mutable static of another
+/// type read (a processor count the boot sets): each could differ at the
+/// first touch, and the type is made at run time as it always was. A type
+/// with a static constructor runs at its first touch exactly, and is never
+/// run here.
 ///
 /// A RUN IS ONE TRANSACTION: every region it writes is saved first, and a run
 /// that does anything the link cannot do -- a system call, a port, a throw,
@@ -50,6 +56,8 @@ public sealed class PreinitWorld
         public string? Symbol { get; init; }
         /// <summary>A unit's own symbol, not global: that unit's, which no other unit's name reaches.</summary>
         public ObjectFile? Local { get; init; }
+        /// <summary>The type whose this is: a static's owner, or the type whose run made an object. Null for the image's own data.</summary>
+        public string? Maker { get; init; }
         public required byte[] Bytes;
         public Dictionary<int, Val> Refs = new();
         /// <summary>Read-only data: a descriptor, a literal. Never written.</summary>
@@ -89,6 +97,17 @@ public sealed class PreinitWorld
     private readonly List<(Region Region, byte[] Bytes, Dictionary<int, Val> Refs, bool Written)> _undo = new();
     private readonly HashSet<TypeEntry> _entering = new();
     private readonly List<TypeEntry> _entered = new();
+    // THE TYPE WHOSE BODY IS RUNNING, innermost last: whose statics and objects a run may write.
+    private readonly List<TypeEntry> _running = new();
+    private readonly Dictionary<string, Preinit.StaticNote> _statics = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _readyWords = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _owners = new(StringComparer.Ordinal);
+
+    /// <summary>The descriptor every string object names: a string is never written after it is made, and anyone may read one.</summary>
+    public string? StringDescriptor { get; init; }
+
+    /// <summary>The unit-local symbols the laid-down data names, each to be given its alias (Preinit.Lay).</summary>
+    public readonly List<(ObjectFile Unit, string Local, string Alias)> Aliases = new();
     private int _transaction = -1, _transactions;
     private Region? _thread;
 
@@ -98,9 +117,8 @@ public sealed class PreinitWorld
     private long _made;
     private const long MostMade = 16L << 20;
 
-    /// <summary>What each kept run read of another type's mutable statics (Preinit's report).</summary>
+    /// <summary>What was made at the link, and why each type that was not runs at its first touch (Preinit's report).</summary>
     public readonly List<string> Report = new();
-    private readonly HashSet<string> _readsThisRun = new(StringComparer.Ordinal);
 
     /// <summary>The link's inputs, where the machine finds each routine's IR.</summary>
     public IReadOnlyList<ObjectFile> Objects { get; }
@@ -146,7 +164,17 @@ public sealed class PreinitWorld
         TypeEntry entry = new(note);
         _byInitializer.TryAdd(note.Initializer, entry);
         _byReady.TryAdd(note.Ready, entry);
+        _readyWords.Add(note.Ready);
+        _owners.Add(note.Owner);
     }
+
+    public void AddStatic(Preinit.StaticNote note) => _statics.TryAdd(note.Symbol, note);
+
+    /// <summary>Whether a type is made: one with no initialiser always is, one with one once a kept run or this run made it.</summary>
+    private bool Made(string owner)
+        => !_owners.Contains(owner) || _byInitializer.Values.Any(t => t.Note.Owner == owner && (t.Frozen || (_entered.Contains(t) && !_entering.Contains(t))));
+
+    private string? Running => _running.Count > 0 ? _running[^1].Note.Owner : null;
 
     /// <summary>The type whose initialiser this routine is (its StaticInit$), or null.</summary>
     public TypeEntry? InitializerOf(string label) => _byInitializer.GetValueOrDefault(label);
@@ -167,9 +195,11 @@ public sealed class PreinitWorld
         if (!type.Note.BeforeFieldInit) throw new Refused("'" + type.Note.Owner + "' has a static constructor, run when it is first touched");
         _entering.Add(type);
         _entered.Add(type);
+        _running.Add(type);
         runBody(type.Note.Body);
-        _entering.Remove(type);
         Store(new Ptr(ready, 0), WordSize, new Num(1));
+        _running.RemoveAt(_running.Count - 1);
+        _entering.Remove(type);
     }
 
     // ---- transactions --------------------------------------------------------------
@@ -180,7 +210,7 @@ public sealed class PreinitWorld
         _undo.Clear();
         _entered.Clear();
         _entering.Clear();
-        _readsThisRun.Clear();
+        _running.Clear();
         Steps = 0;
         _made = 0;
     }
@@ -198,8 +228,6 @@ public sealed class PreinitWorld
         foreach (var saved in _undo) saved.Region.Written = true;
         List<TypeEntry> made = _entered.ToList();
         foreach (TypeEntry t in made) t.Frozen = true;
-        if (_readsThisRun.Count > 0 && made.Count > 0)
-            Report.Add(made[0].Note.Owner + " read " + string.Join(", ", _readsThisRun.Order(StringComparer.Ordinal)));
         _undo.Clear();
         _transaction = -1;
         return made;
@@ -259,6 +287,7 @@ public sealed class PreinitWorld
         Region region = new()
         {
             Kind = RegionKind.Data, Symbol = symbol, Local = local ? owner : null, Bytes = bytes,
+            Maker = !local && _statics.TryGetValue(symbol, out Preinit.StaticNote? st) ? st.Owner : null,
             ReadOnly = section.Kind == SectionKind.ReadOnlyData, Align = Math.Max(1, Math.Min(16, section.Align)),
         };
         if (section.Kind != SectionKind.Uninitialised)
@@ -274,11 +303,11 @@ public sealed class PreinitWorld
         return region;
     }
 
-    /// <summary>Storage the link defines itself: a candidate's word or flag (Preinit.Candidate).</summary>
-    public Region DefineStorage(string symbol, int bytes)
+    /// <summary>Storage the link defines itself: a candidate's word or flag (Preinit.Candidate), its type's.</summary>
+    public Region DefineStorage(string symbol, int bytes, string owner)
     {
         if (_regions.TryGetValue(symbol, out Region? had)) return had;
-        Region region = new() { Kind = RegionKind.Storage, Symbol = symbol, Bytes = new byte[bytes] };
+        Region region = new() { Kind = RegionKind.Storage, Symbol = symbol, Bytes = new byte[bytes], Maker = owner };
         _regions[symbol] = region;
         return region;
     }
@@ -295,15 +324,15 @@ public sealed class PreinitWorld
     public Ptr Allocate(long bytes)
     {
         if (bytes < 0 || bytes > 16L << 20 || (_made += bytes) > MostMade) throw new Refused("an allocation of " + bytes + " bytes");
-        Region region = new() { Kind = RegionKind.Heap, Bytes = new byte[(bytes + WordSize - 1) / WordSize * WordSize] };
+        Region region = new() { Kind = RegionKind.Heap, Bytes = new byte[(bytes + WordSize - 1) / WordSize * WordSize], Maker = Running };
         _heap.Add(region);
         return new Ptr(region, 0);
     }
 
-    /// <summary>An object the link made itself (stage 1), as a region.</summary>
-    public Region Adopt(byte[] bytes)
+    /// <summary>An object the link made itself (stage 1) for a type's static, as a region.</summary>
+    public Region Adopt(byte[] bytes, string owner)
     {
-        Region region = new() { Kind = RegionKind.Heap, Bytes = bytes };
+        Region region = new() { Kind = RegionKind.Heap, Bytes = bytes, Maker = owner };
         _heap.Add(region);
         return region;
     }
@@ -320,6 +349,7 @@ public sealed class PreinitWorld
         if (address is not Ptr p) throw new Refused(address is Num { Bits: 0 } ? "a null dereference" : "a load from " + address);
         Region r = p.Region;
         if (p.Offset < 0 || p.Offset + size > r.Bytes.Length) throw new Refused("a load past '" + r + "'");
+        MayRead(r);
         int at = (int)p.Offset;
         foreach ((int offset, Val v) in r.Refs)
         {
@@ -327,7 +357,6 @@ public sealed class PreinitWorld
             if (offset != at || size != WordSize) throw new Refused("part of an address loaded from '" + r + "'");
             return Resolve(r, offset, v);
         }
-        if (r.Kind == RegionKind.Data && r.Symbol is string s && !r.ReadOnly) Noted(s);
         long bits = 0;
         for (int b = size - 1; b >= 0; b--) bits = (bits << 8) | r.Bytes[at + b];
         if (size < 8) bits = signed ? (bits << (64 - 8 * size)) >> (64 - 8 * size) : bits & ((1L << (8 * size)) - 1);
@@ -348,6 +377,7 @@ public sealed class PreinitWorld
         Region r = p.Region;
         if (r.ReadOnly) throw new Refused("a store into read-only '" + r + "'");
         if (p.Offset < 0 || p.Offset + size > r.Bytes.Length) throw new Refused("a store past '" + r + "'");
+        MayWrite(r);
         Save(r);
         int at = (int)p.Offset;
         foreach (int offset in r.Refs.Keys.Where(o => o + WordSize > at && o < at + size).ToList()) r.Refs.Remove(offset);
@@ -375,6 +405,8 @@ public sealed class PreinitWorld
         if (count < 0 || s.Offset < 0 || d.Offset < 0 || s.Offset + count > s.Region.Bytes.Length || d.Offset + count > d.Region.Bytes.Length)
             throw new Refused("a copy past '" + d.Region + "' or '" + s.Region + "'");
         if (d.Region.ReadOnly) throw new Refused("a copy into read-only '" + d.Region + "'");
+        MayRead(s.Region);
+        MayWrite(d.Region);
         Save(d.Region);
         int from0 = (int)s.Offset, to0 = (int)d.Offset, n = (int)count;
         List<(int, Val)> moving = new();
@@ -395,22 +427,46 @@ public sealed class PreinitWorld
         if (count == 0) return;
         if (to is not Ptr d || count < 0 || d.Offset < 0 || d.Offset + count > d.Region.Bytes.Length) throw new Refused("a fill past " + to);
         if (d.Region.ReadOnly) throw new Refused("a fill of read-only '" + d.Region + "'");
+        MayWrite(d.Region);
         Save(d.Region);
         int at = (int)d.Offset, n = (int)count;
         foreach (int offset in d.Region.Refs.Keys.Where(o => o + WordSize > at && o < at + n).ToList()) d.Region.Refs.Remove(offset);
         System.Array.Fill(d.Region.Bytes, value, at, n);
     }
 
-    /// <summary>A read of another type's mutable static, for the report: its owner from the symbol (s_Owner_field).</summary>
-    private void Noted(string symbol)
+    // The collector's state, read by every reference store's barrier test: which way the store goes, never what it stores.
+    private static readonly HashSet<string> Collector = new(StringComparer.Ordinal) { "s_Runtime_Marking", "s_Runtime_Cards" };
+
+    /// <summary>
+    /// WHAT A RUN MAY READ, as NativeAOT's preinitialisation may: the image's
+    /// read-only data; what the running type holds; a type's state word (a
+    /// touch's test, which Enter answers); a string; another type's readonly
+    /// static once that type is made. A mutable static or object of another
+    /// type's may be other at that type's first touch than it is here.
+    /// </summary>
+    private void MayRead(Region r)
     {
-        if (!symbol.StartsWith("s_", StringComparison.Ordinal) || symbol.Contains("StaticReady$", StringComparison.Ordinal)) return;
-        foreach (TypeEntry t in _entered)
-            if (symbol.StartsWith("s_" + t.Note.Owner + "_", StringComparison.Ordinal)) return;
-        // The collector's own state, read by every store's barrier.
-        if (symbol.StartsWith("s_Runtime_", StringComparison.Ordinal) || symbol.StartsWith("s_Gc_", StringComparison.Ordinal)) return;
-        if (_transaction >= 0) _readsThisRun.Add(symbol);
+        if (r.Kind is RegionKind.Frame or RegionKind.Thread || r.ReadOnly) return;
+        if (r.Maker is not null && r.Maker == Running) return;
+        if (r.Symbol is string s && (_readyWords.Contains(s) || Collector.Contains(s))) return;
+        if (r.Kind == RegionKind.Heap && IsString(r)) return;
+        if (r.Kind is RegionKind.Data or RegionKind.Storage && r.Local is null && r.Symbol is string sym
+            && _statics.TryGetValue(sym, out Preinit.StaticNote? st) && st.ReadOnly && Made(st.Owner)) return;
+        throw new Refused((Running ?? "the run") + " reads '" + r + "', " + (r.Maker is null ? "the image's" : r.Maker + "'s"));
     }
+
+    /// <summary>WHAT A RUN MAY WRITE: what the running type holds, its statics and the objects its run makes. Nothing of another type's.</summary>
+    private void MayWrite(Region r)
+    {
+        if (r.Kind is RegionKind.Frame or RegionKind.Thread) return;
+        if (Running is string me && r.Maker == me) return;
+        throw new Refused((Running ?? "the run") + " writes '" + r + "', " + (r.Maker is null ? "the image's" : r.Maker + "'s"));
+    }
+
+    /// <summary>Whether an object is a string: its descriptor the strings' own.</summary>
+    private bool IsString(Region r)
+        => StringDescriptor is string d && r.Refs.TryGetValue(0, out Val? v)
+           && (v is Ptr { Region.Symbol: string named } && named == d || v is Unresolved u && u.Symbol == d);
 
     // ---- laying it down ------------------------------------------------------------
 
@@ -448,12 +504,12 @@ public sealed class PreinitWorld
     private readonly Dictionary<(ObjectFile, string), string> _aliases = new();
     private static int _aliasCount;
 
+    /// <summary>A unit's own symbol's name for the link's data: an alias given it when the data is laid down (Preinit.Lay), never before.</summary>
     private string Alias(ObjectFile owner, string symbol)
     {
         if (_aliases.TryGetValue((owner, symbol), out string? had)) return had;
-        Symbol local = _locals[owner][symbol];
         string alias = "preinit$alias" + System.Threading.Interlocked.Increment(ref _aliasCount) + "$" + symbol;
-        owner.Symbols.Add(new Symbol { Name = alias, Section = local.Section, Offset = local.Offset, Size = local.Size, IsFunction = local.IsFunction });
+        Aliases.Add((owner, symbol, alias));
         _aliases[(owner, symbol)] = alias;
         return alias;
     }
