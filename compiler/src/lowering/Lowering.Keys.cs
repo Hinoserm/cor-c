@@ -130,6 +130,12 @@ public sealed partial class Lowering
         {
             return guarded;
         }
+        // An attribute class's fields compared and hashed, where it leaves
+        // Attribute's own in the slot (Lowering.Attributes).
+        if (t.Kind == TypeKind.Class && AttributeSlot(t, filled) is string fields)
+        {
+            return fields;
+        }
         // object's own members are symbols with no body (the binder's
         // Rooted): a slot that still holds one -- `new object()`, or a
         // class that overrides none of them -- gets the stub below, as a
@@ -750,34 +756,7 @@ public sealed partial class Lowering
                 {
                     continue;
                 }
-                VReg v;
-                if (IsStructValue(field.Type))
-                {
-                    v = _e.Call(StructHash(StructOf(field.Type)), IrType.I32, R(FieldStruct(a, field)))!;
-                }
-                else if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
-                {
-                    v = _e.Call(KeyHashStub(field.Type), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
-                }
-                else if (field.Type.Prim is Prim.F32 or Prim.F64)
-                {
-                    bool wide = field.Type.Prim == Prim.F64;
-                    v = FloatHash(_f, _e, Numbered(_e, _e.Load(wide ? IrType.I64 : IrType.I32, a, field.Offset, wide ? 8 : 4, false)), wide);
-                }
-                else
-                {
-                    Type raw = field.Type;
-                    VReg w = LoadPlace(new MemPlace(R(a), field.Offset, raw));
-                    if (w.Type == IrType.I64)
-                    {
-                        VReg high = _e.Unary(Opcode.Trunc64, R(_e.Binary(Opcode.ShrU, R(w), Imm(32, IrType.I32), IrType.I64)), IrType.I32);
-                        v = _e.Binary(Opcode.Xor, R(_e.Unary(Opcode.Trunc64, R(w), IrType.I32)), R(high), IrType.I32);
-                    }
-                    else
-                    {
-                        v = w.Type == IrType.I32 ? w : _e.Unary(Opcode.Trunc64, R(w), IrType.I32);
-                    }
-                }
+                VReg v = FieldHashOf(a, field);
                 _e.CopyTo(h, R(_e.Binary(Opcode.Add, R(_e.Binary(Opcode.Mul, R(h), Imm(31, IrType.I32), IrType.I32)), R(v), IrType.I32)));
             }
             _e.Ret(R(h));
@@ -786,6 +765,31 @@ public sealed partial class Lowering
         _m.Functions.Add(f);
         _f = savedFn; _e = savedB; _boundsFail = savedFail; LeaveHelper(context);
         return name;
+    }
+
+    /// <summary>One field's hash, as its Equals sees it (SameField): the field of the block or object at `a`.</summary>
+    private VReg FieldHashOf(VReg a, FieldSymbol field)
+    {
+        if (IsStructValue(field.Type))
+        {
+            return _e.Call(StructHash(StructOf(field.Type)), IrType.I32, R(FieldStruct(a, field)))!;
+        }
+        if (CouldBeObject(field.Type) || field.Type.IsNullableValue)
+        {
+            return _e.Call(KeyHashStub(field.Type), IrType.I32, R(_e.Load(IrTypes.Word, a, field.Offset)))!;
+        }
+        if (field.Type.Prim is Prim.F32 or Prim.F64)
+        {
+            bool wide = field.Type.Prim == Prim.F64;
+            return FloatHash(_f, _e, Numbered(_e, _e.Load(wide ? IrType.I64 : IrType.I32, a, field.Offset, wide ? 8 : 4, false)), wide);
+        }
+        VReg w = LoadPlace(new MemPlace(R(a), field.Offset, field.Type));
+        if (w.Type == IrType.I64)
+        {
+            VReg high = _e.Unary(Opcode.Trunc64, R(_e.Binary(Opcode.ShrU, R(w), Imm(32, IrType.I32), IrType.I64)), IrType.I32);
+            return _e.Binary(Opcode.Xor, R(_e.Unary(Opcode.Trunc64, R(w), IrType.I32)), R(high), IrType.I32);
+        }
+        return w.Type == IrType.I32 ? w : _e.Unary(Opcode.Trunc64, R(w), IrType.I32);
     }
 
     /// <summary>

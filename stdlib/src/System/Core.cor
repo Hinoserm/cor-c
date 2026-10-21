@@ -19721,6 +19721,104 @@ class SynchronizationLockException : SystemException {
 // ToString, Length, Clear, and Append returning the builder so calls chain.
 // Our own spelling would be a spelling every program has to be rewritten for.
 
+// ---- Attribute ------------------------------------------------------------
+//
+// THE BASE OF EVERY ATTRIBUTE CLASS, .NET's System.Attribute. The compiler reads
+// the attributes it acts on ([InterruptHandler], [ModuleInitializer], [Flags]) by
+// name, but C# source declares its own as `class XAttribute : Attribute` and
+// marks them [AttributeUsage(...)], and both have to compile.
+
+abstract class Attribute
+{
+    protected Attribute() { }
+
+    // What tells one attribute's kind from another's: the type, unless a
+    // subclass that allows several of itself says otherwise.
+    public virtual object TypeId => GetType();
+
+    // EQUAL WHEN EVERY FIELD IS, as .NET's: the same type, and each instance
+    // field of it and its bases equal by the field's own Equals, an array
+    // element by element. .NET walks the fields by reflection; here the
+    // compiler writes EqualFields and FieldHash for each class derived from
+    // this one (Lowering.AttributeFieldsEqual), and the two below are what
+    // Attribute itself, with no fields, answers.
+    public override bool Equals(object? obj)
+    {
+        if (obj == null || GetType() != obj.GetType()) return false;
+        return EqualFields((Attribute)obj);
+    }
+
+    // The first field's, as .NET's: the most derived class's first field
+    // holding a value that is not an array, then its base's.
+    public override int GetHashCode() => FieldHash();
+
+    public virtual bool Match(object? obj) => Equals(obj);
+
+    public virtual bool IsDefaultAttribute() => false;
+
+    internal virtual bool EqualFields(Attribute other) => true;
+
+    internal virtual int FieldHash() => 0;
+
+    // ONE REFERENCE FIELD OF TWO ATTRIBUTES COMPARED, .NET's
+    // AreFieldValuesEqual: both null, or two arrays of one type and length
+    // whose elements are, or equal by Equals.
+    internal static bool AreFieldValuesEqual(object? thisValue, object? thatValue)
+    {
+        if (thisValue == null && thatValue == null) return true;
+        if (thisValue == null || thatValue == null) return false;
+        if (thisValue.GetType().IsArray)
+        {
+            if (thisValue.GetType() != thatValue.GetType()) return false;
+            System.Collections.IEnumerator mine = ((System.Collections.IEnumerable)thisValue).GetEnumerator();
+            System.Collections.IEnumerator theirs = ((System.Collections.IEnumerable)thatValue).GetEnumerator();
+            while (true)
+            {
+                bool more = mine.MoveNext();
+                if (more != theirs.MoveNext()) return false;
+                if (!more) return true;
+                if (!AreFieldValuesEqual(mine.Current, theirs.Current)) return false;
+            }
+        }
+        return thisValue.Equals(thatValue);
+    }
+
+    // Whether a reference field's value is the one GetHashCode hashes.
+    internal static bool HashesBy(object? value) => value != null && !value.GetType().IsArray;
+}
+
+// WHERE AN ATTRIBUTE MAY BE WRITTEN, .NET's values to the bit.
+[Flags]
+enum AttributeTargets
+{
+    Assembly = 0x0001,
+    Module = 0x0002,
+    Class = 0x0004,
+    Struct = 0x0008,
+    Enum = 0x0010,
+    Constructor = 0x0020,
+    Method = 0x0040,
+    Property = 0x0080,
+    Field = 0x0100,
+    Event = 0x0200,
+    Interface = 0x0400,
+    Parameter = 0x0800,
+    Delegate = 0x1000,
+    ReturnValue = 0x2000,
+    GenericParameter = 0x4000,
+    All = Assembly | Module | Class | Struct | Enum | Constructor | Method | Property | Field | Event | Interface | Parameter | Delegate | ReturnValue | GenericParameter,
+}
+
+[AttributeUsage(AttributeTargets.Class, Inherited = true)]
+sealed class AttributeUsageAttribute : Attribute
+{
+    public AttributeUsageAttribute(AttributeTargets validOn) { ValidOn = validOn; }
+
+    public AttributeTargets ValidOn { get; }
+    public bool AllowMultiple { get; set; }
+    public bool Inherited { get; set; } = true;
+}
+
 // ---- Exception ------------------------------------------------------------
 //
 // THE BASE OF EVERYTHING THAT CAN BE THROWN, which C# has and this language did

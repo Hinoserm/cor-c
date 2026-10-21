@@ -1,6 +1,8 @@
 // System.Diagnostics.Process, the parts a program uses to run another:
 // Start with a file name and arguments, optional redirection of the
 // standard streams through pipes, WaitForExit, ExitCode.
+namespace System.Diagnostics;
+
 class ProcessStartInfo
 {
     public string FileName = "";

@@ -8,6 +8,8 @@
 //
 // Replace the OS-only Args convention with the compiler library's process API.
 // Exercise a real child, including spaces and an empty argument.
+using System.Diagnostics;
+
 class Program
 {
     static int Main()
