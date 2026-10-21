@@ -939,8 +939,11 @@ public sealed partial class Lowering
                 VReg vt = _e.Load(IrTypes.Word, obj, 0);
                 VReg own = _e.Binary(Opcode.Sub, vt, _t.DescriptorBytes);
                 // A DELEGATE'S IS ITS DELEGATE TYPE (TypeFlagDelegateObject), not
-                // the closure the compiler made of it.
-                if (RuntimeMethod("DelegateTypeOfDescriptor", 1) is not MethodSymbol delegateType) return own;
+                // the closure the compiler made of it -- asked only of what may
+                // be one: GetType of anything else stays the one load that
+                // devirtualizing folds (`source.GetType() == typeof(List<T>)`
+                // answered for a LINQ source the lifetime rules then free).
+                if (!MayBeDelegate(_b.TypeOf(on.Target)) || RuntimeMethod("DelegateTypeOfDescriptor", 1) is not MethodSymbol delegateType) return own;
                 VReg typeOf = _f.NewReg(IrTypes.Word, "gettype");
                 Block asDelegate = _f.NewBlock("gettypedelegate"), typed = _f.NewBlock("gettypeend");
                 _e.CopyTo(typeOf, R(own));
@@ -3032,6 +3035,25 @@ public sealed partial class Lowering
         _e.Jump(end);
         _e.SetBlock(end);
         return result;
+    }
+
+    /// <summary>
+    /// Whether an object of this static type may be a delegate -- a closure or
+    /// a multicast (TypeFlagDelegateObject): an object, a word only run time
+    /// knows, a delegate type, or one of the compiler's delegate classes.
+    /// Another class or interface never is: a closure derives from object and
+    /// implements its delegate type alone.
+    /// </summary>
+    private static bool MayBeDelegate(Type t)
+    {
+        if (t.IsArray || t.IsPointer) return false;
+        if (t.Symbol is not { } s) return t.Prim == Prim.Any;
+        return s.Kind switch
+        {
+            TypeKind.Interface => s.Decl?.IsDelegate == true || s.Name == "IMulticastDelegate",
+            TypeKind.Class => DelegateObject(s) || s.Name is "Object" or "Delegate" or "MulticastDelegate",
+            _ => false,
+        };
     }
 
     /// <summary>A descriptor where the dictionary holds one (NeedEntry), else the named one.</summary>
