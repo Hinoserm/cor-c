@@ -449,9 +449,8 @@ public sealed partial class Lowering
         {
             // A STATIC'S STEP (Lto.Preinit): told to the link, and left at
             // once where the link laid the field down made.
-            if (decl.PreinitField is string preinit)
+            if (decl.PreinitField is string preinit && NotePreinitCandidate(m, decl, preinit))
             {
-                NotePreinitCandidate(m, decl, preinit);
                 PreinitGuard(m, preinit);
             }
             EmitStmt(decl.Body!);

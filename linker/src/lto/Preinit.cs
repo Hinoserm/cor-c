@@ -305,9 +305,10 @@ public static class Preinit
                     _solving.Add(c.Storage);
                     value = Evaluate(c.Value, System.Array.Empty<Value>(), 0);
                     _solving.Remove(c.Storage);
-                    // A field's storage is a word: a number laid down is the initialiser's
-                    // job no more than a constant's, and nothing allocates for one.
-                    if (value is not (Made or NullValue)) value = null;
+                    // Only an object or null, into a word: a number laid down is the
+                    // initialiser's job no more than a constant's, and nothing
+                    // allocates for one.
+                    if (value is not (Made or NullValue) || c.Width != _word) value = null;
                 }
                 _solved[c.Storage] = value;
                 open &= value is not null;
@@ -456,10 +457,11 @@ public static class Preinit
             int frozen = 0;
             foreach (Candidate c in _byStorage.Values.OrderBy(c => c.Storage, StringComparer.Ordinal))
             {
-                Pad(data, _word);
-                obj.Symbols.Add(new Symbol { Name = c.Storage, Section = data, Offset = data.Bytes.Count, Size = _word });
+                // As wide as the field, aligned as the statics' own are (to its size, at most eight).
+                Pad(data, System.Math.Min(8, c.Width >= 8 ? 8 : c.Width >= 4 ? 4 : c.Width >= 2 ? 2 : 1));
+                obj.Symbols.Add(new Symbol { Name = c.Storage, Section = data, Offset = data.Bytes.Count, Size = c.Width });
                 long at = data.Bytes.Count;
-                data.Bytes.AddRange(new byte[_word]);
+                data.Bytes.AddRange(new byte[c.Width]);
                 if (_solved.GetValueOrDefault(c.Storage) is Made m)
                 {
                     Reference(data, at, m);

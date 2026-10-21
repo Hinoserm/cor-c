@@ -3431,7 +3431,6 @@ public sealed partial class Binder
         // first initialiser that is neither one nor a constant: that one may
         // read a later field, null then in .NET.
         bool candidates = d.TypeParams.Count == 0 && !d.Specialised;
-        _r.Types.TryGetValue(TypeKey(d), out TypeSymbol? candidateOwner);
 
         foreach (MemberDecl m in d.Members)
         {
@@ -3460,9 +3459,10 @@ public sealed partial class Binder
             else continue;
 
             // A STATIC THE LINK MAY MAKE: its initialiser a step of its own,
-            // which runs unless the link laid the field down made.
-            if (candidates && candidateOwner is not null && m is FieldDecl candidate && !IsThreadStatic(candidate)
-                && PreinitShape(initial) && ReferenceField(candidate.Type, candidateOwner))
+            // which runs unless the link laid the field down made. Judged by
+            // its shape alone, no type looked up this early: one of a value
+            // type is never laid down (the link makes objects), and runs.
+            if (candidates && m is FieldDecl candidate && !IsThreadStatic(candidate) && candidate.Type.PointerDepth == 0 && PreinitShape(initial))
             {
                 candidate.Preinit = true;
                 string step = "Preinit$" + field;

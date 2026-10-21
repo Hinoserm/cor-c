@@ -30,6 +30,7 @@ public sealed partial class Lowering
     /// </summary>
     private void PreinitGuard(MethodSymbol m, string field)
     {
+        // Not a candidate the link was told of (NotePreinitCandidate): it runs.
         if (m.Owner.Fields.FirstOrDefault(f => f.Static && f.Name == field) is not FieldSymbol f) return;
         VReg flag = _e.Load(IrType.I32, new SymOperand(PreinitFlag(f)), 0, 1, signed: false);
         Corsac.Lang.Ir.Block run = _f.NewBlock("preinit_run");
@@ -44,17 +45,22 @@ public sealed partial class Lowering
     /// Its place among its type's members is its place among the type's
     /// initialisers, which run in the order written.
     /// </summary>
-    private void NotePreinitCandidate(MethodSymbol step, MethodDecl decl, string field)
+    private bool NotePreinitCandidate(MethodSymbol step, MethodDecl decl, string field)
     {
         TypeSymbol t = step.Owner;
-        if (t.Decl is not TypeDecl declared || declared.Elsewhere || declared.External) return;
-        if (t.Fields.FirstOrDefault(f => f.Static && f.Name == field) is not FieldSymbol f || FieldDeclOf(f) is not FieldDecl { Preinit: true } written) return;
+        if (t.Decl is not TypeDecl declared || declared.Elsewhere || declared.External) return false;
+        if (t.Fields.FirstOrDefault(f => f.Static && f.Name == field) is not FieldSymbol f || FieldDeclOf(f) is not FieldDecl { Preinit: true } written) return false;
+        // ONLY A FIELD THAT HOLDS A REFERENCE: the link makes objects. A
+        // number's or a struct's step runs as an initialiser always did, its
+        // storage its unit's.
+        if (HoldsNumber(f.Type) || IsStructValue(f.Type) || f.Type.IsPointer || f.Type.IsNullableValue) return false;
         int order = declared.Members.IndexOf(written);
         Expr? value = decl.Body is { Statements: [ExprStmt { Expr: AssignExpr { Value: { } assigned } }] } ? assigned : null;
         Preinit.Recipe recipe = value is null ? new Preinit.Opaque() : RecipeOf(value, t, null, 0);
         _preinitCandidates.Add(new Preinit.Candidate(TypeKey(t), order, StaticSymbol(f), PreinitFlag(f), Binder.DefinitionName(step),
             _t.WordSize, written.Mods.HasFlag(Mods.Readonly), recipe));
         _preinitNoted.Add(f);
+        return true;
     }
 
     /// <summary>The unit's notes, or null when it has nothing to say.</summary>

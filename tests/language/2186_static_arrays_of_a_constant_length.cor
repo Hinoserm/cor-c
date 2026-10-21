@@ -1,0 +1,57 @@
+// test: static_arrays_of_a_constant_length
+// expect-exit: 0
+// expect-output:
+// 4 8 3 3 2 2 12 3 2 0 100000
+// 0 0 True True True A False 0 0
+// 42 two 7 3 C 1 True
+// Int64[] Process[] Slot[] Byte[][]
+//
+// A static array of a constant length -- a literal, a const, an enum
+// member, folded -- is laid down zeroed in the image rather than made by
+// the type initialiser: of numbers, strings, classes, arrays, enums, bools,
+// doubles and chars, writable, the same object each read, its type its own;
+// one past the limit is made as before.
+// Expected output from .NET 10.
+
+using System;
+
+enum Slot { A, B, C, Count }
+
+class Process { public int Id; public Process(int id) { Id = id; } }
+
+static class Tables
+{
+    const int Most = 6;
+    public static long[] Words = new long[4];
+    public static int[] Ints = new int[Most + 2];
+    public static string[] Names = new string[(int)Slot.Count];
+    public static Process?[] Procs = new Process?[3];
+    public static byte[]?[] Chunks = new byte[]?[2];
+    public static Slot[] Slots = new Slot[2];
+    public static bool[] Flags = new bool[Most * 2];
+    public static double[] Reals = new double[3];
+    public static char[] Chars = new char[2];
+    public static byte[] None = new byte[0];
+    public static byte[] Big = new byte[100000];
+    public static readonly long[] Frozen = new long[1];
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine($"{Tables.Words.Length} {Tables.Ints.Length} {Tables.Names.Length} {Tables.Procs.Length} {Tables.Chunks.Length} {Tables.Slots.Length} {Tables.Flags.Length} {Tables.Reals.Length} {Tables.Chars.Length} {Tables.None.Length} {Tables.Big.Length}");
+        Console.WriteLine($"{Tables.Words[3]} {Tables.Ints[7]} {Tables.Names[2] == null} {Tables.Procs[0] == null} {Tables.Chunks[1] == null} {Tables.Slots[1]} {Tables.Flags[11]} {Tables.Reals[2]} {(int)Tables.Chars[1]}");
+        Tables.Words[3] = 42;
+        Tables.Names[1] = "two";
+        Tables.Procs[2] = new Process(7);
+        Tables.Chunks[0] = new byte[] { 1, 2, 3 };
+        Tables.Slots[0] = Slot.C;
+        Tables.Frozen[0]++;
+        long[] again = Tables.Words;
+        GC.Collect();
+        Console.WriteLine($"{again[3]} {Tables.Names[1]} {Tables.Procs[2]!.Id} {Tables.Chunks[0]!.Length} {Tables.Slots[0]} {Tables.Frozen[0]} {ReferenceEquals(again, Tables.Words)}");
+        Console.WriteLine($"{Tables.Words.GetType().Name} {Tables.Procs.GetType().Name} {Tables.Slots.GetType().Name} {Tables.Chunks.GetType().Name}");
+        return 0;
+    }
+}

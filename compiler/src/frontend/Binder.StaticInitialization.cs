@@ -40,7 +40,7 @@ public sealed partial class Binder
         {
             return null;
         }
-        if (ElementBytes(element, owner) is not int each || length * each > ZeroedLimit)
+        if (ElementBytes(element) is not int each || length * each > ZeroedLimit)
         {
             return null;
         }
@@ -49,38 +49,25 @@ public sealed partial class Binder
 
     /// <summary>
     /// The most bytes one element of a zeroed array takes: a keyword type's
-    /// own size, eight for a reference or an enum; null for a struct, whose
-    /// layout is not known yet, and a nullable value -- each left to the heap.
+    /// own size, eight for an array; null for anything named -- a class, an
+    /// enum, a struct -- whose kind looking it up here would answer before
+    /// its members may be declared (a program's Process taken for
+    /// System.Diagnostics', List<Process> made too soon), and for a nullable
+    /// value. An array of those is the link's to make (Lto.Preinit).
     /// </summary>
-    private int? ElementBytes(TypeRef element, TypeSymbol owner)
+    private static int? ElementBytes(TypeRef element)
     {
         if (element.ArrayRank > 0) return 8;
         bool nullable = element.Nullable;
-        switch (element.Name)
+        return element.Name switch
         {
-            case "string" or "object": return 8;
-            case "bool" or "byte" or "sbyte": return nullable ? null : 1;
-            case "char" or "short" or "ushort": return nullable ? null : 2;
-            case "int" or "uint" or "float": return nullable ? null : 4;
-            case "long" or "ulong" or "double" or "nint" or "nuint": return nullable ? null : 8;
-        }
-        if (element.Args.Count > 0 || element.Name.Length == 0) return null;
-        TypeSymbol? was = _scope;
-        _scope = owner;
-        try
-        {
-            if (!FindType(element.Name, out TypeSymbol? found) || found is null) return null;
-            return found.Kind switch
-            {
-                TypeKind.Class or TypeKind.Interface => 8,
-                TypeKind.Enum when !nullable => 8,
-                _ => found.Decl is TypeDecl { IsDelegate: true } ? 8 : null,
-            };
-        }
-        finally
-        {
-            _scope = was;
-        }
+            "string" or "object" => 8,
+            "bool" or "byte" or "sbyte" => nullable ? null : 1,
+            "char" or "short" or "ushort" => nullable ? null : 2,
+            "int" or "uint" or "float" => nullable ? null : 4,
+            "long" or "ulong" or "double" or "nint" or "nuint" => nullable ? null : 8,
+            _ => null,
+        };
     }
 
     /// <summary>
@@ -105,25 +92,6 @@ public sealed partial class Binder
         UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot or UnOp.Plus } unary => PreinitConstant(unary.Operand),
         _ => false,
     };
-
-    /// <summary>Whether a static of this declared type holds a reference: an array, a class, an interface, a delegate, a string or an object.</summary>
-    private bool ReferenceField(TypeRef declared, TypeSymbol owner)
-    {
-        if (declared.PointerDepth > 0) return false;
-        if (declared.ArrayRank > 0) return true;
-        if (declared.Name is "string" or "object") return true;
-        TypeSymbol? was = _scope;
-        _scope = owner;
-        try
-        {
-            Type resolved = Resolve(declared, owner);
-            return resolved.Symbol is { } sym && (sym.Kind is TypeKind.Class or TypeKind.Interface || sym.Decl is TypeDecl { IsDelegate: true });
-        }
-        finally
-        {
-            _scope = was;
-        }
-    }
 
     /// <summary>The most bytes of elements a zeroed static array is laid down with (ZeroedArrayOf).</summary>
     public const int ZeroedLimit = 65536;

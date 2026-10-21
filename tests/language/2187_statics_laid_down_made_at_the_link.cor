@@ -1,0 +1,100 @@
+// test: statics_laid_down_made_at_the_link
+// expect-exit: 0
+// expect-output:
+// -1 1 2 True
+// -1 True False
+// first 1 True derived 3 7
+// 2 x,y 4 67 1 -1
+// True 99 -1 Gate Derived List`1
+// locked 4
+// True
+//
+// Statics whose initialisers only make objects and arrays out of constants
+// are made by the link and laid down in the image, as NativeAOT freezes
+// them: objects through their constructors' stores and chains, arrays, a u8
+// table's bytes, a readonly static read by another; one whose constructor
+// does more (Holder's count) and every one after it in the type are the
+// type initialiser's, as is an array as long as a static field says. Laid
+// down, each is an ordinary object: written, collected around, locked,
+// replaced.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Gate
+{
+    long[] _word = new long[1];
+    int _stat = -1;
+    public Gate() { }
+    public int Stat => _stat;
+    public long[] Word => _word;
+}
+
+class Queue
+{
+    Gate _gate = new Gate();
+    public object? Head;
+    public Queue() { }
+    public Gate Lock => _gate;
+}
+
+class Named
+{
+    public readonly string Name;
+    public readonly int Id;
+    public Named(string name, int id) { Name = name; Id = id; }
+}
+
+class Derived : Named
+{
+    public int Extra = 7;
+    public Derived() : base("derived", 3) { }
+}
+
+class Holder
+{
+    public static int Count;
+    public Holder() { Count++; }
+}
+
+static class Dyn { public static long Slots = 1; }
+
+static class UsesDyn { public static long[] Per = new long[(int)Dyn.Slots]; }
+
+static class Statics
+{
+    public static Gate TheGate = new Gate();
+    public static Queue[] Queues = new Queue[2];
+    public static Queue Waiters = new Queue();
+    public static readonly Named First = new Named("first", 1);
+    public static Named Alias = First;
+    public static Derived Child = new Derived();
+    public static List<string> Names = new List<string>();
+    public static byte[] Magic = "CORS"u8.ToArray();
+    public static Holder Counted = new Holder();
+    public static Gate Later = new Gate();
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Dyn.Slots = 4;
+        Console.WriteLine($"{Statics.TheGate.Stat} {Statics.TheGate.Word.Length} {Statics.Queues.Length} {Statics.Queues[0] == null}");
+        Console.WriteLine($"{Statics.Waiters.Lock.Stat} {Statics.Waiters.Head == null} {ReferenceEquals(Statics.Waiters.Lock, Statics.TheGate)}");
+        Console.WriteLine($"{Statics.First.Name} {Statics.First.Id} {ReferenceEquals(Statics.Alias, Statics.First)} {Statics.Child.Name} {Statics.Child.Id} {Statics.Child.Extra}");
+        Statics.Names.Add("x");
+        Statics.Names.Add("y");
+        Console.WriteLine($"{Statics.Names.Count} {string.Join(",", Statics.Names)} {Statics.Magic.Length} {Statics.Magic[0]} {Holder.Count} {Statics.Later.Stat}");
+        Statics.Waiters.Head = new object();
+        Statics.TheGate.Word[0] = 99;
+        Statics.Queues[1] = new Queue();
+        GC.Collect();
+        Console.WriteLine($"{Statics.Waiters.Head != null} {Statics.TheGate.Word[0]} {Statics.Queues[1]!.Lock.Stat} {Statics.TheGate.GetType().Name} {Statics.Child.GetType().Name} {Statics.Names.GetType().Name}");
+        lock (Statics.TheGate) { Console.WriteLine("locked " + UsesDyn.Per.Length); }
+        Statics.Waiters = new Queue();
+        Console.WriteLine(Statics.Waiters.Head == null);
+        return 0;
+    }
+}
