@@ -252,13 +252,13 @@ public static class Preinit
     {
         List<ObjectFile> inputs = objects.ToList();
         Solution? solved = Solve(inputs, Read(inputs, take: false), longMode);
-        _last = (inputs, solved);
+        _last = (inputs, longMode, solved);
         return solved;
     }
 
     // THE PEEK'S SOLVE, KEPT for the link that follows it over the same
     // inputs: running every initialiser twice was the link's time twice.
-    private static (List<ObjectFile> Inputs, Solution? Solved)? _last;
+    private static (List<ObjectFile> Inputs, bool LongMode, Solution? Solved)? _last;
 
     private static Solution? Solve(List<ObjectFile> inputs, List<Notes> notes, bool longMode)
     {
@@ -278,7 +278,8 @@ public static class Preinit
     public static ObjectFile? Lay(IEnumerable<ObjectFile> objects, bool longMode)
     {
         List<ObjectFile> inputs = objects.ToList();
-        Solution? solved = _last is { } last && last.Inputs.Count == inputs.Count && last.Inputs.Zip(inputs).All(p => ReferenceEquals(p.First, p.Second))
+        Solution? solved = _last is { } last && last.LongMode == longMode && last.Inputs.Count == inputs.Count
+                           && last.Inputs.Zip(inputs).All(p => ReferenceEquals(p.First, p.Second))
             ? last.Solved : null;
         List<Notes> notes = Take(inputs);
         solved ??= Solve(inputs, notes, longMode);
@@ -379,6 +380,7 @@ public static class Preinit
                         foreach (PreinitWorld.TypeEntry made in world.Commit())
                         {
                             typesRun++;
+                            if (Switches.PreinitReport) world.Report.Add(made.Note.Owner + " made at the link");
                             frozenSteps.Add(made.Note.Initializer);
                             frozenSteps.Add(made.Note.Body);
                             if (_byOwner.TryGetValue(made.Note.Owner, out List<Candidate>? steps)) foreach (Candidate c in steps) frozenSteps.Add(c.Step);
@@ -586,7 +588,7 @@ public static class Preinit
             void Reach(PreinitWorld.Region r)
             {
                 foreach (int offset in r.Refs.Keys.Order())
-                    if (PreinitWorld.Target(r.Refs[offset]).Object is PreinitWorld.Region o && kept.Add(o)) { objects.Add(o); walk.Push(o); }
+                    if (world.Target(r.Refs[offset]).Object is PreinitWorld.Region o && kept.Add(o)) { objects.Add(o); walk.Push(o); }
             }
             foreach (PreinitWorld.Region r in roots) Reach(r);
             while (walk.TryPop(out PreinitWorld.Region? o)) Reach(o);
@@ -637,7 +639,7 @@ public static class Preinit
             foreach ((long at, PreinitWorld.Region r) in placed)
                 foreach ((int offset, PreinitWorld.Val v) in r.Refs.OrderBy(p => p.Key))
                 {
-                    (string? symbol, long addend, PreinitWorld.Region? o) = PreinitWorld.Target(v);
+                    (string? symbol, long addend, PreinitWorld.Region? o) = world.Target(v);
                     data.Relocs.Add(new Relocation((int)(at + offset), symbol ?? names[o!], addend, _longMode ? RelocKind.Abs64 : RelocKind.Abs32));
                 }
             obj.Sections.Add(data);

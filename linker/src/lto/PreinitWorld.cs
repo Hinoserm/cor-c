@@ -32,13 +32,13 @@ public sealed class PreinitWorld
     public sealed record Num(long Bits) : Val;
     /// <summary>An address into a region.</summary>
     public sealed record Ptr(Region Region, long Offset) : Val;
-    /// <summary>A routine's address, or a label's within one.</summary>
-    public sealed record Code(string Label, long Offset) : Val;
-    /// <summary>A unit's relocation, read on first use: the symbol, which may be data or code.</summary>
-    private sealed record Unresolved(string Symbol, long Addend) : Val;
+    /// <summary>A routine's address, or a label's within one; Local, the unit whose own symbol it is.</summary>
+    public sealed record Code(string Label, long Offset, ObjectFile? Local = null) : Val;
+    /// <summary>A relocation, read on first use: the symbol, which may be data or code, as the unit that names it sees it.</summary>
+    private sealed record Unresolved(string Symbol, long Addend, ObjectFile? From) : Val;
 
     /// <summary>A symbol's address, found when it is first read through.</summary>
-    public static Val Lazy(string symbol, long addend) => new Unresolved(symbol, addend);
+    public static Val Lazy(string symbol, long addend) => new Unresolved(symbol, addend, null);
 
     public enum RegionKind { Data, Storage, Heap, Frame, Thread }
 
@@ -48,6 +48,8 @@ public sealed class PreinitWorld
         public required RegionKind Kind { get; init; }
         /// <summary>The symbol a unit's data or the link's storage is defined by.</summary>
         public string? Symbol { get; init; }
+        /// <summary>A unit's own symbol, not global: that unit's, which no other unit's name reaches.</summary>
+        public ObjectFile? Local { get; init; }
         public required byte[] Bytes;
         public Dictionary<int, Val> Refs = new();
         /// <summary>Read-only data: a descriptor, a literal. Never written.</summary>
@@ -73,7 +75,11 @@ public sealed class PreinitWorld
     public int ArrayCountOffset { get; }
     public bool LongMode { get; }
 
+    // THE IMAGE'S NAMES, and each unit's own: a unit's literal str_51 is its
+    // own, another unit's str_51 another, and each unit finds its own first.
     private readonly Dictionary<string, (ObjectFile Object, Symbol Symbol)> _defined = new(StringComparer.Ordinal);
+    private readonly Dictionary<ObjectFile, Dictionary<string, Symbol>> _locals = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<ObjectFile, int> _number = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, Region> _regions = new(StringComparer.Ordinal);
     private readonly Dictionary<Section, SortedRelocations> _sorted = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Section, byte[]> _contents = new(ReferenceEqualityComparer.Instance);
@@ -106,8 +112,31 @@ public sealed class PreinitWorld
         ArrayCountOffset = arrayCountOffset;
         LongMode = longMode;
         foreach (ObjectFile obj in objects)
+        {
+            _number.TryAdd(obj, _number.Count);
             foreach (Symbol s in obj.Symbols)
-                if (s.IsDefined && s.Section!.Kind != SectionKind.Note) _defined.TryAdd(s.Name, (obj, s));
+            {
+                if (!s.IsDefined || s.Section!.Kind == SectionKind.Note) continue;
+                if (s.Global) _defined.TryAdd(s.Name, (obj, s));
+                else (_locals.TryGetValue(obj, out var own) ? own : _locals[obj] = new(StringComparer.Ordinal)).TryAdd(s.Name, s);
+            }
+        }
+    }
+
+    /// <summary>A symbol as a unit sees it: its own first, then the image's.</summary>
+    private (ObjectFile Object, Symbol Symbol, bool Local)? Find(string symbol, ObjectFile? from)
+    {
+        if (from is not null && _locals.TryGetValue(from, out var own) && own.TryGetValue(symbol, out Symbol? mine)) return (from, mine, true);
+        if (_defined.TryGetValue(symbol, out var at)) return (at.Object, at.Symbol, false);
+        // A unit nobody named: its own symbol, when one unit alone has it.
+        if (from is null)
+        {
+            (ObjectFile, Symbol)? only = null;
+            foreach ((ObjectFile obj, var names) in _locals)
+                if (names.TryGetValue(symbol, out Symbol? s)) { if (only is not null) return null; only = (obj, s); }
+            if (only is (ObjectFile o, Symbol found)) return (o, found, true);
+        }
+        return null;
     }
 
     // ---- the types -----------------------------------------------------------------
@@ -131,7 +160,7 @@ public sealed class PreinitWorld
     /// </summary>
     public void Enter(TypeEntry type, Action<string> runBody)
     {
-        Region ready = Data(type.Note.Ready) ?? throw new Refused("no state word '" + type.Note.Ready + "'");
+        Region ready = Data(type.Note.Ready, null) ?? throw new Refused("no state word '" + type.Note.Ready + "'");
         Val state = Load(new Ptr(ready, 0), WordSize, signed: false);
         if (state is Num { Bits: 1 } || _entering.Contains(type)) return;
         if (state is not Num { Bits: 0 }) throw new Refused("'" + type.Note.Owner + "' was given up on before");
@@ -203,10 +232,13 @@ public sealed class PreinitWorld
     /// A symbol's data: a unit's, read from its section on first use, or the
     /// link's storage (DefineStorage). Null for a symbol defined nowhere.
     /// </summary>
-    public Region? Data(string symbol)
+    public Region? Data(string symbol, ObjectFile? from)
     {
-        if (_regions.TryGetValue(symbol, out Region? had)) return had;
-        if (!_defined.TryGetValue(symbol, out var at) || at.Symbol.Section!.Kind == SectionKind.Code) return null;
+        if (_regions.TryGetValue(symbol, out Region? had) && had.Kind == RegionKind.Storage) return had;
+        if (Find(symbol, from) is not var (owner, sym, local) || sym.Section!.Kind == SectionKind.Code) return null;
+        string key = local ? symbol + "\u0001" + _number[owner] : symbol;
+        if (_regions.TryGetValue(key, out had)) return had;
+        var at = (Object: owner, Symbol: sym);
         Section section = at.Symbol.Section!;
         long size = at.Symbol.Size;
         if (size <= 0)
@@ -226,7 +258,7 @@ public sealed class PreinitWorld
         }
         Region region = new()
         {
-            Kind = RegionKind.Data, Symbol = symbol, Bytes = bytes,
+            Kind = RegionKind.Data, Symbol = symbol, Local = local ? owner : null, Bytes = bytes,
             ReadOnly = section.Kind == SectionKind.ReadOnlyData, Align = Math.Max(1, Math.Min(16, section.Align)),
         };
         if (section.Kind != SectionKind.Uninitialised)
@@ -235,10 +267,10 @@ public sealed class PreinitWorld
             foreach (Relocation r in sorted.Within(at.Symbol.Offset, at.Symbol.Offset + size))
             {
                 if (r.Kind is not (RelocKind.Abs32 or RelocKind.Abs64)) continue;
-                region.Refs[(int)(r.Offset - at.Symbol.Offset)] = new Unresolved(r.Symbol, r.Addend);
+                region.Refs[(int)(r.Offset - at.Symbol.Offset)] = new Unresolved(r.Symbol, r.Addend, owner);
             }
         }
-        _regions[symbol] = region;
+        _regions[key] = region;
         return region;
     }
 
@@ -251,16 +283,13 @@ public sealed class PreinitWorld
         return region;
     }
 
-    /// <summary>What a symbol's address is: its data, or a routine's address.</summary>
-    public Val Address(string symbol, long offset)
+    /// <summary>What a symbol's address is, as the unit `from` names it: its data, or a routine's address.</summary>
+    public Val Address(string symbol, long offset, ObjectFile? from)
     {
-        if (Data(symbol) is Region r) return new Ptr(r, offset);
-        if (_defined.TryGetValue(symbol, out var at) && at.Symbol.Section!.Kind == SectionKind.Code) return new Code(symbol, offset);
+        if (Data(symbol, from) is Region r) return new Ptr(r, offset);
+        if (Find(symbol, from) is var (owner, sym, local) && sym.Section!.Kind == SectionKind.Code) return new Code(symbol, offset, local ? owner : null);
         throw new Refused("'" + symbol + "' is defined nowhere the link can see");
     }
-
-    /// <summary>Whether a routine of this name is code in the image.</summary>
-    public bool IsCode(string symbol) => _defined.TryGetValue(symbol, out var at) && at.Symbol.Section!.Kind == SectionKind.Code;
 
     /// <summary>An object's bytes, zeroed, as an allocator hands them out.</summary>
     public Ptr Allocate(long bytes)
@@ -308,7 +337,7 @@ public sealed class PreinitWorld
     private Val Resolve(Region r, int offset, Val v)
     {
         if (v is not Unresolved u) return v;
-        Val resolved = Address(u.Symbol, u.Addend);
+        Val resolved = Address(u.Symbol, u.Addend, u.From);
         r.Refs[offset] = resolved;
         return resolved;
     }
@@ -333,6 +362,9 @@ public sealed class PreinitWorld
                 r.Refs[at] = value;
                 break;
         }
+        // A UNIT'S OWN DATUM is laid down again by the link only under a
+        // name every unit can reach, which its own is not.
+        if (r.Local is not null && r.Kind == RegionKind.Data) throw new Refused("a store into '" + r + "', a unit's own");
     }
 
     /// <summary>Bytes copied, the addresses among them with them.</summary>
@@ -387,13 +419,42 @@ public sealed class PreinitWorld
 
     public IEnumerable<Region> Storages => _regions.Values.Where(r => r.Kind == RegionKind.Storage);
 
-    /// <summary>A word's address as the link writes it: a symbol and an addend, or null for an object it lays down.</summary>
-    public static (string? Symbol, long Addend, Region? Object) Target(Val v) => v switch
+    /// <summary>
+    /// A word's address as the link writes it: a symbol and an addend, or the
+    /// object it lays down. A unit's own symbol is named through an alias the
+    /// unit is given, global, at the same place.
+    /// </summary>
+    public (string? Symbol, long Addend, Region? Object) Target(Val v)
     {
-        Ptr { Region.Kind: RegionKind.Heap } p => (null, p.Offset, p.Region),
-        Ptr { Region.Symbol: string s } p => (s, p.Offset, null),
-        Code c => (c.Label, c.Offset, null),
-        Unresolved u => (u.Symbol, u.Addend, null),
-        _ => throw new InvalidOperationException("preinit: an address the link cannot write: " + v),
-    };
+        switch (v)
+        {
+            case Ptr { Region.Kind: RegionKind.Heap } p: return (null, p.Offset, p.Region);
+            case Ptr { Region: { Symbol: string s, Local: ObjectFile own } } p: return (Alias(own, s), p.Offset, null);
+            case Ptr { Region.Symbol: string s } p: return (s, p.Offset, null);
+            case Code { Local: ObjectFile own } c: return (Alias(own, c.Label), c.Offset, null);
+            case Code c: return (c.Label, c.Offset, null);
+            case Unresolved u:
+            {
+                Val resolved = Address(u.Symbol, u.Addend, u.From);
+                return resolved is Unresolved ? (u.Symbol, u.Addend, null) : Target(resolved);
+            }
+            default: throw new InvalidOperationException("preinit: an address the link cannot write: " + v);
+        }
+    }
+
+    /// <summary>Whether a value can be written into the image: an address of a stack's or a thread's cannot.</summary>
+    public static bool Kept(Val v) => v is not Ptr { Region.Kind: RegionKind.Frame or RegionKind.Thread };
+
+    private readonly Dictionary<(ObjectFile, string), string> _aliases = new();
+    private static int _aliasCount;
+
+    private string Alias(ObjectFile owner, string symbol)
+    {
+        if (_aliases.TryGetValue((owner, symbol), out string? had)) return had;
+        Symbol local = _locals[owner][symbol];
+        string alias = "preinit$alias" + System.Threading.Interlocked.Increment(ref _aliasCount) + "$" + symbol;
+        owner.Symbols.Add(new Symbol { Name = alias, Section = local.Section, Offset = local.Offset, Size = local.Size, IsFunction = local.IsFunction });
+        _aliases[(owner, symbol)] = alias;
+        return alias;
+    }
 }

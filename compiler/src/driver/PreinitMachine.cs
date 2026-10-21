@@ -40,8 +40,9 @@ public sealed class PreinitMachine : Preinit.IMachine
     public static void Remember(ObjectFile obj, List<IrArchiveRecord> records) => Snapshots.AddOrUpdate(obj, records);
 
     private PreinitWorld? _indexed;
-    private readonly Dictionary<string, Func<byte[]>> _bodies = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Function?> _functions = new(StringComparer.Ordinal);
+    // Each routine's IR and the unit it is of: a unit's own symbols are found as that unit names them.
+    private readonly Dictionary<string, (ObjectFile Unit, Func<byte[]> Body)> _bodies = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (Function Function, ObjectFile Unit)?> _functions = new(StringComparer.Ordinal);
     private readonly IrReadBudget _budget = new(1L << 40);
     private const int Deepest = 400;
 
@@ -63,19 +64,19 @@ public sealed class PreinitMachine : Preinit.IMachine
             if (Snapshots.TryGetValue(obj, out List<IrArchiveRecord>? records))
             {
                 foreach (IrArchiveRecord record in records)
-                    if (record.Key.StartsWith("F:", StringComparison.Ordinal)) _bodies.TryAdd(record.Key[2..], record.Body);
+                    if (record.Key.StartsWith("F:", StringComparison.Ordinal)) _bodies.TryAdd(record.Key[2..], (obj, record.Body));
                 continue;
             }
             if (IrArchive.Read(obj) is not IrArchive archive) continue;
             foreach (string key in archive.Entries.Keys)
-                if (key.StartsWith("F:", StringComparison.Ordinal)) _bodies.TryAdd(key[2..], () => archive.ReadBody(key));
+                if (key.StartsWith("F:", StringComparison.Ordinal)) _bodies.TryAdd(key[2..], (obj, () => archive.ReadBody(key)));
         }
     }
 
-    private Function? FunctionOf(string label)
+    private (Function Function, ObjectFile Unit)? FunctionOf(string label)
     {
-        if (_functions.TryGetValue(label, out Function? had)) return had;
-        Function? f = _bodies.TryGetValue(label, out Func<byte[]>? body) ? IrFunctionCodec.Read(body(), _budget) : null;
+        if (_functions.TryGetValue(label, out var had)) return had;
+        (Function, ObjectFile)? f = _bodies.TryGetValue(label, out var body) ? (IrFunctionCodec.Read(body.Body(), _budget), body.Unit) : null;
         _functions[label] = f;
         return f;
     }
@@ -92,8 +93,8 @@ public sealed class PreinitMachine : Preinit.IMachine
             w.Enter(type, body => Call(w, body, System.Array.Empty<Val>(), depth + 1));
             return null;
         }
-        Function f = FunctionOf(label) ?? throw new Refused("'" + label + "' has no IR the link can run");
-        return Execute(w, f, args, depth);
+        var (f, unit) = FunctionOf(label) ?? throw new Refused("'" + label + "' has no IR the link can run");
+        return Execute(w, f, unit, args, depth);
     }
 
     private static bool Is(string label, string owner, string name)
@@ -144,7 +145,7 @@ public sealed class PreinitMachine : Preinit.IMachine
 
     // ---- one routine ---------------------------------------------------------------
 
-    private Val? Execute(PreinitWorld w, Function f, Val[] args, int depth)
+    private Val? Execute(PreinitWorld w, Function f, ObjectFile unit, Val[] args, int depth)
     {
         if (args.Length != f.Params.Count) throw new Refused("'" + f.Name + "' called with " + args.Length + " arguments for " + f.Params.Count);
         Val?[] regs = new Val?[f.RegCount];
@@ -156,7 +157,7 @@ public sealed class PreinitMachine : Preinit.IMachine
         {
             RegOperand r => regs[r.Reg.Id] ?? throw new Refused("'" + f.Name + "' read " + r.Reg + " before it was set"),
             ImmOperand imm => new Num(Normal(imm.Value, imm.Type)),
-            SymOperand sym => w.Address(sym.Name, sym.Offset),
+            SymOperand sym => w.Address(sym.Name, sym.Offset, unit),
             SlotOperand slot => slots.TryGetValue(slot.Slot, out Ptr? p) ? p : slots[slot.Slot] = w.Frame(slot.Slot.Bytes),
             _ => throw new Refused("an operand " + o),
         };
