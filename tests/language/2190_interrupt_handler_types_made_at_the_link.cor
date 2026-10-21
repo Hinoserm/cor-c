@@ -1,0 +1,60 @@
+// test: interrupt handlers touching types the link made, by recipe and by running their initialisers
+// expect-exit: 0
+// expect-output:
+// 1 9 16 49 seat-abc 3
+//
+// A handler that is the first to touch a type runs its initialiser, with
+// interrupts off, unless the link made the type before the program ran
+// (Lto.Preinit). Buffers' table is a recipe's (stage 1): a zeroed array laid
+// down as data. Squares' initialiser runs a loop, calls helpers and builds a
+// string, which no recipe says: the link runs it whole (stage 2), as nothing
+// in it reads or writes another type's mutable state. Were either made at
+// run time, the link's check of Tick would refuse the program.
+
+using System;
+
+static class Buffers
+{
+    public static readonly byte[] Ring = new byte[256];
+}
+
+static class Squares
+{
+    public static readonly int[] Of = Make(8);
+    public static readonly string Name = "seat-" + Letters(3);
+
+    static int[] Make(int n)
+    {
+        int[] made = new int[n];
+        for (int i = 0; i < n; i++) made[i] = i * i;
+        return made;
+    }
+
+    static string Letters(int n)
+    {
+        char[] letters = new char[n];
+        for (int i = 0; i < n; i++) letters[i] = (char)('a' + i);
+        return new string(letters);
+    }
+}
+
+static class Program
+{
+    static int _seen;
+
+    [InterruptHandler]
+    static void Tick()
+    {
+        Buffers.Ring[0]++;
+        _seen += Squares.Of[7] - Squares.Of[7] + Squares.Name.Length - 8;
+    }
+
+    static int Main()
+    {
+        Tick();
+        Tick();
+        Tick();
+        Console.WriteLine(Squares.Of[1] + " " + Squares.Of[3] + " " + Squares.Of[4] + " " + (Squares.Of[7] + _seen) + " " + Squares.Name + " " + Buffers.Ring[0]);
+        return 0;
+    }
+}

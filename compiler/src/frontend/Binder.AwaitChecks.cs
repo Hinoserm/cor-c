@@ -1230,8 +1230,12 @@ public sealed partial class Binder
             {
                 // A STATIC'S STEP IS THE LINK'S TO JUDGE: it never runs where
                 // the link lays the field down made (Lto.Preinit), and the
-                // link's check knows which it laid down.
+                // link's check knows which it laid down. AND SO IS A
+                // BEFOREFIELDINIT TYPE'S WHOLE INITIALISER, which the link runs
+                // before the program does wherever nothing could tell
+                // (Preinit, stage 2): its check reaches it through the facts.
                 if (callee.Decl is MethodDecl { PreinitField: not null }) continue;
+                if (callee.Static && callee.Name == "StaticInit$" && BeforeFieldInit(callee.Owner)) continue;
                 if (bodies.ContainsKey(callee))
                 {
                     (Node Site, string What, MethodSymbol Where)? deeper = AllocatesThrough(callee, bodies, allocates, walk, clean, ref reached);
@@ -1259,6 +1263,10 @@ public sealed partial class Binder
         low = Math.Min(low, reached);
         return found;
     }
+
+    /// <summary>Whether a type is beforefieldinit: no static constructor written, so .NET may make it before its first touch.</summary>
+    private static bool BeforeFieldInit(TypeSymbol t)
+        => t.Decl is TypeDecl d && !d.Members.OfType<MethodDecl>().Any(m => (m.IsCtor && m.Mods.HasFlag(Mods.Static)) || m.Name == "StaticConstructorBody$");
 
     /// <summary>
     /// Every method a body runs that it names exactly -- static, or not

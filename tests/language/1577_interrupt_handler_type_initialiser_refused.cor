@@ -1,15 +1,26 @@
 // test: an interrupt handler whose first touch of a type runs an allocating initialiser refused
-// expect-compile-error: is an interrupt handler and must not allocate: the type initialiser of 'Buffers' makes an array
+// expect-compile-error: is an interrupt handler and must not allocate
 // Touching another type's statics runs its type initialiser the first time
 // (Lowering.TouchType), and Buffers' makes an array: a handler that is the
 // first to touch it allocates with interrupts off, inside
 // EnterTypeInitialization's lock. The check followed calls written as calls.
+//
+// AN ARRAY THE LINK CANNOT MAKE: its length is another type's mutable
+// static, which may be other at Buffers' first touch than when the image
+// starts, so the link leaves Buffers' initialiser to run (Lto.Preinit) and
+// its check finds the array. `new byte[256]` the link lays down made, and
+// a handler touching it allocates nothing (2190).
 
 using System;
 
+static class Config
+{
+    public static int Size = 256;
+}
+
 static class Buffers
 {
-    public static readonly byte[] Ring = new byte[256];
+    public static readonly byte[] Ring = new byte[Config.Size];
 }
 
 static class Program

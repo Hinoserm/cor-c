@@ -1,0 +1,85 @@
+// test: statics_made_at_the_link_as_dotnet_makes_them
+// expect-exit: 0
+// expect-output:
+// 0
+// 10 1
+// 700
+// 27 cubes:a,b;6
+// 42 xyz 3
+// 4 cubes:a,b;6!
+// 224
+//
+// Type initialisers the link may run before the program does (Lto.Preinit,
+// stage 2) and ones it may not: a table built by a loop, a string joined,
+// static lambdas and a list, another type's readonly static read once that
+// type is made; and, made at the first touch as .NET makes them, an
+// initialiser bumping another type's counter and one reading a static Main
+// changed first.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+static class Counter
+{
+    public static int Made;
+}
+
+static class Settings
+{
+    public static int Mode = 1;
+}
+
+static class Table
+{
+    // Its own state alone: the link may make it, and nothing can tell.
+    public static readonly int[] Cubes = Build(6);
+    public static readonly string Label = "cubes:" + string.Join(",", new[] { "a", "b" }) + ";" + Cubes.Length;
+    static int[] Build(int n)
+    {
+        int[] t = new int[n];
+        for (int i = 0; i < n; i++) t[i] = i * i * i;
+        return t;
+    }
+}
+
+static class Bumps
+{
+    // Another type's counter: made at its first touch, as .NET makes it.
+    public static readonly int Value = ++Counter.Made * 10;
+}
+
+static class Reads
+{
+    // Another type's mutable static, changed by Main before the first touch.
+    public static readonly int Seen = Settings.Mode * 100;
+}
+
+static class Lambdas
+{
+    public static readonly Func<int, int> Triple = x => x * 3;
+    public static readonly List<string> Names = new List<string> { "x", "y", "z" };
+}
+
+static class Chained
+{
+    // Another type's readonly static, once that type is made.
+    public static readonly string Text = Table.Label + "!";
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(Counter.Made);
+        Console.WriteLine(Bumps.Value + " " + Counter.Made);
+        Settings.Mode = 7;
+        Console.WriteLine(Reads.Seen);
+        Console.WriteLine(Table.Cubes[3] + " " + Table.Label);
+        Console.WriteLine(Lambdas.Triple(14) + " " + string.Join("", Lambdas.Names) + " " + Lambdas.Names.Count);
+        Lambdas.Names.Add("w");
+        Console.WriteLine(Lambdas.Names.Count + " " + Chained.Text);
+        Table.Cubes[0] = 99;
+        Console.WriteLine(Table.Cubes[0] + Table.Cubes[5]);
+    }
+}
