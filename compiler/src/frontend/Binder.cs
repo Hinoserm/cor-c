@@ -5892,6 +5892,9 @@ public sealed partial class Binder
             // does a namespace: `Corsac.Lang.Type` is this compiler's own, and
             // asking the flat table for a bare "Type" never sees it.
             case "Type" when MeansSystemType(): return Type.TypeHandle;
+            // AND BY ITS FULL NAME ALWAYS, which is how a copy made over a
+            // Type is spelt (NameOf): `Many(types)` is Many<System.Type>.
+            case "System.Type": return Type.TypeHandle;
         }
 
         if (context != null && context.TypeParams.Contains(r.Name))
@@ -13586,6 +13589,10 @@ public sealed partial class Binder
         Prim.NInt => "nint", Prim.NUInt => "nuint",
         Prim.F32 => "float", Prim.F64 => "double",
         Prim.Char => "char", Prim.Any => "object",
+        // A TYPE ARGUMENT THAT IS A TYPE: spelt so, a copy of the generic is
+        // made over it as over any other argument. Unspelt, inference refused
+        // every call whose argument was a Type -- List<Type>'s own Array.Copy.
+        Prim.Type => "System.Type",
         _ => null,
     };
 
@@ -20531,20 +20538,23 @@ public sealed partial class Binder
                 on = on.AsNonNullable();
             }
 
-            if (on.Prim == Prim.Any || (on.IsReference && on.Prim != Prim.NullLiteral))
+            if (on.Prim == Prim.Any || (on.IsReference && on.Prim is not (Prim.NullLiteral or Prim.Type)))
             {
                 RequireNonNull(on, asked.Target, "ask the type of");
                 _r.GetTypes.Add(c);
                 return Type.TypeHandle;
             }
 
+            // A TYPE IS ASKED AS THE OBJECT IT IS, its RuntimeType: a Type's
+            // own word is its descriptor's address, which carries no type of
+            // its own -- `typeof(int).GetType()` is System.RuntimeType.
             // A VALUE IS BOXED AND THE BOX IS ASKED, which is what C# does:
             // GetType is object's, not the value type's, so `5.GetType()` is
             // `((object)5).GetType()` and says System.Int32. A `T?` boxes to
             // its value or to null, and null throws, as it does in .NET.
             Type held = on.AsNonNullable();
             if (!on.IsError && !on.IsPointer && on.ParamName is null
-                && (held.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } || held.IsNumeric || held.Prim is Prim.Bool or Prim.Char))
+                && (held.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } || held.IsNumeric || held.Prim is Prim.Bool or Prim.Char or Prim.Type))
             {
                 CallExpr boxed = new()
                 {
