@@ -610,11 +610,17 @@ static class String {
     public static string ToLower(string s, CultureInfo? culture) { return ToLowerInvariant(s); }
     public static string ToUpper(string s, CultureInfo? culture) { return ToUpperInvariant(s); }
 
-    public static bool Equals(string a, string b, StringComparison kind) {
+    public static bool Equals(string? a, string? b, StringComparison kind) {
+        // EITHER MAY BE NULL, as .NET's: the kind refused first whatever they
+        // are, then the same string (two nulls too) is equal and one null is
+        // not.
+        bool ignoring = IgnoresCase(kind);
+        if ((object?)a == (object?)b) { return true; }
+        if (a == null || b == null) { return false; }
         // IGNORING CASE IS COMPARING UPPER CASE, as .NET's OrdinalIgnoreCase
         // does it: the two differ for the few characters whose upper case is
         // shared and lower case is not (K and the Kelvin sign, s and long s).
-        if (IgnoresCase(kind)) {
+        if (ignoring) {
             return StringComparer.OrdinalIgnoreCase.Equals(a, b);
         }
         return Compare(a, b) == 0;

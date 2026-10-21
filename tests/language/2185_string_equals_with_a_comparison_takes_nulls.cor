@@ -1,0 +1,33 @@
+// test: string_equals_with_a_comparison_takes_nulls
+// expect-exit: 0
+// expect-output:
+// False True False
+// True False True
+// True False
+// ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType')
+// ArgumentException: The string comparison type passed in is currently not supported. (Parameter 'comparisonType')
+//
+// string.Equals(a, b, StringComparison) takes null strings, as .NET's: the
+// kind refused first, then the same string (two nulls too) equal and one
+// null not; the instance form likewise.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static string? Maybe(int i) => i == 0 ? null : i == 1 ? "HTREE\\ROOT\\0" : "htree\\root\\0";
+
+    static int Main()
+    {
+        string? none = Maybe(0), upper = Maybe(1), lower = Maybe(2);
+        Console.WriteLine($"{string.Equals(none, "x", StringComparison.OrdinalIgnoreCase)} {string.Equals(none, none, StringComparison.Ordinal)} {string.Equals("x", none, StringComparison.Ordinal)}");
+        Console.WriteLine($"{string.Equals(upper, lower, StringComparison.OrdinalIgnoreCase)} {string.Equals(upper, lower, StringComparison.Ordinal)} {string.Equals(upper, upper, StringComparison.InvariantCulture)}");
+        Console.WriteLine($"{upper!.Equals(lower, StringComparison.OrdinalIgnoreCase)} {upper.Equals(none, StringComparison.Ordinal)}");
+        try { string.Equals(none, none, (StringComparison)9); }
+        catch (ArgumentException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+        try { string.Equals("a", null, (StringComparison)(-1)); }
+        catch (ArgumentException e) { Console.WriteLine(e.GetType().Name + ": " + e.Message); }
+        return 0;
+    }
+}
