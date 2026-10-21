@@ -563,7 +563,18 @@ public static class RegistryDeclarations
 
         foreach (EnumMember member in choice.EnumMembers)
         {
-            if (member.Value is Expr written && Fold.TryConst(written, out long folded))
+            // An earlier member by name, as the binder reads one.
+            (long, Prim)? Earlier(Expr e)
+            {
+                string? name = e switch
+                {
+                    NameExpr n => n.Name,
+                    MemberExpr { Target: NameExpr owner } x when owner.Name == choice.Name => x.Name,
+                    _ => null,
+                };
+                return name is not null && values.TryGetValue(name, out long earlier) ? (earlier, Prim.I64) : null;
+            }
+            if (member.Value is Expr written && Fold.TryConst(written, out long folded, Earlier))
             {
                 next = folded;
             }

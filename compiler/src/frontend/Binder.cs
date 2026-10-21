@@ -4477,9 +4477,21 @@ public sealed partial class Binder
                 // demanding a bare literal meant writing out the powers of two
                 // by hand. The folder that already exists for constants answers
                 // this exactly -- it is the same question.
+                // AN EARLIER MEMBER BY NAME, as C# allows: `All = Read | Write`
+                // reads the two before it, by its own name or the enum's.
                 if (m.Value != null)
                 {
-                    if (Fold.TryConst(m.Value, out long folded))
+                    (long, Prim)? Earlier(Expr e)
+                    {
+                        string? name = e switch
+                        {
+                            NameExpr n => n.Name,
+                            MemberExpr { Target: NameExpr owner } x when owner.Name == d.Name => x.Name,
+                            _ => null,
+                        };
+                        return name is not null && sym.EnumValues.TryGetValue(name, out long earlier) ? (earlier, sym.EnumUnderlying) : null;
+                    }
+                    if (Fold.TryConst(m.Value, out long folded, Earlier))
                     {
                         next = folded;
                     }

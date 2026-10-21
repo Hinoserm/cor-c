@@ -1,0 +1,97 @@
+// test: attributes_declared_and_equal_field_by_field
+// expect-exit: 0
+// expect-output:
+// made 3
+// True
+// False
+// True False
+// True False
+// True
+// True
+// True False
+// True False False
+// True
+// True
+// True False False
+// False True
+// True
+// True
+// 384 False True
+// True Property, Field
+// 32767
+// 7
+// True
+//
+// A program's attribute classes: System.Attribute, AttributeUsage and
+// AttributeTargets as .NET's, and Equals and GetHashCode field by field, an
+// array element by element, a double by its own Equals, the base's fields
+// too.
+// Expected output from .NET 10.
+
+using System;
+
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = false)]
+sealed class GateAttribute : Attribute
+{
+    public GateAttribute(string name) { Name = name; }
+    public string Name { get; }
+    public int Level { get; set; }
+}
+
+class MarkerAttribute : System.Attribute { }
+
+class TaggedAttribute : Attribute
+{
+    public int[] Lines;
+    public double Weight;
+    public TaggedAttribute(double weight, params int[] lines) { Weight = weight; Lines = lines; }
+}
+
+sealed class NamedTaggedAttribute : TaggedAttribute
+{
+    public string? Label;
+    public NamedTaggedAttribute(string? label, params int[] lines) : base(1.5, lines) { Label = label; }
+}
+
+[Gate("table", Level = 2)]
+class Table
+{
+    [Gate("read")]
+    [Marker]
+    public int Read() => 7;
+}
+
+static class Program
+{
+    static void Main()
+    {
+        GateAttribute g = new GateAttribute("made") { Level = 3 };
+        Console.WriteLine(g.Name + " " + g.Level);
+        Attribute a = g;
+        Console.WriteLine(a is GateAttribute);
+        Console.WriteLine(a.IsDefaultAttribute());
+        Console.WriteLine(a.Match(g) + " " + a.Match(new GateAttribute("other")));
+        Console.WriteLine(a.Equals(new GateAttribute("made") { Level = 3 }) + " " + a.Equals(new GateAttribute("made")));
+        Console.WriteLine(a.GetHashCode() == new GateAttribute("made") { Level = 3 }.GetHashCode());
+        Console.WriteLine(a.TypeId.Equals(typeof(GateAttribute)));
+        Console.WriteLine(new MarkerAttribute().Equals(new MarkerAttribute()) + " " + new MarkerAttribute().Equals(g));
+
+        TaggedAttribute t1 = new TaggedAttribute(double.NaN, 1, 2, 3), t2 = new TaggedAttribute(double.NaN, 1, 2, 3);
+        Console.WriteLine(t1.Equals(t2) + " " + t1.Equals(new TaggedAttribute(double.NaN, 1, 2)) + " " + t1.Equals(new TaggedAttribute(0.0, 1, 2, 3)));
+        Console.WriteLine(new TaggedAttribute(0.0).Equals(new TaggedAttribute(-0.0)));
+        Console.WriteLine(t1.GetHashCode() == t2.GetHashCode());
+        NamedTaggedAttribute n1 = new NamedTaggedAttribute("x", 4), n2 = new NamedTaggedAttribute("x", 4);
+        Console.WriteLine(n1.Equals(n2) + " " + n1.Equals(new NamedTaggedAttribute("y", 4)) + " " + n1.Equals(new NamedTaggedAttribute("x", 5)));
+        Console.WriteLine(n1.Equals(new TaggedAttribute(1.5, 4)) + " " + new NamedTaggedAttribute(null).Equals(new NamedTaggedAttribute(null)));
+        Console.WriteLine(n1.GetHashCode() == n2.GetHashCode());
+        Console.WriteLine(new NamedTaggedAttribute(null, 4).GetHashCode() == new NamedTaggedAttribute(null, 4).GetHashCode());
+
+        AttributeUsageAttribute u = new AttributeUsageAttribute(AttributeTargets.Field | AttributeTargets.Property);
+        Console.WriteLine((int)u.ValidOn + " " + u.AllowMultiple + " " + u.Inherited);
+        u.AllowMultiple = true;
+        Console.WriteLine(u.AllowMultiple + " " + u.ValidOn);
+        Console.WriteLine((int)AttributeTargets.All);
+        Console.WriteLine(new Table().Read());
+        Console.WriteLine(new MarkerAttribute() is Attribute);
+    }
+}

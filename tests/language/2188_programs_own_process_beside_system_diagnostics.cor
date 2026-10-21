@@ -1,0 +1,39 @@
+// test: programs_own_process_beside_system_diagnostics
+// expect-exit: 0
+// expect-output:
+// 3 True shell#7 2 init#1,shell#7
+// Process System.Diagnostics.Process
+// /bin/true
+//
+// A program's own class Process beside the class library's
+// System.Diagnostics.Process, as .NET has them apart: the library's was
+// global, and the program's clashed with it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+// A program's own Process, beside the class library's System.Diagnostics.Process.
+class Process
+{
+    public int Id;
+    public string Name;
+    public Process(int id, string name) { Id = id; Name = name; }
+    public override string ToString() => Name + "#" + Id;
+}
+
+static class Program
+{
+    static Process?[] Slots = new Process?[3];
+
+    static int Main()
+    {
+        List<Process> running = new List<Process> { new Process(1, "init"), new Process(7, "shell") };
+        Slots[1] = running[1];
+        Console.WriteLine($"{Slots.Length} {Slots[0] == null} {Slots[1]} {running.Count} {string.Join(",", running)}");
+        Console.WriteLine($"{typeof(Process).FullName} {typeof(System.Diagnostics.Process).FullName}");
+        System.Diagnostics.ProcessStartInfo info = new System.Diagnostics.ProcessStartInfo("/bin/true");
+        Console.WriteLine(info.FileName);
+        return 0;
+    }
+}
