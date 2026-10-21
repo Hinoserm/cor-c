@@ -23855,8 +23855,11 @@ public sealed partial class Binder
                     // and zero is not one. It is not IsReference only because
                     // that answers "is this definitely a pointer", and an
                     // object may be holding a long.
+                    // NOR A POINTER: a function pointer or a data one may be
+                    // null, as C# has it, an nint here though each is.
                     if (!other.IsReference && !other.IsNullableValue
-                        && other.Prim != Prim.Any && other.ParamName is null && !other.IsError)
+                        && other.Prim != Prim.Any && other.ParamName is null && !other.IsError
+                        && other.Function is null && !other.IsPointer)
                     {
                         Error(b, $"'{other}' is a value type and can never be null");
                     }

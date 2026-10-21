@@ -1559,7 +1559,10 @@ public sealed class Parser
             break;
         }
 
-        if (Seen(at).Kind is Tok.KwClass or Tok.KwInterface or Tok.KwStruct or Tok.KwEnum or Tok.KwDelegate)
+        // NOT `delegate*`: a function pointer's type, which a field, a
+        // property or a method may be of.
+        if (Seen(at).Kind is Tok.KwClass or Tok.KwInterface or Tok.KwStruct or Tok.KwEnum
+            || Seen(at).Kind == Tok.KwDelegate && Seen(at + 1).Kind != Tok.Star)
         {
             return true;
         }
