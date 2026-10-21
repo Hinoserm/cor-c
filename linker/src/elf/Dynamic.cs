@@ -176,6 +176,7 @@ public static partial class Linker
             inputs.Add(new Input("the initialisers", initializers));
             dyn.InitName = ModuleInitName;
         }
+        else if (!dyn.Shared) inputs.Add(new Input("the program's initialisers", ProgramInitializers(inputs, isLongMode)));
         Layout layout = new(loadAddress) { Dyn = dyn, LongMode = isLongMode };
         TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));

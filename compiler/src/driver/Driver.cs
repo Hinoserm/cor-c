@@ -1274,18 +1274,16 @@ public static class Driver
         // WHAT A MODULE SAYS ABOUT ITSELF (ModuleInfo): its aliases and
         // dependencies as its classes declare them, and the ring this image
         // of it is for; the link adds its name and stamp. And its
-        // initialisers, which only a loader runs.
+        // initialisers: a shared object's loader runs them, a program's entry
+        // before Main (Linker.ProgramInitializers), as .NET runs a module's
+        // before any of its code.
         List<string> moduleInfo = new(made.ModuleInfo);
         if (kernel is not null && ring >= 0) moduleInfo.Insert(0, "ring=" + ring);
         if (moduleInfo.Count > 0) obj.Sections.Add(ModuleInfo.Note(ModuleInfo.SectionName, moduleInfo));
         // Which kernel's declarations it was compiled against, for the link
         // to hold it to (Linker.LinkModule).
         if (kernel is not null) obj.Sections.AddRange(KernelExports.StampObject(kernel.Stamp, loaded: false).Sections);
-        if (module.Initializers.Count > 0)
-        {
-            if (!shared) return Fail("[ModuleInitializer] runs when a shared object is loaded, and this compile is not one (--shared, or --kernel for a module)");
-            obj.Sections.Add(ModuleInfo.Note(ModuleInfo.InitializerSection, module.Initializers));
-        }
+        if (module.Initializers.Count > 0) obj.Sections.Add(ModuleInfo.Note(ModuleInfo.InitializerSection, module.Initializers));
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("link-output");
 #endif

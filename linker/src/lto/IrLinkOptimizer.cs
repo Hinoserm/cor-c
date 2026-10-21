@@ -68,6 +68,10 @@ public static class IrLinkOptimizer
         // list -- and those field sites become, through symbols the link
         // defines at the end (DefineFieldSites). Their targets are roots.
         SortedSet<string> linkRoots = new(StringComparer.Ordinal);
+        // AND EVERY MODULE INITIALISER, which nothing in the IR calls: a
+        // function the link makes after this does -- a program's start, a
+        // shared object's DT_INIT (Linker.ProgramInitializers, Initializers).
+        linkRoots.UnionWith(ModuleInfo.Peek(inputs, ModuleInfo.InitializerSection));
         if (enabled && hints.Count > 0) foreach (LifetimeHints unit in hints.Values) linkRoots.UnionWith(unit.Helpers);
         if (hints.Values.Any(unit => unit.FieldSites.Count > 0)) { linkRoots.Add(LifetimeHints.FieldFreer); linkRoots.Add(LifetimeHints.FieldKeeper); }
         // And what regions call, wherever a regenerated unit may open one.

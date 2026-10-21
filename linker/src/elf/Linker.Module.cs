@@ -180,15 +180,42 @@ public static partial class Linker
     /// </summary>
     private static ObjectFile? Initializers(List<Input> inputs, bool longMode)
     {
-        List<string> initializers = ModuleInfo.Take(inputs.Select(input => (input.Name, input.Object)), ModuleInfo.InitializerSection);
+        List<string> initializers = InitializersDefined(inputs, out HashSet<string> defined);
         if (initializers.Count == 0) return null;
-        HashSet<string> defined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
-        foreach (string initializer in initializers)
-            if (!defined.Contains(initializer))
-                throw new LinkException(new[] { "module initializer '" + initializer + "' is not defined by any object" });
         List<string> calls = new();
         if (defined.Contains(Elf.SharedInitName)) calls.Add(Elf.SharedInitName);
         calls.AddRange(initializers);
+        return CallStub(ModuleInitName, calls, longMode);
+    }
+
+    /// <summary>The function a program's entry calls before Main: each module initialiser, or nothing (ProgramInitializers).</summary>
+    public const string ProgramInitName = "__corsac_program_init";
+
+    /// <summary>
+    /// [ModuleInitializer] METHODS IN A PROGRAM, which C# runs before any of
+    /// their module's code, and so before Main: a function of the link's
+    /// making that the entry stub calls whether or not any unit has one
+    /// (Lowering.EmitRunMain) -- a call to each in link order and a return,
+    /// or the return alone. No __corsac_init first, as a shared object's has
+    /// (Initializers): a program's start has made its statics roots already.
+    /// </summary>
+    private static ObjectFile ProgramInitializers(List<Input> inputs, bool longMode)
+        => CallStub(ProgramInitName, InitializersDefined(inputs, out _), longMode);
+
+    /// <summary>The initialisers every unit names (taken from the inputs), each one some object defines.</summary>
+    private static List<string> InitializersDefined(List<Input> inputs, out HashSet<string> defined)
+    {
+        List<string> initializers = ModuleInfo.Take(inputs.Select(input => (input.Name, input.Object)), ModuleInfo.InitializerSection);
+        defined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
+        foreach (string initializer in initializers)
+            if (!defined.Contains(initializer))
+                throw new LinkException(new[] { "module initializer '" + initializer + "' is not defined by any object" });
+        return initializers;
+    }
+
+    /// <summary>A function named `name` that calls each of `calls` in turn and returns, the stack kept sixteen-byte aligned in long mode.</summary>
+    private static ObjectFile CallStub(string name, List<string> calls, bool longMode)
+    {
         ObjectFile stub = new();
         Section text = new(".text", SectionKind.Code) { Align = 16 };
         if (longMode) text.Bytes.AddRange(new byte[] { 0x48, 0x83, 0xEC, 0x08 });          // sub rsp, 8
@@ -201,7 +228,7 @@ public static partial class Linker
         if (longMode) text.Bytes.AddRange(new byte[] { 0x48, 0x83, 0xC4, 0x08 });          // add rsp, 8
         text.Bytes.Add(0xC3);                                                                // ret
         stub.Sections.Add(text);
-        stub.Symbols.Add(new Symbol { Name = ModuleInitName, Section = text, Offset = 0, Size = text.Bytes.Count, IsFunction = true });
+        stub.Symbols.Add(new Symbol { Name = name, Section = text, Offset = 0, Size = text.Bytes.Count, IsFunction = true });
         return stub;
     }
 }

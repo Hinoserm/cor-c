@@ -72,6 +72,18 @@ public static class ModuleInfo
     /// </summary>
     public static List<string> Take(IEnumerable<(string Name, ObjectFile Object)> inputs, string name)
     {
+        List<string> entries = Peek(inputs, name);
+        foreach ((string _, ObjectFile obj) in inputs) obj.Sections.RemoveAll(section => section.Name == name);
+        return entries;
+    }
+
+    /// <summary>
+    /// The same entries, the notes left where they are: what the link's
+    /// optimiser keeps as roots before the link takes them (the module
+    /// initialisers, which only a function the link makes calls).
+    /// </summary>
+    public static List<string> Peek(IEnumerable<(string Name, ObjectFile Object)> inputs, string name)
+    {
         List<string> entries = new();
         HashSet<string> seen = new(StringComparer.Ordinal);
         foreach ((string what, ObjectFile obj) in inputs)
@@ -81,7 +93,6 @@ public static class ModuleInfo
                 try { foreach (string entry in Entries(section.Content())) if (seen.Add(entry)) entries.Add(entry); }
                 catch (ElfFormatException error) { throw new ElfFormatException(what + ": " + error.Message); }
             }
-            obj.Sections.RemoveAll(section => section.Name == name);
         }
         return entries;
     }

@@ -192,11 +192,6 @@ public static class ObjectLinkCommand
         // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's
         // drain stopped making its messages.
         if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
-        // A MODULE INITIALISER IS RUN BY A LOADER, which a static image has
-        // none of: the compiler refuses one in a program, and a unit
-        // compiled into a library and linked into a program is refused here.
-        if (!shared && inputs.Any(input => input.Item2.Sections.Any(section => section.Name == ModuleInfo.InitializerSection)))
-            return Fail("[ModuleInitializer] runs when a shared object is loaded, and this image is not one");
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
         // A KERNEL WITH EXPORTS IS NOT CLOSED, whatever its address says:
         // what a module calls, subclasses or stores into is outside it, so

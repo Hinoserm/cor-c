@@ -1346,6 +1346,12 @@ public sealed partial class Lowering
         // and a bounds check in the second must not jump into the first.
         _boundsFail = null;
 
+        // THE MODULE INITIALISERS RUN FIRST, as .NET runs a module's before
+        // any of its code: every unit's [ModuleInitializer] methods, in link
+        // order, through a function the link makes -- the return alone when
+        // no unit has one (Linker.ProgramInitializers).
+        e.Call(Corsac.Lang.Elf.Linker.ProgramInitName, IrType.Void);
+
         // MAIN'S OWN TYPE IS TOUCHED BEFORE MAIN RUNS, which is what C# does
         // and what the three ordinary triggers cannot do: a static method of a
         // type reached from another method of that type is skipped, because
@@ -1472,11 +1478,12 @@ public sealed partial class Lowering
 
     /// <summary>
     /// [ModuleInitializer] METHODS, which C# runs when the assembly holding
-    /// them is loaded: here, a shared object -- a kernel module registering
-    /// its drivers, above all. Each is required, so it is compiled whether
-    /// or not anything calls it, and named in the module's Initializers; the
-    /// driver writes them into a note and the link makes DT_INIT call them
-    /// after __corsac_init (Linker.Initializers), whichever unit holds that.
+    /// them is loaded: a shared object's -- a kernel module registering its
+    /// drivers, above all -- or a program's, before Main. Each is required,
+    /// so it is compiled whether or not anything calls it, and named in the
+    /// module's Initializers; the driver writes them into a note, and the
+    /// link makes DT_INIT call them after __corsac_init (Linker.Initializers),
+    /// or the program's entry before Main (Linker.ProgramInitializers).
     /// C#'s rules for one: static, no parameters, returning nothing, not
     /// generic and in no generic type.
     /// </summary>
