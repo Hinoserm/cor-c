@@ -429,18 +429,12 @@ static class Interop
     /// `isDirectory` says the path was being used as a directory, which is the
     /// one thing the errno cannot tell us and which decides between
     /// FileNotFoundException and DirectoryNotFoundException -- the same
-    /// decision .NET makes at the same place. A null path is a failure on a
-    /// descriptor, with no name to give.
+    /// decision .NET's Interop makes. A null path is a failure on a
+    /// descriptor, with no name to give. WHETHER A MISSING FILE'S DIRECTORY IS
+    /// MISSING TOO is System.IO's to ask, a library above this one, as .NET's
+    /// file opening asks it (IoErrno).
     public static Exception GetExceptionForIoErrno(int error, string? path, bool isDirectory)
     {
-        // A MISSING FILE IN A MISSING DIRECTORY IS A MISSING DIRECTORY, as
-        // .NET has it: the file is blamed only when the directory it names
-        // exists.
-        if ((error == Err.NoEnt || error == -Err.NoEnt) && !isDirectory && path != null
-            && !Directory.Exists(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path)) ?? ""))
-        {
-            isDirectory = true;
-        }
         return GetExceptionForIoErrnoOnHandle(error, path, isDirectory);
     }
 

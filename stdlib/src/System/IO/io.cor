@@ -383,7 +383,7 @@ class FileStream : Stream
         if (fd < 0)
         {
             if (fd == -Err.IsDir) fd = -(int)Err.Access;
-            throw Interop.GetExceptionForIoErrno(fd, FileSystem.Full(path), (flags & O.Create) != 0);
+            throw IoErrno.For(fd, FileSystem.Full(path), (flags & O.Create) != 0);
         }
         if ((flags & (O.Write | O.ReadWrite)) == 0)
         {
@@ -391,7 +391,7 @@ class FileStream : Stream
             if (Os.Fstat(fd, st) >= 0 && Stat.IsDirMode(Stat.Mode(st)))
             {
                 Os.Close(fd);
-                throw Interop.GetExceptionForIoErrno((int)Err.Access, FileSystem.Full(path), true);
+                throw IoErrno.For((int)Err.Access, FileSystem.Full(path), true);
             }
         }
         return fd;
@@ -411,7 +411,7 @@ class FileStream : Stream
         {
             Os.Close(_fd);
             _fd = -1;
-            throw Interop.GetExceptionForIoErrno((int)Err.Again, FileSystem.Full(path));
+            throw IoErrno.For((int)Err.Again, FileSystem.Full(path));
         }
     }
 
@@ -1921,7 +1921,7 @@ partial static class Directory
         }
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, path, true);
+            throw IoErrno.For(r, path, true);
         }
     }
 
@@ -2011,7 +2011,7 @@ partial static class Directory
         string[]? names = Os.ListDir(path, out error);
         if (names == null)
         {
-            throw Interop.GetExceptionForIoErrno(error, FileSystem.Full(path), true);
+            throw IoErrno.For(error, FileSystem.Full(path), true);
         }
         List<string> files = new List<string>();
         for (int i = 0; i < names.Length; i++)
@@ -2561,7 +2561,7 @@ partial static class File
         {
             r = -(int)Err.Access;
         }
-        throw Interop.GetExceptionForIoErrno(r, full);
+        throw IoErrno.For(r, full);
     }
 
     /// Moves a file, and throws IOException if `to` already exists, as
@@ -2581,7 +2581,7 @@ partial static class File
             string missing = FileSystem.Full(from);
             throw new FileNotFoundException("Could not find file '" + missing + "'.", missing);
         }
-        if (!overwrite && Os.Exists(to)) throw Interop.GetExceptionForIoErrno((int)Err.Exist, FileSystem.Full(to));
+        if (!overwrite && Os.Exists(to)) throw IoErrno.For((int)Err.Exist, FileSystem.Full(to));
         int r = Os.Rename(from, to);
         if (r < 0)
         {
@@ -2594,7 +2594,7 @@ partial static class File
             {
                 blamed = FileSystem.Full(from);
             }
-            throw Interop.GetExceptionForIoErrno(r, blamed);
+            throw IoErrno.For(r, blamed);
         }
     }
 
@@ -2603,7 +2603,7 @@ partial static class File
         int r = Os.Chmod(path, (int)mode);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
+            throw IoErrno.For(r, FileSystem.Full(path));
         }
     }
 
@@ -2614,7 +2614,7 @@ partial static class File
         int r = Os.Stat(path, st);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
+            throw IoErrno.For(r, FileSystem.Full(path));
         }
         return (UnixFileMode)(int)(Stat.Mode(st) & 0xFFF);
     }
@@ -2740,6 +2740,28 @@ static unsafe class LocalZoneQuestions
     }
 }
 
+/// WHAT SYSTEM.IO THROWS FOR AN ERRNO ON A PATH: Interop's, with a missing
+/// file in a missing directory taken for a missing directory, as .NET's
+/// file opening judges it -- the file is blamed only when the directory it
+/// names exists. Here and not in Interop, whose library is below this one.
+static class IoErrno
+{
+    public static Exception For(int error, string? path)
+    {
+        return For(error, path, false);
+    }
+
+    public static Exception For(int error, string? path, bool isDirectory)
+    {
+        if ((error == Err.NoEnt || error == -Err.NoEnt) && !isDirectory && path != null
+            && !Directory.Exists(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path)) ?? ""))
+        {
+            isDirectory = true;
+        }
+        return Interop.GetExceptionForIoErrnoOnHandle(error, path, isDirectory);
+    }
+}
+
 /// A file or directory by its name, with what stat says about it, as .NET
 /// has it. The extra members beyond .NET's -- OwnerId, GroupId, LinkCount,
 /// Inode, IsSymbolicLink, IsDirectoryEntry -- are the few things a Unix
@@ -2843,7 +2865,7 @@ abstract class FileSystemInfo
             int r = Os.Chmod(_path, (int)value);
             if (r < 0)
             {
-                throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(_path));
+                throw IoErrno.For(r, FileSystem.Full(_path));
             }
             _fresh = false;
         }
@@ -3164,7 +3186,7 @@ class DirectoryInfo : FileSystemInfo
         string[]? names = Os.ListDir(_path, out error);
         if (names == null)
         {
-            throw Interop.GetExceptionForIoErrno(error, FileSystem.Full(_path), true);
+            throw IoErrno.For(error, FileSystem.Full(_path), true);
         }
         List<string> kept = new List<string>();
         for (int i = 0; i < names.Length; i++)
@@ -3367,7 +3389,7 @@ partial static class File
             {
                 to.Dispose();
                 from.Dispose();
-                throw Interop.GetExceptionForIoErrno(cut, FileSystem.Full(destination));
+                throw IoErrno.For(cut, FileSystem.Full(destination));
             }
         }
         from.CopyTo(to);
@@ -3386,7 +3408,7 @@ partial static class File
         FileInfo f = new FileInfo(path);
         if (!Os.Exists(path))
         {
-            throw Interop.GetExceptionForIoErrno((int)Err.NoEnt, FileSystem.Full(path));
+            throw IoErrno.For((int)Err.NoEnt, FileSystem.Full(path));
         }
         return f.Attributes;
     }
@@ -3450,7 +3472,7 @@ partial static class File
                        : Os.Utimensat(path, 0, -1, seconds, nanos, followLinks);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
+            throw IoErrno.For(r, FileSystem.Full(path));
         }
     }
 
@@ -3495,7 +3517,7 @@ partial static class File
         int r = Os.Link(pathToTarget, path);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path));
+            throw IoErrno.For(r, FileSystem.Full(path));
         }
     }
 
@@ -3505,7 +3527,7 @@ partial static class File
         int r = Os.Symlink(target, path);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, path);
+            throw IoErrno.For(r, path);
         }
         return new FileInfo(path);
     }
@@ -3607,7 +3629,7 @@ partial static class Directory
             }
             if (r != -Err.Exist)
             {
-                throw Interop.GetExceptionForIoErrno(r, full, true);
+                throw IoErrno.For(r, full, true);
             }
         }
         throw new IOException("A unique directory could not be created in " + root);
@@ -3623,7 +3645,7 @@ partial static class Directory
         int r = Os.Rename(source, destination);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(source), true);
+            throw IoErrno.For(r, FileSystem.Full(source), true);
         }
     }
 
@@ -3660,7 +3682,7 @@ partial static class Directory
         int r = Os.Rmdir(path);
         if (r < 0)
         {
-            throw Interop.GetExceptionForIoErrno(r, FileSystem.Full(path), true);
+            throw IoErrno.For(r, FileSystem.Full(path), true);
         }
     }
 
