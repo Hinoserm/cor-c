@@ -1,0 +1,23 @@
+// test: multicast_delegates_get_their_delegate_type
+// expect-exit: 0
+// expect-output:
+// Func`2 True True xb yb
+//
+// A multicast delegate over references -- combined where it is used, and in
+// a generic class's shared code -- is of its delegate type to GetType, as
+// .NET's, though the shared code made it of the canonical multicast class.
+// Expected output from .NET 10.
+
+using System;
+class Repo<T> { public Func<T, T> Both(Func<T, T> a, Func<T, T> b) => a + b; }
+static class P
+{
+    static int Main()
+    {
+        Func<string, string> a = s => s + "a", b = s => s + "b";
+        Func<string, string> both = a + b;
+        Func<string, string> shared = new Repo<string>().Both(a, b);
+        Console.WriteLine(both.GetType().Name + " " + (both.GetType() == typeof(Func<string, string>)) + " " + (shared.GetType() == typeof(Func<string, string>)) + " " + both("x") + " " + shared("y"));
+        return 0;
+    }
+}

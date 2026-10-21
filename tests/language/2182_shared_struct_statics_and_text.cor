@@ -1,0 +1,36 @@
+// test: shared_struct_statics_and_text
+// expect-exit: 0
+// expect-output:
+// String[] String[]
+// concat Holder<String>(x) Holder<Exception>(System.Exception: e) String[]
+// Holder<String>(x) Holder<String>(x) Holder<String>(x)
+//
+// A shared struct's statics (ArraySegment<string>.Empty, Holder<T>.Of and
+// .Empty) and its ToString -- concatenated, boxed, interpolated, joined --
+// answer for the instantiation named, not for object.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+struct Holder<T>
+{
+    public T Item;
+    public Holder(T item) { Item = item; }
+    public override string ToString() => "Holder<" + typeof(T).Name + ">(" + Item + ")";
+    public static Holder<T> Of(T item) => new Holder<T>(item);
+    public static T[] Empty() => new T[0];
+}
+
+static class P
+{
+    static int Main()
+    {
+        Console.WriteLine(ArraySegment<string>.Empty.Array!.GetType().Name + " " + new ArraySegment<string>(new[] { "a" }).ToArray().GetType().Name);
+        Holder<string> h = new("x");
+        Console.WriteLine("concat " + h + " " + Holder<Exception>.Of(new Exception("e")) + " " + Holder<string>.Empty().GetType().Name);
+        object boxed = h;
+        Console.WriteLine(boxed.ToString() + " " + $"{h}" + " " + string.Join(",", new List<Holder<string>> { h }));
+        return 0;
+    }
+}
