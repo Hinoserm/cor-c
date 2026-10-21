@@ -1195,6 +1195,10 @@ public sealed class Inline : IParallelModulePass
         // And what the objects linked in beside this one name (--with): an
         // entry stub's write to a static, its call into the program.
         foreach (string name in m.ObjectNames) Reach(name);
+        // AND EVERY MODULE INITIALISER (Module.Initializers): nothing in the
+        // IR calls one -- a function the link makes does, the program's
+        // start's or a shared object's DT_INIT.
+        foreach (string initializer in m.Initializers) Reach(initializer);
         // A COROUTINE'S FRAME IS LAID OUT AFTER THE OPTIMISER (AsyncTransform),
         // which writes its size into the item its frame names (SizeSymbol),
         // clears the word saying whether its machine may start in its

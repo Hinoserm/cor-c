@@ -1,0 +1,46 @@
+// test: module_initializers_run_before_main
+// expect-exit: 0
+// expect-output:
+// init;main;
+// 1
+// True
+//
+// A program's [ModuleInitializer] methods run before Main, as .NET runs a
+// module's initialisers before any of its code: each once, the type it is
+// in touched as any call into it would.
+// Expected output from .NET 10.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Registry
+{
+    public static string Order = "";
+    public static int Count;
+    public static bool Hooked;
+}
+
+static class Other
+{
+    [ModuleInitializer]
+    internal static void Hook() { Registry.Hooked = true; }
+}
+
+static class Program
+{
+    [ModuleInitializer]
+    internal static void Register()
+    {
+        Registry.Order += "init;";
+        Registry.Count++;
+    }
+
+    static int Main()
+    {
+        Registry.Order += "main;";
+        Console.WriteLine(Registry.Order);
+        Console.WriteLine(Registry.Count);
+        Console.WriteLine(Registry.Hooked);
+        return 0;
+    }
+}
