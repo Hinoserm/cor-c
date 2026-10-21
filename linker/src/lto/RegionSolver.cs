@@ -565,6 +565,10 @@ public static class RegionSolver
         {
             // For a report: what the link holds before any region is solved.
             if (_report is not null) Log($"heap before the regions: {GC.GetTotalMemory(true) >> 20} MB live");
+            // A diagnostic (+memsteps): what each step below leaves live, for
+            // a link near a 32-bit process's ceiling.
+            bool steps = _report?.Contains("+memsteps") == true;
+            void Step(string what) { if (steps) Log($"heap after {what}: {GC.GetTotalMemory(true) >> 20} MB live, {_clock.ElapsedMilliseconds} ms"); }
             NewObject(-1, -1, -1, 0);                               // Global
             _siteNumber.Add(-1);
             int count = _functions.Count;
@@ -588,6 +592,7 @@ public static class RegionSolver
                 }
                 sites += _functions[f].Sites.Length;
             }
+            Step($"{count} functions' copies and {sites} sites");
             // A diagnostic (+regionsoff): given up before any graph is made.
             if (_report?.Contains("+regionsoff") == true)
                 return GiveUp("regions off (+regionsoff)");
@@ -607,6 +612,7 @@ public static class RegionSolver
                     if (isVirtual && those is { Length: > 0 }) keys[f][k] = call.Callee + "@" + u;
                 }
             }
+            Step("every call's targets");
             // CALLED FROM WHERE NOBODY FOLLOWS, with anything: the entry,
             // what code outside the IR names, every function whose address
             // is taken.
@@ -641,14 +647,13 @@ public static class RegionSolver
             // call's targets narrowed before the graphs and the judge's
             // callers are built from them (+typesoff: every override).
             // Every call's targets before, for what a site's own stamp runs (TargetsOnSite).
+            Step("what is reachable");
             int[]?[][] unpruned = targets.Select(calls => (int[]?[])calls.Clone()).ToArray();
             // In a method of its own: past it nothing holds the pass's working
             // sets -- twenty million values when it gives up -- which held
             // through the graphs below ran a 32-bit linker out of memory.
             if (_report?.Contains("+typesoff") != true) NarrowByReceiverTypes(targets, keys, rooted, typedThis, reached);
-            for (int f = 0; f < count; f++)
-                for (int k = 0; k < targets[f].Length; k++)
-                    if (targets[f][k] is { } those) foreach (int g in those) { Beneath(f, g); _named[f].Add(g); }
+            Step("receiver types");
             bool[] wanted = new bool[count];
             for (int f = 0; f < count; f++) wanted[f] = _functions[f].MayBeBoundary || _functions[f].Loops.Count > 0;
             int[] siteFunction = new int[sites];
@@ -661,6 +666,7 @@ public static class RegionSolver
                 NoReference = _report?.Contains("+norefoff") == true ? null : (site, at) => SiteHoldsNoReference(siteFunction[site], site - siteBase[siteFunction[site]], at),
                 TargetsOn = _report?.Contains("+classoff") == true ? null : TargetsOnSite(targets, unpruned, keys, siteFunction, siteBase),
             };
+            Step("the escape graphs' tables");
             if (_report?.FirstOrDefault(w => w.StartsWith("+why=", StringComparison.Ordinal)) is { } whyOf)
             {
                 // Several functions at once, by parts of their names split by '|':
@@ -697,6 +703,17 @@ public static class RegionSolver
             _escape.WidenFirst = _report?.Contains("+widefirst") == true;
             if (_report is not null && _report.Contains("+cycles")) foreach (int most in new[] { 256, 64, 16, 4 }) _escape.ReportCycles(most);
             _escape.Run();
+            // THE CALLS BETWEEN FUNCTIONS, for the judge alone, made once the
+            // graphs are done: a set of callees, one of callers and one of the
+            // calls named per function, an entry each for millions of targets
+            // -- most of the 600 MB this step adds for the compiler's own
+            // build -- held through every graph, which nothing there reads,
+            // ran a 32-bit linker out of memory solving them. Made in the same
+            // order as before, so each set's order is the same.
+            for (int f = 0; f < count; f++)
+                for (int k = 0; k < targets[f].Length; k++)
+                    if (targets[f][k] is { } those) foreach (int g in those) { Beneath(f, g); _named[f].Add(g); }
+            Step("callers and callees");
             Log($"escape graphs: {count} functions, {sites} sites, {_escape.Applied} summaries applied, largest cycle {_escape.LargestCycle}, "
                 + $"{_escape.Unfollowed} not followed, {_escape.Fallbacks} unified past their bound, {_escape.PoolComponents} past it given {_escape.PoolDrawn} more from the pool ({_escape.InclusionPool} left of the last round's), {_escape.Work} carried, global {_escape.GlobalByUnknown} by the unknown object + {_escape.GlobalByRoots} by roots, unseen {_escape.UnseenBySummaries} by summaries + {_escape.UnseenByRoots} by roots ({_escape.UnknownApplied} unknown summaries applied), {_clock.ElapsedMilliseconds} ms");
             return Judge();
