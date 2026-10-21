@@ -607,14 +607,26 @@ public sealed partial class Lowering
                 if (t.Decl?.FromLibrary == true && !_library) continue;
                 if (t.MembersPending) continue;
                 // Another shared object's; and, when this is one library of
-                // several, an instantiation is reached rather than rooted.
+                // several, an instantiation is reached rather than rooted --
+                // a tuple's shape too, which its declaration does not call one:
+                // one only another library's signature named, (BigInteger,
+                // BigInteger), rooted here had the runtime's library call that
+                // library's BigInteger.ToString, a name from above.
                 if ((t.Decl?.Elsewhere == true && !t.Methods.Any(method => method.Decl?.OwnedImplementation == true))
-                    || (PartOfALibrary && t.Decl?.Specialised == true))
+                    || (PartOfALibrary && (t.Decl?.Specialised == true || IsTupleShape(t))))
                 {
                     continue;
                 }
                 foreach (MethodSymbol m in t.Methods.Where(m => _library || PartOfALibrary || m.Static))
                 {
+                    // A GENERIC METHOD'S COPY (MemberDecl.LocalCopy) is an
+                    // instantiation too, reached rather than rooted in one
+                    // library of several: Array.Empty<PointF>, made because
+                    // another library's declaration named it, rooted here had
+                    // the runtime's library make a PointF[] -- and call
+                    // PointF's members, names from above. A consumer makes
+                    // its own copy, as it always has.
+                    if (PartOfALibrary && m.Decl is MemberDecl { LocalCopy: true }) continue;
                     Require(m);
                 }
                 if ((_library || PartOfALibrary) && t.Decl?.Elsewhere != true)
@@ -631,7 +643,8 @@ public sealed partial class Lowering
                 // units, the unit whose part comes first (Elsewhere: the
                 // first is another unit's), or two units of one link both
                 // defined t_Os.
-                if ((_library || PartOfALibrary) && t.Decl is { Canon: null, Specialised: false, Elsewhere: false } && t.Decl.TypeParams.Count == 0)
+                // NOT A TUPLE'S SHAPE: an instantiation, whoever makes one owns it.
+                if ((_library || PartOfALibrary) && t.Decl is { Canon: null, Specialised: false, Elsewhere: false } && t.Decl.TypeParams.Count == 0 && !IsTupleShape(t))
                 {
                     if (t.Kind == TypeKind.Interface)
                     {

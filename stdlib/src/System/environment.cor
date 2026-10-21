@@ -332,7 +332,9 @@ static partial class Environment
         return directory.EndsWith("/") ? directory + name : directory + "/" + name;
     }
 
-    /// A small file's text, or null when it cannot be read.
+    /// A small file's text, or null when it cannot be read. DECODED WHOLE,
+    /// once read: a character whose bytes a read split was two halves when
+    /// each read was decoded on its own.
     static string? ReadSmallFile(string path)
     {
         int fd = Os.Open(path, 0);
@@ -341,18 +343,24 @@ static partial class Environment
             return null;
         }
         byte[] buffer = new byte[4096];
-        string text = "";
+        int have = 0;
         while (true)
         {
-            int got = Os.Read(fd, buffer, 0, buffer.Length);
+            if (have == buffer.Length)
+            {
+                byte[] wider = new byte[buffer.Length * 2];
+                Array.Copy(buffer, wider, have);
+                buffer = wider;
+            }
+            int got = Os.Read(fd, buffer, have, buffer.Length - have);
             if (got <= 0)
             {
                 break;
             }
-            text = text + System.Text.Encoding.UTF8.GetString(buffer, 0, got);
+            have = have + got;
         }
         Os.Close(fd);
-        return text;
+        return System.Text.Encoding.UTF8.GetString(buffer, 0, have);
     }
 
     /// Every missing directory along the path, outermost first.
@@ -390,11 +398,12 @@ static partial class Environment
                 string? user = GetEnvironmentVariable("USER");
                 return user == null ? "" : user;
             }
-            string[] lines;
-            try { lines = System.IO.File.ReadAllLines("/etc/passwd"); }
-            catch (Exception) { return ""; }
+            // READ BY THE RUNTIME'S OWN CALLS (ReadSmallFile): File is
+            // System.IO's, a library above this one.
+            string? passwd = ReadSmallFile("/etc/passwd");
+            if (passwd == null) return "";
             string wanted = uid.ToString();
-            foreach (string line in lines)
+            foreach (string line in passwd.Split('\n'))
             {
                 // name:password:uid:gid:...
                 int first = line.IndexOf(':');
