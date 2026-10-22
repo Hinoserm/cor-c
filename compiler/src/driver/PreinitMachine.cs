@@ -48,8 +48,22 @@ public sealed class PreinitMachine : Preinit.IMachine
 
     public void Run(PreinitWorld world, string routine)
     {
-        Index(world);
-        Call(world, routine, System.Array.Empty<Val>(), 0);
+        // THE WORLD'S TARGET WHILE ITS ROUTINES ARE READ AND RUN, as
+        // UnitBackend sets it for a unit it makes again. A routine's IR is
+        // verified as it is decoded (IrFunctionCodec), against the word of
+        // the target in force, and the link reads the preinit notes before it
+        // knows the long mode it lays out by: an x86-64 image's initialisers
+        // were checked as x86's, and the store of a new object's header --
+        // eight bytes, an I64 address -- was refused ("operand 0 is I64,
+        // expected I32"), and the link with it.
+        Corsac.Lang.Target was = Corsac.Lang.Target.Current;
+        Corsac.Lang.Target.Current = world.LongMode ? Corsac.Lang.Target.X86_64 : Corsac.Lang.Target.X86;
+        try
+        {
+            Index(world);
+            Call(world, routine, System.Array.Empty<Val>(), 0);
+        }
+        finally { Corsac.Lang.Target.Current = was; }
     }
 
     /// <summary>Where each routine's IR is, over the world's inputs, once a world.</summary>
