@@ -1,0 +1,84 @@
+// test: tuples_conversions_operators_program
+// expect-exit: 0
+// expect-output:
+// 1 7 4 (1, 7, 4) 17 p2
+// 21 p2 True True True
+// b True 1,5
+// n5 6 n5 ValueTuple`2
+// 21.5C 25.5C 21.5 70.7F True True -21.5C 25.5C 10C
+// not both either !s True True
+//
+// A whole small program of tuples and operators: named tuple results
+// deconstructed into new and existing variables and discards, swaps, tuple
+// equality, tuples as dictionary keys, with on a tuple, a conversion to
+// differently named elements; a struct's implicit and explicit conversions,
+// comparison and arithmetic operators, ++, IComparable for Max and OrderBy
+// over implicitly converted literals; a class's true/false operators
+// driving && and || with its & and |. Every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+readonly struct Celsius : IComparable<Celsius>
+{
+    public readonly double Degrees;
+    public Celsius(double d) { Degrees = d; }
+    public static implicit operator Celsius(double d) => new(d);
+    public static explicit operator double(Celsius c) => c.Degrees;
+    public static explicit operator Fahrenheit(Celsius c) => new(c.Degrees * 9 / 5 + 32);
+    public static bool operator <(Celsius a, Celsius b) => a.Degrees < b.Degrees;
+    public static bool operator >(Celsius a, Celsius b) => a.Degrees > b.Degrees;
+    public static bool operator <=(Celsius a, Celsius b) => a.Degrees <= b.Degrees;
+    public static bool operator >=(Celsius a, Celsius b) => a.Degrees >= b.Degrees;
+    public static Celsius operator +(Celsius a, Celsius b) => new(a.Degrees + b.Degrees);
+    public static Celsius operator -(Celsius a) => new(-a.Degrees);
+    public static Celsius operator ++(Celsius a) => new(a.Degrees + 1);
+    public int CompareTo(Celsius other) => Degrees.CompareTo(other.Degrees);
+    public override string ToString() => Degrees + "C";
+}
+
+readonly struct Fahrenheit { public readonly double Degrees; public Fahrenheit(double d) { Degrees = d; } public override string ToString() => Degrees + "F"; }
+
+sealed class Gate
+{
+    public bool Open;
+    public static bool operator true(Gate g) => g.Open;
+    public static bool operator false(Gate g) => !g.Open;
+    public static Gate operator &(Gate a, Gate b) => new() { Open = a.Open && b.Open };
+    public static Gate operator |(Gate a, Gate b) => new() { Open = a.Open || b.Open };
+}
+
+static class Program
+{
+    static (int Min, int Max, double Mean) Stats(IEnumerable<int> xs) => (xs.Min(), xs.Max(), xs.Average());
+    static (string, int) Pair() => ("p", 2);
+
+    static int Main()
+    {
+        var s = Stats(new[] { 4, 1, 7 });
+        var (min, max, _) = s;
+        (int lo, int hi) = (min, max);
+        Console.WriteLine(s.Min + " " + s.Max + " " + s.Mean + " " + s + " " + lo + hi + " " + Pair().Item1 + Pair().Item2);
+        int a = 1, b = 2;
+        (a, b) = (b, a);
+        string word; int count;
+        (word, count) = Pair();
+        Console.WriteLine(a + "" + b + " " + word + count + " " + ((1, "x") == (1, "x")) + " " + ((1, 2) != (1, 3)) + " " + (s == (1, 7, 4.0)));
+        var dict = new Dictionary<(int, int), string> { [(0, 1)] = "a", [(2, 3)] = "b" };
+        Console.WriteLine(dict[(2, 3)] + " " + dict.ContainsKey((0, 1)) + " " + string.Join(",", dict.Keys.Select(k => k.Item1 + k.Item2)));
+        var named = (Name: "n", Value: 5);
+        var renamed = named with { Value = 6 };
+        (string Label, int) unnamedSecond = named;
+        Console.WriteLine(named.Name + named.Value + " " + renamed.Value + " " + unnamedSecond.Label + unnamedSecond.Item2 + " " + named.GetType().Name);
+        Celsius c = 21.5;
+        Celsius warmer = c + 3;
+        warmer++;
+        double raw = (double)c;
+        Console.WriteLine(c + " " + warmer + " " + raw + " " + (Fahrenheit)c + " " + (c < warmer) + " " + (warmer >= c) + " " + (-c) + " " + new[] { warmer, c, (Celsius)(-5.0) }.Max() + " " + new List<Celsius> { 30, 10, 20 }.OrderBy(x => x).First());
+        var open = new Gate { Open = true }; var shut = new Gate();
+        Console.WriteLine((open && shut ? "both" : "not both") + " " + (open || shut ? "either" : "neither") + " " + (shut ? "s" : "!s") + " " + ((open & open).Open) + " " + ((shut | open).Open));
+        return 0;
+    }
+}
