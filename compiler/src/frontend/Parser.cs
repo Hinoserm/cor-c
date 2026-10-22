@@ -1936,6 +1936,14 @@ public sealed class Parser
                     decl.Members.Add(hoisted);
                 }
                 _hoisted.Clear();
+                // And the field a property's accessors name `field` (ParseProperty).
+                foreach (FieldDecl backing in _backingFields)
+                {
+                    backing.Scope = _fileScope;
+                    backing.Namespace = _namespace;
+                    decl.Members.Add(backing);
+                }
+                _backingFields.Clear();
 
                 // `const int A = 0, B = 1;` is several fields written once;
                 // the extras arrive with the first and become members here,
@@ -3776,7 +3784,7 @@ public sealed class Parser
             Expect(Tok.Semi, "';' after an expression body");
             body = new Block { Line = at.Line, Col = at.Col };
             body.WritableStatements.Add(m.Returns is null or { Name: "void", ArrayRank: 0, PointerDepth: 0 }
-                ? new ExprStmt { Expr = value, Line = at.Line, Col = at.Col }
+                ? Statement(value, at)
                 : new ReturnStmt { Value = value, Line = at.Line, Col = at.Col });
         }
         else
@@ -3920,7 +3928,7 @@ public sealed class Parser
                 Expr done = ReadBodyExpression();
                 Expect(Tok.Semi, "';' after an expression-bodied accessor");
                 body = new Block { Line = bodyAt.Line, Col = bodyAt.Col };
-                body.WritableStatements.Add(new ExprStmt { Expr = done, Line = bodyAt.Line, Col = bodyAt.Col });
+                body.WritableStatements.Add(Statement(done, bodyAt));
             }
             else
             {
@@ -4013,8 +4021,25 @@ public sealed class Parser
 
         Expect(Tok.LBrace, "'{' to open the property");
 
+        // C# 14's `field`: in an accessor, the field the compiler makes for
+        // the property -- under a name no program can write and no read of
+        // the property takes for its own (an auto property's `<Name>` is read
+        // in place of its accessors; this one's accessors run). Any accessor
+        // left without a body reads or writes it.
+        string? backing = null;
+        for (int j = _i, depth = 1; j < _t.Count && _t[j].Kind != Tok.End; j++)
+        {
+            if (_t[j].Kind == Tok.LBrace) depth++;
+            else if (_t[j].Kind == Tok.RBrace && --depth == 0) break;
+            else if (_t[j] is { Kind: Tok.Ident, Text: "field" } && _t[j - 1].Kind != Tok.Dot)
+            {
+                backing = "<" + name + ">field";
+                _t[j] = _t[j] with { Text = backing };
+            }
+        }
+
         Block? getter = null, setter = null;
-        bool auto = true, hasSetter = false;
+        bool auto = true, hasSetter = false, hasGetter = false;
 
         while (!At(Tok.RBrace) && !At(Tok.End))
         {
@@ -4022,6 +4047,7 @@ public sealed class Parser
 
             if (TakeContextual("get"))
             {
+                hasGetter = true;
                 if (At(Tok.LBrace))
                 {
                     auto = false;
@@ -4112,6 +4138,34 @@ public sealed class Parser
         if (init != null)
         {
             Expect(Tok.Semi, "';' after a property initialiser");
+        }
+
+        if (backing is not null)
+        {
+            Token at = start;
+            NameExpr Field() => new() { Name = backing, Line = at.Line, Col = at.Col };
+            if (hasGetter && getter is null)
+            {
+                getter = new Block { Line = at.Line, Col = at.Col };
+                getter.WritableStatements.Add(new ReturnStmt { Value = Field(), Line = at.Line, Col = at.Col });
+            }
+            if (hasSetter && setter is null)
+            {
+                setter = new Block { Line = at.Line, Col = at.Col };
+                setter.WritableStatements.Add(new ExprStmt
+                {
+                    Expr = new AssignExpr { Target = Field(), Value = new NameExpr { Name = "value", Line = at.Line, Col = at.Col }, Line = at.Line, Col = at.Col },
+                    Line = at.Line, Col = at.Col,
+                });
+            }
+            // The property's initialiser is its field's, as an auto property's is.
+            _backingFields.Add(new FieldDecl
+            {
+                Name = backing, Type = type, Mods = Mods.Private | (mods & Mods.Static), Init = init,
+                Line = at.Line, Col = at.Col,
+            });
+            init = null;
+            auto = false;
         }
 
         return new PropertyDecl
@@ -4884,6 +4938,8 @@ public sealed class Parser
 
     /// <summary>Generic local functions made into members of the type being read, added after the member that declared them.</summary>
     private readonly List<MethodDecl> _hoisted = new();
+    /// <summary>The fields C# 14's `field` keyword made in the member just read (ParseProperty).</summary>
+    private readonly List<FieldDecl> _backingFields = new();
 
     /// <summary>Whether the member being read is static: its generic local functions are.</summary>
     private bool _memberStatic;
@@ -6002,6 +6058,23 @@ public sealed class Parser
     /// parenthesised expression of any depth is scanned once and cheaply.
     /// </summary>
     private bool IsLambdaHead() => IsLambdaHeadAt(_i);
+
+    /// <summary>
+    /// A generic name's type arguments inside `nameof`, which name nothing it
+    /// answers: `nameof(List<int>)` and, as C# 14 allows, `nameof(List<>)` and
+    /// `nameof(Dictionary<,>)` are "List" and "Dictionary".
+    /// </summary>
+    private void SkipNameofArguments()
+    {
+        if (!At(Tok.Lt)) return;
+        int depth = 0;
+        do
+        {
+            depth += Cur.Kind switch { Tok.Lt => 1, Tok.Gt => -1, Tok.Shr => -2, Tok.UShr => -3, _ => 0 };
+            _i++;
+        }
+        while (depth > 0 && !At(Tok.End) && !At(Tok.RParen));
+    }
 
     /// <summary>
     /// Whether the word here is C# 11's `scoped` before a declaration's type
@@ -8392,7 +8465,85 @@ public sealed class Parser
             _i = save;
         }
 
-        return new ExprStmt { Expr = ParseExpr(), Line = at.Line, Col = at.Col };
+        return Statement(ParseExpr(), at);
+    }
+
+    /// <summary>
+    /// An expression as a statement -- and C# 14's NULL-CONDITIONAL
+    /// ASSIGNMENT as what it means: `a?.B = v` (`a?[i] += v`, `a?.B.C = v`)
+    /// assigns only when a is not null, and evaluates nothing after the `?.`
+    /// otherwise, the value included. `{ var t = a; if (t != null) t.B = v; }`,
+    /// the receiver held once, a link at a time (`a?.B?.C = v` is two).
+    /// </summary>
+    private Stmt Statement(Expr e, Token at)
+    {
+        if (e is not AssignExpr assign || Unlinked(assign.Target, out string held) is not (Expr receiver, Expr rest))
+            return new ExprStmt { Expr = e, Line = at.Line, Col = at.Col };
+        Block block = new() { Line = at.Line, Col = at.Col };
+        block.WritableStatements.Add(new LocalDecl { Name = held, Init = receiver, Line = at.Line, Col = at.Col });
+        block.WritableStatements.Add(new IfStmt
+        {
+            Cond = new BinaryExpr
+            {
+                Op = BinOp.Ne, Left = new NameExpr { Name = held, Line = at.Line, Col = at.Col },
+                Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = at.Line, Col = at.Col },
+                Line = at.Line, Col = at.Col,
+            },
+            Then = Statement(new AssignExpr { Target = rest, Op = assign.Op, Value = assign.Value, Line = assign.Line, Col = assign.Col }, at),
+            Line = at.Line, Col = at.Col,
+        });
+        return block;
+    }
+
+    /// <summary>
+    /// The first `?.` or `?[` of an assignment's target, from the receiver
+    /// out: what it is applied to, and the target with that link read
+    /// through `held` instead. Null when the target has none.
+    /// </summary>
+    private (Expr Receiver, Expr Through)? Unlinked(Expr target, out string held)
+    {
+        held = "";
+        switch (target)
+        {
+            case MemberExpr m:
+            {
+                if (Unlinked(m.Target, out held) is (Expr receiver, Expr inner))
+                {
+                    MemberExpr kept = new() { Target = inner, Name = m.Name, NullConditional = m.NullConditional, Line = m.Line, Col = m.Col };
+                    kept.WritableTypeArgs.AddRange(m.TypeArgs);
+                    return (receiver, kept);
+                }
+                if (!m.NullConditional) return null;
+                held = $"$cond${_hidden++}";
+                MemberExpr through = new() { Target = new NameExpr { Name = held, Line = m.Line, Col = m.Col }, Name = m.Name, Line = m.Line, Col = m.Col };
+                through.WritableTypeArgs.AddRange(m.TypeArgs);
+                return (m.Target, through);
+            }
+            case IndexExpr ix:
+            {
+                Expr? receiver = null, inner = null;
+                if (Unlinked(ix.Target, out held) is (Expr r, Expr i)) { receiver = r; inner = i; }
+                else if (ix.NullConditional)
+                {
+                    held = $"$cond${_hidden++}";
+                    receiver = ix.Target;
+                    inner = new NameExpr { Name = held, Line = ix.Line, Col = ix.Col };
+                }
+                if (receiver is null) return null;
+                IndexExpr kept = new() { Target = inner!, NullConditional = receiver == ix.Target ? false : ix.NullConditional, Line = ix.Line, Col = ix.Col };
+                kept.Args.AddRange(ix.Args);
+                return (receiver, kept);
+            }
+            case CallExpr call when Unlinked(call.Target, out held) is (Expr receiver, Expr inner):
+            {
+                CallExpr kept = new() { Target = inner, Line = call.Line, Col = call.Col };
+                kept.Args.AddRange(call.Args);
+                kept.WritableArgNames.AddRange(call.ArgNames);
+                return (receiver, kept);
+            }
+            default:
+                return null;
+        }
     }
 
     // ---- expressions ------------------------------------------------------
@@ -10266,10 +10417,12 @@ public sealed class Parser
                 _i += 2;
 
                 string spelt = Expect(Tok.Ident, "a name inside 'nameof'").Text;
+                SkipNameofArguments();
 
                 while (Take(Tok.Dot))
                 {
                     spelt = Expect(Tok.Ident, "a name after '.'").Text;
+                    SkipNameofArguments();
                 }
 
                 Expect(Tok.RParen, "')' after 'nameof'");

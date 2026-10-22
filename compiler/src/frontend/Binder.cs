@@ -16407,6 +16407,16 @@ public sealed partial class Binder
 
             case AssignExpr a:
             {
+                // A NULL-CONDITIONAL ASSIGNMENT anywhere but a statement (the
+                // parser writes one of those as the `if` it is): refused, as
+                // its value is no assignment's, rather than made one that
+                // reaches through the null.
+                if (HasConditionalMember(a.Target))
+                {
+                    Error(a, "a null-conditional assignment ('?.' before '=') is only supported as a statement here");
+                    return Type.Error;
+                }
+
                 // AN EVENT WITH ACCESSORS IS TWO METHODS: `h += x` over one
                 // is add_h(x) and `-=` is remove_h(x), as C# compiles them.
                 if (a.Op is BinOp.Add or BinOp.Sub && EventAccessorCall(a) is CallExpr accessed)

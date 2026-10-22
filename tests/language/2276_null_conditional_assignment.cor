@@ -1,0 +1,51 @@
+// test: null_conditional_assignment
+// expect-exit: 0
+// expect-output:
+// a next True 7 6 1 9 2
+//
+// C# 14's null-conditional assignment: `a?.B = v`, `a?[i] = v`, `a?.B +=
+// v`, `a.Next?.Next?.Label = v` assign only where every `?.` found a value,
+// and evaluate nothing after the first that did not -- the value included
+// (calls counts it). Accepted before as a plain assignment through the
+// null: NullReferenceException. Written as `{ var t = a; if (t != null) t.B
+// = v; }` a link at a time (Parser.Statement).
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Node
+{
+    public string? Label;
+    public Node? Next;
+    public int[] Slots = new int[3];
+    public int Count { get; set; }
+    public List<string> Tags = new();
+}
+
+static class Program
+{
+    static int calls;
+    static Node? Find(Node? n) { calls++; return n; }
+    static string Value(string s) { calls += 10; return s; }
+
+    static int Main()
+    {
+        Node a = new() { Next = new Node() };
+        Node? none = null;
+        a?.Label = "a";
+        none?.Label = Value("never");
+        a.Next?.Label = "next";
+        a.Next?.Next?.Label = "deep";
+        a?.Slots[1] = 7;
+        none?.Slots[1] = Value("x").Length;
+        a?.Count += 5;
+        a?.Count += 1;
+        Find(a)?.Tags.Add("t");
+        Find(none)?.Label = Value("skipped");
+        List<int>? list = new() { 1, 2 };
+        list?[0] = 9;
+        Console.WriteLine(a.Label + " " + a.Next!.Label + " " + (a.Next.Next is null) + " " + a.Slots[1] + " " + a.Count + " " + a.Tags.Count + " " + list[0] + " " + calls);
+        return 0;
+    }
+}

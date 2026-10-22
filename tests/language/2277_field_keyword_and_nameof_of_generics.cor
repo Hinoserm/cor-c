@@ -1,0 +1,47 @@
+// test: field_keyword_and_nameof_of_generics
+// expect-exit: 0
+// expect-output:
+// 0 unnamed 4
+// 7 k 1 2
+// 8 2 20
+// List Dictionary List Dictionary Count
+//
+// C# 14's `field` in a property's accessors: the field the compiler makes
+// for it, read and written by the accessors that name it and by those left
+// as `get;` and `set;`, static for a static property, its initialiser the
+// property's (written straight in, as an auto property's is, not through
+// `init`). And nameof of a generic name with its arguments or without (C#
+// 14's `nameof(List<>)`): the name alone.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Counter
+{
+    public int Clamped { get; set => field = Math.Max(0, value); }
+    public string Name { get => field ?? "unnamed"; set; }
+    public int Hits { get { field++; return field; } }
+    public static int Shared { get => field * 2; set => field = value + 1; }
+    public List<int> Seen { get => field ??= new List<int>(); }
+    public int Start { get; init => field = value * 10; } = 4;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Counter c = new() { Clamped = -5 };
+        Console.WriteLine(c.Clamped + " " + c.Name + " " + c.Start);
+        c.Clamped = 7;
+        c.Name = "k";
+        Console.WriteLine(c.Clamped + " " + c.Name + " " + c.Hits + " " + c.Hits);
+        Counter.Shared = 3;
+        c.Seen.Add(1);
+        c.Seen.Add(2);
+        Counter d = new() { Start = 2 };
+        Console.WriteLine(Counter.Shared + " " + c.Seen.Count + " " + d.Start);
+        Console.WriteLine(nameof(List<>) + " " + nameof(Dictionary<,>) + " " + nameof(List<int>) + " " + nameof(Dictionary<int, List<int>>) + " " + nameof(System.Collections.Generic.List<>.Count));
+        return 0;
+    }
+}
