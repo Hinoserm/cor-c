@@ -1895,7 +1895,7 @@ public sealed class Parser
         Token close = Expect(Tok.RBrace, "'}' to close the type body");
 
         if (primary) AddPrimaryConstructor(decl, positional, start, bodies);
-        else AddRecordMembers(decl, positional, start);
+        else if (isRecord) AddRecordMembers(decl, positional, start);
 
         // The whole declaration, brace to brace, so a generic can be written
         // into a header exactly as it was written here.
@@ -2235,8 +2235,21 @@ public sealed class Parser
     /// want identity say so with ReferenceEqualityComparer.
     private void AddRecordMembers(TypeDecl decl, List<Param> positional, Token start)
     {
+        // THE BASE RECORD, when there is one: what its record members chain to
+        // (AddRecordSynthesis), and the positional parameters it already has
+        // properties for, which C# makes none of here -- `Derived(string Kind,
+        // int Extra) : Base(Kind)` has Base's Kind. Known exactly for a base
+        // declared earlier in this file; otherwise one with arguments is a
+        // record (an interface takes none), and a parameter handed to it by
+        // name is taken for its own.
+        bool based = RecordBase(decl, out string? baseText, out HashSet<string>? baseMembers);
+        List<Param> own = positional.Where(p => !based
+            || !(baseMembers?.Contains(p.Name) ?? decl.BaseArgs.Any(a => a is NameExpr { Name: var passed } && passed == p.Name))).ToList();
+
         if (positional.Count == 0)
         {
+            AddRecordSynthesis(decl, own, start, baseText);
+            RememberRecord(decl, own, baseMembers);
             return;
         }
 
@@ -2252,6 +2265,15 @@ public sealed class Parser
 
         foreach (Param p in positional)
         {
+            // The constructor's parameter, for every one; the property and its
+            // assignment for the record's own (above).
+            ctor.WritableParams.Add(new Param
+            {
+                Name = p.Name, Type = p.Type, Default = p.Default,
+                Line = p.Line, Col = p.Col,
+            });
+            if (!own.Contains(p)) continue;
+
             // The property, which is what anybody reading the record sees.
             decl.Members.Add(new PropertyDecl
             {
@@ -2267,12 +2289,6 @@ public sealed class Parser
             // until the base has run. The assignment reads `this.Name = Name`
             // and is unambiguous for the same reason -- a property is reached
             // through `this`, a parameter by its bare name.
-            ctor.WritableParams.Add(new Param
-            {
-                Name = p.Name, Type = p.Type, Default = p.Default,
-                Line = p.Line, Col = p.Col,
-            });
-
             ctor.Body.WritableStatements.Add(new ExprStmt
             {
                 Expr = new AssignExpr
@@ -2291,8 +2307,36 @@ public sealed class Parser
 
         decl.Members.Add(ctor);
         AddRecordDeconstruct(decl, positional, start);
-        AddRecordToString(decl, positional, start);
-        AddRecordEquality(decl, positional, start);
+        AddRecordSynthesis(decl, own, start, baseText);
+        RememberRecord(decl, own, baseMembers);
+    }
+
+    /// <summary>The records of this file so far, by name, with every member name each has (its base's too).</summary>
+    private readonly Dictionary<string, HashSet<string>> _records = new(StringComparer.Ordinal);
+
+    private void RememberRecord(TypeDecl decl, List<Param> own, HashSet<string>? baseMembers)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+        if (baseMembers is not null) names.UnionWith(baseMembers);
+        foreach (Param p in own) names.Add(p.Name);
+        foreach (MemberDecl m in decl.Members) names.Add(m.Name);
+        _records[decl.Name] = names;
+    }
+
+    /// <summary>
+    /// Whether a record class derives from another record (AddRecordMembers),
+    /// with the base as written and, for one of this file, its member names.
+    /// </summary>
+    private bool RecordBase(TypeDecl decl, out string? baseText, out HashSet<string>? baseMembers)
+    {
+        baseText = null;
+        baseMembers = null;
+        if (decl.Kind != TypeKind.Class || decl.Bases.Count == 0) return false;
+        TypeRef first = decl.Bases[0];
+        bool known = _records.TryGetValue(first.Name, out baseMembers);
+        if (!known && decl.BaseArgs.Count == 0) return false;
+        baseText = first.ToString();
+        return true;
     }
 
     /// <summary>
@@ -2406,14 +2450,44 @@ public sealed class Parser
     /// Equals(object?), GetHashCode, operator == and !=). Any of them the
     /// body declared is left to the body.
     /// </summary>
-    private void AddRecordEquality(TypeDecl decl, List<Param> positional, Token start)
+    private void AddRecordSynthesis(TypeDecl decl, List<Param> own, Token start, string? baseText)
     {
         // A record struct has the same members over its fields, with no null
         // and no runtime type to ask about: a value is exactly its type.
         bool value = decl.Kind == TypeKind.Struct;
         if (decl.Kind != TypeKind.Class && !value) return;
+        bool based = baseText is not null;
         string self = decl.Name + (decl.TypeParams.Count == 0 ? "" : "<" + string.Join(", ", decl.TypeParams.Select(t => t.Name)) + ">");
         string maybe = value ? self : self + "?";
+
+        // WHAT THE RECORD IS MADE OF, in the order declared, its positional
+        // properties first: every instance field, an auto-property's too and
+        // private ones, for equality; every public field and readable
+        // property, a computed one too, for its text (C# "Records").
+        List<string> equal = new(), shown = new();
+        foreach (Param p in own)
+        {
+            equal.Add(p.Name);
+            shown.Add(p.Name);
+        }
+        foreach (MemberDecl m in decl.Members)
+        {
+            if (m.Mods.HasFlag(Mods.Static) || m.Mods.HasFlag(Mods.Const)) continue;
+            switch (m)
+            {
+                case FieldDecl { IsEvent: false } f:
+                    equal.Add(f.Name);
+                    if (f.Mods.HasFlag(Mods.Public)) shown.Add(f.Name);
+                    break;
+                // An override is the base's member, written in the base's text
+                // where the base declared it: `Rect { Name = rect, Area = 6, W = 2 }`.
+                case PropertyDecl { FromRecord: false, Params.Count: 0 } p when p.Name != "EqualityContract":
+                    if (p.Auto) equal.Add(p.Name);
+                    if (p.Mods.HasFlag(Mods.Public) && !p.Mods.HasFlag(Mods.Override) && (p.Auto || p.Getter is not null)) shown.Add(p.Name);
+                    break;
+            }
+        }
+
         System.Text.StringBuilder src = new();
         src.Append(value ? "struct " : "class ").Append(self).Append("\n{\n");
         if (!decl.Members.Exists(m => m.Name == "Equals"))
@@ -2423,7 +2497,9 @@ public sealed class Parser
             {
                 src.Append("        if (other is null) return false;\n");
                 src.Append("        if ((object)this == (object)other) return true;\n");
-                src.Append("        if (GetType() != other.GetType()) return false;\n");
+                // The base's members and runtime type first (its own Equals).
+                if (based) src.Append("        if (!base.Equals((").Append(baseText).Append("?)other)) return false;\n");
+                else src.Append("        if (GetType() != other.GetType()) return false;\n");
             }
             src.Append("        return true");
             // EqualityComparer<P>.Default.Equals, as the comparer's own body
@@ -2432,11 +2508,13 @@ public sealed class Parser
             // key question is asked of any object at all -- every Equals in
             // the program a callee of every record's. Here P is known, and
             // the question is asked of a P (Lowering.KeyEqualsStub).
-            foreach (Param p in positional)
-                src.Append("\n            && (Sys.IsObject(this.").Append(p.Name).Append(") ? Sys.KeyEquals(this.").Append(p.Name).Append(", other.").Append(p.Name)
-                   .Append(") : Sys.EqualValues(this.").Append(p.Name).Append(", other.").Append(p.Name).Append("))");
+            foreach (string name in equal.Select(Lexer.Identifier))
+                src.Append("\n            && (Sys.IsObject(this.").Append(name).Append(") ? Sys.KeyEquals(this.").Append(name).Append(", other.").Append(name)
+                   .Append(") : Sys.EqualValues(this.").Append(name).Append(", other.").Append(name).Append("))");
             src.Append(";\n    }\n");
             src.Append("    public override bool Equals(object? obj) { return obj is ").Append(self).Append(" other && Equals(other); }\n");
+            // A base's Equals over a derived one is the derived one's.
+            if (based) src.Append("    public sealed override bool Equals(").Append(baseText).Append("? other) { return Equals((object?)other); }\n");
         }
         // AND Equals(object) WHERE THE BODY WROTE ONLY Equals(R): C# writes
         // that one for every record, whatever the body declares, and object's
@@ -2447,12 +2525,36 @@ public sealed class Parser
         }
         if (!decl.Members.Exists(m => m.Name == "GetHashCode"))
         {
-            src.Append("    public override int GetHashCode()\n    {\n        int hash = 0;\n");
+            src.Append("    public override int GetHashCode()\n    {\n        int hash = ").Append(based ? "base.GetHashCode()" : "0").Append(";\n");
             // And EqualityComparer<P>.Default.GetHashCode, written out as Equals is.
-            foreach (Param p in positional)
-                src.Append("        hash = unchecked(hash * -1521134295 + (Sys.IsObject(this.").Append(p.Name).Append(") ? Sys.KeyHash(this.").Append(p.Name)
-                   .Append(") : (int)Sys.HashValue(this.").Append(p.Name).Append(")));\n");
+            foreach (string name in equal.Select(Lexer.Identifier))
+                src.Append("        hash = unchecked(hash * -1521134295 + (Sys.IsObject(this.").Append(name).Append(") ? Sys.KeyHash(this.").Append(name)
+                   .Append(") : (int)Sys.HashValue(this.").Append(name).Append(")));\n");
             src.Append("        return hash;\n    }\n");
+        }
+        // ITS TEXT, `Point { X = 1, Y = 2 }`: PrintMembers writes the members,
+        // the base's first, and says whether it wrote any.
+        if (!decl.Members.Exists(m => m.Name == "PrintMembers"))
+        {
+            src.Append(value ? "    private bool PrintMembers(" : based ? "    protected override bool PrintMembers(" : "    protected virtual bool PrintMembers(")
+               .Append("System.Text.StringBuilder builder)\n    {\n");
+            src.Append("        bool any = ").Append(based ? "base.PrintMembers(builder)" : "false").Append(";\n");
+            foreach (string name in shown)
+            {
+                src.Append("        if (any) builder.Append(\", \");\n");
+                src.Append("        builder.Append(\"").Append(name).Append(" = \");\n");
+                src.Append("        builder.Append((object?)this.").Append(Lexer.Identifier(name)).Append(");\n");
+                src.Append("        any = true;\n");
+            }
+            src.Append("        return any;\n    }\n");
+        }
+        if (!decl.Members.Exists(m => m.Name == "ToString"))
+        {
+            src.Append("    public override string ToString()\n    {\n");
+            src.Append("        System.Text.StringBuilder builder = new System.Text.StringBuilder();\n");
+            src.Append("        builder.Append(\"").Append(decl.Name).Append(" { \");\n");
+            src.Append("        if (PrintMembers(builder)) builder.Append(' ');\n");
+            src.Append("        builder.Append('}');\n        return builder.ToString();\n    }\n");
         }
         if (!decl.Members.Exists(m => m.Name is "op_Equality" or "op_Inequality"))
         {
@@ -2521,55 +2623,6 @@ public sealed class Parser
         }
 
         decl.Members.Add(taken);
-    }
-
-    /// <summary>
-    /// `ToString()` spelled the way C# spells a record's:
-    /// `Point { X = 1, Y = 2 }`.
-    /// </summary>
-    private static void AddRecordToString(TypeDecl decl, List<Param> positional, Token start)
-    {
-        if (decl.Members.Exists(m => m.Name == "ToString"))
-        {
-            return;
-        }
-
-        Expr text = new LiteralExpr
-        {
-            Kind = Lit.Str, Text = decl.Name + " { ", Line = start.Line, Col = start.Col,
-        };
-
-        for (int i = 0; i < positional.Count; i++)
-        {
-            Param p = positional[i];
-
-            text = Join(text, new LiteralExpr
-            {
-                Kind = Lit.Str, Text = (i == 0 ? "" : ", ") + p.Name + " = ",
-                Line = p.Line, Col = p.Col,
-            });
-
-            text = Join(text, new MemberExpr
-            {
-                Target = new ThisExpr { Line = p.Line, Col = p.Col },
-                Name = p.Name, Line = p.Line, Col = p.Col,
-            });
-        }
-
-        text = Join(text, new LiteralExpr
-        {
-            Kind = Lit.Str, Text = " }", Line = start.Line, Col = start.Col,
-        });
-
-        Block body = new() { Line = start.Line, Col = start.Col };
-        body.WritableStatements.Add(new ReturnStmt { Value = text, Line = start.Line, Col = start.Col });
-
-        decl.Members.Add(new MethodDecl
-        {
-            Name = "ToString", Mods = Mods.Public | Mods.Override,
-            Returns = new TypeRef { Name = "string", Line = start.Line, Col = start.Col },
-            Body = body, Line = start.Line, Col = start.Col,
-        });
     }
 
     private static Expr Join(Expr left, Expr right)

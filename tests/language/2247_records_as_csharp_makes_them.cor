@@ -1,0 +1,48 @@
+// test: records_as_csharp_makes_them
+// expect-exit: 0
+// expect-output:
+// Plain { Name = a, Age = 1, Twice = 2 } True True True
+// False Plain { Name = a, Age = 2, Twice = 4 }
+// Pos { X = 1, Y = 2 } False True
+// Derived { Kind = k, Level = 3, Extra = 7, Note = n } | Derived { Kind = k, Level = 3, Extra = 7, Note = n } | True False False
+// Empty { } True RS { A = 1, B = 2 } True RR { Name = r } Tagged { T = 4 }
+//
+// A record's members as C# makes them: equality over every instance field
+// -- private ones, an init property's, not only the positional ones -- and
+// over its base record's with the runtime type; text over every public
+// field and readable property, computed ones too, the base's first:
+// `Derived { Kind = k, Level = 3, Extra = 7, Note = n }`; a positional
+// parameter its base already has a property for makes none; and a record
+// without positional parameters, `record Empty;`, a record struct and one
+// implementing an interface get them too.
+// Expected output from .NET 10.
+
+using System;
+
+record Plain { public string Name { get; init; } = ""; public int Age; private int _secret; public void Hide(int s) => _secret = s; public int Twice => Age * 2; }
+record Pos(int X) { public int Y { get; init; } public static int S = 5; }
+record Base(string Kind) { public int Level { get; init; } }
+record Derived(string Kind, int Extra) : Base(Kind) { public string Note = "n"; }
+record Empty;
+record struct RS(int A) { public int B; }
+readonly record struct RR(string Name);
+interface ITagged { }
+record Tagged(int T) : ITagged;
+
+static class Program
+{
+    static int Main()
+    {
+        Plain a = new() { Name = "a", Age = 1 }, b = new() { Name = "a", Age = 1 };
+        Console.WriteLine(a + " " + (a == b) + " " + a.Equals(b) + " " + (a.GetHashCode() == b.GetHashCode()));
+        b.Hide(9);
+        Console.WriteLine((a == b) + " " + (a with { Age = 2 }));
+        Pos p = new(1) { Y = 2 }, q = new(1) { Y = 3 };
+        Console.WriteLine(p + " " + (p == q) + " " + (p == new Pos(1) { Y = 2 }));
+        Derived d = new("k", 7) { Level = 3 };
+        Base asBase = d;
+        Console.WriteLine(d + " | " + asBase + " | " + (d == new Derived("k", 7) { Level = 3 }) + " " + (asBase == new Base("k") { Level = 3 }) + " " + (d == new Derived("k", 7) { Level = 4 }));
+        Console.WriteLine(new Empty() + " " + (new Empty() == new Empty()) + " " + new RS(1) { B = 2 } + " " + (new RS(1) == new RS(1)) + " " + new RR("r") + " " + new Tagged(4));
+        return 0;
+    }
+}

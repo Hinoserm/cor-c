@@ -1,0 +1,80 @@
+// test: records_operators_indexers_events_and_formats_as_dotnet
+// expect-exit: 0
+// expect-output:
+// circle=3.14 rect=6 Rect { Name = rect, Area = 6, W = 2, H = 3 } True
+// Circle { Name = circle, Area = 12.57, R = 2 } 12.57 True
+// 14 56 <2,3> <-1,-2> True True
+// 4 AB 40
+// 2-9 11 0 6 9
+// 12.50 12.5 % 1,234.5   7|-7 |   x 0003 ff 1.00E-005 12345.7 True
+// a 1,234.57 a 012 3.14 -0 2 2
+//
+// Records with an abstract base and with-expressions, user-defined
+// operators and implicit conversions on a struct, deconstruction,
+// multi-parameter and string indexers, events with two handlers, params,
+// tuples returned and deconstructed, and number formats in interpolation
+// and string.Format -- each as .NET gives it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+abstract record Shape(string Name) { public abstract double Area { get; } }
+record Circle(double R) : Shape("circle") { public override double Area => Math.Round(Math.PI * R * R, 2); }
+record Rect(double W, double H) : Shape("rect") { public override double Area => W * H; }
+record class Point(int X, int Y) { public void Deconstruct(out int x, out int y, out int sum) { x = X; y = Y; sum = X + Y; } }
+
+struct Vec
+{
+    public readonly int X, Y;
+    public Vec(int x, int y) { X = x; Y = y; }
+    public static Vec operator +(Vec a, Vec b) => new(a.X + b.X, a.Y + b.Y);
+    public static Vec operator -(Vec a) => new(-a.X, -a.Y);
+    public static bool operator ==(Vec a, Vec b) => a.X == b.X && a.Y == b.Y;
+    public static bool operator !=(Vec a, Vec b) => !(a == b);
+    public static implicit operator Vec((int, int) t) => new(t.Item1, t.Item2);
+    public override bool Equals(object? o) => o is Vec v && v == this;
+    public override int GetHashCode() => X * 31 + Y;
+    public override string ToString() => $"<{X},{Y}>";
+    public void Deconstruct(out int x, out int y) { x = X; y = Y; }
+}
+
+class Grid
+{
+    private readonly int[][] _cells = { new int[3], new int[3], new int[3] };
+    public int this[int r, int c] { get => _cells[r][c]; set => _cells[r][c] = value; }
+    public string this[string key] => key.ToUpper();
+    public event EventHandler<int>? Changed;
+    public void Set(int v) { this[1, 1] = v; Changed?.Invoke(this, v); }
+}
+
+static class Program
+{
+    static int Sum(params int[] xs) => xs.Sum();
+    static (int Min, int Max) Range(IEnumerable<int> xs) => (xs.Min(), xs.Max());
+
+    static int Main()
+    {
+        Shape[] shapes = { new Circle(1), new Rect(2, 3) };
+        Console.WriteLine(string.Join(" ", shapes.Select(s => s.Name + "=" + s.Area)) + " " + shapes[1] + " " + (new Rect(2, 3) == (Rect)shapes[1]));
+        Circle c2 = (Circle)shapes[0] with { R = 2 };
+        Console.WriteLine(c2 + " " + c2.Area + " " + (c2 is Shape { Name: "circle" }));
+        var (px, py, ps) = new Point(3, 4);
+        var (vx, vy) = new Vec(5, 6);
+        Vec v = (1, 2);
+        Console.WriteLine(px + py + ps + " " + vx + vy + " " + (v + new Vec(1, 1)) + " " + (-v) + " " + (v == (1, 2)) + " " + v.Equals(new Vec(1, 2)));
+        Grid g = new();
+        int seen = 0;
+        g.Changed += (_, val) => seen += val;
+        g.Changed += (_, val) => seen *= 10;
+        g.Set(4);
+        Console.WriteLine(g[1, 1] + " " + g["ab"] + " " + seen);
+        (int lo, int hi) = Range(new[] { 5, 2, 9 });
+        var t = Range(new[] { 1 });
+        Console.WriteLine(lo + "-" + hi + " " + t.Min + t.Max + " " + Sum() + " " + Sum(1, 2, 3) + " " + Sum(new[] { 4, 5 }));
+        Console.WriteLine($"{12.5:0.00} {0.125:P1} {1234.5:#,##0.0} {7,3}|{-7,-3}| {"x",3} {3:D4} {255:x} {1.0e-5:E2} {12345.678:F1} {true}");
+        Console.WriteLine(string.Format("{0} {1:N2} {0}", "a", 1234.567) + " " + 12.ToString("000") + " " + 3.14159.ToString("G3") + " " + (-0.5).ToString("F0") + " " + 1.5.ToString("F0") + " " + 2.5.ToString("F0"));
+        return 0;
+    }
+}
