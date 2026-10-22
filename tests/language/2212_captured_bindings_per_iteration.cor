@@ -8,6 +8,9 @@
 // n1 ttwo
 // 5 6 7
 // 3 7
+// 16
+// <a><b>
+// one;two;
 //
 // A variable no statement declares -- a pattern's binding, an `out var` --
 // is a new variable each time its scope is entered, as a declared local and
@@ -17,6 +20,10 @@
 // (IrArchive.Read(obj) is not IrArchive archive) continue; ... () =>
 // archive.ReadBody(key)`, read every unit's bodies from the last archive,
 // and the compiler built by itself failed to link ("Missing IR record").
+// Where the block has local functions, whose closures are made at its top,
+// the variable is made new there instead, as a declared local is: the
+// compiler's Peephole hands `Jumped`, reading an `out int[] liveIn`, on as
+// a delegate, and a cell made again at the `out` left the closure's empty.
 
 using System;
 using System.Collections.Generic;
@@ -28,6 +35,21 @@ static class Program
         string line = "";
         foreach (Func<T> f in made) line += (line.Length == 0 ? "" : " ") + f();
         Console.WriteLine(line);
+    }
+
+    static int Count(int[] xs, out int[] doubled)
+    {
+        doubled = new int[xs.Length];
+        for (int i = 0; i < xs.Length; i++) doubled[i] = xs[i] * 2;
+        return xs.Length;
+    }
+
+    static int Jumpy(int[] xs)
+    {
+        int total = Count(xs, out int[] doubled);
+        int Twice(int i) => doubled[i];
+        Func<int, int> f = Twice;
+        return total + f(0) + f(1);
     }
 
     static int Main()
@@ -79,6 +101,28 @@ static class Program
         List<Func<int>> decon = new();
         foreach ((int a, int b) in new[] { (1, 2), (3, 4) }) decon.Add(() => a + b);
         Say(decon);
+
+        Console.WriteLine(Jumpy(new[] { 3, 4 }));
+        List<Func<string>> echoes = new();
+        foreach (object o in new object[] { "a", 1, "b" })
+        {
+            if (o is not string s) continue;
+            string Echo() => "<" + s + ">";
+            echoes.Add(Echo);
+        }
+        string line = "";
+        foreach (Func<string> f in echoes) line += f();
+        Console.WriteLine(line);
+        List<Func<string>> reads = new();
+        foreach (string k in new[] { "a", "b" })
+        {
+            if (!map.TryGetValue(k, out int found)) continue;
+            string Read() => found == 1 ? "one" : "two";
+            reads.Add(Read);
+        }
+        line = "";
+        foreach (Func<string> g in reads) line += g() + ";";
+        Console.WriteLine(line);
         return 0;
     }
 }

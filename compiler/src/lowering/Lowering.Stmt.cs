@@ -87,6 +87,20 @@ public sealed partial class Lowering
                         }
                     }
 
+                    // And the block's captured variables no statement
+                    // declares, made new each time the block is entered.
+                    List<LocalSym> undeclared = new();
+                    foreach (Stmt st in b.Statements) UndeclaredIn(st, undeclared);
+                    foreach (LocalSym early in undeclared)
+                    {
+                        if (_symCells.TryGetValue(early, out VReg? cell) && cell is not null
+                            && (_env is not { } env || !env.Syms.ContainsKey(early)))
+                        {
+                            _e.CopyTo(cell, RegOperand.Of(Allocate(b, Math.Max(_t.WordSize, Math.Max(1, early.Type.Size)))));
+                            _symCellsMade.Add(early);
+                        }
+                    }
+
                     foreach (LocalDecl function in b.Statements.OfType<LocalDecl>().Where(d => d.LocalFunction))
                     {
                         EmitLocalDecl(function);

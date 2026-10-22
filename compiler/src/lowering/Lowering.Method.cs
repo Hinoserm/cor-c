@@ -74,6 +74,8 @@ public sealed partial class Lowering
 
     /// <summary>Captured locals whose cell was made at the top of their block, ahead of a local function.</summary>
     private readonly HashSet<LocalDecl> _cellsMade = new(ReferenceEqualityComparer.Instance);
+    /// <summary>The same for captured variables no statement declares -- a pattern's binding, an `out var` (UndeclaredIn).</summary>
+    private readonly HashSet<LocalSym> _symCellsMade = new(ReferenceEqualityComparer.Instance);
     private readonly List<(Dictionary<SwitchCase, Block> Cases, int Handlers)> _switchBodies = new();
 
     /// <summary>Open try blocks, innermost last: a finally to run on the way out, or null for a catch.</summary>
@@ -157,6 +159,7 @@ public sealed partial class Lowering
         _refAliased.Clear();
         _symSlots.Clear();
         _symCells.Clear();
+        _symCellsMade.Clear();
         _paramCells.Clear();
         _loops.Clear();
         _switchBodies.Clear();
@@ -1508,8 +1511,33 @@ public sealed partial class Lowering
     /// </summary>
     private void FreshCell(Node at, LocalSym named, VReg cell)
     {
+        // NOR ONE MADE AT THE TOP OF ITS BLOCK, ahead of the block's local
+        // functions, whose closures hold that cell (UndeclaredIn): Peephole's
+        // `LiveOut(m, out int[] liveIn)` and the local function Jumped reading
+        // liveIn -- made again at the `out`, the closure read the empty one.
+        if (_symCellsMade.Contains(named)) return;
         if (_env is { } env && env.Syms.ContainsKey(named)) return;
         _e.CopyTo(cell, RegOperand.Of(Allocate(at, Math.Max(_t.WordSize, Math.Max(1, named.Type.Size)))));
+    }
+
+    /// <summary>
+    /// THE CAPTURED VARIABLES NO STATEMENT DECLARES THAT A BLOCK'S OWN
+    /// STATEMENTS DECLARE: a pattern's binding or an `out var` anywhere in
+    /// them, but not inside a nested block, a loop, a lambda or a local
+    /// function -- each of those is a scope entered again, or later, and its
+    /// variables are made new there (FreshCell). Their cells are made at the
+    /// top of the block when it has local functions, as its declared locals'
+    /// are, and so before the closures that hold them.
+    /// </summary>
+    private void UndeclaredIn(Node n, List<LocalSym> into)
+    {
+        if (n is AstBlock or LambdaExpr or LocalDecl { LocalFunction: true } or ForeachStmt or WhileStmt or DoStmt or ForStmt) return;
+        if (_b.PatternSym.TryGetValue(n, out LocalSym? bound) && bound.Boxed && DeclOf(bound) is null) into.Add(bound);
+        if (n is RefArgExpr { Name: not null, Target: NameExpr name } && _b.Resolved.TryGetValue(name, out Sym? sym)
+            && sym is LocalSym { Boxed: true } declared && DeclOf(declared) is null) into.Add(declared);
+        List<Node> children = Children(n);
+        foreach (Node child in children) UndeclaredIn(child, into);
+        ReturnChildren(children);
     }
 
     /// <summary>FreshCell for the variable an expression names, when it is one.</summary>
