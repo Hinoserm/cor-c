@@ -1,0 +1,87 @@
+// test: extension_blocks
+// expect-exit: 0
+// expect-output:
+// 6 HEY! True False
+// 9 9,4 b
+// 7 1 1
+// none
+// set 1
+// 11 12 plain 5
+// DIRECT! 4
+//
+// C# 14's extension blocks: `extension(string s) { ... }` in a static class
+// declares extension methods and properties of string,
+// `extension<T>(IEnumerable<T> items) where T : ...` generic ones, a
+// property with a setter (`box.Label = "set"` calls set_Label), a `ref`
+// receiver for a struct changed in place. Read as the extension methods
+// they mean (Parser.ParseExtensionBlock): each member static, the receiver
+// first with `this`; a property its get_ and set_
+// (Binder.ExtensionProperty), which may be called by those names too.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+struct Point { public int X, Y; }
+
+sealed class Box { public Dictionary<string, string> Tags = new(); }
+
+static class Extensions
+{
+    extension(string s)
+    {
+        public int Twice => s.Length * 2;
+        public string Shout() => s.ToUpperInvariant() + "!";
+        public bool IsBlank => s.Trim().Length == 0;
+    }
+
+    extension<T>(IEnumerable<T> items) where T : IComparable<T>
+    {
+        public T Largest => items.Max()!;
+        public IEnumerable<T> Above(T floor) => items.Where(x => x.CompareTo(floor) > 0);
+    }
+
+    extension<T>(List<T> list)
+    {
+        public T? FirstOr(T? fallback) => list.Count > 0 ? list[0] : fallback;
+        public int Size { get => list.Count; }
+    }
+
+    extension(Box box)
+    {
+        public string Label
+        {
+            get => box.Tags.TryGetValue("label", out string? v) ? v : "none";
+            set => box.Tags["label"] = value;
+        }
+    }
+
+    extension(ref Point p)
+    {
+        public void Shift(int by) { p.X += by; p.Y += by; }
+    }
+
+    public static string Plain(this int n) => "plain " + n;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("abc".Twice + " " + "hey".Shout() + " " + "  ".IsBlank + " " + "x".IsBlank);
+        int[] nums = { 3, 9, 4 };
+        Console.WriteLine(nums.Largest + " " + string.Join(",", nums.Above(3)) + " " + new[] { "b", "a" }.Largest);
+        List<int> list = new() { 7 };
+        Console.WriteLine(list.FirstOr(1) + " " + new List<int>().FirstOr(1) + " " + list.Size);
+        Box box = new();
+        Console.WriteLine(box.Label);
+        box.Label = "set";
+        Console.WriteLine(box.Label + " " + box.Tags.Count);
+        Point pt = new() { X = 1, Y = 2 };
+        pt.Shift(10);
+        Console.WriteLine(pt.X + " " + pt.Y + " " + 5.Plain());
+        Console.WriteLine(Extensions.Shout("direct") + " " + Extensions.get_Twice("ab"));
+        return 0;
+    }
+}

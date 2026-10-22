@@ -1,0 +1,45 @@
+// test: ref_and_in_receivers_of_extension_methods
+// expect-exit: 0
+// expect-output:
+// 11 -8 3
+// 6 3 -3
+// 0 0
+//
+// A `this ref` extension method (C# 7.2) changes the variable it is called
+// on -- a local, an array element, a field -- and `ref this` is the same
+// receiver written the other way round; `this in` reads one without a copy.
+// The receiver was passed by value, and the call refused as one whose first
+// argument is not passed by reference; checked a second time, a call's
+// moved receiver lost its `ref`.
+// Expected output from .NET 10.
+
+using System;
+
+struct Point { public int X, Y; }
+
+static class PointMoves
+{
+    public static void Shift(this ref Point p, int by) { p.X += by; p.Y -= by; }
+    public static int Sum(this in Point p) => p.X + p.Y;
+    public static void Reset(ref this Point p) { p = default; }
+}
+
+sealed class Holder { public Point At; }
+
+static class Program
+{
+    static int Main()
+    {
+        Point pt = new() { X = 1, Y = 2 };
+        pt.Shift(10);
+        Console.WriteLine(pt.X + " " + pt.Y + " " + pt.Sum());
+        Point[] all = { new() { X = 5 } };
+        all[0].Shift(1);
+        Holder h = new();
+        h.At.Shift(3);
+        Console.WriteLine(all[0].X + " " + h.At.X + " " + h.At.Y);
+        pt.Reset();
+        Console.WriteLine(pt.X + " " + pt.Y);
+        return 0;
+    }
+}

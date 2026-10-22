@@ -1926,6 +1926,19 @@ public sealed class Parser
 
                 _inInterface = decl.Kind == TypeKind.Interface;
 
+                // C# 14's EXTENSION BLOCK in a static class: its members are
+                // the class's, made as extension methods (ParseMember, _extension).
+                if (At(Tok.Ident) && Cur.Text == "extension" && Ahead().Kind is Tok.LParen or Tok.Lt && (decl.Mods & Mods.Static) != 0)
+                {
+                    foreach (MemberDecl extended in ParseExtensionBlock(name))
+                    {
+                        extended.Scope = _fileScope;
+                        extended.Namespace = _namespace;
+                        decl.Members.Add(extended);
+                    }
+                    continue;
+                }
+
                 int memberFrom = _i;
                 MemberDecl member = ParseMember(name);
                 // All a field holds is its initialiser, and an auto-property's
@@ -2823,6 +2836,10 @@ public sealed class Parser
     {
         Token start = Cur;
         Mods mods = ParseMods();
+        // An instance member of an extension block is a static one of the
+        // class, its receiver the first parameter (ExtensionMember).
+        bool extending = _extension is not null && (mods & Mods.Static) == 0;
+        if (extending) mods |= Mods.Static;
         _memberStatic = (mods & Mods.Static) != 0;
         _memberName = start.Text;
         // `event T Name;` is a field of a delegate type whose compound
@@ -3085,6 +3102,7 @@ public sealed class Parser
         // property
         if (At(Tok.LBrace))
         {
+            if (extending) return ExtensionProperty(ParseProperty(type, name, mods, start), start);
             MemberDecl property = ParseProperty(type, name, mods, start);
             property.ExplicitInterface = explicitInterface;
             property.ExplicitInterfaceArgs = explicitArgs;
@@ -3101,12 +3119,13 @@ public sealed class Parser
             Block getter = new() { Line = bodyAt.Line, Col = bodyAt.Col };
             getter.WritableStatements.Add(new ReturnStmt { Value = value, Line = bodyAt.Line, Col = bodyAt.Col });
 
-            return new PropertyDecl
+            PropertyDecl read = new()
             {
                 Name = name, Mods = mods, Type = type, Getter = getter,
                 Auto = false, HasSetter = false, Line = start.Line, Col = start.Col,
                 ExplicitInterface = explicitInterface, ExplicitInterfaceArgs = explicitArgs,
             };
+            return extending ? ExtensionProperty(read, start) : read;
         }
 
         // method
@@ -3129,6 +3148,7 @@ public sealed class Parser
             if (At(Tok.Lt)) ParseTypeParams(m.WritableTypeParams);
             { List<Param>? read = null; ParseParams(ref read); m.AdoptParams(read); }
             ParseConstraints(m.TypeParams);
+            if (extending) Extended(m);
             return FinishMethod(m);
         }
 
@@ -3253,7 +3273,7 @@ public sealed class Parser
         }
 
         Token symbol = Cur;
-        if (OperatorName(symbol.Kind) is null && UnaryOperatorName(symbol.Kind) is null)
+        if (OperatorName(symbol.Kind) is null && UnaryOperatorName(symbol.Kind) is null && CompoundOperatorName(symbol.Kind) is null)
         {
             throw Error($"'{symbol.Text}' is not an operator that can be overloaded");
         }
@@ -3267,12 +3287,20 @@ public sealed class Parser
 
         { List<Param>? read = null; ParseParams(ref read); made.AdoptParams(read); }
 
-        string? name = made.Params.Count switch
-        {
-            1 => UnaryOperatorName(symbol.Kind),
-            2 => OperatorName(symbol.Kind),
-            _ => null,
-        };
+        // C# 14's INSTANCE COMPOUND ASSIGNMENT: `public void operator +=(int
+        // by)` changes the object it is called on, and `operator ++()` with
+        // no operand is its increment -- op_AdditionAssignment and
+        // op_IncrementAssignment, as .NET names them (Binder.CompoundCall).
+        string? name = CompoundOperatorName(symbol.Kind) is string compound
+            ? made.Params.Count == 1 ? compound : null
+            : made.Params.Count switch
+            {
+                0 when symbol.Kind == Tok.PlusPlus => "op_IncrementAssignment",
+                0 when symbol.Kind == Tok.MinusMinus => "op_DecrementAssignment",
+                1 => UnaryOperatorName(symbol.Kind),
+                2 => OperatorName(symbol.Kind),
+                _ => null,
+            };
         if (name is null)
         {
             throw Error(UnaryOperatorName(symbol.Kind) is null
@@ -3286,13 +3314,32 @@ public sealed class Parser
             name = name switch
             {
                 "op_Addition" or "op_Subtraction" or "op_Multiply" or "op_Division"
-                    or "op_UnaryNegation" or "op_Increment" or "op_Decrement" => "op_Checked" + name[3..],
+                    or "op_UnaryNegation" or "op_Increment" or "op_Decrement"
+                    or "op_AdditionAssignment" or "op_SubtractionAssignment" or "op_MultiplicationAssignment"
+                    or "op_DivisionAssignment" or "op_IncrementAssignment" or "op_DecrementAssignment" => "op_Checked" + name[3..],
                 _ => throw Error($"'operator {symbol.Text}' cannot be checked"),
             };
         }
         made.Name = name;
         return FinishMethod(made);
     }
+
+    /// <summary>The metadata name of a compound assignment operator (C# 14), declared with one operand.</summary>
+    internal static string? CompoundOperatorName(Tok kind) => kind switch
+    {
+        Tok.PlusEq => "op_AdditionAssignment",
+        Tok.MinusEq => "op_SubtractionAssignment",
+        Tok.StarEq => "op_MultiplicationAssignment",
+        Tok.SlashEq => "op_DivisionAssignment",
+        Tok.PercentEq => "op_ModulusAssignment",
+        Tok.AmpEq => "op_BitwiseAndAssignment",
+        Tok.PipeEq => "op_BitwiseOrAssignment",
+        Tok.CaretEq => "op_ExclusiveOrAssignment",
+        Tok.ShlEq => "op_LeftShiftAssignment",
+        Tok.ShrEq => "op_RightShiftAssignment",
+        Tok.UShrEq => "op_UnsignedRightShiftAssignment",
+        _ => null,
+    };
 
     /// <summary>The metadata name of a one-operand operator.</summary>
     private static string? UnaryOperatorName(Tok kind) => kind switch
@@ -4246,17 +4293,29 @@ public sealed class Parser
 
             // `this` before the first parameter of a static method makes it an
             // extension method: `list.Where(f)` for `Where(this List<T> l, ...)`.
-            bool receiver = Take(Tok.KwThis);
-            bool variadic = Take(Tok.KwParams);
-            bool byRef = Take(Tok.KwRef);
-            bool byOut = !byRef && Take(Tok.KwOut);
-
+            // IN EITHER ORDER with how it is passed, as C# reads them: `this
+            // ref Point p` and `ref this Point p` are one receiver.
+            //
             // `in T x` is a ref the callee may not write: C# passes the address
             // exactly as `ref` does and refuses the assignment, and the caller
             // writes nothing at the call site. The address is what matters --
             // it is why `in` is written at all, a struct too big to copy -- so
-            // it is a ref here, and a ref the reader may not assign to.
-            bool byIn = !byRef && !byOut && Take(Tok.KwIn);
+            // it is a ref here, and a ref the reader may not assign to. C# 12's
+            // `ref readonly` is the same.
+            bool receiver = false, variadic = false, byRef = false, byOut = false, byIn = false;
+            while (true)
+            {
+                if (!receiver && Take(Tok.KwThis)) receiver = true;
+                else if (!variadic && Take(Tok.KwParams)) variadic = true;
+                else if (!byRef && !byOut && !byIn && Take(Tok.KwRef))
+                {
+                    if (Take(Tok.KwReadonly)) byIn = true;
+                    else byRef = true;
+                }
+                else if (!byRef && !byOut && !byIn && Take(Tok.KwOut)) byOut = true;
+                else if (!byRef && !byOut && !byIn && Take(Tok.KwIn)) byIn = true;
+                else break;
+            }
             TypeRef type = ParseTypeRef();
             string name = Expect(Tok.Ident, "a parameter name").Text;
             Expr? def = Take(Tok.Assign) ? ParseExpr() : null;
@@ -6066,6 +6125,94 @@ public sealed class Parser
     /// parenthesised expression of any depth is scanned once and cheaply.
     /// </summary>
     private bool IsLambdaHead() => IsLambdaHeadAt(_i);
+
+    /// <summary>The extension block being read: its receiver and its type parameters (ParseExtensionBlock).</summary>
+    private (Param Receiver, List<TypeParam> TypeParams)? _extension;
+
+    /// <summary>
+    /// C# 14's EXTENSION BLOCK, `extension<T>(List<T> list) { ... }` in a
+    /// static class, as the extension methods it means: each instance member
+    /// a static one taking the receiver first, with `this`, and the block's
+    /// type parameters before its own; a property its get_ and set_ methods,
+    /// which a member access finds (Binder.ExtensionProperty). A member the
+    /// block declares static stays the class's static member.
+    /// </summary>
+    private List<MemberDecl> ParseExtensionBlock(string ownerName)
+    {
+        Token at = Cur;
+        _i++;
+        List<TypeParam> typeParams = new();
+        if (At(Tok.Lt)) ParseTypeParams(typeParams);
+        Expect(Tok.LParen, "'(' after 'extension'");
+        bool byRef = Take(Tok.KwRef), byIn = !byRef && Take(Tok.KwIn);
+        TypeRef receiverType = ParseTypeRef();
+        string receiverName = At(Tok.Ident) ? _t[_i++].Text : "$receiver";
+        Expect(Tok.RParen, "')' after the extended type");
+        ParseConstraints(typeParams);
+        Expect(Tok.LBrace, "'{' to open the extension block");
+        var outer = _extension;
+        _extension = (new Param { Name = receiverName, Type = receiverType, IsThis = true, IsRef = byRef || byIn, IsReadOnlyRef = byIn, Line = at.Line, Col = at.Col }, typeParams);
+        if (typeParams.Count > 0) _templateDepth++;
+        List<MemberDecl> members = new();
+        try
+        {
+            while (!At(Tok.RBrace) && !At(Tok.End))
+            {
+                SkipAttributes();
+                members.Add(ParseMember(ownerName));
+                members.AddRange(_hoisted);
+                _hoisted.Clear();
+            }
+            Expect(Tok.RBrace, "'}' to close the extension block");
+        }
+        finally
+        {
+            if (typeParams.Count > 0) _templateDepth--;
+            _extension = outer;
+        }
+        return members;
+    }
+
+    /// <summary>An extension block's member made an extension method: the receiver first, the block's type parameters first.</summary>
+    private void Extended(MethodDecl m)
+    {
+        (Param receiver, List<TypeParam> typeParams) = _extension!.Value;
+        m.WritableParams.Insert(0, new Param
+        {
+            Name = receiver.Name, Type = receiver.Type, IsThis = true, IsRef = receiver.IsRef, IsReadOnlyRef = receiver.IsReadOnlyRef,
+            Line = m.Line, Col = m.Col,
+        });
+        for (int k = typeParams.Count - 1; k >= 0; k--)
+        {
+            TypeParam p = typeParams[k];
+            TypeParam copy = new() { Name = p.Name, Variance = p.Variance, Struct = p.Struct, New = p.New, Unmanaged = p.Unmanaged, Made = p.Made, Line = p.Line, Col = p.Col };
+            copy.WritableConstraints.AddRange(p.Constraints);
+            m.WritableTypeParams.Insert(0, copy);
+        }
+    }
+
+    /// <summary>An extension block's property as its accessor methods: get_ handed back, set_ hoisted beside it.</summary>
+    private MemberDecl ExtensionProperty(PropertyDecl p, Token start)
+    {
+        MethodDecl Accessor(string name, TypeRef returns, Block? body)
+        {
+            MethodDecl made = new() { Name = name, Mods = p.Mods, Returns = returns, Body = body, Line = start.Line, Col = start.Col };
+            Extended(made);
+            return made;
+        }
+        MethodDecl? setter = null;
+        if (p.HasSetter)
+        {
+            setter = Accessor("set_" + p.Name, new TypeRef { Name = "void", Line = start.Line, Col = start.Col }, p.Setter);
+            setter.WritableParams.Add(new Param { Name = "value", Type = p.Type, Line = start.Line, Col = start.Col });
+        }
+        if (p.Getter is null)
+        {
+            return setter ?? throw Error("an extension property has a body to run: it holds nothing of its own");
+        }
+        if (setter is not null) _hoisted.Add(setter);
+        return Accessor("get_" + p.Name, p.Type, p.Getter);
+    }
 
     /// <summary>
     /// A generic name's type arguments inside `nameof`, which name nothing it

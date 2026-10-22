@@ -16204,6 +16204,16 @@ public sealed partial class Binder
 
             case UnaryExpr u:
             {
+                // AN INCREMENT THE TYPE DEFINES IN PLACE (C# 14's instance
+                // `operator ++()`): `c++` is c.op_IncrementAssignment().
+                if (u.Op is UnOp.PreInc or UnOp.PostInc or UnOp.PreDec or UnOp.PostDec
+                    && CompoundCall(u.Operand, u.Op is UnOp.PreInc or UnOp.PostInc ? "op_IncrementAssignment" : "op_DecrementAssignment", null) is CallExpr stepped)
+                {
+                    _r.Rewrites[u] = stepped;
+                    CheckExpr(stepped);
+                    return Type.Void;
+                }
+
                 // `-2147483648` IS AN INT (C# 6.4.5.3): the literal 2147483648
                 // right after a unary minus is int.MinValue, where on its own
                 // it would be a uint and its negation a long.
@@ -16415,6 +16425,35 @@ public sealed partial class Binder
                 {
                     Error(a, "a null-conditional assignment ('?.' before '=') is only supported as a statement here");
                     return Type.Error;
+                }
+
+                // AN EXTENSION PROPERTY WRITTEN (C# 14): `s.Label = v` is
+                // set_Label(s, v) where s's type has no member Label.
+                if (a.Op is null && a.Target is MemberExpr { NullConditional: false } extendedTarget
+                    && Peek(extendedTarget.Target) is { IsError: false } extendedType
+                    && !(extendedType.Symbol is { } holder && (holder.FindField(extendedTarget.Name) is not null || holder.FindBackingField(extendedTarget.Name) is not null
+                         || holder.FindMethods("set_", extendedTarget.Name).Count > 0 || holder.FindMethods("get_", extendedTarget.Name).Count > 0))
+                    && Extension(extendedType, "set_" + extendedTarget.Name) is { Count: > 0 })
+                {
+                    CallExpr extendedStore = new()
+                    {
+                        Target = new MemberExpr { Target = extendedTarget.Target, Name = "set_" + extendedTarget.Name, Line = a.Line, Col = a.Col },
+                        Line = a.Line, Col = a.Col,
+                    };
+                    extendedStore.Args.Add(a.Value);
+                    extendedStore.WritableArgNames.Add(null);
+                    _r.Rewrites[a] = extendedStore;
+                    CheckExpr(extendedStore);
+                    return Type.Void;
+                }
+
+                // A COMPOUND ASSIGNMENT THE TYPE DEFINES (C# 14): `c += 3` is
+                // c.op_AdditionAssignment(3), changing c where it is.
+                if (a.Op is BinOp op && CompoundCall(a.Target, CompoundName(op), a.Value) is CallExpr compound)
+                {
+                    _r.Rewrites[a] = compound;
+                    CheckExpr(compound);
+                    return Type.Void;
                 }
 
                 // AN EVENT WITH ACCESSORS IS TWO METHODS: `h += x` over one
@@ -20760,6 +20799,11 @@ public sealed partial class Binder
                 return Type.Void;
             }
 
+            if (ExtensionProperty(m, target) is Type extendedValue)
+            {
+                return extendedValue;
+            }
+
             if (Alias(unmarked.ToString()) is { } staticsName && _r.Types.TryGetValue(staticsName, out TypeSymbol? statics)
                 && statics.FindMethods(m.Name).Any(x => x.Static) && !InstanceOfPrimitive(target.Prim, m.Name))
             {
@@ -20946,6 +20990,11 @@ public sealed partial class Binder
             _r.Resolved[m] = new MethodGroupSym(outside);
             _r.Receivers[m] = true;
             return Type.Void;
+        }
+
+        if (ExtensionProperty(m, target) is Type extended)
+        {
+            return extended;
         }
 
         // AN EVENT WITH NO FIELD -- an interface's, an abstract one, or one
@@ -22040,17 +22089,22 @@ public sealed partial class Binder
         // inside it was declared twice. A body copied for the next round
         // copies the two separately, so the argument is made the target's
         // node again first: one expression, checked and lowered once.
+        // A `this ref` receiver passed as `ref` stays passed so, around the
+        // same node.
         Expr? movedReceiver = null;
         if (c.ReceiverAdded && c.Target is MemberExpr moved && c.Args.Count > 0)
         {
-            c.Args[0] = moved.Target;
+            c.Args[0] = c.Args[0] is RefArgExpr { Declare: null, IsOut: false } wasRef
+                ? new RefArgExpr { Target = moved.Target, Line = wasRef.Line, Col = wasRef.Col }
+                : moved.Target;
             movedReceiver = moved.Target;
         }
         List<Type> args = new();
         foreach (Expr argument in c.Args)
         {
             if (argument is LambdaExpr or NewExpr { Type.Name.Length: 0, Elements: null }
-                || ReferenceEquals(argument, movedReceiver) || HoldsLambda(argument))
+                || ReferenceEquals(argument, movedReceiver) || argument is RefArgExpr { Target: var refReceiver } && ReferenceEquals(refReceiver, movedReceiver)
+                || HoldsLambda(argument))
             {
                 args.Add(Type.Any);
                 continue;
@@ -22290,8 +22344,21 @@ public sealed partial class Binder
         {
             _receiverAdded.Add(c);
             c.ReceiverAdded = true;
-            c.Args.Insert(0, recv.Target);
-            args.Insert(0, _r.TypeOf(recv.Target));
+            // A `this ref` RECEIVER (C# 7.2, and an extension block's `ref`
+            // one) is the variable itself, passed as `ref` is written.
+            bool byReference = group.Methods.Count > 0
+                && group.Methods.All(x => x.Params.Count > 0 && x.Params[0].ByRef && !x.Params[0].ReadOnly);
+            if (byReference)
+            {
+                RefArgExpr passed = new() { Target = recv.Target, Line = recv.Line, Col = recv.Col };
+                c.Args.Insert(0, passed);
+                args.Insert(0, CheckExpr(passed));
+            }
+            else
+            {
+                c.Args.Insert(0, recv.Target);
+                args.Insert(0, _r.TypeOf(recv.Target));
+            }
         }
 
         // A `params T[]` CALL HAS TWO FORMS. If an array is supplied in the
@@ -24262,6 +24329,56 @@ public sealed partial class Binder
             }).ToList(),
             Returns = Close(best.Returns, bound),
         };
+    }
+
+    /// <summary>
+    /// C# 14's EXTENSION PROPERTY, read: an extension block's get_Name
+    /// (Parser.ExtensionProperty) called on what is read through --
+    /// `"abc".Twice` is get_Twice("abc"). Not for a call's target, which a
+    /// property never is.
+    /// </summary>
+    private Type? ExtensionProperty(MemberExpr m, Type target)
+    {
+        if (ReferenceEquals(m, _callee) || Extension(target, "get_" + m.Name) is not { Count: > 0 }) return null;
+        CallExpr read = new()
+        {
+            Target = new MemberExpr { Target = m.Target, Name = "get_" + m.Name, NullConditional = m.NullConditional, Line = m.Line, Col = m.Col },
+            Line = m.Line, Col = m.Col,
+        };
+        _r.Rewrites[m] = read;
+        return CheckExpr(read);
+    }
+
+    /// <summary>The instance operator C# 14 calls for a compound assignment of this operator.</summary>
+    private static string CompoundName(BinOp op) => op switch
+    {
+        BinOp.Add => "op_AdditionAssignment", BinOp.Sub => "op_SubtractionAssignment", BinOp.Mul => "op_MultiplicationAssignment",
+        BinOp.Div => "op_DivisionAssignment", BinOp.Rem => "op_ModulusAssignment", BinOp.And => "op_BitwiseAndAssignment",
+        BinOp.Or => "op_BitwiseOrAssignment", BinOp.Xor => "op_ExclusiveOrAssignment", BinOp.Shl => "op_LeftShiftAssignment",
+        BinOp.Shr => "op_RightShiftAssignment", BinOp.UShr => "op_UnsignedRightShiftAssignment", _ => "",
+    };
+
+    /// <summary>
+    /// The call of a user-defined compound assignment or increment operator
+    /// (C# 14) on the variable written, where its type declares one that
+    /// takes what is given -- in a checked context its checked form first --
+    /// or null, and the assignment is the ordinary `x = x op v`.
+    /// </summary>
+    private CallExpr? CompoundCall(Expr target, string name, Expr? value)
+    {
+        if (name.Length == 0 || Peek(target) is not { Symbol: { Kind: TypeKind.Class or TypeKind.Struct } owner, IsArray: false, IsNullableValue: false }) return null;
+        int count = value is null ? 0 : 1;
+        string? chosen = _checked && owner.FindMethods("op_Checked" + name[3..]).Any(m => !m.Static && m.Params.Count == count)
+            ? "op_Checked" + name[3..]
+            : owner.FindMethods(name).Any(m => !m.Static && m.Params.Count == count) ? name : null;
+        if (chosen is null) return null;
+        CallExpr call = new() { Target = new MemberExpr { Target = target, Name = chosen, Line = target.Line, Col = target.Col }, Line = target.Line, Col = target.Col };
+        if (value is not null)
+        {
+            call.Args.Add(value);
+            call.WritableArgNames.Add(null);
+        }
+        return call;
     }
 
     private static bool HasConditionalMember(Expr expression) => expression switch

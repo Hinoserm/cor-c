@@ -1,0 +1,54 @@
+// test: compound_assignment_operators
+// expect-exit: 0
+// expect-output:
+// 6 122 True
+// 1007
+// 12
+//
+// C# 14's user-defined compound assignment and increment operators: `public
+// void operator +=(int by)` and `operator ++()` change the object they are
+// called on, `t += 5` and `t++` calling them (op_AdditionAssignment,
+// op_IncrementAssignment) in place of `t = t + 5` -- the same object after,
+// its static + left alone for `t + 1`; a checked context takes the checked
+// one; a struct variable is changed where it is.
+// Expected output from .NET 10.
+
+using System;
+
+sealed class Tally
+{
+    public int Total;
+    public int Steps;
+    public void operator +=(int by) { Total += by; Steps++; }
+    public void operator -=(int by) { Total -= by; Steps++; }
+    public void operator checked +=(int by) { Total = checked(Total + by); Steps += 100; }
+    public void operator ++() { Total++; Steps += 10; }
+    public static Tally operator +(Tally t, int by) => new Tally { Total = t.Total + by + 1000 };
+}
+
+struct Acc
+{
+    public long Sum;
+    public void operator *=(long k) { Sum *= k; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Tally t = new();
+        Tally same = t;
+        t += 5;
+        t -= 2;
+        t++;
+        ++t;
+        checked { t += 1; }
+        Console.WriteLine(t.Total + " " + t.Steps + " " + ReferenceEquals(t, same));
+        Tally u = t + 1;
+        Console.WriteLine(u.Total);
+        Acc a = new() { Sum = 3 };
+        a *= 4;
+        Console.WriteLine(a.Sum);
+        return 0;
+    }
+}
