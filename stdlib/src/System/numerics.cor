@@ -1699,6 +1699,13 @@ static class BitOperations {
 
     public static bool IsPow2(ulong value) { return value != 0 && (value & (value - 1)) == 0; }
 
+    // The bits that leave one end come back at the other, the amount taken
+    // modulo the width, as the processor's ROL and ROR do.
+    public static uint RotateLeft(uint value, int offset) { return (value << (offset & 31)) | (value >> ((32 - offset) & 31)); }
+    public static ulong RotateLeft(ulong value, int offset) { return (value << (offset & 63)) | (value >> ((64 - offset) & 63)); }
+    public static uint RotateRight(uint value, int offset) { return (value >> (offset & 31)) | (value << ((32 - offset) & 31)); }
+    public static ulong RotateRight(ulong value, int offset) { return (value >> (offset & 63)) | (value << ((64 - offset) & 63)); }
+
     public static uint RoundUpToPowerOf2(uint value) {
         if (value <= 1) { return 1; }
         return (uint)1 << (32 - LeadingZeroCount(value - 1));

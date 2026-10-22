@@ -5330,8 +5330,39 @@ public sealed partial class Binder
         int widest = 1;
         foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static))
             widest = Math.Max(widest, f.Inline ? Math.Max(1, _r.StructOf(f.Type).InlineAlign) : Math.Min(8, Math.Max(1, f.Type.Size)));
-        return Math.Min(8, widest);
+        int pack = NativeLayout(sym.Decl).Pack;
+        return Math.Min(pack > 0 ? pack : 8, widest);
     }
+
+    /// <summary>
+    /// What .NET's [StructLayout] says of a type's layout, as native code lays
+    /// it out: Explicit puts each field where its [FieldOffset] says, Pack caps
+    /// every field's alignment (and the type's), Size is the least it takes.
+    /// Nothing written is the natural sequential layout.
+    /// </summary>
+    private static (bool Explicit, int Pack, int Size) NativeLayout(TypeDecl? decl)
+    {
+        if (decl?.AttributeParts.FirstOrDefault(a => a.Is("StructLayout")) is not AttributeRef layout) return (false, 0, 0);
+        bool explicitly = layout.Argument is "Explicit" or "2";
+        int pack = Whole(layout.Named("Pack")) is int packed && packed > 0 ? packed : 0;
+        int size = Whole(layout.Named("Size")) is int least && least > 0 ? least : 0;
+        return (explicitly, pack, size);
+    }
+
+    /// <summary>An attribute's integer argument as written, decimal or hexadecimal, or null.</summary>
+    private static int? Whole(string? written)
+    {
+        if (written is null) return null;
+        string digits = written.TrimEnd('u', 'U', 'l', 'L').Replace("_", "");
+        if (digits.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return int.TryParse(digits[2..], System.Globalization.NumberStyles.HexNumber, null, out int hex) ? hex : null;
+        return int.TryParse(digits, out int value) ? value : null;
+    }
+
+    /// <summary>A field's [FieldOffset], under an explicit layout.</summary>
+    private static int? FieldOffsetOf(TypeSymbol sym, FieldSymbol f)
+        => sym.Decl?.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name)?.Attributes.FirstOrDefault(a => a.Is("FieldOffset"))?.Argument is string written
+           && Whole(written) is int offset ? offset : null;
 
     /// <summary>Assigns field offsets and vtable slots.</summary>
     private void LayOut(TypeSymbol sym)
@@ -5419,6 +5450,8 @@ public sealed partial class Binder
         }
 
         sym.InlineDecided = true;
+        (bool explicitLayout, int pack, int leastSize) = NativeLayout(sym.Decl);
+        int start = at;
         foreach (FieldSymbol f in sym.Fields.Where(f => !f.Static))
         {
             int size = f.Type.Size;
@@ -5442,12 +5475,22 @@ public sealed partial class Binder
                 align = Math.Max(1, held.InlineAlign);
             }
 
+            // WHERE [FieldOffset] PUTS IT, under an explicit layout -- two
+            // fields may share bytes -- and no further apart than Pack lets
+            // it be aligned under a sequential one.
+            if (explicitLayout && FieldOffsetOf(sym, f) is int written)
+            {
+                f.Offset = start + written;
+                at = Math.Max(at, f.Offset + size);
+                continue;
+            }
+            if (pack > 0) align = Math.Min(align, pack);
             at = (at + align - 1) / align * align;   // natural alignment
             f.Offset = at;
             at += size;
         }
 
-        sym.InstanceSize = Math.Max(at,
+        sym.InstanceSize = Math.Max(Math.Max(at, start + leastSize),
             sym.Kind == TypeKind.Class ? Target.Current.ObjectHeaderBytes : 1);
 
         if (sym.Kind == TypeKind.Struct)

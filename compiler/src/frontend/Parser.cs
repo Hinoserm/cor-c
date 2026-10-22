@@ -1454,7 +1454,10 @@ public sealed class Parser
             {
                 words.Add(_t[j].Text);
             }
-            if (_t[j].Kind is Tok.Ident or Tok.Str)
+            // A NUMBER TOO: `[FieldOffset(4)]`, `Pack = 1` -- dropped, the
+            // attribute said nothing and the struct was laid out as if
+            // unwritten.
+            if (_t[j].Kind is Tok.Ident or Tok.Str or Tok.Int)
             {
                 last = _t[j].Text;
             }

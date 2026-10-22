@@ -4394,6 +4394,15 @@ public sealed partial class Lowering
                 Require(addressed);
                 return _e.Address(CallLabel(addressed));
 
+            // `&s` OF A STRUCT VARIABLE is the address of its bytes, as
+            // `ref s` hands over (StructReference): a struct not held in line
+            // is a pointer to its block, and this was the address of that
+            // pointer -- `((byte*)&s)[0]` read the pointer's low byte.
+            case UnOp.AddressOf when u.Operand is NameExpr { } named && _b.Resolved.TryGetValue(named, out Sym? held)
+                                     && held is LocalSym { IsRef: false } or ParamSym { ByRef: false }
+                                     && IsStructValue(_b.TypeOf(u.Operand)):
+                return StructReference(u.Operand, _b.TypeOf(u.Operand));
+
             case UnOp.AddressOf:
                 return AddressOf(u, u.Operand, pins: true);
 

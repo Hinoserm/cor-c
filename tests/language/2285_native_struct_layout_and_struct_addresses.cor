@@ -1,0 +1,68 @@
+// test: native_struct_layout_and_struct_addresses
+// expect-exit: 0
+// expect-output:
+// 7 8 4 16 8 7
+// 44 99223344
+// 01 | 03 02 04 05 06 07 | 01 03 02 04 05 06 07
+// BEEF A0B0C0D 0D 0C 0B 0A
+// FF FF FF FF
+// 3 8000000000000000 2
+//
+// .NET's [StructLayout] and [FieldOffset], as native code lays a struct
+// out: Pack caps each field's alignment and the struct's, Explicit puts
+// each field at its FieldOffset (two may share bytes), Size is the least it
+// takes -- all read as written, where before every integer argument of an
+// attribute was dropped and the struct laid out as if nothing were. And
+// `&s` of a struct variable is the address of its bytes: it was the address
+// of the pointer to its block, so `((byte*)&s)[0]` and `(&s)->Field` read
+// that pointer. Marshal.SizeOf<T>() and BitOperations' rotates as .NET has
+// them.
+// Expected output from .NET 10.
+
+using System;
+using System.Numerics;
+using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+struct Header { public byte Kind; public ushort Length; public uint Id; }
+
+[StructLayout(LayoutKind.Sequential, Pack = 2)]
+struct Two { public byte A; public uint B; public byte C; }
+
+[StructLayout(LayoutKind.Explicit)]
+struct Overlay { [FieldOffset(0)] public uint Whole; [FieldOffset(0)] public byte Low; [FieldOffset(3)] public byte High; }
+
+[StructLayout(LayoutKind.Explicit, Size = 0x10)]
+struct Sized { [FieldOffset(4)] public int X; }
+
+struct Natural { public byte Kind; public ushort Length; public uint Id; }
+
+static unsafe class Program
+{
+    static string Bytes(byte* at, int count)
+    {
+        string s = "";
+        for (int i = 0; i < count; i++) s += at[i].ToString("X2") + (i + 1 < count ? " " : "");
+        return s;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(sizeof(Header) + " " + sizeof(Two) + " " + sizeof(Overlay) + " " + sizeof(Sized) + " " + sizeof(Natural) + " " + Marshal.SizeOf<Header>());
+        Overlay o = new() { Whole = 0x11223344 };
+        o.High = 0x99;
+        Console.WriteLine(o.Low.ToString("X") + " " + o.Whole.ToString("X"));
+        Natural n = new() { Kind = 1, Length = 0x203, Id = 0x7060504 };
+        Header h = new() { Kind = 1, Length = 0x203, Id = 0x7060504 };
+        Console.WriteLine(Bytes((byte*)&n, 1) + " | " + Bytes((byte*)&n + 2, 6) + " | " + Bytes((byte*)&h, 7));
+        Natural* np = &n;
+        np->Length = 0xBEEF;
+        Header* hp = &h;
+        hp->Id = 0xA0B0C0D;
+        Console.WriteLine(n.Length.ToString("X") + " " + h.Id.ToString("X") + " " + Bytes((byte*)hp + 3, 4));
+        Sized z = new() { X = -1 };
+        Console.WriteLine(Bytes((byte*)&z + 4, 4));
+        Console.WriteLine(BitOperations.RotateLeft(0x80000001u, 1).ToString("X") + " " + BitOperations.RotateRight(1UL, 1).ToString("X") + " " + BitOperations.RotateLeft(1UL, 65));
+        return 0;
+    }
+}

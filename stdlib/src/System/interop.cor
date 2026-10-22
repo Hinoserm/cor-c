@@ -43,6 +43,10 @@ class Win32Exception : ExternalException
 
 static partial class Marshal
 {
+    /// How many bytes a value of T takes laid out for native code: its
+    /// layout here, which is the C one (StructLayout as written).
+    public static int SizeOf<T>() where T : struct { return sizeof(T); }
+
     /// The errno of the last call that failed on THIS thread, as .NET's is:
     /// set by a [DllImport] declared with SetLastError = true, and by the
     /// class library for the system calls it makes itself. It lives in the
