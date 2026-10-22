@@ -535,6 +535,29 @@ public sealed class PreinitWorld
         }
     }
 
+    /// <summary>
+    /// Every name what these regions hold reaches, through the objects they
+    /// hold: the descriptors, literals and routines the link's data would
+    /// name, without giving any unit's own symbol an alias.
+    /// </summary>
+    public HashSet<string> Names(IEnumerable<Region> roots)
+    {
+        HashSet<string> named = new(StringComparer.Ordinal);
+        HashSet<Region> seen = new(ReferenceEqualityComparer.Instance);
+        Stack<Region> walk = new();
+        foreach (Region r in roots) if (seen.Add(r)) walk.Push(r);
+        while (walk.TryPop(out Region? r))
+            foreach (Val v in r.Refs.Values)
+                switch (v)
+                {
+                    case Ptr { Region.Kind: RegionKind.Heap } p: if (seen.Add(p.Region)) walk.Push(p.Region); break;
+                    case Ptr { Region.Symbol: string symbol }: named.Add(symbol); break;
+                    case Code c: named.Add(c.Label); break;
+                    case Unresolved u: named.Add(u.Symbol); break;
+                }
+        return named;
+    }
+
     /// <summary>Whether a value can be written into the image: an address of a stack's or a thread's cannot.</summary>
     public static bool Kept(Val v) => v is not Ptr { Region.Kind: RegionKind.Frame or RegionKind.Thread };
 

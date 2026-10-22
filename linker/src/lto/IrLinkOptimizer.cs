@@ -124,14 +124,12 @@ public static class IrLinkOptimizer
         // of its build reaches is still nobody's, and is dropped. `keep` is
         // every name those modules import.
         if (keep is not null) linkRoots.UnionWith(keep);
-        // And what the statics laid down made name (Preinit): the interrupt
-        // check's solve, before this, decided them.
-        linkRoots.UnionWith(Preinit.LastNamed);
         string? reachEntry = closedImageEntry ?? reachableFrom;
         Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && reachEntry is not null
             ? IrReachability.Find(inputs, archives, owners, reachEntry, linkRoots,
                 noCollector ? HeapDecision.GoneEdges(inputs.Select((input, index) => (input.Object, withoutCollector![index]))
-                    .Where(unit => unit.Item2 is not null).Select(unit => (unit.Object, unit.Item2!)).ToList()) : null) : null;
+                    .Where(unit => unit.Item2 is not null).Select(unit => (unit.Object, unit.Item2!)).ToList()) : null,
+                Preinit.LastEdges) : null;
         LinkTimings.Phase("reachability");
         // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
         // call's targets on a type nothing stamps an object with run on no

@@ -264,17 +264,22 @@ public static class Preinit
     /// the steps and initialisers that never run, and what each kept run read
     /// of other types' mutable statics (Report).
     /// </summary>
-    public sealed record Solution(ObjectFile? Data, HashSet<string> FrozenSteps, int Frozen, int Candidates,
-        HashSet<string> Overrides, int TypesRun, List<string> Report, List<(ObjectFile Unit, string Local, string Alias)> Aliases, string Signature,
-        HashSet<string> Named);
+    public sealed record Solution(HashSet<string> FrozenSteps, int Frozen, int Candidates, int TypesRun, List<string> Report, string Signature,
+        Dictionary<string, HashSet<string>> Edges)
+    {
+        /// <summary>The solve itself, which lays its data down when the link knows what it keeps (Lay).</summary>
+        internal object? Made { get; init; }
+    }
 
     /// <summary>
-    /// WHAT THE LAID-DOWN DATA NAMES, for the link-time optimiser to keep
-    /// (IrLinkOptimizer's roots): a descriptor or a routine only an object
-    /// made at the link reaches is reached all the same, and a unit made again
-    /// that dropped it left the data naming nothing.
+    /// WHAT A STATIC LAID DOWN MADE REACHES, for the link-time optimiser's
+    /// walk (IrReachability): a static of a type made at the link -- its
+    /// word, its state word -- reaches every descriptor and routine its
+    /// objects name, once it is reached itself. Named as roots outright,
+    /// every type's whole library of statics was kept whether the program
+    /// touched it or not, and with them every type they made counted made.
     /// </summary>
-    public static IReadOnlyCollection<string> LastNamed => _last?.Named ?? (IReadOnlyCollection<string>)System.Array.Empty<string>();
+    public static IReadOnlyDictionary<string, HashSet<string>>? LastEdges => _last?.Edges;
 
     /// <summary>
     /// The same solve, the notes left where they are: what the interrupt
@@ -297,8 +302,19 @@ public static class Preinit
     private static void Report(Solution solved)
     {
         if (!Switches.PreinitReport) return;
-        Console.Error.WriteLine($"preinit: {solved.Frozen} of {solved.Candidates} statics laid down made, {solved.TypesRun} types run whole, {solved.Overrides.Count} unit data replaced");
+        Console.Error.WriteLine($"preinit: {solved.Frozen} of {solved.Candidates} statics laid down made, {solved.TypesRun} types run whole");
         foreach (string line in solved.Report) Console.Error.WriteLine("preinit: " + line);
+    }
+
+    /// <summary>Every name the inputs' code and data refer to: what the image keeps of the link's solve.</summary>
+    private static HashSet<string> Referenced(List<ObjectFile> inputs)
+    {
+        HashSet<string> named = new(StringComparer.Ordinal);
+        foreach (ObjectFile obj in inputs)
+            foreach (Section section in obj.Sections)
+                if (section.Kind != SectionKind.Note)
+                    foreach (Relocation r in section.Relocs) named.Add(r.Symbol);
+        return named;
     }
 
     private static Solution? _last;
@@ -330,26 +346,32 @@ public static class Preinit
         Solution? solved = _last is { } last && last.Signature == Signature(notes) ? last : null;
         _last = null;
         if (solved is null && (solved = Solve(inputs, notes, longMode)) is not null) Report(solved);
-        if (solved is null) return null;
-        if (solved.Overrides.Count > 0)
+        if (solved is null || solved.Made is not Solver made) return null;
+        // ONLY WHAT THE IMAGE STILL NAMES: a type made at the link that no
+        // kept code touches is laid down by nobody, and its unit's own data
+        // stays as it was.
+        HashSet<string> referenced = Referenced(inputs);
+        var (data, overrides, aliases, said) = made.Emit(name => referenced.Contains(name));
+        if (Switches.PreinitReport) foreach (string line in said) Console.Error.WriteLine("preinit: " + line);
+        if (overrides.Count > 0)
             foreach (ObjectFile obj in inputs)
                 for (int i = 0; i < obj.Symbols.Count; i++)
                 {
                     Symbol s = obj.Symbols[i];
-                    if (!s.IsDefined || !solved.Overrides.Contains(s.Name)) continue;
+                    if (!s.IsDefined || !overrides.Contains(s.Name)) continue;
                     obj.Symbols[i] = new Symbol { Name = s.Name + "\u0001preinit-replaced", Section = s.Section, Offset = s.Offset, Size = s.Size, IsFunction = s.IsFunction, Global = false };
                 }
         // A UNIT'S OWN SYMBOL the link's data names, given a name every unit
         // reaches, at the same place -- in that unit, which the link must
         // still have: one made again since the solve is another object.
-        foreach ((ObjectFile unit, string local, string alias) in solved.Aliases)
+        foreach ((ObjectFile unit, string local, string alias) in aliases)
         {
             if (!inputs.Any(o => ReferenceEquals(o, unit)))
                 throw new LinkException(new[] { "preinit: '" + local + "', a unit's own, is named by the statics laid down, and its unit was made again since" });
             Symbol at = unit.Symbols.First(x => x.IsDefined && !x.Global && x.Name == local);
             unit.Symbols.Add(new Symbol { Name = alias, Section = at.Section, Offset = at.Offset, Size = at.Size, IsFunction = at.IsFunction });
         }
-        return solved.Data;
+        return data;
     }
 
     /// <summary>A value the link made: a number, an address, or an object it lays down.</summary>
@@ -448,7 +470,7 @@ public static class Preinit
                     }
                 }
             }
-            return Emit(world, frozenSteps, typesRun);
+            return Finish(world, frozenSteps, typesRun);
         }
 
         /// <summary>
@@ -628,15 +650,65 @@ public static class Preinit
             return made;
         }
 
+        // What the solve left, laid down when the link knows what it keeps (Emit).
+        private PreinitWorld? _world;
+        private readonly Dictionary<string, PreinitWorld.TypeEntry> _frozenTypes = new(StringComparer.Ordinal);
+
         /// <summary>
-        /// The data: every object laid down, reached from a candidate's storage
-        /// or from a unit datum a run changed; each such datum, defined again
-        /// as the run left it; then each candidate's storage -- the object, or
-        /// nothing -- and its flag.
+        /// The solve's answer: the steps and initialisers that never run, the
+        /// counts, and what each static laid down reaches (Solution.Edges) --
+        /// a type made at the link as one: its state word and every static
+        /// of it reach everything its objects name.
         /// </summary>
-        private Solution Emit(PreinitWorld world, HashSet<string> frozenSteps, int typesRun)
+        private Solution Finish(PreinitWorld world, HashSet<string> frozenSteps, int typesRun)
         {
-            List<PreinitWorld.Region> roots = world.Storages.Concat(world.Overridden).OrderBy(r => r.Symbol, StringComparer.Ordinal).ToList();
+            _world = world;
+            foreach (PreinitWorld.TypeEntry t in world.Types) if (t.Frozen) _frozenTypes.TryAdd(t.Note.Owner, t);
+            int frozen = 0;
+            foreach (Candidate c in _byStorage.Values)
+                if (_solved.GetValueOrDefault(c.Storage) is Made)
+                {
+                    frozenSteps.Add(c.Step);
+                    frozen++;
+                }
+            Dictionary<string, HashSet<string>> edges = new(StringComparer.Ordinal);
+            List<PreinitWorld.Region> roots = world.Storages.Concat(world.Overridden).ToList();
+            foreach (var owned in roots.GroupBy(r => r.Maker ?? ""))
+            {
+                if (_frozenTypes.TryGetValue(owned.Key, out PreinitWorld.TypeEntry? type))
+                {
+                    HashSet<string> named = world.Names(owned);
+                    foreach (PreinitWorld.Region r in owned) edges[r.Symbol!] = named;
+                    edges[type.Note.Ready] = named;
+                }
+                else
+                    foreach (PreinitWorld.Region r in owned) edges[r.Symbol!] = world.Names(new[] { r });
+            }
+            return new Solution(frozenSteps, frozen, _byStorage.Count, typesRun, world.Report, Signature(_notes), edges) { Made = this };
+        }
+
+        /// <summary>
+        /// THE DATA, for what the image still names (`referenced`): a type made
+        /// at the link is laid down whole when anything names its state word or
+        /// one of its statics, and not at all otherwise -- its unit's own
+        /// definitions stay, and it is made at its first touch as before. A
+        /// candidate of a type not made whole is laid down when its own word
+        /// is named. Then every object those reach; each unit datum kept,
+        /// defined again as the run left it; each candidate's storage -- the
+        /// object, or nothing -- and its flag.
+        /// </summary>
+        internal (ObjectFile Data, HashSet<string> Overrides, List<(ObjectFile Unit, string Local, string Alias)> Aliases, List<string> Said)
+            Emit(Func<string, bool> referenced)
+        {
+            PreinitWorld world = _world!;
+            HashSet<string> keptTypes = new(StringComparer.Ordinal);
+            List<PreinitWorld.Region> state = world.Storages.Concat(world.Overridden).ToList();
+            foreach (var owned in state.GroupBy(r => r.Maker ?? ""))
+                if (_frozenTypes.TryGetValue(owned.Key, out PreinitWorld.TypeEntry? type)
+                    && (referenced(type.Note.Ready) || owned.Any(r => referenced(r.Symbol!))))
+                    keptTypes.Add(owned.Key);
+            bool Kept(PreinitWorld.Region r) => _frozenTypes.ContainsKey(r.Maker ?? "") ? keptTypes.Contains(r.Maker!) : referenced(r.Symbol!);
+            List<PreinitWorld.Region> roots = state.Where(Kept).OrderBy(r => r.Symbol, StringComparer.Ordinal).ToList();
             // Only what they reach: an attempt given up on part of the way left objects nothing names.
             List<PreinitWorld.Region> objects = new();
             HashSet<PreinitWorld.Region> kept = new(ReferenceEqualityComparer.Instance);
@@ -652,12 +724,13 @@ public static class Preinit
             // WHAT IT COSTS THE IMAGE, the objects of four kilobytes and more by
             // the type that made them: each was a boot's allocation before, and
             // is file and memory both now.
+            List<string> said = new();
             if (Switches.PreinitReport)
             {
                 foreach (var made in objects.Where(o => o.Bytes.Length >= 4096).GroupBy(o => o.Maker ?? "?").OrderByDescending(g => g.Sum(o => o.Bytes.Length)))
-                    world.Report.Add(made.Key + " lays down " + made.Count() + " objects of " + made.Sum(o => o.Bytes.Length) + " bytes");
-                world.Report.Add("objects laid down: " + objects.Count + ", " + objects.Sum(o => (long)o.Bytes.Length) + " bytes; unit data replaced: "
-                    + world.Overridden.Sum(r => (long)r.Bytes.Length) + " bytes");
+                    said.Add(made.Key + " lays down " + made.Count() + " objects of " + made.Sum(o => o.Bytes.Length) + " bytes");
+                said.Add(keptTypes.Count + " of " + _frozenTypes.Count + " types made at the link are named by the image; objects laid down: " + objects.Count + ", "
+                    + objects.Sum(o => (long)o.Bytes.Length) + " bytes; unit data replaced: " + roots.Where(r => r.Kind == PreinitWorld.RegionKind.Data).Sum(r => (long)r.Bytes.Length) + " bytes");
             }
             ObjectFile obj = new();
             Section data = new(".data", SectionKind.Data) { Align = 16 };
@@ -673,7 +746,7 @@ public static class Preinit
                 data.Bytes.AddRange(o.Bytes);
             }
             HashSet<string> overrides = new(StringComparer.Ordinal);
-            foreach (PreinitWorld.Region r in world.Overridden.OrderBy(r => r.Symbol, StringComparer.Ordinal))
+            foreach (PreinitWorld.Region r in roots.Where(r => r.Kind == PreinitWorld.RegionKind.Data))
             {
                 Pad(data, System.Math.Max(r.Align, _word));
                 obj.Symbols.Add(new Symbol { Name = r.Symbol!, Section = data, Offset = data.Bytes.Count, Size = r.Bytes.Length });
@@ -681,26 +754,23 @@ public static class Preinit
                 data.Bytes.AddRange(r.Bytes);
                 overrides.Add(r.Symbol!);
             }
-            int frozen = 0;
+            HashSet<PreinitWorld.Region> keptStorage = new(roots.Where(r => r.Kind == PreinitWorld.RegionKind.Storage), ReferenceEqualityComparer.Instance);
             foreach (Candidate c in _byStorage.Values.OrderBy(c => c.Storage, StringComparer.Ordinal))
             {
                 // As wide as the field, aligned as the statics' own are (to its size, at most eight).
                 Pad(data, System.Math.Min(8, c.Width >= 8 ? 8 : c.Width >= 4 ? 4 : c.Width >= 2 ? 2 : 1));
                 PreinitWorld.Region storage = world.DefineStorage(c.Storage, c.Width, c.Owner);
                 obj.Symbols.Add(new Symbol { Name = c.Storage, Section = data, Offset = data.Bytes.Count, Size = c.Width });
-                placed.Add((data.Bytes.Count, storage));
-                data.Bytes.AddRange(storage.Bytes);
-                if (_solved.GetValueOrDefault(c.Storage) is Made)
-                {
-                    frozenSteps.Add(c.Step);
-                    frozen++;
-                }
+                // NOT KEPT, NOTHING IN IT: the step runs and makes the field.
+                if (keptStorage.Contains(storage)) placed.Add((data.Bytes.Count, storage));
+                data.Bytes.AddRange(keptStorage.Contains(storage) ? storage.Bytes : new byte[c.Width]);
             }
             foreach (Candidate c in _byStorage.Values.OrderBy(c => c.Storage, StringComparer.Ordinal))
             {
                 PreinitWorld.Region flag = world.DefineStorage(c.Flag, 1, c.Owner);
+                PreinitWorld.Region storage = world.DefineStorage(c.Storage, c.Width, c.Owner);
                 obj.Symbols.Add(new Symbol { Name = c.Flag, Section = data, Offset = data.Bytes.Count, Size = 1 });
-                data.Bytes.Add(flag.Bytes[0]);
+                data.Bytes.Add(keptStorage.Contains(storage) ? flag.Bytes[0] : (byte)0);
             }
             foreach ((long at, PreinitWorld.Region r) in placed)
                 foreach ((int offset, PreinitWorld.Val v) in r.Refs.OrderBy(p => p.Key))
@@ -709,9 +779,7 @@ public static class Preinit
                     data.Relocs.Add(new Relocation((int)(at + offset), symbol ?? names[o!], addend, _longMode ? RelocKind.Abs64 : RelocKind.Abs32));
                 }
             obj.Sections.Add(data);
-            HashSet<string> named = new(StringComparer.Ordinal);
-            foreach (Relocation r in data.Relocs) if (!r.Symbol.StartsWith("preinit$", StringComparison.Ordinal)) named.Add(r.Symbol);
-            return new Solution(obj, frozenSteps, frozen, _byStorage.Count, overrides, typesRun, world.Report, world.Aliases, Signature(_notes), named);
+            return (obj, overrides, world.Aliases, said);
         }
 
         private static void Pad(Section data, int align)

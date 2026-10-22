@@ -7,8 +7,13 @@ public static class IrReachability
 {
     public static Dictionary<ObjectFile, HashSet<string>> Find(IReadOnlyList<(string Name, ObjectFile Object)> inputs,
         IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<string, ObjectFile> owners, string entry,
-        IEnumerable<string>? roots = null, Func<ObjectFile, string, string, bool>? gone = null)
+        IEnumerable<string>? roots = null, Func<ObjectFile, string, string, bool>? gone = null,
+        IReadOnlyDictionary<string, HashSet<string>>? also = null)
     {
+        // `also`: what reaching a name reaches beside its definition -- a
+        // static the link lays down made reaches what its objects name
+        // (Preinit.LastEdges), and nothing of it before it is reached.
+        HashSet<string> extended = new(StringComparer.Ordinal);
         // `gone`: an edge from a unit's function to a name it no longer
         // refers to as the link will make it (HeapDecision.GoneEdges).
         bool Kept(ObjectFile obj, string from, string to) => gone is null || !gone(obj, from, to);
@@ -30,6 +35,8 @@ public static class IrReachability
         while (pending.Count > 0)
         {
             var reference = pending.Pop();
+            if (also is not null && also.TryGetValue(reference.Symbol, out HashSet<string>? beside) && extended.Add(reference.Symbol))
+                foreach (string named in beside) pending.Push((null, named));
             ObjectFile? owner = reference.Origin is not null && locals[reference.Origin].Contains(reference.Symbol)
                 ? reference.Origin : owners.GetValueOrDefault(reference.Symbol);
             // A DEFINITION THE UNIT'S IR HOLDS AND ITS OBJECT DOES NOT: the
