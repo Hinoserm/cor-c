@@ -240,7 +240,27 @@ public sealed class LifetimeSolver
 
     public bool Holds(LifetimeCondition? condition)
         => condition is not null && condition.Stays.All(need => !Escapes(need.Callee, need.Argument)) && condition.Fresh.All(IsFresh)
-           && condition.Fields.All(need => Merged(need.Callee, need.Argument) is { Opaque: false });
+           && condition.Fields.All(need => Merged(need.Callee, need.Argument) is { Opaque: false })
+           && condition.Either.All(need => !Escapes(need.Callee, need.Argument) || HandsBack(need.Callee, need.Argument) && Holds(need.Or));
+
+    /// <summary>
+    /// Whether the named global's argument leaves only by being handed back
+    /// as its result (LifetimeFunction.ReturnsFirst) -- or stays put: a
+    /// virtual call's symbol, when every override it reaches does one or the
+    /// other.
+    /// </summary>
+    public bool HandsBack(string callee, int argument)
+    {
+        if (argument != 0) return false;
+        if (_virtualMerges.TryGetValue(callee, out string[]? targets))
+            return targets.Length > 0 && targets.All(t => !Escapes(t, 0) || _globals.TryGetValue(t, out LifetimeFunction? f) && f.ReturnsFirst);
+        return _globals.TryGetValue(callee, out LifetimeFunction? function) && function.ReturnsFirst;
+    }
+
+    /// <summary>An either-need's escape side alone, as SolveEscapes can judge it: its stays, and its own either-needs.</summary>
+    private bool EitherStays(LifetimeCondition condition)
+        => condition.Stays.All(need => !Escapes(need.Callee, need.Argument))
+           && condition.Either.All(need => !Escapes(need.Callee, need.Argument) || HandsBack(need.Callee, need.Argument) && EitherStays(need.Or));
 
     /// <summary>A merge's summary: an argument's, or (argument -1) what a fresh function returns.</summary>
     private SolvedFields? Merged(string callee, int argument)
@@ -400,12 +420,37 @@ public sealed class LifetimeSolver
                 }
             }
         }
-        while (escaped.TryDequeue(out (string, int) done))
+        // EITHER-NEEDS AFTER, as long as one more fails: each holds while its
+        // call keeps the argument nowhere or hands it back with the rest
+        // holding, and escapes only grow, so the rounds end.
+        List<(string Name, int Parameter, LifetimeCondition Condition)> eithers = new();
+        foreach (string name in _globals.Keys.Order(StringComparer.Ordinal))
         {
-            if (!dependents.TryGetValue(done, out var list)) continue;
-            foreach ((bool[] escapes, int p, string owner) in list)
-                if (!escapes[p]) { escapes[p] = true; escaped.Enqueue((owner, p)); _why?.TryAdd((owner, p), "through " + done.Item1 + ":" + done.Item2); }
+            LifetimeFunction function = _globals[name];
+            for (int p = 0; p < function.Parameters.Length; p++)
+                if (function.Parameters[p] is { Either.Count: > 0 } condition) eithers.Add((name, p, condition));
         }
+        do
+        {
+            while (escaped.TryDequeue(out (string, int) done))
+            {
+                if (!dependents.TryGetValue(done, out var list)) continue;
+                foreach ((bool[] escapes, int p, string owner) in list)
+                    if (!escapes[p]) { escapes[p] = true; escaped.Enqueue((owner, p)); _why?.TryAdd((owner, p), "through " + done.Item1 + ":" + done.Item2); }
+            }
+            foreach ((string name, int p, LifetimeCondition condition) in eithers)
+            {
+                bool[] escapes = _escapes[name];
+                if (escapes[p]) continue;
+                foreach ((string callee, int argument, LifetimeCondition or) in condition.Either)
+                {
+                    if (!Escapes(callee, argument) || HandsBack(callee, argument) && EitherStays(or)) continue;
+                    escapes[p] = true; escaped.Enqueue((name, p)); _why?.TryAdd((name, p), "neither kept nor handed back by " + callee + ":" + argument);
+                    break;
+                }
+            }
+        }
+        while (escaped.Count > 0);
         // --trace-escapes NAME: why each such parameter escapes, link by link.
         if (_why is not null)
             foreach (((string name, int p), string reason) in _why.OrderBy(w => w.Key.Item1, StringComparer.Ordinal))
@@ -437,7 +482,7 @@ public sealed class LifetimeSolver
         foreach (string name in _globals.Keys.Order(StringComparer.Ordinal))
         {
             LifetimeCondition? condition = _globals[name].Fresh;
-            if (condition is null || condition.Stays.Any(need => Escapes(need.Callee, need.Argument))) continue;
+            if (condition is null || condition.Stays.Any(need => Escapes(need.Callee, need.Argument)) || !EitherStays(condition)) continue;
             waiting[name] = condition.Fresh.Count;
             foreach (string callee in condition.Fresh)
             {

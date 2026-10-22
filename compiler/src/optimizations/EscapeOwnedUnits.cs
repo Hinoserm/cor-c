@@ -615,7 +615,7 @@ public sealed partial class Escape
         // the bound is kept on the sum over the unit.
         void Need(OwnedFieldRecord record, LifetimeCondition condition, Function f)
         {
-            if (!record.Needs.Add(condition)) { record.Refused = true; record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
+            if (!record.Needs.Add(condition)) { record.Refused = true; record.Needs.Clear(); }
             else if (!condition.IsTrue) record.Site(f.Name).Needs.Add(condition);
         }
 
@@ -1255,7 +1255,7 @@ public sealed partial class Escape
                         if (judged is null || !read.Needs.Add(judged.Needs))
                         {
                             read.Refused = true; read.Danger.Clear(); read.DangerFields.Clear(); read.ReturnedBy.Clear();
-                            read.Needs.Stays.Clear(); read.Needs.Fresh.Clear(); read.Needs.Fields.Clear();
+                            read.Needs.Clear();
                             continue;
                         }
                         read.Danger.UnionWith(judged.Danger); read.DangerFields.UnionWith(judged.DangerFields);
@@ -1288,11 +1288,11 @@ public sealed partial class Escape
                 hints.Functions[name] = new OwnedFunctionRecord(record.Calls.ToArray(), record.Writes.ToArray(), record.InitWrites.ToArray(), record.Borrows.ToArray());
         foreach (OwnedFieldRecord record in hints.Fields.Values)
         {
-            if (record.Refused) { record.RefusedBy.Clear(); record.Sites.Clear(); record.Danger.Clear(); record.Sinks.Clear(); record.Needs.Stays.Clear(); record.Needs.Fresh.Clear(); record.Needs.Fields.Clear(); }
+            if (record.Refused) { record.RefusedBy.Clear(); record.Sites.Clear(); record.Danger.Clear(); record.Sinks.Clear(); record.Needs.Clear(); }
             if (record.Refused || record.ElementsRefused)
             {
                 record.ElementsRefused = true; record.ElementArrays = false; record.ElementDanger.Clear(); record.ElementDangerFields.Clear();
-                record.ElementNeeds.Stays.Clear(); record.ElementNeeds.Fresh.Clear(); record.ElementNeeds.Fields.Clear();
+                record.ElementNeeds.Clear();
             }
         }
         return hints;

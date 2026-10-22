@@ -2236,6 +2236,29 @@ continue;
         "m_StringBuilder_Insert_", "m_StringBuilder_Remove_", "m_StringBuilder_Replace_", "m_StringBuilder_Clear_0",
     };
 
+    /// <summary>EitherResult's answer that the result lets the object go, kept so a call's overrides ask once.</summary>
+    private static readonly LifetimeCondition NoEither = new();
+
+    /// <summary>How deep a call's result is judged apart for an either-need (EitherResult): two calls, no more.</summary>
+    [ThreadStatic] private static int _eitherDepth;
+
+    /// <summary>
+    /// What a call's result asks, taken for the object its first argument
+    /// was -- as it is where the callee hands that argument back -- or null
+    /// where that result would let it go whatever the other units do.
+    /// </summary>
+    private static LifetimeCondition? EitherResult(Function f, Instr call, Dictionary<string, bool[]> summaries, Needs needs)
+    {
+        Needs inner = needs.Nested();
+        _eitherDepth++;
+        try
+        {
+            Flow result = Analyse(f, new[] { call.Dest! }, summaries, null, needs: inner);
+            return result.Escapes ? null : inner.Condition;
+        }
+        finally { _eitherDepth--; }
+    }
+
     private static bool ReturnsFirst(string callee)
     {
         if (_returnsFirst?.Contains(callee) == true) return true;
@@ -3547,6 +3570,14 @@ continue;
                                 // the result holds the object, as frame memory
                                 // does, at the offsets the callee put it.
                                 if (!borrowing && Held(i.Callee, a) is long[] boxed && HoldsResult(i, boxed, HeldStamps(i.Callee, a))) continue;
+                                // HANDED BACK, PERHAPS, by a call another unit
+                                // answers -- a virtual GetEnumerator may be an
+                                // iterator's, which returns itself: kept nowhere,
+                                // or handed back with what is done here with the
+                                // result holding too. The result judged apart,
+                                // as the object, for that other way's needs.
+                                if (a == 0 && needs is not null && i.Dest is not null && !borrowing && _eitherDepth < 2 && !needs.Defines(i.Callee)
+                                    && EitherResult(f, i, summaries, needs) is LifetimeCondition handedBack && needs.AllowEither(i.Callee, 0, handedBack)) continue;
                                 if (needs is not null && needs.Allow(i.Callee, a)) continue;
                                 flow.Escapes = true;
                             }
@@ -3581,6 +3612,7 @@ continue;
                                 List<long>? boxedAt = null;
                                 List<Stamp>? boxedAs = null;
                                 bool untyped = false, handedBack = false;
+                                LifetimeCondition? eitherBack = null;
                                 foreach (string o in overrides)
                                 {
                                     if (summaries.TryGetValue(o, out bool[]? summary) && a - 1 < summary.Length && !summary[a - 1]) continue;
@@ -3597,6 +3629,12 @@ continue;
                                         else untyped = true;
                                         continue;
                                     }
+                                    // Kept nowhere, or handed back with the
+                                    // result's own needs holding (EitherResult),
+                                    // where the link answers for the override.
+                                    if (a == 1 && needs is not null && i.Dest is not null && !borrowing && _eitherDepth < 2 && !needs.Defines(o)
+                                        && (eitherBack ??= EitherResult(f, i, summaries, needs) ?? NoEither) is var resultNeeds && !ReferenceEquals(resultNeeds, NoEither)
+                                        && needs.AllowEither(o, 0, resultNeeds)) continue;
                                     if (needs is not null && needs.Allow(o, a - 1)) continue;
                                     if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal))
                                         Console.Error.WriteLine($"indirect {f.Name}: {i} argument {a - 1} kept by override {o}");

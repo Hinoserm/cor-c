@@ -20,8 +20,41 @@ public sealed class LifetimeCondition : IEquatable<LifetimeCondition>
     public SortedSet<(string Callee, int Argument)> Stays { get; } = new(StaysOrder.Instance);
     public SortedSet<string> Fresh { get; } = new(StringComparer.Ordinal);
     public SortedSet<(string Callee, int Argument)> Fields { get; } = new(StaysOrder.Instance);
-    public int Count => Stays.Count + Fresh.Count + Fields.Count;
+
+    /// <summary>
+    /// NEEDS THAT HOLD ONE WAY OR THE OTHER: the callee keeps the argument
+    /// nowhere, as a Stays need asks; or it hands that argument back as its
+    /// result (LifetimeFunction.ReturnsFirst) and what the caller did with
+    /// the result -- the condition beside it -- holds too. An iterator's
+    /// GetEnumerator returns the iterator, and a caller that walked what came
+    /// back said what the walk needs. Kept in order of callee and argument,
+    /// one an argument, so alike conditions are alike lists.
+    /// </summary>
+    public List<(string Callee, int Argument, LifetimeCondition Or)> Either { get; } = new();
+
+    public int Count => Stays.Count + Fresh.Count + Fields.Count + EitherCount;
+    private int EitherCount { get { int n = 0; foreach (var e in Either) n += 1 + e.Or.Count; return n; } }
     public bool IsTrue => Count == 0;
+
+    /// <summary>Nothing needed any more: the condition "always" (a refusal empties one this way).</summary>
+    public void Clear() { Stays.Clear(); Fresh.Clear(); Fields.Clear(); Either.Clear(); }
+
+    /// <summary>An either-need, put in its place in order; false when the condition grew past <see cref="Limit"/>.</summary>
+    public bool AddEither(string callee, int argument, LifetimeCondition or)
+    {
+        int at = 0;
+        while (at < Either.Count && StaysOrder.Instance.Compare((Either[at].Callee, Either[at].Argument), (callee, argument)) < 0) at++;
+        if (at < Either.Count && Either[at].Callee == callee && Either[at].Argument == argument)
+        {
+            // The same call asked twice: both continuations must hold.
+            LifetimeCondition both = new();
+            both.Add(Either[at].Or);
+            both.Add(or);
+            Either[at] = (callee, argument, both);
+        }
+        else Either.Insert(at, (callee, argument, or));
+        return Count <= Limit;
+    }
 
     /// <summary>False when the condition grew past <see cref="Limit"/>, which means "never".</summary>
     public bool Add(LifetimeCondition other)
@@ -29,11 +62,19 @@ public sealed class LifetimeCondition : IEquatable<LifetimeCondition>
         Stays.UnionWith(other.Stays);
         Fresh.UnionWith(other.Fresh);
         Fields.UnionWith(other.Fields);
+        foreach ((string callee, int argument, LifetimeCondition or) in other.Either) AddEither(callee, argument, or);
         return Count <= Limit;
     }
 
     public bool Equals(LifetimeCondition? other)
-        => other is not null && Stays.SetEquals(other.Stays) && Fresh.SetEquals(other.Fresh) && Fields.SetEquals(other.Fields);
+    {
+        if (other is null || !Stays.SetEquals(other.Stays) || !Fresh.SetEquals(other.Fresh) || !Fields.SetEquals(other.Fields)
+            || Either.Count != other.Either.Count) return false;
+        for (int i = 0; i < Either.Count; i++)
+            if (Either[i].Callee != other.Either[i].Callee || Either[i].Argument != other.Either[i].Argument || !Either[i].Or.Equals(other.Either[i].Or))
+                return false;
+        return true;
+    }
     public override bool Equals(object? obj) => Equals(obj as LifetimeCondition);
     public override int GetHashCode()
     {
@@ -41,6 +82,7 @@ public sealed class LifetimeCondition : IEquatable<LifetimeCondition>
         foreach ((string callee, int argument) in Stays) { hash.Add(callee, StringComparer.Ordinal); hash.Add(argument); }
         foreach (string callee in Fresh) hash.Add(callee, StringComparer.Ordinal);
         foreach ((string callee, int argument) in Fields) { hash.Add(callee, StringComparer.Ordinal); hash.Add(~argument); }
+        foreach ((string callee, int argument, LifetimeCondition or) in Either) { hash.Add(callee, StringComparer.Ordinal); hash.Add(argument); hash.Add(or.GetHashCode()); }
         return hash.ToHashCode();
     }
 
@@ -116,7 +158,7 @@ public sealed class LifetimeFields
 /// never be said.
 /// </summary>
 public sealed record LifetimeFunction(string Name, bool Global, LifetimeCondition?[] Parameters, LifetimeCondition? Fresh,
-    LifetimeFields?[]? ParameterFields = null, LifetimeFields? FreshFields = null, LifetimeHeld?[]? Held = null);
+    LifetimeFields?[]? ParameterFields = null, LifetimeFields? FreshFields = null, LifetimeHeld?[]? Held = null, bool ReturnsFirst = false);
 
 /// <summary>
 /// A parameter that escapes only into the box its function returns: when
@@ -207,7 +249,9 @@ public sealed class LifetimeHints
     public IEnumerable<(string Callee, int Argument)> Named()
     {
         IEnumerable<(string, int)> Of(LifetimeCondition? condition)
-            => condition is null ? Enumerable.Empty<(string, int)>() : condition.Stays.Concat(condition.Fields).Concat(condition.Fresh.Select(name => (name, -1)));
+            => condition is null ? Enumerable.Empty<(string, int)>()
+                : condition.Stays.Concat(condition.Fields).Concat(condition.Fresh.Select(name => (name, -1)))
+                    .Concat(condition.Either.SelectMany(e => Of(e.Or).Prepend((e.Callee, e.Argument))));
         IEnumerable<(string, int)> OfFields(LifetimeFields? fields)
             => fields is null ? Enumerable.Empty<(string, int)>() : fields.Conditional.SelectMany(item => Of(item.Condition)).Concat(fields.Merges);
         foreach (LifetimeFunction function in Functions)
@@ -265,6 +309,7 @@ public sealed class LifetimeHints
             foreach ((string callee, int _) in condition.Stays) names.Add(callee);
             names.UnionWith(condition.Fresh);
             foreach ((string callee, int _) in condition.Fields) names.Add(callee);
+            foreach ((string callee, int _, LifetimeCondition or) in condition.Either) { names.Add(callee); Names(or); }
         }
         void FieldNames(LifetimeFields? fields)
         {
@@ -307,6 +352,7 @@ public sealed class LifetimeHints
                 writer.Write(held.Offsets.Length);
                 foreach (long offset in held.Offsets) writer.Write(offset);
             }
+            writer.Write(function.ReturnsFirst);
         }
         List<LifetimeCondition> pending = Pending.Distinct().ToList();
         writer.Write(pending.Count);
@@ -345,6 +391,9 @@ public sealed class LifetimeHints
             foreach (string callee in condition.Fresh) writer.Write(index[callee]);
             writer.Write(condition.Fields.Count);
             foreach ((string callee, int argument) in condition.Fields) { writer.Write(index[callee]); writer.Write(argument); }
+            writer.Write(condition.Either.Count);
+            foreach ((string callee, int argument, LifetimeCondition or) in condition.Either)
+            { writer.Write(index[callee]); writer.Write(argument); Condition(or); }
         }
         void Fields(LifetimeFields? fields)
         {
@@ -443,6 +492,16 @@ public sealed class LifetimeHints
                     string callee = Name(); int argument = reader.ReadInt32();
                     if (argument < 0 || !condition.Fields.Add((callee, argument))) throw new ElfFormatException("Invalid lifetime condition");
                 }
+                int either = reader.ReadInt32();
+                if (either < 0 || stays + fresh + fields + either > LifetimeCondition.Limit) throw new ElfFormatException("Invalid lifetime condition");
+                for (int i = 0; i < either; i++)
+                {
+                    string callee = Name(); int argument = reader.ReadInt32();
+                    LifetimeCondition or = Condition() ?? throw new ElfFormatException("An either-need's other way is never");
+                    if (argument < 0 || condition.Either.Any(e => e.Callee == callee && e.Argument == argument)) throw new ElfFormatException("Invalid lifetime condition");
+                    condition.Either.Add((callee, argument, or));
+                }
+                if (condition.Count > LifetimeCondition.Limit) throw new ElfFormatException("Invalid lifetime condition");
                 return pool is null ? condition : pool.Share(condition);
             }
             LifetimeFields? Fields()
@@ -490,7 +549,8 @@ public sealed class LifetimeHints
                     for (int k = 0; k < offsets; k++) at[k] = reader.ReadInt64();
                     held![p] = new LifetimeHeld(when, at);
                 }
-                hints.Functions.Add(new(name, global, parameters, freshCondition, parameterFields, freshFields, held));
+                bool returnsFirst = reader.ReadBoolean();
+                hints.Functions.Add(new(name, global, parameters, freshCondition, parameterFields, freshFields, held, returnsFirst));
             }
             int pending = Count(8);
             if (pending > PendingLimit) throw new ElfFormatException("Too many pending lifetime conditions");

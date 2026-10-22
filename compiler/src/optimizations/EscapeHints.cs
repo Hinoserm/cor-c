@@ -56,6 +56,23 @@ public sealed partial class Escape
                 && hints[argument] is LifetimeCondition condition && Condition.Add(condition);
         }
 
+        /// <summary>
+        /// A call another unit answers, keeping its argument nowhere or handing
+        /// it back with the result's own needs holding too (LifetimeCondition.
+        /// Either); false for this unit's own functions, whose summaries speak.
+        /// </summary>
+        public bool AllowEither(string callee, int argument, LifetimeCondition or)
+        {
+            if (IsIntrinsic(callee) || _pass._defined.Contains(callee)) return false;
+            return Condition.AddEither(callee, argument, or);
+        }
+
+        /// <summary>A fresh set of needs for the same pass: what a call's result, judged apart, asks.</summary>
+        public Needs Nested() => new(_pass);
+
+        /// <summary>Whether this unit defines the function, so its own summary answers for it.</summary>
+        public bool Defines(string callee) => _pass._defined.Contains(callee);
+
         public bool AllowFresh(string callee)
         {
             if (IsIntrinsic(callee)) return false;
@@ -264,7 +281,10 @@ public sealed partial class Escape
             LifetimeCondition?[] parameters = _paramHints.TryGetValue(f.Name, out LifetimeCondition?[]? known)
                 ? known : new LifetimeCondition?[f.Params.Count];
             hints.Functions.Add(new(f.Name, f.Exported, parameters, _freshHints.GetValueOrDefault(f.Name),
-                _fieldHints.GetValueOrDefault(f.Name), _freshFieldHints.GetValueOrDefault(f.Name), _heldHints.GetValueOrDefault(f.Name)));
+                _fieldHints.GetValueOrDefault(f.Name), _freshFieldHints.GetValueOrDefault(f.Name), _heldHints.GetValueOrDefault(f.Name),
+                // Its first argument leaving only by being handed back, here
+                // (SummariseReturnsFirst): what an either-need asks of it.
+                _returnsFirst?.Contains(f.Name) == true));
         }
         hints.Pending.AddRange(_pending);
         hints.FieldSites.AddRange(_fieldSiteRecords);
