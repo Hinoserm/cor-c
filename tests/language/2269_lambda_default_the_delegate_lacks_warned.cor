@@ -1,0 +1,16 @@
+// test: lambda_default_the_delegate_lacks_warned
+// expect-exit: 0
+// expect-compile-warning: (13,41): warning CS9099
+// expect-compile-warning: (14,34): warning CS9100
+// expect-output:
+// 2 1
+//
+// C# 12's CS9099 and CS9100: a lambda's default value or `params` that its
+// target delegate type has not got is the lambda's alone; no call through
+// the delegate sees it. The lambda converts all the same.
+using System;
+static class Program { static int Main() {
+        Func<int, int> plain = (int x = 9) => x + 1;
+        Func<int[], int> count = (params int[] xs) => xs.Length;
+        Console.WriteLine(plain(1) + " " + count(new[] { 7 }));
+        return 0; } }

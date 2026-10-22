@@ -1,0 +1,17 @@
+// test: implicitly_typed_lambda_default_refused
+// expect-compile-error: CS9098: Implicitly typed lambda parameter 'x' cannot have a default value.
+//
+// C# 12's CS9098: a lambda's default value belongs to a parameter whose
+// type is written.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Func<int, int> f = (x = 5) => x;
+        Console.WriteLine(f(1));
+        return 0;
+    }
+}

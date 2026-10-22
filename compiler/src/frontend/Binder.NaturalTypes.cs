@@ -108,12 +108,99 @@ public sealed partial class Binder
     /// for these parameters and result, or null when a Func or an Action
     /// says it.
     /// </summary>
-    private static string? AnonymousShape(IReadOnlyList<(bool Ref, bool Out, bool In)> parameters, bool returns, bool byReference, bool readOnly)
+    private static string? AnonymousShape(IReadOnlyList<(bool Ref, bool Out, bool In)> parameters, bool returns, bool byReference, bool readOnly,
+        IReadOnlyList<string>? marks = null)
     {
-        if (!byReference && parameters.Count <= 16 && parameters.All(p => !p.Ref && !p.Out && !p.In)) return null;
-        string modes = string.Concat(parameters.Select(p => p.Out ? 'o' : p.In ? 'i' : p.Ref ? 'r' : 'v'));
+        bool marked = marks is not null && marks.Any(mark => mark.Length > 0);
+        if (!marked && !byReference && parameters.Count <= 16 && parameters.All(p => !p.Ref && !p.Out && !p.In)) return null;
+        string modes = string.Concat(parameters.Select((p, k) => (p.Out ? "o" : p.In ? "i" : p.Ref ? "r" : "v") + (marks is null ? "" : marks[k])));
         char result = !returns ? 'V' : byReference ? readOnly ? 'G' : 'F' : 'R';
         return modes + "_" + result;
+    }
+
+    /// <summary>
+    /// What a lambda's parameter adds to its natural type's shape (C# 12):
+    /// `p` for `params`, `x` and its default spelt in hexadecimal for a
+    /// default value -- a delegate with `int x = 5` is not one with `= 6`.
+    /// Empty for neither; null where the default is no constant (CS1736).
+    /// </summary>
+    private string? LambdaMark(Param p, int k) => p.IsParams ? "p" : p.Default is not Expr value ? "" : DefaultMark(value, Resolve(p.Type, _thisType), p.Name, k);
+
+    private string? DefaultMark(Expr value, Type type, string name, int k)
+        => DefaultSpelt(value, type, name, k) is string spelt ? "x" + Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(spelt)).ToLowerInvariant() : null;
+
+    /// <summary>
+    /// A default as its natural type declares it (LambdaDefault), checked
+    /// against its parameter's type as its target -- `string? t = default`
+    /// is a string's default; its part of the shape is `x` and this in
+    /// hexadecimal (DefaultMark).
+    /// </summary>
+    private string? DefaultSpelt(Expr value, Type type, string name, int k)
+    {
+        if (type.IsError) return null;
+        Type? wanted = _wanted;
+        _wanted = type;
+        Type had = CheckExpr(value);
+        _wanted = wanted;
+        if (had.IsError) return null;
+        CheckAssignable(had, type, value, What.Quoted(name));
+        if (LambdaDefault(value, type, k) is not string spelt)
+        {
+            Error(value, $"CS1736: Default parameter value for '{name}' must be a compile-time constant");
+            return null;
+        }
+        return spelt;
+    }
+
+    /// <summary>
+    /// A lambda parameter's default as its natural type's delegate declares
+    /// it (Parser.AnonymousDelegates): the constant's value, as a literal of
+    /// the parameter's type, which that declaration names T and its place.
+    /// </summary>
+    private string? LambdaDefault(Expr value, Type type, int k)
+    {
+        Expr at = _r.Rewrites.TryGetValue(value, out Expr? rewritten) ? rewritten : value;
+        if (at is DefaultExpr or LiteralExpr { Kind: Lit.Null }) return "default";
+        Type plain = type.IsNullableValue ? type.Underlying : type;
+        System.Globalization.CultureInfo invariant = System.Globalization.CultureInfo.InvariantCulture;
+        if (plain.Prim == Prim.String && !plain.IsArray)
+        {
+            return ConstantText(at, _thisType!) is string text
+                ? "\"" + string.Concat(text.Select(c => c < 128 && char.IsLetterOrDigit(c) || c == ' ' ? c.ToString() : $"\\u{(int)c:X4}")) + "\""
+                : null;
+        }
+        if (plain.Prim == Prim.Bool) return Constant(at) is bool truth ? truth ? "true" : "false" : null;
+        if (plain.Symbol is { Kind: TypeKind.Enum }) return ConstantValue(at, _thisType) is long member ? $"(T{k})({member})" : null;
+        if (plain.Symbol?.Name == "Decimal")
+        {
+            if (at is LiteralExpr literal && DecimalLiteralValue(literal) is decimal money) return money.ToString(invariant) + "M";
+            return ConstantValue(at, _thisType) is long whole ? whole + "M" : null;
+        }
+        if (plain.Prim is Prim.F32 or Prim.F64)
+        {
+            string kind = plain.Prim == Prim.F32 ? "float" : "double";
+            double? real = RealConstant(at, _thisType) ?? (double?)ConstantValue(at, _thisType);
+            return real switch
+            {
+                null => null,
+                double.NaN => kind + ".NaN",
+                double.PositiveInfinity => kind + ".PositiveInfinity",
+                double.NegativeInfinity => kind + ".NegativeInfinity",
+                double d => d.ToString("R", invariant) + (plain.Prim == Prim.F32 ? "F" : "D"),
+            };
+        }
+        if (plain.Symbol is null && (plain.IsInteger || plain.Prim == Prim.Char) && ConstantValue(at, _thisType) is long w)
+        {
+            return plain.Prim switch
+            {
+                Prim.U64 => (ulong)w + "UL",
+                Prim.I64 => w + "L",
+                Prim.U32 => (uint)w + "U",
+                Prim.Char => $"(char)({w})",
+                _ => w.ToString(invariant),
+            };
+        }
+        return null;
     }
 
     /// <summary>A lambda's natural type, or null with the reason.</summary>
@@ -168,8 +255,18 @@ public sealed partial class Binder
             result = task;
         }
 
+        List<string> marks = new();
+        for (int k = 0; k < lam.Params.Count; k++)
+        {
+            if (LambdaMark(lam.Params[k], k) is not string mark)
+            {
+                why = $"its parameter '{lam.Params[k].Name}' has a default that is no constant";
+                return null;
+            }
+            marks.Add(mark);
+        }
         string? shape = AnonymousShape(lam.Params.Select(p => (p.IsRef, p.IsOut, p.IsReadOnlyRef)).ToList(),
-                                       result is not null, byReference, (lam.ReturnMods & Mods.RefReadonlyReturn) != 0);
+                                       result is not null, byReference, (lam.ReturnMods & Mods.RefReadonlyReturn) != 0, marks);
         TypeRef spelt = new()
         {
             Name = shape is not null ? Parser.AnonymousDelegateName(shape) : result is null ? "Action" : "Func",
@@ -245,8 +342,24 @@ public sealed partial class Binder
             return null;
         }
 
+        // ITS DEFAULTS AND `params` (C# 12), as a lambda's: `var pick =
+        // Pick;` of `int Pick(int x = 7)` is called as `pick()`. Each
+        // default as a call to it fills it in (Written), spelt in full.
+        List<string> marks = new();
+        for (int k = 0; k < m.Params.Count; k++)
+        {
+            Param? declared = m.Decl is MethodDecl { } md && md.Params.Count == m.Params.Count ? md.Params[k] : null;
+            string? mark = declared is null ? "" : declared.IsParams ? "p" : declared.Default is null ? ""
+                : DefaultMark(Written(m, declared), m.Params[k].Type, declared.Name, k);
+            if (mark is null)
+            {
+                why = $"its parameter '{m.Params[k].Name}' has a default that is no constant";
+                return null;
+            }
+            marks.Add(mark);
+        }
         string? shape = AnonymousShape(m.Params.Select(p => (p.ByRef && !p.ReadOnly && !IsOut(m, p), IsOut(m, p), p.ReadOnly)).ToList(),
-                                       !m.Returns.IsVoid, m.RefReturn, m.RefReturnReadOnly);
+                                       !m.Returns.IsVoid, m.RefReturn, m.RefReturnReadOnly, marks);
         TypeRef spelt = new()
         {
             Name = shape is not null ? Parser.AnonymousDelegateName(shape) : m.Returns.IsVoid ? "Action" : "Func",

@@ -3342,7 +3342,7 @@ public sealed class Parser
                 return true;
             }
         }
-        catch (CompileError)
+        catch (CompileError tried) when (!tried.Certain)
         {
         }
 
@@ -4195,7 +4195,9 @@ public sealed class Parser
             (into ??= new()).Add(read);
             if (cancels) _enumeratorCancellation.Add(read);
 
-            if (variadic && type.ArrayRank == 0)
+            // Not in a synthesised delegate (AnonymousDelegates): its `params
+            // T0` is the array a lambda's natural type passes for T0.
+            if (variadic && type.ArrayRank == 0 && _written)
             {
                 throw new CompileError(_file, at.Line, at.Col,
                                        "a 'params' parameter must be an array");
@@ -4712,7 +4714,7 @@ public sealed class Parser
             while (Take(Tok.Comma));
             if (TakeAngle()) return true;
         }
-        catch (CompileError) { }
+        catch (CompileError tried) when (!tried.Certain) { }
         Unsplit(mark);
         return false;
     }
@@ -4744,7 +4746,7 @@ public sealed class Parser
             }
             while (Take(Tok.Comma));
         }
-        catch (CompileError)
+        catch (CompileError tried) when (!tried.Certain)
         {
             Unsplit(mark);
             return false;
@@ -6021,19 +6023,38 @@ public sealed class Parser
     public static List<TypeDecl> AnonymousDelegates(string shape)
     {
         int split = shape.LastIndexOf('_');
-        string modes = shape[..split];
         char result = shape[split + 1];
+        // Each parameter's letter, and what follows it (C# 12): `p` for
+        // `params`, `x` and hexadecimal digits for its default's spelling
+        // (Binder.LambdaMark). None of the letters is a hexadecimal digit.
+        List<(char Mode, bool Params, string? Default)> modes = new();
+        for (int j = 0; j < split; )
+        {
+            char mode = shape[j++];
+            bool variadic = j < split && shape[j] == 'p';
+            if (variadic) j++;
+            string? value = null;
+            if (j < split && shape[j] == 'x')
+            {
+                int from = ++j;
+                while (j < split && Uri.IsHexDigit(shape[j])) j++;
+                value = System.Text.Encoding.UTF8.GetString(Convert.FromHexString(shape[from..j]));
+            }
+            modes.Add((mode, variadic, value));
+        }
         System.Text.StringBuilder text = new("internal delegate ");
         text.Append(result switch { 'V' => "void", 'F' => "ref TR", 'G' => "ref readonly TR", _ => "TR" });
         text.Append(' ').Append(AnonymousDelegateName(shape));
-        List<string> typeParams = Enumerable.Range(0, modes.Length).Select(k => "T" + k).ToList();
+        List<string> typeParams = Enumerable.Range(0, modes.Count).Select(k => "T" + k).ToList();
         if (result != 'V') typeParams.Add("TR");
         if (typeParams.Count > 0) text.Append('<').Append(string.Join(", ", typeParams)).Append('>');
         text.Append('(');
-        for (int k = 0; k < modes.Length; k++)
+        for (int k = 0; k < modes.Count; k++)
         {
             if (k > 0) text.Append(", ");
-            text.Append(modes[k] switch { 'r' => "ref ", 'o' => "out ", 'i' => "in ", _ => "" }).Append('T').Append(k).Append(" a").Append(k);
+            if (modes[k].Params) text.Append("params ");
+            text.Append(modes[k].Mode switch { 'r' => "ref ", 'o' => "out ", 'i' => "in ", _ => "" }).Append('T').Append(k).Append(" a").Append(k);
+            if (modes[k].Default is string value) text.Append(" = ").Append(value);
         }
         text.Append(");");
         string source = text.ToString();
@@ -6279,7 +6300,8 @@ public sealed class Parser
     /// so the binder fills these in from the wanted type and nothing before
     /// the binder could.
     /// </summary>
-    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null, List<TypeRef?>? types = null, bool noSignature = false)
+    private LambdaExpr Finish(LambdaExpr made, List<string> names, List<Tok>? modifiers = null, List<TypeRef?>? types = null, bool noSignature = false,
+        List<Expr?>? defaults = null)
     {
         // A block lambda's `return default;` waits for the binder, which knows
         // what the lambda is converted to; the method's return type is not it.
@@ -6302,6 +6324,13 @@ public sealed class Parser
         for (int k = 0; k < names.Count; k++)
         {
             Tok modifier = modifiers is null ? Tok.End : modifiers[k];
+            Expr? value = defaults is null ? null : defaults[k];
+            // C# 12's CS9098 and its `params` twin: a default or `params`
+            // belongs to a parameter whose type is written.
+            if (!typed && (value is not null || modifier == Tok.KwParams))
+                throw new CompileError(_file, made.Line, made.Col, value is not null
+                    ? $"CS9098: Implicitly typed lambda parameter '{names[k]}' cannot have a default value."
+                    : $"CS9272: Implicitly typed lambda parameter '{names[k]}' cannot have the 'params' modifier.") { Certain = true };
             done.WritableParams.Add(new Param
             {
                 Name = names[k],
@@ -6309,6 +6338,7 @@ public sealed class Parser
                 // `in` is passed by address, read only, as a method's is
                 // (ParseParams): a ref the body may not assign to.
                 IsRef = modifier is Tok.KwRef or Tok.KwIn, IsOut = modifier == Tok.KwOut, IsReadOnlyRef = modifier == Tok.KwIn,
+                IsParams = modifier == Tok.KwParams, Default = value,
                 Line = made.Line, Col = made.Col,
             });
         }
@@ -6763,7 +6793,7 @@ public sealed class Parser
             return At(Tok.RParen) && (!tuple || type.Args.Count >= 2)
                 && (CastCanFollow(Ahead().Kind) || !tuple && CannotBeExpression(type));
         }
-        catch (CompileError)
+        catch (CompileError tried) when (!tried.Certain)
         {
             return false;                       // not a type, so it is a group
         }
@@ -8209,7 +8239,7 @@ public sealed class Parser
                     return taken;
                 }
             }
-            catch (CompileError)
+            catch (CompileError tried) when (!tried.Certain)
             {
                 // Not a deconstruction into new names; the targets may still
                 // be things that already exist -- see below.
@@ -8326,7 +8356,7 @@ public sealed class Parser
                     return first;
                 }
             }
-            catch (CompileError why)
+            catch (CompileError why) when (!why.Certain)
             {
                 if (Switches.TraceDecl)
                 {
@@ -9062,6 +9092,7 @@ public sealed class Parser
                 List<string> names = new();
                 List<Tok> modifiers = new();
                 List<TypeRef?> types = new();
+                List<Expr?> defaults = new();
 
                 while (!At(Tok.RParen))
                 {
@@ -9071,8 +9102,9 @@ public sealed class Parser
 
                     // `(string s, out int v) => ...`: the word says how the
                     // argument is passed, and the delegate's Invoke must say
-                    // the same (C# 12.19.2). Kept for the binder.
-                    Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) ? _t[_i++].Kind : Tok.End;
+                    // the same (C# 12.19.2). Kept for the binder. `params`
+                    // (C# 12) too, for the natural type to say it.
+                    Tok modifier = At(Tok.KwRef) || At(Tok.KwOut) || At(Tok.KwIn) || At(Tok.KwParams) ? _t[_i++].Kind : Tok.End;
 
                     // `(int a, List<string> b) => ...`: a type before the name
                     // is kept. Where the lambda converts to a delegate the
@@ -9080,7 +9112,7 @@ public sealed class Parser
                     // `var f = (int a) => a + 1;` -- they are what its natural
                     // type is made of (C# 10).
                     TypeRef? written = null;
-                    if (!(At(Tok.Ident) && Ahead().Kind is Tok.Comma or Tok.RParen))
+                    if (!(At(Tok.Ident) && Ahead().Kind is Tok.Comma or Tok.RParen or Tok.Assign))
                     {
                         written = ParseTypeRef();
                     }
@@ -9088,6 +9120,9 @@ public sealed class Parser
                     names.Add(Expect(Tok.Ident, "a lambda parameter name").Text);
                     modifiers.Add(modifier);
                     types.Add(written);
+                    // `(int x = 5) => ...`: a default value (C# 12), which
+                    // the natural type keeps (Binder.NaturalLambda).
+                    defaults.Add(Take(Tok.Assign) ? ParseExpr() : null);
 
                     if (!Take(Tok.Comma))
                     {
@@ -9097,7 +9132,7 @@ public sealed class Parser
 
                 Expect(Tok.RParen, "')' after the lambda parameters");
                 Expect(Tok.FatArrow, "'=>' after the lambda parameters");
-                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers, types);
+                return Finish(new LambdaExpr { Line = at.Line, Col = at.Col }, names, modifiers, types, defaults: defaults);
             }
 
             // `(int, int) (int x) => (x, x)`: the written result a tuple.
@@ -9153,7 +9188,7 @@ public sealed class Parser
                             return new CastExpr { Type = type, Operand = ParseUnary(), Line = at.Line, Col = at.Col };
                         }
                     }
-                    catch (CompileError)
+                    catch (CompileError tried) when (!tried.Certain)
                     {
                         // Not a type; fall through and read it as a group.
                     }
@@ -9291,7 +9326,7 @@ public sealed class Parser
             ParseTypeRef();
             return At(Tok.Ident) && Ahead().Kind == Tok.KwIn;
         }
-        catch (CompileError) { return false; }
+        catch (CompileError tried) when (!tried.Certain) { return false; }
         finally { _i = was; }
     }
 
@@ -9648,7 +9683,7 @@ public sealed class Parser
                     tupled = maybe;
                 }
             }
-            catch (CompileError)
+            catch (CompileError tried) when (!tried.Certain)
             {
                 // Not a type; it is a target-typed new with arguments.
             }

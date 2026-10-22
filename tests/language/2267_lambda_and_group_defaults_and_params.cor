@@ -1,0 +1,75 @@
+// test: lambda_and_group_defaults_and_params
+// expect-exit: 0
+// expect-no-compile-warning: warning CS
+// expect-output:
+// 7:a"b\c	é | 2:xy
+// Green5 Blue6
+// True 0.0015 | False 4
+// 5.00 Z | 2 q
+// none -9000000000 18446744073709551615 | 3 1 2
+// 42 True 4000000000 | 1 False 1
+// True True | False False
+// 0 1 3 2 null-ok
+// |1-a-2.5|p+q
+// 8 2 4
+// 1 3
+// 11
+//
+// C# 12's lambda default values and params: `var f = (int x = 5) => x * 2;`
+// is called as f(), its natural type the delegate C# synthesises with the
+// default in it (Parser.AnonymousDelegates, by a shape that carries the
+// default's spelling: = 5 is no = 6). Every kind of constant: text with
+// escapes, an enum member, NaN, decimal, char, null and default, a long, a
+// ulong past long.MaxValue, a named constant. A method group's natural type
+// keeps its method's defaults (`var pick = Pick;`). And a params delegate
+// is called in its expanded form, as a method is: `sum()`, `sum(1, 2, 3)`,
+// beside an array passed whole.
+// Expected output from .NET 10.
+
+using System;
+
+enum Hue { Red, Green = 5, Blue }
+
+delegate int Sum(params int[] xs);
+delegate string Join(string sep, params object[] parts);
+
+static class Program
+{
+    const int Limit = 40;
+
+    static int Pick(int x = 7, string tag = "m") => x + tag.Length;
+
+    static int Main()
+    {
+        var text = (string s = "a\"b\\c\té") => s.Length + ":" + s;
+        var hue = (Hue h = Hue.Green) => h.ToString() + (int)h;
+        var real = (double d = double.NaN, float f = 1.5e-3f) => double.IsNaN(d) + " " + f;
+        var money = (decimal m = 2.50m, char c = 'Z') => m * 2 + " " + c;
+        var maybe = (int? n = null, long big = -9000000000L, ulong huge = 18446744073709551615UL) => (n?.ToString() ?? "none") + " " + big + " " + huge;
+        var named = (int cap = Limit + 2, bool on = !false, uint u = 4000000000U) => cap + " " + on + " " + u;
+        var refd = (object? o = null, string? t = default) => (o is null) + " " + (t is null);
+        Console.WriteLine(text() + " | " + text("xy"));
+        Console.WriteLine(hue() + " " + hue(Hue.Blue));
+        Console.WriteLine(real() + " | " + real(2.0, 4f));
+        Console.WriteLine(money() + " | " + money(1m, 'q'));
+        Console.WriteLine(maybe() + " | " + maybe(3, 1, 2));
+        Console.WriteLine(named() + " | " + named(1, false, 1));
+        Console.WriteLine(refd() + " | " + refd(1, "x"));
+
+        Sum sum = xs => xs.Length;
+        int[]? none = null;
+        Console.WriteLine(sum() + " " + sum(4) + " " + sum(1, 2, 3) + " " + sum(new[] { 9, 9 }) + " " + (none is null ? "null-ok" : sum(none).ToString()));
+        Join join = (sep, parts) => string.Join(sep, parts);
+        Console.WriteLine(join("-") + "|" + join("-", 1, "a", 2.5) + "|" + join("+", new object[] { "p", "q" }));
+
+        var pick = Pick;
+        Console.WriteLine(pick() + " " + pick(1) + " " + pick(1, "abc"));
+        var both = (int a, params string[] rest) => a + rest.Length;
+        Console.WriteLine(both(1) + " " + both(1, "x", "y"));
+        var same1 = (int x = 1) => x;
+        var same2 = (int x = 1) => x + 10;
+        same1 = same2;
+        Console.WriteLine(same1());
+        return 0;
+    }
+}

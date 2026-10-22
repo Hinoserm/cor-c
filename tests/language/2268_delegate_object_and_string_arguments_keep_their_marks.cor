@@ -1,0 +1,34 @@
+// test: delegate_object_and_string_arguments_keep_their_marks
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// 1
+// x
+// 1
+// y
+//
+// A delegate's `object?` argument is a reference whose `?` is no type, as a
+// class's is: a Func<object?, string?, string> matched no Invoke of its
+// template when its use was read (Binder.SameButReferenceMarks), and its
+// string? parameter fell back to the specialisation's plain string, so
+// passing null was warned of. A written Func and a lambda's natural type
+// alike.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        var g1 = (object? o, string? t) => 1;
+        Console.WriteLine(g1(null, null));
+        var g2 = (string? t, object? o) => "x";
+        Console.WriteLine(g2(null, null));
+        var g3 = (string? t, string? u) => 1;
+        Console.WriteLine(g3(null, null));
+        Func<object?, string?, string> g4 = (o, t) => "y";
+        Console.WriteLine(g4(null, null));
+        return 0;
+    }
+}

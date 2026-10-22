@@ -182,7 +182,9 @@ public sealed partial class Binder
     /// </summary>
     private static bool SameButReferenceMarks(Type a, Type b)
     {
-        if (a.Nullable != b.Nullable && !(a.IsReference && b.IsReference)) return false;
+        // `object?` too, which is no class symbol: a Func<object?, string?,
+        // int> matched no Invoke, and its string? argument lost its `?`.
+        if (a.Nullable != b.Nullable && !(Marked(a) && Marked(b))) return false;
         if (a.Prim != b.Prim || !ReferenceEquals(a.Symbol, b.Symbol) || a.ArrayRank != b.ArrayRank
             || a.PointerDepth != b.PointerDepth || a.ParamName != b.ParamName) return false;
         if ((a.Element is null) != (b.Element is null)) return false;
@@ -191,6 +193,8 @@ public sealed partial class Binder
         for (int i = 0; i < a.Args.Count; i++)
             if (!SameButReferenceMarks(a.Args[i], b.Args[i])) return false;
         return true;
+
+        static bool Marked(Type t) => t.IsReference || t.Prim == Prim.Any && t.Symbol is null && !t.IsNullableValue;
     }
 
     /// <summary>

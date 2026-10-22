@@ -90,6 +90,15 @@ public sealed class CompileError : Exception
     /// </summary>
     public string? Code { get; }
 
+    /// <summary>
+    /// An error no other reading of the text avoids -- a lambda's default
+    /// on an untyped parameter is one whatever the statement around it is
+    /// -- so the parser's tries of one reading and then another let it
+    /// through instead of trying the next (and reporting what that one
+    /// makes of the text).
+    /// </summary>
+    public bool Certain { get; init; }
+
     public CompileError(string file, int line, int col, string message,
                         bool warning = false, string? code = null) : base(message)
     {

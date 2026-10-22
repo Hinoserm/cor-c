@@ -9537,6 +9537,20 @@ public sealed partial class Binder
                     Error(lam, $"parameter {i + 1} of the lambda is declared '{written}', and the delegate's is '{delegated}'");
                 }
             }
+
+            // C# 12's CS9099 and CS9100: a default or `params` the delegate
+            // has not got is the lambda's alone -- no call through the
+            // delegate sees it. Each default is a constant all the same.
+            List<Param>? declared = invoke.Decl is MethodDecl { } invokeDecl && invokeDecl.Params.Count == invoke.Params.Count ? invokeDecl.Params : null;
+            for (int i = 0; i < lam.Params.Count && i < invoke.Params.Count; i++)
+            {
+                Param p = lam.Params[i];
+                if (p.Default is Expr value && DefaultSpelt(value, ContextualParameterType(wanted, invoke, i), p.Name, i) is string spelt
+                    && declared?[i].Default is null)
+                    Warning(value, "CS9099", $"Parameter {i + 1} has default value '{spelt}' in lambda but '<missing>' in the target delegate type.");
+                if (p.IsParams && !invoke.Params[i].IsParams)
+                    Warning(lam, "CS9100", $"Parameter {i + 1} has params modifier in lambda but not in target delegate type.");
+            }
         }
 
         // ---- pass one: which of the enclosing locals does it read? ----------
@@ -22034,18 +22048,46 @@ public sealed partial class Binder
                                              .FindMethods("Invoke")
                                              .FirstOrDefault(m => m.Params.Count == args.Count);
 
+            // A `params` DELEGATE IN ITS EXPANDED FORM, as a method's (C#
+            // 12.6.4.2 holds for Invoke too): `sum(1, 2, 3)` and `sum()` of a
+            // `delegate int Sum(params int[] xs)` pass a new array of what is
+            // written, unless the one argument in its place already is one.
+            if (targetType.Symbol?.FindMethods("Invoke").FirstOrDefault(m => m.Params.Count > 0 && m.Params[^1].IsParams) is { } variadic
+                && !c.ParamsPacked && c.ArgNames.All(name => name is null) && args.Count >= variadic.Params.Count - 1)
+            {
+                int fixedCount = variadic.Params.Count - 1;
+                Type array = ContextualParameterType(targetType, variadic, fixedCount);
+                bool ordinary = args.Count == variadic.Params.Count
+                    && (args[^1].Prim == Prim.NullLiteral || Convertible(args[^1], array));
+                if (!ordinary && array.Element is Type element && RefOf(element) is TypeRef elementRef)
+                {
+                    NewExpr packed = new() { Type = elementRef, Elements = c.Args.Skip(fixedCount).ToList(), Line = c.Line, Col = c.Col };
+                    c.Args.RemoveRange(fixedCount, c.Args.Count - fixedCount);
+                    c.Args.Add(packed);
+                    c.ParamsPacked = true;
+                    args.RemoveRange(fixedCount, args.Count - fixedCount);
+                    args.Add(CheckExpr(packed));
+                    invoke = variadic;
+                }
+            }
+
             // FEWER ARGUMENTS, the rest defaulted in the delegate's own
             // declaration (`delegate int Adder(int a, int b = 10);`): `add(1)`
             // is `add(1, 10)`, as a method's call is filled in.
             if (invoke is null && targetType.Symbol?.FindMethods("Invoke").FirstOrDefault(m => MayTake(m, args.Count)) is { Decl: MethodDecl invokeDecl } defaulted
-                && invokeDecl.Params.Count == defaulted.Params.Count && c.ArgNames.All(name => name is null))
+                && invokeDecl.Params.Count == defaulted.Params.Count && c.ArgNames.All(name => name is null)
+                && Enumerable.Range(args.Count, defaulted.Params.Count - args.Count).All(k => invokeDecl.Params[k].Default is not null))
             {
                 for (int k = args.Count; k < defaulted.Params.Count; k++)
                 {
                     Expr filled = Written(defaulted, invokeDecl.Params[k]);
                     c.Args.Add(filled);
                     if (c.ArgNames.Count > 0) c.WritableArgNames.Add(null);
+                    // `= default` is its parameter's default.
+                    Type? wanted = _wanted;
+                    _wanted = ContextualParameterType(targetType, defaulted, k);
                     args.Add(CheckExpr(filled));
+                    _wanted = wanted;
                 }
                 invoke = defaulted;
             }
