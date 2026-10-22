@@ -3947,12 +3947,18 @@ public sealed class Monomorphiser
                 };
                 foreach (SwitchArm arm in choice.Arms)
                 {
+                    Expr? copiedWhen = arm.When is null ? null : Rewrite(arm.When, map);
                     SwitchArm copied = new()
                     {
                         Value = arm.Value is null ? null : Rewrite(arm.Value, map),
                         Type = arm.Type is null ? null : Sub(arm.Type, map),
                         Binding = arm.Binding,
-                        When = arm.When is null ? null : Rewrite(arm.When, map),
+                        When = copiedWhen,
+                        // The pattern's test is the guard's left half: the
+                        // same node in the copy, as in what it copies.
+                        Guarded = arm.Guarded,
+                        PatternWhen = arm.PatternWhen is not null && arm.When is BinaryExpr { Op: BinOp.AndAlso } joined
+                                      && ReferenceEquals(joined.Left, arm.PatternWhen) && copiedWhen is BinaryExpr { Left: var left } ? left : null,
                         Discard = arm.Discard, Result = Rewrite(arm.Result, map),
                         Fallback = arm.Fallback, Line = arm.Line, Col = arm.Col,
                     };

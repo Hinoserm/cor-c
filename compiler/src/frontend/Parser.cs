@@ -5969,9 +5969,14 @@ public sealed class Parser
                 alternatives.Add(ParseExpr());
             }
 
+            // The pattern's own test, before any `when` joins it: what the arm
+            // covers with its guard left aside (CS8846, Binder.CoversUnguarded).
+            Expr? patternTest = guard;
+            bool guarded = false;
             if (At(Tok.Ident) && Cur.Text == "when")
             {
                 _i++;
+                guarded = true;
 
                 // A property pattern already put a test here; `when` on top of
                 // it means both must hold, which is what C# means too.
@@ -6007,6 +6012,7 @@ public sealed class Parser
             SwitchArm arm = new()
             {
                 Value = value, Type = type, Binding = binding, When = guard,
+                Guarded = guarded, PatternWhen = patternTest,
                 Discard = discard, Result = ParseExpr(),
                 Line = armAt.Line, Col = armAt.Col,
             };
@@ -6018,6 +6024,7 @@ public sealed class Parser
                 sw.Arms.Add(new SwitchArm
                 {
                     Value = other, Type = type, Binding = binding, When = guard,
+                    Guarded = guarded, PatternWhen = patternTest,
                     Discard = discard, Result = arm.Result,
                     Line = armAt.Line, Col = armAt.Col,
                 });

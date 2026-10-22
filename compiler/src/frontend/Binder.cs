@@ -11185,6 +11185,45 @@ public sealed partial class Binder
     /// a null test of a subject that cannot be null, a count compared with a
     /// number, and element tests that are discards or var patterns.
     /// </summary>
+    /// <summary>
+    /// Whether a switch expression's arms cover every value of its subject
+    /// with each arm's `when` guard left aside: its pattern alone, as the
+    /// arm's coverage is worked out (CheckExpr's SwitchExpr: a guard-free
+    /// discard, the lengths a list pattern takes, null with not-null, true
+    /// with false).
+    /// </summary>
+    private bool CoversUnguarded(SwitchExpr sx, Type subject)
+    {
+        Coverage covered = new();
+        bool sawTrue = false, sawFalse = false, sawNull = false, sawSome = false;
+        foreach (SwitchArm arm in sx.Arms)
+        {
+            if (arm.Fallback) continue;
+            Expr? when = arm.Guarded ? arm.PatternWhen : arm.When;
+            if (arm.Discard && when is null) return true;
+            if (arm.Discard && when is not null && Lengths(when) is { } lengths)
+            {
+                covered.Union(lengths);
+                if (covered.All) return true;
+            }
+            if (arm.Value is LiteralExpr { Kind: Lit.Null } && when is null
+                || arm.Discard && when is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } })
+                sawNull = true;
+            if (arm.Discard && when is BinaryExpr { Op: BinOp.Ne, PatternNullTest: true, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } }
+                                  or UnaryExpr { Op: UnOp.Not, Operand: BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } })
+                sawSome = true;
+            if (sawNull && sawSome) return true;
+            if (arm.Value is not (null or LiteralExpr { Kind: Lit.Null }) && when is null && subject.Prim == Prim.Bool
+                && ConstantValue(arm.Value, _thisType) is long truth)
+            {
+                sawTrue |= truth != 0;
+                sawFalse |= truth == 0;
+            }
+            if (subject.Prim == Prim.Bool && sawTrue && sawFalse && (!subject.Nullable || sawNull)) return true;
+        }
+        return false;
+    }
+
     private Coverage? Lengths(Expr test)
     {
         switch (test)
@@ -17922,7 +17961,15 @@ public sealed partial class Binder
                 // an exception type and a control-flow path nobody asked for.
                 // A WARNING, AS C#'s CS8509 IS: the arm the parser added throws
                 // SwitchExpressionException for a value no written arm took.
-                if (!exhaustive)
+                // CS8846 WHERE ONLY A GUARD STANDS IN THE WAY: with every `when`
+                // left aside the arms would cover every value, so the one
+                // missed might yet be taken (Roslyn's "However, a pattern with
+                // a 'when' clause might successfully match this value").
+                if (!exhaustive && sx.Arms.Any(arm => arm.Guarded) && CoversUnguarded(sx, subject))
+                {
+                    Warning(sx, "CS8846", "the switch expression does not handle all possible values of its input type (it is not exhaustive); a pattern with a 'when' clause might match the value missed");
+                }
+                else if (!exhaustive)
                 {
                     Warning(sx, "CS8509", "the switch expression does not handle all possible values of its input type (it is not exhaustive)");
                 }
