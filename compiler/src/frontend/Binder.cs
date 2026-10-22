@@ -22747,11 +22747,17 @@ public sealed partial class Binder
             // first written won; a second round of binding hid it, because by
             // then the call carried its completed arguments and the full-arity
             // rule chose the int. A unit bound once took the long.
+            // A generic one by what its arguments infer, as an open parameter
+            // takes anything: AggregateBy's `Func<K, A> seedSelector` is no
+            // place for the int its seed overload takes.
             MethodSymbol? shorter = BetterMember(group.Methods.Where(
                 m => Completable(m)
                   && Enumerable.Range(0, args.Count)
-                               .All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i])))
+                               .All(i => WordFits(m, i) && !UntypedFunction(m, i)
+                                      && (m.TypeParams.Any(t => Mentions(Wants(m, i), t)) || WrittenFits(args[i], Wants(m, i), c.Args[i])))
+                  && (m.TypeParams.Count == 0 || ValuesInfer(m)))
                 .ToList())
+                ?? group.Methods.FirstOrDefault(m => Completable(m) && !Enumerable.Range(0, args.Count).Any(i => UntypedFunction(m, i)))
                 ?? group.Methods.FirstOrDefault(Completable);
 
             if (shorter != null)
@@ -22826,10 +22832,44 @@ public sealed partial class Binder
         // converts to everything, so without this the first overload taking
         // any function at all wins -- and `Where((n, i) => ...)` picked the
         // one-argument Where and was told it has no Invoke taking two.
+        // A LAMBDA OR A METHOD GROUP FOR A BARE TYPE PARAMETER that no other
+        // argument gives a type (C# 12.6.3: neither has one of its own):
+        // `F(T x, R seed)` takes no lambda for its seed, and F(T x, Func<T,
+        // R> make) beside it is the call. One another argument types --
+        // Combine<T>(T? a, T? b) with a delegate for a -- is not this.
+        // Whether every argument that is a value -- not a lambda, a method
+        // group or a ref -- unifies with its parameter of a generic method.
+        bool ValuesInfer(MethodSymbol m)
+        {
+            Dictionary<string, Type> got = new(StringComparer.Ordinal);
+            for (int i = 0; i < args.Count && i < m.Params.Count; i++)
+            {
+                if (i < c.Args.Count && (IsFunctionSource(c.Args[i]) || c.Args[i] is RefArgExpr)) continue;
+                if (!Unify(m, Wants(m, i), args[i], got)) return false;
+                // Nor a value that cannot be called for a delegate, however
+                // open the delegate's arguments still are.
+                if (Wants(m, i).Symbol?.FindMethods("Invoke") is { Count: > 0 } && !args[i].IsError && args[i].Prim is not (Prim.NullLiteral or Prim.Any)
+                    && args[i].Symbol?.FindMethods("Invoke") is not { Count: > 0 })
+                    return false;
+            }
+            return true;
+        }
+
+        bool UntypedFunction(MethodSymbol m, int i)
+        {
+            if (i >= c.Args.Count || !IsFunctionSource(c.Args[i]) || m.Params[i].Type is not { ParamName: string bare, IsArray: false } || !m.TypeParams.Contains(bare))
+                return false;
+            for (int j = 0; j < c.Args.Count && j < m.Params.Count; j++)
+                if (j != i && !IsFunctionSource(c.Args[j]) && Mentions(m.Params[j].Type, bare)) return false;
+            return true;
+        }
+
         bool Fits(MethodSymbol m)
         {
             for (int i = 0; i < c.Args.Count && i < m.Params.Count; i++)
             {
+                if (UntypedFunction(m, i)) return false;
+
                 List<MethodSymbol> invokes = m.Params[i].Type.Symbol?.FindMethods("Invoke")
                                           ?? NoMethods;
 

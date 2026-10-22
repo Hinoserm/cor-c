@@ -1,0 +1,57 @@
+// test: newer_linq_and_library_apis
+// expect-exit: 0
+// expect-output:
+// a=3,b=2,c=1
+// a:17,b:15,c:6
+// 0apple,2banana,4cherry
+// 1,2,3|4,5,6|7
+// blueberry apple apple,banana,cherry
+// 1,2,3 3,2,1
+// 1aTrue,2bFalse
+// True 3 apple avocado,banana
+// False True -1 True3
+// high mid 2
+// xyxyx 01ABFF ab 2
+// [heLlo] 7 1 10 True
+// a,b,c True abc appleavocado
+//
+// .NET 6 to 9's LINQ and library additions as .NET has them: CountBy,
+// AggregateBy (seed and seed selector), Index, Chunk,
+// MaxBy/MinBy/DistinctBy, Order/OrderDescending, a three-way Zip, ElementAt
+// of an Index and Take of a Range, TryGetNonEnumeratedCount; Dictionary's
+// TryAdd/GetValueOrDefault/Remove(out), PriorityQueue, string.Create,
+// Convert's hex, StringBuilder's Insert/Replace, Split's options.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+
+static class Program
+{
+    static int Main()
+    {
+        string[] words = { "apple", "avocado", "banana", "blueberry", "cherry", "apple" };
+        Console.WriteLine(string.Join(",", words.CountBy(w => w[0]).Select(kv => kv.Key + "=" + kv.Value)));
+        Console.WriteLine(string.Join(",", words.AggregateBy(w => w[0], 0, (acc, w) => acc + w.Length).Select(kv => kv.Key + ":" + kv.Value)));
+        Console.WriteLine(string.Join(",", words.Index().Where(p => p.Index % 2 == 0).Select(p => p.Index + p.Item)));
+        Console.WriteLine(string.Join("|", Enumerable.Range(1, 7).Chunk(3).Select(c => string.Join(",", c))));
+        Console.WriteLine(words.MaxBy(w => w.Length) + " " + words.MinBy(w => w.Length) + " " + string.Join(",", words.DistinctBy(w => w[0])));
+        Console.WriteLine(string.Join(",", new[] { 3, 1, 2 }.Order()) + " " + string.Join(",", new[] { 3, 1, 2 }.OrderDescending()));
+        Console.WriteLine(string.Join(",", Enumerable.Zip(new[] { 1, 2 }, new[] { "a", "b" }, new[] { true, false }).Select(t => t.First + t.Second + t.Third)));
+        Console.WriteLine(new[] { 1, 2, 3 }.TryGetNonEnumeratedCount(out int n) + " " + n + " " + words.ElementAt(^1) + " " + string.Join(",", words.Take(1..3)));
+        var d = new Dictionary<string, int> { ["a"] = 1 };
+        Console.WriteLine(d.TryAdd("a", 2) + " " + d.TryAdd("b", 3) + " " + d.GetValueOrDefault("z", -1) + " " + d.Remove("b", out int removed) + removed);
+        var pq = new PriorityQueue<string, int>();
+        pq.Enqueue("low", 5); pq.Enqueue("high", 1); pq.Enqueue("mid", 3);
+        Console.WriteLine(pq.Dequeue() + " " + pq.Peek() + " " + pq.Count);
+        string made = string.Create(5, 'x', (span, c) => { for (int i = 0; i < span.Length; i++) span[i] = (char)(c + i % 2); });
+        Console.WriteLine(made + " " + Convert.ToHexString(new byte[] { 1, 171, 255 }) + " " + Convert.ToHexStringLower(new byte[] { 171 }) + " " + Convert.FromHexString("0aFF").Length);
+        var sb = new StringBuilder("hello");
+        sb.Insert(0, '[').Append(']').Replace('l', 'L', 0, 4);
+        Console.WriteLine(sb + " " + sb.Length + " " + Random.Shared.Next(1, 2) + " " + Math.Clamp(15, 0, 10) + " " + int.IsPow2(64));
+        Console.WriteLine(string.Join(",", "a,b,,c".Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) + " " + "Hello".Contains('e') + " " + "abc".ReplaceLineEndings() + " " + string.Concat(words.Take(2)));
+        return 0;
+    }
+}

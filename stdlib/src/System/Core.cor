@@ -14214,6 +14214,21 @@ static class Enumerable {
         return count <= 0 ? Empty<T>() : TakeIterator(source, count);
     }
 
+    // A Range (.NET 6): its ends counted against the source's length where
+    // either is from the end.
+    public static IEnumerable<T> Take<T>(this IEnumerable<T> source, Range range) {
+        NotNull(source, "source");
+        Index start = range.Start, end = range.End;
+        if (!start.IsFromEnd && !end.IsFromEnd) {
+            return start.Value >= end.Value ? Empty<T>() : Take(Skip(source, start.Value), end.Value - start.Value);
+        }
+        List<T> all = new List<T>(source);
+        int from = start.GetOffset(all.Count), to = end.GetOffset(all.Count);
+        if (from < 0) { from = 0; }
+        if (to > all.Count) { to = all.Count; }
+        return from >= to ? Empty<T>() : all.GetRange(from, to - from);
+    }
+
     private static IEnumerable<T> TakeIterator<T>(IEnumerable<T> source, int count) {
         foreach (T item in source) {
             yield return item;
@@ -14387,6 +14402,69 @@ static class Enumerable {
         using (IEnumerator<U> right = second.GetEnumerator()) {
             while (left.MoveNext() && right.MoveNext()) { yield return resultSelector(left.Current, right.Current); }
         }
+    }
+
+    // Three at once (.NET 6), as far as the shortest goes.
+    public static IEnumerable<(T First, U Second, V Third)> Zip<T, U, V>(this IEnumerable<T> first, IEnumerable<U> second, IEnumerable<V> third) {
+        NotNull(first, "first"); NotNull(second, "second"); NotNull(third, "third");
+        return ZipTriples(first, second, third);
+    }
+
+    private static IEnumerable<(T First, U Second, V Third)> ZipTriples<T, U, V>(IEnumerable<T> first, IEnumerable<U> second, IEnumerable<V> third) {
+        using (IEnumerator<T> a = first.GetEnumerator())
+        using (IEnumerator<U> b = second.GetEnumerator())
+        using (IEnumerator<V> c = third.GetEnumerator()) {
+            while (a.MoveNext() && b.MoveNext() && c.MoveNext()) { yield return (a.Current, b.Current, c.Current); }
+        }
+    }
+
+    // Each element with its position (.NET 9).
+    public static IEnumerable<(int Index, T Item)> Index<T>(this IEnumerable<T> source) {
+        NotNull(source, "source");
+        return Indexed(source);
+    }
+
+    private static IEnumerable<(int Index, T Item)> Indexed<T>(IEnumerable<T> source) {
+        int at = 0;
+        foreach (T item in source) {
+            yield return (at, item);
+            at = at + 1;
+        }
+    }
+
+    // How many of each key, in the order the keys came (.NET 9).
+    public static IEnumerable<KeyValuePair<K, int>> CountBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IEqualityComparer<K>? keyComparer = null) where K : notnull {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector");
+        Dictionary<K, int> counts = new Dictionary<K, int>(keyComparer);
+        List<K> order = new List<K>();
+        foreach (T item in source) {
+            K key = keySelector(item);
+            if (counts.TryGetValue(key, out int had)) { counts[key] = had + 1; }
+            else { counts[key] = 1; order.Add(key); }
+        }
+        List<KeyValuePair<K, int>> made = new List<KeyValuePair<K, int>>(order.Count);
+        foreach (K key in order) { made.Add(new KeyValuePair<K, int>(key, counts[key])); }
+        return made;
+    }
+
+    // A fold per key, from one seed or a seed made for each key (.NET 9).
+    public static IEnumerable<KeyValuePair<K, A>> AggregateBy<T, K, A>(this IEnumerable<T> source, Func<T, K> keySelector, A seed, Func<A, T, A> func, IEqualityComparer<K>? keyComparer = null) where K : notnull {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(func, "func");
+        return AggregateBy(source, keySelector, (K _) => seed, func, keyComparer);
+    }
+
+    public static IEnumerable<KeyValuePair<K, A>> AggregateBy<T, K, A>(this IEnumerable<T> source, Func<T, K> keySelector, Func<K, A> seedSelector, Func<A, T, A> func, IEqualityComparer<K>? keyComparer = null) where K : notnull {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(seedSelector, "seedSelector"); NotNull(func, "func");
+        Dictionary<K, A> folds = new Dictionary<K, A>(keyComparer);
+        List<K> order = new List<K>();
+        foreach (T item in source) {
+            K key = keySelector(item);
+            if (!folds.TryGetValue(key, out A? had)) { had = seedSelector(key); order.Add(key); }
+            folds[key] = func(had!, item);
+        }
+        List<KeyValuePair<K, A>> made = new List<KeyValuePair<K, A>>(order.Count);
+        foreach (K key in order) { made.Add(new KeyValuePair<K, A>(key, folds[key])); }
+        return made;
     }
 
     public static IEnumerable<T> DefaultIfEmpty<T>(this IEnumerable<T> source) {
@@ -14913,6 +14991,24 @@ static class Enumerable {
         }
         // Past a walk's end, .NET's plain refusal; a list's is its indexer's (above).
         throw new ArgumentOutOfRangeException("index");
+    }
+
+    // An Index (.NET 6): `^1` the last, counted once the source is.
+    public static T ElementAt<T>(this IEnumerable<T> source, Index index) {
+        NotNull(source, "source");
+        if (!index.IsFromEnd) { return ElementAt(source, index.Value); }
+        List<T> all = new List<T>(source);
+        int at = all.Count - index.Value;
+        if (at < 0 || at >= all.Count) { throw new ArgumentOutOfRangeException("index"); }
+        return all[at];
+    }
+
+    public static T? ElementAtOrDefault<T>(this IEnumerable<T> source, Index index) {
+        NotNull(source, "source");
+        if (!index.IsFromEnd) { return ElementAtOrDefault(source, index.Value); }
+        List<T> all = new List<T>(source);
+        int at = all.Count - index.Value;
+        return at >= 0 && at < all.Count ? all[at] : default(T);
     }
 
     public static T? ElementAtOrDefault<T>(this IEnumerable<T> source, int index) {

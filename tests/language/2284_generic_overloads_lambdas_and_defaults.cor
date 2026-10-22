@@ -1,0 +1,58 @@
+// test: generic_overloads_lambdas_and_defaults
+// expect-exit: 0
+// expect-output:
+// seed a:12,b:6 made a:102,b:1
+// seed 5 made 4 made 6 seed t
+// g1 13 g2 33
+// value 4 func 5 value x
+//
+// Choosing between generic overloads where a lambda or a method group meets
+// an open type parameter (C# 12.6.3): a lambda has no type to give a bare
+// R, so F(T, R seed) is no candidate for F(2, x => x * 2) beside F(T,
+// Func<T, R>) -- it was taken, and its R refused the lambda. And with
+// defaults left to fill, the overload is chosen by what its value arguments
+// infer: an int is no Func<K, A> however open its arguments (AggregateBy's
+// seed beside its seed selector), whichever is declared first.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Folds
+{
+    public static string AggBy<T, K, A>(this IEnumerable<T> source, Func<T, K> keySelector, Func<K, A> seedSelector, Func<A, T, A> func, IEqualityComparer<K>? comparer = null) where K : notnull
+    {
+        Dictionary<K, A> folds = new(comparer);
+        foreach (T item in source) { K key = keySelector(item); folds[key] = func(folds.TryGetValue(key, out A? had) ? had! : seedSelector(key), item); }
+        return "made " + string.Join(",", folds.Select(kv => kv.Key + ":" + kv.Value));
+    }
+
+    public static string AggBy<T, K, A>(this IEnumerable<T> source, Func<T, K> keySelector, A seed, Func<A, T, A> func, IEqualityComparer<K>? comparer = null) where K : notnull
+    {
+        Dictionary<K, A> folds = new(comparer);
+        foreach (T item in source) { K key = keySelector(item); folds[key] = func(folds.TryGetValue(key, out A? had) ? had! : seed, item); }
+        return "seed " + string.Join(",", folds.Select(kv => kv.Key + ":" + kv.Value));
+    }
+}
+
+static class Program
+{
+    static string F<T, R>(T x, R seed, IEqualityComparer<T>? c = null) => "seed " + seed;
+    static string F<T, R>(T x, Func<T, R> make, IEqualityComparer<T>? c = null) => "made " + make(x);
+    static string G<T, R>(T x, R seed, Func<R, T, R> f, IEqualityComparer<T>? c = null) => "g1 " + f(seed, x);
+    static string G<T, R>(T x, Func<T, R> make, Func<R, T, R> f, IEqualityComparer<T>? c = null) => "g2 " + f(make(x), x);
+    static string H<T>(T value) => "value " + value;
+    static string H<T>(Func<T> make) => "func " + make();
+    static int Twice(int x) => x * 2;
+
+    static int Main()
+    {
+        string[] words = { "apple", "avocado", "banana" };
+        Console.WriteLine(words.AggBy(w => w[0], 0, (acc, w) => acc + w.Length) + " " + words.AggBy(w => w[0], k => k == 'a' ? 100 : 0, (acc, w) => acc + 1));
+        Console.WriteLine(F(1, 5) + " " + F(2, x => x * 2) + " " + F(3, Twice) + " " + F("s", "t"));
+        Console.WriteLine(G(3, 10, (acc, v) => acc + v) + " " + G(3, x => x * 10, (acc, v) => acc + v));
+        Console.WriteLine(H(4) + " " + H(() => 5) + " " + H("x"));
+        return 0;
+    }
+}
