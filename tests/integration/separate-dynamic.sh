@@ -62,4 +62,16 @@ for image in libData.so data-whole; do
         exit 1
     fi
 done
+# A LIBRARY OF ITS OWN OVER THE CLASS LIBRARY: `--shared` alone takes the
+# class library's sources as --ref, so the object holds its own code and
+# imports the rest. Owned, the whole class library was rooted in the one
+# object, and the compile stopped on a copy's body wanted after binding.
+"$corc" compile --shared tests/integration/ir-lto/Words.cor -o "$work/libWords.so"
+readelf --dyn-syms -W "$work/libWords.so" > "$work/words.syms"
+awk '$7 != "UND" && $8 ~ /^m_Words_Joined_/' "$work/words.syms" | grep -q .
+awk '$7 == "UND" && $8 ~ /^m_String_Join_/' "$work/words.syms" | grep -q .
+if awk '$7 != "UND" && $8 ~ /^m_(Runtime|String)_/' "$work/words.syms" | grep -q .; then
+    echo 'FAIL a --shared library of its own compiled the class library into itself' >&2
+    exit 1
+fi
 printf 'PASS separate dynamic linking with and without LTO: %s\n' "$work"

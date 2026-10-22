@@ -880,7 +880,22 @@ public static class Driver
         List<string> classLibrary = DefaultLibraries(target, freestanding);
         if (!args.Contains("--nostdlib") && classLibrary.Count > 0)
         {
-            files.InsertRange(0, classLibrary.Where(d => !files.Any(f => Path.GetFullPath(f) == Path.GetFullPath(d))));
+            List<string> added = classLibrary.Where(d => !files.Any(f => Path.GetFullPath(f) == Path.GetFullPath(d))).ToList();
+            files.InsertRange(0, added);
+
+            // A SHARED OBJECT OF ONE'S OWN SOURCES IS A LIBRARY ABOVE THE CLASS
+            // LIBRARY: `corc compile --shared mine.cor` is `--shared mine.cor
+            // --ref <the class library>`, as a library of the class library's
+            // own is built (docs/X86-BACKEND.md, "What each image contains") --
+            // its code left to the shared objects that have it. Owned, the
+            // whole class library was rooted in the one object, every copy's
+            // every method, and the compile stopped on a body first wanted
+            // after binding ('List$byte') or ran out of memory. A class
+            // library source named on the command line stays this one's own.
+            if (shared)
+            {
+                references.AddRange(added.Where(d => !references.Any(r => Path.GetFullPath(r) == Path.GetFullPath(d))));
+            }
         }
 
         // THE CONDITIONAL SYMBOLS, which is what `#if DEBUG` asks about. C#

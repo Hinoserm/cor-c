@@ -1,0 +1,13 @@
+// A library of its own over the class library (separate-dynamic.sh): a
+// string the class library joins, and a list it makes a copy of.
+public static class Words
+{
+    public static string Joined(string[] parts) => string.Join("-", parts);
+
+    public static int Longest(System.Collections.Generic.List<string> parts)
+    {
+        int best = 0;
+        foreach (string part in parts) best = System.Math.Max(best, part.Length);
+        return best;
+    }
+}

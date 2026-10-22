@@ -4265,8 +4265,13 @@ public sealed partial class Binder
         if (_r.Wanted.Count != wanted || _r.WantedOverrides.Count != overrides || _r.AnonymousDelegates.Count != anonymous
             || _r.Reexpand != reexpand || _staticNext != statics)
         {
-            throw new InvalidOperationException($"the bodies of '{sym.Name}', first asked for after binding, "
-                + "wanted a copy, a delegate or static storage that no round of binding can now make");
+            throw new InvalidOperationException($"the bodies of '{sym.Name}'{(only is null ? "" : $" ({only.Name})")}, first asked for after binding, "
+                + "wanted a copy, a delegate or static storage that no round of binding can now make"
+                + (_r.Wanted.Count != wanted ? $": {string.Join(", ", _r.Wanted.Skip(wanted).Take(4).Select(w => $"{w.Template.Name}<{string.Join(", ", w.Args.Select(a => a.Name))}> at {w.Call.Line}:{w.Call.Col}"))}" : "")
+                + (_r.WantedOverrides.Count != overrides ? " (an override)" : "")
+                + (_r.AnonymousDelegates.Count != anonymous ? " (a delegate)" : "")
+                + (_staticNext != statics ? " (static storage)" : "")
+                + (_r.Reexpand != reexpand ? " (re-expansion)" : ""));
         }
         // What this check wanted, now that it is done (WantBody).
         if (_lateDraining == 0 && _lateWanted.Count > 0) DrainLateBodies();
