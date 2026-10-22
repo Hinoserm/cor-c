@@ -21,15 +21,19 @@ public sealed class SyntaxTokenCache
     public SyntaxTokenCache(long budgetBytes = 0)
     { if (budgetBytes < 0) throw new ArgumentOutOfRangeException(nameof(budgetBytes)); }
 
+    /// <summary>
+    /// A file, or a declaration's header from an index (SourceIndexBuilder),
+    /// whose first line is <paramref name="line"/> of its file.
+    /// </summary>
     public CompilationUnit Parse(string text, string file, IReadOnlyCollection<string>? symbols = null,
-        bool declarationsOnly = false, bool includeTemplateBodies = false)
+        bool declarationsOnly = false, bool includeTemplateBodies = false, int line = 1)
     {
         Interlocked.Increment(ref misses);
         // AND ITS #pragma warning TABLE, as Parser.ParseText keeps it: a unit
         // compiled against a declaration index is parsed here, and without
         // it every warning its pragmas disable was said all the same.
         List<PragmaWarning> pragmas = new();
-        Token[] snapshot = Lexer.Tokenize(text, file, 1, 1, symbols, pragmas).ToArray();
+        Token[] snapshot = Lexer.Tokenize(text, file, line, 1, symbols, pragmas).ToArray();
         CompilationUnit unit = new Parser(snapshot, file, declarationsOnly, includeTemplateBodies) { Source = text }.ParseUnit();
         unit.Pragmas.AddRange(pragmas);
         return unit;

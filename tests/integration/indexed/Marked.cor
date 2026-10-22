@@ -1,5 +1,8 @@
-// A header with no namespace whose base lives in one, named bare: how the
-// class library's Stream names System.IAsyncDisposable.
+// A header with no namespace whose base lives in one, named through the
+// file's using: how the class library's Stream names System.IAsyncDisposable.
+// The index carries the file's usings with the declaration.
+using Marks;
+
 public abstract class Marked : IMark
 {
     public int Size;

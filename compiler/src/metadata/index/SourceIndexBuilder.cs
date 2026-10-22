@@ -150,6 +150,32 @@ public static class SourceIndexBuilder
                     // expressions.
                     using MemoryStream shape = new();
                     using BinaryWriter shaped = new(shape, Encoding.UTF8, leaveOpen: true);
+                    // EACH TOKEN WHERE IT WAS WRITTEN: on its own line and at
+                    // its own column, the text read from the type's line
+                    // (IndexedDeclarations), so what a unit reading this header
+                    // says of it points into the file. Joined by single spaces,
+                    // every such error was at line 1 -- "Marked.cor(1,32)" for a
+                    // base named on line 3. A body left out leaves its lines
+                    // empty; a token its stand-in pushed right is moved over
+                    // by one space, and stays on its line.
+                    int line = type.Line, column = 1;
+                    void Place(Token at)
+                    {
+                        if (at.Line > line) { declaration.Append('\n', at.Line - line); line = at.Line; column = 1; }
+                        if (at.Line == line && at.Col > column) { declaration.Append(' ', at.Col - column); column = at.Col; }
+                        else if (at.Line < line || at.Col < column) { declaration.Append(' '); column++; }
+                    }
+                    // A piece written, and where the next one starts: a token
+                    // may hold a line break (a verbatim string).
+                    void Write(string piece, int from, int count)
+                    {
+                        if (count == 0) return;
+                        declaration.Append(piece, from, count);
+                        int last = piece.LastIndexOf('\n', from + count - 1, count);
+                        if (last < 0) { column += count; return; }
+                        for (int i = from; i <= last; i++) if (piece[i] == '\n') line++;
+                        column = from + count - last;
+                    }
                     for (int tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
                     {
                         Token token = tokens[tokenIndex];
@@ -174,8 +200,12 @@ public static class SourceIndexBuilder
                             for (int k = tokenIndex; k < tokens.Count && tokens[k].Pos < bodies[bodyIndex].To && !copies; k++)
                                 copies = tokens[k].Kind == Tok.Ident && tokens[k].Text == "MemberwiseClone";
                             if (!wroteBody)
-                                declaration.Append(bodies[bodyIndex].Block ? (never ? (copies ? "{ MemberwiseClone ; throw null ; } " : "{ throw null ; } ") : copies ? "{ MemberwiseClone ; } " : "{} ")
-                                    : (never ? (copies ? "throw MemberwiseClone " : "throw null ") : copies ? "MemberwiseClone " : "default "));
+                            {
+                                string standIn = bodies[bodyIndex].Block ? (never ? (copies ? "{ MemberwiseClone ; throw null ; } " : "{ throw null ; } ") : copies ? "{ MemberwiseClone ; } " : "{} ")
+                                    : (never ? (copies ? "throw MemberwiseClone " : "throw null ") : copies ? "MemberwiseClone " : "default ");
+                                Place(token);
+                                Write(standIn, 0, standIn.Length);
+                            }
                             wroteBody = true;
                             if (bodies[bodyIndex].Template)
                             {
@@ -184,7 +214,8 @@ public static class SourceIndexBuilder
                             }
                             continue;
                         }
-                        declaration.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                        Place(token);
+                        Write(text, token.Pos, ends[tokenIndex] - token.Pos);
                     }
                     shaped.Flush();
                     string syntax = declaration.ToString();

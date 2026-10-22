@@ -688,7 +688,7 @@ public sealed class IndexedDeclarations : IDisposable
                 bool signatures = false;
                 if (!template)
                 {
-                    CompilationUnit header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true);
+                    CompilationUnit header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true, line: source.Line);
                     // A CLASS OF ANOTHER RING parses to nothing (Parser.Ring): an
                     // index built for every ring holds it, and this compile does
                     // not, any more than its own sources' copy of it.
@@ -877,10 +877,11 @@ public sealed class IndexedDeclarations : IDisposable
     {
         SyntaxTokenCache tokens = Tokens;
         string text = source.Text, key = source.Key, space = source.Namespace;
+        int line = source.Line;
         FileScope scope = source.Scope;
         return () =>
         {
-            CompilationUnit header = tokens.Parse(text, displayFile, declarationsOnly: true);
+            CompilationUnit header = tokens.Parse(text, displayFile, declarationsOnly: true, line: line);
             List<MemberDecl> members = Wanted(header, key).Members;
             Place(members, space, scope, displayFile);
             return members;
