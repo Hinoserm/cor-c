@@ -1,5 +1,6 @@
-// No namespace and no using: DemoLib.Value by its simple name, the one type
-// that carries it, as a whole-program compile finds it.
+// No namespace and no using: DemoLib.Value by its simple name. C# finds no
+// such name (CS0103) however few types carry it, and an indexed compile
+// says so as a whole-program compile does, naming the using that is missing.
 static class Program
 {
     static int Main() => Value.Get();

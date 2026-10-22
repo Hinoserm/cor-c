@@ -10,7 +10,7 @@ mkdir -p build
 work=$(mktemp -d "$root/build/indexed.XXXXXX")
 "$corc" index --assembly Indexed tests/integration/indexed/Value.cor tests/integration/indexed/Unused.cor -o "$work/declarations.idx"
 "$corc" compile --nostdlib --lib tests/integration/indexed/Value.cor --obj -o "$work/value.o"
-for source in Caller AliasCaller QualifiedCaller BareCaller; do
+for source in Caller AliasCaller QualifiedCaller; do
     "$corc" compile --nostdlib --decl-index "$work/declarations.idx" --assembly Indexed \
         "tests/integration/indexed/$source.cor" --obj -o "$work/$source.o" 2> "$work/$source.compile.log"
     grep -q 'indexed declaration payloads loaded=1' "$work/$source.compile.log"
@@ -19,6 +19,13 @@ for source in Caller AliasCaller QualifiedCaller BareCaller; do
     "$work/$source" || status=$?
     test "$status" = 42
 done
+# A bare name whose namespace no using brings in is not found (C#'s CS0103),
+# and the error names the using that would bring it in.
+if "$corc" compile --nostdlib --decl-index "$work/declarations.idx" --assembly Indexed \
+    tests/integration/indexed/BareCaller.cor --obj -o "$work/BareCaller.o" 2> "$work/BareCaller.compile.log"; then
+    echo 'An indexed type was found by a bare name without its using' >&2; exit 1
+fi
+grep -q "CS0103: The name 'Value' does not exist in the current context (it is DemoLib.Value: add \`using DemoLib;\`)" "$work/BareCaller.compile.log"
 "$corc" compile --nostdlib --lib tests/integration/indexed/DifferentValue.cor --obj -o "$work/different.o"
 if corlink "$work/Caller.o" "$work/different.o" -o "$work/incompatible" 2> "$work/incompatible.log"; then
     echo 'Incompatible managed return ABI was accepted' >&2; exit 1
@@ -66,4 +73,4 @@ corlink "$work/MarkedCaller.o" -o "$work/marked" 2> "$work/marked.link.log"
 status=0
 "$work/marked" || status=$?
 test "$status" = 42
-printf 'PASS indexed namespace/alias/qualified/bare consumers and separate linking: %s\n' "$work"
+printf 'PASS indexed namespace/alias/qualified consumers, bare names refused and separate linking: %s\n' "$work"

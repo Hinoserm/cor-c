@@ -39,9 +39,10 @@ grep -q 'IR units regenerated=0' "$work/budget.link.log"
 grep -Eq 'call.*<m_Compute_Choose' "$work/off.disassembly"
 grep -Eq 'call.*<m_Compute_Choose' "$work/budget.disassembly"
 if grep -Eq 'call.*<m_Compute_Choose' "$work/on.disassembly"; then echo 'IR import did not inline the cross-unit call' >&2; exit 1; fi
-objcopy --dump-section ".text=$work/on.text" "$work/on"
-objcopy --dump-section ".text=$work/off.text" "$work/off"
-test "$(wc -c < "$work/on.text")" -lt "$(wc -c < "$work/off.text")"
+# Smaller code with the import: the functions' own bytes, not the section's,
+# which aligning each function pads to the same length when the gain is small.
+code() { readelf -sW "$1" | awk '$4 == "FUNC" { total += $3 } END { print total }'; }
+test "$(code "$work/on")" -lt "$(code "$work/off")"
 objcopy --remove-section .corsac.cpu "$work/caller.o" "$work/missing-cpu.o"
 if corlink "$work/missing-cpu.o" "$work/compute.o" -o "$work/invalid" 2> "$work/missing-cpu.log"; then
     echo 'Linker accepted a removed required CPU contract' >&2; exit 1
