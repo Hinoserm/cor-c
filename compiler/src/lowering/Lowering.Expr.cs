@@ -3713,6 +3713,31 @@ public sealed partial class Lowering
                 }
                 _e.Jump(body);
             }
+            else if (!arm.Discard && of.IsNullableValue)
+            {
+                // A NULLABLE VALUE'S ARM asks its cell: `null` matches one with
+                // no value, and a constant one whose value equals it (C#
+                // 11.2.6, the lifted ==). Compared as the cell, `bool? h =
+                // true` matched no `true =>`, and the switch threw.
+                if (arm.Value is LiteralExpr { Kind: Lit.Null })
+                {
+                    _e.Branch(HasValue(subject), next, body);
+                }
+                else
+                {
+                    Block some = _f.NewBlock("swsome");
+                    _e.Branch(HasValue(subject), some, next);
+                    _e.SetBlock(some);
+                    Type inner = of.Underlying;
+                    VReg value = NullableRead(subject, of);
+                    VReg want = EvalAs(arm.Value!, inner);
+                    VReg same = inner.Prim == Prim.String ? StringEquals(arm, value, want)
+                        : inner.IsFloat ? _e.Binary(Opcode.Or, _e.Binary(Opcode.FEq, value, want),
+                            _e.Binary(Opcode.And, _e.Binary(Opcode.FNe, want, want), _e.Binary(Opcode.FNe, value, value)))
+                        : _e.Binary(Opcode.Eq, value, want);
+                    _e.Branch(same, body, next);
+                }
+            }
             else if (!arm.Discard)
             {
                 VReg want = EvalAs(arm.Value!, of);

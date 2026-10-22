@@ -3,11 +3,17 @@
 // expect-output:
 // 2 1 0
 // 0 1 2
+// T F N
+// one two none many
+// five none other
 //
 // `null`, `true` and `false` are every value a bool? has, in whatever order
 // the arms are written: no CS8509, which this compiler said of the link's
 // own `facts.Heap switch { null => 2, true => 1, false => 0 }` -- and, with
-// warnings errors, refused.
+// warnings errors, refused. And each arm of a nullable value's switch asks
+// the value, as C#'s lifted == does: compared as the cell it is held in,
+// a bool? that was true matched no `true =>` and threw, and in a switch
+// statement went to the default.
 
 using System;
 
@@ -16,10 +22,36 @@ static class Program
     static byte Code(bool? heap) => heap switch { null => (byte)2, true => (byte)1, false => (byte)0 };
     static int Back(bool? heap) => heap switch { false => 0, true => 1, null => 2 };
 
+    static string Of(bool? h)
+    {
+        switch (h)
+        {
+            case true: return "T";
+            case false: return "F";
+            default: return "N";
+        }
+    }
+
+    static string Num(int? i)
+    {
+        switch (i)
+        {
+            case 1: return "one";
+            case 2: return "two";
+            case null: return "none";
+            default: return "many";
+        }
+    }
+
+    static string Five(int? i) => i switch { 5 => "five", null => "none", _ => "other" };
+
     static int Main()
     {
         Console.WriteLine(Code(null) + " " + Code(true) + " " + Code(false));
         Console.WriteLine(Back(false) + " " + Back(true) + " " + Back(null));
+        Console.WriteLine(Of(true) + " " + Of(false) + " " + Of(null));
+        Console.WriteLine(Num(1) + " " + Num(2) + " " + Num(null) + " " + Num(7));
+        Console.WriteLine(Five(5) + " " + Five(null) + " " + Five(6));
         return 0;
     }
 }

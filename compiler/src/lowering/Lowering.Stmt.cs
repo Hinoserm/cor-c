@@ -635,7 +635,10 @@ public sealed partial class Lowering
 
         Block fallback = defaultBlock ?? end;
 
-        if (ConstantCases(sw, bodies) is { } entries && SearchOrder(entries, of, IsWideInteger(of)) is bool unsigned)
+        // NOT A NULLABLE VALUE'S, whose word is its cell: each label is asked
+        // as the lifted == it is (BranchOn), or `case true:` of a bool? that
+        // was true went to the default.
+        if (!of.IsNullableValue && ConstantCases(sw, bodies) is { } entries && SearchOrder(entries, of, IsWideInteger(of)) is bool unsigned)
         {
             Dispatch(held, entries, 0, entries.Count, fallback, IsWideInteger(of), unsigned);
         }
