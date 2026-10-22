@@ -1,0 +1,19 @@
+// test: static_member_through_a_value_refused
+// expect-compile-error: CS0176: Member 'string.IsNullOrEmpty' cannot be accessed with an instance reference
+//
+// C#'s CS0176: a static member is called through its type, never a value.
+// The library writes a string's instance methods as statics taking the
+// receiver first, beside String's real statics, and `s.IsNullOrEmpty()`
+// was accepted as if it were one of them.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        string s = "x";
+        Console.WriteLine(s.IsNullOrEmpty());
+        return 0;
+    }
+}

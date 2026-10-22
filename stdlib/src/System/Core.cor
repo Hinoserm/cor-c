@@ -6500,6 +6500,110 @@ static class NumberRead {
 // and because the range check belongs to the TYPE rather than to the caller.
 
 static class SByte {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static sbyte Max(sbyte x, sbyte y) => x >= y ? x : y;
+    public static sbyte Min(sbyte x, sbyte y) => x <= y ? x : y;
+    public static sbyte Clamp(sbyte value, sbyte min, sbyte max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(sbyte value) => value < 0 ? -1 : value > 0 ? 1 : 0;
+    public static bool IsPow2(sbyte value) => value > 0 && (value & (value - 1)) == 0;
+    public static sbyte Log2(sbyte value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (sbyte)System.Numerics.BitOperations.Log2((uint)value); }
+    public static sbyte PopCount(sbyte value) => (sbyte)System.Numerics.BitOperations.PopCount((uint)(byte)value);
+    public static sbyte LeadingZeroCount(sbyte value) => (sbyte)(System.Numerics.BitOperations.LeadingZeroCount((uint)(byte)value) - 24);
+    public static sbyte TrailingZeroCount(sbyte value) => value == 0 ? (sbyte)8 : (sbyte)System.Numerics.BitOperations.TrailingZeroCount((uint)(byte)value);
+    public static sbyte RotateLeft(sbyte value, int rotateAmount) => (sbyte)((byte)((byte)value << (rotateAmount & 7)) | (byte)((byte)value >> ((8 - rotateAmount) & 7)));
+    public static sbyte RotateRight(sbyte value, int rotateAmount) => (sbyte)((byte)((byte)value >> (rotateAmount & 7)) | (byte)((byte)value << ((8 - rotateAmount) & 7)));
+    public static bool IsEvenInteger(sbyte value) => (value & 1) == 0;
+    public static bool IsOddInteger(sbyte value) => (value & 1) != 0;
+    public static (sbyte Quotient, sbyte Remainder) DivRem(sbyte left, sbyte right) { sbyte quotient = (sbyte)(left / right); return (quotient, (sbyte)(left - quotient * right)); }
+    public static sbyte Abs(sbyte value) { if (value < 0) { value = (sbyte)(-value); if (value < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } } return value; }
+    public static bool IsNegative(sbyte value) => value < 0;
+    public static bool IsPositive(sbyte value) => value >= 0;
+    public static sbyte CopySign(sbyte value, sbyte sign) { sbyte absValue = value; if (absValue < 0) { absValue = (sbyte)(-absValue); } if (sign >= 0) { if (absValue < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } return absValue; } return (sbyte)(-absValue); }
+    public static sbyte MaxMagnitude(sbyte x, sbyte y) { sbyte absX = x; if (absX < 0) { absX = (sbyte)(-absX); if (absX < 0) { return x; } } sbyte absY = y; if (absY < 0) { absY = (sbyte)(-absY); if (absY < 0) { return y; } } if (absX > absY) { return x; } if (absX == absY) { return x < 0 ? y : x; } return y; }
+    public static sbyte MinMagnitude(sbyte x, sbyte y) { sbyte absX = x; if (absX < 0) { absX = (sbyte)(-absX); if (absX < 0) { return y; } } sbyte absY = y; if (absY < 0) { absY = (sbyte)(-absY); if (absY < 0) { return x; } } if (absX < absY) { return x; } if (absX == absY) { return x < 0 ? x : y; } return y; }
+    static sbyte INumberBase<sbyte>.Zero => 0;
+    static sbyte INumberBase<sbyte>.One => 1;
+    static sbyte INumberBase<sbyte>.AdditiveIdentity => 0;
+    static sbyte INumberBase<sbyte>.MultiplicativeIdentity => 1;
+    static sbyte INumberBase<sbyte>.NegativeOne => -1;
+    static int INumberBase<sbyte>.Radix => 2;
+    static bool INumberBase<sbyte>.IsZero(sbyte value) => value == 0;
+    static bool INumberBase<sbyte>.IsNormal(sbyte value) => value != 0;
+    static bool INumberBase<sbyte>.IsInteger(sbyte value) => true;
+    static bool INumberBase<sbyte>.IsFinite(sbyte value) => true;
+    static bool INumberBase<sbyte>.IsRealNumber(sbyte value) => true;
+    static bool INumberBase<sbyte>.IsCanonical(sbyte value) => true;
+    static bool INumberBase<sbyte>.IsNaN(sbyte value) => false;
+    static bool INumberBase<sbyte>.IsInfinity(sbyte value) => false;
+    static bool INumberBase<sbyte>.IsNegativeInfinity(sbyte value) => false;
+    static bool INumberBase<sbyte>.IsPositiveInfinity(sbyte value) => false;
+    static bool INumberBase<sbyte>.IsSubnormal(sbyte value) => false;
+    static bool INumberBase<sbyte>.IsComplexNumber(sbyte value) => false;
+    static bool INumberBase<sbyte>.IsImaginaryNumber(sbyte value) => false;
+    static sbyte INumberBase<sbyte>.MaxNumber(sbyte x, sbyte y) => x >= y ? x : y;
+    static sbyte INumberBase<sbyte>.MinNumber(sbyte x, sbyte y) => x <= y ? x : y;
+    static sbyte INumberBase<sbyte>.MaxMagnitudeNumber(sbyte x, sbyte y) => MaxMagnitude(x, y);
+    static sbyte INumberBase<sbyte>.MinMagnitudeNumber(sbyte x, sbyte y) => MinMagnitude(x, y);
+    public static sbyte CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((sbyte)v),
+            byte v => checked((sbyte)v),
+            short v => checked((sbyte)v),
+            ushort v => checked((sbyte)v),
+            int v => checked((sbyte)v),
+            uint v => checked((sbyte)v),
+            long v => checked((sbyte)v),
+            ulong v => checked((sbyte)v),
+            char v => checked((sbyte)v),
+            nint v => checked((sbyte)v),
+            nuint v => checked((sbyte)v),
+            float v => checked((sbyte)v),
+            double v => checked((sbyte)v),
+            decimal v => checked((sbyte)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static sbyte CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (long)v >= (long)sbyte.MaxValue ? sbyte.MaxValue : (long)v <= (long)sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            byte v => (ulong)v >= (ulong)sbyte.MaxValue ? sbyte.MaxValue : (sbyte)v,
+            short v => (long)v >= (long)sbyte.MaxValue ? sbyte.MaxValue : (long)v <= (long)sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            ushort v => (ulong)v >= (ulong)sbyte.MaxValue ? sbyte.MaxValue : (sbyte)v,
+            int v => (long)v >= (long)sbyte.MaxValue ? sbyte.MaxValue : (long)v <= (long)sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            uint v => (ulong)v >= (ulong)sbyte.MaxValue ? sbyte.MaxValue : (sbyte)v,
+            long v => (long)v >= (long)sbyte.MaxValue ? sbyte.MaxValue : (long)v <= (long)sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            ulong v => (ulong)v >= (ulong)sbyte.MaxValue ? sbyte.MaxValue : (sbyte)v,
+            char v => (ulong)v >= (ulong)sbyte.MaxValue ? sbyte.MaxValue : (sbyte)v,
+            nint v => (long)v >= (long)sbyte.MaxValue ? sbyte.MaxValue : (long)v <= (long)sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            nuint v => (ulong)v >= (ulong)sbyte.MaxValue ? sbyte.MaxValue : (sbyte)v,
+            float v => float.IsNaN(v) ? (sbyte)0 : v >= sbyte.MaxValue ? sbyte.MaxValue : v <= sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            double v => double.IsNaN(v) ? (sbyte)0 : v >= sbyte.MaxValue ? sbyte.MaxValue : v <= sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            decimal v => v >= sbyte.MaxValue ? sbyte.MaxValue : v <= sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static sbyte CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((sbyte)v),
+            byte v => unchecked((sbyte)v),
+            short v => unchecked((sbyte)v),
+            ushort v => unchecked((sbyte)v),
+            int v => unchecked((sbyte)v),
+            uint v => unchecked((sbyte)v),
+            long v => unchecked((sbyte)v),
+            ulong v => unchecked((sbyte)v),
+            char v => unchecked((sbyte)v),
+            nint v => unchecked((sbyte)v),
+            nuint v => unchecked((sbyte)v),
+            float v => float.IsNaN(v) ? (sbyte)0 : v >= sbyte.MaxValue ? sbyte.MaxValue : v <= sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            double v => double.IsNaN(v) ? (sbyte)0 : v >= sbyte.MaxValue ? sbyte.MaxValue : v <= sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            decimal v => v >= sbyte.MaxValue ? sbyte.MaxValue : v <= sbyte.MinValue ? sbyte.MinValue : (sbyte)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
     // Equals and GetHashCode as SByte overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(sbyte value, sbyte other) { return value == other; }
@@ -6579,6 +6683,110 @@ static class SByte {
 }
 
 static class Int16 {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static short Max(short x, short y) => x >= y ? x : y;
+    public static short Min(short x, short y) => x <= y ? x : y;
+    public static short Clamp(short value, short min, short max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(short value) => value < 0 ? -1 : value > 0 ? 1 : 0;
+    public static bool IsPow2(short value) => value > 0 && (value & (value - 1)) == 0;
+    public static short Log2(short value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (short)System.Numerics.BitOperations.Log2((uint)value); }
+    public static short PopCount(short value) => (short)System.Numerics.BitOperations.PopCount((uint)(ushort)value);
+    public static short LeadingZeroCount(short value) => (short)(System.Numerics.BitOperations.LeadingZeroCount((uint)(ushort)value) - 16);
+    public static short TrailingZeroCount(short value) => value == 0 ? (short)16 : (short)System.Numerics.BitOperations.TrailingZeroCount((uint)(ushort)value);
+    public static short RotateLeft(short value, int rotateAmount) => (short)((ushort)((ushort)value << (rotateAmount & 15)) | (ushort)((ushort)value >> ((16 - rotateAmount) & 15)));
+    public static short RotateRight(short value, int rotateAmount) => (short)((ushort)((ushort)value >> (rotateAmount & 15)) | (ushort)((ushort)value << ((16 - rotateAmount) & 15)));
+    public static bool IsEvenInteger(short value) => (value & 1) == 0;
+    public static bool IsOddInteger(short value) => (value & 1) != 0;
+    public static (short Quotient, short Remainder) DivRem(short left, short right) { short quotient = (short)(left / right); return (quotient, (short)(left - quotient * right)); }
+    public static short Abs(short value) { if (value < 0) { value = (short)(-value); if (value < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } } return value; }
+    public static bool IsNegative(short value) => value < 0;
+    public static bool IsPositive(short value) => value >= 0;
+    public static short CopySign(short value, short sign) { short absValue = value; if (absValue < 0) { absValue = (short)(-absValue); } if (sign >= 0) { if (absValue < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } return absValue; } return (short)(-absValue); }
+    public static short MaxMagnitude(short x, short y) { short absX = x; if (absX < 0) { absX = (short)(-absX); if (absX < 0) { return x; } } short absY = y; if (absY < 0) { absY = (short)(-absY); if (absY < 0) { return y; } } if (absX > absY) { return x; } if (absX == absY) { return x < 0 ? y : x; } return y; }
+    public static short MinMagnitude(short x, short y) { short absX = x; if (absX < 0) { absX = (short)(-absX); if (absX < 0) { return y; } } short absY = y; if (absY < 0) { absY = (short)(-absY); if (absY < 0) { return x; } } if (absX < absY) { return x; } if (absX == absY) { return x < 0 ? x : y; } return y; }
+    static short INumberBase<short>.Zero => 0;
+    static short INumberBase<short>.One => 1;
+    static short INumberBase<short>.AdditiveIdentity => 0;
+    static short INumberBase<short>.MultiplicativeIdentity => 1;
+    static short INumberBase<short>.NegativeOne => -1;
+    static int INumberBase<short>.Radix => 2;
+    static bool INumberBase<short>.IsZero(short value) => value == 0;
+    static bool INumberBase<short>.IsNormal(short value) => value != 0;
+    static bool INumberBase<short>.IsInteger(short value) => true;
+    static bool INumberBase<short>.IsFinite(short value) => true;
+    static bool INumberBase<short>.IsRealNumber(short value) => true;
+    static bool INumberBase<short>.IsCanonical(short value) => true;
+    static bool INumberBase<short>.IsNaN(short value) => false;
+    static bool INumberBase<short>.IsInfinity(short value) => false;
+    static bool INumberBase<short>.IsNegativeInfinity(short value) => false;
+    static bool INumberBase<short>.IsPositiveInfinity(short value) => false;
+    static bool INumberBase<short>.IsSubnormal(short value) => false;
+    static bool INumberBase<short>.IsComplexNumber(short value) => false;
+    static bool INumberBase<short>.IsImaginaryNumber(short value) => false;
+    static short INumberBase<short>.MaxNumber(short x, short y) => x >= y ? x : y;
+    static short INumberBase<short>.MinNumber(short x, short y) => x <= y ? x : y;
+    static short INumberBase<short>.MaxMagnitudeNumber(short x, short y) => MaxMagnitude(x, y);
+    static short INumberBase<short>.MinMagnitudeNumber(short x, short y) => MinMagnitude(x, y);
+    public static short CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((short)v),
+            byte v => checked((short)v),
+            short v => checked((short)v),
+            ushort v => checked((short)v),
+            int v => checked((short)v),
+            uint v => checked((short)v),
+            long v => checked((short)v),
+            ulong v => checked((short)v),
+            char v => checked((short)v),
+            nint v => checked((short)v),
+            nuint v => checked((short)v),
+            float v => checked((short)v),
+            double v => checked((short)v),
+            decimal v => checked((short)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static short CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (long)v >= (long)short.MaxValue ? short.MaxValue : (long)v <= (long)short.MinValue ? short.MinValue : (short)v,
+            byte v => (ulong)v >= (ulong)short.MaxValue ? short.MaxValue : (short)v,
+            short v => (long)v >= (long)short.MaxValue ? short.MaxValue : (long)v <= (long)short.MinValue ? short.MinValue : (short)v,
+            ushort v => (ulong)v >= (ulong)short.MaxValue ? short.MaxValue : (short)v,
+            int v => (long)v >= (long)short.MaxValue ? short.MaxValue : (long)v <= (long)short.MinValue ? short.MinValue : (short)v,
+            uint v => (ulong)v >= (ulong)short.MaxValue ? short.MaxValue : (short)v,
+            long v => (long)v >= (long)short.MaxValue ? short.MaxValue : (long)v <= (long)short.MinValue ? short.MinValue : (short)v,
+            ulong v => (ulong)v >= (ulong)short.MaxValue ? short.MaxValue : (short)v,
+            char v => (ulong)v >= (ulong)short.MaxValue ? short.MaxValue : (short)v,
+            nint v => (long)v >= (long)short.MaxValue ? short.MaxValue : (long)v <= (long)short.MinValue ? short.MinValue : (short)v,
+            nuint v => (ulong)v >= (ulong)short.MaxValue ? short.MaxValue : (short)v,
+            float v => float.IsNaN(v) ? (short)0 : v >= short.MaxValue ? short.MaxValue : v <= short.MinValue ? short.MinValue : (short)v,
+            double v => double.IsNaN(v) ? (short)0 : v >= short.MaxValue ? short.MaxValue : v <= short.MinValue ? short.MinValue : (short)v,
+            decimal v => v >= short.MaxValue ? short.MaxValue : v <= short.MinValue ? short.MinValue : (short)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static short CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((short)v),
+            byte v => unchecked((short)v),
+            short v => unchecked((short)v),
+            ushort v => unchecked((short)v),
+            int v => unchecked((short)v),
+            uint v => unchecked((short)v),
+            long v => unchecked((short)v),
+            ulong v => unchecked((short)v),
+            char v => unchecked((short)v),
+            nint v => unchecked((short)v),
+            nuint v => unchecked((short)v),
+            float v => float.IsNaN(v) ? (short)0 : v >= short.MaxValue ? short.MaxValue : v <= short.MinValue ? short.MinValue : (short)v,
+            double v => double.IsNaN(v) ? (short)0 : v >= short.MaxValue ? short.MaxValue : v <= short.MinValue ? short.MinValue : (short)v,
+            decimal v => v >= short.MaxValue ? short.MaxValue : v <= short.MinValue ? short.MinValue : (short)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
 
     // UTF-8 TEXT, as .NET 8's short parses and formats it (IUtf8SpanParsable,
     // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
@@ -6672,6 +6880,109 @@ static class Int16 {
 }
 
 static class UInt16 {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static ushort Max(ushort x, ushort y) => x >= y ? x : y;
+    public static ushort Min(ushort x, ushort y) => x <= y ? x : y;
+    public static ushort Clamp(ushort value, ushort min, ushort max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(ushort value) => value > 0 ? 1 : 0;
+    public static bool IsPow2(ushort value) => value > 0 && (value & (value - 1)) == 0;
+    public static ushort Log2(ushort value) => (ushort)System.Numerics.BitOperations.Log2((uint)value);
+    public static ushort PopCount(ushort value) => (ushort)System.Numerics.BitOperations.PopCount((uint)(ushort)value);
+    public static ushort LeadingZeroCount(ushort value) => (ushort)(System.Numerics.BitOperations.LeadingZeroCount((uint)(ushort)value) - 16);
+    public static ushort TrailingZeroCount(ushort value) => value == 0 ? (ushort)16 : (ushort)System.Numerics.BitOperations.TrailingZeroCount((uint)(ushort)value);
+    public static ushort RotateLeft(ushort value, int rotateAmount) => (ushort)((ushort)((ushort)value << (rotateAmount & 15)) | (ushort)((ushort)value >> ((16 - rotateAmount) & 15)));
+    public static ushort RotateRight(ushort value, int rotateAmount) => (ushort)((ushort)((ushort)value >> (rotateAmount & 15)) | (ushort)((ushort)value << ((16 - rotateAmount) & 15)));
+    public static bool IsEvenInteger(ushort value) => (value & 1) == 0;
+    public static bool IsOddInteger(ushort value) => (value & 1) != 0;
+    public static (ushort Quotient, ushort Remainder) DivRem(ushort left, ushort right) { ushort quotient = (ushort)(left / right); return (quotient, (ushort)(left - quotient * right)); }
+    static ushort INumberBase<ushort>.Abs(ushort value) => value;
+    static bool INumberBase<ushort>.IsNegative(ushort value) => false;
+    static bool INumberBase<ushort>.IsPositive(ushort value) => true;
+    static ushort INumberBase<ushort>.CopySign(ushort value, ushort sign) => value;
+    static ushort INumberBase<ushort>.MaxMagnitude(ushort x, ushort y) => x >= y ? x : y;
+    static ushort INumberBase<ushort>.MinMagnitude(ushort x, ushort y) => x <= y ? x : y;
+    static ushort INumberBase<ushort>.Zero => 0;
+    static ushort INumberBase<ushort>.One => 1;
+    static ushort INumberBase<ushort>.AdditiveIdentity => 0;
+    static ushort INumberBase<ushort>.MultiplicativeIdentity => 1;
+    static int INumberBase<ushort>.Radix => 2;
+    static bool INumberBase<ushort>.IsZero(ushort value) => value == 0;
+    static bool INumberBase<ushort>.IsNormal(ushort value) => value != 0;
+    static bool INumberBase<ushort>.IsInteger(ushort value) => true;
+    static bool INumberBase<ushort>.IsFinite(ushort value) => true;
+    static bool INumberBase<ushort>.IsRealNumber(ushort value) => true;
+    static bool INumberBase<ushort>.IsCanonical(ushort value) => true;
+    static bool INumberBase<ushort>.IsNaN(ushort value) => false;
+    static bool INumberBase<ushort>.IsInfinity(ushort value) => false;
+    static bool INumberBase<ushort>.IsNegativeInfinity(ushort value) => false;
+    static bool INumberBase<ushort>.IsPositiveInfinity(ushort value) => false;
+    static bool INumberBase<ushort>.IsSubnormal(ushort value) => false;
+    static bool INumberBase<ushort>.IsComplexNumber(ushort value) => false;
+    static bool INumberBase<ushort>.IsImaginaryNumber(ushort value) => false;
+    static ushort INumberBase<ushort>.MaxNumber(ushort x, ushort y) => x >= y ? x : y;
+    static ushort INumberBase<ushort>.MinNumber(ushort x, ushort y) => x <= y ? x : y;
+    static ushort INumberBase<ushort>.MaxMagnitudeNumber(ushort x, ushort y) => x >= y ? x : y;
+    static ushort INumberBase<ushort>.MinMagnitudeNumber(ushort x, ushort y) => x <= y ? x : y;
+    public static ushort CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((ushort)v),
+            byte v => checked((ushort)v),
+            short v => checked((ushort)v),
+            ushort v => checked((ushort)v),
+            int v => checked((ushort)v),
+            uint v => checked((ushort)v),
+            long v => checked((ushort)v),
+            ulong v => checked((ushort)v),
+            char v => checked((ushort)v),
+            nint v => checked((ushort)v),
+            nuint v => checked((ushort)v),
+            float v => checked((ushort)v),
+            double v => checked((ushort)v),
+            decimal v => checked((ushort)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static ushort CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (long)v >= (long)ushort.MaxValue ? ushort.MaxValue : (long)v <= (long)ushort.MinValue ? ushort.MinValue : (ushort)v,
+            byte v => (ulong)v >= (ulong)ushort.MaxValue ? ushort.MaxValue : (ushort)v,
+            short v => (long)v >= (long)ushort.MaxValue ? ushort.MaxValue : (long)v <= (long)ushort.MinValue ? ushort.MinValue : (ushort)v,
+            ushort v => (ulong)v >= (ulong)ushort.MaxValue ? ushort.MaxValue : (ushort)v,
+            int v => (long)v >= (long)ushort.MaxValue ? ushort.MaxValue : (long)v <= (long)ushort.MinValue ? ushort.MinValue : (ushort)v,
+            uint v => (ulong)v >= (ulong)ushort.MaxValue ? ushort.MaxValue : (ushort)v,
+            long v => (long)v >= (long)ushort.MaxValue ? ushort.MaxValue : (long)v <= (long)ushort.MinValue ? ushort.MinValue : (ushort)v,
+            ulong v => (ulong)v >= (ulong)ushort.MaxValue ? ushort.MaxValue : (ushort)v,
+            char v => (ulong)v >= (ulong)ushort.MaxValue ? ushort.MaxValue : (ushort)v,
+            nint v => (long)v >= (long)ushort.MaxValue ? ushort.MaxValue : (long)v <= (long)ushort.MinValue ? ushort.MinValue : (ushort)v,
+            nuint v => (ulong)v >= (ulong)ushort.MaxValue ? ushort.MaxValue : (ushort)v,
+            float v => float.IsNaN(v) ? (ushort)0 : v >= ushort.MaxValue ? ushort.MaxValue : v <= ushort.MinValue ? ushort.MinValue : (ushort)v,
+            double v => double.IsNaN(v) ? (ushort)0 : v >= ushort.MaxValue ? ushort.MaxValue : v <= ushort.MinValue ? ushort.MinValue : (ushort)v,
+            decimal v => v >= ushort.MaxValue ? ushort.MaxValue : v <= ushort.MinValue ? ushort.MinValue : (ushort)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static ushort CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((ushort)v),
+            byte v => unchecked((ushort)v),
+            short v => unchecked((ushort)v),
+            ushort v => unchecked((ushort)v),
+            int v => unchecked((ushort)v),
+            uint v => unchecked((ushort)v),
+            long v => unchecked((ushort)v),
+            ulong v => unchecked((ushort)v),
+            char v => unchecked((ushort)v),
+            nint v => unchecked((ushort)v),
+            nuint v => unchecked((ushort)v),
+            float v => float.IsNaN(v) ? (ushort)0 : v >= ushort.MaxValue ? ushort.MaxValue : v <= ushort.MinValue ? ushort.MinValue : (ushort)v,
+            double v => double.IsNaN(v) ? (ushort)0 : v >= ushort.MaxValue ? ushort.MaxValue : v <= ushort.MinValue ? ushort.MinValue : (ushort)v,
+            decimal v => v >= ushort.MaxValue ? ushort.MaxValue : v <= ushort.MinValue ? ushort.MinValue : (ushort)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
 
     // UTF-8 TEXT, as .NET 8's ushort parses and formats it (IUtf8SpanParsable,
     // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
@@ -6765,6 +7076,109 @@ static class UInt16 {
 }
 
 static class UInt32 {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static uint Max(uint x, uint y) => x >= y ? x : y;
+    public static uint Min(uint x, uint y) => x <= y ? x : y;
+    public static uint Clamp(uint value, uint min, uint max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(uint value) => value > 0 ? 1 : 0;
+    public static bool IsPow2(uint value) => value > 0 && (value & (value - 1)) == 0;
+    public static uint Log2(uint value) => (uint)System.Numerics.BitOperations.Log2((uint)value);
+    public static uint PopCount(uint value) => (uint)System.Numerics.BitOperations.PopCount((uint)(uint)value);
+    public static uint LeadingZeroCount(uint value) => (uint)(System.Numerics.BitOperations.LeadingZeroCount((uint)(uint)value) - 0);
+    public static uint TrailingZeroCount(uint value) => value == 0 ? (uint)32 : (uint)System.Numerics.BitOperations.TrailingZeroCount((uint)(uint)value);
+    public static uint RotateLeft(uint value, int rotateAmount) => (uint)((uint)((uint)value << (rotateAmount & 31)) | (uint)((uint)value >> ((32 - rotateAmount) & 31)));
+    public static uint RotateRight(uint value, int rotateAmount) => (uint)((uint)((uint)value >> (rotateAmount & 31)) | (uint)((uint)value << ((32 - rotateAmount) & 31)));
+    public static bool IsEvenInteger(uint value) => (value & 1) == 0;
+    public static bool IsOddInteger(uint value) => (value & 1) != 0;
+    public static (uint Quotient, uint Remainder) DivRem(uint left, uint right) { uint quotient = (uint)(left / right); return (quotient, (uint)(left - quotient * right)); }
+    static uint INumberBase<uint>.Abs(uint value) => value;
+    static bool INumberBase<uint>.IsNegative(uint value) => false;
+    static bool INumberBase<uint>.IsPositive(uint value) => true;
+    static uint INumberBase<uint>.CopySign(uint value, uint sign) => value;
+    static uint INumberBase<uint>.MaxMagnitude(uint x, uint y) => x >= y ? x : y;
+    static uint INumberBase<uint>.MinMagnitude(uint x, uint y) => x <= y ? x : y;
+    static uint INumberBase<uint>.Zero => 0;
+    static uint INumberBase<uint>.One => 1;
+    static uint INumberBase<uint>.AdditiveIdentity => 0;
+    static uint INumberBase<uint>.MultiplicativeIdentity => 1;
+    static int INumberBase<uint>.Radix => 2;
+    static bool INumberBase<uint>.IsZero(uint value) => value == 0;
+    static bool INumberBase<uint>.IsNormal(uint value) => value != 0;
+    static bool INumberBase<uint>.IsInteger(uint value) => true;
+    static bool INumberBase<uint>.IsFinite(uint value) => true;
+    static bool INumberBase<uint>.IsRealNumber(uint value) => true;
+    static bool INumberBase<uint>.IsCanonical(uint value) => true;
+    static bool INumberBase<uint>.IsNaN(uint value) => false;
+    static bool INumberBase<uint>.IsInfinity(uint value) => false;
+    static bool INumberBase<uint>.IsNegativeInfinity(uint value) => false;
+    static bool INumberBase<uint>.IsPositiveInfinity(uint value) => false;
+    static bool INumberBase<uint>.IsSubnormal(uint value) => false;
+    static bool INumberBase<uint>.IsComplexNumber(uint value) => false;
+    static bool INumberBase<uint>.IsImaginaryNumber(uint value) => false;
+    static uint INumberBase<uint>.MaxNumber(uint x, uint y) => x >= y ? x : y;
+    static uint INumberBase<uint>.MinNumber(uint x, uint y) => x <= y ? x : y;
+    static uint INumberBase<uint>.MaxMagnitudeNumber(uint x, uint y) => x >= y ? x : y;
+    static uint INumberBase<uint>.MinMagnitudeNumber(uint x, uint y) => x <= y ? x : y;
+    public static uint CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((uint)v),
+            byte v => checked((uint)v),
+            short v => checked((uint)v),
+            ushort v => checked((uint)v),
+            int v => checked((uint)v),
+            uint v => checked((uint)v),
+            long v => checked((uint)v),
+            ulong v => checked((uint)v),
+            char v => checked((uint)v),
+            nint v => checked((uint)v),
+            nuint v => checked((uint)v),
+            float v => checked((uint)v),
+            double v => checked((uint)v),
+            decimal v => checked((uint)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static uint CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (long)v >= (long)uint.MaxValue ? uint.MaxValue : (long)v <= (long)uint.MinValue ? uint.MinValue : (uint)v,
+            byte v => (ulong)v >= (ulong)uint.MaxValue ? uint.MaxValue : (uint)v,
+            short v => (long)v >= (long)uint.MaxValue ? uint.MaxValue : (long)v <= (long)uint.MinValue ? uint.MinValue : (uint)v,
+            ushort v => (ulong)v >= (ulong)uint.MaxValue ? uint.MaxValue : (uint)v,
+            int v => (long)v >= (long)uint.MaxValue ? uint.MaxValue : (long)v <= (long)uint.MinValue ? uint.MinValue : (uint)v,
+            uint v => (ulong)v >= (ulong)uint.MaxValue ? uint.MaxValue : (uint)v,
+            long v => (long)v >= (long)uint.MaxValue ? uint.MaxValue : (long)v <= (long)uint.MinValue ? uint.MinValue : (uint)v,
+            ulong v => (ulong)v >= (ulong)uint.MaxValue ? uint.MaxValue : (uint)v,
+            char v => (ulong)v >= (ulong)uint.MaxValue ? uint.MaxValue : (uint)v,
+            nint v => (long)v >= (long)uint.MaxValue ? uint.MaxValue : (long)v <= (long)uint.MinValue ? uint.MinValue : (uint)v,
+            nuint v => (ulong)v >= (ulong)uint.MaxValue ? uint.MaxValue : (uint)v,
+            float v => float.IsNaN(v) ? (uint)0 : v >= uint.MaxValue ? uint.MaxValue : v <= uint.MinValue ? uint.MinValue : (uint)v,
+            double v => double.IsNaN(v) ? (uint)0 : v >= uint.MaxValue ? uint.MaxValue : v <= uint.MinValue ? uint.MinValue : (uint)v,
+            decimal v => v >= uint.MaxValue ? uint.MaxValue : v <= uint.MinValue ? uint.MinValue : (uint)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static uint CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((uint)v),
+            byte v => unchecked((uint)v),
+            short v => unchecked((uint)v),
+            ushort v => unchecked((uint)v),
+            int v => unchecked((uint)v),
+            uint v => unchecked((uint)v),
+            long v => unchecked((uint)v),
+            ulong v => unchecked((uint)v),
+            char v => unchecked((uint)v),
+            nint v => unchecked((uint)v),
+            nuint v => unchecked((uint)v),
+            float v => float.IsNaN(v) ? (uint)0 : v >= uint.MaxValue ? uint.MaxValue : v <= uint.MinValue ? uint.MinValue : (uint)v,
+            double v => double.IsNaN(v) ? (uint)0 : v >= uint.MaxValue ? uint.MaxValue : v <= uint.MinValue ? uint.MinValue : (uint)v,
+            decimal v => v >= uint.MaxValue ? uint.MaxValue : v <= uint.MinValue ? uint.MinValue : (uint)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
 
     // UTF-8 TEXT, as .NET 8's uint parses and formats it (IUtf8SpanParsable,
     // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
@@ -6858,6 +7272,110 @@ static class UInt32 {
 }
 
 static class Int64 {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static long Max(long x, long y) => x >= y ? x : y;
+    public static long Min(long x, long y) => x <= y ? x : y;
+    public static long Clamp(long value, long min, long max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(long value) => value < 0 ? -1 : value > 0 ? 1 : 0;
+    public static bool IsPow2(long value) => value > 0 && (value & (value - 1)) == 0;
+    public static long Log2(long value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (long)System.Numerics.BitOperations.Log2((ulong)value); }
+    public static long PopCount(long value) => (long)System.Numerics.BitOperations.PopCount((ulong)(ulong)value);
+    public static long LeadingZeroCount(long value) => (long)(System.Numerics.BitOperations.LeadingZeroCount((ulong)(ulong)value) - 0);
+    public static long TrailingZeroCount(long value) => value == 0 ? (long)64 : (long)System.Numerics.BitOperations.TrailingZeroCount((ulong)(ulong)value);
+    public static long RotateLeft(long value, int rotateAmount) => (long)((ulong)((ulong)value << (rotateAmount & 63)) | (ulong)((ulong)value >> ((64 - rotateAmount) & 63)));
+    public static long RotateRight(long value, int rotateAmount) => (long)((ulong)((ulong)value >> (rotateAmount & 63)) | (ulong)((ulong)value << ((64 - rotateAmount) & 63)));
+    public static bool IsEvenInteger(long value) => (value & 1) == 0;
+    public static bool IsOddInteger(long value) => (value & 1) != 0;
+    public static (long Quotient, long Remainder) DivRem(long left, long right) { long quotient = (long)(left / right); return (quotient, (long)(left - quotient * right)); }
+    public static long Abs(long value) { if (value < 0) { value = (long)(-value); if (value < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } } return value; }
+    public static bool IsNegative(long value) => value < 0;
+    public static bool IsPositive(long value) => value >= 0;
+    public static long CopySign(long value, long sign) { long absValue = value; if (absValue < 0) { absValue = (long)(-absValue); } if (sign >= 0) { if (absValue < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } return absValue; } return (long)(-absValue); }
+    public static long MaxMagnitude(long x, long y) { long absX = x; if (absX < 0) { absX = (long)(-absX); if (absX < 0) { return x; } } long absY = y; if (absY < 0) { absY = (long)(-absY); if (absY < 0) { return y; } } if (absX > absY) { return x; } if (absX == absY) { return x < 0 ? y : x; } return y; }
+    public static long MinMagnitude(long x, long y) { long absX = x; if (absX < 0) { absX = (long)(-absX); if (absX < 0) { return y; } } long absY = y; if (absY < 0) { absY = (long)(-absY); if (absY < 0) { return x; } } if (absX < absY) { return x; } if (absX == absY) { return x < 0 ? x : y; } return y; }
+    static long INumberBase<long>.Zero => 0;
+    static long INumberBase<long>.One => 1;
+    static long INumberBase<long>.AdditiveIdentity => 0;
+    static long INumberBase<long>.MultiplicativeIdentity => 1;
+    static long INumberBase<long>.NegativeOne => -1;
+    static int INumberBase<long>.Radix => 2;
+    static bool INumberBase<long>.IsZero(long value) => value == 0;
+    static bool INumberBase<long>.IsNormal(long value) => value != 0;
+    static bool INumberBase<long>.IsInteger(long value) => true;
+    static bool INumberBase<long>.IsFinite(long value) => true;
+    static bool INumberBase<long>.IsRealNumber(long value) => true;
+    static bool INumberBase<long>.IsCanonical(long value) => true;
+    static bool INumberBase<long>.IsNaN(long value) => false;
+    static bool INumberBase<long>.IsInfinity(long value) => false;
+    static bool INumberBase<long>.IsNegativeInfinity(long value) => false;
+    static bool INumberBase<long>.IsPositiveInfinity(long value) => false;
+    static bool INumberBase<long>.IsSubnormal(long value) => false;
+    static bool INumberBase<long>.IsComplexNumber(long value) => false;
+    static bool INumberBase<long>.IsImaginaryNumber(long value) => false;
+    static long INumberBase<long>.MaxNumber(long x, long y) => x >= y ? x : y;
+    static long INumberBase<long>.MinNumber(long x, long y) => x <= y ? x : y;
+    static long INumberBase<long>.MaxMagnitudeNumber(long x, long y) => MaxMagnitude(x, y);
+    static long INumberBase<long>.MinMagnitudeNumber(long x, long y) => MinMagnitude(x, y);
+    public static long CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((long)v),
+            byte v => checked((long)v),
+            short v => checked((long)v),
+            ushort v => checked((long)v),
+            int v => checked((long)v),
+            uint v => checked((long)v),
+            long v => checked((long)v),
+            ulong v => checked((long)v),
+            char v => checked((long)v),
+            nint v => checked((long)v),
+            nuint v => checked((long)v),
+            float v => checked((long)v),
+            double v => checked((long)v),
+            decimal v => checked((long)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static long CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (long)v >= (long)long.MaxValue ? long.MaxValue : (long)v <= (long)long.MinValue ? long.MinValue : (long)v,
+            byte v => (ulong)v >= (ulong)long.MaxValue ? long.MaxValue : (long)v,
+            short v => (long)v >= (long)long.MaxValue ? long.MaxValue : (long)v <= (long)long.MinValue ? long.MinValue : (long)v,
+            ushort v => (ulong)v >= (ulong)long.MaxValue ? long.MaxValue : (long)v,
+            int v => (long)v >= (long)long.MaxValue ? long.MaxValue : (long)v <= (long)long.MinValue ? long.MinValue : (long)v,
+            uint v => (ulong)v >= (ulong)long.MaxValue ? long.MaxValue : (long)v,
+            long v => (long)v >= (long)long.MaxValue ? long.MaxValue : (long)v <= (long)long.MinValue ? long.MinValue : (long)v,
+            ulong v => (ulong)v >= (ulong)long.MaxValue ? long.MaxValue : (long)v,
+            char v => (ulong)v >= (ulong)long.MaxValue ? long.MaxValue : (long)v,
+            nint v => (long)v >= (long)long.MaxValue ? long.MaxValue : (long)v <= (long)long.MinValue ? long.MinValue : (long)v,
+            nuint v => (ulong)v >= (ulong)long.MaxValue ? long.MaxValue : (long)v,
+            float v => float.IsNaN(v) ? (long)0 : v >= long.MaxValue ? long.MaxValue : v <= long.MinValue ? long.MinValue : (long)v,
+            double v => double.IsNaN(v) ? (long)0 : v >= long.MaxValue ? long.MaxValue : v <= long.MinValue ? long.MinValue : (long)v,
+            decimal v => v >= long.MaxValue ? long.MaxValue : v <= long.MinValue ? long.MinValue : (long)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static long CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((long)v),
+            byte v => unchecked((long)v),
+            short v => unchecked((long)v),
+            ushort v => unchecked((long)v),
+            int v => unchecked((long)v),
+            uint v => unchecked((long)v),
+            long v => unchecked((long)v),
+            ulong v => unchecked((long)v),
+            char v => unchecked((long)v),
+            nint v => unchecked((long)v),
+            nuint v => unchecked((long)v),
+            float v => float.IsNaN(v) ? (long)0 : v >= long.MaxValue ? long.MaxValue : v <= long.MinValue ? long.MinValue : (long)v,
+            double v => double.IsNaN(v) ? (long)0 : v >= long.MaxValue ? long.MaxValue : v <= long.MinValue ? long.MinValue : (long)v,
+            decimal v => v >= long.MaxValue ? long.MaxValue : v <= long.MinValue ? long.MinValue : (long)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
 
     // UTF-8 TEXT, as .NET 8's long parses and formats it (IUtf8SpanParsable,
     // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
@@ -6954,6 +7472,110 @@ static class Int64 {
 }
 
 static class Int32 {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static int Max(int x, int y) => x >= y ? x : y;
+    public static int Min(int x, int y) => x <= y ? x : y;
+    public static int Clamp(int value, int min, int max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(int value) => value < 0 ? -1 : value > 0 ? 1 : 0;
+    public static bool IsPow2(int value) => value > 0 && (value & (value - 1)) == 0;
+    public static int Log2(int value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (int)System.Numerics.BitOperations.Log2((uint)value); }
+    public static int PopCount(int value) => (int)System.Numerics.BitOperations.PopCount((uint)(uint)value);
+    public static int LeadingZeroCount(int value) => (int)(System.Numerics.BitOperations.LeadingZeroCount((uint)(uint)value) - 0);
+    public static int TrailingZeroCount(int value) => value == 0 ? (int)32 : (int)System.Numerics.BitOperations.TrailingZeroCount((uint)(uint)value);
+    public static int RotateLeft(int value, int rotateAmount) => (int)((uint)((uint)value << (rotateAmount & 31)) | (uint)((uint)value >> ((32 - rotateAmount) & 31)));
+    public static int RotateRight(int value, int rotateAmount) => (int)((uint)((uint)value >> (rotateAmount & 31)) | (uint)((uint)value << ((32 - rotateAmount) & 31)));
+    public static bool IsEvenInteger(int value) => (value & 1) == 0;
+    public static bool IsOddInteger(int value) => (value & 1) != 0;
+    public static (int Quotient, int Remainder) DivRem(int left, int right) { int quotient = (int)(left / right); return (quotient, (int)(left - quotient * right)); }
+    public static int Abs(int value) { if (value < 0) { value = (int)(-value); if (value < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } } return value; }
+    public static bool IsNegative(int value) => value < 0;
+    public static bool IsPositive(int value) => value >= 0;
+    public static int CopySign(int value, int sign) { int absValue = value; if (absValue < 0) { absValue = (int)(-absValue); } if (sign >= 0) { if (absValue < 0) { throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); } return absValue; } return (int)(-absValue); }
+    public static int MaxMagnitude(int x, int y) { int absX = x; if (absX < 0) { absX = (int)(-absX); if (absX < 0) { return x; } } int absY = y; if (absY < 0) { absY = (int)(-absY); if (absY < 0) { return y; } } if (absX > absY) { return x; } if (absX == absY) { return x < 0 ? y : x; } return y; }
+    public static int MinMagnitude(int x, int y) { int absX = x; if (absX < 0) { absX = (int)(-absX); if (absX < 0) { return y; } } int absY = y; if (absY < 0) { absY = (int)(-absY); if (absY < 0) { return x; } } if (absX < absY) { return x; } if (absX == absY) { return x < 0 ? x : y; } return y; }
+    static int INumberBase<int>.Zero => 0;
+    static int INumberBase<int>.One => 1;
+    static int INumberBase<int>.AdditiveIdentity => 0;
+    static int INumberBase<int>.MultiplicativeIdentity => 1;
+    static int INumberBase<int>.NegativeOne => -1;
+    static int INumberBase<int>.Radix => 2;
+    static bool INumberBase<int>.IsZero(int value) => value == 0;
+    static bool INumberBase<int>.IsNormal(int value) => value != 0;
+    static bool INumberBase<int>.IsInteger(int value) => true;
+    static bool INumberBase<int>.IsFinite(int value) => true;
+    static bool INumberBase<int>.IsRealNumber(int value) => true;
+    static bool INumberBase<int>.IsCanonical(int value) => true;
+    static bool INumberBase<int>.IsNaN(int value) => false;
+    static bool INumberBase<int>.IsInfinity(int value) => false;
+    static bool INumberBase<int>.IsNegativeInfinity(int value) => false;
+    static bool INumberBase<int>.IsPositiveInfinity(int value) => false;
+    static bool INumberBase<int>.IsSubnormal(int value) => false;
+    static bool INumberBase<int>.IsComplexNumber(int value) => false;
+    static bool INumberBase<int>.IsImaginaryNumber(int value) => false;
+    static int INumberBase<int>.MaxNumber(int x, int y) => x >= y ? x : y;
+    static int INumberBase<int>.MinNumber(int x, int y) => x <= y ? x : y;
+    static int INumberBase<int>.MaxMagnitudeNumber(int x, int y) => MaxMagnitude(x, y);
+    static int INumberBase<int>.MinMagnitudeNumber(int x, int y) => MinMagnitude(x, y);
+    public static int CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((int)v),
+            byte v => checked((int)v),
+            short v => checked((int)v),
+            ushort v => checked((int)v),
+            int v => checked((int)v),
+            uint v => checked((int)v),
+            long v => checked((int)v),
+            ulong v => checked((int)v),
+            char v => checked((int)v),
+            nint v => checked((int)v),
+            nuint v => checked((int)v),
+            float v => checked((int)v),
+            double v => checked((int)v),
+            decimal v => checked((int)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static int CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (long)v >= (long)int.MaxValue ? int.MaxValue : (long)v <= (long)int.MinValue ? int.MinValue : (int)v,
+            byte v => (ulong)v >= (ulong)int.MaxValue ? int.MaxValue : (int)v,
+            short v => (long)v >= (long)int.MaxValue ? int.MaxValue : (long)v <= (long)int.MinValue ? int.MinValue : (int)v,
+            ushort v => (ulong)v >= (ulong)int.MaxValue ? int.MaxValue : (int)v,
+            int v => (long)v >= (long)int.MaxValue ? int.MaxValue : (long)v <= (long)int.MinValue ? int.MinValue : (int)v,
+            uint v => (ulong)v >= (ulong)int.MaxValue ? int.MaxValue : (int)v,
+            long v => (long)v >= (long)int.MaxValue ? int.MaxValue : (long)v <= (long)int.MinValue ? int.MinValue : (int)v,
+            ulong v => (ulong)v >= (ulong)int.MaxValue ? int.MaxValue : (int)v,
+            char v => (ulong)v >= (ulong)int.MaxValue ? int.MaxValue : (int)v,
+            nint v => (long)v >= (long)int.MaxValue ? int.MaxValue : (long)v <= (long)int.MinValue ? int.MinValue : (int)v,
+            nuint v => (ulong)v >= (ulong)int.MaxValue ? int.MaxValue : (int)v,
+            float v => float.IsNaN(v) ? (int)0 : v >= int.MaxValue ? int.MaxValue : v <= int.MinValue ? int.MinValue : (int)v,
+            double v => double.IsNaN(v) ? (int)0 : v >= int.MaxValue ? int.MaxValue : v <= int.MinValue ? int.MinValue : (int)v,
+            decimal v => v >= int.MaxValue ? int.MaxValue : v <= int.MinValue ? int.MinValue : (int)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static int CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((int)v),
+            byte v => unchecked((int)v),
+            short v => unchecked((int)v),
+            ushort v => unchecked((int)v),
+            int v => unchecked((int)v),
+            uint v => unchecked((int)v),
+            long v => unchecked((int)v),
+            ulong v => unchecked((int)v),
+            char v => unchecked((int)v),
+            nint v => unchecked((int)v),
+            nuint v => unchecked((int)v),
+            float v => float.IsNaN(v) ? (int)0 : v >= int.MaxValue ? int.MaxValue : v <= int.MinValue ? int.MinValue : (int)v,
+            double v => double.IsNaN(v) ? (int)0 : v >= int.MaxValue ? int.MaxValue : v <= int.MinValue ? int.MinValue : (int)v,
+            decimal v => v >= int.MaxValue ? int.MaxValue : v <= int.MinValue ? int.MinValue : (int)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
 
     // UTF-8 TEXT, as .NET 8's int parses and formats it (IUtf8SpanParsable,
     // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
@@ -7327,6 +7949,109 @@ static class UIntPtr {
 }
 
 static class UInt64 {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static ulong Max(ulong x, ulong y) => x >= y ? x : y;
+    public static ulong Min(ulong x, ulong y) => x <= y ? x : y;
+    public static ulong Clamp(ulong value, ulong min, ulong max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(ulong value) => value > 0 ? 1 : 0;
+    public static bool IsPow2(ulong value) => value > 0 && (value & (value - 1)) == 0;
+    public static ulong Log2(ulong value) => (ulong)System.Numerics.BitOperations.Log2((ulong)value);
+    public static ulong PopCount(ulong value) => (ulong)System.Numerics.BitOperations.PopCount((ulong)(ulong)value);
+    public static ulong LeadingZeroCount(ulong value) => (ulong)(System.Numerics.BitOperations.LeadingZeroCount((ulong)(ulong)value) - 0);
+    public static ulong TrailingZeroCount(ulong value) => value == 0 ? (ulong)64 : (ulong)System.Numerics.BitOperations.TrailingZeroCount((ulong)(ulong)value);
+    public static ulong RotateLeft(ulong value, int rotateAmount) => (ulong)((ulong)((ulong)value << (rotateAmount & 63)) | (ulong)((ulong)value >> ((64 - rotateAmount) & 63)));
+    public static ulong RotateRight(ulong value, int rotateAmount) => (ulong)((ulong)((ulong)value >> (rotateAmount & 63)) | (ulong)((ulong)value << ((64 - rotateAmount) & 63)));
+    public static bool IsEvenInteger(ulong value) => (value & 1) == 0;
+    public static bool IsOddInteger(ulong value) => (value & 1) != 0;
+    public static (ulong Quotient, ulong Remainder) DivRem(ulong left, ulong right) { ulong quotient = (ulong)(left / right); return (quotient, (ulong)(left - quotient * right)); }
+    static ulong INumberBase<ulong>.Abs(ulong value) => value;
+    static bool INumberBase<ulong>.IsNegative(ulong value) => false;
+    static bool INumberBase<ulong>.IsPositive(ulong value) => true;
+    static ulong INumberBase<ulong>.CopySign(ulong value, ulong sign) => value;
+    static ulong INumberBase<ulong>.MaxMagnitude(ulong x, ulong y) => x >= y ? x : y;
+    static ulong INumberBase<ulong>.MinMagnitude(ulong x, ulong y) => x <= y ? x : y;
+    static ulong INumberBase<ulong>.Zero => 0;
+    static ulong INumberBase<ulong>.One => 1;
+    static ulong INumberBase<ulong>.AdditiveIdentity => 0;
+    static ulong INumberBase<ulong>.MultiplicativeIdentity => 1;
+    static int INumberBase<ulong>.Radix => 2;
+    static bool INumberBase<ulong>.IsZero(ulong value) => value == 0;
+    static bool INumberBase<ulong>.IsNormal(ulong value) => value != 0;
+    static bool INumberBase<ulong>.IsInteger(ulong value) => true;
+    static bool INumberBase<ulong>.IsFinite(ulong value) => true;
+    static bool INumberBase<ulong>.IsRealNumber(ulong value) => true;
+    static bool INumberBase<ulong>.IsCanonical(ulong value) => true;
+    static bool INumberBase<ulong>.IsNaN(ulong value) => false;
+    static bool INumberBase<ulong>.IsInfinity(ulong value) => false;
+    static bool INumberBase<ulong>.IsNegativeInfinity(ulong value) => false;
+    static bool INumberBase<ulong>.IsPositiveInfinity(ulong value) => false;
+    static bool INumberBase<ulong>.IsSubnormal(ulong value) => false;
+    static bool INumberBase<ulong>.IsComplexNumber(ulong value) => false;
+    static bool INumberBase<ulong>.IsImaginaryNumber(ulong value) => false;
+    static ulong INumberBase<ulong>.MaxNumber(ulong x, ulong y) => x >= y ? x : y;
+    static ulong INumberBase<ulong>.MinNumber(ulong x, ulong y) => x <= y ? x : y;
+    static ulong INumberBase<ulong>.MaxMagnitudeNumber(ulong x, ulong y) => x >= y ? x : y;
+    static ulong INumberBase<ulong>.MinMagnitudeNumber(ulong x, ulong y) => x <= y ? x : y;
+    public static ulong CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((ulong)v),
+            byte v => checked((ulong)v),
+            short v => checked((ulong)v),
+            ushort v => checked((ulong)v),
+            int v => checked((ulong)v),
+            uint v => checked((ulong)v),
+            long v => checked((ulong)v),
+            ulong v => checked((ulong)v),
+            char v => checked((ulong)v),
+            nint v => checked((ulong)v),
+            nuint v => checked((ulong)v),
+            float v => checked((ulong)v),
+            double v => checked((ulong)v),
+            decimal v => checked((ulong)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static ulong CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => v < 0 ? (ulong)0 : (ulong)v,
+            byte v => (ulong)v,
+            short v => v < 0 ? (ulong)0 : (ulong)v,
+            ushort v => (ulong)v,
+            int v => v < 0 ? (ulong)0 : (ulong)v,
+            uint v => (ulong)v,
+            long v => v < 0 ? (ulong)0 : (ulong)v,
+            ulong v => (ulong)v,
+            char v => (ulong)v,
+            nint v => v < 0 ? (ulong)0 : (ulong)v,
+            nuint v => (ulong)v,
+            float v => float.IsNaN(v) ? (ulong)0 : v >= ulong.MaxValue ? ulong.MaxValue : v <= ulong.MinValue ? ulong.MinValue : (ulong)v,
+            double v => double.IsNaN(v) ? (ulong)0 : v >= ulong.MaxValue ? ulong.MaxValue : v <= ulong.MinValue ? ulong.MinValue : (ulong)v,
+            decimal v => v >= ulong.MaxValue ? ulong.MaxValue : v <= ulong.MinValue ? ulong.MinValue : (ulong)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static ulong CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((ulong)v),
+            byte v => unchecked((ulong)v),
+            short v => unchecked((ulong)v),
+            ushort v => unchecked((ulong)v),
+            int v => unchecked((ulong)v),
+            uint v => unchecked((ulong)v),
+            long v => unchecked((ulong)v),
+            ulong v => unchecked((ulong)v),
+            char v => unchecked((ulong)v),
+            nint v => unchecked((ulong)v),
+            nuint v => unchecked((ulong)v),
+            float v => float.IsNaN(v) ? (ulong)0 : v >= ulong.MaxValue ? ulong.MaxValue : v <= ulong.MinValue ? ulong.MinValue : (ulong)v,
+            double v => double.IsNaN(v) ? (ulong)0 : v >= ulong.MaxValue ? ulong.MaxValue : v <= ulong.MinValue ? ulong.MinValue : (ulong)v,
+            decimal v => v >= ulong.MaxValue ? ulong.MaxValue : v <= ulong.MinValue ? ulong.MinValue : (ulong)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
 
     // UTF-8 TEXT, as .NET 8's ulong parses and formats it (IUtf8SpanParsable,
     // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
@@ -7420,6 +8145,109 @@ static class UInt64 {
 }
 
 static class Byte {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static byte Max(byte x, byte y) => x >= y ? x : y;
+    public static byte Min(byte x, byte y) => x <= y ? x : y;
+    public static byte Clamp(byte value, byte min, byte max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
+    public static int Sign(byte value) => value > 0 ? 1 : 0;
+    public static bool IsPow2(byte value) => value > 0 && (value & (value - 1)) == 0;
+    public static byte Log2(byte value) => (byte)System.Numerics.BitOperations.Log2((uint)value);
+    public static byte PopCount(byte value) => (byte)System.Numerics.BitOperations.PopCount((uint)(byte)value);
+    public static byte LeadingZeroCount(byte value) => (byte)(System.Numerics.BitOperations.LeadingZeroCount((uint)(byte)value) - 24);
+    public static byte TrailingZeroCount(byte value) => value == 0 ? (byte)8 : (byte)System.Numerics.BitOperations.TrailingZeroCount((uint)(byte)value);
+    public static byte RotateLeft(byte value, int rotateAmount) => (byte)((byte)((byte)value << (rotateAmount & 7)) | (byte)((byte)value >> ((8 - rotateAmount) & 7)));
+    public static byte RotateRight(byte value, int rotateAmount) => (byte)((byte)((byte)value >> (rotateAmount & 7)) | (byte)((byte)value << ((8 - rotateAmount) & 7)));
+    public static bool IsEvenInteger(byte value) => (value & 1) == 0;
+    public static bool IsOddInteger(byte value) => (value & 1) != 0;
+    public static (byte Quotient, byte Remainder) DivRem(byte left, byte right) { byte quotient = (byte)(left / right); return (quotient, (byte)(left - quotient * right)); }
+    static byte INumberBase<byte>.Abs(byte value) => value;
+    static bool INumberBase<byte>.IsNegative(byte value) => false;
+    static bool INumberBase<byte>.IsPositive(byte value) => true;
+    static byte INumberBase<byte>.CopySign(byte value, byte sign) => value;
+    static byte INumberBase<byte>.MaxMagnitude(byte x, byte y) => x >= y ? x : y;
+    static byte INumberBase<byte>.MinMagnitude(byte x, byte y) => x <= y ? x : y;
+    static byte INumberBase<byte>.Zero => 0;
+    static byte INumberBase<byte>.One => 1;
+    static byte INumberBase<byte>.AdditiveIdentity => 0;
+    static byte INumberBase<byte>.MultiplicativeIdentity => 1;
+    static int INumberBase<byte>.Radix => 2;
+    static bool INumberBase<byte>.IsZero(byte value) => value == 0;
+    static bool INumberBase<byte>.IsNormal(byte value) => value != 0;
+    static bool INumberBase<byte>.IsInteger(byte value) => true;
+    static bool INumberBase<byte>.IsFinite(byte value) => true;
+    static bool INumberBase<byte>.IsRealNumber(byte value) => true;
+    static bool INumberBase<byte>.IsCanonical(byte value) => true;
+    static bool INumberBase<byte>.IsNaN(byte value) => false;
+    static bool INumberBase<byte>.IsInfinity(byte value) => false;
+    static bool INumberBase<byte>.IsNegativeInfinity(byte value) => false;
+    static bool INumberBase<byte>.IsPositiveInfinity(byte value) => false;
+    static bool INumberBase<byte>.IsSubnormal(byte value) => false;
+    static bool INumberBase<byte>.IsComplexNumber(byte value) => false;
+    static bool INumberBase<byte>.IsImaginaryNumber(byte value) => false;
+    static byte INumberBase<byte>.MaxNumber(byte x, byte y) => x >= y ? x : y;
+    static byte INumberBase<byte>.MinNumber(byte x, byte y) => x <= y ? x : y;
+    static byte INumberBase<byte>.MaxMagnitudeNumber(byte x, byte y) => x >= y ? x : y;
+    static byte INumberBase<byte>.MinMagnitudeNumber(byte x, byte y) => x <= y ? x : y;
+    public static byte CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => checked((byte)v),
+            byte v => checked((byte)v),
+            short v => checked((byte)v),
+            ushort v => checked((byte)v),
+            int v => checked((byte)v),
+            uint v => checked((byte)v),
+            long v => checked((byte)v),
+            ulong v => checked((byte)v),
+            char v => checked((byte)v),
+            nint v => checked((byte)v),
+            nuint v => checked((byte)v),
+            float v => checked((byte)v),
+            double v => checked((byte)v),
+            decimal v => checked((byte)v),
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static byte CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (long)v >= (long)byte.MaxValue ? byte.MaxValue : (long)v <= (long)byte.MinValue ? byte.MinValue : (byte)v,
+            byte v => (ulong)v >= (ulong)byte.MaxValue ? byte.MaxValue : (byte)v,
+            short v => (long)v >= (long)byte.MaxValue ? byte.MaxValue : (long)v <= (long)byte.MinValue ? byte.MinValue : (byte)v,
+            ushort v => (ulong)v >= (ulong)byte.MaxValue ? byte.MaxValue : (byte)v,
+            int v => (long)v >= (long)byte.MaxValue ? byte.MaxValue : (long)v <= (long)byte.MinValue ? byte.MinValue : (byte)v,
+            uint v => (ulong)v >= (ulong)byte.MaxValue ? byte.MaxValue : (byte)v,
+            long v => (long)v >= (long)byte.MaxValue ? byte.MaxValue : (long)v <= (long)byte.MinValue ? byte.MinValue : (byte)v,
+            ulong v => (ulong)v >= (ulong)byte.MaxValue ? byte.MaxValue : (byte)v,
+            char v => (ulong)v >= (ulong)byte.MaxValue ? byte.MaxValue : (byte)v,
+            nint v => (long)v >= (long)byte.MaxValue ? byte.MaxValue : (long)v <= (long)byte.MinValue ? byte.MinValue : (byte)v,
+            nuint v => (ulong)v >= (ulong)byte.MaxValue ? byte.MaxValue : (byte)v,
+            float v => float.IsNaN(v) ? (byte)0 : v >= byte.MaxValue ? byte.MaxValue : v <= byte.MinValue ? byte.MinValue : (byte)v,
+            double v => double.IsNaN(v) ? (byte)0 : v >= byte.MaxValue ? byte.MaxValue : v <= byte.MinValue ? byte.MinValue : (byte)v,
+            decimal v => v >= byte.MaxValue ? byte.MaxValue : v <= byte.MinValue ? byte.MinValue : (byte)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static byte CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => unchecked((byte)v),
+            byte v => unchecked((byte)v),
+            short v => unchecked((byte)v),
+            ushort v => unchecked((byte)v),
+            int v => unchecked((byte)v),
+            uint v => unchecked((byte)v),
+            long v => unchecked((byte)v),
+            ulong v => unchecked((byte)v),
+            char v => unchecked((byte)v),
+            nint v => unchecked((byte)v),
+            nuint v => unchecked((byte)v),
+            float v => float.IsNaN(v) ? (byte)0 : v >= byte.MaxValue ? byte.MaxValue : v <= byte.MinValue ? byte.MinValue : (byte)v,
+            double v => double.IsNaN(v) ? (byte)0 : v >= byte.MaxValue ? byte.MaxValue : v <= byte.MinValue ? byte.MinValue : (byte)v,
+            decimal v => v >= byte.MaxValue ? byte.MaxValue : v <= byte.MinValue ? byte.MinValue : (byte)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
 
     // UTF-8 TEXT, as .NET 8's byte parses and formats it (IUtf8SpanParsable,
     // IUtf8SpanFormattable): whitespace around the number allowed on the way in.
@@ -7513,6 +8341,121 @@ static class Byte {
 }
 
 static class Double {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static double Abs(double value) => Math.Abs(value);
+    public static double Max(double x, double y) => Math.Max(x, y);
+    public static double Min(double x, double y) => Math.Min(x, y);
+    public static double Clamp(double value, double min, double max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return Math.Min(Math.Max(value, min), max); }
+    public static int Sign(double value) => Math.Sign(value);
+    public static double CopySign(double value, double sign) => Math.CopySign(value, sign);
+    public static bool IsPositive(double value) => !IsNegative(value);
+    public static bool IsInteger(double value) => IsFinite(value) && value == Math.Truncate(value);
+    public static bool IsEvenInteger(double value) => IsInteger(value) && Math.Abs(value % 2) == 0;
+    public static bool IsOddInteger(double value) => IsInteger(value) && Math.Abs(value % 2) == 1;
+    public static bool IsPow2(double value) { long bits = BitConverter.DoubleToInt64Bits(value); if (bits <= 0) { return false; } int exponent = (int)(bits >> 52); long fraction = bits & 0xFFFFFFFFFFFFFL; if (exponent == 0) { return System.Numerics.BitOperations.PopCount((ulong)fraction) == 1; } return exponent != 0x7FF && fraction == 0; }
+    public static double Log2(double value) => Math.Log2(value);
+    public static double MaxMagnitude(double x, double y) { double ax = Math.Abs(x); double ay = Math.Abs(y); if (ax > ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? y : x; } return y; }
+    public static double MinMagnitude(double x, double y) { double ax = Math.Abs(x); double ay = Math.Abs(y); if (ax < ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? x : y; } return y; }
+    public static double MaxNumber(double x, double y) { if (x != y) { if (!IsNaN(y)) { return y < x ? x : y; } return x; } return IsNegative(y) ? x : y; }
+    public static double MinNumber(double x, double y) { if (x != y) { if (!IsNaN(y)) { return x < y ? x : y; } return x; } return IsNegative(x) ? x : y; }
+    public static double MaxMagnitudeNumber(double x, double y) { double ax = Math.Abs(x); double ay = Math.Abs(y); if (ax > ay || IsNaN(ay)) { return x; } if (ax == ay) { return IsNegative(x) ? y : x; } return y; }
+    public static double MinMagnitudeNumber(double x, double y) { double ax = Math.Abs(x); double ay = Math.Abs(y); if (ax < ay || IsNaN(ay)) { return x; } if (ax == ay) { return IsNegative(x) ? x : y; } return y; }
+    public static double Sqrt(double x) => Math.Sqrt(x);
+    public static double Floor(double x) => Math.Floor(x);
+    public static double Ceiling(double x) => Math.Ceiling(x);
+    public static double Truncate(double x) => Math.Truncate(x);
+    public static double Round(double x) => Math.Round(x);
+    public static double Exp(double x) => Math.Exp(x);
+    public static double Log(double x) => Math.Log(x);
+    public static double Log10(double x) => Math.Log10(x);
+    public static double Cbrt(double x) => Math.Cbrt(x);
+    public static double Sin(double x) => Math.Sin(x);
+    public static double Cos(double x) => Math.Cos(x);
+    public static double Tan(double x) => Math.Tan(x);
+    public static double Asin(double x) => Math.Asin(x);
+    public static double Acos(double x) => Math.Acos(x);
+    public static double Atan(double x) => Math.Atan(x);
+    public static double Sinh(double x) => Math.Sinh(x);
+    public static double Cosh(double x) => Math.Cosh(x);
+    public static double Tanh(double x) => Math.Tanh(x);
+    public static double Pow(double x, double y) => Math.Pow(x, y);
+    public static double Atan2(double y, double x) => Math.Atan2(y, x);
+    public static double Lerp(double value1, double value2, double amount) => (value1 * (1 - amount)) + (value2 * amount);
+    public static double DegreesToRadians(double degrees) => degrees * (Math.PI / 180);
+    public static double RadiansToDegrees(double radians) => radians * (180 / Math.PI);
+    public const double Pi = 3.14159265358979323846;
+    public const double E = 2.7182818284590452354;
+    public const double Tau = 6.28318530717958647693;
+    static double INumberBase<double>.Zero => 0;
+    static double INumberBase<double>.One => 1;
+    static double INumberBase<double>.AdditiveIdentity => 0;
+    static double INumberBase<double>.MultiplicativeIdentity => 1;
+    static double INumberBase<double>.NegativeOne => -1;
+    static int INumberBase<double>.Radix => 2;
+    static bool INumberBase<double>.IsZero(double value) => value == 0;
+    static bool INumberBase<double>.IsCanonical(double value) => true;
+    static bool INumberBase<double>.IsComplexNumber(double value) => false;
+    static bool INumberBase<double>.IsImaginaryNumber(double value) => false;
+    public static double CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (double)v,
+            byte v => (double)v,
+            short v => (double)v,
+            ushort v => (double)v,
+            int v => (double)v,
+            uint v => (double)v,
+            long v => (double)v,
+            ulong v => (double)v,
+            char v => (double)v,
+            nint v => (double)v,
+            nuint v => (double)v,
+            float v => (double)v,
+            double v => (double)v,
+            decimal v => (double)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static double CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (double)v,
+            byte v => (double)v,
+            short v => (double)v,
+            ushort v => (double)v,
+            int v => (double)v,
+            uint v => (double)v,
+            long v => (double)v,
+            ulong v => (double)v,
+            char v => (double)v,
+            nint v => (double)v,
+            nuint v => (double)v,
+            float v => (double)v,
+            double v => (double)v,
+            decimal v => (double)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static double CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (double)v,
+            byte v => (double)v,
+            short v => (double)v,
+            ushort v => (double)v,
+            int v => (double)v,
+            uint v => (double)v,
+            long v => (double)v,
+            ulong v => (double)v,
+            char v => (double)v,
+            nint v => (double)v,
+            nuint v => (double)v,
+            float v => (double)v,
+            double v => (double)v,
+            decimal v => (double)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
     // Equals and GetHashCode as Double overrides them: NaN equals NaN, and
     // every NaN and both zeros hash alike, since they are Equal.
     public static bool Equals(double value, double other) { return value == other || (IsNaN(value) && IsNaN(other)); }
@@ -7727,6 +8670,121 @@ static class Double {
 /// Framework's float.ToString() was, so 0.1f prints 0.1 and not the double
 /// it widens to.
 static class Single {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    public static float Abs(float value) => MathF.Abs(value);
+    public static float Max(float x, float y) => MathF.Max(x, y);
+    public static float Min(float x, float y) => MathF.Min(x, y);
+    public static float Clamp(float value, float min, float max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return MathF.Min(MathF.Max(value, min), max); }
+    public static int Sign(float value) => MathF.Sign(value);
+    public static float CopySign(float value, float sign) => MathF.CopySign(value, sign);
+    public static bool IsPositive(float value) => !IsNegative(value);
+    public static bool IsInteger(float value) => IsFinite(value) && value == MathF.Truncate(value);
+    public static bool IsEvenInteger(float value) => IsInteger(value) && MathF.Abs(value % 2) == 0;
+    public static bool IsOddInteger(float value) => IsInteger(value) && MathF.Abs(value % 2) == 1;
+    public static bool IsPow2(float value) { int bits = BitConverter.SingleToInt32Bits(value); if (bits <= 0) { return false; } int exponent = bits >> 23; int fraction = bits & 0x7FFFFF; if (exponent == 0) { return System.Numerics.BitOperations.PopCount((uint)fraction) == 1; } return exponent != 0xFF && fraction == 0; }
+    public static float Log2(float value) => MathF.Log2(value);
+    public static float MaxMagnitude(float x, float y) { float ax = MathF.Abs(x); float ay = MathF.Abs(y); if (ax > ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? y : x; } return y; }
+    public static float MinMagnitude(float x, float y) { float ax = MathF.Abs(x); float ay = MathF.Abs(y); if (ax < ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? x : y; } return y; }
+    public static float MaxNumber(float x, float y) { if (x != y) { if (!IsNaN(y)) { return y < x ? x : y; } return x; } return IsNegative(y) ? x : y; }
+    public static float MinNumber(float x, float y) { if (x != y) { if (!IsNaN(y)) { return x < y ? x : y; } return x; } return IsNegative(x) ? x : y; }
+    public static float MaxMagnitudeNumber(float x, float y) { float ax = MathF.Abs(x); float ay = MathF.Abs(y); if (ax > ay || IsNaN(ay)) { return x; } if (ax == ay) { return IsNegative(x) ? y : x; } return y; }
+    public static float MinMagnitudeNumber(float x, float y) { float ax = MathF.Abs(x); float ay = MathF.Abs(y); if (ax < ay || IsNaN(ay)) { return x; } if (ax == ay) { return IsNegative(x) ? x : y; } return y; }
+    public static float Sqrt(float x) => MathF.Sqrt(x);
+    public static float Floor(float x) => MathF.Floor(x);
+    public static float Ceiling(float x) => MathF.Ceiling(x);
+    public static float Truncate(float x) => MathF.Truncate(x);
+    public static float Round(float x) => MathF.Round(x);
+    public static float Exp(float x) => MathF.Exp(x);
+    public static float Log(float x) => MathF.Log(x);
+    public static float Log10(float x) => MathF.Log10(x);
+    public static float Cbrt(float x) => MathF.Cbrt(x);
+    public static float Sin(float x) => MathF.Sin(x);
+    public static float Cos(float x) => MathF.Cos(x);
+    public static float Tan(float x) => MathF.Tan(x);
+    public static float Asin(float x) => MathF.Asin(x);
+    public static float Acos(float x) => MathF.Acos(x);
+    public static float Atan(float x) => MathF.Atan(x);
+    public static float Sinh(float x) => MathF.Sinh(x);
+    public static float Cosh(float x) => MathF.Cosh(x);
+    public static float Tanh(float x) => MathF.Tanh(x);
+    public static float Pow(float x, float y) => MathF.Pow(x, y);
+    public static float Atan2(float y, float x) => MathF.Atan2(y, x);
+    public static float Lerp(float value1, float value2, float amount) => (value1 * (1 - amount)) + (value2 * amount);
+    public static float DegreesToRadians(float degrees) => degrees * (float)(MathF.PI / 180);
+    public static float RadiansToDegrees(float radians) => radians * (float)(180 / MathF.PI);
+    public const float Pi = 3.14159265358979323846f;
+    public const float E = 2.7182818284590452354f;
+    public const float Tau = 6.28318530717958647693f;
+    static float INumberBase<float>.Zero => 0;
+    static float INumberBase<float>.One => 1;
+    static float INumberBase<float>.AdditiveIdentity => 0;
+    static float INumberBase<float>.MultiplicativeIdentity => 1;
+    static float INumberBase<float>.NegativeOne => -1;
+    static int INumberBase<float>.Radix => 2;
+    static bool INumberBase<float>.IsZero(float value) => value == 0;
+    static bool INumberBase<float>.IsCanonical(float value) => true;
+    static bool INumberBase<float>.IsComplexNumber(float value) => false;
+    static bool INumberBase<float>.IsImaginaryNumber(float value) => false;
+    public static float CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (float)v,
+            byte v => (float)v,
+            short v => (float)v,
+            ushort v => (float)v,
+            int v => (float)v,
+            uint v => (float)v,
+            long v => (float)v,
+            ulong v => (float)v,
+            char v => (float)v,
+            nint v => (float)v,
+            nuint v => (float)v,
+            float v => (float)v,
+            double v => (float)v,
+            decimal v => (float)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static float CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (float)v,
+            byte v => (float)v,
+            short v => (float)v,
+            ushort v => (float)v,
+            int v => (float)v,
+            uint v => (float)v,
+            long v => (float)v,
+            ulong v => (float)v,
+            char v => (float)v,
+            nint v => (float)v,
+            nuint v => (float)v,
+            float v => (float)v,
+            double v => (float)v,
+            decimal v => (float)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static float CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (float)v,
+            byte v => (float)v,
+            short v => (float)v,
+            ushort v => (float)v,
+            int v => (float)v,
+            uint v => (float)v,
+            long v => (float)v,
+            ulong v => (float)v,
+            char v => (float)v,
+            nint v => (float)v,
+            nuint v => (float)v,
+            float v => (float)v,
+            double v => (float)v,
+            decimal v => (float)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
     // Equals and GetHashCode as Single overrides them: NaN equals NaN, and
     // every NaN and both zeros hash alike, since they are Equal.
     public static bool Equals(float value, float other) { return value == other || (IsNaN(value) && IsNaN(other)); }
@@ -15822,6 +16880,85 @@ static class HalfBits {
 /// by the compiler with .NET's own arithmetic (Binder.Decimal). Arithmetic
 /// that does not fit is an OverflowException, checked or not, as in .NET.
 readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>, IFormattable {
+    // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
+    // generic method's copy for this type. Explicit implementations, as
+    // .NET's, are reached only through a type parameter.
+    static decimal INumberBase<decimal>.AdditiveIdentity => 0m;
+    static decimal INumberBase<decimal>.MultiplicativeIdentity => 1m;
+    static decimal INumberBase<decimal>.NegativeOne => -1m;
+    static int INumberBase<decimal>.Radix => 10;
+    static bool INumberBase<decimal>.IsFinite(decimal value) => true;
+    static bool INumberBase<decimal>.IsRealNumber(decimal value) => true;
+    static bool INumberBase<decimal>.IsNaN(decimal value) => false;
+    static bool INumberBase<decimal>.IsInfinity(decimal value) => false;
+    static bool INumberBase<decimal>.IsNegativeInfinity(decimal value) => false;
+    static bool INumberBase<decimal>.IsPositiveInfinity(decimal value) => false;
+    static bool INumberBase<decimal>.IsSubnormal(decimal value) => false;
+    static bool INumberBase<decimal>.IsComplexNumber(decimal value) => false;
+    static bool INumberBase<decimal>.IsImaginaryNumber(decimal value) => false;
+    static bool INumberBase<decimal>.IsNormal(decimal value) => value != 0;
+    static decimal INumberBase<decimal>.MaxNumber(decimal x, decimal y) => Max(x, y);
+    static decimal INumberBase<decimal>.MinNumber(decimal x, decimal y) => Min(x, y);
+    static decimal INumberBase<decimal>.MaxMagnitudeNumber(decimal x, decimal y) => MaxMagnitude(x, y);
+    static decimal INumberBase<decimal>.MinMagnitudeNumber(decimal x, decimal y) => MinMagnitude(x, y);
+    public static decimal CreateChecked<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (decimal)v,
+            byte v => (decimal)v,
+            short v => (decimal)v,
+            ushort v => (decimal)v,
+            int v => (decimal)v,
+            uint v => (decimal)v,
+            long v => (decimal)v,
+            ulong v => (decimal)v,
+            char v => (decimal)v,
+            nint v => (decimal)v,
+            nuint v => (decimal)v,
+            float v => (decimal)v,
+            double v => (decimal)v,
+            decimal v => (decimal)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static decimal CreateSaturating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (decimal)v,
+            byte v => (decimal)v,
+            short v => (decimal)v,
+            ushort v => (decimal)v,
+            int v => (decimal)v,
+            uint v => (decimal)v,
+            long v => (decimal)v,
+            ulong v => (decimal)v,
+            char v => (decimal)v,
+            nint v => (decimal)v,
+            nuint v => (decimal)v,
+            float v => float.IsNaN(v) ? 0m : v >= (double)decimal.MaxValue ? decimal.MaxValue : v <= (double)decimal.MinValue ? decimal.MinValue : (decimal)v,
+            double v => double.IsNaN(v) ? 0m : v >= (double)decimal.MaxValue ? decimal.MaxValue : v <= (double)decimal.MinValue ? decimal.MinValue : (decimal)v,
+            decimal v => (decimal)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+    public static decimal CreateTruncating<TOther>(TOther value) {
+        return value switch {
+            sbyte v => (decimal)v,
+            byte v => (decimal)v,
+            short v => (decimal)v,
+            ushort v => (decimal)v,
+            int v => (decimal)v,
+            uint v => (decimal)v,
+            long v => (decimal)v,
+            ulong v => (decimal)v,
+            char v => (decimal)v,
+            nint v => (decimal)v,
+            nuint v => (decimal)v,
+            float v => float.IsNaN(v) ? 0m : v >= (double)decimal.MaxValue ? decimal.MaxValue : v <= (double)decimal.MinValue ? decimal.MinValue : (decimal)v,
+            double v => double.IsNaN(v) ? 0m : v >= (double)decimal.MaxValue ? decimal.MaxValue : v <= (double)decimal.MinValue ? decimal.MinValue : (decimal)v,
+            decimal v => (decimal)v,
+            _ => throw new NotSupportedException("Specified type is not supported"),
+        };
+    }
+
     // .NET's three fields, in .NET's order.
     private readonly int _flags;
     private readonly uint _hi32;
@@ -16023,7 +17160,7 @@ readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>
     public static int Sign(decimal d) { return (d._lo64 | d._hi32) == 0 ? 0 : (d._flags >> 31) | 1; }
     public static bool IsNegative(decimal value) { return value._flags < 0; }
     public static bool IsPositive(decimal value) { return value._flags >= 0; }
-    public static bool IsZero(decimal value) { return (value._lo64 | value._hi32) == 0; }
+    static bool INumberBase<decimal>.IsZero(decimal value) { return (value._lo64 | value._hi32) == 0; }
     public static bool IsInteger(decimal value) { return value == Truncate(value); }
     public static bool IsEvenInteger(decimal value) { return IsInteger(value) && (Truncate(value).Low & 1) == 0; }
     public static bool IsOddInteger(decimal value) { return IsInteger(value) && (Truncate(value).Low & 1) != 0; }

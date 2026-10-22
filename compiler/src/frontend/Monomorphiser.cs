@@ -3801,6 +3801,12 @@ public sealed class Monomorphiser
                     // compiling, while the same pattern on a local carried on
                     // working because a local is narrowed by the test instead.
                     Guarded = m.Guarded,
+
+                    // `T.Zero`, whose T this copy names its type: a static
+                    // abstract member of T's constraint, found on the type
+                    // as only a type parameter finds it.
+                    ThroughTypeParameter = m.ThroughTypeParameter
+                        || m.Target is NameExpr { TypeArgs.Count: 0 } typeParameter && map.ContainsKey(typeParameter.Name),
                     Line = m.Line, Col = m.Col,
                 };
                 if (m.TypeArgs.Count > 0) SubInto(made.WritableTypeArgs, m.TypeArgs, map);

@@ -35,6 +35,15 @@ public sealed class MemberExpr : Expr
     public bool NullConditional { get; init; }
 
     /// <summary>
+    /// Read through a type parameter: `T.Zero` in a generic method's copy,
+    /// where T became the type it was bound to. C# 11's static abstract and
+    /// static virtual interface members are reached only this way, so only
+    /// for this read are an explicit implementation and an interface's
+    /// default looked for (Binder.ThroughTypeParameter).
+    /// </summary>
+    public bool ThroughTypeParameter { get; init; }
+
+    /// <summary>
     /// The member read instead when the type has none called Name: a list
     /// pattern asks for `Length`, else `Count` (C# 11.2.11's countable type),
     /// and only the binder knows which of the two the subject has.

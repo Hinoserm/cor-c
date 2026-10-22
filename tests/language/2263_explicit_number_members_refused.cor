@@ -1,0 +1,17 @@
+// test: explicit_number_members_refused
+// expect-compile-error: has no member 'Zero'
+//
+// .NET implements INumberBase<int>.Zero, One and IsZero explicitly, so
+// `int.Zero` written out is CS0117; only a type parameter reaches them
+// (T.Zero in a copy for int, test 2261).
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(int.Zero);
+        return 0;
+    }
+}

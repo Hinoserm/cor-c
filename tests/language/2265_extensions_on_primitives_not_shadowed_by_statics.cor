@@ -1,0 +1,41 @@
+// test: extensions_on_primitives_not_shadowed_by_statics
+// expect-exit: 0
+// expect-output:
+// 108 3 ext34 4
+// True False a+b p-q
+// -2.5 2.5 1 True a
+//
+// A call through a number, char or string value takes only what .NET makes
+// an instance method. The library writes those as statics taking the
+// receiver first, in the class that holds the type's real statics too
+// (uint.Log2, char.IsDigit, string.Join); taken as instance methods those
+// shadowed the program's own extensions of the name, and `u.Log2()` called
+// uint.Log2.
+// Expected output from .NET 10.
+
+using System;
+
+static class Ext
+{
+    public static int Log2(this uint v) => 100 + (int)v;
+    public static string Max(this int a, int b) => "ext" + a + b;
+    public static bool IsDigit(this char c) => c == 'x';
+    public static string Join(this string s, string other) => s + "+" + other;
+    public static double Abs(this double d) => -d;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        uint u = 8;
+        int i = 3;
+        char c = 'x';
+        string s = "a";
+        double d = 2.5;
+        Console.WriteLine(u.Log2() + " " + uint.Log2(u) + " " + i.Max(4) + " " + int.Max(i, 4));
+        Console.WriteLine(c.IsDigit() + " " + char.IsDigit(c) + " " + s.Join("b") + " " + string.Join("-", "p", "q"));
+        Console.WriteLine(d.Abs() + " " + double.Abs(d) + " " + i.CompareTo(2) + " " + d.Equals(2.5) + " " + s.Substring(0));
+        return 0;
+    }
+}

@@ -19990,6 +19990,68 @@ public sealed partial class Binder
         return CheckMemberCore(m, alsoAType);
     }
 
+    /// <summary>
+    /// Whether .NET's primitive type has an instance method of this name. The
+    /// library writes each as a static taking the receiver first, in the
+    /// class that also holds the type's statics; a call through a value takes
+    /// only these. A number, char or bool has the few every primitive has;
+    /// a string all but its statics; the rest are left as they are.
+    /// </summary>
+    private static bool InstanceOfPrimitive(Prim prim, string name) => prim switch
+    {
+        Prim.String => name is not ("Compare" or "CompareOrdinal" or "Concat" or "Copy" or "Create" or "Format" or "Intern"
+            or "IsInterned" or "IsNullOrEmpty" or "IsNullOrWhiteSpace" or "Join"),
+        Prim.Bool or Prim.Char or Prim.F32 or Prim.F64 or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64
+            or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+            => name is "CompareTo" or "Equals" or "GetHashCode" or "GetTypeCode" or "ToString" or "TryFormat",
+        _ => true,
+    };
+
+    /// <summary>
+    /// What a member read through a type parameter is (C# 11's static
+    /// abstract and static virtual interface members, MemberExpr.
+    /// ThroughTypeParameter): an explicit implementation on the type or a
+    /// base of it, or with `defaults`, the body an interface it implements
+    /// gives its static virtual member. Only ever this way: `Money.Zero`
+    /// written out has no member Zero, and `int.Zero` none either -- .NET
+    /// implements INumberBase<int>.Zero explicitly, which the library spells
+    /// the same way (Core.cor's Int32).
+    /// </summary>
+    private Type? ThroughTypeParameter(MemberExpr m, TypeSymbol owner, Type target, Dictionary<string, Type>? received, bool defaults)
+    {
+        List<TypeSymbol> places = new();
+        for (TypeSymbol? t = owner; t is not null; t = t.Base)
+        {
+            if (!defaults)
+            {
+                places.Add(t);
+                continue;
+            }
+            foreach (TypeSymbol face in t.Interfaces)
+                foreach (TypeSymbol up in Extended(face))
+                    if (!places.Contains(up)) places.Add(up);
+        }
+
+        foreach (TypeSymbol place in places)
+        {
+            List<MethodSymbol> group = place.Methods.Where(x => Implements(x, m.Name)).ToList();
+            if (group.Count > 0)
+            {
+                _r.Resolved[m] = new MethodGroupSym(group);
+                return Type.Void;
+            }
+            if (place.Methods.FirstOrDefault(x => Implements(x, "get_" + m.Name)) is { } getter)
+            {
+                _r.Resolved[m] = new PropertyGetSym(getter);
+                return defaults ? getter.Returns : Close(ContextualMemberResult(target, getter), received);
+            }
+        }
+        return null;
+
+        bool Implements(MethodSymbol x, string name)
+            => x.Static && (defaults ? x.Name == name && !x.Abstract && x.ExplicitInterface is null : x.ExplicitMember == name);
+    }
+
     private Type CheckMemberCore(MemberExpr m, TypeSymbol? asType)
     {
         // STILL IN A `?.` CHAIN past a call or an indexer: `n?.Self().Label`
@@ -20526,6 +20588,14 @@ public sealed partial class Binder
                                                           && x.Params[0].Type.Prim == target.Prim)
                                                  .ToList();
 
+                // ONLY WHAT .NET MAKES AN INSTANCE METHOD. Beside those the
+                // class holds the type's real statics -- `int.Max`,
+                // `uint.Log2`, `string.IsNullOrEmpty` -- which C# never calls
+                // through a value (CS0176), and which taken as one shadowed an
+                // extension of the name: `u.Log2()` of the program's own
+                // `Log2(this uint)` called uint.Log2.
+                if (!InstanceOfPrimitive(target.Prim, m.Name)) onString.Clear();
+
                 // NOT WHERE NONE OF THEM TAKES THE CALL (C# 12.8.10.3): the
                 // extensions are tried then, as for a class's methods --
                 // String's Count(predicate), LINQ's own over a string here,
@@ -20560,6 +20630,13 @@ public sealed partial class Binder
                 _r.Resolved[m] = new MethodGroupSym(found);
                 _r.Receivers[m] = true;
                 return Type.Void;
+            }
+
+            if (Alias(unmarked.ToString()) is { } staticsName && _r.Types.TryGetValue(staticsName, out TypeSymbol? statics)
+                && statics.FindMethods(m.Name).Any(x => x.Static) && !InstanceOfPrimitive(target.Prim, m.Name))
+            {
+                Error(m, $"CS0176: Member '{target}.{m.Name}' cannot be accessed with an instance reference; qualify it with a type name instead");
+                return Type.Error;
             }
 
             Error(m, $"'{target}' has no member '{m.Name}'");
@@ -20599,6 +20676,15 @@ public sealed partial class Binder
         // Through a local it never showed, because a written `Holder<string>`
         // asks for the specialisation and is given it.
         Dictionary<string, Type>? received = Received(target, owner);
+
+        // A TYPE PARAMETER'S MEMBER, read in the copy where it became its
+        // type: `T.Zero` is first what the type implements EXPLICITLY, as an
+        // interface map takes `static Money IHasZero<Money>.Zero` before a
+        // public member of the name (ThroughTypeParameter).
+        if (m.ThroughTypeParameter && ThroughTypeParameter(m, owner, target, received, defaults: false) is Type explicitOne)
+        {
+            return explicitOne;
+        }
 
         FieldSymbol? field = owner.FindField(m.Name) ?? BackingField(owner, m.Name, nonVirtual: m.Target is BaseExpr);
 
@@ -20714,6 +20800,13 @@ public sealed partial class Binder
         {
             _r.Resolved[m] = new MethodGroupSym(inherited);
             return Type.Void;
+        }
+
+        // AND LAST, what an interface it implements gives every implementer
+        // that writes none: a static virtual member's body.
+        if (m.ThroughTypeParameter && ThroughTypeParameter(m, owner, target, received, defaults: true) is Type byDefault)
+        {
+            return byDefault;
         }
 
         // AN EXTENSION METHOD, which is where LINQ lives. Last, after every

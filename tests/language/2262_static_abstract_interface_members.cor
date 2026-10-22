@@ -1,0 +1,92 @@
+// test: static_abstract_interface_members
+// expect-exit: 0
+// expect-output:
+// 4.25
+// #7
+// default tally
+// 20.10 #8
+// 0.21 #9
+// 1.00 default
+// #10 tally #-1
+//
+// C# 11's static abstract and static virtual interface members, reached
+// through a type parameter: an explicit implementation (`static Money
+// IHasZero<Money>.Zero`) is found, and taken before a public member of the
+// name, as an interface map does; a static virtual member a type leaves out
+// is the interface's body, which may itself call T's. Before, every one was
+// 'Money has no member Zero'.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+interface IHasZero<T> where T : IHasZero<T>
+{
+    static abstract T Zero { get; }
+    static abstract T Add(T a, T b);
+    static virtual string Kind() => "default";
+    static virtual T Twice(T a) => T.Add(a, a);
+}
+
+readonly struct Money : IHasZero<Money>
+{
+    public readonly long Cents;
+    public Money(long cents) { Cents = cents; }
+    static Money IHasZero<Money>.Zero => new Money(0);
+    public static Money Add(Money a, Money b) => new Money(a.Cents + b.Cents);
+    public override string ToString() => (Cents / 100) + "." + (Cents % 100).ToString("00");
+}
+
+sealed class Tally : IHasZero<Tally>
+{
+    public int N;
+    public static Tally Zero => new Tally();
+    static Tally IHasZero<Tally>.Add(Tally a, Tally b) => new Tally { N = a.N + b.N };
+    public static Tally Add(Tally a, Tally b) => new Tally { N = -1 };
+    public static string Kind() => "tally";
+    public override string ToString() => "#" + N;
+}
+
+sealed class Ledger<T> where T : IHasZero<T>
+{
+    private readonly List<T> _items = new();
+    public void Post(T item) => _items.Add(item);
+    public T Total()
+    {
+        T sum = T.Zero;
+        foreach (T item in _items) sum = T.Add(sum, item);
+        return sum;
+    }
+    public string Kind => T.Kind();
+}
+
+static class Program
+{
+    static T Sum<T>(params T[] xs) where T : IHasZero<T>
+    {
+        T total = T.Zero;
+        foreach (T x in xs) total = T.Add(total, x);
+        return total;
+    }
+
+    static string KindOf<T>() where T : IHasZero<T> => T.Kind();
+    static T TwiceOf<T>(T x) where T : IHasZero<T> => T.Twice(x);
+    static T Outer<T>(T x) where T : IHasZero<T> => Sum(x, TwiceOf(x));
+
+    static int Main()
+    {
+        Console.WriteLine(Sum(new Money(150), new Money(275)));
+        Console.WriteLine(Sum(new Tally { N = 2 }, new Tally { N = 5 }));
+        Console.WriteLine(KindOf<Money>() + " " + KindOf<Tally>());
+        Console.WriteLine(TwiceOf(new Money(1005)) + " " + TwiceOf(new Tally { N = 4 }));
+        Console.WriteLine(Outer(new Money(7)) + " " + Outer(new Tally { N = 3 }));
+        Ledger<Money> ledger = new();
+        ledger.Post(new Money(99));
+        ledger.Post(new Money(1));
+        Console.WriteLine(ledger.Total() + " " + ledger.Kind);
+        Ledger<Tally> tallies = new();
+        tallies.Post(new Tally { N = 10 });
+        Console.WriteLine(tallies.Total() + " " + tallies.Kind + " " + Tally.Add(new Tally(), new Tally()));
+        return 0;
+    }
+}
