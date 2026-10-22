@@ -11,6 +11,8 @@ public sealed class TypeDecl : Node
     /// <summary>An implementation-private generated type, such as a closure.</summary>
     public bool LocalOnly { get; set; }
     public bool IsDelegate { get; set; }
+    /// <summary>Written `record` (Parser.AddRecordMembers): what the index says of it (SourceIndexBuilder.RecordKey).</summary>
+    public bool IsRecord { get; set; }
 
     /// <summary>
     /// Its field initialisers are already in its constructors. A declaration

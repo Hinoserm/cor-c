@@ -1,0 +1,41 @@
+// test: record_base_declared_in_another_unit
+// units: tests/language/support/2271_record_bases.cor
+// expect-exit: 0
+// expect-output:
+// Dog { Sound = woof, Legs = 4 } True False True True
+// False False
+// Puppy { Name = Rex, Weeks = 8 } True
+// True
+//
+// As test 2271, with the base records in a unit compiled apart: what the
+// declaration index says of them now says they are records
+// (SourceIndexBuilder.RecordKey), and a record of this unit deriving from
+// one without arguments chains its equality and text to it.
+// Expected output from .NET 10.
+
+using System;
+
+record Dog : Animal
+{
+    public int Legs { get; init; } = 4;
+}
+
+record Puppy(string Name, int Weeks) : Animal2(Name);
+
+static class Program
+{
+    static int Main()
+    {
+        Dog a = new() { Sound = "woof" };
+        Dog b = new() { Sound = "woof" };
+        Dog c = new() { Sound = "arf" };
+        Console.WriteLine(a + " " + (a == b) + " " + (a == c) + " " + a.Equals((Animal)b) + " " + (a.GetHashCode() == b.GetHashCode()));
+        Animal plain = new() { Sound = "woof" };
+        Console.WriteLine(plain.Equals(a) + " " + a.Equals(plain));
+        Console.WriteLine(new Puppy("Rex", 8) + " " + (new Puppy("Rex", 8) == new Puppy("Rex", 8)));
+        Console.WriteLine(new Late(2) == new Late(2));
+        return 0;
+    }
+}
+
+record Late(int N) : Earlier;

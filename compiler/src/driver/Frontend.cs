@@ -119,7 +119,7 @@ public static class Frontend
         try
         {
             Meter parsing = Meter.Start();
-            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, declarations?.Tokens);
+            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, declarations?.Tokens, declarations?.RecordNames());
             parsing.Stop("front:parse");
             int sourceIndex = 0;
             foreach ((string file, string? path, bool isLibrary, bool isElsewhere) in sources)
@@ -478,9 +478,11 @@ public static class Frontend
 
     private static CompilationUnit[] ParseSources(
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
-        IReadOnlyCollection<string>? symbols, int workers, SyntaxTokenCache? tokens = null)
+        IReadOnlyCollection<string>? symbols, int workers, SyntaxTokenCache? tokens = null, List<string>? indexedRecords = null)
     {
-        Parser.ProjectRecords = RecordNames(sources);
+        HashSet<string> records = RecordNames(sources);
+        if (indexedRecords is not null) records.UnionWith(indexedRecords);
+        Parser.ProjectRecords = records;
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
@@ -524,7 +526,9 @@ public static class Frontend
     /// The names of the record classes the program's files declare, from
     /// their tokens (`record [class] Name`), for a record whose base is one
     /// declared in another file (Parser.ProjectRecords). The library's are
-    /// left out: no program record derives from one of them.
+    /// left out: no program record derives from one of them. A unit
+    /// compiled apart has the rest from the index (IndexedDeclarations.
+    /// RecordNames).
     /// </summary>
     private static HashSet<string> RecordNames(List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources)
     {

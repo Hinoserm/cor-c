@@ -45,6 +45,9 @@ public static class SourceIndexBuilder
     /// <summary>The key of an assembly's `global using` directives on one side, the library's or the program's.</summary>
     public static string GlobalUsingKey(string identity, bool library) => "U:" + identity + "\n" + (library ? "library" : "program");
 
+    /// <summary>The key of every record class's name (Parser.ProjectRecords): one key, every name.</summary>
+    public static string RecordKey(string identity) => "R:" + identity + "\n";
+
     /// <summary>
     /// A text's hash as the index records it: of its UTF-8 bytes, as read
     /// (File.ReadAllText). FastHash, not SHA-256: it only tells a unit that a
@@ -287,6 +290,11 @@ public static class SourceIndexBuilder
                         .Distinct(StringComparer.Ordinal))
                         yield return new DeclarationRecord("G:" + identity + "\n" + method, Encoding.UTF8.GetBytes(key));
                     if (type.Kind == TypeKind.Interface) yield return InterfaceFamilies.Record(key, type, librarySource?.Invoke(path) ?? true);
+                    // A RECORD CLASS BY NAME, which a record of another unit
+                    // may derive from without arguments to say it is one
+                    // (Frontend.RecordNames).
+                    if (type.IsRecord && type.Kind == TypeKind.Class)
+                        yield return new DeclarationRecord(RecordKey(identity), Encoding.UTF8.GetBytes(type.Name));
                 }
             }
             // THE FORMS EVERY UNIT NUMBERS A BLOCK FOR (InterfaceForms), over

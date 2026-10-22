@@ -109,6 +109,16 @@ public sealed class IndexedDeclarations : IDisposable
         return catalog.GlobalUsings(assembly, library);
     }
 
+    /// <summary>
+    /// The assembly's record classes by name (Parser.ProjectRecords): asked,
+    /// so a record added or taken away anywhere rebuilds every unit.
+    /// </summary>
+    public List<string> RecordNames()
+    {
+        queries.Add(('R', ""));
+        return catalog.RecordNames(assembly);
+    }
+
     public void Require(string bindingName)
     {
         if (!required.TryGetValue(bindingName, out string? key))

@@ -2299,6 +2299,7 @@ public sealed class Parser
     /// want identity say so with ReferenceEqualityComparer.
     private void AddRecordMembers(TypeDecl decl, List<Param> positional, Token start)
     {
+        decl.IsRecord = true;
         // THE BASE RECORD, when there is one: what its record members chain to
         // (AddRecordSynthesis), and the positional parameters it already has
         // properties for, which C# makes none of here -- `Derived(string Kind,

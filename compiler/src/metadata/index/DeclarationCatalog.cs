@@ -250,6 +250,20 @@ public sealed class DeclarationCatalog : IDisposable
         return found;
     }
 
+    /// <summary>The names of an assembly's record classes (SourceIndexBuilder.RecordKey).</summary>
+    public List<string> RecordNames(string assembly)
+    {
+        string query = SourceIndexBuilder.RecordKey(SourceIndexBuilder.AssemblyIdentity(assembly));
+        List<string> found = new();
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            foreach (DeclarationRecord record in index.Find(query))
+                found.Add(DeclarationIndex.Utf8.GetString(record.Payload));
+        }
+        return found;
+    }
+
     // `kind:identity\nname` asked of the index once, and remembered. Two
     // answers to a binding name are an error in the index; two to a sole
     // name are no answer.
