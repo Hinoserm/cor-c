@@ -2050,6 +2050,16 @@ public sealed partial class Lowering
 
         foreach (InitIndex one in body.Indexes)
         {
+            // An array member's element, set in place; `^k` is its length less k.
+            if (_b.InitElement.TryGetValue(one, out Type? array))
+            {
+                VReg index = one.Args[0] is FromEndExpr end
+                    ? _e.Binary(Opcode.Sub, _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32), EvalAs(end.Offset, Type.I32))
+                    : EvalAs(one.Args[0], Type.I32);
+                VReg element = EvalAs(one.Value, array.Element!);
+                StorePlace(ElementPlace(obj, index, array, array.Element!, one), element);
+                continue;
+            }
             if (!_b.InitIndexer.TryGetValue(one, out MethodSymbol? setter))
             {
                 continue;

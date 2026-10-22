@@ -77,9 +77,9 @@ public sealed partial class Binder
                 _quiet--;
                 expanded = !given.IsError && given.Prim != Prim.NullLiteral && !Convertible(given, array);
             }
-            if (expanded && array.Element is Type element && RefOf(element) is TypeRef each)
+            if (expanded && ParamsElement(array) is Type element && RefOf(element) is TypeRef each)
             {
-                NewExpr packed = new() { Type = each, Elements = call.Args.Skip(fixedCount).ToList(), Line = call.Line, Col = call.Col };
+                NewExpr packed = Gathered(call.Args.Skip(fixedCount), array, each, call);
                 call.Args.RemoveRange(fixedCount, call.Args.Count - fixedCount);
                 call.Args.Add(packed);
                 if (call.ArgNames.Count > call.Args.Count) call.WritableArgNames.RemoveRange(call.Args.Count, call.ArgNames.Count - call.Args.Count);

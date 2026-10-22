@@ -1,0 +1,53 @@
+// test: index_indexers_and_index_values
+// expect-exit: 0
+// expect-output:
+// 30 20 True 1
+// 5
+// c
+// 5
+// 42 7
+// 9
+//
+// An Index reaching an indexer that takes one (C# 12.8.12.2): `h[^1]` and
+// `new Holder { [^1] = 42 }` pass the Index, where it was turned into a
+// count less one of a Length the type has not got. An array indexed by an
+// Index held in a value, read and now written too: `items[i] = 5` threw
+// IndexOutOfRangeException before. And an array member's elements set by a
+// nested initialiser, `Data = { [^1] = 9 }`, refused before.
+// Expected output from .NET 10.
+
+using System;
+static class Program
+{
+    static void Values()
+    {
+        int[] items = { 10, 20, 30 };
+        Index i = ^1;
+        Index j = 1;
+        Console.WriteLine(items[i] + " " + items[j] + " " + i.IsFromEnd + " " + i.Value);
+        items[i] = 5;
+        Console.WriteLine(items[2]);
+        string s = "abc";
+        Console.WriteLine(s[i]);
+    }
+
+    static int Main()
+    {
+        Values();
+        var h = new Holder();
+        h[^1] = 5;
+        Console.WriteLine(h.Items[2]);
+        var g = new Holder { [^1] = 42, [0] = 7 };
+        Console.WriteLine(g.Items[2] + " " + g.Items[0]);
+        var arr = new int[3];
+        var w = new Wrap { Data = { [^1] = 9 } };
+        Console.WriteLine(w.Data[2]);
+        return 0;
+    }
+}
+sealed class Holder
+{
+    public int[] Items = new int[3];
+    public int this[Index i] { get => Items[i]; set => Items[i] = value; }
+}
+sealed class Wrap { public int[] Data = new int[3]; }

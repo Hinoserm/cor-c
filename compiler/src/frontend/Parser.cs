@@ -4178,6 +4178,10 @@ public sealed class Parser
 
             Token at = Cur;
 
+            // `scoped` (C# 11) narrows how far a ref or a ref struct may
+            // escape, which nothing here lets one do past its call: read past.
+            if (Scoped() || At(Tok.Ident) && Cur.Text == "scoped" && Ahead().Kind is Tok.KwRef or Tok.KwIn or Tok.KwOut) _i++;
+
             // `this` before the first parameter of a static method makes it an
             // extension method: `list.Where(f)` for `Where(this List<T> l, ...)`.
             bool receiver = Take(Tok.KwThis);
@@ -4207,7 +4211,9 @@ public sealed class Parser
 
             // Not in a synthesised delegate (AnonymousDelegates): its `params
             // T0` is the array a lambda's natural type passes for T0.
-            if (variadic && type.ArrayRank == 0 && _written)
+            // C# 13's params collections take a span or a collection type
+            // too (Binder.ParamsElement): anything generic is left to it.
+            if (variadic && type.ArrayRank == 0 && type.Args.Count == 0 && _written)
             {
                 throw new CompileError(_file, at.Line, at.Col,
                                        "a 'params' parameter must be an array");
@@ -5996,6 +6002,13 @@ public sealed class Parser
     /// parenthesised expression of any depth is scanned once and cheaply.
     /// </summary>
     private bool IsLambdaHead() => IsLambdaHeadAt(_i);
+
+    /// <summary>
+    /// Whether the word here is C# 11's `scoped` before a declaration's type
+    /// -- `scoped Span<int> s` -- and not a type of that name, `scoped x`.
+    /// </summary>
+    private bool Scoped() => At(Tok.Ident) && Cur.Text == "scoped" && Ahead().Kind == Tok.Ident
+        && _i + 2 < _t.Count && _t[_i + 2].Kind is Tok.Ident or Tok.Lt or Tok.LBracket or Tok.Question or Tok.Dot;
 
     /// <summary>Where the switch arm being guarded has its `=>`, or -1. See the `when` in a switch expression.</summary>
     private int _armArrow = -1;
@@ -8330,6 +8343,9 @@ public sealed class Parser
         {
             int save = _i;
             bool constant = Take(Tok.KwConst);
+            // `scoped Span<int> s = ...` (C# 11), whose word narrows how far
+            // the span may escape -- a ref struct's own rules keep it here.
+            if (!constant && Scoped()) _i++;
 
             try
             {

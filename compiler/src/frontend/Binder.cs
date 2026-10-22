@@ -2428,7 +2428,7 @@ public sealed partial class Binder
     /// taken against the length, and a span's is the same through Slice; an
     /// array's is RuntimeHelpers.GetSubArray, which copies.
     /// </summary>
-    private Expr ThroughIndexValue(IndexExpr ix, Type indexed, bool range)
+    private Expr ThroughIndexValue(IndexExpr ix, Type indexed, bool range, Func<IndexExpr, Expr>? use = null)
     {
         int line = ix.Line, col = ix.Col;
         SubjectExpr Held(int outer) => new() { Outer = outer, Line = line, Col = col };
@@ -2469,7 +2469,7 @@ public sealed partial class Binder
         {
             IndexExpr at = new() { Target = Held(1), Line = line, Col = col };
             at.Args.Add(Invoke(Held(0), "GetOffset", Length(Held(1))));
-            return Once(ix.Target, Once(ix.Args[0], at));
+            return Once(ix.Target, Once(ix.Args[0], use is null ? at : use(at)));
         }
 
         Expr Start() => Invoke(Member(Held(0), "Start"), "GetOffset", Length(Held(1)));
@@ -2505,6 +2505,17 @@ public sealed partial class Binder
     /// subject, as ThroughIndexValue does): the element at the held value's
     /// count less k, handed to `use` -- read as it is, or assigned to.
     /// </summary>
+    /// <summary>
+    /// Whether what is indexed has an indexer of its own taking a System.Index
+    /// (C# 12.8.12.2): `h[^1]` then passes the Index, and the count less one
+    /// is only for a type that has no such indexer -- a Length or a Count and
+    /// an int indexer, C#'s implicit Index support.
+    /// </summary>
+    private bool TakesIndex(Expr target)
+        => Peek(target) is { Symbol: TypeSymbol owner, IsArray: false }
+        && owner.FindMethods("get_", "Item").Concat(owner.FindMethods("set_", "Item"))
+                .Any(m => !m.Static && m.Params.Count is 1 or 2 && m.Params[0].Type.Symbol?.Name == "Index" && m.Params[0].Type.Symbol?.Kind == TypeKind.Struct);
+
     private PatternExpr FromEndOnce(Expr target, FromEndExpr end, Func<IndexExpr, Expr> use)
     {
         SubjectExpr Held() => new() { Outer = 0, Line = end.Line, Col = end.Col };
@@ -13858,6 +13869,55 @@ public sealed partial class Binder
         => t.Symbol?.Decl is { Template: "ReadOnlySpan" }
                           or { Name: "ReadOnlySpan", TypeParams.Count: 1 };
 
+    /// <summary>
+    /// What a `params` parameter gathers: an array's element, or, as C# 13's
+    /// params collections, a span's or the T of a collection type a
+    /// collection expression makes (IEnumerable<T>, IReadOnlyList<T>,
+    /// List<T> and the rest), which the gathered arguments are made into.
+    /// </summary>
+    private Type? ParamsElement(Type t)
+    {
+        if (t.IsArray) return t.Element;
+        if (SpanHolds(t) is Type held) return held;
+        if (t.Symbol?.Decl is { Template: string template, TemplateArgs.Count: 1 } made && Gathers(template))
+            return Resolve(made.TemplateArgs[0], _thisType);
+        if (t.Symbol?.Decl is { Name: string name, TypeParams.Count: 1 } && Gathers(name) && t.Args.Count == 1)
+            return t.Args[0];
+        return null;
+
+        static bool Gathers(string name) => name is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList" or "ICollection"
+            or "IList" or "List" or "HashSet" or "Stack" or "Queue" or "LinkedList" or "SortedSet";
+    }
+
+    /// <summary>
+    /// The arguments a `params` parameter gathers, made into what it is, its
+    /// type written out -- so a later round, and a generic method's
+    /// inference, read it as that: a new array of them, which an interface
+    /// (IEnumerable<T>, IReadOnlyList<T> and the rest) takes as it is; a span
+    /// over that array; a collection class filled by its initialiser.
+    /// </summary>
+    private static NewExpr Gathered(IEnumerable<Expr> items, Type parameter, TypeRef element, Node at)
+    {
+        List<Expr> written = items.ToList();
+        NewExpr array = new() { Type = element, Elements = written, Line = at.Line, Col = at.Col };
+        if (parameter.IsArray || parameter.Symbol is { Kind: TypeKind.Interface } || RefOf(parameter) is not TypeRef spelt) return array;
+        if (parameter.Symbol?.Kind == TypeKind.Struct)
+        {
+            NewExpr span = new() { Type = spelt, Line = at.Line, Col = at.Col };
+            span.Args.Add(new NewExpr { Type = element, Elements = written, Line = at.Line, Col = at.Col });
+            span.WritableArgNames.Add(null);
+            return span;
+        }
+        NewExpr collection = new() { Type = spelt, Line = at.Line, Col = at.Col };
+        foreach (Expr item in written)
+        {
+            InitAdd add = new() { Line = item.Line, Col = item.Col };
+            add.Args.Add(item);
+            collection.Body.WritableAdds.Add(add);
+        }
+        return collection;
+    }
+
     private Type? SpanHolds(Type t)
     {
         if (t.Symbol?.Decl is { Template: "ReadOnlySpan" or "Span", TemplateArgs.Count: 1 } made)
@@ -14569,6 +14629,26 @@ public sealed partial class Binder
         foreach (InitIndex one in body.Indexes)
         {
             Type? outerIndexed = _wanted;
+
+            // AN ARRAY'S ELEMENT, set in place: `Data = { [2] = 9 }` of an
+            // array member, `[^1]` counted from its end (C# 13).
+            if (type.IsArray && type.Element is Type element)
+            {
+                if (one.Args.Count != 1)
+                {
+                    Error(one, $"'{type}' has one index, and this initialiser gives {one.Args.Count}");
+                    continue;
+                }
+                _wanted = null;
+                Expr at = one.Args[0] is FromEndExpr end ? end.Offset : one.Args[0];
+                CheckAssignable(CheckExpr(at), Type.I32, at, "the index");
+                _wanted = element;
+                Type given = one.Value is LambdaExpr elementLambda ? CheckLambda(elementLambda, element) : CheckExpr(one.Value);
+                _wanted = outerIndexed;
+                CheckAssignable(given, element, one.Value, "the element");
+                _r.InitElement[one] = type;
+                continue;
+            }
 
             _wanted = null;
 
@@ -15448,7 +15528,8 @@ public sealed partial class Binder
             // Params it read -- not `h?.Params[h?.Params.Count - 1]`, whose
             // index is itself an int? and which reads the chain twice.
             case IndexExpr { Args.Count: 1 } backOf when backOf.Args[0] is FromEndExpr endOf
-                                                     && (backOf.NullConditional || HasConditionalMember(backOf.Target)):
+                                                     && (backOf.NullConditional || HasConditionalMember(backOf.Target))
+                                                     && !TakesIndex(backOf.Target):
             {
                 SubjectExpr Reached() => new() { Outer = 0, Line = backOf.Line, Col = backOf.Col };
                 IndexExpr at = new() { Target = Reached(), NullConditional = true, Line = backOf.Line, Col = backOf.Col };
@@ -15472,7 +15553,7 @@ public sealed partial class Binder
             // count is the target's -- read by writing the target twice, Make
             // ran twice. A local, a parameter or `this` is read twice for
             // nothing; anything else is evaluated once and held, as C# does.
-            case IndexExpr { Args.Count: 1 } back when back.Args[0] is FromEndExpr end:
+            case IndexExpr { Args.Count: 1 } back when back.Args[0] is FromEndExpr end && !TakesIndex(back.Target):
             {
                 if (!ReadTwiceForNothing(back.Target))
                 {
@@ -16286,7 +16367,8 @@ public sealed partial class Binder
             // element of what was held -- target, then index, then value,
             // C#'s order.
             case AssignExpr fromEnd when fromEnd.Target is IndexExpr { Args.Count: 1, NullConditional: false } backAt
-                                         && backAt.Args[0] is FromEndExpr backEnd && !ReadTwiceForNothing(backAt.Target):
+                                         && backAt.Args[0] is FromEndExpr backEnd && !ReadTwiceForNothing(backAt.Target)
+                                         && !TakesIndex(backAt.Target):
             {
                 PatternExpr once = FromEndOnce(backAt.Target, backEnd, element => new AssignExpr
                 {
@@ -16295,6 +16377,25 @@ public sealed partial class Binder
                 });
                 _r.Rewrites[fromEnd] = once;
                 return CheckExpr(once);
+            }
+
+            // `items[i] = v` WITH i AN INDEX held in a value: the element at
+            // its offset, as a read of it is (ThroughIndexValue) -- the target
+            // and the index each once, then the value, C#'s order. Only where
+            // the type has no indexer taking the Index itself.
+            case AssignExpr byIndex when byIndex.Target is IndexExpr { Args.Count: 1, NullConditional: false } valuedAt
+                                         && valuedAt.Args[0] is not (RangeExpr or FromEndExpr or LiteralExpr)
+                                         && Peek(valuedAt.Args[0]).AsNonNullable() is { } heldAt && IsIndexType(heldAt)
+                                         && Peek(valuedAt.Target).AsNonNullable() is { IsError: false } indexedAt
+                                         && !(indexedAt.Symbol is { } ownerAt && Reachable(ownerAt, "set_Item").Any(s => s.Params.Count == 2
+                                              && MethodSignatures.SameType(s.Params[0].Type.AsNonNullable(), heldAt))):
+            {
+                Expr made = ThroughIndexValue(valuedAt, indexedAt, range: false, element => new AssignExpr
+                {
+                    Target = element, Op = byIndex.Op, Value = byIndex.Value, Line = byIndex.Line, Col = byIndex.Col,
+                });
+                _r.Rewrites[byIndex] = made;
+                return CheckExpr(made);
             }
 
             case AssignExpr a when (a.Target is IndexExpr refTarget ? RefIndexerCall(refTarget) : a.Target is MemberExpr refMember ? RefMemberCall(refMember) : null) is CallExpr refStore:
@@ -22059,14 +22160,17 @@ public sealed partial class Binder
                 Type array = ContextualParameterType(targetType, variadic, fixedCount);
                 bool ordinary = args.Count == variadic.Params.Count
                     && (args[^1].Prim == Prim.NullLiteral || Convertible(args[^1], array));
-                if (!ordinary && array.Element is Type element && RefOf(element) is TypeRef elementRef)
+                if (!ordinary && ParamsElement(array) is Type element && RefOf(element) is TypeRef elementRef)
                 {
-                    NewExpr packed = new() { Type = elementRef, Elements = c.Args.Skip(fixedCount).ToList(), Line = c.Line, Col = c.Col };
+                    NewExpr packed = Gathered(c.Args.Skip(fixedCount), array, elementRef, c);
                     c.Args.RemoveRange(fixedCount, c.Args.Count - fixedCount);
                     c.Args.Add(packed);
                     c.ParamsPacked = true;
                     args.RemoveRange(fixedCount, args.Count - fixedCount);
+                    Type? wantedPack = _wanted;
+                    _wanted = array;
                     args.Add(CheckExpr(packed));
+                    _wanted = wantedPack;
                     invoke = variadic;
                 }
             }
@@ -22357,7 +22461,12 @@ public sealed partial class Binder
                 if (said < 0) return false;
                 if (said > 0) better = true;
             }
-            return better;
+            // AND AS C# 13 RANKS WHAT GATHERS THEM: a ReadOnlySpan before a
+            // Span, a Span before an array or an interface -- `Which(1, 2)`
+            // beside Which(params int[]) is Which(params ReadOnlySpan<int>).
+            return better || Gatherer(one.Params[^1].Type) > Gatherer(other.Params[^1].Type);
+
+            int Gatherer(Type t) => ReadOnlySpanned(t) ? 2 : SpanHolds(t) is not null ? 1 : 0;
         }
 
         List<MethodSymbol> ordinaryFits = new();
@@ -22374,15 +22483,14 @@ public sealed partial class Binder
                 if (!c.ParamsPacked && m.TypeParams.Count == 0
                     && m.Params.Count > 0
                     && m.Params[^1].IsParams
-                    && m.Params[^1].Type.IsArray
-                    && m.Params[^1].Type.Element is Type element
+                    && ParamsElement(m.Params[^1].Type) is Type element
                     && args.Count >= m.Params.Count - 1
                     && Enumerable.Range(0, m.Params.Count - 1)
                                  .All(i => WrittenFits(args[i], Wants(m, i), c.Args[i]))
                     && Enumerable.Range(m.Params.Count - 1, args.Count - (m.Params.Count - 1))
                                  .All(i => WrittenFits(args[i], element, c.Args[i]))
                     && (expandedParams is null
-                        || ExpandedBetter(m, new Dictionary<string, Type>(), element, expandedParams, expandedParams.Params[^1].Type.Element!)))
+                        || ExpandedBetter(m, new Dictionary<string, Type>(), element, expandedParams, ParamsElement(expandedParams.Params[^1].Type)!)))
                 {
                     expandedParams = m;
                 }
@@ -22394,11 +22502,12 @@ public sealed partial class Binder
             // result is the int[] of both, where WhenAll(params Task[]) has
             // none. The two expanded forms compete as any two overloads do,
             // and the ordinary one wins a tie (C# 12.6.4.3).
-            Type? expandedElement = expandedParams?.Params[^1].Type.Element;
+            Type? expandedElement = expandedParams is null ? null : ParamsElement(expandedParams.Params[^1].Type);
+            Dictionary<string, Type>? expandedBindings = null;
             foreach (MethodSymbol m in group.Methods)
             {
                 if (c.ParamsPacked || m.TypeParams.Count == 0 || m.Params.Count == 0 || !m.Params[^1].IsParams
-                    || m.Params[^1].Type is not { IsArray: true, Element: Type open }
+                    || ParamsElement(m.Params[^1].Type) is not Type open
                     || args.Count < m.Params.Count - 1
                     || !InferExpanded(m, open, out Dictionary<string, Type> got))
                 {
@@ -22412,6 +22521,7 @@ public sealed partial class Binder
                 {
                     expandedParams = m;
                     expandedElement = closedElement;
+                    expandedBindings = got;
                 }
             }
 
@@ -22458,19 +22568,18 @@ public sealed partial class Binder
                     return Type.Error;
                 }
 
-                NewExpr packed = new()
-                {
-                    Type = elementRef,
-                    Elements = c.Args.Skip(fixedCount).ToList(),
-                    Line = c.Line,
-                    Col = c.Col,
-                };
+                Type gathering = Wants(variadic, fixedCount);
+                if (expandedBindings is not null) gathering = Close(gathering, expandedBindings);
+                NewExpr packed = Gathered(c.Args.Skip(fixedCount), gathering, elementRef, c);
 
                 c.Args.RemoveRange(fixedCount, c.Args.Count - fixedCount);
                 c.Args.Add(packed);
                 c.ParamsPacked = true;
                 args.RemoveRange(fixedCount, args.Count - fixedCount);
+                Type? wantedPack = _wanted;
+                _wanted = gathering;
                 args.Add(CheckExpr(packed));
+                _wanted = wantedPack;
             }
         }
 

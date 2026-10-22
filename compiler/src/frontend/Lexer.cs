@@ -313,6 +313,18 @@ public sealed class Lexer
             return Number(line, col, start);
         }
 
+        // $"""...""" and $$"""...""" -- A RAW INTERPOLATED LITERAL (C# 11),
+        // its holes opened by as many braces as it has dollars.
+        if (c == '$')
+        {
+            int dollars = 1;
+            while (Peek(dollars) == '$') dollars++;
+            if (Peek(dollars) == '"' && Peek(dollars + 1) == '"' && Peek(dollars + 2) == '"')
+            {
+                return RawInterpolatedLiteral(line, col, start, dollars);
+            }
+        }
+
         // $"..." -- taken here rather than in Punct, because what follows the
         // dollar decides whether it is a string at all.
         if (c == '$' && Peek(1) == '"')
@@ -1117,6 +1129,88 @@ public sealed class Lexer
 
             Advance();
         }
+    }
+
+    /// <summary>
+    /// A RAW INTERPOLATED LITERAL (C# 11): read as a raw literal is -- its
+    /// fence, its lines, the closing fence's indentation off each -- and then
+    /// spelt as the ordinary interpolated literal the parser reads: the text
+    /// with its backslashes, quotes and braces escaped, each hole as `{...}`.
+    /// A hole opens with as many braces as there are dollars and closes with
+    /// as many; a run of fewer is text, and the braces of a longer run before
+    /// the hole's are text too.
+    /// </summary>
+    private Token RawInterpolatedLiteral(int line, int col, int start, int dollars)
+    {
+        for (int i = 0; i < dollars; i++) Advance();
+        string text = RawStringLiteral(line, col, start).Text;
+        StringBuilder sb = new();
+        for (int i = 0; i < text.Length;)
+        {
+            char c = text[i];
+            if (c == '{')
+            {
+                int run = 0;
+                while (i + run < text.Length && text[i + run] == '{') run++;
+                if (run < dollars)
+                {
+                    for (int k = 0; k < run; k++) sb.Append("{{");
+                    i += run;
+                    continue;
+                }
+                if (run >= 2 * dollars)
+                {
+                    throw Error($"the raw literal has a run of {run} '{{' -- a hole opens with {dollars}, and text of '{{' needs fewer than that", line, col);
+                }
+                for (int k = 0; k < run - dollars; k++) sb.Append("{{");
+                i += run;
+                // The hole's code to the run of `dollars` closing braces at
+                // its own depth, past any string or character in it.
+                int from = i, depth = 0;
+                while (true)
+                {
+                    if (i >= text.Length) throw Error("this raw interpolated literal has a hole with no end", line, col);
+                    char h = text[i];
+                    if (h is '"' or '\'')
+                    {
+                        i++;
+                        while (i < text.Length && text[i] != h) i += text[i] == '\\' ? 2 : 1;
+                        i++;
+                        continue;
+                    }
+                    if (h == '{') depth++;
+                    else if (h == '}')
+                    {
+                        if (depth > 0) depth--;
+                        else
+                        {
+                            int close = 0;
+                            while (i + close < text.Length && text[i + close] == '}') close++;
+                            if (close >= dollars)
+                            {
+                                sb.Append('{').Append(text, from, i - from).Append('}');
+                                i += dollars;
+                                break;
+                            }
+                        }
+                    }
+                    i++;
+                }
+                continue;
+            }
+            if (c == '}')
+            {
+                int run = 0;
+                while (i + run < text.Length && text[i + run] == '}') run++;
+                if (run >= dollars) throw Error($"the raw literal has a '}}' with no hole to close", line, col);
+                for (int k = 0; k < run; k++) sb.Append("}}");
+                i += run;
+                continue;
+            }
+            sb.Append(c switch { '\\' => "\\\\", '"' => "\\\"", '\n' => "\\n", '\r' => "\\r", _ => c.ToString() });
+            i++;
+        }
+        return new Token(Tok.InterpStr, sb.ToString(), line, col, start);
     }
 
     /// <summary>

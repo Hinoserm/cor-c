@@ -1,0 +1,71 @@
+// test: raw_interpolated_strings_and_params_collections
+// expect-exit: 0
+// expect-output:
+// Hello, Ann! "quoted" and \backslash\
+// {"name": "Ann", "n": 7, "braces": "{}"}
+// {{literal}} 14 3.14
+// [    7] [7    ] [3.142]
+// Name: Ann
+//   Indented 7
+// Tail
+// big 3
+// 0 1 6 9
+// 0 2
+// |a-b-c|x+y
+// 101 106
+// -1 5
+// 3 b
+// span 2; span 0; array 1
+//
+// C# 11's raw interpolated literals and C# 13's params collections.
+// $"""...""" with one dollar or several: a hole opens with as many braces
+// as there are dollars, fewer are text; multi-line ones lose the closing
+// fence's indentation; alignment and format in holes
+// (Lexer.RawInterpolatedLiteral spells each as the ordinary literal).
+// params ReadOnlySpan<T>, Span<T>, IEnumerable<T>, IReadOnlyList<T> and
+// List<T>, expanded and passed whole, a generic one inferring T; a
+// ReadOnlySpan overload taken before an array one, as C# 13 ranks them.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static int Span(params ReadOnlySpan<int> xs) { int t = 0; foreach (int x in xs) t += x; return t; }
+    static int Mutable(params Span<int> xs) { if (xs.Length > 0) xs[0] = 99; return xs.Length; }
+    static string Seq(string sep, params IEnumerable<string> parts) => string.Join(sep, parts);
+    static int Listed(params List<int> xs) { xs.Add(100); return xs.Count + xs.Sum(); }
+    static int ReadOnly(params IReadOnlyList<int> xs) => xs.Count == 0 ? -1 : xs[^1];
+    static T Last<T>(params ReadOnlySpan<T> xs) => xs[xs.Length - 1];
+    static string Which(params int[] xs) => "array " + xs.Length;
+    static string Which(params ReadOnlySpan<int> xs) => "span " + xs.Length;
+
+    static int Main()
+    {
+        int n = 7;
+        double price = 3.14159;
+        string name = "Ann";
+        Console.WriteLine($"""Hello, {name}! "quoted" and \backslash\""");
+        Console.WriteLine($$"""{"name": "{{name}}", "n": {{n}}, "braces": "{}"}""");
+        Console.WriteLine($$$"""{{literal}} {{{n * 2}}} {{{price:F2}}}""");
+        Console.WriteLine($"""[{n,5}] [{n,-5}] [{price:F3}]""");
+        string block = $"""
+            Name: {name}
+              Indented {n}
+            Tail
+            """;
+        Console.WriteLine(block);
+        Console.WriteLine($"""{(n > 5 ? "big" : "small")} {name.Length}""");
+
+        Console.WriteLine(Span() + " " + Span(1) + " " + Span(1, 2, 3) + " " + Span(new[] { 4, 5 }));
+        Console.WriteLine(Mutable() + " " + Mutable(1, 2));
+        Console.WriteLine(Seq("-") + "|" + Seq("-", "a", "b", "c") + "|" + Seq("+", new List<string> { "x", "y" }));
+        Console.WriteLine(Listed() + " " + Listed(1, 2));
+        Console.WriteLine(ReadOnly() + " " + ReadOnly(3, 4, 5));
+        Console.WriteLine(Last(1, 2, 3) + " " + Last("a", "b"));
+        Console.WriteLine(Which(1, 2) + "; " + Which() + "; " + Which(new[] { 1 }));
+        return 0;
+    }
+}

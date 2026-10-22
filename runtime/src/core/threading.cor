@@ -6763,6 +6763,29 @@ namespace System
 
 namespace System.Threading
 {
+    /// .NET 9's Lock: a lock object of its own, held through the object's
+    /// monitor -- the same one `lock (gate)` takes (Parser's MonitorCall) --
+    /// so the statement and the methods agree on who holds it. C# 13 writes
+    /// `lock` on a Lock as its EnterScope; the monitor is the same lock.
+    public sealed class Lock
+    {
+        public void Enter() { Monitor.Enter(this); }
+        public bool TryEnter() { return Monitor.TryEnter(this); }
+        public bool TryEnter(int millisecondsTimeout) { return Monitor.TryEnter(this, millisecondsTimeout); }
+        public bool TryEnter(TimeSpan timeout) { return Monitor.TryEnter(this, timeout); }
+        public void Exit() { Monitor.Exit(this); }
+        public bool IsHeldByCurrentThread { get { return Monitor.IsEntered(this); } }
+        public Scope EnterScope() { Monitor.Enter(this); return new Scope(this); }
+
+        /// What EnterScope holds until its Dispose: `using (gate.EnterScope())`.
+        public ref struct Scope
+        {
+            private readonly Lock? _held;
+            internal Scope(Lock held) { _held = held; }
+            public void Dispose() { if (_held is not null) Monitor.Exit(_held); }
+        }
+    }
+
     /// A count of permits for threads and awaits alike: Wait takes one, or
     /// waits (with a timeout, or until a token is canceled) for a Release.
     /// Waiters are served in the order they came. Every waiter, synchronous

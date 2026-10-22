@@ -1,0 +1,95 @@
+// test: csharp_11_to_13_features
+// expect-exit: 0
+// expect-output:
+// Ann 3
+// empty; one 4; two; many 1..9
+// {"a": 1,
+//   "b": "x"}
+// {"n": 5}
+// 3 195
+// 0 6 2
+// 12
+// 4
+// locked True
+// 42 0 3 8
+// Tagged True True
+//
+// A run of C# 11 to 13 features together: required members, generic
+// attributes, a ref struct over a span, list patterns, raw (and raw
+// interpolated) literals, UTF-8 literals, params ReadOnlySpan and scoped
+// parameters, the \e escape, System.Threading.Lock under the lock
+// statement, and ^1 in an object initializer of a type whose indexer takes
+// an Index.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+
+sealed class Person
+{
+    public required string Name { get; init; }
+    public int Age { get; init; }
+}
+
+[AttributeUsage(AttributeTargets.Class)]
+sealed class TagAttribute<T> : Attribute { }
+
+[Tag<int>]
+sealed class Tagged { }
+
+ref struct Window
+{
+    public Span<int> Items;
+    public Window(Span<int> items) { Items = items; }
+    public int Sum() { int t = 0; foreach (int x in Items) t += x; return t; }
+}
+
+static class Program
+{
+    static int Total(params ReadOnlySpan<int> xs) { int t = 0; foreach (int x in xs) t += x; return t; }
+    static int Peek(scoped ReadOnlySpan<int> s) => s.Length;
+
+    static string Shape(int[] a) => a switch
+    {
+        [] => "empty",
+        [var one] => "one " + one,
+        [var first, .., var last] when a.Length > 2 => "many " + first + ".." + last,
+        [_, _] => "two",
+    };
+
+    static int Main()
+    {
+        Person p = new() { Name = "Ann", Age = 3 };
+        Console.WriteLine(p.Name + " " + p.Age);
+        Console.WriteLine(Shape(new int[0]) + "; " + Shape(new[] { 4 }) + "; " + Shape(new[] { 1, 2 }) + "; " + Shape(new[] { 1, 2, 3, 9 }));
+        string raw = """
+            {"a": 1,
+              "b": "x"}
+            """;
+        Console.WriteLine(raw);
+        int n = 5;
+        string rawi = $$"""{"n": {{n}}}""";
+        Console.WriteLine(rawi);
+        ReadOnlySpan<byte> u8 = "hé"u8;
+        Console.WriteLine(u8.Length + " " + u8[1]);
+        Console.WriteLine(Total() + " " + Total(1, 2, 3) + " " + Peek(stackalloc int[] { 1, 2 }));
+        Span<int> buf = stackalloc int[] { 3, 4, 5 };
+        Console.WriteLine(new Window(buf).Sum());
+        Console.WriteLine("\e[0m".Length);
+        Lock gate = new();
+        lock (gate) { Console.WriteLine("locked " + gate.IsHeldByCurrentThread); }
+        var nums = new List<int> { 1, 2, 3 };
+        int[] arr = { 9, 8, 7 };
+        var holder = new Holder { [^1] = 42 };
+        Console.WriteLine(holder.Items[^1] + " " + holder.Items[0] + " " + nums[^1] + " " + arr[1..][0]);
+        Console.WriteLine(typeof(Tagged).Name + " " + (1 is > 0 and < 2) + " " + (p is { Name.Length: 3 }));
+        return 0;
+    }
+}
+
+sealed class Holder
+{
+    public int[] Items = new int[3];
+    public int this[Index i] { get => Items[i]; set => Items[i] = value; }
+}

@@ -358,6 +358,12 @@ public sealed partial class BindResult
     public Dictionary<InitIndex, MethodSymbol> InitIndexer { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// `Data = { [2] = 9, [^1] = 7 }`: an element of an array member set in
+    /// place, by the array's type (Lowering's InitBody).
+    /// </summary>
+    public Dictionary<InitIndex, Type> InitElement { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// The construction each tuple written out became: `(a, b)` is a `new` of
     /// the class the checker wrote for that shape, with its elements assigned
     /// as an object initialiser would assign them.
@@ -677,6 +683,7 @@ public sealed partial class BindResult
                 break;
             case InitIndex index:
                 InitIndexer.Remove(index);
+                InitElement.Remove(index);
                 break;
             case ForeachStmt each:
                 ForeachSlot.Remove(each);
@@ -798,6 +805,7 @@ public sealed partial class BindResult
         DecimalValues.Clear();
         InitAdder.Clear();
         InitIndexer.Clear();
+        InitElement.Clear();
         Tuples.Clear();
         SizeOfs.Clear();
         TypeOfs.Clear();
