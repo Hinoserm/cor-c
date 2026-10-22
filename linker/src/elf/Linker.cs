@@ -147,7 +147,7 @@ public static partial class Linker
         // ELF64, loads at 0x400000 by default and relocates with the x86-64
         // types. TargetContract.Validate has already refused a mixture.
         bool isLongMode = longMode ?? inputs.Any(i => TargetContract.IsLongMode(i.Object));
-        inputs.Add(new Input("the program's initialisers", ProgramInitializers(inputs, isLongMode)));
+        if (ProgramInitializers(inputs, isLongMode) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
         // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
         // storage and flag, defined by no unit.
         if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), isLongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
@@ -245,7 +245,7 @@ public static partial class Linker
         // relocate as R_X86_64_64 and its code RIP-relative, all within the
         // run from the base.
         Layout layout = new(baseAddress) { LongMode = longMode ?? inputs.Any(i => TargetContract.IsLongMode(i.Object)) };
-        inputs.Add(new Input("the program's initialisers", ProgramInitializers(inputs, layout.LongMode)));
+        if (ProgramInitializers(inputs, layout.LongMode) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
         // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
         // storage and flag, defined by no unit.
         if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), layout.LongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));

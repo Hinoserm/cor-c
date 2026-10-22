@@ -198,9 +198,16 @@ public static partial class Linker
     /// (Lowering.EmitRunMain) -- a call to each in link order and a return,
     /// or the return alone. No __corsac_init first, as a shared object's has
     /// (Initializers): a program's start has made its statics roots already.
+    ///
+    /// ONLY WHERE SOMETHING CALLS IT: a program whose entry is its own -- a
+    /// freestanding image's _start -- names no such function, and was given
+    /// one all the same, a return and the padding to the next function in
+    /// every flat image. Null then.
     /// </summary>
-    private static ObjectFile ProgramInitializers(List<Input> inputs, bool longMode)
-        => CallStub(ProgramInitName, InitializersDefined(inputs, out _), longMode);
+    private static ObjectFile? ProgramInitializers(List<Input> inputs, bool longMode)
+        => inputs.Any(input => input.Object.Sections.Any(section => section.Relocs.Any(r => r.Symbol == ProgramInitName)))
+            ? CallStub(ProgramInitName, InitializersDefined(inputs, out _), longMode)
+            : null;
 
     /// <summary>The initialisers every unit names (taken from the inputs), each one some object defines.</summary>
     private static List<string> InitializersDefined(List<Input> inputs, out HashSet<string> defined)

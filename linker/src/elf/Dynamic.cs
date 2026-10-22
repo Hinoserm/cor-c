@@ -176,7 +176,7 @@ public static partial class Linker
             inputs.Add(new Input("the initialisers", initializers));
             dyn.InitName = ModuleInitName;
         }
-        else if (!dyn.Shared) inputs.Add(new Input("the program's initialisers", ProgramInitializers(inputs, isLongMode)));
+        else if (!dyn.Shared && ProgramInitializers(inputs, isLongMode) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
         // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
         // storage and flag, defined by no unit.
         if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), isLongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
