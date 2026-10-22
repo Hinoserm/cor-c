@@ -1,0 +1,11 @@
+// A unit of 2201_global_using_of_another_unit: the project's global usings,
+// and a helper.
+
+global using System;
+global using System.Collections.Generic;
+global using System.Text;
+
+static class Helper
+{
+    public static int Five() { return 5; }
+}

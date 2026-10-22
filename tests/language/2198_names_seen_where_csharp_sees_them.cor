@@ -1,0 +1,62 @@
+// test: names_seen_where_csharp_sees_them
+// expect-exit: 0
+// expect-output:
+// 3
+// abc
+// inner Q.X
+// alias 2
+// global 4
+// nested 7
+// qualified 1
+//
+// What C# lets a file name without qualifying it, and how: the types of
+// the namespaces a using directive imports -- at the top of the file or in
+// a namespace's block -- of every namespace enclosing the place, by an
+// alias, by a global using written anywhere in the compilation, a type's
+// nested types by `using static`, and anything by its full name with no
+// using at all. Each of these is how a program says which X it means; the
+// compiler took the one X of the name anywhere whatever was written, and
+// so had no way to refuse the name C# refuses (2199, 2200).
+
+global using System.Text;
+using System;
+using Gen = System.Collections.Generic;
+using static Outer;
+
+namespace Q
+{
+    class X { public override string ToString() { return "Q.X"; } }
+
+    namespace Inner
+    {
+        static class Show
+        {
+            // Q is an enclosing namespace: its X is seen here.
+            public static string It() { return "inner " + new X(); }
+        }
+    }
+}
+
+static class Outer
+{
+    public class Nested { public int Seven = 7; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(1 + 2);
+        StringBuilder b = new StringBuilder();
+        b.Append("abc");
+        Console.WriteLine(b.ToString());
+        Console.WriteLine(Q.Inner.Show.It());
+        Gen.List<int> list = new Gen.List<int> { 1, 2 };
+        Console.WriteLine("alias " + list.Count);
+        Console.WriteLine("global " + new StringBuilder("four").Length);
+        Console.WriteLine("nested " + new Nested().Seven);
+        System.Collections.Generic.HashSet<int> set = new System.Collections.Generic.HashSet<int> { 5 };
+        Console.WriteLine("qualified " + set.Count);
+        return 0;
+    }
+}

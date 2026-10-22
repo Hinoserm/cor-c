@@ -1,0 +1,25 @@
+// test: global_using_of_another_unit
+// apart: tests/language/support/2201_global_usings_unit.cor
+// expect-exit: 0
+// expect-output:
+// built 5
+// 2
+//
+// A global using written in one file of a project imports into every
+// file of it, a unit compiled by itself included: the entry unit here
+// imports nothing of its own, and its StringBuilder, List and Console are
+// System.Text's, System.Collections.Generic's and System's by the other
+// unit's global usings, read out of the declaration index.
+
+static class Program
+{
+    static int Main()
+    {
+        StringBuilder b = new StringBuilder("built");
+        b.Append(' ').Append(Helper.Five());
+        Console.WriteLine(b.ToString());
+        List<int> list = new List<int> { 1, 2 };
+        Console.WriteLine(list.Count);
+        return 0;
+    }
+}

@@ -1,0 +1,21 @@
+// test: type_of_an_unimported_namespace_refused
+// expect-compile-error: CS0246: The type or namespace name 'X' could not be found (it is Q.X: add `using Q;`)
+//
+// A type of a namespace nothing in scope imports, named bare: C# refuses
+// it (CS0246). The compiler took the one type of the name anywhere in the
+// program, so a file compiled here that C# would not; the error now says
+// where the type is and the using that brings it in.
+
+namespace Q
+{
+    class X { }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        X x = new X();
+        return x == null ? 1 : 0;
+    }
+}

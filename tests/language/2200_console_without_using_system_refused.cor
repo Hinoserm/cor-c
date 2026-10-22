@@ -1,0 +1,16 @@
+// test: console_without_using_system_refused
+// expect-compile-error: CS0103: The name 'Console' does not exist in the current context (it is System.Console: add `using System;`)
+//
+// Console is System's, and a file with no `using System;` names it only
+// as System.Console (CS0103). The class library declares its .NET types
+// at the top level, and every one of them was seen from everywhere; now a
+// program sees each only where its .NET namespace is in scope.
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("seen");
+        return 0;
+    }
+}
