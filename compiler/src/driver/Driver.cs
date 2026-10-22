@@ -314,6 +314,7 @@ public static class Driver
               -D <name>          define a conditional symbol, for `#if`; may be
                                  repeated, and several may be separated by commas
               -Wno-error         show warnings and go on; by default a warning fails the compile
+              --check            read, bind and lower the program, report what is wrong, write nothing
               --entry <sym>      the entry symbol (default _start)
               --freestanding     no operating system: link runtime/src/arch/x86/baremetal.cor,
                                  no thread scheduler, and an entry stub that
@@ -888,6 +889,10 @@ public static class Driver
         Parser.ProjectUsings = Values(args, "--using").ToList();
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
+        // --check: the source read, bound and lowered, its errors and warnings
+        // reported, and nothing written -- the question of whether a program
+        // compiles, asked of a whole tree in the time its front end takes.
+        bool checkOnly = args.Contains("--check");
 
         // A shared object IS the class library, so everything in it counts as
         // library source: that is what lets a definition be given away to
@@ -980,6 +985,10 @@ public static class Driver
         if (made is null)
         {
             return 1;
+        }
+        if (checkOnly)
+        {
+            return 0;
         }
         Module module = made.Module;
         // --unused-report: what each definition names as written, taken now,
