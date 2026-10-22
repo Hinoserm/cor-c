@@ -1,0 +1,97 @@
+// test: matrix_program_rectangular_arrays
+// expect-exit: 0
+// expect-output:
+//  58  64
+// 139 154
+//   1   4
+//   2   5
+//   3   6
+// 2 6 2 0
+// 21 6 2,4,6
+// #.#.
+// .#@#
+// #.#.
+// 3 3 21 1|2,3|4,5,6
+// 3 8 1.5-2 2
+// 1 99
+// out of range
+// shapes
+//
+// A whole small program over rectangular arrays: matrix multiply and
+// transpose by GetLength, Rank, Length, bounds, foreach over every element
+// in row order, Cast<int>() into LINQ, a char grid, a three-dimensional
+// array, Clone, an index out of range -- with a jagged array beside them.
+// Every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Linq;
+using System.Text;
+
+static class Matrix
+{
+    public static int[,] Multiply(int[,] a, int[,] b)
+    {
+        int n = a.GetLength(0), m = a.GetLength(1), p = b.GetLength(1);
+        if (m != b.GetLength(0)) throw new ArgumentException("shapes");
+        var c = new int[n, p];
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < p; j++)
+            {
+                int sum = 0;
+                for (int k = 0; k < m; k++) sum += a[i, k] * b[k, j];
+                c[i, j] = sum;
+            }
+        return c;
+    }
+
+    public static int[,] Transpose(int[,] a)
+    {
+        var t = new int[a.GetLength(1), a.GetLength(0)];
+        for (int i = 0; i < a.GetLength(0); i++)
+            for (int j = 0; j < a.GetLength(1); j++)
+                t[j, i] = a[i, j];
+        return t;
+    }
+
+    public static string Show(int[,] a)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < a.GetLength(0); i++)
+        {
+            for (int j = 0; j < a.GetLength(1); j++) sb.Append(j == 0 ? "" : " ").Append(a[i, j].ToString().PadLeft(3));
+            sb.Append('\n');
+        }
+        return sb.ToString();
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int[,] a = { { 1, 2, 3 }, { 4, 5, 6 } };
+        int[,] b = { { 7, 8 }, { 9, 10 }, { 11, 12 } };
+        Console.Write(Matrix.Show(Matrix.Multiply(a, b)));
+        Console.Write(Matrix.Show(Matrix.Transpose(a)));
+        Console.WriteLine(a.Rank + " " + a.Length + " " + a.GetUpperBound(1) + " " + a.GetLowerBound(0));
+        int total = 0;
+        foreach (int v in a) total += v;
+        Console.WriteLine(total + " " + a.Cast<int>().Max() + " " + string.Join(",", a.Cast<int>().Where(v => v % 2 == 0)));
+        var grid = new char[3, 4];
+        for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) grid[r, c] = (r + c) % 2 == 0 ? '#' : '.';
+        grid[1, 2] = '@';
+        for (int r = 0; r < 3; r++) { var row = new StringBuilder(); for (int c = 0; c < 4; c++) row.Append(grid[r, c]); Console.WriteLine(row); }
+        int[][] jagged = { new[] { 1 }, new[] { 2, 3 }, new[] { 4, 5, 6 } };
+        Console.WriteLine(jagged.Length + " " + jagged[2].Length + " " + jagged.Sum(r => r.Sum()) + " " + string.Join("|", jagged.Select(r => string.Join(",", r))));
+        var cube = new double[2, 2, 2];
+        cube[1, 1, 1] = 1.5; cube[0, 1, 0] = -2;
+        Console.WriteLine(cube.Rank + " " + cube.Length + " " + cube[1, 1, 1] + cube[0, 1, 0] + " " + cube.GetLength(2));
+        int[,] copy = (int[,])a.Clone();
+        copy[0, 0] = 99;
+        Console.WriteLine(a[0, 0] + " " + copy[0, 0]);
+        try { Console.WriteLine(a[2, 0]); } catch (IndexOutOfRangeException) { Console.WriteLine("out of range"); }
+        try { Matrix.Multiply(a, a); } catch (ArgumentException e) { Console.WriteLine(e.Message); }
+        return 0;
+    }
+}
