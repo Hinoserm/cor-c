@@ -2575,7 +2575,10 @@ public sealed partial class Binder
         Prim.I32 => value is >= int.MinValue and <= int.MaxValue,
         Prim.U32 => value is >= 0 and <= uint.MaxValue,
         Prim.Char => value is >= 0 and <= char.MaxValue,
-        Prim.I64 or Prim.U64 => true,
+        Prim.I64 => true,
+        // Not negative: `(ulong)long.MinValue` is CS0221 as `(ulong)-1` is
+        // (a ulong past long.MaxValue is ConstantFits' own case).
+        Prim.U64 => value >= 0,
         Prim.NInt => Target.Current.WordSize == 8 || value is >= int.MinValue and <= int.MaxValue,
         Prim.NUInt => Target.Current.WordSize == 8 ? value >= 0 : value is >= 0 and <= uint.MaxValue,
         _ => false,
