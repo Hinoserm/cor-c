@@ -1960,7 +1960,7 @@ public sealed class Parser
             forward.Append("System.Delegate? System.Delegate.RemoveImpl(System.Delegate value) { return ")
                    .Append(helper).Append(".Remove(this, Sys.As<").Append(self).Append(">(value)); }\n");
 
-            Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward.ToString() + " }", _file), _file, SkipWritten(declaration.TypeParams.Count > 0), _includeTemplateBodies);
+            Parser sub = new(Lexer.Tokenize("interface __Forward { " + forward.ToString() + " }", _file), _file, SkipWritten(declaration.TypeParams.Count > 0), _includeTemplateBodies) { _written = false };
             CompilationUnit wrapped = sub.ParseUnit();
             List<MemberDecl> statics = wrapped.Types[0].Members;
             foreach (MemberDecl member in statics)
@@ -2141,7 +2141,12 @@ public sealed class Parser
         src.Append("    public override int GetHashCode() { return __Delegates.Hash(this); }\n");
         src.Append("}\n");
         string generated = src.ToString();
-        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(delegateDecl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated };
+        // THE COMPILER'S TEXT, not the file's (TypeRef.Written): placed at the
+        // top level beside the delegate, the multicast names a delegate nested
+        // in a class -- Outer.Maker -- by the name the class gives it, which
+        // no file sees from the top level, and C#'s rule for what a file can
+        // see refused it ("'Maker' could not be found").
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(delegateDecl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated, _written = false };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return null;
         TypeDecl made = unit.Types[0];
@@ -2347,7 +2352,7 @@ public sealed class Parser
         }
         src.Append("}\n");
         string generated = src.ToString();
-        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(decl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated };
+        Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(decl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated, _written = false };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return;
         Adopt(unit.Types[0].Members);
@@ -5604,7 +5609,7 @@ public sealed class Parser
         }
         text.Append(");");
         string source = text.ToString();
-        Parser sub = new(Lexer.Tokenize(source, "<anonymous delegate>"), "<anonymous delegate>") { Source = source };
+        Parser sub = new(Lexer.Tokenize(source, "<anonymous delegate>"), "<anonymous delegate>") { Source = source, _written = false };
         CompilationUnit made = sub.ParseUnit();
         foreach (TypeDecl declared in made.Types)
         {

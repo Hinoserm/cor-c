@@ -1,0 +1,48 @@
+// test: delegate_nested_in_a_class
+// expect-exit: 0
+// expect-output:
+// 4
+// 6
+// 9
+//
+// A delegate type declared inside a class, used inside it and from outside
+// by its qualified name, and one nested in a generic class. The class the
+// compiler writes for a delegate's invocation list sits at the top level
+// beside it and names the delegate as the source does -- `Maker` for
+// Outer.Maker -- and C#'s rule for what a file can see was asked of that
+// compiler-written name: "'Maker' could not be found", at no line the
+// program has, for every nested delegate in a program.
+
+using System;
+
+static class Outer
+{
+    public delegate int Maker(int a);
+
+    static int Use(Maker m) { return m(1); }
+
+    public static int Go() { return Use(x => x + 1) + Use(Twice); }
+
+    static int Twice(int a) { return a * 2; }
+}
+
+class Box<T>
+{
+    public delegate T Make(T seed);
+
+    public T Run(Make make, T seed) { return make(seed); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Outer.Go());
+        Outer.Maker plus = x => x + 5;
+        Outer.Maker both = plus;
+        both += x => x * 3;
+        Console.WriteLine(both(2));
+        Console.WriteLine(new Box<int>().Run(s => s * s, 3));
+        return 0;
+    }
+}

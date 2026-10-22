@@ -690,6 +690,15 @@ public sealed partial class Binder
         // is, the error says (WhereItIs). A spliced name is no name written
         // here, and the copy's type argument the monomorphiser spelt is
         // found by its path above.
+        //
+        // A NAME THE COMPILER WROTE (_made) is still read as the one type of
+        // that name: a delegate's multicast class is placed at the top level
+        // beside the delegate and names it as the source does, `Maker` for a
+        // delegate nested in Outer, which nothing in scope there declares.
+        if (_made > 0)
+        {
+            return Sole(name, out sym);
+        }
         sym = null;
         return false;
     }
