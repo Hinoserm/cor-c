@@ -1,0 +1,32 @@
+// test: constant_arithmetic_checked_and_unchecked
+// expect-exit: 0
+// expect-output:
+// -2147483648 -2147483648 0 4294967295
+// -9223372036854775808 1
+// 2147483648 18446744073709551614 1844674407370955161 65534 256 1431655765 -9223372036854775807
+//
+// A constant expression is worked out when it is compiled, in its own
+// type's arithmetic: `Big + 1L` is a long and fits, `short.MaxValue * 2` an
+// int; written unchecked -- an expression or a block -- it wraps, as it
+// does at run time.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    const int Big = int.MaxValue;
+    const uint Top = uint.MaxValue;
+
+    static int Main()
+    {
+        Console.WriteLine(unchecked(Big + 1) + " " + unchecked(-int.MinValue) + " " + unchecked(Top + 1u) + " " + unchecked(0u - 1u));
+        unchecked
+        {
+            long wrapped = long.MaxValue + 1L;
+            Console.WriteLine(wrapped + " " + (int.MinValue / -1 + 0 == 0 ? 0 : 1));
+        }
+        Console.WriteLine((Big + 1L) + " " + (ulong.MaxValue - 1) + " " + (ulong.MaxValue / 10) + " " + (short.MaxValue * 2) + " " + (1 << 40) + " " + (Top / 3u) + " " + (-long.MaxValue));
+        return 0;
+    }
+}

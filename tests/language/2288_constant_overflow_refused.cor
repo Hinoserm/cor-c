@@ -1,0 +1,17 @@
+// test: constant_overflow_refused
+// expect-compile-error: CS0220: The operation overflows at compile time in checked mode
+//
+// C#'s CS0220: a constant expression that overflows its type is refused
+// unless written unchecked -- `int.MaxValue + 1`, `-int.MinValue`, `0u - 1u`.
+// It was folded as a wrapped value, silently.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(int.MaxValue + 1);
+        return 0;
+    }
+}

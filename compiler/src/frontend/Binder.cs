@@ -15000,6 +15000,61 @@ public sealed partial class Binder
 
     private readonly Dictionary<TypeSymbol, string?> _specialisedOuter = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// C#'s CS0220 and CS0020: a constant expression is worked out when it
+    /// is compiled, checked unless written unchecked -- `int.MaxValue + 1`
+    /// and `-int.MinValue` overflow there, and `5 / 0` divides by zero. Each
+    /// in its own type's arithmetic: `int.MaxValue + 1L` is a long and fits.
+    /// </summary>
+    private void ConstantOverflow(Expr e, Type t)
+    {
+        bool overflows;
+        if (e is UnaryExpr { Operand: var operand })
+        {
+            if (ConstantValue(operand, _thisType) is not long v) return;
+            overflows = t.Prim switch { Prim.I32 => v == int.MinValue, Prim.I64 => v == long.MinValue, _ => false };
+        }
+        else if (e is BinaryExpr { Op: BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem } b
+                 && ConstantValue(b.Left, _thisType) is long l && ConstantValue(b.Right, _thisType) is long r)
+        {
+            if (b.Op is BinOp.Div or BinOp.Rem && r == 0)
+            {
+                Error(e, "CS0020: Division by constant zero");
+                return;
+            }
+            // The operands as their type holds them -- a ulong past
+            // long.MaxValue arrives as the negative long of its bits -- and
+            // only the operation checked.
+            int il = unchecked((int)l), ir = unchecked((int)r);
+            uint ul = unchecked((uint)l), ur = unchecked((uint)r);
+            ulong ql = unchecked((ulong)l), qr = unchecked((ulong)r);
+            try
+            {
+                checked
+                {
+                    _ = t.Prim switch
+                    {
+                        Prim.I32 => b.Op switch { BinOp.Add => il + ir, BinOp.Sub => il - ir, BinOp.Mul => il * ir, BinOp.Div => il / ir, _ => il % ir },
+                        Prim.U32 => b.Op switch { BinOp.Add => (long)(ul + ur), BinOp.Sub => ul - ur, BinOp.Mul => ul * ur, BinOp.Div => ul / ur, _ => ul % ur },
+                        Prim.I64 => b.Op switch { BinOp.Add => l + r, BinOp.Sub => l - r, BinOp.Mul => l * r, BinOp.Div => l / r, _ => l % r },
+                        Prim.U64 => unchecked((long)(b.Op switch { BinOp.Add => ql + qr, BinOp.Sub => ql - qr, BinOp.Mul => ql * qr, BinOp.Div => ql / qr, _ => ql % qr })),
+                        _ => 0L,
+                    };
+                }
+                overflows = false;
+            }
+            catch (OverflowException)
+            {
+                overflows = true;
+            }
+        }
+        else
+        {
+            return;
+        }
+        if (overflows) Error(e, "CS0220: The operation overflows at compile time in checked mode");
+    }
+
     private Type CheckExpr(Expr e)
     {
         Type t = CheckExprCore(e);
@@ -15008,6 +15063,10 @@ public sealed partial class Binder
         if (e is BinaryExpr or UnaryExpr or CastExpr && IsDecimalType(t))
         {
             FoldDecimal(e);
+        }
+        if (e is BinaryExpr or UnaryExpr { Op: UnOp.Neg } && t.IsInteger && t.Symbol is null && !t.IsNullableValue && _uncheckedDepth == 0)
+        {
+            ConstantOverflow(e, t);
         }
         _r.ExprType[e] = t;
         if (_inBodies) ForceBody(t);

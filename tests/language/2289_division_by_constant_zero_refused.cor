@@ -1,0 +1,18 @@
+// test: division_by_constant_zero_refused
+// expect-compile-error: CS0020: Division by constant zero
+//
+// C#'s CS0020: an integer divided by the constant zero, or its remainder
+// taken, is refused where it is compiled.
+
+using System;
+
+static class Program
+{
+    const int None = 0;
+
+    static int Main()
+    {
+        Console.WriteLine(10 % None);
+        return 0;
+    }
+}
