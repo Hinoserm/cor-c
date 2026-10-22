@@ -13221,7 +13221,10 @@ public sealed partial class Binder
     /// </summary>
     private Type? AsyncTask(Type want, Type? result)
     {
-        string task = Invoked(want)?.Returns.Symbol is TypeSymbol answers && TaskLikeName(answers) == "ValueTask" ? "ValueTask" : TaskTypeName;
+        // What the delegate answers with, its type arguments applied: the
+        // TResult of an open Func<T, ValueTask> is the ValueTask.
+        string task = Invoked(want) is MethodSymbol invoke && Substitute(invoke.Returns, Applied(want)).Symbol is TypeSymbol answers
+                      && TaskLikeName(answers) == "ValueTask" ? "ValueTask" : TaskTypeName;
         TypeRef made = new() { Name = task, Line = 0, Col = 0 };
         if (result is not null)
         {

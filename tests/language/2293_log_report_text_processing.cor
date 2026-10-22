@@ -1,0 +1,63 @@
+// test: log_report_text_processing
+// expect-exit: 0
+// expect-output:
+// 6 ERROR,INFO,WARN
+// alice |2|login;logout
+// bob   |2|failed_login;failed_login
+// carol |1|crash
+// dave  |1|login
+// attempts 7 hex 31
+// 2024-03-02 09:00:30 INFO  user=dave action=login ip=192.x.x.20
+// a|b|c|d True value
+// the=3 brown=1 dog=1
+// 03-01:W 03-01:E 03-02:W a\.b\*c -a-a-a-
+//
+// A whole small text-processing program: a log read with Regex (named
+// groups, multiline, matches to a dictionary, Replace with an evaluator,
+// Split, IsMatch ignoring case, Escape, lazy empty matches), grouped,
+// ordered and counted with LINQ and printed aligned -- every line as .NET
+// prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+
+static class Program
+{
+    const string Log = @"2024-03-01 12:00:01 INFO  user=alice action=login ip=10.0.0.5
+2024-03-01 12:03:17 WARN  user=bob action=failed_login ip=10.0.0.9 attempts=3
+2024-03-01 12:05:44 ERROR user=carol action=crash code=0x1F
+2024-03-02 08:15:00 INFO  user=alice action=logout ip=10.0.0.5
+2024-03-02 09:00:30 INFO  user=dave action=login ip=192.168.1.20
+2024-03-02 09:01:02 WARN  user=bob action=failed_login ip=10.0.0.9 attempts=4";
+
+    static int Main()
+    {
+        Regex line = new(@"^(?<date>\d{4}-\d{2}-\d{2}) (?<time>[\d:]+) (?<level>\w+)\s+(?<rest>.*)$", RegexOptions.Multiline);
+        Regex pair = new(@"(\w+)=(\S+)");
+        var entries = new List<(string Date, string Level, Dictionary<string, string> Fields)>();
+        foreach (Match m in line.Matches(Log))
+        {
+            var fields = pair.Matches(m.Groups["rest"].Value).ToDictionary(p => p.Groups[1].Value, p => p.Groups[2].Value);
+            entries.Add((m.Groups["date"].Value, m.Groups["level"].Value, fields));
+        }
+        Console.WriteLine(entries.Count + " " + string.Join(",", entries.Select(e => e.Level).Distinct().OrderBy(l => l, StringComparer.Ordinal)));
+        foreach (var byUser in entries.GroupBy(e => e.Fields["user"]).OrderByDescending(g => g.Count()).ThenBy(g => g.Key))
+            Console.WriteLine($"{byUser.Key,-6}|{byUser.Count()}|{string.Join(";", byUser.Select(e => e.Fields["action"]))}");
+        int attempts = entries.Where(e => e.Fields.ContainsKey("attempts")).Sum(e => int.Parse(e.Fields["attempts"]));
+        Console.WriteLine("attempts " + attempts + " hex " + Convert.ToInt32(entries.Single(e => e.Level == "ERROR").Fields["code"], 16));
+        string masked = Regex.Replace(Log, @"\b(\d+)\.(\d+)\.(\d+)\.(\d+)\b", m => $"{m.Groups[1].Value}.x.x.{m.Groups[4].Value}");
+        Console.WriteLine(masked.Split('\n')[4]);
+        Console.WriteLine(string.Join("|", Regex.Split("a1b22c333d", @"\d+")) + " " + Regex.IsMatch("Hello World", @"^h\w+\s", RegexOptions.IgnoreCase) + " " + Regex.Match("key: value", @"(?<k>\w+):\s*(?<v>\w+)").Groups["v"].Value);
+        var words = Regex.Matches("The quick brown fox jumps over the lazy dog the end", @"\w+").Select(m => m.Value.ToLowerInvariant());
+        var freq = words.GroupBy(w => w).Select(g => (Word: g.Key, Count: g.Count())).OrderByDescending(t => t.Count).ThenBy(t => t.Word, StringComparer.Ordinal).Take(3);
+        Console.WriteLine(string.Join(" ", freq.Select(t => t.Word + "=" + t.Count)));
+        var sb = new StringBuilder();
+        foreach (var e in entries.Where(e => e.Level != "INFO")) sb.Append(e.Date[5..]).Append(':').Append(e.Level[0]).Append(' ');
+        Console.WriteLine(sb.ToString().TrimEnd() + " " + Regex.Escape("a.b*c") + " " + Regex.Replace("aaa", "a*?", "-"));
+        return 0;
+    }
+}

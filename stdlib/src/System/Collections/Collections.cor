@@ -2122,6 +2122,40 @@ static class Parallel
         return new ParallelLoopResult(true);
     }
 
+    // An asynchronous body for each element (.NET 6): every one started,
+    // their tasks awaited together, the first fault thrown.
+    public static Task ForEachAsync<T>(IEnumerable<T> source, Func<T, CancellationToken, System.Threading.Tasks.ValueTask> body)
+    {
+        return ForEachAsync(source, CancellationToken.None, body);
+    }
+
+    public static Task ForEachAsync<T>(IEnumerable<T> source, CancellationToken cancellationToken, Func<T, CancellationToken, System.Threading.Tasks.ValueTask> body)
+    {
+        if (source == null) throw new ArgumentNullException("source");
+        if (body == null) throw new ArgumentNullException("body");
+        List<Task> running = new List<Task>();
+        foreach (T item in source)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            T each = item;
+            running.Add(Task.Run(() => body(each, cancellationToken).AsTask()));
+        }
+        return Task.WhenAll(running);
+    }
+
+    public static async Task ForEachAsync<T>(IAsyncEnumerable<T> source, Func<T, CancellationToken, System.Threading.Tasks.ValueTask> body)
+    {
+        if (source == null) throw new ArgumentNullException("source");
+        if (body == null) throw new ArgumentNullException("body");
+        List<Task> running = new List<Task>();
+        await foreach (T item in source)
+        {
+            T each = item;
+            running.Add(Task.Run(() => body(each, CancellationToken.None).AsTask()));
+        }
+        await Task.WhenAll(running);
+    }
+
     public static ParallelLoopResult ForEach<T>(IEnumerable<T> source, Action<T> body)
     {
         List<T> items = new List<T>(source);
