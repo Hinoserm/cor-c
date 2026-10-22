@@ -1275,8 +1275,13 @@ public sealed class Inline : IParallelModulePass
                         else if (method && !made.Contains(d.Name)) Unmade(d, r.Offset - methods, r.Symbol);
                         else Reach(r.Symbol);
                         // Data that is no descriptor makes what it names: a
-                        // descriptor's own words (its bases, its element) do not.
-                        if (byMade && !descriptor && Escape.IsDescriptor(r.Symbol)) Made(r.Symbol);
+                        // descriptor's own words (its bases, its element) do not,
+                        // and nor does its display (Lowering's "d_", every
+                        // ancestor's descriptor, root first), which names the
+                        // bases a type test walks: taken for making them, every
+                        // class with a subclass was made, and a base nothing
+                        // makes an object of kept its own methods in its slots.
+                        if (byMade && !descriptor && !d.Name.StartsWith("d_", StringComparison.Ordinal) && Escape.IsDescriptor(r.Symbol)) Made(r.Symbol);
                     }
                     continue;
                 }
