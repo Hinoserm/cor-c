@@ -161,6 +161,7 @@ internal sealed class MemberRare
     public CtorInit? Init;
     public string? NotNullIfNotNull;
     public string? HoistedName;
+    public TypeRef? StaticExtensionOf;
     public string? HoistedIn;
     public List<string>? CarriedTypeParams;
     public List<(string Name, string Method)>? LocalGenerics;

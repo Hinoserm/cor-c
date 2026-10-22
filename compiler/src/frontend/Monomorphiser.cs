@@ -3348,6 +3348,7 @@ public sealed class Monomorphiser
                 // name, the names it calls by, and how many of its parameters
                 // are the variables it captured.
                 made.HoistedName = md.HoistedName;
+                made.StaticExtensionOf = md.StaticExtensionOf;
                 made.CarriedTypeParams = md.CarriedTypeParams;
                 if (md.LocalGenerics.Count > 0) made.WritableLocalGenerics.AddRange(md.LocalGenerics);
                 made.Captures = md.Captures;

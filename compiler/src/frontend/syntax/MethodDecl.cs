@@ -103,6 +103,17 @@ public sealed class MethodDecl : MemberDecl
     /// ParseGenericLocalFunction): the name it was written under, which is
     /// how its block, and its own body, call it. Null for every other method.
     /// </summary>
+    /// <summary>
+    /// A STATIC member of a C# 14 extension block: the type it extends, through
+    /// which it is called -- `string.Hello()` (Binder.StaticExtension). Null
+    /// for every other method.
+    /// </summary>
+    public TypeRef? StaticExtensionOf
+    {
+        get => _rare?.StaticExtensionOf;
+        set { if (value is not null) Rare.StaticExtensionOf = value; else if (_rare is not null) _rare.StaticExtensionOf = null; }
+    }
+
     public string? HoistedName
     {
         get => _rare?.HoistedName;

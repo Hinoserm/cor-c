@@ -3102,7 +3102,7 @@ public sealed class Parser
         // property
         if (At(Tok.LBrace))
         {
-            if (extending) return ExtensionProperty(ParseProperty(type, name, mods, start), start);
+            if (extending || _extension is { TypeParams.Count: 0 }) return ExtensionProperty(ParseProperty(type, name, mods, start), start, extending);
             MemberDecl property = ParseProperty(type, name, mods, start);
             property.ExplicitInterface = explicitInterface;
             property.ExplicitInterfaceArgs = explicitArgs;
@@ -3125,7 +3125,7 @@ public sealed class Parser
                 Auto = false, HasSetter = false, Line = start.Line, Col = start.Col,
                 ExplicitInterface = explicitInterface, ExplicitInterfaceArgs = explicitArgs,
             };
-            return extending ? ExtensionProperty(read, start) : read;
+            return extending || _extension is { TypeParams.Count: 0 } ? ExtensionProperty(read, start, extending) : read;
         }
 
         // method
@@ -3149,6 +3149,7 @@ public sealed class Parser
             { List<Param>? read = null; ParseParams(ref read); m.AdoptParams(read); }
             ParseConstraints(m.TypeParams);
             if (extending) Extended(m);
+            else if (_extension is { } block && block.TypeParams.Count == 0) m.StaticExtensionOf = block.Receiver.Type;
             return FinishMethod(m);
         }
 
@@ -3874,6 +3875,7 @@ public sealed class Parser
             ExplicitInterface = m.ExplicitInterface, ExplicitInterfaceArgs = m.ExplicitInterfaceArgs,
             Line = m.Line, Col = m.Col, Body = body, Init = init,
         }.CopyListsFrom(m);
+        made.StaticExtensionOf = m.StaticExtensionOf;
         // NOT A CONSTRUCTOR'S, NOR AN ASYNC METHOD'S: a call to an async
         // method comes back with its task at the first await or the throw,
         // whatever its body does after.
@@ -6191,13 +6193,18 @@ public sealed class Parser
         }
     }
 
-    /// <summary>An extension block's property as its accessor methods: get_ handed back, set_ hoisted beside it.</summary>
-    private MemberDecl ExtensionProperty(PropertyDecl p, Token start)
+    /// <summary>
+    /// An extension block's property as its accessor methods: get_ handed
+    /// back, set_ hoisted beside it -- an instance one's taking the receiver,
+    /// a static one's called through the type (StaticExtensionOf).
+    /// </summary>
+    private MemberDecl ExtensionProperty(PropertyDecl p, Token start, bool instance)
     {
         MethodDecl Accessor(string name, TypeRef returns, Block? body)
         {
             MethodDecl made = new() { Name = name, Mods = p.Mods, Returns = returns, Body = body, Line = start.Line, Col = start.Col };
-            Extended(made);
+            if (instance) Extended(made);
+            else made.StaticExtensionOf = _extension!.Value.Receiver.Type;
             return made;
         }
         MethodDecl? setter = null;

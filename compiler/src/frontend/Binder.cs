@@ -20997,6 +20997,12 @@ public sealed partial class Binder
             return extended;
         }
 
+        if ((_r.Resolved.TryGetValue(m.Target, out Sym? throughType) && throughType is TypeNameSym || m.Target is NameExpr { Name: var spelledType } && Alias(spelledType) is not null)
+            && StaticExtension(m, owner) is Type extendedStatic)
+        {
+            return extendedStatic;
+        }
+
         // AN EVENT WITH NO FIELD -- an interface's, an abstract one, or one
         // written with its own add and remove -- is its two accessors and
         // nothing that can be read or raised (C#'s CS0079); += and -= reach
@@ -24347,6 +24353,46 @@ public sealed partial class Binder
         };
         _r.Rewrites[m] = read;
         return CheckExpr(read);
+    }
+
+    /// <summary>
+    /// A STATIC member of a C# 14 extension block, reached through the type
+    /// it extends: `string.Hello()` calls the block's Hello, and `T.Prop` reads
+    /// its get_Prop (MethodDecl.StaticExtensionOf).
+    /// </summary>
+    private Type? StaticExtension(MemberExpr m, TypeSymbol owner)
+    {
+        List<MethodSymbol> methods = new();
+        MethodSymbol? getter = null;
+        foreach (TypeSymbol holder in _r.Types.Values)
+        {
+            // By what it declares first: a class whose members were never
+            // asked for is looked into only for one of these.
+            if (holder.Decl is not { Kind: TypeKind.Class } declared || !declared.Mods.HasFlag(Mods.Static)
+                || !declared.Members.Any(d => d is MethodDecl { StaticExtensionOf: not null } && (d.Name == m.Name || TypeSymbol.IsJoined(d.Name, "get_", m.Name))))
+                continue;
+            foreach (MethodSymbol x in holder.Methods)
+            {
+                if (x.Decl is not MethodDecl { StaticExtensionOf: TypeRef of } || !x.Static) continue;
+                bool named = x.Name == m.Name, read = TypeSymbol.IsJoined(x.Name, "get_", m.Name);
+                if (!named && !read) continue;
+                // A keyword's type is its class here: `extension(string)` extends String.
+                if (!ReferenceEquals(Resolve(of, holder).Symbol, owner) && Alias(of.Name) != owner.Name) continue;
+                if (named) methods.Add(x);
+                else getter = x;
+            }
+        }
+        if (methods.Count > 0)
+        {
+            _r.Resolved[m] = new MethodGroupSym(methods);
+            return Type.Void;
+        }
+        if (getter is not null && !ReferenceEquals(m, _callee))
+        {
+            _r.Resolved[m] = new PropertyGetSym(getter);
+            return getter.Returns;
+        }
+        return null;
     }
 
     /// <summary>The instance operator C# 14 calls for a compound assignment of this operator.</summary>

@@ -1,0 +1,50 @@
+// test: static_extension_members
+// expect-exit: 0
+// expect-output:
+// 0.00 2.50 8.00 ---
+// 1.00 0.00
+//
+// C# 14's static extension members: a static method or property of an
+// extension block, `extension(Money) { public static Money Of(decimal a)
+// ... }`, is reached through the type it extends -- `Money.Of(2.5m)`,
+// `Money.Zero`, `string.Dashes(3)` of `extension(string)` -- and through
+// its class by its own name and get_Zero (MethodDecl.StaticExtensionOf,
+// Binder.StaticExtension).
+// Expected output from .NET 10.
+
+using System;
+
+sealed class Money
+{
+    public decimal Amount;
+    public override string ToString() => Amount.ToString("0.00");
+}
+
+static class MoneyExtensions
+{
+    extension(Money)
+    {
+        public static Money Zero => new Money();
+        public static Money Of(decimal amount) => new Money { Amount = amount };
+    }
+
+    extension(string)
+    {
+        public static string Dashes(int n) => new string('-', n);
+    }
+
+    extension(Money m)
+    {
+        public Money Doubled => Money.Of(m.Amount * 2);
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Money.Zero + " " + Money.Of(2.5m) + " " + Money.Of(4m).Doubled + " " + string.Dashes(3));
+        Console.WriteLine(MoneyExtensions.Of(1m) + " " + MoneyExtensions.get_Zero());
+        return 0;
+    }
+}
