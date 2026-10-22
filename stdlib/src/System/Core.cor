@@ -34890,6 +34890,45 @@ namespace System.Text.Unicode
 
 namespace System.Runtime.CompilerServices
 {
+    /// .NET's Unsafe: references and pointers as the addresses they are,
+    /// with no check -- what code over raw memory writes. A reference is
+    /// its address (Sys.AddressOf), a struct's the address of its bytes.
+    public static unsafe class Unsafe
+    {
+        public static int SizeOf<T>() { return sizeof(T); }
+        public static T As<T>(object? o) where T : class? { return Sys.As<T>(o!); }
+        public static ref TTo As<TFrom, TTo>(ref TFrom source) { return ref *(TTo*)Sys.AddressOf(ref source); }
+        public static void* AsPointer<T>(ref T value) { return (void*)Sys.AddressOf(ref value); }
+        public static ref T AsRef<T>(void* source) { return ref *(T*)source; }
+        public static ref T Add<T>(ref T source, int elementOffset) { return ref *((T*)Sys.AddressOf(ref source) + elementOffset); }
+        public static ref T Add<T>(ref T source, nint elementOffset) { return ref *((T*)Sys.AddressOf(ref source) + elementOffset); }
+        public static void* Add<T>(void* source, int elementOffset) { return (byte*)source + (long)elementOffset * sizeof(T); }
+        public static ref T AddByteOffset<T>(ref T source, nint byteOffset) { return ref *(T*)((byte*)Sys.AddressOf(ref source) + byteOffset); }
+        public static ref T Subtract<T>(ref T source, int elementOffset) { return ref *((T*)Sys.AddressOf(ref source) - elementOffset); }
+        public static ref T Subtract<T>(ref T source, nint elementOffset) { return ref *((T*)Sys.AddressOf(ref source) - elementOffset); }
+        public static void* Subtract<T>(void* source, int elementOffset) { return (byte*)source - (long)elementOffset * sizeof(T); }
+        public static ref T SubtractByteOffset<T>(ref T source, nint byteOffset) { return ref *(T*)((byte*)Sys.AddressOf(ref source) - byteOffset); }
+        public static bool AreSame<T>(ref T left, ref T right) { return Sys.AddressOf(ref left) == Sys.AddressOf(ref right); }
+        public static bool IsAddressGreaterThan<T>(ref T left, ref T right) { return (ulong)Sys.AddressOf(ref left) > (ulong)Sys.AddressOf(ref right); }
+        public static bool IsAddressLessThan<T>(ref T left, ref T right) { return (ulong)Sys.AddressOf(ref left) < (ulong)Sys.AddressOf(ref right); }
+        public static nint ByteOffset<T>(ref T origin, ref T target) { return (nint)(Sys.AddressOf(ref target) - Sys.AddressOf(ref origin)); }
+        public static bool IsNullRef<T>(ref T source) { return Sys.AddressOf(ref source) == 0; }
+        public static ref T NullRef<T>() { return ref *(T*)null; }
+        public static T Read<T>(void* source) { return *(T*)source; }
+        public static T ReadUnaligned<T>(void* source) { return *(T*)source; }
+        public static T ReadUnaligned<T>(ref byte source) { return *(T*)Sys.AddressOf(ref source); }
+        public static void Write<T>(void* destination, T value) { *(T*)destination = value; }
+        public static void WriteUnaligned<T>(void* destination, T value) { *(T*)destination = value; }
+        public static void WriteUnaligned<T>(ref byte destination, T value) { *(T*)Sys.AddressOf(ref destination) = value; }
+        public static void Copy<T>(void* destination, ref T source) { *(T*)destination = source; }
+        public static void Copy<T>(ref T destination, void* source) { destination = *(T*)source; }
+        public static void CopyBlock(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((long)destination, (long)source, byteCount); }
+        public static void CopyBlockUnaligned(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((long)destination, (long)source, byteCount); }
+        public static void InitBlock(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((long)startAddress, value, byteCount); }
+        public static void InitBlockUnaligned(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((long)startAddress, value, byteCount); }
+        public static void SkipInit<T>(out T value) { value = default!; }
+    }
+
     /// What every ValueTuple answers, boxed or not: how many items it has,
     /// and each one as an object, from 0.
     public interface ITuple

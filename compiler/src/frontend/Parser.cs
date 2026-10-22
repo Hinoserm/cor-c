@@ -4374,7 +4374,10 @@ public sealed class Parser
     private TypeRef VoidType()
     {
         Token at = _t[_i++];
-        return new TypeRef { Name = "void", Line = at.Line, Col = at.Col };
+        // `void*`, a pointer to bytes of no type (C# 23.3), and `void**`.
+        int depth = 0;
+        while (Take(Tok.Star)) depth++;
+        return new TypeRef { Name = "void", PointerDepth = depth, Line = at.Line, Col = at.Col };
     }
 
     private TypeRef ParseTypeRef(bool pattern = false)

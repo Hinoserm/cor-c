@@ -221,7 +221,7 @@ public sealed class Type : IEquatable<Type>
     /// returns its own T report "this method returns void, so 'return' cannot
     /// have a value".
     /// </summary>
-    public bool IsVoid => Prim == Prim.Void && Symbol is null && !IsArray && ParamName is null;
+    public bool IsVoid => Prim == Prim.Void && Symbol is null && !IsArray && ParamName is null && PointerDepth == 0;
     public bool IsNumeric => IsInteger || IsFloat;
 
     public bool IsInteger => Prim is Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.Char

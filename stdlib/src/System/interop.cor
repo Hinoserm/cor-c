@@ -546,6 +546,46 @@ static class CollectionsMarshal
 
 namespace System.Runtime.InteropServices
 {
+    /// .NET's MemoryMarshal, as far as memory that is an array's can go: a
+    /// reference to the first element, and a value of an unmanaged type read
+    /// from bytes or written to them, as native data is.
+    public static unsafe class MemoryMarshal
+    {
+        public static ref T GetArrayDataReference<T>(T[] array) { return ref array[0]; }
+        public static ref T GetReference<T>(Span<T> span) { return ref span[0]; }
+
+        public static T Read<T>(ReadOnlySpan<byte> source) where T : struct
+        {
+            if (source.Length < sizeof(T)) { throw new ArgumentOutOfRangeException("length"); }
+            T value = default;
+            byte* into = (byte*)Sys.AddressOf(ref value);
+            for (int i = 0; i < sizeof(T); i++) { into[i] = source[i]; }
+            return value;
+        }
+
+        public static bool TryRead<T>(ReadOnlySpan<byte> source, out T value) where T : struct
+        {
+            if (source.Length < sizeof(T)) { value = default; return false; }
+            value = Read<T>(source);
+            return true;
+        }
+
+        public static void Write<T>(Span<byte> destination, in T value) where T : struct
+        {
+            if (destination.Length < sizeof(T)) { throw new ArgumentOutOfRangeException("length"); }
+            T copy = value;
+            byte* from = (byte*)Sys.AddressOf(ref copy);
+            for (int i = 0; i < sizeof(T); i++) { destination[i] = from[i]; }
+        }
+
+        public static bool TryWrite<T>(Span<byte> destination, in T value) where T : struct
+        {
+            if (destination.Length < sizeof(T)) { return false; }
+            Write(destination, value);
+            return true;
+        }
+    }
+
     /// A processor architecture, as .NET numbers them.
     public enum Architecture
     {

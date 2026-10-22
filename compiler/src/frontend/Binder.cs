@@ -8900,10 +8900,16 @@ public sealed partial class Binder
         // AFTER selecting the method, not in this applicability predicate.
         if (from.Prim == Prim.NullLiteral)
         {
-            return to.IsReference || to.IsNullableValue;
+            return to.IsReference || to.IsNullableValue || to.IsPointer;
         }
 
         if (from.AsNonNullable().Equals(to.AsNonNullable()))
+        {
+            return true;
+        }
+
+        // ANY POINTER IS A void* (C# 23.5.1), implicitly.
+        if (from.IsPointer && to.PointerDepth == 1 && to.Prim == Prim.Void && to.Symbol is null)
         {
             return true;
         }

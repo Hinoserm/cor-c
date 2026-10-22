@@ -1,0 +1,56 @@
+// test: unsafe_and_memory_marshal
+// expect-exit: 0
+// expect-output:
+// 7 8
+// 7 1234 1
+// 09-11-22-33-44-55-66-00 False
+// 99 31 8 True False
+// 5060708 708
+// 7 99
+// 4
+//
+// .NET's Unsafe -- SizeOf, As both ways, Add, ByteOffset, AreSame,
+// IsNullRef, Read/Write and their unaligned forms, AsPointer and AsRef --
+// and MemoryMarshal's GetArrayDataReference, Read, TryRead and Write of an
+// unmanaged struct from and to bytes, over C#'s `void*`: a pointer of no
+// type, which any pointer converts to. `void*` was refused where a type is
+// read (its `*` not taken), and a method returning one taken for a void
+// method.
+// Expected output from .NET 10.
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+struct Header { public byte Kind; public ushort Length; public uint Id; }
+
+static unsafe class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Unsafe.SizeOf<Header>() + " " + Unsafe.SizeOf<long>());
+        Header h = MemoryMarshal.Read<Header>(new byte[] { 7, 0x34, 0x12, 1, 0, 0, 0 });
+        Console.WriteLine(h.Kind + " " + h.Length.ToString("X") + " " + h.Id);
+        byte[] buf = new byte[8];
+        MemoryMarshal.Write(buf, new Header { Kind = 9, Length = 0x2211, Id = 0x66554433 });
+        Console.WriteLine(BitConverter.ToString(buf) + " " + MemoryMarshal.TryRead(new byte[2], out Header none));
+        int[] arr = { 10, 20, 30 };
+        ref int first = ref MemoryMarshal.GetArrayDataReference(arr);
+        first = 99;
+        ref int last = ref Unsafe.Add(ref first, 2);
+        last++;
+        Console.WriteLine(arr[0] + " " + arr[2] + " " + Unsafe.ByteOffset(ref first, ref last) + " " + Unsafe.AreSame(ref first, ref arr[0]) + " " + Unsafe.IsNullRef(ref first));
+        long word = 0x0102030405060708;
+        ref int low = ref Unsafe.As<long, int>(ref word);
+        Console.WriteLine(low.ToString("X") + " " + Unsafe.ReadUnaligned<ushort>(Unsafe.AsPointer(ref word)).ToString("X"));
+        fixed (int* p = arr)
+        {
+            Unsafe.Write(p + 1, 7);
+            Console.WriteLine(Unsafe.Read<int>(p + 1) + " " + Unsafe.AsRef<int>(p));
+        }
+        object o = "text";
+        Console.WriteLine(Unsafe.As<string>(o).Length);
+        return 0;
+    }
+}
