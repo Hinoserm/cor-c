@@ -3054,7 +3054,15 @@ public sealed class InputTap : IDisposable
 {
     readonly Seat _seat;
     readonly Thread _thread;
+    readonly long _kinds;
     volatile bool _closed;
+    // A TAP IS ITS THREAD'S: the seat keeps a client a thread, and offers
+    // input to the thread that opened the tap. So the loop's own thread
+    // opens it, reads it and closes it; the constructor waits for the
+    // opening's answer, and Dispose wakes the loop through a pipe.
+    readonly ManualResetEventSlim _answered = new ManualResetEventSlim(false);
+    long _opened;
+    int _wakeRead = -1, _wakeWrite = -1;
 
     public event EventHandler<KeyObservedEventArgs>? KeyObserved;
     public event EventHandler<PointerObservedEventArgs>? PointerObserved;
@@ -3062,48 +3070,80 @@ public sealed class InputTap : IDisposable
     public InputTap(InputTapKinds kinds)
     {
         _seat = new Seat(Environment.GetEnvironmentVariable("SEAT") ?? "/dev/seat0");
-        long opened = _seat.TapOpen((long)kinds);
-        if (opened < 0) throw new UnauthorizedAccessException("an input tap needs the seat's own account (" + (-opened) + ")");
+        _kinds = (long)kinds;
+        int[] pair = new int[2];
+        if (Os.Pipe(pair) == 0) { _wakeRead = pair[0]; _wakeWrite = pair[1]; }
         _thread = new Thread(Loop);
         _thread.IsBackground = true;
         _thread.Start();
+        _answered.Wait();
+        if (_opened < 0)
+        {
+            CloseWake();
+            throw new UnauthorizedAccessException("an input tap needs the seat's own account (" + (-_opened) + ")");
+        }
+    }
+
+    void CloseWake()
+    {
+        if (_wakeRead >= 0) { Os.Close(_wakeRead); _wakeRead = -1; }
+        if (_wakeWrite >= 0) { Os.Close(_wakeWrite); _wakeWrite = -1; }
     }
 
     void Loop()
     {
+        _opened = _seat.TapOpen(_kinds);
+        _answered.Set();
+        if (_opened < 0) return;
+        try { Watch(); }
+        finally { _seat.TapClose(); }
+    }
+
+    void Watch()
+    {
         byte[] item = new byte[28];
+        int[] wake = _wakeRead >= 0 ? new int[] { _wakeRead } : new int[0];
         while (!_closed)
         {
-            Message m;
-            if (!_seat.Next(out m)) break;
-            if (m.Kind != Seat.TapInput) continue;
-            if (!_seat.TapItem(item)) continue;
-            bool eat = false;
-            int kind = Int(item, 0), flags = Int(item, 20);
-            bool injected = (flags & 1) != 0, up = (flags & 2) != 0;
-            if (kind == 1 && KeyObserved != null)
-            {
-                int vk = Int(item, 4), lParam = Int(item, 8), mods = Int(item, 12);
-                System.Windows.Forms.Keys k = (System.Windows.Forms.Keys)vk
-                    | ((mods & 1) != 0 ? System.Windows.Forms.Keys.Shift : System.Windows.Forms.Keys.None)
-                    | ((mods & 2) != 0 ? System.Windows.Forms.Keys.Control : System.Windows.Forms.Keys.None)
-                    | ((mods & 4) != 0 ? System.Windows.Forms.Keys.Alt : System.Windows.Forms.Keys.None);
-                // VK_PACKET carries its character at +16 (the seat's TapItem).
-                int packet = vk == 0xE7 ? Int(item, 16) & 0xFFFF : 0;
-                KeyObservedEventArgs e = new KeyObservedEventArgs(vk, packet != 0 ? packet : (lParam >> 16) & 0xFF, up, injected, k, (char)packet);
-                KeyObserved(this, e);
-                eat = e.Eat;
-            }
-            else if (kind == 2 && PointerObserved != null)
-            {
-                int message = Int(item, 4), x = Int(item, 8), y = Int(item, 12), extra = Int(item, 16);
-                int wheel = (short)((extra >> 16) & 0xFFFF);
-                PointerObservedEventArgs e = new PointerObservedEventArgs(message, x, y, wheel, injected);
-                PointerObserved(this, e);
-                eat = e.Eat;
-            }
-            _seat.TapAnswer(eat);
+            // The seat or Dispose's wake, whichever first.
+            if (_seat.WaitAny(wake, wake.Length, -1) >= 0) return;
+            while (!_closed && _seat.Poll(0)) Offered(item);
         }
+    }
+
+    /// One event of the tap's: an input offered, handed to the handlers
+    /// and answered.
+    void Offered(byte[] item)
+    {
+        Message m;
+        if (!_seat.Next(out m)) { _closed = true; return; }
+        if (m.Kind != Seat.TapInput) return;
+        if (!_seat.TapItem(item)) return;
+        bool eat = false;
+        int kind = Int(item, 0), flags = Int(item, 20);
+        bool injected = (flags & 1) != 0, up = (flags & 2) != 0;
+        if (kind == 1 && KeyObserved != null)
+        {
+            int vk = Int(item, 4), lParam = Int(item, 8), mods = Int(item, 12);
+            System.Windows.Forms.Keys k = (System.Windows.Forms.Keys)vk
+                | ((mods & 1) != 0 ? System.Windows.Forms.Keys.Shift : System.Windows.Forms.Keys.None)
+                | ((mods & 2) != 0 ? System.Windows.Forms.Keys.Control : System.Windows.Forms.Keys.None)
+                | ((mods & 4) != 0 ? System.Windows.Forms.Keys.Alt : System.Windows.Forms.Keys.None);
+            // VK_PACKET carries its character at +16 (the seat's TapItem).
+            int packet = vk == 0xE7 ? Int(item, 16) & 0xFFFF : 0;
+            KeyObservedEventArgs e = new KeyObservedEventArgs(vk, packet != 0 ? packet : (lParam >> 16) & 0xFF, up, injected, k, (char)packet);
+            KeyObserved(this, e);
+            eat = e.Eat;
+        }
+        else if (kind == 2 && PointerObserved != null)
+        {
+            int message = Int(item, 4), x = Int(item, 8), y = Int(item, 12), extra = Int(item, 16);
+            int wheel = (short)((extra >> 16) & 0xFFFF);
+            PointerObservedEventArgs e = new PointerObservedEventArgs(message, x, y, wheel, injected);
+            PointerObserved(this, e);
+            eat = e.Eat;
+        }
+        _seat.TapAnswer(eat);
     }
 
     static int Int(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
@@ -3158,10 +3198,15 @@ public sealed class InputTap : IDisposable
         _seat.InjectInput(item);
     }
 
+    /// The tap closed by its own thread, woken for it, and waited for --
+    /// as UnhookWindowsHookEx returns with the hook gone -- unless a
+    /// handler disposes it from that thread.
     public void Dispose()
     {
         if (_closed) return;
         _closed = true;
-        _seat.TapClose();
+        if (_wakeWrite >= 0) Os.Write(_wakeWrite, new byte[1], 0, 1);
+        if (Thread.CurrentThread != _thread) _thread.Join(2000);
+        CloseWake();
     }
 }
