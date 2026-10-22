@@ -8041,7 +8041,11 @@ public sealed partial class Binder
             {
                 Error(at, $"{what}: '{to}' is a value type and cannot be null");
             }
-            else if (!to.Nullable)
+            // NOT A NULL WRITTEN `null!`, which says so: it is the null literal
+            // to the overload it is handed to (WrittenFits), and the `!` takes
+            // the warning away, as C#'s does -- `new UnitFront(null!, ...)` was
+            // told its Module is not nullable.
+            else if (!to.Nullable && at is not SuppressExpr)
             {
                 // CS8625: a null LITERAL into a non-nullable reference. Real
                 // C# gives the literal its own code rather than the general
@@ -18224,6 +18228,9 @@ public sealed partial class Binder
         Expr? valued = cond switch
         {
             PatternExpr tested when PatternExcludesNull(tested.Test, holds) => tested.Subject,
+            // `t?.Decl is not { } d` false, `x?.Op is Call c` true: a type test
+            // or `{ }` passes no null -- not `is var v`, which takes anything.
+            IsExpr { Type.Name: not TypeRef.Anything } typeTest when holds => typeTest.Operand,
             BinaryExpr { Op: BinOp.Eq or BinOp.Ne, PatternConstant: false } compared
                 when (compared.Op == BinOp.Eq) == holds && compared.Right is not LiteralExpr { Kind: Lit.Null }
                      && compared.Left is not LiteralExpr { Kind: Lit.Null } =>

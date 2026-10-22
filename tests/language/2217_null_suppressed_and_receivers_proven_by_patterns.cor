@@ -1,0 +1,51 @@
+// test: null_suppressed_and_receivers_proven_by_patterns
+// expect-exit: 0
+// expect-output:
+// 7
+// 3 0 1 0
+//
+// What C# takes without a warning, and this compiler warned of:
+// - `null!` handed to a parameter that is no `?`: the `!` says so, as the
+//   compiler's own `new UnitFront(null!, ...)` writes it;
+// - a conditional access tested by a pattern that passes no null -- `{ }`,
+//   a property pattern, a type test -- says its receiver is not null:
+//   `if (t?.Decl is not { Specialised: true } made) return ...; Use(t)`.
+
+using System;
+
+sealed class Module { }
+sealed class Front { public Front(Module m, int k) { M = m; K = k; } public Module M; public int K; }
+sealed class Decl { public bool Specialised; public string? Template; }
+sealed class Sym { public Decl? Decl; public string Key = "k"; }
+
+static class Program
+{
+    static int Box(Module m, int k) => k;
+    static int Use(Sym s) => s.Key.Length;
+
+    static int Outer(Sym? t)
+    {
+        if (t?.Decl is not { Specialised: true, Template: string template } made || template.Length == 0) return 0;
+        return Use(t) + made.Template!.Length;
+    }
+
+    static int Plain(Sym? t)
+    {
+        if (t?.Decl is not { } d) return 0;
+        return Use(t);
+    }
+
+    static int Typed(object? o)
+    {
+        if (o is not Sym s) return 0;
+        return Use(s);
+    }
+
+    static int Main()
+    {
+        Front f = new(null!, 3);
+        Console.WriteLine(f.K + Box(null!, 4));
+        Console.WriteLine(Outer(new Sym { Decl = new Decl { Specialised = true, Template = "ab" } }) + " " + Outer(null) + " " + Plain(new Sym { Decl = new Decl() }) + " " + Typed(null));
+        return 0;
+    }
+}
