@@ -1,0 +1,38 @@
+// test: aliases_of_any_type
+// expect-exit: 0
+// expect-output:
+// 3 2 (5, 4) 5 2 True 3 2.5 Lovelace b.txt
+//
+// A using alias names any type, as C# 12 has it, and a constructed generic
+// as C# always has: `using Map = Dictionary<string, int>;` dropped its
+// arguments, `using Point = (int X, int Y);` and `using Ints = int[];` were
+// refused, and `using Num = double;` named nothing. A namespace alias,
+// `using IO = System.IO;`, is one still.
+// Expected output from .NET 10.
+
+using System;
+using IO = System.IO;
+using Map = System.Collections.Generic.Dictionary<string, int>;
+using Point = (int X, int Y);
+using Ints = int[];
+using Num = double;
+using Names = System.Collections.Generic.List<(string First, string Last)>;
+
+static class Program
+{
+    static Point Move(Point p, int by) => (p.X + by, p.Y);
+    static Num Half(Num n) => n / 2;
+
+    static int Main()
+    {
+        Map m = new Map { ["a"] = 1 };
+        m["b"] = 2;
+        Point p = Move((3, 4), 2);
+        Point[] ps = { p, (0, 0) };
+        Point? none = null;
+        Ints xs = new[] { 1, 2, 3 };
+        Names people = new() { ("Ada", "Lovelace") };
+        Console.WriteLine(m["a"] + m["b"] + " " + m.Count + " " + p + " " + p.X + " " + ps.Length + " " + (none is null) + " " + xs.Length + " " + Half(5) + " " + people[0].Last + " " + IO.Path.GetFileName("/a/b.txt"));
+        return 0;
+    }
+}

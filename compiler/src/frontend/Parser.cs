@@ -1129,6 +1129,10 @@ public sealed class Parser
             {
                 TryParseTypeArgs(out _);
                 _fileScope.StaticImports.Add((_namespace, name));
+                // And its nested types, which it brings in too: `using static
+                // Outer;` names Outer.Nested bare, found as a namespace's are.
+                _fileScope.Imports.Add((_namespace, name));
+                unit.Usings.Add(name);
                 Expect(Tok.Semi, "';' after using static");
                 continue;
             }
@@ -1139,11 +1143,37 @@ public sealed class Parser
             // was written in, so where it was written is kept with it.
             if (Take(Tok.Assign))
             {
+                // AN ALIAS FOR ANY TYPE -- `using Map = Dictionary<string,
+                // int>;`, `using Point = (int X, int Y);`, `using Ints =
+                // int[];` -- is its type, put where the file names the alias
+                // as one (ParseWrittenTypeRef). Read as a dotted name, its
+                // arguments were dropped, and a tuple's was refused. A dotted
+                // name alone may be a namespace, and stays the alias it was.
+                int from = _i;
+                bool plain = At(Tok.Ident);
+                while (plain && _i < _t.Count && !At(Tok.Semi))
+                {
+                    plain = At(Tok.Ident) && (Ahead().Kind is Tok.Dot or Tok.Semi);
+                    _i += At(Tok.Ident) && Ahead().Kind == Tok.Dot ? 2 : 1;
+                }
+                _i = from;
+                if (!plain)
+                {
+                    List<string> words = new();
+                    while (!At(Tok.Semi) && !At(Tok.End)) words.Add(_t[_i++].Text);
+                    _typeAliases[name] = string.Join(" ", words);
+                    Expect(Tok.Semi, "';' after using");
+                    continue;
+                }
                 string target = ParseDottedName();
 
-                TryParseTypeArgs(out _);
                 _fileScope.Aliases.Add((_namespace, name, target));
                 if (global) unit.GlobalUsings.Add(name + "=" + target);
+                // A built-in type by its keyword or its System name -- `using
+                // Num = double;`, `using Num = System.Double;` -- resolves as a
+                // written type does, and no alias of a name found it.
+                if (target.IndexOf('.') < 0 || target.StartsWith("System.", StringComparison.Ordinal) && target.IndexOf('.', 7) < 0)
+                    _typeAliases[name] = target;
             }
             else
             {
@@ -4309,11 +4339,21 @@ public sealed class Parser
             }
         }
 
+        // AN ALIAS OF A TYPE (ParseUsings): its type, read afresh at each use.
+        if (args.Count == 0 && _typeAliases.TryGetValue(name, out string? aliased))
+        {
+            TypeRef made = new Parser(Lexer.Tokenize(aliased, _file, at.Line, at.Col), _file) { _written = _written }.ParseTypeRef();
+            return Suffixes(made, !pattern);
+        }
+
         TypeRef type = new() { Name = name, Line = at.Line, Col = at.Col };
 
         type.Arguments.AddRange(args);
         return Suffixes(type, !pattern);
     }
+
+    /// <summary>`using Map = Dictionary<string, int>;` and the like: each alias of a type, as its tokens' text (ParseUsings).</summary>
+    private readonly Dictionary<string, string> _typeAliases = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The rest of a tuple, from wherever it was recognised.
