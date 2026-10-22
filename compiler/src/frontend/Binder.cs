@@ -4317,6 +4317,15 @@ public sealed partial class Binder
     /// </summary>
     private bool FindBase(TypeRef b, out TypeSymbol? based)
     {
+        // A BASE THE COMPILER WROTE (not TypeRef.Written) -- a delegate's
+        // multicast class, a record's IEquatable -- names its type for the
+        // compiler, as any type it makes does (ResolveCore).
+        if (!b.Written && _made == 0)
+        {
+            _made++;
+            try { return FindBase(b, out based); }
+            finally { _made--; }
+        }
         if (b.Args.Count > 0
                 ? FindType(Arity(b.Name, b.Args.Count), out based) || FindType(b.Name, out based)
                 : FindType(b.Name, out based))
@@ -4413,7 +4422,7 @@ public sealed partial class Binder
             // `List<T> : IReadOnlyList<T>` names IReadOnlyList`1 (FindBase).
             if (!FindBase(b, out TypeSymbol? based))
             {
-                Error(b, $"'{b.Name}' is not a known type");
+                Error(b, $"CS0246: The type or namespace name '{b.Name}' could not be found{WhereItIs(b.Args.Count > 0 ? Arity(b.Name, b.Args.Count) : b.Name)}");
                 continue;
             }
 
