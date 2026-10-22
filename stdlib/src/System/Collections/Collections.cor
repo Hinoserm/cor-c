@@ -2250,7 +2250,7 @@ sealed class __Rectangular2<T> : IEnumerable<T> {
     }
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-    public override string ToString() => typeof(T).ToString() + "[,]";
+    public override string ToString() => typeof(T).FullName + "[,]";
 }
 
 sealed class __Rectangular3<T> : IEnumerable<T> {
@@ -2306,7 +2306,7 @@ sealed class __Rectangular3<T> : IEnumerable<T> {
     }
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-    public override string ToString() => typeof(T).ToString() + "[,,]";
+    public override string ToString() => typeof(T).FullName + "[,,]";
 }
 
 namespace System.Collections.Concurrent
