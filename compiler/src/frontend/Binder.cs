@@ -12022,6 +12022,14 @@ public sealed partial class Binder
     /// Null when this is not one of them, so an ordinary member lookup can
     /// report what it usually would.
     /// </summary>
+    /// <summary>An expression's type, its diagnostics held back.</summary>
+    private Type? CheckQuietly(Expr e)
+    {
+        _quiet++;
+        try { return CheckExpr(e); }
+        finally { _quiet--; }
+    }
+
     private Type? EnumStatic(MemberExpr named, CallExpr call)
     {
         TypeSymbol? chosen = null;
@@ -12043,6 +12051,16 @@ public sealed partial class Binder
         {
             chosen = byTypeof;
             skip = 1;
+        }
+        // AND FROM WHAT TryParse FILLS IN: `Enum.TryParse("Blue", out Color
+        // parsed)` is TryParse<Color>, by the variable it writes -- one it
+        // declares, or one it is handed.
+        else if (named.Name == "TryParse" && call.Args.Count is 2 or 3 && call.Args[^1] is RefArgExpr { IsOut: true } filled
+                 && (filled.Declare is { } declared && declared.Name != "var" && FindType(declared.Name, out TypeSymbol? byOut) ? byOut
+                     : filled.Declare is null && filled.Target is { } handed && CheckQuietly(handed) is { } held ? held.AsNonNullable().Symbol : null)
+                    is { Kind: TypeKind.Enum } byFilled)
+        {
+            chosen = byFilled;
         }
         // AND FROM THE VALUE, as the generic overloads infer TEnum:
         // `Enum.IsDefined(type)` and `Enum.GetName(kind)` over an enum value

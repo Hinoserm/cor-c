@@ -1,0 +1,56 @@
+// test: values_enums_numbers_and_arrays_as_dotnet
+// expect-exit: 0
+// expect-output:
+// True False True True P
+// Green 3 8 True Red,Green,Blue Red,Green,Blue TrueBlue 4 -1
+// True Int32 True 7
+// 44 -56 3 -3 0 c 25 4294967295 9223372036854775808
+// Infinity -Infinity 0.1 1.2345678901234567 100 1E-07 123456789012 1.7976931348623157E+308 1E-45 0.30000000000000004 3.3 3.3333333333333333333333333333 2.34 1000000000000000 10000000000000000
+// 1434747710 14 5 0.522764
+// 9,7,5,3,1,0,0 3 3 (c, 1);(a, 2);(b, 2) a||b
+// 007-x/3.5 1267650600228229401496703205377 377 01234567-89ab-cdef-0123-456789abcdef 32
+//
+// Value semantics as .NET gives them: a struct's default Equals and
+// GetHashCode, enum text for flags and undefined values, IsDefined,
+// GetValues, GetNames and TryParse inferring the enum from its out argument
+// (refused before: "the name Enum does not exist"), boxed nullables,
+// unchecked conversions, double, float and decimal text, a seeded Random's
+// sequence, Array.Sort, BinarySearch, Reverse, Resize and IndexOf, a list
+// sorted by a comparison, string.Join over nulls, AppendFormat, BigInteger
+// and Guid text.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
+using System.Text;
+
+enum Color { Red = 1, Green = 2, Blue = 4 }
+struct P { public int X; public string? Name; }
+
+static class Program
+{
+    static int Main()
+    {
+        P a = new() { X = 1, Name = "n" }, b = new() { X = 1, Name = "n" }, c = new() { X = 2 };
+        Console.WriteLine(a.Equals(b) + " " + a.Equals(c) + " " + (a.GetHashCode() == b.GetHashCode()) + " " + a.Equals((object)b) + " " + a.ToString());
+        Console.WriteLine(Color.Green + " " + (Color)3 + " " + (Color)8 + " " + Enum.IsDefined(typeof(Color), 4) + " " + string.Join(",", Enum.GetValues<Color>()) + " " + string.Join(",", Enum.GetNames(typeof(Color))) + " " + Enum.TryParse("Blue", out Color parsed) + parsed + " " + (int)Color.Blue + " " + Color.Red.CompareTo(Color.Blue));
+        int? none = null; object boxedNone = none!; int? some = 7; object boxedSome = some;
+        Console.WriteLine((boxedNone == null) + " " + boxedSome.GetType().Name + " " + (boxedSome is int) + " " + (boxedSome is int i ? i : -1));
+        Console.WriteLine(unchecked((byte)300) + " " + unchecked((sbyte)200) + " " + (int)3.99 + " " + (int)-3.99 + " " + (long)1e19.GetHashCode() * 0 + " " + (char)('a' + 2) + " " + ('z' - 'a') + " " + unchecked((uint)-1) + " " + unchecked((ulong)long.MinValue));
+        Console.WriteLine(1.0 / 0 + " " + -1.0 / 0 + " " + 0.1f + " " + 1.23456789012345678 + " " + 100.0 + " " + 1e-7 + " " + 123456789012.0 + " " + double.MaxValue + " " + float.Epsilon + " " + 0.30000000000000004.ToString("R") + " " + 1.1m * 3 + " " + 10m / 3 + " " + Math.Round(2.345m, 2) + " " + 1.0E15 + " " + 1.0E16);
+        Random r = new(42);
+        Console.WriteLine(r.Next() + " " + r.Next(100) + " " + r.Next(5, 10) + " " + r.NextDouble().ToString("F6"));
+        int[] arr = { 5, 3, 9, 1, 7 };
+        Array.Sort(arr); int idx = Array.BinarySearch(arr, 7); Array.Reverse(arr); Array.Resize(ref arr, 7);
+        List<(string, int)> items = new() { ("b", 2), ("a", 2), ("c", 1) };
+        items.Sort((x, y) => x.Item2.CompareTo(y.Item2));
+        Console.WriteLine(string.Join(",", arr) + " " + idx + " " + Array.IndexOf(arr, 3) + " " + string.Join(";", items) + " " + string.Join("|", new string?[] { "a", null, "b" }));
+        StringBuilder sb = new(); sb.AppendFormat("{0:D3}-{1}", 7, "x").AppendLine().Append(3.5);
+        BigInteger big = BigInteger.Pow(2, 100) + 1;
+        Guid g = new("01234567-89ab-cdef-0123-456789abcdef");
+        Console.WriteLine(sb.ToString().Replace(Environment.NewLine, "/") + " " + big + " " + big % 1000 + " " + g + " " + g.ToString("N").Length);
+        return 0;
+    }
+}
