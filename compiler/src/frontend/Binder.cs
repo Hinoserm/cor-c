@@ -15389,8 +15389,13 @@ public sealed partial class Binder
                 // new(slot, 0)` constructs an Address, and the conversion to
                 // Address? that follows puts it in its cell. Taken as the T? it
                 // was a struct's block read as a cell.
+                // WHAT `new()` MAKES IS NEVER NULL, whatever it was made for:
+                // `_rangeDefinitions[dest] = definitions = new();` over a
+                // `List<Instr>? definitions` took the place's `?`, and the
+                // list just made was "maybe null" to the line after.
                 Type type = nw.Type.Name.Length == 0
-                          ? (_wanted is { IsNullableValue: true } lifted ? lifted.Underlying : _wanted ?? Type.Error)
+                          ? (_wanted is { IsNullableValue: true } lifted ? lifted.Underlying
+                             : _wanted is { IsReference: true, Nullable: true } asked ? asked.AsNonNullable() : _wanted ?? Type.Error)
                           : Resolve(nw.Type, _thisType);
 
                 // `new int()`, `new E()`: ZERO, as a value type's parameterless
