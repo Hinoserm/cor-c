@@ -159,6 +159,7 @@ public sealed partial class Binder
     {
         _breaks.Add(null);
         _jumpTargets.Add((loop ? JumpTarget.Loop : JumpTarget.Switch, _finallyDepth));
+        _nullJumps.Add((loop, null, null));
     }
 
     private HashSet<LocalSym>? LeaveBreakable()
@@ -166,7 +167,62 @@ public sealed partial class Binder
         HashSet<LocalSym>? broke = _breaks[^1];
         _breaks.RemoveAt(_breaks.Count - 1);
         _jumpTargets.RemoveAt(_jumpTargets.Count - 1);
+        (_, _leftBroke, _leftContinued) = _nullJumps[^1];
+        _nullJumps.RemoveAt(_nullJumps.Count - 1);
         return broke;
+    }
+
+    /// <summary>
+    /// WHAT EACH BREAK AND CONTINUE PROVED, joined, per breakable beside
+    /// <see cref="_breaks"/>: a loop's break states are the state after it,
+    /// with the condition's failing, and its continues join its head
+    /// (AfterLoopNullState). The innermost's, once left, in _leftBroke and
+    /// _leftContinued.
+    /// </summary>
+    private readonly List<(bool Loop, (HashSet<Sym>, HashSet<string>)? Broke, (HashSet<Sym>, HashSet<string>)? Continued)> _nullJumps = new();
+    private (HashSet<Sym>, HashSet<string>)? _leftBroke, _leftContinued;
+
+    private void JoinNullState(ref (HashSet<Sym>, HashSet<string>)? into)
+    {
+        if (into is not { } held) into = NullState();
+        else
+        {
+            held.Item1.IntersectWith(_notNull);
+            held.Item2.IntersectWith(_notNullPaths);
+        }
+    }
+
+    private void IntersectNullState((HashSet<Sym>, HashSet<string>) with)
+    {
+        _notNull.IntersectWith(with.Item1);
+        _notNullPaths.IntersectWith(with.Item2);
+    }
+
+    /// <summary>
+    /// THE NULL STATE AFTER A LOOP, as C# joins it, called once its body (and
+    /// a for's step) is checked and the breakable left. Its head held what the
+    /// entry and every way back -- the end of the body, each continue -- all
+    /// proved (only the way back for a body that runs first, a do's); after
+    /// it comes the head with the condition failing, joined with each break.
+    /// After `while (true)` only the breaks lead on, and what they proved is
+    /// what holds: `while (true) { … if (taken != null) break; … }` leaves
+    /// taken not null. A foreach runs out of elements instead (exhausts).
+    /// A body's later passes are not checked again, so a proof the body
+    /// itself undoes may still be read in it; that only misses a warning.
+    /// </summary>
+    private void AfterLoopNullState((HashSet<Sym>, HashSet<string>)? entry, Expr? cond, bool exhausts = false)
+    {
+        (HashSet<Sym>, HashSet<string>)? broke = _leftBroke, continued = _leftContinued;
+        if (continued is { } back) IntersectNullState(back);
+        if (entry is { } before) IntersectNullState(before);
+        bool endless = !exhausts && (cond is null || cond is LiteralExpr { Kind: Lit.Bool, Text: "true" });
+        if (endless)
+        {
+            if (broke is { } only) RestoreNullState(only);
+            return;
+        }
+        if (cond is not null) Assume(cond, false);
+        if (broke is { } left) IntersectNullState(left);
     }
 
     /// <summary>
@@ -2390,7 +2446,7 @@ public sealed partial class Binder
         {
             CallExpr sub = new()
             {
-                Target = Member(new NameExpr { Name = "RuntimeHelpers", Line = line, Col = col }, "GetSubArray"),
+                Target = Member(Global(ix, "System", "Runtime", "CompilerServices", "RuntimeHelpers"), "GetSubArray"),
                 Line = line, Col = col,
             };
             sub.Args.Add(ix.Target);
@@ -7058,9 +7114,12 @@ public sealed partial class Binder
 
                 CheckEmbedded(i.Then);
                 HashSet<LocalSym> afterThen = AssignedCopy();
-                Forget(inThen);
 
+                // What the condition proved is still so at the end of the then
+                // branch, unless the branch wrote it: `if (info != null) { … }
+                // else { info = new(); }` leaves info not null either way.
                 (HashSet<Sym>, HashSet<string>) afterThenState = NullState();
+                Forget(inThen);
                 RestoreNullState(beforeThen);
 
                 _assigned.Clear();
@@ -7138,6 +7197,7 @@ public sealed partial class Binder
             case WhileStmt w:
             {
                 PushScope();
+                (HashSet<Sym>, HashSet<string>) beforeWhile = NullState();
                 CheckCondition(w.Cond);
 
                 List<Sym> inLoop = Assume(w.Cond, true);
@@ -7146,21 +7206,31 @@ public sealed partial class Binder
                 CheckEmbedded(w.Body);
                 HashSet<LocalSym>? whileBroke = LeaveBreakable();
                 Forget(inLoop);
+                AfterLoopNullState(beforeWhile, w.Cond);
                 PopScope();
                 AfterEndlessLoop(w.Cond, whileBroke);
                 break;
             }
 
             case DoStmt dd:
+            {
                 EnterBreakable();
                 CheckEmbedded(dd.Body);
                 LeaveBreakable();
+                // The condition is reached by the end of the body and by each
+                // continue, and the body by the entry first.
+                if (_leftContinued is { } doContinued) IntersectNullState(doContinued);
+                (HashSet<Sym>, HashSet<string>)? doBroke = _leftBroke;
                 // What the condition declares is the do statement's alone:
                 // nothing after the loop sees it.
                 PushScope();
                 CheckCondition(dd.Cond);
+                _leftBroke = doBroke;
+                _leftContinued = null;
+                AfterLoopNullState(null, dd.Cond);
                 PopScope();
                 break;
+            }
 
             case ForStmt f:
             {
@@ -7170,6 +7240,7 @@ public sealed partial class Binder
                 {
                     CheckStmt(f.Init);
                 }
+                (HashSet<Sym>, HashSet<string>) beforeFor = NullState();
                 if (f.Cond != null)
                 {
                     CheckCondition(f.Cond);
@@ -7193,12 +7264,16 @@ public sealed partial class Binder
                 CheckEmbedded(f.Body);
                 HashSet<LocalSym>? forBroke = LeaveBreakable();
 
+                // The step runs after the body and after each continue.
+                if (_leftContinued is { } forContinued) IntersectNullState(forContinued);
+                _leftContinued = null;
                 foreach (Expr step in f.Step)
                 {
                     CheckExpr(step);
                 }
 
                 Forget(proved);
+                AfterLoopNullState(beforeFor, f.Cond);
                 PopScope();
                 AfterEndlessLoop(f.Cond, forBroke);
                 break;
@@ -7334,9 +7409,11 @@ public sealed partial class Binder
                 // Recorded as a pattern's binding is: a lambda that captures
                 // it makes it a cell, and the lowering stores into the cell.
                 _r.PatternSym[fe] = iteration;
+                (HashSet<Sym>, HashSet<string>) beforeEach = NullState();
                 EnterBreakable();
                 CheckEmbedded(fe.Body);
                 LeaveBreakable();
+                AfterLoopNullState(beforeEach, null, exhausts: true);
                 PopScope();
                 break;
             }
@@ -7493,6 +7570,19 @@ public sealed partial class Binder
                 if (jumpDepth >= 0)
                 {
                     JumpOutOfFinally(s, jumpDepth);
+                    // What it proved goes where it goes (AfterLoopNullState).
+                    if (s is BreakStmt && _nullJumps.Count > 0)
+                    {
+                        var top = _nullJumps[^1];
+                        JoinNullState(ref top.Broke);
+                        _nullJumps[^1] = top;
+                    }
+                    else if (s is ContinueStmt && _nullJumps.FindLastIndex(j => j.Loop) is int loopAt and >= 0)
+                    {
+                        var loop = _nullJumps[loopAt];
+                        JoinNullState(ref loop.Continued);
+                        _nullJumps[loopAt] = loop;
+                    }
                     if (s is BreakStmt && _breaks.Count > 0)
                     {
                         HashSet<LocalSym>? broke = _breaks[^1];
@@ -11981,6 +12071,17 @@ public sealed partial class Binder
     /// last part against the type table and nothing else can shadow it, which
     /// is also how C# spells its way out of exactly this collision.
     /// </summary>
+    /// <summary>
+    /// `global::A.B.C` written where a rewrite needs a type by its whole name:
+    /// the program's usings say nothing about what the compiler adds.
+    /// </summary>
+    private static Expr Global(Node at, params string[] names)
+    {
+        Expr path = new NameExpr { Name = names[0], Global = true, Line = at.Line, Col = at.Col };
+        for (int i = 1; i < names.Length; i++) path = new MemberExpr { Target = path, Name = names[i], Line = at.Line, Col = at.Col };
+        return path;
+    }
+
     private static CallExpr Call(string owner, string method, Node at, params Expr[] arguments)
     {
         CallExpr made = new()
@@ -15169,7 +15270,17 @@ public sealed partial class Binder
                     Line = taken.Line, Col = taken.Col,
                 };
 
-                CallExpr copy = Call("RuntimeHelpers", "GetSubArray", part, part.Target, first, count);
+                CallExpr copy = new()
+                {
+                    Target = new MemberExpr
+                    {
+                        Target = Global(part, "System", "Runtime", "CompilerServices", "RuntimeHelpers"), Name = "GetSubArray",
+                        Line = part.Line, Col = part.Col,
+                    },
+                    Line = part.Line, Col = part.Col,
+                };
+                copy.Args.AddRange(new[] { part.Target, first, count });
+                copy.WritableArgNames.AddRange(new string?[] { null, null, null });
 
                 _r.Rewrites[part] = copy;
                 return CheckExpr(copy);

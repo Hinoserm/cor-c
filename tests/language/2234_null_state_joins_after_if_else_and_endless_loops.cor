@@ -1,0 +1,101 @@
+// test: null_state_joins_after_if_else_and_endless_loops
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// kept
+// 1 1 1 1
+// 9 8 0
+//
+// The null state after an if/else is what both branches left, the
+// condition's proof included: `if (info != null) { … } else { info = new();
+// }` leaves info not null. After `while (true)` it is what the breaks
+// proved: `if (taken != null) break;` leaves taken not null after the loop,
+// inside try/finally too. The shapes of the CORSAC86 kernel's registry,
+// sockets and keyboard layouts, which 3a0a8035 refused.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Info { public int A = 1; public long[] G = new long[0]; }
+class Sock { public string Peer = "p"; public bool Closed; public List<Sock> Backlog = new(); }
+class KeyboardLayout { public bool Unloaded; public int Id = 4; }
+
+static class P
+{
+    static Info? Find(int k) { return k > 0 ? new Info() : null; }
+    static long[] Gens() { return new long[1]; }
+
+    // The join after if/else: the then branch proved by the condition, the else assigning.
+    static int Kept(int k)
+    {
+        Info? info = Find(k);
+        if (info != null) { Console.WriteLine("kept"); }
+        else
+        {
+            info = new Info();
+            info.G = Gens();
+        }
+        return info.A;
+    }
+
+    // After while (true), what its breaks proved.
+    static int Taken(List<Sock> backlog)
+    {
+        Sock? taken = null;
+        while (true)
+        {
+            if (backlog.Count > 0) { taken = backlog[0]; backlog.RemoveAt(0); }
+            if (taken != null) break;
+            backlog.Add(new Sock());
+        }
+        return taken.Peer.Length;
+    }
+
+    static bool Enter() => true;
+    static void Leave(bool on) { }
+
+    // The same inside try/finally, with returns.
+    static long Accept(Sock s)
+    {
+        Sock? taken = null;
+        try
+        {
+            while (true)
+            {
+                bool on = Enter();
+                try
+                {
+                    if (s.Closed) return -1;
+                    if (s.Backlog.Count > 0) { taken = s.Backlog[0]; s.Backlog.RemoveAt(0); }
+                }
+                finally { Leave(on); }
+                if (taken != null) break;
+                s.Backlog.Add(new Sock());
+            }
+            return taken.Peer.Length;
+        }
+        finally { Leave(true); }
+    }
+
+    static KeyboardLayout? FindLayout(int h) => h > 5 ? new KeyboardLayout() : null;
+    static KeyboardLayout? Make(int h) => h > 0 ? new KeyboardLayout() : null;
+    static int SetLayout(KeyboardLayout kl, bool unload) => kl.Id + (unload ? 1 : 0);
+
+    // The then branch proved by the condition; the else assigning and returning on null.
+    static int Load(int hkl, bool reset)
+    {
+        int flags = 0;
+        KeyboardLayout? kl = FindLayout(hkl);
+        if (kl != null) { if (kl.Unloaded) kl.Unloaded = false; else if (!reset) flags = 1; }
+        else { kl = Make(hkl); if (kl == null) return 0; }
+        return SetLayout(kl, flags == 1) + kl.Id;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Kept(1) + " " + Kept(0) + " " + Taken(new List<Sock>()) + " " + Accept(new Sock()));
+        Console.WriteLine(Load(9, false) + " " + Load(2, true) + " " + Load(0, true));
+        return 0;
+    }
+}

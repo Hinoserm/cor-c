@@ -1,0 +1,36 @@
+// test: span_sequence_equal_takes_a_null_array_as_empty
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// 6 4 6 3 3 0 3 6
+// True False 0
+//
+// An array converts to a span, and a null one to an empty span, as .NET has
+// it: `a.AsSpan().SequenceEqual(none)` with a null array is false, where
+// the overload standing in for the conversion read the null array and
+// threw. Arrays and strings convert implicitly to Span and ReadOnlySpan
+// arguments and locals.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static int Sum(ReadOnlySpan<int> xs) { int s = 0; foreach (int x in xs) s += x; return s; }
+    static int Fill(Span<int> xs) { for (int i = 0; i < xs.Length; i++) xs[i] = i * 2; return xs.Length; }
+    static int Count(ReadOnlySpan<char> text, char c) { int n = 0; foreach (char x in text) if (x == c) n++; return n; }
+
+    static int Main()
+    {
+        int[] a = { 1, 2, 3 };
+        Span<int> s = a;
+        ReadOnlySpan<int> r = a;
+        int[]? none = null;
+        Span<int> empty = none;
+        ReadOnlySpan<char> chars = "banana";
+        int[] b = new int[4];
+        Console.WriteLine(Sum(a) + " " + Fill(b) + " " + b[3] + " " + s.Length + " " + r[2] + " " + empty.Length + " " + Count("banana", 'a') + " " + chars.Length);
+        Console.WriteLine(s.SequenceEqual(a) + " " + a.AsSpan().SequenceEqual(none) + " " + Sum(none));
+        return 0;
+    }
+}

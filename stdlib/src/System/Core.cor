@@ -9695,12 +9695,15 @@ public static class MemoryExtensions {
     }
     // AN ARRAY OR A STRING WHERE .NET CONVERTS IT to a span implicitly, a
     // user-defined conversion this compiler does not have: the same answers.
-    public static bool SequenceEqual<T>(this Span<T> span, T[] other) {
+    // A null array is an empty span, as the conversion makes it.
+    public static bool SequenceEqual<T>(this Span<T> span, T[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (!Same(span[i], other[i])) { return false; } }
         return true;
     }
-    public static bool SequenceEqual<T>(this ReadOnlySpan<T> span, T[] other) {
+    public static bool SequenceEqual<T>(this ReadOnlySpan<T> span, T[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (!Same(span[i], other[i])) { return false; } }
         return true;
@@ -9718,7 +9721,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this ReadOnlySpan<char> span, char[] other) {
+    public static bool SequenceEqual(this ReadOnlySpan<char> span, char[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9733,7 +9737,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this Span<char> span, char[] other) {
+    public static bool SequenceEqual(this Span<char> span, char[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9748,7 +9753,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this ReadOnlySpan<short> span, short[] other) {
+    public static bool SequenceEqual(this ReadOnlySpan<short> span, short[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9763,7 +9769,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this Span<short> span, short[] other) {
+    public static bool SequenceEqual(this Span<short> span, short[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9778,7 +9785,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this ReadOnlySpan<ushort> span, ushort[] other) {
+    public static bool SequenceEqual(this ReadOnlySpan<ushort> span, ushort[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9793,7 +9801,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this Span<ushort> span, ushort[] other) {
+    public static bool SequenceEqual(this Span<ushort> span, ushort[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9808,7 +9817,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this ReadOnlySpan<int> span, int[] other) {
+    public static bool SequenceEqual(this ReadOnlySpan<int> span, int[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9823,7 +9833,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this Span<int> span, int[] other) {
+    public static bool SequenceEqual(this Span<int> span, int[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9838,7 +9849,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this ReadOnlySpan<uint> span, uint[] other) {
+    public static bool SequenceEqual(this ReadOnlySpan<uint> span, uint[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9853,7 +9865,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this Span<uint> span, uint[] other) {
+    public static bool SequenceEqual(this Span<uint> span, uint[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9868,7 +9881,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this ReadOnlySpan<long> span, long[] other) {
+    public static bool SequenceEqual(this ReadOnlySpan<long> span, long[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9883,7 +9897,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this Span<long> span, long[] other) {
+    public static bool SequenceEqual(this Span<long> span, long[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9898,7 +9913,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this ReadOnlySpan<ulong> span, ulong[] other) {
+    public static bool SequenceEqual(this ReadOnlySpan<ulong> span, ulong[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
@@ -9913,7 +9929,8 @@ public static class MemoryExtensions {
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
     }
-    public static bool SequenceEqual(this Span<ulong> span, ulong[] other) {
+    public static bool SequenceEqual(this Span<ulong> span, ulong[]? other) {
+        if (other is null) { return span.Length == 0; }
         if (span.Length != other.Length) { return false; }
         for (int i = 0; i < span.Length; i++) { if (span[i] != other[i]) { return false; } }
         return true;
