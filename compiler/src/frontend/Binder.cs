@@ -19507,6 +19507,10 @@ public sealed partial class Binder
             && !(Path(m.Target) is string spelt && _notNullPaths.Contains(spelt)))
         {
             RequireNonNull(target, m.Target, "reach through");
+            // AND IT IS NOT NULL AFTER, as C# has it: a reach through that did
+            // not throw says so of what it reached through. Told once here,
+            // every later `x.M` of the same x was told again.
+            Proved(m.Target);
         }
 
         // THE TWO THINGS EVERY OBJECT ANSWERS, on a value whose type is only
@@ -19757,6 +19761,12 @@ public sealed partial class Binder
         {
             _r.Resolved[m] = new PropertyGetSym(getter);
             Type read = Close(ContextualMemberResult(target, getter), received);
+            // A PROPERTY'S NULL STATE AS A FIELD'S: `i.Dest!.Type` and then
+            // `V(i.Dest)` -- Instr.Dest is a property with accessors of its
+            // own -- proved the path and read it as maybe null all the same,
+            // where C# tracks a property read as it tracks a field's.
+            if (!read.IsNullableValue && Path(m) is string path && _notNullPaths.Contains(path))
+                read = read.AsNonNullable();
             return conditional ? read.AsNullable() : read;
         }
 
