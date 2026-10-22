@@ -1,0 +1,114 @@
+// test: primary_constructors
+// expect-exit: 0
+// expect-output:
+// refused: no room
+// 10 11 12
+// ADA 3
+// kept ada
+// 0 7
+// 12
+// box 5 5
+// rex is a dog
+// 5 9
+// 8
+// 2 3 4
+//
+// A class or struct with a parameter list has a primary constructor (C# 12):
+// `sealed class Refused(string why) : Exception(why);`, as the link's own
+// PreinitWorld writes it. The parameters reach the base's constructor and
+// every initialiser, and a member's body that names one reads it from the
+// object, writes included; a member of the same name is what the bodies
+// mean, the parameter what the initialisers mean. Every other constructor
+// hands over with this(...). A generic class, a struct, a base made with
+// arguments, a default and a lambda that keeps a parameter, each once.
+
+using System;
+
+sealed class Refused(string why) : Exception(why);
+
+class Counter(int start)
+{
+    public int Next() => start++;
+}
+
+class Holder(string name)
+{
+    public string Name { get; } = name.ToUpper();
+    public readonly int Length = name.Length;
+}
+
+class Named(string name)
+{
+    private readonly string name = "kept " + name;
+    public string Get() => name;
+}
+
+class Point(int x, int y)
+{
+    public Point() : this(0, 0) { }
+    public int Sum() => x + y;
+}
+
+struct Pair(int a, int b)
+{
+    public int Product => a * b;
+}
+
+class Box<T>(T value)
+{
+    public T Get() => value;
+    public T Copy { get; } = value;
+}
+
+class Animal(string kind)
+{
+    public string Kind => kind;
+}
+
+class Dog(string name) : Animal("dog")
+{
+    public string Describe() => name + " is a " + Kind;
+}
+
+class Optional(int n = 5)
+{
+    public int N => n;
+}
+
+class Adder(int k)
+{
+    public Func<int, int> Add() => x => x + k;
+}
+
+class Steps(int from, int count)
+{
+    public string Run()
+    {
+        string said = "";
+        for (int i = 0; i < count; i++) said += (i == 0 ? "" : " ") + (from + i);
+        return said;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        try { throw new Refused("no room"); }
+        catch (Refused e) { Console.WriteLine("refused: " + e.Message); }
+        Counter c = new(10);
+        Console.WriteLine(c.Next() + " " + c.Next() + " " + c.Next());
+        Holder h = new("ada");
+        Console.WriteLine(h.Name + " " + h.Length);
+        Console.WriteLine(new Named("ada").Get());
+        Console.WriteLine(new Point().Sum() + " " + new Point(3, 4).Sum());
+        Console.WriteLine(new Pair(3, 4).Product);
+        Box<int> box = new(5);
+        Console.WriteLine("box " + box.Get() + " " + box.Copy);
+        Console.WriteLine(new Dog("rex").Describe());
+        Console.WriteLine(new Optional().N + " " + new Optional(9).N);
+        Console.WriteLine(new Adder(3).Add()(5));
+        Console.WriteLine(new Steps(2, 3).Run());
+        return 0;
+    }
+}

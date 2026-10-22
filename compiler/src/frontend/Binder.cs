@@ -3805,7 +3805,7 @@ public sealed partial class Binder
         return null;
     }
 
-    private static Expr Retarget(Expr init, TypeRef declared)
+    internal static Expr Retarget(Expr init, TypeRef declared)
     {
         // A collection expression is made for its type by the checker, which
         // knows what the type is (the assignment this becomes wants it). And

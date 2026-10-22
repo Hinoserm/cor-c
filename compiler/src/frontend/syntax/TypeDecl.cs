@@ -343,6 +343,15 @@ public sealed class TypeDecl : Node
     /// </summary>
     public bool MemberwiseCopied { get; set; }
 
+    /// <summary>
+    /// THE NAMES OF A PRIMARY CONSTRUCTOR'S PARAMETERS (Parser.AddPrimaryConstructor),
+    /// as the parse that read the declaration found them; null for a type
+    /// with none. Read by an index as it writes the declaration
+    /// (SourceIndexBuilder): a body it leaves out says which of them it
+    /// names, since a parameter a body names is a field of the object.
+    /// </summary>
+    public List<string>? PrimaryParameters { get; set; }
+
     /// <summary>Which library it came from, so its statics can be found.</summary>
     public int LibSlot { get; set; }
 

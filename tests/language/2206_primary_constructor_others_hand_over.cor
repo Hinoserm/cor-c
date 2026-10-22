@@ -1,0 +1,18 @@
+// test: primary_constructor_others_hand_over
+// expect-compile-error: A constructor declared in a type with parameter list must have 'this' constructor initializer.
+// A type with a primary constructor makes its objects through it: any other
+// constructor must hand over to it with this(...), or the parameters it
+// keeps and the initialisers it runs are never given (C#'s CS8862).
+
+using System;
+
+class Point(int x, int y)
+{
+    public Point() { }
+    public int Sum() => x + y;
+}
+
+static class Program
+{
+    static void Main() { Console.WriteLine(new Point().Sum()); }
+}

@@ -1722,7 +1722,12 @@ public sealed class Parser
         // found by something DOWNSTREAM breaking rather than by the copy itself
         // complaining, because a copy that has fallen behind is still perfectly
         // valid code.
-        if (isRecord && At(Tok.LParen))
+        // A CLASS OR STRUCT WITH A PARAMETER LIST has a primary constructor
+        // (C# 12): `class Refused(string why) : Exception(why);`. Its
+        // parameters are read as a record's are, and made into a constructor
+        // and no properties (AddPrimaryConstructor).
+        bool primary = !isRecord && kind is TypeKind.Class or TypeKind.Struct && At(Tok.LParen);
+        if ((isRecord || primary) && At(Tok.LParen))
         {
             List<Param>? positionalRead = positional;
             ParseParams(ref positionalRead);
@@ -1739,7 +1744,7 @@ public sealed class Parser
                 // Type) : Place(Type)`. They belong to the constructor the
                 // record generates, which does not exist yet, so they are kept
                 // on the declaration until it does.
-                if (isRecord && At(Tok.LParen))
+                if ((isRecord || primary) && At(Tok.LParen))
                 {
                     _i++;
                     int spanMark = _spans.Count;
@@ -1779,9 +1784,10 @@ public sealed class Parser
 
         // `record X(...);` -- a body is optional when the parameters said
         // everything. A semicolon closes it instead of a brace.
-        if (isRecord && Take(Tok.Semi))
+        if ((isRecord || primary) && Take(Tok.Semi))
         {
-            AddRecordMembers(decl, positional, start);
+            if (isRecord) AddRecordMembers(decl, positional, start);
+            else AddPrimaryConstructor(decl, positional, start, new());
             decl.SourceFrom = start.Pos;
             decl.SourceTo = _t[_i - 1].Pos + 1;
             decl.MemberwiseCopied = NamesMemberwiseClone(startIndex);
@@ -1792,6 +1798,9 @@ public sealed class Parser
 
         Expect(Tok.LBrace, "'{' to open the type body");
 
+        // Where each member that may read a primary constructor's parameter
+        // was written: its tokens (AddPrimaryConstructor).
+        List<(int From, int To)> bodies = new();
         if (kind == TypeKind.Enum)
         {
             while (!At(Tok.RBrace) && !At(Tok.End))
@@ -1842,7 +1851,11 @@ public sealed class Parser
 
                 _inInterface = decl.Kind == TypeKind.Interface;
 
+                int memberFrom = _i;
                 MemberDecl member = ParseMember(name);
+                // All a field holds is its initialiser, and an auto-property's
+                // the same: what they name runs in the constructor.
+                if (primary && member is not FieldDecl && member is not PropertyDecl { Init: not null }) bodies.Add((memberFrom, _i));
 
                 member.Scope = _fileScope;
                 member.Namespace = _namespace;
@@ -1878,7 +1891,8 @@ public sealed class Parser
 
         Token close = Expect(Tok.RBrace, "'}' to close the type body");
 
-        AddRecordMembers(decl, positional, start);
+        if (primary) AddPrimaryConstructor(decl, positional, start, bodies);
+        else AddRecordMembers(decl, positional, start);
 
         // The whole declaration, brace to brace, so a generic can be written
         // into a header exactly as it was written here.
@@ -2223,14 +2237,7 @@ public sealed class Parser
             return;
         }
 
-        CtorInit? chain = null;
-
-        if (decl.BaseArgs.Count > 0)
-        {
-            chain = new CtorInit { IsThis = false, Spans = decl.BaseSpans, Source = decl.BaseSource, Line = start.Line, Col = start.Col };
-            chain.Args.AddRange(decl.BaseArgs);
-            chain.WritableArgNames.AddRange(decl.BaseArgNames);
-        }
+        CtorInit? chain = BaseChain(decl, start);
 
         MethodDecl ctor = new()
         {
@@ -2283,6 +2290,111 @@ public sealed class Parser
         AddRecordDeconstruct(decl, positional, start);
         AddRecordToString(decl, positional, start);
         AddRecordEquality(decl, positional, start);
+    }
+
+    /// <summary>
+    /// A CLASS'S OR STRUCT'S PRIMARY CONSTRUCTOR (C# 12): `class Refused(string
+    /// why) : Exception(why);`. Its parameters are in scope through the type's
+    /// body, and become no properties, as a record's do.
+    ///
+    /// THE CONSTRUCTOR runs the base's with the arguments written beside it,
+    /// then every instance initialiser of this declaration in the order
+    /// written -- moved here from the members, since every other constructor
+    /// must hand over to this one (CS8862) and it alone runs them -- so an
+    /// initialiser reads a parameter as a statement of the constructor does,
+    /// and the parameter, not a member of its name, is what it means there.
+    ///
+    /// A PARAMETER A MEMBER'S BODY NAMES is kept in a private field of its own
+    /// name, which the constructor fills first: the member finds the field as
+    /// it finds any other, and a member the type declares by that name is the
+    /// one its bodies mean, as in C#, so then none is made. Named only where
+    /// the object is made -- an initialiser, the base's arguments -- it takes
+    /// no room in the object. A declaration read from an index has its bodies
+    /// left out, and each one's stand-in names the parameters it named
+    /// (SourceIndexBuilder), so the object is laid out the same there.
+    /// </summary>
+    private void AddPrimaryConstructor(TypeDecl decl, List<Param> parameters, Token start, List<(int From, int To)> bodies)
+    {
+        MethodDecl ctor = new()
+        {
+            Name = decl.Name, Mods = Mods.Public, Returns = null, IsCtor = true,
+            Body = new Block { Line = start.Line, Col = start.Col },
+            Init = BaseChain(decl, start),
+            Line = start.Line, Col = start.Col,
+        };
+        ctor.WritableParams.AddRange(parameters);
+        decl.PrimaryParameters = parameters.Select(p => p.Name).ToList();
+
+        foreach (MethodDecl other in decl.Members.OfType<MethodDecl>())
+            if (other.IsCtor && !other.Mods.HasFlag(Mods.Static) && other.Init is not { IsThis: true })
+                throw new CompileError(_file, other.Line, other.Col,
+                    "A constructor declared in a type with parameter list must have 'this' constructor initializer.", code: "CS8862");
+
+        HashSet<string> declared = new(decl.Members.Select(member => member.Name), StringComparer.Ordinal);
+        List<MemberDecl> kept = new();
+        foreach (Param p in parameters)
+        {
+            if (declared.Contains(p.Name) || !Named(p.Name)) continue;
+            kept.Add(new FieldDecl { Name = p.Name, Type = p.Type, Mods = Mods.Private, Line = p.Line, Col = p.Col });
+            ctor.Body.WritableStatements.Add(Assign(p.Name, new NameExpr { Name = p.Name, Line = p.Line, Col = p.Col }, p.Line, p.Col));
+        }
+
+        foreach (MemberDecl member in decl.Members)
+        {
+            switch (member)
+            {
+                case FieldDecl f when f.Init is not null && !f.Mods.HasFlag(Mods.Static) && !f.Mods.HasFlag(Mods.Const):
+                    ctor.Body.WritableStatements.Add(Scope(Assign(f.Name, Binder.Retarget(f.Init, f.Type), f.Line, f.Col)));
+                    f.Init = null;
+                    break;
+                // An auto-property's backing field, as the binder names it.
+                case PropertyDecl property when property.Init is not null && property.Auto && !property.Mods.HasFlag(Mods.Static):
+                    ctor.Body.WritableStatements.Add(Scope(Assign("<" + property.Name + ">", Binder.Retarget(property.Init, property.Type), property.Line, property.Col)));
+                    property.Init = null;
+                    break;
+            }
+        }
+
+        decl.Members.InsertRange(0, kept);
+        decl.Members.Add(ctor);
+
+        // Named as itself in a body: not as a member of something else (`x.name`).
+        bool Named(string name)
+        {
+            foreach ((int from, int to) in bodies)
+                for (int k = from; k < to && k < _t.Count; k++)
+                    if (_t[k].Kind == Tok.Ident && _t[k].Text == name && (k == 0 || _t[k - 1].Kind is not (Tok.Dot or Tok.QuestionDot or Tok.Arrow)))
+                        return true;
+            return false;
+        }
+
+        static Stmt Assign(string field, Expr value, int line, int col) => new ExprStmt
+        {
+            Expr = new AssignExpr
+            {
+                Target = new MemberExpr { Target = new ThisExpr { Line = line, Col = col }, Name = field, Line = line, Col = col },
+                Value = value, Line = line, Col = col,
+            },
+            Line = line, Col = col,
+        };
+
+        // Each in a block of its own, as the binder places initialisers: what one declares is its own.
+        static Stmt Scope(Stmt one)
+        {
+            Block block = new() { Line = one.Line, Col = one.Col };
+            block.WritableStatements.Add(one);
+            return block;
+        }
+    }
+
+    /// <summary>The base's constructor run with the arguments written where the base is named, if any were.</summary>
+    private static CtorInit? BaseChain(TypeDecl decl, Token start)
+    {
+        if (decl.BaseArgs.Count == 0) return null;
+        CtorInit chain = new() { IsThis = false, Spans = decl.BaseSpans, Source = decl.BaseSource, Line = start.Line, Col = start.Col };
+        chain.Args.AddRange(decl.BaseArgs);
+        chain.WritableArgNames.AddRange(decl.BaseArgNames);
+        return chain;
     }
 
     /// <summary>

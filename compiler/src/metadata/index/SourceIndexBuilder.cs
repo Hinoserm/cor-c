@@ -203,6 +203,25 @@ public static class SourceIndexBuilder
                             {
                                 string standIn = bodies[bodyIndex].Block ? (never ? (copies ? "{ MemberwiseClone ; throw null ; } " : "{ throw null ; } ") : copies ? "{ MemberwiseClone ; } " : "{} ")
                                     : (never ? (copies ? "throw MemberwiseClone " : "throw null ") : copies ? "MemberwiseClone " : "default ");
+                                // AND THE PRIMARY CONSTRUCTOR'S PARAMETERS IT
+                                // NAMES (TypeDecl.PrimaryParameters): each is a
+                                // field of the object where a body names it
+                                // (Parser.AddPrimaryConstructor), and the unit
+                                // reading this lays the object out from what the
+                                // stand-ins name. Before a block's statements,
+                                // whose last says whether it returns; after an
+                                // expression, whose first does.
+                                if (type.PrimaryParameters is { Count: > 0 } primary)
+                                {
+                                    StringBuilder? named = null;
+                                    foreach (string name in primary)
+                                        for (int k = tokenIndex; k < tokens.Count && tokens[k].Pos < bodies[bodyIndex].To; k++)
+                                            if (tokens[k].Kind == Tok.Ident && tokens[k].Text == name
+                                                && tokens[k - 1].Kind is not (Tok.Dot or Tok.QuestionDot or Tok.Arrow))
+                                            { (named ??= new()).Append(name).Append(bodies[bodyIndex].Block ? " ; " : " "); break; }
+                                    if (named is not null)
+                                        standIn = bodies[bodyIndex].Block ? "{ " + named + standIn[1..].TrimStart() : standIn + named;
+                                }
                                 Place(token);
                                 Write(standIn, 0, standIn.Length);
                             }
