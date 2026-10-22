@@ -455,6 +455,14 @@ public sealed partial class Binder
         string bare = name[(name.LastIndexOf('.') + 1)..];
         sym = _r.Types.TryGetValue(bare, out TypeSymbol? global) && global.Decl is { Outer: null } d
               && (d.Namespace.Length == 0 || d.Namespace == LibraryHome) ? global : null;
+        // BY ITS OWN NAMESPACE, in a program: `System.Collections.Generic.
+        // List<int>` is the library's List and `System.List<int>` names
+        // nothing in .NET (LibraryNamespaces), so not here either.
+        if (sym is not null && name.IndexOf('.') > 0 && !name.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal)
+            && LibraryNamespaces.Of(sym.Key) is string space && name[..name.LastIndexOf('.')] != space && BindingProgramCode())
+        {
+            sym = null;
+        }
         return sym is not null;
     }
 
