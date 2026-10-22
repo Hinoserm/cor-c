@@ -13230,6 +13230,15 @@ public sealed partial class Binder
             {
                 return actual.AsNullable();
             }
+            // OVER A REFERENCE, `T?` IS THAT REFERENCE MAYBE NULL (C# 9's
+            // unconstrained T?): FirstOrDefault<Item> answers an Item?, and a
+            // value type stays itself. Taken bare, `Select(b =>
+            // b.Items.FirstOrDefault())` inferred an Item and warned that the
+            // lambda's Item? may be null.
+            if (t.Nullable && !t.StructParam && actual is { IsReference: true, Nullable: false, IsError: false, ParamName: null })
+            {
+                return actual.AsNullable();
+            }
             return actual;
         }
 

@@ -1,0 +1,36 @@
+// test: unconstrained_t_question_over_a_reference
+// expect-exit: 0
+// expect-output:
+// 2 3 True
+// 5 0
+//
+// An unconstrained `T?` over a reference type is that type maybe null (C#
+// 9): FirstOrDefault<Item> answers an Item?, so a lambda returning it makes
+// Select's R an Item?, not an Item that the lambda's Item? "may be null"
+// into -- the compiler's own binder selects so. Over a value type `T?` is
+// the value type itself.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Item { public int X; }
+sealed class Box { public List<Item> Items = new(); }
+
+static class Program
+{
+    static T? Last<T>(List<T> xs) => xs.Count == 0 ? default : xs[xs.Count - 1];
+
+    static int Main()
+    {
+        List<Box> boxes = new() { new Box { Items = { new Item { X = 3 } } }, new Box() };
+        List<Item?> firsts = boxes.Select(b => b.Items.FirstOrDefault(i => i.X > 0)).ToList();
+        Item? any = boxes.Select(b => b.Items.FirstOrDefault()).FirstOrDefault(i => i is not null);
+        Func<Box, Item?> pick = b => b.Items.FirstOrDefault();
+        Console.WriteLine(firsts.Count + " " + (any?.X ?? -1) + " " + (pick(boxes[1]) is null));
+        int last = Last(new List<int> { 4, 5 });
+        int none = Last(new List<int>());
+        Console.WriteLine(last + " " + none);
+        return 0;
+    }
+}
