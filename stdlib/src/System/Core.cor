@@ -14840,6 +14840,26 @@ static class Enumerable {
         return GroupByResults(source, keySelector, resultSelector);
     }
 
+    public static IEnumerable<R> GroupBy<T, K, R>(this IEnumerable<T> source, Func<T, K> keySelector, Func<K, IEnumerable<T>, R> resultSelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(resultSelector, "resultSelector");
+        return GroupByResults(source, keySelector, element => element, resultSelector, comparer);
+    }
+
+    // The key, each element made, and the result made of each group (the
+    // four-argument and five-argument overloads), in the order keys came.
+    public static IEnumerable<R> GroupBy<T, K, E, R>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector, Func<K, IEnumerable<E>, R> resultSelector) {
+        return GroupBy(source, keySelector, elementSelector, resultSelector, null);
+    }
+
+    public static IEnumerable<R> GroupBy<T, K, E, R>(this IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector, Func<K, IEnumerable<E>, R> resultSelector, IEqualityComparer<K>? comparer) {
+        NotNull(source, "source"); NotNull(keySelector, "keySelector"); NotNull(elementSelector, "elementSelector"); NotNull(resultSelector, "resultSelector");
+        return GroupByResults(source, keySelector, elementSelector, resultSelector, comparer);
+    }
+
+    private static IEnumerable<R> GroupByResults<T, K, E, R>(IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector, Func<K, IEnumerable<E>, R> resultSelector, IEqualityComparer<K>? comparer) {
+        foreach (IGrouping<K, E> group in GroupBy(source, keySelector, elementSelector, comparer)) { yield return resultSelector(group.Key, group); }
+    }
+
     private static IEnumerable<R> GroupByResults<T, K, R>(IEnumerable<T> source, Func<T, K> keySelector, Func<K, IEnumerable<T>, R> resultSelector) {
         foreach (R result in ((Lookup<K, T>)ToLookup(source, keySelector, null)).ApplyResultSelector(resultSelector)) { yield return result; }
     }
