@@ -1,0 +1,11 @@
+// A unit of 2193_program_type_named_like_runtime_type_in_its_own_unit: a
+// call through the program's AsyncRuntime, read out of the index beside the
+// runtime's.
+
+static class Neighbour
+{
+    public static int Next()
+    {
+        return AsyncRuntime.Count + 1;
+    }
+}

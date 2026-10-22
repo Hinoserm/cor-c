@@ -1,0 +1,52 @@
+// test: program_type_named_like_runtime_type_in_its_own_unit
+// apart: tests/language/support/2193_runtime_named_unit.cor
+// expect-exit: 0
+// expect-output:
+// 42
+// program 7
+// unit 8
+//
+// A program's own type named as one the runtime declares in the global
+// namespace -- AsyncRuntime, which every async method's code calls -- in a
+// project whose runtime sources are units of the same declaration index.
+// The entry unit found its own AsyncRuntime and never asked the index for
+// the name, so the runtime's never reached it: the program's kept the name
+// the runtime's object defines, every other unit moved it aside, and the
+// link found FlowSaved and FlowRestore defined twice. The program's moves
+// aside in its own unit as in the others; the async method still runs on
+// the runtime's, and the program and its neighbour both find the
+// program's.
+
+using System;
+using System.Threading.Tasks;
+
+static class AsyncRuntime
+{
+    public static int Count = 7;
+
+    public static object? FlowSaved()
+    {
+        return null;
+    }
+
+    public static void FlowRestore(object? saved)
+    {
+    }
+}
+
+static class Program
+{
+    static async Task<int> Twice(int x)
+    {
+        await Task.Yield();
+        return x * 2;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Twice(21).Result);
+        Console.WriteLine("program " + AsyncRuntime.Count);
+        Console.WriteLine("unit " + Neighbour.Next());
+        return 0;
+    }
+}

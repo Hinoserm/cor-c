@@ -1,0 +1,7 @@
+// A unit of 2194_program_type_declared_in_two_units_refused: a second
+// declaration of the entry unit's Shared, not partial.
+
+class Shared
+{
+    public int Value() { return 2; }
+}

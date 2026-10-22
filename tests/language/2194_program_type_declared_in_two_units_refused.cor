@@ -1,0 +1,24 @@
+// test: program_type_declared_in_two_units_refused
+// apart: tests/language/support/2194_twice_declared_unit.cor
+// expect-compile-error: 'Shared' is declared more than once
+//
+// Two of a program's files declaring one type, neither partial, compiled
+// each as a unit of its own against one declaration index. C# refuses the
+// program (CS0101), and so does a single compile here; each unit, finding
+// its own Shared, never asked the index for the name, and the two passed
+// the compile to meet at the link as two definitions of one symbol.
+
+using System;
+
+class Shared
+{
+    public int Value() { return 1; }
+}
+
+static class Program
+{
+    static void Main()
+    {
+        Console.WriteLine(new Shared().Value());
+    }
+}
