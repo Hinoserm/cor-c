@@ -1,0 +1,119 @@
+// test: print_job_keeps_its_spooler_connection
+// expect-exit: 0
+// expect-output:
+// connection 1: start, job 1
+// connection 1: page begun
+// connection 1: 3 bytes
+// connection 1: page ended
+// connection 1: ended
+// connection 1: closed
+// connection 2: start, job 2
+// connection 2: cancelled
+// connection 2: closed
+// lost 0
+//
+// A print job's requests go over the connection its StartDoc was asked on,
+// held until EndDoc or AbortDoc. The GUI kernel's spooler ties a job to the
+// connection that began it and cancels the job when that connection closes
+// unended, as Windows aborts one at ClosePrinter or when its process dies.
+// PrintSpooler asked each request on a connection of its own, closed as
+// the answer came: the job was cancelled as StartDoc returned, the seat
+// made it no page, and AbortDoc found no job. A service manager of the
+// test's own, on the socket the GUI kernel's listens on, tells which
+// connection each request came on, and counts a job lost when its
+// connection closed before it ended.
+
+using System;
+using System.Collections.Generic;
+using System.ServiceProcess;
+using System.Threading;
+using Corsac.Printing;
+
+static class Program
+{
+    static readonly List<string> Said = new List<string>();
+    static int _listener;
+    static int _lost;
+
+    static byte[] Address()
+    {
+        string name = "gui-services";
+        byte[] a = new byte[3 + name.Length];
+        a[0] = 1;
+        for (int i = 0; i < name.Length; i++) a[3 + i] = (byte)name[i];
+        return a;
+    }
+
+    static void Answer(int fd, long job)
+    {
+        WireWriter w = new WireWriter();
+        w.Int(0);
+        if (job != 0) w.Int(job);
+        byte[] m = w.ToArray();
+        Os.Send(fd, m, 0, m.Length, 0x4000);
+    }
+
+    // Two connections, each served until it closes: a job's whole life on
+    // each when the job keeps its connection.
+    static void Serve()
+    {
+        long jobs = 0;
+        for (int n = 1; n <= 2; n++)
+        {
+            int fd = Os.Accept(_listener, null);
+            bool open = false;
+            byte[] b = new byte[70000];
+            while (true)
+            {
+                int got = Os.Recv(fd, b, 0, b.Length, 0);
+                if (got <= 0) break;
+                WireReader r = new WireReader(b, got);
+                ServiceRequest op = (ServiceRequest)r.Int();
+                r.Int();
+                string what;
+                long job = 0;
+                switch (op)
+                {
+                    case ServiceRequest.SpoolStartDoc: job = ++jobs; open = true; what = "start, job " + job; break;
+                    case ServiceRequest.SpoolStartPage: what = "page begun"; break;
+                    case ServiceRequest.SpoolWrite: r.Int(); job = r.Bytes().Length; what = job + " bytes"; break;
+                    case ServiceRequest.SpoolEndPage: what = "page ended"; break;
+                    case ServiceRequest.SpoolEndDoc: open = false; what = "ended"; break;
+                    case ServiceRequest.SpoolAbortDoc: open = false; what = "cancelled"; break;
+                    default: what = "asked " + (long)op; break;
+                }
+                lock (Said) Said.Add("connection " + n + ": " + what);
+                Answer(fd, job);
+            }
+            if (open) _lost++;
+            lock (Said) Said.Add("connection " + n + ": closed");
+            Os.Close(fd);
+        }
+    }
+
+    static void Main()
+    {
+        _listener = Os.Socket(1, 5 | 0x80000, 0);
+        if (_listener < 0 || Os.Bind(_listener, Address()) < 0 || Os.Listen(_listener, 4) < 0)
+        {
+            Console.WriteLine("no socket to serve on");
+            return;
+        }
+        Thread server = new Thread(Serve);
+        server.Start();
+
+        long job = PrintSpooler.StartDoc("Printer", "Document", "RAW", "", 1);
+        PrintSpooler.StartPage(job);
+        PrintSpooler.Write(job, new byte[] { 1, 2, 3 }, 0, 3);
+        PrintSpooler.EndPage(job);
+        PrintSpooler.EndDoc(job);
+
+        long other = PrintSpooler.StartDoc("Printer", "Another", "PAGES", "", 1);
+        PrintSpooler.AbortDoc(other);
+
+        server.Join();
+        Os.Close(_listener);
+        foreach (string line in Said) Console.WriteLine(line);
+        Console.WriteLine("lost " + _lost);
+    }
+}

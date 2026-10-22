@@ -1,0 +1,51 @@
+// test: com_class_type_by_clsid_is_its_own
+// expect-exit: 0
+// expect-output:
+// System.__ComObject
+// same True
+// apart False
+// object False
+// COMException
+//
+// Type.GetTypeFromCLSID answers a Type of the class's own: named
+// System.__ComObject, as .NET's are, the same Type every time it is asked
+// for one CLSID and another for another, and one Activator.CreateInstance
+// makes the class's object with -- through the COM broker, which a run on
+// Linux has none of, so the COMException that says so. The Type was made by
+// copying the descriptor whose word a cast to object read; a Type cast to
+// object is now its one RuntimeType, so the copy was that object's bytes,
+// every CLSID's Type was System.__ComObject's own, and CreateInstance,
+// which knows a class's Type by its descriptor, refused every one with a
+// MissingMethodException.
+
+using System;
+using System.Runtime.InteropServices;
+
+static class Program
+{
+    static void Main()
+    {
+        Guid first = new Guid("6b0b1e4c-2d4f-4a3b-9e1a-3c5d7f9a1b2c");
+        Guid second = new Guid("1f2e3d4c-5b6a-4789-8a9b-0c1d2e3f4a5b");
+        Type a = Type.GetTypeFromCLSID(first)!;
+        Type again = Type.GetTypeFromCLSID(first)!;
+        Type b = Type.GetTypeFromCLSID(second)!;
+        Console.WriteLine(a.FullName);
+        Console.WriteLine("same " + (a == again));
+        Console.WriteLine("apart " + (a == b));
+        Console.WriteLine("object " + (a == typeof(object)));
+        try
+        {
+            Activator.CreateInstance(a);
+            Console.WriteLine("made");
+        }
+        catch (COMException)
+        {
+            Console.WriteLine("COMException");
+        }
+        catch (MissingMethodException e)
+        {
+            Console.WriteLine("missing: " + e.Message);
+        }
+    }
+}
