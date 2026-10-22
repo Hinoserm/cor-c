@@ -4448,6 +4448,11 @@ public sealed class Parser
     /// </summary>
     private TypeRef Suffixes(TypeRef bare, bool allowNullable = true)
     {
+        if (RectangularAhead())
+        {
+            return RectangularSuffixes(bare, allowNullable);
+        }
+
         int stars = 0;
         int rank = 0;
 
@@ -4528,6 +4533,146 @@ public sealed class Parser
 
         type.Arguments.AddRange(bare.Args);
         return type;
+    }
+
+    /// <summary>Whether the brackets after a type here hold a comma: a rectangular array's, `int[,]`.</summary>
+    private bool RectangularAhead()
+    {
+        int j = _i;
+        while (j < _t.Count && _t[j].Kind is Tok.Star or Tok.Question) j++;
+        while (j + 1 < _t.Count && _t[j].Kind == Tok.LBracket)
+        {
+            if (_t[j + 1].Kind == Tok.Comma) return true;
+            if (_t[j + 1].Kind != Tok.RBracket) return false;
+            j += 2;
+            while (j < _t.Count && _t[j].Kind == Tok.Question) j++;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// A TYPE WITH A RECTANGULAR ARRAY IN IT, `T[,]`, `T[,,]`, `T[,][]`: each
+    /// rank specifier around what the ones after it make, the first the
+    /// outermost, as C# reads them -- a rectangular one the class library's
+    /// __Rectangular2 or __Rectangular3 of its element. A `?` before the
+    /// brackets is the element's, one after them the whole type's.
+    /// </summary>
+    private TypeRef RectangularSuffixes(TypeRef bare, bool allowNullable)
+    {
+        TypeRef element = bare;
+        if (allowNullable && Take(Tok.Question))
+        {
+            element = new TypeRef { Name = bare.Name, Nullable = true, TupleNames = bare.TupleNames, Line = bare.Line, Col = bare.Col };
+            element.Arguments.AddRange(bare.Args);
+        }
+        List<int> specifiers = new();
+        while (At(Tok.LBracket) && Ahead().Kind is Tok.RBracket or Tok.Comma)
+        {
+            _i++;
+            int rank = 1;
+            while (Take(Tok.Comma)) rank++;
+            Expect(Tok.RBracket, "']' to close the array's rank");
+            if (rank > 3) throw Error($"a rectangular array of rank {rank} is not supported here; ranks 2 and 3 are");
+            specifiers.Add(rank);
+        }
+        TypeRef made = element;
+        for (int k = specifiers.Count - 1; k >= 0; k--)
+            made = specifiers[k] == 1 ? ArrayOf(made) : Rectangular(made, specifiers[k], bare);
+        if (allowNullable && Take(Tok.Question))
+        {
+            TypeRef maybe = new()
+            {
+                Name = made.Name, ArrayRank = made.ArrayRank, ElementNullable = made.ElementNullable,
+                Nullable = true, Line = made.Line, Col = made.Col,
+            };
+            maybe.Arguments.AddRange(made.Args);
+            made = maybe;
+        }
+        return made;
+    }
+
+    private static TypeRef ArrayOf(TypeRef element)
+    {
+        TypeRef array = new()
+        {
+            Name = element.Name, ArrayRank = element.ArrayRank + 1,
+            ElementNullable = element.ArrayRank == 0 ? element.Nullable : element.ElementNullable,
+            TupleNames = element.TupleNames, Line = element.Line, Col = element.Col,
+        };
+        array.Arguments.AddRange(element.Args);
+        return array;
+    }
+
+    private static TypeRef Rectangular(TypeRef element, int rank, Node at) => Rectangular(element, rank, at.Line, at.Col);
+    private static TypeRef Rectangular(TypeRef element, int rank, Token at) => Rectangular(element, rank, at.Line, at.Col);
+
+    private static TypeRef Rectangular(TypeRef element, int rank, int line, int col)
+    {
+        TypeRef made = new() { Name = "__Rectangular" + rank, Line = line, Col = col };
+        made.Arguments.Add(element);
+        return made;
+    }
+
+    private static int RectangularRank(TypeRef type)
+        => type.ArrayRank == 0 && type.Args.Count == 1 && type.Name is "__Rectangular2" or "__Rectangular3" ? type.Name[^1] - '0' : 0;
+
+    /// <summary>
+    /// A RECTANGULAR ARRAY'S INITIALISER, `{ {1, 2}, {3, 4} }`: its elements
+    /// row by row, the lengths its braces give (each level's the same, or
+    /// C#'s CS0847), made by __Rectangular.Of2 or Of3 -- of the element type
+    /// written, or, for `new[,]`, the one its elements infer.
+    /// </summary>
+    private Expr RectangularInit(TypeRef? element, int rank, Token at)
+    {
+        List<Expr> flat = new();
+        int[] lengths = new int[rank];
+        bool[] seen = new bool[rank];
+        void Level(int depth)
+        {
+            Expect(Tok.LBrace, "'{' to open a row of the array's elements");
+            int count = 0;
+            while (!At(Tok.RBrace) && !At(Tok.End))
+            {
+                if (depth < rank - 1) Level(depth + 1);
+                else flat.Add(ParseExpr());
+                count++;
+                if (!Take(Tok.Comma)) break;
+            }
+            Expect(Tok.RBrace, "'}' to close a row of the array's elements");
+            if (!seen[depth])
+            {
+                lengths[depth] = count;
+                seen[depth] = true;
+            }
+            else if (lengths[depth] != count)
+            {
+                throw Error($"CS0847: An array initializer of length '{lengths[depth]}' is expected");
+            }
+        }
+        Level(0);
+
+        NewExpr values = new()
+        {
+            Type = element ?? new TypeRef { Name = "", Line = at.Line, Col = at.Col },
+            Elements = flat, Line = at.Line, Col = at.Col,
+        };
+        CallExpr made = new()
+        {
+            Target = new MemberExpr
+            {
+                Target = new NameExpr { Name = "__Rectangular", Line = at.Line, Col = at.Col },
+                Name = "Of" + rank, Line = at.Line, Col = at.Col,
+            },
+            Line = at.Line, Col = at.Col,
+        };
+        foreach (int length in lengths)
+        {
+            made.Args.Add(new LiteralExpr { Kind = Lit.Int, Text = length.ToString(System.Globalization.CultureInfo.InvariantCulture), IntValue = length, Line = at.Line, Col = at.Col });
+            made.WritableArgNames.Add(null);
+        }
+        made.Args.Add(values);
+        made.WritableArgNames.Add(null);
+        return made;
     }
 
     /// <summary>
@@ -8587,6 +8732,12 @@ public sealed class Parser
             return zero;
         }
 
+        // `int[,] grid = { {1, 2}, {3, 4} };`
+        if (At(Tok.LBrace) && RectangularRank(declared) is int declaredRank and > 0)
+        {
+            return RectangularInit(declared.Args[0], declaredRank, Cur);
+        }
+
         // A COLLECTION EXPRESSION -- `int[] a = [1, 2, 3];` -- is the braced
         // initialiser with square brackets, and it is read as exactly that.
         // C# target-types it from the declaration, which is the type this
@@ -8853,6 +9004,10 @@ public sealed class Parser
             case Tok.KwRef when StartsRefLambda():
                 return TypedLambda(at);
 
+            // A QUERY EXPRESSION, `from x in xs where … select …` (C# 12.20).
+            case Tok.Ident when Cur.Text == "from" && StartsQuery():
+                return ParseQuery(at);
+
             case Tok.Ident when Ahead().Kind == Tok.FatArrow && _i + 1 != _armArrow:
             {
                 List<string> one = new() { _t[_i++].Text };
@@ -9033,6 +9188,242 @@ public sealed class Parser
     /// arguments are inferred from the values. Two files with one shape make
     /// two classes, where C# shares one in the assembly.
     /// </summary>
+    /// <summary>Whether `[a, b]` follows: a rectangular array's lengths -- a comma at the top level of the brackets.</summary>
+    private bool SizedRectangularAhead()
+    {
+        int depth = 0;
+        for (int j = _i; j < _t.Count; j++)
+        {
+            Tok k = _t[j].Kind;
+            if (k is Tok.LBracket or Tok.LParen or Tok.LBrace) depth++;
+            else if (k is Tok.RBracket or Tok.RParen or Tok.RBrace) { depth--; if (depth == 0) return false; }
+            else if (k == Tok.Comma && depth == 1) return true;
+            else if (k is Tok.Semi or Tok.End) return false;
+        }
+        return false;
+    }
+
+    /// <summary>Whether `from` here begins a query: a range variable, its type or not, and `in`.</summary>
+    private bool StartsQuery()
+    {
+        if (_t[_i + 1].Kind == Tok.Ident && _t[_i + 2].Kind == Tok.KwIn) return true;
+        int was = _i;
+        try
+        {
+            _i++;
+            ParseTypeRef();
+            return At(Tok.Ident) && Ahead().Kind == Tok.KwIn;
+        }
+        catch (CompileError) { return false; }
+        finally { _i = was; }
+    }
+
+    /// <summary>
+    /// A QUERY EXPRESSION, translated as C# translates one (12.20.3) into the
+    /// calls it stands for: `where` is Where, `select` Select, `orderby`
+    /// OrderBy and ThenBy, `group … by` GroupBy, `join` Join or GroupJoin,
+    /// a second `from` SelectMany, `let` a Select that keeps the new name,
+    /// and `into` a query over the result. Where more than one range variable
+    /// is in scope, what flows between the calls is a tuple named by them,
+    /// and each lambda takes its parts back out into locals of their names
+    /// (QueryLambda) -- the clause's own expression is read as written.
+    /// </summary>
+    private Expr ParseQuery(Token at)
+    {
+        _i++;                                   // 'from'
+        (string first, Expr source) = RangeVariable(at);
+        return QueryBody(source, new List<string> { first }, at);
+    }
+
+    /// <summary>`[T] x in e`, after `from` or `join`: the name, and the source -- cast to T when it is written.</summary>
+    private (string Name, Expr Source) RangeVariable(Token at)
+    {
+        TypeRef? cast = At(Tok.Ident) && Ahead().Kind == Tok.KwIn ? null : ParseTypeRef();
+        string name = Expect(Tok.Ident, "a range variable").Text;
+        Expect(Tok.KwIn, "'in' after the range variable");
+        Expr source = ParseExpr();
+        if (cast is not null) source = QueryCall(source, "Cast", at, new List<TypeRef> { cast });
+        return (name, source);
+    }
+
+    private bool QueryWord(string word) => At(Tok.Ident) && Cur.Text == word;
+
+    private void ExpectQueryWord(string word)
+    {
+        if (!QueryWord(word)) throw Error($"expected '{word}' in the query, found '{Cur.Text}'");
+        _i++;
+    }
+
+    private Expr QueryBody(Expr current, List<string> scope, Token at)
+    {
+        while (true)
+        {
+            if (QueryWord("from") && Ahead().Kind == Tok.Ident)
+            {
+                _i++;
+                (string next, Expr source) = RangeVariable(at);
+                List<string> wider = new(scope) { next };
+                current = QueryCall(current, "SelectMany", at, null, QueryLambda(scope, null, source, at),
+                                    QueryLambda(scope, next, QueryTuple(wider, null, at), at));
+                scope = wider;
+                continue;
+            }
+            if (QueryWord("let"))
+            {
+                _i++;
+                string name = Expect(Tok.Ident, "the name a let clause gives").Text;
+                Expect(Tok.Assign, "'=' after the let clause's name");
+                Expr value = ParseExpr();
+                current = QueryCall(current, "Select", at, null, QueryLambda(scope, null, QueryTuple(scope, (name, value), at), at));
+                scope = new List<string>(scope) { name };
+                continue;
+            }
+            if (QueryWord("where"))
+            {
+                _i++;
+                current = QueryCall(current, "Where", at, null, QueryLambda(scope, null, ParseExpr(), at));
+                continue;
+            }
+            if (QueryWord("join"))
+            {
+                _i++;
+                (string inner, Expr source) = RangeVariable(at);
+                ExpectQueryWord("on");
+                Expr outerKey = ParseExpr();
+                ExpectQueryWord("equals");
+                Expr innerKey = ParseExpr();
+                if (QueryWord("into"))
+                {
+                    _i++;
+                    string group = Expect(Tok.Ident, "the name a join's into gives").Text;
+                    List<string> grouped = new(scope) { group };
+                    current = QueryCall(current, "GroupJoin", at, null, source, QueryLambda(scope, null, outerKey, at),
+                                        QueryLambda(new List<string> { inner }, null, innerKey, at),
+                                        QueryLambda(scope, group, QueryTuple(grouped, null, at), at));
+                    scope = grouped;
+                }
+                else
+                {
+                    List<string> joined = new(scope) { inner };
+                    current = QueryCall(current, "Join", at, null, source, QueryLambda(scope, null, outerKey, at),
+                                        QueryLambda(new List<string> { inner }, null, innerKey, at),
+                                        QueryLambda(scope, inner, QueryTuple(joined, null, at), at));
+                    scope = joined;
+                }
+                continue;
+            }
+            if (QueryWord("orderby"))
+            {
+                _i++;
+                bool firstKey = true;
+                do
+                {
+                    Expr key = ParseExpr();
+                    bool descending = false;
+                    if (QueryWord("ascending")) _i++;
+                    else if (QueryWord("descending")) { _i++; descending = true; }
+                    string method = firstKey ? (descending ? "OrderByDescending" : "OrderBy") : (descending ? "ThenByDescending" : "ThenBy");
+                    current = QueryCall(current, method, at, null, QueryLambda(scope, null, key, at));
+                    firstKey = false;
+                }
+                while (Take(Tok.Comma));
+                continue;
+            }
+            if (QueryWord("select"))
+            {
+                _i++;
+                current = QueryCall(current, "Select", at, null, QueryLambda(scope, null, ParseExpr(), at));
+            }
+            else if (QueryWord("group"))
+            {
+                _i++;
+                Expr element = ParseExpr();
+                ExpectQueryWord("by");
+                Expr key = ParseExpr();
+                current = scope.Count == 1 && element is NameExpr { Name: var only } && only == scope[0]
+                    ? QueryCall(current, "GroupBy", at, null, QueryLambda(scope, null, key, at))
+                    : QueryCall(current, "GroupBy", at, null, QueryLambda(scope, null, key, at), QueryLambda(scope, null, element, at));
+            }
+            else
+            {
+                throw Error($"a query ends with a select or group clause, not '{Cur.Text}'");
+            }
+            if (QueryWord("into"))
+            {
+                _i++;
+                scope = new List<string> { Expect(Tok.Ident, "the name a query continues with").Text };
+                continue;
+            }
+            return current;
+        }
+    }
+
+    private int _querySerial;
+
+    /// <summary>`target.method<types>(arguments)`, a query clause's call.</summary>
+    private static CallExpr QueryCall(Expr target, string method, Token at, List<TypeRef>? types, params Expr[] arguments)
+    {
+        MemberExpr member = new() { Target = target, Name = method, Line = at.Line, Col = at.Col };
+        if (types is not null) member.WritableTypeArgs.AddRange(types);
+        CallExpr call = new() { Target = member, Line = at.Line, Col = at.Col };
+        foreach (Expr argument in arguments)
+        {
+            call.Args.Add(argument);
+            call.WritableArgNames.Add(null);
+        }
+        return call;
+    }
+
+    /// <summary>
+    /// A clause's lambda over the range variables in scope, and one more
+    /// parameter when `second` is given (SelectMany's, Join's): a lone range
+    /// variable is its parameter; several arrive as one tuple taken apart
+    /// into locals of their names, then `body`.
+    /// </summary>
+    private LambdaExpr QueryLambda(List<string> scope, string? second, Expr body, Token at)
+    {
+        Param Parameter(string name) => new() { Name = name, Type = new TypeRef { Name = "", Line = at.Line, Col = at.Col }, Line = at.Line, Col = at.Col };
+        if (scope.Count == 1)
+        {
+            LambdaExpr plain = new() { Body = body, Line = at.Line, Col = at.Col };
+            plain.WritableParams.Add(Parameter(scope[0]));
+            if (second is not null) plain.WritableParams.Add(Parameter(second));
+            return plain;
+        }
+        string carried = "__query" + _querySerial++;
+        Block block = new() { Line = at.Line, Col = at.Col };
+        foreach (string name in scope)
+        {
+            block.WritableStatements.Add(new LocalDecl
+            {
+                Type = null, Name = name, Line = at.Line, Col = at.Col,
+                Init = new MemberExpr { Target = new NameExpr { Name = carried, Line = at.Line, Col = at.Col }, Name = name, Line = at.Line, Col = at.Col },
+            });
+        }
+        block.WritableStatements.Add(new ReturnStmt { Value = body, Line = at.Line, Col = at.Col });
+        LambdaExpr unpacked = new() { BlockBody = block, Line = at.Line, Col = at.Col };
+        unpacked.WritableParams.Add(Parameter(carried));
+        if (second is not null) unpacked.WritableParams.Add(Parameter(second));
+        return unpacked;
+    }
+
+    /// <summary>The range variables as a tuple named by them, with one more of the given name and value.</summary>
+    private static TupleExpr QueryTuple(List<string> names, (string Name, Expr Value)? extra, Token at)
+    {
+        TupleExpr tuple = new() { Line = at.Line, Col = at.Col };
+        foreach (string name in names)
+        {
+            tuple.Items.Add(new NameExpr { Name = name, Line = at.Line, Col = at.Col });
+            tuple.Names.Add(name);
+        }
+        if (extra is { } added)
+        {
+            tuple.Items.Add(added.Value);
+            tuple.Names.Add(added.Name);
+        }
+        return tuple;
+    }
+
     private Expr ParseAnonymousObject(Token at)
     {
         Expect(Tok.LBrace, "'{' to open the anonymous type");
@@ -9196,6 +9587,44 @@ public sealed class Parser
                       ? new TypeRef { Name = "", Line = at.Line, Col = at.Col }
                       : ParseTypeRef());
         NewExpr n = new() { Type = type, Line = at.Line, Col = at.Col };
+
+        // `new int[,] { {1, 2}, {3, 4} }`: the type took the rank.
+        if (At(Tok.LBrace) && RectangularRank(type) is int writtenRank and > 0)
+        {
+            return RectangularInit(type.Args[0], writtenRank, at);
+        }
+
+        // `new[,] { … }`: no type, a rank and the elements.
+        if (type.Name.Length == 0 && At(Tok.LBracket) && Ahead().Kind == Tok.Comma)
+        {
+            _i++;
+            int implicitRank = 1;
+            while (Take(Tok.Comma)) implicitRank++;
+            Expect(Tok.RBracket, "']' to close the array's rank");
+            if (implicitRank > 3) throw Error($"a rectangular array of rank {implicitRank} is not supported here; ranks 2 and 3 are");
+            return RectangularInit(null, implicitRank, at);
+        }
+
+        // `new int[2, 3]`: a length for each rank -- with an initialiser, the
+        // lengths its braces give.
+        if (type.Name.Length > 0 && At(Tok.LBracket) && !(Ahead().Kind == Tok.RBracket) && SizedRectangularAhead())
+        {
+            _i++;
+            List<Expr> lengths = new() { ParseExpr() };
+            while (Take(Tok.Comma)) lengths.Add(ParseExpr());
+            Expect(Tok.RBracket, "']' after the array's lengths");
+            if (lengths.Count > 3) throw Error($"a rectangular array of rank {lengths.Count} is not supported here; ranks 2 and 3 are");
+            TypeRef element = type;
+            while (At(Tok.LBracket) && Ahead().Kind == Tok.RBracket)
+            {
+                _i += 2;
+                element = ArrayOf(element);
+            }
+            if (At(Tok.LBrace)) return RectangularInit(element, lengths.Count, at);
+            NewExpr sized = new() { Type = Rectangular(element, lengths.Count, at), Line = at.Line, Col = at.Col };
+            foreach (Expr length in lengths) sized.Args.Add(length);
+            return sized;
+        }
 
         // `new int[] { 1, 2 }` -- ParseTypeRef has already taken the
         // `[]` as part of the type, so the brackets are gone by the

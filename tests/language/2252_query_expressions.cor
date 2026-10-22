@@ -1,0 +1,53 @@
+// test: query_expressions
+// expect-exit: 0
+// expect-output:
+// APPLE,CHERRY,AVOCADO,BANANA | a:avocado/apple b:banana c:cherry | one=uno,three=tres | 10,20,30,60
+// { City = X, Count = 2, Oldest = 30 } { City = Y, Count = 1, Oldest = 25 } { City = Z, Count = 1, Oldest = 41 } | Xanadu(2) Ypres(1) Warsaw(0) | 1,2 | a3,c3,d4
+// 7
+//
+// LINQ query expressions, translated as C# translates them into the calls
+// they stand for: from, where, select, let, orderby with ascending and
+// descending keys, group by with into, join and join into, a second from
+// (SelectMany), a typed range variable over a non-generic sequence (Cast),
+// anonymous types projected; and `from` and `select` still names elsewhere.
+// corc could not parse `from w in words`.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Person { public string Name = ""; public int Age; public string City = ""; }
+
+static class Program
+{
+    static int Main()
+    {
+        string[] words = { "apple", "bob", "cherry", "avocado", "banana" };
+        var q1 = from w in words where w.Length > 3 select w.ToUpper();
+        var q2 = from w in words let len = w.Length where len > 3 orderby w[0], len descending group w by w[0] into g select g.Key + ":" + string.Join("/", g);
+        var q3 = from a in new[] { (1, "one"), (2, "two"), (3, "three") }
+                 join b in new[] { (1, "uno"), (3, "tres") } on a.Item1 equals b.Item1
+                 select a.Item2 + "=" + b.Item2;
+        var q4 = from x in new[] { 1, 2, 3 } from y in new[] { 10, 20 } where (x + y) % 2 == 1 select x * y;
+        Console.WriteLine(string.Join(",", q1) + " | " + string.Join(" ", q2) + " | " + string.Join(",", q3) + " | " + string.Join(",", q4));
+        List<Person> people = new()
+        {
+            new Person { Name = "al", Age = 30, City = "X" }, new Person { Name = "bo", Age = 25, City = "Y" },
+            new Person { Name = "cy", Age = 30, City = "X" }, new Person { Name = "di", Age = 41, City = "Z" },
+        };
+        var byCity = from p in people group p by p.City into c orderby c.Count() descending, c.Key select new { City = c.Key, Count = c.Count(), Oldest = c.Max(p => p.Age) };
+        var cities = new[] { ("X", "Xanadu"), ("Y", "Ypres"), ("W", "Warsaw") };
+        var gj = from c in cities join p in people on c.Item1 equals p.City into living select c.Item2 + "(" + living.Count() + ")";
+        ArrayListLike legacy = new() { "s", "tt" };
+        var typed = from string s in legacy select s.Length;
+        var nested = from p in people let first = p.Name[0] let decade = p.Age / 10 where decade >= 3 select $"{first}{decade}";
+        Console.WriteLine(string.Join(" ", byCity) + " | " + string.Join(" ", gj) + " | " + string.Join(",", typed) + " | " + string.Join(",", nested));
+        int from = 3, select = 4;
+        Console.WriteLine(from + select);
+        return 0;
+    }
+}
+
+sealed class ArrayListLike : IEnumerable { readonly List<object> _items = new(); public void Add(object o) => _items.Add(o); public IEnumerator GetEnumerator() => _items.GetEnumerator(); }

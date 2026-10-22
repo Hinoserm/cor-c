@@ -1816,6 +1816,133 @@ class StringCollection : IEnumerable<string> {
 // taken under it, which is what .NET documents for the bag, the queue and the
 // stack, and within what it promises for the dictionary -- an enumeration
 // that may see changes made while it runs, or not.
+// ---- Rectangular arrays -----------------------------------------------------
+//
+// `T[,]` AND `T[,,]`, C#'s rectangular arrays: the parser writes the type as
+// one of these (Parser.Suffixes), `new T[a, b]` as its constructor and a
+// nested initialiser `{ {1, 2}, {3, 4} }` as its elements in row-major order
+// with the lengths its braces give. One flat array underneath, indexed
+// i * columns + j, each index checked against its own length; enumerated in
+// row-major order, as foreach walks one; a negative length is .NET's
+// OverflowException and an index out of range its IndexOutOfRangeException.
+
+/// The makers an initialiser of one is written as: its lengths, and its
+/// elements row by row as an array whose element type they infer --
+/// `new[,] { {1, 2}, {3, 4} }` names none.
+static class __Rectangular {
+    public static __Rectangular2<T> Of2<T>(int rows, int columns, T[] values) => new __Rectangular2<T>(rows, columns, values);
+    public static __Rectangular3<T> Of3<T>(int planes, int rows, int columns, T[] values) => new __Rectangular3<T>(planes, rows, columns, values);
+}
+
+sealed class __Rectangular2<T> : IEnumerable<T> {
+    private readonly T[] items;
+    private readonly int rows;
+    private readonly int columns;
+
+    public __Rectangular2(int rows, int columns) {
+        if (rows < 0 || columns < 0) { throw new OverflowException("Arithmetic operation resulted in an overflow."); }
+        this.rows = rows;
+        this.columns = columns;
+        items = new T[rows * columns];
+    }
+
+    /// The lengths and the elements, row by row: an initialiser's.
+    public __Rectangular2(int rows, int columns, T[] values) {
+        this.rows = rows;
+        this.columns = columns;
+        items = values;
+    }
+
+    public T this[int i, int j] {
+        get {
+            if ((uint)i >= (uint)rows || (uint)j >= (uint)columns) { throw new IndexOutOfRangeException(); }
+            return items[i * columns + j];
+        }
+        set {
+            if ((uint)i >= (uint)rows || (uint)j >= (uint)columns) { throw new IndexOutOfRangeException(); }
+            items[i * columns + j] = value;
+        }
+    }
+
+    public int Length => items.Length;
+    public long LongLength => items.Length;
+    public int Rank => 2;
+
+    public int GetLength(int dimension) {
+        if (dimension == 0) { return rows; }
+        if (dimension == 1) { return columns; }
+        throw new IndexOutOfRangeException();
+    }
+    public long GetLongLength(int dimension) => GetLength(dimension);
+    public int GetLowerBound(int dimension) { GetLength(dimension); return 0; }
+    public int GetUpperBound(int dimension) => GetLength(dimension) - 1;
+
+    public object Clone() => new __Rectangular2<T>(rows, columns, (T[])items.Clone());
+
+    public IEnumerator<T> GetEnumerator() {
+        for (int k = 0; k < items.Length; k++) { yield return items[k]; }
+    }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public override string ToString() => typeof(T).ToString() + "[,]";
+}
+
+sealed class __Rectangular3<T> : IEnumerable<T> {
+    private readonly T[] items;
+    private readonly int planes;
+    private readonly int rows;
+    private readonly int columns;
+
+    public __Rectangular3(int planes, int rows, int columns) {
+        if (planes < 0 || rows < 0 || columns < 0) { throw new OverflowException("Arithmetic operation resulted in an overflow."); }
+        this.planes = planes;
+        this.rows = rows;
+        this.columns = columns;
+        items = new T[planes * rows * columns];
+    }
+
+    public __Rectangular3(int planes, int rows, int columns, T[] values) {
+        this.planes = planes;
+        this.rows = rows;
+        this.columns = columns;
+        items = values;
+    }
+
+    public T this[int i, int j, int k] {
+        get {
+            if ((uint)i >= (uint)planes || (uint)j >= (uint)rows || (uint)k >= (uint)columns) { throw new IndexOutOfRangeException(); }
+            return items[(i * rows + j) * columns + k];
+        }
+        set {
+            if ((uint)i >= (uint)planes || (uint)j >= (uint)rows || (uint)k >= (uint)columns) { throw new IndexOutOfRangeException(); }
+            items[(i * rows + j) * columns + k] = value;
+        }
+    }
+
+    public int Length => items.Length;
+    public long LongLength => items.Length;
+    public int Rank => 3;
+
+    public int GetLength(int dimension) {
+        if (dimension == 0) { return planes; }
+        if (dimension == 1) { return rows; }
+        if (dimension == 2) { return columns; }
+        throw new IndexOutOfRangeException();
+    }
+    public long GetLongLength(int dimension) => GetLength(dimension);
+    public int GetLowerBound(int dimension) { GetLength(dimension); return 0; }
+    public int GetUpperBound(int dimension) => GetLength(dimension) - 1;
+
+    public object Clone() => new __Rectangular3<T>(planes, rows, columns, (T[])items.Clone());
+
+    public IEnumerator<T> GetEnumerator() {
+        for (int k = 0; k < items.Length; k++) { yield return items[k]; }
+    }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public override string ToString() => typeof(T).ToString() + "[,,]";
+}
+
 namespace System.Collections.Concurrent
 {
     /// A collection one thread can add to while another takes from it.

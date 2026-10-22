@@ -1,0 +1,51 @@
+// test: rectangular_arrays
+// expect-exit: 0
+// expect-output:
+// 23 111 12 2 3x4 3 238
+// 6 3 c 2.5 8 True 1,2,3,4,5,6
+// 21 7 2 2 True
+// out of range
+// overflow
+// 1 99 0 System.Int32[,] System.Double[,,]
+//
+// Rectangular arrays, `int[,]` and `double[,,]`, as C# has them: `new
+// int[3, 4]`, nested initialisers `{ {1, 2}, {3, 4} }` and `new[,] { … }`,
+// `a[i, j]` read and written and compounded, Length, Rank, GetLength and
+// GetUpperBound, foreach and LINQ in row-major order, nullable elements,
+// arrays of them and of arrays in them, IndexOutOfRangeException out of
+// bounds, OverflowException for a negative length, Clone, and their names
+// as text. corc could not parse `int[,]`.
+// Expected output from .NET 10.
+
+using System;
+using System.Linq;
+
+static class Program
+{
+    static int Sum(int[,] m) { int s = 0; for (int i = 0; i < m.GetLength(0); i++) for (int j = 0; j < m.GetLength(1); j++) s += m[i, j]; return s; }
+
+    static int Main()
+    {
+        int[,] grid = new int[3, 4];
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 4; j++) grid[i, j] = i * 10 + j;
+        grid[1, 1] += 100;
+        Console.WriteLine(grid[2, 3] + " " + grid[1, 1] + " " + grid.Length + " " + grid.Rank + " " + grid.GetLength(0) + "x" + grid.GetLength(1) + " " + grid.GetUpperBound(1) + " " + Sum(grid));
+        int[,] lit = { { 1, 2 }, { 3, 4 }, { 5, 6 } };
+        var inferred = new[,] { { "a", "b" }, { "c", "d" } };
+        double[,,] cube = new double[2, 2, 2];
+        cube[1, 0, 1] = 2.5;
+        string?[,] names = new string?[2, 2];
+        Console.WriteLine(lit[2, 1] + " " + lit.GetLength(0) + " " + inferred[1, 0] + " " + cube[1, 0, 1] + " " + cube.Length + " " + (names[0, 1] is null) + " " + string.Join(",", lit.Cast<int>()));
+        int total = 0; foreach (int v in lit) total += v;
+        int[][,] jagged = { new int[,] { { 7 } }, new int[1, 2] };
+        int[,][] rows = new int[2, 1][];
+        rows[1, 0] = new[] { 9, 9 };
+        Console.WriteLine(total + " " + jagged[0][0, 0] + " " + jagged[1].Length + " " + rows[1, 0].Length + " " + (rows[0, 0] is null));
+        try { int bad = grid[3, 0]; } catch (IndexOutOfRangeException) { Console.WriteLine("out of range"); }
+        int negative = -1;
+        try { var neg = new int[negative, 2]; } catch (OverflowException) { Console.WriteLine("overflow"); }
+        int[,] copy = (int[,])lit.Clone(); copy[0, 0] = 99;
+        Console.WriteLine(lit[0, 0] + " " + copy[0, 0] + " " + new int[0, 5].Length + " " + grid + " " + cube);
+        return 0;
+    }
+}
