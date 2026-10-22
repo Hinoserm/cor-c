@@ -4021,6 +4021,7 @@ public sealed class Parser
             string? callerArgument = null;
             string? marshalAs = null;
             bool cancels = false;
+            bool maybeNull = false;
 
             // AND THE CALLER-INFORMATION ATTRIBUTES, which make the compiler
             // pass what it knows at the call for an argument left out: the
@@ -4043,6 +4044,8 @@ public sealed class Parser
                 else if (named == "MarshalAs" && written.Argument is { Length: > 0 } unmanaged) marshalAs = unmanaged;
                 // The token an async iterator's body is given in its place.
                 else if (named == "EnumeratorCancellation") cancels = true;
+                // What may be null inside the method whatever the type says (Param.MaybeNull).
+                else if (named is "MaybeNullWhen" or "MaybeNull" or "AllowNull") maybeNull = true;
             }
 
             Token at = Cur;
@@ -4069,7 +4072,7 @@ public sealed class Parser
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
                 NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
-                MarshalAs = marshalAs, Default = def, Line = at.Line, Col = at.Col,
+                MarshalAs = marshalAs, MaybeNull = maybeNull, Default = def, Line = at.Line, Col = at.Col,
             };
             (into ??= new()).Add(read);
             if (cancels) _enumeratorCancellation.Add(read);
@@ -5344,8 +5347,7 @@ public sealed class Parser
             // it. There is no test, and the name has the subject's own type --
             // nullability and all, since a pattern that asked nothing proved
             // nothing. `var _` is the discard designation and names nothing.
-            else if (At(Tok.KwVar) && Ahead().Kind == Tok.Ident
-                     && Ahead().Text is not ("or" or "and" or "when"))
+            else if (At(Tok.KwVar) && NamesBinding(_i + 1))
             {
                 _i++;
                 string named = _t[_i++].Text;
@@ -5404,7 +5406,7 @@ public sealed class Parser
                     // or a property pattern follows, which no constant takes:
                     // `System.Int64 l => …` declares l.
                     if (parsed is not null && parsed.Name.Contains('.')
-                        && !At(Tok.LBrace) && !(At(Tok.Ident) && Cur.Text is not ("when" or "or" or "and")))
+                        && !At(Tok.LBrace) && !NamesBinding(_i))
                     {
                         parsed = null;
                     }
@@ -5429,7 +5431,7 @@ public sealed class Parser
                             new NameExpr { Name = "$held$", Line = braceAt.Line, Col = braceAt.Col },
                             braceAt, designates: false);
 
-                        binding = At(Tok.Ident) && Cur.Text is not ("when" or "or" or "and")
+                        binding = NamesBinding(_i)
                                 ? _t[_i++].Text
                                 : held;
 
@@ -5438,7 +5440,7 @@ public sealed class Parser
                         Rename(test, "$held$", binding);
                         guard = test;
                     }
-                    else if (parsed is not null && At(Tok.Ident) && Cur.Text is not ("when" or "or" or "and"))
+                    else if (parsed is not null && NamesBinding(_i))
                     {
                         type = parsed;
                         binding = _t[_i++].Text;
@@ -7607,6 +7609,18 @@ public sealed class Parser
             Line = at.Line, Col = at.Col,
         };
     }
+
+    /// <summary>
+    /// Whether the identifier at <paramref name="j"/> names what a pattern
+    /// binds, as C# reads it: not `when`, and an `or` or `and` only where no
+    /// pattern follows it -- `BinaryExpr { Op: BinOp.OrElse } or => ...` binds
+    /// a variable called `or`, which this read as the combinator and refused
+    /// ("expected '=>' after the pattern, found 'or'").
+    /// </summary>
+    private bool NamesBinding(int j)
+        => j < _t.Count && _t[j].Kind == Tok.Ident
+        && (_t[j].Text is not ("or" or "and" or "when")
+            || _t[j].Text is "or" or "and" && j + 1 < _t.Count && !StartsPattern(_t[j + 1].Kind));
 
     private SwitchStmt ParseSwitch()
     {

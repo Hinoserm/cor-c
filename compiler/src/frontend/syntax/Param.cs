@@ -19,7 +19,7 @@ public sealed class Param : Node
     private ParamRare Rare => _rare ??= new();
     private byte _flags;
 
-    private const byte RefFlag = 1, OutFlag = 2, ReadOnlyRefFlag = 4, ParamsFlag = 8, ThisFlag = 16;
+    private const byte RefFlag = 1, OutFlag = 2, ReadOnlyRefFlag = 4, ParamsFlag = 8, ThisFlag = 16, MaybeNullFlag = 32;
 
     private void SetFlag(byte flag, bool value) => _flags = value ? (byte)(_flags | flag) : (byte)(_flags & ~flag);
 
@@ -44,6 +44,14 @@ public sealed class Param : Node
     /// compiled by it.
     /// </summary>
     public bool IsThis { get => (_flags & ThisFlag) != 0; init => SetFlag(ThisFlag, value); }
+
+    /// <summary>
+    /// `[MaybeNullWhen(..)]`, `[MaybeNull]` or `[AllowNull]` on it: inside the
+    /// method it may hold null whatever its type says -- `accessor = Read(ix);`
+    /// into a `[MaybeNullWhen(false)] out MethodSymbol accessor` is no warning
+    /// (C#'s rule) -- and a caller sees the type as declared.
+    /// </summary>
+    public bool MaybeNull { get => (_flags & MaybeNullFlag) != 0; init => SetFlag(MaybeNullFlag, value); }
 
     /// <summary>
     /// What a particular answer from this method PROVES about this argument.

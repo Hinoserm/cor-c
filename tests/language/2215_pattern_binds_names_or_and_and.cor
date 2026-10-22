@@ -1,0 +1,37 @@
+// test: pattern_binds_names_or_and_and
+// expect-exit: 0
+// expect-output:
+// either 3
+// both 4
+// one 5
+// none
+//
+// A pattern may bind a variable called `or` or `and` where no pattern
+// follows the word: `Pair { Kind: 1 } or => or.Sum` binds `or`, as C#
+// reads it, and only `or` with a pattern after it combines two. This
+// compiler took every such word for the combinator ("expected '=>' after
+// the pattern, found 'or'").
+
+using System;
+
+sealed class Pair { public int Kind; public int A; public int B; public int Sum => A + B; }
+
+static class Program
+{
+    static string Say(object o) => o switch
+    {
+        Pair { Kind: 1 } or => "either " + or.Sum,
+        Pair { Kind: 2 } and => "both " + and.Sum,
+        Pair { Kind: 3 or 4 } one => "one " + one.Sum,
+        _ => "none",
+    };
+
+    static int Main()
+    {
+        Console.WriteLine(Say(new Pair { Kind = 1, A = 1, B = 2 }));
+        Console.WriteLine(Say(new Pair { Kind = 2, A = 1, B = 3 }));
+        Console.WriteLine(Say(new Pair { Kind = 4, A = 2, B = 3 }));
+        Console.WriteLine(Say("x"));
+        return 0;
+    }
+}

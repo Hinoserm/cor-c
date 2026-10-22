@@ -6438,8 +6438,11 @@ public sealed partial class Binder
 
             for (int i = 0; i < _method.Params.Count; i++)
             {
+                // A parameter that may be null inside whatever its type says (Param.MaybeNull).
+                Type inside = md.Params[i].MaybeNull && _method.Params[i].Type is { IsReference: true, ParamName: null } declaredType
+                    ? declaredType.AsNullable() : _method.Params[i].Type;
                 Declare(md.Params[i], _method.Params[i].Name,
-                        new ParamSym(i, _method.Params[i].Type, _method.Params[i].Name,
+                        new ParamSym(i, inside, _method.Params[i].Name,
                                      _method.Params[i].ByRef, _method.Params[i].ReadOnly)
                         {
                             Cell = _method.Params[i].Cell, CapturedVariable = _method.Params[i].CapturedVariable,
@@ -18197,7 +18200,66 @@ public sealed partial class Binder
                 added.Add(new PathSym(spelt));
             }
         }
+
+        // A CONDITIONAL ACCESS THAT GAVE A VALUE HAD A RECEIVER, as C# learns
+        // it: `i.Dest?.Type is not (IrType.I32 or IrType.I64)` false, or
+        // `x?.Count == 3` true, says i.Dest and x are not null, and the code
+        // after the test reads `i.Dest.Type`. Each receiver of the chain.
+        Expr? valued = cond switch
+        {
+            PatternExpr tested when ExcludesNull(tested.Test, holds) => tested.Subject,
+            BinaryExpr { Op: BinOp.Eq or BinOp.Ne, PatternConstant: false } compared
+                when (compared.Op == BinOp.Eq) == holds && compared.Right is not LiteralExpr { Kind: Lit.Null }
+                     && compared.Left is not LiteralExpr { Kind: Lit.Null } =>
+                HasConditionalMember(compared.Left) && NeverNull(compared.Right) ? compared.Left
+                : HasConditionalMember(compared.Right) && NeverNull(compared.Left) ? compared.Right : null,
+            // `xs?.Count > 0`, true: C# lifts a comparison to false for null.
+            BinaryExpr { Op: BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge } ordered when holds =>
+                HasConditionalMember(ordered.Left) ? ordered.Left : HasConditionalMember(ordered.Right) ? ordered.Right : null,
+            _ => null,
+        };
+        // And the value itself, where it is a reference read by a path:
+        // `r?.Name == "x"` true leaves r.Name not null too.
+        if (valued is not null && Path(valued) is string itself && _notNullPaths.Add(itself)) added.Add(new PathSym(itself));
+        for (Expr? at = valued; at is not null; )
+        {
+            Expr? receiver = at switch
+            {
+                MemberExpr { NullConditional: true } member => member.Target,
+                IndexExpr { NullConditional: true } index => index.Target,
+                MemberExpr member => member.Target,
+                IndexExpr index => index.Target,
+                CallExpr { Target: MemberExpr callee } => callee,
+                _ => null,
+            };
+            if (at is MemberExpr { NullConditional: true } or IndexExpr { NullConditional: true } && receiver is not null)
+            {
+                if (Path(receiver) is string proved && _notNullPaths.Add(proved)) added.Add(new PathSym(proved));
+                if (_r.Resolved.TryGetValue(receiver, out Sym? held) && held is LocalSym or ParamSym or FieldSym or CapturedFieldSym
+                    && _notNull.Add(held))
+                    added.Add(held);
+            }
+            at = receiver;
+        }
         return added;
+
+        // What a pattern's test says of its subject when it comes out `holds`:
+        // whether that outcome is only had by a value that is not null.
+        static bool ExcludesNull(Expr test, bool holds) => test switch
+        {
+            UnaryExpr { Op: UnOp.Not } negated => ExcludesNull(negated.Operand, !holds),
+            BinaryExpr { Op: BinOp.OrElse } either => holds ? ExcludesNull(either.Left, true) && ExcludesNull(either.Right, true)
+                                                            : ExcludesNull(either.Left, false) || ExcludesNull(either.Right, false),
+            BinaryExpr { Op: BinOp.AndAlso } both => holds ? ExcludesNull(both.Left, true) || ExcludesNull(both.Right, true)
+                                                           : ExcludesNull(both.Left, false) && ExcludesNull(both.Right, false),
+            // `is null` false; `is not null` and `is { }` true.
+            BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } => !holds,
+            BinaryExpr { Op: BinOp.Ne, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } => holds,
+            // A constant (null is the one constant a null equals) or a
+            // relational pattern -- `< 5`, which C# lifts to false for null.
+            BinaryExpr { Op: BinOp.Eq or BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge, Left: SubjectExpr { Outer: 0 } } => holds,
+            _ => false,
+        };
     }
 
     private HashSet<string> OutPathsWhen(Expr expression, bool holds)
