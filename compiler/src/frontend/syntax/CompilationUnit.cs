@@ -6,6 +6,16 @@ namespace Corsac.Lang;
 public sealed class CompilationUnit : Node
 {
     public List<string> Usings { get; } = new();
+
+    /// <summary>
+    /// The file's `global using` directives, spelt as --using spells one
+    /// ("Namespace", or "Alias=Target"): C# applies each to every file of
+    /// the compilation, so the front end adds them to every file scope of
+    /// its side -- the program's to the program's files, a library's to
+    /// its own (Frontend.ApplyGlobalUsings).
+    /// </summary>
+    public List<string> GlobalUsings { get; } = new();
+
     public List<TypeDecl> Types { get; } = new();
 
     /// <summary>

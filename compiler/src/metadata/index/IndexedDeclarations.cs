@@ -98,6 +98,17 @@ public sealed class IndexedDeclarations : IDisposable
         owned = ownedFiles.Select(Path.GetFullPath).ToHashSet(StringComparer.Ordinal);
     }
 
+    /// <summary>
+    /// The assembly's `global using` directives on one side, which every
+    /// file of that side reads (Frontend.ApplyGlobalUsings): asked, so a
+    /// directive added or taken away in any file rebuilds every unit.
+    /// </summary>
+    public List<string> GlobalUsings(bool library)
+    {
+        queries.Add(('U', library ? "library" : "program"));
+        return catalog.GlobalUsings(assembly, library);
+    }
+
     public void Require(string bindingName)
     {
         if (!required.TryGetValue(bindingName, out string? key))

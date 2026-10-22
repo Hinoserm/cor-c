@@ -42,6 +42,9 @@ public static class SourceIndexBuilder
     /// <summary>The key of a source file's record: the hash of the text the index was made from.</summary>
     public static string SourceKey(string path) => "F:" + System.IO.Path.GetFullPath(path);
 
+    /// <summary>The key of an assembly's `global using` directives on one side, the library's or the program's.</summary>
+    public static string GlobalUsingKey(string identity, bool library) => "U:" + identity + "\n" + (library ? "library" : "program");
+
     /// <summary>
     /// A text's hash as the index records it: of its UTF-8 bytes, as read
     /// (File.ReadAllText). FastHash, not SHA-256: it only tells a unit that a
@@ -121,6 +124,12 @@ public static class SourceIndexBuilder
                         : TypeName(parent) + "+" + own;
                 }
                 bool librarySide = librarySource?.Invoke(path) ?? true;
+                // THE FILE'S GLOBAL USINGS, which every file of its side reads
+                // as its own (IndexedDeclarations.GlobalUsings, Frontend.
+                // ApplyGlobalUsings): a unit compiled by itself parses only
+                // its own files, and the directive may be in any other.
+                foreach (string use in unit.GlobalUsings)
+                    yield return new DeclarationRecord(GlobalUsingKey(identity, librarySide), Encoding.UTF8.GetBytes(use));
                 foreach (TypeDecl type in unit.Types)
                 {
                     skeletons.Add(InterfaceForms.Declared.Of(type, librarySide));

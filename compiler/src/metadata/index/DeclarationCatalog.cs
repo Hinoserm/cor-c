@@ -233,6 +233,23 @@ public sealed class DeclarationCatalog : IDisposable
     public string? SoleKey(string assembly, string simpleName)
         => Remembered('S', SourceIndexBuilder.AssemblyIdentity(assembly), simpleName);
 
+    /// <summary>An assembly's `global using` directives on one side, each once, as --using spells them.</summary>
+    public List<string> GlobalUsings(string assembly, bool library)
+    {
+        string query = SourceIndexBuilder.GlobalUsingKey(SourceIndexBuilder.AssemblyIdentity(assembly), library);
+        List<string> found = new();
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            foreach (DeclarationRecord record in index.Find(query))
+            {
+                string use = DeclarationIndex.Utf8.GetString(record.Payload);
+                if (!found.Contains(use)) found.Add(use);
+            }
+        }
+        return found;
+    }
+
     // `kind:identity\nname` asked of the index once, and remembered. Two
     // answers to a binding name are an error in the index; two to a sole
     // name are no answer.

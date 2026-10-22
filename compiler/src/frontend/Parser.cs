@@ -1102,7 +1102,8 @@ public sealed class Parser
         while (At(Tok.KwUsing)
                || (At(Tok.Ident) && Cur.Text == "global" && Ahead().Kind == Tok.KwUsing))
         {
-            if (!At(Tok.KwUsing))
+            bool global = !At(Tok.KwUsing);
+            if (global)
             {
                 _i++;                           // 'global'
             }
@@ -1122,10 +1123,12 @@ public sealed class Parser
 
                 TryParseTypeArgs(out _);
                 _fileScope.Aliases.Add((_namespace, name, target));
+                if (global) unit.GlobalUsings.Add(name + "=" + target);
             }
             else
             {
                 _fileScope.Imports.Add((_namespace, name));
+                if (global) unit.GlobalUsings.Add(name);
             }
 
             unit.Usings.Add(name);

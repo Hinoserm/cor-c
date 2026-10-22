@@ -115,6 +115,7 @@ public static class Frontend
 #if COR_SELFHOST_BENCHMARK
         Program.BenchmarkStage("parse");
 #endif
+        List<string> programGlobals = new(), libraryGlobals = new();
         try
         {
             Meter parsing = Meter.Start();
@@ -125,6 +126,7 @@ public static class Frontend
             {
                 CompilationUnit one = parsed[sourceIndex++];
                 unit.Usings.AddRange(one.Usings);
+                (isLibrary ? libraryGlobals : programGlobals).AddRange(one.GlobalUsings);
 
                 // Which file each type and member came from, for diagnostics:
                 // everything merges into one unit here and a line number on
@@ -166,6 +168,7 @@ public static class Frontend
                 // compilation roots alive through a stale parser-array slot.
                 one.Types.Clear();
                 one.Usings.Clear();
+                one.GlobalUsings.Clear();
                 one.Pragmas.Clear();
                 parsed[sourceIndex - 1] = null!;
             }
@@ -205,6 +208,12 @@ public static class Frontend
                 indexed.FromLibrary = true;
             }
         }
+        if (declarations is not null)
+        {
+            programGlobals.AddRange(declarations.GlobalUsings(library: false));
+            libraryGlobals.AddRange(declarations.GlobalUsings(library: true));
+        }
+        ApplyGlobalUsings(unit, programGlobals, libraryGlobals);
         if (declarations is not null)
             unit.Types.Sort((left, right) =>
             {
@@ -436,6 +445,36 @@ public static class Frontend
 
     /// <summary>Whether a warning fails the compile. The default, and the rule.</summary>
     public static bool WarningsAreErrors { get; set; } = true;
+
+    /// <summary>
+    /// GLOBAL USING DIRECTIVES, which C# applies to every file of the
+    /// compilation they are written in: added to every file scope of their
+    /// side -- a program's to the program's files, a library's to its own,
+    /// a library being another assembly -- at the top of each, where a
+    /// file's own directives outside any namespace are. A unit compiled by
+    /// itself has the other files' from the index (IndexedDeclarations.
+    /// GlobalUsings). Read before as the file's own, a `global using` in one
+    /// file of a project imported nothing into the rest.
+    /// </summary>
+    private static void ApplyGlobalUsings(CompilationUnit unit, List<string> program, List<string> library)
+    {
+        if (program.Count == 0 && library.Count == 0) return;
+        HashSet<FileScope> seen = new(ReferenceEqualityComparer.Instance);
+        foreach (TypeDecl type in unit.Types)
+        {
+            if (type.Scope is not FileScope scope || !seen.Add(scope)) continue;
+            foreach (string use in type.FromLibrary ? library : program)
+            {
+                int equals = use.IndexOf('=');
+                if (equals > 0)
+                {
+                    (string, string, string) alias = ("", use[..equals], use[(equals + 1)..]);
+                    if (!scope.Aliases.Contains(alias)) scope.Aliases.Add(alias);
+                }
+                else if (!scope.Imports.Contains(("", use))) scope.Imports.Add(("", use));
+            }
+        }
+    }
 
     private static CompilationUnit[] ParseSources(
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
