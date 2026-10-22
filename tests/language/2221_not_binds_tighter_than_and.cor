@@ -1,0 +1,73 @@
+// test: not_binds_tighter_than_and
+// expect-exit: 0
+// expect-output:
+// False True False
+// False True False
+// False True False
+// False True True
+// False False True
+// False False True
+// False True True
+// True False False
+// False False True 3
+// slot other null
+// small small big
+//
+// `not` negates the one pattern after it: it binds tighter than `and`,
+// which binds tighter than `or`. `s is not null and not Slot` was compiled
+// as `not (null and not Slot)`, true for a Slot and for null. A leading
+// `not` before a constant still evaluates a called subject once.
+// Expected output from .NET 10.
+
+using System;
+
+abstract class Place { }
+sealed class MemPlace : Place { }
+sealed class Slot : Place { }
+sealed class Box { public string? Name; public int N; }
+
+static class Program
+{
+    static int _calls;
+    static int G(int v) { _calls++; return v; }
+
+    static bool B(object? s) => s is not null and not Slot;
+    static bool C(int x) => x is not 0 and not 5;
+    static bool D(object? s) => s is not Slot and not null;
+    static bool E(int x) => x is not 1 or 2;
+    static bool F(int x) => x is not (1 or 2);
+    static bool H(int x) => x is not > 0 and not < -5;
+    static bool I(int x) => x is not 1 and not 2 or 3;
+    static bool J(Box b) => b is { Name: not null and not "" };
+    static bool K(int v) => G(v) is not 5 and not 6;
+    static string S(object? o) => o switch
+    {
+        not null and not Slot => "other",
+        Slot => "slot",
+        _ => "null",
+    };
+    static string T(int x)
+    {
+        switch (x)
+        {
+            case not 0 and not 1: return "big";
+            default: return "small";
+        }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(B(new Slot()) + " " + B(new MemPlace()) + " " + B(null));
+        Console.WriteLine(C(5) + " " + C(3) + " " + C(0));
+        Console.WriteLine(D(new Slot()) + " " + D(new MemPlace()) + " " + D(null));
+        Console.WriteLine(E(1) + " " + E(2) + " " + E(3));
+        Console.WriteLine(F(1) + " " + F(2) + " " + F(3));
+        Console.WriteLine(H(1) + " " + H(-6) + " " + H(-1));
+        Console.WriteLine(I(1) + " " + I(3) + " " + I(4));
+        Console.WriteLine(J(new Box { Name = "a" }) + " " + J(new Box { Name = "" }) + " " + J(new Box()));
+        Console.WriteLine(K(5) + " " + K(6) + " " + K(7) + " " + _calls);
+        Console.WriteLine(S(new Slot()) + " " + S(new MemPlace()) + " " + S(null));
+        Console.WriteLine(T(0) + " " + T(1) + " " + T(2));
+        return 0;
+    }
+}

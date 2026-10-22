@@ -6278,8 +6278,16 @@ public sealed class Parser
         // `x.Foo() is Bar b` in a PatternExpr the code generator has no case
         // for. It reads the subject once; leave it alone.
         bool simple = Rereadable(subject);
-        bool repeats = StartsValuePattern() || At(Tok.LBracket);
         int start = _i;
+
+        // What decides it is the pattern a leading `not` negates.
+        while (At(Tok.Ident) && Cur.Text == "not")
+        {
+            _i++;
+        }
+
+        bool repeats = StartsValuePattern() || At(Tok.LBracket);
+        _i = start;
         Expr stands = simple || !repeats ? subject : new SubjectExpr { Line = at.Line, Col = at.Col };
         Expr built = ParsePrimaryPattern(stands, at);
 
@@ -8288,22 +8296,13 @@ public sealed class Parser
                 // `x is Foo or Bar` stopped at the `or` and reported a missing
                 // bracket. The other copy is gone; this calls the parser.
                 //
-                // `not` is an ordinary word to the lexer, matched by its text,
-                // and applied once at the end so every shape is negatable
-                // without each of them knowing about it.
-                bool notted = At(Tok.Ident) && Cur.Text == "not";
-
-                if (notted)
-                {
-                    _i++;
-                }
-
+                // `not` NEGATES ONE PATTERN, NOT THE WHOLE OF WHAT FOLLOWS: it
+                // binds tighter than `and`, which binds tighter than `or`.
+                // Taken here and applied to everything after it,
+                // `s is not null and not Slot` meant `not (null and not Slot)`
+                // -- true for a Slot and for null, both of which it refuses.
+                // ParsePrimaryPattern reads it, where each operand is read.
                 left = ParseIsPattern(left, at);
-
-                if (notted)
-                {
-                    left = new UnaryExpr { Op = UnOp.Not, Operand = left, Line = at.Line, Col = at.Col };
-                }
                 continue;
             }
 
