@@ -1,0 +1,163 @@
+// test: expression_interpreter_program
+// expect-exit: 0
+// expect-output:
+// (1 + (2 * 3)) = 7
+// ((x + y) ^ 2) = 49
+// sqrt(((x * x) + (y * y))) = 5
+// (max(1, x, y, 2) - min(5, y)) = 0
+// let z = (x * 2) in (z + avg(z, 4)) = 11
+// 10 / (y - 4): DivideByZeroException: Attempted to divide by zero.
+// foo(1): KeyNotFoundException: no function 'foo'
+// 2 + * 3: ParseError: unexpected '*' at 4
+// w + 1: KeyNotFoundException: no variable 'w'
+// sum() = 0
+// True Bin { Op = +, Left = Num { Value = 1 }, Right = Var { Name = x } } Bin { Op = -, Left = Num { Value = 1 }, Right = Var { Name = x } }
+// 1:5 2:2 3:1 5:1 6:1
+//
+// A whole small program, as C# is written: an expression parser and
+// evaluator over records, positional and property patterns with guards,
+// primary constructors, an exception class of its own, collection
+// initialisers of lambdas, LINQ, with-expressions and record equality and
+// text -- every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+
+abstract record Expr;
+sealed record Num(double Value) : Expr;
+sealed record Var(string Name) : Expr;
+sealed record Bin(char Op, Expr Left, Expr Right) : Expr;
+sealed record Call(string Name, IReadOnlyList<Expr> Args) : Expr;
+sealed record Let(string Name, Expr Value, Expr Body) : Expr;
+
+sealed class ParseError(string message, int at) : Exception(message + " at " + at);
+
+sealed class Parser(string text)
+{
+    private int _at;
+    private char Peek => _at < text.Length ? text[_at] : '\0';
+    private void Skip() { while (char.IsWhiteSpace(Peek)) _at++; }
+
+    public Expr Parse() { Expr e = Sum(); Skip(); if (_at != text.Length) throw new ParseError("trailing text", _at); return e; }
+
+    private Expr Sum()
+    {
+        Expr left = Product();
+        while (true)
+        {
+            Skip();
+            if (Peek is '+' or '-') { char op = text[_at++]; left = new Bin(op, left, Product()); }
+            else return left;
+        }
+    }
+
+    private Expr Product()
+    {
+        Expr left = Atom();
+        while (true)
+        {
+            Skip();
+            if (Peek is '*' or '/' or '^') { char op = text[_at++]; left = new Bin(op, left, Atom()); }
+            else return left;
+        }
+    }
+
+    private Expr Atom()
+    {
+        Skip();
+        if (Peek == '(') { _at++; Expr inner = Sum(); Skip(); Expect(')'); return inner; }
+        if (char.IsDigit(Peek)) { int start = _at; while (char.IsDigit(Peek) || Peek == '.') _at++; return new Num(double.Parse(text[start.._at], System.Globalization.CultureInfo.InvariantCulture)); }
+        if (char.IsLetter(Peek))
+        {
+            int start = _at;
+            while (char.IsLetterOrDigit(Peek)) _at++;
+            string name = text[start.._at];
+            Skip();
+            if (name == "let") { string bound = Word(); Skip(); Expect('='); Expr value = Sum(); Skip(); string kw = Word(); if (kw != "in") throw new ParseError("expected in", _at); return new Let(bound, value, Sum()); }
+            if (Peek == '(')
+            {
+                _at++;
+                List<Expr> args = new();
+                Skip();
+                if (Peek != ')') { do { args.Add(Sum()); Skip(); } while (Peek == ',' && _at++ >= 0); }
+                Expect(')');
+                return new Call(name, args);
+            }
+            return new Var(name);
+        }
+        throw new ParseError($"unexpected '{Peek}'", _at);
+    }
+
+    private string Word() { Skip(); int start = _at; while (char.IsLetter(Peek)) _at++; return text[start.._at]; }
+    private void Expect(char c) { Skip(); if (Peek != c) throw new ParseError($"expected '{c}'", _at); _at++; }
+}
+
+static class Evaluator
+{
+    static readonly Dictionary<string, Func<double[], double>> Functions = new()
+    {
+        ["max"] = xs => xs.Max(),
+        ["min"] = xs => xs.Min(),
+        ["sum"] = xs => xs.Sum(),
+        ["avg"] = xs => xs.Average(),
+        ["sqrt"] = xs => Math.Sqrt(xs[0]),
+    };
+
+    public static double Eval(Expr e, IReadOnlyDictionary<string, double> env) => e switch
+    {
+        Num(var v) => v,
+        Var(var name) => env.TryGetValue(name, out double v) ? v : throw new KeyNotFoundException($"no variable '{name}'"),
+        Bin('+', var l, var r) => Eval(l, env) + Eval(r, env),
+        Bin('-', var l, var r) => Eval(l, env) - Eval(r, env),
+        Bin('*', var l, var r) => Eval(l, env) * Eval(r, env),
+        Bin('/', var l, var r) when Eval(r, env) is var d && d != 0 => Eval(l, env) / d,
+        Bin('/', _, _) => throw new DivideByZeroException(),
+        Bin('^', var l, var r) => Math.Pow(Eval(l, env), Eval(r, env)),
+        Call(var name, var args) when Functions.TryGetValue(name, out var f) => f(args.Select(a => Eval(a, env)).ToArray()),
+        Call(var name, _) => throw new KeyNotFoundException($"no function '{name}'"),
+        Let(var name, var value, var body) => Eval(body, new Dictionary<string, double>(env) { [name] = Eval(value, env) }),
+        _ => throw new InvalidOperationException(e.ToString()),
+    };
+
+    public static string Show(Expr e) => e switch
+    {
+        Num n => n.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        Var v => v.Name,
+        Bin b => $"({Show(b.Left)} {b.Op} {Show(b.Right)})",
+        Call c => c.Name + "(" + string.Join(", ", c.Args.Select(Show)) + ")",
+        Let l => $"let {l.Name} = {Show(l.Value)} in {Show(l.Body)}",
+        _ => "?",
+    };
+}
+
+static class Program
+{
+    static int Main()
+    {
+        var env = new Dictionary<string, double> { ["x"] = 3, ["y"] = 4 };
+        string[] inputs = { "1 + 2 * 3", "(x + y) ^ 2", "sqrt(x*x + y*y)", "max(1, x, y, 2) - min(5, y)", "let z = x * 2 in z + avg(z, 4)", "10 / (y - 4)", "foo(1)", "2 + * 3", "w + 1", "sum()" };
+        var results = new StringBuilder();
+        foreach (string input in inputs)
+        {
+            try
+            {
+                Expr parsed = new Parser(input).Parse();
+                double value = Evaluator.Eval(parsed, env);
+                results.AppendLine($"{Evaluator.Show(parsed)} = {value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            }
+            catch (Exception ex) when (ex is ParseError or KeyNotFoundException or DivideByZeroException or InvalidOperationException)
+            {
+                results.AppendLine($"{input}: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+        Console.Write(results.ToString());
+        Bin a = new Bin('+', new Num(1), new Var("x")), b = new Bin('+', new Num(1), new Var("x"));
+        Console.WriteLine((a == b) + " " + a + " " + (a with { Op = '-' }));
+        var grouped = inputs.GroupBy(i => i.Length / 5).OrderBy(g => g.Key).Select(g => g.Key + ":" + g.Count());
+        Console.WriteLine(string.Join(" ", grouped));
+        return 0;
+    }
+}
