@@ -27,6 +27,9 @@ public sealed class FieldSymbol
     /// </summary>
     public bool IsEvent { get; init; }
 
+    /// <summary>A fixed-size buffer's element count (FieldDecl.FixedSize); 0 for any other field.</summary>
+    public int FixedLength { get; init; }
+
     /// <summary>
     /// [ThreadStatic]: a static with a value of its own on every thread. Its
     /// storage is no symbol of the image but a cell each thread makes the first

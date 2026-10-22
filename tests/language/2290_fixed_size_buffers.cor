@@ -1,0 +1,47 @@
+// test: fixed_size_buffers
+// expect-exit: 0
+// expect-output:
+// 20 15 21 84 5 ABCD
+// 200 43981
+// 42 42
+//
+// C#'s fixed-size buffers, `public fixed byte Data[8];` in an unsafe
+// struct: the elements in line, the struct's size counting them all; read,
+// the buffer is a pointer to its first element -- through the struct, by
+// its bare name in the struct's own methods, through a pointer to the
+// struct, and under `fixed` from a class's field. Refused before, `fixed`
+// read as a type.
+// Expected output from .NET 10.
+
+using System;
+
+unsafe struct Packet
+{
+    public fixed byte Data[8];
+    public int Count;
+    public fixed ushort Words[3];
+
+    public int Sum() { int t = 0; for (int i = 0; i < 8; i++) t += Data[i]; return t; }
+}
+
+sealed unsafe class Holder { public Packet P; }
+
+static unsafe class Program
+{
+    static int Main()
+    {
+        Packet p = new();
+        for (int i = 0; i < 8; i++) p.Data[i] = (byte)(i * 3);
+        p.Count = 5;
+        p.Words[2] = 0xABCD;
+        byte* raw = p.Data;
+        Console.WriteLine(sizeof(Packet) + " " + raw[5] + " " + *(raw + 7) + " " + p.Sum() + " " + p.Count + " " + p.Words[2].ToString("X"));
+        Packet* pp = &p;
+        pp->Data[0] = 200;
+        Console.WriteLine(p.Data[0] + " " + pp->Words[2]);
+        Holder h = new();
+        fixed (byte* hd = h.P.Data) { hd[1] = 42; }
+        Console.WriteLine(h.P.Data[1] + " " + h.P.Sum());
+        return 0;
+    }
+}

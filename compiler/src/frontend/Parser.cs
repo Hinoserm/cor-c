@@ -2839,6 +2839,19 @@ public sealed class Parser
     {
         Token start = Cur;
         Mods mods = ParseMods();
+        // A FIXED-SIZE BUFFER, `fixed byte Data[8];`: the element type, the
+        // name, the count in brackets.
+        if (At(Tok.Ident) && Cur.Text == "fixed" && Ahead().Kind is not (Tok.LParen or Tok.Semi or Tok.Assign or Tok.Comma))
+        {
+            _i++;
+            TypeRef element = ParseTypeRef();
+            string bufferName = Expect(Tok.Ident, "the fixed buffer's name").Text;
+            Expect(Tok.LBracket, "'[' and the fixed buffer's length");
+            Expr length = ParseExpr();
+            Expect(Tok.RBracket, "']' after the fixed buffer's length");
+            Expect(Tok.Semi, "';' after the fixed buffer");
+            return new FieldDecl { Name = bufferName, Mods = mods, Type = element, FixedSize = length, Line = start.Line, Col = start.Col };
+        }
         // An instance member of an extension block is a static one of the
         // class, its receiver the first parameter (ExtensionMember).
         bool extending = _extension is not null && (mods & Mods.Static) == 0;

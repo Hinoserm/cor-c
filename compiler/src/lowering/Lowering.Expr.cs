@@ -1470,6 +1470,10 @@ public sealed partial class Lowering
             case PropertySetSym:
                 return Fail(n, $"the property '{n.Name}' cannot be read: it has no get accessor");
 
+            // A fixed buffer of this struct's, read by its bare name: its first element's address.
+            case FieldSym { Field.FixedLength: > 0 } when PlaceOfSym(sym, n) is Place buffer:
+                return AddressOfPlace(buffer, n);
+
             default:
             {
                 Place? p = PlaceOfSym(sym, n);
@@ -1523,6 +1527,9 @@ public sealed partial class Lowering
                     return ConstValue(k, m);
                 case FieldSym f when f.Field.Static:
                     return LoadPlace(PlaceOfField(f.Field, null, m));
+                // A fixed buffer's first element, where it is.
+                case FieldSym { Field.FixedLength: > 0 } buffer:
+                    return AddressOfPlace(PlaceOfField(buffer.Field, FieldBase(buffer.Field, m.Target), m), m);
                 case FieldSym f:
                     return LoadPlace(PlaceOfField(f.Field, Eval(m.Target), m));
             }

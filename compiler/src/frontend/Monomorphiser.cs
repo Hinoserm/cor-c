@@ -3216,6 +3216,7 @@ public sealed class Monomorphiser
                     // A candidate for the link to lay down made, as its step says (Lto.Preinit).
                     Preinit = f.Preinit,
                     VtableSlotHint = f.VtableSlotHint,
+                    FixedSize = f.FixedSize,
                     Line = f.Line, Col = f.Col,
                 };
 

@@ -4794,12 +4794,18 @@ public sealed partial class Binder
                         break;
                     }
 
+                    int fixedLength = 0;
+                    if (f.FixedSize is Expr bufferLength)
+                    {
+                        if (ConstantValue(bufferLength, sym) is long counted && counted > 0 && counted <= int.MaxValue) fixedLength = (int)counted;
+                        else Error(bufferLength, "CS0133: a fixed buffer's length must be a positive constant");
+                    }
                     sym.WritableFields.Add(new FieldSymbol
                     {
                         Name = f.Name, Type = Resolve(f.Type, sym), Owner = sym,
                         Static = f.Mods.HasFlag(Mods.Static),
                         Volatile = f.Mods.HasFlag(Mods.Volatile),
-                        IsEvent = f.IsEvent,
+                        IsEvent = f.IsEvent, FixedLength = fixedLength,
                         ThreadStatic = f.Mods.HasFlag(Mods.Static) && IsThreadStatic(f),
                         Required = f.Mods.HasFlag(Mods.Required),
                         Initialised = f.DeclaredInit is not null || f.Init is not null,
@@ -5468,6 +5474,8 @@ public sealed partial class Binder
             // block made for it (FieldSymbol.Inline).
             f.Inline = !f.Boxed && InlineStruct(f.Type);
             int align = size;
+            // A FIXED BUFFER is its elements in line, aligned as one is.
+            if (f.FixedLength > 0) size *= f.FixedLength;
             if (f.Inline)
             {
                 TypeSymbol held = _r.StructOf(f.Type);
@@ -19726,6 +19734,8 @@ public sealed partial class Binder
                 FieldSym read = new(f);
 
                 _r.Resolved[n] = read;
+                // A fixed buffer of this struct's: a pointer to its first element.
+                if (f.FixedLength > 0) return f.Type.PointerTo();
 
                 // A lambda nested in a generated closure may read one of that
                 // closure's capture fields. Carry that value, or the same
@@ -20966,6 +20976,8 @@ public sealed partial class Binder
         {
             FieldSym read = new(field);
             _r.Resolved[m] = read;
+            // A FIXED BUFFER READ is a pointer to its first element (C# 23.8.3).
+            if (field.FixedLength > 0) return field.Type.PointerTo();
             Type fieldType = Close(ContextualFieldResult(target, field), received);
             // `t.Item2` of an `(int, Box?)` is the use's Box?.
             if (owner.Structural && owner.Fields.IndexOf(field) is int item and >= 0 && !field.Static)

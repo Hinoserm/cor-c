@@ -8,6 +8,13 @@ public sealed class FieldDecl : MemberDecl
     public bool IsEvent { get; init; }
 
     /// <summary>
+    /// A FIXED-SIZE BUFFER's length, `fixed byte Data[8];` in an unsafe
+    /// struct: the field is that many elements in line, and reading it is a
+    /// pointer to the first (FieldSymbol.FixedLength).
+    /// </summary>
+    public Expr? FixedSize { get; init; }
+
+    /// <summary>
     /// What it starts as, until the binder moves it.
     ///
     /// Settable rather than init-only because moving it is exactly what
