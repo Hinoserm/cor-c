@@ -1,0 +1,21 @@
+// test: switch_arm_of_a_derived_class_after_its_base_refused
+// expect-compile-error: (14,60): error: CS8510: The pattern has already been handled by a previous arm of the switch expression
+//
+// C#'s CS8510 for type patterns: `Dog d` after `Animal a` is never reached,
+// every Dog being an Animal. Before it, the same arm is fine (test 2310).
+
+using System;
+
+class Animal { }
+class Dog : Animal { }
+
+static class Program
+{
+    static int Kind(object o) => o switch { Animal a => 1, Dog d => 2, _ => 3 };
+
+    static int Main()
+    {
+        Console.WriteLine(Kind(new Dog()));
+        return 0;
+    }
+}

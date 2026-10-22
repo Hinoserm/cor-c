@@ -1,0 +1,20 @@
+// test: switch_arm_inside_earlier_ranges_refused
+// expect-compile-error: (13,52): error: CS8510: The pattern has already been handled by a previous arm of the switch expression
+//
+// C#'s CS8510: an arm every value of which an earlier unguarded arm took is
+// refused. An integer's constants and relational patterns are added up as
+// ranges, as Roslyn adds them: `5` after `> 0` can never be reached. It was
+// compiled as an arm nothing reaches.
+
+using System;
+
+static class Program
+{
+    static int Sign(int x) => x switch { > 0 => 1, 5 => 2, _ => 3 };
+
+    static int Main()
+    {
+        Console.WriteLine(Sign(5));
+        return 0;
+    }
+}

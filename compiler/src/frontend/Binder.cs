@@ -11244,10 +11244,124 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// The values an integer subject takes, biased so a ulong's order is a
-    /// long's (Biased); null for a subject that is no integer, or an enum.
+    /// C#'s CS8510: an arm no value can reach, every value it takes having
+    /// been taken by the unguarded arms before it -- or none being possible,
+    /// as `> 5 and < 3`. The arms are read as ArmsCover reads them, an arm's
+    /// own guard aside and only unguarded arms covering, and an arm is judged
+    /// only where what it takes is known exactly: everything, all but null,
+    /// null, an integer's or an enum's constants and ranges, true or false, a
+    /// string literal, or a type test over a type tested before or its base
+    /// class. Null is a value of every reference, as patterns read it,
+    /// whatever its annotation says. Not in a generic's copy, whose arms the
+    /// copy made never to match.
     /// </summary>
-    private static (long Lo, long Hi, bool Unsigned64)? IntegerDomain(Type subject) => subject.Symbol is not null || subject.IsArray ? null : subject.Prim switch
+    private void ReportSubsumed(SwitchExpr sx, Type subject, HashSet<SwitchArm> nullOnly, Dictionary<SwitchArm, Type> armTypes)
+    {
+        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true || subject.ParamName is not null || subject.IsError) return;
+        bool canBeNull = subject.IsReference || subject.Prim == Prim.Any || subject.IsNullableValue;
+        (long Lo, long Hi, bool Unsigned64)? domain = IntegerDomain(subject, enums: true);
+        bool all = false, none = false, sawTrue = false, sawFalse = false;
+        List<(long Lo, long Hi)> taken = [];
+        HashSet<string> texts = new(StringComparer.Ordinal);
+        List<Type> types = [];
+        foreach (SwitchArm arm in sx.Arms)
+        {
+            if (arm.Fallback) continue;
+            Expr? when = arm.Guarded ? arm.PatternWhen : arm.When;
+            bool covers = !arm.Guarded;
+            bool subsumed = false;
+            List<(long Lo, long Hi)>? accepted = null;
+            if (domain is { } d && when is null && arm.Value is not (null or LiteralExpr { Kind: Lit.Null })
+                && ConstantValue(arm.Value, _thisType) is long c)
+            {
+                accepted = [(Biased(c, d), Biased(c, d))];
+            }
+            else if (domain is { } dr && arm.Discard && when is not null)
+            {
+                accepted = Ranges(when, dr);
+            }
+
+            if (arm.Discard && when is null
+                || arm.Type is not null && when is null && !nullOnly.Contains(arm) && !_r.ArmTests.Contains(arm))
+            {
+                // Everything.
+                subsumed = all && (none || !canBeNull);
+                if (covers) { all = true; none = true; }
+            }
+            else if (arm.Type is not null && when is null && nullOnly.Contains(arm)
+                     || arm.Discard && when is BinaryExpr { Op: BinOp.Ne, PatternNullTest: true, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } }
+                                           or UnaryExpr { Op: UnOp.Not, Operand: BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } }
+                                           or IsExpr { Operand: SubjectExpr { Outer: 0 }, Type.Name: TypeRef.Same })
+            {
+                // Every value but null.
+                subsumed = all;
+                if (covers) all = true;
+            }
+            else if (canBeNull && (arm.Value is LiteralExpr { Kind: Lit.Null } && when is null
+                     || arm.Discard && when is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } }))
+            {
+                subsumed = none;
+                if (covers) none = true;
+            }
+            else if (subject.Prim == Prim.Bool && subject.Symbol is null && arm.Value is not (null or LiteralExpr { Kind: Lit.Null }) && when is null
+                     && ConstantValue(arm.Value, _thisType) is long truth)
+            {
+                subsumed = all || (truth != 0 ? sawTrue : sawFalse);
+                if (covers)
+                {
+                    if (truth != 0) sawTrue = true;
+                    else sawFalse = true;
+                    all |= sawTrue && sawFalse;
+                }
+            }
+            else if (domain is { } whole && accepted is not null)
+            {
+                List<(long Lo, long Hi)> joined = Union(taken, accepted);
+                subsumed = all || joined.SequenceEqual(taken);
+                if (covers)
+                {
+                    taken = joined;
+                    all |= taken.Count == 1 && taken[0].Lo == whole.Lo && taken[0].Hi == whole.Hi;
+                }
+            }
+            else if (arm.Value is LiteralExpr { Kind: Lit.Str, Text: { } quoted } && when is null)
+            {
+                subsumed = all || texts.Contains(quoted);
+                if (covers) texts.Add(quoted);
+            }
+            else if (arm.Type is not null && when is null && _r.ArmTests.Contains(arm) && armTypes.TryGetValue(arm, out Type? tested)
+                     && !tested.IsArray && tested.Args.Count == 0)
+            {
+                subsumed = all || types.Any(before => before.Equals(tested)
+                                                      || tested.Symbol is { } derived && before.Symbol is { Kind: TypeKind.Class } baseClass && Derives(derived, baseClass));
+                if (covers) types.Add(tested);
+            }
+
+            if (subsumed) Error(arm, "CS8510: The pattern has already been handled by a previous arm of the switch expression");
+        }
+    }
+
+    private static bool Derives(TypeSymbol derived, TypeSymbol baseClass)
+    {
+        for (TypeSymbol? at = derived.Base; at is not null; at = at.Base)
+        {
+            if (ReferenceEquals(at, baseClass)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The values an integer subject takes, biased so a ulong's order is a
+    /// long's (Biased); null for a subject that is no integer, or an enum
+    /// unless asked for.
+    /// </summary>
+    private static (long Lo, long Hi, bool Unsigned64)? IntegerDomain(Type subject, bool enums = false)
+        => subject.IsArray || subject.IsPointer ? null
+         : subject.Symbol is null ? IntegerDomain(subject.Prim)
+         : enums && subject.Symbol is { Kind: TypeKind.Enum } named ? IntegerDomain(named.EnumUnderlying)
+         : null;
+
+    private static (long Lo, long Hi, bool Unsigned64)? IntegerDomain(Prim prim) => prim switch
     {
         Prim.I8 => (sbyte.MinValue, sbyte.MaxValue, false),
         Prim.U8 => (byte.MinValue, byte.MaxValue, false),
@@ -17698,6 +17812,8 @@ public sealed partial class Binder
                 // Type arms only a null fails (ArmsCover): `int n` over an int?,
                 // `string v` over a string, `Animal a` over a Dog.
                 HashSet<SwitchArm> nullOnly = new(ReferenceEqualityComparer.Instance);
+                // Each type arm's type, as resolved (ReportSubsumed).
+                Dictionary<SwitchArm, Type> armTested = new(ReferenceEqualityComparer.Instance);
                 List<Sym> pastNull = new();
 
                 foreach (SwitchArm arm in sx.Arms)
@@ -17855,6 +17971,7 @@ public sealed partial class Binder
                             else Error(arm, $"this arm matches '{tested}' and the subject is '{subject}'");
                         }
 
+                        armTested[arm] = tested;
                         if (_r.NullableArms.Contains(arm) || _r.NonNullArms.Contains(arm)
                             || _r.ArmTests.Contains(arm) && subject.IsReference && tested.IsReference
                                && ReferenceConvertible(subject.AsNonNullable(), tested.AsNonNullable()))
@@ -18127,6 +18244,7 @@ public sealed partial class Binder
                 // where the subject may be null (CS8655), or a guard might take
                 // it (CS8847). A subject that cannot be null needs no null arm:
                 // `s switch { string v => … }` over a string is complete.
+                ReportSubsumed(sx, subject, nullOnly, armTested);
                 if (!exhaustive)
                 {
                     (bool some, bool none) = ArmsCover(sx, subject, nullOnly, guards: true);
