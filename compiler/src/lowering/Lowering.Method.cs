@@ -652,15 +652,27 @@ public sealed partial class Lowering
         // the lambda that captured it -- `owner.Canon is string canonical`
         // followed by `t => t.Name == canonical` reads the name nowhere else,
         // so nothing above would find a use of it to make the cell from.
-        if (_b.PatternSym.TryGetValue(n, out LocalSym? bound) && bound.Boxed
-            && DeclOf(bound) is null && !_symCells.ContainsKey(bound))
+        PatternCell(n);
+
+        // A switch expression's arms are not among its children, only what
+        // they hold: `o switch { long v => () => v * 3 }` named v nowhere else.
+        if (n is SwitchExpr sx)
         {
-            _symCells[bound] = CellFor(n, Math.Max(_t.WordSize, Math.Max(1, bound.Type.Size)), symbol: bound);
+            foreach (SwitchArm arm in sx.Arms) PatternCell(arm);
         }
 
         List<Node> children = Children(n);
         foreach (Node child in children) MakeCapturedCells(child);
         ReturnChildren(children);
+    }
+
+    private void PatternCell(Node n)
+    {
+        if (_b.PatternSym.TryGetValue(n, out LocalSym? bound) && bound.Boxed
+            && DeclOf(bound) is null && !_symCells.ContainsKey(bound))
+        {
+            _symCells[bound] = CellFor(n, Math.Max(_t.WordSize, Math.Max(1, bound.Type.Size)), symbol: bound);
+        }
     }
 
     /// <summary>
@@ -1550,6 +1562,13 @@ public sealed partial class Lowering
     {
         if (n is AstBlock or LambdaExpr or LocalDecl { LocalFunction: true } or ForeachStmt or WhileStmt or DoStmt or ForStmt) return;
         if (_b.PatternSym.TryGetValue(n, out LocalSym? bound) && bound.Boxed && DeclOf(bound) is null) into.Add(bound);
+        if (n is SwitchExpr sx)
+        {
+            foreach (SwitchArm arm in sx.Arms)
+            {
+                if (_b.PatternSym.TryGetValue(arm, out LocalSym? armBound) && armBound.Boxed && DeclOf(armBound) is null) into.Add(armBound);
+            }
+        }
         if (n is RefArgExpr { Name: not null, Target: NameExpr name } && _b.Resolved.TryGetValue(name, out Sym? sym)
             && sym is LocalSym { Boxed: true } declared && DeclOf(declared) is null) into.Add(declared);
         List<Node> children = Children(n);

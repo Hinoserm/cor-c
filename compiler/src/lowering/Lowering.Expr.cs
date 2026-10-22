@@ -3746,6 +3746,18 @@ public sealed partial class Lowering
                     _e.Branch(matched, body, next);
                 }
             }
+            else if (arm.Type is not null && _b.NullableArms.Contains(arm))
+            {
+                // `int n` over an int?: one holding a value, and that value named.
+                Block some = _f.NewBlock("swsome");
+                _e.Branch(HasValue(subject), some, next);
+                _e.SetBlock(some);
+                if (_b.ArmSlot.TryGetValue(arm, out int heldValue))
+                {
+                    BindPattern(arm, heldValue, of.Underlying, NullableRead(subject, of));
+                }
+                _e.Jump(body);
+            }
             else if (arm.Type is not null)
             {
                 if (_b.ArmSlot.TryGetValue(arm, out int named))

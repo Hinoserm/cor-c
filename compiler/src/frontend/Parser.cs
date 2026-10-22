@@ -5970,7 +5970,7 @@ public sealed class Parser
             }
 
             // The pattern's own test, before any `when` joins it: what the arm
-            // covers with its guard left aside (CS8846, Binder.CoversUnguarded).
+            // covers with its guard left aside (CS8846, Binder.ArmsCover).
             Expr? patternTest = guard;
             bool guarded = false;
             if (At(Tok.Ident) && Cur.Text == "when")

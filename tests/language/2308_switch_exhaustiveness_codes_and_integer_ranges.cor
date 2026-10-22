@@ -1,0 +1,94 @@
+// test: switch_exhaustiveness_codes_and_integer_ranges
+// expect-exit: 0
+// expect-compile-warning: (57,35): warning CS8655
+// expect-compile-warning: (59,35): warning CS8655
+// expect-compile-warning: (60,35): warning CS8655
+// expect-compile-warning: (61,34): warning CS8509
+// expect-compile-warning: (64,32): warning CS8655
+// expect-compile-warning: (65,32): warning CS8655
+// expect-compile-warning: (66,32): warning CS8655
+// expect-compile-warning: (68,32): warning CS8655
+// expect-compile-warning: (69,32): warning CS8655
+// expect-compile-warning: (72,33): warning CS8509
+// expect-compile-warning: (77,32): warning CS8846
+// expect-compile-warning: (78,36): warning CS8847
+// expect-compile-warning: (79,33): warning CS8847
+// expect-compile-warning: (82,32): warning CS8846
+// expect-compile-warning: (86,32): warning CS8509
+// expect-no-compile-warning: (56,
+// expect-no-compile-warning: (58,
+// expect-no-compile-warning: (62,
+// expect-no-compile-warning: (63,
+// expect-no-compile-warning: (67,
+// expect-no-compile-warning: (70,
+// expect-no-compile-warning: (71,
+// expect-no-compile-warning: (73,
+// expect-no-compile-warning: (74,
+// expect-no-compile-warning: (75,
+// expect-no-compile-warning: (76,
+// expect-no-compile-warning: (80,
+// expect-no-compile-warning: (81,
+// expect-no-compile-warning: (83,
+// expect-no-compile-warning: (84,
+// expect-no-compile-warning: (85,
+// expect-output:
+// 8
+// -101 12 12 12 21 12 21
+// 12 20 123 1 12 1 211 123 12 12
+//
+// Roslyn's four switch expression warnings: a value other than null missed
+// (CS8509), or one a `when` guard might take (CS8846); only null missed
+// where the subject may be null (CS8655), or a guard might take it
+// (CS8847). A subject that cannot be null needs no null arm, a type every
+// value of the subject converts to takes every value but null, and an
+// integer's relational and constant arms are added up as ranges. All were
+// CS8509, and many where Roslyn warns nothing.
+// Expected output from .NET 10.
+
+using System;
+
+class Animal { }
+class Dog : Animal { }
+
+static class P
+{
+    static bool G = DateTime.Now.Year > 2000;
+    static int A1(string s) => s switch { string v => v.Length };
+    static int A2(string? s) => s switch { string v => v.Length };
+    static int A3(string s) => s switch { { } v => v.Length };
+    static int A4(string? s) => s switch { { } v => v.Length };
+    static int A5(string? s) => s switch { not null => 1 };
+    static int A6(object o) => o switch { string v => v.Length };
+    static int A7(Dog d) => d switch { Animal a => 1 };
+    static int A8(Dog? d) => d switch { Animal a => 1, null => 0 };
+    static int A9(int? x) => x switch { int n => n };
+    static int B1(int? x) => x switch { not null => 1 };
+    static int B2(int? x) => x switch { { } n => n };
+    static int B3(string? s) => s switch { string v => v.Length, null => 0 };
+    static int B4(Dog? d) => d switch { Dog a => 1 };
+    static int B5(int? x) => x switch { > 0 => 1, <= 0 => 2 };
+    static int RA1(int x) => x switch { < 0 => -1, 0 => 0, > 0 => 1 };
+    static int RA2(byte x) => x switch { < 128 => 1, >= 128 => 2 };
+    static int RA3(byte x) => x switch { 0 => 1, > 1 => 2 };
+    static int RA4(ulong x) => x switch { < 10 => 1, >= 10 => 2 };
+    static int RA5(ulong x) => x switch { > 0 => 1, 0 => 2 };
+    static int RA6(char c) => c switch { >= 'a' and <= 'z' => 1, < 'a' or > 'z' => 2 };
+    static int RA7(int x) => x switch { not 0 => 1, 0 => 2 };
+    static int RA8(int x) => x switch { > 0 when G => 1, <= 0 => 2 };
+    static int RA9(string? s) => s switch { string v => v.Length, null when G => 0 };
+    static int RB1(int? x) => x switch { > 0 => 1, <= 0 => 2, null when G => 3 };
+    static int RB2(long x) => x switch { >= long.MinValue => 1 };
+    static int RB3(sbyte x) => x switch { < -100 => 1, >= -100 => 2 };
+    static int RB4(int x) => x switch { _ when G => 1 };
+    static int RB5(short x) => x switch { >= 0 and <= 10 or > 10 => 1, < 0 => 2 };
+    static int RB6(uint x) => x switch { 0 => 1, >= 1 and < 4000000000 => 2, >= 4000000000 => 3 };
+    static int RB8(ulong x) => x switch { <= 9223372036854775807 => 1, > 9223372036854775807 => 2 };
+    static int RB9(int x) => x switch { < 0 => 1, > 0 => 2 };
+
+    static void Main()
+    {
+        Console.WriteLine(A1("ab") + A3("c") + A6("d") + A7(new Dog()) + A8(null) + A9(3) + B3(null));
+        Console.WriteLine($"{RA1(-5)}{RA1(0)}{RA1(9)} {RA2(3)}{RA2(200)} {RA3(0)}{RA3(7)} {RA4(3)}{RA4(30)} {RA5(0)}{RA5(4)} {RA6('q')}{RA6('Q')} {RA7(0)}{RA7(3)}");
+        Console.WriteLine($"{RA8(1)}{RA8(-1)} {RA9("ab")}{RA9(null)} {RB1(1)}{RB1(-1)}{RB1(null)} {RB2(5)} {RB3(-128)}{RB3(0)} {RB4(0)} {RB5(-1)}{RB5(4)}{RB5(20)} {RB6(0)}{RB6(5)}{RB6(4000000001)} {RB8(1)}{RB8(18446744073709551615)} {RB9(-3)}{RB9(3)}");
+    }
+}

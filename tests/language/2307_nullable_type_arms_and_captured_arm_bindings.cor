@@ -1,0 +1,58 @@
+// test: nullable_type_arms_and_captured_arm_bindings
+// expect-exit: 0
+// expect-compile-warning: (33,31): warning CS8655
+// expect-compile-warning: (34,31): warning CS8846
+// expect-output:
+// 5 -4 0
+// Blue none
+// 7
+// SwitchExpressionException
+// 5 0
+// SwitchExpressionException
+// yes no:False ?
+// int 3 str x other int 4
+// 3 -1 24 0
+// 12 12 0 15 0 3
+//
+// A switch expression's type arm over a nullable value takes the value it
+// holds, as `x is int n` does: `x switch { int n => n, null => 0 }` over an
+// int? matched every value, null included, and named the cell's address n.
+// A lambda in an arm's result capturing the arm's binding was refused ("'v'
+// has no declaration"): its cell was never made.
+// Expected output from .NET 10.
+
+using System;
+
+struct Pt { public int X; public int Y; public Pt(int x, int y) { X = x; Y = y; } }
+enum Hue { Red, Green, Blue }
+
+static class P
+{
+    static int A(Pt? p) => p switch { Pt q when q.X > 0 => q.X + q.Y, Pt q => -q.Y, null => 0 };
+    static string B(Hue? h) => h switch { Hue c => c.ToString(), null => "none" };
+    static int C(int? x) => x switch { int n => n };
+    static int D(int? x) => x switch { int n when n > 0 => n, null => 0 };
+    static string E(bool? b) => b switch { bool v when v => "yes", bool v => "no:" + v, null => "?" };
+    static string F<T>(T value) => value switch { int i => "int " + i, string s => "str " + s, _ => "other" };
+    static double G(double? d) => d switch { double v => v * 2, null => -1 };
+    static long H(long? l) { Func<long> f = null!; var r = l switch { long v => (f = () => v * 3)(), null => 0 }; return r + (f is null ? 0 : f()); }
+
+    static long H1(long l) { Func<long> f = l switch { long v => () => v * 3 }; return f(); }
+    static long H2(long? l) { Func<long> f = l switch { long v => () => v * 3, null => () => 0 }; return f(); }
+    static long H3(object o) { Func<long> f = o switch { long v => () => v * 3, _ => () => 0 }; return f(); }
+    static int H4(string s) { Func<int> f = s switch { string v => () => v.Length }; return f(); }
+
+    static void Main()
+    {
+        Console.WriteLine($"{A(new Pt(2, 3))} {A(new Pt(-1, 4))} {A(null)}");
+        Console.WriteLine($"{B(Hue.Blue)} {B(null)}");
+        Console.WriteLine($"{C(7)}");
+        try { Console.WriteLine(C(null)); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        Console.WriteLine($"{D(5)} {D(null)}");
+        try { Console.WriteLine(D(-5)); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        Console.WriteLine($"{E(true)} {E(false)} {E(null)}");
+        Console.WriteLine($"{F(3)} {F("x")} {F(2.5)} {F<int?>(4)}");
+        Console.WriteLine($"{G(1.5)} {G(null)} {H(4)} {H(null)}");
+        Console.WriteLine($"{H1(4)} {H2(4)} {H2(null)} {H3(5L)} {H3("x")} {H4("abc")}");
+    }
+}

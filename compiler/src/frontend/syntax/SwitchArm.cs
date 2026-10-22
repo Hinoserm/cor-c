@@ -40,7 +40,7 @@ public sealed class SwitchArm : Node, ICanonSlot
     /// <summary>
     /// Written with `when`: the arm matches only where its guard holds, and
     /// PatternWhen is its pattern's own test without it (null for none) --
-    /// what decides CS8846 over CS8509 (Binder.CoversUnguarded).
+    /// what decides CS8846 over CS8509 (Binder.ArmsCover).
     /// </summary>
     public bool Guarded { get; init; }
     public Expr? PatternWhen { get; init; }

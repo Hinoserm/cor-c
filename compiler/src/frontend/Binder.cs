@@ -11179,51 +11179,163 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// The lengths a pattern's test is sure to accept, when LENGTH is the only
-    /// thing it can fail on; null when anything else about it might fail.
-    /// Reads the tests the parser writes for a list pattern (ParseListPattern):
-    /// a null test of a subject that cannot be null, a count compared with a
-    /// number, and element tests that are discards or var patterns.
+    /// What a switch expression's arms cover: every value but null (Some), and
+    /// null (None) -- with each arm's `when` guard, or with the guards left
+    /// aside as CS8846 and CS8847 ask. The arms read as CheckExpr's SwitchExpr
+    /// reads them: a guard-free discard or a type pattern the subject always
+    /// passes, one only a null fails (nullOnly), the lengths a list pattern
+    /// takes, null with not-null, true with false.
     /// </summary>
-    /// <summary>
-    /// Whether a switch expression's arms cover every value of its subject
-    /// with each arm's `when` guard left aside: its pattern alone, as the
-    /// arm's coverage is worked out (CheckExpr's SwitchExpr: a guard-free
-    /// discard, the lengths a list pattern takes, null with not-null, true
-    /// with false).
-    /// </summary>
-    private bool CoversUnguarded(SwitchExpr sx, Type subject)
+    private (bool Some, bool None) ArmsCover(SwitchExpr sx, Type subject, HashSet<SwitchArm> nullOnly, bool guards)
     {
         Coverage covered = new();
-        bool sawTrue = false, sawFalse = false, sawNull = false, sawSome = false;
+        bool sawTrue = false, sawFalse = false, some = false, none = false;
+        (long Lo, long Hi, bool Unsigned64)? domain = IntegerDomain(subject);
+        List<(long Lo, long Hi)> taken = [];
         foreach (SwitchArm arm in sx.Arms)
         {
             if (arm.Fallback) continue;
-            Expr? when = arm.Guarded ? arm.PatternWhen : arm.When;
-            if (arm.Discard && when is null) return true;
+            // An arm a generic's copy made one that never matches covers nothing.
+            if (arm.When is LiteralExpr { Kind: Lit.Bool, IntValue: 0 }
+                or BinaryExpr { Op: BinOp.AndAlso, Left: LiteralExpr { Kind: Lit.Bool, IntValue: 0 } }) continue;
+            Expr? when = arm.Guarded && !guards ? arm.PatternWhen : arm.When;
+            if (arm.Discard && when is null) return (true, true);
+            if (arm.Type is not null && when is null)
+            {
+                if (nullOnly.Contains(arm)) some = true;
+                else if (!_r.ArmTests.Contains(arm)) return (true, true);
+            }
             if (arm.Discard && when is not null && Lengths(when) is { } lengths)
             {
                 covered.Union(lengths);
-                if (covered.All) return true;
+                if (covered.All) return (true, true);
             }
             if (arm.Value is LiteralExpr { Kind: Lit.Null } && when is null
                 || arm.Discard && when is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } })
-                sawNull = true;
+                none = true;
             if (arm.Discard && when is BinaryExpr { Op: BinOp.Ne, PatternNullTest: true, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } }
-                                  or UnaryExpr { Op: UnOp.Not, Operand: BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } })
-                sawSome = true;
-            if (sawNull && sawSome) return true;
+                                  or UnaryExpr { Op: UnOp.Not, Operand: BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } }
+                                  or IsExpr { Operand: SubjectExpr { Outer: 0 }, Type.Name: TypeRef.Same })
+                some = true;
             if (arm.Value is not (null or LiteralExpr { Kind: Lit.Null }) && when is null && subject.Prim == Prim.Bool
                 && ConstantValue(arm.Value, _thisType) is long truth)
             {
                 sawTrue |= truth != 0;
                 sawFalse |= truth == 0;
             }
-            if (subject.Prim == Prim.Bool && sawTrue && sawFalse && (!subject.Nullable || sawNull)) return true;
+
+            // AN INTEGER'S RANGES, as Roslyn adds them up: `< 0 => …, 0 =>
+            // …, > 0 => …` takes every int.
+            if (domain is { } d && !some)
+            {
+                List<(long Lo, long Hi)>? accepted = null;
+                if (arm.Value is not (null or LiteralExpr { Kind: Lit.Null }) && when is null && ConstantValue(arm.Value, _thisType) is long c)
+                    accepted = [(Biased(c, d), Biased(c, d))];
+                else if (arm.Discard && when is not null)
+                    accepted = Ranges(when, d);
+                if (accepted is not null)
+                {
+                    taken = Union(taken, accepted);
+                    some = taken.Count == 1 && taken[0].Lo == d.Lo && taken[0].Hi == d.Hi;
+                }
+            }
         }
-        return false;
+        return (some || sawTrue && sawFalse, none);
     }
 
+    /// <summary>
+    /// The values an integer subject takes, biased so a ulong's order is a
+    /// long's (Biased); null for a subject that is no integer, or an enum.
+    /// </summary>
+    private static (long Lo, long Hi, bool Unsigned64)? IntegerDomain(Type subject) => subject.Symbol is not null || subject.IsArray ? null : subject.Prim switch
+    {
+        Prim.I8 => (sbyte.MinValue, sbyte.MaxValue, false),
+        Prim.U8 => (byte.MinValue, byte.MaxValue, false),
+        Prim.I16 => (short.MinValue, short.MaxValue, false),
+        Prim.U16 or Prim.Char => (ushort.MinValue, ushort.MaxValue, false),
+        Prim.I32 => (int.MinValue, int.MaxValue, false),
+        Prim.U32 => (uint.MinValue, uint.MaxValue, false),
+        Prim.I64 => (long.MinValue, long.MaxValue, false),
+        Prim.U64 => (long.MinValue, long.MaxValue, true),
+        _ => null,
+    };
+
+    private static long Biased(long value, (long Lo, long Hi, bool Unsigned64) domain)
+        => domain.Unsigned64 ? value ^ long.MinValue : value;
+
+    /// <summary>
+    /// The values a pattern's test accepts, exactly, as sorted ranges that do
+    /// not touch, when it is only comparisons of the subject with constants
+    /// joined by `and`, `or` and `not`; null when anything else decides it.
+    /// </summary>
+    private List<(long Lo, long Hi)>? Ranges(Expr test, (long Lo, long Hi, bool Unsigned64) domain)
+    {
+        switch (test)
+        {
+            case BinaryExpr { Op: BinOp.AndAlso } both:
+                return Ranges(both.Left, domain) is { } left && Ranges(both.Right, domain) is { } right
+                    ? Complement(Union(Complement(left, domain), Complement(right, domain)), domain) : null;
+            case BinaryExpr { Op: BinOp.OrElse } either:
+                return Ranges(either.Left, domain) is { } one && Ranges(either.Right, domain) is { } other ? Union(one, other) : null;
+            case UnaryExpr { Op: UnOp.Not } not:
+                return Ranges(not.Operand, domain) is { } inner ? Complement(inner, domain) : null;
+            case BinaryExpr { Op: BinOp.Eq or BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge, Left: SubjectExpr { Outer: 0 } } compare
+                when ConstantValue(compare.Right, _thisType) is long written:
+            {
+                long c = Biased(written, domain);
+                (long lo, long hi) = compare.Op switch
+                {
+                    BinOp.Eq => (c, c),
+                    BinOp.Lt => c == long.MinValue ? (1, 0) : (domain.Lo, c - 1),
+                    BinOp.Le => (domain.Lo, c),
+                    BinOp.Gt => c == long.MaxValue ? (1, 0) : (c + 1, domain.Hi),
+                    _ => (c, domain.Hi),
+                };
+                lo = Math.Max(lo, domain.Lo);
+                hi = Math.Min(hi, domain.Hi);
+                return lo <= hi ? [(lo, hi)] : [];
+            }
+            default:
+                return null;
+        }
+    }
+
+    private static List<(long Lo, long Hi)> Union(List<(long Lo, long Hi)> a, List<(long Lo, long Hi)> b)
+    {
+        List<(long Lo, long Hi)> all = [.. a, .. b];
+        all.Sort((x, y) => x.Lo.CompareTo(y.Lo));
+        List<(long Lo, long Hi)> merged = [];
+        foreach ((long lo, long hi) in all)
+        {
+            if (merged.Count > 0 && (merged[^1].Hi == long.MaxValue || lo <= merged[^1].Hi + 1))
+                merged[^1] = (merged[^1].Lo, Math.Max(merged[^1].Hi, hi));
+            else merged.Add((lo, hi));
+        }
+        return merged;
+    }
+
+    private static List<(long Lo, long Hi)> Complement(List<(long Lo, long Hi)> ranges, (long Lo, long Hi, bool Unsigned64) domain)
+    {
+        List<(long Lo, long Hi)> gaps = [];
+        long from = domain.Lo;
+        bool open = true;
+        foreach ((long lo, long hi) in ranges)
+        {
+            if (lo > from) gaps.Add((from, lo - 1));
+            if (hi == domain.Hi) { open = false; break; }
+            from = hi + 1;
+        }
+        if (open && from <= domain.Hi) gaps.Add((from, domain.Hi));
+        return gaps;
+    }
+
+    /// <summary>
+    /// The lengths a pattern's test is sure to accept, when LENGTH is the only
+    /// thing it can fail on; null when anything else about it might fail.
+    /// Reads the tests the parser writes for a list pattern (ParseListPattern):
+    /// a null test of a subject that cannot be null, a count compared with a
+    /// number, and element tests that are discards or var patterns.
+    /// </summary>
     private Coverage? Lengths(Expr test)
     {
         switch (test)
@@ -17583,6 +17695,9 @@ public sealed partial class Binder
                 bool exhaustive = false;
                 Coverage covered = new();
                 bool sawTrue = false, sawFalse = false, sawNull = false, sawSome = false;
+                // Type arms only a null fails (ArmsCover): `int n` over an int?,
+                // `string v` over a string, `Animal a` over a Dog.
+                HashSet<SwitchArm> nullOnly = new(ReferenceEqualityComparer.Instance);
                 List<Sym> pastNull = new();
 
                 foreach (SwitchArm arm in sx.Arms)
@@ -17664,7 +17779,28 @@ public sealed partial class Binder
                         // handed in. `o switch { string s => ..., Dog d => ... }`
                         // answered the string arm for a Dog and then faulted
                         // joining the null it had bound.
-                        if (tested.IsReference && (subject.IsReference || subject.Prim == Prim.Any))
+                        // A NULLABLE VALUE'S ARM TAKES THE VALUE IT HOLDS, as `x
+                        // is int n` does (NullablePatterns): `x switch { int n
+                        // => … }` over an int? matches one with a value and
+                        // names that value. Taken for a pattern that always
+                        // matches -- an int? converts to an int -- it named the
+                        // cell, so n was its address and a null took the arm.
+                        if (subject.IsNullableValue && tested.Equals(subject.Underlying))
+                        {
+                            _r.NullableArms.Add(arm);
+                        }
+                        else if (subject.IsNullableValue && !subject.IsError && !tested.IsError)
+                        {
+                            // In a generic's copy, an arm that never matches (below).
+                            if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+                            {
+                                LiteralExpr never = new() { Kind = Lit.Bool, Text = "false", IntValue = 0, Line = arm.Line, Col = arm.Col };
+                                arm.When = arm.When is null ? never
+                                         : new BinaryExpr { Op = BinOp.AndAlso, Left = never, Right = arm.When, Line = arm.Line, Col = arm.Col };
+                            }
+                            else Error(arm, $"a '{subject}' can only match its held '{subject.Underlying}' value");
+                        }
+                        else if (tested.IsReference && (subject.IsReference || subject.Prim == Prim.Any))
                         {
                             _r.ArmTests.Add(arm);
                             if (tested.Prim == Prim.String && arm.Type.ArrayRank == 0)
@@ -17699,6 +17835,13 @@ public sealed partial class Binder
                             else Error(arm, $"this arm matches '{tested}' and the subject is '{subject}'");
                         }
 
+                        if (_r.NullableArms.Contains(arm)
+                            || _r.ArmTests.Contains(arm) && subject.IsReference && tested.IsReference
+                               && ReferenceConvertible(subject.AsNonNullable(), tested.AsNonNullable()))
+                        {
+                            nullOnly.Add(arm);
+                        }
+
                         if (arm.Binding is not null)
                         {
                             int slot = NewSlot();
@@ -17711,8 +17854,10 @@ public sealed partial class Binder
                         }
 
                         // A PATTERN THAT ALWAYS MATCHES IS AS GOOD AS '_' for
-                        // deciding whether the switch can fall off the end.
-                        exhaustive = exhaustive || (!_r.ArmTests.Contains(arm) && arm.When is null);
+                        // deciding whether the switch can fall off the end; a
+                        // nullable's held value is every value but null.
+                        if (_r.NullableArms.Contains(arm)) sawSome |= arm.When is null;
+                        else exhaustive = exhaustive || (!_r.ArmTests.Contains(arm) && arm.When is null);
                     }
                     else if (arm.Value is not null)
                     {
@@ -17955,23 +18100,26 @@ public sealed partial class Binder
                     }
                 }
 
-                // NOT A WARNING. An expression has to have a value on every
-                // path, and there is nothing sensible to produce when nothing
-                // matched -- C# throws, and throwing here would mean inventing
-                // an exception type and a control-flow path nobody asked for.
-                // A WARNING, AS C#'s CS8509 IS: the arm the parser added throws
+                // A WARNING, AS C#'s ARE: the arm the parser added throws
                 // SwitchExpressionException for a value no written arm took.
-                // CS8846 WHERE ONLY A GUARD STANDS IN THE WAY: with every `when`
-                // left aside the arms would cover every value, so the one
-                // missed might yet be taken (Roslyn's "However, a pattern with
-                // a 'when' clause might successfully match this value").
-                if (!exhaustive && sx.Arms.Any(arm => arm.Guarded) && CoversUnguarded(sx, subject))
+                // Roslyn's four: a value other than null missed (CS8509), or
+                // one a `when` guard might yet take (CS8846); only null missed
+                // where the subject may be null (CS8655), or a guard might take
+                // it (CS8847). A subject that cannot be null needs no null arm:
+                // `s switch { string v => … }` over a string is complete.
+                if (!exhaustive)
                 {
-                    Warning(sx, "CS8846", "the switch expression does not handle all possible values of its input type (it is not exhaustive); a pattern with a 'when' clause might match the value missed");
-                }
-                else if (!exhaustive)
-                {
-                    Warning(sx, "CS8509", "the switch expression does not handle all possible values of its input type (it is not exhaustive)");
+                    (bool some, bool none) = ArmsCover(sx, subject, nullOnly, guards: true);
+                    bool mayBeNull = subject.Nullable || subject.IsNullableValue;
+                    if (some && (none || !mayBeNull)) { }
+                    else if (some && ArmsCover(sx, subject, nullOnly, guards: false).None)
+                        Warning(sx, "CS8847", "the switch expression does not handle some null inputs (it is not exhaustive); a pattern with a 'when' clause might match the value missed");
+                    else if (some)
+                        Warning(sx, "CS8655", "the switch expression does not handle some null inputs (it is not exhaustive)");
+                    else if (ArmsCover(sx, subject, nullOnly, guards: false).Some)
+                        Warning(sx, "CS8846", "the switch expression does not handle all possible values of its input type (it is not exhaustive); a pattern with a 'when' clause might match the value missed");
+                    else
+                        Warning(sx, "CS8509", "the switch expression does not handle all possible values of its input type (it is not exhaustive)");
                 }
                 return result;
             }

@@ -307,6 +307,10 @@ public sealed partial class BindResult
     /// guard to use -- and there is no header on a long to test.
     public HashSet<SwitchArm> ArmTests { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// Arms of a switch over a Nullable&lt;T&gt; that match its held T: a test
+    /// that it has one, and that value named (NullablePatterns' arm form).
+    public HashSet<SwitchArm> NullableArms { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// Where a switch expression keeps its subject while the arms are tried.
     public Dictionary<SwitchExpr, int> SwitchSlot { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -672,6 +676,7 @@ public sealed partial class BindResult
             case SwitchArm arm:
                 ArmSlot.Remove(arm);
                 ArmTests.Remove(arm);
+                NullableArms.Remove(arm);
                 break;
             case InitAssign init:
                 InitField.Remove(init);
@@ -796,6 +801,7 @@ public sealed partial class BindResult
         ArmSlot.Clear();
         PatternSym.Clear();
         ArmTests.Clear();
+        NullableArms.Clear();
         SwitchSlot.Clear();
         PatternSubject.Clear();
         InitField.Clear();
