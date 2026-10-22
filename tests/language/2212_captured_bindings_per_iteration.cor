@@ -1,0 +1,84 @@
+// test: captured_bindings_per_iteration
+// expect-exit: 0
+// expect-output:
+// a1 a2 b1 b2 c1 c2
+// x y
+// p q
+// 1 2
+// n1 ttwo
+// 5 6 7
+// 3 7
+//
+// A variable no statement declares -- a pattern's binding, an `out var` --
+// is a new variable each time its scope is entered, as a declared local and
+// a foreach's cursor are (C#), and a lambda keeps the one it was made with.
+// Captured, they had one cell for the whole method, and every lambda made
+// in a loop read the last lap's value: the link's preinitialiser, `if
+// (IrArchive.Read(obj) is not IrArchive archive) continue; ... () =>
+// archive.ReadBody(key)`, read every unit's bodies from the last archive,
+// and the compiler built by itself failed to link ("Missing IR record").
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static void Say<T>(List<Func<T>> made)
+    {
+        string line = "";
+        foreach (Func<T> f in made) line += (line.Length == 0 ? "" : " ") + f();
+        Console.WriteLine(line);
+    }
+
+    static int Main()
+    {
+        List<Func<string>> fs = new();
+        foreach (object o in new object[] { "a", "b", 1, "c" })
+        {
+            if (o is not string s) continue;
+            foreach (string k in new[] { "1", "2" })
+                fs.Add(() => s + k);
+        }
+        Say(fs);
+
+        List<Func<string>> gs = new();
+        foreach (object o in new object[] { "x", "y" })
+        {
+            string t = (string)o;
+            gs.Add(() => t);
+        }
+        Say(gs);
+
+        List<Func<string>> hs = new();
+        foreach (object o in new object[] { "p", 2, "q" })
+        {
+            if (o is string u) hs.Add(() => u);
+        }
+        Say(hs);
+
+        Dictionary<string, int> map = new() { ["a"] = 1, ["b"] = 2 };
+        List<Func<int>> outs = new();
+        foreach (string k in new[] { "a", "b" })
+        {
+            if (map.TryGetValue(k, out int v)) outs.Add(() => v);
+        }
+        Say(outs);
+
+        List<Func<string>> arms = new();
+        foreach (object o in new object[] { 1, "two", 3L })
+        {
+            switch (o) { case int n: arms.Add(() => "n" + n); break; case string t: arms.Add(() => "t" + t); break; }
+        }
+        Say(arms);
+
+        List<Func<int>> whiles = new();
+        Queue<object> q = new(new object[] { 5, 6, 7 });
+        while (q.Count > 0 && q.Dequeue() is int w) whiles.Add(() => w);
+        Say(whiles);
+
+        List<Func<int>> decon = new();
+        foreach ((int a, int b) in new[] { (1, 2), (3, 4) }) decon.Add(() => a + b);
+        Say(decon);
+        return 0;
+    }
+}

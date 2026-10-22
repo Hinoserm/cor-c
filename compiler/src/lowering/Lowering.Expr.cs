@@ -99,6 +99,9 @@ public sealed partial class Lowering
 
         if (byRef)
         {
+            // `out var v` DECLARES v here: a new variable each time it runs.
+            if (e is RefArgExpr { Name: not null } declaring) FreshCell(declaring, declaring.Target);
+
             // `in` TAKES A VALUE WHERE `ref` TAKES A VARIABLE. C# passes the
             // address either way, so an argument with no address of its own --
             // a literal, the result of a call -- is copied into a temporary of

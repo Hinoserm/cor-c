@@ -1494,6 +1494,33 @@ public sealed partial class Lowering
     private int LoadSize(Type t) => Math.Max(1, t.Size);
 
     /// <summary>
+    /// A NEW CELL FOR A CAPTURED VARIABLE NO STATEMENT DECLARES, where its
+    /// declaration runs -- a pattern's binding, an `out var` -- as a foreach's
+    /// cursor has one each time round: every entry of the scope it is
+    /// declared in is a new variable (C#), and a lambda keeps the one it was
+    /// made with. The cell made once on entry (MakeCapturedCells) was every
+    /// lap's: `if (o is not IrArchive archive) continue; ... () =>
+    /// archive.ReadBody(key)` gave each body the last unit's archive, and the
+    /// compiler built by itself failed to link ("Missing IR record"); an `out
+    /// int v` in a loop gave every lambda the last v. Not one in the method's
+    /// environment block, which only a call-only local function reads, within
+    /// the lap.
+    /// </summary>
+    private void FreshCell(Node at, LocalSym named, VReg cell)
+    {
+        if (_env is { } env && env.Syms.ContainsKey(named)) return;
+        _e.CopyTo(cell, RegOperand.Of(Allocate(at, Math.Max(_t.WordSize, Math.Max(1, named.Type.Size)))));
+    }
+
+    /// <summary>FreshCell for the variable an expression names, when it is one.</summary>
+    private void FreshCell(Node at, Expr named)
+    {
+        if (named is NameExpr name && _b.Resolved.TryGetValue(name, out Sym? sym) && sym is LocalSym { Boxed: true } local
+            && DeclOf(local) is null && _symCells.TryGetValue(local, out VReg? cell) && cell is not null)
+            FreshCell(at, local, cell);
+    }
+
+    /// <summary>
     /// Where a pattern's binding goes: the slot it was given, or the heap cell
     /// it was given instead when a lambda captured it.
     /// </summary>
@@ -1502,6 +1529,7 @@ public sealed partial class Lowering
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
+            FreshCell(at, named, cell);
             _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, value, held)), 0, LoadSize(held));
             return;
         }
