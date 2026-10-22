@@ -75,6 +75,14 @@ public static class Driver
         // are Switches'.
         List<string> taken;
         try { taken = Switches.Take(args); }
+        // A RANGE OR A NULL REFUSED INSIDE THE COMPILER is a bug in it, not a
+        // word to its user: said with where it came from. A link that stopped
+        // on a negative length said only that, and nothing of where.
+        catch (ArgumentException e) when (e is ArgumentOutOfRangeException or ArgumentNullException)
+        {
+            Console.Error.WriteLine(e.ToString());
+            return Fail(e.Message);
+        }
         catch (ArgumentException e) { return Fail(e.Message); }
         int traceAt = taken.IndexOf("--trace-escape");
         if (traceAt >= 0 && traceAt + 1 < taken.Count)
@@ -179,6 +187,14 @@ public static class Driver
         catch (InvalidDataException e) { return Fail(e.Message); }
         catch (ElfFormatException e) { return Fail(e.Message); }
         catch (IOException e) { return Fail(e.Message); }
+        // A RANGE OR A NULL REFUSED INSIDE THE COMPILER is a bug in it, not a
+        // word to its user: said with where it came from. A link that stopped
+        // on a negative length said only that, and nothing of where.
+        catch (ArgumentException e) when (e is ArgumentOutOfRangeException or ArgumentNullException)
+        {
+            Console.Error.WriteLine(e.ToString());
+            return Fail(e.Message);
+        }
         catch (ArgumentException e) { return Fail(e.Message); }
         catch (CompileError e) { Console.Error.WriteLine(e.ToString()); return 1; }
         catch (LinkException e)

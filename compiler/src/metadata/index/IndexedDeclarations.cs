@@ -514,6 +514,25 @@ public sealed class IndexedDeclarations : IDisposable
             string? key = catalog.BindingKey(assembly, name) ?? Sole(name);
             if (key is not null) Load(key);
         }
+        // EVERY TYPE OF THE PROGRAM'S OWN THAT ANOTHER FILE MAY DECLARE TOO,
+        // under its own key. The unit's own code finds its own type and never
+        // asks the index for the name, so a class library type of the same
+        // name, compiled as another unit of the same project, never reached
+        // it: the program's stayed under the name the library's object
+        // defines (Monomorphiser.MoveAside never saw the two), and the link
+        // found both -- a --nostdlib kernel's own AsyncRuntime beside the
+        // runtime's. Read here, the program's moves aside in this unit as in
+        // every other, and a second program declaration is the error C#
+        // makes it. Loaded, the key is in the receipt, so a library type of
+        // the name added later rebuilds this unit.
+        foreach (TypeDecl type in unit.Types.Where(type => type.Outer is null && !type.Elsewhere
+                     && !type.Mods.HasFlag(Mods.Partial) && !Binder.ClassLibrarySide(type)))
+        {
+            string name = Binder.TypeKey(type);
+            queries.Add(('B', name));
+            string? key = catalog.BindingKey(assembly, name);
+            if (key is not null) Load(key);
+        }
         // AND WHAT THIS UNIT'S OWN CODE NAMES. Its sources are fully parsed,
         // bodies and all, so the types it uses are knowable before binding
         // begins -- and until now nobody looked. The binder met them one
