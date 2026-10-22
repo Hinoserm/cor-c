@@ -7985,6 +7985,32 @@ public sealed partial class Binder
            && UserConversion(had, Type.Bool, explicitToo: false) is MethodSymbol toBool
             ? ConvertByOperator(operand, toBool) : had;
 
+    /// <summary>
+    /// Whether no value of static type <paramref name="from"/> can be a
+    /// <paramref name="to"/> at run time: neither converts to the other, and
+    /// neither is object, an interface or a type parameter, which may hold
+    /// anything.
+    /// </summary>
+    private bool NeverOfType(Type from, Type to)
+    {
+        Type held = from.IsNullableValue ? from.Underlying : from.AsNonNullable();
+        Type wanted = to.IsNullableValue ? to.Underlying : to.AsNonNullable();
+        if (held.IsError || wanted.IsError || held.Prim == Prim.Any || wanted.Prim == Prim.Any) return false;
+        if (held.ParamName is not null || wanted.ParamName is not null) return false;
+        // An interface may hold any of its implementers, boxed ones too.
+        if (held.Symbol is { Kind: TypeKind.Interface }) return false;
+        // A VALUE IS ITS OWN TYPE AND NO OTHER -- a double is never an int,
+        // whatever converts -- and the interfaces it implements.
+        static bool IsValue(Type t) => t.Symbol is { Kind: TypeKind.Struct or TypeKind.Enum }
+            || t.Symbol is null && !t.IsArray && !t.IsPointer && (t.IsNumeric || t.Prim is Prim.Bool or Prim.Char);
+        if (IsValue(held))
+            return !MethodSignatures.SameType(held, wanted) && !(wanted.Symbol is { Kind: TypeKind.Interface } && Convertible(held, wanted));
+        // A reference is never a value; for an interface a subclass may implement it.
+        if (IsValue(wanted)) return true;
+        if (wanted.Symbol is { Kind: TypeKind.Interface }) return false;
+        return !Convertible(held, wanted) && !Convertible(wanted, held);
+    }
+
     private Type? UserLogical(BinaryExpr b, Type operand)
     {
         if (operand.IsError || operand.Prim == Prim.Bool || operand.IsNullableValue || operand.Symbol is not TypeSymbol type) return null;
@@ -17177,7 +17203,16 @@ public sealed partial class Binder
                         }
                         else if (!Convertible(subject, tested) && !subject.IsError && !tested.IsError)
                         {
-                            Error(arm, $"this arm matches '{tested}' and the subject is '{subject}'");
+                            // IN A GENERIC'S COPY THE ARM IS ONE THAT NEVER MATCHES: C# judges
+                            // `value switch { int i => …, string s => … }` once, over T, and
+                            // each instantiation simply takes the arm its value fits.
+                            if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+                            {
+                                LiteralExpr never = new() { Kind = Lit.Bool, Text = "false", IntValue = 0, Line = arm.Line, Col = arm.Col };
+                                arm.When = arm.When is null ? never
+                                         : new BinaryExpr { Op = BinOp.AndAlso, Left = never, Right = arm.When, Line = arm.Line, Col = arm.Col };
+                            }
+                            else Error(arm, $"this arm matches '{tested}' and the subject is '{subject}'");
                         }
 
                         if (arm.Binding is not null)
@@ -17680,6 +17715,15 @@ public sealed partial class Binder
                 Type tested = isx.Type.Name == TypeRef.Same
                             ? operand.AsNonNullable()
                             : Resolve(isx.Type, _thisType);
+
+                // IN A GENERIC'S COPY A TEST THAT CAN NEVER PASS IS FALSE: `v is
+                // int i` in the copy for string. C# judges the generic once, over
+                // T; an ordinary program saying it is refused (CS8121) as before.
+                if ((_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+                    && isx.Type.Name != TypeRef.Same && NeverOfType(operand, tested))
+                {
+                    _r.NeverMatches.Add(isx);
+                }
 
                 // AN ARRAY IS EVERY SEQUENCE INTERFACE OF ITS ELEMENT, as .NET's
                 // arrays are -- IList<T>, ICollection<T>, IReadOnlyList<T> --

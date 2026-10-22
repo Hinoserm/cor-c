@@ -251,6 +251,13 @@ public sealed partial class BindResult
     /// </summary>
     public HashSet<Node> StringTests { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// Type tests a generic's copy can never pass -- `v is int i` in a copy
+    /// for string (Binder) -- which C# judges once, over the type parameter:
+    /// the lowering answers false, the operand still evaluated.
+    /// </summary>
+    public HashSet<Node> NeverMatches { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// Where a switch arm's type-pattern name lives. Per ARM rather than per
     /// switch: two arms may bind the same name at different types.
     /// <summary>
@@ -737,6 +744,7 @@ public sealed partial class BindResult
             }
         }
         StringTests.Remove(n);
+        NeverMatches.Remove(n);
         TestedTypes.Remove(n);
         TestedArrays.Remove(n);
         Shapes.Remove(n);
@@ -774,6 +782,7 @@ public sealed partial class BindResult
         NonNullPatterns.Clear();
         BoxPatterns.Clear();
         StringTests.Clear();
+        NeverMatches.Clear();
         TestedTypes.Clear();
         Shapes.Clear();
         TestedArrays.Clear();

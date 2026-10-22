@@ -3377,6 +3377,14 @@ public sealed partial class Lowering
 
     private VReg EmitIs(IsExpr isx)
     {
+        // A TEST A GENERIC'S COPY CAN NEVER PASS (Binder): false, the operand
+        // still evaluated for what it does.
+        if (_b.NeverMatches.Contains(isx))
+        {
+            if (isx.Operand is not SubjectExpr) Eval(isx.Operand);
+            return _e.Const(0, IrType.I32);
+        }
+
         // `x is U` IN A SHARED METHOD COPY, U its own type parameter (HiddenParam).
         if (HiddenParam(isx.Type) is { } isTo && HeldByReference(_b.TypeOf(isx.Operand)))
         {

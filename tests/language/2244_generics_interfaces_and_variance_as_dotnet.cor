@@ -1,0 +1,68 @@
+// test: generics_interfaces_and_variance_as_dotnet
+// expect-exit: 0
+// expect-output:
+// contra; woof 1 y
+// fido named:fido c
+// 2 1 0
+// 2 0 9 2
+// 10 42 0 thing Main x
+// int 3, string s, null, Double, List`1, Dictionary`2, Int32[]
+// 9 5 |0
+//
+// Generic and interface behaviour as .NET gives it: covariant and
+// contravariant interfaces and delegates, explicit interface members,
+// IComparable<T> constraints over classes and structs, static fields per
+// instantiation, a boxed struct copy, ref/in/out arguments, new()
+// constraints, nameof, type patterns over T, typeof names, stackalloc spans
+// and default values.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+interface IAnimal { string Sound(); }
+interface INamed { string Name { get; } }
+class Dog : IAnimal, INamed, IComparable<Dog>
+{
+    public string Name { get; init; } = "rex";
+    public string Sound() => "woof";
+    string INamed.Name => "named:" + Name;
+    public int CompareTo(Dog? other) => string.Compare(Name, other?.Name, StringComparison.Ordinal);
+}
+static class Counter<T> { public static int Hits; }
+struct Meter : IComparable<Meter> { public int V; public int CompareTo(Meter o) => V.CompareTo(o.V); public void Grow() => V++; }
+class Box<T> where T : class, new() { public T Make() => new T(); }
+class Thing { public override string ToString() => "thing"; }
+
+static class Program
+{
+    static T Max<T>(IEnumerable<T> xs) where T : IComparable<T> { T best = xs.First(); foreach (T x in xs) if (x.CompareTo(best) > 0) best = x; return best; }
+    static void Twice(ref int x) { x *= 2; }
+    static int Read(in Meter m) => m.V;
+    static bool Try(string s, out int v) => int.TryParse(s, out v);
+    static string Kinds<T>(T value) => value switch { int i => "int " + i, string s => "string " + s, null => "null", _ => typeof(T).Name };
+
+    static int Main()
+    {
+        IEnumerable<IAnimal> animals = new List<Dog> { new() };
+        IEnumerable<object> objs = new List<string> { "s" };
+        Func<object> f = () => "x"; Func<string> g = () => "y"; Func<object> h = g;
+        Action<object> ao = o => Console.Write(o + ";"); Action<string> astr = ao; astr("contra");
+        Console.WriteLine(" " + animals.First().Sound() + " " + objs.Count() + " " + h());
+        Dog d = new() { Name = "fido" };
+        INamed n = d;
+        Console.WriteLine(d.Name + " " + n.Name + " " + Max(new[] { new Dog { Name = "a" }, new Dog { Name = "c" }, new Dog { Name = "b" } }).Name);
+        Counter<int>.Hits++; Counter<int>.Hits++; Counter<string>.Hits++;
+        Console.WriteLine(Counter<int>.Hits + " " + Counter<string>.Hits + " " + Counter<long>.Hits);
+        Meter m = new() { V = 1 };
+        IComparable<Meter> boxed = m; m.Grow();
+        Console.WriteLine(m.V + " " + boxed.CompareTo(new Meter { V = 1 }) + " " + Max(new[] { new Meter { V = 3 }, new Meter { V = 9 } }).V + " " + Read(m));
+        int x = 5; Twice(ref x); Try("42", out int parsed); Try("no", out int bad);
+        Console.WriteLine(x + " " + parsed + " " + bad + " " + new Box<Thing>().Make() + " " + nameof(Program.Main) + " " + nameof(x));
+        Console.WriteLine(Kinds(3) + ", " + Kinds("s") + ", " + Kinds<string?>(null) + ", " + Kinds(2.5) + ", " + typeof(List<int>).Name + ", " + typeof(Dictionary<string, int>).Name + ", " + typeof(int[]).Name);
+        Span<int> st = stackalloc int[4]; for (int i = 0; i < st.Length; i++) st[i] = i * i;
+        Console.WriteLine(st[3] + " " + st.Slice(1, 2).ToArray().Sum() + " " + default(int?) + "|" + default(Meter).V);
+        return 0;
+    }
+}

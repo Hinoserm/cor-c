@@ -1,0 +1,31 @@
+// test: type_patterns_in_generic_code
+// expect-exit: 0
+// expect-output:
+// int 3, string s, null, Double
+// int4 str3 chars other
+// 3 3 0
+//
+// A type pattern in generic code is judged once, over T, as C# does: `value
+// switch { int i => …, string s => … }`, `v is int i`, `case int i:` --
+// each instantiation takes the arm its value fits, and one its value can
+// never fit never matches. corc checked each instantiation as if written
+// for its type and refused the arms that could not match.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static string Kinds<T>(T value) => value switch { int i => "int " + i, string s => "string " + s, null => "null", _ => typeof(T).Name };
+    static string Is<T>(T v) => v is int i ? "int" + i : v is string s ? "str" + s.Length : v is IEnumerable<char> e ? "chars" : "other";
+    static int Sum<T>(IEnumerable<T> xs) { int n = 0; foreach (T x in xs) { switch (x) { case int i: n += i; break; case string s: n += s.Length; break; } } return n; }
+
+    static int Main()
+    {
+        Console.WriteLine(Kinds(3) + ", " + Kinds("s") + ", " + Kinds<string?>(null) + ", " + Kinds(2.5));
+        Console.WriteLine(Is(4) + " " + Is("abc") + " " + Is(new List<char>()) + " " + Is(1.5));
+        Console.WriteLine(Sum(new[] { 1, 2 }) + " " + Sum(new[] { "ab", "c" }) + " " + Sum(new[] { 1.5 }));
+        return 0;
+    }
+}
