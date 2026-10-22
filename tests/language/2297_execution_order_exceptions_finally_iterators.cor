@@ -1,0 +1,111 @@
+// test: execution_order_exceptions_finally_iterators
+// expect-exit: 0
+// expect-output:
+// yield 0 | yield 1 | yield 2 | numbers done
+// 10,-2
+// open risky1 | finally 1 | close risky1 | open risky2 | caught app 2 | finally 2 | close risky2
+// open risky3 | finally 3 | close risky3 | outer three
+// wrapped 8 inner 7
+// 3,3,3,10,20
+// 2 3
+// posneg 203
+// OverflowException
+// d 1
+//
+// A whole small program about the order things run in: an iterator's
+// finally when its walk is broken off, using-declarations closed after
+// finally blocks, an exception filter on a property, a throw out of a using
+// and a finally, an exception wrapped with its inner one, closures over a
+// for variable (shared) and a foreach variable (one each), a local
+// function's finally after its return value is made, checked overflow --
+// every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Resource : IDisposable
+{
+    private readonly string _name;
+    private readonly List<string> _log;
+    public Resource(string name, List<string> log) { _name = name; _log = log; log.Add("open " + name); }
+    public void Dispose() => _log.Add("close " + _name);
+}
+
+sealed class AppException : Exception
+{
+    public int Code { get; }
+    public AppException(string message, int code, Exception? inner = null) : base(message, inner) { Code = code; }
+}
+
+static class Program
+{
+    static readonly List<string> Log = new();
+
+    static IEnumerable<int> Numbers(int n)
+    {
+        try
+        {
+            for (int i = 0; i < n; i++) { Log.Add("yield " + i); yield return i; }
+        }
+        finally { Log.Add("numbers done"); }
+    }
+
+    static int Risky(int x)
+    {
+        using var r = new Resource("risky" + x, Log);
+        try
+        {
+            if (x == 2) throw new AppException("two", 2);
+            if (x == 3) throw new InvalidOperationException("three");
+            return x * 10;
+        }
+        catch (AppException e) when (e.Code == 2)
+        {
+            Log.Add("caught app " + e.Code);
+            return -2;
+        }
+        finally
+        {
+            Log.Add("finally " + x);
+        }
+    }
+
+    static int Main()
+    {
+        foreach (int n in Numbers(5)) { if (n == 2) break; }
+        Console.WriteLine(string.Join(" | ", Log)); Log.Clear();
+        Console.WriteLine(string.Join(",", Enumerable.Range(1, 2).Select(Risky)));
+        Console.WriteLine(string.Join(" | ", Log)); Log.Clear();
+        try { Risky(3); }
+        catch (InvalidOperationException e) { Log.Add("outer " + e.Message); }
+        Console.WriteLine(string.Join(" | ", Log)); Log.Clear();
+        try
+        {
+            try { throw new AppException("inner", 7); }
+            catch (AppException e) { throw new AppException("wrapped", 8, e); }
+        }
+        catch (AppException e) { Console.WriteLine(e.Message + " " + e.Code + " " + e.InnerException?.Message + " " + ((AppException)e.InnerException!).Code); }
+        var actions = new List<Func<int>>();
+        for (int i = 0; i < 3; i++) actions.Add(() => i);
+        foreach (int j in new[] { 10, 20 }) actions.Add(() => j);
+        Console.WriteLine(string.Join(",", actions.Select(a => a())));
+        int counter = 0;
+        Func<int> next = () => ++counter;
+        next(); next();
+        Console.WriteLine(counter + " " + next());
+        string Outcome(int k)
+        {
+            try { return k > 0 ? "pos" : throw new ArgumentException("neg"); }
+            catch (ArgumentException) { return "neg"; }
+            finally { counter += 100; }
+        }
+        Console.WriteLine(Outcome(1) + Outcome(-1) + " " + counter);
+        try { checked { int big = int.MaxValue; big++; } }
+        catch (OverflowException e) { Console.WriteLine(e.GetType().Name); }
+        var data = new AppException("d", 1);
+        Console.WriteLine(data.Message + " " + data.Code);
+        return 0;
+    }
+}
