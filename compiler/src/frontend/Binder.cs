@@ -21008,33 +21008,39 @@ public sealed partial class Binder
 
             if (invoke != null)
             {
+                // EACH PARAMETER AS THE DELEGATE'S USE HAS IT: a local function
+                // `bool Input(Instr i, VReg? r)` is a Func<Instr, VReg?, bool>,
+                // whose specialisation's Invoke takes a VReg -- every call
+                // handing it a VReg? was warned of, as a List<Node?>'s Add was
+                // before the receiver's use reached it.
                 for (int i = 0; i < args.Count; i++)
                 {
+                    Type taken = ContextualParameterType(targetType, invoke, i);
                     // `out var x` AND `out _` take their type from the
                     // parameter here too, as a method call's do: a local
                     // function called `Judge(g, b, call, out _)` had nowhere
                     // for its discard to go.
                     if (c.Args[i] is RefArgExpr { Declare: null, Name: not null } inferred)
                     {
-                        LocalSym made = new(NewSlot(), invoke.Params[i].Type, inferred.Name);
+                        LocalSym made = new(NewSlot(), taken, inferred.Name);
                         Declare(inferred, inferred.Name, made);
                         _assigned.Add(made);
                         CheckExpr(inferred.Target);
-                        args[i] = invoke.Params[i].Type;
+                        args[i] = taken;
                         continue;
                     }
                     if (c.Args[i] is LambdaExpr invoked)
                     {
-                        args[i] = CheckLambda(invoked, invoke.Params[i].Type);
+                        args[i] = CheckLambda(invoked, taken);
                     }
                     else if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } || HoldsLambda(c.Args[i]) || Deferred(c.Args[i]))
                     {
                         Type? saved = _wanted;
-                        _wanted = invoke.Params[i].Type;
+                        _wanted = taken;
                         args[i] = CheckExpr(c.Args[i]);
                         _wanted = saved;
                     }
-                    CheckAssignable(args[i], invoke.Params[i].Type, c.Args[i],
+                    CheckAssignable(args[i], taken, c.Args[i],
                                     $"argument {i + 1} of '{targetType}'");
                 }
 
@@ -21046,7 +21052,7 @@ public sealed partial class Binder
                     _r.LocalFunctionCalls[c] = function;
                     _r.LocalFunctionCallTargets.Add((NameExpr)c.Target);
                 }
-                return invoke.Returns;
+                return ContextualMemberResult(targetType, invoke);
             }
 
             if (!targetType.IsError)
