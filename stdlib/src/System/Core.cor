@@ -6499,6 +6499,41 @@ static class NumberRead {
 // `byte.TryParse(field, out b)` is what a program that reads a byte writes,
 // and because the range check belongs to the TYPE rather than to the caller.
 
+/// The bit counts the numbers' generic-math members answer with (PopCount,
+/// LeadingZeroCount, TrailingZeroCount, Log2), here and not in numerics.cor's
+/// BitOperations: this file is compiled freestanding into the kernel, which
+/// carries no numerics.cor.
+static class __Bits {
+    public static int PopCount(uint value) {
+        value = value - ((value >> 1) & 0x55555555u);
+        value = (value & 0x33333333u) + ((value >> 2) & 0x33333333u);
+        return (int)((((value + (value >> 4)) & 0x0F0F0F0Fu) * 0x01010101u) >> 24);
+    }
+    public static int PopCount(ulong value) { return PopCount((uint)value) + PopCount((uint)(value >> 32)); }
+    public static int LeadingZeroCount(uint value) {
+        if (value == 0) { return 32; }
+        int n = 0;
+        while ((value & 0x80000000u) == 0) { value <<= 1; n++; }
+        return n;
+    }
+    public static int LeadingZeroCount(ulong value) {
+        uint high = (uint)(value >> 32);
+        return high != 0 ? LeadingZeroCount(high) : 32 + LeadingZeroCount((uint)value);
+    }
+    public static int TrailingZeroCount(uint value) {
+        if (value == 0) { return 32; }
+        int n = 0;
+        while ((value & 1u) == 0) { value >>= 1; n++; }
+        return n;
+    }
+    public static int TrailingZeroCount(ulong value) {
+        uint low = (uint)value;
+        return low != 0 ? TrailingZeroCount(low) : 32 + TrailingZeroCount((uint)(value >> 32));
+    }
+    public static int Log2(uint value) { return value == 0 ? 0 : 31 - LeadingZeroCount(value); }
+    public static int Log2(ulong value) { return value == 0 ? 0 : 63 - LeadingZeroCount(value); }
+}
+
 static class SByte {
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
@@ -6508,10 +6543,10 @@ static class SByte {
     public static sbyte Clamp(sbyte value, sbyte min, sbyte max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(sbyte value) => value < 0 ? -1 : value > 0 ? 1 : 0;
     public static bool IsPow2(sbyte value) => value > 0 && (value & (value - 1)) == 0;
-    public static sbyte Log2(sbyte value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (sbyte)System.Numerics.BitOperations.Log2((uint)value); }
-    public static sbyte PopCount(sbyte value) => (sbyte)System.Numerics.BitOperations.PopCount((uint)(byte)value);
-    public static sbyte LeadingZeroCount(sbyte value) => (sbyte)(System.Numerics.BitOperations.LeadingZeroCount((uint)(byte)value) - 24);
-    public static sbyte TrailingZeroCount(sbyte value) => value == 0 ? (sbyte)8 : (sbyte)System.Numerics.BitOperations.TrailingZeroCount((uint)(byte)value);
+    public static sbyte Log2(sbyte value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (sbyte)__Bits.Log2((uint)value); }
+    public static sbyte PopCount(sbyte value) => (sbyte)__Bits.PopCount((uint)(byte)value);
+    public static sbyte LeadingZeroCount(sbyte value) => (sbyte)(__Bits.LeadingZeroCount((uint)(byte)value) - 24);
+    public static sbyte TrailingZeroCount(sbyte value) => value == 0 ? (sbyte)8 : (sbyte)__Bits.TrailingZeroCount((uint)(byte)value);
     public static sbyte RotateLeft(sbyte value, int rotateAmount) => (sbyte)((byte)((byte)value << (rotateAmount & 7)) | (byte)((byte)value >> ((8 - rotateAmount) & 7)));
     public static sbyte RotateRight(sbyte value, int rotateAmount) => (sbyte)((byte)((byte)value >> (rotateAmount & 7)) | (byte)((byte)value << ((8 - rotateAmount) & 7)));
     public static bool IsEvenInteger(sbyte value) => (value & 1) == 0;
@@ -6691,10 +6726,10 @@ static class Int16 {
     public static short Clamp(short value, short min, short max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(short value) => value < 0 ? -1 : value > 0 ? 1 : 0;
     public static bool IsPow2(short value) => value > 0 && (value & (value - 1)) == 0;
-    public static short Log2(short value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (short)System.Numerics.BitOperations.Log2((uint)value); }
-    public static short PopCount(short value) => (short)System.Numerics.BitOperations.PopCount((uint)(ushort)value);
-    public static short LeadingZeroCount(short value) => (short)(System.Numerics.BitOperations.LeadingZeroCount((uint)(ushort)value) - 16);
-    public static short TrailingZeroCount(short value) => value == 0 ? (short)16 : (short)System.Numerics.BitOperations.TrailingZeroCount((uint)(ushort)value);
+    public static short Log2(short value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (short)__Bits.Log2((uint)value); }
+    public static short PopCount(short value) => (short)__Bits.PopCount((uint)(ushort)value);
+    public static short LeadingZeroCount(short value) => (short)(__Bits.LeadingZeroCount((uint)(ushort)value) - 16);
+    public static short TrailingZeroCount(short value) => value == 0 ? (short)16 : (short)__Bits.TrailingZeroCount((uint)(ushort)value);
     public static short RotateLeft(short value, int rotateAmount) => (short)((ushort)((ushort)value << (rotateAmount & 15)) | (ushort)((ushort)value >> ((16 - rotateAmount) & 15)));
     public static short RotateRight(short value, int rotateAmount) => (short)((ushort)((ushort)value >> (rotateAmount & 15)) | (ushort)((ushort)value << ((16 - rotateAmount) & 15)));
     public static bool IsEvenInteger(short value) => (value & 1) == 0;
@@ -6888,10 +6923,10 @@ static class UInt16 {
     public static ushort Clamp(ushort value, ushort min, ushort max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(ushort value) => value > 0 ? 1 : 0;
     public static bool IsPow2(ushort value) => value > 0 && (value & (value - 1)) == 0;
-    public static ushort Log2(ushort value) => (ushort)System.Numerics.BitOperations.Log2((uint)value);
-    public static ushort PopCount(ushort value) => (ushort)System.Numerics.BitOperations.PopCount((uint)(ushort)value);
-    public static ushort LeadingZeroCount(ushort value) => (ushort)(System.Numerics.BitOperations.LeadingZeroCount((uint)(ushort)value) - 16);
-    public static ushort TrailingZeroCount(ushort value) => value == 0 ? (ushort)16 : (ushort)System.Numerics.BitOperations.TrailingZeroCount((uint)(ushort)value);
+    public static ushort Log2(ushort value) => (ushort)__Bits.Log2((uint)value);
+    public static ushort PopCount(ushort value) => (ushort)__Bits.PopCount((uint)(ushort)value);
+    public static ushort LeadingZeroCount(ushort value) => (ushort)(__Bits.LeadingZeroCount((uint)(ushort)value) - 16);
+    public static ushort TrailingZeroCount(ushort value) => value == 0 ? (ushort)16 : (ushort)__Bits.TrailingZeroCount((uint)(ushort)value);
     public static ushort RotateLeft(ushort value, int rotateAmount) => (ushort)((ushort)((ushort)value << (rotateAmount & 15)) | (ushort)((ushort)value >> ((16 - rotateAmount) & 15)));
     public static ushort RotateRight(ushort value, int rotateAmount) => (ushort)((ushort)((ushort)value >> (rotateAmount & 15)) | (ushort)((ushort)value << ((16 - rotateAmount) & 15)));
     public static bool IsEvenInteger(ushort value) => (value & 1) == 0;
@@ -7084,10 +7119,10 @@ static class UInt32 {
     public static uint Clamp(uint value, uint min, uint max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(uint value) => value > 0 ? 1 : 0;
     public static bool IsPow2(uint value) => value > 0 && (value & (value - 1)) == 0;
-    public static uint Log2(uint value) => (uint)System.Numerics.BitOperations.Log2((uint)value);
-    public static uint PopCount(uint value) => (uint)System.Numerics.BitOperations.PopCount((uint)(uint)value);
-    public static uint LeadingZeroCount(uint value) => (uint)(System.Numerics.BitOperations.LeadingZeroCount((uint)(uint)value) - 0);
-    public static uint TrailingZeroCount(uint value) => value == 0 ? (uint)32 : (uint)System.Numerics.BitOperations.TrailingZeroCount((uint)(uint)value);
+    public static uint Log2(uint value) => (uint)__Bits.Log2((uint)value);
+    public static uint PopCount(uint value) => (uint)__Bits.PopCount((uint)(uint)value);
+    public static uint LeadingZeroCount(uint value) => (uint)(__Bits.LeadingZeroCount((uint)(uint)value) - 0);
+    public static uint TrailingZeroCount(uint value) => value == 0 ? (uint)32 : (uint)__Bits.TrailingZeroCount((uint)(uint)value);
     public static uint RotateLeft(uint value, int rotateAmount) => (uint)((uint)((uint)value << (rotateAmount & 31)) | (uint)((uint)value >> ((32 - rotateAmount) & 31)));
     public static uint RotateRight(uint value, int rotateAmount) => (uint)((uint)((uint)value >> (rotateAmount & 31)) | (uint)((uint)value << ((32 - rotateAmount) & 31)));
     public static bool IsEvenInteger(uint value) => (value & 1) == 0;
@@ -7280,10 +7315,10 @@ static class Int64 {
     public static long Clamp(long value, long min, long max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(long value) => value < 0 ? -1 : value > 0 ? 1 : 0;
     public static bool IsPow2(long value) => value > 0 && (value & (value - 1)) == 0;
-    public static long Log2(long value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (long)System.Numerics.BitOperations.Log2((ulong)value); }
-    public static long PopCount(long value) => (long)System.Numerics.BitOperations.PopCount((ulong)(ulong)value);
-    public static long LeadingZeroCount(long value) => (long)(System.Numerics.BitOperations.LeadingZeroCount((ulong)(ulong)value) - 0);
-    public static long TrailingZeroCount(long value) => value == 0 ? (long)64 : (long)System.Numerics.BitOperations.TrailingZeroCount((ulong)(ulong)value);
+    public static long Log2(long value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (long)__Bits.Log2((ulong)value); }
+    public static long PopCount(long value) => (long)__Bits.PopCount((ulong)(ulong)value);
+    public static long LeadingZeroCount(long value) => (long)(__Bits.LeadingZeroCount((ulong)(ulong)value) - 0);
+    public static long TrailingZeroCount(long value) => value == 0 ? (long)64 : (long)__Bits.TrailingZeroCount((ulong)(ulong)value);
     public static long RotateLeft(long value, int rotateAmount) => (long)((ulong)((ulong)value << (rotateAmount & 63)) | (ulong)((ulong)value >> ((64 - rotateAmount) & 63)));
     public static long RotateRight(long value, int rotateAmount) => (long)((ulong)((ulong)value >> (rotateAmount & 63)) | (ulong)((ulong)value << ((64 - rotateAmount) & 63)));
     public static bool IsEvenInteger(long value) => (value & 1) == 0;
@@ -7480,10 +7515,10 @@ static class Int32 {
     public static int Clamp(int value, int min, int max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(int value) => value < 0 ? -1 : value > 0 ? 1 : 0;
     public static bool IsPow2(int value) => value > 0 && (value & (value - 1)) == 0;
-    public static int Log2(int value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (int)System.Numerics.BitOperations.Log2((uint)value); }
-    public static int PopCount(int value) => (int)System.Numerics.BitOperations.PopCount((uint)(uint)value);
-    public static int LeadingZeroCount(int value) => (int)(System.Numerics.BitOperations.LeadingZeroCount((uint)(uint)value) - 0);
-    public static int TrailingZeroCount(int value) => value == 0 ? (int)32 : (int)System.Numerics.BitOperations.TrailingZeroCount((uint)(uint)value);
+    public static int Log2(int value) { if (value < 0) { throw new ArgumentOutOfRangeException(nameof(value), "Value must be positive."); } return (int)__Bits.Log2((uint)value); }
+    public static int PopCount(int value) => (int)__Bits.PopCount((uint)(uint)value);
+    public static int LeadingZeroCount(int value) => (int)(__Bits.LeadingZeroCount((uint)(uint)value) - 0);
+    public static int TrailingZeroCount(int value) => value == 0 ? (int)32 : (int)__Bits.TrailingZeroCount((uint)(uint)value);
     public static int RotateLeft(int value, int rotateAmount) => (int)((uint)((uint)value << (rotateAmount & 31)) | (uint)((uint)value >> ((32 - rotateAmount) & 31)));
     public static int RotateRight(int value, int rotateAmount) => (int)((uint)((uint)value >> (rotateAmount & 31)) | (uint)((uint)value << ((32 - rotateAmount) & 31)));
     public static bool IsEvenInteger(int value) => (value & 1) == 0;
@@ -7957,10 +7992,10 @@ static class UInt64 {
     public static ulong Clamp(ulong value, ulong min, ulong max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(ulong value) => value > 0 ? 1 : 0;
     public static bool IsPow2(ulong value) => value > 0 && (value & (value - 1)) == 0;
-    public static ulong Log2(ulong value) => (ulong)System.Numerics.BitOperations.Log2((ulong)value);
-    public static ulong PopCount(ulong value) => (ulong)System.Numerics.BitOperations.PopCount((ulong)(ulong)value);
-    public static ulong LeadingZeroCount(ulong value) => (ulong)(System.Numerics.BitOperations.LeadingZeroCount((ulong)(ulong)value) - 0);
-    public static ulong TrailingZeroCount(ulong value) => value == 0 ? (ulong)64 : (ulong)System.Numerics.BitOperations.TrailingZeroCount((ulong)(ulong)value);
+    public static ulong Log2(ulong value) => (ulong)__Bits.Log2((ulong)value);
+    public static ulong PopCount(ulong value) => (ulong)__Bits.PopCount((ulong)(ulong)value);
+    public static ulong LeadingZeroCount(ulong value) => (ulong)(__Bits.LeadingZeroCount((ulong)(ulong)value) - 0);
+    public static ulong TrailingZeroCount(ulong value) => value == 0 ? (ulong)64 : (ulong)__Bits.TrailingZeroCount((ulong)(ulong)value);
     public static ulong RotateLeft(ulong value, int rotateAmount) => (ulong)((ulong)((ulong)value << (rotateAmount & 63)) | (ulong)((ulong)value >> ((64 - rotateAmount) & 63)));
     public static ulong RotateRight(ulong value, int rotateAmount) => (ulong)((ulong)((ulong)value >> (rotateAmount & 63)) | (ulong)((ulong)value << ((64 - rotateAmount) & 63)));
     public static bool IsEvenInteger(ulong value) => (value & 1) == 0;
@@ -8153,10 +8188,10 @@ static class Byte {
     public static byte Clamp(byte value, byte min, byte max) { if (min > max) { throw new ArgumentException("'" + min + "' cannot be greater than " + max + "."); } return value < min ? min : value > max ? max : value; }
     public static int Sign(byte value) => value > 0 ? 1 : 0;
     public static bool IsPow2(byte value) => value > 0 && (value & (value - 1)) == 0;
-    public static byte Log2(byte value) => (byte)System.Numerics.BitOperations.Log2((uint)value);
-    public static byte PopCount(byte value) => (byte)System.Numerics.BitOperations.PopCount((uint)(byte)value);
-    public static byte LeadingZeroCount(byte value) => (byte)(System.Numerics.BitOperations.LeadingZeroCount((uint)(byte)value) - 24);
-    public static byte TrailingZeroCount(byte value) => value == 0 ? (byte)8 : (byte)System.Numerics.BitOperations.TrailingZeroCount((uint)(byte)value);
+    public static byte Log2(byte value) => (byte)__Bits.Log2((uint)value);
+    public static byte PopCount(byte value) => (byte)__Bits.PopCount((uint)(byte)value);
+    public static byte LeadingZeroCount(byte value) => (byte)(__Bits.LeadingZeroCount((uint)(byte)value) - 24);
+    public static byte TrailingZeroCount(byte value) => value == 0 ? (byte)8 : (byte)__Bits.TrailingZeroCount((uint)(byte)value);
     public static byte RotateLeft(byte value, int rotateAmount) => (byte)((byte)((byte)value << (rotateAmount & 7)) | (byte)((byte)value >> ((8 - rotateAmount) & 7)));
     public static byte RotateRight(byte value, int rotateAmount) => (byte)((byte)((byte)value >> (rotateAmount & 7)) | (byte)((byte)value << ((8 - rotateAmount) & 7)));
     public static bool IsEvenInteger(byte value) => (value & 1) == 0;
@@ -8354,7 +8389,7 @@ static class Double {
     public static bool IsInteger(double value) => IsFinite(value) && value == Math.Truncate(value);
     public static bool IsEvenInteger(double value) => IsInteger(value) && Math.Abs(value % 2) == 0;
     public static bool IsOddInteger(double value) => IsInteger(value) && Math.Abs(value % 2) == 1;
-    public static bool IsPow2(double value) { long bits = BitConverter.DoubleToInt64Bits(value); if (bits <= 0) { return false; } int exponent = (int)(bits >> 52); long fraction = bits & 0xFFFFFFFFFFFFFL; if (exponent == 0) { return System.Numerics.BitOperations.PopCount((ulong)fraction) == 1; } return exponent != 0x7FF && fraction == 0; }
+    public static bool IsPow2(double value) { long bits = BitConverter.DoubleToInt64Bits(value); if (bits <= 0) { return false; } int exponent = (int)(bits >> 52); long fraction = bits & 0xFFFFFFFFFFFFFL; if (exponent == 0) { return __Bits.PopCount((ulong)fraction) == 1; } return exponent != 0x7FF && fraction == 0; }
     public static double Log2(double value) => Math.Log2(value);
     public static double MaxMagnitude(double x, double y) { double ax = Math.Abs(x); double ay = Math.Abs(y); if (ax > ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? y : x; } return y; }
     public static double MinMagnitude(double x, double y) { double ax = Math.Abs(x); double ay = Math.Abs(y); if (ax < ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? x : y; } return y; }
@@ -8683,7 +8718,7 @@ static class Single {
     public static bool IsInteger(float value) => IsFinite(value) && value == MathF.Truncate(value);
     public static bool IsEvenInteger(float value) => IsInteger(value) && MathF.Abs(value % 2) == 0;
     public static bool IsOddInteger(float value) => IsInteger(value) && MathF.Abs(value % 2) == 1;
-    public static bool IsPow2(float value) { int bits = BitConverter.SingleToInt32Bits(value); if (bits <= 0) { return false; } int exponent = bits >> 23; int fraction = bits & 0x7FFFFF; if (exponent == 0) { return System.Numerics.BitOperations.PopCount((uint)fraction) == 1; } return exponent != 0xFF && fraction == 0; }
+    public static bool IsPow2(float value) { int bits = BitConverter.SingleToInt32Bits(value); if (bits <= 0) { return false; } int exponent = bits >> 23; int fraction = bits & 0x7FFFFF; if (exponent == 0) { return __Bits.PopCount((uint)fraction) == 1; } return exponent != 0xFF && fraction == 0; }
     public static float Log2(float value) => MathF.Log2(value);
     public static float MaxMagnitude(float x, float y) { float ax = MathF.Abs(x); float ay = MathF.Abs(y); if (ax > ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? y : x; } return y; }
     public static float MinMagnitude(float x, float y) { float ax = MathF.Abs(x); float ay = MathF.Abs(y); if (ax < ay || IsNaN(ax)) { return x; } if (ax == ay) { return IsNegative(x) ? x : y; } return y; }
