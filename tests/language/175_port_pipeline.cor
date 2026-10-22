@@ -14,6 +14,7 @@
 // `echo hi | wc -c` answers 3: two letters and the newline.
 
 using System.IO;
+using System;
 
 class Program
 {

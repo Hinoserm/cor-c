@@ -15,6 +15,7 @@
 // came from the same program run on .NET.
 
 using System.Text;
+using System;
 
 class Program
 {

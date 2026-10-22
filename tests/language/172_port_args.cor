@@ -10,6 +10,7 @@
 // Exercise a real child, including spaces and an empty argument.
 using System.Diagnostics;
 using System.IO;
+using System;
 
 class Program
 {

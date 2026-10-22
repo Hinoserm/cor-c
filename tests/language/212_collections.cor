@@ -23,6 +23,7 @@
 // what ContainsKey and the indexer answer in two.
 
 using System;
+using System.Collections.Generic;
 
 class Person
 {

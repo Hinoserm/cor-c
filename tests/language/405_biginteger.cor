@@ -18,6 +18,7 @@
 // line came from the same program run on .NET.
 
 using System.Numerics;
+using System;
 
 class Program
 {

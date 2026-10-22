@@ -12,6 +12,7 @@
 // StringBuilder including growth past its first buffer.
 
 using System.Text;
+using System;
 
 static class Program
 {

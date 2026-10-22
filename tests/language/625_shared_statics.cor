@@ -16,6 +16,7 @@
 // copy of both and reaches the library's through the GOT.
 
 using System.IO;
+using System;
 
 static class Counted
 {

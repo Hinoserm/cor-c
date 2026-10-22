@@ -12,6 +12,7 @@
 // and comparisons between chars.
 
 using System.Text;
+using System;
 
 static class Program
 {

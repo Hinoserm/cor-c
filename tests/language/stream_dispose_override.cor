@@ -4,6 +4,7 @@
 // stream disposal ok
 
 using System.IO;
+using System;
 
 sealed class ProbeStream : Stream
 {

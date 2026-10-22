@@ -19,6 +19,7 @@
 // graceful skip: whatever it was, the test does not need it.
 
 using System.IO;
+using System;
 
 static class Program
 {
