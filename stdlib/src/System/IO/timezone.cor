@@ -106,7 +106,10 @@ sealed class TimeZoneInfo : IEquatable<TimeZoneInfo>
     static TimeZoneInfo FindLocal()
     {
         string? tz = Environment.GetEnvironmentVariable("TZ");
-        if (tz != null && tz.Length > 0)
+        // TZ SET AND EMPTY IS UTC, as .NET's TryGetLocalTzFile and glibc
+        // take it; only TZ unset falls back to /etc/localtime.
+        if (tz != null && tz.Length == 0) return Utc;
+        if (tz != null)
         {
             string name = tz.StartsWith(":") ? tz.Substring(1) : tz;
             TimeZoneInfo? named = TryFile(name, name);
