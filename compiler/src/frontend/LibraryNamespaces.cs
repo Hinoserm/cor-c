@@ -93,7 +93,7 @@ internal static class LibraryNamespaces
             "RegexParseError", "RegexParseException");
         In("System.Threading", "CancellationToken", "CancellationTokenRegistration", "CancellationTokenSource",
             "ManualResetEventSlim", "Monitor", "SynchronizationLockException", "ThreadPool", "Timeout");
-        In("System.Threading.Tasks", "Task", "TaskCanceledException", "TaskCompletionSource",
+        In("System.Threading.Tasks", "Parallel", "ParallelLoopResult", "Task", "TaskCanceledException", "TaskCompletionSource",
             "TaskCompletionSource`1", "TaskStatus", "Task`1");
         return table;
     }

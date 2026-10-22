@@ -2067,7 +2067,7 @@ public sealed partial class Lowering
         ("System.Text", "StringBuilder Encoding UTF8Encoding ASCIIEncoding UnicodeEncoding UTF32Encoding Rune StringRuneEnumerator"),
         ("System.Text.RegularExpressions", "RegexOptions RegexParseError RegexParseException RegexMatchTimeoutException MatchEvaluator Capture "
             + "Group CaptureCollection GroupCollection Match MatchCollection Regex"),
-        ("System.Threading.Tasks", "Task TaskStatus TaskCompletionSource TaskCanceledException TaskFactory TaskCreationOptions "
+        ("System.Threading.Tasks", "Parallel ParallelLoopResult Task TaskStatus TaskCompletionSource TaskCanceledException TaskFactory TaskCreationOptions "
             + "TaskContinuationOptions TaskScheduler ValueTask TaskAsyncEnumerableExtensions"),
         ("System.Threading", "CancellationTokenSource CancellationToken CancellationTokenRegistration Timeout Monitor ThreadPool "
             + "SynchronizationLockException Interlocked Volatile Thread"),

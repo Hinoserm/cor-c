@@ -9816,6 +9816,10 @@ public sealed partial class Binder
         closure.InlineDecided = true;                    // laid out here, nothing in line
 
         Type closureReturns = ContextualMemberResult(wanted, invoke);
+        // A LAMBDA FOR A DELEGATE THAT RETURNS NOTHING has a statement for its
+        // body (CS0201): `Action<string> a = s => s.Length;` drops a value.
+        if (lam.Body is not null && closureReturns.IsVoid && !lam.Async && !StatementExpression(lam.Body))
+            Error(lam.Body, "CS0201: Only assignment, call, increment, decrement, await, and new object expressions can be used as a statement");
         MethodDecl body = new()
         {
             // RETURNED BY REFERENCE AS THE DELEGATE SAYS: for `delegate ref
@@ -10478,7 +10482,12 @@ public sealed partial class Binder
                 // A concrete delegate result is a constraint too. Ignoring
                 // failure keeps (for example) the int-returning Sum overload
                 // eligible for a lambda whose result is long or double.
-                if (!Unify(m, gives, made, bound)) return false;
+                // NOT A VOID ONE (C# 12.6.3.7 infers from the result only when
+                // the delegate has one): `Each(xs, v => sum += v)` over an
+                // Action<T> throws the value away, and whether its body may
+                // stand as a statement is asked where the lambda is fitted
+                // (LambdaFits). Unified, void and long refused the call.
+                if (!gives.IsVoid && !Unify(m, gives, made, bound)) return false;
             }
         }
 

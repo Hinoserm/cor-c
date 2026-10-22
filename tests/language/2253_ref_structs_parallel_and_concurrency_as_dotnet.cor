@@ -1,0 +1,69 @@
+// test: ref_structs_parallel_and_concurrency_as_dotnet
+// expect-exit: 0
+// expect-output:
+// 6 3.5 42 28
+// using,closed 14
+// 4000 100 81 False made True
+// 5050 3 1 seven
+//
+// `ref struct` declarations; Parallel.For, ForEach and Invoke, an
+// iteration's exception an AggregateException; readonly structs with
+// checked operators, anonymous methods, await using over IAsyncDisposable,
+// await foreach over an async iterator, Interlocked across threads,
+// ConcurrentDictionary, Lazy<T>, and unsafe fixed pointers and sizeof --
+// each as .NET gives it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+ref struct Window { public Span<int> Data; public Window(Span<int> d) { Data = d; } public int Sum() { int s = 0; foreach (int v in Data) s += v; return s; } }
+readonly struct Money { public readonly decimal Amount; public Money(decimal a) { Amount = a; } public static Money operator +(Money a, Money b) => new(a.Amount + b.Amount); public static Money operator checked +(Money a, Money b) => new(checked(a.Amount + b.Amount)); }
+sealed class Conn : IAsyncDisposable { public List<string> Log = new(); public ValueTask DisposeAsync() { Log.Add("closed"); return ValueTask.CompletedTask; } }
+
+static class Program
+{
+    static async IAsyncEnumerable<int> Numbers(int n) { for (int i = 0; i < n; i++) { await Task.Yield(); yield return i * i; } }
+
+    static unsafe int Unsafe()
+    {
+        int[] arr = { 1, 2, 3 };
+        fixed (int* p = arr) { *(p + 1) = 20; }
+        return arr[1] + sizeof(long);
+    }
+
+    static async Task<int> Main()
+    {
+        Span<int> backing = stackalloc int[] { 1, 2, 3 };
+        Window w = new(backing);
+        Money m = new Money(1.5m) + new Money(2m);
+        Func<int, int> twice = delegate (int x) { return x * 2; };
+        Action nothing = delegate { };
+        nothing();
+        Console.WriteLine(w.Sum() + " " + m.Amount + " " + twice(21) + " " + Unsafe());
+        Conn c = new();
+        await using (c) { c.Log.Add("using"); }
+        int total = 0;
+        await foreach (int v in Numbers(4)) total += v;
+        Console.WriteLine(string.Join(",", c.Log) + " " + total);
+        int counter = 0;
+        Thread[] threads = Enumerable.Range(0, 4).Select(_ => new Thread(() => { for (int i = 0; i < 1000; i++) Interlocked.Increment(ref counter); })).ToArray();
+        foreach (Thread t in threads) t.Start();
+        foreach (Thread t in threads) t.Join();
+        ConcurrentDictionary<int, int> squares = new();
+        Parallel.For(0, 100, i => squares[i] = i * i);
+        Lazy<string> lazy = new(() => "made");
+        Console.WriteLine(counter + " " + squares.Count + " " + squares[9] + " " + lazy.IsValueCreated + " " + lazy.Value + " " + lazy.IsValueCreated);
+        long sum = 0;
+        Parallel.ForEach(Enumerable.Range(1, 100), v => Interlocked.Add(ref sum, v));
+        int a1 = 0, b1 = 0;
+        Parallel.Invoke(() => a1 = 1, () => b1 = 2);
+        try { Parallel.For(0, 10, i => { if (i == 7) throw new InvalidOperationException("seven"); }); }
+        catch (AggregateException e) { Console.WriteLine(sum + " " + (a1 + b1) + " " + e.InnerExceptions.Count + " " + e.InnerExceptions[0].Message); }
+        return 0;
+    }
+}

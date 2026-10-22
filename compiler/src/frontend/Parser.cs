@@ -1551,6 +1551,13 @@ public sealed class Parser
                     m |= Mods.Partial;
                     break;
 
+                // `ref struct` (C# 7.2): a struct that lives on the stack only.
+                // The rule is what a program may do with one; one C# accepts
+                // runs the same as any struct here.
+                case Tok.KwRef when _t[_i + 1].Kind == Tok.KwStruct
+                                    || _t[_i + 1] is { Kind: Tok.Ident, Text: "partial" } && _t[_i + 2].Kind == Tok.KwStruct:
+                    break;
+
                 // `file` (C# 11): a type seen in its own file only. Taken as
                 // an internal one, which every program that compiles as C#
                 // means the same by -- two files each with a `file` type of
@@ -1611,6 +1618,7 @@ public sealed class Parser
             if (k is Tok.KwPublic or Tok.KwPrivate or Tok.KwProtected or Tok.KwInternal
                   or Tok.KwStatic or Tok.KwAbstract or Tok.KwVirtual or Tok.KwOverride
                   or Tok.KwSealed or Tok.KwReadonly or Tok.KwConst or Tok.KwVolatile
+             || k == Tok.KwRef && (Seen(at + 1).Kind == Tok.KwStruct || Seen(at + 1) is { Kind: Tok.Ident, Text: "partial" } && Seen(at + 2).Kind == Tok.KwStruct)
              || (k == Tok.Ident && Seen(at).Text is "unsafe" or "required" or "partial" or "async" or "extern" or "file"
                  && (StartsMember(Seen(at + 1).Kind) || Seen(at).Text == "file" && Seen(at + 1) is { Kind: Tok.Ident, Text: "record" })))
             {
@@ -5537,6 +5545,11 @@ public sealed class Parser
                 }
 
                 Stmt s = ParseSimpleStmt();
+                // ONLY AN EXPRESSION THAT DOES SOMETHING IS A STATEMENT (C#
+                // CS0201): an assignment, a call, an increment or decrement,
+                // an await or a new. `s.Length;` reads and drops a value.
+                if (s is ExprStmt { Expr: var alone } && !StatementExpressionSyntax(alone))
+                    throw new CompileError(_file, s.Line, s.Col, "CS0201: Only assignment, call, increment, decrement, await, and new object expressions can be used as a statement");
                 Expect(Tok.Semi, "';' after the statement");
                 return s;
             }
@@ -9188,6 +9201,15 @@ public sealed class Parser
     /// arguments are inferred from the values. Two files with one shape make
     /// two classes, where C# shares one in the assembly.
     /// </summary>
+    /// <summary>What C# lets stand as a statement (CS0201), as written.</summary>
+    internal static bool StatementExpressionSyntax(Expr e) => e switch
+    {
+        CallExpr or AssignExpr or NewExpr or AwaitExpr or ThrowExpr => true,
+        UnaryExpr { Op: UnOp.PreInc or UnOp.PreDec or UnOp.PostInc or UnOp.PostDec } => true,
+        SuppressExpr { Operand: var inner } => StatementExpressionSyntax(inner),
+        _ => false,
+    };
+
     /// <summary>Whether `[a, b]` follows: a rectangular array's lengths -- a comma at the top level of the brackets.</summary>
     private bool SizedRectangularAhead()
     {

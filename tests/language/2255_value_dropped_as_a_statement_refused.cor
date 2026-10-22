@@ -1,0 +1,19 @@
+// test: value_dropped_as_a_statement_refused
+// expect-compile-error: CS0201: Only assignment, call, increment, decrement, await, and new object expressions can be used as a statement
+//
+// C#'s CS0201: an expression that only reads a value is no statement, and
+// a lambda for a delegate that returns nothing has a statement for its
+// body. `Action<string> a = s => s.Length;` was accepted, its value
+// dropped.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Action<string> a = s => s.Length;
+        a("x");
+        return 0;
+    }
+}
