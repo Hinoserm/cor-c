@@ -16842,14 +16842,17 @@ public sealed partial class Binder
                         }
                         exhaustive = exhaustive || sawNull && sawSome;
 
-                        // AND `true` WITH `false` IS EVERY bool.
-                        if (arm.Value is not null && arm.When is null && subject.Prim == Prim.Bool && !subject.Nullable
+                        // AND `true` WITH `false` IS EVERY bool -- and with
+                        // `null` every bool?, in whatever order the arms come:
+                        // `facts.Heap switch { null => 2, true => 1, false =>
+                        // 0 }` was said to miss a value.
+                        if (arm.Value is not (null or LiteralExpr { Kind: Lit.Null }) && arm.When is null && subject.Prim == Prim.Bool
                             && ConstantValue(arm.Value, _thisType) is long truth)
                         {
                             sawTrue |= truth != 0;
                             sawFalse |= truth == 0;
-                            exhaustive = exhaustive || sawTrue && sawFalse;
                         }
+                        if (subject.Prim == Prim.Bool) exhaustive = exhaustive || sawTrue && sawFalse && (!subject.Nullable || sawNull);
                     }
 
                     Type value = CheckExpr(arm.Result);
@@ -21112,8 +21115,12 @@ public sealed partial class Binder
             // never a char overload unboxing a null.
             if (written is SuppressExpr { Operand: LiteralExpr { Kind: Lit.Null } }) had = Type.Null;
             if (NullableIntoValue(had, want)) return false;
+            // AND A METHOD GROUP to a delegate it converts to, as Fits has it:
+            // an element of a tuple literal is asked here, and `(obj,
+            // record.Body)` for a (ObjectFile, Func<byte[]>) parameter -- the
+            // link's PreinitMachine -- fitted no overload.
             if (Convertible(had, want) || had.IsError || Unmade(want) || Variant(had, want)
-                || LocalFunctionConverts(written, want))
+                || LocalFunctionConverts(written, want) || MethodGroupFits(written, want))
             {
                 return true;
             }

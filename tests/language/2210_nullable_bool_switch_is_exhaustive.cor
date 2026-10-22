@@ -1,0 +1,25 @@
+// test: nullable_bool_switch_is_exhaustive
+// expect-exit: 0
+// expect-output:
+// 2 1 0
+// 0 1 2
+//
+// `null`, `true` and `false` are every value a bool? has, in whatever order
+// the arms are written: no CS8509, which this compiler said of the link's
+// own `facts.Heap switch { null => 2, true => 1, false => 0 }` -- and, with
+// warnings errors, refused.
+
+using System;
+
+static class Program
+{
+    static byte Code(bool? heap) => heap switch { null => (byte)2, true => (byte)1, false => (byte)0 };
+    static int Back(bool? heap) => heap switch { false => 0, true => 1, null => 2 };
+
+    static int Main()
+    {
+        Console.WriteLine(Code(null) + " " + Code(true) + " " + Code(false));
+        Console.WriteLine(Back(false) + " " + Back(true) + " " + Back(null));
+        return 0;
+    }
+}

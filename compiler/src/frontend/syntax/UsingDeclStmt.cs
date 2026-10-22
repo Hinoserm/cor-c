@@ -8,4 +8,11 @@ public sealed class UsingDeclStmt : Stmt
 
     /// <summary>`await using`: the resource is given back by awaiting DisposeAsync, not by Dispose.</summary>
     public bool Async { get; init; }
+
+    /// <summary>
+    /// The resources declared after the first in one declaration --
+    /// `using MemoryStream input = new(bytes), log = new();` -- each given
+    /// back before the ones declared ahead of it (Parser.LowerUsings).
+    /// </summary>
+    public List<LocalDecl>? More { get; init; }
 }

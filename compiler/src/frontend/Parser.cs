@@ -4647,6 +4647,19 @@ public sealed class Parser
 
     private Block LowerUsings(Block block)
     {
+        // A DECLARATION OF SEVERAL is that many, one after the other: each
+        // holds the rest of the block, so the last declared is given back
+        // first.
+        for (int i = 0; i < block.Statements.Count; i++)
+        {
+            if (block.Statements[i] is not UsingDeclStmt { More: { } more } several) continue;
+            List<Stmt> spread = new() { new UsingDeclStmt { Declaration = several.Declaration, Async = several.Async, Line = several.Line, Col = several.Col } };
+            foreach (LocalDecl next in more) spread.Add(new UsingDeclStmt { Declaration = next, Async = several.Async, Line = next.Line, Col = next.Col });
+            block.WritableStatements.RemoveAt(i);
+            block.WritableStatements.InsertRange(i, spread);
+            i += spread.Count - 1;
+        }
+
         int at = -1;
 
         for (int i = 0; i < block.Statements.Count; i++)
@@ -4800,18 +4813,28 @@ public sealed class Parser
         }
 
         TypeRef? type = Take(Tok.KwVar) ? null : ParseTypeRef();
-        string name = Expect(Tok.Ident, "a resource name").Text;
-        Expect(Tok.Assign, "'=' in a using declaration");
-        Expr init = ParseExpr();
+        // ONE DECLARATION OR SEVERAL of the one type, as a local's: `using
+        // MemoryStream input = new(bytes), log = new();` (C# 8).
+        List<LocalDecl> declared = new();
+        do
+        {
+            Token named = Cur;
+            string name = Expect(Tok.Ident, "a resource name").Text;
+            Expect(Tok.Assign, "'=' in a using declaration");
+            Expr init = ParseExpr();
+            declared.Add(new LocalDecl
+            {
+                Type = type, Name = name, Init = init,
+                Line = declared.Count == 0 ? at.Line : named.Line, Col = declared.Count == 0 ? at.Col : named.Col,
+            });
+        }
+        while (Take(Tok.Comma));
         Expect(Tok.Semi, "';' after the using declaration");
 
         return new UsingDeclStmt
         {
-            Declaration = new LocalDecl
-            {
-                Type = type, Name = name, Init = init,
-                Line = at.Line, Col = at.Col,
-            },
+            Declaration = declared[0],
+            More = declared.Count > 1 ? declared.GetRange(1, declared.Count - 1) : null,
             Async = async,
             Line = at.Line,
             Col = at.Col,
@@ -7588,9 +7611,13 @@ public sealed class Parser
     private SwitchStmt ParseSwitch()
     {
         Token at = _t[_i++];
+        Token open = Cur;
         Expect(Tok.LParen, "'(' after 'switch'");
         Expr subject = ParseExpr();
-        Expect(Tok.RParen, "')' after the switch subject");
+        // `switch (op, a, b)`: a tuple whose parentheses are the switch's own
+        // (C# 8), as the link's PreinitMachine writes its operations.
+        if (At(Tok.Comma)) subject = FinishTuple(open, subject, null);
+        else Expect(Tok.RParen, "')' after the switch subject");
         Expect(Tok.LBrace, "'{' to open the switch body");
 
         SwitchStmt sw = new() { Subject = subject, Line = at.Line, Col = at.Col };

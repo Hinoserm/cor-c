@@ -1,0 +1,40 @@
+// test: switch_on_a_bare_tuple
+// expect-exit: 0
+// expect-output:
+// add 7
+// sub 1
+// other
+// both
+//
+// `switch (op, a, b)`: a tuple whose parentheses are the switch statement's
+// own (C# 8), as the link's PreinitMachine writes its operations -- "expected
+// ')' after the switch subject, found ','" until now.
+
+using System;
+
+static class Program
+{
+    static string Apply(string op, int a, int b)
+    {
+        switch (op, a, b)
+        {
+            case ("add", int x, int y): return "add " + (x + y);
+            case ("sub", int x, int y) when x > y: return "sub " + (x - y);
+            default: return "other";
+        }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Apply("add", 3, 4));
+        Console.WriteLine(Apply("sub", 4, 3));
+        Console.WriteLine(Apply("sub", 3, 4));
+        bool p = true, q = true;
+        switch (p, q)
+        {
+            case (true, true): Console.WriteLine("both"); break;
+            default: Console.WriteLine("not both"); break;
+        }
+        return 0;
+    }
+}

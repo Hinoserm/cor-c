@@ -1,0 +1,36 @@
+// test: method_group_in_a_tuple_argument
+// expect-exit: 0
+// expect-output:
+// 1 3
+// 3 3
+//
+// A method group as an element of a tuple literal passed where a tuple of a
+// delegate is wanted: `(obj, record.Body)` for a (ObjectFile, Func<byte[]>)
+// parameter, as the link's PreinitMachine hands a body to TryAdd. The
+// element converts to the delegate as it would on its own; no overload
+// fitted before.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Rec
+{
+    public string Key = "k";
+    public byte[] Body() => new byte[] { 1, 2, 3 };
+}
+
+static class Program
+{
+    static readonly Dictionary<string, (int Unit, Func<byte[]> Body)> _bodies = new();
+    static void Take((int Unit, Func<byte[]> Body) pair) => Console.WriteLine(pair.Unit + " " + pair.Body().Length);
+
+    static int Main()
+    {
+        Rec record = new();
+        Take((1, record.Body));
+        _bodies.TryAdd(record.Key, (2, record.Body));
+        (int Unit, Func<byte[]> Body) local = (3, record.Body);
+        Console.WriteLine(_bodies[record.Key].Body().Length + " " + local.Body().Length);
+        return 0;
+    }
+}

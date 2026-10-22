@@ -1,0 +1,39 @@
+// test: using_declaration_of_several
+// expect-exit: 0
+// expect-output:
+// open a
+// open b
+// body a b
+// close b
+// close a
+// after
+//
+// One using declaration of several resources (C# 8): `using Res a =
+// new("a"), b = new("b");` holds both to the end of the block, and gives
+// them back in the reverse of the order they were declared -- "expected ';'
+// after the using declaration, found ','" until now.
+
+using System;
+
+sealed class Res : IDisposable
+{
+    public readonly string Name;
+    public Res(string name) { Name = name; Console.WriteLine("open " + name); }
+    public void Dispose() => Console.WriteLine("close " + Name);
+}
+
+static class Program
+{
+    static void Run()
+    {
+        using Res a = new("a"), b = new("b");
+        Console.WriteLine("body " + a.Name + " " + b.Name);
+    }
+
+    static int Main()
+    {
+        Run();
+        Console.WriteLine("after");
+        return 0;
+    }
+}
