@@ -3471,7 +3471,8 @@ public sealed partial class Lowering
             if (_b.PatternSlot.TryGetValue(isx, out int slot))
             {
                 VReg v = NullableRead(cell, whole);
-                BindPattern(isx, slot, held, v);
+                if (_b.BoxedBindings.Contains(isx)) BindPattern(isx, slot, Type.Any, BoxValue(isx, v, held));
+                else BindPattern(isx, slot, held, v);
             }
             _e.CopyTo(result, Imm(1, IrType.I32));
             _e.Jump(end);
@@ -3746,6 +3747,15 @@ public sealed partial class Lowering
                     _e.Branch(matched, body, next);
                 }
             }
+            else if (arm.Type is not null && _b.NonNullArms.Contains(arm))
+            {
+                // `object x` over a reference: there is one, and it is named.
+                if (_b.ArmSlot.TryGetValue(arm, out int present))
+                {
+                    BindPattern(arm, present, Type.Any, subject);
+                }
+                _e.Branch(_e.Binary(Opcode.Ne, R(subject), Imm(0, subject.Type), IrType.I32), body, next);
+            }
             else if (arm.Type is not null && _b.NullableArms.Contains(arm))
             {
                 // `int n` over an int?: one holding a value, and that value named.
@@ -3754,7 +3764,18 @@ public sealed partial class Lowering
                 _e.SetBlock(some);
                 if (_b.ArmSlot.TryGetValue(arm, out int heldValue))
                 {
-                    BindPattern(arm, heldValue, of.Underlying, NullableRead(subject, of));
+                    VReg inner = NullableRead(subject, of);
+                    if (_b.BoxedBindings.Contains(arm)) BindPattern(arm, heldValue, Type.Any, BoxValue(arm, inner, of.Underlying));
+                    else BindPattern(arm, heldValue, of.Underlying, inner);
+                }
+                _e.Jump(body);
+            }
+            else if (arm.Type is not null && _b.BoxedBindings.Contains(arm))
+            {
+                // `object x` over a value: always, and the value boxed.
+                if (_b.ArmSlot.TryGetValue(arm, out int boxedSlot))
+                {
+                    BindPattern(arm, boxedSlot, Type.Any, BoxValue(arm, subject, of));
                 }
                 _e.Jump(body);
             }

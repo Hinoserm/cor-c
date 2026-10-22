@@ -1,0 +1,38 @@
+// test: object_and_interface_patterns_over_values_and_nulls
+// expect-exit: 0
+// expect-output:
+// some 5 none obj t nothing some null
+// boxed 7 cmp 1
+// boxed 2 none
+// boxed 3 none cmp -1 none boxed 4
+//
+// `object x` takes any value but null, as `x is object y` does: over a
+// reference or an object, an arm of that type was taken for one that always
+// matches, and a null took it. Over a value, `object x` and an interface
+// the value has name the value boxed, in an arm and in `is` over a
+// nullable, which were refused or named the raw value as an object.
+// Expected output from .NET 10.
+
+using System;
+
+static class P
+{
+    static string A(object? o) => o switch { object x => "some " + x, null => "none" };
+    static string B(string? s) => s switch { object x => "obj " + x, _ => "nothing" };
+    static string C(object? o) => o switch { object x => "some", _ => "null" };
+    static string D(int i) => i switch { object x => "boxed " + x };
+    static string E(int i) => i switch { IComparable c => "cmp " + c.CompareTo(3) };
+    static string F(int? i) => i switch { object x => "boxed " + x, null => "none" };
+
+    static string G(int? i) => i is object o ? "boxed " + o : "none";
+    static string H(int? i) => i is IComparable c ? "cmp " + c.CompareTo(1) : "none";
+    static string I(int i) => i is object o ? "boxed " + o : "none";
+
+    static void Main()
+    {
+        Console.WriteLine($"{A(5)} {A(null)} {B("t")} {B(null)} {C(1)} {C(null)}");
+        Console.WriteLine($"{D(7)} {E(4)}");
+        Console.WriteLine($"{F(2)} {F(null)}");
+        Console.WriteLine($"{G(3)} {G(null)} {H(0)} {H(null)} {I(4)}");
+    }
+}

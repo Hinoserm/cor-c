@@ -311,6 +311,14 @@ public sealed partial class BindResult
     /// that it has one, and that value named (NullablePatterns' arm form).
     public HashSet<SwitchArm> NullableArms { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// `object x` arms over a reference or an object: a test that there is
+    /// one (NonNullPatterns' arm form).
+    public HashSet<SwitchArm> NonNullArms { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// Patterns over a value that name it as an object or an interface: the
+    /// binding is the value boxed (a switch arm, or `is` over a nullable).
+    public HashSet<Node> BoxedBindings { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// Where a switch expression keeps its subject while the arms are tried.
     public Dictionary<SwitchExpr, int> SwitchSlot { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -669,6 +677,7 @@ public sealed partial class BindResult
             case IsExpr i:
                 PatternSlot.Remove(i);
                 NullablePatterns.Remove(i);
+                BoxedBindings.Remove(i);
                 ValuePatterns.Remove(i);
                 NonNullPatterns.Remove(i);
                 BoxPatterns.Remove(i);
@@ -677,6 +686,8 @@ public sealed partial class BindResult
                 ArmSlot.Remove(arm);
                 ArmTests.Remove(arm);
                 NullableArms.Remove(arm);
+                NonNullArms.Remove(arm);
+                BoxedBindings.Remove(arm);
                 break;
             case InitAssign init:
                 InitField.Remove(init);
@@ -802,6 +813,8 @@ public sealed partial class BindResult
         PatternSym.Clear();
         ArmTests.Clear();
         NullableArms.Clear();
+        NonNullArms.Clear();
+        BoxedBindings.Clear();
         SwitchSlot.Clear();
         PatternSubject.Clear();
         InitField.Clear();

@@ -17785,9 +17785,20 @@ public sealed partial class Binder
                         // names that value. Taken for a pattern that always
                         // matches -- an int? converts to an int -- it named the
                         // cell, so n was its address and a null took the arm.
-                        if (subject.IsNullableValue && tested.Equals(subject.Underlying))
+                        // AND `object x`, OR AN INTERFACE IT HAS, OVER A VALUE IS THE
+                        // VALUE BOXED (BoxedBindings): always, or with a value held.
+                        bool boxing = !subject.IsReference && subject.Prim != Prim.Any && !subject.IsError && !subject.IsVoid
+                                      && subject.ParamName is null && !subject.IsPointer
+                                      && (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray
+                                          || tested.Symbol is { Kind: TypeKind.Interface } && Convertible(subject.IsNullableValue ? subject.Underlying : subject, tested));
+                        if (subject.IsNullableValue && (tested.Equals(subject.Underlying) || boxing))
                         {
                             _r.NullableArms.Add(arm);
+                            if (boxing) _r.BoxedBindings.Add(arm);
+                        }
+                        else if (boxing)
+                        {
+                            _r.BoxedBindings.Add(arm);
                         }
                         else if (subject.IsNullableValue && !subject.IsError && !tested.IsError)
                         {
@@ -17799,6 +17810,15 @@ public sealed partial class Binder
                                          : new BinaryExpr { Op = BinOp.AndAlso, Left = never, Right = arm.When, Line = arm.Line, Col = arm.Col };
                             }
                             else Error(arm, $"a '{subject}' can only match its held '{subject.Underlying}' value");
+                        }
+                        // `object x` TAKES ANY VALUE BUT NULL, as `x is object y`
+                        // does (NonNullPatterns): over a reference or an object
+                        // it asks only whether there is one. Taken for a pattern
+                        // that always matches, it took a null too.
+                        else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray
+                                 && (subject.IsReference || subject.Prim == Prim.Any))
+                        {
+                            _r.NonNullArms.Add(arm);
                         }
                         else if (tested.IsReference && (subject.IsReference || subject.Prim == Prim.Any))
                         {
@@ -17835,7 +17855,7 @@ public sealed partial class Binder
                             else Error(arm, $"this arm matches '{tested}' and the subject is '{subject}'");
                         }
 
-                        if (_r.NullableArms.Contains(arm)
+                        if (_r.NullableArms.Contains(arm) || _r.NonNullArms.Contains(arm)
                             || _r.ArmTests.Contains(arm) && subject.IsReference && tested.IsReference
                                && ReferenceConvertible(subject.AsNonNullable(), tested.AsNonNullable()))
                         {
@@ -17856,7 +17876,7 @@ public sealed partial class Binder
                         // A PATTERN THAT ALWAYS MATCHES IS AS GOOD AS '_' for
                         // deciding whether the switch can fall off the end; a
                         // nullable's held value is every value but null.
-                        if (_r.NullableArms.Contains(arm)) sawSome |= arm.When is null;
+                        if (_r.NullableArms.Contains(arm) || _r.NonNullArms.Contains(arm)) sawSome |= arm.When is null;
                         else exhaustive = exhaustive || (!_r.ArmTests.Contains(arm) && arm.When is null);
                     }
                     else if (arm.Value is not null)
@@ -18408,6 +18428,13 @@ public sealed partial class Binder
                     if (tested.Equals(operand.Underlying))
                     {
                         _r.NullablePatterns.Add(isx);
+                    }
+                    // `x is object o` over an int?: the value held, boxed.
+                    else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray
+                             || tested.Symbol is { Kind: TypeKind.Interface } && Convertible(operand.Underlying, tested))
+                    {
+                        _r.NullablePatterns.Add(isx);
+                        _r.BoxedBindings.Add(isx);
                     }
                     else if (!tested.IsError)
                     {
