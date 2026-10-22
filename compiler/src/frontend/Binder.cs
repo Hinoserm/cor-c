@@ -1249,7 +1249,7 @@ public sealed partial class Binder
             return $" (it is {copied}.{template}<>: add `using {copied};`)";
         }
         // SYSTEM.ENUM, whose statics the compiler answers itself.
-        if (name == "Enum") return " (it is System.Enum: add `using System;`)";
+        if (name == "Enum") return NamespaceInScope("System") ? " (Enum's statics here: GetValues, GetNames, GetName, IsDefined, Parse, TryParse, GetUnderlyingType)" : " (it is System.Enum: add `using System;`)";
         string bare = name.Contains('.') ? name[(name.LastIndexOf('.') + 1)..] : name;
         if (_r.Types.TryGetValue(bare, out TypeSymbol? global) && global.Decl is { Outer: null } d && d.Namespace.Length == 0
             && LibraryNamespaces.Of(global.Key) is string space)
@@ -12225,6 +12225,21 @@ public sealed partial class Binder
                 return CheckExpr(listed);
             }
 
+            // ITS INTEGER TYPE, known here: `Enum.GetUnderlyingType(typeof(Access))`
+            // is typeof(byte) for an enum declared `: byte`.
+            case "GetUnderlyingType" when rest.Count == 0 && skip == 1:
+            {
+                string? keyword = chosen.EnumUnderlying switch
+                {
+                    Prim.I8 => "sbyte", Prim.U8 => "byte", Prim.I16 => "short", Prim.U16 => "ushort",
+                    Prim.I32 => "int", Prim.U32 => "uint", Prim.I64 => "long", Prim.U64 => "ulong", _ => null,
+                };
+                if (keyword is null) return null;
+                TypeOfExpr underlying = new() { Type = new TypeRef { Name = keyword, Line = call.Line, Col = call.Col }, Line = call.Line, Col = call.Col };
+                _r.Rewrites[call] = underlying;
+                return CheckExpr(underlying);
+            }
+
             case "GetName" when rest.Count == 1:
             case "IsDefined" when rest.Count == 1:
             {
@@ -21644,6 +21659,27 @@ public sealed partial class Binder
     /// at run time, the question asked then; and anything else as it is, the
     /// format ignored. Null to keep the call as written.
     /// </summary>
+    /// <summary>
+    /// An enum value formatted as System.Enum formats one: String.FormatEnum
+    /// of its name, its number and its size, the value read once.
+    /// </summary>
+    private Expr EnumFormatted(Expr value, TypeSymbol enumType, Expr format, int line, int col)
+    {
+        SubjectExpr Held() => new() { Line = line, Col = col };
+        int bytes = enumType.EnumUnderlying switch
+        {
+            Prim.I8 or Prim.U8 => 1, Prim.I16 or Prim.U16 or Prim.Char => 2, Prim.I64 or Prim.U64 => 8, _ => 4,
+        };
+        CallExpr named = new() { Target = new MemberExpr { Target = Held(), Name = "ToString", Line = line, Col = col }, Line = line, Col = col };
+        CallExpr call = new() { Target = new MemberExpr { Target = Global(value, "System", "String"), Name = "FormatEnum", Line = line, Col = col }, Line = line, Col = col };
+        call.Args.Add(named);
+        call.Args.Add(new CastExpr { Type = new TypeRef { Name = "long", Line = line, Col = col }, Operand = Held(), Line = line, Col = col });
+        call.Args.Add(new LiteralExpr { Kind = Lit.Int, Text = bytes.ToString(), IntValue = bytes, Line = line, Col = col });
+        call.Args.Add(format);
+        foreach (Expr _ in call.Args) call.WritableArgNames.Add(null);
+        return new PatternExpr { Subject = value, Test = call, Line = line, Col = col };
+    }
+
     private Expr? FormatHole(CallExpr c, MemberExpr hole, Type value)
     {
         int line = c.Line, col = c.Col;
@@ -21676,6 +21712,9 @@ public sealed partial class Binder
         }
 
         bool TakesFormat(MethodSymbol m, int at) => m.Params.Count == at + 1 && m.Params[at].Type.Prim == Prim.String;
+        // AN ENUM WITH A FORMAT, `{kind:X}`: as its ToString(format) is.
+        if (value.Symbol is { Kind: TypeKind.Enum } formattedEnum && c.Args.Count == 1)
+            return EnumFormatted(hole.Target, formattedEnum, c.Args[0], line, col);
         if (Alias(value.ToString()) is { } primitive && _r.Types.TryGetValue(primitive, out TypeSymbol? numbers)
             && numbers.FindMethods("ToString").Any(m => m.Static && TakesFormat(m, 1) && m.Params[0].Type.Prim == value.Prim))
             return null;
@@ -21987,6 +22026,19 @@ public sealed partial class Binder
             };
             _r.Rewrites[c] = lowered;
             return CheckExpr(lowered);
+        }
+
+        // AN ENUM'S ToString(format), System.Enum's: G its name, D the number,
+        // X its bits in hexadecimal, two digits a byte of its underlying type
+        // (String.FormatEnum). It read as the number's own ToString(format).
+        if (c.Target is MemberExpr { Name: "ToString" } enumText && c.Args.Count is 1 or 2 && !c.FormatHole
+            && !_r.Rewrites.ContainsKey(c)
+            && Peek(enumText.Target).AsNonNullable() is { Symbol: { Kind: TypeKind.Enum } textEnum } textValue && !textValue.IsNullableValue
+            && Peek(c.Args[0]) is { Prim: Prim.String } or { Prim: Prim.NullLiteral })
+        {
+            Expr formatted = EnumFormatted(enumText.Target, textEnum, c.Args[0], c.Line, c.Col);
+            _r.Rewrites[c] = formatted;
+            return CheckExpr(formatted);
         }
 
         // AN ENUM'S Equals AND GetHashCode are System.Enum's: the value boxed,

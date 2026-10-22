@@ -1,0 +1,86 @@
+// test: enums_and_events_program
+// expect-exit: 0
+// expect-output:
+// Read, Execute None True All 8 ReadWrite 7
+// ReadWrite TrueExecute None,Read,Write,ReadWrite,Execute,All Write True
+// Blue Green 5 Red,Green,Blue,Teal cool other 7 1 002 10000000A
+// Count=3! | second | counted 3 | extra 3 | second | counted 4
+// Red:2 Blue:2 Byte None True
+//
+// A whole small program of enums and events: [Flags] values printed as
+// their members, HasFlag,
+// Enum.Parse/TryParse/GetValues/GetName/GetNames/IsDefined/GetUnderlyingType
+// , an alias member, switch arms over an enum, ToString's D and X -- X
+// padded to the underlying type, where it was the bare number (and `{e:X}`
+// the name) -- and an event with its own accessors beside a field-like one,
+// handlers added and removed. Every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+[Flags]
+enum Access : byte { None = 0, Read = 1, Write = 2, Execute = 4, ReadWrite = Read | Write, All = Read | Write | Execute }
+
+enum Color { Red = 1, Green, Blue = 10, Teal = Blue }
+
+sealed class ChangedArgs : EventArgs
+{
+    public string Name { get; }
+    public object? Value { get; }
+    public ChangedArgs(string name, object? value) { Name = name; Value = value; }
+}
+
+sealed class Model
+{
+    private readonly List<EventHandler<ChangedArgs>> _handlers = new();
+    private int _count;
+    public event EventHandler<ChangedArgs> Changed
+    {
+        add { _handlers.Add(value); }
+        remove { _handlers.Remove(value); }
+    }
+    public event Action<int>? Counted;
+    public int Count
+    {
+        get => _count;
+        set { if (_count == value) return; _count = value; Raise(nameof(Count), value); Counted?.Invoke(value); }
+    }
+    private void Raise(string name, object? value) { foreach (var h in _handlers.ToArray()) h(this, new ChangedArgs(name, value)); }
+}
+
+static class Program
+{
+    static string Describe(Color c) => c switch
+    {
+        Color.Red => "warm",
+        Color.Green or Color.Blue => "cool",
+        _ => "other " + (int)c,
+    };
+
+    static int Main()
+    {
+        Access a = Access.Read | Access.Execute;
+        Console.WriteLine(a + " " + (a & Access.Write) + " " + a.HasFlag(Access.Read) + " " + (Access.ReadWrite | Access.Execute) + " " + (Access)8 + " " + (Access)3 + " " + (byte)Access.All);
+        Console.WriteLine(Enum.Parse<Access>("Read, Write") + " " + Enum.TryParse("execute", true, out Access parsed) + parsed + " " + string.Join(",", Enum.GetValues<Access>()) + " " + Enum.GetName(Access.Write) + " " + Enum.IsDefined(typeof(Access), (byte)3));
+        Console.WriteLine(Color.Teal + " " + (Color)2 + " " + (Color)5 + " " + string.Join(",", Enum.GetNames<Color>()) + " " + Describe(Color.Green) + " " + Describe((Color)7) + " " + Color.Blue.CompareTo(Color.Red) + " " + ((int)Color.Green).ToString("D3") + " " + Color.Red.ToString("D") + Color.Blue.ToString("X"));
+        var model = new Model();
+        var seen = new List<string>();
+        EventHandler<ChangedArgs> log = (sender, e) => seen.Add(e.Name + "=" + e.Value + (sender == model ? "!" : "?"));
+        model.Changed += log;
+        model.Changed += (s, e) => seen.Add("second");
+        model.Counted += n => seen.Add("counted " + n);
+        Action<int> extra = n => seen.Add("extra " + n);
+        model.Counted += extra;
+        model.Count = 3;
+        model.Count = 3;
+        model.Changed -= log;
+        model.Counted -= extra;
+        model.Count = 4;
+        Console.WriteLine(string.Join(" | ", seen));
+        var colorCounts = new[] { Color.Red, Color.Blue, Color.Red, Color.Teal }.GroupBy(c => c).Select(g => g.Key + ":" + g.Count());
+        Console.WriteLine(string.Join(" ", colorCounts) + " " + Enum.GetUnderlyingType(typeof(Access)).Name + " " + default(Access) + " " + (Access.None == 0));
+        return 0;
+    }
+}
