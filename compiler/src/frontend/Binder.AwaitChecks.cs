@@ -83,6 +83,29 @@ public sealed partial class Binder
 
     private static HeldLocks DeadLocks => new HeldLocks { Count = LockDead };
 
+    /// <summary>The local a condition says is not null -- `g != null` or `null != g` -- or null.</summary>
+    private static string? NullTested(Expr cond) => cond switch
+    {
+        BinaryExpr { Op: BinOp.Ne, Left: NameExpr name, Right: LiteralExpr { Kind: Lit.Null } } => name.Name,
+        BinaryExpr { Op: BinOp.Ne, Left: LiteralExpr { Kind: Lit.Null }, Right: NameExpr name } => name.Name,
+        _ => null,
+    };
+
+    /// <summary>How much a branch gives back through calls on `local` itself (`g.Leave()`), as a negative count; 0 for none.</summary>
+    private int GivenThrough(Stmt branch, string local)
+    {
+        int given = 0;
+        foreach (Stmt s in branch is Block b ? b.Statements : (IReadOnlyList<Stmt>)new[] { branch })
+        {
+            if (s is ExprStmt { Expr: CallExpr { Target: MemberExpr { Target: NameExpr { Name: var on } } } call } && on == local
+                && LockEffectOf(call) == LockEffect.Give)
+            {
+                given += Math.Min(-1, TakenBy(call));
+            }
+        }
+        return given;
+    }
+
     private static HeldLocks JoinLocks(HeldLocks a, HeldLocks b)
     {
         if (a.Dead) return b;
@@ -204,22 +227,80 @@ public sealed partial class Binder
             // wrapper is a lock too. Only bodies that call a lock, or a method
             // whose summary is not zero, can have one; reported nothing -- the
             // walk that reports comes after, with every summary known.
-            List<MethodSymbol> work = new();
-            HashSet<MethodSymbol> queued = new(ReferenceEqualityComparer.Instance);
+            //
+            // CALLEES BEFORE CALLERS. Taken in no order, a caller was
+            // summarised before the wrappers it calls -- RegistryDomain's
+            // KeysWithPrefix before its EnterRead and LeaveGate -- and counted
+            // the taking with no giving back; every caller in a loop over it
+            // went to the most a summary holds, and undoing that did not end
+            // within the steps allowed: a whole kernel left Ide.IssueAwaited,
+            // which gives back all it takes, summarised as holding seven
+            // locks, and every await after a call to it was refused. So every
+            // method a summary can reach -- one calling a lock's own method,
+            // and its callers, transitively -- is summarised once callees
+            // first, and the work list after only settles what calls itself.
+            HashSet<MethodSymbol> affected = new(ReferenceEqualityComparer.Instance);
+            Stack<MethodSymbol> reach = new();
             foreach ((MethodSymbol m, MethodDecl unused) in _boundBodies)
             {
-                if (facts.TryGetValue(m, out BodyFacts? taking) && taking.TakesLocks && Summarised(m) && queued.Add(m)) work.Add(m);
+                if (facts.TryGetValue(m, out BodyFacts? taking) && taking.TakesLocks && Summarised(m) && affected.Add(m)) reach.Push(m);
             }
-            int steps = 0;
-            while (work.Count > 0 && steps++ < 20000)
+            while (reach.Count > 0)
+            {
+                if (callers.TryGetValue(reach.Pop(), out List<MethodSymbol>? up))
+                {
+                    foreach (MethodSymbol caller in up)
+                    {
+                        if (bodies.ContainsKey(caller) && Summarised(caller) && affected.Add(caller)) reach.Push(caller);
+                    }
+                }
+            }
+            List<MethodSymbol> order = new();
+            HashSet<MethodSymbol> visited = new(ReferenceEqualityComparer.Instance);
+            Stack<(MethodSymbol Method, int Next)> descent = new();
+            foreach (MethodSymbol root in affected)
+            {
+                if (!visited.Add(root)) continue;
+                descent.Push((root, 0));
+                while (descent.Count > 0)
+                {
+                    (MethodSymbol at, int next) = descent.Pop();
+                    List<MethodSymbol> calls = facts[at].Calls;
+                    while (next < calls.Count && !(affected.Contains(calls[next]) && visited.Add(calls[next]))) next++;
+                    if (next < calls.Count)
+                    {
+                        descent.Push((at, next + 1));
+                        descent.Push((calls[next], 0));
+                        continue;
+                    }
+                    order.Add(at);
+                }
+            }
+            int Summary(MethodSymbol m)
+            {
+                LockWalk w = new() { Report = false };
+                HeldLocks end = WalkLockStmt(bodies[m].Body!, new HeldLocks(), w);
+                HeldLocks exit = JoinLocks(w.Exit, end);
+                return exit.Dead ? 0 : exit.Count;
+            }
+            foreach (MethodSymbol m in order)
+            {
+                int first = Summary(m);
+                if (first != 0) _lockSummary[m] = first;
+            }
+            List<MethodSymbol> work = new();
+            HashSet<MethodSymbol> queued = new(ReferenceEqualityComparer.Instance);
+            for (int k = order.Count - 1; k >= 0; k--)
+            {
+                if (queued.Add(order[k])) work.Add(order[k]);
+            }
+            int steps = 0, most = Math.Max(20000, 50 * order.Count);
+            while (work.Count > 0 && steps++ < most)
             {
                 MethodSymbol m = work[^1];
                 work.RemoveAt(work.Count - 1);
                 queued.Remove(m);
-                LockWalk w = new() { Report = false };
-                HeldLocks end = WalkLockStmt(bodies[m].Body!, new HeldLocks(), w);
-                HeldLocks exit = JoinLocks(w.Exit, end);
-                int net = exit.Dead ? 0 : exit.Count;
+                int net = Summary(m);
                 int had = _lockSummary.TryGetValue(m, out int known) ? known : 0;
                 if (net == had)
                 {
@@ -454,6 +535,20 @@ public sealed partial class Binder
                 WalkLockCondition(i.Cond, h, w, out HeldLocks yes, out HeldLocks no);
                 HeldLocks then = WalkLockStmt(i.Then, yes, w);
                 HeldLocks otherwise = i.Else is not null ? WalkLockStmt(i.Else, no, w) : no;
+                // A GUARD THAT IS NULL HELD NOTHING TO GIVE BACK. `if (guard !=
+                // null && !guard.Enter()) return;` and, after, `if (guard !=
+                // null) guard.Leave();`: taken only where there is a guard and
+                // given back only there. The two tests agree, which the counts
+                // cannot see, and the path with no guard was counted as still
+                // holding what the other took -- Vfs.Writeback summarised as
+                // taking a lock, and through it the file cache, the frame
+                // allocator, the page tables and every await in the kernel
+                // after a call that reached them. Where `if (g != null)` gives
+                // back through g, the path where g is null gives back as much.
+                if (i.Else is null && NullTested(i.Cond) is string guarded && GivenThrough(i.Then, guarded) is int given && given < 0)
+                {
+                    otherwise = AddLocks(otherwise, given, null, null);
+                }
                 return JoinLocks(then, otherwise);
             }
 

@@ -2337,7 +2337,10 @@ internal sealed partial class Selector
             // Pentium's (Isa.Requires), and a kernel that also runs on a 486
             // asks which it is on before it reads or writes it.
             case MachineIntrinsics.ReadCr:
-                Emit(new MInstr(MOp.MovFromCr, Lo(i.Dest!), ControlRegister(i.Operands[0])) { Probed = true });
+                // INTO A TEMPORARY WHERE NOTHING READS IT, as x86-64's: a read
+                // whose value was stored to a static nothing reads loses its
+                // destination with the store, and keeps its probe.
+                Emit(new MInstr(MOp.MovFromCr, i.Dest is not null ? Lo(i.Dest) : Temp(), ControlRegister(i.Operands[0])) { Probed = true });
                 return;
             case MachineIntrinsics.WriteCr:
                 Emit(new MInstr(MOp.MovToCr, R(i.Operands[1]), ControlRegister(i.Operands[0])) { Probed = true });
@@ -2513,7 +2516,10 @@ internal sealed partial class Selector
                 return;
             }
             case MachineIntrinsics.GetGs:
-                Emit(MOp.GetGs, Lo(i.Dest!));
+                // NOTHING WHERE NOTHING READS IT: `Runtime.NativeGs =
+                // Sys.GetGs();` in a program that never reads NativeGs lost
+                // the store and kept the read, with no register to read into.
+                if (i.Dest is not null) Emit(MOp.GetGs, Lo(i.Dest));
                 return;
             case MachineIntrinsics.ReadFlags:
                 // pushfd; pop r: no call to a stub for the one bit a lock or a

@@ -1,0 +1,58 @@
+// test: lock_taken_through_a_guard_that_may_be_null
+// expect-exit: 0
+// expect-output:
+// 7
+// 0
+//
+// A lock taken through a guard that may be null, and given back the same
+// way: `if (guard != null && !guard.Enter()) return;`, then `if (guard !=
+// null) guard.Leave();`. The two tests agree, which the lock counts of the
+// await check could not see: the path with no guard was counted as still
+// holding what the other path took, Store.Write was summarised as a method
+// that returns holding a lock, and the await after a call to it was
+// refused. Through the kernel's Vfs.Writeback the same summary reached the
+// file cache, the frame allocator and the page tables, and an await after
+// any call into them.
+
+using System;
+using System.Threading.Tasks;
+
+class IoOwnership
+{
+    int _held;
+    public bool Enter() { _held++; return true; }
+    public void Leave() { _held--; }
+    public int Held => _held;
+}
+
+static class Store
+{
+    public static IoOwnership? Guard = new IoOwnership();
+
+    // Taken only where there is a guard, and given back only there.
+    public static int Write(int value)
+    {
+        IoOwnership? guard = Guard;
+        if (guard != null && !guard.Enter()) return -1;
+        int result = value * 2;
+        if (guard != null) guard.Leave();
+        return result;
+    }
+}
+
+static class Program
+{
+    static async Task<int> Run()
+    {
+        int a = Store.Write(3);
+        await Task.Yield();
+        return a + 1;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Run().Result);
+        Console.WriteLine(Store.Guard!.Held);
+        return 0;
+    }
+}

@@ -1,0 +1,29 @@
+// test: machine_register_read_nothing_uses
+// only-target: x86
+// expect-exit: 0
+// expect-output:
+// read 1
+// ok
+//
+// A read of a machine register whose value nothing uses: GS read and
+// thrown away, and read into a static nothing reads, whose store goes and
+// leaves the read with no register to read into. The x86 code generator
+// asked for that register's low half all the same, and a compile of the
+// kernel's frame allocator -- where the runtime's `Runtime.NativeGs =
+// Sys.GetGs();` is such a read -- stopped on a NullReferenceException.
+
+using System;
+
+static class Program
+{
+    static long _never;
+
+    static int Main()
+    {
+        Sys.GetGs();
+        _never = Sys.GetGs();
+        Console.WriteLine("read " + (Sys.GetGs() >= 0 ? 1 : 0));
+        Console.WriteLine("ok");
+        return 0;
+    }
+}
