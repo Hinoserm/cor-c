@@ -306,10 +306,10 @@ namespace System.ServiceProcess
         public long Quad() { long low = Int(); return low | (Int() << 32); }
     }
 
-    /// One request on its own connection, and its answer: the reader past
-    /// the answer's error, which is in `error`; null when there is no
-    /// manager to ask (ERROR_SERVICE_NOT_ACTIVE's sibling,
-    /// RPC_S_SERVER_UNAVAILABLE, 1722).
+    /// One request on its own connection, or on one held open (AskOn), and
+    /// its answer: the reader past the answer's error, which is in `error`;
+    /// null when there is no manager to ask (ERROR_SERVICE_NOT_ACTIVE's
+    /// sibling, RPC_S_SERVER_UNAVAILABLE, 1722).
     public static class WireClient
     {
         const int AfUnix = 1, SeqPacket = 5, CloseOnExec = 0x80000, NoSignal = 0x4000;
@@ -362,16 +362,22 @@ namespace System.ServiceProcess
             error = WireError.Unavailable;
             int fd = Connect();
             if (fd < 0) return null;
-            try
-            {
-                if (!Send(fd, Message(op, fields))) return null;
-                byte[]? answer = Receive(fd);
-                if (answer == null || answer.Length < 4) return null;
-                WireReader r = new WireReader(answer, answer.Length);
-                error = r.Int();
-                return r;
-            }
+            try { return AskOn(fd, op, fields, out error); }
             finally { Os.Close(fd); }
+        }
+
+        /// One request on a connection held open (Connect), and its answer,
+        /// as Ask: the manager answers any number of requests on one
+        /// connection, one at a time, so the caller asks one at a time.
+        public static WireReader? AskOn(int fd, ServiceRequest op, WireWriter fields, out long error)
+        {
+            error = WireError.Unavailable;
+            if (!Send(fd, Message(op, fields))) return null;
+            byte[]? answer = Receive(fd);
+            if (answer == null || answer.Length < 4) return null;
+            WireReader r = new WireReader(answer, answer.Length);
+            error = r.Int();
+            return r;
         }
     }
 }

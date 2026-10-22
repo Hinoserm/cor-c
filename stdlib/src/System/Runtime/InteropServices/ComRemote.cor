@@ -1757,25 +1757,32 @@ namespace System.Runtime.InteropServices
     public static class ComClassTypes
     {
         static readonly Dictionary<long, string> _clsidOf = new Dictionary<long, string>();
-        // Kept as object: Type is the compiler's descriptor handle, no class a
-        // generic copy can dispatch on.
-        static readonly Dictionary<string, object> _byClsid = new Dictionary<string, object>();
+        static readonly Dictionary<string, Type> _byClsid = new Dictionary<string, Type>();
 
         /// A Type for the class: a copy of System.__ComObject's descriptor
         /// (FullName "System.__ComObject", as .NET's are), told apart from
         /// every other class's by its address.
+        ///
+        /// THE DESCRIPTOR'S OWN WORD, handed to Sys.Word as the Type it is
+        /// and taken back with Sys.As: a Type cast to object is its one
+        /// RuntimeType (Runtime.TypeObject), whose address is no descriptor's,
+        /// and an object cast to Type is the type that RuntimeType stands for.
+        /// Cast so, the copy was the RuntimeType's bytes, every class's Type
+        /// came back System.__ComObject's own, and ClsidOf, asking by the
+        /// RuntimeType's address, knew none of them: Activator.CreateInstance
+        /// refused every class GetTypeFromCLSID had answered.
         public static Type For(string clsid)
         {
             string key = ComMarshal.Normal(clsid);
             lock (_clsidOf)
             {
-                object? had;
-                if (_byClsid.TryGetValue(key, out had) && had != null) return (Type)had;
-                long original = Sys.Word((object)typeof(System.__ComObject));
+                Type? had;
+                if (_byClsid.TryGetValue(key, out had) && had != null) return had;
+                long original = Sys.Word(typeof(System.__ComObject));
                 int bytes = 12 * (int)WordSize.Bytes;
                 nint copy = Marshal.AllocHGlobal(bytes);
                 for (int i = 0; i < bytes; i++) Sys.PokeByte(copy + i, Sys.PeekByte(original + i));
-                Type made = (Type)Sys.FromWord(copy)!;
+                Type made = Sys.As<Type>(copy);
                 _clsidOf[copy] = key;
                 _byClsid[key] = made;
                 return made;
@@ -1788,7 +1795,7 @@ namespace System.Runtime.InteropServices
             lock (_clsidOf)
             {
                 string? found;
-                return _clsidOf.TryGetValue(Sys.Word((object)t), out found) ? found : null;
+                return _clsidOf.TryGetValue(Sys.Word(t), out found) ? found : null;
             }
         }
     }

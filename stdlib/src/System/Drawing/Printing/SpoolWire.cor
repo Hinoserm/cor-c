@@ -2,7 +2,9 @@
 // service of the GUI kernel (os/gui/spooler.cor in the system's
 // repository), on the service manager's socket (System.ServiceProcess's
 // WireClient: one message each way, the request's number and the user it
-// is for, then its fields; the answer a Win32 error, then its fields). The
+// is for, then its fields; the answer a Win32 error, then its fields). A
+// job's requests all go on the connection its SpoolStartDoc was asked on,
+// which the spooler cancels the job with when it closes unended. The
 // requests and their fields:
 //
 //   SpoolPrinters ()                         Int(count), each a PrinterRecord
@@ -134,6 +136,62 @@ namespace Corsac.Printing
 
         static void Do(ServiceRequest op, WireWriter fields, string what) { Ask(op, fields, what); }
 
+        /// THE CONNECTION EACH JOB THIS PROCESS BEGAN WAS BEGUN ON, held
+        /// until the job ends. The spooler ties a job to the connection that
+        /// began it and cancels it when that connection goes, as Windows
+        /// aborts an unfinished job at ClosePrinter or when its process
+        /// dies. Begun on a connection of the request's own, which Ask closes
+        /// as it returns, a job was cancelled as StartDoc returned: the seat
+        /// made it no page, and AbortDoc found no job to cancel. Every
+        /// request of the job goes over it, one at a time; EndDoc and
+        /// AbortDoc close it, and so does the process's end.
+        sealed class Held
+        {
+            public readonly int Fd;
+            public Held(int fd) { Fd = fd; }
+        }
+
+        static readonly Dictionary<long, Held> _held = new Dictionary<long, Held>();
+
+        static Held? HeldFor(long job)
+        {
+            lock (_held)
+            {
+                Held? held;
+                return _held.TryGetValue(job, out held) ? held : null;
+            }
+        }
+
+        /// A request of one job's: on the connection that began it when this
+        /// process began it, on one of its own otherwise.
+        static WireReader JobAsk(long job, ServiceRequest op, WireWriter fields, string what)
+        {
+            Held? held = HeldFor(job);
+            if (held == null) return Ask(op, fields, what);
+            long error;
+            WireReader? r;
+            lock (held) r = WireClient.AskOn(held.Fd, op, fields, out error);
+            if (r == null || error != 0) throw new SpoolerException(what, error);
+            return r;
+        }
+
+        /// A job's last request, and its connection let go after it, said or
+        /// refused: a job not ended by then the spooler cancels as the
+        /// connection closes.
+        static void Finish(long job, ServiceRequest op, string what)
+        {
+            try { JobAsk(job, op, JobFields(job), what); }
+            finally
+            {
+                Held? held;
+                lock (_held)
+                {
+                    if (_held.TryGetValue(job, out held)) _held.Remove(job);
+                }
+                if (held != null) lock (held) Os.Close(held.Fd);
+            }
+        }
+
         /// Every printer, the default one marked.
         public static List<PrinterRecord> Printers()
         {
@@ -158,12 +216,24 @@ namespace Corsac.Printing
         }
 
         /// A job begun: "RAW" for bytes written (Write), "PAGES" for pages
-        /// the seat hands in (Corsac.GUI's Seat.CreatePage). Its id.
+        /// the seat hands in (Corsac.GUI's Seat.CreatePage). Its id. Begun on
+        /// a connection of its own, held until EndDoc or AbortDoc (Held).
         public static long StartDoc(string printer, string document, string datatype, string outputFile, int copies)
         {
             WireWriter w = new WireWriter();
             w.Text(printer); w.Text(document); w.Text(datatype); w.Text(outputFile); w.Int(copies);
-            return Ask(ServiceRequest.SpoolStartDoc, w, "the spooler began no job").Int();
+            int fd = WireClient.Connect();
+            if (fd < 0) throw new SpoolerException("the spooler began no job", WireError.Unavailable);
+            long error;
+            WireReader? r = WireClient.AskOn(fd, ServiceRequest.SpoolStartDoc, w, out error);
+            if (r == null || error != 0)
+            {
+                Os.Close(fd);
+                throw new SpoolerException("the spooler began no job", error);
+            }
+            long job = r.Int();
+            lock (_held) _held[job] = new Held(fd);
+            return job;
         }
 
         /// A RAW job's bytes, as the printer takes them, in pieces the wire
@@ -177,17 +247,17 @@ namespace Corsac.Printing
                 Array.Copy(data, offset, part, 0, piece);
                 WireWriter w = new WireWriter();
                 w.Int(job); w.Bytes(part);
-                Ask(ServiceRequest.SpoolWrite, w, "the spooler took no data");
+                JobAsk(job, ServiceRequest.SpoolWrite, w, "the spooler took no data");
                 offset += piece; count -= piece;
             }
         }
 
         static WireWriter JobFields(long job) { WireWriter w = new WireWriter(); w.Int(job); return w; }
 
-        public static void StartPage(long job) { Do(ServiceRequest.SpoolStartPage, JobFields(job), "no page begun"); }
-        public static void EndPage(long job) { Do(ServiceRequest.SpoolEndPage, JobFields(job), "no page ended"); }
-        public static void EndDoc(long job) { Do(ServiceRequest.SpoolEndDoc, JobFields(job), "the job was not ended"); }
-        public static void AbortDoc(long job) { Do(ServiceRequest.SpoolAbortDoc, JobFields(job), "the job was not cancelled"); }
+        public static void StartPage(long job) { JobAsk(job, ServiceRequest.SpoolStartPage, JobFields(job), "no page begun"); }
+        public static void EndPage(long job) { JobAsk(job, ServiceRequest.SpoolEndPage, JobFields(job), "no page ended"); }
+        public static void EndDoc(long job) { Finish(job, ServiceRequest.SpoolEndDoc, "the job was not ended"); }
+        public static void AbortDoc(long job) { Finish(job, ServiceRequest.SpoolAbortDoc, "the job was not cancelled"); }
 
         /// A printer's jobs ("" every printer's), in queue order.
         public static List<JobRecord> Jobs(string printer)
