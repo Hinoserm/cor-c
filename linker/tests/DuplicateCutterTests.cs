@@ -6,72 +6,69 @@ using Corsac.Lang.Lto;
 namespace Corsac.Tests.Elf;
 
 /// <summary>
-/// The x86-64 generator's stack maps ('CSMX', version 0, fixed sixteen-byte
-/// entries) as the link's duplicate cutter rewrites them: a cut function's
-/// call sites go with it, the rest are measured from the code as cut, and
-/// each kept entry's pointer into the bitmap pool follows the entries that
-/// moved. A table of another magic or version leaves the code uncut.
+/// The stack-map table ('CSM1', version 0, StackMapTable) as the link's
+/// duplicate cutter rewrites it: a cut function's call sites go with it,
+/// the rest start where their code now starts, each site kept as it was
+/// within its function. A table of another magic or version, one too short
+/// for its header, or one whose offsets run past its end leaves the code
+/// uncut.
 /// </summary>
 public static class DuplicateCutterTests
 {
     public static void Run()
     {
         void Check(bool value, string message) { if (!value) throw new Exception(message); }
-        const int Entries = 20, Pool = Entries + 3 * 16;
         (ObjectFile Obj, Section Text, Section Maps, Symbol Middle) Make(uint magic, uint version)
         {
             ObjectFile obj = new();
             Section text = new(".text", SectionKind.Code) { Align = 16 };
             text.Bytes.AddRange(new byte[48]);
             obj.Sections.Add(text);
-            Symbol[] functions = new Symbol[3];
+            Symbol[] symbols = new Symbol[3];
+            List<StackMapTable.Function> functions = new();
             for (int i = 0; i < 3; i++)
             {
-                functions[i] = new Symbol { Name = "f" + i, IsFunction = true, Section = text, Offset = 16 * i, Size = 16 };
-                obj.Symbols.Add(functions[i]);
+                symbols[i] = new Symbol { Name = "f" + i, IsFunction = true, Section = text, Offset = 16 * i, Size = 16 };
+                obj.Symbols.Add(symbols[i]);
+                StackMapTable.Function f = new() { Start = 16 * i, FrameSize = 8 };
+                f.Sites.Add(new StackMapTable.Site(5, false, 0, [i]));
+                functions.Add(f);
             }
-            byte[] table = new byte[Pool + 3 * 4];
-            void Word(int at, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(table.AsSpan(at), value);
-            Word(0, magic); Word(4, version); Word(8, 3); Word(12, 16);
-            for (int i = 0; i < 3; i++)
-            {
-                Word(Entries + 16 * i, (uint)(16 * i + 5));          // a return address, from the base
-                Word(Entries + 16 * i + 8, (uint)(Pool + 4 * i));    // its bitmap, in the pool
-                Word(Pool + 4 * i, 0x100u + (uint)i);
-            }
+            byte[] table = StackMapTable.Encode(functions);
+            BinaryPrimitives.WriteUInt32LittleEndian(table.AsSpan(0), magic);
+            BinaryPrimitives.WriteUInt32LittleEndian(table.AsSpan(4), version);
             Section maps = new(".corsac.stackmaps", SectionKind.ReadOnlyData) { Align = 8 };
             maps.Bytes.AddRange(table);
-            maps.Relocs.Add(new Relocation(16, "f0", 0, RelocKind.Abs32));
+            maps.Relocs.Add(new Relocation(StackMapTable.BaseOffset, "f0", 0, RelocKind.Abs32));
             obj.Sections.Add(maps);
-            return (obj, text, maps, functions[1]);
+            return (obj, text, maps, symbols[1]);
         }
 
-        var (obj, text, maps, middle) = Make(0x584d5343, 0);
+        var (obj, text, maps, middle) = Make(StackMapTable.Magic, StackMapTable.Version);
         List<Symbol> left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
-        byte[] cut = maps.Bytes.Slice(0, maps.Bytes.Count);
-        uint At(int offset) => BinaryPrimitives.ReadUInt32LittleEndian(cut.AsSpan(offset));
-        Check(left.Count == 0 && text.Bytes.Count == 32, "a 'CSMX' table's code left uncut");
-        Check(At(0) == 0x584d5343 && At(4) == 0 && At(8) == 2 && At(12) == 16, "the cut 'CSMX' header");
-        Check(At(Entries) == 5 && At(Entries + 16) == 21, "the kept sites, measured from the cut code");
-        Check(At(Entries + 8) == Pool - 16 && At(Entries + 24) == Pool - 16 + 8, "the kept sites' bitmaps, past the entry that went");
-        Check(At((int)At(Entries + 8)) == 0x100 && At((int)At(Entries + 24)) == 0x102, "the bitmaps the kept sites point at");
+        Check(left.Count == 0 && text.Bytes.Count == 32, "a 'CSM1' table's code left uncut");
+        List<StackMapTable.Function>? kept = StackMapTable.Decode(maps.Bytes.Slice(0, maps.Bytes.Count));
+        Check(kept is { Count: 2 }, "the cut table, read back");
+        Check(kept![0].Start == 0 && kept[1].Start == 16, "the kept functions, where their code now starts");
+        Check(kept[0].Sites is [{ Return: 5, Slots: [0] }] && kept[1].Sites is [{ Return: 5, Slots: [2] }],
+            "the kept sites, as they were within their functions");
 
-        foreach ((uint magic, uint version) in new[] { (0x584d5343u, 3u), (0x4d534321u, 0u) })
+        foreach ((uint magic, uint version) in new[] { (StackMapTable.Magic, 3u), (0x4d534321u, StackMapTable.Version) })
         {
             (obj, text, maps, middle) = Make(magic, version);
             left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
             Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map table of another magic or version cut");
         }
-        // A section too short for a header, and a count whose entries would
-        // run past any table: unknown, the code left, nothing read past it.
-        (obj, text, maps, middle) = Make(0x584d5343, 0);
+        // A section too short for a header, and a pool said to start past the
+        // table's end: unknown, the code left, nothing read past it.
+        (obj, text, maps, middle) = Make(StackMapTable.Magic, StackMapTable.Version);
         maps.Bytes.Clear(); maps.Bytes.AddRange(new byte[] { 0x43, 0x53, 0x4d });
         left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
         Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map section shorter than its header cut");
-        (obj, text, maps, middle) = Make(0x584d5343, 0);
-        maps.Bytes.WriteInt32(8, 0x10000000);
+        (obj, text, maps, middle) = Make(StackMapTable.Magic, StackMapTable.Version);
+        maps.Bytes.WriteInt32(32, 0x10000000);
         left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
-        Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map table counting past its end cut");
-        Console.WriteLine("  duplicate cutter: 'CSMX' sites and bitmaps follow the cut; any other table leaves the code");
+        Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map table pointing past its end cut");
+        Console.WriteLine("  duplicate cutter: 'CSM1' functions and sites follow the cut; any other table leaves the code");
     }
 }
