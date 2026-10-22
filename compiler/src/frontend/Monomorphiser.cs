@@ -2510,6 +2510,7 @@ public sealed class Monomorphiser
                 // the innermost).
                 CanonIndex = bound.CanonIndex,
                 CanonWhole = bound.CanonWhole,
+                Spliced = true,
                 Line = r.Line, Col = r.Col,
             };
             _settled.Add(substituted);

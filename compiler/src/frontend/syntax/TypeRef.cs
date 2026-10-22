@@ -90,8 +90,8 @@ public sealed class TypeRef : Node
     private TypeRefRare Rare => _rare ??= new();
 
     private const int ByteMarker = 255;
-    private const int CanonShift = 18;
-    private const int CanonMarker = -8192;
+    private const int CanonShift = 19;
+    private const int CanonMarker = -4096;
 
     private int GetByte(int shift, bool pointer)
     {
@@ -136,6 +136,17 @@ public sealed class TypeRef : Node
     /// Element with its own Nullable. Only the syntactic side was flat.
     /// </summary>
     public bool ElementNullable { get => (_packed & (1 << 17)) != 0; init => SetFlag(17, value); }
+
+    /// <summary>
+    /// What a generic copy's type parameter was bound to, put in its place
+    /// by the monomorphiser (Monomorphiser.Sub): a type the code that made
+    /// the instantiation named, spelt by its path. It is resolved as that
+    /// path, never by the names the copy's own file can see -- a program's
+    /// `Box<StringBuilder>` from a file that imports System.Text is no less
+    /// a box of StringBuilder in the file declaring Box, which need not
+    /// (Binder.ProgramNamespaceRule).
+    /// </summary>
+    public bool Spliced { get => (_packed & (1 << 18)) != 0; init => SetFlag(18, value); }
 
     /// <summary>
     /// The '?' marks between the brackets of an array of arrays: bit k-1 set

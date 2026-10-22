@@ -545,7 +545,11 @@ public sealed partial class Binder
         if (TypeCandidate(name, out _)) return false;
         if (file != null && Imported(file, "", name, out _)) return false;
         if (ImportsSystem("")) return true;
-        return !Sole(name, out _);
+        // A PROGRAM'S BARE `Type` WITH NO System IN SCOPE is no System.Type,
+        // as in C# (CS0246 when nothing else is called Type). The class
+        // library's own code reads it as System.Type wherever nothing else
+        // is the one Type, as it always has (ProgramNamespaceRule).
+        return !BindingProgramCode() && !Sole(name, out _);
     }
 
     /// <summary>
@@ -643,10 +647,12 @@ public sealed partial class Binder
             sym = mine;
             return true;
         }
-        if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { } candidate && IsProgramSource(candidate)))
+        if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { } candidate && IsProgramSource(candidate))
+            && (sym is null || LibraryGlobalVisible(sym)))
         {
             return true;
         }
+        sym = null;
 
         if (file != null && Imported(file, "", name, out sym))
         {
@@ -667,7 +673,17 @@ public sealed partial class Binder
         // Two types of the same simple name stay distinct: each is found by
         // the walk above from inside, and neither is sole, so an unqualified
         // mention from anywhere else is refused rather than guessed.
-        return Sole(name, out sym);
+        //
+        // AND NOT THE ONE TYPE OF THE NAME ANYWHERE. That was taken for a
+        // name nothing in scope declares -- a namespaced type no using
+        // brought in, even a private one nested in another namespace's
+        // class (PrintSpooler.Held, offered for FontCollection's field
+        // Held) -- where C# refuses the name (CS0246). Where such a type
+        // is, the error says (WhereItIs). A spliced name is no name written
+        // here, and the copy's type argument the monomorphiser spelt is
+        // found by its path above.
+        sym = null;
+        return false;
     }
 
     /// <summary>Whether a specialisation has a template argument written as this name.</summary>
@@ -1069,6 +1085,92 @@ public sealed partial class Binder
         _sole[type.Name] = _sole.ContainsKey(type.Name) ? null : type;
         if (IsLibraryType(type))
             _soleLibrary[type.Name] = _soleLibrary.ContainsKey(type.Name) ? null : type;
+    }
+
+    /// <summary>Spliced references being resolved (TypeRef.Spliced): the names in them were spelt by the monomorphiser.</summary>
+    private int _spliced;
+
+    /// <summary>
+    /// C#'S RULE FOR THE NAMES A PROGRAM'S FILE CAN SEE: whether the code
+    /// being bound was written in a program's source. The class library's
+    /// own code -- a declaration from its sources, a specialisation of one
+    /// of its templates, a copy of one of its generic methods (LocalCopy)
+    /// -- reads its global types as the one namespace they are to it, and
+    /// code the compiler wrote reads every name; neither is a program's to
+    /// be refused.
+    /// </summary>
+    private bool BindingProgramCode()
+    {
+        if (_spliced > 0) return false;
+        TypeDecl? written = (_scope ?? _thisType)?.Decl;
+        if (written is null || written.File == "<prelude>" || _member is { LocalCopy: true }) return false;
+        return !ClassLibrarySide(written);
+    }
+
+    /// <summary>
+    /// THE CLASS LIBRARY'S GLOBAL TYPES ARE .NET'S, IN .NET'S NAMESPACES
+    /// (LibraryNamespaces): a program sees one written bare only inside that
+    /// namespace or under a using directive of it -- `Console` with no
+    /// `using System;` is CS0103, `List<int>` without System.Collections.
+    /// Generic is CS0246, as C# has them. Every name was seen everywhere, so
+    /// a program that compiled here could be refused by C#. The library's
+    /// global types of names .NET has none of (Os, Gc, Runtime) are in no
+    /// namespace, and seen everywhere.
+    /// </summary>
+    private bool LibraryGlobalVisible(TypeSymbol sym)
+    {
+        if (sym.Decl is not { Outer: null } d || d.Namespace.Length != 0 || !ClassLibrarySide(d)) return true;
+        if (LibraryNamespaces.Of(sym.Key) is not string space || !BindingProgramCode()) return true;
+        return NamespaceInScope(space);
+    }
+
+    /// <summary>
+    /// Whether namespace `space` is in scope where the name being bound was
+    /// written, as C# has it: it encloses that place, or a using directive in
+    /// force there imports it -- the file's own at its top or in an enclosing
+    /// namespace's block, a global using of its side, the project's --using.
+    /// </summary>
+    private bool NamespaceInScope(string space)
+    {
+        TypeDecl? written = (_scope ?? _thisType)?.Decl;
+        string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
+        if (Encloses(space, within)) return true;
+        FileScope? file = _member?.Scope ?? written?.Scope;
+        if (file is null) return true;
+        foreach ((string at, string imported) in file.Imports)
+        {
+            if (imported == space && (at.Length == 0 || Encloses(at, within))) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Whether namespace `outer` is `inner` or one it is written inside.</summary>
+    private static bool Encloses(string outer, string inner)
+        => inner == outer || inner.Length > outer.Length && inner[outer.Length] == '.' && inner.StartsWith(outer, StringComparison.Ordinal);
+
+    /// <summary>
+    /// What a "could not be found" error adds: where a type of the name is,
+    /// and the using that brings it in -- a global type of the library's by
+    /// its .NET namespace, or the one type of the name anywhere -- or C#'s
+    /// own question when there is none (nothing, for a name that may as
+    /// well be a variable's: `orAsk` false).
+    /// </summary>
+    private string WhereItIs(string name, bool orAsk = true)
+    {
+        string bare = name.Contains('.') ? name[(name.LastIndexOf('.') + 1)..] : name;
+        if (_r.Types.TryGetValue(bare, out TypeSymbol? global) && global.Decl is { Outer: null } d && d.Namespace.Length == 0
+            && LibraryNamespaces.Of(global.Key) is string space)
+        {
+            return $" (it is {space}.{PlainName(global.Name)}: add `using {space};`)";
+        }
+        if (Sole(bare, out TypeSymbol? only) && only?.Decl is TypeDecl decl)
+        {
+            string path = only.Key;
+            return decl.Outer is null || decl.Outer == decl.Namespace
+                ? $" (it is {path}: add `using {decl.Namespace};`)"
+                : $" (it is {path}, a type nested in {decl.Outer})";
+        }
+        return orAsk ? " (are you missing a using directive or an assembly reference?)" : "";
     }
 
     /// <summary>
@@ -5797,6 +5899,15 @@ public sealed partial class Binder
 
     private Type ResolveCore(TypeRef r, TypeSymbol? context)
     {
+        // A TYPE THE MONOMORPHISER SPLICED IN (TypeRef.Spliced), with all it
+        // is made of, is the one its instantiation named: C#'s rule for the
+        // names a file can see is not asked of it (ProgramNamespaceRule).
+        if (r.Spliced && _spliced == 0)
+        {
+            _spliced++;
+            try { return ResolveCore(r, context); }
+            finally { _spliced--; }
+        }
         // A TUPLE TYPE is the class this writes for its shape, carrying the
         // element names it was written with. See TupleType.
         if (r.Name == TypeRef.Tuple && r.Args.Count > 1)
@@ -6016,7 +6127,7 @@ public sealed partial class Binder
             }
         }
 
-        Error(r, $"'{r.Name}' is not a known type");
+        Error(r, $"CS0246: The type or namespace name '{r.Name}' could not be found{WhereItIs(r.Args.Count > 0 ? Arity(r.Name, r.Args.Count) : r.Name)}");
         return Type.Error;
     }
 
@@ -18759,7 +18870,7 @@ public sealed partial class Binder
             return Type.Plain(type, Prim.Void);
         }
 
-        Error(n, $"'{n.Name}' is not declared");
+        Error(n, $"CS0103: The name '{n.Name}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
         return Type.Error;
     }
 
