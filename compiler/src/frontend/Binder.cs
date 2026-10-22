@@ -14043,19 +14043,23 @@ public sealed partial class Binder
 
             for (int i = 0; i < given.Count; i++)
             {
+                // The element AS THE COLLECTION'S USE HAS IT: `new() { (1,
+                // null) }` for a List<(int A, string? B)> adds a string? where
+                // the specialisation's Add takes a (int, string).
+                Type element = ContextualParameterType(type, chosen, i);
                 if (add.Args[i] is LambdaExpr lambda)
                 {
-                    given[i] = CheckLambda(lambda, chosen.Params[i].Type);
+                    given[i] = CheckLambda(lambda, element);
                     continue;
                 }
                 if (add.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null, Collection: false } || HoldsLambda(add.Args[i]) || Deferred(add.Args[i]))
                 {
                     Type? saved = _wanted;
-                    _wanted = chosen.Params[i].Type;
+                    _wanted = element;
                     given[i] = CheckExpr(add.Args[i]);
                     _wanted = saved;
                 }
-                given[i] = Settle(add.Args[i], chosen.Params[i].Type, given[i]);
+                given[i] = Settle(add.Args[i], element, given[i]);
                 CheckAssignable(given[i], chosen.Params[i].Type, add.Args[i], What.ArgumentOf(i + 1, "Add"));
             }
 
@@ -22143,7 +22147,13 @@ public sealed partial class Binder
         {
             if (i < best.Params.Count)
             {
-                args[i] = Settle(c.Args[i], Close(best.Params[i].Type, bound), args[i]);
+                // AS THE RECEIVER'S USE HAS IT, as below: `pairs.Add((3, null))`
+                // on a List<(int A, string? B)> takes the use's string?, which
+                // the specialisation's (int, string) does not carry.
+                Type settled = Close(!c.ReceiverAdded && c.Target is MemberExpr settleOn
+                    ? ContextualParameterType(_r.TypeOf(settleOn.Target), best, i)
+                    : best.Params[i].Type, bound);
+                args[i] = Settle(c.Args[i], settled, args[i]);
             }
 
             if (c.Args[i] is RefArgExpr { Declare: null, Name: not null } inferred

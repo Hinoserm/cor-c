@@ -1,0 +1,57 @@
+// test: null_state_as_csharp_tracks_it
+// expect-exit: 0
+// expect-output:
+// 4 4 3
+// 1 5
+// 2 two
+//
+// What C# knows of a nullable reference after it is used, without a
+// warning: the compiler's own sources gave hundreds Roslyn does not, and
+// with warnings errors that refuses programs C# compiles.
+// - `i.Dest!.Id` proves the path i.Dest, a property with accessors of its
+//   own, as it proves a field's: `Use(i.Dest)` after it needs no `!`.
+// - What `new()` makes is never null, whatever its target's `?`:
+//   `map[1] = list = new();` leaves the `List<int>? list` not null.
+// - A tuple type argument's element keeps its `?`: `(2, null)` is an
+//   element of a `List<(int A, string? B)>`.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Reg { public int Id; }
+
+sealed class Ins
+{
+    private Reg? _dest;
+    public Reg? Dest { get => _dest; set => _dest = value; }
+}
+
+static class Program
+{
+    static int Width(int id) => id;
+    static int Use(Reg r) => r.Id;
+
+    static int Main()
+    {
+        Ins i = new() { Dest = new Reg { Id = 4 } };
+        int w = Width(i.Dest!.Id);
+        int u = Use(i.Dest);
+        string? s = w > 0 ? "abc" : null;
+        int a = s!.Length;
+        Console.WriteLine(w + " " + u + " " + a);
+
+        Dictionary<int, List<int>> map = new();
+        if (!map.TryGetValue(1, out List<int>? list))
+        {
+            map[1] = list = new();
+            list.Add(5);
+        }
+        Console.WriteLine(map.Count + " " + map[1][0]);
+
+        List<(int A, string? B)> pairs = new() { (1, null) };
+        pairs.Add((2, "two"));
+        pairs.Add((3, null));
+        Console.WriteLine((pairs.Count - 1) + " " + pairs[1].B);
+        return 0;
+    }
+}
