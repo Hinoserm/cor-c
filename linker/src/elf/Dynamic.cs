@@ -177,13 +177,18 @@ public static partial class Linker
             dyn.InitName = ModuleInitName;
         }
         else if (!dyn.Shared && ProgramInitializers(inputs, isLongMode) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
-        // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
-        // storage and flag, defined by no unit.
-        if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), isLongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
         Layout layout = new(loadAddress) { Dyn = dyn, LongMode = isLongMode };
         TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(input => (input.Name, input.Object)).ToArray());
+        // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
+        // storage and flag, defined by no unit. After the units' copies are
+        // coalesced, as a program's link does: laying them down renames a
+        // unit's own definition of what it defines again, and a copy two
+        // units certified alike was then nowhere the coalescer looked for it
+        // -- every shared library's link failed on EmptyArray<T>'s flag
+        // ("Coalescing definition integrity mismatch").
+        if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), isLongMode) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));
         AddManagedMetadata(inputs, layout, errors);
         Merge(inputs, layout, errors);
         Resolve(inputs, layout, errors);
