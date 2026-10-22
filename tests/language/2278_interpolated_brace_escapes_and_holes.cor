@@ -1,0 +1,34 @@
+// test: interpolated_brace_escapes_and_holes
+// expect-exit: 0
+// expect-output:
+// a { b } c 2
+// run of 2 '{' alone
+// closing '}' alone 2
+// {2} and }{
+// verbatim {2} '{' "q"
+// { 2
+//
+// An interpolated string's `{{` and `}}` are a brace of text however they
+// stand: the lexer took the second `{` of `'{{'` for a hole opening, and
+// the string ran on unterminated -- this compiler's own sources have one.
+// And a hole is read as the file's own text is: an anonymous object made in
+// one (`{new { A = n }.A}`) had its class made by the hole's reader and
+// lost with it.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        int n = 2;
+        Console.WriteLine($"a {{ b }} c {n}");
+        Console.WriteLine($"run of {n} '{{' alone");
+        Console.WriteLine($"closing '}}' alone {n}");
+        Console.WriteLine($"{{{n}}} and }}{{");
+        Console.WriteLine($@"verbatim {{{n}}} '{{' ""q""");
+        Console.WriteLine($"{(n > 1 ? "{" : "}")} {new { A = n }.A}");
+        return 0;
+    }
+}

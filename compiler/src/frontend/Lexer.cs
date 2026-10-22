@@ -1454,9 +1454,19 @@ public sealed class Lexer
                 continue;
             }
 
+            // `{{` AND `}}` OUTSIDE A HOLE ARE A BRACE OF TEXT, both
+            // characters taken together: the second `{` of `'{{'` was read as
+            // a hole opening, and the string ran on unterminated.
+            if (depth == 0 && (Cur == '{' && Peek(1) == '{' || Cur == '}' && Peek(1) == '}'))
+            {
+                sb.Append(ReadChar());
+                sb.Append(ReadChar());
+                continue;
+            }
+
             if (Cur == '{')
             {
-                depth = Peek(1) == '{' ? depth : depth + 1;
+                depth++;
             }
             else if (Cur == '}' && depth > 0)
             {

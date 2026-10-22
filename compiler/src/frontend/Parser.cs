@@ -511,8 +511,16 @@ public sealed class Parser
             // column whenever the text before it held no escape -- and an
             // escape only ever shortens it, so this never overshoots the line.
             List<Token> tokens = Lexer.Tokenize(expression, _file, at.Line, at.Col + 2 + from);
-            Parser sub = new(tokens, _file) { Source = expression };
+            // THE FILE'S OWN READING OF IT: its aliases, and what a hole makes
+            // -- an anonymous object's class, a hidden name -- made into the
+            // file's, under names the file's own count, not lost with the
+            // reader of the hole or made twice under one name.
+            Parser sub = new(tokens, _file)
+            {
+                Source = expression, _typeAliases = _typeAliases, _anonymous = _anonymous, _anonymousTypes = _anonymousTypes, _hidden = _hidden,
+            };
             Expr hole = sub.ParseExpr();
+            _hidden = sub._hidden;
 
             if (format is not null)
             {
@@ -4436,7 +4444,7 @@ public sealed class Parser
     }
 
     /// <summary>`using Map = Dictionary<string, int>;` and the like: each alias of a type, as its tokens' text (ParseUsings).</summary>
-    private readonly Dictionary<string, string> _typeAliases = new(StringComparer.Ordinal);
+    private Dictionary<string, string> _typeAliases = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The rest of a tuple, from wherever it was recognised.
@@ -9768,8 +9776,8 @@ public sealed class Parser
         return call;
     }
 
-    private readonly Dictionary<string, string> _anonymous = new(StringComparer.Ordinal);
-    private readonly List<TypeDecl> _anonymousTypes = new();
+    private Dictionary<string, string> _anonymous = new(StringComparer.Ordinal);
+    private List<TypeDecl> _anonymousTypes = new();
 
     /// <summary>The class and maker for one list of anonymous members, written as source and parsed.</summary>
     private string MakeAnonymousType(List<string> names)
