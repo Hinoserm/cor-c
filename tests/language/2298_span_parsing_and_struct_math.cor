@@ -1,0 +1,86 @@
+// test: span_parsing_and_struct_math
+// expect-exit: 0
+// expect-output:
+// <1, 2, 3> <4, -5, 6.5> <5, -3, 9.5> <-1, -2, -3> <2, 4, 6>
+// 13.5 <28, 5.5, -13> 5 eq True
+// 10.5
+// [key:value][other:42][last:] 42 True12
+// True True True 8 2 HELLO, WORLD World True True
+// True 3.14 4
+// 9,5,3,1 2 True
+//
+// A whole small program over spans and struct math: ReadOnlySpan<char>
+// trimmed with no argument, sliced by ranges, searched, parsed (double,
+// int, TryParse), compared with a string and with a comparison; Span's Sort
+// and Reverse; a number's TryFormat into chars; string.Create with a
+// provider; a readonly struct's operators over `in` parameters,
+// Deconstruct, IEquatable -- every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Globalization;
+using System.Text;
+
+readonly struct Vec3 : IEquatable<Vec3>
+{
+    public readonly double X, Y, Z;
+    public Vec3(double x, double y, double z) { X = x; Y = y; Z = z; }
+    public static Vec3 operator +(in Vec3 a, in Vec3 b) => new(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
+    public static Vec3 operator -(in Vec3 a) => new(-a.X, -a.Y, -a.Z);
+    public static Vec3 operator *(in Vec3 a, double k) => new(a.X * k, a.Y * k, a.Z * k);
+    public static double Dot(in Vec3 a, in Vec3 b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+    public static Vec3 Cross(in Vec3 a, in Vec3 b) => new(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X);
+    public double Length => Math.Sqrt(Dot(this, this));
+    public bool Equals(Vec3 o) => X == o.X && Y == o.Y && Z == o.Z;
+    public override bool Equals(object? obj) => obj is Vec3 v && Equals(v);
+    public override int GetHashCode() => HashCode.Combine(X, Y, Z);
+    public override string ToString() => string.Create(CultureInfo.InvariantCulture, $"<{X}, {Y}, {Z}>");
+    public void Deconstruct(out double x, out double y, out double z) { x = X; y = Y; z = Z; }
+}
+
+static class Program
+{
+    static Vec3 ParseVec(ReadOnlySpan<char> text)
+    {
+        text = text.Trim().Trim("()".AsSpan());
+        Span<double> parts = stackalloc double[3];
+        for (int i = 0; i < 3; i++)
+        {
+            int comma = text.IndexOf(',');
+            ReadOnlySpan<char> piece = comma < 0 ? text : text[..comma];
+            parts[i] = double.Parse(piece.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture);
+            text = comma < 0 ? ReadOnlySpan<char>.Empty : text[(comma + 1)..];
+        }
+        return new Vec3(parts[0], parts[1], parts[2]);
+    }
+
+    static int Main()
+    {
+        Vec3 a = ParseVec(" (1, 2, 3) "), b = ParseVec("(4,-5,6.5)");
+        Console.WriteLine(a + " " + b + " " + (a + b) + " " + (-a) + " " + a * 2);
+        Console.WriteLine(Vec3.Dot(a, b) + " " + Vec3.Cross(a, b) + " " + new Vec3(3, 4, 0).Length + " " + (a.Equals(ParseVec("1,2,3")) ? "eq" : "ne") + " " + a.Equals(ParseVec("1,2,3")));
+        var (x, _, z) = b;
+        Console.WriteLine(x + z);
+        ReadOnlySpan<char> line = "key=value; other = 42 ;last=";
+        var sb = new StringBuilder();
+        while (!line.IsEmpty)
+        {
+            int semi = line.IndexOf(';');
+            ReadOnlySpan<char> pair = semi < 0 ? line : line[..semi];
+            int eq = pair.IndexOf('=');
+            sb.Append('[').Append(pair[..eq].Trim()).Append(':').Append(pair[(eq + 1)..].Trim()).Append(']');
+            line = semi < 0 ? ReadOnlySpan<char>.Empty : line[(semi + 1)..];
+        }
+        Console.WriteLine(sb + " " + int.Parse("  42 ".AsSpan().Trim()) + " " + int.TryParse("12x".AsSpan(0, 2), out int twelve) + twelve);
+        ReadOnlySpan<char> word = "Hello, World";
+        Console.WriteLine(word.StartsWith("Hell") + " " + word.EndsWith("ld") + " " + word.Contains("o, W", StringComparison.Ordinal) + " " + word.LastIndexOf('o') + " " + word.IndexOfAny('W', 'l') + " " + word.ToString().ToUpperInvariant() + " " + new string(word[7..]) + " " + word.SequenceEqual("Hello, World") + " " + MemoryExtensions.Equals(word, "hello, world", StringComparison.OrdinalIgnoreCase));
+        Span<char> buf = stackalloc char[16];
+        bool ok = 3.14159.TryFormat(buf, out int written, "F2", CultureInfo.InvariantCulture);
+        Console.WriteLine(ok + " " + new string(buf[..written]) + " " + written);
+        Span<int> nums = stackalloc int[] { 5, 3, 9, 1 };
+        nums.Sort();
+        nums.Reverse();
+        Console.WriteLine(string.Join(",", nums.ToArray()) + " " + nums.IndexOf(3) + " " + nums.Contains(9));
+        return 0;
+    }
+}

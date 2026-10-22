@@ -519,6 +519,13 @@ static class String {
     /// new and nobody else holds it until it is returned, so writing into it
     /// is building it, as SetChar does here, and no string anyone has seen
     /// changes. What the action leaves unwritten is U+0000, as in .NET.
+    /// An interpolated string formatted with this provider (.NET 6). The
+    /// cultures here are invariant, so the holes are formatted as written
+    /// by the time the text arrives.
+    public static string Create(IFormatProvider? provider, string text) {
+        return text;
+    }
+
     public static string Create<TState>(int length, TState state, SpanAction<char, TState> action) {
         if (action == null) { throw new ArgumentNullException("action"); }
         if (length <= 0) {
@@ -6535,6 +6542,15 @@ static class __Bits {
 }
 
 static class SByte {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(sbyte value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -6718,6 +6734,15 @@ static class SByte {
 }
 
 static class Int16 {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(short value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -6915,6 +6940,15 @@ static class Int16 {
 }
 
 static class UInt16 {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(ushort value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -7111,6 +7145,15 @@ static class UInt16 {
 }
 
 static class UInt32 {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(uint value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -7307,6 +7350,15 @@ static class UInt32 {
 }
 
 static class Int64 {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(long value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -7507,6 +7559,15 @@ static class Int64 {
 }
 
 static class Int32 {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(int value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -7984,6 +8045,15 @@ static class UIntPtr {
 }
 
 static class UInt64 {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(ulong value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -8180,6 +8250,15 @@ static class UInt64 {
 }
 
 static class Byte {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(byte value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -8376,6 +8455,15 @@ static class Byte {
 }
 
 static class Double {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(double value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -8705,6 +8793,15 @@ static class Double {
 /// Framework's float.ToString() was, so 0.1f prints 0.1 and not the double
 /// it widens to.
 static class Single {
+    // Its text into chars (ISpanFormattable), as ToString would make it.
+    public static bool TryFormat(float value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
+        string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
+        if (text.Length > destination.Length) { charsWritten = 0; return false; }
+        for (int i = 0; i < text.Length; i++) { destination[i] = text[i]; }
+        charsWritten = text.Length;
+        return true;
+    }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -11037,6 +11134,44 @@ public static class MemoryExtensions {
         return true;
     }
 
+    // A CHAR SPAN'S OWN, ordinal, as .NET has beside the generic ones: a
+    // string argument converts to its span here, where the generic's T is
+    // read from both arguments.
+    public static bool StartsWith(this ReadOnlySpan<char> span, ReadOnlySpan<char> value) {
+        if (value.Length > span.Length) { return false; }
+        for (int i = 0; i < value.Length; i++) { if (span[i] != value[i]) { return false; } }
+        return true;
+    }
+    public static bool EndsWith(this ReadOnlySpan<char> span, ReadOnlySpan<char> value) {
+        int at = span.Length - value.Length;
+        if (at < 0) { return false; }
+        for (int i = 0; i < value.Length; i++) { if (span[at + i] != value[i]) { return false; } }
+        return true;
+    }
+    // White space off either end, as string.Trim() takes it.
+    public static ReadOnlySpan<char> Trim(this ReadOnlySpan<char> span) { return TrimEnd(TrimStart(span)); }
+    public static ReadOnlySpan<char> TrimStart(this ReadOnlySpan<char> span) {
+        int from = 0;
+        while (from < span.Length && char.IsWhiteSpace(span[from])) { from++; }
+        return span.Slice(from);
+    }
+    public static ReadOnlySpan<char> TrimEnd(this ReadOnlySpan<char> span) {
+        int to = span.Length;
+        while (to > 0 && char.IsWhiteSpace(span[to - 1])) { to--; }
+        return span.Slice(0, to);
+    }
+    public static Span<char> Trim(this Span<char> span) { return TrimEnd(TrimStart(span)); }
+    public static Span<char> TrimStart(this Span<char> span) {
+        int from = 0;
+        while (from < span.Length && char.IsWhiteSpace(span[from])) { from++; }
+        return span.Slice(from);
+    }
+    public static Span<char> TrimEnd(this Span<char> span) {
+        int to = span.Length;
+        while (to > 0 && char.IsWhiteSpace(span[to - 1])) { to--; }
+        return span.Slice(0, to);
+    }
+
     public static bool StartsWith<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> value) {
         if (value.Length > span.Length) { return false; }
         for (int i = 0; i < value.Length; i++) { if (!Same(span[i], value[i])) { return false; } }
@@ -11102,6 +11237,26 @@ public static class MemoryExtensions {
         return -1;
     }
     public static bool Contains<T>(this ReadOnlySpan<T> span, T value) { return IndexOf(span, value) >= 0; }
+    public static bool Contains(this ReadOnlySpan<char> span, ReadOnlySpan<char> value, StringComparison comparisonType) {
+        for (int i = 0; i + value.Length <= span.Length; i++) { if (Equals(span.Slice(i, value.Length), value, comparisonType)) { return true; } }
+        return false;
+    }
+    // In place: reversed, or sorted by its elements' order (a copy sorted
+    // and written back, as Array.Sort sorts).
+    public static void Reverse<T>(this Span<T> span) {
+        for (int i = 0, j = span.Length - 1; i < j; i++, j--) { T held = span[i]; span[i] = span[j]; span[j] = held; }
+    }
+    public static void Sort<T>(this Span<T> span) { Sort(span, Comparer<T>.Default); }
+    public static void Sort<T>(this Span<T> span, IComparer<T>? comparer) {
+        T[] sorted = span.ToArray();
+        Array.Sort(sorted, comparer ?? Comparer<T>.Default);
+        for (int i = 0; i < sorted.Length; i++) { span[i] = sorted[i]; }
+    }
+    public static void Sort<T>(this Span<T> span, Comparison<T> comparison) {
+        T[] sorted = span.ToArray();
+        Array.Sort(sorted, comparison);
+        for (int i = 0; i < sorted.Length; i++) { span[i] = sorted[i]; }
+    }
     public static bool Contains<T>(this Span<T> span, T value) { return IndexOf(span, value) >= 0; }
 }
 
