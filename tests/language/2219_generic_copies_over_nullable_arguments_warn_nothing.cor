@@ -1,0 +1,28 @@
+// test: generic_copies_over_nullable_arguments_warn_nothing
+// expect-exit: 0
+// expect-output:
+// 2 True
+// 3 3
+//
+// A generic body is judged once, over its type parameters, as C# judges
+// it -- not again in each copy made for its arguments, where a `?` kept on
+// a parameter and lost on a shared type argument (IEnumerable<string?> is
+// one class with IEnumerable<string>) looked like a null where none may
+// go: Enumerable.Repeat<string?> warned in the class library's own code.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static int Main()
+    {
+        List<string?> twice = Enumerable.Repeat<string?>(null, 2).ToList();
+        Console.WriteLine(twice.Count + " " + (twice[0] is null));
+        List<string?> names = Enumerable.Repeat<string?>("ab", 1).Concat(twice).ToList();
+        List<string?> copied = names.Select(n => n is null ? null : n + "!").ToList();
+        Console.WriteLine(copied.Count + " " + copied[0]!.Length);
+        return 0;
+    }
+}

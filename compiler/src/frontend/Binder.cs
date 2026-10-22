@@ -8058,7 +8058,16 @@ public sealed partial class Binder
 
         // Reference annotations warn, but do not waive the underlying type
         // conversion check. A nullable Foo is still not an unrelated Bar.
-        if (from.Nullable && !to.Nullable && to.IsReference)
+        // NOT IN A GENERIC COPY. C# judges a generic body once, over its type
+        // parameters; a copy's types are its arguments', their `?` kept in a
+        // parameter and lost in a type argument made one shared class (an
+        // IEnumerable<string?> is IEnumerable$string) -- Repeat<string?>'s
+        // `yield return element` and SelectAny<int[]?[], …>'s `foreach (T
+        // item …)` were warned of in the class library, which C# never does.
+        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+        {
+        }
+        else if (from.Nullable && !to.Nullable && to.IsReference)
         {
             Warning(at, NullCode(what.ToString()), $"{what}: '{from.Shown()}' may be null but '{to.Shown()}' may not");
         }
