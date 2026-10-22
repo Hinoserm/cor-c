@@ -1176,6 +1176,15 @@ public sealed partial class Binder
     /// </summary>
     private string WhereItIs(string name, bool orAsk = true)
     {
+        // A COPY OF ONE OF THE LIBRARY'S TEMPLATES -- `Comparer<int>.Default`
+        // is Comparer$int by the time it is bound -- is where its template is.
+        if (_r.Types.TryGetValue(name, out TypeSymbol? copy) && copy.Decl is { Template: string template, Outer: null } made
+            && LibraryNamespaces.Of(Arity(template, made.TemplateArgs.Count)) is string copied)
+        {
+            return $" (it is {copied}.{template}<>: add `using {copied};`)";
+        }
+        // SYSTEM.ENUM, whose statics the compiler answers itself.
+        if (name == "Enum") return " (it is System.Enum: add `using System;`)";
         string bare = name.Contains('.') ? name[(name.LastIndexOf('.') + 1)..] : name;
         if (_r.Types.TryGetValue(bare, out TypeSymbol? global) && global.Decl is { Outer: null } d && d.Namespace.Length == 0
             && LibraryNamespaces.Of(global.Key) is string space)
@@ -1191,6 +1200,12 @@ public sealed partial class Binder
         }
         return orAsk ? " (are you missing a using directive or an assembly reference?)" : "";
     }
+
+    /// <summary>A name as its source wrote it: a copy of a template, Comparer$int, as Comparer&lt;int&gt;.</summary>
+    private string AsWritten(string name)
+        => _r.Types.TryGetValue(name, out TypeSymbol? copy) && copy.Decl is { Template: string template } made && made.TemplateArgs.Count > 0
+            ? template + "<" + string.Join(", ", made.TemplateArgs.Select(a => a.ToString())) + ">"
+            : name;
 
     /// <summary>
     /// The one type whose simple name is this, if there is exactly one.
@@ -18900,7 +18915,7 @@ public sealed partial class Binder
             return Type.Plain(type, Prim.Void);
         }
 
-        Error(n, $"CS0103: The name '{n.Name}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
+        Error(n, $"CS0103: The name '{AsWritten(n.Name)}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
         return Type.Error;
     }
 
