@@ -6,8 +6,6 @@
 // program, so a file compiled here that C# would not; the error now says
 // where the type is and the using that brings it in.
 
-using Q;
-
 namespace Q
 {
     class X { }
