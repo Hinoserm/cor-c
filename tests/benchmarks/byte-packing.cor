@@ -1,3 +1,6 @@
+using System;
+using System.Diagnostics;
+
 static class Program
 {
     static long ReadWord(byte[] bytes)

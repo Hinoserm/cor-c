@@ -1,3 +1,6 @@
+using System;
+using System.Diagnostics;
+
 class PathOwner
 {
     public byte[] Buffer;

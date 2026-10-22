@@ -1,4 +1,8 @@
 // Linux allocation baseline. Every timed result is checked outside timing.
+
+using System;
+using System.Diagnostics;
+
 class Cell { public long Value; }
 class NarrowCell { public byte A; public sbyte B; public ushort C; public short D; public byte Zero; }
 class BufferOwner { public byte[] Buffer; }

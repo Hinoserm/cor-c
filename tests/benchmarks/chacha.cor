@@ -1,5 +1,9 @@
 // Actual software ChaCha20, RFC 8439 section 2.3.2 block vector.
 // Counter/key/nonce reuse here is only for a known-answer benchmark.
+
+using System;
+using System.Diagnostics;
+
 static class Program
 {
     static byte[] Hex(string text)

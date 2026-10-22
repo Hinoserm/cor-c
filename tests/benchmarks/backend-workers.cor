@@ -2,6 +2,7 @@
 using Corsac.Lang.Ir;
 using Corsac.Lang.X86;
 using Corsac.Lang.Elf;
+using System;
 
 static class Program
 {

@@ -1,5 +1,9 @@
 // Profile actual SSH X25519 code with and without workspace reuse.
 // The expected output is RFC 7748's first function vector.
+
+using System;
+using System.Diagnostics;
+
 static class Program
 {
     static byte[] Hex(string text)

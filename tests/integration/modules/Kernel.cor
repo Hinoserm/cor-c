@@ -3,6 +3,7 @@
 // --exports, so a module compiled against its declarations calls these.
 
 using System.Collections.Generic;
+using System;
 
 namespace Kernel;
 

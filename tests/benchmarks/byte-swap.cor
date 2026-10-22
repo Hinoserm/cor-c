@@ -1,3 +1,6 @@
+using System;
+using System.Diagnostics;
+
 static class Program
 {
     static uint Next(ref uint state) { state = unchecked(state * 1664525u + 1013904223u); return state; }

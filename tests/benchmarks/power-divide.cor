@@ -1,3 +1,6 @@
+using System;
+using System.Diagnostics;
+
 static class Program
 {
     static int[] _narrow = new int[] { 2, -8, 1024 };

@@ -3,6 +3,7 @@
 
 using System.Runtime.CompilerServices;
 using Kernel;
+using Corsac.GUI;
 
 namespace Sound;
 

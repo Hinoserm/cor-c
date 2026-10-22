@@ -1,4 +1,8 @@
 // Constant divisors versus a mutable-data reference outside the timed region.
+
+using System;
+using System.Diagnostics;
+
 static class Program
 {
     static uint[] _divisors = new uint[] { 3, 5, 10 };

@@ -1,6 +1,10 @@
 // Profile the real allocator under concurrent allocation and explicit reuse.
 // Raw addresses deliberately exercise Runtime.Alloc/Free, not compiler escape
 // elimination. A live guard on each side keeps the small free block separate.
+
+using System;
+using System.Threading;
+
 class AllocationWorker : Action
 {
     public int Count;

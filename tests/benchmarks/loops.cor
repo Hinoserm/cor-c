@@ -1,4 +1,8 @@
 // Runtime inputs prevent constant folding the whole workload.
+
+using System;
+using System.Diagnostics;
+
 static class Program
 {
     static long Work(long seed, int count)

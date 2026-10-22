@@ -6,6 +6,7 @@
 // so the files are read with Linux's own calls.
 
 using System.Collections.Generic;
+using System;
 
 namespace Kernel;
 

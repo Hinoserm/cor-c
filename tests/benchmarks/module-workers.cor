@@ -1,6 +1,8 @@
 // Native acceptance for the actual module passes, not a simulated scheduler.
 using Corsac.Lang.Ir;
 using Corsac.Lang.Opt;
+using System;
+using System.Text;
 static class Program
 {
     static Module Make()

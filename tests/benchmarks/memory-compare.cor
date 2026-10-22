@@ -1,5 +1,6 @@
 // Runtime string/byte comparison versus a byte-at-a-time source reference.
 using System;
+using System.Diagnostics;
 
 static class MemoryCompareBenchmark
 {
