@@ -1119,9 +1119,19 @@ public sealed class Parser
             }
 
             _i++;                               // 'using'
-            Take(Tok.KwStatic);
+            bool statics = Take(Tok.KwStatic);
 
             string name = ParseDottedName();
+
+            // `using static System.Math;` -- A TYPE'S STATIC MEMBERS by their
+            // bare names (Binder.CheckName), not a namespace's types.
+            if (statics)
+            {
+                TryParseTypeArgs(out _);
+                _fileScope.StaticImports.Add((_namespace, name));
+                Expect(Tok.Semi, "';' after using static");
+                continue;
+            }
 
             // `using Block = Corsac.Lang.Ir.Block;` -- a name for one type,
             // which is how a file that means two things called Block says
@@ -1511,6 +1521,14 @@ public sealed class Parser
                     m |= Mods.Partial;
                     break;
 
+                // `file` (C# 11): a type seen in its own file only. Taken as
+                // an internal one, which every program that compiles as C#
+                // means the same by -- two files each with a `file` type of
+                // one name being the one it cannot tell apart.
+                case Tok.Ident when Cur.Text == "file" && (StartsMember(_t[_i + 1].Kind)
+                                                            || _t[_i + 1] is { Kind: Tok.Ident, Text: "record" }):
+                    break;
+
                 default: return m;
             }
             _i++;
@@ -1563,8 +1581,8 @@ public sealed class Parser
             if (k is Tok.KwPublic or Tok.KwPrivate or Tok.KwProtected or Tok.KwInternal
                   or Tok.KwStatic or Tok.KwAbstract or Tok.KwVirtual or Tok.KwOverride
                   or Tok.KwSealed or Tok.KwReadonly or Tok.KwConst or Tok.KwVolatile
-             || (k == Tok.Ident && Seen(at).Text is "unsafe" or "required" or "partial" or "async" or "extern"
-                 && StartsMember(Seen(at + 1).Kind)))
+             || (k == Tok.Ident && Seen(at).Text is "unsafe" or "required" or "partial" or "async" or "extern" or "file"
+                 && (StartsMember(Seen(at + 1).Kind) || Seen(at).Text == "file" && Seen(at + 1) is { Kind: Tok.Ident, Text: "record" })))
             {
                 at++;
                 continue;
@@ -4946,12 +4964,19 @@ public sealed class Parser
                 {
                     Name = held, Line = at.Line, Col = at.Col,
                 };
+                // `global::System.Threading.Monitor`, in full: a program
+                // without `using System.Threading;` locks as any other does.
                 CallExpr MonitorCall(string member) => new()
                 {
                     Target = new MemberExpr
                     {
-                        Target = new NameExpr
+                        Target = new MemberExpr
                         {
+                            Target = new MemberExpr
+                            {
+                                Target = new NameExpr { Name = "System", Global = true, Line = at.Line, Col = at.Col },
+                                Name = "Threading", Line = at.Line, Col = at.Col,
+                            },
                             Name = "Monitor", Line = at.Line, Col = at.Col,
                         },
                         Name = member, Line = at.Line, Col = at.Col,

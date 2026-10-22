@@ -1,0 +1,45 @@
+// test: using_static_file_types_and_lock_without_usings
+// expect-exit: 0
+// expect-output:
+// 4 9 3.142 2.5
+// 6.28 3 cm 3.14
+// 3 2 Pair { A = 1, B = 2 } shown
+//
+// `using static` names a type's static members bare -- System.Math's Sqrt
+// and PI, System.Console's WriteLine, a program's own constants, fields,
+// properties and methods; `file` types (C# 11) are declared; and `lock`
+// needs no `using System.Threading;`, the compiler naming Monitor in full.
+// corc refused all three.
+// Expected output from .NET 10.
+
+using static System.Math;
+using static System.Console;
+using static Shapes.Geometry;
+
+namespace Shapes
+{
+    static class Geometry { public const double Turn = 6.28; public static int Made; public static string Unit { get; } = "cm"; public static double Circle(double r) => PI * r * r; }
+}
+
+file sealed class Local { public static int Count => 2; }
+file record Pair(int A, int B);
+file interface IShown { string Show(); }
+file struct Shown : IShown { public string Show() => "shown"; }
+
+static class Program
+{
+    static readonly object Gate = new();
+    static int _hits;
+
+    static int Main()
+    {
+        WriteLine(Sqrt(16) + " " + Max(3, 9) + " " + Round(PI, 3) + " " + Abs(-2.5));
+        Made = 3;
+        WriteLine(Turn + " " + Made + " " + Unit + " " + Round(Circle(1), 2));
+        lock (Gate) { _hits++; }
+        lock (Gate) { _hits += 2; }
+        IShown shown = new Shown();
+        WriteLine(_hits + " " + Local.Count + " " + new Pair(1, 2) + " " + shown.Show());
+        return 0;
+    }
+}

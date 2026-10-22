@@ -19680,8 +19680,51 @@ public sealed partial class Binder
             return Type.Plain(type, Prim.Void);
         }
 
+        // `using static System.Math;` -- A STATIC MEMBER BY ITS BARE NAME
+        // (C# 14.5.3): a method, a constant, a field or a property of a type
+        // the file imports so, where nothing nearer answers the name.
+        if (StaticallyImported(n) is Type imported)
+        {
+            return imported;
+        }
+
         Error(n, $"CS0103: The name '{AsWritten(n.Name)}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
         return Type.Error;
+    }
+
+    private Type? StaticallyImported(NameExpr n)
+    {
+        TypeDecl? written = (_scope ?? _thisType)?.Decl;
+        FileScope? file = _member?.Scope ?? written?.Scope;
+        if (file is null || file.StaticImports.Count == 0) return null;
+        string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
+        foreach ((string scope, string typeName) in file.StaticImports)
+        {
+            if (scope.Length > 0 && within != scope && !within.StartsWith(scope + ".", StringComparison.Ordinal)) continue;
+            // The library's by its System path (LibraryGlobal), a program's by its own.
+            if ((!FindType(typeName, out TypeSymbol? from) || from is null) && !LibraryGlobal(typeName, out from) || from is null) continue;
+            if (from.FindMethods(n.Name).Where(m => m.Static).ToList() is { Count: > 0 } methods)
+            {
+                _r.Resolved[n] = new MethodGroupSym(methods);
+                return Type.Void;
+            }
+            if (FindConstant(from, n.Name) is (long value, Type constantType))
+            {
+                _r.Resolved[n] = new ConstSym(value, constantType);
+                return constantType;
+            }
+            if (from.FindField(n.Name) is { Static: true } field)
+            {
+                _r.Resolved[n] = new FieldSym(field);
+                return field.Type;
+            }
+            if (from.FindMethods("get_", n.Name).FirstOrDefault(g => g.Static && g.Params.Count == 0) is { } getter)
+            {
+                _r.Resolved[n] = new PropertyGetSym(getter);
+                return getter.Returns;
+            }
+        }
+        return null;
     }
 
     /// <summary>

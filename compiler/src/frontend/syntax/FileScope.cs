@@ -20,4 +20,7 @@ public sealed class FileScope
 
     /// <summary>`using Block = Corsac.Lang.Ir.Block;`, and where it was written.</summary>
     public List<(string In, string Alias, string Target)> Aliases { get; } = new();
+
+    /// <summary>`using static System.Math;`, and where it was written: the type whose static members are named bare.</summary>
+    public List<(string In, string Type)> StaticImports { get; } = new();
 }
