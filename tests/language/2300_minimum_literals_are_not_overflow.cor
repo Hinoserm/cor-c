@@ -1,0 +1,25 @@
+// test: minimum_literals_are_not_overflow
+// expect-exit: 0
+// expect-no-compile-warning: warning CS
+// expect-output:
+// -9223372036854775808 -2147483648 -9223372036854775808 True
+//
+// C# 6.4.5.3: the decimal literal 9223372036854775808 (and 2147483648)
+// right after a unary minus is long.MinValue (and int.MinValue) -- no
+// constant overflow, where `-long.MinValue` written out is CS0220. The
+// check for CS0220 took the literal's negation for one.
+
+using System;
+using System.Numerics;
+
+static class Program
+{
+    static int Main()
+    {
+        long low = -9223372036854775808;
+        int lo = -2147483648;
+        BigInteger big = new BigInteger(-9223372036854775808);
+        Console.WriteLine(low + " " + lo + " " + big + " " + (low == long.MinValue));
+        return 0;
+    }
+}

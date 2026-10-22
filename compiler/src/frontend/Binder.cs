@@ -15047,7 +15047,10 @@ public sealed partial class Binder
         bool overflows;
         if (e is UnaryExpr { Operand: var operand })
         {
-            if (ConstantValue(operand, _thisType) is not long v) return;
+            // NOT A LITERAL: `-9223372036854775808` and `-2147483648` are
+            // long.MinValue and int.MinValue themselves (C# 6.4.5.3), the
+            // literal right after the minus read as its negative.
+            if (operand is LiteralExpr || ConstantValue(operand, _thisType) is not long v) return;
             overflows = t.Prim switch { Prim.I32 => v == int.MinValue, Prim.I64 => v == long.MinValue, _ => false };
         }
         else if (e is BinaryExpr { Op: BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Div or BinOp.Rem } b
