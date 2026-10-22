@@ -1,0 +1,25 @@
+// test: a_switch_arm_proves_nothing_in_the_next
+// expect-exit: 0
+// expect-compile-warning: (17,81): warning CS8602
+// expect-compile-warning: (18,103): warning CS8602
+// expect-output:
+// 2
+//
+// What an arm or a section proved -- `not null when s.Length > 3` reads s
+// -- is not so in the next, which a null reaches: C# warns on `_ =>
+// s.Length` and `default: return s.Length;`, and so does corc.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static int A(string? s) => s switch { not null when s.Length > 3 => 1, _ => s.Length };
+    static int B(string? s) { switch (s) { case not null when s.Length > 1: return 1; default: return s.Length; } }
+
+    static int Main()
+    {
+        Console.WriteLine(A("abcd") + B("ab"));
+        return 0;
+    }
+}

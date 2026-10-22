@@ -1,0 +1,61 @@
+// test: switch_arm_guards_concat_and_not_null_or_null
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-no-compile-warning: warning CS8509
+// expect-output:
+// 1
+// 2 4 2 emptylongshort chdir /
+//
+// What the CORSAC86 kernel's tests met: a guard of `not null when s.Length
+// > 3` reads s as proved by its arm; String.Concat takes `string?`
+// operands, as .NET declares it; and `s switch { not null => …, null => …
+// }` takes every value, without CS8509.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Reg { public int N; }
+static class Os { public static string? Getcwd() => "/"; }
+
+static class Program
+{
+    static int Locals(List<string?> items)
+    {
+        int count = 0;
+        foreach (string? i in items)
+        {
+            switch (i)
+            {
+                case "a":
+                case "b":
+                    Derive(i);
+                    break;
+            }
+        }
+        return count;
+
+        void Derive(string? d) { if (d is null) return; count += d.Length; }
+    }
+
+    static string Arm(string? s) => s switch
+    {
+        null or "" => "empty",
+        not null when s.Length > 3 => "long",
+        _ => "short",
+    };
+
+    static int Either(string? s) => s switch { not null => 1, null => 0 };
+
+    static int Main()
+    {
+        Console.WriteLine(Either("x") + Either(null));
+        List<string?> list = new List<string?> { "a", null, "b", "z" };
+        List<(string Key, Reg? Old)> undo = new();
+        undo.Add(("a", null));
+        undo.Add(("b", new Reg { N = 1 }));
+        string line = String.Concat("chdir ", Os.Getcwd());
+        Console.WriteLine(Locals(list) + " " + list.Count + " " + undo.Count + " " + Arm(null) + Arm("abcd") + Arm("ab") + " " + line);
+        return 0;
+    }
+}

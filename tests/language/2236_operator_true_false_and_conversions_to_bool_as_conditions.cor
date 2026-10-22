@@ -1,0 +1,75 @@
+// test: operator_true_false_and_conversions_to_bool_as_conditions
+// expect-exit: 0
+// expect-output:
+// m3m0
+// F& 0
+// F 0
+// T 3
+// T| 3
+// Fm2&T both
+// T|T neither
+// m0T 0
+// flag
+// False False yes
+// m1Fm2&Tm2Fm1&Tm3Fm0&T 3
+// TTFalse True !z a
+// m2T-m1T-m0T
+//
+// A type says when it is true by its own operators, as C# reads them
+// (12.15.3, 12.24): `x && y` over a type with `operator &` and `operator
+// false` is `T.false(x) ? x : x & y`, x evaluated once, and `||` the same
+// with `operator true` and `|`; a condition of that type -- if, while, do,
+// for, ?: -- asks its `operator true`; and a type converting to bool
+// implicitly is a bool to `if`, `&&`, `||` and `!`. corc refused all of
+// them.
+// Expected output from .NET 10.
+
+using System;
+
+struct Meters
+{
+    public double Value;
+    public Meters(double v) { Value = v; }
+    public static explicit operator Meters(double d) => new Meters(d);
+    public static bool operator true(Meters m) { Console.Write("T"); return m.Value != 0; }
+    public static bool operator false(Meters m) { Console.Write("F"); return m.Value == 0; }
+    public static Meters operator &(Meters a, Meters b) { Console.Write("&"); return new Meters(Math.Min(a.Value, b.Value)); }
+    public static Meters operator |(Meters a, Meters b) { Console.Write("|"); return new Meters(Math.Max(a.Value, b.Value)); }
+    public override string ToString() => Value.ToString();
+}
+
+sealed class Flag
+{
+    public bool On;
+    public static implicit operator bool(Flag f) => f.On;
+}
+
+static class Program
+{
+    static Meters Make(double v) { Console.Write("m" + v); return new Meters(v); }
+
+    static int Main()
+    {
+        Meters a = Make(3), z = Make(0);
+        Console.WriteLine();
+        Console.WriteLine(" " + (a && z));
+        Console.WriteLine(" " + (z && Make(9)));
+        Console.WriteLine(" " + (a || Make(9)));
+        Console.WriteLine(" " + (z || a));
+        if (a && Make(2)) Console.WriteLine(" both");
+        if (z || z) Console.WriteLine(" either"); else Console.WriteLine(" neither");
+        int n = 0;
+        while (Make(n) ) { n++; if (n > 2) break; }
+        Console.WriteLine(" " + n);
+        Flag f = new() { On = true };
+        if (f) Console.WriteLine("flag");
+        Console.WriteLine((f && n > 1) + " " + (new Flag() || false) + " " + (f ? "yes" : "no"));
+        int k = 0;
+        do { k++; } while (Make(k) && Make(3 - k));
+        Console.WriteLine(" " + k);
+        Console.WriteLine((!f) + " " + (!new Flag()) + " " + (z ? "z" : "!z") + " " + (a ? "a" : "!a"));
+        for (Meters i = Make(2); i; i = Make(i.Value - 1)) Console.Write("-");
+        Console.WriteLine();
+        return 0;
+    }
+}

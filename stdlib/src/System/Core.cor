@@ -80,7 +80,7 @@ static class String {
     // .NET hands back the other -- as are Substring's and FromInt's: a unit
     // without these bodies takes each for a fresh block by name
     // (Escape.AlwaysFresh), and the lifetime pass frees what it made.
-    public static string Concat(string a, string b) {
+    public static string Concat(string? a, string? b) {
         // A null is nothing, as .NET's Concat takes it; `a + b` hands none.
         if (a == null) { a = ""; }
         if (b == null) { b = ""; }

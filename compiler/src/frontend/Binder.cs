@@ -2086,6 +2086,13 @@ public sealed partial class Binder
     /// PatternExpr of its own -- from using this at all.
     private readonly List<(int Slot, Type Type)> _subject = new();
 
+    /// <summary>
+    /// The expression each subject on <see cref="_subject"/> is, for what a
+    /// test of it proves (Assume): `not null when s.Length > 3` as an arm of
+    /// `s switch` proves s for its guard.
+    /// </summary>
+    private readonly List<Expr> _subjectExprs = new();
+
 
     /// <summary>
     /// The type an expression is being checked AGAINST, where one is known.
@@ -7709,10 +7716,20 @@ public sealed partial class Binder
 
                 _r.SwitchSubject[sw] = held;
                 _subject.Add((held, subject));
+                _subjectExprs.Add(sw.Subject);
                 _switches.Add(sw);
+
+                // EACH SECTION IS ENTERED FROM THE SUBJECT, not from the section
+                // before it, and what follows the switch is what its breaks
+                // carried -- with the state it began in, when no label may
+                // match: `case not null when s.Length > 1: …` proves nothing
+                // in `default:`, which a null reaches.
+                (HashSet<Sym>, HashSet<string>) switchEntry = NullState();
+                (HashSet<Sym>, HashSet<string>)? switchOut = null;
 
                 foreach (SwitchCase c in sw.Cases)
                 {
+                    RestoreNullState(switchEntry);
                     _assigned.Clear();
                     _assigned.UnionWith(beforeSwitch);
                     PushScope();
@@ -7764,8 +7781,14 @@ public sealed partial class Binder
                     {
                         if (continuing is null) continuing = AssignedCopy();
                         else continuing.IntersectWith(_assigned);
+                        if (c.Body.Count == 0) JoinNullState(ref switchOut);
                     }
                     LeaveBreakable();
+                    if (_leftBroke is { } sectionBroke)
+                    {
+                        if (switchOut is { } joined) { joined.Item1.IntersectWith(sectionBroke.Item1); joined.Item2.IntersectWith(sectionBroke.Item2); }
+                        else switchOut = sectionBroke;
+                    }
                     Forget(caseProof);
                     PopScope();
                 }
@@ -7796,7 +7819,22 @@ public sealed partial class Binder
                 }
                 SpareAssigned(beforeSwitch);
 
+                // No label matching is every label failing: past `case null:
+                // return 0;` the subject is not null (a guarded label failing
+                // says nothing, as Assume finds for its `&&`).
+                RestoreNullState(switchEntry);
+                if (!hasDefault)
+                {
+                    foreach (SwitchCase c in sw.Cases)
+                    {
+                        if (c.Pattern is not null) Assume(c.Pattern, false);
+                    }
+                    if (switchOut is { } broken) IntersectNullState(broken);
+                }
+                else if (switchOut is { } broken) RestoreNullState(broken);
+
                 _subject.RemoveAt(_subject.Count - 1);
+                _subjectExprs.RemoveAt(_subjectExprs.Count - 1);
                 _switches.RemoveAt(_switches.Count - 1);
 
                 Forget(proven);
@@ -7904,10 +7942,86 @@ public sealed partial class Binder
 
         if (!t.IsError && t.Prim != Prim.Bool)
         {
+            // A TYPE THAT SAYS WHEN IT IS TRUE IS A CONDITION (C# 12.24): by
+            // an implicit conversion to bool, else by its `operator true`. The
+            // call goes on what the condition was rewritten to, if anything
+            // -- a user-defined `&&` (UserLogical) -- since a conversion's
+            // argument is lowered as the node it replaces.
+            Expr converted = _r.Rewrites.TryGetValue(e, out Expr? rewritten) ? rewritten : e;
+            if (UserConversion(t, Type.Bool, explicitToo: false) is MethodSymbol toBool)
+            {
+                ConvertByOperator(converted, toBool);
+                return;
+            }
+            if (t.Symbol?.FindMethods("op_True").FirstOrDefault(m => m.Static && m.Params.Count == 1 && m.Returns.Prim == Prim.Bool) is MethodSymbol isTrue)
+            {
+                ConvertByOperator(converted, isTrue);
+                return;
+            }
+
             // No truthiness. An integer is not a condition, and saying so is
             // the difference between catching `if (x = 1)` and shipping it.
             Error(e, $"a condition must be 'bool', not '{t}'");
         }
+    }
+
+    /// <summary>
+    /// `x && y` AND `x || y` OVER A TYPE OF ITS OWN (C# 12.15.3): with an
+    /// `operator &` (or `|`) taking and making that type, and an `operator
+    /// false` (or `true`), `x && y` is `T.false(x) ? x : x & y`, x evaluated
+    /// once, and `||` the same with true and |. Null when the type has no
+    /// such operators, and `&&` is the ordinary one. Asked of the left
+    /// operand's type once it is checked: asking first, of every `&&`, made
+    /// a chain of them cost twice per link.
+    /// </summary>
+    /// <summary>
+    /// An operand of `&&` or `||` whose type converts to bool implicitly, by
+    /// an operator of its own: converted, and bool. Anything else as it was.
+    /// </summary>
+    private Type BoolByConversion(Expr operand, Type had)
+        => !had.IsError && had.Prim != Prim.Bool && !had.IsNullableValue
+           && UserConversion(had, Type.Bool, explicitToo: false) is MethodSymbol toBool
+            ? ConvertByOperator(operand, toBool) : had;
+
+    private Type? UserLogical(BinaryExpr b, Type operand)
+    {
+        if (operand.IsError || operand.Prim == Prim.Bool || operand.IsNullableValue || operand.Symbol is not TypeSymbol type) return null;
+        bool and = b.Op == BinOp.AndAlso;
+        MethodSymbol? combine = type.FindMethods(and ? "op_BitwiseAnd" : "op_BitwiseOr").FirstOrDefault(m => m.Static && m.Params.Count == 2
+            && MethodSignatures.SameType(m.Params[0].Type, operand) && MethodSignatures.SameType(m.Params[1].Type, operand)
+            && MethodSignatures.SameType(m.Returns, operand));
+        MethodSymbol? decides = type.FindMethods(and ? "op_False" : "op_True").FirstOrDefault(m => m.Static && m.Params.Count == 1 && m.Returns.Prim == Prim.Bool);
+        if (combine is null || decides is null) return null;
+
+        CallExpr Of(MethodSymbol op, params Expr[] arguments)
+        {
+            CallExpr call = new()
+            {
+                Target = new MemberExpr { Target = Qualified(type, b), Name = op.Name, Line = b.Line, Col = b.Col },
+                Line = b.Line, Col = b.Col,
+            };
+            foreach (Expr argument in arguments)
+            {
+                call.Args.Add(argument);
+                call.WritableArgNames.Add(null);
+            }
+            return call;
+        }
+
+        PatternExpr lowered = new()
+        {
+            Subject = b.Left,
+            Test = new ConditionalExpr
+            {
+                Cond = Of(decides, new SubjectExpr { Line = b.Line, Col = b.Col }),
+                Then = new SubjectExpr { Line = b.Line, Col = b.Col },
+                Else = Of(combine, new SubjectExpr { Line = b.Line, Col = b.Col }, b.Right),
+                Line = b.Line, Col = b.Col,
+            },
+            Line = b.Line, Col = b.Col,
+        };
+        _r.Rewrites[b] = lowered;
+        return CheckExpr(lowered);
     }
 
     /// <summary>
@@ -15067,10 +15181,12 @@ public sealed partial class Binder
 
                 _r.PatternSubject[pat] = slot;
                 _subject.Add((slot, had));
+                _subjectExprs.Add(pat.Subject);
 
                 Type answer = CheckExpr(pat.Test);
 
                 _subject.RemoveAt(_subject.Count - 1);
+                _subjectExprs.RemoveAt(_subjectExprs.Count - 1);
                 return answer;
             }
 
@@ -15955,7 +16071,8 @@ public sealed partial class Binder
                         return t.PointerTo();
 
                     case UnOp.Not:
-                        if (t.Prim != Prim.Bool)
+                        // A type converting to bool by an operator of its own is negated as the bool.
+                        if (t.Prim != Prim.Bool && BoolByConversion(u.Operand, t).Prim != Prim.Bool && !t.IsError)
                         {
                             Error(u, $"'!' needs a 'bool', not '{t}'");
                         }
@@ -16927,6 +17044,7 @@ public sealed partial class Binder
                 // parser writes `>= 90 => …` as a guard over a SubjectExpr,
                 // and this is what the SubjectExpr resolves to.
                 _subject.Add((held, subject));
+                _subjectExprs.Add(sx.Subject);
                 Type result = Type.Error;
                 bool first = true;
                 // Every arm's type, and whether two disagreed pending the rest (below).
@@ -16939,6 +17057,12 @@ public sealed partial class Binder
 
                 foreach (SwitchArm arm in sx.Arms)
                 {
+                    // EACH ARM IS REACHED BY THE ONES BEFORE IT FAILING: what an
+                    // arm's guard or value proved -- `not null when s.Length > 3`
+                    // reads s -- is not so in the next, which a null reaches.
+                    // Only a `null =>` arm's lesson carries on (pastNull).
+                    (HashSet<Sym>, HashSet<string>) armEntry = NullState();
+                    int pastNullBefore = pastNull.Count;
                     if (arm.CanonSelf is { } armSelf) CheckExpr(armSelf);
                     // A TYPE PATTERN NAMES WHAT IT MATCHED, exactly as `is`
                     // does, and the name belongs to the ARM rather than to the
@@ -17127,7 +17251,9 @@ public sealed partial class Binder
                         {
                             sawNull = true;
                         }
-                        if (arm.Discard && arm.When is BinaryExpr { Op: BinOp.Ne, PatternNullTest: true, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } })
+                        // `{ }` and `not null`, which take every value.
+                        if (arm.Discard && arm.When is BinaryExpr { Op: BinOp.Ne, PatternNullTest: true, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } }
+                                            or UnaryExpr { Op: UnOp.Not, Operand: BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } })
                         {
                             sawSome = true;
                         }
@@ -17165,6 +17291,13 @@ public sealed partial class Binder
                     Forget(armProof);
 
                     PopScope();
+
+                    RestoreNullState(armEntry);
+                    for (int k = pastNullBefore; k < pastNull.Count; k++)
+                    {
+                        if (pastNull[k] is PathSym { Spelt: var pastPath }) _notNullPaths.Add(pastPath);
+                        else _notNull.Add(pastNull[k]);
+                    }
 
                     if (value.IsError)
                     {
@@ -17228,6 +17361,7 @@ public sealed partial class Binder
                 }
 
                 _subject.RemoveAt(_subject.Count - 1);
+                _subjectExprs.RemoveAt(_subjectExprs.Count - 1);
                 Forget(pastNull);
 
                 if (sx.Arms.Count == 0)
@@ -18623,6 +18757,18 @@ public sealed partial class Binder
             Expr? side = test.Right is LiteralExpr { Kind: Lit.Null } ? test.Left
                        : test.Left is LiteralExpr { Kind: Lit.Null } ? test.Right
                        : null;
+
+            // A PATTERN'S SUBJECT, tested: what it stands for is proved -- a
+            // local or parameter by its symbol, anything else by its path.
+            if (side is SubjectExpr { Outer: var outer } && outer < _subjectExprs.Count
+                && _subjectExprs[^(1 + outer)] is { } subjectOf && subjectOf is not SubjectExpr)
+            {
+                side = subjectOf;
+                if ((test.Op == BinOp.Ne) == holds && side is NameExpr subjectName
+                    && ResolvedOrLookup(subjectName) is LocalSym or ParamSym or FieldSym or CapturedFieldSym
+                    && _notNull.Add(ResolvedOrLookup(subjectName)!))
+                    added.Add(ResolvedOrLookup(subjectName)!);
+            }
 
             // A member by its bare name as well: `if (Owner == null) return;`.
             // A local's or a parameter's test is the symbol's, above.
@@ -24343,8 +24489,10 @@ public sealed partial class Binder
         if (b.Op == BinOp.AndAlso)
         {
             Type left = CheckExpr(b.Left);
+            if (left.Prim != Prim.Bool && UserLogical(b, left) is Type userAnd) return userAnd;
+            left = BoolByConversion(b.Left, left);
             List<Sym> proved = Assume(b.Left, true);
-            Type right = CheckExpr(b.Right);
+            Type right = BoolByConversion(b.Right, CheckExpr(b.Right));
 
             Forget(proved);
 
@@ -24362,8 +24510,10 @@ public sealed partial class Binder
         if (b.Op == BinOp.OrElse)
         {
             Type first = CheckExpr(b.Left);
+            if (first.Prim != Prim.Bool && UserLogical(b, first) is Type userOr) return userOr;
+            first = BoolByConversion(b.Left, first);
             List<Sym> knowing = Assume(b.Left, false);
-            Type second = CheckExpr(b.Right);
+            Type second = BoolByConversion(b.Right, CheckExpr(b.Right));
 
             Forget(knowing);
 

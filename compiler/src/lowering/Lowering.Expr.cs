@@ -821,6 +821,16 @@ public sealed partial class Lowering
             return;
         }
 
+        // A `&&` OR `||` OVER A TYPE OF ITS OWN is its operators, as the
+        // checker rewrote it (Binder.UserLogical), and the condition that
+        // type's operator true of that: not the bool short circuit below.
+        if (cond is BinaryExpr { Op: BinOp.AndAlso or BinOp.OrElse } && _b.Rewrites.TryGetValue(cond, out Expr? logical)
+            && logical is PatternExpr)
+        {
+            BranchOn(logical, ifTrue, ifFalse);
+            return;
+        }
+
         switch (cond)
         {
             case BinaryExpr { Op: BinOp.AndAlso } and:

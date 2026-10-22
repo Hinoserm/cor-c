@@ -1,0 +1,95 @@
+// test: null_state_through_switch_sections
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// 20
+//
+// A switch statement as C# joins its null state: each section is entered
+// from the subject, not from the section before it; what follows is what
+// the breaks carried; and with no default, what no label matching proves --
+// past `case null: return 0;` the subject is not null.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Node { public string Name = "n"; public Node? Next; }
+
+static class Program
+{
+    static int A(int k)
+    {
+        string? s;
+        switch (k)
+        {
+            case 1: s = "one"; break;
+            case 2: s = "two"; break;
+            default: s = "many"; break;
+        }
+        return s.Length;
+    }
+
+    static int B(int k, string? t)
+    {
+        switch (k)
+        {
+            case 1: if (t is null) return 0; break;
+            default: if (t == null) throw new Exception(); break;
+        }
+        return t.Length;
+    }
+
+    static int C(object? o)
+    {
+        Node? n = null;
+        switch (o)
+        {
+            case Node found: n = found; break;
+            case string text: n = new Node { Name = text }; break;
+            default: return -1;
+        }
+        return n.Name.Length;
+    }
+
+    static int D(string? s)
+    {
+        switch (s)
+        {
+            case null: return 0;
+            case "x": return 1;
+        }
+        return s.Length;
+    }
+
+    static int E(Node? head, int k)
+    {
+        if (head is null) return 0;
+        switch (k)
+        {
+            case 0: Console.Write(head.Name); break;
+            case 1: head.Next = new Node(); break;
+        }
+        return head.Name.Length;
+    }
+
+    static int F(List<string>? xs, int k)
+    {
+        switch (k)
+        {
+            case 0:
+            case 1:
+                xs ??= new List<string>();
+                break;
+            default:
+                xs = new List<string> { "a" };
+                break;
+        }
+        return xs.Count;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(A(1) + A(3) + B(1, "ab") + C(new Node()) + C("abc") + D("hello") + E(new Node(), 1) + F(null, 0) + F(null, 5));
+        return 0;
+    }
+}
