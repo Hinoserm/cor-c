@@ -879,6 +879,14 @@ public sealed class Parser
     /// </summary>
     public static IReadOnlyList<string> ProjectUsings { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// The record classes the program declares, in any of its files, by name
+    /// (Frontend.RecordNames, read before any is parsed): a record deriving
+    /// from one declared in another file, or later in its own, chains its
+    /// equality and text to it (RecordBase) without arguments to say so.
+    /// </summary>
+    public static IReadOnlySet<string> ProjectRecords { get; set; } = new HashSet<string>();
+
     public CompilationUnit ParseUnit()
     {
         Token start = Cur;
@@ -2381,7 +2389,8 @@ public sealed class Parser
 
     /// <summary>
     /// Whether a record class derives from another record (AddRecordMembers),
-    /// with the base as written and, for one of this file, its member names.
+    /// with the base as written and, for one of this file declared before it,
+    /// its member names.
     /// </summary>
     private bool RecordBase(TypeDecl decl, out string? baseText, out HashSet<string>? baseMembers)
     {
@@ -2390,7 +2399,7 @@ public sealed class Parser
         if (decl.Kind != TypeKind.Class || decl.Bases.Count == 0) return false;
         TypeRef first = decl.Bases[0];
         bool known = _records.TryGetValue(first.Name, out baseMembers);
-        if (!known && decl.BaseArgs.Count == 0) return false;
+        if (!known && decl.BaseArgs.Count == 0 && !ProjectRecords.Contains(first.Name)) return false;
         baseText = first.ToString();
         return true;
     }

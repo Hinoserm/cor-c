@@ -1,0 +1,44 @@
+// test: record_base_declared_in_another_file
+// sources: tests/language/support/2271_record_bases.cor
+// expect-exit: 0
+// expect-output:
+// Dog { Sound = woof, Legs = 4 } True False True True
+// False False
+// Puppy { Name = Rex, Weeks = 8 } True
+// True
+//
+// A record whose base record is declared in another file of the program, or
+// later in its own, with no arguments to say it is one: `record Dog :
+// Animal` chains its equality and text to Animal's, as C# does. Known
+// before only for a base earlier in the same file; Dog printed without
+// Animal's Sound, and two Dogs of different Sounds were equal. The parser
+// now knows every program record's name before it reads any
+// (Frontend.RecordNames).
+// Expected output from .NET 10.
+
+using System;
+
+record Dog : Animal
+{
+    public int Legs { get; init; } = 4;
+}
+
+record Puppy(string Name, int Weeks) : Animal2(Name);
+
+static class Program
+{
+    static int Main()
+    {
+        Dog a = new() { Sound = "woof" };
+        Dog b = new() { Sound = "woof" };
+        Dog c = new() { Sound = "arf" };
+        Console.WriteLine(a + " " + (a == b) + " " + (a == c) + " " + a.Equals((Animal)b) + " " + (a.GetHashCode() == b.GetHashCode()));
+        Animal plain = new() { Sound = "woof" };
+        Console.WriteLine(plain.Equals(a) + " " + a.Equals(plain));
+        Console.WriteLine(new Puppy("Rex", 8) + " " + (new Puppy("Rex", 8) == new Puppy("Rex", 8)));
+        Console.WriteLine(new Late(2) == new Late(2));
+        return 0;
+    }
+}
+
+record Late(int N) : Earlier;

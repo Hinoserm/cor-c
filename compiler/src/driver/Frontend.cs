@@ -480,6 +480,7 @@ public static class Frontend
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
         IReadOnlyCollection<string>? symbols, int workers, SyntaxTokenCache? tokens = null)
     {
+        Parser.ProjectRecords = RecordNames(sources);
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
@@ -519,6 +520,34 @@ public static class Frontend
     /// syntax tree, held for the whole compilation and copied whole by every
     /// round of generic expansion.
     /// </summary>
+    /// <summary>
+    /// The names of the record classes the program's files declare, from
+    /// their tokens (`record [class] Name`), for a record whose base is one
+    /// declared in another file (Parser.ProjectRecords). The library's are
+    /// left out: no program record derives from one of them.
+    /// </summary>
+    private static HashSet<string> RecordNames(List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+        foreach ((string name, string? path, bool fromLibrary, bool _) in sources)
+        {
+            if (path is null || fromLibrary) continue;
+            string text = SourceText(path);
+            if (!text.Contains("record", StringComparison.Ordinal)) continue;
+            // A file that does not lex is reported by its parse, in order.
+            List<Token> read;
+            try { read = Lexer.Tokenize(text, name); }
+            catch (CompileError) { continue; }
+            for (int i = 0; i + 1 < read.Count; i++)
+            {
+                if (read[i] is not { Kind: Tok.Ident, Text: "record" }) continue;
+                int j = read[i + 1].Kind == Tok.KwClass ? i + 2 : i + 1;
+                if (j < read.Count && read[j].Kind == Tok.Ident) names.Add(read[j].Text);
+            }
+        }
+        return names;
+    }
+
     private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols,
         SyntaxTokenCache? tokens = null, bool elsewhere = false)
     {

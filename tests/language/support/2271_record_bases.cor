@@ -1,0 +1,8 @@
+record Animal
+{
+    public string Sound { get; init; } = "";
+}
+
+record Animal2(string Name);
+
+record Earlier;
