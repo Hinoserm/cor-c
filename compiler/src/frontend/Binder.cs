@@ -21938,6 +21938,22 @@ public sealed partial class Binder
                                              .FindMethods("Invoke")
                                              .FirstOrDefault(m => m.Params.Count == args.Count);
 
+            // FEWER ARGUMENTS, the rest defaulted in the delegate's own
+            // declaration (`delegate int Adder(int a, int b = 10);`): `add(1)`
+            // is `add(1, 10)`, as a method's call is filled in.
+            if (invoke is null && targetType.Symbol?.FindMethods("Invoke").FirstOrDefault(m => MayTake(m, args.Count)) is { Decl: MethodDecl invokeDecl } defaulted
+                && invokeDecl.Params.Count == defaulted.Params.Count && c.ArgNames.All(name => name is null))
+            {
+                for (int k = args.Count; k < defaulted.Params.Count; k++)
+                {
+                    Expr filled = Written(defaulted, invokeDecl.Params[k]);
+                    c.Args.Add(filled);
+                    if (c.ArgNames.Count > 0) c.WritableArgNames.Add(null);
+                    args.Add(CheckExpr(filled));
+                }
+                invoke = defaulted;
+            }
+
             if (invoke != null)
             {
                 // EACH PARAMETER AS THE DELEGATE'S USE HAS IT: a local function

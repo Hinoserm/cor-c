@@ -1,0 +1,26 @@
+// test: delegate_calls_fill_in_defaults
+// expect-exit: 0
+// expect-output:
+// 11 3 abab xxx
+//
+// A delegate declared with defaults is called with fewer arguments, as a
+// method is, the rest its defaults: `delegate int Adder(int a, int b =
+// 10);` and `add(1)` is `add(1, 10)`, a generic delegate's too. corc
+// refused the call: "this expression is not a method and cannot be called".
+// Expected output from .NET 10.
+
+using System;
+
+delegate int Adder(int a, int b = 10);
+delegate T Maker<T>(T seed, int times = 2);
+
+static class Program
+{
+    static int Main()
+    {
+        Adder add = (a, b) => a + b;
+        Maker<string> make = (s, n) => string.Concat(System.Linq.Enumerable.Repeat(s, n));
+        Console.WriteLine(add(1) + " " + add(1, 2) + " " + make("ab") + " " + make("x", 3));
+        return 0;
+    }
+}
