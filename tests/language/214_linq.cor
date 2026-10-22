@@ -19,6 +19,9 @@
 // answers a List rather than a lazy sequence -- `yield return` does not exist
 // here yet -- and means what the same name means in C#.
 
+using System;
+using System.Linq;
+
 class Part
 {
     public string Name;

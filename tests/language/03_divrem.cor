@@ -13,6 +13,8 @@
 // high bit as a sign; 64-bit division on a 32-bit target goes through a
 // runtime helper and must still get the signs right.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

@@ -17,6 +17,8 @@
 // calculation does not change answer when a number outgrows a long. Every
 // line came from the same program run on .NET.
 
+using System.Numerics;
+
 class Program
 {
     static int Main()

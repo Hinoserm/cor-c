@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // left rotates passed
+
+using System;
+
 static class Program
 {
     static uint[] _values = new uint[] { 0, 1, 2147483648u, 305419896u, 4294967295u };

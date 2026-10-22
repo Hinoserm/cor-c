@@ -16,6 +16,9 @@
 // that takes a prefix, a seek that lands somewhere else, or a size read out
 // of the wrong half of st_size all "succeed".
 
+using System;
+using System.IO;
+
 class Program
 {
     static int Main()

@@ -18,6 +18,8 @@
 // handed one, which is why the declared type is `string?` and the ordinary call
 // still needs no cast.
 
+using System.IO;
+
 static class Program
 {
     static void Line(string s)

@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // 42 43 44
+
+using System;
+
 class ValueBox
 {
     public int Value;

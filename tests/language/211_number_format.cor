@@ -20,6 +20,9 @@
 // types' own Parse and TryParse, and a real number that can finally be
 // printed rather than scaled to a long first.
 
+using System;
+using System.Globalization;
+
 static class Program
 {
     static void Line(string s)

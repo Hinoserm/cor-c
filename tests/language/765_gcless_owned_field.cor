@@ -9,6 +9,8 @@
 // a hundred thousand times and each given a second buffer once, run no
 // collection and leave the heap as they found it.
 
+using System;
+
 sealed class Holder
 {
     byte[] _buffer;

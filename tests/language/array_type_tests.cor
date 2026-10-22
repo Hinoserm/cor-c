@@ -17,6 +17,7 @@
 // `new object()`, the thing a program locks on.
 
 using System;
+using System.Threading;
 
 static class Program
 {

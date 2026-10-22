@@ -16,6 +16,9 @@
 // directory -- and Os.Getcwd answers the NAME, with the NUL the kernel counts
 // already taken off, which is the detail pwd(1) got wrong on the old library.
 
+using System;
+using System.IO;
+
 class Program
 {
     static int Main()

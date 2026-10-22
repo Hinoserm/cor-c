@@ -35,6 +35,9 @@
 // `[Flags]` is the one attribute that means something: C# says such an enum is
 // a set of bits, and a value no single member has is written as the members it
 // is made of, largest first, in value order.
+
+using System;
+
 enum Colour
 {
     Red,

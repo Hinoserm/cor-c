@@ -14,6 +14,8 @@
 // IR as an i32 compared with an i64, and the kernel's hook code would not
 // compile ("operands 0 and 1 differ: I32 and I64").
 
+using System;
+
 static class Thunk
 {
     public const long Dispatch = 0x77E14735;

@@ -14,6 +14,8 @@
 // compile. C# resolves a name after `global::` from the global namespace:
 // no local, parameter or member of the enclosing types is meant.
 
+using System;
+
 static class Tally
 {
     public const long Write = 40;

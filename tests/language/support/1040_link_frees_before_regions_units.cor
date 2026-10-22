@@ -1,6 +1,9 @@
 // The other unit of 1040_link_frees_before_regions_across_units: a class
 // whose descriptor, and so the methods in its slots, only this unit holds,
 // and one deriving from it that keeps every object it disposes.
+
+using System;
+
 namespace LinkFreesUnits;
 
 public class Sink : IDisposable

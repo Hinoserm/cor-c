@@ -10,6 +10,8 @@
 // run no collection and leave the heap as they found it: no collector, and no
 // leak for the lack of one.
 
+using System;
+
 static class Program
 {
     static int Main()

@@ -18,6 +18,8 @@
 // things most likely to be wrong. Every operand is a variable so that nothing
 // here is folded away by the compiler.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

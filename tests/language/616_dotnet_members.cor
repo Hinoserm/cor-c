@@ -18,6 +18,8 @@
 // With them, ToUnixTimeSeconds is DateTimeOffset's alone: .NET puts it
 // nowhere else, because a DateTime carries no offset to count from.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

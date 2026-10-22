@@ -5,6 +5,9 @@
 //
 // A catch that only rethrows, and a finally, between the throw and the
 // catch that takes it: neither keeps it, and the catch frees it.
+
+using System;
+
 static class Program
 {
     static int s_count;

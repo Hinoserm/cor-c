@@ -12,6 +12,8 @@
 // catch with the original as InnerException, a filter that runs exactly
 // once, and a catch clause naming a type but no variable.
 
+using System;
+
 class Boom : Exception
 {
     public int Code;

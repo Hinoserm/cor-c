@@ -29,6 +29,9 @@
 // blocks (C# 6), including a finally that awaits while an exception is on
 // its way out, and a bare `throw;` after an await inside a catch.
 
+using System;
+using System.Threading.Tasks;
+
 class Boom : Exception
 {
     public int Code;

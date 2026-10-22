@@ -4,6 +4,7 @@
 // 15
 // True False 1
 using System.Collections.Generic;
+using System;
 sealed class Needs { public Outer Owner; public Needs(Outer o) { Owner = o; } }
 public sealed class Hints
 {

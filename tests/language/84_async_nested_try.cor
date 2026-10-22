@@ -23,6 +23,9 @@
 // linked again on resume, in the right nesting. The last line runs two
 // of these interleaved, so their handler chains must not mix.
 
+using System;
+using System.Threading.Tasks;
+
 class E1 : Exception
 {
     public E1() : base("e1")

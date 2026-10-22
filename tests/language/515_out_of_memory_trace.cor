@@ -29,6 +29,10 @@
 //
 // That child is a separate process because the exception ends it. The
 // parent reads its standard error and asks what the report named.
+
+using System;
+using System.IO;
+
 static class Program
 {
     static int Sink;

@@ -11,6 +11,8 @@
 // digits in a string by indexing, building a string a character at a time,
 // and comparisons between chars.
 
+using System.Text;
+
 static class Program
 {
     static void Line(string s)

@@ -7,6 +7,8 @@
 // long, a better conversion than both to double. Picking the double overload
 // made `long n = Math.Min(room, name.Length)` fail to compile.
 
+using System;
+
 static class Program
 {
     static int Main()

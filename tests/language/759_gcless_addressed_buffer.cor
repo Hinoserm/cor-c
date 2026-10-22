@@ -9,6 +9,8 @@
 // hundred thousand of them allocate nothing and no collection runs, so the
 // code needs no collector -- and, freed with its frame, leaks nothing.
 
+using System;
+
 static class Program
 {
     static long Sum(long at, int n)

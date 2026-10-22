@@ -6,6 +6,8 @@
 // System.Text.RegularExpressions: the surface grep and sed are written
 // against, and the parts of .NET's pattern language they translate into.
 
+using System.Text.RegularExpressions;
+
 class Program
 {
     static int _bad;

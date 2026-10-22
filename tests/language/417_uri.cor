@@ -16,6 +16,8 @@
 // piece keeps the slash that ended it, and concatenating them gives the path.
 // Every line came from the same program run on .NET.
 
+using System;
+
 class Program {
     static int Main() {
         Uri u = new Uri("https://user:pw@example.com:8443/a/b/c.html?x=1&y=2#frag");

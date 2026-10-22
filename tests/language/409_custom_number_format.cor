@@ -28,6 +28,8 @@
 // a hundred. Every line was taken from the same program run on .NET against
 // the invariant culture.
 
+using System;
+
 class Program
 {
     static double[] Numbers()

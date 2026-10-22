@@ -21,6 +21,9 @@
 // is ever pending during a blocking wait: what else runs during it is
 // not something C# specifies.
 
+using System;
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

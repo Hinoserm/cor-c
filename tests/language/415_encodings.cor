@@ -13,6 +13,9 @@
 // the nth position. A string on this machine is UTF-8, so all three of these
 // do real work. Values from the same program run on .NET.
 
+using System;
+using System.Text;
+
 class Program
 {
     static int Main()

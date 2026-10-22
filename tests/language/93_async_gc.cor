@@ -18,6 +18,8 @@
 // suspended state machine may be freed or moved without its reference
 // being updated, and the kept arrays must still hold their patterns.
 
+using System.Threading.Tasks;
+
 static class Program
 {
     // Garbage is parked here so that it escapes and has to be the heap's;

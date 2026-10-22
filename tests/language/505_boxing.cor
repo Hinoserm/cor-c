@@ -29,6 +29,9 @@
 // and the InvalidCastException a mismatched unboxing throws. A string held as
 // an object is here too: it has no vtable of its own, so it is its own
 // ToString, and reading a slot it does not have was the same crash.
+
+using System;
+
 static class Program
 {
     static void Line(string text)

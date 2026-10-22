@@ -24,6 +24,8 @@
 // is suspended alongside it, so the two state machines must not share
 // anything. Each value is changed between awaits and printed afterwards.
 
+using System.Threading.Tasks;
+
 class Tag
 {
     public string Name;

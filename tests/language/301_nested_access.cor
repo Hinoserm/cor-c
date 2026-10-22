@@ -17,6 +17,8 @@
 // constants and nested types or enums. Instance members are reached the
 // only way they can be, through an explicit reference to an outer object.
 
+using System;
+
 static class Outer
 {
     private static int _count = 7;

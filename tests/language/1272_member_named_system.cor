@@ -11,6 +11,7 @@
 // global::, as C# spells its way out of the same collision.
 
 using System.IO;
+using System.Threading;
 sealed class Img { public int W; }
 static class Imgs
 {

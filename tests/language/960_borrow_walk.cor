@@ -19,6 +19,7 @@
 // bytes), and a borrow handed on -- returned, stored -- still escapes.
 
 using System.Collections.Generic;
+using System;
 
 class Tok
 {

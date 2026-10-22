@@ -12,6 +12,8 @@
 // program that reads the whole word as the exit code reports a killed job as
 // having exited with nine.
 
+using System;
+
 class Program
 {
     static int Main()

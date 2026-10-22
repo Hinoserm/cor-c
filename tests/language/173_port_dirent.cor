@@ -12,6 +12,9 @@
 // next one, because the name is padded to an alignment a program must not
 // guess. A scan for zeroes finds the first name and then garbage.
 
+using System;
+using System.IO;
+
 class Program
 {
     static int Main()

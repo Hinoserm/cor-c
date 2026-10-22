@@ -19,6 +19,9 @@
 // the thread pool at an unspecified moment. Main is parked on a long
 // delay so nothing it does could run after the crash.
 
+using System;
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

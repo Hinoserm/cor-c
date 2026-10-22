@@ -14,6 +14,8 @@
 // CHANGE the array they are called on and return it, which is .NET's contract
 // and not what the names suggest. Taken from the same program run there.
 
+using System.Collections;
+
 class Program
 {
     static int Main()

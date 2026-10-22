@@ -17,6 +17,9 @@
 // With it: a method group infers what a generic method's result is, the
 // unsigned Math pair, and a hex literal takes the first type that can hold it.
 
+using System;
+using System.Numerics;
+
 static class Program
 {
     static void Line(string s)

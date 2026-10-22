@@ -19,6 +19,9 @@
 // catch clause is a type test against a descriptor. If the program carried a
 // copy of that descriptor rather than using the library's, the test would
 // compare two addresses of one type and the exception would go unhandled.
+
+using System;
+
 class Mine : Exception
 {
     public Mine(string message) : base(message) { }

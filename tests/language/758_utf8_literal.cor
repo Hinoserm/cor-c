@@ -7,6 +7,8 @@
 // it: laid down once as data, so taking it in a loop allocates nothing, and
 // the same literal twice is the same bytes. "é" is two bytes.
 
+using System;
+
 static class Program
 {
     static int Count(ReadOnlySpan<byte> s) => s.Length;

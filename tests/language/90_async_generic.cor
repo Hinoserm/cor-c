@@ -16,6 +16,9 @@
 // explicit and inferred type arguments, one that builds a List<T> from
 // awaited values, and one with two type parameters.
 
+using System;
+using System.Threading.Tasks;
+
 class Person
 {
     public string Name;

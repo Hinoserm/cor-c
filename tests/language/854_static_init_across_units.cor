@@ -5,6 +5,7 @@
 // x86 486 4 8 16 8 48 16 8 False
 // x86-64 k8 8 16 24 16 96 16 8 True
 using StaticUnits;
+using System;
 
 static class Program
 {

@@ -8,6 +8,8 @@
 // the trace the throw recorded. A hundred thousand throws and catches run no
 // collection and leave the heap as they found it.
 
+using System;
+
 static class Program
 {
     static int Check(int k)

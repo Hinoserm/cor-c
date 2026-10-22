@@ -33,6 +33,8 @@
 // so its Ticks is the local reading and its UtcTicks the moment. Every line
 // came from the same program run on .NET against the invariant culture.
 
+using System;
+
 class Program
 {
     static int Main()

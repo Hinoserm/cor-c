@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // owned graphs True True True True True
+
+using System;
+
 class GraphBranch { public byte[] Buffer; }
 class GraphRoot { public GraphBranch Child; }
 static class Program

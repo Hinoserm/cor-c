@@ -21,6 +21,9 @@
 // `ref T[]`, which the compiler will not infer a type argument through. Both
 // are reported; both come back into this test when they are fixed.
 
+using System;
+using System.IO;
+
 class Program
 {
     static int Main()

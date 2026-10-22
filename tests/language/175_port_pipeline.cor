@@ -13,6 +13,8 @@
 //
 // `echo hi | wc -c` answers 3: two letters and the newline.
 
+using System.IO;
+
 class Program
 {
     static int Main()

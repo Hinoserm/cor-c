@@ -14,6 +14,9 @@
 // seven-bit groups, so the same bytes are what .NET writes and reads. Every
 // line was taken from the same program run there.
 
+using System.IO;
+using System.Text;
+
 class Program
 {
     static string Show(string s, string newline)

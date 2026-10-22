@@ -22,6 +22,9 @@
 // containers here answer what the reference answers, enumeration order
 // included -- a stack walks top to bottom, the two maps walk in key order.
 
+using System;
+using System.Collections.Generic;
+
 class Program
 {
     static int Main()

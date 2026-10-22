@@ -11,6 +11,8 @@
 // String.Split, integer parsing and formatting in several bases, and
 // StringBuilder including growth past its first buffer.
 
+using System.Text;
+
 static class Program
 {
     static void Line(string s)

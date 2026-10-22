@@ -11,6 +11,8 @@
 // compiler, which knows the keyword; `Int32.MaxValue` is the same constant
 // spelled the other way C# allows it, and nothing answered it at all.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

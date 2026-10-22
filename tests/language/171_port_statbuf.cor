@@ -14,6 +14,9 @@
 // answers two fields glued together. This proves the accessors read what the
 // kernel actually wrote.
 
+using System;
+using System.IO;
+
 class Program
 {
     static int Main()

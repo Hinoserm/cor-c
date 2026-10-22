@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // tuple contexts passed
+
+using System.Collections.Generic;
+
 class TupleHolder<T>
 {
     private T _value;

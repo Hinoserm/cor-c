@@ -30,6 +30,9 @@
 //
 // The two share one routine now, because `is` and an arm have to mean the same
 // thing by the same pattern.
+
+using System;
+
 enum Colour { Red, Green = 5, Blue }
 
 // NOT CALLED POINT, deliberately. The standard library is compiled

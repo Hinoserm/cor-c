@@ -10,6 +10,8 @@
 // thirteen distinct keys, so the same keys are hit over and over, and a
 // second count over a split sentence.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

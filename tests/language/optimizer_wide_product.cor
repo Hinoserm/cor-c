@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // wide products 81
+
+using System;
+
 static class Program
 {
     static long[] _values = new long[] { 0, 1, -1, 2147483647, 2147483648, 4294967295, 4294967296, long.MinValue, 9223372036854775807 };

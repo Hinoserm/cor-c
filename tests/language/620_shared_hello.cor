@@ -12,6 +12,9 @@
 // tests/integration/shared-libraries.sh compiles this one --dynamic and runs it
 // against build/lib. Here it is linked statically, which is what says that
 // the two ways of building it agree.
+
+using System;
+
 static class Program
 {
     static void Main()

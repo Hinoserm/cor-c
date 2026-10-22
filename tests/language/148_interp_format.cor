@@ -13,6 +13,8 @@
 // away, so the string said one thing and printed another. Also `$@"..."`,
 // where a backslash is a backslash and `""` is one quote.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

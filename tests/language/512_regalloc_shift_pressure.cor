@@ -18,6 +18,9 @@
 // read from its spill slot does not need the register at all, and spilling it
 // from this instruction hands the register over. The answers below are the
 // point -- the shift still has to be right.
+
+using System.Runtime.InteropServices;
+
 static class Program
 {
     static void Line(string text)

@@ -3,6 +3,9 @@
 // expect-output:
 // 5
 // 1 2 7
+
+using System;
+
 class Block { public int N; }
 class Instr { public int K; }
 static class Program

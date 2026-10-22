@@ -27,6 +27,8 @@
 // on every way out of its scope -- the end of the block, a return, an
 // exception, a break and a continue -- innermost first.
 
+using System;
+
 class Res : IDisposable {
     string name;
     public Res(string n) { name = n; Sys.Print("open " + n); Sys.PrintLine(); }

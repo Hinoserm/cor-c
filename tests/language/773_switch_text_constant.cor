@@ -3,6 +3,9 @@
 // expect-output:
 // three
 // ess
+
+using System;
+
 static class Program
 {
     public const int C = 3;

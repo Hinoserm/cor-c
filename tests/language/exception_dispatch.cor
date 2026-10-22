@@ -3,6 +3,7 @@
 // expect-output:
 // exception dispatch ok
 using System.Runtime.ExceptionServices;
+using System;
 static class Program
 {
     static void Origin() { throw new InvalidOperationException("original"); }

@@ -13,6 +13,8 @@
 // interface, a virtual implementation overridden in a subclass and reached
 // through the interface, and an interface-typed parameter.
 
+using System;
+
 interface IShape
 {
     long Area();

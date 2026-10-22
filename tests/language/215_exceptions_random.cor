@@ -21,6 +21,10 @@
 // seeded pseudo-random source, whose whole contract is that the same seed
 // gives the same numbers.
 
+using System;
+using System.Collections.Generic;
+using System.IO;
+
 static class Program
 {
     static void Line(string s)

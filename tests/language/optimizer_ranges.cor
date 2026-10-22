@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // optimizer ranges and ABI passed
+
+using System;
+
 static class Program
 {
     static long[] _values = new long[] { -1, 65535, 65536, 1099511627776L };

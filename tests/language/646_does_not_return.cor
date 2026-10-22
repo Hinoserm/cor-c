@@ -12,6 +12,7 @@
 // definite assignment does not count such a call, as C#'s does not.
 
 using System.Diagnostics.CodeAnalysis;
+using System;
 
 class Program
 {

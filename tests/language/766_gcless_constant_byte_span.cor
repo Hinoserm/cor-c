@@ -9,6 +9,8 @@
 // sit where the program's data is, and reading them a hundred thousand times
 // allocates nothing.
 
+using System;
+
 static class Program
 {
     static ReadOnlySpan<byte> Table => new byte[] { 1, 2, 200 };

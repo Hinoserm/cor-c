@@ -14,6 +14,8 @@
 // IReadOnlyCollection<T> is an IEnumerable<T> -- so the operators reach
 // everything that is one.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

@@ -17,6 +17,9 @@
 // (a StringBuilder's buffer is the library's own field), something live only
 // on the stack, and a collection in the middle of it. Anything the collector
 // failed to see comes back as rubbish or brings the process down.
+
+using System.Text;
+
 class Held
 {
     public string[] Items;

@@ -11,6 +11,7 @@
 // that took -1 for "not yet" never measured an interval.
 
 using System.Diagnostics;
+using System;
 
 class Program
 {

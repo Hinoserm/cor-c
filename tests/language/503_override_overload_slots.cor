@@ -16,6 +16,9 @@
 // resolved to Write(char) dispatched through the slot Write(string) had been
 // written into, and read the character code as a pointer. A library
 // TextWriter subclass -- the shape this was found in -- crashed on Write('c').
+
+using System.IO;
+
 class B
 {
     public virtual void Write(char c) { Line("Bchar " + c); }

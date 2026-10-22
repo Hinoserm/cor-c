@@ -4,6 +4,7 @@
 // expect-output:
 // 0 0 5
 using SharedStatics;
+using System;
 
 static class Program
 {

@@ -27,6 +27,9 @@
 //
 // C#'s rule is the other way round: a simple name takes the innermost
 // declaration that matches, and a type name only when nothing else does.
+
+using System;
+
 static class Files
 {
     public static int Count = 99;

@@ -14,6 +14,8 @@
 // An async Fibonacci that yields in every call makes nearly two thousand
 // tasks.
 
+using System.Threading.Tasks;
+
 static class Program
 {
     static int active;

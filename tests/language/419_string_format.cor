@@ -20,6 +20,9 @@
 // type-testing a boxed user-defined struct currently faults the machine
 // (reported); the branch is written and this test grows a line when it lands.
 
+using System;
+using System.Text;
+
 class Program
 {
     static int Main()

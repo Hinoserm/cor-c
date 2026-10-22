@@ -21,6 +21,8 @@
 // conditional lambda argument, `?? throw` on a nullable tuple, global:: past
 // a member of the same name, and an array passed as Memory<T>.
 
+using System;
+
 namespace Probe.Inner
 {
     public static class Cpu

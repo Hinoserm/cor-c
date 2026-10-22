@@ -23,6 +23,8 @@
 // through several frames in the right order, and a finally run by a break
 // out of a loop.
 
+using System;
+
 class Boom : Exception
 {
     public Boom() : base("boom")

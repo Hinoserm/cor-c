@@ -16,6 +16,9 @@
 // The path carries this process's pid so two copies of the suite cannot
 // collide in /tmp.
 
+using System;
+using System.IO;
+
 static class Program
 {
     static void Line(string s)

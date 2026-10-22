@@ -22,6 +22,8 @@
 // Array's copy and fill, and the Dictionary members that answer in one lookup
 // what ContainsKey and the indexer answer in two.
 
+using System;
+
 class Person
 {
     public string Name;

@@ -11,6 +11,8 @@
 // `is` and `as`: through a chain of base classes, against an interface,
 // with a declaration pattern that binds a name, and on a null reference.
 
+using System;
+
 class Base
 {
 }

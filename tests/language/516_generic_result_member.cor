@@ -18,6 +18,9 @@
 // is given it, while an inferred one is the template with its arguments beside
 // it until the copy that spells it has been made. Reading a field off that
 // answered the member's type as the class declared it, with nothing put in.
+
+using System.Collections.Generic;
+
 class Holder<T>
 {
     public List<T> Items = new List<T>();

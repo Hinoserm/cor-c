@@ -8,6 +8,9 @@
 //
 // Distinct NaN payloads and signed zeroes compare and hash equally;
 // dictionary lookups must agree with direct boxed equality.
+
+using System;
+
 static class Program
 {
     static int Main()

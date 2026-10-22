@@ -18,6 +18,8 @@
 // The inherited stdin is reported on and otherwise left alone, which is the
 // graceful skip: whatever it was, the test does not need it.
 
+using System.IO;
+
 static class Program
 {
     static void Line(string s)

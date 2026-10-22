@@ -9,6 +9,8 @@
 // crashed the compiler on `Sys.PokeWord(0xBFFFFFF0, 0)`. The code is only
 // compiled here: running it in a program would fault.
 
+using System;
+
 class Program
 {
     static long Touch()

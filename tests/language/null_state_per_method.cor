@@ -11,6 +11,8 @@
 // as its third argument, as C# does. And a receiver's `!` holds in what is
 // evaluated after it: a call's arguments, an assignment's right-hand side.
 
+using System;
+
 class Box
 {
     public int Value;

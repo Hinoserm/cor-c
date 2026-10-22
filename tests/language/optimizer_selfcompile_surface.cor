@@ -7,6 +7,11 @@
 // linq
 // writer
 // selfcompile surface passed
+
+using System;
+using System.IO;
+using System.Text;
+
 class Cell
 {
     public int Value;

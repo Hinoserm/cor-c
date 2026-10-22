@@ -9,6 +9,8 @@
 // output as it is, nothing encoded and nothing allocated, beside the string
 // overload that encodes its UTF-16 to UTF-8.
 
+using System;
+
 static class Program
 {
     static int Main()

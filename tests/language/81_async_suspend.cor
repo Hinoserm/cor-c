@@ -33,6 +33,8 @@
 // two loops yielding in turn. Continuations are posted to a FIFO queue, so
 // resumptions happen in the order the awaits were reached.
 
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

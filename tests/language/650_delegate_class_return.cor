@@ -9,6 +9,8 @@
 // `T last = default;`, which for a class return is null: a delegate
 // returning a non-nullable class did not compile.
 
+using System;
+
 sealed class Shape
 {
     public string Name = "";

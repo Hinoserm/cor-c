@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // signed powers 176
+
+using System;
+
 static class Program
 {
     static int[] _d32 = new int[] { 2, -2, 8, -8, 1073741824, -1073741824, int.MinValue };

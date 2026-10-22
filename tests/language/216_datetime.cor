@@ -22,6 +22,8 @@
 // and the custom format picture are all a number and a rule, and the number is
 // .NET's tick so that a program moved between the two keeps its values.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

@@ -15,6 +15,8 @@
 // reported as a conversion error at the call. The setter side has to choose
 // the pair of whichever getter was chosen, not the first setter of that arity.
 
+using System;
+
 class Table {
     int[] slots = new int[4];
     string named = "none";

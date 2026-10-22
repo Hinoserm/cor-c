@@ -14,6 +14,9 @@
 // struct -- and formats through it; Array.Resize infers its type argument
 // through a `ref T[]`; and Enumerable's ...OrDefault family is declared `T?`,
 // which for a value type is still that value type and not a cell.
+
+using System;
+
 static class Program
 {
     static void Line(string text)

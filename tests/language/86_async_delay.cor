@@ -42,6 +42,8 @@
 // running. Durations differ by at least 40 ms so no result depends on how
 // long the surrounding code takes.
 
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

@@ -18,6 +18,10 @@
 // A tree whose every branch hangs off Exception compiles and catches nothing,
 // and the program only finds out at the moment it needed the catch.
 
+using System;
+using System.Collections.Generic;
+using System.IO;
+
 class Program
 {
     static int Main()

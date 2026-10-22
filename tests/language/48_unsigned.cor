@@ -13,6 +13,8 @@
 // values are printed by a helper that itself relies on unsigned 64-bit
 // division.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

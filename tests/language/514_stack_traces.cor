@@ -24,6 +24,9 @@
 // The helpers below recurse so that the optimiser leaves them standing: an
 // inlined frame is not a frame, here or in .NET, and a test that asserts one
 // is really asserting that nothing was inlined.
+
+using System;
+
 static class Program
 {
     static int Sink;

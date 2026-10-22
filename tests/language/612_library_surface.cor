@@ -18,6 +18,9 @@
 // holds, StringBuilder(string) and Append(object), ReadOnlySpan's Empty and
 // IndexOf, and the exception constructors that carry a parameter name.
 
+using System;
+using System.Text;
+
 class Sym
 {
     public override string ToString() => "sym";

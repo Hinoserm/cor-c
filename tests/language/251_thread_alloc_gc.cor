@@ -18,6 +18,7 @@
 // forty thousand nodes and their strings do not fit without several.
 
 using System.Threading;
+using System;
 
 class Node
 {

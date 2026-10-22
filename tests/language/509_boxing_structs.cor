@@ -23,6 +23,9 @@
 // A boxed struct is a COPY of the block behind an object header, its ToString
 // is the one the struct declared, and unboxing copies back out -- so writing
 // to what came out does not write through to the box.
+
+using System;
+
 struct Small
 {
     public int V;

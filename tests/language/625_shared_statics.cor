@@ -14,6 +14,9 @@
 // library's initialiser, so the "once" in C#'s rule is once per process and
 // not once per image -- which is only true because the program drops its own
 // copy of both and reaches the library's through the GOT.
+
+using System.IO;
+
 static class Counted
 {
     public static int Runs = Start();

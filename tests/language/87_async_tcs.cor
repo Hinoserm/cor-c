@@ -27,6 +27,9 @@
 // Only one of the waiters prints, because C# does not promise the order in
 // which several continuations of one task run.
 
+using System;
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

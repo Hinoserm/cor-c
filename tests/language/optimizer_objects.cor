@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // optimizer object lifetimes passed
+
+using System;
+
 class TestCell { public long Value; public byte Byte; public sbyte Signed; public short Short; public ushort Word; public byte[] Buffer; }
 static class Program
 {

@@ -19,6 +19,7 @@
 // with it instead.
 
 using System.Threading;
+using System;
 
 class Boom : Exception
 {

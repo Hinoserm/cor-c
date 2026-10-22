@@ -13,6 +13,8 @@
 // property". Expression-bodied accessors inside the braces are checked here
 // too, since they share the shape.
 
+using System;
+
 class Row {
     int[] data = new int[] { 20, 21, 22, 23 };
     int stored;

@@ -19,6 +19,8 @@
 // captures in a list of async lambdas; a lambda with a parameter; and
 // Task.Run given async lambdas, with and without a result.
 
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

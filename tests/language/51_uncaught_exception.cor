@@ -6,6 +6,8 @@
 // compared -- what the runtime prints for an unhandled exception is its
 // own business -- but "after" must never be reached.
 
+using System;
+
 class Failure : Exception
 {
     public Failure() : base("unhandled failure")

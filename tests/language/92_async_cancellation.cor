@@ -23,6 +23,10 @@
 // only that it ran at least three and stopped exactly where the
 // canceller saw it.
 
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
 static class Program
 {
     static int steps;

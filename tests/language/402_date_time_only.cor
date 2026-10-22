@@ -13,6 +13,9 @@
 // week, which is printed as its number here because an enum has no name at
 // runtime. Thursday is 4.
 
+using System;
+using System.Diagnostics;
+
 class Program
 {
     static int Main()

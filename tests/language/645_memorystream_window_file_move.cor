@@ -15,6 +15,8 @@
 // replaces it.
 
 using System.IO;
+using System;
+using System.Text;
 
 class Program
 {

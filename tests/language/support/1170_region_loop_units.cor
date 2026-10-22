@@ -1,6 +1,9 @@
 // The other unit of 1170_region_loop_laps_across_units: what the loops there
 // call -- a parser making a record and its fields for every line, a chain
 // grown by one link, entries a cache keeps, and a check that throws.
+
+using System;
+
 namespace LoopUnits;
 
 public sealed class Field

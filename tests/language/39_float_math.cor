@@ -20,6 +20,8 @@
 // nearest thousandth before printing so a last-bit difference in a series
 // does not change the output.
 
+using System;
+
 static class Program
 {
     const double TwoPi = Math.PI * 2;

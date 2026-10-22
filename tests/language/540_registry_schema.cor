@@ -25,6 +25,10 @@
 // field is typed and the member names cannot drift. [Label] and [Description]
 // on a member are what a settings page shows; C# allows attributes there and
 // this compiler did not until the registry needed them.
+
+using Microsoft.Win32;
+using System;
+
 enum Units
 {
     [Label("Banana")] [Description("Roughly 18cm, varies by fruit.")]

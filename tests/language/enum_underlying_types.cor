@@ -10,6 +10,8 @@
 // enum's 0xC0000002 is a large positive number as a long, not a negative
 // one, and it is greater than 5, as NTSTATUS codes need.
 
+using System;
+
 enum Status : uint { Ok = 5, Failed = 0xC0000002 }
 enum Wide : long { Big = 0xC0000001, Negative = -5 }
 enum Small : byte { High = 250 }

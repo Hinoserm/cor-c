@@ -8,6 +8,8 @@
 // and otherwise takes the head of the next non-empty bin, so however many
 // holes the heap has, a large request probes a handful of blocks at most.
 
+using System;
+
 // ROOTS THE COLLECTOR READS A WORD AT A TIME: a block with no descriptor,
 // read as every such block is. An array of numbers is not read at all -- it
 // holds no reference, as in .NET -- so raw addresses kept in a long[] kept

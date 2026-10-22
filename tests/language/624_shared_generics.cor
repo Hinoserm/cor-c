@@ -16,6 +16,9 @@
 // its descriptor's address -- so a `List<string>` made here and one made in
 // the library have to be the same type, which they are only because the
 // program drops its own copy in favour of the one the library exports.
+
+using System;
+
 class Node
 {
     public int Value;

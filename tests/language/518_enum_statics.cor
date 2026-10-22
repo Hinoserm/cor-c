@@ -36,6 +36,9 @@
 // Parse reads a member's name, a comma-separated list of them -- for any enum,
 // not only a [Flags] one -- or a plain decimal number, which it accepts even
 // when no member has it; TryParse answers false where Parse throws.
+
+using System;
+
 enum Colour
 {
     Red,

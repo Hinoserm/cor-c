@@ -6,6 +6,8 @@
 // at the top level, and every one of them was seen from everywhere; now a
 // program sees each only where its .NET namespace is in scope.
 
+using System;
+
 static class Program
 {
     static int Main()

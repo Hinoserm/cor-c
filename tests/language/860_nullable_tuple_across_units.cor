@@ -4,6 +4,7 @@
 // expect-output:
 // 1 2 3 0
 using NullableTuples;
+using System;
 
 static class Program
 {

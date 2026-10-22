@@ -24,6 +24,9 @@
 // which is not how nearly any C# class is written. The accessors are real
 // methods now, reached only through an interface, because a read written
 // through the class finds the field first and loads it with no call at all.
+
+using System;
+
 interface ICounted
 {
     void Go();

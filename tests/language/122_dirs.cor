@@ -15,6 +15,8 @@
 // because the order a filing system hands them back is its own business and
 // a test that depended on it would be testing the filing system.
 
+using System;
+
 static class Program
 {
     static void Line(string s)

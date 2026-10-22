@@ -8,6 +8,9 @@
 // now ok
 // delete ok
 
+using System;
+using System.IO;
+
 class Program
 {
     static int Main()

@@ -35,6 +35,8 @@
 // class; one that implements an interface; and two on one type, each read
 // through the derived type AND through the base type.
 
+using System;
+
 abstract class Base
 {
     protected string _p;

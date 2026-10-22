@@ -14,6 +14,8 @@
 // character above the basic plane as the surrogate pair D83D DE00. Every line
 // came from the same program run on .NET.
 
+using System.Text;
+
 class Program
 {
     static string Hex(byte[] bytes)

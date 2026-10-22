@@ -3,6 +3,8 @@
 // expect-output:
 // 5 HARDWARE SYSTEM 3 2 1
 
+using System;
+
 // An implicitly typed array initialises a field, static or not: a static
 // one was retargeted to the declared type and became an array of arrays.
 class Holder

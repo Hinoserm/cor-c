@@ -16,6 +16,8 @@
 // need a PATH search -- which it could not do without an environment it is
 // not promised.
 
+using System.IO;
+
 static class Program
 {
     static void Line(string s)

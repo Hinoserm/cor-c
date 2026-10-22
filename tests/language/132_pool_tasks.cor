@@ -13,6 +13,8 @@
 // The work allocates nothing and throws nothing on purpose: see the note on
 // Thread in lib/threading.cor for why neither is safe off the first thread yet.
 
+using System.Threading.Tasks;
+
 class Square : Func<int>
 {
     int _n;

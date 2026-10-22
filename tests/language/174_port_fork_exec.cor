@@ -10,6 +10,8 @@
 // the exit code. Everything sh(1) can do rests on these three calls agreeing
 // about which side of the fork they are on.
 
+using System.IO;
+
 class Program
 {
     static int Main()

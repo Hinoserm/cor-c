@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // byte swaps True True True
+
+using System;
+
 static class Program
 {
     static long Reference(long source)

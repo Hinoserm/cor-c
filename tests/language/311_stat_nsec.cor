@@ -22,6 +22,9 @@
 // It does NOT check that two writes a moment apart differ, because on some
 // hosts they genuinely do not: the filesystem stamps a coarse clock.
 
+using System;
+using System.IO;
+
 class Program {
     static int Main() {
         string path = "/tmp/corsac-stat-nsec.tmp";

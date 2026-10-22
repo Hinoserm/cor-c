@@ -17,6 +17,8 @@
 // never heard of answers an empty sequence rather than throwing, which is the
 // whole difference from a Dictionary.
 
+using System;
+
 class Program
 {
     static int Main()

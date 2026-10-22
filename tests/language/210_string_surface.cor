@@ -27,6 +27,7 @@
 // splicing, and the character predicates that go with them.
 
 using System.Linq;
+using System;
 
 static class Program
 {

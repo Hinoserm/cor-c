@@ -64,6 +64,10 @@
 // Func<Task>, cancellation tokens with Delay and CancelAfter, and the
 // scheduler's deadlock report.
 
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
 class Log : Action
 {
     string _text;

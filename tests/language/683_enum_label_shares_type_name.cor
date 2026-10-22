@@ -8,6 +8,8 @@
 // member or a type nested in it. Trimmed to a bare name, it found the nested
 // class below and tested the enum value as an object.
 
+using System;
+
 enum Req : long { Insert = 1, Watch = 2, Close = 3 }
 
 class Registry

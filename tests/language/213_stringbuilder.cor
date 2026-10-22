@@ -19,6 +19,8 @@
 // that can be assigned to, and a Clear that answers the builder so calls
 // chain.
 
+using System.Text;
+
 static class Program
 {
     static void Line(string s)

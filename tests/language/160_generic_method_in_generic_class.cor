@@ -13,6 +13,8 @@
 // arguments; a generic method that calls another generic method of the same
 // class; and a static generic method in a generic class.
 
+using System;
+
 class Person
 {
     public string Name;

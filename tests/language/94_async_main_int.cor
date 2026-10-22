@@ -9,6 +9,8 @@
 // task Main returned completes -- through yields and a timer -- and the
 // task's result becomes the process exit code.
 
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

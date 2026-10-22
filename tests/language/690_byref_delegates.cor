@@ -7,6 +7,8 @@
 // out, local functions with ref and out (their own delegate type), one in a
 // generic class capturing a local, and `T Item = default!;`.
 
+using System;
+
 delegate bool TryIt(string s, out int v);
 class Holder<T>
 {

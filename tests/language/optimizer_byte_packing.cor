@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // byte packing passed
+
+using System;
+
 static class Program
 {
     static long P8(long x) { return (x & 255) << 8; }

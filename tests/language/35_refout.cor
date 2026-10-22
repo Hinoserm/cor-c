@@ -17,6 +17,8 @@
 // fit in registers; the target being a static field, an object field and an
 // array element; `out var`; and a double passed by reference.
 
+using System;
+
 static class Div
 {
     public static bool Half(long n, out long half)

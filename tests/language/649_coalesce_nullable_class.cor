@@ -3,6 +3,8 @@
 // expect-output:
 // 5
 
+using System;
+
 sealed class Shape { public int N; }
 class Dc { public Shape? Clip; }
 class Program

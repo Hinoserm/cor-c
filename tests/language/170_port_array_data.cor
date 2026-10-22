@@ -16,6 +16,8 @@
 // not a rewrite to `+ 16`. The headers are the target's: 16 and 8 bytes on
 // i386, 24 and 16 in long mode, where every word in them is eight.
 
+using System;
+
 class Program
 {
 #if TARGET_64BIT

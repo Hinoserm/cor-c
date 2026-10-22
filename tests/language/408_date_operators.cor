@@ -13,6 +13,8 @@
 // The compiler resolves each to the static method the struct declared, under
 // the name the operator has in metadata. Values from the same program on .NET.
 
+using System;
+
 class Program
 {
     static int Main()

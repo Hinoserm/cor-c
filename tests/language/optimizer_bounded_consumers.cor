@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // bounded consumers True
+
+using System;
+
 static class Program
 {
     static long Mutate(long value)

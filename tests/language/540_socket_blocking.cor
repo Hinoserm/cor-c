@@ -12,6 +12,8 @@
 // descriptor rather than one it opened itself.
 
 using System.Threading;
+using System.Net;
+using System.Net.Sockets;
 
 class Program
 {

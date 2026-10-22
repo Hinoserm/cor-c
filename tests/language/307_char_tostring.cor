@@ -14,6 +14,8 @@
 // Concatenation and interpolation already went the other way, which made the
 // disagreement between `c.ToString()` and `"" + c` the visible symptom.
 
+using System;
+
 class Program {
     static int Main() {
         char c = 'a';

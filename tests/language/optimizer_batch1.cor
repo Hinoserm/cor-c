@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // optimizer batch1 boundaries passed
+
+using System;
+
 static class Program
 {
     static long[] _inputs = new long[] { -1, 0, 1, 3, 32, 63 };

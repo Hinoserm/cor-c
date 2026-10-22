@@ -4,6 +4,7 @@
 // thread lifecycle ok
 
 using System.Threading;
+using System;
 
 static class Program
 {

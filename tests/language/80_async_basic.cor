@@ -20,6 +20,8 @@
 // of awaits -- one of which really suspends -- carries a long result back
 // through three methods.
 
+using System.Threading.Tasks;
+
 static class Program
 {
     static void Line(string s)

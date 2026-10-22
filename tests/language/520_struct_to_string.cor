@@ -21,6 +21,9 @@
 // the register holding a struct holds its address, which is what the method
 // wants for `this`. A struct that declares no ToString says its type's name,
 // which is what object.ToString answers for everything else here.
+
+using System;
+
 struct Vec
 {
     public int X;

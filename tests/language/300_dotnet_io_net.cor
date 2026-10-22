@@ -12,6 +12,10 @@
 // System.Environment, System.Security.Cryptography and System.Net.Sockets
 // by their .NET names, no system calls of its own.
 
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+
 class Program
 {
     static int Main()

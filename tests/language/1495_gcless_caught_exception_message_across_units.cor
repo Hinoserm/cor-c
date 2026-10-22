@@ -9,6 +9,8 @@
 // whose other exception constructors -- ones this program never reaches --
 // store messages their callers keep.
 
+using System;
+
 static class Program
 {
     static int Check(int k)

@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // 8 12 16 20
+
+using System;
+
 static class Program
 {
     static Func<int, int> _field = Twice;

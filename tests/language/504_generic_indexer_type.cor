@@ -10,6 +10,9 @@
 // `this` was not one: `public IReadOnlyList<T> this[int i]` was read as the
 // type `IReadOnlyList` followed by a comparison, and reported as a member with
 // no name. The same held for `operator`.
+
+using System.Collections.Generic;
+
 class Shelf<T>
 {
     private List<T> _rows = new List<T>();

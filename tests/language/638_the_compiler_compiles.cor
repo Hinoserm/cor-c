@@ -30,6 +30,8 @@
 // reads a property as readily as a field. And a pattern's binding that a
 // lambda captured lives in a heap cell like any other captured local.
 
+using System.Collections.Generic;
+
 sealed record Image(byte[] Bytes, int Base);
 
 abstract class Sym { }

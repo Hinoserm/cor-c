@@ -8,6 +8,8 @@
 // only reads does not escape. So a local handed through a virtual call a
 // hundred thousand times is the frame's, not the heap's.
 
+using System;
+
 sealed class Box { public int X; }
 
 abstract class Reader { public abstract int Get(Box b); }

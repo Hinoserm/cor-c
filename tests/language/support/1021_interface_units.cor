@@ -1,5 +1,8 @@
 // The other unit of 1021_interfaces_both_sides_across_units: interfaces on
 // this side, one of them on an exception that derives from the library's.
+
+using System;
+
 namespace CodeUnits;
 
 public interface ICoded

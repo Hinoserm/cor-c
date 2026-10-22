@@ -2,6 +2,9 @@
 // expect-exit: 0
 // expect-output:
 // stream disposal ok
+
+using System.IO;
+
 sealed class ProbeStream : Stream
 {
     public bool Cleaned;

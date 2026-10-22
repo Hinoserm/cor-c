@@ -27,6 +27,9 @@
 // makes that call an interface dispatch on a word -- right for every type
 // argument the constraint admits -- while the copy keeps the name a consumer
 // asks for.
+
+using System.Collections.Generic;
+
 interface IShape
 {
     int Area();

@@ -1,6 +1,9 @@
 // The other unit of 973_region_throw_across_units: a parser of sums that
 // builds a list of terms, and throws, with what it was reading, on a term
 // that is not a number.
+
+using System;
+
 namespace RegionThrow;
 
 public sealed class Term

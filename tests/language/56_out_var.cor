@@ -9,6 +9,8 @@
 // declared by the argument, is in scope after the call, and holds the
 // callee's value (or the default when the callee reports failure).
 
+using System;
+
 static class Div
 {
     public static void Split(long n, out long tens, out long units)

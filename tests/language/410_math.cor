@@ -13,6 +13,8 @@
 // half that surprises people: 2.5 rounds to 2 and 3.5 to 4, because always
 // rounding a half upwards biases a column of figures upwards.
 
+using System;
+
 class Program
 {
     static string F(double d) { return d.ToString("0.000000"); }

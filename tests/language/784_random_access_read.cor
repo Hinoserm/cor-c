@@ -4,6 +4,7 @@
 // 6 [random] 19
 // 0
 using System.IO;
+using System;
 static class Program
 {
     static int Main()

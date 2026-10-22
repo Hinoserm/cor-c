@@ -43,6 +43,9 @@
 // arriving through an awaited faulted task. Two methods suspended inside
 // their using blocks at the same time close in the order they resume.
 
+using System;
+using System.Threading.Tasks;
+
 class Res : IDisposable
 {
     string name;
