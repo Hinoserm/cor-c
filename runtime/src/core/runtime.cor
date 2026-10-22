@@ -4459,13 +4459,22 @@ static class Runtime
     /// (Escape.KeepsNothing); with the report spliced into the check, every
     /// value stored and every array stored into escaped through the report's
     /// raw writes, and an iterator's sets went back to the collector (1080).
+    ///
+    /// THE REPORT THROUGH A HOOK the journal sets as it is turned on
+    /// (Gc.FreeJournalOn): called by name, it was a call into the collector
+    /// from every image that stores a reference into a shared array -- one
+    /// made without a collector included, which kept the collector's
+    /// reporting routines, where nothing could ever turn the journal on.
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void ArrayStoreRefused(long array, long value)
     {
-        Gc.SayFreed("array store: the value", value);
-        Gc.SayFreed("array store: the array", array);
+        if (ArrayStoreReport != 0) Sys.Call(ArrayStoreReport, value, array, 0);
         throw new ArrayTypeMismatchException();
     }
+
+    /// What says a refused store's value and array as the free journal knows
+    /// them (Gc.SayRefusedStore), once the journal is on; 0 until then.
+    public static long ArrayStoreReport;
 
     /// The copy of `value` into `array` by CopyTo (Lowering.ArrayFaces):
     /// refused as Array.Copy refuses an element the destination's cannot
