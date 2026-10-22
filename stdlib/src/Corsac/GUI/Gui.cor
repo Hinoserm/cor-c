@@ -1758,9 +1758,22 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     /// seat reads each write on its own, and the tail of an op at the head
     /// of the next write is parsed as opcodes, which throws the rest away.
     bool _renewing;                  // Renew is writing: a Room inside it grows the buffer, never flushes
+    bool _renew;                     // a flush came in the middle of drawing: the next op names the window again
 
     void Room(int words)
     {
+        // A FLUSH IN THE MIDDLE OF DRAWING -- a caret's ioctl from inside a
+        // TextBox's paint flushes what is queued -- left the next batch with
+        // no window, and the seat drops every op until one is named: the
+        // controls painted after a focused TextBox never showed. The next op
+        // names the window, the clip and the engine's state again first.
+        if (_renew && !_renewing)
+        {
+            _renew = false;
+            _renewing = true;
+            try { Renew(); }
+            finally { _renewing = false; }
+        }
         if (_used + words * 4 <= _batch.Length) return;
         if (!_renewing)
         {
@@ -1822,15 +1835,18 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         }
         _used = 0;
         // The seat forgets the current window and clip at the end of every
-        // write, so the next batch has to name them again: Renew does, when
-        // a batch filled up mid-drawing; a new batch starts with Target.
+        // write, so the next batch has to name them again: Renew does, before
+        // the next op of the drawing under way (Room); a new drawing starts
+        // with Target.
         _named = false;
+        _renew = _window != 0;
     }
 
     /// After a flush in the middle of drawing: the same window and clip
     /// again, or the rest of the drawing goes nowhere.
     void Renew()
     {
+        _renew = false;
         if (_window != 0) { _named = true; Word(12); Word(_window); }
         if (_clipOn) { Word(6); Word(_clipX); Word(_clipY); Word(_clipW); Word(_clipH); }
         // The engine's state as the Graphics drawing set it: the clip
@@ -1846,6 +1862,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         if (_window == window && _named) return;
         _window = window;
         _named = true;
+        _renew = false;
         _clipOn = false;
         ForgetGeometry();
         Room(2); Word(12); Word(window);

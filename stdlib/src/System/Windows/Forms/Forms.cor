@@ -1030,6 +1030,11 @@ public class Control
         return null;
     }
 
+    /// .NET's IsHandleCreated: whether the control has its window. A control
+    /// here is drawn in its form's, so it has one when its form does --
+    /// once the form is shown, until it is closed.
+    public bool IsHandleCreated { get { return FindForm() is Form f && f.Handle != 0; } }
+
     /// .NET's DrawToBitmap: what the control shows -- a form with its frame
     /// -- copied into the bitmap at targetBounds' corner, as much as fits
     /// there. Read from the seat (Seat.WindowPixels), after anything owed
