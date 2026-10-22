@@ -107,7 +107,7 @@ public static class IrUnitCodec
     /// virtual call X's methods implement had them as targets, in every
     /// program that asked.
     /// </summary>
-    private static bool ComparedOnly(Instr[] instructions, string name)
+    internal static bool ComparedOnly(Instr[] instructions, string name)
     {
         if (!(name.Length > 2 && name[1] == '_' && name[0] is 't' or 'q' or 'v' or 'b')) return false;
         HashSet<VReg>? held = null;

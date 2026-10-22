@@ -1109,6 +1109,10 @@ public sealed class Inline : IParallelModulePass
         // beside it, a coroutine's frame laid out after the optimiser, the
         // link's run of a unit's passes.
         bool bySlot = m.ClosedImage && !m.PreserveExports && !m.AtLink && !coroutines && m.ObjectNames.Count == 0;
+        // WHICH TABLES ARE MADE (below) needs no slot read, and holds where a
+        // coroutine's frame keeps the slots from being judged: nothing laid
+        // out after the optimiser makes an object of a table the IR names.
+        bool byMade = m.ClosedImage && !m.PreserveExports && !m.AtLink && m.ObjectNames.Count == 0;
         int methods = Target.Current.DescriptorBytes;
         Dictionary<long, HashSet<string>> slotReads = new();
         Dictionary<long, List<(DataItem Table, string Method)>> waiting = new();
@@ -1166,8 +1170,35 @@ public sealed class Inline : IParallelModulePass
                 return true;
             });
         }
+        // A TABLE NO OBJECT IS MADE OF answers no slot: a descriptor only
+        // compared with -- `value is double` in String.FormatBoxed, which every
+        // box's IFormattable slot reaches -- is kept for the comparison, and
+        // its methods wait until something makes an object of it: code that
+        // names it otherwise than to compare (an allocation's stamp, a typeof
+        // handed on), or data that is no descriptor (a literal, a table laid
+        // down, a dictionary of descriptors). Taken for made, every box's
+        // table kept every number's formatting, double's and its tables
+        // among them, in a program that boxed no double.
+        HashSet<string> made = new(StringComparer.Ordinal);
+        Dictionary<string, List<(DataItem Table, long Slot, string Method)>> unmade = new(StringComparer.Ordinal);
+        void Made(string table)
+        {
+            if (!made.Add(table) || !unmade.Remove(table, out List<(DataItem Table, long Slot, string Method)>? held)) return;
+            foreach (var (t, slot, method) in held)
+            {
+                if (bySlot) TableMethod(t, slot, method);
+                else Reach(method);
+            }
+        }
+        void Unmade(DataItem table, long slot, string method)
+            => (unmade.TryGetValue(table.Name, out var held) ? held : unmade[table.Name] = new()).Add((table, slot, method));
         void TableMethod(DataItem table, long slot, string method)
         {
+            if (!made.Contains(table.Name))
+            {
+                Unmade(table, slot, method);
+                return;
+            }
             if (slotReads.TryGetValue(slot, out HashSet<string>? reads) && reads.Any(through => Answers(table, through))) Reach(method);
             else (waiting.TryGetValue(slot, out List<(DataItem, string)>? held) ? held : waiting[slot] = new()).Add((table, method));
         }
@@ -1236,16 +1267,22 @@ public sealed class Inline : IParallelModulePass
                 if (dataWork.Count > 0)
                 {
                     DataItem d = dataWork.Pop();
-                    bool table = bySlot && Escape.IsDescriptor(d.Name);
+                    bool descriptor = byMade && Escape.IsDescriptor(d.Name);
                     foreach (DataReloc r in d.Relocs)
                     {
-                        if (table && r.Offset >= methods && r.Addend == 0 && byName.ContainsKey(r.Symbol)) TableMethod(d, r.Offset - methods, r.Symbol);
+                        bool method = descriptor && r.Offset >= methods && r.Addend == 0 && byName.ContainsKey(r.Symbol);
+                        if (method && bySlot) TableMethod(d, r.Offset - methods, r.Symbol);
+                        else if (method && !made.Contains(d.Name)) Unmade(d, r.Offset - methods, r.Symbol);
                         else Reach(r.Symbol);
+                        // Data that is no descriptor makes what it names: a
+                        // descriptor's own words (its bases, its element) do not.
+                        if (byMade && !descriptor && Escape.IsDescriptor(r.Symbol)) Made(r.Symbol);
                     }
                     continue;
                 }
                 Function reached = work.Pop();
                 if (bySlot) VirtualSlotUses.Of(reached, SlotRead);
+                Instr[]? flat = null;
                 foreach (Block b in reached.Blocks)
                     foreach (Instr i in b.Instrs)
                     {
@@ -1263,7 +1300,13 @@ public sealed class Inline : IParallelModulePass
                             else if (callee == Corsac.Lang.X86.MachineIntrinsics.CardMark) Reach(Corsac.Lang.Lto.RuntimeAbi.CardMark);
                         }
                         foreach (Operand o in i.Operands)
-                            if (o is SymOperand s) Reach(s.Name);
+                            if (o is SymOperand s)
+                            {
+                                Reach(s.Name);
+                                if (byMade && !made.Contains(s.Name) && Escape.IsDescriptor(s.Name)
+                                    && !Corsac.Lang.Metadata.IrUnitCodec.ComparedOnly(flat ??= reached.Blocks.SelectMany(x => x.Instrs).ToArray(), s.Name))
+                                    Made(s.Name);
+                            }
                     }
             }
         }
@@ -1278,13 +1321,18 @@ public sealed class Inline : IParallelModulePass
         }
         int gone = m.Functions.RemoveAll(f => !live.Contains(f.Name));
         gone += m.Data.RemoveAll(d => !liveData.Contains(d.Name));
-        // The slots nothing reads, left empty: their methods went.
-        if (bySlot)
+        // The slots nothing reads, left empty: their methods went -- and those
+        // of a table no object was made of.
+        if (bySlot || byMade)
         {
             HashSet<DataItem> emptied = new(ReferenceEqualityComparer.Instance);
+            foreach (List<(DataItem Table, long Slot, string Method)> held in unmade.Values)
+                foreach (var (table, _, method) in held)
+                    if (!live.Contains(method) && table.Relocs.RemoveAll(r => r.Offset >= methods && r.Symbol == method) > 0) emptied.Add(table);
             foreach (List<(DataItem Table, string Method)> held in waiting.Values)
                 foreach (var (table, method) in held)
                     if (!live.Contains(method) && table.Relocs.RemoveAll(r => r.Offset >= methods && r.Symbol == method) > 0) emptied.Add(table);
+
             // AN ARRAY'S TABLE ENDS AT ITS LAST SLOT LEFT, and its walker's:
             // the sequence interfaces' slots (Lowering.ArrayFaces) are high,
             // and an image that calls none of them through an array kept
