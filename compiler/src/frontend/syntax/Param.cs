@@ -19,7 +19,7 @@ public sealed class Param : Node
     private ParamRare Rare => _rare ??= new();
     private byte _flags;
 
-    private const byte RefFlag = 1, OutFlag = 2, ReadOnlyRefFlag = 4, ParamsFlag = 8, ThisFlag = 16, MaybeNullFlag = 32;
+    private const byte RefFlag = 1, OutFlag = 2, ReadOnlyRefFlag = 4, ParamsFlag = 8, ThisFlag = 16, MaybeNullFlag = 32, NotNullFlag = 64;
 
     private void SetFlag(byte flag, bool value) => _flags = value ? (byte)(_flags | flag) : (byte)(_flags & ~flag);
 
@@ -52,6 +52,13 @@ public sealed class Param : Node
     /// (C#'s rule) -- and a caller sees the type as declared.
     /// </summary>
     public bool MaybeNull { get => (_flags & MaybeNullFlag) != 0; init => SetFlag(MaybeNullFlag, value); }
+
+    /// <summary>
+    /// `[NotNull]` on it: once the method returns, the argument is not null,
+    /// whatever it was before -- `ArgumentNullException.ThrowIfNull(x)` throws
+    /// for a null, `Array.Resize(ref items, n)` leaves an array behind.
+    /// </summary>
+    public bool NotNull { get => (_flags & NotNullFlag) != 0; init => SetFlag(NotNullFlag, value); }
 
     /// <summary>
     /// What a particular answer from this method PROVES about this argument.

@@ -1,0 +1,78 @@
+// test: null_state_of_bare_members_and_this
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// 1 1 1 1 1 2 1 1 2
+// 0 0 0 0 0
+// 1
+// 4 0 4 0
+//
+// A member by its bare name, or through `this.`, has a null state as a
+// field read through a path has: `if (P is not null) P.Label`, `if (P ==
+// null) return`, `this.P is { }` then `P.Label`, and a field tested inside
+// a local function. C# warns on none of these; corc warned on each.
+// `storage is not null and not MemPlace { Inline: true } ? storage.Size`
+// proves storage.
+// Expected output from .NET 10.
+
+using System;
+
+sealed class Block { public string Label = "L"; }
+abstract class Place { public int Size = 4; }
+sealed class MemPlace : Place { public bool Inline; }
+sealed class Slot : Place { }
+
+sealed class Ins
+{
+    private Block? _f;
+    public Block? P { get => _f; set => _f = value; }
+    public int A() { if (P is not null) return P.Label.Length; return 0; }
+    public int B() { if (P != null) return P.Label.Length; return 0; }
+    public int C() { if (_f is not null) return _f.Label.Length; return 0; }
+    public int D() { if (null != _f) return _f.Label.Length; return 0; }
+    public int E() { if (P is { }) return P.Label.Length; return 0; }
+    public int F() { if (this.P is not null) return P.Label.Length + this.P.Label.Length; return 0; }
+    public int G() { if (P is null) return 0; return P.Label.Length; }
+    public int H() { if (P?.Label == "L") return P.Label.Length; return 0; }
+    public int I() { if (P is Block b) return b.Label.Length + P.Label.Length; return 0; }
+}
+
+sealed class Walk
+{
+    private int[]? _mark;
+    private Block? _seen;
+
+    public int Run(int n)
+    {
+        _mark = new int[n];
+        int Visit(int r)
+        {
+            if (_mark![r] == 7) return -1;
+            _mark[r] = 7;
+            return r;
+        }
+        int Name()
+        {
+            if (_seen is null) return 0;
+            return _seen.Label.Length;
+        }
+        _seen = new Block();
+        return Visit(0) + Visit(0) + Visit(1) + Name();
+    }
+}
+
+static class Program
+{
+    static int Size(Place? storage) => storage is not null and not MemPlace { Inline: true } ? storage.Size : 0;
+
+    static int Main()
+    {
+        Ins i = new() { P = new Block() };
+        Ins none = new();
+        Console.WriteLine(i.A() + " " + i.B() + " " + i.C() + " " + i.D() + " " + i.E() + " " + i.F() + " " + i.G() + " " + i.H() + " " + i.I());
+        Console.WriteLine(none.A() + " " + none.B() + " " + none.E() + " " + none.G() + " " + none.H());
+        Console.WriteLine(new Walk().Run(3));
+        Console.WriteLine(Size(new Slot()) + " " + Size(new MemPlace { Inline = true }) + " " + Size(new MemPlace()) + " " + Size(null));
+        return 0;
+    }
+}

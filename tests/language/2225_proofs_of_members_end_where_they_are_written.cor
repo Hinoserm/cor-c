@@ -1,0 +1,45 @@
+// test: proofs_of_members_end_where_they_are_written
+// expect-exit: 0
+// expect-compile-warning: (30,62): warning CS8602
+// expect-compile-warning: (31,56): warning CS8602
+// expect-compile-warning: (32,74): warning CS8602
+// expect-compile-warning: (33,84): warning CS8602
+// expect-compile-warning: (34,44): warning CS8600
+// expect-output:
+// 0 0 0 0 0 1
+//
+// A test proves a field, a property or a static member until it is written:
+// `if (_f is not null) { _f = null; return _f.Length; }` warns, as C# does,
+// and so does an auto-property, one with accessors, `this.P` and
+// `Holder.F`. corc kept the proof through the write. A switch with a
+// maybe-null arm is maybe null where a `string` is wanted.
+// Expected output from .NET 10.
+
+using System;
+
+static class Holder { public static string? F; }
+
+sealed class Ins
+{
+    public string? P { get; set; }
+    private string? _f;
+    private string? _b;
+    public string? Q { get => _b; set => _b = value; }
+
+    public int A() { if (P is not null) { P = null; return P?.Length ?? -1; } return 0; }
+    public int B() { if (_f is not null) { _f = null; return _f.Length; } return 0; }
+    public int C() { if (Q != null) { Q = null; return Q.Length; } return 0; }
+    public int D() { if (this.P is not null) { this.P = null; return this.P.Length; } return 0; }
+    public int E() { if (Holder.F is null) return 0; Holder.F = null; return Holder.F.Length; }
+    public int G(string? q) { string w = q switch { "a" => "b", _ => q }; return w.Length; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Ins i = new();
+        Console.WriteLine(i.A() + " " + i.B() + " " + i.C() + " " + i.D() + " " + i.E() + " " + i.G("a"));
+        return 0;
+    }
+}

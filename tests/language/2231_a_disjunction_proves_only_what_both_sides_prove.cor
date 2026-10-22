@@ -1,0 +1,25 @@
+// test: a_disjunction_proves_only_what_both_sides_prove
+// expect-exit: 0
+// expect-compile-warning: (17,85): warning CS8602
+// expect-compile-warning: (18,70): warning CS8602
+// expect-output:
+// 3
+//
+// `a is not null || b is not null` proves neither a nor b, and `a is not
+// null || c` does not prove a: C# warns on `a.Length` after either, and so
+// does corc.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static int A(string? a, string? b) { if (a is not null || b is not null) return a.Length; return 0; }
+    static int B(string? a, bool c) { if (a is not null || c) return a.Length; return 0; }
+
+    static int Main()
+    {
+        Console.WriteLine(A("x", null) + B("yz", false));
+        return 0;
+    }
+}

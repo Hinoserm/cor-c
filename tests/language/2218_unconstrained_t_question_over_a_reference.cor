@@ -1,5 +1,6 @@
 // test: unconstrained_t_question_over_a_reference
 // expect-exit: 0
+// expect-no-compile-warning: warning CS86
 // expect-output:
 // 2 3 True
 // 5 0

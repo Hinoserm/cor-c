@@ -1,0 +1,74 @@
+// test: null_state_through_switch_arms_statics_and_plain_enumerators
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// 6
+// op_CheckedAddition op_CheckedSubtraction
+// not checked
+// 7
+// none
+// set4
+//
+// What C# knows of null that corc did not: inside an arm only a value
+// passes, the switch subject is not null (`"op_Addition" => … +
+// name[3..]`); a switch whose arms are not null, or throw, is not null when
+// converted to a `string?`; a static member is a path (`if (Settings.Name
+// is null) return …; Settings.Name.Length`); and a non-generic
+// IEnumerator's Current is an object, not an object?, as .NET declares it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+
+static class Settings { public static string? Name; public static string? Path { get; set; } }
+
+static class Program
+{
+    static readonly Regex Letter = new("[a-z]");
+
+    static string Checked(string? name)
+    {
+        name = name switch
+        {
+            "op_Addition" or "op_Subtraction" => "op_Checked" + name[3..],
+            _ => throw new ArgumentException("not checked"),
+        };
+        string kept = name;
+        return kept;
+    }
+
+    static int Length(object? o) => o switch
+    {
+        string s => s.Length,
+        int[] a => a.Length,
+        _ => 0,
+    };
+
+    static string Name()
+    {
+        if (Settings.Name is null) return "none";
+        string n = Settings.Name;
+        if (Settings.Path != null) n += Settings.Path.Length;
+        return n;
+    }
+
+    static int Main()
+    {
+        int n = 0;
+        foreach (Match m in Letter.Matches("a1b2c")) n += m.Length;
+        IEnumerable plain = new List<string> { "xy", "z" };
+        foreach (string s in plain) n += s.Length;
+        foreach (var v in plain) n += v.GetHashCode() == 0 ? 1 : 0;
+        Console.WriteLine(n);
+        Console.WriteLine(Checked("op_Addition") + " " + Checked("op_Subtraction"));
+        try { Checked(null); } catch (ArgumentException e) { Console.WriteLine(e.Message); }
+        Console.WriteLine(Length("abc") + Length(new int[4]) + Length(null));
+        Console.WriteLine(Name());
+        Settings.Name = "set";
+        Settings.Path = "/a/b";
+        Console.WriteLine(Name());
+        return 0;
+    }
+}

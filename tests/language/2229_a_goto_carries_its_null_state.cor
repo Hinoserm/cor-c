@@ -1,0 +1,42 @@
+// test: a_goto_carries_its_null_state
+// expect-exit: 0
+// expect-compile-warning: (22,18): warning CS8602
+// expect-compile-warning: (34,16): warning CS8602
+// expect-output:
+// 3
+//
+// A goto carries its null state to its label, as C# has it: a null written
+// before a forward `goto done;` is maybe null after `done:`, and a label
+// reached again from below by `goto again;` holds nothing proved, since the
+// later pass brings a null.
+// Expected output from .NET 10.
+
+using System;
+
+static class Program
+{
+    static int Back(string? s, int n)
+    {
+        int total = 0;
+    again:
+        total += s.Length;
+        s = null;
+        if (--n > 0) goto again;
+        return total;
+    }
+
+    static int Forward(string? s, bool c)
+    {
+        if (s is null) return 0;
+        if (c) { s = null; goto done; }
+        s.Length.ToString();
+    done:
+        return s.Length;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Back("ab", 1) + Forward("x", false));
+        return 0;
+    }
+}

@@ -1,5 +1,6 @@
 // test: generic_copies_over_nullable_arguments_warn_nothing
 // expect-exit: 0
+// expect-no-compile-warning: warning CS86
 // expect-output:
 // 2 True
 // 3 3

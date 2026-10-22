@@ -1,5 +1,6 @@
 // test: pattern_binds_names_or_and_and
 // expect-exit: 0
+// expect-no-compile-warning: warning CS86
 // expect-output:
 // either 3
 // both 4

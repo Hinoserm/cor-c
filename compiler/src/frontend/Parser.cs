@@ -4022,6 +4022,7 @@ public sealed class Parser
             string? marshalAs = null;
             bool cancels = false;
             bool maybeNull = false;
+            bool notNull = false;
 
             // AND THE CALLER-INFORMATION ATTRIBUTES, which make the compiler
             // pass what it knows at the call for an argument left out: the
@@ -4046,6 +4047,8 @@ public sealed class Parser
                 else if (named == "EnumeratorCancellation") cancels = true;
                 // What may be null inside the method whatever the type says (Param.MaybeNull).
                 else if (named is "MaybeNullWhen" or "MaybeNull" or "AllowNull") maybeNull = true;
+                // Not null once the method returns (Param.NotNull).
+                else if (named == "NotNull") notNull = true;
             }
 
             Token at = Cur;
@@ -4072,7 +4075,7 @@ public sealed class Parser
                 Name = name, Type = type, IsRef = byRef || byIn, IsOut = byOut,
                 IsReadOnlyRef = byIn, IsParams = variadic, IsThis = receiver,
                 NotNullWhen = whenProved, Caller = caller, CallerArgument = callerArgument,
-                MarshalAs = marshalAs, MaybeNull = maybeNull, Default = def, Line = at.Line, Col = at.Col,
+                MarshalAs = marshalAs, MaybeNull = maybeNull, NotNull = notNull, Default = def, Line = at.Line, Col = at.Col,
             };
             (into ??= new()).Add(read);
             if (cancels) _enumeratorCancellation.Add(read);

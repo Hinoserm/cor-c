@@ -1,0 +1,50 @@
+// test: not_null_parameters_prove_their_arguments
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// True False True 3
+// s
+//
+// A `[NotNull]` parameter leaves its argument not null once the call
+// returns, as C# reads it: `Array.Resize(ref seen, n)` then `seen[k]`, and
+// `ArgumentNullException.ThrowIfNull(s)` then `s.Length`. corc read the
+// attribute nowhere and warned on both.
+// Expected output from .NET 10.
+
+using System;
+
+sealed class Walk
+{
+    private int[]?[] _seen = new int[]?[2];
+    private int _walk = 3;
+
+    public bool Mark(int holder, int k)
+    {
+        int[]? seen = _seen[holder];
+        if (seen is null || seen.Length <= k)
+        {
+            Array.Resize(ref seen, Math.Max(k + 1, seen is null ? 4 : seen.Length * 2));
+            _seen[holder] = seen;
+        }
+        if (seen[k] == _walk) return false;
+        seen[k] = _walk;
+        return true;
+    }
+
+    public static int Length(string? s)
+    {
+        ArgumentNullException.ThrowIfNull(s);
+        return s.Length;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Walk w = new();
+        Console.WriteLine(w.Mark(0, 5) + " " + w.Mark(0, 5) + " " + w.Mark(1, 0) + " " + Walk.Length("abc"));
+        try { Walk.Length(null); } catch (ArgumentNullException e) { Console.WriteLine(e.ParamName); }
+        return 0;
+    }
+}

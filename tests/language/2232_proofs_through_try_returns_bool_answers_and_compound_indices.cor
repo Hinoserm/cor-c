@@ -1,0 +1,70 @@
+// test: proofs_through_try_returns_bool_answers_and_compound_indices
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// two -
+// 1 6
+// ONE none
+// 66
+//
+// More null state as C# keeps it: a branch ending in `try { return …; }
+// finally { … }` leaves, so the guard proves the rest; `e == true` holding
+// is e holding, and a conditional call compared so ran
+// (`c.Uses?.TryGetValue(i, out string? saved) == true` proves saved); and a
+// compound assignment's index is read before its value (`_bits[_few![k] >>
+// 6] |= 1UL << _few[k]`).
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Call { public Dictionary<int, string>? Uses; }
+
+sealed class Bits
+{
+    private int[]? _few = { 1, 70 };
+    private ulong[] _bits = new ulong[2];
+    public int Count = 2;
+    public ulong Spread()
+    {
+        for (int k = 0; k < Count; k++) _bits[_few![k] >> 6] |= 1UL << _few[k];
+        return _bits[0] + _bits[1];
+    }
+}
+
+static class Program
+{
+    static string? Path(bool hosted) => hosted ? null : "/bin/x";
+
+    static int Run(bool hosted, string? path)
+    {
+        if (hosted || path is null)
+        {
+            List<string> flags = new() { "a" };
+            try { return flags.Count; }
+            finally { flags.Clear(); }
+        }
+        return path.Length;
+    }
+
+    static string Use(Call c, int i)
+    {
+        if (c.Uses?.TryGetValue(i, out string? saved) == true) return saved.ToUpper();
+        return "none";
+    }
+
+    static string Plain(Dictionary<int, string> d)
+    {
+        if (d.TryGetValue(2, out string? found) == true) return found.ToLower();
+        return "-";
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Plain(new() { [2] = "TWO" }) + " " + Plain(new()));
+        Console.WriteLine(Run(true, null) + " " + Run(false, "/bin/x"));
+        Console.WriteLine(Use(new Call { Uses = new() { [1] = "one" } }, 1) + " " + Use(new Call(), 1));
+        Console.WriteLine(new Bits().Spread());
+        return 0;
+    }
+}

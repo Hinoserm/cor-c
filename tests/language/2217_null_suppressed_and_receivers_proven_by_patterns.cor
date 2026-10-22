@@ -1,5 +1,6 @@
 // test: null_suppressed_and_receivers_proven_by_patterns
 // expect-exit: 0
+// expect-no-compile-warning: warning CS86
 // expect-output:
 // 7
 // 3 0 1 0

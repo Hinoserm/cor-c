@@ -1,0 +1,36 @@
+// test: a_branch_that_leaves_takes_its_null_writes_with_it
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// 1 2 -1 1 0
+//
+// A branch that cannot reach the line after its `if` -- it returns, throws,
+// breaks -- takes what it wrote with it: `if (x < 0) { seen = null; break;
+// }` and then `seen.Contains(x)` reads seen as it was, as C# does. corc
+// carried the null on and warned.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int A(bool c) { string? s = "a"; if (c) { s = null; return 0; } return s.Length; }
+    static int B(int[] xs)
+    {
+        List<int>? seen = new();
+        foreach (int x in xs)
+        {
+            if (x < 0) { seen = null; break; }
+            if (!seen.Contains(x)) seen.Add(x);
+        }
+        return seen?.Count ?? -1;
+    }
+    static int C(bool c) { string? s = "a"; if (c) { s = null; throw new Exception(); } return s.Length; }
+    static int D(bool c) { string? s = "a"; if (c) s = null; else return 1; return s?.Length ?? 0; }
+    static int Main()
+    {
+        Console.WriteLine(A(false) + " " + B(new[] { 1, 2, 2 }) + " " + B(new[] { -1 }) + " " + C(false) + " " + D(true));
+        return 0;
+    }
+}

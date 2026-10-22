@@ -6434,6 +6434,7 @@ public sealed partial class Binder
             // and a generic call over it was specialised for the wrong type.
             _notNull.Clear();
             _notNullPaths.Clear();
+            _gotoStates.Clear();
             PushScope(functionBoundary: true);
 
             for (int i = 0; i < _method.Params.Count; i++)
@@ -6759,8 +6760,25 @@ public sealed partial class Binder
             }
         if (labels is null) return false;
         _labels.Add((_method, _thisType, labels, _finallyDepth));
+
+        // A LABEL A GOTO REACHES FROM ITS OWN STATEMENT OR BELOW is the head
+        // of a loop (the LabeledStmt case of CheckStmt). Labels cannot be
+        // shadowed, so the name is the label.
+        for (int i = 0; i < b.Statements.Count; i++)
+            for (Stmt? at = b.Statements[i]; at is LabeledStmt l; at = l.Body)
+            {
+                for (int k = i; k < b.Statements.Count && !_jumpedBack.Contains(l); k++)
+                    foreach (Node n in SafetyNodes(b.Statements[k]))
+                        if (n is GotoStmt { Label: var target } && target == l.Label) { _jumpedBack.Add(l); break; }
+            }
         return true;
     }
+
+    /// <summary>Labels a goto reaches from below (PushLabels).</summary>
+    private readonly HashSet<LabeledStmt> _jumpedBack = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>What the forward gotos to a label all proved, until it is reached (CheckStmt).</summary>
+    private readonly Dictionary<LabeledStmt, (HashSet<Sym>, HashSet<string>)> _gotoStates = new(ReferenceEqualityComparer.Instance);
 
     private readonly List<(MethodSymbol? Method, TypeSymbol? Type, Dictionary<string, LabeledStmt> Labels, int Finally)> _labels = new();
 
@@ -7031,11 +7049,19 @@ public sealed partial class Binder
                 // THE THEN BRANCH KNOWS WHAT THE CONDITION PROVED, and the else
                 // branch knows the opposite. Each is undone afterwards, because
                 // what a branch proved is only true inside it.
+                //
+                // AND EACH BRANCH STARTS FROM WHAT HELD BEFORE THE `if`: what
+                // the then branch wrote is not what the else branch reads --
+                // `if (Fields.Count == 0) Fields = null; else Fields.TrimExcess();`.
+                (HashSet<Sym>, HashSet<string>) beforeThen = NullState();
                 List<Sym> inThen = Assume(i.Cond, true);
 
                 CheckEmbedded(i.Then);
                 HashSet<LocalSym> afterThen = AssignedCopy();
                 Forget(inThen);
+
+                (HashSet<Sym>, HashSet<string>) afterThenState = NullState();
+                RestoreNullState(beforeThen);
 
                 _assigned.Clear();
                 _assigned.UnionWith(before);
@@ -7078,9 +7104,26 @@ public sealed partial class Binder
                 // Environment.Exit, a throw helper -- leaves as far as null is
                 // concerned, as C#'s nullable analysis has it; definite
                 // assignment above does not count it, as C#'s does not.
-                if (!thenLeaves && !NeverReturns(i.Then))
+                //
+                // What null state follows is what the branches that reach the
+                // next line left: the else path's alone when the then branch
+                // leaves, the then path's alone when the else branch does --
+                // `if (x < 0) { seen = null; break; } seen.Add(x)` reads seen
+                // as it was -- and what both left otherwise.
+                bool thenGone = thenLeaves || NeverReturns(i.Then);
+                bool elseGone = i.Else != null && (elseLeaves || NeverReturns(i.Else));
+                if (thenGone)
                 {
-                    Forget(inElse);
+                    // the else path's, the condition's proofs included
+                }
+                else if (elseGone)
+                {
+                    RestoreNullState(afterThenState);
+                }
+                else
+                {
+                    _notNull.IntersectWith(afterThenState.Item1);
+                    _notNullPaths.IntersectWith(afterThenState.Item2);
                 }
                 break;
             }
@@ -7247,7 +7290,13 @@ public sealed partial class Binder
                 // whole tuple and then could not index it.
                 bool linear = seq.IsArray || seq.Prim == Prim.String;
 
-                if ((!linear || fe.Bindings != null) && !seq.IsError
+                // AND ONE NAMING ANOTHER TYPE than the element's: `foreach
+                // (string s in objects)` casts each element, which the fast
+                // path, binding the element as it is, does not.
+                bool converts = linear && fe.Bindings == null && fe.Type is { Name: not "var" } written && !seq.IsError
+                    && !MethodSignatures.SameType(Resolve(written, _thisType), seq.IsArray && seq.Element != null ? seq.Element : Type.Char);
+
+                if ((!linear || fe.Bindings != null || converts) && !seq.IsError
                     && Iterate(fe, seq) is Stmt lowered)
                 {
                     _r.Lowered[fe] = lowered;
@@ -7402,15 +7451,39 @@ public sealed partial class Binder
                 {
                     _r.Gotos[jump] = labeled;
                     JumpOutOfFinally(jump, labelDepth);
+
+                    // WHAT A FORWARD GOTO TAKES TO ITS LABEL, kept there to be
+                    // joined with what falls into it (LabeledStmt below).
+                    if (!_jumpedBack.Contains(labeled))
+                    {
+                        if (_gotoStates.TryGetValue(labeled, out var taken))
+                        {
+                            taken.Item1.IntersectWith(_notNull);
+                            taken.Item2.IntersectWith(_notNullPaths);
+                        }
+                        else _gotoStates[labeled] = NullState();
+                    }
                 }
                 else Error(jump, $"no label '{jump.Label}' within the scope of the goto statement");
                 break;
 
             // A LABEL JOINS whatever jumps to it with what falls into it, and
-            // what one path proved about a nullable the other may not have.
+            // what one path proved about a nullable the other may not have:
+            // what every forward goto and the fall-through all proved holds
+            // after it -- `goto next;` out of a loop keeps what the method
+            // proved before the loop. A label a goto reaches from below it is
+            // a loop, whose later states are not known yet: nothing holds.
             case LabeledStmt marked:
-                _notNull.Clear();
-                _notNullPaths.Clear();
+                if (_jumpedBack.Contains(marked))
+                {
+                    _notNull.Clear();
+                    _notNullPaths.Clear();
+                }
+                else if (_gotoStates.Remove(marked, out var joined))
+                {
+                    _notNull.IntersectWith(joined.Item1);
+                    _notNullPaths.IntersectWith(joined.Item2);
+                }
                 CheckStmt(marked.Body);
                 break;
 
@@ -10973,10 +11046,12 @@ public sealed partial class Binder
     {
         int n = _iterations++;
 
-        // AN ARRAY, when it is being taken apart: the same index loop, over the
-        // length instead of a Count. Only reached for a deconstructing loop --
-        // an ordinary one keeps the code generator's own tighter path.
-        if (seq.IsArray && fe.Bindings is { } split)
+        // AN ARRAY, when it is being taken apart or cast: the same index loop,
+        // over the length instead of a Count. Only reached for a deconstructing
+        // loop or one naming another type -- an ordinary one keeps the code
+        // generator's own tighter path.
+        bool cast = fe.Bindings is null && fe.Type is { Name: not "var" } && (seq.IsArray || seq.Prim == Prim.String);
+        if (seq.IsArray && fe.Bindings is not null || cast)
         {
             string walked = $"$sequence${n}";
             string cursor = $"$index${n}";
@@ -10993,11 +11068,29 @@ public sealed partial class Binder
             {
                 Name = element, Init = take, Line = fe.Line, Col = fe.Col,
             });
-            inside.WritableStatements.AddRange(Deconstruct(
-                fe,
-                new NameExpr { Name = element, Line = fe.Line, Col = fe.Col },
-                split,
-                seq.Element ?? Type.Error));
+            // `foreach (string s in objects)`: each element converted to the
+            // type written, explicitly, as C# converts it.
+            if (cast)
+            {
+                inside.WritableStatements.Add(new LocalDecl
+                {
+                    Type = fe.Type!, Name = fe.Name,
+                    Init = new CastExpr
+                    {
+                        Type = fe.Type!, Operand = new NameExpr { Name = element, Line = fe.Line, Col = fe.Col },
+                        Line = fe.Line, Col = fe.Col,
+                    },
+                    Line = fe.Line, Col = fe.Col,
+                });
+            }
+            else
+            {
+                inside.WritableStatements.AddRange(Deconstruct(
+                    fe,
+                    new NameExpr { Name = element, Line = fe.Line, Col = fe.Col },
+                    fe.Bindings!,
+                    seq.Element ?? Type.Error));
+            }
             inside.WritableStatements.Add(fe.Body);
 
             ForStmt stepping = new()
@@ -14986,7 +15079,9 @@ public sealed partial class Binder
                 // through (CallExpr.CanonSelf), bound where the call is: in a
                 // lambda, captured.
                 if (c.CanonSelf is { } callSelf) CheckExpr(callSelf);
-                return CheckCall(c);
+                Type called = CheckCall(c);
+                ProveNotNullArguments(c);
+                return called;
 
             // A SLICE OF A STRING: `s[1..4]`, `s[2..]`, `s[..3]`.
             //
@@ -15940,12 +16035,33 @@ public sealed partial class Binder
                 // `_at![j] = _at[last]`: the target's receiver is evaluated
                 // before the value, so its `!` holds on the right-hand side.
                 ProveReceivers(a.Target switch { MemberExpr m => m.Target, IndexExpr ix => ix.Target, _ => null });
+                // And its index, read before the value too: `regs[i.Dest!.Id] = Fit(v, i.Dest.Type)`,
+                // `_bits[_few![k] >> 6] |= 1UL << _few[k]`.
+                if (a.Target is IndexExpr { Args: var indices }) foreach (Expr index in indices) ProveEvaluated(index);
                 Type value = CheckExpr(a.Value);
                 _wanted = previousWanted;
 
                 if (a.Target is NameExpr into && Lookup(into.Name) is Sym held)
                 {
                     _notNull.Remove(held);
+                }
+
+                // AND A MEMBER'S, which a test proves by its symbol as well as
+                // by its path: `if (_f is not null) { _f = null; return
+                // _f.Length; }` read _f as proved, and C# warns. By name, so a
+                // field or property reached through `this` or a receiver goes.
+                if (a.Op is null && a.Target switch { NameExpr n => n.Name, MemberExpr m => m.Name, _ => null } is string member)
+                {
+                    string getterName = "get_" + member;
+                    _notNull.RemoveWhere(proved => proved switch
+                    {
+                        // An auto-property's backing field too: its reads are the field's.
+                        FieldSym f => f.Field.Name == member || TypeSymbol.IsBackingName(f.Field.Name, member),
+                        CapturedFieldSym c => c.Field.Name == member || TypeSymbol.IsBackingName(c.Field.Name, member),
+                        PropertyGetSym g => g.Getter.Name == getterName,
+                        CapturedPropertyGetSym g => g.Getter.Name == getterName,
+                        _ => false,
+                    });
                 }
 
                 // AND EVERY PATH THROUGH WHAT WAS WRITTEN. Assigning `d` says
@@ -16919,6 +17035,20 @@ public sealed partial class Binder
                         if (subject.Prim == Prim.Bool) exhaustive = exhaustive || sawTrue && sawFalse && (!subject.Nullable || sawNull);
                     }
 
+                    // THE SUBJECT IS NOT NULL in an arm only a value passes, as
+                    // in a switch statement's section: `name switch {
+                    // "op_Addition" => "op_Checked" + name[3..], ... }` reads
+                    // name as a string, as C# does.
+                    if (arm.Type is not null
+                        || arm.Value is not (null or LiteralExpr { Kind: Lit.Null })
+                        || arm.When is not null && PatternExcludesNull(arm.When, true))
+                    {
+                        if (Path(sx.Subject) is string subjectPath && _notNullPaths.Add(subjectPath)) armProof.Add(new PathSym(subjectPath));
+                        if (_r.Resolved.TryGetValue(sx.Subject, out Sym? subjectSym)
+                            && subjectSym is LocalSym or ParamSym or FieldSym or CapturedFieldSym && _notNull.Add(subjectSym))
+                            armProof.Add(subjectSym);
+                    }
+
                     Type value = CheckExpr(arm.Result);
 
                     Forget(armProof);
@@ -16947,7 +17077,10 @@ public sealed partial class Binder
                     }
                     else if (Convertible(value, result))
                     {
-                        // the arms agree already
+                        // the arms agree already -- but for a `?`, which a
+                        // maybe-null reference arm gives the whole.
+                        if (value.IsReference && value.Nullable && result.IsReference && !result.Nullable)
+                            result = result.AsNullable();
                     }
                     else if (Convertible(result, value))
                     {
@@ -17006,7 +17139,19 @@ public sealed partial class Binder
                                        && (had.IsError || Convertible(had, asked)
                                            || (had.IsInteger && asked.IsInteger))))
                 {
-                    result = asked;
+                    // Of the wanted type, but not null where no arm can be:
+                    // `name = name switch { "a" => "b", _ => throw … }` leaves
+                    // the `string? name` not null, as C# has it.
+                    bool sure = !asked.IsNullableValue && asked.Nullable
+                        && sx.Arms.All(arm => arm.Result is ThrowExpr
+                                              || _r.ExprType.TryGetValue(arm.Result, out Type? had)
+                                                 && !had.IsError && !had.Nullable && had.Prim != Prim.NullLiteral && had.IsReference);
+                    // And maybe null where an arm may be: `string w = q switch {
+                    // "a" => "b", _ => q }` initialises w with a maybe-null q.
+                    bool maybe = asked.IsReference && !asked.Nullable
+                        && sx.Arms.Any(arm => _r.ExprType.TryGetValue(arm.Result, out Type? had) && !had.IsError
+                                              && (had.Prim == Prim.NullLiteral || had.IsReference && had.Nullable));
+                    result = sure ? asked.AsNonNullable() : maybe ? asked.AsNullable() : asked;
                 }
 
                 // AN ARM THAT IS A DIFFERENT TUPLE IS REBUILT AS THE RESULT'S:
@@ -17888,6 +18033,9 @@ public sealed partial class Binder
                  MemberExpr inner => inner.Target,
                  IndexExpr indexed => indexed.Target,
                  SuppressExpr sure => sure.Operand,
+                 // A call in the chain ran, its arguments too, before what
+                 // follows it: `s.Append(r!.Name).Append(Value(r))`.
+                 CallExpr earlier => (earlier.Target as MemberExpr)?.Target,
                  _ => null,
              })
         {
@@ -17895,6 +18043,55 @@ public sealed partial class Binder
             {
                 Proved(asserted.Operand);
             }
+            else if (chain is CallExpr ran)
+            {
+                foreach (Expr argument in ran.Args) ProveReceivers(argument is RefArgExpr passed ? passed.Target : argument);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The `!`s an expression is certain to have evaluated, applied now: of
+    /// its operands, arguments and indices -- not past a `&&`, `||`, `??` or
+    /// `?:`, whose other side may not run, nor into a lambda.
+    /// </summary>
+    private void ProveEvaluated(Expr? e)
+    {
+        switch (e)
+        {
+            case SuppressExpr sure:
+                ProveEvaluated(sure.Operand);
+                Proved(sure.Operand);
+                break;
+            case MemberExpr member:
+                ProveEvaluated(member.Target);
+                break;
+            case IndexExpr indexed:
+                ProveEvaluated(indexed.Target);
+                if (!indexed.NullConditional) foreach (Expr index in indexed.Args) ProveEvaluated(index);
+                break;
+            case CallExpr call:
+                ProveEvaluated((call.Target as MemberExpr)?.Target);
+                // `a?.M(x!)` may not reach its arguments.
+                if (call.Target is not MemberExpr { NullConditional: true })
+                    foreach (Expr argument in call.Args) ProveEvaluated(argument is RefArgExpr passed ? passed.Target : argument);
+                break;
+            case BinaryExpr { Op: BinOp.AndAlso or BinOp.OrElse or BinOp.Coalesce } shortCircuit:
+                ProveEvaluated(shortCircuit.Left);
+                break;
+            case BinaryExpr both:
+                ProveEvaluated(both.Left);
+                ProveEvaluated(both.Right);
+                break;
+            case UnaryExpr unary:
+                ProveEvaluated(unary.Operand);
+                break;
+            case CastExpr cast:
+                ProveEvaluated(cast.Operand);
+                break;
+            case ConditionalExpr chosen:
+                ProveEvaluated(chosen.Cond);
+                break;
         }
     }
 
@@ -17910,8 +18107,10 @@ public sealed partial class Binder
             _notNullPaths.Add(route);
         }
 
-        if (_r.Resolved.TryGetValue(e, out Sym? sym)
-            && sym is LocalSym or ParamSym or FieldSym or CapturedFieldSym)
+        // A name not bound yet -- a receiver's `!` proved ahead of its call
+        // (ProveReceivers) -- by what it names.
+        Sym? sym = _r.Resolved.TryGetValue(e, out Sym? bound) ? bound : e is NameExpr named ? Lookup(named.Name) : null;
+        if (sym is LocalSym or ParamSym or FieldSym or CapturedFieldSym)
         {
             _notNull.Add(sym);
         }
@@ -18007,11 +18206,29 @@ public sealed partial class Binder
     {
         switch (e)
         {
+            // A PROPERTY OF `this` BY ITS BARE NAME is a path as `this.P` is:
+            // `if (Owner is not null) Owner.Run();` proves what it reads. Known
+            // by the type having it, not by what the name bound to, so that
+            // `Owner = null;` -- bound to the setter -- forgets the proof.
             case NameExpr n when (ResolvedOrLookup(n)
-                                  is LocalSym or ParamSym or FieldSym or CapturedFieldSym)
+                                  is LocalSym or ParamSym or FieldSym or CapturedFieldSym or PropertyGetSym or CapturedPropertyGetSym)
                                   || _thisType?.FindField(n.Name) is not null
-                                  || _capturedThisType?.FindField(n.Name) is not null:
+                                  || _capturedThisType?.FindField(n.Name) is not null
+                                  || (_thisType is not null && Members(_thisType, Interned.Prefixed("get_", n.Name)).Count > 0)
+                                  || _capturedThisType?.FindMethods("get_", n.Name).Count > 0:
                 return n.Name;
+
+            // A TYPE'S NAME ROOTS A PATH TO ITS STATIC MEMBERS:
+            // `if (Environment.ProcessPath is null) return;` proves what the
+            // next line reads.
+            case NameExpr n when ResolvedOrLookup(n) is null or TypeNameSym && IsTypeName(n.Name):
+                return n.Name;
+
+            // `this.P` IS `P`: one member, one path, whichever way it is written.
+            case MemberExpr { Target: ThisExpr, NullConditional: false } m
+                when _thisType is not null && (_thisType.FindField(m.Name) is not null
+                                               || Members(_thisType, Interned.Prefixed("get_", m.Name)).Count > 0):
+                return m.Name;
 
             case MemberExpr m when Path(m.Target) is string root:
                 return root + "." + m.Name;
@@ -18129,6 +18346,14 @@ public sealed partial class Binder
             return Assume(negated.Operand, !holds);
         }
 
+        // A CONDITIONAL CALL WITH AN ANSWER RAN, and the answer is its call's:
+        // CheckCall lowers `a?.M(…)` to a test of a and the call itself.
+        if (cond is CallExpr && _r.Rewrites.TryGetValue(cond, out Expr? lowered)
+            && lowered is PatternExpr { Test: ConditionalExpr { Else: CallExpr ran } })
+        {
+            return Assume(ran, holds);
+        }
+
         // `a && b` proves everything a proves AND everything b proves, when
         // the whole is true -- which is what makes `if (x != null && x.Y)`
         // work, and that shape is everywhere in real code.
@@ -18145,6 +18370,49 @@ public sealed partial class Binder
             added.AddRange(Assume(or.Left, false));
             added.AddRange(Assume(or.Right, false));
             return added;
+        }
+
+        // `e == true` HOLDING IS e HOLDING, and `e == false` is e failing --
+        // a conditional call's too, which then ran: `m?.TryGetValue(k, out
+        // V? v) == true` proves v as the call itself would.
+        if (holds && cond is BinaryExpr { Op: BinOp.Eq, Right: LiteralExpr { Kind: Lit.Bool } answer } toBool)
+        {
+            added.AddRange(Assume(toBool.Left, answer.Text == "true"));
+        }
+
+        // EQUAL TO A CONSTANT THAT IS NOT NULL, NOT NULL: `a == "x"` true,
+        // and `a is "x" or "yy"`, which is two of them.
+        if (cond is BinaryExpr { Op: BinOp.Eq or BinOp.Ne } same && (same.Op == BinOp.Eq) == holds)
+        {
+            Expr? equal = same.Right is LiteralExpr { Kind: not Lit.Null } ? same.Left
+                        : same.Left is LiteralExpr { Kind: not Lit.Null } ? same.Right : null;
+            if (equal is SubjectExpr) equal = null;
+            if (equal is not null && Path(equal) is string spelt && _notNullPaths.Add(spelt)) added.Add(new PathSym(spelt));
+            if (equal is not null && _r.Resolved.TryGetValue(equal, out Sym? equalSym)
+                && equalSym is LocalSym or ParamSym or FieldSym or CapturedFieldSym && _notNull.Add(equalSym))
+                added.Add(equalSym);
+        }
+
+        // EITHER ONE, AND WHAT BOTH PROVE: `a || b` true, or `a && b` false.
+        // `sym is LocalSym or ParamSym` is two type tests joined so, and each
+        // says sym is not null -- as does `x is not {} and not {}` false. Each
+        // side is assumed in turn (the right after the left failed, as it
+        // runs), undone, and what both proved is kept.
+        BinaryExpr? either = cond is BinaryExpr { Op: BinOp.OrElse } && holds
+                             || cond is BinaryExpr { Op: BinOp.AndAlso } && !holds ? (BinaryExpr)cond : null;
+        if (either is not null)
+        {
+            List<Sym> byLeft = Assume(either.Left, holds);
+            Forget(byLeft);
+            List<Sym> leftFailed = Assume(either.Left, !holds);
+            List<Sym> byRight = Assume(either.Right, holds);
+            Forget(byRight);
+            Forget(leftFailed);
+            foreach (Sym both in byLeft)
+            {
+                if (!byRight.Contains(both)) continue;
+                if (both is PathSym { Spelt: var spelt } ? _notNullPaths.Add(spelt) : _notNull.Add(both)) added.Add(both);
+            }
         }
 
         // For `a || b` on the TRUE path, only facts established by every
@@ -18245,7 +18513,10 @@ public sealed partial class Binder
                        : test.Left is LiteralExpr { Kind: Lit.Null } ? test.Right
                        : null;
 
-            if (side is MemberExpr && Path(side) is string spelt
+            // A member by its bare name as well: `if (Owner == null) return;`.
+            // A local's or a parameter's test is the symbol's, above.
+            if ((side is MemberExpr || side is NameExpr named && ResolvedOrLookup(named) is not (LocalSym or ParamSym))
+                && Path(side) is string spelt
                 && (test.Op == BinOp.Ne) == holds && _notNullPaths.Add(spelt))
             {
                 _proved.Add(spelt);
@@ -18276,6 +18547,9 @@ public sealed partial class Binder
         // And the value itself, where it is a reference read by a path:
         // `r?.Name == "x"` true leaves r.Name not null too.
         if (valued is not null && Path(valued) is string itself && _notNullPaths.Add(itself)) added.Add(new PathSym(itself));
+        if (valued is NameExpr && _r.Resolved.TryGetValue(valued, out Sym? valuedSym)
+            && valuedSym is LocalSym or ParamSym or FieldSym or CapturedFieldSym && _notNull.Add(valuedSym))
+            added.Add(valuedSym);
         for (Expr? at = valued; at is not null; )
         {
             Expr? receiver = at switch
@@ -18441,6 +18715,18 @@ public sealed partial class Binder
     /// which is how most real code tests a nullable, because the alternative is
     /// indenting the entire body of every method by one.
     /// </summary>
+    /// <summary>What is proved not null now (_notNull, _notNullPaths), copied.</summary>
+    private (HashSet<Sym>, HashSet<string>) NullState()
+        => (new HashSet<Sym>(_notNull), new HashSet<string>(_notNullPaths, StringComparer.Ordinal));
+
+    private void RestoreNullState((HashSet<Sym> Syms, HashSet<string> Paths) state)
+    {
+        _notNull.Clear();
+        _notNull.UnionWith(state.Syms);
+        _notNullPaths.Clear();
+        _notNullPaths.UnionWith(state.Paths);
+    }
+
     private static bool Leaves(Stmt s) => s switch
     {
         ReturnStmt or ThrowStmt or BreakStmt or ContinueStmt or GotoStmt => true,
@@ -18448,6 +18734,8 @@ public sealed partial class Binder
         YieldStmt { Value: null } => true,
         Block b => b.Statements.Count > 0 && Leaves(b.Statements[^1]),
         IfStmt i => i.Else != null && Leaves(i.Then) && Leaves(i.Else),
+        // `try { return Run(); } finally { … }`: no way out of it reaches the next line.
+        TryStmt t => Leaves(t.Body) && t.Catches.All(c => Leaves(c.Body)),
         _ => false,
     };
 
@@ -18798,7 +19086,8 @@ public sealed partial class Binder
             if (getter != null)
             {
                 _r.Resolved[n] = new PropertyGetSym(getter);
-                return getter.Returns;
+                return _notNullPaths.Contains(n.Name) && !getter.Returns.IsNullableValue
+                    ? getter.Returns.AsNonNullable() : getter.Returns;
             }
 
             if (Members(_thisType, Interned.Prefixed("set_", n.Name)).FirstOrDefault(s => s.Params.Count == 1) is { } onlySetter
@@ -18846,8 +19135,10 @@ public sealed partial class Binder
                                       ?? _lexicalType.FindBackingField(n.Name);
             if (staticField is { Static: true } && !NotInvocable(n, staticField.Type))
             {
-                _r.Resolved[n] = new FieldSym(staticField);
-                return staticField.Type;
+                FieldSym lexicalRead = new(staticField);
+                _r.Resolved[n] = lexicalRead;
+                return (_notNull.Contains(lexicalRead) || _notNullPaths.Contains(n.Name)) && !staticField.Type.IsNullableValue
+                    ? staticField.Type.AsNonNullable() : staticField.Type;
             }
 
             // EVERY METHOD OF THE NAME, and not only the static ones, when
@@ -18886,7 +19177,8 @@ public sealed partial class Binder
             if (staticGetter is not null && !NotInvocable(n, staticGetter.Returns))
             {
                 _r.Resolved[n] = new PropertyGetSym(staticGetter);
-                return staticGetter.Returns;
+                return _notNullPaths.Contains(n.Name) && !staticGetter.Returns.IsNullableValue
+                    ? staticGetter.Returns.AsNonNullable() : staticGetter.Returns;
             }
 
             MethodSymbol? staticSetter = _lexicalType.FindMethods("set_", n.Name)
@@ -18914,7 +19206,11 @@ public sealed partial class Binder
             if (outerField is not null && !NotInvocable(n, outerField.Type))
             {
                 _r.Resolved[n] = new CapturedFieldSym(_capturedThisField, outerField);
-                return outerField.Type;
+                // ITS NULL STATE BY PATH, as the method's own field read has it:
+                // `_mark![r]` and then `_mark[r] = 7` in a local function
+                // proved _mark and read it as maybe null.
+                return _notNullPaths.Contains(n.Name) && !outerField.Type.IsNullableValue
+                    ? outerField.Type.AsNonNullable() : outerField.Type;
             }
 
             List<MethodSymbol> outerMethods = _capturedThisType.FindMethods(n.Name);
@@ -18928,7 +19224,8 @@ public sealed partial class Binder
             if (outerGetter is not null && !NotInvocable(n, outerGetter.Returns))
             {
                 _r.Resolved[n] = new CapturedPropertyGetSym(_capturedThisField, outerGetter);
-                return outerGetter.Returns;
+                return _notNullPaths.Contains(n.Name) && !outerGetter.Returns.IsNullableValue
+                    ? outerGetter.Returns.AsNonNullable() : outerGetter.Returns;
             }
 
             MethodSymbol? outerSetter = _capturedThisType.FindMethods("set_", n.Name).FirstOrDefault(m => m.Params.Count == 1);
@@ -18986,8 +19283,10 @@ public sealed partial class Binder
                                     ?? outer.FindBackingField(n.Name);
             if (outerStatic is { Static: true } && !NotInvocable(n, outerStatic.Type))
             {
-                _r.Resolved[n] = new FieldSym(outerStatic);
-                return outerStatic.Type;
+                FieldSym outerRead = new(outerStatic);
+                _r.Resolved[n] = outerRead;
+                return (_notNull.Contains(outerRead) || _notNullPaths.Contains(n.Name)) && !outerStatic.Type.IsNullableValue
+                    ? outerStatic.Type.AsNonNullable() : outerStatic.Type;
             }
 
             List<MethodSymbol> outerStatics = outer.FindMethods(n.Name)
@@ -19003,7 +19302,8 @@ public sealed partial class Binder
             if (outerStaticGetter is not null && !NotInvocable(n, outerStaticGetter.Returns))
             {
                 _r.Resolved[n] = new PropertyGetSym(outerStaticGetter);
-                return outerStaticGetter.Returns;
+                return _notNullPaths.Contains(n.Name) && !outerStaticGetter.Returns.IsNullableValue
+                    ? outerStaticGetter.Returns.AsNonNullable() : outerStaticGetter.Returns;
             }
 
             MethodSymbol? outerStaticSetter = outer.FindMethods("set_", n.Name)
@@ -20606,6 +20906,35 @@ public sealed partial class Binder
             if (name != null) return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// WHAT A CALL LEAVES NOT NULL: an argument to a `[NotNull]` parameter
+    /// (Param.NotNull), from the call on, as an assignment leaves what it
+    /// wrote -- `Array.Resize(ref seen, n); seen[k]` and
+    /// `ArgumentNullException.ThrowIfNull(x); x.Length` read no maybe-null.
+    /// Arguments by position only, as [NotNullWhen] is read (Assume).
+    /// </summary>
+    private void ProveNotNullArguments(CallExpr c)
+    {
+        if (!_r.Calls.TryGetValue(c, out MethodSymbol? m) || m.Decl is not { } signature) return;
+
+        // Named arguments are in the order written, not the parameters'.
+        if (c.ArgNames.Any(named => named is not null)) return;
+
+        // An extension method called on its receiver, the receiver not yet
+        // moved into the arguments (CallExpr.ReceiverAdded): its first parameter.
+        int shift = signature.Params.Count > 0 && signature.Params[0].IsThis && c.Target is MemberExpr
+                    && !c.ReceiverAdded && c.Args.Count < signature.Params.Count ? 1 : 0;
+        for (int i = 0; i < c.Args.Count && i + shift < signature.Params.Count; i++)
+        {
+            if (!signature.Params[i + shift].NotNull) continue;
+
+            Expr given = c.Args[i] is RefArgExpr passed ? passed.Target : c.Args[i];
+            if (Path(given) is string proved) _notNullPaths.Add(proved);
+            if (_r.Resolved.TryGetValue(given, out Sym? held) && held is LocalSym or ParamSym or FieldSym or CapturedFieldSym)
+                _notNull.Add(held);
+        }
     }
 
     private Type CheckCall(CallExpr c)

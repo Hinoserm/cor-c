@@ -1,5 +1,6 @@
 // test: nullable_elements_of_lists_and_jagged_arrays
 // expect-exit: 0
+// expect-no-compile-warning: warning CS86
 // expect-output:
 // 6
 // 3 2 2 1

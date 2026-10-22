@@ -1,5 +1,6 @@
 // test: conditional_access_tested_proves_its_receiver
 // expect-exit: 0
+// expect-no-compile-warning: warning CS86
 // expect-output:
 // 2 0 0
 // 1 -1

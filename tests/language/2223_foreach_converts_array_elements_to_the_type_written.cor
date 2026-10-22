@@ -1,0 +1,68 @@
+// test: foreach_converts_array_elements_to_the_type_written
+// expect-exit: 0
+// expect-output:
+// 3
+// 9
+// 73
+// 269
+// woof
+// abc
+// took x
+// InvalidCastException
+//
+// A foreach over an array or a string converts each element to the type
+// written, explicitly, as C# does: `foreach (string s in objects)`,
+// `foreach (int i in boxes)` unboxing, `foreach (byte b in ints)` and
+// `foreach (int c in text)`. corc bound the element as it was and refused
+// `s.Length` on an object; an element of another type throws
+// InvalidCastException.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Animal { public virtual string Say() => "..."; }
+sealed class Dog : Animal { public override string Say() => "woof"; }
+
+static class Program
+{
+    static int Main()
+    {
+        int n = 0;
+        object[] words = { "ab", "c" };
+        foreach (string s in words) n += s.Length;
+        Console.WriteLine(n);
+
+        object[] boxed = { 1, 2, 3 };
+        foreach (int i in boxed) n += i;
+        Console.WriteLine(n);
+
+        int[] ints = { 4, 5 };
+        foreach (long l in ints) n += (int)(l * 2);
+        foreach (byte b in new[] { 300, 2 }) n += b;
+        Console.WriteLine(n);
+
+        foreach (int c in "AB") n += c;
+        foreach (byte c in "Ł") n += c;
+        Console.WriteLine(n);
+
+        Dog[] dogs = { new Dog() };
+        foreach (Animal a in dogs) Console.WriteLine(a.Say());
+
+        List<Func<string>> later = new();
+        foreach (string s in words) later.Add(() => s);
+        foreach (Func<string> f in later) Console.Write(f());
+        Console.WriteLine();
+
+        object[] mixed = { "x", 7 };
+        try
+        {
+            foreach (string s in mixed) Console.WriteLine("took " + s);
+        }
+        catch (InvalidCastException)
+        {
+            Console.WriteLine("InvalidCastException");
+        }
+        return 0;
+    }
+}

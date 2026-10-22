@@ -1,0 +1,80 @@
+// test: proofs_through_gotos_receiver_calls_indices_and_lambdas
+// expect-exit: 0
+// expect-no-compile-warning: warning CS86
+// expect-output:
+// i327 mixed i32 True i32 none
+// KK!
+// 2 2
+//
+// Null state C# keeps that corc dropped: what every forward `goto` and the
+// fall-through proved holds at the label; a `!` in a call earlier in a
+// receiver chain proves for the arguments after it
+// (`s.Append(r!.Name).Append(Value(r))`); an assignment target's index is
+// read before its value (`regs[i.Dest!.Id] = Fit(i.Dest.Type)`); and a
+// static field or property of the enclosing class tested in a lambda.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+
+sealed class Reg { public int Id; public string Type = "i32"; }
+sealed class Ins { public Reg? Dest; public int[] Values = { 1, 2 }; }
+sealed class Kind { public string Name = "K"; }
+
+sealed class Library
+{
+    public static Func<string, bool>? Source { get; set; }
+    public static Func<string, bool>? Field;
+    private readonly List<string?> _paths = new() { "a.cor", null, "b.cor" };
+
+    public int Count() => _paths.Count(p => p is not string path || Source is null || Source(path));
+    public int Fields() => _paths.Count(p => p is not string path || Field is null || Field(path));
+}
+
+static class Program
+{
+    static string Fit(int v, string t) => t + v;
+    static string Value(Kind k, string v) => k.Name + v;
+
+    static string Copy(Ins i, string[] regs)
+    {
+        regs[i.Dest!.Id] = Fit(7, i.Dest.Type);
+        return regs[0];
+    }
+
+    static string Fold(Ins i)
+    {
+        if (i.Dest is null) return "none";
+        bool? answer = null;
+        foreach (int v in i.Values)
+        {
+            bool one = v > 1;
+            if (answer is not null && answer != one) { answer = null; goto next; }
+            answer = one;
+        }
+    next:
+        if (answer is not bool known) return "mixed " + i.Dest.Type;
+        return known + " " + i.Dest.Type;
+    }
+
+    static string Chain(Kind? result)
+    {
+        StringBuilder s = new();
+        s.Append(result!.Name).Append(Value(result, "!"));
+        return s.ToString();
+    }
+
+    static int Main()
+    {
+        Ins i = new() { Dest = new Reg { Id = 0 } };
+        Console.WriteLine(Copy(i, new string[2]) + " " + Fold(i) + " " + Fold(new Ins { Dest = new Reg(), Values = new[] { 5 } }) + " " + Fold(new Ins()));
+        Console.WriteLine(Chain(new Kind()));
+        Library.Source = s => s.StartsWith("a");
+        Library.Field = s => s.StartsWith("b");
+        Library l = new();
+        Console.WriteLine(l.Count() + " " + l.Fields());
+        return 0;
+    }
+}

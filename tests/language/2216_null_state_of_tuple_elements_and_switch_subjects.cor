@@ -1,5 +1,6 @@
 // test: null_state_of_tuple_elements_and_switch_subjects
 // expect-exit: 0
+// expect-no-compile-warning: warning CS86
 // expect-output:
 // 1 1 1
 // 1 0 1 3

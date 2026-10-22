@@ -10620,7 +10620,7 @@ static class Memory {
 /// .NET's non-generic IEnumerator (System.Collections): what IEnumerator<T>
 /// also is, its Current an object.
 interface IEnumerator {
-    object? Current { get; }
+    object Current { get; }
     bool MoveNext();
     void Reset();
 }
@@ -18322,7 +18322,7 @@ static class Array {
     /// parameter is `ref`: an array cannot change its own length, so what
     /// really happens is a new one and an assignment over the caller's
     /// variable. .NET's signature says so and this one says the same.
-    public static void Resize<T>(ref T[]? items, int size) {
+    public static void Resize<T>([NotNull] ref T[]? items, int size) {
         if (size < 0) { throw new ArgumentOutOfRangeException("newSize", "Non-negative number required."); }
         // NO ARRAY YET is an empty one, as .NET has it: one of the size asked.
         if (items is null) { items = new T[size]; return; }
@@ -18754,13 +18754,17 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             // A list only appended to: at its region's top it grows where it
             // is (Runtime.GrowInPlace).
             int[]? was = vacant;
+            int[] into;
             if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.Word(was), was.Length * 2)) {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
                 Outgrown(was);
+                into = more;
+            } else {
+                into = was;
             }
-            vacant[vacancies] = place;
+            into[vacancies] = place;
             vacancies = vacancies + 1;
         }
     }
@@ -22422,13 +22426,17 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
             // A list only appended to: at its region's top it grows where it
             // is (Runtime.GrowInPlace).
             int[]? was = vacant;
+            int[] into;
             if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.Word(was), was.Length * 2)) {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
                 Outgrown(was);
+                into = more;
+            } else {
+                into = was;
             }
-            vacant[vacancies] = place;
+            into[vacancies] = place;
             vacancies = vacancies + 1;
         }
     }
