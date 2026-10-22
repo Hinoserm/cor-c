@@ -2283,6 +2283,17 @@ public sealed class Monomorphiser
     }
 
     /// <summary>Records that a specialisation is needed and returns its name.</summary>
+    /// <summary>A call's target while it is rewritten: a member with type arguments there is a generic method, not a type.</summary>
+    private Node? _callTarget;
+
+    /// <summary>`A.B.C` as written, when it is names and dots and nothing else.</summary>
+    private static string? DottedPath(Expr e) => e switch
+    {
+        NameExpr { TypeArgs.Count: 0 } n => n.Name,
+        MemberExpr { TypeArgs.Count: 0, NullConditional: false } m when DottedPath(m.Target) is string outer => outer + "." + m.Name,
+        _ => null,
+    };
+
     private string Instantiate(string name, List<TypeRef> args, Node at)
     {
         // A TYPE ARGUMENT IS SPLICED INTO A COPY OF THE TEMPLATE, and the copy
@@ -3754,6 +3765,27 @@ public sealed class Monomorphiser
                 return new NameExpr { Name = made, Global = n.Global, Line = n.Line, Col = n.Col };
             }
 
+            // A GENERIC TYPE NAMED THROUGH ITS NAMESPACE, with its arguments,
+            // and not called: `Shapes.Box<int>` of `Shapes.Box<int>.Count`,
+            // `System.Collections.Generic.EqualityComparer<int>` of `….Default`.
+            // A name with arguments, as a bare `Comparer<int>` is (NameExpr
+            // above), by its whole path. Read as a member access, the qualifier
+            // was a namespace with nothing in it.
+            case MemberExpr { TypeArgs.Count: > 0 } typeNamed when !ReferenceEquals(typeNamed, _callTarget)
+                && DottedPath(typeNamed.Target) is string qualifier
+                && GenericPath(qualifier + "." + typeNamed.Name, typeNamed.TypeArgs.Count, typeNamed) is not null:
+            {
+                NameExpr named = new() { Name = qualifier + "." + typeNamed.Name, Line = typeNamed.Line, Col = typeNamed.Col };
+                named.WritableTypeArgs.AddRange(typeNamed.TypeArgs);
+                Expr instance = Rewrite(named, map);
+                // The library's, spelt out: seen without its using, as the
+                // program named its namespace (Binder.LibraryGlobal).
+                if ((qualifier == "System" || qualifier.StartsWith("System.", StringComparison.Ordinal))
+                    && instance is NameExpr { TypeArgs.Count: 0 } madeName && madeName.Name.IndexOf('.') < 0)
+                    madeName.Name = Binder.LibrarySpelling + "." + madeName.Name;
+                return instance;
+            }
+
             case MemberExpr m:
             {
                 MemberExpr made = new()
@@ -3787,7 +3819,13 @@ public sealed class Monomorphiser
                     SubInto(named.WritableTypeArgs, method.TypeArgs, map);
                     target = named;
                 }
-                else target = Rewrite(c.Target, map);
+                else
+                {
+                    Node? outerCall = _callTarget;
+                    _callTarget = c.Target;
+                    target = Rewrite(c.Target, map);
+                    _callTarget = outerCall;
+                }
                 CallExpr made = new() { Target = target, FormatHole = c.FormatHole, Line = c.Line, Col = c.Col };
                 CanonContextCall(made, c);
 

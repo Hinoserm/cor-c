@@ -1,0 +1,35 @@
+// test: generic_types_named_through_their_namespace
+// expect-exit: 0
+// expect-output:
+// 7
+// String
+// -1
+// True
+// array
+//
+// A generic type named through its namespace, its static members read:
+// `Shapes.Box<int>.Count`,
+// `System.Collections.Generic.Comparer<int>.Default`,
+// `System.Collections.Generic.EqualityComparer<int>.Default` -- the last
+// two without a using, as their namespace is spelt out. corc read the
+// qualifier as a namespace with nothing in it: "the name 'System' does not
+// exist".
+// Expected output from .NET 10.
+
+namespace Shapes
+{
+    static class Box<T> { public static int Count = 7; public static string Name() => typeof(T).Name; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        System.Console.WriteLine(Shapes.Box<int>.Count);
+        System.Console.WriteLine(Shapes.Box<string>.Name());
+        System.Console.WriteLine(System.Collections.Generic.Comparer<int>.Default.Compare(1, 2));
+        System.Console.WriteLine(System.Collections.Generic.EqualityComparer<int>.Default.Equals(1, 1));
+        System.Console.WriteLine(System.Linq.Enumerable.Empty<string>().GetType() == typeof(string[]) ? "array" : "other");
+        return 0;
+    }
+}

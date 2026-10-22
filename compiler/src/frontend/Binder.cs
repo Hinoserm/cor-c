@@ -500,7 +500,7 @@ public sealed partial class Binder
     /// </summary>
     private static string LibraryType(string name) => LibrarySpelling + "." + name;
 
-    private const string LibrarySpelling = "__library";
+    internal const string LibrarySpelling = "__library";
 
     /// <summary>
     /// `System.X`, however deep the qualifier, as the library's global X (a
