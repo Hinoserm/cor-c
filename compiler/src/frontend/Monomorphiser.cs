@@ -453,6 +453,7 @@ public sealed class Monomorphiser
             PointerDepth = r.PointerDepth,
             TupleNames = r.TupleNames,
             UseArgs = useArgs,
+            Written = r.Written,
             Line = r.Line,
             Col = r.Col,
         };
@@ -2189,6 +2190,7 @@ public sealed class Monomorphiser
             Name = a.Name, Arguments = args, UseArgs = a.UseArgs, ArrayRank = a.ArrayRank,
             Nullable = a.Nullable && !reference, ElementNullable = a.ElementNullable && !referenceElements,
             InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
+            Written = a.Written,
             Line = a.Line, Col = a.Col,
         };
     }
@@ -2218,6 +2220,7 @@ public sealed class Monomorphiser
             Name = bare ? "object" : a.Name, Arguments = args, UseArgs = a.UseArgs, ArrayRank = a.ArrayRank,
             Nullable = a.Nullable, ElementNullable = a.ElementNullable,
             InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
+            Written = a.Written,
             Line = a.Line, Col = a.Col,
         };
     }
@@ -2237,6 +2240,7 @@ public sealed class Monomorphiser
         {
             Name = name, ArrayRank = a.ArrayRank, Nullable = a.Nullable, UseArgs = QualifyAll(a.Args),
             ElementNullable = a.ElementNullable, InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth,
+            Written = a.Written,
             Line = a.Line, Col = a.Col,
         };
     }
@@ -2510,7 +2514,6 @@ public sealed class Monomorphiser
                 // the innermost).
                 CanonIndex = bound.CanonIndex,
                 CanonWhole = bound.CanonWhole,
-                Spliced = true,
                 Line = r.Line, Col = r.Col,
             };
             _settled.Add(substituted);
@@ -2529,6 +2532,7 @@ public sealed class Monomorphiser
                 ElementNullable = r.ElementNullable, InnerNullable = r.InnerNullable,
                 PointerDepth = r.PointerDepth,
                 TupleNames = r.TupleNames is null ? null : new List<string>(r.TupleNames),
+                Written = r.Written,
                 Line = r.Line, Col = r.Col,
             };
 
@@ -2573,6 +2577,7 @@ public sealed class Monomorphiser
                 InnerNullable = r.InnerNullable,
                 PointerDepth = r.PointerDepth,
                 CanonIndex = r.CanonIndex,
+                Written = r.Written,
                 Line = r.Line, Col = r.Col,
             };
         }

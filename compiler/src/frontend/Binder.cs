@@ -572,8 +572,8 @@ public sealed partial class Binder
     /// </summary>
     private void AsyncNeeds()
     {
-        FindType("AsyncRuntime", out _);
-        FindType("Action", out _);
+        FindMadeType("AsyncRuntime", out _);
+        FindMadeType("Action", out _);
     }
 
     private bool FindType(string name, out TypeSymbol? sym)
@@ -1095,8 +1095,16 @@ public sealed partial class Binder
             _soleLibrary[type.Name] = _soleLibrary.ContainsKey(type.Name) ? null : type;
     }
 
-    /// <summary>Spliced references being resolved (TypeRef.Spliced): the names in them were spelt by the monomorphiser.</summary>
-    private int _spliced;
+    /// <summary>Types the compiler made being resolved (not TypeRef.Written), or names it looks up for itself (FindMadeType).</summary>
+    private int _made;
+
+    /// <summary>A library type the compiler looks up for itself, whatever the file it is binding imports.</summary>
+    private bool FindMadeType(string name, out TypeSymbol? sym)
+    {
+        _made++;
+        try { return FindType(name, out sym); }
+        finally { _made--; }
+    }
 
     /// <summary>
     /// C#'S RULE FOR THE NAMES A PROGRAM'S FILE CAN SEE: whether the code
@@ -1109,7 +1117,7 @@ public sealed partial class Binder
     /// </summary>
     private bool BindingProgramCode()
     {
-        if (_spliced > 0) return false;
+        if (_made > 0) return false;
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         if (written is null || written.File == "<prelude>" || _member is { LocalCopy: true }) return false;
         return !ClassLibrarySide(written);
@@ -1128,7 +1136,10 @@ public sealed partial class Binder
     private bool LibraryGlobalVisible(TypeSymbol sym)
     {
         if (sym.Decl is not { Outer: null } d || d.Namespace.Length != 0 || !ClassLibrarySide(d)) return true;
-        if (LibraryNamespaces.Of(sym.Key) is not string space || !BindingProgramCode()) return true;
+        // A COPY OF A TEMPLATE, by the template's: `List<int>` is List$int by
+        // the time it is bound, and is System.Collections.Generic's as List is.
+        string key = d.Template is string template ? Arity(template, d.TemplateArgs.Count) : sym.Key;
+        if (LibraryNamespaces.Of(key) is not string space || !BindingProgramCode()) return true;
         return NamespaceInScope(space);
     }
 
@@ -3346,8 +3357,8 @@ public sealed partial class Binder
         // Asked for by name, so that every unit has them -- a unit's library
         // declarations arrive as its source names them -- and every unit
         // gives a tuple shape the same two.
-        FindType("IComparable", out _);
-        FindType("System.Runtime.CompilerServices.ITuple", out _);
+        FindMadeType("IComparable", out _);
+        FindMadeType("System.Runtime.CompilerServices.ITuple", out _);
         _tupleFacesReady = true;
         foreach (TypeSymbol shape in _r.Types.Values.Where(t => t.Structural && t.Kind == TypeKind.Struct).ToList())
         {
@@ -5907,14 +5918,16 @@ public sealed partial class Binder
 
     private Type ResolveCore(TypeRef r, TypeSymbol? context)
     {
-        // A TYPE THE MONOMORPHISER SPLICED IN (TypeRef.Spliced), with all it
-        // is made of, is the one its instantiation named: C#'s rule for the
-        // names a file can see is not asked of it (ProgramNamespaceRule).
-        if (r.Spliced && _spliced == 0)
+        // A TYPE THE COMPILER MADE (not TypeRef.Written), with all it is made
+        // of, names its type for the compiler -- a guard's Exception, the type
+        // a generic copy's parameter was bound to, spelt by the path its
+        // instantiation found: C#'s rule for the names a file can see is not
+        // asked of it (BindingProgramCode).
+        if (!r.Written && _made == 0)
         {
-            _spliced++;
+            _made++;
             try { return ResolveCore(r, context); }
-            finally { _spliced--; }
+            finally { _made--; }
         }
         // A TUPLE TYPE is the class this writes for its shape, carrying the
         // element names it was written with. See TupleType.
@@ -6373,7 +6386,7 @@ public sealed partial class Binder
             // here, where Main is.
             if (md.Name == "Main" && _method.Static && _method.Params.Count == 1 && _method.Params[0].Type.IsArray)
             {
-                FindType("Environment", out _);
+                FindMadeType("Environment", out _);
             }
             if (_method.Async) AsyncNeeds();
             _closureOwner = ClosureIdentity.Of(_method);
@@ -14704,7 +14717,7 @@ public sealed partial class Binder
             // declared a type of that name, so a program with an `Enum` of its
             // own keeps it.
             case CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Enum" } } asked } wanted
-                when !FindType("Enum", out _) && EnumStatic(asked, wanted) is Type answered:
+                when !FindType("Enum", out _) && (!BindingProgramCode() || NamespaceInScope("System")) && EnumStatic(asked, wanted) is Type answered:
                 return answered;
 
             // ASKING WHETHER A SETTING IS SET IS NOT A QUESTION ABOUT ITS

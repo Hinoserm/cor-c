@@ -138,15 +138,16 @@ public sealed class TypeRef : Node
     public bool ElementNullable { get => (_packed & (1 << 17)) != 0; init => SetFlag(17, value); }
 
     /// <summary>
-    /// What a generic copy's type parameter was bound to, put in its place
-    /// by the monomorphiser (Monomorphiser.Sub): a type the code that made
-    /// the instantiation named, spelt by its path. It is resolved as that
-    /// path, never by the names the copy's own file can see -- a program's
-    /// `Box<StringBuilder>` from a file that imports System.Text is no less
-    /// a box of StringBuilder in the file declaring Box, which need not
-    /// (Binder.ProgramNamespaceRule).
+    /// A type a person wrote, as the parser read it (Parser.ParseTypeRef),
+    /// and every copy made of it: C#'s rule for the names a file can see is
+    /// asked of it (Binder.BindingProgramCode). One the compiler made -- a
+    /// static initialiser's guard catching Exception, a foreach disposing
+    /// through IDisposable, what a generic copy's type parameter was bound
+    /// to (Monomorphiser.Sub), spelt by the path the instantiation found --
+    /// names its type for the compiler, and is not refused for a using no
+    /// file could have written.
     /// </summary>
-    public bool Spliced { get => (_packed & (1 << 18)) != 0; init => SetFlag(18, value); }
+    public bool Written { get => (_packed & (1 << 18)) != 0; set => SetFlag(18, value); }
 
     /// <summary>
     /// The '?' marks between the brackets of an array of arrays: bit k-1 set

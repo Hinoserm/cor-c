@@ -3977,6 +3977,14 @@ public sealed class Parser
 
     private TypeRef ParseTypeRef(bool pattern = false)
     {
+        // WRITTEN, as every type read here is (TypeRef.Written).
+        TypeRef read = ParseWrittenTypeRef(pattern);
+        read.Written = true;
+        return read;
+    }
+
+    private TypeRef ParseWrittenTypeRef(bool pattern)
+    {
         Token at = Cur;
 
         if (At(Tok.KwVoid))
