@@ -15475,6 +15475,20 @@ public sealed partial class Binder
                 when !FindType("Enum", out _) && (!BindingProgramCode() || NamespaceInScope("System")) && EnumStatic(asked, wanted) is Type answered:
                 return answered;
 
+            // Nullable.GetUnderlyingType OF A WRITTEN TYPE, answered here: the
+            // T of `typeof(T?)`, and null of any other -- a nullable's Type is
+            // its underlying type's at run time, so only the spelling tells.
+            case CallExpr { Args.Count: 1, Target: MemberExpr { Name: "GetUnderlyingType", Target: NameExpr { Name: "Nullable" } } } underlyingOf
+                when underlyingOf.Args[0] is TypeOfExpr { Type: var spelt }
+                     && !(FindType("Nullable", out TypeSymbol? userNullable) && userNullable?.Decl is { } ownNullable && IsProgramSource(ownNullable)):
+            {
+                Expr answer = spelt.Nullable && spelt.ArrayRank == 0
+                    ? new TypeOfExpr { Type = new TypeRef { Name = spelt.Name, Arguments = spelt.Args, Line = spelt.Line, Col = spelt.Col }, Line = underlyingOf.Line, Col = underlyingOf.Col }
+                    : new CastExpr { Type = new TypeRef { Name = "Type", Nullable = true, Line = underlyingOf.Line, Col = underlyingOf.Col }, Operand = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = underlyingOf.Line, Col = underlyingOf.Col }, Line = underlyingOf.Line, Col = underlyingOf.Col };
+                _r.Rewrites[underlyingOf] = answer;
+                return CheckExpr(answer);
+            }
+
             // ASKING WHETHER A SETTING IS SET IS NOT A QUESTION ABOUT ITS
             // VALUE, and neither is forgetting one. Both take a declared
             // member, and a declared member is a property -- so evaluating
@@ -16453,6 +16467,33 @@ public sealed partial class Binder
                     case UnOp.AddressOf:
                         RequireAssignable(u.Operand, "take the address of");
                         return t.PointerTo();
+
+                    // LIFTED (C# 12.4.8): `!n` of a bool? is null where n is,
+                        // not false.
+                    case UnOp.Not when t.IsNullableValue && t.Underlying.Prim == Prim.Bool:
+                    {
+                        SubjectExpr Held() => new() { Line = u.Line, Col = u.Col };
+                        TypeRef Maybe() => new() { Name = "bool", Nullable = true, Line = u.Line, Col = u.Col };
+                        PatternExpr lifted = new()
+                        {
+                            Subject = u.Operand,
+                            Test = new ConditionalExpr
+                            {
+                                Cond = new MemberExpr { Target = Held(), Name = "HasValue", Guarded = true, Line = u.Line, Col = u.Col },
+                                Then = new CastExpr
+                                {
+                                    Type = Maybe(),
+                                    Operand = new UnaryExpr { Op = UnOp.Not, Operand = new MemberExpr { Target = Held(), Name = "Value", Guarded = true, Line = u.Line, Col = u.Col }, Line = u.Line, Col = u.Col },
+                                    Line = u.Line, Col = u.Col,
+                                },
+                                Else = new CastExpr { Type = Maybe(), Operand = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = u.Line, Col = u.Col }, Line = u.Line, Col = u.Col },
+                                Line = u.Line, Col = u.Col,
+                            },
+                            Line = u.Line, Col = u.Col,
+                        };
+                        _r.Rewrites[u] = lifted;
+                        return CheckExpr(lifted);
+                    }
 
                     case UnOp.Not:
                         // A type converting to bool by an operator of its own is negated as the bool.

@@ -1,0 +1,68 @@
+// test: generics_and_nullable_values_program
+// expect-exit: 0
+// expect-output:
+// 2 1 0 Int32,Int32 String
+// 9 pear value 0 ref-or-nullable ref-or-nullable True
+// 7 0 0
+// bb none 4 null
+// 21rl 8 List`1 Dictionary`2
+// 6||False|True|True|5-1|9|TrueFalse
+// |True||False|True
+// Int32 True 10 5
+// 12 True lt Int32 True
+//
+// A whole small program of generics and nullable values: a static field per
+// instantiation, constraints (IComparable<T>, new(), class, struct,
+// unmanaged), default(T) of each kind, ref swaps, generic type names;
+// lifted arithmetic, comparison, ?? and ??= over int?, bool?'s three-valued
+// & | and ! -- `!n` of a null bool? is null, where it was false -- boxing a
+// nullable, and System.Nullable's GetUnderlyingType of a written type.
+// Every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+sealed class Registry<T>
+{
+    public static int Created;
+    public static readonly List<string> Names = new();
+    public Registry() { Created++; Names.Add(typeof(T).Name); }
+}
+
+sealed class Box<T> where T : new() { public T Value = new T(); }
+sealed class Counter { public int N = 7; }
+
+static class Program
+{
+    static T Max<T>(T a, T b) where T : IComparable<T> => a.CompareTo(b) >= 0 ? a : b;
+    static string Kind<T>() => default(T) is null ? "ref-or-nullable" : "value " + default(T);
+    static bool IsStruct<T>(T value) where T : struct => true;
+    static T? Find<T>(IEnumerable<T> items, Func<T, bool> test) where T : class { foreach (T x in items) if (test(x)) return x; return null; }
+    static T? FindValue<T>(IEnumerable<T> items, Func<T, bool> test) where T : struct { foreach (T x in items) if (test(x)) return x; return null; }
+    static void Swap<T>(ref T a, ref T b) { T t = a; a = b; b = t; }
+    static int SizeOf<T>() where T : unmanaged => System.Runtime.InteropServices.Marshal.SizeOf<T>();
+
+    static int Main()
+    {
+        new Registry<int>(); new Registry<int>(); new Registry<string>();
+        Console.WriteLine(Registry<int>.Created + " " + Registry<string>.Created + " " + Registry<double>.Created + " " + string.Join(",", Registry<int>.Names) + " " + string.Join(",", Registry<string>.Names));
+        Console.WriteLine(Max(3, 9) + " " + Max("pear", "apple") + " " + Kind<int>() + " " + Kind<string>() + " " + Kind<int?>() + " " + IsStruct(4.5));
+        Console.WriteLine(new Box<Counter>().Value.N + " " + new Box<List<int>>().Value.Count + " " + new Box<int>().Value);
+        Console.WriteLine((Find(new[] { "a", "bb", "ccc" }, s => s.Length == 2) ?? "none") + " " + (Find(new[] { "a" }, s => s.Length > 5) ?? "none") + " " + FindValue(new[] { 1, 4, 9 }, x => x > 3) + " " + (FindValue(new[] { 1 }, x => x > 3)?.ToString() ?? "null"));
+        int x = 1, y = 2; Swap(ref x, ref y);
+        string s1 = "l", s2 = "r"; Swap(ref s1, ref s2);
+        Console.WriteLine(x + "" + y + s1 + s2 + " " + SizeOf<long>() + " " + typeof(List<int>).Name + " " + typeof(Dictionary<string, int[]>).Name);
+        int? a = 5, b = null;
+        Console.WriteLine((a + 1) + "|" + (a + b) + "|" + (a > b) + "|" + (a == 5) + "|" + (b == null) + "|" + (a ?? 0) + (b ?? -1) + "|" + b.GetValueOrDefault(9) + "|" + a.HasValue + b.HasValue);
+        bool? t = true, n = null;
+        Console.WriteLine((t & n) + "|" + (t | n) + "|" + (!n) + "|" + (n == false) + "|" + (t == true));
+        object boxed = a; object boxedNull = b;
+        Console.WriteLine(boxed.GetType().Name + " " + (boxedNull == null) + " " + (boxed is int unboxed ? unboxed * 2 : 0) + " " + ((int?)boxed).Value);
+        b ??= 12;
+        int? c = null;
+        c += 1;
+        Console.WriteLine(b + " " + (c is null) + " " + (a < 10 ? "lt" : "ge") + " " + Nullable.GetUnderlyingType(typeof(int?))!.Name + " " + EqualityComparer<int?>.Default.Equals(a, 5));
+        return 0;
+    }
+}

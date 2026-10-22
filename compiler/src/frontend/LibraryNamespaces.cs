@@ -38,7 +38,7 @@ internal static class LibraryNamespaces
             "ICloneable", "IComparable", "IComparable`1", "ICustomFormatter", "IDisposable", "IEquatable`1",
             "IFormatProvider", "IFormattable", "Index", "IndexOutOfRangeException", "Int128", "Int16", "Int32",
             "Int64", "IntPtr", "InvalidCastException", "InvalidOperationException", "InvalidTimeZoneException",
-            "Lazy`1", "Math", "MathF", "MemberAccessException", "MemoryExtensions", "Memory`1", "MidpointRounding",
+            "Lazy`1", "Math", "MathF", "MemberAccessException", "MemoryExtensions", "Memory`1", "MidpointRounding", "Nullable",
             "MissingMemberException", "MissingMethodException", "NotImplementedException", "NotSupportedException",
             "NullReferenceException", "ObjectDisposedException", "OperatingSystem", "OperationCanceledException",
             "OutOfMemoryException", "OverflowException", "PlatformNotSupportedException", "Predicate`1", "Random",

@@ -6506,6 +6506,25 @@ static class NumberRead {
 // `byte.TryParse(field, out b)` is what a program that reads a byte writes,
 // and because the range check belongs to the TYPE rather than to the caller.
 
+/// .NET's System.Nullable: two nullable values ordered and compared, a value
+/// before none and none equal to none. GetUnderlyingType of `typeof(T?)` is
+/// answered where it is compiled (Binder); a nullable's Type here is its
+/// underlying type's, so asked of a Type at run time it has no answer.
+public static class Nullable {
+    public static int Compare<T>(T? n1, T? n2) where T : struct {
+        if (n1.HasValue) { return n2.HasValue ? Comparer<T>.Default.Compare(n1.Value, n2.Value) : 1; }
+        return n2.HasValue ? -1 : 0;
+    }
+    public static bool Equals<T>(T? n1, T? n2) where T : struct {
+        if (n1.HasValue) { return n2.HasValue && EqualityComparer<T>.Default.Equals(n1.Value, n2.Value); }
+        return !n2.HasValue;
+    }
+    public static Type? GetUnderlyingType(Type nullableType) {
+        if (nullableType == null) { throw new ArgumentNullException("nullableType"); }
+        return null;
+    }
+}
+
 /// The bit counts the numbers' generic-math members answer with (PopCount,
 /// LeadingZeroCount, TrailingZeroCount, Log2), here and not in numerics.cor's
 /// BitOperations: this file is compiled freestanding into the kernel, which
