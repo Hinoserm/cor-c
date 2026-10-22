@@ -1,0 +1,72 @@
+// test: non_generic_collections
+// expect-exit: 0
+// expect-output:
+// 5 3 2 True True
+// 3;two;1.5;
+// 9,5,2,1 17 2
+// 100 4 False
+// 2 10 True True True False
+// duplicate
+// 12 2 2
+// 1 2
+// k=7
+// x 1 1 1 y 1
+//
+// System.Collections' ArrayList, Hashtable, Stack and Queue, and the
+// interfaces they are held through (ICollection, IList, IDictionary,
+// IDictionaryEnumerator, IComparer) with DictionaryEntry: each the generic
+// collection of object it amounts to, with .NET's non-generic surface -- a
+// Hashtable's missing key reads null, Add refuses a duplicate, foreach over
+// one gives DictionaryEntry; an ArrayList walked as ints casts each element.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+
+static class Program
+{
+    static int Main()
+    {
+        ArrayList list = new ArrayList { 3, "two", 1.5 };
+        list.Add(null);
+        list.Insert(0, 'c');
+        Console.WriteLine(list.Count + " " + list[1] + " " + list.IndexOf("two") + " " + list.Contains(1.5) + " " + (list[4] == null));
+        list.RemoveAt(4);
+        list.Remove('c');
+        string s = "";
+        foreach (object? o in list) s += o + ";";
+        Console.WriteLine(s);
+        ArrayList nums = new ArrayList();
+        nums.AddRange(new[] { 5, 2, 9, 1 });
+        nums.Sort();
+        nums.Reverse();
+        int total = 0;
+        foreach (int n in nums) total += n;
+        Console.WriteLine(string.Join(",", nums.ToArray()) + " " + total + " " + nums.GetRange(1, 2).Count);
+        IList asList = nums;
+        asList[0] = 100;
+        Console.WriteLine(nums[0] + " " + asList.Count + " " + asList.IsReadOnly);
+
+        Hashtable table = new Hashtable();
+        table["a"] = 1;
+        table.Add("b", 2);
+        table["a"] = 10;
+        Console.WriteLine(table.Count + " " + table["a"] + " " + (table["missing"] == null) + " " + table.ContainsKey("b") + " " + table.ContainsValue(2) + " " + table.Contains("z"));
+        try { table.Add("b", 3); } catch (ArgumentException) { Console.WriteLine("duplicate"); }
+        int sum = 0;
+        foreach (DictionaryEntry e in table) sum += (int)e.Value!;
+        Console.WriteLine(sum + " " + table.Keys.Count + " " + table.Values.Count);
+        table.Remove("a");
+        IDictionary dict = table;
+        Console.WriteLine(dict.Count + " " + dict["b"]);
+        DictionaryEntry entry = new DictionaryEntry("k", 7);
+        Console.WriteLine(entry.Key + "=" + entry.Value);
+
+        Stack stack = new Stack();
+        stack.Push(1); stack.Push("x");
+        Queue queue = new Queue();
+        queue.Enqueue(1); queue.Enqueue("y");
+        Console.WriteLine(stack.Pop() + " " + stack.Peek() + " " + stack.Count + " " + queue.Dequeue() + " " + queue.Peek() + " " + queue.Count);
+        return 0;
+    }
+}

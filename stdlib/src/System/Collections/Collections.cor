@@ -1599,6 +1599,272 @@ class PriorityQueue<TElement, TPriority> {
     }
 }
 
+// ---- the non-generic collections ------------------------------------------
+//
+// System.Collections as .NET 1 had it, and as old code still writes it: a
+// list, a table, a stack and a queue of objects, and the interfaces they are
+// held through. Each is the generic collection of object it amounts to, with
+// the non-generic surface over it -- a Hashtable's missing key reads null,
+// where a Dictionary's throws.
+
+interface ICollection : IEnumerable {
+    int Count { get; }
+    bool IsSynchronized { get; }
+    object SyncRoot { get; }
+}
+
+interface IList : ICollection {
+    object? this[int index] { get; set; }
+    bool IsFixedSize { get; }
+    bool IsReadOnly { get; }
+    int Add(object? value);
+    void Clear();
+    bool Contains(object? value);
+    int IndexOf(object? value);
+    void Insert(int index, object? value);
+    void Remove(object? value);
+    void RemoveAt(int index);
+}
+
+interface IDictionaryEnumerator : IEnumerator {
+    DictionaryEntry Entry { get; }
+    object Key { get; }
+    object? Value { get; }
+}
+
+interface IDictionary : ICollection {
+    object? this[object key] { get; set; }
+    ICollection Keys { get; }
+    ICollection Values { get; }
+    bool IsFixedSize { get; }
+    bool IsReadOnly { get; }
+    void Add(object key, object? value);
+    void Clear();
+    bool Contains(object key);
+    new IDictionaryEnumerator GetEnumerator();
+    void Remove(object key);
+}
+
+interface IComparer {
+    int Compare(object? x, object? y);
+}
+
+struct DictionaryEntry {
+    private object _key;
+    private object? _value;
+
+    public DictionaryEntry(object key, object? value) { _key = key; _value = value; }
+
+    public object Key { get { return _key; } set { _key = value; } }
+    public object? Value { get { return _value; } set { _value = value; } }
+
+    public void Deconstruct(out object key, out object? value) { key = _key; value = _value; }
+}
+
+/// What ArrayList, Hashtable, Stack and Queue walk with: the objects of a
+/// list, in order, read when the walk asks.
+sealed class ObjectWalk : IEnumerator {
+    private readonly List<object?> _items;
+    private int _at = -1;
+
+    public ObjectWalk(List<object?> items) { _items = items; }
+
+    public object Current { get { return _items[_at]!; } }
+    public bool MoveNext() { _at = _at + 1; return _at < _items.Count; }
+    public void Reset() { _at = -1; }
+}
+
+sealed class ObjectCollection : ICollection {
+    private readonly List<object?> _items;
+
+    public ObjectCollection(List<object?> items) { _items = items; }
+
+    public int Count { get { return _items.Count; } }
+    public bool IsSynchronized { get { return false; } }
+    public object SyncRoot { get { return this; } }
+    public IEnumerator GetEnumerator() { return new ObjectWalk(_items); }
+}
+
+class ArrayList : IList {
+    private List<object?> _items;
+
+    public ArrayList() { _items = new List<object?>(); }
+    public ArrayList(int capacity) { _items = new List<object?>(capacity); }
+    // Any sequence, an array included: .NET's arrays are ICollections, and
+    // here an array is the sequence it walks.
+    public ArrayList(IEnumerable c) { _items = new List<object?>(); AddRange(c); }
+
+    public virtual int Count { get { return _items.Count; } }
+    public virtual int Capacity { get { return _items.Capacity; } set { _items.Capacity = value; } }
+    public virtual bool IsFixedSize { get { return false; } }
+    public virtual bool IsReadOnly { get { return false; } }
+    public virtual bool IsSynchronized { get { return false; } }
+    public virtual object SyncRoot { get { return this; } }
+
+    public virtual object? this[int index] { get { return _items[index]; } set { _items[index] = value; } }
+
+    public virtual int Add(object? value) { _items.Add(value); return _items.Count - 1; }
+    public virtual void AddRange(IEnumerable c) {
+        if (c == null) { throw new ArgumentNullException("c"); }
+        IEnumerator walk = c.GetEnumerator();
+        while (walk.MoveNext()) { _items.Add(walk.Current); }
+    }
+    public virtual void Clear() { _items.Clear(); }
+    public virtual bool Contains(object? item) { return IndexOf(item) >= 0; }
+    public virtual int IndexOf(object? value) {
+        for (int i = 0; i < _items.Count; i++) { if (Equals(_items[i], value)) { return i; } }
+        return -1;
+    }
+    public virtual void Insert(int index, object? value) { _items.Insert(index, value); }
+    public virtual void Remove(object? obj) { int at = IndexOf(obj); if (at >= 0) { _items.RemoveAt(at); } }
+    public virtual void RemoveAt(int index) { _items.RemoveAt(index); }
+    public virtual void RemoveRange(int index, int count) { _items.RemoveRange(index, count); }
+    public virtual void Reverse() { _items.Reverse(); }
+    public virtual void Sort() { _items.Sort((x, y) => Comparer<object?>.Default.Compare(x, y)); }
+    public virtual void Sort(IComparer? comparer) {
+        if (comparer == null) { Sort(); return; }
+        _items.Sort((x, y) => comparer.Compare(x, y));
+    }
+    public virtual ArrayList GetRange(int index, int count) {
+        ArrayList made = new ArrayList(count);
+        for (int i = index; i < index + count; i++) { made.Add(_items[i]); }
+        return made;
+    }
+    public virtual object?[] ToArray() { return _items.ToArray(); }
+    public virtual IEnumerator GetEnumerator() { return new ObjectWalk(_items); }
+}
+
+class Hashtable : IDictionary {
+    private readonly Dictionary<object, object?> _map;
+    private readonly List<object> _order = new List<object>();
+
+    public Hashtable() { _map = new Dictionary<object, object?>(); }
+    public Hashtable(int capacity) { _map = new Dictionary<object, object?>(capacity); }
+    public Hashtable(IEqualityComparer<object>? equalityComparer) { _map = new Dictionary<object, object?>(equalityComparer ?? EqualityComparer<object>.Default); }
+
+    public virtual int Count { get { return _map.Count; } }
+    public virtual bool IsFixedSize { get { return false; } }
+    public virtual bool IsReadOnly { get { return false; } }
+    public virtual bool IsSynchronized { get { return false; } }
+    public virtual object SyncRoot { get { return this; } }
+
+    // A KEY NOT THERE READS NULL, where a Dictionary's throws; written, it
+    // is added.
+    public virtual object? this[object key] {
+        get {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            return _map.TryGetValue(key, out object? value) ? value : null;
+        }
+        set {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (!_map.ContainsKey(key)) { _order.Add(key); }
+            _map[key] = value;
+        }
+    }
+
+    public virtual void Add(object key, object? value) {
+        if (key == null) { throw new ArgumentNullException("key"); }
+        if (_map.ContainsKey(key)) { throw new ArgumentException("Item has already been added. Key in dictionary: '" + key + "'  Key being added: '" + key + "'"); }
+        _map[key] = value;
+        _order.Add(key);
+    }
+    public virtual void Clear() { _map.Clear(); _order.Clear(); }
+    public virtual bool Contains(object key) { return ContainsKey(key); }
+    public virtual bool ContainsKey(object key) {
+        if (key == null) { throw new ArgumentNullException("key"); }
+        return _map.ContainsKey(key);
+    }
+    public virtual bool ContainsValue(object? value) {
+        foreach (object? held in _map.Values) { if (Equals(held, value)) { return true; } }
+        return false;
+    }
+    public virtual void Remove(object key) {
+        if (key == null) { throw new ArgumentNullException("key"); }
+        if (_map.Remove(key)) { _order.Remove(key); }
+    }
+
+    public virtual ICollection Keys {
+        get {
+            List<object?> keys = new List<object?>(_order.Count);
+            foreach (object key in _order) { keys.Add(key); }
+            return new ObjectCollection(keys);
+        }
+    }
+    public virtual ICollection Values {
+        get {
+            List<object?> values = new List<object?>(_order.Count);
+            foreach (object key in _order) { values.Add(_map[key]); }
+            return new ObjectCollection(values);
+        }
+    }
+
+    public virtual IDictionaryEnumerator GetEnumerator() { return new HashtableWalk(this, _order); }
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    private sealed class HashtableWalk : IDictionaryEnumerator {
+        private readonly Hashtable _table;
+        private readonly List<object> _keys;
+        private int _at = -1;
+
+        public HashtableWalk(Hashtable table, List<object> keys) { _table = table; _keys = new List<object>(keys); }
+
+        public DictionaryEntry Entry { get { return new DictionaryEntry(_keys[_at], _table[_keys[_at]]); } }
+        public object Key { get { return _keys[_at]; } }
+        public object? Value { get { return _table[_keys[_at]]; } }
+        public object Current { get { return Entry; } }
+        public bool MoveNext() { _at = _at + 1; return _at < _keys.Count; }
+        public void Reset() { _at = -1; }
+    }
+}
+
+class Stack : ICollection {
+    private readonly List<object?> _items = new List<object?>();
+
+    public virtual int Count { get { return _items.Count; } }
+    public virtual bool IsSynchronized { get { return false; } }
+    public virtual object SyncRoot { get { return this; } }
+
+    public virtual void Push(object? obj) { _items.Add(obj); }
+    public virtual object? Pop() {
+        if (_items.Count == 0) { throw new InvalidOperationException("Stack empty."); }
+        object? top = _items[_items.Count - 1];
+        _items.RemoveAt(_items.Count - 1);
+        return top;
+    }
+    public virtual object? Peek() {
+        if (_items.Count == 0) { throw new InvalidOperationException("Stack empty."); }
+        return _items[_items.Count - 1];
+    }
+    public virtual bool Contains(object? obj) { return _items.Contains(obj); }
+    public virtual void Clear() { _items.Clear(); }
+    public virtual object?[] ToArray() { object?[] made = _items.ToArray(); Array.Reverse(made); return made; }
+    public virtual IEnumerator GetEnumerator() { List<object?> top = new List<object?>(_items); top.Reverse(); return new ObjectWalk(top); }
+}
+
+class Queue : ICollection {
+    private readonly List<object?> _items = new List<object?>();
+
+    public virtual int Count { get { return _items.Count; } }
+    public virtual bool IsSynchronized { get { return false; } }
+    public virtual object SyncRoot { get { return this; } }
+
+    public virtual void Enqueue(object? obj) { _items.Add(obj); }
+    public virtual object? Dequeue() {
+        if (_items.Count == 0) { throw new InvalidOperationException("Queue empty."); }
+        object? first = _items[0];
+        _items.RemoveAt(0);
+        return first;
+    }
+    public virtual object? Peek() {
+        if (_items.Count == 0) { throw new InvalidOperationException("Queue empty."); }
+        return _items[0];
+    }
+    public virtual bool Contains(object? obj) { return _items.Contains(obj); }
+    public virtual void Clear() { _items.Clear(); }
+    public virtual object?[] ToArray() { return _items.ToArray(); }
+    public virtual IEnumerator GetEnumerator() { return new ObjectWalk(new List<object?>(_items)); }
+}
+
 // ---- BitArray -------------------------------------------------------------
 //
 // System.Collections' array of bits, thirty-two to a word. A bool[] would do

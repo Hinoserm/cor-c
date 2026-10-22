@@ -2060,7 +2060,7 @@ public sealed partial class Lowering
         ("System.Collections.Generic", "Comparer Dictionary EqualityComparer HashSet ICollection IComparer IDictionary IEnumerable IEnumerator "
             + "IEqualityComparer IList IReadOnlyCollection IReadOnlyDictionary IReadOnlyList IReadOnlySet ISet KeyValuePair List Queue SortedSet "
             + "Stack LinkedList LinkedListNode SortedDictionary SortedList PriorityQueue ReferenceEqualityComparer KeyNotFoundException"),
-        ("System.Collections", "BitArray"),
+        ("System.Collections", "BitArray ArrayList Hashtable DictionaryEntry IDictionaryEnumerator"),
         ("System.Collections.Specialized", "StringCollection"),
         ("System.Linq", "IGrouping ILookup IOrderedEnumerable Lookup Grouping OrderedSequence Enumerable"),
         ("System.Numerics", "BigInteger Complex BitOperations"),

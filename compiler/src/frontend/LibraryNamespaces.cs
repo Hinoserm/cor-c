@@ -48,7 +48,8 @@ internal static class LibraryNamespaces
             "TypeInitializationException", "UInt128", "UInt16", "UInt32", "UInt64", "UIntPtr",
             "UnauthorizedAccessException", "Uri", "UriFormatException", "UriKind");
         In("System.Buffers.Binary", "BinaryPrimitives");
-        In("System.Collections", "BitArray", "IEnumerable", "IEnumerator");
+        In("System.Collections", "ArrayList", "BitArray", "DictionaryEntry", "Hashtable", "ICollection", "IComparer", "IDictionary",
+            "IDictionaryEnumerator", "IEnumerable", "IEnumerator", "IList", "Queue", "Stack");
         In("System.Collections.Generic", "Comparer`1", "Dictionary`2", "EqualityComparer`1", "HashSet`1",
             "IAsyncEnumerable`1", "IAsyncEnumerator`1", "ICollection`1", "IComparer`1", "IDictionary`2",
             "IEnumerable`1", "IEnumerator`1", "IEqualityComparer`1", "IList`1", "IReadOnlyCollection`1",
