@@ -12022,6 +12022,50 @@ public sealed partial class Binder
     /// Null when this is not one of them, so an ordinary member lookup can
     /// report what it usually would.
     /// </summary>
+    /// <summary>
+    /// `x[i]` as a call of x's getter, when that getter returns a variable
+    /// (`ref T this[int i]`); null for any other index, or one that has a
+    /// setter beside a getter of the same arity.
+    /// </summary>
+    private CallExpr? RefIndexerCall(IndexExpr ix)
+    {
+        if (ix.NullConditional || ix.Args.Any(a => a is RangeExpr or FromEndExpr)) return null;
+        if (_r.Rewrites.TryGetValue(ix, out Expr? already) && already is CallExpr made) return made;
+        Type target = Peek(ix.Target).AsNonNullable();
+        if (target.IsError || target.IsArray || target.IsPointer || target.Symbol is not TypeSymbol indexed) return null;
+        List<MethodSymbol> getters = Reachable(indexed, "get_Item").Where(g => g.Params.Count == ix.Args.Count).ToList();
+        if (getters.Count == 0 || !getters.All(g => g.RefReturn)) return null;
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = ix.Target, Name = "get_Item", Line = ix.Line, Col = ix.Col },
+            Line = ix.Line, Col = ix.Col,
+        };
+        foreach (Expr argument in ix.Args)
+        {
+            call.Args.Add(argument);
+            call.WritableArgNames.Add(null);
+        }
+        _r.Rewrites[ix] = call;
+        return call;
+    }
+
+    /// <summary>`x.P` as a call of P's getter, when that getter returns a variable (`ref T P { get … }`).</summary>
+    private CallExpr? RefMemberCall(MemberExpr m)
+    {
+        if (m.NullConditional) return null;
+        if (_r.Rewrites.TryGetValue(m, out Expr? already) && already is CallExpr made) return made;
+        Type target = Peek(m.Target).AsNonNullable();
+        if (target.IsError || target.IsArray || target.Symbol is not TypeSymbol owner) return null;
+        if (MethodsOn(owner, "get_", m.Name).FirstOrDefault(g => g.Params.Count == 0) is not { RefReturn: true }) return null;
+        CallExpr call = new()
+        {
+            Target = new MemberExpr { Target = m.Target, Name = "get_" + m.Name, Line = m.Line, Col = m.Col },
+            Line = m.Line, Col = m.Col,
+        };
+        _r.Rewrites[m] = call;
+        return call;
+    }
+
     /// <summary>An expression's type, its diagnostics held back.</summary>
     private Type? CheckQuietly(Expr e)
     {
@@ -15705,6 +15749,16 @@ public sealed partial class Binder
                     MethodSymbol? getter = IndexerFor(
                         Reachable(target.Symbol, "get_Item"), index, ix.Args.Count);
 
+                    // AN INDEXER THAT RETURNS A VARIABLE (`ref T this[int i]`) is
+                    // a call of its getter, which answers the variable: read,
+                    // written, compounded and passed by ref as a ref-returning
+                    // method's call is (RefIndexerCall).
+                    if (getter is { RefReturn: true } && RefIndexerCall(ix) is CallExpr refRead)
+                    {
+                        _r.Rewrites[ix] = refRead;
+                        return CheckExpr(refRead);
+                    }
+
                     if (getter != null)
                     {
                         for (int i = 0; i < ix.Args.Count; i++)
@@ -16042,6 +16096,14 @@ public sealed partial class Binder
                 return type;
             }
 
+            case UnaryExpr { Op: UnOp.PreInc or UnOp.PreDec or UnOp.PostInc or UnOp.PostDec } stepped
+                when (stepped.Operand is IndexExpr refStepped ? RefIndexerCall(refStepped) : stepped.Operand is MemberExpr refStepMember ? RefMemberCall(refStepMember) : null) is CallExpr refStep:
+            {
+                UnaryExpr through = new() { Op = stepped.Op, Operand = refStep, Line = stepped.Line, Col = stepped.Col };
+                _r.Rewrites[stepped] = through;
+                return CheckExpr(through);
+            }
+
             case UnaryExpr u:
             {
                 // `-2147483648` IS AN INT (C# 6.4.5.3): the literal 2147483648
@@ -16216,6 +16278,13 @@ public sealed partial class Binder
                 });
                 _r.Rewrites[fromEnd] = once;
                 return CheckExpr(once);
+            }
+
+            case AssignExpr a when (a.Target is IndexExpr refTarget ? RefIndexerCall(refTarget) : a.Target is MemberExpr refMember ? RefMemberCall(refMember) : null) is CallExpr refStore:
+            {
+                AssignExpr through = new() { Op = a.Op, Target = refStore, Value = a.Value, Line = a.Line, Col = a.Col };
+                _r.Rewrites[a] = through;
+                return CheckExpr(through);
             }
 
             case AssignExpr a:
@@ -17611,6 +17680,14 @@ public sealed partial class Binder
                 // checker sees this -- substitution replaced it -- so the
                 // expression remembers what it was written as.
                 return of.IsReference && !df.OfTypeParameter ? of.AsNullable() : of;
+            }
+
+            case RefArgExpr { Declare: null } passedRef
+                when (passedRef.Target is IndexExpr refPassed ? RefIndexerCall(refPassed) : passedRef.Target is MemberExpr refPassedMember ? RefMemberCall(refPassedMember) : null) is CallExpr refArg:
+            {
+                RefArgExpr through = new() { Target = refArg, IsOut = passedRef.IsOut, Line = passedRef.Line, Col = passedRef.Col };
+                _r.Rewrites[passedRef] = through;
+                return CheckExpr(through);
             }
 
             case RefArgExpr ra:
@@ -20583,6 +20660,14 @@ public sealed partial class Binder
         }
 
         MethodSymbol? getter = MethodsOn(owner, "get_", m.Name).FirstOrDefault();
+
+        // A PROPERTY THAT RETURNS A VARIABLE (`ref T First { get … }`): a call
+        // of its getter, as a ref-returning indexer's is (RefMemberCall).
+        if (getter is { RefReturn: true } && RefMemberCall(m) is CallExpr refRead)
+        {
+            _r.Rewrites[m] = refRead;
+            return CheckExpr(refRead);
+        }
 
         if (getter != null)
         {

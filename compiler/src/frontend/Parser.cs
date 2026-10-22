@@ -2928,9 +2928,12 @@ public sealed class Parser
 
         TypeRef type = At(Tok.KwVoid) ? VoidType() : ParseTypeRef();
 
-        if ((mods & Mods.RefReturn) != 0 && !(At(Tok.Ident) && Ahead().Kind is Tok.LParen or Tok.Lt))
+        // A METHOD, AN INDEXER OR A PROPERTY may return a variable: `ref T
+        // this[int i] => ref items[i];` -- its getter does (Binder, RefIndexer).
+        if ((mods & Mods.RefReturn) != 0 && !(At(Tok.Ident) && Ahead().Kind is Tok.LParen or Tok.Lt or Tok.LBrace or Tok.FatArrow)
+            && !(At(Tok.KwThis) && Ahead().Kind == Tok.LBracket))
         {
-            throw Error("only a method can return by reference here; a ref-returning property, indexer or operator is not supported");
+            throw Error("only a method, an indexer or a property can return by reference; an operator cannot");
         }
 
         // AN OPERATOR: `public static TimeSpan operator -(DateTime a, DateTime b)`.
@@ -5347,6 +5350,11 @@ public sealed class Parser
                     };
                 }
 
+                // `foreach (ref var x in span)` (C# 7.3): each element by
+                // reference, `ref readonly` for a ReadOnlySpan's.
+                bool byRef = !awaited && Take(Tok.KwRef);
+                bool readOnlyRef = byRef && Take(Tok.KwReadonly);
+
                 TypeRef? type = At(Tok.KwVar) ? null : ParseTypeRef();
 
                 if (type is null)
@@ -5358,6 +5366,7 @@ public sealed class Parser
                 Expect(Tok.KwIn, "'in' after the loop variable");
                 Expr seq = ParseExpr();
                 Expect(Tok.RParen, "')' after the sequence");
+                if (byRef) return RefForeach(type, name, readOnlyRef, seq, ParseStmt(), at);
                 return new ForeachStmt { Type = type, Name = name, Sequence = seq, Body = ParseStmt(), Async = awaited, Line = at.Line, Col = at.Col };
             }
 
@@ -9201,6 +9210,52 @@ public sealed class Parser
     /// arguments are inferred from the values. Two files with one shape make
     /// two classes, where C# shares one in the assembly.
     /// </summary>
+    private int _refForeachSerial;
+
+    /// <summary>
+    /// `foreach (ref T x in seq) body` as the index loop it walks: the
+    /// sequence held once, and each element a ref local of the loop's name
+    /// -- `ref T x = ref seq[i];` -- so a write to x is a write to the
+    /// element, as through a span's ref-returning indexer.
+    /// </summary>
+    private Stmt RefForeach(TypeRef? type, string name, bool readOnly, Expr seq, Stmt body, Token at)
+    {
+        int n = _refForeachSerial++;
+        string held = "$refeach$" + n, index = "$refat$" + n;
+        NameExpr Named(string id) => new() { Name = id, Line = at.Line, Col = at.Col };
+        Block outer = new() { Line = at.Line, Col = at.Col };
+        outer.WritableStatements.Add(new LocalDecl { Type = null, Name = held, Init = seq, Line = at.Line, Col = at.Col });
+        IndexExpr element = new() { Target = Named(held), Line = at.Line, Col = at.Col };
+        element.Args.Add(Named(index));
+        Block inside = new() { Line = at.Line, Col = at.Col };
+        inside.WritableStatements.Add(new LocalDecl
+        {
+            Type = type, Name = name, IsRef = true, IsReadOnlyRef = readOnly,
+            Init = new RefArgExpr { Target = element, Line = at.Line, Col = at.Col },
+            Line = at.Line, Col = at.Col,
+        });
+        inside.WritableStatements.Add(body);
+        ForStmt loop = new()
+        {
+            Init = new LocalDecl
+            {
+                Type = new TypeRef { Name = "int", Line = at.Line, Col = at.Col }, Name = index,
+                Init = new LiteralExpr { Kind = Lit.Int, Text = "0", IntValue = 0, Line = at.Line, Col = at.Col },
+                Line = at.Line, Col = at.Col,
+            },
+            Cond = new BinaryExpr
+            {
+                Op = BinOp.Lt, Left = Named(index),
+                Right = new MemberExpr { Target = Named(held), Name = "Length", Line = at.Line, Col = at.Col },
+                Line = at.Line, Col = at.Col,
+            },
+            Body = inside, Line = at.Line, Col = at.Col,
+        };
+        loop.Step.Add(new UnaryExpr { Op = UnOp.PostInc, Operand = Named(index), Line = at.Line, Col = at.Col });
+        outer.WritableStatements.Add(loop);
+        return outer;
+    }
+
     /// <summary>What C# lets stand as a statement (CS0201), as written.</summary>
     internal static bool StatementExpressionSyntax(Expr e) => e switch
     {

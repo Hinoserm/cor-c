@@ -1,0 +1,53 @@
+// test: ref_returning_indexers_and_properties
+// expect-exit: 0
+// expect-output:
+// 120 9 30 7 30 21 0
+//
+// An indexer or a property may return a variable (C# 7): `ref int this[int
+// i] => ref _items[i];` and `ref int First { get { return ref _items[0]; }
+// }`, assigned, compounded, incremented, taken by a ref local and passed by
+// ref -- each the element itself. corc refused them: only a method could
+// return by reference.
+// Expected output from .NET 10.
+
+using System;
+
+sealed class Store
+{
+    private int[] _items = { 1, 2, 3 };
+    public ref int this[int i] => ref _items[i];
+    public ref int First { get { return ref _items[0]; } }
+    public int Get(int i) => _items[i];
+}
+
+struct Grid
+{
+    private readonly int[] _cells;
+    private readonly int _w;
+    public Grid(int w, int h) { _w = w; _cells = new int[w * h]; }
+    public ref int this[int x, int y] => ref _cells[y * _w + x];
+}
+
+static class Program
+{
+    static void Twice(ref int x) => x *= 2;
+
+    static int Main()
+    {
+        Store s = new();
+        s[0] = 10;
+        s[1] += 5;
+        ref int r = ref s[2];
+        r = 30;
+        Twice(ref s[0]);
+        int copy = s[1];
+        s[1]++;
+        ++s[1];
+        s.First += 100;
+        Grid g = new(3, 2);
+        g[2, 1] = 7;
+        g[2, 1] *= 3;
+        Console.WriteLine(s.Get(0) + " " + s.Get(1) + " " + s.Get(2) + " " + copy + " " + s[2] + " " + g[2, 1] + " " + g[0, 0]);
+        return 0;
+    }
+}

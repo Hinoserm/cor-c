@@ -1,0 +1,70 @@
+// test: patterns_as_dotnet_matches_them
+// expect-exit: 0
+// expect-output:
+// lowerupperdigitspaceother
+// freezing cold mild nan hot
+// adult in Paris; west coast; long name; elsewhere
+// empty; one 4; 1..9 with 2 between; third is 7; two
+// big circle 11; small or degenerate; small or degenerate; big square; some shape; none
+// zero x long abc other
+// big long 42 True 1
+//
+// Patterns as .NET matches them: relational and logical patterns over chars
+// and doubles (NaN its own), extended property patterns `{ Home.City:
+// "Paris" }` and nested ones, list patterns with slices bound and nested,
+// type patterns with `or` and property tests, `when` guards, tuple switches
+// with discards, `not null` and `null` arms, and `and` over a type pattern
+// with a relational one.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+record Address(string City, int Zip);
+record Person(string Name, int Age, Address Home);
+abstract class Shape { }
+sealed class Circle : Shape { public double R; }
+sealed class Square : Shape { public double Side; }
+
+static class Program
+{
+    static string Classify(char c) => c switch { >= 'a' and <= 'z' => "lower", >= 'A' and <= 'Z' => "upper", >= '0' and <= '9' => "digit", ' ' or '\t' => "space", _ => "other" };
+    static string Temp(double t) => t switch { < 0 => "freezing", >= 0 and < 15 => "cold", >= 15 and < 25 => "mild", double.NaN => "nan", _ => "hot" };
+    static string Where(Person p) => p switch
+    {
+        { Home.City: "Paris", Age: >= 18 } => "adult in Paris",
+        { Home: { Zip: > 90000 } } => "west coast",
+        { Name.Length: > 5 } => "long name",
+        _ => "elsewhere",
+    };
+    static string List(int[] xs) => xs switch
+    {
+        [] => "empty",
+        [var x] => $"one {x}",
+        [1, .. var mid, 9] => $"1..9 with {mid.Length} between",
+        [_, _, .. [var third, ..]] => $"third is {third}",
+        [..] => "two",
+    };
+    static string Shape(Shape s) => s switch
+    {
+        Circle { R: > 10 } c => $"big circle {c.R}",
+        Circle or Square { Side: 0 } => "small or degenerate",
+        Square sq when sq.Side > 5 => "big square",
+        not null => "some shape",
+        null => "none",
+    };
+    static string Pair(int a, string b) => (a, b) switch { (0, _) => "zero", (_, "x") => "x", (> 0, var s) when s.Length > 2 => "long " + s, _ => "other" };
+
+    static int Main()
+    {
+        Console.WriteLine(Classify('q') + Classify('Q') + Classify('5') + Classify(' ') + Classify('#'));
+        Console.WriteLine(Temp(-3) + " " + Temp(10) + " " + Temp(20) + " " + Temp(double.NaN) + " " + Temp(30));
+        Console.WriteLine(Where(new("Ann", 30, new("Paris", 75001))) + "; " + Where(new("Bob", 10, new("LA", 90210))) + "; " + Where(new("Charlotte", 10, new("Rome", 100))) + "; " + Where(new("Di", 10, new("Oslo", 1))));
+        Console.WriteLine(List(new int[0]) + "; " + List(new[] { 4 }) + "; " + List(new[] { 1, 2, 3, 9 }) + "; " + List(new[] { 5, 6, 7, 8 }) + "; " + List(new[] { 5, 6 }));
+        Console.WriteLine(Shape(new Circle { R = 11 }) + "; " + Shape(new Circle { R = 1 }) + "; " + Shape(new Square { Side = 0 }) + "; " + Shape(new Square { Side = 6 }) + "; " + Shape(new Square { Side = 2 }) + "; " + Shape(null!));
+        Console.WriteLine(Pair(0, "a") + " " + Pair(1, "x") + " " + Pair(2, "abc") + " " + Pair(-1, "q"));
+        object o = 42L;
+        Console.WriteLine((o is long l and > 40 ? "big long " + l : "no") + " " + (o is not (int or string)) + " " + (o is IComparable cmp ? cmp.CompareTo(41L) : 9));
+        return 0;
+    }
+}

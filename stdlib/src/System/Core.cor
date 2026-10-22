@@ -9068,10 +9068,10 @@ struct ReadOnlySpan<T> {
     /// AN ELEMENT OF THE SPAN, not merely of its array: an index past the
     /// window is .NET's IndexOutOfRangeException even where the array
     /// beneath has an element there.
-    public T this[int index] {
+    public ref readonly T this[int index] {
         get {
             if ((uint)index >= (uint)count) { throw new IndexOutOfRangeException(); }
-            return items[from + index];
+            return ref items[from + index];
         }
     }
 
@@ -9272,15 +9272,13 @@ struct Span<T> {
     internal T[] Array => items;
     internal int Start => from;
 
-    /// An element of the span, not merely of its array, as ReadOnlySpan's.
-    public T this[int index] {
+    /// An element of the span, not merely of its array, as ReadOnlySpan's:
+    /// the variable itself, as .NET's indexer answers it -- `ref span[i]`,
+    /// `foreach (ref var x in span)`.
+    public ref T this[int index] {
         get {
             if ((uint)index >= (uint)count) { throw new IndexOutOfRangeException(); }
-            return items[from + index];
-        }
-        set {
-            if ((uint)index >= (uint)count) { throw new IndexOutOfRangeException(); }
-            items[from + index] = value;
+            return ref items[from + index];
         }
     }
 

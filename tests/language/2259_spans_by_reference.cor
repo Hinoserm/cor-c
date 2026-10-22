@@ -1,0 +1,41 @@
+// test: spans_by_reference
+// expect-exit: 0
+// expect-output:
+// 15,-1,30,99 143 30 ABC 99
+// out
+//
+// A span's indexer is the element itself, as .NET's `ref T this[int]` is:
+// `foreach (ref int x in span)` writes the array beneath, as do `span[0] +=
+// 5`, `span[1]++`, a ref local and a slice; a ReadOnlySpan's is `ref
+// readonly`, walked by `foreach (ref readonly int v in ro)`; a
+// stack-allocated Span<char> too. corc's spans answered copies, and
+// `foreach (ref …)` was not parsed.
+// Expected output from .NET 10.
+
+using System;
+using System.Linq;
+
+static class Program
+{
+    static int Sum(ReadOnlySpan<int> xs) { int s = 0; foreach (ref readonly int v in xs) s += v; return s; }
+
+    static int Main()
+    {
+        int[] arr = { 1, 2, 3, 4 };
+        Span<int> span = arr;
+        foreach (ref int x in span) x *= 10;
+        span[0] += 5;
+        span[1]++;
+        ref int last = ref span[3];
+        last = 99;
+        Span<int> part = span.Slice(1, 2);
+        part[0] = -1;
+        ReadOnlySpan<int> ro = arr;
+        Span<char> chars = stackalloc char[3];
+        chars[0] = 'a'; chars[1] = 'b'; chars[2] = 'c';
+        foreach (ref char c in chars) c = char.ToUpper(c);
+        Console.WriteLine(string.Join(",", arr) + " " + Sum(ro) + " " + ro[2] + " " + new string(chars) + " " + span.ToArray().Max());
+        try { int bad = span[9]; } catch (IndexOutOfRangeException) { Console.WriteLine("out"); }
+        return 0;
+    }
+}

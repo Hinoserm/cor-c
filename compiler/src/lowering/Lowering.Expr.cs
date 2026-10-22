@@ -193,6 +193,9 @@ public sealed partial class Lowering
         => e switch
         {
             RefArgExpr => true,
+            // An indexer or a property that returns a variable, as the binder
+            // made it a call of its getter (Binder.RefIndexerCall).
+            IndexExpr or MemberExpr when RefGetterCall(e) is not null => true,
             IndexExpr ix => ix.Args.Count == 1 && !_b.Indexers.ContainsKey(ix),
             MemberExpr me => _b.Resolved.TryGetValue(me, out Sym? s) && s is FieldSym,
             UnaryExpr { Op: UnOp.Deref } => true,
@@ -4622,8 +4625,18 @@ public sealed partial class Lowering
     /// Sys.ArrayData does (Addressed) and as C#'s `fixed` keeps it: the
     /// pointer is a number, which the collector does not follow.
     /// </summary>
+    /// <summary>The ref-returning getter call the binder made of `x[i]` or `x.P` (Binder.RefIndexerCall), or null.</summary>
+    private CallExpr? RefGetterCall(Expr e)
+        => e is IndexExpr or MemberExpr && _b.Rewrites.TryGetValue(e, out Expr? made) && made is CallExpr call && RefCallee(call) is not null ? call : null;
+
     private VReg AddressOf(Node at, Expr target, bool pins = false)
     {
+        // Its getter's answer is the address.
+        if (RefGetterCall(target) is CallExpr getter)
+        {
+            return EmitCall(getter);
+        }
+
         if (target is IndexExpr index && index.Args.Count == 1 && !_b.Indexers.ContainsKey(index))
         {
             Type sequence = _b.TypeOf(index.Target);
