@@ -16,6 +16,8 @@
 // GetSystemTimeZones lists the zones by their Windows names and display
 // names, which is what a Windows program and a Windows user expect to see.
 
+using System.IO;
+
 class TimeZoneNotFoundException : Exception
 {
     public TimeZoneNotFoundException() : base() { }

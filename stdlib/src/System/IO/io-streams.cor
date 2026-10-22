@@ -5,6 +5,8 @@
 // half of System.IO that a program uses to talk to ITSELF: text in a string,
 // numbers in a byte array, a buffer in front of something slow.
 
+using System.IO;
+
 /// Reading past the end of what a BinaryReader was given. .NET makes this a
 /// subclass of IOException, and a caller distinguishes it from a real failure
 /// of the device precisely because it is its own type.

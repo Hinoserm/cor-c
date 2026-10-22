@@ -4,6 +4,8 @@
 // None of them needs an operating system and none of them belongs to a larger
 // area, which is why they are together here rather than each in a file.
 
+using System.IO;
+
 // ---- Guid -----------------------------------------------------------------
 //
 // SIXTEEN BYTES, and the text form is NOT their order: the first three fields

@@ -18,6 +18,8 @@
 // what LeadingZeroCount counts, what ">>>" shifts in. Small names that range
 // here so those answers come out the same.
 
+using System.Globalization;
+
 readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<BigInteger>, IFormattable {
     private readonly int sign;       // -1, 0 or 1
     private readonly uint[] limbs;   // least significant first; no leading zeros

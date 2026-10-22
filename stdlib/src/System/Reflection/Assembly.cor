@@ -7,6 +7,8 @@
 // what .NET answers for an assembly inside a single-file bundle;
 // Environment.ProcessPath is the image, as .NET documents for that case.
 
+using System.IO;
+
 namespace System.Reflection;
 
 public class Assembly

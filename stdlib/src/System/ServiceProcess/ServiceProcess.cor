@@ -12,6 +12,8 @@
 // that connection until it is stopped -- as advapi32's dispatcher answers
 // the controller's on its pipe.
 
+using System.Threading;
+
 namespace System.ServiceProcess
 {
     public enum ServiceControllerStatus

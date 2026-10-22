@@ -22,6 +22,9 @@
 // or IOException, each with .NET's message -- with the errno kept in HResult
 // so the system's own words can still be recovered.
 
+using System.IO;
+using System.Runtime.InteropServices;
+
 /// System.ComponentModel's Win32Exception: a Windows error by its number --
 /// on Unix an errno, in strerror's words. Here beside Marshal, whose words they
 /// are, and so where Marshal is: a hosted program's.

@@ -8,6 +8,8 @@
 // restores it, as .NET's does on Unix; KeyAvailable asks whether a key is
 // waiting; CancelKeyPress is SIGINT delivered as an event.
 
+using System.Threading;
+
 /// The keys, as System.ConsoleKey names and numbers them.
 ///
 /// THE WHOLE TABLE, values and all, because it is .NET's and not ours to

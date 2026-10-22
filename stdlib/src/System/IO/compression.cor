@@ -23,6 +23,8 @@
 // table belongs to the Deflater or the Inflater and is reused block after
 // block.
 
+using System.IO;
+
 /// Whether a compressing stream compresses or decompresses. .NET's.
 enum CompressionMode
 {

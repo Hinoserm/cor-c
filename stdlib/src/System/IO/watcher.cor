@@ -5,6 +5,9 @@
 // names the Filter matches. A rename is inotify's MOVED_FROM and MOVED_TO
 // sharing a cookie; one without the other is a name that came or went.
 
+using System.IO;
+using System.Threading;
+
 [Flags]
 enum NotifyFilters
 {

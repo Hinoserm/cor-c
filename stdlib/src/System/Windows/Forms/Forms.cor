@@ -57,6 +57,9 @@ using System.Drawing;
 using Corsac.GUI;
 using Microsoft.Win32;
 using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Threading;
 
 namespace System.Windows.Forms;
 

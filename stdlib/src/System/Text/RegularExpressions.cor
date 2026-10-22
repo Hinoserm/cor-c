@@ -28,6 +28,9 @@
 // letters it is equivalent to, decided once as the pattern is read, so 'k'
 // also matches the Kelvin sign; a back-reference compares lower-cased.
 
+using System.Globalization;
+using System.Threading;
+
 enum RegexOptions
 {
     None = 0,

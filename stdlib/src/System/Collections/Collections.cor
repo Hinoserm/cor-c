@@ -11,6 +11,8 @@
 // that an insert into the middle of a large SortedDictionary shifts rather
 // than rotates, and every answer, ordering and exception is .NET's.
 
+using System.Collections.ObjectModel;
+
 // ---- Stack ----------------------------------------------------------------
 //
 // LAST IN, FIRST OUT, on a growable array whose top is its end -- so Push and

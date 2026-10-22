@@ -7,6 +7,14 @@
 //
 //   corc compile myprogram.cor -o myprogram
 
+using System;
+using System.Buffers;
+using System.Buffers.Text;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+
 // ---- String ---------------------------------------------------------------
 // What '+', '==' and the ordering comparisons on strings actually call. The
 // compiler lowers those operators into these methods rather than emitting code

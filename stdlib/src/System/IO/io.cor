@@ -4,6 +4,9 @@
 // underneath (runtime/src/platforms/linux/system.cor), so a program written for .NET compiles
 // here unchanged.
 
+using System;
+using System.IO;
+
 enum FileMode
 {
     CreateNew = 1,

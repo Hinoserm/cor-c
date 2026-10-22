@@ -21,6 +21,8 @@
 // .NET writes. Writing produces whichever TarWriter was asked for, and only
 // spends an extra record when the header genuinely cannot hold the value.
 
+using System.IO;
+
 /// Which of the four interchange formats an entry is in.
 enum TarEntryFormat
 {

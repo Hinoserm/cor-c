@@ -40,6 +40,12 @@
 //
 // ---- atomics on a word inside an object -------------------------------------
 
+using System;
+using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+
 /// Where the words that atomic operations work on live, and a spin lock.
 ///
 /// THE LAYOUT ASSUMPTION, in one place. An object is a two-word header

@@ -42,6 +42,8 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.ServiceProcess;
+using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace System.Runtime.InteropServices
 {

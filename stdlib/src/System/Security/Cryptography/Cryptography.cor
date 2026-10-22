@@ -2,6 +2,9 @@
 // system's randomness, as .NET hands it out. On Linux that is getrandom(2)
 // blocking until the pool is seeded, which is exactly what a program
 // making keys wants and never what it should have to think about.
+
+using System.IO;
+
 static class RandomNumberGenerator
 {
     public static void Fill(byte[] data)

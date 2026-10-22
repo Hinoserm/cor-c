@@ -2,6 +2,8 @@
 // IPEndPoint, Dns, Socket, TcpClient, TcpListener, NetworkStream. IPv4
 // only for now, which is what the machine this is for will speak.
 
+using System.IO;
+
 enum AddressFamily
 {
     Unspecified = 0,

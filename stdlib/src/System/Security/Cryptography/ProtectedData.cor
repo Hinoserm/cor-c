@@ -7,6 +7,8 @@
 // store, through the NT kernel's Protected Storage, so either side reads
 // what the other protected.
 
+using System.ServiceProcess;
+
 /// Who may unprotect what was protected.
 public enum DataProtectionScope
 {
