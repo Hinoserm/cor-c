@@ -314,7 +314,7 @@ public static class Driver
               -D <name>          define a conditional symbol, for `#if`; may be
                                  repeated, and several may be separated by commas
               -Wno-error         show warnings and go on; by default a warning fails the compile
-              --check            read, bind and lower the program, report what is wrong, write nothing
+              --check            read and bind the program, report what is wrong, write nothing
               --entry <sym>      the entry symbol (default _start)
               --freestanding     no operating system: link runtime/src/arch/x86/baremetal.cor,
                                  no thread scheduler, and an entry stub that
@@ -559,6 +559,12 @@ public static class Driver
     private sealed record UnitFront(Module Module, Dictionary<string, string> Entries, Dictionary<string, byte[]> DefinitionSemantics,
         List<ManagedTypeLayout> Layouts, List<RegistrySchema> Schemas, List<string> ModuleInfo);
 
+    /// <summary>--check: the program is read and bound, and its errors reported, and nothing more (FrontToModule).</summary>
+    private static bool _checkOnly;
+
+    /// <summary>What FrontToModule answers for a program --check found nothing wrong with: no module is made.</summary>
+    private static readonly UnitFront Checked = new(null!, new(), new(), new(), new(), new());
+
     /// <summary>
     /// Parses, binds and lowers a unit, and takes from its syntax and
     /// bindings what is written into the object after code generation: the
@@ -593,6 +599,10 @@ public static class Driver
         if (front is null)
         {
             return null;
+        }
+        if (_checkOnly)
+        {
+            return Checked;
         }
 
         List<CompileError> errors = new();
@@ -889,10 +899,10 @@ public static class Driver
         Parser.ProjectUsings = Values(args, "--using").ToList();
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
-        // --check: the source read, bound and lowered, its errors and warnings
+        // --check: the source read and bound, its errors and warnings
         // reported, and nothing written -- the question of whether a program
-        // compiles, asked of a whole tree in the time its front end takes.
-        bool checkOnly = args.Contains("--check");
+        // compiles, asked of a whole tree in the time its binding takes.
+        bool checkOnly = _checkOnly = args.Contains("--check");
 
         // A shared object IS the class library, so everything in it counts as
         // library source: that is what lets a definition be given away to
