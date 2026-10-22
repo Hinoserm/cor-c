@@ -1,0 +1,39 @@
+// test: nullable_elements_of_lists_and_jagged_arrays
+// expect-exit: 0
+// expect-output:
+// 6
+// 3 2 2 1
+//
+// Elements that may be null, as C# reads them, with no warning:
+// - a collection initializer's element is the collection's as its use has
+//   it: `new() { "ab", null }` for a List<string?> adds a string?;
+// - a `?` after the k-th brackets of an array type marks the array of the
+//   first k ranks, which the later ones wrap: `int[]?[][]` is an array of
+//   `int[]?[]` (the compiler's region solver writes one), its initializer's
+//   rows and a lambda answering one included.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+static class Program
+{
+    static int Main()
+    {
+        List<string?> a = new() { "ab", null };
+        List<string?> b = new List<string?> { null };
+        List<string?> c = new();
+        c.Add(null);
+        var d = new List<string?> { "x" };
+        d.Add(null);
+        Console.WriteLine(a.Count + b.Count + c.Count + d.Count);
+
+        List<int[]?> calls = new() { new[] { 1 }, null };
+        calls.Add(null);
+        int[]?[] row = { new[] { 2 }, null };
+        int[]?[][] grid = { row, new int[]?[] { null } };
+        int[]?[][] copied = grid.Select(r => (int[]?[])r.Clone()).ToArray();
+        Console.WriteLine(calls.Count + " " + row.Length + " " + grid.Length + " " + copied[0][0]!.Length);
+        return 0;
+    }
+}

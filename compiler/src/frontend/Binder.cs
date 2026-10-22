@@ -13730,12 +13730,21 @@ public sealed partial class Binder
     {
         Type bare = t;
         int rank = 0;
+        // The `?` of each array between the outermost and the element, by its
+        // depth from the outside (bit d), turned into TypeRef.InnerNullable's
+        // levels counted from the innermost below: dropped, an `int[]?[]`
+        // inferred for a lambda's result came back an `int[][]`.
+        int deeper = 0;
 
         while (bare.IsArray && bare.Element is Type of)
         {
+            if (rank > 0 && bare.Nullable) deeper |= 1 << rank;
             bare = of;
             rank++;
         }
+        int inner = 0;
+        for (int depth = 1; depth < rank; depth++)
+            if ((deeper & (1 << depth)) != 0) inner |= 1 << (rank - depth - 1);
 
         // A synthesized tuple symbol name is an implementation key such as
         // `ValueTuple$string$int`, not a type spelling. Feeding that key back
@@ -13750,6 +13759,7 @@ public sealed partial class Binder
                 ArrayRank = rank,
                 Nullable = rank == 0 ? bare.Nullable : t.Nullable,
                 ElementNullable = rank > 0 && bare.Nullable,
+                InnerNullable = inner,
                 TupleNames = (bare.Names ?? tuple.TupleNames) is not { } tupleNames
                     ? null
                     : new List<string>(tupleNames),
@@ -13797,6 +13807,7 @@ public sealed partial class Binder
             ArrayRank = rank,
             Nullable = rank == 0 ? bare.Nullable : t.Nullable,
             ElementNullable = rank > 0 && bare.Nullable,
+            InnerNullable = inner,
         };
     }
 
@@ -14101,7 +14112,10 @@ public sealed partial class Binder
                     _wanted = saved;
                 }
                 given[i] = Settle(add.Args[i], element, given[i]);
-                CheckAssignable(given[i], chosen.Params[i].Type, add.Args[i], What.ArgumentOf(i + 1, "Add"));
+                // The element as the collection's use has it, as above: `new()
+                // { "ab", null }` for a List<string?> adds a string? -- checked
+                // against the specialisation's Add(string), the null was refused.
+                CheckAssignable(given[i], element, add.Args[i], What.ArgumentOf(i + 1, "Add"));
             }
 
             _r.InitAdder[add] = chosen;

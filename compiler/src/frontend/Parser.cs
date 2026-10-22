@@ -7622,6 +7622,21 @@ public sealed class Parser
         && (_t[j].Text is not ("or" or "and" or "when")
             || _t[j].Text is "or" or "and" && j + 1 < _t.Count && !StartsPattern(_t[j + 1].Kind));
 
+    /// <summary>
+    /// The `?` marks of an array type's ELEMENT -- the array with its outermost
+    /// rank taken away. TypeRef.InnerNullable counts the levels from the
+    /// innermost, as C# reads them: `int[]?[][]` is an array of `int[]?[]`, the
+    /// mark after the first brackets the innermost array's. So the element's
+    /// own mark is the level just inside the outermost, and its inner marks
+    /// the ones below it. Taken from the bottom, the element of an `int[]?[][]`
+    /// was read as an `int[][]?`, and `int[]?[][] grid = { row }` warned of
+    /// its rows as C# does not.
+    /// </summary>
+    private static (bool Own, int Inner) ElementMarks(TypeRef array)
+        => array.ArrayRank <= 1
+            ? (array.ElementNullable, 0)
+            : ((array.InnerNullable >> (array.ArrayRank - 2) & 1) != 0, array.InnerNullable & ((1 << (array.ArrayRank - 2)) - 1));
+
     private SwitchStmt ParseSwitch()
     {
         Token at = _t[_i++];
@@ -8530,9 +8545,9 @@ public sealed class Parser
             Type = new TypeRef
             {
                 Name = declared.Name, Arguments = declared.Args,
-                Nullable = declared.ArrayRank == 1 ? declared.ElementNullable : (declared.InnerNullable & 1) != 0,
+                Nullable = ElementMarks(declared).Own,
                 ElementNullable = declared.ArrayRank > 1 && declared.ElementNullable,
-                InnerNullable = declared.InnerNullable >> 1,
+                InnerNullable = ElementMarks(declared).Inner,
                 PointerDepth = declared.PointerDepth, ArrayRank = declared.ArrayRank - 1,
                 TupleNames = declared.TupleNames, Line = at.Line, Col = at.Col,
             },
@@ -8956,9 +8971,9 @@ public sealed class Parser
                 Type = new TypeRef
                 {
                     Name = type.Name, Arguments = type.Args,
-                    Nullable = type.ArrayRank == 1 ? type.ElementNullable : (type.InnerNullable & 1) != 0,
+                    Nullable = ElementMarks(type).Own,
                     ElementNullable = type.ArrayRank > 1 && type.ElementNullable,
-                    InnerNullable = type.InnerNullable >> 1,
+                    InnerNullable = ElementMarks(type).Inner,
                     PointerDepth = type.PointerDepth, ArrayRank = type.ArrayRank - 1,
                     Line = type.Line, Col = type.Col,
                 },
