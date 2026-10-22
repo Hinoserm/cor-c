@@ -1,0 +1,55 @@
+// test: null_state_of_tuple_elements_and_switch_subjects
+// expect-exit: 0
+// expect-output:
+// 1 1 1
+// 1 0 1 3
+//
+// Two more places C# knows a nullable reference is not null, with no `!`:
+// - a tuple's named element once tested, `r.Origin is not null &&
+//   Use(r.Origin)` -- the compiler's link reachability reads its pending
+//   references so;
+// - a switch's subject in a section whose label only a value passes, `case
+//   Name n when …: return Integral(e)`, or past a `case null:` -- the
+//   compiler's decimal folding reads its expression so.
+
+using System;
+using System.Collections.Generic;
+
+class Expr { }
+sealed class Name : Expr { public string Text = "x"; }
+
+static class Program
+{
+    static int Use(Expr e) => e is Name ? 1 : 2;
+
+    static int TupleIf((Expr? Origin, string Symbol) r) { if (r.Origin is not null && Use(r.Origin) > 0) return Use(r.Origin); return 0; }
+    static int TupleNe((Expr? Origin, string Symbol) r) => r.Origin != null ? Use(r.Origin) : 0;
+    static int TupleIs((Expr? Origin, string Symbol) r) => r.Origin is not null ? Use(r.Origin) : 0;
+
+    static int WithNull(Expr? e)
+    {
+        switch (e)
+        {
+            case null: return 0;
+            case Name n when n.Text.Length > 5: return 9;
+            default: return Use(e);
+        }
+    }
+
+    static int Typed(Expr? e)
+    {
+        switch (e)
+        {
+            case Name n when n.Text.Length > 0: return Use(e);
+            default: return 3;
+        }
+    }
+
+    static int Main()
+    {
+        Name a = new();
+        Console.WriteLine(TupleIf((a, "s")) + " " + TupleNe((a, "s")) + " " + TupleIs((a, "s")));
+        Console.WriteLine(WithNull(a) + " " + WithNull(null) + " " + Typed(a) + " " + Typed(null));
+        return 0;
+    }
+}

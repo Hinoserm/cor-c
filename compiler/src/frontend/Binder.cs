@@ -7572,6 +7572,22 @@ public sealed partial class Binder
                         caseProof = Assume(c.Pattern, true);
                     }
 
+                    // THE SUBJECT IS NOT NULL in a section whose label only a
+                    // value passes -- a type test, a constant -- and in any
+                    // section but the null one where a `case null:` takes null:
+                    // `case NameExpr local when …: return Integral(e, …)` reads e
+                    // as an Expr, as C# does. A local or parameter by its symbol,
+                    // which is how a name's read is narrowed, and a path by its
+                    // spelling; both let go with the section's proof.
+                    bool nullSection = c.Pattern is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr, Right: LiteralExpr { Kind: Lit.Null } };
+                    if (!nullSection && (caseNull || c.Pattern is not null && PatternExcludesNull(c.Pattern, true)))
+                    {
+                        if (Path(sw.Subject) is string subjectPath && _notNullPaths.Add(subjectPath)) caseProof.Add(new PathSym(subjectPath));
+                        if (_r.Resolved.TryGetValue(sw.Subject, out Sym? subjectSym)
+                            && subjectSym is LocalSym or ParamSym or FieldSym or CapturedFieldSym && _notNull.Add(subjectSym))
+                            caseProof.Add(subjectSym);
+                    }
+
                     foreach (Stmt body in c.Body)
                     {
                         CheckStmt(body);
@@ -18207,7 +18223,7 @@ public sealed partial class Binder
         // after the test reads `i.Dest.Type`. Each receiver of the chain.
         Expr? valued = cond switch
         {
-            PatternExpr tested when ExcludesNull(tested.Test, holds) => tested.Subject,
+            PatternExpr tested when PatternExcludesNull(tested.Test, holds) => tested.Subject,
             BinaryExpr { Op: BinOp.Eq or BinOp.Ne, PatternConstant: false } compared
                 when (compared.Op == BinOp.Eq) == holds && compared.Right is not LiteralExpr { Kind: Lit.Null }
                      && compared.Left is not LiteralExpr { Kind: Lit.Null } =>
@@ -18242,25 +18258,31 @@ public sealed partial class Binder
             at = receiver;
         }
         return added;
-
-        // What a pattern's test says of its subject when it comes out `holds`:
-        // whether that outcome is only had by a value that is not null.
-        static bool ExcludesNull(Expr test, bool holds) => test switch
-        {
-            UnaryExpr { Op: UnOp.Not } negated => ExcludesNull(negated.Operand, !holds),
-            BinaryExpr { Op: BinOp.OrElse } either => holds ? ExcludesNull(either.Left, true) && ExcludesNull(either.Right, true)
-                                                            : ExcludesNull(either.Left, false) || ExcludesNull(either.Right, false),
-            BinaryExpr { Op: BinOp.AndAlso } both => holds ? ExcludesNull(both.Left, true) || ExcludesNull(both.Right, true)
-                                                           : ExcludesNull(both.Left, false) && ExcludesNull(both.Right, false),
-            // `is null` false; `is not null` and `is { }` true.
-            BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } => !holds,
-            BinaryExpr { Op: BinOp.Ne, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } => holds,
-            // A constant (null is the one constant a null equals) or a
-            // relational pattern -- `< 5`, which C# lifts to false for null.
-            BinaryExpr { Op: BinOp.Eq or BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge, Left: SubjectExpr { Outer: 0 } } => holds,
-            _ => false,
-        };
     }
+
+    /// <summary>
+    /// What a pattern's test says of its subject when it comes out
+    /// <paramref name="holds"/>: whether that outcome is only had by a value
+    /// that is not null -- a type test, a constant other than null, a
+    /// relational test, `not null`, and what `and`, `or` and `not` make of them.
+    /// </summary>
+    private static bool PatternExcludesNull(Expr test, bool holds) => test switch
+    {
+        UnaryExpr { Op: UnOp.Not } negated => PatternExcludesNull(negated.Operand, !holds),
+        BinaryExpr { Op: BinOp.OrElse } either => holds ? PatternExcludesNull(either.Left, true) && PatternExcludesNull(either.Right, true)
+                                        : PatternExcludesNull(either.Left, false) || PatternExcludesNull(either.Right, false),
+        BinaryExpr { Op: BinOp.AndAlso } both => holds ? PatternExcludesNull(both.Left, true) || PatternExcludesNull(both.Right, true)
+                                           : PatternExcludesNull(both.Left, false) && PatternExcludesNull(both.Right, false),
+        // `is null` false; `is not null` and `is { }` true.
+        BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } => !holds,
+        BinaryExpr { Op: BinOp.Ne, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } => holds,
+        // A constant (null is the one constant a null equals) or a
+        // relational pattern -- `< 5`, which C# lifts to false for null.
+        BinaryExpr { Op: BinOp.Eq or BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge, Left: SubjectExpr { Outer: 0 } } => holds,
+        // `case NameExpr local:` -- a type test no null passes.
+        IsExpr { Operand: SubjectExpr { Outer: 0 } } => holds,
+        _ => false,
+    };
 
     private HashSet<string> OutPathsWhen(Expr expression, bool holds)
     {
@@ -19435,7 +19457,11 @@ public sealed partial class Binder
             {
                 RequireNonNull(target, m.Target, "read");
                 _r.Resolved[m] = new FieldSym(shaped.Fields[which]);
-                return TupleItem(target, shaped, which);
+                // ITS NULL STATE BY PATH, as a field's: `r.Origin is not null
+                // && Use(r.Origin)` proved r.Origin and read it as maybe null.
+                Type item = TupleItem(target, shaped, which);
+                if (!item.IsNullableValue && Path(m) is string path && _notNullPaths.Contains(path)) item = item.AsNonNullable();
+                return item;
             }
         }
 
