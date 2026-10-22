@@ -9548,21 +9548,34 @@ public sealed partial class Binder
     {
         if (lam.BlockBody != null)
         {
-            // ITS GENERIC LOCAL FUNCTIONS TOO, as CheckBlock declares a
-            // block's: a lambda's body is that block, read here statement by
-            // statement, and `T Mark<T>(T v)` inside one was never named.
-            foreach ((string name, string method) in lam.BlockBody.GenericLocals)
+            // ITS RETURNS ARE ITS OWN. A lambda bound inside another whose
+            // result is being inferred (LambdaGives, LambdaResult) returns
+            // from itself, not from the outer one; left set, the inner
+            // `return 5;` was taken for one of the outer lambda's values,
+            // which then gave an int and fitted no Action -- `Start(1, s =>
+            // { int n = Run(() => { return 5; }); })` found no overload of
+            // Start, where the same inner call at the top of Main bound.
+            List<Type>? wasInferred = _inferredReturns;
+            _inferredReturns = null;
+            try
             {
-                DeclareGenericLocal(lam.BlockBody, name, method);
+                // ITS GENERIC LOCAL FUNCTIONS TOO, as CheckBlock declares a
+                // block's: a lambda's body is that block, read here statement by
+                // statement, and `T Mark<T>(T v)` inside one was never named.
+                foreach ((string name, string method) in lam.BlockBody.GenericLocals)
+                {
+                    DeclareGenericLocal(lam.BlockBody, name, method);
+                }
+                DeclareLocalFunctions(lam.BlockBody);
+                bool labels = PushLabels(lam.BlockBody);
+                foreach (Stmt s in lam.BlockBody.Statements)
+                {
+                    CheckStmt(s);
+                }
+                if (labels) _labels.RemoveAt(_labels.Count - 1);
+                if (lam.BlockBody.GenericLocals.Count > 0) DiscoverGenericCaptures(lam.BlockBody);
             }
-            DeclareLocalFunctions(lam.BlockBody);
-            bool labels = PushLabels(lam.BlockBody);
-            foreach (Stmt s in lam.BlockBody.Statements)
-            {
-                CheckStmt(s);
-            }
-            if (labels) _labels.RemoveAt(_labels.Count - 1);
-            if (lam.BlockBody.GenericLocals.Count > 0) DiscoverGenericCaptures(lam.BlockBody);
+            finally { _inferredReturns = wasInferred; }
             return;
         }
 

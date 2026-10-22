@@ -1,0 +1,48 @@
+// test: nested_block_lambda_returns_its_own_value
+// expect-exit: 0
+// expect-output:
+// 3 9
+// s 5 40
+// inner s
+// 10
+//
+// A block-bodied lambda that returns a value, written inside another lambda
+// passed to a method. Whether the outer lambda fits Start's Action<string>
+// is asked by inferring what its block returns, and the inner lambda's own
+// `return n;` -- bound while that was being asked -- was counted as one of
+// the outer lambda's returns: the outer one then gave an int, fitted no
+// Action, and the call was refused ("no overload of 'Start' accepts (int,
+// object)"), where the same inner call at the top of Main bound. A local
+// function's returns are its own the same way.
+
+using System;
+
+static class H
+{
+    public static T Ui<T>(int form, Func<T> work) { return work(); }
+    public static void Ui(int form, Action work) { work(); }
+    public static void Start(int form, Action<string> body) { body("s"); }
+    public static int Twice(Func<int, int> f) { return f(f(1)); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        int counter = 3;
+        H.Start(1, s =>
+        {
+            int had = H.Ui(1, () => { int n = counter; counter = 9; return n; });
+            Console.WriteLine(had + " " + counter);
+        });
+        H.Start(2, s =>
+        {
+            Func<int> five = () => { return 5; };
+            int Local(int x) { return x * 10; }
+            Console.WriteLine(s + " " + five() + " " + Local(4));
+        });
+        H.Ui(3, () => { H.Start(4, s => { Console.WriteLine("inner " + s); }); });
+        Console.WriteLine(H.Twice(x => { int y = x + 1; return y * 2; }));
+        return 0;
+    }
+}
