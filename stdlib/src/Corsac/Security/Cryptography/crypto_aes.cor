@@ -1,0 +1,311 @@
+// CORSAC/SECURE Crypto portable AES-128 and AES-256.
+//
+// Binary keys and blocks are byte arrays.  The expanded key and all working
+// state belong to this heap object, so independent contexts remain correct
+// when a thread migrates or two operations are interleaved. Per-operation
+// discovery selects the small AES register-pair round/key helpers. The
+// compiler keeps one block's state in GPRs across its software round loop;
+// no whole-cipher CPU opcode or hidden key state is involved. Older/excluded
+// units use a table-free portable implementation, including key expansion.
+// Substitution uses fixed-work GF inversion followed by the FIPS 197 affine
+// transform. Sys.GaloisFieldMultiply selects the documented stateless GFMul
+// operation when installed and eight masked software steps when excluded.
+// This removes secret-indexed substitution addresses; it does not by itself
+// establish constant-time behavior of the compiler, runtime or whole system.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_Aes
+{
+    public const int BlockBytes = 16;
+    public const int Key128Bytes = 16;
+    public const int Key256Bytes = 32;
+    public const int InvalidArgument = 1;
+    public const int ProtocolState = 9;
+
+    private byte[] _roundKeys;
+    private byte[] _state;
+    // Retained empty fields preserve the established V1 instance layout.
+    // Neither is a substitution table or is indexed by key/state bytes.
+    private byte[] _sbox;
+    private byte[] _inverseSbox;
+    private int _rounds;
+    private int _error;
+    private bool _closed;
+
+    /// Copies and expands a 16-byte or 32-byte key.  No caller-owned key
+    /// storage is retained after the constructor returns.
+    public CorsacSecureCrypto_Aes(
+        byte[] key, long keyOffset, long keyCount)
+    {
+        _roundKeys = new byte[240];
+        _state = new byte[BlockBytes];
+        _sbox = new byte[0];
+        _inverseSbox = new byte[0];
+
+        if ((keyCount != Key128Bytes && keyCount != Key256Bytes)
+            || !CorsacSecureCrypto_Bytes.Range(key, keyOffset, keyCount))
+        {
+            _error = InvalidArgument;
+            return;
+        }
+
+        ExpandKey(key, keyOffset, (int)keyCount);
+    }
+
+    public int Error => _error;
+
+    /// Encrypts exactly one AES block.  The complete input is copied before
+    /// output is touched, so exact or partial input/output overlap is safe.
+    /// An invalid call changes no caller-owned output and records a stable
+    /// context error.
+    public bool EncryptBlock(byte[] input, long inputOffset,
+                             byte[] output, long outputOffset)
+    {
+        if (!Ready()) return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(
+                input, inputOffset, BlockBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, BlockBytes))
+            return Fail(InvalidArgument);
+
+        CorsacSecureCrypto_Bytes.Copy(
+            _state, 0, input, inputOffset, BlockBytes);
+        if (!Sys.TryAesEncryptBlock(Sys.ArrayData(_state),
+                                    Sys.ArrayData(_roundKeys), _rounds))
+        {
+        AddRoundKey(0);
+        for (int round = 1; round < _rounds; round = round + 1)
+        {
+            SubBytes();
+            ShiftRows();
+            MixColumns();
+            AddRoundKey(round);
+        }
+        SubBytes();
+        ShiftRows();
+        AddRoundKey(_rounds);
+        }
+
+        bool copied = CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, _state, 0, BlockBytes);
+        EraseState();
+        return copied;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        CorsacSecureCrypto_Bytes.Zero(
+            _roundKeys, 0, _roundKeys.Length);
+        CorsacSecureCrypto_Bytes.Zero(_state, 0, _state.Length);
+        CorsacSecureCrypto_Bytes.Zero(_sbox, 0, _sbox.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _inverseSbox, 0, _inverseSbox.Length);
+        _rounds = 0;
+        _closed = true;
+    }
+
+    /// One-shot AES block encryption.  It accepts only AES-128 and AES-256;
+    /// AES-192 is deliberately outside the Crypto interface.
+    public static bool Encrypt(
+        byte[] key, long keyOffset, long keyCount,
+        byte[] input, long inputOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!ValidOneShot(
+                key, keyOffset, keyCount,
+                input, inputOffset, output, outputOffset))
+            return false;
+
+        CorsacSecureCrypto_Aes context =
+            new CorsacSecureCrypto_Aes(key, keyOffset, keyCount);
+        bool okay = context.Error == 0
+            && context.EncryptBlock(input, inputOffset, output, outputOffset);
+        context.Close();
+        return okay;
+    }
+
+    private static bool ValidOneShot(
+        byte[] key, long keyOffset, long keyCount,
+        byte[] input, long inputOffset,
+        byte[] output, long outputOffset)
+    {
+        return (keyCount == Key128Bytes || keyCount == Key256Bytes)
+            && CorsacSecureCrypto_Bytes.Range(
+                key, keyOffset, keyCount)
+            && CorsacSecureCrypto_Bytes.Range(
+                input, inputOffset, BlockBytes)
+            && CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, BlockBytes);
+    }
+
+    private bool Ready()
+    {
+        return !_closed && _error == 0;
+    }
+
+    private bool Fail(int error)
+    {
+        EraseState();
+        if (_error == 0) _error = error;
+        return false;
+    }
+
+    private void ExpandKey(byte[] key, long keyOffset, int keyBytes)
+    {
+        for (int i = 0; i < keyBytes; i = i + 1)
+            _roundKeys[i] = key[(int)keyOffset + i];
+
+        _rounds = keyBytes == Key128Bytes ? 10 : 14;
+        int expandedBytes = (_rounds + 1) * BlockBytes;
+        int generated = keyBytes;
+        int rcon = 1;
+        // The rolling schedule is always stored in the existing binary
+        // array. A later CPU can fall back without an opaque accelerator key.
+        while (generated < expandedBytes)
+        {
+            long output = Sys.ArrayData(_roundKeys) + generated;
+            bool rotated = (generated % keyBytes) == 0;
+            bool assisted;
+            if (keyBytes == Key128Bytes)
+                assisted = Sys.TryAesKey128Next(output, output - 16, rcon);
+            else
+                assisted = Sys.TryAesKey256Next(output, output - 32, output - 16,
+                                               rotated ? rcon : 256);
+            if (!assisted) break;
+            generated = generated + 16;
+            if (rotated)
+            {
+                int high = (rcon >> 7) & 1;
+                rcon = ((rcon << 1) & 255) ^ (0x1b & (0 - high));
+            }
+        }
+        if (generated == expandedBytes) return;
+        byte[] word = new byte[4];
+
+        while (generated < expandedBytes)
+        {
+            for (int i = 0; i < 4; i = i + 1)
+                word[i] = _roundKeys[generated - 4 + i];
+
+            if ((generated % keyBytes) == 0)
+            {
+                byte first = word[0];
+                word[0] = Substitute(word[1]);
+                word[1] = Substitute(word[2]);
+                word[2] = Substitute(word[3]);
+                word[3] = Substitute(first);
+                word[0] = (byte)(word[0] ^ rcon);
+                int high = (rcon >> 7) & 1;
+                rcon = ((rcon << 1) & 255)
+                    ^ (0x1b & (0 - high));
+            }
+            else if (keyBytes == Key256Bytes
+                     && (generated % keyBytes) == 16)
+            {
+                for (int i = 0; i < 4; i = i + 1)
+                    word[i] = Substitute(word[i]);
+            }
+
+            for (int i = 0; i < 4 && generated < expandedBytes;
+                 i = i + 1)
+            {
+                _roundKeys[generated] = (byte)(
+                    _roundKeys[generated - keyBytes] ^ word[i]);
+                generated = generated + 1;
+            }
+        }
+        CorsacSecureCrypto_Bytes.Zero(word, 0, word.Length);
+    }
+
+    private void AddRoundKey(int round)
+    {
+        int at = round * BlockBytes;
+        for (int i = 0; i < BlockBytes; i = i + 1)
+            _state[i] = (byte)(_state[i] ^ _roundKeys[at + i]);
+    }
+
+    private void SubBytes()
+    {
+        for (int i = 0; i < BlockBytes; i = i + 1)
+            _state[i] = Substitute(_state[i]);
+    }
+
+    private void ShiftRows()
+    {
+        byte value = _state[1];
+        _state[1] = _state[5];
+        _state[5] = _state[9];
+        _state[9] = _state[13];
+        _state[13] = value;
+
+        value = _state[2];
+        _state[2] = _state[10];
+        _state[10] = value;
+        value = _state[6];
+        _state[6] = _state[14];
+        _state[14] = value;
+
+        value = _state[15];
+        _state[15] = _state[11];
+        _state[11] = _state[7];
+        _state[7] = _state[3];
+        _state[3] = value;
+    }
+
+    private void MixColumns()
+    {
+        for (int column = 0; column < 4; column = column + 1)
+        {
+            int at = column * 4;
+            int s0 = _state[at] & 255;
+            int s1 = _state[at + 1] & 255;
+            int s2 = _state[at + 2] & 255;
+            int s3 = _state[at + 3] & 255;
+            int x0 = (int)Sys.GaloisFieldMultiply(s0, 2);
+            int x1 = (int)Sys.GaloisFieldMultiply(s1, 2);
+            int x2 = (int)Sys.GaloisFieldMultiply(s2, 2);
+            int x3 = (int)Sys.GaloisFieldMultiply(s3, 2);
+
+            _state[at] = (byte)(x0 ^ (x1 ^ s1) ^ s2 ^ s3);
+            _state[at + 1] = (byte)(s0 ^ x1 ^ (x2 ^ s2) ^ s3);
+            _state[at + 2] = (byte)(s0 ^ s1 ^ x2 ^ (x3 ^ s3));
+            _state[at + 3] = (byte)((x0 ^ s0) ^ s1 ^ s2 ^ x3);
+        }
+    }
+
+    // FIPS 197 sections 4.4, 5.1.1 and 5.3.2. This addition chain raises
+    // x to 254 in GF(2^8), modulo x^8+x^4+x^3+x+1. It also maps zero to
+    // zero without a special-case branch. Every input uses the same eleven
+    // field multiplies (eight fixed masked steps each on a unit-free CPU).
+    // Source: https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.197-upd1.pdf
+    private static int InvertByte(int value)
+    {
+        int x = value & 255;
+        int x2 = (int)Sys.GaloisFieldMultiply(x, x);
+        int x3 = (int)Sys.GaloisFieldMultiply(x2, x);
+        int x6 = (int)Sys.GaloisFieldMultiply(x3, x3);
+        int x12 = (int)Sys.GaloisFieldMultiply(x6, x6);
+        int x15 = (int)Sys.GaloisFieldMultiply(x12, x3);
+        int x30 = (int)Sys.GaloisFieldMultiply(x15, x15);
+        int x60 = (int)Sys.GaloisFieldMultiply(x30, x30);
+        int x120 = (int)Sys.GaloisFieldMultiply(x60, x60);
+        int x240 = (int)Sys.GaloisFieldMultiply(x120, x120);
+        int x252 = (int)Sys.GaloisFieldMultiply(x240, x12);
+        return (int)Sys.GaloisFieldMultiply(x252, x2);
+    }
+
+    private static byte Substitute(int value)
+    {
+        int x = InvertByte(value);
+        return (byte)((x ^ ((x << 1) | (x >> 7))
+            ^ ((x << 2) | (x >> 6)) ^ ((x << 3) | (x >> 5))
+            ^ ((x << 4) | (x >> 4)) ^ 0x63) & 255);
+    }
+
+    private void EraseState()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_state, 0, _state.Length);
+    }
+}

@@ -1,0 +1,656 @@
+// X.509 CERTIFICATES AS .NET HAS THEM: X509Certificate and X509Certificate2,
+// their names (X500DistinguishedName), public key (PublicKey) and extensions
+// (X509Extension and the kinds .NET decodes). Read through X509Fields, so a
+// certificate loads whatever its algorithms; what can be checked is the
+// path validator's question (X509Chain), not the loader's.
+//
+// Behaviour follows .NET 10 on Linux, compared against it: Subject and
+// Issuer most specific first ("CN=..., O=..., C=US"), SerialNumber the
+// INTEGER's own bytes (a leading 00 kept), Thumbprint SHA-1, NotBefore and
+// NotAfter in local time, the extension kinds and names OpenSSL's.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using Corsac.Security.Cryptography;
+
+namespace System.Security.Cryptography.X509Certificates;
+
+public enum X509ContentType
+{
+    Unknown = 0,
+    Cert = 1,
+    SerializedCert = 2,
+    Pfx = 3,
+    Pkcs12 = 3,
+    SerializedStore = 4,
+    Pkcs7 = 5,
+    Authenticode = 6,
+}
+
+public enum X509NameType
+{
+    SimpleName = 0,
+    EmailName = 1,
+    UpnName = 2,
+    DnsName = 3,
+    DnsFromAlternativeName = 4,
+    UrlName = 5,
+}
+
+[Flags]
+public enum X509KeyUsageFlags
+{
+    None = 0,
+    EncipherOnly = 1,
+    CrlSign = 2,
+    KeyCertSign = 4,
+    KeyAgreement = 8,
+    DataEncipherment = 16,
+    KeyEncipherment = 32,
+    NonRepudiation = 64,
+    DigitalSignature = 128,
+    DecipherOnly = 32768,
+}
+
+[Flags]
+public enum X500DistinguishedNameFlags
+{
+    None = 0,
+    Reversed = 1,
+    UseSemicolons = 16,
+    DoNotUsePlusSign = 32,
+    DoNotUseQuotes = 64,
+    UseCommas = 128,
+    UseNewLines = 256,
+    UseUTF8Encoding = 4096,
+    UseT61Encoding = 8192,
+    ForceUTF8Encoding = 16384,
+}
+
+/// A certificate, as .NET's first X.509 type has it.
+public class X509Certificate : IDisposable
+{
+    internal X509Fields? _fields;
+
+    public X509Certificate() { }
+
+    /// DER bytes, or PEM text holding a certificate.
+    public X509Certificate(byte[] data) { _fields = Load(data); }
+
+    /// A file of DER, or of PEM text holding a certificate.
+    public X509Certificate(string fileName)
+    {
+        if (fileName == null) throw new ArgumentNullException(nameof(fileName));
+        _fields = Load(File.ReadAllBytes(fileName));
+    }
+
+    public X509Certificate(X509Certificate cert)
+    {
+        if (cert == null) throw new ArgumentNullException(nameof(cert));
+        _fields = cert._fields;
+    }
+
+    internal static X509Fields Load(byte[] data)
+    {
+        if (data == null) throw new ArgumentNullException("rawData");
+        byte[] der = data;
+        if (X509Der.IsPem(data))
+        {
+            List<byte[]> found = X509Der.PemCertificates(data);
+            if (found.Count == 0) throw new CryptographicException("Cannot find the requested object.");
+            der = found[0];
+        }
+        X509Fields? fields = X509Fields.Read(der);
+        if (fields == null) throw new CryptographicException("ASN1 corrupted data.");
+        return fields;
+    }
+
+    internal X509Fields Fields
+    {
+        get { if (_fields == null) throw new CryptographicException("m_safeCertContext is an invalid handle."); return _fields; }
+    }
+
+    public IntPtr Handle => IntPtr.Zero;
+
+    public string Subject => X509Der.NameText(Fields.Subject, true, ", ");
+    public string Issuer => X509Der.NameText(Fields.Issuer, true, ", ");
+
+    public virtual byte[] GetRawCertData() => (byte[])Fields.Raw.Clone();
+    public virtual string GetRawCertDataString() => X509Der.Hex(Fields.Raw);
+    public virtual byte[] GetCertHash() => SHA1.HashData(Fields.Raw);
+    public virtual string GetCertHashString() => X509Der.Hex(GetCertHash());
+
+    /// The serial number least significant byte first, as .NET gives it.
+    public virtual byte[] GetSerialNumber()
+    {
+        byte[] serial = (byte[])Fields.Serial.Clone();
+        Array.Reverse(serial);
+        return serial;
+    }
+
+    public virtual string GetSerialNumberString() => X509Der.Hex(Fields.Serial);
+    public virtual string GetKeyAlgorithm() => Fields.KeyAlgorithm;
+    public virtual byte[] GetKeyAlgorithmParameters() => (byte[])Fields.KeyParameters.Clone();
+    public virtual string GetKeyAlgorithmParametersString() => X509Der.Hex(Fields.KeyParameters);
+    public virtual byte[] GetPublicKey() => (byte[])Fields.KeyValue.Clone();
+    public virtual string GetPublicKeyString() => X509Der.Hex(Fields.KeyValue);
+    public virtual string GetFormat() => "X509";
+    public virtual string GetEffectiveDateString() => Fields.NotBefore.ToLocalTime().ToString();
+    public virtual string GetExpirationDateString() => Fields.NotAfter.ToLocalTime().ToString();
+
+    public virtual byte[] Export(X509ContentType contentType)
+    {
+        if (contentType == X509ContentType.Cert) return GetRawCertData();
+        throw new CryptographicException("The requested export format is not supported.");
+    }
+
+    public override bool Equals(object? obj) => obj is X509Certificate other && Equals(other);
+
+    public virtual bool Equals(X509Certificate? other)
+    {
+        if (other == null || _fields == null || other._fields == null) return other != null && _fields == null && other._fields == null;
+        return Fields.Issuer.AsSpan().SequenceEqual(other.Fields.Issuer) && Fields.Serial.AsSpan().SequenceEqual(other.Fields.Serial);
+    }
+
+    public override int GetHashCode()
+    {
+        if (_fields == null) return 0;
+        byte[] hash = GetCertHash();
+        return hash[0] | (hash[1] << 8) | (hash[2] << 16) | (hash[3] << 24);
+    }
+
+    public override string ToString() => GetType().FullName ?? "System.Security.Cryptography.X509Certificates.X509Certificate";
+
+    public virtual string ToString(bool fVerbose)
+    {
+        if (!fVerbose || _fields == null) return ToString();
+        string nl = Environment.NewLine;
+        return "[Subject]" + nl + "  " + Subject + nl + nl + "[Issuer]" + nl + "  " + Issuer + nl + nl
+             + "[Serial Number]" + nl + "  " + GetSerialNumberString() + nl + nl
+             + "[Not Before]" + nl + "  " + GetEffectiveDateString() + nl + nl
+             + "[Not After]" + nl + "  " + GetExpirationDateString() + nl + nl
+             + "[Thumbprint]" + nl + "  " + GetCertHashString() + nl;
+    }
+
+    public virtual void Reset() { _fields = null; }
+
+    public void Dispose() { Dispose(true); GC.SuppressFinalize(this); }
+    protected virtual void Dispose(bool disposing) { if (disposing) Reset(); }
+}
+
+/// A certificate with its parts read out, as .NET's X509Certificate2 has
+/// them. No private key is ever loaded with one here.
+public class X509Certificate2 : X509Certificate
+{
+    X509ExtensionCollection? _extensions;
+    string _friendlyName = "";
+
+    public X509Certificate2() { }
+    public X509Certificate2(byte[] rawData) : base(rawData) { }
+    public X509Certificate2(string fileName) : base(fileName) { }
+    public X509Certificate2(X509Certificate certificate) : base(certificate) { }
+
+    internal X509Certificate2(X509Fields fields) { _fields = fields; }
+
+    /// The first certificate of PEM text.
+    public static X509Certificate2 CreateFromPem(string certPem)
+    {
+        if (certPem == null) throw new ArgumentNullException(nameof(certPem));
+        List<byte[]> found = X509Der.PemCertificates(Encoding.ASCII.GetBytes(certPem));
+        if (found.Count == 0) throw new CryptographicException("The contents of the PEM did not contain a certificate.");
+        return new X509Certificate2(found[0]);
+    }
+
+    public static X509Certificate2 CreateFromPemFile(string certPemFilePath) => CreateFromPem(File.ReadAllText(certPemFilePath));
+
+    public byte[] RawData => (byte[])Fields.Raw.Clone();
+    public string Thumbprint => GetCertHashString();
+    public string SerialNumber => GetSerialNumberString();
+    public int Version => Fields.Version;
+    public DateTime NotBefore => Fields.NotBefore.ToLocalTime();
+    public DateTime NotAfter => Fields.NotAfter.ToLocalTime();
+    public bool HasPrivateKey => false;
+    public bool Archived { get; set; }
+    public string FriendlyName { get { return _friendlyName; } set { _friendlyName = value ?? ""; } }
+    public X500DistinguishedName SubjectName => new X500DistinguishedName(Fields.Subject);
+    public X500DistinguishedName IssuerName => new X500DistinguishedName(Fields.Issuer);
+    public Oid SignatureAlgorithm => new Oid(Fields.SignatureAlgorithm);
+    public PublicKey PublicKey => new PublicKey(Fields);
+
+    public X509ExtensionCollection Extensions
+    {
+        get
+        {
+            if (_extensions == null)
+            {
+                X509ExtensionCollection made = new X509ExtensionCollection();
+                foreach (X509FieldExtension e in Fields.Extensions) made.Add(X509Extension.Decoded(e));
+                _extensions = made;
+            }
+            return _extensions;
+        }
+    }
+
+    /// A name of the certificate's, as .NET's GetNameInfo finds one: from
+    /// the subject (or issuer) and, for the kinds that have one, the
+    /// alternative names first.
+    public string GetNameInfo(X509NameType nameType, bool forIssuer)
+    {
+        byte[] name = forIssuer ? Fields.Issuer : Fields.Subject;
+        X509SubjectAlternativeNameExtension? alternative = forIssuer ? null : AlternativeNames();
+        switch (nameType)
+        {
+            case X509NameType.SimpleName:
+                return X509Der.FirstValue(name, "CN") ?? X509Der.FirstValue(name, "OU") ?? X509Der.FirstValue(name, "O")
+                    ?? X509Der.FirstValue(name, "E") ?? FirstOf(alternative, 1) ?? FirstOf(alternative, 2) ?? "";
+            case X509NameType.DnsName:
+                return FirstOf(alternative, 2) ?? X509Der.FirstValue(name, "CN") ?? "";
+            case X509NameType.DnsFromAlternativeName:
+                return FirstOf(alternative, 2) ?? "";
+            case X509NameType.EmailName:
+                return FirstOf(alternative, 1) ?? X509Der.FirstValue(name, "E") ?? "";
+            case X509NameType.UrlName:
+                return FirstOf(alternative, 6) ?? "";
+            case X509NameType.UpnName:
+                return "";
+            default:
+                throw new ArgumentException("The value of 'nameType' is invalid.", nameof(nameType));
+        }
+    }
+
+    static string? FirstOf(X509SubjectAlternativeNameExtension? alternative, int tag)
+    {
+        if (alternative == null) return null;
+        foreach (KeyValuePair<int, byte[]> entry in alternative.Entries)
+            if (entry.Key == tag) return Encoding.ASCII.GetString(entry.Value);
+        return null;
+    }
+
+    internal X509SubjectAlternativeNameExtension? AlternativeNames()
+    {
+        foreach (X509Extension e in Extensions) if (e is X509SubjectAlternativeNameExtension san) return san;
+        return null;
+    }
+
+    /// Whether the certificate names `hostname`, as .NET 7's MatchesHostname
+    /// decides: by the alternative names when there are any DNS or IP
+    /// entries, by the subject's CN otherwise (allowCommonName); a wildcard
+    /// stands for one whole leftmost label (allowWildcards); an IP address
+    /// only ever matches an IP entry.
+    public bool MatchesHostname(string hostname, bool allowWildcards = true, bool allowCommonName = true)
+    {
+        if (hostname == null) throw new ArgumentNullException(nameof(hostname));
+        string host = hostname.EndsWith(".", StringComparison.Ordinal) ? hostname.Substring(0, hostname.Length - 1) : hostname;
+        byte[]? address = X509HostNames.ParseAddress(host);
+        if (address == null && !X509HostNames.ValidDnsName(host))
+            throw new ArgumentException("The provided value is not a valid DNS hostname or IP Address.", nameof(hostname));
+        X509SubjectAlternativeNameExtension? alternative = AlternativeNames();
+        bool anyNames = false;
+        if (alternative != null)
+        {
+            foreach (KeyValuePair<int, byte[]> entry in alternative.Entries)
+            {
+                if (entry.Key == 2)
+                {
+                    anyNames = true;
+                    if (address == null && X509HostNames.DnsMatches(Encoding.ASCII.GetString(entry.Value), host, allowWildcards)) return true;
+                }
+                else if (entry.Key == 7)
+                {
+                    anyNames = true;
+                    if (address != null && entry.Value.AsSpan().SequenceEqual(address)) return true;
+                }
+            }
+        }
+        if (anyNames || !allowCommonName || address != null) return false;
+        string? cn = X509Der.FirstValue(Fields.Subject, "CN");
+        return cn != null && X509HostNames.DnsMatches(cn, host, allowWildcards);
+    }
+
+    /// Whether a chain builds for it under the default policy.
+    public bool Verify()
+    {
+        using (X509Chain chain = new X509Chain()) return chain.Build(this);
+    }
+
+    public string ExportCertificatePem() => X509Der.Pem("CERTIFICATE", Fields.Raw);
+
+    public override string ToString() => base.ToString(true);
+
+    public override string ToString(bool verbose) => base.ToString(true);
+
+    public override void Reset() { _extensions = null; base.Reset(); }
+}
+
+/// A distinguished name: its encoding and its text.
+public sealed class X500DistinguishedName : AsnEncodedData
+{
+    public X500DistinguishedName(byte[] encodedDistinguishedName) : base(new Oid(), encodedDistinguishedName) { }
+    public X500DistinguishedName(X500DistinguishedName distinguishedName) : base(distinguishedName) { }
+    public X500DistinguishedName(AsnEncodedData encodedDistinguishedName) : base(encodedDistinguishedName) { }
+
+    public string Name => X509Der.NameText(RawData, true, ", ");
+
+    public string Decode(X500DistinguishedNameFlags flag)
+    {
+        bool reversed = (flag & X500DistinguishedNameFlags.Reversed) != 0;
+        string separator = (flag & X500DistinguishedNameFlags.UseSemicolons) != 0 ? "; "
+            : (flag & X500DistinguishedNameFlags.UseNewLines) != 0 ? Environment.NewLine : ", ";
+        return X509Der.NameText(RawData, reversed, separator);
+    }
+
+    public override string Format(bool multiLine) => X509Der.NameText(RawData, true, multiLine ? Environment.NewLine : ", ");
+}
+
+/// A certificate's public key: its algorithm, its value and the
+/// algorithm's parameters, each as their encoded bytes.
+public sealed class PublicKey
+{
+    readonly Oid _oid;
+    readonly AsnEncodedData _value;
+    readonly AsnEncodedData _parameters;
+    readonly byte[] _spki;
+
+    internal PublicKey(X509Fields fields)
+    {
+        _oid = new Oid(fields.KeyAlgorithm);
+        _value = new AsnEncodedData(_oid, fields.KeyValue);
+        _parameters = new AsnEncodedData(_oid, fields.KeyParameters);
+        _spki = fields.SubjectPublicKeyInfo;
+    }
+
+    public PublicKey(Oid oid, AsnEncodedData? parameters, AsnEncodedData keyValue)
+    {
+        _oid = new Oid(oid);
+        _value = new AsnEncodedData(keyValue);
+        _parameters = parameters == null ? new AsnEncodedData(_oid, new byte[0]) : new AsnEncodedData(parameters);
+        _spki = new byte[0];
+    }
+
+    public Oid Oid => _oid;
+    public AsnEncodedData EncodedKeyValue => _value;
+    public AsnEncodedData EncodedParameters => _parameters;
+    public byte[] ExportSubjectPublicKeyInfo() => (byte[])_spki.Clone();
+}
+
+/// One extension: its identifier, whether it is critical, its value.
+public class X509Extension : AsnEncodedData
+{
+    bool _critical;
+
+    protected X509Extension() { }
+    public X509Extension(AsnEncodedData encodedExtension, bool critical) : base(encodedExtension) { _critical = critical; }
+    public X509Extension(Oid oid, byte[] rawData, bool critical) : base(oid, rawData) { _critical = critical; }
+    public X509Extension(string oid, byte[] rawData, bool critical) : base(oid, rawData) { _critical = critical; }
+
+    public bool Critical { get { return _critical; } set { _critical = value; } }
+
+    public override void CopyFrom(AsnEncodedData asnEncodedData)
+    {
+        base.CopyFrom(asnEncodedData);
+        if (asnEncodedData is X509Extension e) _critical = e._critical;
+    }
+
+    internal void Set(string oid, byte[] value, bool critical) { Oid = new Oid(oid); RawData = value; _critical = critical; }
+
+    /// The kind .NET decodes an extension as, when it is one of them.
+    internal static X509Extension Decoded(X509FieldExtension e)
+    {
+        X509Extension made;
+        switch (e.Oid)
+        {
+            case "2.5.29.19": made = new X509BasicConstraintsExtension(); break;
+            case "2.5.29.15": made = new X509KeyUsageExtension(); break;
+            case "2.5.29.37": made = new X509EnhancedKeyUsageExtension(); break;
+            case "2.5.29.14": made = new X509SubjectKeyIdentifierExtension(); break;
+            case "2.5.29.17": made = new X509SubjectAlternativeNameExtension(); break;
+            default: made = new X509Extension(); break;
+        }
+        made.Set(e.Oid, e.Value, e.Critical);
+        return made;
+    }
+}
+
+/// basicConstraints: whether a CA, and how many CAs may follow it.
+public sealed class X509BasicConstraintsExtension : X509Extension
+{
+    public X509BasicConstraintsExtension() { }
+
+    public bool CertificateAuthority { get { bool ca; int length; Decode(out ca, out length); return ca; } }
+    public bool HasPathLengthConstraint { get { bool ca; int length; Decode(out ca, out length); return length >= 0; } }
+    public int PathLengthConstraint { get { bool ca; int length; Decode(out ca, out length); return length < 0 ? 0 : length; } }
+
+    void Decode(out bool ca, out int length)
+    {
+        ca = false;
+        length = -1;
+        byte[] raw = RawData;
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(raw, 0, raw.Length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return;
+        CorsacSecureCrypto_DerCursor inner = new CorsacSecureCrypto_DerCursor(raw, offset, count);
+        long cls, tag, at, n;
+        bool constructed;
+        if (inner.TryPeekElement(out cls, out constructed, out tag, out at, out n) && cls == 0 && tag == CorsacSecureCrypto_DerCursor.Boolean)
+            inner.TryReadBoolean(out ca);
+        long io, ic;
+        if (!inner.AtEnd() && inner.TryReadInteger(out io, out ic) && ic <= 4)
+        {
+            int value = 0;
+            for (long i = io; i < io + ic; i++) value = (value << 8) | raw[(int)i];
+            length = value;
+        }
+    }
+}
+
+/// keyUsage: what the key may be used for.
+public sealed class X509KeyUsageExtension : X509Extension
+{
+    public X509KeyUsageExtension() { }
+
+    public X509KeyUsageFlags KeyUsages
+    {
+        get
+        {
+            byte[] raw = RawData;
+            CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(raw, 0, raw.Length);
+            long offset, count, unused;
+            if (!top.TryReadBitString(out offset, out count, out unused) || count == 0) return X509KeyUsageFlags.None;
+            int flags = raw[(int)offset];
+            if (count > 1) flags |= raw[(int)offset + 1] << 8;
+            return (X509KeyUsageFlags)flags;
+        }
+    }
+}
+
+/// extendedKeyUsage: the purposes the key is for.
+public sealed class X509EnhancedKeyUsageExtension : X509Extension
+{
+    public X509EnhancedKeyUsageExtension() { }
+
+    public OidCollection EnhancedKeyUsages
+    {
+        get
+        {
+            OidCollection made = new OidCollection();
+            byte[] raw = RawData;
+            CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(raw, 0, raw.Length);
+            long offset, count;
+            if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return made;
+            CorsacSecureCrypto_DerCursor list = new CorsacSecureCrypto_DerCursor(raw, offset, count);
+            long oo, oc;
+            while (!list.AtEnd() && list.TryReadObjectIdentifier(out oo, out oc)) made.Add(new Oid(X509Der.OidText(raw, oo, oc)));
+            return made;
+        }
+    }
+}
+
+/// subjectKeyIdentifier: the key's identifier, in hexadecimal.
+public sealed class X509SubjectKeyIdentifierExtension : X509Extension
+{
+    public X509SubjectKeyIdentifierExtension() { }
+
+    public string? SubjectKeyIdentifier
+    {
+        get
+        {
+            byte[] raw = RawData;
+            CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(raw, 0, raw.Length);
+            long offset, count;
+            if (!top.TryReadOctetString(out offset, out count)) return null;
+            return X509Der.Hex(X509Fields.Slice(raw, offset, count));
+        }
+    }
+}
+
+/// subjectAltName (.NET 7's type): the certificate's other names.
+public sealed class X509SubjectAlternativeNameExtension : X509Extension
+{
+    public X509SubjectAlternativeNameExtension() { }
+
+    /// Each GeneralName: its context tag (1 rfc822Name, 2 dNSName, 6 URI,
+    /// 7 iPAddress) and its content.
+    internal List<KeyValuePair<int, byte[]>> Entries
+    {
+        get
+        {
+            List<KeyValuePair<int, byte[]>> made = new List<KeyValuePair<int, byte[]>>();
+            byte[] raw = RawData;
+            CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(raw, 0, raw.Length);
+            long offset, count;
+            if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return made;
+            CorsacSecureCrypto_DerCursor list = new CorsacSecureCrypto_DerCursor(raw, offset, count);
+            while (!list.AtEnd())
+            {
+                long cls, tag, at, n;
+                bool constructed;
+                if (!list.TryReadElement(out cls, out constructed, out tag, out at, out n)) break;
+                if (cls == CorsacSecureCrypto_DerCursor.Context) made.Add(new KeyValuePair<int, byte[]>((int)tag, X509Fields.Slice(raw, at, n)));
+            }
+            return made;
+        }
+    }
+
+    public IEnumerable<string> EnumerateDnsNames()
+    {
+        List<string> names = new List<string>();
+        foreach (KeyValuePair<int, byte[]> entry in Entries) if (entry.Key == 2) names.Add(Encoding.ASCII.GetString(entry.Value));
+        return names;
+    }
+}
+
+/// A certificate's extensions in order.
+public sealed class X509ExtensionCollection : ICollection, IEnumerable<X509Extension>
+{
+    readonly List<X509Extension> _items = new List<X509Extension>();
+
+    public int Add(X509Extension extension) { _items.Add(extension); return _items.Count - 1; }
+    public int Count => _items.Count;
+    public X509Extension this[int index] => _items[index];
+
+    /// The extension with this identifier (value or friendly name), or null.
+    public X509Extension? this[string oid]
+    {
+        get
+        {
+            foreach (X509Extension e in _items) if (e.Oid != null && (e.Oid.Value == oid || e.Oid.FriendlyName == oid)) return e;
+            return null;
+        }
+    }
+
+    public bool IsSynchronized => false;
+    public object SyncRoot => this;
+    public void CopyTo(X509Extension[] array, int index) { _items.CopyTo(array, index); }
+    void ICollection.CopyTo(Array array, int index)
+    {
+        if (array is X509Extension[] typed) { _items.CopyTo(typed, index); return; }
+        if (array is object[] objects) { for (int i = 0; i < _items.Count; i++) objects[index + i] = _items[i]; return; }
+        throw new ArgumentException("Target array type is not compatible with the type of items in the collection.", nameof(array));
+    }
+    public IEnumerator<X509Extension> GetEnumerator() => _items.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => _items.GetEnumerator();
+}
+
+/// Host-name and address matching for MatchesHostname.
+internal static class X509HostNames
+{
+    /// A presented DNS name against a reference host, ignoring case and a
+    /// final dot; "*.example.com" stands for one leftmost label.
+    public static bool DnsMatches(string presented, string host, bool allowWildcards)
+    {
+        string p = presented.EndsWith(".", StringComparison.Ordinal) ? presented.Substring(0, presented.Length - 1) : presented;
+        if (string.Equals(p, host, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!allowWildcards || !p.StartsWith("*.", StringComparison.Ordinal)) return false;
+        int dot = host.IndexOf('.');
+        if (dot <= 0) return false;
+        return string.Equals(p.Substring(1), host.Substring(dot), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// Whether a host is a DNS name as Uri.CheckHostName sees one: labels of
+    /// letters, digits, hyphens and underscores, none empty, past 63 or
+    /// starting with a hyphen (one may end with one).
+    public static bool ValidDnsName(string host)
+    {
+        if (host.Length == 0 || host.Length > 255) return false;
+        foreach (string label in host.Split('.'))
+        {
+            if (label.Length == 0 || label.Length > 63 || label[0] == '-') return false;
+            foreach (char c in label)
+                if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' && c != '_') return false;
+        }
+        return true;
+    }
+
+    /// A host that is an IPv4 or IPv6 literal, as its bytes; null otherwise.
+    public static byte[]? ParseAddress(string host)
+    {
+        string h = host.StartsWith("[", StringComparison.Ordinal) && host.EndsWith("]", StringComparison.Ordinal) ? host.Substring(1, host.Length - 2) : host;
+        if (h.IndexOf(':') < 0)
+        {
+            string[] parts = h.Split('.');
+            if (parts.Length != 4) return null;
+            byte[] four = new byte[4];
+            for (int i = 0; i < 4; i++)
+            {
+                int value;
+                if (parts[i].Length == 0 || parts[i].Length > 3 || !int.TryParse(parts[i], out value) || value > 255) return null;
+                four[i] = (byte)value;
+            }
+            return four;
+        }
+        string[] halves = h.Split(new[] { "::" }, StringSplitOptions.None);
+        if (halves.Length > 2) return null;
+        List<int> head = Groups(halves[0]), tail = halves.Length == 2 ? Groups(halves[1]) : new List<int>();
+        if (head.Contains(-1) || tail.Contains(-1)) return null;
+        int fill = 8 - head.Count - tail.Count;
+        if ((halves.Length == 1 && fill != 0) || fill < 0) return null;
+        byte[] sixteen = new byte[16];
+        int at = 0;
+        foreach (int g in head) { sixteen[at++] = (byte)(g >> 8); sixteen[at++] = (byte)g; }
+        at += fill * 2;
+        foreach (int g in tail) { sixteen[at++] = (byte)(g >> 8); sixteen[at++] = (byte)g; }
+        return sixteen;
+    }
+
+    static List<int> Groups(string text)
+    {
+        List<int> groups = new List<int>();
+        if (text.Length == 0) return groups;
+        foreach (string g in text.Split(':'))
+        {
+            int value = 0;
+            if (g.Length == 0 || g.Length > 4) { groups.Add(-1); continue; }
+            foreach (char c in g)
+            {
+                int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+                if (digit < 0) { value = -1; break; }
+                value = value * 16 + digit;
+            }
+            groups.Add(value);
+        }
+        return groups;
+    }
+}

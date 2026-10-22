@@ -1,0 +1,297 @@
+// CORSAC/SECURE Crypto portable SHA-512.
+//
+// Every context word lives in ordinary memory.  In particular, this class
+// does not use the Crypto unit's hidden H registers: two heap contexts may be
+// updated in any order without sharing processor-context state. HashBlock
+// uses this same state directly when present; otherwise compression uses
+// scalar arithmetic and the mandatory native-width rotate operation.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_Sha512
+{
+    public const int Sha512 = 3;
+    public const int InvalidArgument = 1;
+    public const int ProtocolState = 9;
+
+    // The public ABI uses signed Int64 offsets and lengths.  Keeping the byte
+    // count nonnegative and at most Int64.MaxValue also makes the complete
+    // 66-bit bit count representable as the two words written by Finish.
+    private const long MaximumBytes = 0x7fffffffffffffff;
+
+    private byte[] _block;
+    private int _held;
+    private long _total;
+    private long[] _state;
+    private long[] _work;
+    private long[] _round;
+    private bool _finished;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureCrypto_Sha512()
+    {
+        _block = new byte[128];
+        _state = new long[8];
+        _work = new long[80];
+        _round = new long[] {
+            0x428a2f98d728ae22,0x7137449123ef65cd,
+            unchecked((long)0xb5c0fbcfec4d3b2f),unchecked((long)0xe9b5dba58189dbbc),
+            0x3956c25bf348b538,0x59f111f1b605d019,
+            unchecked((long)0x923f82a4af194f9b),unchecked((long)0xab1c5ed5da6d8118),
+            unchecked((long)0xd807aa98a3030242),0x12835b0145706fbe,
+            0x243185be4ee4b28c,0x550c7dc3d5ffb4e2,
+            0x72be5d74f27b896f,unchecked((long)0x80deb1fe3b1696b1),
+            unchecked((long)0x9bdc06a725c71235),unchecked((long)0xc19bf174cf692694),
+            unchecked((long)0xe49b69c19ef14ad2),unchecked((long)0xefbe4786384f25e3),
+            0x0fc19dc68b8cd5b5,0x240ca1cc77ac9c65,
+            0x2de92c6f592b0275,0x4a7484aa6ea6e483,
+            0x5cb0a9dcbd41fbd4,0x76f988da831153b5,
+            unchecked((long)0x983e5152ee66dfab),unchecked((long)0xa831c66d2db43210),
+            unchecked((long)0xb00327c898fb213f),unchecked((long)0xbf597fc7beef0ee4),
+            unchecked((long)0xc6e00bf33da88fc2),unchecked((long)0xd5a79147930aa725),
+            0x06ca6351e003826f,0x142929670a0e6e70,
+            0x27b70a8546d22ffc,0x2e1b21385c26c926,
+            0x4d2c6dfc5ac42aed,0x53380d139d95b3df,
+            0x650a73548baf63de,0x766a0abb3c77b2a8,
+            unchecked((long)0x81c2c92e47edaee6),unchecked((long)0x92722c851482353b),
+            unchecked((long)0xa2bfe8a14cf10364),unchecked((long)0xa81a664bbc423001),
+            unchecked((long)0xc24b8b70d0f89791),unchecked((long)0xc76c51a30654be30),
+            unchecked((long)0xd192e819d6ef5218),unchecked((long)0xd69906245565a910),
+            unchecked((long)0xf40e35855771202a),0x106aa07032bbd1b8,
+            0x19a4c116b8d2d0c8,0x1e376c085141ab53,
+            0x2748774cdf8eeb99,0x34b0bcb5e19b48a8,
+            0x391c0cb3c5c95a63,0x4ed8aa4ae3418acb,
+            0x5b9cca4f7763e373,0x682e6ff3d6b2b8a3,
+            0x748f82ee5defb2fc,0x78a5636f43172f60,
+            unchecked((long)0x84c87814a1f0ab72),unchecked((long)0x8cc702081a6439ec),
+            unchecked((long)0x90befffa23631e28),unchecked((long)0xa4506cebde82bde9),
+            unchecked((long)0xbef9a3f7b2c67915),unchecked((long)0xc67178f2e372532b),
+            unchecked((long)0xca273eceea26619c),unchecked((long)0xd186b8c721c0c207),
+            unchecked((long)0xeada7dd6cde0eb1e),unchecked((long)0xf57d4f7fee6ed178),
+            0x06f067aa72176fba,0x0a637dc5a2c898a6,
+            0x113f9804bef90dae,0x1b710b35131c471b,
+            0x28db77f523047d84,0x32caab7b40c72493,
+            0x3c9ebe0a15c9bebc,0x431d67c49c100d4c,
+            0x4cc5d4becb3e42b6,0x597f299cfc657e2a,
+            0x5fcb6fab3ad6faec,0x6c44198c4a475817
+        };
+        Initialize();
+    }
+
+    public int Algorithm => Sha512;
+    public int BlockBytes => 128;
+    public int DigestBytes => 64;
+    public int Error => _error;
+    public bool Finished => _finished;
+
+    /// Discards a healthy context's current transcript or reuses it after a
+    /// successful Finish.  Errors are sticky, so a failed context is closed
+    /// rather than silently revived with ambiguous protocol state.
+    public bool Reset()
+    {
+        if (_closed || _error != 0) return false;
+        EraseState();
+        Initialize();
+        return true;
+    }
+
+    public bool Update(byte[] buffer, long offset, long count)
+    {
+        if (_closed || _finished || _error != 0)
+            return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(buffer, offset, count)
+            || count > MaximumBytes - _total)
+            return Fail(InvalidArgument);
+
+        _total = _total + count;
+        while (count > 0)
+        {
+            // Range and total-length checks precede all state changes. A
+            // complete block can be consumed directly, including unaligned
+            // input, with the same scalar and accelerator source semantics.
+            if (_held == 0 && count >= 128)
+            {
+                Compress(buffer, (int)offset);
+                offset = offset + 128;
+                count = count - 128;
+                continue;
+            }
+            int room = 128 - _held;
+            int take = (int)(count < room ? count : room);
+            // Partial blocks still use the checked private assembly buffer.
+            CorsacSecureCrypto_Bytes.Copy(
+                _block, _held, buffer, offset, take);
+            _held = _held + take;
+            offset = offset + take;
+            count = count - take;
+            if (_held == 128)
+            {
+                Compress(_block, 0);
+                _held = 0;
+            }
+        }
+        return true;
+    }
+
+    /// Writes the digest only after validating the complete output range.
+    /// Invalid output therefore remains byte-for-byte unchanged.
+    public bool Finish(byte[] output, long outputOffset)
+    {
+        if (_closed || _finished || _error != 0)
+            return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(output, outputOffset, 64))
+            return Fail(InvalidArgument);
+
+        _block[_held] = 0x80;
+        _held = _held + 1;
+        if (_held > 112)
+        {
+            CorsacSecureCrypto_Bytes.Zero(_block, _held, 128 - _held);
+            Compress(_block, 0);
+            CorsacSecureCrypto_Bytes.Zero(_block, 0, 112);
+        }
+        else
+        {
+            CorsacSecureCrypto_Bytes.Zero(_block, _held, 112 - _held);
+        }
+
+        // SHA-512 appends a 128-bit big-endian bit length.  A nonnegative
+        // Int64 byte count needs at most 66 bits after multiplication by 8:
+        // high carries bits 65..64 and low carries bits 63..0.
+        long high = LogicalRight(_total, 61);
+        long low = _total << 3;
+        WriteBigEndian(_block, 112, high);
+        WriteBigEndian(_block, 120, low);
+        Compress(_block, 0);
+
+        for (int word = 0; word < 8; word = word + 1)
+        {
+            for (int at = 0; at < 8; at = at + 1)
+                output[(int)outputOffset + word * 8 + at] =
+                    (byte)(LogicalRight(_state[word], (7 - at) * 8) & 255);
+        }
+
+        _finished = true;
+        EraseState();
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        EraseState();
+        for (int i = 0; i < 80; i = i + 1) _round[i] = 0;
+        _closed = true;
+        _finished = true;
+    }
+
+    private void Initialize()
+    {
+        _state[0] = 0x6a09e667f3bcc908;
+        _state[1] = unchecked((long)0xbb67ae8584caa73b);
+        _state[2] = 0x3c6ef372fe94f82b;
+        _state[3] = unchecked((long)0xa54ff53a5f1d36f1);
+        _state[4] = 0x510e527fade682d1;
+        _state[5] = unchecked((long)0x9b05688c2b3e6c1f);
+        _state[6] = 0x1f83d9abfb41bd6b;
+        _state[7] = 0x5be0cd19137e2179;
+        _held = 0;
+        _total = 0;
+        _finished = false;
+    }
+
+    private bool Fail(int error)
+    {
+        if (_error == 0) _error = error;
+        return false;
+    }
+
+    private void EraseState()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_block, 0, _block.Length);
+        for (int i = 0; i < 8; i = i + 1) _state[i] = 0;
+        for (int i = 0; i < 80; i = i + 1) _work[i] = 0;
+        _held = 0;
+        _total = 0;
+    }
+
+    // Every caller has validated one complete source block. Read-only source
+    // bytes may be unaligned; both paths consume them without modifying them.
+    private void Compress(byte[] block, int offset)
+    {
+        // (no hardware assist on this machine: the software path follows)
+        for (int i = 0; i < 16; i = i + 1)
+        {
+            long value = 0;
+            for (int at = 0; at < 8; at = at + 1)
+                value = (value << 8) | (block[offset + i * 8 + at] & 255);
+            _work[i] = value;
+        }
+        for (int i = 16; i < 80; i = i + 1)
+        {
+            long x = _work[i - 15];
+            long y = _work[i - 2];
+            long s0 = RotateRight64(x, 1) ^ RotateRight64(x, 8)
+                    ^ LogicalRight(x, 7);
+            long s1 = RotateRight64(y, 19) ^ RotateRight64(y, 61)
+                    ^ LogicalRight(y, 6);
+            _work[i] = _work[i - 16] + s0 + _work[i - 7] + s1;
+        }
+
+        long a = _state[0];
+        long b = _state[1];
+        long c = _state[2];
+        long d = _state[3];
+        long e = _state[4];
+        long f = _state[5];
+        long g = _state[6];
+        long h = _state[7];
+        for (int i = 0; i < 80; i = i + 1)
+        {
+            long s1 = RotateRight64(e, 14) ^ RotateRight64(e, 18)
+                    ^ RotateRight64(e, 41);
+            long choose = (e & f) ^ ((~e) & g);
+            long t1 = h + s1 + choose + _round[i] + _work[i];
+            long s0 = RotateRight64(a, 28) ^ RotateRight64(a, 34)
+                    ^ RotateRight64(a, 39);
+            long majority = (a & b) ^ (a & c) ^ (b & c);
+            long t2 = s0 + majority;
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+
+        _state[0] = _state[0] + a;
+        _state[1] = _state[1] + b;
+        _state[2] = _state[2] + c;
+        _state[3] = _state[3] + d;
+        _state[4] = _state[4] + e;
+        _state[5] = _state[5] + f;
+        _state[6] = _state[6] + g;
+        _state[7] = _state[7] + h;
+    }
+
+    private static void WriteBigEndian(byte[] output, int offset, long value)
+    {
+        for (int i = 0; i < 8; i = i + 1)
+            output[offset + i] =
+                (byte)(LogicalRight(value, (7 - i) * 8) & 255);
+    }
+
+    private static long LogicalRight(long value, int bits)
+    {
+        if (bits == 0) return value;
+        return (value >> bits) & (0x7fffffffffffffff >> (bits - 1));
+    }
+
+    private static long RotateRight64(long value, int bits)
+    {
+        return Sys.RotateRight(value, bits);
+    }
+}

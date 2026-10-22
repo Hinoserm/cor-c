@@ -1,0 +1,548 @@
+// CORSAC/SECURE TLS bounded X.509 certification-path validation.
+//
+// The peer supplies an ordered path, leaf first, and the caller supplies a
+// bounded set of trust-anchor certificates.  Every untrusted link is matched
+// by its encoded issuer/subject Name and authenticated before it is accepted.
+// The validator borrows all byte arrays only for the duration of ValidateDns
+// or ValidateIp; binary certificate material is never represented as string.
+//
+// This is deliberately a small TLS-server profile rather than a general PKIX
+// policy engine.  It accepts only the signature/key algorithms already
+// admitted by CertificateView, enforces serverAuth along the path, and rejects
+// unknown critical extensions in CertificateView before path processing.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Security.Cryptography.X509Certificates;
+
+internal static class X509PathError
+{
+    public const int None = 0;
+    public const int InvalidArgument = 1;
+    public const int Certificate = 2;
+    public const int Unsupported = 3;
+    public const int Untrusted = 4;
+    public const int Time = 5;
+    public const int ServiceIdentity = 6;
+    public const int ResourceLimit = 7;
+    public const int KeyUsage = 8;
+    public const int Signature = 9;
+    public const int Path = 10;
+    public const int Closed = 11;
+    public const int NameConstraints = 12;
+}
+
+internal class X509PathValidator
+{
+    // Eight certificates is enough for real public Web PKI paths while
+    // keeping hostile TLS Certificate messages from inducing unbounded work.
+    public const int MaximumCertificates = 8;
+    public const int MaximumTrustAnchors = 32;
+
+    private X509CertificateView[] _path;
+    private X509CertificateView _anchor;
+    private CorsacSecureCrypto_Hash _hash;
+    private CorsacSecureCrypto_RsaWorkspace _rsa;
+    private CorsacSecureCrypto_P256Workspace _p256;
+    private CorsacSecureCrypto_Ed25519Workspace _ed25519;
+    private byte[] _digest;
+    private byte[] _empty;
+    private bool _closed;
+    private int _error;
+    // What one validation asks beyond the path itself: the TLS reference
+    // identity (ValidateDns, ValidateIp), and serverAuth of the leaf and
+    // every CA. ValidateChain asks neither unless its caller does, as
+    // X509Chain's policy decides.
+    private bool _identity = true;
+    private bool _serverAuth = true;
+    // Whether validity times count (X509VerificationFlags.IgnoreNotTimeValid
+    // turns them off for ValidateChain).
+    private bool _time = true;
+
+    public X509PathValidator()
+    {
+        _path = new X509CertificateView[MaximumCertificates];
+        for (int i = 0; i < _path.Length; i = i + 1)
+            _path[i] = new X509CertificateView();
+        _anchor = new X509CertificateView();
+        _hash = new CorsacSecureCrypto_Hash();
+        _rsa = new CorsacSecureCrypto_RsaWorkspace();
+        _p256 = new CorsacSecureCrypto_P256Workspace();
+        _ed25519 = new CorsacSecureCrypto_Ed25519Workspace();
+        _digest = new byte[32];
+        _empty = new byte[0];
+    }
+
+    public int Error => _error;
+    public bool Closed => _closed;
+
+    public bool ValidateDns(
+        byte[][] certificates, long[] certificateOffsets,
+        long[] certificateCounts, int certificateCount,
+        byte[][] trustAnchors, long[] trustAnchorOffsets,
+        long[] trustAnchorCounts, int trustAnchorCount,
+        long packedUtc, string serverName)
+    {
+        BeginOperation();
+        _identity = true;
+        _serverAuth = true;
+        bool answer = !_closed
+            && ValidDnsReference(serverName)
+            && ValidatePath(certificates, certificateOffsets,
+                certificateCounts, certificateCount,
+                trustAnchors, trustAnchorOffsets, trustAnchorCounts,
+                trustAnchorCount, packedUtc, serverName,
+                _empty, 0, 0, false);
+        if (_closed) Fail(X509PathError.Closed);
+        else if (!ValidDnsReference(serverName))
+            Fail(X509PathError.InvalidArgument);
+        ReleaseViews();
+        return answer;
+    }
+
+    public bool ValidateIp(
+        byte[][] certificates, long[] certificateOffsets,
+        long[] certificateCounts, int certificateCount,
+        byte[][] trustAnchors, long[] trustAnchorOffsets,
+        long[] trustAnchorCounts, int trustAnchorCount,
+        long packedUtc, byte[] address,
+        long addressOffset, long addressCount)
+    {
+        BeginOperation();
+        _identity = true;
+        _serverAuth = true;
+        bool validAddress = (addressCount == 4 || addressCount == 16)
+            && CorsacSecureCrypto_Bytes.Range(
+                address, addressOffset, addressCount);
+        bool answer = !_closed && validAddress
+            && ValidatePath(certificates, certificateOffsets,
+                certificateCounts, certificateCount,
+                trustAnchors, trustAnchorOffsets, trustAnchorCounts,
+                trustAnchorCount, packedUtc, "",
+                address, addressOffset, addressCount, true);
+        if (_closed) Fail(X509PathError.Closed);
+        else if (!validAddress)
+            Fail(X509PathError.InvalidArgument);
+        ReleaseViews();
+        return answer;
+    }
+
+    /// A path checked as X509Chain checks one: the leaf need not name any
+    /// service, and serverAuth is asked of the path only with
+    /// `serverAuthentication` (an ApplicationPolicy holding id-kp-serverAuth).
+    public bool ValidateChain(
+        byte[][] certificates, long[] certificateOffsets,
+        long[] certificateCounts, int certificateCount,
+        byte[][] trustAnchors, long[] trustAnchorOffsets,
+        long[] trustAnchorCounts, int trustAnchorCount,
+        long packedUtc, bool serverAuthentication, bool checkTime)
+    {
+        BeginOperation();
+        _identity = false;
+        _serverAuth = serverAuthentication;
+        _time = checkTime;
+        bool answer = !_closed
+            && ValidatePath(certificates, certificateOffsets,
+                certificateCounts, certificateCount,
+                trustAnchors, trustAnchorOffsets, trustAnchorCounts,
+                trustAnchorCount, packedUtc, "",
+                _empty, 0, 0, false);
+        if (_closed) Fail(X509PathError.Closed);
+        _identity = true;
+        _serverAuth = true;
+        _time = true;
+        ReleaseViews();
+        return answer;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        ReleaseViews();
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        _hash.Close();
+        _rsa.Close();
+        _p256.Close();
+        _ed25519.Close();
+        _closed = true;
+    }
+
+    private bool ValidatePath(
+        byte[][] certificates, long[] certificateOffsets,
+        long[] certificateCounts, int certificateCount,
+        byte[][] trustAnchors, long[] trustAnchorOffsets,
+        long[] trustAnchorCounts, int trustAnchorCount,
+        long packedUtc, string serverName,
+        byte[] address, long addressOffset, long addressCount,
+        bool useAddress)
+    {
+        if (!ValidInputs(certificates, certificateOffsets,
+                certificateCounts, certificateCount,
+                trustAnchors, trustAnchorOffsets,
+                trustAnchorCounts, trustAnchorCount)
+            || !ValidPackedUtc(packedUtc))
+            return Fail(X509PathError.InvalidArgument);
+
+        for (int i = 0; i < certificateCount; i = i + 1)
+        {
+            if (!_path[i].Parse(certificates[i], certificateOffsets[i],
+                                certificateCounts[i]))
+                return Fail(_path[i].Error
+                    == X509CertificateView.Unsupported
+                    ? X509PathError.Unsupported
+                    : X509PathError.Certificate);
+            if (_time && !_path[i].ValidAt(packedUtc))
+                return Fail(X509PathError.Time);
+            for (int previous = 0; previous < i; previous = previous + 1)
+                if (SameCertificate(
+                        certificates[i], certificateOffsets[i],
+                        certificateCounts[i], certificates[previous],
+                        certificateOffsets[previous],
+                        certificateCounts[previous]))
+                    return Fail(X509PathError.Path);
+        }
+
+        X509CertificateView leaf = _path[0];
+        if (_serverAuth && (leaf.IsCa || !leaf.AllowsDigitalSignature()
+            || !leaf.AllowsServerAuthentication))
+            return Fail(X509PathError.KeyUsage);
+        if (_identity)
+        {
+            bool identity = useAddress
+                ? leaf.MatchesIpAddress(address, addressOffset, addressCount)
+                : leaf.MatchesDnsName(serverName);
+            if (!identity)
+                return Fail(X509PathError.ServiceIdentity);
+        }
+
+        // Authenticate each peer-provided link before consulting the trust
+        // store.  A CA EKU, when present, also constrains permitted purposes.
+        for (int i = 1; i < certificateCount; i = i + 1)
+        {
+            if (!ValidCa(_path[i], CaCertificatesBelow(i))) return false;
+            if (!_path[i - 1].IssuerMatches(_path[i]))
+                return Fail(X509PathError.Path);
+            if (!VerifySignature(_path[i - 1], certificates[i - 1],
+                    _path[i], certificates[i]))
+                return Fail(X509PathError.Signature);
+        }
+
+        X509CertificateView last =
+            _path[certificateCount - 1];
+        byte[] lastBytes = certificates[certificateCount - 1];
+        long lastOffset = certificateOffsets[certificateCount - 1];
+        long lastCount = certificateCounts[certificateCount - 1];
+        bool nameConstraintsRejected = false;
+
+        for (int anchorIndex = 0;
+             anchorIndex < trustAnchorCount;
+             anchorIndex = anchorIndex + 1)
+        {
+            if (!_anchor.Parse(trustAnchors[anchorIndex],
+                    trustAnchorOffsets[anchorIndex],
+                    trustAnchorCounts[anchorIndex]))
+                continue;
+            if (_time && !_anchor.ValidAt(packedUtc)) continue;
+
+            bool exact = SameCertificate(
+                lastBytes, lastOffset, lastCount,
+                trustAnchors[anchorIndex], trustAnchorOffsets[anchorIndex],
+                trustAnchorCounts[anchorIndex]);
+            if (exact)
+            {
+                // A directly trusted end certificate is a useful explicit
+                // pin.  Otherwise the anchor terminates a CA path and must
+                // obey that path's CA constraints.
+                if (certificateCount == 1) return true;
+                if (!ValidCa(_anchor,
+                        CaCertificatesBelow(certificateCount - 1)))
+                {
+                    _error = 0;
+                    continue;
+                }
+                // A self-issued anchor has a checkable signature; authenticate
+                // it as a corruption check even though trust does not derive
+                // from that self-signature.  Cross-signed anchors are trusted
+                // by their exact caller-supplied certificate bytes.
+                if (_anchor.IssuerMatches(_anchor)
+                    && !VerifySignature(_anchor,
+                        trustAnchors[anchorIndex], _anchor,
+                        trustAnchors[anchorIndex]))
+                    continue;
+                if (ValidateNameConstraints(
+                        certificateCount, true, serverName,
+                        address, addressOffset, addressCount, useAddress))
+                    return true;
+                nameConstraintsRejected = true;
+                _error = 0;
+                continue;
+            }
+
+            if (!last.IssuerMatches(_anchor)) continue;
+            if (!ValidCa(_anchor,
+                    CaCertificatesBelow(certificateCount)))
+            {
+                _error = 0;
+                continue;
+            }
+            if (VerifySignature(last, lastBytes, _anchor,
+                    trustAnchors[anchorIndex]))
+            {
+                if (ValidateNameConstraints(
+                        certificateCount, false, serverName,
+                        address, addressOffset, addressCount, useAddress))
+                    return true;
+                nameConstraintsRejected = true;
+                _error = 0;
+            }
+        }
+        if (nameConstraintsRejected)
+            return Fail(X509PathError.NameConstraints);
+        return Fail(X509PathError.Untrusted);
+    }
+
+    // Apply every CA's constraints independently.  This is equivalent to the
+    // RFC 5280 permitted-subtree intersection and excluded-subtree union:
+    // every authority must permit a name, while any exclusion rejects it.
+    // A self-issued non-final certificate's own names are skipped, but any
+    // constraints carried by that certificate still constrain descendants.
+    private bool ValidateNameConstraints(
+        int certificateCount, bool anchorIsLastPathCertificate,
+        string serverName, byte[] address,
+        long addressOffset, long addressCount, bool useAddress)
+    {
+        // The selected TLS reference identity is checked explicitly in
+        // addition to every presented supported SAN (when there is one).
+        for (int authority = 1; _identity &&
+             authority < certificateCount;
+             authority = authority + 1)
+        {
+            bool permitted = useAddress
+                ? _path[authority].PermitsIpAddress(
+                    address, addressOffset, addressCount)
+                : _path[authority].PermitsDnsName(serverName);
+            if (!permitted)
+                return Fail(X509PathError.NameConstraints);
+        }
+        if (_identity && !anchorIsLastPathCertificate)
+        {
+            bool permitted = useAddress
+                ? _anchor.PermitsIpAddress(
+                    address, addressOffset, addressCount)
+                : _anchor.PermitsDnsName(serverName);
+            if (!permitted)
+                return Fail(X509PathError.NameConstraints);
+        }
+
+        for (int subject = 0;
+             subject < certificateCount;
+             subject = subject + 1)
+        {
+            // In this leaf-first representation, index zero is the final
+            // certificate whose names must be checked even if self-issued.
+            if (subject > 0 && _path[subject].IssuerMatches(_path[subject]))
+                continue;
+            for (int authority = subject + 1;
+                 authority < certificateCount;
+                 authority = authority + 1)
+                if (!_path[authority].PermitsSubjectAlternativeNames(
+                        _path[subject]))
+                    return Fail(
+                        X509PathError.NameConstraints);
+            if (!anchorIsLastPathCertificate
+                && !_anchor.PermitsSubjectAlternativeNames(_path[subject]))
+                return Fail(X509PathError.NameConstraints);
+        }
+        return true;
+    }
+
+    private bool ValidCa(X509CertificateView certificate,
+                         int caCertificatesBelow)
+    {
+        if (!certificate.BasicConstraintsPresent || !certificate.IsCa
+            || !certificate.AllowsCertificateSigning()
+            || (_serverAuth && !certificate.AllowsServerAuthentication))
+            return Fail(X509PathError.KeyUsage);
+        if (certificate.PathLength >= 0
+            && caCertificatesBelow > certificate.PathLength)
+            return Fail(X509PathError.Path);
+        return true;
+    }
+
+    private int CaCertificatesBelow(int issuerIndex)
+    {
+        int answer = 0;
+        // The leaf at zero is never counted.  RFC 5280 pathLenConstraint also
+        // excludes self-issued intermediate certificates.
+        for (int i = 1; i < issuerIndex; i = i + 1)
+            if (!_path[i].IssuerMatches(_path[i])) answer = answer + 1;
+        return answer;
+    }
+
+    private bool VerifySignature(
+        X509CertificateView child, byte[] childBytes,
+        X509CertificateView issuer, byte[] issuerBytes)
+    {
+        int algorithm = child.SignatureAlgorithm;
+        if ((algorithm == X509SignatureAlgorithm
+                             .RsaPkcs1Sha256
+             || algorithm == X509SignatureAlgorithm
+                             .RsaPssSha256)
+            && issuer.PublicKeyAlgorithm
+                == X509KeyAlgorithm.Rsa)
+        {
+            bool hashed = _hash.Update(
+                    childBytes, child.TbsOffset, child.TbsCount)
+                && _hash.Finish(_digest, 0);
+            if (!hashed) return false;
+            bool valid = algorithm
+                    == X509SignatureAlgorithm.RsaPkcs1Sha256
+                ? _rsa.VerifyPkcs1Sha256(
+                    issuerBytes, issuer.RsaModulusOffset,
+                    issuer.RsaModulusCount, issuer.RsaExponent,
+                    childBytes, child.SignatureOffset,
+                    child.SignatureCount, _digest, 0)
+                : _rsa.VerifyPssSha256(
+                    issuerBytes, issuer.RsaModulusOffset,
+                    issuer.RsaModulusCount, issuer.RsaExponent,
+                    childBytes, child.SignatureOffset,
+                    child.SignatureCount, _digest, 0);
+            CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+            return _hash.Reset() && valid;
+        }
+        if (algorithm
+                == X509SignatureAlgorithm.EcdsaP256Sha256
+            && issuer.PublicKeyAlgorithm
+                == X509KeyAlgorithm.P256)
+            return _p256.VerifySha256Der(
+                issuerBytes, issuer.PublicKeyOffset,
+                issuer.PublicKeyCount,
+                childBytes, child.TbsOffset, child.TbsCount,
+                childBytes, child.SignatureOffset,
+                child.SignatureCount);
+        if (algorithm == X509SignatureAlgorithm.Ed25519
+            && issuer.PublicKeyAlgorithm
+                == X509KeyAlgorithm.Ed25519
+            && child.SignatureCount == 64)
+            return _ed25519.CheckSignature(
+                issuerBytes, issuer.PublicKeyOffset,
+                childBytes, child.TbsOffset, child.TbsCount,
+                childBytes, child.SignatureOffset);
+        return false;
+    }
+
+    private bool ValidInputs(
+        byte[][] certificates, long[] certificateOffsets,
+        long[] certificateCounts, int certificateCount,
+        byte[][] trustAnchors, long[] trustAnchorOffsets,
+        long[] trustAnchorCounts, int trustAnchorCount)
+    {
+        if (certificates == null || certificateOffsets == null
+            || certificateCounts == null || trustAnchors == null
+            || trustAnchorOffsets == null || trustAnchorCounts == null
+            || certificateCount < 1
+            || trustAnchorCount < (_identity ? 1 : 0))
+            return false;
+        if (certificateCount > MaximumCertificates
+            || trustAnchorCount > MaximumTrustAnchors)
+            return Fail(X509PathError.ResourceLimit);
+        if (certificates.Length < certificateCount
+            || certificateOffsets.Length < certificateCount
+            || certificateCounts.Length < certificateCount
+            || trustAnchors.Length < trustAnchorCount
+            || trustAnchorOffsets.Length < trustAnchorCount
+            || trustAnchorCounts.Length < trustAnchorCount)
+            return false;
+        for (int i = 0; i < certificateCount; i = i + 1)
+            if (!CorsacSecureCrypto_Bytes.Range(
+                    certificates[i], certificateOffsets[i],
+                    certificateCounts[i])) return false;
+        for (int i = 0; i < trustAnchorCount; i = i + 1)
+            if (!CorsacSecureCrypto_Bytes.Range(
+                    trustAnchors[i], trustAnchorOffsets[i],
+                    trustAnchorCounts[i])) return false;
+        return true;
+    }
+
+    private static bool SameCertificate(
+        byte[] left, long leftOffset, long leftCount,
+        byte[] right, long rightOffset, long rightCount)
+    {
+        return leftCount == rightCount
+            && CorsacSecureCrypto_Bytes.Equal(
+                left, leftOffset, right, rightOffset, leftCount);
+    }
+
+    private static bool ValidDnsReference(string reference)
+    {
+        if (reference == null || reference.Length < 1
+            || reference.Length > 254) return false;
+        int count = reference.Length;
+        if (reference[count - 1] == '.') count = count - 1;
+        if (count < 1 || count > 253) return false;
+        int label = 0;
+        for (int i = 0; i <= count; i = i + 1)
+        {
+            int value = i == count ? '.' : reference[i];
+            if (value == '.')
+            {
+                int width = i - label;
+                if (width < 1 || width > 63
+                    || reference[label] == '-'
+                    || reference[i - 1] == '-') return false;
+                label = i + 1;
+            }
+            else if (!((value >= 'A' && value <= 'Z')
+                    || (value >= 'a' && value <= 'z')
+                    || (value >= '0' && value <= '9')
+                    || value == '-')) return false;
+        }
+        return true;
+    }
+
+    private static bool ValidPackedUtc(long packed)
+    {
+        if (packed < 19500101000000L || packed > 99991231235959L)
+            return false;
+        int second = (int)(packed % 100); packed = packed / 100;
+        int minute = (int)(packed % 100); packed = packed / 100;
+        int hour = (int)(packed % 100); packed = packed / 100;
+        int day = (int)(packed % 100); packed = packed / 100;
+        int month = (int)(packed % 100); packed = packed / 100;
+        int year = (int)packed;
+        if (month < 1 || month > 12 || hour > 23
+            || minute > 59 || second > 59 || day < 1) return false;
+        int days = 31;
+        if (month == 2)
+        {
+            bool leap = (year % 4 == 0 && year % 100 != 0)
+                     || year % 400 == 0;
+            days = leap ? 29 : 28;
+        }
+        else if (month == 4 || month == 6 || month == 9 || month == 11)
+            days = 30;
+        return day <= days;
+    }
+
+    private void BeginOperation()
+    {
+        _error = 0;
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        ReleaseViews();
+    }
+
+    private void ReleaseViews()
+    {
+        // A failed empty parse resets CertificateView's borrowed-storage
+        // reference, so this reusable validator never retains caller arrays.
+        for (int i = 0; i < _path.Length; i = i + 1)
+            _path[i].Parse(_empty, 0, 0);
+        _anchor.Parse(_empty, 0, 0);
+    }
+
+    private bool Fail(int error)
+    {
+        if (_error == 0) _error = error;
+        return false;
+    }
+}

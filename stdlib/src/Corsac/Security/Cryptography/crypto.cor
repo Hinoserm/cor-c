@@ -1,0 +1,463 @@
+// CORSAC/SECURE Crypto shared-library root.
+//
+// Product-qualified names form the sole CORSAC/OS interface. Algorithm
+// implementations change only when every producer and consumer is rebuilt
+// together as one standard.
+
+namespace Corsac.Security.Cryptography;
+
+public static class CorsacSecureCrypto_Info
+{
+    public const long ByteOperations = 1;
+    public const long Sha256 = 2;
+    public const long HmacSha256 = 4;
+    public const long HkdfSha256 = 8;
+    public const long ChaCha20 = 16;
+    public const long Poly1305 = 32;
+    public const long Sha512 = 64;
+    public const long X25519 = 128;
+    public const long Ed25519 = 256;
+    public const long Aes = 512;
+    public const long AesGcm = 1024;
+    public const long ChaChaPoly = 2048;
+    public const long DerPem = 4096;
+    public const long P256 = 8192;
+    public const long Rsa = 16384;
+
+    // Independent monotonic latches: a late successful test cannot overwrite
+    // another thread's failure. Volatile publishes/releases each result and
+    // acquires it on observation; every successful return checks failure last.
+    private static volatile bool _portableProviderPassed;
+    private static volatile bool _portableProviderFailed;
+
+    public static string Product()
+    {
+        return "CORSAC/SECURE Crypto for CORSAC/OS";
+    }
+
+    // A provider is advertised only after known-answer tests of its complete
+    // dependency chain.  Failure is sticky for the life of this process.
+    public static long Capabilities()
+    {
+        if (_portableProviderFailed) return 0;
+        if (!_portableProviderPassed)
+        {
+            if (!SelfTest())
+            {
+                _portableProviderFailed = true;
+                return 0;
+            }
+            _portableProviderPassed = true;
+        }
+        return _portableProviderFailed ? 0
+            : ByteOperations | Sha256 | HmacSha256 | HkdfSha256
+            | ChaCha20 | Poly1305 | Sha512 | X25519 | Ed25519
+            | Aes | AesGcm | ChaChaPoly | DerPem | P256 | Rsa;
+    }
+
+    private static bool SelfTest()
+    {
+        return SelfTestSha256()
+            && SelfTestHmacSha256()
+            && SelfTestHkdfSha256()
+            && SelfTestChaCha20()
+            && SelfTestPoly1305()
+            && SelfTestSha512()
+            && SelfTestX25519()
+            && SelfTestEd25519()
+            && SelfTestP256()
+            && SelfTestRsa()
+            && SelfTestAes()
+            && SelfTestAesGcm()
+            && SelfTestChaChaPoly()
+            && SelfTestDerPem();
+    }
+
+    private static bool SelfTestAes()
+    {
+        byte[] key = FromHex("000102030405060708090a0b0c0d0e0f");
+        byte[] plaintext = FromHex("00112233445566778899aabbccddeeff");
+        byte[] ciphertext = new byte[16];
+        bool okay = CorsacSecureCrypto_Aes.Encrypt(
+                key, 0, key.Length, plaintext, 0, ciphertext, 0)
+            && MatchesHex(ciphertext, "69c4e0d86a7b0430d8cdb78070b4c55a");
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        CorsacSecureCrypto_Bytes.Zero(plaintext, 0, plaintext.Length);
+        CorsacSecureCrypto_Bytes.Zero(ciphertext, 0, ciphertext.Length);
+        return okay;
+    }
+
+    private static bool SelfTestAesGcm()
+    {
+        byte[] key = new byte[16];
+        byte[] iv = new byte[12];
+        byte[] empty = new byte[0];
+        byte[] tag = new byte[16];
+        bool okay = CorsacSecureCrypto_Gcm.Encrypt(
+                key, 0, key.Length,
+                iv, 0, iv.Length,
+                empty, 0, 0, empty, 0, 0,
+                empty, 0, tag, 0, tag.Length)
+            && MatchesHex(tag, "58e2fccefa7e3061367f1d57a4e7455a");
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        CorsacSecureCrypto_Bytes.Zero(iv, 0, iv.Length);
+        CorsacSecureCrypto_Bytes.Zero(tag, 0, tag.Length);
+        return okay;
+    }
+
+    // Keep each provider KAT in a compact procedure.  Apart from making the
+    // dependency chain explicit, this avoids forcing startup through one
+    // needlessly large method on small CORSAC implementations.
+    private static bool SelfTestSha256()
+    {
+        byte[] digest = new byte[32];
+        byte[] abc = Ascii("abc");
+        CorsacSecureCrypto_Hash hash = new CorsacSecureCrypto_Hash();
+        bool okay = hash.Update(abc, 0, abc.Length)
+            && hash.Finish(digest, 0)
+            && MatchesHex(digest,
+                "ba7816bf8f01cfea414140de5dae2223"
+              + "b00361a396177a9cb410ff61f20015ad");
+        hash.Close();
+        CorsacSecureCrypto_Bytes.Zero(abc, 0, abc.Length);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        return okay;
+    }
+
+    private static bool SelfTestHmacSha256()
+    {
+        byte[] key = new byte[20];
+        byte[] message = Ascii("Hi There");
+        byte[] digest = new byte[32];
+        for (int i = 0; i < key.Length; i = i + 1)
+            key[i] = 0x0b;
+        bool okay = CorsacSecureCrypto_Hmac.Sha256(
+                key, 0, key.Length,
+                message, 0, message.Length, digest, 0)
+            && MatchesHex(digest,
+                "b0344c61d8db38535ca8afceaf0bf12b"
+              + "881dc200c9833da726e9376c2e32cff7");
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        CorsacSecureCrypto_Bytes.Zero(message, 0, message.Length);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        return okay;
+    }
+
+    private static bool SelfTestHkdfSha256()
+    {
+        byte[] inputKeyMaterial = new byte[22];
+        byte[] salt = new byte[13];
+        byte[] info = new byte[10];
+        byte[] prk = new byte[32];
+        byte[] output = new byte[42];
+        for (int i = 0; i < inputKeyMaterial.Length; i = i + 1)
+            inputKeyMaterial[i] = 0x0b;
+        for (int i = 0; i < salt.Length; i = i + 1)
+            salt[i] = (byte)i;
+        for (int i = 0; i < info.Length; i = i + 1)
+            info[i] = (byte)(0xf0 + i);
+
+        bool okay = CorsacSecureCrypto_Hkdf.Extract(
+                salt, 0, salt.Length,
+                inputKeyMaterial, 0, inputKeyMaterial.Length, prk, 0)
+            && MatchesHex(prk,
+                "077709362c2e32df0ddc3f0dc47bba63"
+              + "90b6c73bb50f9c3122ec844ad7c2b3e5")
+            && CorsacSecureCrypto_Hkdf.Expand(
+                prk, 0, prk.Length, info, 0, info.Length,
+                output, 0, output.Length)
+            && MatchesHex(output,
+                "3cb25f25faacd57a90434f64d0362f2a"
+              + "2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
+              + "34007208d5b887185865");
+        CorsacSecureCrypto_Bytes.Zero(
+            inputKeyMaterial, 0, inputKeyMaterial.Length);
+        CorsacSecureCrypto_Bytes.Zero(salt, 0, salt.Length);
+        CorsacSecureCrypto_Bytes.Zero(info, 0, info.Length);
+        CorsacSecureCrypto_Bytes.Zero(prk, 0, prk.Length);
+        CorsacSecureCrypto_Bytes.Zero(output, 0, output.Length);
+        return okay;
+    }
+
+    private static bool SelfTestChaCha20()
+    {
+        byte[] key = new byte[32];
+        byte[] nonce = new byte[12];
+        byte[] block = new byte[64];
+        for (int i = 0; i < key.Length; i = i + 1)
+            key[i] = (byte)i;
+        nonce[3] = 9;
+        nonce[7] = 0x4a;
+        bool okay = CorsacSecureCrypto_ChaCha20.Block(
+                key, 0, 1, nonce, 0, block, 0)
+            && MatchesHex(block,
+                "10f1e7e4d13b5915500fdd1fa32071c4"
+              + "c7d1f4c733c068030422aa9ac3d46c4e"
+              + "d2826446079faa0914c2d705d98b02a2"
+              + "b5129cd1de164eb9cbd083e8a2503c4e");
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        CorsacSecureCrypto_Bytes.Zero(nonce, 0, nonce.Length);
+        CorsacSecureCrypto_Bytes.Zero(block, 0, block.Length);
+        return okay;
+    }
+
+    private static bool SelfTestPoly1305()
+    {
+        byte[] key = FromHex(
+            "85d6be7857556d337f4452fe42d506a8"
+          + "0103808afb0db2fd4abff6af4149f51b");
+        byte[] message = Ascii("Cryptographic Forum Research Group");
+        byte[] tag = new byte[16];
+        bool okay = CorsacSecureCrypto_Poly1305.Authenticate(
+                key, 0, message, 0, message.Length, tag, 0)
+            && MatchesHex(tag, "a8061dc1305136c6c22b8baf0c0127a9");
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        CorsacSecureCrypto_Bytes.Zero(message, 0, message.Length);
+        CorsacSecureCrypto_Bytes.Zero(tag, 0, tag.Length);
+        return okay;
+    }
+
+    private static bool SelfTestSha512()
+    {
+        byte[] message = Ascii("abc");
+        byte[] digest = new byte[64];
+        CorsacSecureCrypto_Sha512 hash =
+            new CorsacSecureCrypto_Sha512();
+        bool okay = hash.Update(message, 0, message.Length)
+            && hash.Finish(digest, 0)
+            && MatchesHex(digest,
+                "ddaf35a193617abacc417349ae204131"
+              + "12e6fa4e89a97ea20a9eeee64b55d39a"
+              + "2192992a274fc1a836ba3c23a3feebbd"
+              + "454d4423643ce80e2a9ac94fa54ca49f");
+        hash.Close();
+        CorsacSecureCrypto_Bytes.Zero(message, 0, message.Length);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        return okay;
+    }
+
+    private static bool SelfTestX25519()
+    {
+        byte[] scalar = FromHex(
+            "77076d0a7318a57d3c16c17251b26645"
+          + "df4c2f87ebc0992ab177fba51db92c2a");
+        byte[] output = new byte[32];
+        bool okay = CorsacSecureCrypto_X25519.PublicKey(
+                scalar, 0, output, 0)
+            && MatchesHex(output,
+                "8520f0098930a754748b7ddcb43ef75a0"
+              + "dbf3a0d26381af4eba4a98eaa9b4e6a");
+        CorsacSecureCrypto_Bytes.Zero(scalar, 0, scalar.Length);
+        CorsacSecureCrypto_Bytes.Zero(output, 0, output.Length);
+        return okay;
+    }
+
+    private static bool SelfTestEd25519()
+    {
+        byte[] seed = FromHex(
+            "9d61b19deffd5a60ba844af492ec2cc4"
+          + "4449c5697b326919703bac031cae7f60");
+        byte[] expectedPublic = FromHex(
+            "d75a980182b10ab7d54bfed3c964073a"
+          + "0ee172f3daa62325af021a68f707511a");
+        byte[] expectedSignature = FromHex(
+            "e5564300c360ac729086e2cc806e828a"
+          + "84877f1eb8e5d974d873e06522490155"
+          + "5fb8821590a33bacc61e39701cf9b46b"
+          + "d25bf5f0595bbe24655141438e7a100b");
+        byte[] empty = new byte[0];
+        byte[] publicKey = new byte[32];
+        byte[] signature = new byte[64];
+        CorsacSecureCrypto_Ed25519Workspace workspace
+            = new CorsacSecureCrypto_Ed25519Workspace();
+        bool okay = CorsacSecureCrypto_Ed25519.PublicKey(
+                seed, 0, publicKey, 0, workspace)
+            && CorsacSecureCrypto_Bytes.Equal(
+                publicKey, 0, expectedPublic, 0, 32)
+            && CorsacSecureCrypto_Ed25519.Sign(
+                seed, 0, empty, 0, 0, signature, 0, workspace)
+            && CorsacSecureCrypto_Bytes.Equal(
+                signature, 0, expectedSignature, 0, 64)
+            && CorsacSecureCrypto_Ed25519.Verify(
+                publicKey, 0, empty, 0, 0,
+                signature, 0, workspace);
+        workspace.Close();
+        CorsacSecureCrypto_Bytes.Zero(seed, 0, seed.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            expectedPublic, 0, expectedPublic.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            expectedSignature, 0, expectedSignature.Length);
+        CorsacSecureCrypto_Bytes.Zero(publicKey, 0, publicKey.Length);
+        CorsacSecureCrypto_Bytes.Zero(signature, 0, signature.Length);
+        return okay;
+    }
+
+    private static bool SelfTestP256()
+    {
+        byte[] publicKey = FromHex(
+            "04"
+          + "60fed4ba255a9d31c961eb74c6356d68"
+          + "c049b8923b61fa6ce669622e60f29fb6"
+          + "7903fe1008b8bc99a41ae9e95628bc64"
+          + "f2f1b20c2d7e9f5177a3c294d4462299");
+        byte[] digest = FromHex(
+            "af2bdbe1aa9b6ec1e2ade1d694f41fc7"
+          + "1a831d0268e9891562113d8a62add1bf");
+        byte[] signature = FromHex(
+            "efd48b2aacb6a8fd1140dd9cd45e81d6"
+          + "9d2c877b56aaf991c34d0ea84eaf3716"
+          + "f7cb1c942d657c41d436c7a1b6e29f65"
+          + "f3e900dbb9aff4064dc4ab2f843acda8");
+        CorsacSecureCrypto_P256Workspace workspace =
+            new CorsacSecureCrypto_P256Workspace();
+        bool okay = CorsacSecureCrypto_P256.ValidatePublicKey(
+                publicKey, 0, publicKey.Length, workspace)
+            && CorsacSecureCrypto_P256.VerifyDigestRaw(
+                publicKey, 0, publicKey.Length,
+                digest, 0, signature, 0, workspace);
+        workspace.Close();
+        CorsacSecureCrypto_Bytes.Zero(publicKey, 0, publicKey.Length);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            signature, 0, signature.Length);
+        return okay;
+    }
+
+    private static bool SelfTestRsa()
+    {
+        // OpenSSL 3 signatures over the SHA-256 digest below.  This startup
+        // KAT deliberately uses public exponent 3 so a minimally accelerated
+        // CORSAC does not spend 17 Montgomery rounds merely discovering the
+        // provider.  The focused RSA suite retains exponent-65537 vectors.
+        // PSS uses MGF1-SHA-256 and the TLS profile's 32-byte salt.
+        byte[] modulus = FromHex(
+            "be810194aa299cff6db9a88580a20b6ece514a2ee6e92915468792696e28297f"
+          + "308b68b66f0089c9938c5215e514e645fcf8ed03be8571c605b524dfcd7f55b5"
+          + "c16f5a1b58c87f05e17c6fbe3ef13a860ddcfc4d4f636237ecb3c1b530665792"
+          + "fc75f9653a771081954591835947691057bd88aa17b200873c6b6a53593092420"
+          + "78e5ec0c0b3e82da2795594d083a53f0303d184f0300dfd0c18370a93445ab90"
+          + "3966652c190994b866a50056cf17001a20b53aa548c47ad59958c9a0771231df"
+          + "a7ffb87adb61116e8dd8d8619f1f3c9025eb9240807c28018792f0792ef44a70"
+          + "48ef71526d95282c71eb8e3b4b2cad6c3cd5824c7d21233b95d47c59486e72f");
+        byte[] digest = FromHex(
+            "8bc9b98bb2313f5f3306e942a05ff9cb"
+          + "b32a2651c81f08239e6db679a083034d");
+        byte[] pkcs1 = FromHex(
+            "8b14153fa4d5586eab59396cf7b8ca3191784808aa7c261501a83ac8265a17bb"
+          + "a41da7850c4a637a8a2a146c7a6f601683559cc36da556ac4dd5186d70a0ae0b"
+          + "0ca310dd4ff749a8367881eff7c2cf02114c8fe957e34fa9ac03976e5f46846f"
+          + "84323b7759e09a27b978cc720ced87a9c77ee469d73e3ce17186f602214c8835"
+          + "1012750b7f59ddab715ccd881a624ba79900635bf908124ee9222291c789c921a"
+          + "5749a29e663ab0854b9e7ea2fd571f95cb6a70067572dda47afba404c5ae74b3"
+          + "2a968992074198d331437f53670050332cd5749fad6f280dac5fe8fd83330b669"
+          + "cad2559e9ab2b3e1cf9ee8a0990cb4bce0a43f81ba6869f18623c37d7edc83");
+        byte[] pss = FromHex(
+            "1276f21f8904a52da7b9b9925baa25ec4ebe7a04457eef42aa9a67be30483832"
+          + "aa12264759d4adc5b5e08cfcbbcec10ab407a849ed458a0974aa1d042d4b492c"
+          + "a3e157600034c04d2251d39278314c175dafca16d8ef77683e2d6128805f6aa"
+          + "ca5e96f80601fa3efec32b75fa28cb3e259b18a5994097ead103a5e04058b143"
+          + "c9ec63775b7a93194f324a24ec799b037fd4dd2382a4f067472adf34c8b92e4f"
+          + "debcf2b3e1900682f4a7d26d1a9087403789cf54ddc96d2216cbc7832571971e"
+          + "549e6ec398b21c63874dcaf3a0f4ae1564bd45a6d1b8572bb99e69b98887161"
+          + "a6dc94033124e2d53ac0593e80852ef8a8b0b9251ad94eb2a4cce7978c9c5210c4");
+        CorsacSecureCrypto_RsaWorkspace workspace =
+            new CorsacSecureCrypto_RsaWorkspace();
+        bool okay = workspace.VerifyPkcs1Sha256(
+                modulus, 0, modulus.Length, 3,
+                pkcs1, 0, pkcs1.Length, digest, 0)
+            && workspace.VerifyPssSha256(
+                modulus, 0, modulus.Length, 3,
+                pss, 0, pss.Length, digest, 0);
+        workspace.Close();
+        CorsacSecureCrypto_Bytes.Zero(modulus, 0, modulus.Length);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        CorsacSecureCrypto_Bytes.Zero(pkcs1, 0, pkcs1.Length);
+        CorsacSecureCrypto_Bytes.Zero(pss, 0, pss.Length);
+        return okay;
+    }
+
+    private static bool SelfTestDerPem()
+    {
+        byte[] encoded = FromHex("3003020101");
+        CorsacSecureCrypto_DerCursor outer =
+            new CorsacSecureCrypto_DerCursor(encoded, 0, encoded.Length);
+        CorsacSecureCrypto_DerCursor sequence =
+            new CorsacSecureCrypto_DerCursor(encoded, 0, 0);
+        long offset = 0;
+        long count = 0;
+        bool okay = outer.TryEnterSequence(sequence) && outer.AtEnd()
+            && sequence.TryReadPositiveInteger(out offset, out count)
+            && count == 1 && encoded[(int)offset] == (byte)1
+            && sequence.AtEnd();
+
+        byte[] pem = Ascii("-----BEGIN DATA-----\nAQ==\n-----END DATA-----\n");
+        byte[] decoded = new byte[1];
+        long written = 0;
+        long consumed = 0;
+        okay = okay && CorsacSecureCrypto_Pem.Decode(
+                pem, 0, pem.Length, "DATA",
+                decoded, 0, decoded.Length, out written, out consumed)
+            && written == 1 && consumed == pem.Length
+            && decoded[0] == (byte)1;
+        CorsacSecureCrypto_Bytes.Zero(encoded, 0, encoded.Length);
+        CorsacSecureCrypto_Bytes.Zero(pem, 0, pem.Length);
+        CorsacSecureCrypto_Bytes.Zero(decoded, 0, decoded.Length);
+        return okay;
+    }
+
+    private static bool SelfTestChaChaPoly()
+    {
+        byte[] key = new byte[32];
+        byte[] nonce = new byte[12];
+        byte[] empty = new byte[0];
+        byte[] tag = new byte[16];
+        CorsacSecureCrypto_ChaChaPoly1305 aead =
+            new CorsacSecureCrypto_ChaChaPoly1305(key, 0, 0);
+        bool okay = aead.Error == 0
+            && aead.Seal(nonce, 0, empty, 0, 0, empty, 0, 0,
+                         empty, 0, tag, 0)
+            && MatchesHex(tag, "4eb972c9a8fb3a1b382bb4d36f5ffad1");
+        aead.Close();
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        CorsacSecureCrypto_Bytes.Zero(nonce, 0, nonce.Length);
+        CorsacSecureCrypto_Bytes.Zero(tag, 0, tag.Length);
+        return okay;
+    }
+
+    private static byte[] FromHex(string text)
+    {
+        byte[] answer = new byte[text.Length / 2];
+        for (int i = 0; i < answer.Length; i = i + 1)
+            answer[i] = (byte)((HexNibble(text[i * 2]) << 4)
+                             | HexNibble(text[i * 2 + 1]));
+        return answer;
+    }
+
+    private static bool MatchesHex(byte[] bytes, string expected)
+    {
+        if (bytes.Length * 2 != expected.Length) return false;
+        long difference = 0;
+        for (int i = 0; i < bytes.Length; i = i + 1)
+        {
+            int high = HexNibble(expected[i * 2]);
+            int low = HexNibble(expected[i * 2 + 1]);
+            difference = difference
+                | ((bytes[i] & 255) ^ ((high << 4) | low));
+        }
+        return difference == 0;
+    }
+
+    private static int HexNibble(char value)
+    {
+        if (value >= '0' && value <= '9') return (int)(value - '0');
+        return (int)(value - 'a' + 10);
+    }
+
+    private static byte[] Ascii(string text)
+    {
+        byte[] bytes = new byte[text.Length];
+        for (int i = 0; i < text.Length; i = i + 1)
+            bytes[i] = (byte)text[i];
+        return bytes;
+    }
+}

@@ -1,0 +1,444 @@
+// CORSAC/SECURE Crypto portable 256-bit Montgomery arithmetic.
+//
+// This private support layer is intentionally fixed at four 64-bit limbs.  It
+// serves both the NIST P-256 field prime and the P-256 group order without a
+// general-purpose bignum ABI.  Multiplication performs the complete 512-bit
+// product followed by four fixed Montgomery-reduction rounds.  Carries,
+// subtraction borrows and final selection never branch on operand values.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_P256Number
+{
+    public long[] Words;
+
+    public CorsacSecureCrypto_P256Number()
+    {
+        Words = new long[4];
+    }
+
+    public void Clear()
+    {
+        Words[0] = 0;
+        Words[1] = 0;
+        Words[2] = 0;
+        Words[3] = 0;
+    }
+}
+
+public class CorsacSecureCrypto_P256Montgomery
+{
+    private CorsacSecureCrypto_P256Number _modulus;
+    private CorsacSecureCrypto_P256Number _one;
+    private CorsacSecureCrypto_P256Number _normalOne;
+    private CorsacSecureCrypto_P256Number _r2;
+    private CorsacSecureCrypto_P256Number _difference;
+    private CorsacSecureCrypto_P256Number _temporary;
+    private long _factor;
+    private long[] _work;
+
+    public CorsacSecureCrypto_P256Montgomery(
+        long modulus0, long modulus1, long modulus2, long modulus3,
+        long factor,
+        long one0, long one1, long one2, long one3,
+        long r20, long r21, long r22, long r23)
+    {
+        _modulus = new CorsacSecureCrypto_P256Number();
+        Set(_modulus, modulus0, modulus1, modulus2, modulus3);
+        _one = new CorsacSecureCrypto_P256Number();
+        Set(_one, one0, one1, one2, one3);
+        _normalOne = new CorsacSecureCrypto_P256Number();
+        Set(_normalOne, 1, 0, 0, 0);
+        _r2 = new CorsacSecureCrypto_P256Number();
+        Set(_r2, r20, r21, r22, r23);
+        _difference = new CorsacSecureCrypto_P256Number();
+        _temporary = new CorsacSecureCrypto_P256Number();
+        _factor = factor;
+        _work = new long[9];
+    }
+
+    public void SetZero(CorsacSecureCrypto_P256Number output)
+    {
+        output.Clear();
+    }
+
+    public void SetOne(CorsacSecureCrypto_P256Number output)
+    {
+        Copy(output, _one);
+    }
+
+    public void Copy(CorsacSecureCrypto_P256Number output,
+                     CorsacSecureCrypto_P256Number input)
+    {
+        long w0 = input.Words[0], w1 = input.Words[1];
+        long w2 = input.Words[2], w3 = input.Words[3];
+        Set(output, w0, w1, w2, w3);
+    }
+
+    public bool DecodeStrict(CorsacSecureCrypto_P256Number output,
+                             byte[] input, long offset, bool nonzero)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(input, offset, 32))
+            return false;
+        long w3 = LoadBig64(input, offset);
+        long w2 = LoadBig64(input, offset + 8);
+        long w1 = LoadBig64(input, offset + 16);
+        long w0 = LoadBig64(input, offset + 24);
+        Set(_difference, w0, w1, w2, w3);
+        bool less = LessThan(_difference, _modulus);
+        bool present = (w0 | w1 | w2 | w3) != 0;
+        bool valid = less & (!nonzero | present);
+        Multiply(_temporary, _difference, _r2);
+        ConditionalMove(output, _temporary, valid);
+        _difference.Clear();
+        _temporary.Clear();
+        return valid;
+    }
+
+    // Decodes a complete 256-bit value modulo a modulus whose top bit is set.
+    // Such an input is less than 2*modulus, so one conditional subtraction is
+    // sufficient.  This is the bits2int reduction used by P-256 ECDSA.
+    public bool DecodeReduced(CorsacSecureCrypto_P256Number output,
+                              byte[] input, long offset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(input, offset, 32))
+            return false;
+        long w3 = LoadBig64(input, offset);
+        long w2 = LoadBig64(input, offset + 8);
+        long w1 = LoadBig64(input, offset + 16);
+        long w0 = LoadBig64(input, offset + 24);
+        long borrow = SubtractWords(
+            _difference, w0, w1, w2, w3, _modulus);
+        bool reduce = borrow == 0;
+        _temporary.Words[0] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[0], w0, reduce);
+        _temporary.Words[1] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[1], w1, reduce);
+        _temporary.Words[2] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[2], w2, reduce);
+        _temporary.Words[3] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[3], w3, reduce);
+        Multiply(output, _temporary, _r2);
+        _difference.Clear();
+        _temporary.Clear();
+        return true;
+    }
+
+    public bool Encode(byte[] output, long offset,
+                       CorsacSecureCrypto_P256Number input)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(output, offset, 32))
+            return false;
+        Multiply(_temporary, input, _normalOne);
+        StoreBig64(output, offset, _temporary.Words[3]);
+        StoreBig64(output, offset + 8, _temporary.Words[2]);
+        StoreBig64(output, offset + 16, _temporary.Words[1]);
+        StoreBig64(output, offset + 24, _temporary.Words[0]);
+        _temporary.Clear();
+        return true;
+    }
+
+    public void Add(CorsacSecureCrypto_P256Number output,
+                    CorsacSecureCrypto_P256Number left,
+                    CorsacSecureCrypto_P256Number right)
+    {
+        long carry = 0;
+        for (int i = 0; i < 4; i = i + 1)
+        {
+            long sum0 = left.Words[i] + right.Words[i];
+            long carry0 = CarryBit(left.Words[i], right.Words[i], sum0);
+            long sum1 = sum0 + carry;
+            long carry1 = CarryBit(sum0, carry, sum1);
+            _work[i] = sum1;
+            carry = carry0 | carry1;
+        }
+        _work[4] = carry;
+
+        long borrow = SubtractWords(
+            _difference, _work[0], _work[1], _work[2], _work[3],
+            _modulus);
+        bool reduce = (_work[4] != 0) | (borrow == 0);
+        output.Words[0] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[0], _work[0], reduce);
+        output.Words[1] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[1], _work[1], reduce);
+        output.Words[2] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[2], _work[2], reduce);
+        output.Words[3] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[3], _work[3], reduce);
+        ClearScratch();
+    }
+
+    public void Subtract(CorsacSecureCrypto_P256Number output,
+                         CorsacSecureCrypto_P256Number left,
+                         CorsacSecureCrypto_P256Number right)
+    {
+        long borrow = SubtractWords(
+            _difference,
+            left.Words[0], left.Words[1], left.Words[2], left.Words[3],
+            right);
+        long mask = CorsacSecureCrypto_Bytes.Select(-1, 0, borrow != 0);
+        long carry = 0;
+        for (int i = 0; i < 4; i = i + 1)
+        {
+            long addend = _modulus.Words[i] & mask;
+            long sum0 = _difference.Words[i] + addend;
+            long carry0 = CarryBit(
+                _difference.Words[i], addend, sum0);
+            long sum1 = sum0 + carry;
+            long carry1 = CarryBit(sum0, carry, sum1);
+            output.Words[i] = sum1;
+            carry = carry0 | carry1;
+        }
+        _difference.Clear();
+    }
+
+    public void Negate(CorsacSecureCrypto_P256Number output,
+                       CorsacSecureCrypto_P256Number input)
+    {
+        // Subtract may alias and overwrite input.  Capture zero first so
+        // Negate(x, x) remains canonical when x is zero.
+        bool inputZero = IsZero(input);
+        Subtract(output, _modulus, input);
+        CorsacSecureCrypto_P256Number zero = _difference;
+        zero.Clear();
+        ConditionalMove(output, zero, inputZero);
+    }
+
+    public void Multiply(CorsacSecureCrypto_P256Number output,
+                         CorsacSecureCrypto_P256Number left,
+                         CorsacSecureCrypto_P256Number right)
+    {
+        long a0 = left.Words[0], a1 = left.Words[1];
+        long a2 = left.Words[2], a3 = left.Words[3];
+        long b0 = right.Words[0], b1 = right.Words[1];
+        long b2 = right.Words[2], b3 = right.Words[3];
+        for (int i = 0; i < 9; i = i + 1) _work[i] = 0;
+
+        AddProduct(0, a0, b0); AddProduct(1, a0, b1);
+        AddProduct(2, a0, b2); AddProduct(3, a0, b3);
+        AddProduct(1, a1, b0); AddProduct(2, a1, b1);
+        AddProduct(3, a1, b2); AddProduct(4, a1, b3);
+        AddProduct(2, a2, b0); AddProduct(3, a2, b1);
+        AddProduct(4, a2, b2); AddProduct(5, a2, b3);
+        AddProduct(3, a3, b0); AddProduct(4, a3, b1);
+        AddProduct(5, a3, b2); AddProduct(6, a3, b3);
+
+        for (int i = 0; i < 4; i = i + 1)
+        {
+            long multiple = _work[i] * _factor;
+            AddProduct(i, multiple, _modulus.Words[0]);
+            AddProduct(i + 1, multiple, _modulus.Words[1]);
+            AddProduct(i + 2, multiple, _modulus.Words[2]);
+            AddProduct(i + 3, multiple, _modulus.Words[3]);
+        }
+
+        long borrow = SubtractWords(
+            _difference, _work[4], _work[5], _work[6], _work[7],
+            _modulus);
+        bool reduce = (_work[8] != 0) | (borrow == 0);
+        output.Words[0] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[0], _work[4], reduce);
+        output.Words[1] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[1], _work[5], reduce);
+        output.Words[2] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[2], _work[6], reduce);
+        output.Words[3] = CorsacSecureCrypto_Bytes.Select(
+            _difference.Words[3], _work[7], reduce);
+        ClearScratch();
+    }
+
+    public void Square(CorsacSecureCrypto_P256Number output,
+                       CorsacSecureCrypto_P256Number input)
+    {
+        Multiply(output, input, input);
+    }
+
+    public void Pow(CorsacSecureCrypto_P256Number output,
+                    CorsacSecureCrypto_P256Number input,
+                    byte[] exponent,
+                    CorsacSecureCrypto_P256Number square,
+                    CorsacSecureCrypto_P256Number product)
+    {
+        SetOne(output);
+        for (int bit = 255; bit >= 0; bit = bit - 1)
+        {
+            Square(square, output);
+            Copy(output, square);
+            // The exponent is a public, fixed algorithm constant (p-2,
+            // (p+1)/4, or n-2).  Skipping its zero-bit multiplies reveals no
+            // operand information and materially reduces first-CPU latency.
+            if (((exponent[31 - (bit >> 3)] >> (bit & 7)) & 1) != 0)
+                Multiply(output, output, input);
+        }
+    }
+
+    public bool Equal(CorsacSecureCrypto_P256Number left,
+                      CorsacSecureCrypto_P256Number right)
+    {
+        return ((left.Words[0] ^ right.Words[0])
+              | (left.Words[1] ^ right.Words[1])
+              | (left.Words[2] ^ right.Words[2])
+              | (left.Words[3] ^ right.Words[3])) == 0;
+    }
+
+    public bool IsZero(CorsacSecureCrypto_P256Number input)
+    {
+        return (input.Words[0] | input.Words[1]
+              | input.Words[2] | input.Words[3]) == 0;
+    }
+
+    public bool IsOdd(CorsacSecureCrypto_P256Number input)
+    {
+        Multiply(_temporary, input, _normalOne);
+        bool odd = (_temporary.Words[0] & 1) != 0;
+        _temporary.Clear();
+        return odd;
+    }
+
+    public void ConditionalMove(CorsacSecureCrypto_P256Number destination,
+                                CorsacSecureCrypto_P256Number source,
+                                bool condition)
+    {
+        for (int i = 0; i < 4; i = i + 1)
+            destination.Words[i] = CorsacSecureCrypto_Bytes.Select(
+                source.Words[i], destination.Words[i], condition);
+    }
+
+    public void Close()
+    {
+        _modulus.Clear();
+        _one.Clear();
+        _normalOne.Clear();
+        _r2.Clear();
+        _difference.Clear();
+        _temporary.Clear();
+        ClearScratch();
+        _factor = 0;
+    }
+
+    private void AddProduct(int index, long left, long right)
+    {
+        long high;
+        long low = Sys.MultiplyAccumulate(
+            left, right, _work[index], out high);
+        _work[index] = low;
+        long sum = _work[index + 1] + high;
+        long carry = CarryBit(_work[index + 1], high, sum);
+        _work[index + 1] = sum;
+
+        // The fixed traversal prevents the location of the last carry from
+        // becoming a timing signal.  A 512-bit product plus one reduction
+        // multiple cannot overflow the ninth word.
+        for (int i = index + 2; i < 9; i = i + 1)
+        {
+            long next = _work[i] + carry;
+            carry = CarryBit(_work[i], carry, next);
+            _work[i] = next;
+        }
+    }
+
+    private long SubtractWords(
+        CorsacSecureCrypto_P256Number output,
+        long left0, long left1, long left2, long left3,
+        CorsacSecureCrypto_P256Number right)
+    {
+        long borrow = 0;
+        borrow = SubtractWord(
+            left0, right.Words[0], borrow, output, 0);
+        borrow = SubtractWord(
+            left1, right.Words[1], borrow, output, 1);
+        borrow = SubtractWord(
+            left2, right.Words[2], borrow, output, 2);
+        borrow = SubtractWord(
+            left3, right.Words[3], borrow, output, 3);
+        return borrow;
+    }
+
+    private static long SubtractWord(
+        long left, long right, long borrow,
+        CorsacSecureCrypto_P256Number output, int index)
+    {
+        long difference0 = left - right;
+        long borrow0 = BorrowBit(left, right, difference0);
+        long difference1 = difference0 - borrow;
+        long borrow1 = BorrowBit(difference0, borrow, difference1);
+        output.Words[index] = difference1;
+        return borrow0 | borrow1;
+    }
+
+    private bool LessThan(CorsacSecureCrypto_P256Number left,
+                          CorsacSecureCrypto_P256Number right)
+    {
+        long borrow = SubtractWords(
+            _temporary,
+            left.Words[0], left.Words[1], left.Words[2], left.Words[3],
+            right);
+        _temporary.Clear();
+        return borrow != 0;
+    }
+
+    private static long CarryBit(long left, long right, long sum)
+    {
+        return (((left & right) | ((left | right) & ~sum)) >> 63) & 1;
+    }
+
+    private static long BorrowBit(long left, long right, long difference)
+    {
+        return (((~left & right) | (~(left ^ right) & difference)) >> 63)
+             & 1;
+    }
+
+    private static void Set(CorsacSecureCrypto_P256Number output,
+                            long w0, long w1, long w2, long w3)
+    {
+        output.Words[0] = w0;
+        output.Words[1] = w1;
+        output.Words[2] = w2;
+        output.Words[3] = w3;
+    }
+
+    private static long LoadBig64(byte[] input, long offset)
+    {
+        long value = 0;
+        for (int i = 0; i < 8; i = i + 1)
+            value = (value << 8) | ((long)input[(int)(offset + i)] & 255);
+        return value;
+    }
+
+    private static void StoreBig64(byte[] output, long offset, long value)
+    {
+        for (int i = 7; i >= 0; i = i - 1)
+        {
+            output[(int)(offset + i)] = (byte)(value & 255);
+            value = (long)((ulong)value >> 8);
+        }
+    }
+
+    private void ClearScratch()
+    {
+        _difference.Clear();
+        for (int i = 0; i < 9; i = i + 1) _work[i] = 0;
+    }
+}
+
+public class CorsacSecureCrypto_P256Point
+{
+    public CorsacSecureCrypto_P256Number X;
+    public CorsacSecureCrypto_P256Number Y;
+    public CorsacSecureCrypto_P256Number Z;
+
+    public CorsacSecureCrypto_P256Point()
+    {
+        X = new CorsacSecureCrypto_P256Number();
+        Y = new CorsacSecureCrypto_P256Number();
+        Z = new CorsacSecureCrypto_P256Number();
+    }
+
+    public void Clear()
+    {
+        X.Clear();
+        Y.Clear();
+        Z.Clear();
+    }
+}

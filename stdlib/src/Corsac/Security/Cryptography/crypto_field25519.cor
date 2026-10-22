@@ -1,0 +1,581 @@
+// CORSAC/SECURE Crypto portable field arithmetic modulo 2^255 - 19.
+//
+// The representation is the processor ABI's five little-endian radix-2^51
+// limbs.  SetLimbs accepts the complete accelerator input range (each limb
+// below 2^54); every arithmetic operation and decoder emits a tight,
+// canonical value.  Field objects and the inversion workspace are owned by
+// the caller and reusable.  Multiply, Square and Invert allocate no storage.
+//
+// Every product is accumulated as an exact unsigned 128-bit pair.  COR-C#'s
+// long is signed, so ordinary signed arithmetic alone is not sufficient here:
+// MultiplyHighUnsigned supplies the upper product word and CarryBit computes
+// the carry from a wrapping low-word addition without a data-dependent branch.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_Field25519
+{
+    private const long LimbMask = 0x7ffffffffffffL;
+    private const long LimbRadix = 0x8000000000000L;
+    private const long LooseLimit = 0x40000000000000L;
+
+    private long[] _limbs;
+
+    public CorsacSecureCrypto_Field25519()
+    {
+        _limbs = new long[5];
+    }
+
+    /// Installs an accelerator-form value.  Loose limbs are retained so this
+    /// path also exercises the CPU ABI's promised input range.  All consumers
+    /// below accept them; arithmetic results are canonical.
+    public static bool SetLimbs(
+        CorsacSecureCrypto_Field25519 output,
+        long limb0, long limb1, long limb2, long limb3, long limb4)
+    {
+        if (output == null
+            || limb0 < 0 || limb0 >= LooseLimit
+            || limb1 < 0 || limb1 >= LooseLimit
+            || limb2 < 0 || limb2 >= LooseLimit
+            || limb3 < 0 || limb3 >= LooseLimit
+            || limb4 < 0 || limb4 >= LooseLimit)
+            return false;
+        output._limbs[0] = limb0;
+        output._limbs[1] = limb1;
+        output._limbs[2] = limb2;
+        output._limbs[3] = limb3;
+        output._limbs[4] = limb4;
+        return true;
+    }
+
+    public static bool SetSmall(
+        CorsacSecureCrypto_Field25519 output, long value)
+    {
+        if (output == null || value < 0 || value > LimbMask) return false;
+        output._limbs[0] = value;
+        output._limbs[1] = 0;
+        output._limbs[2] = 0;
+        output._limbs[3] = 0;
+        output._limbs[4] = 0;
+        return true;
+    }
+
+    public static void SetZero(CorsacSecureCrypto_Field25519 output)
+    {
+        output._limbs[0] = 0;
+        output._limbs[1] = 0;
+        output._limbs[2] = 0;
+        output._limbs[3] = 0;
+        output._limbs[4] = 0;
+    }
+
+    public static void SetOne(CorsacSecureCrypto_Field25519 output)
+    {
+        output._limbs[0] = 1;
+        output._limbs[1] = 0;
+        output._limbs[2] = 0;
+        output._limbs[3] = 0;
+        output._limbs[4] = 0;
+    }
+
+    /// Copies the representation exactly, including a valid loose form.
+    public static void Copy(CorsacSecureCrypto_Field25519 output,
+                            CorsacSecureCrypto_Field25519 input)
+    {
+        long h0 = input._limbs[0], h1 = input._limbs[1];
+        long h2 = input._limbs[2], h3 = input._limbs[3];
+        long h4 = input._limbs[4];
+        output._limbs[0] = h0;
+        output._limbs[1] = h1;
+        output._limbs[2] = h2;
+        output._limbs[3] = h3;
+        output._limbs[4] = h4;
+    }
+
+    public static void Add(CorsacSecureCrypto_Field25519 output,
+                           CorsacSecureCrypto_Field25519 left,
+                           CorsacSecureCrypto_Field25519 right)
+    {
+        long a0 = left._limbs[0], a1 = left._limbs[1];
+        long a2 = left._limbs[2], a3 = left._limbs[3];
+        long a4 = left._limbs[4];
+        long b0 = right._limbs[0], b1 = right._limbs[1];
+        long b2 = right._limbs[2], b3 = right._limbs[3];
+        long b4 = right._limbs[4];
+        // Both operands are snapshotted before output is used as scratch,
+        // including output==left==right. Loose inputs need not be separately
+        // canonicalized: their sum has nonnegative limbs below 2^55.
+        a0 = a0 + b0;
+        a1 = a1 + b1;
+        a2 = a2 + b2;
+        a3 = a3 + b3;
+        a4 = a4 + b4;
+        StoreReduced(output, a0, a1, a2, a3, a4);
+    }
+
+    public static void Subtract(CorsacSecureCrypto_Field25519 output,
+                                CorsacSecureCrypto_Field25519 left,
+                                CorsacSecureCrypto_Field25519 right)
+    {
+        long a0 = left._limbs[0], a1 = left._limbs[1];
+        long a2 = left._limbs[2], a3 = left._limbs[3];
+        long a4 = left._limbs[4];
+        long b0 = right._limbs[0], b1 = right._limbs[1];
+        long b2 = right._limbs[2], b3 = right._limbs[3];
+        long b4 = right._limbs[4];
+        // Add 16p before subtracting the original loose representations.
+        // Every input limb is below 8*2^51, so these limbs are nonnegative
+        // and below 24*2^51 (<2^56). This avoids two complete reductions
+        // without narrowing SetLimbs' public <2^54 input contract.
+        a0 = a0 + 16 * (LimbRadix - 19) - b0;
+        a1 = a1 + 16 * LimbMask - b1;
+        a2 = a2 + 16 * LimbMask - b2;
+        a3 = a3 + 16 * LimbMask - b3;
+        a4 = a4 + 16 * LimbMask - b4;
+        StoreReduced(output, a0, a1, a2, a3, a4);
+    }
+
+    public static void Multiply(CorsacSecureCrypto_Field25519 output,
+                                CorsacSecureCrypto_Field25519 left,
+                                CorsacSecureCrypto_Field25519 right)
+    {
+        // Five binary limbs are already the CPU's chainable representation.
+        // Discover per operation; no cached feature claim survives migration.
+        // (no hardware assist on this machine: the software path follows)
+        // Snapshot all inputs before any output write, so every aliasing
+        // arrangement is valid.
+        long a0 = left._limbs[0], a1 = left._limbs[1];
+        long a2 = left._limbs[2], a3 = left._limbs[3];
+        long a4 = left._limbs[4];
+        long b0 = right._limbs[0], b1 = right._limbs[1];
+        long b2 = right._limbs[2], b3 = right._limbs[3];
+        long b4 = right._limbs[4];
+
+        long c0l = 0, c0h = 0, c1l = 0, c1h = 0;
+        long c2l = 0, c2h = 0, c3l = 0, c3h = 0;
+        long c4l = 0, c4h = 0;
+
+        AddProduct(ref c0l, ref c0h, a0, b0);
+        AddProduct19(ref c0l, ref c0h, a1, b4);
+        AddProduct19(ref c0l, ref c0h, a2, b3);
+        AddProduct19(ref c0l, ref c0h, a3, b2);
+        AddProduct19(ref c0l, ref c0h, a4, b1);
+
+        AddProduct(ref c1l, ref c1h, a0, b1);
+        AddProduct(ref c1l, ref c1h, a1, b0);
+        AddProduct19(ref c1l, ref c1h, a2, b4);
+        AddProduct19(ref c1l, ref c1h, a3, b3);
+        AddProduct19(ref c1l, ref c1h, a4, b2);
+
+        AddProduct(ref c2l, ref c2h, a0, b2);
+        AddProduct(ref c2l, ref c2h, a1, b1);
+        AddProduct(ref c2l, ref c2h, a2, b0);
+        AddProduct19(ref c2l, ref c2h, a3, b4);
+        AddProduct19(ref c2l, ref c2h, a4, b3);
+
+        AddProduct(ref c3l, ref c3h, a0, b3);
+        AddProduct(ref c3l, ref c3h, a1, b2);
+        AddProduct(ref c3l, ref c3h, a2, b1);
+        AddProduct(ref c3l, ref c3h, a3, b0);
+        AddProduct19(ref c3l, ref c3h, a4, b4);
+
+        AddProduct(ref c4l, ref c4h, a0, b4);
+        AddProduct(ref c4l, ref c4h, a1, b3);
+        AddProduct(ref c4l, ref c4h, a2, b2);
+        AddProduct(ref c4l, ref c4h, a3, b1);
+        AddProduct(ref c4l, ref c4h, a4, b0);
+
+        long carry = ShiftRight51(c0l, c0h);
+        long h0 = c0l & LimbMask;
+        AddWord(ref c1l, ref c1h, carry, 0);
+        carry = ShiftRight51(c1l, c1h);
+        long h1 = c1l & LimbMask;
+        AddWord(ref c2l, ref c2h, carry, 0);
+        carry = ShiftRight51(c2l, c2h);
+        long h2 = c2l & LimbMask;
+        AddWord(ref c3l, ref c3h, carry, 0);
+        carry = ShiftRight51(c3l, c3h);
+        long h3 = c3l & LimbMask;
+        AddWord(ref c4l, ref c4h, carry, 0);
+        carry = ShiftRight51(c4l, c4h);
+        long h4 = c4l & LimbMask;
+
+        // With every input limb < 2^54 this last product remains below 2^64.
+        // Its signed long bit pattern is therefore exact even when bit 63 is
+        // set; Canonicalize uses logical shifts to recover its unsigned carry.
+        h0 = h0 + carry * 19;
+        Canonicalize(ref h0, ref h1, ref h2, ref h3, ref h4);
+        Store(output, h0, h1, h2, h3, h4);
+    }
+
+    public static void Square(CorsacSecureCrypto_Field25519 output,
+                              CorsacSecureCrypto_Field25519 input)
+    {
+        // (no hardware assist on this machine: the software path follows)
+        Multiply(output, input, input);
+    }
+
+    /// Computes input^(p-2).  Inverting zero returns zero.  The fixed addition
+    /// chain executes 254 squares and 11 multiplies for every input.
+    public static void Invert(
+        CorsacSecureCrypto_Field25519 output,
+        CorsacSecureCrypto_Field25519 input,
+        CorsacSecureCrypto_Field25519Workspace workspace)
+    {
+        workspace.ComputeInverse(output, input);
+    }
+
+    public static bool Equal(CorsacSecureCrypto_Field25519 left,
+                             CorsacSecureCrypto_Field25519 right)
+    {
+        long a0 = left._limbs[0], a1 = left._limbs[1];
+        long a2 = left._limbs[2], a3 = left._limbs[3];
+        long a4 = left._limbs[4];
+        long b0 = right._limbs[0], b1 = right._limbs[1];
+        long b2 = right._limbs[2], b3 = right._limbs[3];
+        long b4 = right._limbs[4];
+        Canonicalize(ref a0, ref a1, ref a2, ref a3, ref a4);
+        Canonicalize(ref b0, ref b1, ref b2, ref b3, ref b4);
+        long difference = (a0 ^ b0) | (a1 ^ b1) | (a2 ^ b2)
+                        | (a3 ^ b3) | (a4 ^ b4);
+        return difference == 0;
+    }
+
+    public static bool IsZero(CorsacSecureCrypto_Field25519 input)
+    {
+        long h0 = input._limbs[0], h1 = input._limbs[1];
+        long h2 = input._limbs[2], h3 = input._limbs[3];
+        long h4 = input._limbs[4];
+        Canonicalize(ref h0, ref h1, ref h2, ref h3, ref h4);
+        return (h0 | h1 | h2 | h3 | h4) == 0;
+    }
+
+    public static void ConditionalMove(
+        CorsacSecureCrypto_Field25519 destination,
+        CorsacSecureCrypto_Field25519 source, bool condition)
+    {
+        for (int i = 0; i < 5; i = i + 1)
+            destination._limbs[i] = CorsacSecureCrypto_Bytes.Select(
+                source._limbs[i], destination._limbs[i], condition);
+    }
+
+    public static void ConditionalSwap(
+        CorsacSecureCrypto_Field25519 left,
+        CorsacSecureCrypto_Field25519 right, bool condition)
+    {
+        long mask = CorsacSecureCrypto_Bytes.Select(-1, 0, condition);
+        for (int i = 0; i < 5; i = i + 1)
+        {
+            long change = (left._limbs[i] ^ right._limbs[i]) & mask;
+            left._limbs[i] = left._limbs[i] ^ change;
+            right._limbs[i] = right._limbs[i] ^ change;
+        }
+    }
+
+    /// Encodes the unique canonical 32-byte little-endian representation.
+    public static bool Encode(byte[] output, long outputOffset,
+                              CorsacSecureCrypto_Field25519 input)
+    {
+        if (input == null
+            || !CorsacSecureCrypto_Bytes.Range(output, outputOffset, 32))
+            return false;
+        long h0 = input._limbs[0], h1 = input._limbs[1];
+        long h2 = input._limbs[2], h3 = input._limbs[3];
+        long h4 = input._limbs[4];
+        Canonicalize(ref h0, ref h1, ref h2, ref h3, ref h4);
+        Store64(output, outputOffset, h0 | (h1 << 51));
+        Store64(output, outputOffset + 8,
+                LogicalShiftRight(h1, 13) | (h2 << 38));
+        Store64(output, outputOffset + 16,
+                LogicalShiftRight(h2, 26) | (h3 << 25));
+        Store64(output, outputOffset + 24,
+                LogicalShiftRight(h3, 39) | (h4 << 12));
+        return true;
+    }
+
+    /// Decodes only canonical field encodings.  Bit 255 must be clear and
+    /// encodings p through 2^255-1 are rejected without changing output.
+    public static bool DecodeStrict(
+        CorsacSecureCrypto_Field25519 output,
+        byte[] input, long inputOffset)
+    {
+        if (output == null
+            || !CorsacSecureCrypto_Bytes.Range(input, inputOffset, 32))
+            return false;
+        long h0, h1, h2, h3, h4;
+        DecodeLimbs(input, inputOffset, out h0, out h1, out h2, out h3, out h4);
+
+        // For a 255-bit h, h+19 carries beyond bit 254 exactly when h >= p.
+        long carry = LogicalShiftRight(h0 + 19, 51);
+        carry = LogicalShiftRight(h1 + carry, 51);
+        carry = LogicalShiftRight(h2 + carry, 51);
+        carry = LogicalShiftRight(h3 + carry, 51);
+        carry = LogicalShiftRight(h4 + carry, 51);
+        long top = ((long)input[(int)(inputOffset + 31)] & 128) >> 7;
+        bool valid = (top | carry) == 0;
+
+        output._limbs[0] = CorsacSecureCrypto_Bytes.Select(
+            h0, output._limbs[0], valid);
+        output._limbs[1] = CorsacSecureCrypto_Bytes.Select(
+            h1, output._limbs[1], valid);
+        output._limbs[2] = CorsacSecureCrypto_Bytes.Select(
+            h2, output._limbs[2], valid);
+        output._limbs[3] = CorsacSecureCrypto_Bytes.Select(
+            h3, output._limbs[3], valid);
+        output._limbs[4] = CorsacSecureCrypto_Bytes.Select(
+            h4, output._limbs[4], valid);
+        return valid;
+    }
+
+    /// RFC 7748 decoding masks bit 255 and accepts every remaining 255-bit
+    /// input.  Noncanonical values are reduced modulo p.
+    public static bool DecodeRfc7748(
+        CorsacSecureCrypto_Field25519 output,
+        byte[] input, long inputOffset)
+    {
+        if (output == null
+            || !CorsacSecureCrypto_Bytes.Range(input, inputOffset, 32))
+            return false;
+        long h0, h1, h2, h3, h4;
+        DecodeLimbs(input, inputOffset, out h0, out h1, out h2, out h3, out h4);
+        StoreReduced(output, h0, h1, h2, h3, h4);
+        return true;
+    }
+
+    private static void StoreReduced(CorsacSecureCrypto_Field25519 output,
+                                     long h0, long h1, long h2, long h3, long h4)
+    {
+        // Only Add, Subtract and RFC decoding call this helper. Their maximum
+        // input bound is 24*2^51. One fixed carry pass leaves limbs1..4 below
+        // 2^51 and limb0 below 2^51+24*19: all are safely below the CPU's
+        // 2^54 limit, independently of their values. No secret-dependent
+        // range branch or per-operation allocation is required.
+        // Do NOT route Multiply's unsigned folded intermediate here; it may
+        // exceed the instruction range and keeps full scalar Canonicalize.
+        CarryRound(ref h0, ref h1, ref h2, ref h3, ref h4);
+        Store(output, h0, h1, h2, h3, h4);
+        long address = Sys.ArrayData(output._limbs);
+        // (no hardware assist on this machine: the software path follows)
+        // Per-call discovery permits older/absent units or migration. The
+        // scratch belongs to the result, never to a distinct read-only input.
+        Canonicalize(ref h0, ref h1, ref h2, ref h3, ref h4);
+        Store(output, h0, h1, h2, h3, h4);
+    }
+
+    private static void Store(CorsacSecureCrypto_Field25519 output,
+                              long h0, long h1, long h2, long h3, long h4)
+    {
+        output._limbs[0] = h0;
+        output._limbs[1] = h1;
+        output._limbs[2] = h2;
+        output._limbs[3] = h3;
+        output._limbs[4] = h4;
+    }
+
+    private static void AddProduct(ref long low, ref long high,
+                                   long left, long right)
+    {
+        long productLow = left * right;
+        long productHigh = Sys.MultiplyHighUnsigned(left, right);
+        AddWord(ref low, ref high, productLow, productHigh);
+    }
+
+    private static void AddProduct19(ref long low, ref long high,
+                                     long left, long right)
+    {
+        long productLow = left * right;
+        long productHigh = Sys.MultiplyHighUnsigned(left, right);
+        long scaledLow = productLow * 19;
+        long scaledHigh = productHigh * 19
+                        + Sys.MultiplyHighUnsigned(productLow, 19);
+        AddWord(ref low, ref high, scaledLow, scaledHigh);
+    }
+
+    private static void AddWord(ref long low, ref long high,
+                                long addLow, long addHigh)
+    {
+        long before = low;
+        long sum = before + addLow;
+        long carry = CarryBit(before, addLow, sum);
+        low = sum;
+        high = high + addHigh + carry;
+    }
+
+    private static long CarryBit(long left, long right, long sum)
+    {
+        return (((left & right) | ((left | right) & ~sum)) >> 63) & 1;
+    }
+
+    private static long ShiftRight51(long low, long high)
+    {
+        return (long)(((ulong)low >> 51) | ((ulong)high << 13));
+    }
+
+    private static long LogicalShiftRight(long value, int bits)
+    {
+        return (long)((ulong)value >> bits);
+    }
+
+    private static void Canonicalize(ref long h0, ref long h1,
+                                     ref long h2, ref long h3, ref long h4)
+    {
+        // Three fixed carry rounds cover the full <2^54 input contract.  If a
+        // carry ripples through all five limbs in round two, it clears the
+        // upper limbs; round three then consumes the final 19-fold.
+        CarryRound(ref h0, ref h1, ref h2, ref h3, ref h4);
+        CarryRound(ref h0, ref h1, ref h2, ref h3, ref h4);
+        CarryRound(ref h0, ref h1, ref h2, ref h3, ref h4);
+
+        // g = h + 19 - 2^255.  g4 is nonnegative exactly when h >= p.
+        long g0 = h0 + 19;
+        long carry = LogicalShiftRight(g0, 51);
+        g0 = g0 & LimbMask;
+        long g1 = h1 + carry;
+        carry = LogicalShiftRight(g1, 51);
+        g1 = g1 & LimbMask;
+        long g2 = h2 + carry;
+        carry = LogicalShiftRight(g2, 51);
+        g2 = g2 & LimbMask;
+        long g3 = h3 + carry;
+        carry = LogicalShiftRight(g3, 51);
+        g3 = g3 & LimbMask;
+        long g4 = h4 + carry - LimbRadix;
+        bool reduce = g4 >= 0;
+        h0 = CorsacSecureCrypto_Bytes.Select(g0, h0, reduce);
+        h1 = CorsacSecureCrypto_Bytes.Select(g1, h1, reduce);
+        h2 = CorsacSecureCrypto_Bytes.Select(g2, h2, reduce);
+        h3 = CorsacSecureCrypto_Bytes.Select(g3, h3, reduce);
+        h4 = CorsacSecureCrypto_Bytes.Select(g4 & LimbMask, h4, reduce);
+    }
+
+    private static void CarryRound(ref long h0, ref long h1,
+                                   ref long h2, ref long h3, ref long h4)
+    {
+        long carry = LogicalShiftRight(h0, 51);
+        h0 = h0 & LimbMask;
+        h1 = h1 + carry;
+        carry = LogicalShiftRight(h1, 51);
+        h1 = h1 & LimbMask;
+        h2 = h2 + carry;
+        carry = LogicalShiftRight(h2, 51);
+        h2 = h2 & LimbMask;
+        h3 = h3 + carry;
+        carry = LogicalShiftRight(h3, 51);
+        h3 = h3 & LimbMask;
+        h4 = h4 + carry;
+        carry = LogicalShiftRight(h4, 51);
+        h4 = h4 & LimbMask;
+        h0 = h0 + carry * 19;
+    }
+
+    private static void DecodeLimbs(byte[] input, long offset,
+                                    out long h0, out long h1, out long h2,
+                                    out long h3, out long h4)
+    {
+        h0 = Load64(input, offset) & LimbMask;
+        h1 = LogicalShiftRight(Load64(input, offset + 6), 3) & LimbMask;
+        h2 = LogicalShiftRight(Load64(input, offset + 12), 6) & LimbMask;
+        h3 = LogicalShiftRight(Load64(input, offset + 19), 1) & LimbMask;
+        h4 = LogicalShiftRight(Load64(input, offset + 24), 12) & LimbMask;
+    }
+
+    private static long Load64(byte[] input, long offset)
+    {
+        long value = 0;
+        for (int i = 0; i < 8; i = i + 1)
+            value = value
+                  | (((long)input[(int)(offset + i)] & 255) << (i * 8));
+        return value;
+    }
+
+    private static void Store64(byte[] output, long offset, long value)
+    {
+        for (int i = 0; i < 8; i = i + 1)
+        {
+            output[(int)(offset + i)] = (byte)(value & 255);
+            value = LogicalShiftRight(value, 8);
+        }
+    }
+}
+
+/// Four private field temporaries allocated once for fixed-chain inversion.
+/// Callers own and reuse this object but cannot alias a live operand with its
+/// scratch state.
+public class CorsacSecureCrypto_Field25519Workspace
+{
+    private CorsacSecureCrypto_Field25519 _temp0;
+    private CorsacSecureCrypto_Field25519 _temp1;
+    private CorsacSecureCrypto_Field25519 _temp2;
+    private CorsacSecureCrypto_Field25519 _temp3;
+
+    public CorsacSecureCrypto_Field25519Workspace()
+    {
+        _temp0 = new CorsacSecureCrypto_Field25519();
+        _temp1 = new CorsacSecureCrypto_Field25519();
+        _temp2 = new CorsacSecureCrypto_Field25519();
+        _temp3 = new CorsacSecureCrypto_Field25519();
+    }
+
+    public void ComputeInverse(CorsacSecureCrypto_Field25519 output,
+                               CorsacSecureCrypto_Field25519 input)
+    {
+        CorsacSecureCrypto_Field25519.Square(_temp0, input);     // 2
+        CorsacSecureCrypto_Field25519.Square(_temp1, _temp0);    // 4
+        CorsacSecureCrypto_Field25519.Square(_temp1, _temp1);    // 8
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp1, input, _temp1);                                // 9
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp0, _temp0, _temp1);                               // 11
+        CorsacSecureCrypto_Field25519.Square(_temp2, _temp0);    // 22
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp1, _temp1, _temp2);                               // 2^5 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp2, _temp1);
+        for (int i = 1; i < 5; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp2, _temp2);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp1, _temp2, _temp1);                               // 2^10 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp2, _temp1);
+        for (int i = 1; i < 10; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp2, _temp2);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp2, _temp2, _temp1);                               // 2^20 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp3, _temp2);
+        for (int i = 1; i < 20; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp3, _temp3);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp2, _temp3, _temp2);                               // 2^40 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp2, _temp2);
+        for (int i = 1; i < 10; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp2, _temp2);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp1, _temp2, _temp1);                               // 2^50 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp2, _temp1);
+        for (int i = 1; i < 50; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp2, _temp2);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp2, _temp2, _temp1);                               // 2^100 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp3, _temp2);
+        for (int i = 1; i < 100; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp3, _temp3);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp2, _temp3, _temp2);                               // 2^200 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp2, _temp2);
+        for (int i = 1; i < 50; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp2, _temp2);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temp1, _temp2, _temp1);                               // 2^250 - 1
+
+        CorsacSecureCrypto_Field25519.Square(_temp1, _temp1);
+        for (int i = 1; i < 5; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(_temp1, _temp1);
+        CorsacSecureCrypto_Field25519.Multiply(
+            output, _temp1, _temp0);                               // 2^255 - 21
+    }
+}

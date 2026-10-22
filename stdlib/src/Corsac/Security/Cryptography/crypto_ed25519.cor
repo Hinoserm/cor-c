@@ -1,0 +1,817 @@
+// CORSAC/SECURE Crypto portable RFC 8032 Ed25519.
+//
+// Binary keys, messages and signatures are byte arrays.  Text strings never
+// enter this interface.  A caller owns one reusable workspace; after its
+// construction, public-key derivation and signing allocate no storage.  The
+// fixed four-bit scalar loop performs the same doubles, additions and table
+// scans for every secret scalar.  Field table selection is implemented with
+// the processor's constant-time select primitive (or its software fallback).
+//
+// Verification deliberately implements the strict interpretation needed by
+// SSH host and user keys: field and scalar encodings must be canonical, the
+// sign bit may not encode negative zero, and both A and R must be non-identity
+// members of the prime-order subgroup.  This rejects small-order inputs,
+// mixed torsion points and the S + L signature malleability accepted by some
+// historical implementations.
+
+namespace Corsac.Security.Cryptography;
+
+public static class CorsacSecureCrypto_Ed25519
+{
+    public const int SeedBytes = 32;
+    public const int PublicKeyBytes = 32;
+    public const int SignatureBytes = 64;
+
+    public static bool PublicKey(
+        byte[] seed, long seedOffset,
+        byte[] output, long outputOffset,
+        CorsacSecureCrypto_Ed25519Workspace workspace)
+    {
+        if (workspace == null) return false;
+        return workspace.DerivePublicKey(
+            seed, seedOffset, output, outputOffset);
+    }
+
+    public static bool Sign(
+        byte[] seed, long seedOffset,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] output, long outputOffset,
+        CorsacSecureCrypto_Ed25519Workspace workspace)
+    {
+        if (workspace == null) return false;
+        return workspace.CreateSignature(
+            seed, seedOffset, message, messageOffset, messageCount,
+            output, outputOffset);
+    }
+
+    public static bool Verify(
+        byte[] publicKey, long publicKeyOffset,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] signature, long signatureOffset,
+        CorsacSecureCrypto_Ed25519Workspace workspace)
+    {
+        if (workspace == null) return false;
+        return workspace.CheckSignature(
+            publicKey, publicKeyOffset,
+            message, messageOffset, messageCount,
+            signature, signatureOffset);
+    }
+}
+
+public class CorsacSecureCrypto_Ed25519Point
+{
+    public CorsacSecureCrypto_Field25519 X;
+    public CorsacSecureCrypto_Field25519 Y;
+    public CorsacSecureCrypto_Field25519 Z;
+    public CorsacSecureCrypto_Field25519 T;
+
+    public CorsacSecureCrypto_Ed25519Point()
+    {
+        X = new CorsacSecureCrypto_Field25519();
+        Y = new CorsacSecureCrypto_Field25519();
+        Z = new CorsacSecureCrypto_Field25519();
+        T = new CorsacSecureCrypto_Field25519();
+    }
+
+    public void Clear()
+    {
+        CorsacSecureCrypto_Field25519.SetZero(X);
+        CorsacSecureCrypto_Field25519.SetZero(Y);
+        CorsacSecureCrypto_Field25519.SetZero(Z);
+        CorsacSecureCrypto_Field25519.SetZero(T);
+    }
+}
+
+public class CorsacSecureCrypto_Ed25519Workspace
+{
+    private CorsacSecureCrypto_Sha512 _sha;
+    private CorsacSecureCrypto_Field25519Workspace _inverse;
+
+    private CorsacSecureCrypto_Field25519 _zero;
+    private CorsacSecureCrypto_Field25519 _one;
+    private CorsacSecureCrypto_Field25519 _d;
+    private CorsacSecureCrypto_Field25519 _twoD;
+    private CorsacSecureCrypto_Field25519 _sqrtMinusOne;
+    private CorsacSecureCrypto_Field25519 _baseX;
+    private CorsacSecureCrypto_Field25519 _baseY;
+
+    // Twelve field temporaries cover a complete extended-coordinate add.
+    private CorsacSecureCrypto_Field25519 _f0;
+    private CorsacSecureCrypto_Field25519 _f1;
+    private CorsacSecureCrypto_Field25519 _f2;
+    private CorsacSecureCrypto_Field25519 _f3;
+    private CorsacSecureCrypto_Field25519 _f4;
+    private CorsacSecureCrypto_Field25519 _f5;
+    private CorsacSecureCrypto_Field25519 _f6;
+    private CorsacSecureCrypto_Field25519 _f7;
+    private CorsacSecureCrypto_Field25519 _f8;
+    private CorsacSecureCrypto_Field25519 _f9;
+    private CorsacSecureCrypto_Field25519 _f10;
+    private CorsacSecureCrypto_Field25519 _f11;
+    private CorsacSecureCrypto_Field25519 _powTemp0;
+    private CorsacSecureCrypto_Field25519 _powTemp1;
+    private CorsacSecureCrypto_Field25519 _powTemp2;
+
+    private CorsacSecureCrypto_Ed25519Point[] _table;
+    private CorsacSecureCrypto_Ed25519Point _selected;
+    private CorsacSecureCrypto_Ed25519Point _mulDouble;
+    private CorsacSecureCrypto_Ed25519Point _point0;
+    private CorsacSecureCrypto_Ed25519Point _point1;
+    private CorsacSecureCrypto_Ed25519Point _point2;
+    private CorsacSecureCrypto_Ed25519Point _point3;
+    private CorsacSecureCrypto_Ed25519Point _point4;
+    private CorsacSecureCrypto_Ed25519Point _point5;
+
+    private byte[] _digest;
+    private byte[] _scalar0;
+    private byte[] _scalar1;
+    private byte[] _scalar2;
+    private byte[] _scalar3;
+    private byte[] _order;
+    private byte[] _wide;
+    private byte[] _remainder;
+    private byte[] _candidate;
+    private long[] _product;
+    private byte[] _publicEncoding;
+    private byte[] _rEncoding;
+    private byte[] _signature;
+    private byte[] _pointEncoding;
+    private byte[] _xEncoding;
+    private bool _closed;
+
+    public CorsacSecureCrypto_Ed25519Workspace()
+    {
+        _sha = new CorsacSecureCrypto_Sha512();
+        _inverse = new CorsacSecureCrypto_Field25519Workspace();
+
+        _zero = NewField();
+        _one = NewField();
+        _d = NewField();
+        _twoD = NewField();
+        _sqrtMinusOne = NewField();
+        _baseX = NewField();
+        _baseY = NewField();
+        CorsacSecureCrypto_Field25519.SetZero(_zero);
+        CorsacSecureCrypto_Field25519.SetOne(_one);
+        CorsacSecureCrypto_Field25519.SetLimbs(
+            _d, 929955233495203L, 466365720129213L,
+            1662059464998953L, 2033849074728123L,
+            1442794654840575L);
+        CorsacSecureCrypto_Field25519.SetLimbs(
+            _twoD, 1859910466990425L, 932731440258426L,
+            1072319116312658L, 1815898335770999L,
+            633789495995903L);
+        CorsacSecureCrypto_Field25519.SetLimbs(
+            _sqrtMinusOne, 1718705420411056L, 234908883556509L,
+            2233514472574048L, 2117202627021982L,
+            765476049583133L);
+        CorsacSecureCrypto_Field25519.SetLimbs(
+            _baseX, 1738742601995546L, 1146398526822698L,
+            2070867633025821L, 562264141797630L,
+            587772402128613L);
+        CorsacSecureCrypto_Field25519.SetLimbs(
+            _baseY, 1801439850948184L, 1351079888211148L,
+            450359962737049L, 900719925474099L,
+            1801439850948198L);
+
+        _f0 = NewField(); _f1 = NewField();
+        _f2 = NewField(); _f3 = NewField();
+        _f4 = NewField(); _f5 = NewField();
+        _f6 = NewField(); _f7 = NewField();
+        _f8 = NewField(); _f9 = NewField();
+        _f10 = NewField(); _f11 = NewField();
+        _powTemp0 = NewField(); _powTemp1 = NewField();
+        _powTemp2 = NewField();
+
+        _table = new CorsacSecureCrypto_Ed25519Point[16];
+        for (int i = 0; i < 16; i = i + 1)
+            _table[i] = new CorsacSecureCrypto_Ed25519Point();
+        _selected = new CorsacSecureCrypto_Ed25519Point();
+        _mulDouble = new CorsacSecureCrypto_Ed25519Point();
+        _point0 = new CorsacSecureCrypto_Ed25519Point();
+        _point1 = new CorsacSecureCrypto_Ed25519Point();
+        _point2 = new CorsacSecureCrypto_Ed25519Point();
+        _point3 = new CorsacSecureCrypto_Ed25519Point();
+        _point4 = new CorsacSecureCrypto_Ed25519Point();
+        _point5 = new CorsacSecureCrypto_Ed25519Point();
+
+        _digest = new byte[64];
+        _scalar0 = new byte[32];
+        _scalar1 = new byte[32];
+        _scalar2 = new byte[32];
+        _scalar3 = new byte[32];
+        _order = new byte[] {
+            0xed,0xd3,0xf5,0x5c,0x1a,0x63,0x12,0x58,
+            0xd6,0x9c,0xf7,0xa2,0xde,0xf9,0xde,0x14,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x10
+        };
+        _wide = new byte[64];
+        _remainder = new byte[33];
+        _candidate = new byte[33];
+        _product = new long[64];
+        _publicEncoding = new byte[32];
+        _rEncoding = new byte[32];
+        _signature = new byte[64];
+        _pointEncoding = new byte[32];
+        _xEncoding = new byte[32];
+    }
+
+    public bool DerivePublicKey(
+        byte[] seed, long seedOffset,
+        byte[] output, long outputOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(seed, seedOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(output, outputOffset, 32))
+            return false;
+
+        if (!HashOne(seed, seedOffset, 32, _digest))
+            return FailedOperation();
+        PruneScalar(_scalar0, _digest);
+        SetBase(_point0);
+        ScalarMultiply(_point1, _point0, _scalar0, 0);
+        EncodePoint(_publicEncoding, _point1);
+        CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, _publicEncoding, 0, 32);
+        WipeOperation();
+        return true;
+    }
+
+    public bool CreateSignature(
+        byte[] seed, long seedOffset,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] output, long outputOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(seed, seedOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   message, messageOffset, messageCount)
+            || !CorsacSecureCrypto_Bytes.Range(output, outputOffset, 64))
+            return false;
+
+        // h = SHA-512(seed), a = prune(h[0..31]), prefix = h[32..63].
+        if (!HashOne(seed, seedOffset, 32, _digest))
+            return FailedOperation();
+        PruneScalar(_scalar0, _digest);
+        SetBase(_point0);
+        ScalarMultiply(_point1, _point0, _scalar0, 0);
+        EncodePoint(_publicEncoding, _point1);
+
+        // r = SHA-512(prefix || M) mod L.  Update consumes the prefix before
+        // Finish overwrites _digest, so no extra prefix allocation is needed.
+        if (!HashTwo(_digest, 32, 32,
+                     message, messageOffset, messageCount, _digest))
+            return FailedOperation();
+        ReduceScalar(_scalar1, _digest);
+        ScalarMultiply(_point2, _point0, _scalar1, 0);
+        EncodePoint(_rEncoding, _point2);
+
+        // k = SHA-512(R || A || M) mod L; S = (r + k*a) mod L.
+        if (!HashThree(_rEncoding, 0, 32,
+                       _publicEncoding, 0, 32,
+                       message, messageOffset, messageCount, _digest))
+            return FailedOperation();
+        ReduceScalar(_scalar2, _digest);
+        MultiplyAddScalar(
+            _scalar3, _scalar2, _scalar0, _scalar1);
+
+        CorsacSecureCrypto_Bytes.Copy(
+            _signature, 0, _rEncoding, 0, 32);
+        CorsacSecureCrypto_Bytes.Copy(
+            _signature, 32, _scalar3, 0, 32);
+        // This is the first write to caller storage.  Consequently seed,
+        // message and output may be the same array with arbitrary overlap.
+        CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, _signature, 0, 64);
+        WipeOperation();
+        return true;
+    }
+
+    public bool CheckSignature(
+        byte[] publicKey, long publicKeyOffset,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] signature, long signatureOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(
+                   publicKey, publicKeyOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   message, messageOffset, messageCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   signature, signatureOffset, 64))
+            return false;
+
+        // S must be the unique integer in [0,L).  In particular, adding L to
+        // a valid S cannot produce a second accepted encoding.
+        if (!ScalarCanonical(signature, signatureOffset + 32))
+        {
+            WipeOperation();
+            return false;
+        }
+        if (!DecodePoint(_point0, publicKey, publicKeyOffset)
+            || !DecodePoint(_point1, signature, signatureOffset))
+        {
+            WipeOperation();
+            return false;
+        }
+
+        // [L]P == identity establishes membership in the prime subgroup.
+        // The separate identity rejection excludes every small-order point,
+        // including the neutral element which technically passes [L]P.
+        if (!PrimeOrderNonIdentity(_point0)
+            || !PrimeOrderNonIdentity(_point1))
+        {
+            WipeOperation();
+            return false;
+        }
+
+        if (!HashThree(signature, signatureOffset, 32,
+                       publicKey, publicKeyOffset, 32,
+                       message, messageOffset, messageCount, _digest))
+            return FailedOperation();
+        ReduceScalar(_scalar0, _digest);
+
+        // RFC 8032 equation: [S]B = R + [k]A.
+        SetBase(_point2);
+        ScalarMultiply(
+            _point3, _point2, signature, signatureOffset + 32);
+        ScalarMultiply(_point4, _point0, _scalar0, 0);
+        AddPoint(_point5, _point1, _point4);
+        bool valid = PointsEqual(_point3, _point5);
+        WipeOperation();
+        return valid;
+    }
+
+    /// Erases all mutable state and permanently retires the workspace.
+    public void Close()
+    {
+        if (_closed) return;
+        WipeOperation();
+        _sha.Close();
+        ClearField(_zero); ClearField(_one); ClearField(_d);
+        ClearField(_twoD); ClearField(_sqrtMinusOne);
+        ClearField(_baseX); ClearField(_baseY);
+        for (int i = 0; i < 32; i = i + 1) _order[i] = 0;
+        _closed = true;
+    }
+
+    private static CorsacSecureCrypto_Field25519 NewField()
+    {
+        return new CorsacSecureCrypto_Field25519();
+    }
+
+    private bool FailedOperation()
+    {
+        WipeOperation();
+        return false;
+    }
+
+    private bool BeginHash()
+    {
+        if (_sha.Error != 0) return false;
+        if (_sha.Finished) return _sha.Reset();
+        return true;
+    }
+
+    private bool HashOne(
+        byte[] a, long aOffset, long aCount, byte[] output)
+    {
+        return BeginHash()
+            && _sha.Update(a, aOffset, aCount)
+            && _sha.Finish(output, 0);
+    }
+
+    private bool HashTwo(
+        byte[] a, long aOffset, long aCount,
+        byte[] b, long bOffset, long bCount, byte[] output)
+    {
+        return BeginHash()
+            && _sha.Update(a, aOffset, aCount)
+            && _sha.Update(b, bOffset, bCount)
+            && _sha.Finish(output, 0);
+    }
+
+    private bool HashThree(
+        byte[] a, long aOffset, long aCount,
+        byte[] b, long bOffset, long bCount,
+        byte[] c, long cOffset, long cCount, byte[] output)
+    {
+        return BeginHash()
+            && _sha.Update(a, aOffset, aCount)
+            && _sha.Update(b, bOffset, bCount)
+            && _sha.Update(c, cOffset, cCount)
+            && _sha.Finish(output, 0);
+    }
+
+    private static void PruneScalar(byte[] scalar, byte[] digest)
+    {
+        for (int i = 0; i < 32; i = i + 1) scalar[i] = digest[i];
+        scalar[0] = (byte)(scalar[0] & 248);
+        scalar[31] = (byte)((scalar[31] & 63) | 64);
+    }
+
+    /// Reduces a 512-bit little-endian integer modulo L.  At each input bit
+    /// the 33-byte remainder is below 2L, so one fixed conditional subtraction
+    /// suffices.  No input bit changes the loop count or memory addresses.
+    private void ReduceScalar(byte[] output, byte[] input)
+    {
+        for (int i = 0; i < 33; i = i + 1) _remainder[i] = 0;
+        for (int bit = 511; bit >= 0; bit = bit - 1)
+        {
+            int carry = (input[bit >> 3] >> (bit & 7)) & 1;
+            for (int i = 0; i < 33; i = i + 1)
+            {
+                int value = (_remainder[i] << 1) | carry;
+                _remainder[i] = (byte)(value & 255);
+                carry = (value >> 8) & 1;
+            }
+
+            long borrow = 0;
+            for (int i = 0; i < 33; i = i + 1)
+            {
+                long modulus = i < 32 ? _order[i] : 0;
+                long difference = _remainder[i] - modulus - borrow;
+                _candidate[i] = (byte)(difference & 255);
+                borrow = (difference >> 63) & 1;
+            }
+            bool useCandidate = borrow == 0;
+            for (int i = 0; i < 33; i = i + 1)
+            {
+                int selected = (int)CorsacSecureCrypto_Bytes.Select(
+                    (int)_candidate[i], (int)_remainder[i], useCandidate);
+                _remainder[i] = (byte)selected;
+            }
+        }
+        for (int i = 0; i < 32; i = i + 1)
+            output[i] = _remainder[i];
+    }
+
+    private void MultiplyAddScalar(
+        byte[] output, byte[] left, byte[] right, byte[] addend)
+    {
+        for (int i = 0; i < 64; i = i + 1) _product[i] = 0;
+        for (int i = 0; i < 32; i = i + 1)
+        {
+            for (int j = 0; j < 32; j = j + 1)
+                _product[i + j] = _product[i + j]
+                    + (long)left[i] * (long)right[j];
+            _product[i] = _product[i] + addend[i];
+        }
+        long carry = 0;
+        for (int i = 0; i < 64; i = i + 1)
+        {
+            long value = _product[i] + carry;
+            _wide[i] = (byte)(value & 255);
+            carry = (long)((ulong)value >> 8);
+        }
+        ReduceScalar(output, _wide);
+    }
+
+    private bool ScalarCanonical(byte[] scalar, long offset)
+    {
+        for (int i = 31; i >= 0; i = i - 1)
+        {
+            int value = scalar[(int)offset + i];
+            int limit = _order[i];
+            if (value < limit) return true;
+            if (value > limit) return false;
+        }
+        return false;
+    }
+
+    private void SetBase(CorsacSecureCrypto_Ed25519Point point)
+    {
+        CorsacSecureCrypto_Field25519.Copy(point.X, _baseX);
+        CorsacSecureCrypto_Field25519.Copy(point.Y, _baseY);
+        CorsacSecureCrypto_Field25519.SetOne(point.Z);
+        CorsacSecureCrypto_Field25519.Multiply(
+            point.T, _baseX, _baseY);
+    }
+
+    private void SetIdentity(CorsacSecureCrypto_Ed25519Point point)
+    {
+        CorsacSecureCrypto_Field25519.SetZero(point.X);
+        CorsacSecureCrypto_Field25519.SetOne(point.Y);
+        CorsacSecureCrypto_Field25519.SetOne(point.Z);
+        CorsacSecureCrypto_Field25519.SetZero(point.T);
+    }
+
+    private static void CopyPoint(
+        CorsacSecureCrypto_Ed25519Point output,
+        CorsacSecureCrypto_Ed25519Point input)
+    {
+        CorsacSecureCrypto_Field25519.Copy(output.X, input.X);
+        CorsacSecureCrypto_Field25519.Copy(output.Y, input.Y);
+        CorsacSecureCrypto_Field25519.Copy(output.Z, input.Z);
+        CorsacSecureCrypto_Field25519.Copy(output.T, input.T);
+    }
+
+    private static void ConditionalMovePoint(
+        CorsacSecureCrypto_Ed25519Point destination,
+        CorsacSecureCrypto_Ed25519Point source, bool condition)
+    {
+        CorsacSecureCrypto_Field25519.ConditionalMove(
+            destination.X, source.X, condition);
+        CorsacSecureCrypto_Field25519.ConditionalMove(
+            destination.Y, source.Y, condition);
+        CorsacSecureCrypto_Field25519.ConditionalMove(
+            destination.Z, source.Z, condition);
+        CorsacSecureCrypto_Field25519.ConditionalMove(
+            destination.T, source.T, condition);
+    }
+
+    /// Complete extended-coordinate addition for a=-1.
+    private void AddPoint(
+        CorsacSecureCrypto_Ed25519Point output,
+        CorsacSecureCrypto_Ed25519Point left,
+        CorsacSecureCrypto_Ed25519Point right)
+    {
+        CorsacSecureCrypto_Field25519.Subtract(_f0, left.Y, left.X);
+        CorsacSecureCrypto_Field25519.Subtract(_f1, right.Y, right.X);
+        CorsacSecureCrypto_Field25519.Multiply(_f0, _f0, _f1); // A
+        CorsacSecureCrypto_Field25519.Add(_f1, left.Y, left.X);
+        CorsacSecureCrypto_Field25519.Add(_f2, right.Y, right.X);
+        CorsacSecureCrypto_Field25519.Multiply(_f1, _f1, _f2); // B
+        CorsacSecureCrypto_Field25519.Multiply(_f2, left.T, right.T);
+        CorsacSecureCrypto_Field25519.Multiply(_f2, _f2, _twoD); // C
+        CorsacSecureCrypto_Field25519.Multiply(_f3, left.Z, right.Z);
+        CorsacSecureCrypto_Field25519.Add(_f3, _f3, _f3);       // D
+        CorsacSecureCrypto_Field25519.Subtract(_f4, _f1, _f0); // E
+        CorsacSecureCrypto_Field25519.Subtract(_f5, _f3, _f2); // F
+        CorsacSecureCrypto_Field25519.Add(_f6, _f3, _f2);      // G
+        CorsacSecureCrypto_Field25519.Add(_f7, _f1, _f0);      // H
+        CorsacSecureCrypto_Field25519.Multiply(_f8, _f4, _f5);
+        CorsacSecureCrypto_Field25519.Multiply(_f9, _f6, _f7);
+        CorsacSecureCrypto_Field25519.Multiply(_f10, _f4, _f7);
+        CorsacSecureCrypto_Field25519.Multiply(_f11, _f5, _f6);
+        CorsacSecureCrypto_Field25519.Copy(output.X, _f8);
+        CorsacSecureCrypto_Field25519.Copy(output.Y, _f9);
+        CorsacSecureCrypto_Field25519.Copy(output.T, _f10);
+        CorsacSecureCrypto_Field25519.Copy(output.Z, _f11);
+    }
+
+    /// Dedicated doubling saves four field products per scalar bit compared
+    /// with invoking the complete addition formula on the same point twice.
+    private void DoublePoint(
+        CorsacSecureCrypto_Ed25519Point output,
+        CorsacSecureCrypto_Ed25519Point input)
+    {
+        CorsacSecureCrypto_Field25519.Square(_f0, input.X);     // A
+        CorsacSecureCrypto_Field25519.Square(_f1, input.Y);     // B
+        CorsacSecureCrypto_Field25519.Square(_f2, input.Z);
+        CorsacSecureCrypto_Field25519.Add(_f2, _f2, _f2);      // C
+        CorsacSecureCrypto_Field25519.Subtract(_f3, _zero, _f0); // D
+        CorsacSecureCrypto_Field25519.Add(_f4, input.X, input.Y);
+        CorsacSecureCrypto_Field25519.Square(_f4, _f4);
+        CorsacSecureCrypto_Field25519.Subtract(_f4, _f4, _f0);
+        CorsacSecureCrypto_Field25519.Subtract(_f4, _f4, _f1); // E
+        CorsacSecureCrypto_Field25519.Add(_f5, _f3, _f1);      // G
+        CorsacSecureCrypto_Field25519.Subtract(_f6, _f5, _f2); // F
+        CorsacSecureCrypto_Field25519.Subtract(_f7, _f3, _f1); // H
+        CorsacSecureCrypto_Field25519.Multiply(_f8, _f4, _f6);
+        CorsacSecureCrypto_Field25519.Multiply(_f9, _f5, _f7);
+        CorsacSecureCrypto_Field25519.Multiply(_f10, _f4, _f7);
+        CorsacSecureCrypto_Field25519.Multiply(_f11, _f6, _f5);
+        CorsacSecureCrypto_Field25519.Copy(output.X, _f8);
+        CorsacSecureCrypto_Field25519.Copy(output.Y, _f9);
+        CorsacSecureCrypto_Field25519.Copy(output.T, _f10);
+        CorsacSecureCrypto_Field25519.Copy(output.Z, _f11);
+    }
+
+    /// Fixed-window multiplication.  Every invocation builds all sixteen
+    /// table entries, scans every entry for all 64 nibbles, performs exactly
+    /// 256 doubles and 64 additions, and uses no secret-indexed load.
+    private void ScalarMultiply(
+        CorsacSecureCrypto_Ed25519Point output,
+        CorsacSecureCrypto_Ed25519Point point,
+        byte[] scalar, long scalarOffset)
+    {
+        SetIdentity(_table[0]);
+        CopyPoint(_table[1], point);
+        for (int i = 2; i < 16; i = i + 1)
+            AddPoint(_table[i], _table[i - 1], point);
+
+        SetIdentity(output);
+        for (int at = 63; at >= 0; at = at - 1)
+        {
+            for (int doubling = 0; doubling < 4; doubling = doubling + 1)
+            {
+                DoublePoint(_mulDouble, output);
+                CopyPoint(output, _mulDouble);
+            }
+            int value = scalar[(int)scalarOffset + (at >> 1)];
+            int digit = (at & 1) == 0 ? value & 15 : value >> 4;
+            SetIdentity(_selected);
+            for (int candidate = 0; candidate < 16;
+                 candidate = candidate + 1)
+                ConditionalMovePoint(
+                    _selected, _table[candidate], candidate == digit);
+            AddPoint(_mulDouble, output, _selected);
+            CopyPoint(output, _mulDouble);
+        }
+    }
+
+    private bool EncodePoint(
+        byte[] output, CorsacSecureCrypto_Ed25519Point point)
+    {
+        CorsacSecureCrypto_Field25519.Invert(_f0, point.Z, _inverse);
+        CorsacSecureCrypto_Field25519.Multiply(_f1, point.X, _f0);
+        CorsacSecureCrypto_Field25519.Multiply(_f2, point.Y, _f0);
+        CorsacSecureCrypto_Field25519.Encode(_pointEncoding, 0, _f2);
+        CorsacSecureCrypto_Field25519.Encode(_xEncoding, 0, _f1);
+        _pointEncoding[31] = (byte)(_pointEncoding[31]
+            | ((_xEncoding[0] & 1) << 7));
+        return CorsacSecureCrypto_Bytes.Copy(
+            output, 0, _pointEncoding, 0, 32);
+    }
+
+    private bool DecodePoint(
+        CorsacSecureCrypto_Ed25519Point output,
+        byte[] input, long inputOffset)
+    {
+        int sign = (input[(int)inputOffset + 31] >> 7) & 1;
+        CorsacSecureCrypto_Bytes.Copy(
+            _pointEncoding, 0, input, inputOffset, 32);
+        _pointEncoding[31] = (byte)(_pointEncoding[31] & 127);
+        if (!CorsacSecureCrypto_Field25519.DecodeStrict(
+                _f0, _pointEncoding, 0))
+            return false;                                         // y
+
+        CorsacSecureCrypto_Field25519.Square(_f1, _f0);         // y^2
+        CorsacSecureCrypto_Field25519.Subtract(_f2, _f1, _one); // u
+        CorsacSecureCrypto_Field25519.Multiply(_f3, _d, _f1);
+        CorsacSecureCrypto_Field25519.Add(_f3, _f3, _one);      // v
+        // x = u*v^3*(u*v^7)^((p-5)/8).  This ratio-square-root form avoids
+        // a separate inversion and uses a short fixed addition chain.
+        CorsacSecureCrypto_Field25519.Square(_f4, _f3);        // v^2
+        CorsacSecureCrypto_Field25519.Multiply(_f5, _f4, _f3); // v^3
+        CorsacSecureCrypto_Field25519.Square(_f6, _f5);        // v^6
+        CorsacSecureCrypto_Field25519.Multiply(_f6, _f6, _f3); // v^7
+        CorsacSecureCrypto_Field25519.Multiply(_f7, _f2, _f6); // u*v^7
+        Pow22523(_f8, _f7);
+        CorsacSecureCrypto_Field25519.Multiply(_f9, _f2, _f5); // u*v^3
+        CorsacSecureCrypto_Field25519.Multiply(_f5, _f9, _f8);
+
+        CorsacSecureCrypto_Field25519.Square(_f6, _f5);
+        CorsacSecureCrypto_Field25519.Multiply(_f6, _f6, _f3);
+        if (!CorsacSecureCrypto_Field25519.Equal(_f6, _f2))
+        {
+            CorsacSecureCrypto_Field25519.Subtract(
+                _f7, _zero, _f2);
+            if (!CorsacSecureCrypto_Field25519.Equal(_f6, _f7))
+                return false;
+            CorsacSecureCrypto_Field25519.Multiply(
+                _f5, _f5, _sqrtMinusOne);
+        }
+
+        if (CorsacSecureCrypto_Field25519.IsZero(_f5) && sign != 0)
+            return false; // RFC 8032's forbidden negative-zero encoding.
+        CorsacSecureCrypto_Field25519.Encode(_xEncoding, 0, _f5);
+        int parity = _xEncoding[0] & 1;
+        if (parity != sign)
+            CorsacSecureCrypto_Field25519.Subtract(_f5, _zero, _f5);
+
+        CorsacSecureCrypto_Field25519.Copy(output.X, _f5);
+        CorsacSecureCrypto_Field25519.Copy(output.Y, _f0);
+        CorsacSecureCrypto_Field25519.SetOne(output.Z);
+        CorsacSecureCrypto_Field25519.Multiply(
+            output.T, output.X, output.Y);
+        return true;
+    }
+
+    /// z^((p-5)/8) = z^(2^252-3), using the standard fixed addition
+    /// chain: 251 squares and 11 multiplies rather than 250 multiplies.
+    private void Pow22523(
+        CorsacSecureCrypto_Field25519 output,
+        CorsacSecureCrypto_Field25519 z)
+    {
+        CorsacSecureCrypto_Field25519.Square(_powTemp0, z);       // 2
+        CorsacSecureCrypto_Field25519.Square(_powTemp1, _powTemp0);
+        CorsacSecureCrypto_Field25519.Square(_powTemp1, _powTemp1);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp1, z, _powTemp1);                              // 9
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp0, _powTemp0, _powTemp1);                      // 11
+        CorsacSecureCrypto_Field25519.Square(_powTemp0, _powTemp0);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp0, _powTemp1, _powTemp0);                      // 2^5-1
+
+        CorsacSecureCrypto_Field25519.Square(_powTemp1, _powTemp0);
+        for (int i = 1; i < 5; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(
+                _powTemp1, _powTemp1);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp0, _powTemp1, _powTemp0);                      // 2^10-1
+
+        CorsacSecureCrypto_Field25519.Square(_powTemp1, _powTemp0);
+        for (int i = 1; i < 10; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(
+                _powTemp1, _powTemp1);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp1, _powTemp1, _powTemp0);                      // 2^20-1
+
+        CorsacSecureCrypto_Field25519.Square(_powTemp2, _powTemp1);
+        for (int i = 1; i < 20; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(
+                _powTemp2, _powTemp2);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp1, _powTemp2, _powTemp1);                      // 2^40-1
+
+        CorsacSecureCrypto_Field25519.Square(_powTemp1, _powTemp1);
+        for (int i = 1; i < 10; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(
+                _powTemp1, _powTemp1);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp0, _powTemp1, _powTemp0);                      // 2^50-1
+
+        CorsacSecureCrypto_Field25519.Square(_powTemp1, _powTemp0);
+        for (int i = 1; i < 50; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(
+                _powTemp1, _powTemp1);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp1, _powTemp1, _powTemp0);                      // 2^100-1
+
+        CorsacSecureCrypto_Field25519.Square(_powTemp2, _powTemp1);
+        for (int i = 1; i < 100; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(
+                _powTemp2, _powTemp2);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp1, _powTemp2, _powTemp1);                      // 2^200-1
+
+        CorsacSecureCrypto_Field25519.Square(_powTemp1, _powTemp1);
+        for (int i = 1; i < 50; i = i + 1)
+            CorsacSecureCrypto_Field25519.Square(
+                _powTemp1, _powTemp1);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _powTemp0, _powTemp1, _powTemp0);                      // 2^250-1
+        CorsacSecureCrypto_Field25519.Square(_powTemp0, _powTemp0);
+        CorsacSecureCrypto_Field25519.Square(_powTemp0, _powTemp0);
+        CorsacSecureCrypto_Field25519.Multiply(
+            output, _powTemp0, z);                                // 2^252-3
+    }
+
+    private bool PrimeOrderNonIdentity(
+        CorsacSecureCrypto_Ed25519Point point)
+    {
+        if (IsIdentity(point)) return false;
+        ScalarMultiply(_point5, point, _order, 0);
+        return IsIdentity(_point5);
+    }
+
+    private bool IsIdentity(CorsacSecureCrypto_Ed25519Point point)
+    {
+        if (!CorsacSecureCrypto_Field25519.IsZero(point.X))
+            return false;
+        return CorsacSecureCrypto_Field25519.Equal(point.Y, point.Z);
+    }
+
+    private bool PointsEqual(
+        CorsacSecureCrypto_Ed25519Point left,
+        CorsacSecureCrypto_Ed25519Point right)
+    {
+        CorsacSecureCrypto_Field25519.Multiply(
+            _f0, left.X, right.Z);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _f1, right.X, left.Z);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _f2, left.Y, right.Z);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _f3, right.Y, left.Z);
+        return CorsacSecureCrypto_Field25519.Equal(_f0, _f1)
+            && CorsacSecureCrypto_Field25519.Equal(_f2, _f3);
+    }
+
+    private void WipeOperation()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, 64);
+        CorsacSecureCrypto_Bytes.Zero(_scalar0, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(_scalar1, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(_scalar2, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(_scalar3, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(_wide, 0, 64);
+        CorsacSecureCrypto_Bytes.Zero(_remainder, 0, 33);
+        CorsacSecureCrypto_Bytes.Zero(_candidate, 0, 33);
+        CorsacSecureCrypto_Bytes.Zero(_publicEncoding, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(_rEncoding, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(_signature, 0, 64);
+        CorsacSecureCrypto_Bytes.Zero(_pointEncoding, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(_xEncoding, 0, 32);
+        for (int i = 0; i < 64; i = i + 1) _product[i] = 0;
+        ClearField(_f0); ClearField(_f1); ClearField(_f2);
+        ClearField(_f3); ClearField(_f4); ClearField(_f5);
+        ClearField(_f6); ClearField(_f7); ClearField(_f8);
+        ClearField(_f9); ClearField(_f10); ClearField(_f11);
+        ClearField(_powTemp0); ClearField(_powTemp1);
+        ClearField(_powTemp2);
+        for (int i = 0; i < 16; i = i + 1) _table[i].Clear();
+        _selected.Clear(); _mulDouble.Clear();
+        _point0.Clear(); _point1.Clear(); _point2.Clear();
+        _point3.Clear(); _point4.Clear(); _point5.Clear();
+    }
+
+    private static void ClearField(CorsacSecureCrypto_Field25519 field)
+    {
+        CorsacSecureCrypto_Field25519.SetZero(field);
+    }
+}

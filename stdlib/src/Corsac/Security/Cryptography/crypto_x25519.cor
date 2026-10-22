@@ -1,0 +1,324 @@
+// CORSAC/SECURE Crypto portable RFC 7748 X25519.
+//
+// Scalars, u-coordinates and results are 32-octet byte arrays.  The arithmetic
+// is shared with Ed25519 through the audited five-limb radix-2^51 field layer.
+// A caller-owned workspace keeps every ladder temporary and secret byte buffer
+// reusable: the 255-step Montgomery ladder and inversion loop allocate no
+// storage and make no secret-dependent branch or memory access.
+
+namespace Corsac.Security.Cryptography;
+
+public static class CorsacSecureCrypto_X25519
+{
+    public const int ScalarBytes = 32;
+    public const int CoordinateBytes = 32;
+    public const int SharedSecretBytes = 32;
+
+    /// Computes the raw RFC 7748 function. Small-order inputs and an all-zero
+    /// result are permitted here; key agreement callers use Agree instead.
+    public static bool Calculate(
+        byte[] scalar, long scalarOffset,
+        byte[] coordinate, long coordinateOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!Range(scalar, scalarOffset, ScalarBytes)
+            || !Range(coordinate, coordinateOffset, CoordinateBytes)
+            || !Range(output, outputOffset, CoordinateBytes))
+            return false;
+        CorsacSecureCrypto_X25519Workspace workspace
+            = new CorsacSecureCrypto_X25519Workspace();
+        bool okay = workspace.Calculate(
+            scalar, scalarOffset, coordinate, coordinateOffset,
+            output, outputOffset);
+        workspace.Close();
+        return okay;
+    }
+
+    public static bool CalculateWithWorkspace(
+        byte[] scalar, long scalarOffset,
+        byte[] coordinate, long coordinateOffset,
+        byte[] output, long outputOffset,
+        CorsacSecureCrypto_X25519Workspace workspace)
+    {
+        return workspace != null && workspace.Calculate(
+            scalar, scalarOffset, coordinate, coordinateOffset,
+            output, outputOffset);
+    }
+
+    public static bool PublicKey(
+        byte[] scalar, long scalarOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!Range(scalar, scalarOffset, ScalarBytes)
+            || !Range(output, outputOffset, CoordinateBytes))
+            return false;
+        CorsacSecureCrypto_X25519Workspace workspace
+            = new CorsacSecureCrypto_X25519Workspace();
+        bool okay = workspace.PublicKey(
+            scalar, scalarOffset, output, outputOffset);
+        workspace.Close();
+        return okay;
+    }
+
+    public static bool PublicKeyWithWorkspace(
+        byte[] scalar, long scalarOffset,
+        byte[] output, long outputOffset,
+        CorsacSecureCrypto_X25519Workspace workspace)
+    {
+        return workspace != null && workspace.PublicKey(
+            scalar, scalarOffset, output, outputOffset);
+    }
+
+    /// Computes a shared secret and rejects every peer input whose result is
+    /// all zero. Rejection leaves output unchanged.
+    public static bool Agree(
+        byte[] scalar, long scalarOffset,
+        byte[] peerPublic, long peerOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!Range(scalar, scalarOffset, ScalarBytes)
+            || !Range(peerPublic, peerOffset, CoordinateBytes)
+            || !Range(output, outputOffset, SharedSecretBytes))
+            return false;
+        CorsacSecureCrypto_X25519Workspace workspace
+            = new CorsacSecureCrypto_X25519Workspace();
+        bool okay = workspace.Agree(
+            scalar, scalarOffset, peerPublic, peerOffset,
+            output, outputOffset);
+        workspace.Close();
+        return okay;
+    }
+
+    public static bool AgreeWithWorkspace(
+        byte[] scalar, long scalarOffset,
+        byte[] peerPublic, long peerOffset,
+        byte[] output, long outputOffset,
+        CorsacSecureCrypto_X25519Workspace workspace)
+    {
+        return workspace != null && workspace.Agree(
+            scalar, scalarOffset, peerPublic, peerOffset,
+            output, outputOffset);
+    }
+
+    private static bool Range(byte[] buffer, long offset, long count)
+    {
+        return buffer != null && offset >= 0 && count >= 0
+            && offset <= buffer.Length && count <= buffer.Length - offset;
+    }
+}
+
+/// Reusable X25519 ladder state. Every public operation snapshots its scalar
+/// and decodes its coordinate before committing output, so every input/output
+/// overlap is supported. Secret state is erased before the call returns.
+public class CorsacSecureCrypto_X25519Workspace
+{
+    private byte[] _scalar;
+    private byte[] _result;
+    private byte[] _basePoint;
+    private CorsacSecureCrypto_Field25519 _x1;
+    private CorsacSecureCrypto_Field25519 _x2;
+    private CorsacSecureCrypto_Field25519 _z2;
+    private CorsacSecureCrypto_Field25519 _x3;
+    private CorsacSecureCrypto_Field25519 _z3;
+    private CorsacSecureCrypto_Field25519 _a;
+    private CorsacSecureCrypto_Field25519 _aa;
+    private CorsacSecureCrypto_Field25519 _b;
+    private CorsacSecureCrypto_Field25519 _bb;
+    private CorsacSecureCrypto_Field25519 _e;
+    private CorsacSecureCrypto_Field25519 _c;
+    private CorsacSecureCrypto_Field25519 _d;
+    private CorsacSecureCrypto_Field25519 _da;
+    private CorsacSecureCrypto_Field25519 _cb;
+    private CorsacSecureCrypto_Field25519 _temporary0;
+    private CorsacSecureCrypto_Field25519 _temporary1;
+    private CorsacSecureCrypto_Field25519 _inverse;
+    private CorsacSecureCrypto_Field25519 _a24;
+    private CorsacSecureCrypto_Field25519Workspace _fieldWorkspace;
+    private bool _closed;
+
+    public CorsacSecureCrypto_X25519Workspace()
+    {
+        _scalar = new byte[32];
+        _result = new byte[32];
+        _basePoint = new byte[32];
+        _basePoint[0] = (byte)9;
+        _x1 = new CorsacSecureCrypto_Field25519();
+        _x2 = new CorsacSecureCrypto_Field25519();
+        _z2 = new CorsacSecureCrypto_Field25519();
+        _x3 = new CorsacSecureCrypto_Field25519();
+        _z3 = new CorsacSecureCrypto_Field25519();
+        _a = new CorsacSecureCrypto_Field25519();
+        _aa = new CorsacSecureCrypto_Field25519();
+        _b = new CorsacSecureCrypto_Field25519();
+        _bb = new CorsacSecureCrypto_Field25519();
+        _e = new CorsacSecureCrypto_Field25519();
+        _c = new CorsacSecureCrypto_Field25519();
+        _d = new CorsacSecureCrypto_Field25519();
+        _da = new CorsacSecureCrypto_Field25519();
+        _cb = new CorsacSecureCrypto_Field25519();
+        _temporary0 = new CorsacSecureCrypto_Field25519();
+        _temporary1 = new CorsacSecureCrypto_Field25519();
+        _inverse = new CorsacSecureCrypto_Field25519();
+        _a24 = new CorsacSecureCrypto_Field25519();
+        _fieldWorkspace = new CorsacSecureCrypto_Field25519Workspace();
+        CorsacSecureCrypto_Field25519.SetSmall(_a24, 121665);
+        _closed = false;
+    }
+
+    public bool Calculate(
+        byte[] scalar, long scalarOffset,
+        byte[] coordinate, long coordinateOffset,
+        byte[] output, long outputOffset)
+    {
+        if (_closed
+            || !Range(scalar, scalarOffset, 32)
+            || !Range(coordinate, coordinateOffset, 32)
+            || !Range(output, outputOffset, 32)) return false;
+        Multiply(scalar, scalarOffset, coordinate, coordinateOffset);
+        Commit(output, outputOffset);
+        ClearSensitive();
+        return true;
+    }
+
+    public bool PublicKey(
+        byte[] scalar, long scalarOffset,
+        byte[] output, long outputOffset)
+    {
+        if (_closed
+            || !Range(scalar, scalarOffset, 32)
+            || !Range(output, outputOffset, 32)) return false;
+        Multiply(scalar, scalarOffset, _basePoint, 0);
+        Commit(output, outputOffset);
+        ClearSensitive();
+        return true;
+    }
+
+    public bool Agree(
+        byte[] scalar, long scalarOffset,
+        byte[] peerPublic, long peerOffset,
+        byte[] output, long outputOffset)
+    {
+        if (_closed
+            || !Range(scalar, scalarOffset, 32)
+            || !Range(peerPublic, peerOffset, 32)
+            || !Range(output, outputOffset, 32)) return false;
+        Multiply(scalar, scalarOffset, peerPublic, peerOffset);
+        int aggregate = 0;
+        for (int i = 0; i < 32; i = i + 1)
+            aggregate = aggregate | _result[i];
+        bool okay = aggregate != 0;
+        if (okay) Commit(output, outputOffset);
+        ClearSensitive();
+        return okay;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        ClearSensitive();
+        CorsacSecureCrypto_Bytes.Zero(_basePoint, 0, _basePoint.Length);
+        CorsacSecureCrypto_Field25519.SetZero(_a24);
+        _closed = true;
+    }
+
+    private void Multiply(byte[] scalar, long scalarOffset,
+                          byte[] coordinate, long coordinateOffset)
+    {
+        for (int i = 0; i < 32; i = i + 1)
+            _scalar[i] = scalar[(int)scalarOffset + i];
+        _scalar[0] = (byte)(_scalar[0] & 248);
+        _scalar[31] = (byte)((_scalar[31] & 127) | 64);
+
+        CorsacSecureCrypto_Field25519.DecodeRfc7748(
+            _x1, coordinate, coordinateOffset);
+        CorsacSecureCrypto_Field25519.SetOne(_x2);
+        CorsacSecureCrypto_Field25519.SetZero(_z2);
+        CorsacSecureCrypto_Field25519.Copy(_x3, _x1);
+        CorsacSecureCrypto_Field25519.SetOne(_z3);
+
+        int previous = 0;
+        for (int bit = 254; bit >= 0; bit = bit - 1)
+        {
+            int selected = (_scalar[bit >> 3] >> (bit & 7)) & 1;
+            bool swap = (previous ^ selected) != 0;
+            CorsacSecureCrypto_Field25519.ConditionalSwap(
+                _x2, _x3, swap);
+            CorsacSecureCrypto_Field25519.ConditionalSwap(
+                _z2, _z3, swap);
+            previous = selected;
+
+            CorsacSecureCrypto_Field25519.Add(_a, _x2, _z2);
+            CorsacSecureCrypto_Field25519.Square(_aa, _a);
+            CorsacSecureCrypto_Field25519.Subtract(_b, _x2, _z2);
+            CorsacSecureCrypto_Field25519.Square(_bb, _b);
+            CorsacSecureCrypto_Field25519.Subtract(_e, _aa, _bb);
+            CorsacSecureCrypto_Field25519.Add(_c, _x3, _z3);
+            CorsacSecureCrypto_Field25519.Subtract(_d, _x3, _z3);
+            CorsacSecureCrypto_Field25519.Multiply(_da, _d, _a);
+            CorsacSecureCrypto_Field25519.Multiply(_cb, _c, _b);
+            CorsacSecureCrypto_Field25519.Add(
+                _temporary0, _da, _cb);
+            CorsacSecureCrypto_Field25519.Square(_x3, _temporary0);
+            CorsacSecureCrypto_Field25519.Subtract(
+                _temporary0, _da, _cb);
+            CorsacSecureCrypto_Field25519.Square(
+                _temporary1, _temporary0);
+            CorsacSecureCrypto_Field25519.Multiply(
+                _z3, _x1, _temporary1);
+            CorsacSecureCrypto_Field25519.Multiply(_x2, _aa, _bb);
+            CorsacSecureCrypto_Field25519.Multiply(
+                _temporary0, _e, _a24);
+            CorsacSecureCrypto_Field25519.Add(
+                _temporary0, _aa, _temporary0);
+            CorsacSecureCrypto_Field25519.Multiply(
+                _z2, _e, _temporary0);
+        }
+
+        bool finalSwap = previous != 0;
+        CorsacSecureCrypto_Field25519.ConditionalSwap(
+            _x2, _x3, finalSwap);
+        CorsacSecureCrypto_Field25519.ConditionalSwap(
+            _z2, _z3, finalSwap);
+        CorsacSecureCrypto_Field25519.Invert(
+            _inverse, _z2, _fieldWorkspace);
+        CorsacSecureCrypto_Field25519.Multiply(
+            _temporary0, _x2, _inverse);
+        CorsacSecureCrypto_Field25519.Encode(_result, 0, _temporary0);
+    }
+
+    private void Commit(byte[] output, long outputOffset)
+    {
+        int at = (int)outputOffset;
+        for (int i = 0; i < 32; i = i + 1)
+            output[at + i] = _result[i];
+    }
+
+    private void ClearSensitive()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_scalar, 0, _scalar.Length);
+        CorsacSecureCrypto_Bytes.Zero(_result, 0, _result.Length);
+        CorsacSecureCrypto_Field25519.SetZero(_x1);
+        CorsacSecureCrypto_Field25519.SetZero(_x2);
+        CorsacSecureCrypto_Field25519.SetZero(_z2);
+        CorsacSecureCrypto_Field25519.SetZero(_x3);
+        CorsacSecureCrypto_Field25519.SetZero(_z3);
+        CorsacSecureCrypto_Field25519.SetZero(_a);
+        CorsacSecureCrypto_Field25519.SetZero(_aa);
+        CorsacSecureCrypto_Field25519.SetZero(_b);
+        CorsacSecureCrypto_Field25519.SetZero(_bb);
+        CorsacSecureCrypto_Field25519.SetZero(_e);
+        CorsacSecureCrypto_Field25519.SetZero(_c);
+        CorsacSecureCrypto_Field25519.SetZero(_d);
+        CorsacSecureCrypto_Field25519.SetZero(_da);
+        CorsacSecureCrypto_Field25519.SetZero(_cb);
+        CorsacSecureCrypto_Field25519.SetZero(_temporary0);
+        CorsacSecureCrypto_Field25519.SetZero(_temporary1);
+        CorsacSecureCrypto_Field25519.SetZero(_inverse);
+    }
+
+    private static bool Range(byte[] buffer, long offset, long count)
+    {
+        return buffer != null && offset >= 0 && count >= 0
+            && offset <= buffer.Length && count <= buffer.Length - offset;
+    }
+}

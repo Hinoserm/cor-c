@@ -1,0 +1,331 @@
+// CORSAC/SECURE Crypto portable RFC 8439 ChaCha20.
+//
+// Keys, nonces, input and output are octet buffers. The established public
+// ABI carries its checked unsigned 32-bit counter range in a long.
+// Private state is sixteen uint words, directly usable by ChaCha20Block.w;
+// each block discovers the assist, with the same scalar fallback if absent.
+// Both operations validate every caller range before writing any output.
+
+namespace Corsac.Security.Cryptography;
+
+public static class CorsacSecureCrypto_ChaCha20
+{
+    private const long Mask32 = 0xffffffffL;
+    private const long CounterLimit = 0x100000000L;
+
+    /// Produces one RFC 8439 ChaCha20 block.  Caller buffers may alias in any
+    /// arrangement: the complete block is made privately before it is copied
+    /// to output.
+    public static bool Block(byte[] key, long keyOffset, long counter,
+                             byte[] nonce, long nonceOffset,
+                             byte[] output, long outputOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(key, keyOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(nonce, nonceOffset, 12)
+            || !CorsacSecureCrypto_Bytes.Range(output, outputOffset, 64)
+            || counter < 0 || counter > Mask32)
+            return false;
+
+        byte[] block = new byte[64];
+        uint[] state = new uint[16];
+        long[] work = new long[16];
+        Initialize(key, keyOffset, nonce, nonceOffset, state);
+        Generate(state, counter, work, block);
+        bool okay = CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, block, 0, 64);
+        CorsacSecureCrypto_Bytes.Zero(block, 0, block.Length);
+        EraseWords(state);
+        EraseWords(work);
+        return okay;
+    }
+
+    private static void Initialize(byte[] key, long keyOffset,
+                                   byte[] nonce, long nonceOffset,
+                                   uint[] state)
+    {
+        state[0] = 0x61707865;
+        state[1] = 0x3320646e;
+        state[2] = 0x79622d32;
+        state[3] = 0x6b206574;
+        for (int i = 0; i < 8; i = i + 1)
+            state[4 + i] = (uint)ReadLittleWord(key, keyOffset + i * 4);
+        for (int i = 0; i < 3; i = i + 1)
+            state[13 + i] = (uint)ReadLittleWord(nonce, nonceOffset + i * 4);
+    }
+
+    private static void Generate(uint[] state, long counter,
+                                 long[] work, byte[] output)
+    {
+        state[12] = (uint)counter;
+        // (no hardware assist on this machine: the software path follows)
+        for (int i = 0; i < 16; i = i + 1) work[i] = state[i];
+        for (int round = 0; round < 10; round = round + 1)
+        {
+            QuarterRound(work, 0, 4, 8, 12);
+            QuarterRound(work, 1, 5, 9, 13);
+            QuarterRound(work, 2, 6, 10, 14);
+            QuarterRound(work, 3, 7, 11, 15);
+            QuarterRound(work, 0, 5, 10, 15);
+            QuarterRound(work, 1, 6, 11, 12);
+            QuarterRound(work, 2, 7, 8, 13);
+            QuarterRound(work, 3, 4, 9, 14);
+        }
+
+        for (int i = 0; i < 16; i = i + 1)
+        {
+            long word = (work[i] + state[i]) & Mask32;
+            int at = i * 4;
+            output[at] = (byte)(word & 255);
+            output[at + 1] = (byte)((word >> 8) & 255);
+            output[at + 2] = (byte)((word >> 16) & 255);
+            output[at + 3] = (byte)((word >> 24) & 255);
+        }
+    }
+
+    private static void EraseWords(long[] words)
+    {
+        for (int i = 0; i < words.Length; i = i + 1) words[i] = 0;
+    }
+
+    private static void EraseWords(uint[] words)
+    {
+        for (int i = 0; i < words.Length; i = i + 1) words[i] = 0;
+    }
+
+    private static long ReadLittleWord(byte[] bytes, long offset)
+    {
+        int at = (int)offset;
+        return ((long)bytes[at] & 255)
+             | (((long)bytes[at + 1] & 255) << 8)
+             | (((long)bytes[at + 2] & 255) << 16)
+             | (((long)bytes[at + 3] & 255) << 24);
+    }
+
+    private static void QuarterRound(long[] words,
+                                     int ai, int bi, int ci, int di)
+    {
+        long a = words[ai], b = words[bi];
+        long c = words[ci], d = words[di];
+
+        a = (a + b) & Mask32;
+        d = RotateLeft32((d ^ a) & Mask32, 16);
+        c = (c + d) & Mask32;
+        b = RotateLeft32((b ^ c) & Mask32, 12);
+        a = (a + b) & Mask32;
+        d = RotateLeft32((d ^ a) & Mask32, 8);
+        c = (c + d) & Mask32;
+        b = RotateLeft32((b ^ c) & Mask32, 7);
+
+        words[ai] = a;
+        words[bi] = b;
+        words[ci] = c;
+        words[di] = d;
+    }
+
+    private static long RotateLeft32(long value, int bits)
+    {
+        // rol.w sign-extends its narrow result.  The mask restores the RFC's
+        // unsigned 32-bit word after using the native rotate fast path.
+        return (((value & Mask32) << bits) | ((value & Mask32) >> (32 - bits))) & Mask32;
+    }
+}
+
+/// A reusable ChaCha20 workspace for long-lived protocol connections.  The
+/// key schedule and fixed scratch arrays are allocated once; Block and Xor do
+/// not allocate.  Exact in-place XOR is supported, while partial overlap is
+/// rejected so a caller never receives silently order-dependent output.
+public class CorsacSecureCrypto_ChaCha20Context
+{
+    public const int InvalidArgument = 1;
+    public const int ProtocolState = 9;
+
+    private const long Mask32 = 0xffffffffL;
+    private const long CounterLimit = 0x100000000L;
+
+    private uint[] _state;
+    private long[] _work;
+    private byte[] _block;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureCrypto_ChaCha20Context(byte[] key, long keyOffset)
+    {
+        _state = new uint[16];
+        _work = new long[16];
+        _block = new byte[64];
+        if (!CorsacSecureCrypto_Bytes.Range(key, keyOffset, 32))
+        {
+            _error = InvalidArgument;
+            return;
+        }
+
+        _state[0] = 0x61707865;
+        _state[1] = 0x3320646e;
+        _state[2] = 0x79622d32;
+        _state[3] = 0x6b206574;
+        for (int i = 0; i < 8; i = i + 1)
+            _state[4 + i] = (uint)ReadLittleWord(key, keyOffset + i * 4);
+    }
+
+    public int Error => _error;
+
+    public bool Block(long counter, byte[] nonce, long nonceOffset,
+                      byte[] output, long outputOffset)
+    {
+        if (!Ready()) return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(nonce, nonceOffset, 12)
+            || !CorsacSecureCrypto_Bytes.Range(output, outputOffset, 64)
+            || counter < 0 || counter > Mask32)
+            return Fail(InvalidArgument);
+
+        SetNonce(nonce, nonceOffset);
+        Generate(counter);
+        bool okay = CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, _block, 0, 64);
+        EraseBlock();
+        return okay;
+    }
+
+    public bool Xor(long counter, byte[] nonce, long nonceOffset,
+                    byte[] input, long inputOffset,
+                    byte[] output, long outputOffset, long count)
+    {
+        if (!Ready()) return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(nonce, nonceOffset, 12)
+            || !CorsacSecureCrypto_Bytes.Range(input, inputOffset, count)
+            || !CorsacSecureCrypto_Bytes.Range(output, outputOffset, count)
+            || !CounterRange(counter, count)
+            || PartialOverlap(input, inputOffset, output, outputOffset, count))
+            return Fail(InvalidArgument);
+        if (count == 0) return true;
+
+        SetNonce(nonce, nonceOffset);
+        long done = 0;
+        long blockCounter = counter;
+        while (done < count)
+        {
+            Generate(blockCounter);
+            int take = (int)(count - done < 64 ? count - done : 64);
+            for (int i = 0; i < take; i = i + 1)
+            {
+                output[(int)(outputOffset + done) + i] = (byte)(
+                    input[(int)(inputOffset + done) + i] ^ _block[i]);
+            }
+            done = done + take;
+            blockCounter = blockCounter + 1;
+        }
+        EraseBlock();
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        for (int i = 0; i < _state.Length; i = i + 1) _state[i] = 0;
+        for (int i = 0; i < _work.Length; i = i + 1) _work[i] = 0;
+        EraseBlock();
+        _closed = true;
+    }
+
+    private bool Ready()
+    {
+        return !_closed && _error == 0;
+    }
+
+    private bool Fail(int error)
+    {
+        if (_error == 0) _error = error;
+        return false;
+    }
+
+    private static bool PartialOverlap(
+        byte[] input, long inputOffset,
+        byte[] output, long outputOffset, long count)
+    {
+        if (count == 0 || Sys.Word(input) != Sys.Word(output)
+            || inputOffset == outputOffset) return false;
+        return inputOffset < outputOffset + count
+            && outputOffset < inputOffset + count;
+    }
+
+    private static bool CounterRange(long counter, long count)
+    {
+        if (counter < 0 || counter > Mask32 || count < 0) return false;
+        if (count == 0) return true;
+        long blocks = ((count - 1) / 64) + 1;
+        return counter <= CounterLimit - blocks;
+    }
+
+    private void SetNonce(byte[] nonce, long nonceOffset)
+    {
+        for (int i = 0; i < 3; i = i + 1)
+            _state[13 + i] = (uint)ReadLittleWord(nonce, nonceOffset + i * 4);
+    }
+
+    private void Generate(long counter)
+    {
+        _state[12] = (uint)counter;
+        // (no hardware assist on this machine: the software path follows)
+        for (int i = 0; i < 16; i = i + 1) _work[i] = _state[i];
+        for (int round = 0; round < 10; round = round + 1)
+        {
+            QuarterRound(0, 4, 8, 12);
+            QuarterRound(1, 5, 9, 13);
+            QuarterRound(2, 6, 10, 14);
+            QuarterRound(3, 7, 11, 15);
+            QuarterRound(0, 5, 10, 15);
+            QuarterRound(1, 6, 11, 12);
+            QuarterRound(2, 7, 8, 13);
+            QuarterRound(3, 4, 9, 14);
+        }
+
+        for (int i = 0; i < 16; i = i + 1)
+        {
+            long word = (_work[i] + _state[i]) & Mask32;
+            int at = i * 4;
+            _block[at] = (byte)(word & 255);
+            _block[at + 1] = (byte)((word >> 8) & 255);
+            _block[at + 2] = (byte)((word >> 16) & 255);
+            _block[at + 3] = (byte)((word >> 24) & 255);
+        }
+    }
+
+    private void QuarterRound(int ai, int bi, int ci, int di)
+    {
+        long a = _work[ai], b = _work[bi];
+        long c = _work[ci], d = _work[di];
+
+        a = (a + b) & Mask32;
+        d = RotateLeft32((d ^ a) & Mask32, 16);
+        c = (c + d) & Mask32;
+        b = RotateLeft32((b ^ c) & Mask32, 12);
+        a = (a + b) & Mask32;
+        d = RotateLeft32((d ^ a) & Mask32, 8);
+        c = (c + d) & Mask32;
+        b = RotateLeft32((b ^ c) & Mask32, 7);
+
+        _work[ai] = a;
+        _work[bi] = b;
+        _work[ci] = c;
+        _work[di] = d;
+    }
+
+    private static long ReadLittleWord(byte[] bytes, long offset)
+    {
+        int at = (int)offset;
+        return ((long)bytes[at] & 255)
+             | (((long)bytes[at + 1] & 255) << 8)
+             | (((long)bytes[at + 2] & 255) << 16)
+             | (((long)bytes[at + 3] & 255) << 24);
+    }
+
+    private static long RotateLeft32(long value, int bits)
+    {
+        return (((value & Mask32) << bits) | ((value & Mask32) >> (32 - bits))) & Mask32;
+    }
+
+    private void EraseBlock()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_block, 0, _block.Length);
+    }
+}

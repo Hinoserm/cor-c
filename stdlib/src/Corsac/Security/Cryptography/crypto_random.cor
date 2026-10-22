@@ -1,0 +1,40 @@
+// Randomness for the CORSAC/SECURE crypto library: the operating system's
+// generator, through .NET's RandomNumberGenerator, which blocks until the
+// pool is seeded. Ready and WaitReady remain for callers written when the
+// kernel could answer "not yet"; the answer is now always yes.
+
+using System.IO;
+using System.Security.Cryptography;
+
+namespace Corsac.Security.Cryptography;
+
+public static class CorsacSecureCrypto_Random
+{
+    public const int EntropyUnavailable = 6;
+
+    public static bool Ready()
+    {
+        return true;
+    }
+
+    public static bool Fill(byte[] output, long outputOffset, long count)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, count)) return false;
+        if (count == 0) return true;
+        try
+        {
+            RandomNumberGenerator.Fill(output, (int)outputOffset, (int)count);
+        }
+        catch (IOException e)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    public static bool Fill(byte[] output)
+    {
+        return output != null && Fill(output, 0, output.Length);
+    }
+}

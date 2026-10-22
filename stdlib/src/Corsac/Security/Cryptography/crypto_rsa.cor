@@ -1,0 +1,672 @@
+// CORSAC/SECURE Crypto portable RSA public verification.
+//
+// This provider deliberately exposes only the public operation and the two
+// SHA-256 signature encodings required by contemporary TLS.  It contains no
+// private-key operation.  Moduli and representatives are unsigned, fixed-
+// width, big-endian byte arrays; binary values never pass through string.
+//
+// Arithmetic uses at most 128 little-endian 64-bit limbs.  The public
+// exponent is evaluated with coarsely integrated operand-scanning Montgomery
+// multiplication.  Sys.MultiplyAccumulate is merely the one-word primitive:
+// its compiler fallback is ordinary MUL/MULHU/ADD, so a machine without a
+// Crypto unit executes the same bounded algorithm in software.
+
+namespace Corsac.Security.Cryptography;
+
+public static class CorsacSecureCrypto_Rsa
+{
+    public const int MinimumModulusBits = 2048;
+    public const int MaximumModulusBits = 8192;
+    public const int Sha256Bytes = 32;
+    public const int TlsPssSaltBytes = 32;
+
+    /// Strict EMSA-PKCS1-v1_5 verification for SHA-256.  DigestInfo must use
+    /// the canonical SHA-256 AlgorithmIdentifier including its NULL value.
+    public static bool VerifyPkcs1Sha256(
+        byte[] modulus, long modulusOffset, long modulusCount,
+        long publicExponent,
+        byte[] signature, long signatureOffset, long signatureCount,
+        byte[] digest, long digestOffset)
+    {
+        CorsacSecureCrypto_RsaWorkspace workspace =
+            new CorsacSecureCrypto_RsaWorkspace();
+        bool answer = workspace.VerifyPkcs1Sha256(
+            modulus, modulusOffset, modulusCount, publicExponent,
+            signature, signatureOffset, signatureCount,
+            digest, digestOffset);
+        workspace.Close();
+        return answer;
+    }
+
+}
+
+/// Reusable bounded workspace.  All operation state is erased before an
+/// operation returns; Close additionally retires the SHA-256 context.
+public class CorsacSecureCrypto_RsaWorkspace
+{
+    private const int MaximumWords = 128;
+    private const int MaximumBytes = 1024;
+    private const int MaximumDivisionDigits = 256;
+    private const int MaximumNumeratorDigits = 514;
+
+    private long[] _modulus;
+    private long[] _r2;
+    private long[] _normalOne;
+    private long[] _one;
+    private long[] _base;
+    private long[] _result;
+    private long[] _difference;
+    private long[] _work;
+    private uint[] _divisionModulus;
+    private uint[] _divisionNumerator;
+    private byte[] _encoded;
+    private byte[] _mask;
+    private byte[] _hashResult;
+    private byte[] _messagePrime;
+    private byte[] _counter;
+    private byte[] _pkcsPrefix;
+    private CorsacSecureCrypto_Hash _hash;
+    private int _words;
+    private int _bytes;
+    private int _modulusBits;
+    private long _factor;
+    private long _exponent;
+    private bool _closed;
+
+    public CorsacSecureCrypto_RsaWorkspace()
+    {
+        _modulus = new long[MaximumWords];
+        _r2 = new long[MaximumWords];
+        _normalOne = new long[MaximumWords];
+        _one = new long[MaximumWords];
+        _base = new long[MaximumWords];
+        _result = new long[MaximumWords];
+        _difference = new long[MaximumWords];
+        _work = new long[MaximumWords + 2];
+        _divisionModulus = new uint[MaximumDivisionDigits];
+        _divisionNumerator = new uint[MaximumNumeratorDigits];
+        _encoded = new byte[MaximumBytes];
+        _mask = new byte[MaximumBytes];
+        _hashResult = new byte[32];
+        _messagePrime = new byte[72];
+        _counter = new byte[4];
+        _pkcsPrefix = new byte[] {
+            0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
+            0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20
+        };
+        _hash = new CorsacSecureCrypto_Hash();
+    }
+
+    public bool PublicOperation(
+        byte[] modulus, long modulusOffset, long modulusCount,
+        long publicExponent,
+        byte[] input, long inputOffset, long inputCount,
+        byte[] output, long outputOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(
+                    output, outputOffset, modulusCount))
+            return false;
+
+        bool answer = PublicCore(
+            modulus, modulusOffset, modulusCount, publicExponent,
+            input, inputOffset, inputCount);
+        if (answer)
+            answer = CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _encoded, 0, _bytes);
+        ClearOperation();
+        return answer;
+    }
+
+    public bool VerifyPkcs1Sha256(
+        byte[] modulus, long modulusOffset, long modulusCount,
+        long publicExponent,
+        byte[] signature, long signatureOffset, long signatureCount,
+        byte[] digest, long digestOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, 32))
+            return false;
+        if (!PublicCore(
+                modulus, modulusOffset, modulusCount, publicExponent,
+                signature, signatureOffset, signatureCount))
+        {
+            ClearOperation();
+            return false;
+        }
+
+        // DER DigestInfo prefix for SHA-256:
+        // SEQUENCE { AlgorithmIdentifier { id-sha256, NULL }, OCTET STRING[32] }
+        int digestInfoBytes = _pkcsPrefix.Length + 32;
+        int separator = _bytes - digestInfoBytes - 1;
+        int difference = 0;
+        difference = difference | _encoded[0];
+        difference = difference | (_encoded[1] ^ 1);
+        for (int i = 2; i < separator; i = i + 1)
+            difference = difference | (_encoded[i] ^ 255);
+        difference = difference | _encoded[separator];
+        for (int i = 0; i < _pkcsPrefix.Length; i = i + 1)
+            difference = difference
+                       | (_encoded[separator + 1 + i] ^ _pkcsPrefix[i]);
+        for (int i = 0; i < 32; i = i + 1)
+            difference = difference
+                       | (_encoded[_bytes - 32 + i]
+                        ^ digest[(int)digestOffset + i]);
+
+        // A 2048-bit key leaves far more than RFC 8017's minimum eight FF
+        // octets, but keep the structural condition explicit.
+        bool answer = separator >= 10 && difference == 0;
+        ClearOperation();
+        return answer;
+    }
+
+    public bool VerifyPssSha256(
+        byte[] modulus, long modulusOffset, long modulusCount,
+        long publicExponent,
+        byte[] signature, long signatureOffset, long signatureCount,
+        byte[] digest, long digestOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, 32))
+            return false;
+        if (!PublicCore(
+                modulus, modulusOffset, modulusCount, publicExponent,
+                signature, signatureOffset, signatureCount))
+        {
+            ClearOperation();
+            return false;
+        }
+
+        int encodedBits = _modulusBits - 1;
+        int encodedBytes = (encodedBits + 7) / 8;
+        int leadingBytes = _bytes - encodedBytes;
+        int databaseBytes = encodedBytes - 32 - 1;
+        int hashOffset = leadingBytes + databaseBytes;
+        int unusedBits = encodedBytes * 8 - encodedBits;
+        int paddingBytes = encodedBytes - 32 - 32 - 2;
+        if (leadingBytes < 0 || leadingBytes > 1
+            || databaseBytes < 33 || paddingBytes < 0)
+        {
+            ClearOperation();
+            return false;
+        }
+        int difference = 0;
+
+        // I2OSP may have one leading zero when emBits loses a complete byte.
+        for (int i = 0; i < leadingBytes; i = i + 1)
+            difference = difference | _encoded[i];
+        difference = difference | (_encoded[_bytes - 1] ^ 0xbc);
+        int forbidden = unusedBits == 0
+            ? 0 : (255 << (8 - unusedBits)) & 255;
+        difference = difference
+                   | (_encoded[leadingBytes] & forbidden);
+
+        bool generated = MaskGenerationFunction(
+            _encoded, hashOffset, 32, _mask, 0, databaseBytes);
+        if (generated)
+        {
+            for (int i = 0; i < databaseBytes; i = i + 1)
+                _mask[i] = (byte)(_mask[i]
+                              ^ _encoded[leadingBytes + i]);
+            if (unusedBits != 0)
+                _mask[0] = (byte)(_mask[0] & (255 >> unusedBits));
+
+            for (int i = 0; i < paddingBytes; i = i + 1)
+                difference = difference | _mask[i];
+            difference = difference | (_mask[paddingBytes] ^ 1);
+
+            CorsacSecureCrypto_Bytes.Zero(_messagePrime, 0, 8);
+            CorsacSecureCrypto_Bytes.Copy(
+                _messagePrime, 8, digest, digestOffset, 32);
+            CorsacSecureCrypto_Bytes.Copy(
+                _messagePrime, 40, _mask, paddingBytes + 1, 32);
+            generated = Hash(
+                _messagePrime, 0, 72, null, 0, 0, _hashResult, 0);
+            if (generated)
+            {
+                for (int i = 0; i < 32; i = i + 1)
+                    difference = difference
+                               | (_hashResult[i]
+                                ^ _encoded[hashOffset + i]);
+            }
+        }
+
+        bool answer = generated && difference == 0;
+        ClearOperation();
+        return answer;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        ClearOperation();
+        CorsacSecureCrypto_Bytes.Zero(
+            _pkcsPrefix, 0, _pkcsPrefix.Length);
+        _hash.Close();
+        _closed = true;
+    }
+
+    private bool PublicCore(
+        byte[] modulus, long modulusOffset, long modulusCount,
+        long publicExponent,
+        byte[] input, long inputOffset, long inputCount)
+    {
+        ClearOperation();
+        if (!InitializeModulus(
+                modulus, modulusOffset, modulusCount, publicExponent)
+            || inputCount != modulusCount
+            || !CorsacSecureCrypto_Bytes.Range(
+                    input, inputOffset, inputCount))
+            return false;
+
+        Decode(_base, input, inputOffset, _bytes);
+        if (!LessThan(_base, _modulus)) return false;
+
+        // xR = Mont(x, R^2), then left-to-right public exponentiation.
+        MontgomeryMultiply(_base, _base, _r2);
+        CopyWords(_result, _one);
+        int highest = 62;
+        ulong exponent = (ulong)_exponent;
+        while (highest > 0
+               && ((exponent >> highest) & (ulong)1) == (ulong)0)
+            highest = highest - 1;
+        for (int bit = highest; bit >= 0; bit = bit - 1)
+        {
+            MontgomeryMultiply(_result, _result, _result);
+            if (((exponent >> bit) & (ulong)1) != (ulong)0)
+                MontgomeryMultiply(_result, _result, _base);
+        }
+        MontgomeryMultiply(_result, _result, _normalOne);
+        Encode(_encoded, 0, _result, _bytes);
+        return true;
+    }
+
+    private bool InitializeModulus(
+        byte[] modulus, long modulusOffset, long modulusCount,
+        long publicExponent)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(
+                modulus, modulusOffset, modulusCount)
+            || modulusCount < 256 || modulusCount > MaximumBytes
+            || publicExponent < 3 || (publicExponent & 1) == 0)
+            return false;
+        int first = modulus[(int)modulusOffset] & 255;
+        if (first == 0
+            || (modulus[(int)(modulusOffset + modulusCount - 1)] & 1) == 0)
+            return false;
+
+        int leadingBits = 0;
+        int value = first;
+        while (value != 0)
+        {
+            leadingBits = leadingBits + 1;
+            value = value >> 1;
+        }
+        int bits = ((int)modulusCount - 1) * 8 + leadingBits;
+        if (bits < CorsacSecureCrypto_Rsa.MinimumModulusBits
+            || bits > CorsacSecureCrypto_Rsa.MaximumModulusBits)
+            return false;
+
+        _bytes = (int)modulusCount;
+        _words = (_bytes + 7) / 8;
+        _modulusBits = bits;
+        _exponent = publicExponent;
+        Decode(_modulus, modulus, modulusOffset, _bytes);
+
+        // Newton iteration doubles the correct low inverse bits each round.
+        long inverse = 1;
+        for (int i = 0; i < 6; i = i + 1)
+            inverse = inverse * (2 - _modulus[0] * inverse);
+        _factor = 0 - inverse;
+
+        // Compute R^2 mod n with normalized base-2^32 long division.  The
+        // numerator is the single-bit value 2^(128*words), so materializing
+        // the quotient would be wasteful: Algorithm D leaves exactly the
+        // remainder needed by Montgomery conversion.  This is O(words^2),
+        // rather than performing 128*words full-width modular doublings.
+        ComputeR2();
+        _normalOne[0] = 1;
+        MontgomeryMultiply(_one, _normalOne, _r2);
+        return true;
+    }
+
+    private void ComputeR2()
+    {
+        const ulong mask = (ulong)0xffffffff;
+        const ulong radix = (ulong)0x100000000;
+        int divisorDigits = (_modulusBits + 31) / 32;
+        int numeratorTop = _words * 4;
+
+        ClearDivision();
+
+        // Algorithm D requires a divisor whose highest base-2^32 digit has
+        // its high bit set.  This shift cannot grow the divisor: it moves the
+        // highest set bit precisely to bit 31 of its existing top digit.
+        ulong top = ModulusDigit(divisorDigits - 1);
+        int shift = 0;
+        while ((top & (ulong)0x80000000) == (ulong)0)
+        {
+            top = top << 1;
+            shift = shift + 1;
+        }
+        ulong carry = (ulong)0;
+        for (int i = 0; i < divisorDigits; i = i + 1)
+        {
+            ulong value = (ModulusDigit(i) << shift) | carry;
+            _divisionModulus[i] = (uint)(value & mask);
+            carry = value >> 32;
+        }
+
+        // Normalizing the sparse numerator merely moves its one bit within
+        // the same digit.  One extra zero digit remains available above it
+        // for quotient estimation and subtraction carry.
+        _divisionNumerator[numeratorTop] = (uint)((ulong)1 << shift);
+
+        for (int position = numeratorTop - divisorDigits;
+             position >= 0; position = position - 1)
+        {
+            int highAt = position + divisorDigits;
+            ulong combined = ((ulong)_divisionNumerator[highAt] << 32)
+                           | (ulong)_divisionNumerator[highAt - 1];
+            ulong highDivisor = (ulong)_divisionModulus[divisorDigits - 1];
+            ulong quotient = combined / highDivisor;
+            ulong remainder = combined % highDivisor;
+
+            // With a normalized divisor, Knuth's estimate can exceed the
+            // exact digit by at most two.  Keep the correction explicitly
+            // bounded even for hostile certificate keys.
+            for (int correction = 0; correction < 2;
+                 correction = correction + 1)
+            {
+                bool tooLarge = quotient >= radix;
+                if (!tooLarge && divisorDigits > 1)
+                {
+                    ulong left = quotient
+                               * (ulong)_divisionModulus[divisorDigits - 2];
+                    ulong right = (remainder << 32)
+                                + (ulong)_divisionNumerator[highAt - 2];
+                    tooLarge = left > right;
+                }
+                if (!tooLarge) break;
+                quotient = quotient - (ulong)1;
+                remainder = remainder + highDivisor;
+                if (remainder >= radix) break;
+            }
+
+            ulong borrow = (ulong)0;
+            for (int i = 0; i < divisorDigits; i = i + 1)
+            {
+                ulong product = quotient * (ulong)_divisionModulus[i]
+                              + borrow;
+                ulong low = product & mask;
+                ulong digit = (ulong)_divisionNumerator[position + i];
+                ulong high = product >> 32;
+                if (digit < low)
+                {
+                    _divisionNumerator[position + i] =
+                        (uint)((digit + radix - low) & mask);
+                    borrow = high + (ulong)1;
+                }
+                else
+                {
+                    _divisionNumerator[position + i] =
+                        (uint)(digit - low);
+                    borrow = high;
+                }
+            }
+
+            ulong topDigit = (ulong)_divisionNumerator[highAt];
+            bool addBack = topDigit < borrow;
+            _divisionNumerator[highAt] =
+                (uint)((topDigit - borrow) & mask);
+            if (addBack)
+            {
+                carry = (ulong)0;
+                for (int i = 0; i < divisorDigits; i = i + 1)
+                {
+                    ulong sum = (ulong)_divisionNumerator[position + i]
+                              + (ulong)_divisionModulus[i] + carry;
+                    _divisionNumerator[position + i] =
+                        (uint)(sum & mask);
+                    carry = sum >> 32;
+                }
+                _divisionNumerator[highAt] =
+                    (uint)(((ulong)_divisionNumerator[highAt] + carry) & mask);
+            }
+        }
+
+        // Undo normalization and pack two 32-bit digits into each of the
+        // little-endian 64-bit Montgomery limbs.
+        if (shift != 0)
+        {
+            for (int i = 0; i < divisorDigits; i = i + 1)
+            {
+                ulong higher = i + 1 < divisorDigits
+                    ? (ulong)_divisionNumerator[i + 1] : (ulong)0;
+                _divisionNumerator[i] = (uint)(
+                    (((ulong)_divisionNumerator[i] >> shift)
+                    | (higher << (32 - shift))) & mask);
+            }
+        }
+        for (int i = 0; i < _words; i = i + 1)
+        {
+            ulong low = (ulong)_divisionNumerator[i * 2];
+            ulong high = i * 2 + 1 < divisorDigits
+                ? (ulong)_divisionNumerator[i * 2 + 1] : (ulong)0;
+            _r2[i] = (long)(low | (high << 32));
+        }
+        ClearDivision();
+    }
+
+    private ulong ModulusDigit(int index)
+    {
+        ulong word = (ulong)_modulus[index >> 1];
+        return (word >> ((index & 1) * 32)) & (ulong)0xffffffff;
+    }
+
+    private void ClearDivision()
+    {
+        for (int i = 0; i < _divisionModulus.Length; i = i + 1)
+            _divisionModulus[i] = 0;
+        for (int i = 0; i < _divisionNumerator.Length; i = i + 1)
+            _divisionNumerator[i] = 0;
+    }
+
+    private void MontgomeryMultiply(
+        long[] output, long[] left, long[] right)
+    {
+        for (int i = 0; i < _words + 2; i = i + 1) _work[i] = 0;
+
+        for (int i = 0; i < _words; i = i + 1)
+        {
+            long carry = 0;
+            for (int j = 0; j < _words; j = j + 1)
+            {
+                long high;
+                long low = Sys.MultiplyAccumulate(
+                    left[j], right[i], _work[j], out high);
+                long sum = low + carry;
+                long carryBit = CarryBit(low, carry, sum);
+                _work[j] = sum;
+                carry = high + carryBit;
+            }
+            AddTop(carry);
+
+            long multiple = _work[0] * _factor;
+            carry = 0;
+            for (int j = 0; j < _words; j = j + 1)
+            {
+                long high;
+                long low = Sys.MultiplyAccumulate(
+                    multiple, _modulus[j], _work[j], out high);
+                long sum = low + carry;
+                long carryBit = CarryBit(low, carry, sum);
+                _work[j] = sum;
+                carry = high + carryBit;
+            }
+            AddTop(carry);
+
+            // The reduction multiple makes the low word zero.  Dropping it is
+            // division by R's one-word radix for this CIOS round.
+            for (int j = 0; j <= _words; j = j + 1)
+                _work[j] = _work[j + 1];
+            _work[_words + 1] = 0;
+        }
+
+        long borrow = Subtract(
+            _difference, _work, _modulus, _words);
+        bool reduce = _work[_words] != 0 || borrow == 0;
+        for (int i = 0; i < _words; i = i + 1)
+            output[i] = CorsacSecureCrypto_Bytes.Select(
+                _difference[i], _work[i], reduce);
+        ClearWords(_difference);
+        for (int i = 0; i < _words + 2; i = i + 1) _work[i] = 0;
+    }
+
+    private void AddTop(long carry)
+    {
+        long old = _work[_words];
+        long sum = old + carry;
+        _work[_words] = sum;
+        _work[_words + 1] = _work[_words + 1]
+                                + CarryBit(old, carry, sum);
+    }
+
+    private bool LessThan(long[] left, long[] right)
+    {
+        long borrow = Subtract(_difference, left, right, _words);
+        ClearWords(_difference);
+        return borrow != 0;
+    }
+
+    private static long Subtract(
+        long[] output, long[] left, long[] right, int words)
+    {
+        long borrow = 0;
+        for (int i = 0; i < words; i = i + 1)
+        {
+            long difference0 = left[i] - right[i];
+            long borrow0 = BorrowBit(left[i], right[i], difference0);
+            long difference1 = difference0 - borrow;
+            long borrow1 = BorrowBit(difference0, borrow, difference1);
+            output[i] = difference1;
+            borrow = borrow0 | borrow1;
+        }
+        return borrow;
+    }
+
+    private static long CarryBit(long left, long right, long sum)
+    {
+        return (((left & right) | ((left | right) & ~sum)) >> 63) & 1;
+    }
+
+    private static long BorrowBit(long left, long right, long difference)
+    {
+        return (((~left & right) | (~(left ^ right) & difference)) >> 63)
+             & 1;
+    }
+
+    private void Decode(
+        long[] output, byte[] input, long offset, int count)
+    {
+        ClearWords(output);
+        for (int i = 0; i < count; i = i + 1)
+        {
+            int word = i >> 3;
+            int shift = (i & 7) * 8;
+            long octet = input[(int)(offset + count - 1 - i)] & 255;
+            output[word] = output[word] | (octet << shift);
+        }
+    }
+
+    private static void Encode(
+        byte[] output, int offset, long[] input, int count)
+    {
+        for (int i = 0; i < count; i = i + 1)
+        {
+            int word = i >> 3;
+            int shift = (i & 7) * 8;
+            output[offset + count - 1 - i] =
+                (byte)(((ulong)input[word] >> shift) & (ulong)255);
+        }
+    }
+
+    private void CopyWords(long[] output, long[] input)
+    {
+        for (int i = 0; i < _words; i = i + 1)
+            output[i] = input[i];
+    }
+
+    private static void ClearWords(long[] words)
+    {
+        for (int i = 0; i < words.Length; i = i + 1) words[i] = 0;
+    }
+
+    private bool MaskGenerationFunction(
+        byte[] seed, long seedOffset, long seedCount,
+        byte[] output, long outputOffset, int outputCount)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(seed, seedOffset, seedCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                    output, outputOffset, outputCount))
+            return false;
+        int made = 0;
+        int counter = 0;
+        while (made < outputCount)
+        {
+            _counter[0] = (byte)((counter >> 24) & 255);
+            _counter[1] = (byte)((counter >> 16) & 255);
+            _counter[2] = (byte)((counter >> 8) & 255);
+            _counter[3] = (byte)(counter & 255);
+            if (!Hash(seed, seedOffset, seedCount,
+                      _counter, 0, 4, _hashResult, 0))
+                return false;
+            int take = outputCount - made;
+            if (take > 32) take = 32;
+            CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset + made, _hashResult, 0, take);
+            made = made + take;
+            counter = counter + 1;
+        }
+        return true;
+    }
+
+    private bool Hash(
+        byte[] first, long firstOffset, long firstCount,
+        byte[]? second, long secondOffset, long secondCount,
+        byte[] output, long outputOffset)
+    {
+        if (!_hash.Reset()
+            || !_hash.Update(first, firstOffset, firstCount))
+            return false;
+        if (second != null
+            && !_hash.Update(second, secondOffset, secondCount))
+            return false;
+        return _hash.Finish(output, outputOffset);
+    }
+
+    private void ClearOperation()
+    {
+        ClearWords(_modulus);
+        ClearWords(_r2);
+        ClearWords(_normalOne);
+        ClearWords(_one);
+        ClearWords(_base);
+        ClearWords(_result);
+        ClearWords(_difference);
+        ClearWords(_work);
+        ClearDivision();
+        CorsacSecureCrypto_Bytes.Zero(_encoded, 0, _encoded.Length);
+        CorsacSecureCrypto_Bytes.Zero(_mask, 0, _mask.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _hashResult, 0, _hashResult.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _messagePrime, 0, _messagePrime.Length);
+        CorsacSecureCrypto_Bytes.Zero(_counter, 0, _counter.Length);
+        _words = 0;
+        _bytes = 0;
+        _modulusBits = 0;
+        _factor = 0;
+        _exponent = 0;
+    }
+}
