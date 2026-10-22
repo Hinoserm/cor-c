@@ -522,14 +522,14 @@ public sealed class PreinitWorld
             case Code { Local: ObjectFile own } c: return (Alias(own, c.Label), c.Offset, null);
             case Code c: return (c.Label, c.Offset, null);
             // A RELOCATION NEVER READ THROUGH is written as the unit wrote it,
-            // by its name: what the unit's own data named, the link finds, or
-            // says it cannot -- as stage 1's recipes always named theirs.
+            // by its name -- a unit's own through its alias -- and never read:
+            // laid down at the link's end, the sections it would be read out of
+            // are the link's by then (a library's frame pool rewritten), and a
+            // symbol past its section's end stopped libcorsacrt's link.
             case Unresolved u:
             {
-                Val resolved;
-                try { resolved = Address(u.Symbol, u.Addend, u.From); }
-                catch (Refused) { return (u.Symbol, u.Addend, null); }
-                return resolved is Unresolved ? (u.Symbol, u.Addend, null) : Target(resolved);
+                var found = Find(u.Symbol, u.From);
+                return found is { Local: true } own ? (Alias(own.Object, u.Symbol), u.Addend, null) : (u.Symbol, u.Addend, null);
             }
             default: throw new InvalidOperationException("preinit: an address the link cannot write: " + v);
         }
