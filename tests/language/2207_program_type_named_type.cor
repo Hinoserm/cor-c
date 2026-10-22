@@ -1,0 +1,39 @@
+// test: program_type_named_type
+// expect-exit: 0
+// expect-output:
+// 7 Int32 String
+// same
+//
+// A program with a Type of its own, in a namespace of its own -- as the
+// compiler's Corsac.Lang.Type is -- and System.Type named bare under
+// `using System;` and by its whole name. The class library's own
+// `Dictionary<string, Type>` (ComClassTypes, which GetTypeFromCLSID
+// reaches) is System.Type's: the library sees no type of the program's,
+// and its generic copy took the one Type the program declared, "no
+// overload of 'TryGetValue'". And `System.Type.GetTypeFromCLSID`, the
+// statics through the namespace, said "The name 'System' does not exist".
+// (What the call answers is Windows' to say; only that both spellings
+// answer alike is asked.)
+
+using System;
+using System.Collections.Generic;
+
+namespace Mine
+{
+    public class Type { public int X = 7; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Mine.Type mine = new();
+        Dictionary<string, System.Type> map = new();
+        map["int"] = typeof(int);
+        List<Type> types = new() { typeof(string) };
+        Console.WriteLine(mine.X + " " + map["int"].Name + " " + types[0].Name);
+        System.Type? clsid = System.Type.GetTypeFromCLSID(new Guid("00000000-0000-0000-0000-000000000001"));
+        Console.WriteLine(Type.GetTypeFromCLSID(new Guid("00000000-0000-0000-0000-000000000001")) == clsid ? "same" : "other");
+        return 0;
+    }
+}

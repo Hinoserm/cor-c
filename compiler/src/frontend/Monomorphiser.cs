@@ -511,6 +511,22 @@ public sealed class Monomorphiser
             }
         }
 
+        // A BARE `Type` IS System.Type as the checker reads one (Binder.
+        // MeansSystemType), spelt with its namespace, as a copy made over a
+        // Type is (Binder.NameOf): in the class library's code always, which
+        // never sees the program's types, and in the program's where System
+        // is in scope and nothing nearer is called Type. System.Type is the
+        // compiler's own and declared nowhere, so the last resort below took
+        // the one Type the program declared, in whatever namespace: a
+        // program's Mine.Type made the library's Dictionary<string, Type> a
+        // dictionary of it, and the compiler's own Corsac.Lang.Type did the
+        // same in its build.
+        bool systemType = name == "Type" && (_libraryCode || SystemInScope());
+        if (systemType && _libraryCode)
+        {
+            return "System.Type";
+        }
+
         // THE PROGRAM'S OWN TYPE where it took a library type's name and was
         // moved aside (MoveAside): the program's code finds it; the library's
         // code, and every copy spelled in it, the library's.
@@ -527,6 +543,11 @@ public sealed class Monomorphiser
         if (Named("", name) is string outermost)
         {
             return outermost;
+        }
+
+        if (systemType)
+        {
+            return "System.Type";
         }
 
         // WRITTEN WITH ITS NAMESPACE, a library type is still the one the
@@ -572,6 +593,22 @@ public sealed class Monomorphiser
         }
 
         return _soleNested.TryGetValue(name, out string? sole) && sole is not null ? sole : name;
+    }
+
+    /// <summary>
+    /// Whether the namespace System is in scope where the name being spelt
+    /// was written: it encloses that place, or a using directive in force
+    /// there imports it (Binder.NamespaceInScope).
+    /// </summary>
+    private bool SystemInScope()
+    {
+        if (_inNamespace == "System" || _inNamespace.StartsWith("System.", StringComparison.Ordinal)) return true;
+        if (_usings is null) return false;
+        foreach ((string In, string Namespace) import in _usings.Imports)
+            if (import.Namespace == "System" && (import.In.Length == 0 || import.In == _inNamespace
+                || _inNamespace.StartsWith(import.In + ".", StringComparison.Ordinal)))
+                return true;
+        return false;
     }
 
     /// <summary>Asks the declaration index for one type, once, recording what it must load.</summary>

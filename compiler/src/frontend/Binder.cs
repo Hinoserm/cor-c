@@ -19192,6 +19192,17 @@ public sealed partial class Binder
                 return Type.Plain(byPath, Prim.Void);
             }
 
+            // AND System.Type, the compiler's own and declared nowhere
+            // (Binder.MeansSystemType): its statics are the library's
+            // SystemType's (Alias), as a bare `Type`'s are. Asked by its path
+            // alone, `System.Type.GetType(name)` found no type, and System
+            // was "a name that does not exist".
+            if (Spelt(m) == "System.Type" && Alias("Type") is string statics && TypeCandidate(statics, out TypeSymbol? systemType) && systemType is not null)
+            {
+                _r.Resolved[m] = new TypeNameSym(systemType);
+                return Type.Plain(systemType, Prim.Void);
+            }
+
             // AND THEN THE LAST PART ALONE, for the namespaces this compiler
             // models as nothing at all: `System.Text.StringBuilder` is a
             // StringBuilder declared in the global namespace here. Never a
