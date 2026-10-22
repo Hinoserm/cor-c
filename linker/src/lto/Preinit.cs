@@ -32,8 +32,9 @@ namespace Corsac.Lang.Lto;
 public static class Preinit
 {
     public const string SectionName = ".corsac.preinit";
-    // 2: each type's initialiser named, for the link to run whole (TypeNote).
-    const int Version = 2;
+    // One layout, 0, until a release: each type's initialiser named, for the
+    // link to run whole (TypeNote).
+    const int Version = 0;
 
     /// <summary>The most bytes the link lays down, and the deepest a recipe is followed.</summary>
     const long MostBytes = 4 << 20;
