@@ -155,12 +155,19 @@ public sealed class Parser
         _includeTemplateBodies = includeTemplateBodies;
     }
 
+    /// <summary>
+    /// Source text parsed. `written` false for text the compiler wrote itself
+    /// (DynamicDeclarations, ComDeclarations): the types it names are the
+    /// compiler's to name (TypeRef.Written), whatever the file it joins
+    /// imports.
+    /// </summary>
     public static CompilationUnit ParseText(string source, string file = "<source>",
-                                            IReadOnlyCollection<string>? symbols = null, bool declarationsOnly = false, bool includeTemplateBodies = false)
+                                            IReadOnlyCollection<string>? symbols = null, bool declarationsOnly = false, bool includeTemplateBodies = false,
+                                            bool written = true)
     {
         List<PragmaWarning> pragmas = new();
         List<Token> tokens = Lexer.Tokenize(source, file, 1, 1, symbols, pragmas);
-        CompilationUnit unit = new Parser(tokens, file, declarationsOnly, includeTemplateBodies) { Source = source }.ParseUnit();
+        CompilationUnit unit = new Parser(tokens, file, declarationsOnly, includeTemplateBodies) { Source = source, _written = written }.ParseUnit();
 
         unit.Pragmas.AddRange(pragmas);
         return unit;
@@ -3977,11 +3984,14 @@ public sealed class Parser
 
     private TypeRef ParseTypeRef(bool pattern = false)
     {
-        // WRITTEN, as every type read here is (TypeRef.Written).
+        // WRITTEN, as every type a person's source has (TypeRef.Written).
         TypeRef read = ParseWrittenTypeRef(pattern);
-        read.Written = true;
+        read.Written = _written;
         return read;
     }
+
+    /// <summary>Whether this text is a person's (ParseText's `written`).</summary>
+    private bool _written = true;
 
     private TypeRef ParseWrittenTypeRef(bool pattern)
     {

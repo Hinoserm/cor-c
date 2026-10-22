@@ -24,6 +24,8 @@
 // namespace does not hide it. And a property pattern over a value type asks
 // about its members and nothing about null, because a struct is always there.
 
+using System;
+
 namespace Corsac.Test;
 
 enum Fmt { None, R, R4, M }

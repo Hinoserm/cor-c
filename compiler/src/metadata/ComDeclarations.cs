@@ -187,7 +187,7 @@ public static class ComDeclarations
     static void AddParsed(CompilationUnit unit, string text, TypeDecl beside, IReadOnlyCollection<string>? symbols, List<CompileError> errors)
     {
         CompilationUnit parsed;
-        try { parsed = Parser.ParseText(text, "<com:" + beside.Name + ">", symbols); }
+        try { parsed = Parser.ParseText(text, "<com:" + beside.Name + ">", symbols, written: false); }
         catch (CompileError e) { errors.Add(e); return; }
         foreach (TypeDecl t in parsed.Types)
         {
@@ -900,7 +900,7 @@ public static class ComDeclarations
         s.Append("    }\n}\n");
 
         CompilationUnit parsed;
-        try { parsed = Parser.ParseText(s.ToString(), "<com:" + c.Name + ">", symbols); }
+        try { parsed = Parser.ParseText(s.ToString(), "<com:" + c.Name + ">", symbols, written: false); }
         catch (CompileError e) { errors.Add(e); return; }
         foreach (MemberDecl m in parsed.Types[0].Members)
         {

@@ -78,7 +78,7 @@ public static class DynamicDeclarations
             MethodDecl? invoke = d.Members.OfType<MethodDecl>().FirstOrDefault(m => m.Name == "Invoke");
             if (invoke is null || d.Members.Any(m => m is MethodDecl { Name: "__LateInvoke" })) continue;
             CompilationUnit late;
-            try { late = Parser.ParseText(DelegateMembers(scope, d, invoke), "<dynamic:" + d.Name + ">", symbols); }
+            try { late = Parser.ParseText(DelegateMembers(scope, d, invoke), "<dynamic:" + d.Name + ">", symbols, written: false); }
             catch (CompileError e) { errors.Add(e); continue; }
             d.WritableBases.Add(new TypeRef { Name = "System.Dynamic.ILateInvocable", Line = d.Line, Col = d.Col });
             foreach (MemberDecl m in late.Types[0].Members)
@@ -102,7 +102,7 @@ public static class DynamicDeclarations
             if (!inherits) t.WritableBases.Add(new TypeRef { Name = Face, Line = t.Line, Col = t.Col });
             string text = Members(scope, t, chain, modifier, inherits);
             CompilationUnit parsed;
-            try { parsed = Parser.ParseText(text, "<dynamic:" + t.Name + ">", symbols); }
+            try { parsed = Parser.ParseText(text, "<dynamic:" + t.Name + ">", symbols, written: false); }
             catch (CompileError e) { errors.Add(e); continue; }
             foreach (MemberDecl m in parsed.Types[0].Members)
             {
@@ -744,7 +744,7 @@ public static class DynamicDeclarations
 
         // Registered as Main's type is first touched: before Main runs.
         CompilationUnit hook;
-        try { hook = Parser.ParseText("class __Members\n{\n    static readonly bool __lateUnit = System.DynamicRuntime.Registered(new " + (home.Namespace.Length == 0 ? "" : home.Namespace + ".") + "__LateUnit());\n}\n", "<dynamic:register>", symbols); }
+        try { hook = Parser.ParseText("class __Members\n{\n    static readonly bool __lateUnit = System.DynamicRuntime.Registered(new " + (home.Namespace.Length == 0 ? "" : home.Namespace + ".") + "__LateUnit());\n}\n", "<dynamic:register>", symbols, written: false); }
         catch (CompileError e) { errors.Add(e); return; }
         foreach (MemberDecl m in hook.Types[0].Members)
         {
@@ -794,7 +794,7 @@ public static class DynamicDeclarations
                            IReadOnlyCollection<string>? symbols, List<CompileError> errors)
     {
         CompilationUnit late;
-        try { late = Parser.ParseText(text, file, symbols); }
+        try { late = Parser.ParseText(text, file, symbols, written: false); }
         catch (CompileError e) { errors.Add(e); return null; }
         TypeDecl made = late.Types[0];
         made.Namespace = ns;
