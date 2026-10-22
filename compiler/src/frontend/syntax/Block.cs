@@ -35,4 +35,11 @@ public sealed class Block : Stmt
     /// at a time, as C# runs one -- nothing until the first MoveNext.
     /// </summary>
     public bool Iterator { get; set; }
+
+    /// <summary>
+    /// An instance field's initialiser, put at the top of a constructor's
+    /// body (Binder.Initialisers): run before the base constructor is called,
+    /// as C# runs it, so a virtual method the base calls sees it set.
+    /// </summary>
+    public bool FieldInitialiser { get; set; }
 }

@@ -3803,7 +3803,7 @@ public sealed partial class Binder
                     continue;
             }
 
-            prologue.Add(Scoped(new ExprStmt
+            Block placed = (Block)Scoped(new ExprStmt
             {
                 Expr = new AssignExpr
                 {
@@ -3816,7 +3816,9 @@ public sealed partial class Binder
                     Line = m.Line, Col = m.Col,
                 },
                 Line = m.Line, Col = m.Col,
-            }));
+            });
+            placed.FieldInitialiser = true;
+            prologue.Add(placed);
         }
 
         d.Members.AddRange(initializerMethods);
@@ -13905,6 +13907,14 @@ public sealed partial class Binder
         {
             if (Resolve(decl.TemplateArgs[0], _thisType) is { IsError: false } argument) element = argument;
         }
+        // A SPAN OF THE ELEMENTS (C# 12): an array of them, which converts to
+        // the span the target is. `Span<int> s = [7, 8];` looked for an Add.
+        else if (target.Symbol is { Kind: TypeKind.Struct, Decl: { } spanDecl }
+                 && spanDecl.Template is string spanTemplate && spanDecl.TemplateArgs.Count == 1
+                 && Last(spanTemplate) is "Span" or "ReadOnlySpan")
+        {
+            if (Resolve(spanDecl.TemplateArgs[0], _thisType) is { IsError: false } argument) element = argument;
+        }
         if (element is not null)
         {
             if (RefOf(element) is not TypeRef elementRef)
@@ -13917,6 +13927,15 @@ public sealed partial class Binder
                 Type = elementRef, Elements = elements,
                 Line = collection.Line, Col = collection.Col,
             };
+        }
+
+        // `ICollection<T>` OR `IList<T>`: a List<T> of the elements, as C#
+        // makes one -- gathered as a spread is (SpreadFor), and kept a List.
+        if (target.Symbol is { Kind: TypeKind.Interface, Decl: { } listDecl }
+            && listDecl.Template is string listTemplate && listDecl.TemplateArgs.Count == 1
+            && Last(listTemplate) is "ICollection" or "IList")
+        {
+            return SpreadFor(collection, target, out why);
         }
 
         if (target.Symbol is { Kind: TypeKind.Class or TypeKind.Struct } && !target.IsArray && RefOf(target) is TypeRef targetRef)
@@ -13943,7 +13962,7 @@ public sealed partial class Binder
     {
         why = null;
         Type? element = null;
-        bool gathered = false;
+        bool gathered = false, listed = false;
         if (target.IsArray && target.ArrayRank == 1)
         {
             element = target.Element;
@@ -13951,10 +13970,11 @@ public sealed partial class Binder
         }
         else if (target.Symbol is { Kind: TypeKind.Interface, Decl: { } decl }
                  && decl.Template is string template && decl.TemplateArgs.Count == 1
-                 && Last(template) is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList")
+                 && Last(template) is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList" or "ICollection" or "IList")
         {
             if (Resolve(decl.TemplateArgs[0], _thisType) is { IsError: false } argument) element = argument;
             gathered = true;
+            listed = Last(template) is "ICollection" or "IList";
         }
         else if (target.Symbol is { Kind: TypeKind.Class or TypeKind.Struct } owner && !target.IsArray)
         {
@@ -14013,7 +14033,7 @@ public sealed partial class Binder
             built = call;
         }
 
-        if (!gathered)
+        if (!gathered || listed)
         {
             return built;
         }

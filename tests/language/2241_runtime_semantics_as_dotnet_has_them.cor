@@ -1,0 +1,90 @@
+// test: runtime_semantics_as_dotnet_has_them
+// expect-exit: 0
+// expect-output:
+// yield 0,yield 1,yield 2,finally
+// f1 f2 3
+// overflow
+// -2147483648 |False False 7 10
+// Read, Exec All 8 True Read, Write
+// 0.3333333333333333 0.10.2 0.30000000000000004 1E+21 123456790 NaN -0 7.5
+// 2 4 -2 -2 -3 -1 3 -4
+// 1 1 1
+// False True True
+// B:derived;
+// initA initB BA
+// x,w,z
+// al di bo cy | 3:bocy 1:aldi | bo cy al di
+// a||b| c a|b|c
+// >eLLo! 6 -32 -1 2
+//
+// A spread of what a program sees at run time, each as .NET gives it: an
+// iterator's finally when a foreach breaks, exception filters and finally
+// order, checked overflow, lifted nullable operators, [Flags] names and
+// Enum.Parse, double, float and decimal text, rounding to even, integer
+// division and shifts of negatives, struct copies in arrays and lists,
+// boxed equality, field initialisers before a base constructor's virtual
+// call, static initialisers in order, a dictionary's order after a removal,
+// stable OrderBy and GroupBy order, Split options, StringBuilder edits and
+// ordinal comparisons.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+
+[Flags] enum Perm { None = 0, Read = 1, Write = 2, Exec = 4, All = Read | Write | Exec }
+struct Counter { public int N; public void Bump() => N++; }
+class Base { public Base() { Console.Write("B:" + Name() + ";"); } public virtual string Name() => "base"; }
+class Derived : Base { readonly string _n = "derived"; public override string Name() => _n ?? "null"; }
+static class Init { public static readonly string A = Log("A"); public static readonly string B = Log("B"); static string Log(string s) { Console.Write("init" + s + " "); return s; } }
+
+static class Program
+{
+    static IEnumerable<int> Count(List<string> log)
+    {
+        try { for (int i = 0; ; i++) { log.Add("yield " + i); yield return i; } }
+        finally { log.Add("finally"); }
+    }
+
+    static int Filter(int k)
+    {
+        try { throw new InvalidOperationException("x" + k); }
+        catch (InvalidOperationException e) when (e.Message == "x1") { return 1; }
+        catch (Exception) { return 2; }
+        finally { Console.Write("f" + k + " "); }
+    }
+
+    static int Main()
+    {
+        List<string> log = new();
+        foreach (int i in Count(log)) { if (i == 2) break; }
+        Console.WriteLine(string.Join(",", log));
+        Console.WriteLine(Filter(1) + Filter(2));
+        try { checked { int big = int.MaxValue; big++; } } catch (OverflowException) { Console.WriteLine("overflow"); }
+        int wrap = unchecked(int.MaxValue + 1);
+        int? a = 5, b = null;
+        Console.WriteLine(wrap + " " + (a + b) + "|" + (a > b) + " " + (a == null) + " " + (b ?? 7) + " " + (a * 2));
+        Perm p = Perm.Read | Perm.Exec;
+        Console.WriteLine(p + " " + Perm.All + " " + (Perm)8 + " " + p.HasFlag(Perm.Read) + " " + Enum.Parse<Perm>("Write, Read"));
+        Console.WriteLine(1.0 / 3 + " " + 0.1 + 0.2 + " " + (0.1 + 0.2) + " " + 1e21 + " " + 123456789.0f + " " + double.NaN + " " + (-0.0) + " " + 2.5m * 3);
+        Console.WriteLine(Math.Round(2.5) + " " + Math.Round(3.5) + " " + Math.Round(-2.5) + " " + (int)-2.7 + " " + -7 / 2 + " " + -7 % 2 + " " + (7 >> 1) + " " + (-7 >> 1));
+        Counter c = new(); Counter[] cs = { c }; cs[0].Bump(); c.Bump(); List<Counter> lc = new() { c };
+        Console.WriteLine(c.N + " " + cs[0].N + " " + lc[0].N);
+        object o1 = 5, o2 = 5;
+        Console.WriteLine((o1 == o2) + " " + o1.Equals(o2) + " " + ReferenceEquals("ab", "a" + "b"));
+        new Derived(); Console.WriteLine();
+        Console.WriteLine(Init.B + Init.A);
+        Dictionary<string, int> d = new() { ["x"] = 1, ["y"] = 2, ["z"] = 3 };
+        d.Remove("y"); d["w"] = 4;
+        Console.WriteLine(string.Join(",", d.Keys));
+        var people = new[] { ("bo", 3), ("al", 1), ("cy", 3), ("di", 1) };
+        Console.WriteLine(string.Join(" ", people.OrderBy(x => x.Item2).Select(x => x.Item1)) + " | "
+            + string.Join(" ", people.GroupBy(x => x.Item2).Select(g => g.Key + ":" + string.Join("", g.Select(x => x.Item1)))) + " | "
+            + string.Join(" ", people.OrderByDescending(x => x.Item2).ThenBy(x => x.Item1).Select(x => x.Item1)));
+        Console.WriteLine(string.Join("|", "a,,b, c".Split(',')) + " " + string.Join("|", "a,,b, c".Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+        StringBuilder sb = new("hello"); sb.Insert(0, ">").Append('!').Replace("l", "L").Remove(1, 1);
+        Console.WriteLine(sb + " " + sb.Length + " " + "Hello".CompareTo("hello") + " " + string.Compare("a", "B", StringComparison.OrdinalIgnoreCase) + " " + "abc".IndexOf('c'));
+        return 0;
+    }
+}

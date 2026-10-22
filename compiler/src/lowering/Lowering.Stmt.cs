@@ -109,7 +109,7 @@ public sealed partial class Lowering
 
                 foreach (Stmt inner in b.Statements)
                 {
-                    if (inner is LocalDecl { LocalFunction: true })
+                    if (inner is LocalDecl { LocalFunction: true } || _initialisersRun.Contains(inner))
                     {
                         continue;
                     }

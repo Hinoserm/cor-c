@@ -76,6 +76,9 @@ public sealed partial class Lowering
     private readonly HashSet<LocalDecl> _cellsMade = new(ReferenceEqualityComparer.Instance);
     /// <summary>The same for captured variables no statement declares -- a pattern's binding, an `out var` (UndeclaredIn).</summary>
     private readonly HashSet<LocalSym> _symCellsMade = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A constructor's field initialisers, emitted before its base constructor's call and left out of its body.</summary>
+    private readonly HashSet<Stmt> _initialisersRun = new(ReferenceEqualityComparer.Instance);
     private readonly List<(Dictionary<SwitchCase, Block> Cases, int Handlers)> _switchBodies = new();
 
     /// <summary>Open try blocks, innermost last: a finally to run on the way out, or null for a catch.</summary>
@@ -395,6 +398,20 @@ public sealed partial class Lowering
         if (!m.Returns.IsVoid)
         {
             _returnValue = _f.NewReg(ReturnIr(m), "result");
+        }
+
+        // THE FIELD INITIALISERS FIRST, then the base constructor (C# 15.11.3):
+        // a virtual method the base calls -- WinForms' Control calls several --
+        // sees the derived class's fields already set. They head the body
+        // (Binder.Initialisers), and are left out when it is emitted.
+        if (decl.IsCtor && !m.Static && decl.Init is not { IsThis: true } && decl.Body is { } ctorBody)
+        {
+            foreach (Stmt first in ctorBody.Statements)
+            {
+                if (first is not AstBlock { FieldInitialiser: true }) break;
+                EmitStmt(first);
+                _initialisersRun.Add(first);
+            }
         }
 
         // A chained constructor runs before the body, on the same object.

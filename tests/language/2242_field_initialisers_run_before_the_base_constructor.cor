@@ -1,0 +1,71 @@
+// test: field_initialisers_run_before_the_base_constructor
+// expect-exit: 0
+// expect-output:
+// [75 OK:made] OK:made+ctor
+// [75 OK:made] Go:made+ctor+text
+// named=4 12
+// [75 OK:made] 12
+//
+// An instance field initialiser runs before the base constructor is called
+// (C# 15.11.3), so a virtual member the base constructor calls -- as
+// WinForms' Control does -- sees the derived class's fields set: `_width =
+// 75` is 75, not 0, inside Control's constructor. A constructor chaining to
+// `this(...)` runs none of its own; a generic base, a struct and a lambda
+// making one keep the order.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+class Control
+{
+    public Control() { Console.Write("[" + DefaultSize + " " + Describe() + "] "); }
+    protected virtual int DefaultSize => 1;
+    public virtual string Describe() => "control";
+}
+
+class Button : Control
+{
+    private readonly List<string> _log = new() { "made" };
+    private int _width = 75;
+    public string Text { get; set; } = "OK";
+    public Button() : base() { _log.Add("ctor"); }
+    public Button(string text) : this() { Text = text; _log.Add("text"); }
+    protected override int DefaultSize => _width;
+    public override string Describe() => Text + ":" + string.Join("+", _log);
+}
+
+class Holder<T>
+{
+    protected readonly T Value;
+    public Holder(T value) { Value = value; }
+}
+
+class Named<T> : Holder<T>
+{
+    private readonly string _name = "named";
+    public Named(T v) : base(v) { }
+    public override string ToString() => _name + "=" + Value;
+}
+
+struct Pair
+{
+    public int A = 1;
+    public int B;
+    public Pair(int b) { B = b; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Button b = new();
+        Console.WriteLine(b.Describe());
+        Button c = new("Go");
+        Console.WriteLine(c.Describe());
+        Console.WriteLine(new Named<int>(4) + " " + new Pair(2).A + new Pair(2).B);
+        Func<int> later = () => new Button().Describe().Length;
+        Console.WriteLine(later());
+        return 0;
+    }
+}

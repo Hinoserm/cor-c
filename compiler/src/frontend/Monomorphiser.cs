@@ -3391,7 +3391,7 @@ public sealed class Monomorphiser
         {
             case Block b:
             {
-                Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext, Iterator = b.Iterator };
+                Block made = new() { Line = b.Line, Col = b.Col, ArithmeticContext = b.ArithmeticContext, Iterator = b.Iterator, FieldInitialiser = b.FieldInitialiser };
                 if (b.GenericLocals.Count > 0) made.WritableGenericLocals.AddRange(b.GenericLocals);
 
                 foreach (Stmt inner in b.Statements)
