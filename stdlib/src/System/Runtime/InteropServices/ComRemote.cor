@@ -1783,7 +1783,10 @@ namespace System.Runtime.InteropServices
                 nint copy = Marshal.AllocHGlobal(bytes);
                 for (int i = 0; i < bytes; i++) Sys.PokeByte(copy + i, Sys.PeekByte(original + i));
                 Type made = Sys.As<Type>(copy);
-                _clsidOf[copy] = key;
+                // KEYED BY THE WORD ClsidOf READS, Sys.Word's: the address
+                // as an nint widens with its sign, and a 32-bit process's
+                // heap above 2 GB came out negative, a key no lookup made.
+                _clsidOf[Sys.Word(made)] = key;
                 _byClsid[key] = made;
                 return made;
             }
