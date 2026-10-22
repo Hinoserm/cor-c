@@ -1,0 +1,94 @@
+// test: inheritance_and_dispatch_program
+// expect-exit: 0
+// expect-output:
+// Shape static | Circle static | Shape ctor Circle | Circle ctor | Shape ctor Square | Shape ctor Labelled
+// circle:3.1 circle Circle of area 3.14 Circle of area 3.14
+// square(shape):4.0 square(shape) Square of area 4.00 Square of area 4.00
+// square(shape):9.0 square(shape) Labelled of area 9.00 Labelled of area 9.00
+// labelled square(shape) 3 3 my own square Labelled
+// 50.3
+// 36.0
+// 3; 3 Circle 9 True True
+//
+// A whole small program of inheritance and dispatch: static constructors
+// and constructors in order, abstract and virtual properties overridden and
+// sealed, base calls, an explicit implementation and a default interface
+// method reached through an interface, through a type parameter constrained
+// to it (in the copy for a class that declares neither: read through the
+// interface, as C# reads T's), and a `new` property hiding its base's auto
+// property -- which an initialiser and a read now reach, where they took
+// the base's field -- with delegate and interface variance.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+interface IShape
+{
+    double Area { get; }
+    string Name => GetType().Name;
+    string Describe() => $"{Name} of area {Area:F2}";
+    static int Made;
+}
+
+interface IScalable { IShape Scale(double k); }
+
+abstract class Shape : IShape
+{
+    static Shape() { Log.Add("Shape static"); }
+    protected Shape() { IShape.Made++; Log.Add("Shape ctor " + GetType().Name); }
+    public abstract double Area { get; }
+    public virtual string Kind => "shape";
+    public override string ToString() => $"{Kind}:{Area:F1}";
+    public static readonly List<string> Log = new();
+}
+
+class Circle : Shape, IScalable
+{
+    static Circle() { Log.Add("Circle static"); }
+    public double R { get; }
+    public Circle(double r) { R = r; Log.Add("Circle ctor"); }
+    public override double Area => Math.PI * R * R;
+    public override string Kind => "circle";
+    public IShape Scale(double k) => new Circle(R * k);
+}
+
+class Square : Shape, IScalable
+{
+    public double Side { get; init; }
+    public override double Area => Side * Side;
+    public sealed override string Kind => "square(" + base.Kind + ")";
+    IShape IScalable.Scale(double k) => new Square { Side = Side * k };
+    public string Describe() => "my own square";
+}
+
+class Labelled : Square
+{
+    public new string Kind => "labelled";
+    public new double Side { get => base.Side; init => base.Side = value + 1; }
+}
+
+static class Program
+{
+    static string Of<T>(T shape) where T : IShape => shape.Describe();
+
+    static int Main()
+    {
+        var shapes = new List<Shape> { new Circle(1), new Square { Side = 2 }, new Labelled { Side = 2 } };
+        Console.WriteLine(string.Join(" | ", Shape.Log));
+        foreach (Shape s in shapes) Console.WriteLine(s + " " + s.Kind + " " + ((IShape)s).Describe() + " " + Of(s));
+        Labelled l = (Labelled)shapes[2];
+        Console.WriteLine(l.Kind + " " + ((Square)l).Kind + " " + l.Side + " " + ((Square)l).Side + " " + l.Describe() + " " + ((IShape)l).Name);
+        IScalable[] scalable = { new Circle(2), new Square { Side = 3 } };
+        foreach (var sc in scalable) Console.WriteLine(sc.Scale(2).Area.ToString("F1"));
+        IEnumerable<IShape> covariant = shapes;
+        IReadOnlyList<object> asObjects = shapes;
+        Func<Shape> make = () => new Circle(3);
+        Func<IShape> wider = make;
+        Action<IShape> show = s => Console.Write(s.Area.ToString("F0") + ";");
+        Action<Circle> narrower = show;
+        narrower(new Circle(1));
+        Console.WriteLine(" " + asObjects.Count + " " + wider().Name + " " + IShape.Made + " " + (shapes[0] is IScalable) + " " + (shapes[1] as IScalable != null));
+        return 0;
+    }
+}

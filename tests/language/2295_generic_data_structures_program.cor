@@ -1,0 +1,129 @@
+// test: generic_data_structures_program
+// expect-exit: 0
+// expect-output:
+// 11 h4 1,5,10,20,25,30,35,50,60,70,80 66
+// (1,5) (2,0) (2,1) 3
+// 2 2 True 1
+// a1 aa4 bb2 ccc3 a
+// fig,kiwi,pear,banana 1
+// pear,kiwi,fig,banana
+// 0,1,2,25 0 2
+// c(0,9) a(1,1) b(1,2)
+// (1,2)(3,0)(3,1) 0 (3,1) -1
+//
+// A whole small program of data structures: a balanced generic tree over
+// IComparable<T> walked by an iterator, an IEquatable struct as a
+// dictionary and set key with its own ==, a custom IComparer for
+// SortedDictionary, List.Sort and BinarySearch, a Comparison lambda,
+// LinkedList's node edits, PriorityQueue with struct priorities,
+// Array.Sort/IndexOf/Max over IComparable -- every line as .NET prints it.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
+readonly struct Point : IEquatable<Point>, IComparable<Point>
+{
+    public readonly int X, Y;
+    public Point(int x, int y) { X = x; Y = y; }
+    public bool Equals(Point other) => X == other.X && Y == other.Y;
+    public override bool Equals(object? obj) => obj is Point p && Equals(p);
+    public override int GetHashCode() => HashCode.Combine(X, Y);
+    public int CompareTo(Point other) => X != other.X ? X.CompareTo(other.X) : Y.CompareTo(other.Y);
+    public static bool operator ==(Point a, Point b) => a.Equals(b);
+    public static bool operator !=(Point a, Point b) => !a.Equals(b);
+    public override string ToString() => $"({X},{Y})";
+}
+
+sealed class Tree<T> : IEnumerable<T> where T : IComparable<T>
+{
+    private sealed class Node { public T Value = default!; public Node? Left, Right; public int Height = 1; }
+    private Node? _root;
+    public int Count { get; private set; }
+
+    public bool Add(T value)
+    {
+        bool added = false;
+        _root = Insert(_root, value, ref added);
+        if (added) Count++;
+        return added;
+    }
+
+    private static int H(Node? n) => n?.Height ?? 0;
+    private static Node Fix(Node n) { n.Height = 1 + Math.Max(H(n.Left), H(n.Right)); return n; }
+    private static Node RotateRight(Node n) { Node l = n.Left!; n.Left = l.Right; l.Right = Fix(n); return Fix(l); }
+    private static Node RotateLeft(Node n) { Node r = n.Right!; n.Right = r.Left; r.Left = Fix(n); return Fix(r); }
+
+    private static Node Insert(Node? n, T value, ref bool added)
+    {
+        if (n is null) { added = true; return new Node { Value = value }; }
+        int c = value.CompareTo(n.Value);
+        if (c < 0) n.Left = Insert(n.Left, value, ref added);
+        else if (c > 0) n.Right = Insert(n.Right, value, ref added);
+        else return n;
+        Fix(n);
+        int balance = H(n.Left) - H(n.Right);
+        if (balance > 1) { if (value.CompareTo(n.Left!.Value) > 0) n.Left = RotateLeft(n.Left); return RotateRight(n); }
+        if (balance < -1) { if (value.CompareTo(n.Right!.Value) < 0) n.Right = RotateRight(n.Right); return RotateLeft(n); }
+        return n;
+    }
+
+    public int Height => H(_root);
+
+    public IEnumerator<T> GetEnumerator()
+    {
+        var stack = new Stack<Node>();
+        Node? at = _root;
+        while (at is not null || stack.Count > 0)
+        {
+            while (at is not null) { stack.Push(at); at = at.Left; }
+            at = stack.Pop();
+            yield return at.Value;
+            at = at.Right;
+        }
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+sealed class ByLength : IComparer<string>
+{
+    public int Compare(string? a, string? b) => a!.Length != b!.Length ? a.Length.CompareTo(b.Length) : string.CompareOrdinal(a, b);
+}
+
+static class Program
+{
+    static int Main()
+    {
+        var tree = new Tree<int>();
+        foreach (int v in new[] { 50, 20, 70, 10, 30, 60, 80, 25, 35, 30, 5, 1 }) tree.Add(v);
+        Console.WriteLine(tree.Count + " h" + tree.Height + " " + string.Join(",", tree) + " " + tree.Where(x => x % 2 == 1).Sum());
+        var points = new Tree<Point>();
+        points.Add(new Point(2, 1)); points.Add(new Point(1, 5)); points.Add(new Point(2, 0)); points.Add(new Point(1, 5));
+        Console.WriteLine(string.Join(" ", points) + " " + points.Count);
+        var visits = new Dictionary<Point, int>();
+        foreach (var p in new[] { new Point(1, 1), new Point(2, 2), new Point(1, 1) }) visits[p] = visits.GetValueOrDefault(p) + 1;
+        Console.WriteLine(visits[new Point(1, 1)] + " " + visits.Count + " " + (new Point(3, 4) == new Point(3, 4)) + " " + new HashSet<Point> { new(1, 2), new(1, 2) }.Count);
+        var sorted = new SortedDictionary<string, int>(new ByLength()) { ["ccc"] = 3, ["a"] = 1, ["bb"] = 2, ["aa"] = 4 };
+        Console.WriteLine(string.Join(" ", sorted.Select(kv => kv.Key + kv.Value)) + " " + sorted.First().Key);
+        var words = new List<string> { "pear", "fig", "banana", "kiwi" };
+        words.Sort(new ByLength());
+        Console.WriteLine(string.Join(",", words) + " " + words.BinarySearch("kiwi", new ByLength()));
+        words.Sort((a, b) => string.Compare(b, a, StringComparison.Ordinal));
+        Console.WriteLine(string.Join(",", words));
+        var list = new LinkedList<int>(new[] { 1, 2, 3 });
+        list.AddFirst(0); list.AddAfter(list.Find(2)!, 25); list.RemoveLast();
+        Console.WriteLine(string.Join(",", list) + " " + list.First!.Value + " " + list.Last!.Previous!.Value);
+        var pq = new PriorityQueue<string, Point>();
+        pq.Enqueue("b", new Point(1, 2)); pq.Enqueue("a", new Point(1, 1)); pq.Enqueue("c", new Point(0, 9));
+        var drained = new List<string>();
+        while (pq.TryDequeue(out string? item, out Point pri)) drained.Add(item + pri);
+        Console.WriteLine(string.Join(" ", drained));
+        var arr = new[] { new Point(3, 1), new Point(1, 2), new Point(3, 0) };
+        Array.Sort(arr);
+        Console.WriteLine(string.Join("", arr) + " " + Array.IndexOf(arr, new Point(1, 2)) + " " + arr.Max() + " " + Comparer<Point>.Default.Compare(arr[0], arr[1]));
+        return 0;
+    }
+}

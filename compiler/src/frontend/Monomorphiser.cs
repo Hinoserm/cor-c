@@ -3269,6 +3269,10 @@ public sealed class Monomorphiser
                     _methodParams.Add(tp.Name);
                     _methodParamInfo[tp.Name] = tp;
                 }
+                // ITS VALUES OF A TYPE PARAMETER, the parameters declared `T x`:
+                // a member read through one is read as T's constraint has it
+                // (MemberExpr.ThroughTypeParameter), locals added as met.
+                _typeParameterValues = new HashSet<string>(md.Params.Where(p => Bare(p.Type, map)).Select(p => p.Name), StringComparer.Ordinal);
 
                 MethodDecl made = new()
                 {
@@ -3416,6 +3420,7 @@ public sealed class Monomorphiser
 
             case LocalDecl d:
             {
+                if (d.Type is not null && Bare(d.Type, map)) _typeParameterValues?.Add(d.Name);
                 LocalDecl made = new()
                 {
                     Type = d.Type is null ? null : Sub(d.Type, map), Name = d.Name,
@@ -3717,6 +3722,13 @@ public sealed class Monomorphiser
         return made;
     }
 
+    /// <summary>The method being copied's parameters and locals declared with a bare type parameter (ThroughTypeParameter).</summary>
+    private HashSet<string>? _typeParameterValues;
+
+    /// <summary>Whether a written type is one of this copy's type parameters, bare (`T`, `T?`).</summary>
+    private static bool Bare(TypeRef t, Dictionary<string, TypeRef> map)
+        => t.Args.Count == 0 && t.ArrayRank == 0 && t.PointerDepth == 0 && map.ContainsKey(t.Name);
+
     private Expr RewriteExpr(Expr e, Dictionary<string, TypeRef> map)
     {
         switch (e)
@@ -3808,7 +3820,8 @@ public sealed class Monomorphiser
                     // abstract member of T's constraint, found on the type
                     // as only a type parameter finds it.
                     ThroughTypeParameter = m.ThroughTypeParameter
-                        || m.Target is NameExpr { TypeArgs.Count: 0 } typeParameter && map.ContainsKey(typeParameter.Name),
+                        || m.Target is NameExpr { TypeArgs.Count: 0 } typeParameter && map.ContainsKey(typeParameter.Name)
+                        || m.Target is NameExpr { TypeArgs.Count: 0 } typed && _typeParameterValues?.Contains(typed.Name) == true,
                     Line = m.Line, Col = m.Col,
                 };
                 if (m.TypeArgs.Count > 0) SubInto(made.WritableTypeArgs, m.TypeArgs, map);

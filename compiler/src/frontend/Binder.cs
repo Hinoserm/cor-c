@@ -14536,6 +14536,10 @@ public sealed partial class Binder
 
             FieldSymbol? field = owner.FindField(init.Name)
                               ?? BackingField(owner, init.Name);
+            // A NEARER DECLARATION HIDES IT: a class's own `new double Side {
+            // init => ... }` over its base's auto property is what
+            // `new Labelled { Side = 2 }` sets, not the base's field.
+            if (field is not null && HiddenByNearerProperty(owner, field, init.Name)) field = null;
 
             // `Name = { … }` -- the member is READ and what it holds is filled
             // in, so a get-only property is enough and no assignment happens.
@@ -20980,6 +20984,8 @@ public sealed partial class Binder
         }
 
         FieldSymbol? field = owner.FindField(m.Name) ?? BackingField(owner, m.Name, nonVirtual: m.Target is BaseExpr);
+        // As in an initialiser: a property declared nearer hides the field.
+        if (field is not null && HiddenByNearerProperty(owner, field, m.Name)) field = null;
 
         if (field != null)
         {
@@ -21102,6 +21108,22 @@ public sealed partial class Binder
         if (m.ThroughTypeParameter && ThroughTypeParameter(m, owner, target, received, defaults: true) is Type byDefault)
         {
             return byDefault;
+        }
+
+        // AN INSTANCE MEMBER OF T'S CONSTRAINT, through a value of T in the
+        // copy where T became a class or struct that does not declare it --
+        // an explicit implementation, an interface's default method: read
+        // as C# reads it through T, through the interface that declares it.
+        if (m.ThroughTypeParameter && InterfaceDeclaring(owner, m.Name) is TypeSymbol face
+            && RefOf(Type.Plain(face, Prim.Void)) is TypeRef faceRef)
+        {
+            MemberExpr through = new()
+            {
+                Target = new CastExpr { Type = faceRef, Operand = m.Target, Line = m.Line, Col = m.Col },
+                Name = m.Name, Line = m.Line, Col = m.Col,
+            };
+            _r.Rewrites[m] = through;
+            return CheckExpr(through);
         }
 
         // AN EXTENSION METHOD, which is where LINQ lives. Last, after every
@@ -21814,6 +21836,29 @@ public sealed partial class Binder
 
     private Type CheckCall(CallExpr c)
     {
+        // A METHOD OF T'S CONSTRAINT called through a value of T, in the copy
+        // where T is a class or struct declaring none of the name: called
+        // through the interface that does (CheckMemberCore's read of one).
+        if (c.Target is MemberExpr { ThroughTypeParameter: true, NullConditional: false } throughT
+            && Peek(throughT.Target) is { Symbol: { Kind: TypeKind.Class or TypeKind.Struct } holder, IsError: false }
+            && holder.FindMethods(throughT.Name).Count == 0 && Extension(Peek(throughT.Target), throughT.Name).Count == 0
+            && InterfaceDeclaring(holder, throughT.Name) is TypeSymbol face && RefOf(Type.Plain(face, Prim.Void)) is TypeRef faceRef)
+        {
+            CallExpr viaFace = new()
+            {
+                Target = new MemberExpr
+                {
+                    Target = new CastExpr { Type = faceRef, Operand = throughT.Target, Line = throughT.Line, Col = throughT.Col },
+                    Name = throughT.Name, Line = throughT.Line, Col = throughT.Col,
+                },
+                Line = c.Line, Col = c.Col,
+            };
+            viaFace.Args.AddRange(c.Args);
+            viaFace.WritableArgNames.AddRange(c.ArgNames);
+            _r.Rewrites[c] = viaFace;
+            return CheckExpr(viaFace);
+        }
+
         if (c.FormatHole && c.Target is MemberExpr { Name: "ToString" } hole && c.Args.Count == 1)
         {
             _quiet++;
@@ -24556,6 +24601,34 @@ public sealed partial class Binder
             return getter.Returns;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Whether a property of this name is declared between `owner` and the
+    /// type that declares `field` -- nearer, so it hides the field (C# 12.6's
+    /// member lookup: a derived declaration hides the base's).
+    /// </summary>
+    private static bool HiddenByNearerProperty(TypeSymbol owner, FieldSymbol field, string name)
+    {
+        for (TypeSymbol? t = owner; t is not null && !ReferenceEquals(t, field.Owner); t = t.Base)
+            if (t.Methods.Any(x => ReferenceEquals(x.Owner, t) && (TypeSymbol.IsJoined(x.Name, "get_", name) || TypeSymbol.IsJoined(x.Name, "set_", name))))
+                return true;
+        return false;
+    }
+
+    /// <summary>The one interface a type implements that declares an instance member of this name, or null.</summary>
+    private static TypeSymbol? InterfaceDeclaring(TypeSymbol owner, string name)
+    {
+        TypeSymbol? found = null;
+        for (TypeSymbol? t = owner; t is not null; t = t.Base)
+            foreach (TypeSymbol face in t.Interfaces)
+                foreach (TypeSymbol up in Extended(face))
+                    if (up.Methods.Any(x => !x.Static && (x.Name == name || TypeSymbol.IsJoined(x.Name, "get_", name))))
+                    {
+                        if (found is not null && !ReferenceEquals(found, up)) return null;
+                        found = up;
+                    }
+        return found;
     }
 
     /// <summary>The instance operator C# 14 calls for a compound assignment of this operator.</summary>
