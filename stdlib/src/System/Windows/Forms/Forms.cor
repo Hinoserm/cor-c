@@ -1566,6 +1566,12 @@ public class Form : ScrollableControl
     }
     public bool HasFrame { get { return _border != FormBorderStyle.None; } }
 
+    /// .NET's KeyPreview: the form is given each key -- KeyDown, KeyPress,
+    /// KeyUp -- before the control with the focus, and a key it marks
+    /// Handled (or whose press it suppresses) goes no further, as
+    /// Form.ProcessKeyPreview takes it ahead of the control's own.
+    public bool KeyPreview { get; set; }
+
     public override Rectangle ClientRectangle
     {
         get
@@ -7190,14 +7196,18 @@ public static class Application
                 if (target == null) return;
                 Keys data = (Keys)vk | ((mods & 1) != 0 ? Keys.Shift : Keys.None) | ((mods & 2) != 0 ? Keys.Control : Keys.None)
                           | ((mods & 4) != 0 ? Keys.Alt : Keys.None);
+                Form? form = target.FindForm();
+                if (form == null) form = _active;
+                // KEYPREVIEW: the form first, and what it handles is its own.
+                Form? preview = form != null && form.KeyPreview && form != target ? form : null;
                 if (up)
                 {
-                    target.RaiseKeyUp(new KeyEventArgs(data));
+                    KeyEventArgs released = new KeyEventArgs(data);
+                    if (preview != null) preview.RaiseKeyUp(released);
+                    if (!released.Handled) target.RaiseKeyUp(released);
                     Message rawUp = m; target.DispatchRaw(ref rawUp);
                     break;
                 }
-                Form? form = target.FindForm();
-                if (form == null) form = _active;
 
                 // THE ORDER WINDOWS USES, and the reason a dialog feels
                 // right: the control sees the key first, as a KeyDown and
@@ -7217,7 +7227,8 @@ public static class Application
                     if (chosen != null) { chosen.PerformClick(); return; }
                 }
                 KeyEventArgs down = new KeyEventArgs(data);
-                target.RaiseKeyDown(down);
+                if (preview != null) preview.RaiseKeyDown(down);
+                if (!down.Handled) target.RaiseKeyDown(down);
                 bool handled = down.Handled;
 
                 if (!handled) handled = target.ProcessDialogKey(down.KeyCode, mods);
@@ -7233,7 +7244,8 @@ public static class Application
                 if (!handled && ch != 0 && !down.SuppressKeyPress)
                 {
                     KeyPressEventArgs press = new KeyPressEventArgs(ch);
-                    target.RaiseKeyPress(press);
+                    if (preview != null) preview.RaiseKeyPress(press);
+                    if (!press.Handled) target.RaiseKeyPress(press);
                     handled = press.Handled;
                 }
 
