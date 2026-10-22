@@ -1,0 +1,55 @@
+// test: anonymous_types
+// expect-exit: 0
+// expect-output:
+// { A = 1, B = two } True False False True 1two
+// { Name = Ada, Age = 36, City = , Older = 37 } 37
+// { Name = al, Initial = a }; { Name = cy, Initial = c } c
+// { Age = 30, City = X }=2 { Age = 25, City = Y }=1 { Age = 25, City = X }=1
+// True False
+// 5 2 { Value = w, Count = 3 } { Value = 4.5, Count = 1 }
+// { }|{ N =  }|3
+//
+// Anonymous types, as C# makes them: `new { A = 1, B = "two" }` and
+// projections `new { p.Name, p.Age }`, read-only properties, value equality
+// and hash (as Dictionary and GroupBy keys), `{ A = 1, B = two }` text with
+// nothing for a null, nested ones, one made in a generic method, and
+// `select new { … }` through LINQ. corc could not parse `new {`.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+sealed class Person { public string Name = ""; public int Age; public string? City; }
+
+static class Program
+{
+    static object Wrap<T>(T value, int n) => new { Value = value, Count = n };
+
+    static int Main()
+    {
+        var a = new { A = 1, B = "two" };
+        var b = new { A = 1, B = "two" };
+        var c = new { A = 2, B = "two" };
+        Console.WriteLine(a + " " + a.Equals(b) + " " + a.Equals(c) + " " + (a == b) + " " + (a.GetHashCode() == b.GetHashCode()) + " " + a.A + a.B);
+        Person p = new() { Name = "Ada", Age = 36 };
+        var proj = new { p.Name, p.Age, p.City, Older = p.Age + 1 };
+        Console.WriteLine(proj + " " + proj.Older);
+        List<Person> people = new()
+        {
+            new Person { Name = "al", Age = 30, City = "X" }, new Person { Name = "bo", Age = 25, City = "Y" },
+            new Person { Name = "cy", Age = 30, City = "X" }, new Person { Name = "di", Age = 25, City = "X" },
+        };
+        var rows = people.Where(x => x.Age > 26).Select(x => new { x.Name, Initial = x.Name[0] }).ToList();
+        Console.WriteLine(string.Join("; ", rows) + " " + rows[1].Initial);
+        var groups = people.GroupBy(x => new { x.Age, x.City }).Select(g => g.Key + "=" + g.Count());
+        Console.WriteLine(string.Join(" ", groups));
+        Dictionary<object, string> seen = new() { [new { X = 1, Y = 2 }] = "first" };
+        Console.WriteLine(seen.ContainsKey(new { X = 1, Y = 2 }) + " " + seen.ContainsKey(new { X = 2, Y = 1 }));
+        var nested = new { Outer = new { Inner = 5 }, List = new[] { 1, 2 } };
+        Console.WriteLine(nested.Outer.Inner + " " + nested.List.Length + " " + Wrap("w", 3) + " " + Wrap(4.5, 1));
+        var empty = new { };
+        Console.WriteLine(empty + "|" + new { N = (string?)null } + "|" + new[] { new { K = 1 }, new { K = 2 } }.Sum(x => x.K));
+        return 0;
+    }
+}

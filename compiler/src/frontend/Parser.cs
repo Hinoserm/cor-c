@@ -918,6 +918,9 @@ public sealed class Parser
 
         ParseNamespaceMembers(unit, StartNamespace, StartTypePath ?? StartNamespace);
         unit.UsesDynamic = _sawDynamic;
+        // The anonymous types the file's `new { … }` made (ParseAnonymousObject).
+        unit.Types.AddRange(_anonymousTypes);
+        _anonymousTypes.Clear();
         return unit;
     }
 
@@ -8904,8 +8907,122 @@ public sealed class Parser
     /// target-typed `new()`. `stackalloc T[n]` and `stackalloc T[] { ... }`
     /// read the same array creation after their own keyword.
     /// </summary>
+    /// <summary>
+    /// AN ANONYMOUS TYPE, `new { A = 1, x.Name }` (C# 12.8.17.7): a class made
+    /// once per list of member names in a file, generic over each member's
+    /// type, with read-only properties, value equality and .NET's `{ A = 1,
+    /// Name = rex }` text; the expression is a call of its maker, whose type
+    /// arguments are inferred from the values. Two files with one shape make
+    /// two classes, where C# shares one in the assembly.
+    /// </summary>
+    private Expr ParseAnonymousObject(Token at)
+    {
+        Expect(Tok.LBrace, "'{' to open the anonymous type");
+        List<string> names = new();
+        List<Expr> values = new();
+        while (!At(Tok.RBrace))
+        {
+            string name;
+            Expr value;
+            if (At(Tok.Ident) && Ahead().Kind == Tok.Assign)
+            {
+                name = _t[_i].Text;
+                _i += 2;
+                value = ParseExpr();
+            }
+            else
+            {
+                value = ParseExpr();
+                name = value switch
+                {
+                    NameExpr named => named.Name,
+                    MemberExpr member => member.Name,
+                    _ => throw Error("CS0746: Invalid anonymous type member declarator. Anonymous type members must be declared with a member assignment, simple name or member access."),
+                };
+            }
+            if (names.Contains(name)) throw Error("CS0833: An anonymous type cannot have multiple properties with the same name");
+            names.Add(name);
+            values.Add(value);
+            if (!Take(Tok.Comma)) break;
+        }
+        Expect(Tok.RBrace, "'}' to close the anonymous type");
+
+        string key = string.Join(",", names);
+        if (!_anonymous.TryGetValue(key, out string? maker))
+        {
+            maker = MakeAnonymousType(names);
+            _anonymous[key] = maker;
+        }
+        CallExpr call = new()
+        {
+            Target = new MemberExpr
+            {
+                Target = new NameExpr { Name = maker, Line = at.Line, Col = at.Col },
+                Name = "Make", Line = at.Line, Col = at.Col,
+            },
+            Line = at.Line, Col = at.Col,
+        };
+        foreach (Expr value in values)
+        {
+            call.Args.Add(value);
+            call.WritableArgNames.Add(null);
+        }
+        return call;
+    }
+
+    private readonly Dictionary<string, string> _anonymous = new(StringComparer.Ordinal);
+    private readonly List<TypeDecl> _anonymousTypes = new();
+
+    /// <summary>The class and maker for one list of anonymous members, written as source and parsed.</summary>
+    private string MakeAnonymousType(List<string> names)
+    {
+        uint hash = 2166136261;
+        foreach (char c in _file) hash = (hash ^ c) * 16777619;
+        string type = $"__AnonymousType_{hash:x8}_{_anonymous.Count}";
+        string maker = $"__AnonymousMake_{hash:x8}_{_anonymous.Count}";
+        string parameters = names.Count == 0 ? "" : "<" + string.Join(", ", names.Select((_, k) => "T" + k)) + ">";
+        string closed = type + parameters;
+        System.Text.StringBuilder text = new();
+        // Its own using: a parsed type keeps its file's (TypeDecl.Scope), and
+        // the program's say nothing about what the compiler writes.
+        text.Append("using System.Collections.Generic;\n");
+        text.Append("sealed class ").Append(closed).Append("\n{\n");
+        for (int k = 0; k < names.Count; k++)
+            text.Append("    public T").Append(k).Append(' ').Append(Lexer.Identifier(names[k])).Append(" { get; }\n");
+        text.Append("    public ").Append(type).Append('(').Append(string.Join(", ", names.Select((_, k) => "T" + k + " p" + k))).Append(")\n    {\n");
+        for (int k = 0; k < names.Count; k++)
+            text.Append("        ").Append(Lexer.Identifier(names[k])).Append(" = p").Append(k).Append(";\n");
+        text.Append("    }\n");
+        text.Append("    public override bool Equals(object? obj) => obj is ").Append(closed).Append(" other");
+        for (int k = 0; k < names.Count; k++)
+            text.Append("\n        && EqualityComparer<T").Append(k).Append(">.Default.Equals(")
+                .Append(Lexer.Identifier(names[k])).Append(", other.").Append(Lexer.Identifier(names[k])).Append(')');
+        text.Append(";\n");
+        text.Append("    public override int GetHashCode()\n    {\n        int hash = -1134271262;\n");
+        for (int k = 0; k < names.Count; k++)
+            text.Append("        hash = hash * -1521134295 + (").Append(Lexer.Identifier(names[k])).Append(" is null ? 0 : ")
+                .Append(Lexer.Identifier(names[k])).Append(".GetHashCode());\n");
+        text.Append("        return hash;\n    }\n");
+        text.Append("    public override string ToString() => \"{");
+        for (int k = 0; k < names.Count; k++)
+            text.Append(k == 0 ? " " : ", ").Append(names[k]).Append(" = \" + ").Append(Lexer.Identifier(names[k])).Append(" + \"");
+        text.Append(names.Count == 0 ? " }\";\n" : " }\";\n");
+        text.Append("}\n");
+        text.Append("static class ").Append(maker).Append("\n{\n    public static ").Append(closed).Append(" Make").Append(parameters).Append('(')
+            .Append(string.Join(", ", names.Select((_, k) => "T" + k + " p" + k))).Append(") => new ").Append(closed).Append('(')
+            .Append(string.Join(", ", names.Select((_, k) => "p" + k))).Append(");\n}\n");
+        CompilationUnit made = new Parser(Lexer.Tokenize(text.ToString(), _file), _file).ParseUnit();
+        _anonymousTypes.AddRange(made.Types);
+        return maker;
+    }
+
     private Expr ParseNew(Token at)
     {
+        if (At(Tok.LBrace))
+        {
+            return ParseAnonymousObject(at);
+        }
+
         // TARGET-TYPED `new()`, where the type is the one already
         // written on the left: `List<TypeRef> Args { get; init; } =
         // new();`. Saying it twice is what this exists to avoid, and
