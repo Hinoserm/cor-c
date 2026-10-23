@@ -1168,8 +1168,11 @@ static partial class Os
     /// in either word size, laid down in the image.
     static readonly long[] NoEntryBlock = { 0, 0, 0, 0 };
 
-    /// Where argc, argv and envp would be: the empty block.
+    /// Where argc, argv and envp would be: the empty block. (Windows makes
+    /// a real one: runtime/src/platforms/win32/files.cor.)
+#if !TARGET_WINDOWS
     public static long MainEntryStack() { return Sys.ArrayData(NoEntryBlock); }
+#endif
 
     /// envp, as on Linux: past argc, argv's entries and argv's null.
     public static long EnvironAddress()
@@ -1207,6 +1210,9 @@ static partial class Os
 // word. There are no threads on bare metal until the kernel makes them, so
 // a wait is a spin on the clock and a wake is nothing.
 
+// WINDOWS HAS ITS OWN CLOCK AND THREADS (runtime/src/platforms/win32/threading.cor):
+// the performance counter and CreateThread, under these same names.
+#if !TARGET_WINDOWS
 /// A monotonic nanosecond clock from the PIT, with no interrupts.
 ///
 /// The 8254's channel 0 counts down at 1193182 Hz from whatever the BIOS
@@ -1466,3 +1472,5 @@ static class Native
         return 0;
     }
 }
+
+#endif

@@ -1325,6 +1325,95 @@ static class Platform
 ///     kernel; Linux left argc and argv on the stack at entry.
 static partial class Os
 {
+    static long _signalRestorer;
+
+    /// The kernel's sigaction: handler, flags, restorer, mask (64 bits) --
+    /// four words on x86-64, where the first three are eight bytes each.
+    ///
+    /// SA_RESTORER names the few bytes the kernel returns THROUGH when a
+    /// handler finishes, and two things about them are easy to get wrong and
+    /// fatal when they are:
+    ///
+    ///   THE CALL IS sigreturn(119), NOT rt_sigreturn(173). On i386 the
+    ///   kernel builds the OLD signal frame for a handler registered without
+    ///   SA_SIGINFO -- whichever call registered it -- and the two frames are
+    ///   not the same shape. Returning through the wrong one restores a
+    ///   context of rubbish: the program resumes at address zero and dies of
+    ///   a fault nowhere near the signal. `pop %eax` first, as glibc's own
+    ///   __restore does, because the legacy frame wants the signal number off
+    ///   the stack before the sigcontext underneath it is read.
+    ///
+    ///   THE BYTES MUST BE EXECUTABLE. The heap is mapped read/write and
+    ///   nothing else, so a thunk kept in an ordinary array is data the
+    ///   processor refuses to run: a fault on the way out of every handler.
+    ///   They live in a page of their own, mapped with PROT_EXEC.
+    ///
+    /// SA_RESTART keeps a read or a wait from failing with EINTR under a
+    /// signal the program handles.
+    /// The session the process is in (getsid(2)): what a named mutex not
+    /// marked global is private to.
+    public static long SessionId() => Platform.Result(Sys.Syscall(Call.Getsid, 0, 0, 0));
+
+    public static void InstallSignal(int signal, long handler)
+    {
+        if (_signalRestorer == 0)
+        {
+            long page = Os.MapExecutable(4096);
+            if (page == 0)
+            {
+                return;
+            }
+#if TARGET_AMD64
+            // Long mode's: rt_sigreturn is 15 and is made with `syscall`. The
+            // kernel refuses a handler without a restorer on this ABI.
+            Sys.PokeByte(page, 0xB8);                                 // mov eax,
+            Sys.PokeByte(page + 1, 15);                               //   15 (rt_sigreturn)
+            Sys.PokeByte(page + 2, 0);
+            Sys.PokeByte(page + 3, 0);
+            Sys.PokeByte(page + 4, 0);
+            Sys.PokeByte(page + 5, 0x0F);                             // syscall
+            Sys.PokeByte(page + 6, 0x05);
+#else
+            Sys.PokeByte(page, 0xB8);                                 // mov eax,
+            Sys.PokeByte(page + 1, 173);                              //   173 (rt_sigreturn)
+            Sys.PokeByte(page + 2, 0);
+            Sys.PokeByte(page + 3, 0);
+            Sys.PokeByte(page + 4, 0);
+            Sys.PokeByte(page + 5, 0xCD);                             // int
+            Sys.PokeByte(page + 6, 0x80);                             //   0x80
+#endif
+            _signalRestorer = page;
+        }
+#if TARGET_64BIT
+        // x86-64's kernel sigaction: handler, flags, restorer and mask, a
+        // word each.
+        byte[] act = new byte[32];
+        Raw.SetI64(act, 0, handler);
+#else
+        byte[] act = new byte[20];
+        Raw.SetU32(act, 0, handler);
+#endif
+        long flags = 0x04000000;                                      // SA_RESTORER
+        if (handler > 1)
+        {
+            // SA_SIGINFO AS WELL AS SA_RESTART, and not for the extra
+            // arguments: it is what makes the kernel build the MODERN signal
+            // frame, the one rt_sigreturn above knows how to return through.
+            // Without it i386 builds the old frame for a handler registered
+            // through rt_sigaction, and returning through the wrong one
+            // restores a context of rubbish.
+            flags = flags | 0x10000000 | 0x00000004;                  // SA_RESTART|SA_SIGINFO
+        }
+#if TARGET_64BIT
+        Raw.SetI64(act, 8, flags);
+        Raw.SetI64(act, 16, _signalRestorer);
+#else
+        Raw.SetU32(act, 4, flags);
+        Raw.SetU32(act, 8, _signalRestorer);
+#endif
+        Os.SigAction(signal, act);
+    }
+
     [DoesNotReturn]
     public static void Exit(int code)
     {
@@ -2405,102 +2494,6 @@ static partial class Os
             length = length + 1;
         }
     }
-}
-
-/// The kernel's `struct termios` as the TCGETS/TCSETS ioctls use it: four
-/// flag words, a line discipline byte, then nineteen special characters.
-/// (glibc's termios is a different, larger structure; this is the kernel's.)
-static class Termios
-{
-    public const int Bytes = 36;
-
-    public const int InputAt = 0;
-    public const int OutputAt = 4;
-    public const int ControlAt = 8;
-    public const int LocalAt = 12;
-    public const int LineAt = 16;
-    public const int CharsAt = 17;
-
-    // c_lflag, the bits a program actually changes.
-    public const long Signals = 0x1;        // ISIG
-    public const long Canonical = 0x2;      // ICANON: input arrives a LINE at a time
-    public const long Echo = 0x8;           // ECHO
-    public const long EchoErase = 0x10;     // ECHOE
-
-    // c_iflag
-    public const long CrToNl = 0x100;       // ICRNL
-    public const long IgnoreCr = 0x80;      // IGNCR
-    public const long FlowControl = 0x400;  // IXON
-
-    // c_cflag
-    public const long HangUpOnClose = 0x400; // HUPCL: the last close drops DTR
-    public const long LocalLine = 0x800;    // CLOCAL: the line's carrier means nothing
-    public const long HardwareFlow = 0x80000000; // CRTSCTS: RTS/CTS flow control
-
-    // c_oflag
-    public const long PostProcess = 0x1;    // OPOST
-    public const long NlToCrNl = 0x4;       // ONLCR
-
-    // indices into c_cc
-    public const int Intr = 0;
-    public const int Quit = 1;
-    public const int Erase = 2;
-    public const int Kill = 3;
-    public const int Eof = 4;
-    public const int Time = 5;
-    public const int Min = 6;
-
-    public static byte[] Room()
-    {
-        return new byte[Bytes];
-    }
-
-    public static void Check(byte[] b)
-    {
-        if (b.Length < Bytes)
-        {
-            throw new ArgumentException("a termios is 36 bytes");
-        }
-    }
-
-    public static long Input(byte[] t)   { return Raw.U32(t, InputAt); }
-    public static long Output(byte[] t)  { return Raw.U32(t, OutputAt); }
-    public static long Control(byte[] t) { return Raw.U32(t, ControlAt); }
-    public static long Local(byte[] t)   { return Raw.U32(t, LocalAt); }
-
-    public static void SetInput(byte[] t, long v)   { Raw.SetU32(t, InputAt, v); }
-    public static void SetOutput(byte[] t, long v)  { Raw.SetU32(t, OutputAt, v); }
-    public static void SetControl(byte[] t, long v) { Raw.SetU32(t, ControlAt, v); }
-    public static void SetLocal(byte[] t, long v)   { Raw.SetU32(t, LocalAt, v); }
-
-    public static long Char(byte[] t, int which)
-    {
-        return t[CharsAt + which];
-    }
-
-    public static void SetChar(byte[] t, int which, long ch)
-    {
-        t[CharsAt + which] = (byte)(ch & 0xFF);
-    }
-}
-
-/// The terminal ioctls, by their traditional numbers.
-static class Tio
-{
-    public const long GetAttributes = 0x5401;       // TCGETS
-    public const long SetAttributes = 0x5402;       // TCSETS, at once
-    public const long SetAttributesDrain = 0x5403;  // TCSETSW, after the output goes out
-    public const long SetAttributesFlush = 0x5404;  // TCSETSF, and throw the input away
-    public const long WindowSize = 0x5413;          // TIOCGWINSZ
-    public const long SetWindowSize = 0x5414;
-    public const long Foreground = 0x540F;          // TIOCGPGRP
-    public const long SetForeground = 0x5410;
-    public const long Exclusive = 0x540C;
-    public const long SetControlling = 0x540E;      // TIOCSCTTY
-    public const long GiveUpControlling = 0x5422;   // TIOCNOTTY
-    public const long GetModemLines = 0x5415;       // TIOCMGET
-    public const long SetModemLines = 0x5418;       // TIOCMSET
-    public const long FlushInput = 0x540B;          // TCFLSH
 }
 
 /// The status word waitpid(2) writes, and what it means. The encoding is the

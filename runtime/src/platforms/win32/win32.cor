@@ -56,6 +56,18 @@ static class Win32
     static extern uint GetVersion();
 
     [DllImport("kernel32"), SuppressGCTransition]
+    static extern nint GetModuleHandleW(nint name);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nint CreateSemaphoreW(nint security, int initial, int maximum, nint name);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int ReleaseSemaphore(nint semaphore, int count, nint previous);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int WaitForSingleObject(nint handle, int milliseconds);
+
+    [DllImport("kernel32"), SuppressGCTransition]
     static extern int TlsFree(int slot);
 
     [DllImport("kernel32"), SuppressGCTransition]
@@ -122,6 +134,7 @@ static class Win32
         Platform.WriteHook = Sys.AddressOf(Write);
         Platform.WaitHook = Sys.AddressOf(Yield);
         Platform.YieldHook = Sys.AddressOf(Yield);
+        if (!MakeParking()) return false;
         int slot = TlsAlloc();
         if (slot == TlsOutOfIndexes) return false;
         bool nt = (GetVersion() & NotNt) == 0;
@@ -309,6 +322,68 @@ static class Win32
     {
         long offset = number switch { 0 => 0xB0, 1 => 0xAC, 2 => 0xA8, 3 => 0xA4, 4 => 0xC4, 5 => 0xB4, 6 => 0xA0, _ => 0x9C };
         return Sys.PeekWord(ctx + offset) & 0xFFFFFFFF;
+    }
+
+    /// A PROGRAM'S IMAGE: the module the process was started from (its handle is its base).
+    public static long ProgramImage() => (long)(nuint)GetModuleHandleW(0);
+
+    /// The process ends, with `code`: a program that could not even start.
+    public static void Fail(int code) => ExitProcess(code);
+
+    /// Nanoseconds by the performance counter, for Clock.
+    public static long NowNanos() => Nanos(0, 0, 0);
+
+    // ---- a wait on a word ------------------------------------------------
+    //
+    // Windows 2000 has no WaitOnAddress. A wait parks on one of ParkBuckets
+    // semaphores, chosen by the word's address, after counting itself among
+    // its bucket's waiters and reading the word once more; a wake releases as
+    // many as wait there. A waiter counted before its last read cannot miss a
+    // wake made after the word changed. Words that share a bucket wake each
+    // other now and then, which every caller allows: each reads its word
+    // again. Made in Attach, in memory of its own: a wait may be the
+    // collector's, with nothing to be had of the heap.
+    const int ParkBuckets = 64;
+    static long _parkSemaphores;
+    static long _parkWaiters;
+
+    static bool MakeParking()
+    {
+        if (_parkSemaphores != 0) return true;
+        long table = (long)(nuint)VirtualAlloc(0, ParkBuckets * 8, MemCommit | MemReserve, PageReadWrite);
+        if (table == 0) return false;
+        for (int i = 0; i < ParkBuckets; i++)
+        {
+            long semaphore = (long)(nuint)CreateSemaphoreW(0, 0, 0x7FFFFFFF, 0);
+            if (semaphore == 0) return false;
+            Sys.Poke(table + i * 4, semaphore);
+        }
+        _parkWaiters = table + ParkBuckets * 4;
+        _parkSemaphores = table;
+        return true;
+    }
+
+    static int Bucket(long at) => (int)(((at >> 2) * 0x9E3779B1L >> 26) & (ParkBuckets - 1));
+
+    /// Waits while the word at `at` is `expect`, for at most `milliseconds`
+    /// (-1, none -- looked at again each second all the same).
+    public static void Park(long at, long expect, int milliseconds)
+    {
+        int b = Bucket(at);
+        long waiters = _parkWaiters + b * 4;
+        Sys.AtomicAdd(waiters, 1);
+        if (Sys.PeekWord(at) == expect)
+            WaitForSingleObject((nint)Sys.PeekWord(_parkSemaphores + b * 4), milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds);
+        Sys.AtomicAdd(waiters, -1);
+    }
+
+    /// Wakes up to `count` of what waits on the word at `at`.
+    public static void Unpark(long at, long count)
+    {
+        int b = Bucket(at);
+        long waiting = Sys.PeekWord(_parkWaiters + b * 4);
+        if (waiting <= 0) return;
+        ReleaseSemaphore((nint)Sys.PeekWord(_parkSemaphores + b * 4), (int)(count < waiting ? count : waiting), 0);
     }
 
     /// The runtime is running: what wants it.

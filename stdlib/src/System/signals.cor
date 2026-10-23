@@ -45,7 +45,6 @@ class PosixSignalRegistration : IDisposable
     const int MaxSignal = 32;
     static PosixSignalHandler?[]? _handlers;
     static long _pending;                       // a bit per signal that arrived
-    static long _restorer;
 
     PosixSignal _signal;
 
@@ -131,86 +130,7 @@ class PosixSignalRegistration : IDisposable
         }
     }
 
-    /// The kernel's sigaction: handler, flags, restorer, mask (64 bits) --
-    /// four words on x86-64, where the first three are eight bytes each.
-    ///
-    /// SA_RESTORER names the few bytes the kernel returns THROUGH when a
-    /// handler finishes, and two things about them are easy to get wrong and
-    /// fatal when they are:
-    ///
-    ///   THE CALL IS sigreturn(119), NOT rt_sigreturn(173). On i386 the
-    ///   kernel builds the OLD signal frame for a handler registered without
-    ///   SA_SIGINFO -- whichever call registered it -- and the two frames are
-    ///   not the same shape. Returning through the wrong one restores a
-    ///   context of rubbish: the program resumes at address zero and dies of
-    ///   a fault nowhere near the signal. `pop %eax` first, as glibc's own
-    ///   __restore does, because the legacy frame wants the signal number off
-    ///   the stack before the sigcontext underneath it is read.
-    ///
-    ///   THE BYTES MUST BE EXECUTABLE. The heap is mapped read/write and
-    ///   nothing else, so a thunk kept in an ordinary array is data the
-    ///   processor refuses to run: a fault on the way out of every handler.
-    ///   They live in a page of their own, mapped with PROT_EXEC.
-    ///
-    /// SA_RESTART keeps a read or a wait from failing with EINTR under a
-    /// signal the program handles.
-    static void Install(int signal, long handler)
-    {
-        if (_restorer == 0)
-        {
-            long page = Os.MapExecutable(4096);
-            if (page == 0)
-            {
-                return;
-            }
-#if TARGET_AMD64
-            // Long mode's: rt_sigreturn is 15 and is made with `syscall`. The
-            // kernel refuses a handler without a restorer on this ABI.
-            Sys.PokeByte(page, 0xB8);                                 // mov eax,
-            Sys.PokeByte(page + 1, 15);                               //   15 (rt_sigreturn)
-            Sys.PokeByte(page + 2, 0);
-            Sys.PokeByte(page + 3, 0);
-            Sys.PokeByte(page + 4, 0);
-            Sys.PokeByte(page + 5, 0x0F);                             // syscall
-            Sys.PokeByte(page + 6, 0x05);
-#else
-            Sys.PokeByte(page, 0xB8);                                 // mov eax,
-            Sys.PokeByte(page + 1, 173);                              //   173 (rt_sigreturn)
-            Sys.PokeByte(page + 2, 0);
-            Sys.PokeByte(page + 3, 0);
-            Sys.PokeByte(page + 4, 0);
-            Sys.PokeByte(page + 5, 0xCD);                             // int
-            Sys.PokeByte(page + 6, 0x80);                             //   0x80
-#endif
-            _restorer = page;
-        }
-#if TARGET_64BIT
-        // x86-64's kernel sigaction: handler, flags, restorer and mask, a
-        // word each.
-        byte[] act = new byte[32];
-        Raw.SetI64(act, 0, handler);
-#else
-        byte[] act = new byte[20];
-        Raw.SetU32(act, 0, handler);
-#endif
-        long flags = 0x04000000;                                      // SA_RESTORER
-        if (handler > 1)
-        {
-            // SA_SIGINFO AS WELL AS SA_RESTART, and not for the extra
-            // arguments: it is what makes the kernel build the MODERN signal
-            // frame, the one rt_sigreturn above knows how to return through.
-            // Without it i386 builds the old frame for a handler registered
-            // through rt_sigaction, and returning through the wrong one
-            // restores a context of rubbish.
-            flags = flags | 0x10000000 | 0x00000004;                  // SA_RESTART|SA_SIGINFO
-        }
-#if TARGET_64BIT
-        Raw.SetI64(act, 8, flags);
-        Raw.SetI64(act, 16, _restorer);
-#else
-        Raw.SetU32(act, 4, flags);
-        Raw.SetU32(act, 8, _restorer);
-#endif
-        Os.SigAction(signal, act);
-    }
+    /// The handler at a signal, 0 its default action and 1 ignored: the
+    /// platform's to install (Os.InstallSignal).
+    static void Install(int signal, long handler) => Os.InstallSignal(signal, handler);
 }

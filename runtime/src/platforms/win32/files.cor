@@ -1,0 +1,725 @@
+// Windows' file calls under the names System.IO is built on (Os): the part
+// of the Linux platform's files.cor that a Windows image needs, over
+// kernel32 (docs/WIN32-TARGET.md, "The platform layer").
+//
+// THE LIBRARY'S SIDE IS UNCHANGED. It speaks Linux's words -- descriptors,
+// O_ flags, a struct stat64 in a byte[] (abi.cor), a negative errno for a
+// failure -- and this file answers in them: a descriptor is a slot in a
+// table of handles, 0, 1 and 2 the process's standard handles; a stat is
+// filled from what Windows says of the file; Windows' error becomes the
+// errno a Linux kernel would have given. Paths go to the wide calls as the
+// UTF-16 a string already is, so a name in any language is one Windows
+// knows. Windows 2000 is the floor (MoveFileEx, CreateHardLink,
+// GetFileAttributesEx); 9x has no wide calls and is for later.
+
+static partial class Os
+{
+    const int StdInput = -10, StdOutput = -11, StdError = -12;
+    const uint GenericRead = 0x80000000, GenericWrite = 0x40000000;
+    const int ShareAll = 7;
+    const int CreateNew = 1, CreateAlways = 2, OpenExisting = 3, OpenAlways = 4, TruncateExisting = 5;
+    const int BackupSemantics = 0x02000000;
+    const int AttributeReadOnly = 0x1, AttributeDirectory = 0x10, AttributeReparse = 0x400;
+    const int FileTypeChar = 2, FileTypePipe = 3;
+    const long InvalidHandle = 0xFFFFFFFF;
+    /// FILETIME's epoch (1601) to Unix's (1970), in its 100 ns ticks.
+    const long EpochTicks = 116444736000000000;
+
+    /// The descriptors past the standard three: each a handle, and whether
+    /// it was opened to append (Windows has no such mode; each write goes to
+    /// the end first).
+    static long[]? _handles;
+    static bool[]? _appending;
+
+    [DllImport("kernel32")] static extern nint GetStdHandle(int which);
+    [DllImport("kernel32")] static extern nint CreateFileW(nint name, uint access, int share, nint security, int disposition, int flags, nint template);
+    [DllImport("kernel32")] static extern int CloseHandle(nint handle);
+    [DllImport("kernel32")] static extern int ReadFile(nint file, nint into, int count, nint read, nint overlapped);
+    [DllImport("kernel32")] static extern int WriteFile(nint file, nint from, int count, nint written, nint overlapped);
+    [DllImport("kernel32")] static extern int SetFilePointer(nint file, int low, nint high, int method);
+    [DllImport("kernel32")] static extern int SetEndOfFile(nint file);
+    [DllImport("kernel32")] static extern int FlushFileBuffers(nint file);
+    [DllImport("kernel32")] static extern int GetFileType(nint file);
+    [DllImport("kernel32")] static extern int GetFileInformationByHandle(nint file, nint info);
+    [DllImport("kernel32")] static extern int GetFileAttributesExW(nint name, int level, nint info);
+    [DllImport("kernel32")] static extern int SetFileAttributesW(nint name, int attributes);
+    [DllImport("kernel32")] static extern int GetFileAttributesW(nint name);
+    [DllImport("kernel32")] static extern int DeleteFileW(nint name);
+    [DllImport("kernel32")] static extern int MoveFileExW(nint from, nint to, int flags);
+    [DllImport("kernel32")] static extern int CreateDirectoryW(nint name, nint security);
+    [DllImport("kernel32")] static extern int RemoveDirectoryW(nint name);
+    [DllImport("kernel32")] static extern int CreateHardLinkW(nint name, nint existing, nint security);
+    [DllImport("kernel32")] static extern int GetCurrentDirectoryW(int length, nint into);
+    [DllImport("kernel32")] static extern nint FindFirstFileW(nint pattern, nint data);
+    [DllImport("kernel32")] static extern int FindNextFileW(nint find, nint data);
+    [DllImport("kernel32")] static extern int FindClose(nint find);
+    [DllImport("kernel32")] static extern int SetFileTime(nint file, nint created, nint accessed, nint written);
+    [DllImport("kernel32")] static extern int GetDiskFreeSpaceExW(nint root, nint free, nint total, nint totalFree);
+    [DllImport("kernel32")] static extern void GetSystemTimeAsFileTime(nint into);
+    [DllImport("kernel32")] static extern int GetConsoleScreenBufferInfo(nint console, nint info);
+    [DllImport("kernel32")] static extern int WaitForSingleObject(nint handle, int milliseconds);
+    [DllImport("kernel32")] static extern int GetLastError();
+
+    /// A path as the wide calls take one: its UTF-16 and a zero after it.
+    static char[] Wide(string s)
+    {
+        char[] c = new char[s.Length + 1];
+        for (int i = 0; i < s.Length; i++) c[i] = s[i];
+        return c;
+    }
+
+    static nint At(char[] c) => (nint)Sys.ArrayData(c);
+    static nint At(byte[] b) => (nint)Sys.ArrayData(b);
+
+    /// Windows' last error as the errno Linux would have answered, negated.
+    static int Failed()
+    {
+        int error = GetLastError();
+        long errno = error switch
+        {
+            2 or 3 or 15 or 123 or 161 => Err.NoEnt,        // file, path, drive not found; bad name
+            5 or 19 or 32 or 33 => Err.Access,              // denied, write-protected, sharing, lock
+            6 => Err.BadF,
+            8 or 14 => Err.NoMem,
+            17 => 18,                                       // not the same device: EXDEV
+            80 or 183 => 17,                                // file exists: EEXIST
+            87 => 22,                                       // bad parameter: EINVAL
+            109 => 32,                                      // broken pipe: EPIPE
+            112 => 28,                                      // disk full: ENOSPC
+            145 => 39,                                      // directory not empty: ENOTEMPTY
+            206 => 36,                                      // name too long: ENAMETOOLONG
+            267 => 20,                                      // not a directory: ENOTDIR
+            _ => Err.Io,
+        };
+        return (int)-errno;
+    }
+
+    /// The handle a descriptor names, or 0 for none.
+    static long HandleOf(int fd)
+    {
+        if (fd == 0) return (long)GetStdHandle(StdInput) & 0xFFFFFFFF;
+        if (fd == 1) return (long)GetStdHandle(StdOutput) & 0xFFFFFFFF;
+        if (fd == 2) return (long)GetStdHandle(StdError) & 0xFFFFFFFF;
+        if (_handles == null || fd < 3 || fd >= _handles.Length) return 0;
+        return _handles[fd];
+    }
+
+    /// A descriptor for a handle: the lowest free slot past the standard three.
+    static int Adopt(long handle, bool appending)
+    {
+        if (_handles == null)
+        {
+            _handles = new long[64];
+            _appending = new bool[64];
+        }
+        for (int fd = 3; fd < _handles.Length; fd++)
+        {
+            if (_handles[fd] != 0) continue;
+            _handles[fd] = handle;
+            _appending![fd] = appending;
+            return fd;
+        }
+        long[] more = new long[_handles.Length * 2];
+        bool[] moreAppending = new bool[more.Length];
+        for (int i = 0; i < _handles.Length; i++) { more[i] = _handles[i]; moreAppending[i] = _appending![i]; }
+        int next = _handles.Length;
+        _handles = more;
+        _appending = moreAppending;
+        _handles[next] = handle;
+        _appending[next] = appending;
+        return next;
+    }
+
+    /// open(2), as CreateFile: the access O_ asks, the disposition its create,
+    /// exclusive and truncate say, a directory opened by backup semantics,
+    /// shared with every other opener as a Unix file is. The mode is a Unix
+    /// permission and has no Windows meaning but read-only, which a file
+    /// made without any write bit gets.
+    public static int Open(string path, int flags, int mode)
+    {
+        uint access = (flags & O.AccessMask) switch { O.Write => GenericWrite, O.ReadWrite => GenericRead | GenericWrite, _ => GenericRead };
+        bool create = (flags & O.Create) != 0, truncate = (flags & O.Truncate) != 0;
+        int disposition = create && (flags & O.Exclusive) != 0 ? CreateNew
+            : create && truncate ? CreateAlways
+            : create ? OpenAlways
+            : truncate ? TruncateExisting : OpenExisting;
+        int attributes = create && (mode & 0x92) == 0 ? AttributeReadOnly : 0x80;   // FILE_ATTRIBUTE_NORMAL
+        if ((flags & O.Directory) != 0) attributes = attributes | BackupSemantics;
+        char[] name = Wide(path);
+        long handle = (long)CreateFileW(At(name), access, ShareAll, 0, disposition, attributes, 0) & 0xFFFFFFFF;
+        if (handle == InvalidHandle) return Failed();
+        return Adopt(handle, (flags & O.Append) != 0);
+    }
+
+    public static int Open(string path, int flags) => Open(path, flags, 0x1A4);
+
+    public static int Close(int fd)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return (int)-Err.BadF;
+        if (fd >= 3) _handles![fd] = 0;
+        return CloseHandle((nint)handle) != 0 ? 0 : Failed();
+    }
+
+    public static int Close(long fd) => Close((int)fd);
+
+    /// read(2): the end of a file, and of a pipe whose writer has gone, is 0.
+    public static long Read(int fd, long into, long count)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return -Err.BadF;
+        int got = 0;
+        if (ReadFile((nint)handle, (nint)into, (int)count, (nint)Sys.AddressOf(ref got), 0) == 0)
+        {
+            int error = GetLastError();
+            if (error == 109 || error == 38) return 0;      // ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF
+            return Failed();
+        }
+        return got;
+    }
+
+    public static int Read(int fd, byte[] buf, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count) throw new IndexOutOfRangeException("read range is outside its buffer");
+        return (int)Read(fd, Sys.ArrayData(buf) + at, count);
+    }
+
+    /// A read at an offset that moves no file position, as pread(2): the
+    /// overlapped form's offset, which a handle opened for ordinary reads
+    /// takes on NT.
+    public static long Pread(int fd, long into, long count, long offset)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return -Err.BadF;
+        byte[] overlapped = new byte[20];
+        Raw.SetU32(overlapped, 8, offset & 0xFFFFFFFF);
+        Raw.SetU32(overlapped, 12, (offset >> 32) & 0xFFFFFFFF);
+        int got = 0;
+        if (ReadFile((nint)handle, (nint)into, (int)count, (nint)Sys.AddressOf(ref got), At(overlapped)) == 0)
+        {
+            int error = GetLastError();
+            if (error == 38) return 0;
+            return Failed();
+        }
+        return got;
+    }
+
+    public static long Pread(int fd, byte[] buf, int at, int count, long offset)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count) throw new IndexOutOfRangeException("read range is outside its buffer");
+        return Pread(fd, Sys.ArrayData(buf) + at, count, offset);
+    }
+
+    /// write(2); a descriptor opened to append writes at the end each time.
+    public static long Write(int fd, long at, long count)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return -Err.BadF;
+        if (fd >= 3 && _appending![fd]) SetFilePointer((nint)handle, 0, 0, 2);
+        int wrote = 0;
+        if (WriteFile((nint)handle, (nint)at, (int)count, (nint)Sys.AddressOf(ref wrote), 0) == 0) return Failed();
+        return wrote;
+    }
+
+    public static int Write(int fd, byte[] buf, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count) throw new IndexOutOfRangeException("write range is outside its buffer");
+        return (int)Write(fd, Sys.ArrayData(buf) + at, count);
+    }
+
+    /// `s` as UTF-8 with a zero byte after it (what a Linux call takes).
+    public static byte[] CStr(string s) => Utf8Transcoder.EncodeTerminated(s);
+
+    /// lseek(2): Whence's set, current and end are Windows' FILE_BEGIN,
+    /// FILE_CURRENT and FILE_END.
+    public static long Lseek(int fd, long offset, int whence)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return -Err.BadF;
+        int type = GetFileType((nint)handle);
+        if (type == FileTypeChar || type == FileTypePipe) return -29;      // ESPIPE
+        int high = (int)(offset >> 32);
+        int low = SetFilePointer((nint)handle, (int)offset, (nint)Sys.AddressOf(ref high), whence);
+        if (low == -1 && GetLastError() != 0) return Failed();
+        return ((long)high << 32) | ((long)low & 0xFFFFFFFF);
+    }
+
+    public static long Lseek(long fd, long offset, long whence) => Lseek((int)fd, offset, (int)whence);
+
+    public static long Tell(int fd) => Lseek(fd, 0, Whence.Current);
+
+    public static long SizeOf(int fd)
+    {
+        byte[] st = StatBuf.Room();
+        if (Fstat(fd, st) >= 0 && (StatBuf.Mode(st) & 0xF000) == 0x8000) return StatBuf.Size(st);
+        return -29;
+    }
+
+    public static int Ftruncate(int fd, long length)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return (int)-Err.BadF;
+        long here = Lseek(fd, 0, Whence.Current);
+        if (Lseek(fd, length, Whence.Set) < 0) return Failed();
+        int ok = SetEndOfFile((nint)handle);
+        Lseek(fd, here, Whence.Set);
+        return ok != 0 ? 0 : Failed();
+    }
+
+    public static int Truncate(int fd, long length) => Ftruncate(fd, length);
+
+    public static int Fsync(int fd)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return (int)-Err.BadF;
+        return FlushFileBuffers((nint)handle) != 0 ? 0 : Failed();
+    }
+
+    /// flock(2): Windows locks byte ranges, and every opener here shares;
+    /// the advisory lock a Unix program takes is granted.
+    public static int Flock(int fd, int operation) => HandleOf(fd) == 0 ? (int)-Err.BadF : 0;
+
+    /// FILETIME's ticks as Unix seconds, and the nanoseconds past them.
+    static long Seconds(long ticks) => (ticks - EpochTicks) / 10000000;
+    static long Nanos(long ticks) => (ticks - EpochTicks) % 10000000 * 100;
+
+    /// A struct stat64 from what Windows says: the type from the attributes,
+    /// permissions as a Unix sees a Windows file (everyone may read; write
+    /// unless read-only; a directory may be entered), its size and its times.
+    static void Fill(byte[] st, int attributes, long created, long accessed, long written, long size, long links, long index)
+    {
+        for (int i = 0; i < st.Length; i++) st[i] = 0;
+        long mode = (attributes & AttributeDirectory) != 0 ? StatBuf.Dir | 0x1ED : StatBuf.File | 0x1A4;
+        if ((attributes & AttributeReadOnly) != 0) mode = mode & ~0x92;
+        Raw.SetU32(st, StatBuf.ModeAt, mode);
+        Raw.SetU32(st, StatBuf.NlinkAt, links);
+        Raw.SetI64(st, StatBuf.SizeAt, size);
+        Raw.SetU32(st, StatBuf.BlkSizeAt, 4096);
+        Raw.SetI64(st, StatBuf.BlocksAt, (size + 511) / 512);
+        Raw.SetU32(st, StatBuf.AtimeAt, Seconds(accessed));
+        Raw.SetU32(st, StatBuf.AtimeNsecAt, Nanos(accessed));
+        Raw.SetU32(st, StatBuf.MtimeAt, Seconds(written));
+        Raw.SetU32(st, StatBuf.MtimeNsecAt, Nanos(written));
+        Raw.SetU32(st, StatBuf.CtimeAt, Seconds(created));
+        Raw.SetU32(st, StatBuf.CtimeNsecAt, Nanos(created));
+        Raw.SetI64(st, StatBuf.InoAt, index);
+    }
+
+    public static int Stat(string path, byte[] into)
+    {
+        StatBuf.Check(into);
+        byte[] data = new byte[36];      // WIN32_FILE_ATTRIBUTE_DATA
+        char[] name = Wide(path);
+        if (GetFileAttributesExW(At(name), 0, At(data)) == 0) return Failed();
+        Fill(into, (int)Raw.U32(data, 0), Raw.I64(data, 4), Raw.I64(data, 12), Raw.I64(data, 20),
+            (Raw.U32(data, 28) << 32) | Raw.U32(data, 32), 1, 0);
+        return 0;
+    }
+
+    /// Windows 2000 has no symbolic links: lstat is stat.
+    public static int Lstat(string path, byte[] into) => Stat(path, into);
+
+    public static int Fstat(int fd, byte[] into)
+    {
+        StatBuf.Check(into);
+        long handle = HandleOf(fd);
+        if (handle == 0) return (int)-Err.BadF;
+        int type = GetFileType((nint)handle);
+        if (type == FileTypeChar || type == FileTypePipe)
+        {
+            for (int i = 0; i < into.Length; i++) into[i] = 0;
+            Raw.SetU32(into, StatBuf.ModeAt, (type == FileTypeChar ? StatBuf.Char : StatBuf.Fifo) | 0x1B6);
+            Raw.SetU32(into, StatBuf.NlinkAt, 1);
+            return 0;
+        }
+        byte[] info = new byte[52];      // BY_HANDLE_FILE_INFORMATION
+        if (GetFileInformationByHandle((nint)handle, At(info)) == 0) return Failed();
+        Fill(into, (int)Raw.U32(info, 0), Raw.I64(info, 4), Raw.I64(info, 12), Raw.I64(info, 20),
+            (Raw.U32(info, 32) << 32) | Raw.U32(info, 36), Raw.U32(info, 40), (Raw.U32(info, 44) << 32) | Raw.U32(info, 48));
+        return 0;
+    }
+
+    public static bool Exists(string path)
+    {
+        char[] name = Wide(path);
+        return GetFileAttributesW(At(name)) != -1;
+    }
+
+    public static long ModeOf(string path)
+    {
+        byte[] st = StatBuf.Room();
+        return Stat(path, st) < 0 ? 0 : StatBuf.Mode(st);
+    }
+
+    public static long SizeOf(string path)
+    {
+        byte[] st = StatBuf.Room();
+        int r = Stat(path, st);
+        return r < 0 ? r : StatBuf.Size(st);
+    }
+
+    public static int Create(string path, int mode) => Open(path, O.Write | O.Create | O.Truncate, mode);
+
+    public static int Unlink(string path)
+    {
+        char[] name = Wide(path);
+        return DeleteFileW(At(name)) != 0 ? 0 : Failed();
+    }
+
+    /// rename(2), which replaces what is there, as MoveFileEx's replace does.
+    public static int Rename(string from, string to)
+    {
+        char[] a = Wide(from), b = Wide(to);
+        return MoveFileExW(At(a), At(b), 1) != 0 ? 0 : Failed();
+    }
+
+    public static int Mkdir(string path, int mode)
+    {
+        char[] name = Wide(path);
+        return CreateDirectoryW(At(name), 0) != 0 ? 0 : Failed();
+    }
+
+    public static int Mkdir(string path) => Mkdir(path, 0x1ED);
+
+    public static int Rmdir(string path)
+    {
+        char[] name = Wide(path);
+        return RemoveDirectoryW(At(name)) != 0 ? 0 : Failed();
+    }
+
+    /// chmod(2): of a Unix mode, Windows keeps only whether the file may be
+    /// written -- read-only when no write bit is set.
+    public static int Chmod(string path, int mode)
+    {
+        char[] name = Wide(path);
+        int attributes = GetFileAttributesW(At(name));
+        if (attributes == -1) return Failed();
+        attributes = (mode & 0x92) == 0 ? attributes | AttributeReadOnly : attributes & ~AttributeReadOnly;
+        return SetFileAttributesW(At(name), attributes) != 0 ? 0 : Failed();
+    }
+
+    public static int Access(string path, int mode)
+    {
+        char[] name = Wide(path);
+        int attributes = GetFileAttributesW(At(name));
+        if (attributes == -1) return Failed();
+        if ((mode & 2) != 0 && (attributes & AttributeReadOnly) != 0) return (int)-Err.Access;
+        return 0;
+    }
+
+    public static int Link(string existing, string name)
+    {
+        char[] a = Wide(existing), b = Wide(name);
+        return CreateHardLinkW(At(b), At(a), 0) != 0 ? 0 : Failed();
+    }
+
+    /// Windows 2000 has no symbolic links.
+    public static int Symlink(string target, string name) => (int)-Err.Perm;
+
+    public static string? Readlink(string path) => null;
+
+    public static string? Getcwd()
+    {
+        char[] room = new char[1024];
+        int n = GetCurrentDirectoryW(room.Length, At(room));
+        if (n <= 0 || n >= room.Length) return null;
+        return new string(room, 0, n);
+    }
+
+    public static string[]? ListDir(string path)
+    {
+        int error;
+        return ListDir(path, out error);
+    }
+
+    /// A directory's names but . and .., by FindFirstFile over `path\*`.
+    public static string[]? ListDir(string path, out int error)
+    {
+        string pattern = path.Length > 0 && (path[path.Length - 1] == '\\' || path[path.Length - 1] == '/') ? path + "*" : path + "\\*";
+        byte[] data = new byte[592];     // WIN32_FIND_DATAW
+        char[] name = Wide(pattern);
+        long find = (long)FindFirstFileW(At(name), At(data)) & 0xFFFFFFFF;
+        if (find == InvalidHandle)
+        {
+            error = Failed();
+            return null;
+        }
+        error = 0;
+        List<string> names = new List<string>();
+        do
+        {
+            int length = 0;
+            while (length < 260 && (data[44 + 2 * length] | data[45 + 2 * length]) != 0) length++;
+            char[] chars = new char[length];
+            for (int i = 0; i < length; i++) chars[i] = (char)(data[44 + 2 * i] | (data[45 + 2 * i] << 8));
+            string found = new string(chars);
+            if (found != "." && found != "..") names.Add(found);
+        }
+        while (FindNextFileW((nint)find, At(data)) != 0);
+        FindClose((nint)find);
+        return names.ToArray();
+    }
+
+    /// utimensat(2): the times by SetFileTime; a negative nanoseconds leaves one as it is.
+    public static int Utimensat(string path, long atimeSeconds, long atimeNanos, long mtimeSeconds, long mtimeNanos, bool follow)
+    {
+        char[] name = Wide(path);
+        long handle = (long)CreateFileW(At(name), 0x100, ShareAll, 0, OpenExisting, BackupSemantics, 0) & 0xFFFFFFFF;  // FILE_WRITE_ATTRIBUTES
+        if (handle == InvalidHandle) return Failed();
+        byte[] accessed = new byte[8], written = new byte[8];
+        Raw.SetI64(accessed, 0, atimeSeconds * 10000000 + atimeNanos / 100 + EpochTicks);
+        Raw.SetI64(written, 0, mtimeSeconds * 10000000 + mtimeNanos / 100 + EpochTicks);
+        int ok = SetFileTime((nint)handle, 0, atimeNanos < 0 ? 0 : At(accessed), mtimeNanos < 0 ? 0 : At(written));
+        int result = ok != 0 ? 0 : Failed();
+        CloseHandle((nint)handle);
+        return result;
+    }
+
+    /// statfs(2): the volume's sizes, in 4 KiB blocks.
+    public static int Statfs(string path, byte[] into)
+    {
+        StatFs.Check(into);
+        byte[] free = new byte[8], total = new byte[8], totalFree = new byte[8];
+        char[] name = Wide(path);
+        if (GetDiskFreeSpaceExW(At(name), At(free), At(total), At(totalFree)) == 0) return Failed();
+        for (int i = 0; i < into.Length; i++) into[i] = 0;
+        Raw.SetI64(into, StatFs.BlockSizeAt, 4096);
+        Raw.SetI64(into, StatFs.BlocksAt, Raw.I64(total, 0) / 4096);
+        Raw.SetI64(into, StatFs.FreeAt, Raw.I64(totalFree, 0) / 4096);
+        Raw.SetI64(into, StatFs.AvailableAt, Raw.I64(free, 0) / 4096);
+        Raw.SetI64(into, StatFs.NameLengthAt, 255);
+        return 0;
+    }
+
+    /// Microseconds since 1970, from the system clock.
+    public static long Micros()
+    {
+        long ticks = 0;
+        GetSystemTimeAsFileTime((nint)Sys.AddressOf(ref ticks));
+        return (ticks - EpochTicks) / 10;
+    }
+
+    /// Whether a descriptor is a terminal: Windows' console is a character device.
+    public static bool IsTty(int fd)
+    {
+        long handle = HandleOf(fd);
+        return handle != 0 && GetFileType((nint)handle) == FileTypeChar;
+    }
+
+    /// The terminal's settings: Windows' console has none a termios holds.
+    public static long GetAttributes(int fd, byte[] into) => -25;      // ENOTTY
+
+    public static long SetAttributes(int fd, byte[] from) => -25;
+
+    /// The console's window, columns in the high half and rows in the low, as the Linux one answers.
+    public static long WindowSize(int fd)
+    {
+        long handle = HandleOf(fd);
+        byte[] info = new byte[22];      // CONSOLE_SCREEN_BUFFER_INFO
+        if (handle == 0 || GetConsoleScreenBufferInfo((nint)handle, At(info)) == 0) return 0;
+        long columns = (short)Raw.U16(info, 14) - (short)Raw.U16(info, 10) + 1;
+        long rows = (short)Raw.U16(info, 16) - (short)Raw.U16(info, 12) + 1;
+        return (columns << 16) | rows;
+    }
+
+    /// poll(2) on one descriptor: readable when its handle is signalled.
+    public static int Poll(int fd, int events, int timeoutMs)
+    {
+        long handle = HandleOf(fd);
+        if (handle == 0) return (int)-Err.BadF;
+        if ((events & 1) == 0) return 1;
+        return WaitForSingleObject((nint)handle, timeoutMs < 0 ? -1 : timeoutMs) == 0 ? 1 : 0;
+    }
+
+    /// ioctl(2): Windows has none of Linux's.
+    public static long Ioctl(int fd, long request, long argument) => -25;
+
+    public static long Ioctl(long fd, long request, long argument) => -25;
+
+    // ---- signals ----------------------------------------------------------
+
+    [DllImport("kernel32")] static extern int SetConsoleCtrlHandler(nint routine, int add);
+
+    /// What runs on each signal the console can raise (PosixSignalRegistration.Dispatch):
+    /// SIGINT for Ctrl+C and Ctrl+Break, SIGTERM for the console closing.
+    static long _onInterrupt, _onTerminate;
+    static bool _consoleHandler;
+
+    /// sigaction(2) as far as Windows has signals: Ctrl+C, Ctrl+Break and the
+    /// console going away, by SetConsoleCtrlHandler. Every other signal
+    /// never comes on Windows; installing a handler for it does nothing.
+    public static void InstallSignal(int signal, long handler)
+    {
+        if (signal == 2) _onInterrupt = handler;
+        else if (signal == 15) _onTerminate = handler;
+        else return;
+        if (!_consoleHandler)
+        {
+            _consoleHandler = true;
+            SetConsoleCtrlHandler((nint)Sys.AddressOf(ConsoleControl), 1);
+        }
+    }
+
+    /// The console's control routine, which Windows calls on a thread of its
+    /// own: the handler's number, as Linux would deliver it, and TRUE --
+    /// handled -- when the program has one, so the console does not end it.
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int ConsoleControl(int type)
+    {
+        long handler = type <= 1 ? _onInterrupt : _onTerminate;
+        if (handler <= 1) return handler == 1 ? 1 : 0;
+        Sys.Call(handler, type <= 1 ? 2 : 15, 0, 0);
+        return 1;
+    }
+
+    // ---- the process's arguments and environment --------------------------
+
+    [DllImport("kernel32")] static extern nint GetCommandLineW();
+    [DllImport("kernel32")] static extern nint GetEnvironmentStringsW();
+    [DllImport("kernel32")] static extern int FreeEnvironmentStringsW(nint block);
+    [DllImport("kernel32"), SuppressGCTransition] static extern nint VirtualAlloc(nint at, nint bytes, int type, int protect);
+
+    static long _entryStack;
+
+    /// WHERE MAIN'S ARGUMENTS ARE, laid out as a Linux process's entry stack
+    /// is -- argc, argv, a zero, the environment, a zero, and the strings as
+    /// UTF-8 -- so System.Environment reads a Windows process as it reads a
+    /// Linux one: made once, from GetCommandLineW split as Microsoft's C
+    /// runtime splits it and GetEnvironmentStringsW.
+    public static long MainEntryStack()
+    {
+        if (_entryStack != 0) return _entryStack;
+        List<string> args = SplitCommandLine(Wide(GetCommandLineW()));
+        List<string> env = new List<string>();
+        long block = (long)GetEnvironmentStringsW();
+        if (block != 0)
+        {
+            long at = block;
+            while (Sys.PeekHalf(at) != 0)
+            {
+                string one = Wide((nint)at);
+                // "=C:=C:\..." is cmd's drive memory, not a variable.
+                if (one.Length > 0 && one[0] != '=') env.Add(one);
+                at = at + 2 * (one.Length + 1);
+            }
+            FreeEnvironmentStringsW((nint)block);
+        }
+        List<byte[]> texts = new List<byte[]>();
+        foreach (string a in args) texts.Add(Utf8Transcoder.EncodeTerminated(a));
+        foreach (string v in env) texts.Add(Utf8Transcoder.EncodeTerminated(v));
+        long words = 1 + args.Count + 1 + env.Count + 1;
+        long bytes = words * 4;
+        foreach (byte[] t in texts) bytes = bytes + t.Length;
+        long stack = (long)(nuint)VirtualAlloc(0, (nint)bytes, 0x3000, 0x04);
+        if (stack == 0) return 0;
+        Sys.Poke(stack, args.Count);
+        long text = stack + words * 4;
+        for (int i = 0; i < texts.Count; i++)
+        {
+            long slot = i < args.Count ? stack + 4 * (1 + i) : stack + 4 * (1 + args.Count + 1 + (i - args.Count));
+            Sys.Poke(slot, text);
+            byte[] t = texts[i];
+            for (int k = 0; k < t.Length; k++) Sys.PokeByte(text + k, t[k]);
+            text = text + t.Length;
+        }
+        _entryStack = stack;
+        return stack;
+    }
+
+    /// A wide string, ended by a zero, at an address.
+    static string Wide(nint at)
+    {
+        long p = (long)(nuint)at;
+        int n = 0;
+        while (Sys.PeekHalf(p + 2 * n) != 0) n++;
+        char[] chars = new char[n];
+        for (int i = 0; i < n; i++) chars[i] = (char)Sys.PeekHalf(p + 2 * i);
+        return new string(chars);
+    }
+
+    /// A command line as Microsoft's C runtime splits it: blanks between
+    /// arguments, quotes around blanks, 2n backslashes before a quote are n
+    /// and the quote is one, 2n+1 are n and a quote kept; the first argument,
+    /// the program, by its quotes alone.
+    static List<string> SplitCommandLine(string line)
+    {
+        List<string> args = new List<string>();
+        int i = 0;
+        System.Text.StringBuilder one = new System.Text.StringBuilder();
+        // The program's name: quoted or up to a blank, backslashes as they are.
+        if (i < line.Length && line[i] == '"')
+        {
+            i++;
+            while (i < line.Length && line[i] != '"') one.Append(line[i++]);
+            if (i < line.Length) i++;
+        }
+        else
+        {
+            while (i < line.Length && line[i] != ' ' && line[i] != '\t') one.Append(line[i++]);
+        }
+        args.Add(one.ToString());
+        while (true)
+        {
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t')) i++;
+            if (i >= line.Length) break;
+            one.Clear();
+            bool quoted = false;
+            while (i < line.Length && (quoted || (line[i] != ' ' && line[i] != '\t')))
+            {
+                int slashes = 0;
+                while (i < line.Length && line[i] == '\\') { slashes++; i++; }
+                if (i < line.Length && line[i] == '"')
+                {
+                    for (int k = 0; k < slashes / 2; k++) one.Append('\\');
+                    if (slashes % 2 == 1) { one.Append('"'); i++; }
+                    else if (quoted && i + 1 < line.Length && line[i + 1] == '"') { one.Append('"'); i += 2; }
+                    else { quoted = !quoted; i++; }
+                }
+                else
+                {
+                    for (int k = 0; k < slashes; k++) one.Append('\\');
+                    if (i < line.Length && (quoted || (line[i] != ' ' && line[i] != '\t'))) one.Append(line[i++]);
+                }
+            }
+            args.Add(one.ToString());
+        }
+        return args;
+    }
+
+    /// A variable of the environment the process started with, or null (getenv(3)).
+    public static string? StartingVariable(string name)
+    {
+        long at = EnvironAddress();
+        for (long entry = Sys.Peek(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.Peek(at))
+        {
+            int i = 0;
+            while (i < name.Length && Sys.PeekByte(entry + i) == name[i]) i = i + 1;
+            if (i == name.Length && Sys.PeekByte(entry + i) == '=') return StringAt(entry + i + 1);
+        }
+        return null;
+    }
+
+    /// Windows has no Unix user or session numbers: the one there is.
+    public static int Getuid() => 0;
+
+    public static long SessionId() => 0;
+
+    [DllImport("advapi32")] static extern int CryptAcquireContextW(nint context, nint container, nint provider, int type, uint flags);
+    [DllImport("advapi32")] static extern int CryptGenRandom(nint context, int count, nint into);
+
+    static long _cryptContext;
+
+    /// Random bytes from the system (getrandom(2)): CryptGenRandom, which
+    /// Windows 2000 has, by a context made once (PROV_RSA_FULL, verify only).
+    public static long GetRandom(byte[] buffer, int at, int count)
+    {
+        if (at < 0 || count < 0 || at > buffer.Length - count) throw new IndexOutOfRangeException("getrandom range is outside its buffer");
+        if (_cryptContext == 0)
+        {
+            long context = 0;
+            if (CryptAcquireContextW((nint)Sys.AddressOf(ref context), 0, 0, 1, 0xF0000000) == 0) return Failed();
+            _cryptContext = context;
+        }
+        return CryptGenRandom((nint)_cryptContext, count, (nint)(Sys.ArrayData(buffer) + at)) != 0 ? count : Failed();
+    }
+}

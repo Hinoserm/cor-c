@@ -253,4 +253,61 @@ public sealed partial class Lowering
         Require(pin);
         e.Call(CallLabel(pin), IrType.Void, RegOperand.Of(image));
     }
+
+    /// <summary>
+    /// A WINDOWS PROGRAM'S ENTRY, which the loader calls with nothing: the
+    /// platform library takes the TLS slot and puts this thread's block in it
+    /// for the program's module (Win32.Attach, as a DLL's DllMain does, the
+    /// module's handle from GetModuleHandle), the thread is the collector's,
+    /// an SEH registration in this frame makes a fault in Main's code an
+    /// exception (SehEnter), and Main runs as on any target (EmitRunMain):
+    /// the module initialisers, Main's type, Main, and the exit through the
+    /// runtime, which ends the process (ExitProcess).
+    /// </summary>
+    private void EmitWindowsEntry(MethodSymbol entry)
+    {
+        Function f = new(EntryName, IrType.Void);
+        Builder e = new(f, f.NewBlock("entry"));
+        _f = f;
+        _e = e;
+        _method = null;
+        if (Win32Method("Attach", 1) is not MethodSymbol take || Win32Method("ProgramImage") is not MethodSymbol image
+            || Win32Method("Fail", 1) is not MethodSymbol fail)
+        {
+            Error(new Block(), "a Windows program needs the Windows platform library (runtime/src/platforms/win32/win32.cor)");
+            return;
+        }
+        Require(image);
+        VReg instance = e.Call(CallLabel(image), IrType.I64)!;
+        Require(take);
+        VReg ok = e.Call(CallLabel(take), IrType.I32, RegOperand.Of(instance))!;
+        var run = f.NewBlock("run");
+        var failed = f.NewBlock("noslot");
+        e.Branch(ok, run, failed);
+        e.SetBlock(failed);
+        Require(fail);
+        e.Call(CallLabel(fail), IrType.Void, new ImmOperand(1, IrType.I32));
+        e.Jump(run);
+        e.SetBlock(run);
+        if (RuntimeKnobs.Count > 0 && RuntimeMethod("UseKnobs", 1) is MethodSymbol knobs)
+        {
+            Require(knobs);
+            e.Call(CallLabel(knobs), IrType.Void, R(e.Address(InternString(string.Join('\0', RuntimeKnobs) + "\0"))));
+        }
+        if (RuntimeMethod("StartThread", 0) is MethodSymbol join)
+        {
+            Require(join);
+            e.Call(CallLabel(join), IrType.Void);
+        }
+        SehEnter();
+        Require(entry);
+        EmitRunMain(entry, f, e);
+        // What the optimiser may call after lowering, rooted as EmitEntry roots it.
+        foreach (string helper in new[] { "AllocManual", "AllocManualObject", "Free", "FreeManual", "ManualObject" })
+            if (RuntimeMethod(helper, 1) is MethodSymbol rooted) Require(rooted);
+        foreach (string helper in new[] { "FreeField", "FreeReplaced" })
+            if (RuntimeMethod(helper, 2) is MethodSymbol rooted) Require(rooted);
+        _m.Functions.Add(f);
+        _m.Entry = EntryName;
+    }
 }

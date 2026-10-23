@@ -576,7 +576,8 @@ public sealed partial class Lowering
             if (exports is null)
             {
                 _m.Main = CallLabel(entry!);
-                EmitEntry(entry!);
+                if (Windows) EmitWindowsEntry(entry!);
+                else EmitEntry(entry!);
             }
             // The frees the lifetime passes may call (Escape) have bodies in
             // the program: the passes run after lowering, and a call they add

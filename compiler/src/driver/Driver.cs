@@ -753,7 +753,6 @@ public static class Driver
         bool runtimeDll = windows && args.Contains("--shared");
         if (runtimeDll && args.Contains("--dynamic")) return Fail("--windows --shared makes the runtime DLL, which imports no runtime: not with --dynamic");
         dll |= runtimeDll;
-        if (windows && !dll) return Fail("--windows makes DLLs only so far (--dll): a program's start comes with the Windows platform layer");
         // Its runtime is the bare-metal one with kernel32 answering its hooks
         // (runtime/src/platforms/win32/win32.cor).
         freestanding |= windows;
@@ -937,6 +936,8 @@ public static class Driver
             symbols.AddRange(given.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
         }
         symbols.AddRange(TargetSymbols(target));
+        // A Windows image's platform answers Clock and Native itself (TARGET_WINDOWS).
+        if (windows) symbols.Add("TARGET_WINDOWS");
 
         // THE PROJECT'S USINGS, in every file (Parser.ProjectUsings).
         Parser.ProjectUsings = Values(args, "--using").ToList();
@@ -1793,6 +1794,7 @@ public static class Driver
         if (!freestanding)
         {
             libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "threading.cor"));
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "threads.cor"));
         }
         string system = freestanding
             ? Path.Combine(root, "runtime", "src", "arch", "x86", "baremetal.cor")
@@ -1803,7 +1805,22 @@ public static class Driver
         }
         if (windows)
         {
+            // THE WINDOWS PLATFORM: the bare-metal runtime's hooks answered by
+            // kernel32 (win32.cor), its own clock and threads, and the file
+            // calls under Linux's names and numbers (abi.cor), so the hosted
+            // class library above it is the one Linux has.
             libs.Add(Path.Combine(root, "runtime", "src", "platforms", "win32", "win32.cor"));
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "win32", "threading.cor"));
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "threads.cor"));
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "abi.cor"));
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "win32", "files.cor"));
+            foreach (string dotnet in new[] {
+                "System/interop.cor", "System/IO/io.cor", "System/Collections/Collections.cor", "System/IO/io-streams.cor",
+                "System/IO/timezone.cor", "System/time.cor", "System/values.cor", "System/console.cor", "System/environment.cor",
+                "System/signals.cor" })
+            {
+                libs.Add(Path.Combine(root, "stdlib", "src", dotnet));
+            }
         }
         if (!freestanding)
         {

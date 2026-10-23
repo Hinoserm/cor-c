@@ -278,7 +278,7 @@ public sealed partial class Lowering
     {
         // A WINDOWS DLL is called on threads it never saw start: one without
         // a block is given one first (Win32.Enter).
-        if (Dll && Win32Method("Enter") is MethodSymbol adopt)
+        if (Windows && Win32Method("Enter") is MethodSymbol adopt)
         {
             Require(adopt);
             _e.Call(CallLabel(adopt), IrType.Void);
