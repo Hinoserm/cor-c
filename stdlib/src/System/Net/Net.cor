@@ -4,12 +4,15 @@
 
 using System.IO;
 
+/// .NET's values (Windows' AF_ numbers): InterNetworkV6 is 23, where
+/// Linux's AF_INET6 is 10 (Socket says which it asks the kernel for).
 enum AddressFamily
 {
+    Unknown = -1,
     Unspecified = 0,
     Unix = 1,
     InterNetwork = 2,
-    InterNetworkV6 = 10
+    InterNetworkV6 = 23
 }
 
 enum SocketType
@@ -178,121 +181,434 @@ class SocketException : IOException
     }
 }
 
+/// An IPv4 or IPv6 address, as .NET's: the bytes in network order (4 or
+/// 16), an IPv6 address's scope, and .NET's parsing and text -- IPv4 in
+/// inet_aton's forms ("1", "1.2", hex and octal parts), IPv6 with "::", an
+/// embedded dotted quad, brackets, a port after them and a "%" scope, a
+/// name for one read as the interface's index; IPv6 written as RFC 5952
+/// writes it, the last 32 bits dotted for the compatible, mapped, SIIT and
+/// ISATAP forms.
 class IPAddress
 {
-    long _bits;                       // host order: a.b.c.d = a<<24 | ... | d
+    readonly byte[] _bytes;
+    long _scope;
 
-    public IPAddress(long address)
+    public static readonly IPAddress Any = new IPAddress(new byte[] { 0, 0, 0, 0 });
+    public static readonly IPAddress Loopback = new IPAddress(new byte[] { 127, 0, 0, 1 });
+    public static readonly IPAddress Broadcast = new IPAddress(new byte[] { 255, 255, 255, 255 });
+    public static readonly IPAddress None = Broadcast;
+    public static readonly IPAddress IPv6Any = new IPAddress(new byte[16], 0);
+    public static readonly IPAddress IPv6Loopback = new IPAddress(new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }, 0);
+    public static readonly IPAddress IPv6None = new IPAddress(new byte[16], 0);
+
+    /// An IPv4 address, `newAddress` its four bytes in network order read
+    /// as a little-endian number: 0x0100007F is 127.0.0.1.
+    public IPAddress(long newAddress)
     {
-        _bits = address & 0xFFFFFFFF;
+        if (newAddress < 0 || newAddress > 0xFFFFFFFFL) throw new ArgumentOutOfRangeException(nameof(newAddress));
+        _bytes = new byte[] { (byte)newAddress, (byte)(newAddress >> 8), (byte)(newAddress >> 16), (byte)(newAddress >> 24) };
     }
 
-    public IPAddress(byte[] address)
+    public IPAddress(byte[] address) : this(new ReadOnlySpan<byte>(address ?? throw new ArgumentNullException(nameof(address)))) { }
+
+    public IPAddress(ReadOnlySpan<byte> address)
     {
-        _bits = ((long)(address[0] & 255) << 24) | ((long)(address[1] & 255) << 16)
-              | ((long)(address[2] & 255) << 8) | (long)(address[3] & 255);
+        if (address.Length != 4 && address.Length != 16) throw new ArgumentException("An invalid IP address was specified.", nameof(address));
+        _bytes = address.ToArray();
     }
 
-    public static IPAddress Any = new IPAddress(0);
-    public static IPAddress Loopback = new IPAddress(0x7F000001);
-    public static IPAddress Broadcast = new IPAddress(0xFFFFFFFF);
-    public static IPAddress None = new IPAddress(0xFFFFFFFF);
+    public IPAddress(byte[] address, long scopeid) : this(new ReadOnlySpan<byte>(address ?? throw new ArgumentNullException(nameof(address))), scopeid) { }
 
-    public AddressFamily AddressFamily
+    public IPAddress(ReadOnlySpan<byte> address, long scopeid)
     {
-        get { return AddressFamily.InterNetwork; }
+        if (address.Length != 16) throw new ArgumentException("An invalid IP address was specified.", nameof(address));
+        if (scopeid < 0 || scopeid > 0xFFFFFFFFL) throw new ArgumentOutOfRangeException(nameof(scopeid));
+        _bytes = address.ToArray();
+        _scope = scopeid;
     }
 
-    public long HostOrder
-    {
-        get { return _bits; }
-    }
+    bool IsIPv6 => _bytes.Length == 16;
 
-    public byte[] GetAddressBytes()
-    {
-        byte[] b = new byte[4];
-        b[0] = (byte)(_bits >> 24);
-        b[1] = (byte)(_bits >> 16);
-        b[2] = (byte)(_bits >> 8);
-        b[3] = (byte)_bits;
-        return b;
-    }
+    public AddressFamily AddressFamily => IsIPv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
 
-    public static bool TryParse(string text, out IPAddress? address)
+    /// The IPv4 address as the long constructor takes it. Obsolete in .NET,
+    /// and an IPv6 address has none.
+    [Obsolete("IPAddress.Address is address family dependent and has been deprecated. Use IPAddress.Equals to perform comparisons instead.")]
+    public long Address
     {
-        address = null;
-        long[] part = new long[4];
-        int n = 0;
-        long value = 0;
-        int digits = 0;
-        for (int i = 0; i <= text.Length; i++)
+        get
         {
-            int c = i == text.Length ? '.' : Sys.GetChar(text, i);
-            if (c == '.')
-            {
-                if (digits == 0 || n >= 4 || value > 255)
-                {
-                    return false;
-                }
-                part[n] = value;
-                n = n + 1;
-                value = 0;
-                digits = 0;
-            }
-            else if (c >= '0' && c <= '9' && digits < 3)
-            {
-                value = value * 10 + (c - '0');
-                digits = digits + 1;
-            }
-            else
-            {
-                return false;
-            }
+            if (IsIPv6) throw new SocketException((int)Err.NotSup);
+            return (long)_bytes[0] | ((long)_bytes[1] << 8) | ((long)_bytes[2] << 16) | ((long)_bytes[3] << 24);
         }
-        if (n != 4)
+        set
         {
-            return false;
+            if (IsIPv6) throw new SocketException((int)Err.NotSup);
+            if (value < 0 || value > 0xFFFFFFFFL) throw new ArgumentOutOfRangeException(nameof(value));
+            _bytes[0] = (byte)value; _bytes[1] = (byte)(value >> 8); _bytes[2] = (byte)(value >> 16); _bytes[3] = (byte)(value >> 24);
         }
-        address = new IPAddress((part[0] << 24) | (part[1] << 16) | (part[2] << 8) | part[3]);
+    }
+
+    public long ScopeId
+    {
+        get
+        {
+            if (!IsIPv6) throw new SocketException((int)Err.NotSup);
+            return _scope;
+        }
+        set
+        {
+            if (!IsIPv6) throw new SocketException((int)Err.NotSup);
+            if (value < 0 || value > 0xFFFFFFFFL) throw new ArgumentOutOfRangeException(nameof(value));
+            _scope = value;
+        }
+    }
+
+    int Group(int i) => (_bytes[2 * i] << 8) | _bytes[2 * i + 1];
+
+    public bool IsIPv6LinkLocal => IsIPv6 && (Group(0) & 0xFFC0) == 0xFE80;
+    public bool IsIPv6SiteLocal => IsIPv6 && (Group(0) & 0xFFC0) == 0xFEC0;
+    public bool IsIPv6Multicast => IsIPv6 && (Group(0) & 0xFF00) == 0xFF00;
+    public bool IsIPv6Teredo => IsIPv6 && Group(0) == 0x2001 && Group(1) == 0;
+    public bool IsIPv6UniqueLocal => IsIPv6 && (_bytes[0] & 0xFE) == 0xFC;
+
+    public bool IsIPv4MappedToIPv6
+    {
+        get
+        {
+            if (!IsIPv6) return false;
+            for (int i = 0; i < 10; i++) if (_bytes[i] != 0) return false;
+            return _bytes[10] == 0xFF && _bytes[11] == 0xFF;
+        }
+    }
+
+    public byte[] GetAddressBytes() => (byte[])_bytes.Clone();
+
+    public bool TryWriteBytes(Span<byte> destination, out int bytesWritten)
+    {
+        bytesWritten = 0;
+        if (destination.Length < _bytes.Length) return false;
+        for (int i = 0; i < _bytes.Length; i++) destination[i] = _bytes[i];
+        bytesWritten = _bytes.Length;
         return true;
     }
 
-    public static IPAddress Parse(string text)
+    /// The IPv4 address an IPv6 one ends in (its last 32 bits); an IPv4
+    /// address itself.
+    public IPAddress MapToIPv4() => IsIPv6 ? new IPAddress(new byte[] { _bytes[12], _bytes[13], _bytes[14], _bytes[15] }) : this;
+
+    /// ::ffff:a.b.c.d for an IPv4 address; an IPv6 address itself.
+    public IPAddress MapToIPv6()
     {
-        IPAddress? a;
-        if (!TryParse(text, out a) || a == null)
-        {
-            throw new FormatException("not an IPv4 address: " + text);
-        }
-        return a;
+        if (IsIPv6) return this;
+        byte[] six = new byte[16];
+        six[10] = 0xFF; six[11] = 0xFF;
+        Array.Copy(_bytes, 0, six, 12, 4);
+        return new IPAddress(six, 0);
     }
 
-    public override string ToString()
+    /// 127.0.0.0/8, ::1, and an IPv4 loopback address mapped into IPv6.
+    public static bool IsLoopback(IPAddress address)
     {
-        return "" + ((_bits >> 24) & 255) + "." + ((_bits >> 16) & 255) + "." + ((_bits >> 8) & 255) + "." + (_bits & 255);
+        if (address == null) throw new ArgumentNullException(nameof(address));
+        if (!address.IsIPv6) return address._bytes[0] == 127;
+        if (address.IsIPv4MappedToIPv6) return address._bytes[12] == 127;
+        for (int i = 0; i < 15; i++) if (address._bytes[i] != 0) return false;
+        return address._bytes[15] == 1;
     }
 
-    public bool Equals(IPAddress other)
+    public bool Equals(IPAddress? other)
     {
-        return other != null && other._bits == _bits;
+        if (other is null || other._bytes.Length != _bytes.Length || other._scope != _scope) return false;
+        for (int i = 0; i < _bytes.Length; i++) if (other._bytes[i] != _bytes[i]) return false;
+        return true;
     }
 
-    /// The same address, as .NET's IPAddress.Equals(object) has it.
-    public override bool Equals(object? comparand)
-    {
-        return comparand is IPAddress other && Equals(other);
-    }
+    public override bool Equals(object? comparand) => comparand is IPAddress other && Equals(other);
 
     public override int GetHashCode()
     {
-        return (int)_bits;
+        int hash = (int)_scope;
+        foreach (byte b in _bytes) hash = hash * 31 + b;
+        return hash;
     }
 
-    /// 127.0.0.0/8, which is the whole of what IsLoopback answers for IPv4.
-    public static bool IsLoopback(IPAddress address)
+    // ---- text ---------------------------------------------------------------------------
+
+    public override string ToString()
     {
-        return (address._bits >> 24) == 127;
+        if (!IsIPv6) return _bytes[0] + "." + _bytes[1] + "." + _bytes[2] + "." + _bytes[3];
+        int[] g = new int[8];
+        for (int i = 0; i < 8; i++) g[i] = Group(i);
+        // The last 32 bits dotted: 0:0:0:0:0:0|ffff:x.x.x.x (compatible,
+        // mapped), 0:0:0:0:ffff:0:x.x.x.x (SIIT), x:x:x:x:0:5efe:x.x.x.x
+        // (ISATAP).
+        bool dotted = (g[0] == 0 && g[1] == 0 && g[2] == 0 && g[3] == 0 && g[6] != 0
+                       && ((g[4] == 0 && (g[5] == 0 || g[5] == 0xFFFF)) || (g[4] == 0xFFFF && g[5] == 0)))
+                      || (g[4] == 0 && g[5] == 0x5EFE);
+        int groups = dotted ? 6 : 8;
+        // The longest run of two or more zero groups, the first of equal
+        // ones, written as "::".
+        int bestStart = -1, bestLength = 0, run = 0;
+        for (int i = 0; i < groups; i++)
+        {
+            if (g[i] == 0)
+            {
+                run++;
+                if (run > bestLength) { bestLength = run; bestStart = i - run + 1; }
+            }
+            else run = 0;
+        }
+        if (bestLength < 2) bestStart = -1;
+        System.Text.StringBuilder text = new System.Text.StringBuilder();
+        for (int i = 0; i < groups; i++)
+        {
+            if (i == bestStart)
+            {
+                text.Append("::");
+                i += bestLength - 1;
+                continue;
+            }
+            if (text.Length > 0 && text[text.Length - 1] != ':') text.Append(':');
+            text.Append(g[i].ToString("x"));
+        }
+        if (dotted)
+        {
+            if (text.Length > 0 && text[text.Length - 1] != ':') text.Append(':');
+            text.Append(_bytes[12]).Append('.').Append(_bytes[13]).Append('.').Append(_bytes[14]).Append('.').Append(_bytes[15]);
+        }
+        if (_scope != 0) text.Append('%').Append(_scope);
+        return text.ToString();
     }
+
+    public string ToString(string? format, IFormatProvider? formatProvider) => ToString();
+
+    public bool TryFormat(Span<char> destination, out int charsWritten) => TryFormat(destination, out charsWritten, default, null);
+
+    public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
+    {
+        string text = ToString();
+        charsWritten = 0;
+        if (destination.Length < text.Length) return false;
+        for (int i = 0; i < text.Length; i++) destination[i] = text[i];
+        charsWritten = text.Length;
+        return true;
+    }
+
+    public static IPAddress Parse(string ipString)
+    {
+        if (ipString == null) throw new ArgumentNullException(nameof(ipString));
+        return Parse(ipString.AsSpan());
+    }
+
+    public static IPAddress Parse(ReadOnlySpan<char> ipSpan)
+    {
+        IPAddress? address = Read(ipSpan);
+        if (address == null) throw new FormatException("An invalid IP address was specified.", new SocketException((int)Err.Inval));
+        return address;
+    }
+
+    public static bool TryParse(string? ipString, out IPAddress? address)
+    {
+        address = ipString == null ? null : Read(ipString.AsSpan());
+        return address != null;
+    }
+
+    public static bool TryParse(ReadOnlySpan<char> ipSpan, out IPAddress? address)
+    {
+        address = Read(ipSpan);
+        return address != null;
+    }
+
+    public static bool IsValid(ReadOnlySpan<char> ipSpan) => Read(ipSpan) != null;
+
+    static IPAddress? Read(ReadOnlySpan<char> text)
+    {
+        if (text.IndexOf(':') >= 0) return ReadSix(text);
+        long value;
+        return ReadFour(text, out value) ? new IPAddress(new byte[] { (byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value }) : null;
+    }
+
+    /// inet_aton's IPv4: one to four parts, each decimal, octal (a leading
+    /// 0) or hex (0x), the last filling the bytes left; the address as a
+    /// number, most significant byte first.
+    static bool ReadFour(ReadOnlySpan<char> text, out long address)
+    {
+        address = 0;
+        long[] parts = new long[4];
+        int count = 0, at = 0;
+        while (true)
+        {
+            if (count == 4 || at >= text.Length) return false;
+            int numberBase = 10;
+            if (text[at] == '0')
+            {
+                numberBase = 8;
+                if (at + 1 < text.Length && (text[at + 1] == 'x' || text[at + 1] == 'X')) { numberBase = 16; at += 2; }
+            }
+            long value = 0;
+            int digits = 0;
+            bool leadingZero = numberBase == 8;
+            while (at < text.Length && text[at] != '.')
+            {
+                int d = Digit(text[at]);
+                if (d < 0 || d >= numberBase) return false;
+                value = value * numberBase + d;
+                if (value > 0xFFFFFFFFL) return false;
+                digits++;
+                at++;
+            }
+            if (digits == 0 && !leadingZero) return false;
+            parts[count++] = value;
+            if (at == text.Length) break;
+            at++;                                   // the dot
+        }
+        long[] limits = { 0xFFFFFFFFL, 0xFFFFFFL, 0xFFFFL, 0xFFL };
+        for (int i = 0; i < count - 1; i++) if (parts[i] > 0xFF) return false;
+        if (parts[count - 1] > limits[count - 1]) return false;
+        long made = 0;
+        for (int i = 0; i < count - 1; i++) made |= parts[i] << (24 - 8 * i);
+        address = made | parts[count - 1];
+        return true;
+    }
+
+    static int Digit(char c)
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    /// IPv6: groups of one to four hex digits, one "::", a dotted quad in
+    /// the last 32 bits, "[...]" with an optional ":port" after, and
+    /// "%scope", a number or an interface's name.
+    static IPAddress? ReadSix(ReadOnlySpan<char> text)
+    {
+        if (text.Length > 0 && text[0] == '[')
+        {
+            int close = text.IndexOf(']');
+            if (close < 0) return null;
+            ReadOnlySpan<char> after = text.Slice(close + 1);
+            if (after.Length > 0)
+            {
+                if (after[0] != ':' || after.Length == 1) return null;
+                for (int i = 1; i < after.Length; i++) if (after[i] < '0' || after[i] > '9') return null;
+            }
+            text = text.Slice(1, close - 1);
+        }
+        long scope = 0;
+        int percent = text.IndexOf('%');
+        if (percent >= 0)
+        {
+            ReadOnlySpan<char> name = text.Slice(percent + 1);
+            if (name.Length == 0) return null;
+            scope = ScopeOf(name.ToString());
+            if (scope < 0) return null;
+            text = text.Slice(0, percent);
+        }
+        int[] head = new int[8], tail = new int[8];
+        int headCount = 0, tailCount = 0;
+        bool compressed = false;
+        int at = 0;
+        if (text.Length >= 2 && text[0] == ':' && text[1] == ':') { compressed = true; at = 2; }
+        else if (text.Length >= 1 && text[0] == ':') return null;
+        byte[] bytes = new byte[16];
+        bool four = false;
+        while (at < text.Length)
+        {
+            int start = at;
+            int value = 0, digits = 0;
+            while (at < text.Length && Digit(text[at]) >= 0 && digits < 5) { value = value * 16 + Digit(text[at]); digits++; at++; }
+            if (at < text.Length && text[at] == '.')
+            {
+                // The dotted quad: decimal, four parts, the last 32 bits.
+                long quad;
+                if (!ReadDotted(text.Slice(start), out quad)) return null;
+                if (compressed)
+                {
+                    if (tailCount > 6) return null;
+                    tail[tailCount++] = (int)(quad >> 16);
+                    tail[tailCount++] = (int)(quad & 0xFFFF);
+                }
+                else
+                {
+                    if (headCount > 6) return null;
+                    head[headCount++] = (int)(quad >> 16);
+                    head[headCount++] = (int)(quad & 0xFFFF);
+                }
+                four = true;
+                at = text.Length;
+                break;
+            }
+            if (digits == 0 || digits > 4) return null;
+            if (compressed) { if (tailCount == 8) return null; tail[tailCount++] = value; }
+            else { if (headCount == 8) return null; head[headCount++] = value; }
+            if (at == text.Length) break;
+            if (text[at] != ':') return null;
+            at++;
+            if (at < text.Length && text[at] == ':')
+            {
+                if (compressed) return null;
+                compressed = true;
+                at++;
+            }
+            else if (at == text.Length) return null;
+        }
+        int total = headCount + tailCount;
+        if (compressed ? total > 7 : total != 8) return null;
+        if (four && !compressed && total != 8) return null;
+        int[] groups = new int[8];
+        for (int i = 0; i < headCount; i++) groups[i] = head[i];
+        for (int i = 0; i < tailCount; i++) groups[8 - tailCount + i] = tail[i];
+        for (int i = 0; i < 8; i++) { bytes[2 * i] = (byte)(groups[i] >> 8); bytes[2 * i + 1] = (byte)groups[i]; }
+        return new IPAddress(bytes, scope);
+    }
+
+    /// a.b.c.d, decimal, each part to 255: the whole of what is left.
+    static bool ReadDotted(ReadOnlySpan<char> text, out long value)
+    {
+        value = 0;
+        int parts = 0, at = 0;
+        while (parts < 4)
+        {
+            long part = 0;
+            int digits = 0;
+            while (at < text.Length && text[at] >= '0' && text[at] <= '9' && digits < 4) { part = part * 10 + (text[at] - '0'); digits++; at++; }
+            if (digits == 0 || digits > 3 || part > 255) return false;
+            value = (value << 8) | part;
+            parts++;
+            if (parts == 4) break;
+            if (at >= text.Length || text[at] != '.') return false;
+            at++;
+        }
+        return at == text.Length;
+    }
+
+    /// A scope as a number, or an interface's name as its index -- 0 for a
+    /// name no interface has, as .NET leaves it; -1 when it is neither.
+    static long ScopeOf(string name)
+    {
+        long number = 0;
+        bool numeric = true;
+        foreach (char c in name)
+        {
+            if (c < '0' || c > '9') { numeric = false; break; }
+            number = number * 10 + (c - '0');
+            if (number > 0xFFFFFFFFL) return -1;
+        }
+        if (numeric) return number;
+        foreach (char c in name) if (c == '/' || c == '\0') return 0;
+        try
+        {
+            string index = File.ReadAllText("/sys/class/net/" + name + "/ifindex").Trim();
+            long found;
+            return long.TryParse(index, out found) && found >= 0 && found <= 0xFFFFFFFFL ? found : 0;
+        }
+        catch (Exception) { return 0; }
+    }
+
+    // ---- byte order ---------------------------------------------------------------------
 
     /// The two that turn a number the wire's way round and back. THIS
     /// MACHINE IS LITTLE-ENDIAN AND THE WIRE IS NOT, so a port or an
@@ -348,20 +664,35 @@ class IPEndPoint
         Port = port;
     }
 
+    public AddressFamily AddressFamily => Address.AddressFamily;
+
+    /// "a.b.c.d:port", or "[v6]:port", as .NET writes them.
     public override string ToString()
     {
-        return Address.ToString() + ":" + Port;
+        return Address.AddressFamily == AddressFamily.InterNetworkV6 ? "[" + Address + "]:" + Port : Address.ToString() + ":" + Port;
     }
 
-    /// The sockaddr_in the kernel takes.
+    /// The sockaddr the kernel takes: sockaddr_in, or sockaddr_in6 with the
+    /// scope for an IPv6 address.
     public byte[] Serialize()
     {
+        byte[] ip = Address.GetAddressBytes();
+        if (ip.Length == 16)
+        {
+            byte[] six = new byte[28];
+            six[0] = 10;                            // AF_INET6
+            six[2] = (byte)(Port >> 8);
+            six[3] = (byte)Port;
+            Array.Copy(ip, 0, six, 8, 16);
+            long scope = Address.ScopeId;
+            six[24] = (byte)scope; six[25] = (byte)(scope >> 8); six[26] = (byte)(scope >> 16); six[27] = (byte)(scope >> 24);
+            return six;
+        }
         byte[] a = new byte[16];
         a[0] = 2;                                   // AF_INET
         a[1] = 0;
         a[2] = (byte)(Port >> 8);
         a[3] = (byte)Port;
-        byte[] ip = Address.GetAddressBytes();
         a[4] = ip[0];
         a[5] = ip[1];
         a[6] = ip[2];
@@ -371,9 +702,17 @@ class IPEndPoint
 
     public static IPEndPoint FromSockaddr(byte[] a)
     {
+        int port = ((a[2] & 255) << 8) | (a[3] & 255);
+        if (a.Length >= 28 && a[0] == 10 && a[1] == 0)
+        {
+            byte[] six = new byte[16];
+            Array.Copy(a, 8, six, 0, 16);
+            long scope = (a[24] & 255L) | ((a[25] & 255L) << 8) | ((a[26] & 255L) << 16) | ((a[27] & 255L) << 24);
+            return new IPEndPoint(new IPAddress(six, scope), port);
+        }
         byte[] ip = new byte[4];
         ip[0] = a[4]; ip[1] = a[5]; ip[2] = a[6]; ip[3] = a[7];
-        return new IPEndPoint(new IPAddress(ip), ((a[2] & 255) << 8) | (a[3] & 255));
+        return new IPEndPoint(new IPAddress(ip), port);
     }
 }
 
@@ -1285,7 +1624,7 @@ class Socket : IDisposable
         _family = family;
         _type = type;
         _protocol = protocol;
-        _fd = Os.Socket((int)family, (int)type, (int)protocol);
+        _fd = Os.Socket(family == AddressFamily.InterNetworkV6 ? 10 : (int)family, (int)type, (int)protocol);
         if (_fd < 0)
         {
             throw new SocketException(-_fd);
