@@ -1,0 +1,612 @@
+// TLS AS .NET HAS IT: SslStream over any Stream (a NetworkStream, usually),
+// AuthenticatedStream beneath it, SslClientAuthenticationOptions, the
+// validation and selection callbacks, SslApplicationProtocol and
+// TlsCipherSuite. The protocol is the CORSAC/SECURE TLS 1.3 client beside
+// this file (CorsacSecureTls_Client); the server's certificate is decided
+// as .NET's SslStream decides it, on the public X.509 types: an X509Chain
+// built with the certificates the server sent as its extra store and
+// serverAuth asked, the target host matched with MatchesHostname, and
+// RemoteCertificateValidationCallback, when given, deciding with the
+// errors found. Whatever is accepted, the server must still prove it
+// holds the certificate's key.
+//
+// What this does not do: TLS 1.2 or older (a handshake that asks only for
+// those is refused), the server side (AuthenticateAsServer), client
+// certificates (a server that asks for one is answered with none), session
+// resumption, renegotiation. ALPN, SNI (left out for an IP address, as
+// .NET leaves it out), the TLS 1.3 key update and close_notify are done.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+public delegate bool RemoteCertificateValidationCallback(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors sslPolicyErrors);
+
+public delegate X509Certificate LocalCertificateSelectionCallback(object sender, string targetHost, X509CertificateCollection localCertificates, X509Certificate? remoteCertificate, string[] acceptableIssuers);
+
+/// The cipher suites by IANA's numbers, as .NET names them; the TLS 1.3
+/// suites are the ones a handshake here can give.
+public enum TlsCipherSuite : ushort
+{
+    TLS_NULL_WITH_NULL_NULL = 0,
+    TLS_AES_128_GCM_SHA256 = 4865,
+    TLS_AES_256_GCM_SHA384 = 4866,
+    TLS_CHACHA20_POLY1305_SHA256 = 4867,
+    TLS_AES_128_CCM_SHA256 = 4868,
+    TLS_AES_128_CCM_8_SHA256 = 4869,
+}
+
+/// An ALPN protocol name: its bytes, and .NET's three by name.
+public readonly struct SslApplicationProtocol : IEquatable<SslApplicationProtocol>
+{
+    readonly byte[]? _protocol;
+
+    public static readonly SslApplicationProtocol Http3 = new SslApplicationProtocol("h3");
+    public static readonly SslApplicationProtocol Http2 = new SslApplicationProtocol("h2");
+    public static readonly SslApplicationProtocol Http11 = new SslApplicationProtocol("http/1.1");
+
+    public SslApplicationProtocol(byte[] protocol)
+    {
+        if (protocol == null) throw new ArgumentNullException(nameof(protocol));
+        if (protocol.Length == 0 || protocol.Length > 255) throw new ArgumentException("The application protocol value is invalid.", nameof(protocol));
+        _protocol = (byte[])protocol.Clone();
+    }
+
+    public SslApplicationProtocol(string protocol) : this(Encoding.UTF8.GetBytes(protocol ?? throw new ArgumentNullException(nameof(protocol)))) { }
+
+    public ReadOnlyMemory<byte> Protocol => _protocol == null ? new ReadOnlyMemory<byte>(new byte[0]) : new ReadOnlyMemory<byte>(_protocol);
+
+    internal byte[] Bytes => _protocol ?? new byte[0];
+
+    public bool Equals(SslApplicationProtocol other)
+    {
+        byte[] a = Bytes, b = other.Bytes;
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    public override bool Equals(object? obj) => obj is SslApplicationProtocol other && Equals(other);
+
+    public override int GetHashCode()
+    {
+        int hash = 0;
+        foreach (byte b in Bytes) hash = hash * 31 + b;
+        return hash;
+    }
+
+    public override string ToString()
+    {
+        byte[] b = Bytes;
+        if (b.Length == 0) return "";
+        try { return new UTF8Encoding(false, true).GetString(b); }
+        catch (Exception) { }
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < b.Length; i++) { if (i > 0) text.Append(' '); text.Append("0x").Append(b[i].ToString("x2")); }
+        return text.ToString();
+    }
+
+    public static bool operator ==(SslApplicationProtocol left, SslApplicationProtocol right) => left.Equals(right);
+    public static bool operator !=(SslApplicationProtocol left, SslApplicationProtocol right) => !left.Equals(right);
+}
+
+/// How a client authenticates: the server's name, the protocols, ALPN,
+/// and how the server's certificate is judged.
+public class SslClientAuthenticationOptions
+{
+    public bool AllowRenegotiation { get; set; } = true;
+    public bool AllowTlsResume { get; set; } = true;
+    public List<SslApplicationProtocol>? ApplicationProtocols { get; set; }
+    public X509ChainPolicy? CertificateChainPolicy { get; set; }
+    public X509RevocationMode CertificateRevocationCheckMode { get; set; } = X509RevocationMode.NoCheck;
+    public X509CertificateCollection? ClientCertificates { get; set; }
+    public SslProtocols EnabledSslProtocols { get; set; } = SslProtocols.None;
+    public LocalCertificateSelectionCallback? LocalCertificateSelectionCallback { get; set; }
+    public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; set; }
+    public string? TargetHost { get; set; }
+}
+
+/// A stream over another that authenticates its peer.
+public abstract class AuthenticatedStream : Stream
+{
+    readonly Stream _innerStream;
+    readonly bool _leaveInnerStreamOpen;
+
+    protected AuthenticatedStream(Stream innerStream, bool leaveInnerStreamOpen)
+    {
+        if (innerStream == null || innerStream == Stream.Null) throw new ArgumentNullException(nameof(innerStream));
+        if (!innerStream.CanRead || !innerStream.CanWrite) throw new ArgumentException("The stream has to be read/write.", nameof(innerStream));
+        _innerStream = innerStream;
+        _leaveInnerStreamOpen = leaveInnerStreamOpen;
+    }
+
+    protected Stream InnerStream => _innerStream;
+    public bool LeaveInnerStreamOpen => _leaveInnerStreamOpen;
+    public abstract bool IsAuthenticated { get; }
+    public abstract bool IsMutuallyAuthenticated { get; }
+    public abstract bool IsEncrypted { get; }
+    public abstract bool IsSigned { get; }
+    public abstract bool IsServer { get; }
+
+    protected override void Dispose(bool disposing)
+    {
+        try { if (disposing && !_leaveInnerStreamOpen) _innerStream.Dispose(); }
+        finally { base.Dispose(disposing); }
+    }
+}
+
+/// TLS over a stream, the client side.
+public class SslStream : AuthenticatedStream
+{
+    const string ServerAuthentication = "1.3.6.1.5.5.7.3.1";
+    const int MostRecord = 16384;
+
+    readonly RemoteCertificateValidationCallback? _validation;
+    readonly LocalCertificateSelectionCallback? _selection;
+    CorsacSecureTls_Client? _client;
+    SslStreamSource? _source;
+    SslStreamSink? _sink;
+    SslStreamPolicy? _policy;
+    bool _authenticated;
+    bool _failed;
+    bool _closed;
+    string _targetHost = "";
+    SslApplicationProtocol _protocol;
+    X509Certificate2? _remote;
+    readonly byte[] _record = new byte[MostRecord];
+    int _held, _heldAt;
+
+    public SslStream(Stream innerStream) : this(innerStream, false, null, null) { }
+    public SslStream(Stream innerStream, bool leaveInnerStreamOpen) : this(innerStream, leaveInnerStreamOpen, null, null) { }
+    public SslStream(Stream innerStream, bool leaveInnerStreamOpen, RemoteCertificateValidationCallback? userCertificateValidationCallback) : this(innerStream, leaveInnerStreamOpen, userCertificateValidationCallback, null) { }
+
+    public SslStream(Stream innerStream, bool leaveInnerStreamOpen, RemoteCertificateValidationCallback? userCertificateValidationCallback, LocalCertificateSelectionCallback? userCertificateSelectionCallback)
+        : base(innerStream, leaveInnerStreamOpen)
+    {
+        _validation = userCertificateValidationCallback;
+        _selection = userCertificateSelectionCallback;
+    }
+
+    // ---- authenticating -----------------------------------------------------------------
+
+    public virtual void AuthenticateAsClient(string targetHost) => AuthenticateAsClient(targetHost, null, SslProtocols.None, false);
+
+    public virtual void AuthenticateAsClient(string targetHost, X509CertificateCollection? clientCertificates, bool checkCertificateRevocation)
+        => AuthenticateAsClient(targetHost, clientCertificates, SslProtocols.None, checkCertificateRevocation);
+
+    public virtual void AuthenticateAsClient(string targetHost, X509CertificateCollection? clientCertificates, SslProtocols enabledSslProtocols, bool checkCertificateRevocation)
+    {
+        SslClientAuthenticationOptions options = new SslClientAuthenticationOptions();
+        options.TargetHost = targetHost;
+        options.ClientCertificates = clientCertificates;
+        options.EnabledSslProtocols = enabledSslProtocols;
+        options.CertificateRevocationCheckMode = checkCertificateRevocation ? X509RevocationMode.Online : X509RevocationMode.NoCheck;
+        AuthenticateAsClient(options);
+    }
+
+    /// The handshake, as the options say. AuthenticationException when the
+    /// server or its certificate is refused, IOException when the stream
+    /// under fails.
+    public void AuthenticateAsClient(SslClientAuthenticationOptions sslClientAuthenticationOptions)
+    {
+        SslClientAuthenticationOptions options = sslClientAuthenticationOptions ?? throw new ArgumentNullException(nameof(sslClientAuthenticationOptions));
+        if (_closed) throw new ObjectDisposedException(nameof(SslStream));
+        if (_authenticated || _failed || _client != null) throw new InvalidOperationException("This operation is only allowed using a successfully authenticated context.");
+        if (options.EnabledSslProtocols != SslProtocols.None && (options.EnabledSslProtocols & SslProtocols.Tls13) == 0)
+            throw new AuthenticationException("The client and server cannot communicate, because they do not possess a common algorithm: only TLS 1.3 is available.");
+
+        string host = options.TargetHost ?? "";
+        if (host.EndsWith(".", StringComparison.Ordinal)) host = host.Substring(0, host.Length - 1);
+        _targetHost = options.TargetHost ?? "";
+        bool literal = X509HostAddress.IsLiteral(host);
+
+        byte[] alpn = AlpnList(options.ApplicationProtocols);
+        _source = new SslStreamSource(InnerStream);
+        _sink = new SslStreamSink(InnerStream);
+        _policy = new SslStreamPolicy(this, host, options, _validation ?? options.RemoteCertificateValidationCallback);
+        _client = new CorsacSecureTls_Client(_source, _sink, 65536, 262144);
+
+        byte[] random = new byte[32], session = new byte[32], x25519 = new byte[32], p256 = new byte[32];
+        RandomNumberGenerator.Fill(random);
+        RandomNumberGenerator.Fill(session);
+        RandomNumberGenerator.Fill(x25519);
+        RandomNumberGenerator.Fill(p256);
+        bool connected;
+        try
+        {
+            connected = _client.Connect(random, 0, session, 0, 32, x25519, 0, p256, 0,
+                                        literal ? "" : host, alpn, 0, alpn.Length, _policy);
+        }
+        finally
+        {
+            CorsacSecureCrypto_Bytes.Zero(x25519, 0, 32);
+            CorsacSecureCrypto_Bytes.Zero(p256, 0, 32);
+        }
+        _remote = _policy.Leaf;
+        if (!connected)
+        {
+            _failed = true;
+            Exception failure = HandshakeFailure();
+            _client.Close();
+            throw failure;
+        }
+        _authenticated = true;
+        _protocol = Selected();
+    }
+
+    public Task AuthenticateAsClientAsync(string targetHost) => Completed(() => AuthenticateAsClient(targetHost));
+    public Task AuthenticateAsClientAsync(string targetHost, X509CertificateCollection? clientCertificates, bool checkCertificateRevocation)
+        => Completed(() => AuthenticateAsClient(targetHost, clientCertificates, checkCertificateRevocation));
+    public Task AuthenticateAsClientAsync(string targetHost, X509CertificateCollection? clientCertificates, SslProtocols enabledSslProtocols, bool checkCertificateRevocation)
+        => Completed(() => AuthenticateAsClient(targetHost, clientCertificates, enabledSslProtocols, checkCertificateRevocation));
+    public Task AuthenticateAsClientAsync(SslClientAuthenticationOptions sslClientAuthenticationOptions, CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+        return Completed(() => AuthenticateAsClient(sslClientAuthenticationOptions));
+    }
+
+    public virtual void AuthenticateAsServer(X509Certificate serverCertificate)
+        => throw new NotSupportedException("The server side of TLS is not implemented.");
+
+    static Task Completed(Action work)
+    {
+        try { work(); return Task.CompletedTask; }
+        catch (Exception e) { return Task.FromException(e); }
+    }
+
+    /// Why the handshake failed, as .NET words it.
+    Exception HandshakeFailure()
+    {
+        if (_source != null && _source.Failure != null) return new IOException("Unable to read data from the transport connection.", _source.Failure);
+        if (_sink != null && _sink.Failure != null) return new IOException("Unable to write data to the transport connection.", _sink.Failure);
+        if (_policy != null && _policy.Decided && !_policy.Accepted)
+        {
+            if (_policy.AskedCallback)
+                return new AuthenticationException("The remote certificate was rejected by the provided RemoteCertificateValidationCallback.");
+            return new AuthenticationException("The remote certificate is invalid according to the validation procedure: " + _policy.Errors + (_policy.ChainText.Length > 0 ? " (" + _policy.ChainText + ")" : "") + ".");
+        }
+        if (_policy != null && _policy.UnsupportedKey)
+            return new AuthenticationException("The remote certificate's key is of a kind this TLS client cannot check.");
+        CorsacSecureTls_Client c = _client!;
+        if (c.Error == CorsacSecureTls_ClientError.PeerAlert)
+            return new AuthenticationException("Authentication failed because the remote party sent a TLS alert: '" + AlertName(c.PeerAlert) + "'.");
+        if (c.Error == CorsacSecureTls_ClientError.Io)
+            return new IOException("Received an unexpected EOF or 0 bytes from the transport stream.");
+        return new AuthenticationException("Authentication failed, see inner exception.", new IOException("TLS handshake failed (" + ErrorName(c.Error) + ")."));
+    }
+
+    static string ErrorName(int error)
+    {
+        switch (error)
+        {
+            case CorsacSecureTls_ClientError.Malformed: return "a malformed message from the server";
+            case CorsacSecureTls_ClientError.Unsupported: return "nothing in common with the server";
+            case CorsacSecureTls_ClientError.Authentication: return "the server's proof did not verify";
+            case CorsacSecureTls_ClientError.Certificate: return "the server's certificate";
+            case CorsacSecureTls_ClientError.ResourceLimit: return "a message past this client's limits";
+            case CorsacSecureTls_ClientError.ProtocolState: return "a message out of order";
+            default: return "error " + error;
+        }
+    }
+
+    static string AlertName(int alert)
+    {
+        switch (alert)
+        {
+            case 0: return "CloseNotify";
+            case 10: return "UnexpectedMessage";
+            case 20: return "BadRecordMac";
+            case 40: return "HandshakeFailure";
+            case 42: return "BadCertificate";
+            case 43: return "UnsupportedCert";
+            case 44: return "CertificateRevoked";
+            case 45: return "CertificateExpired";
+            case 46: return "CertificateUnknown";
+            case 47: return "IllegalParameter";
+            case 48: return "UnknownCA";
+            case 49: return "AccessDenied";
+            case 50: return "DecodeError";
+            case 51: return "DecryptError";
+            case 70: return "ProtocolVersion";
+            case 71: return "InsufficientSecurity";
+            case 80: return "InternalError";
+            case 86: return "InappropriateFallback";
+            case 90: return "UserCanceled";
+            case 109: return "MissingExtension";
+            case 110: return "UnsupportedExtension";
+            case 112: return "UnrecognizedName";
+            case 116: return "CertificateRequired";
+            case 120: return "NoApplicationProtocol";
+            default: return alert.ToString();
+        }
+    }
+
+    static byte[] AlpnList(List<SslApplicationProtocol>? protocols)
+    {
+        if (protocols == null || protocols.Count == 0) return new byte[0];
+        MemoryStream list = new MemoryStream();
+        foreach (SslApplicationProtocol p in protocols)
+        {
+            byte[] name = p.Bytes;
+            if (name.Length == 0) continue;
+            list.WriteByte((byte)name.Length);
+            list.Write(name, 0, name.Length);
+        }
+        return list.ToArray();
+    }
+
+    SslApplicationProtocol Selected()
+    {
+        CorsacSecureTls_Client c = _client!;
+        if (c.SelectedAlpnLength == 0) return default;
+        byte[] name = new byte[c.SelectedAlpnLength];
+        c.CopySelectedAlpn(name, 0);
+        return new SslApplicationProtocol(name);
+    }
+
+    // ---- what was negotiated ----------------------------------------------------------------
+
+    public override bool IsAuthenticated => _authenticated;
+    public override bool IsMutuallyAuthenticated => false;
+    public override bool IsEncrypted => _authenticated;
+    public override bool IsSigned => _authenticated;
+    public override bool IsServer => false;
+    public virtual bool CheckCertRevocationStatus => _policy != null && _policy.RevocationMode != X509RevocationMode.NoCheck;
+    public virtual SslProtocols SslProtocol => _authenticated ? SslProtocols.Tls13 : SslProtocols.None;
+    public virtual TlsCipherSuite NegotiatedCipherSuite => _authenticated ? (TlsCipherSuite)(ushort)_client!.CipherSuite : TlsCipherSuite.TLS_NULL_WITH_NULL_NULL;
+    public SslApplicationProtocol NegotiatedApplicationProtocol => _protocol;
+    public virtual X509Certificate? LocalCertificate => null;
+    public virtual X509Certificate? RemoteCertificate => _remote;
+    public string TargetHostName => _targetHost;
+
+    // ---- the stream -------------------------------------------------------------------------
+
+    public override bool CanRead => _authenticated && !_closed && InnerStream.CanRead;
+    public override bool CanWrite => _authenticated && !_closed && InnerStream.CanWrite;
+    public override bool CanSeek => false;
+    public override bool CanTimeout => InnerStream.CanTimeout;
+    public override int ReadTimeout { get { return InnerStream.ReadTimeout; } set { InnerStream.ReadTimeout = value; } }
+    public override int WriteTimeout { get { return InnerStream.WriteTimeout; } set { InnerStream.WriteTimeout = value; } }
+    public override long Length => throw new NotSupportedException("This stream does not support seek operations.");
+    public override long Position { get { throw new NotSupportedException("This stream does not support seek operations."); } set { throw new NotSupportedException("This stream does not support seek operations."); } }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException("This stream does not support seek operations.");
+    public override void SetLength(long value) => throw new NotSupportedException("This stream does not support seek operations.");
+    public override void Flush() { InnerStream.Flush(); }
+
+    void Ready()
+    {
+        if (_closed) throw new ObjectDisposedException(nameof(SslStream));
+        if (!_authenticated) throw new InvalidOperationException("This operation is only allowed using a successfully authenticated context.");
+    }
+
+    /// Decrypted bytes, as many as are held or the next record gives; 0 once
+    /// the server has closed (close_notify).
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+        if (offset < 0 || count < 0 || offset > buffer.Length - count) throw new ArgumentOutOfRangeException(nameof(count));
+        Ready();
+        if (count == 0) return 0;
+        while (_held == 0)
+        {
+            CorsacSecureTls_Client c = _client!;
+            long got;
+            if (!c.ReceiveApplicationData(_record, 0, _record.Length, out got))
+            {
+                if (c.Error == 0 && c.PeerSentCloseNotify) return 0;
+                if (_source != null && _source.Failure != null) throw new IOException("Unable to read data from the transport connection.", _source.Failure);
+                if (c.Error == CorsacSecureTls_ClientError.Io) return 0;
+                throw new IOException("Unable to read data from the transport connection: " + (c.Error == CorsacSecureTls_ClientError.PeerAlert
+                    ? "the remote party sent a TLS alert: '" + AlertName(c.PeerAlert) + "'" : ErrorName(c.Error)) + ".");
+            }
+            _held = (int)got;
+            _heldAt = 0;
+        }
+        int n = Math.Min(count, _held);
+        Array.Copy(_record, _heldAt, buffer, offset, n);
+        CorsacSecureCrypto_Bytes.Zero(_record, _heldAt, n);
+        _heldAt += n;
+        _held -= n;
+        return n;
+    }
+
+    /// The bytes encrypted and sent, a record at a time.
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+        if (offset < 0 || count < 0 || offset > buffer.Length - count) throw new ArgumentOutOfRangeException(nameof(count));
+        Ready();
+        int at = offset, left = count;
+        while (left > 0)
+        {
+            int n = Math.Min(left, MostRecord);
+            if (!_client!.SendApplicationData(buffer, at, n))
+            {
+                if (_sink != null && _sink.Failure != null) throw new IOException("Unable to write data to the transport connection.", _sink.Failure);
+                throw new IOException("Unable to write data to the transport connection: " + ErrorName(_client.Error) + ".");
+            }
+            at += n;
+            left -= n;
+        }
+    }
+
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<int>(cancellationToken);
+        try { return Task.FromResult(Read(buffer, offset, count)); }
+        catch (Exception e) { return Task.FromException<int>(e); }
+    }
+
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+        return Completed(() => Write(buffer, offset, count));
+    }
+
+    /// close_notify sent: no more will be written.
+    public virtual Task ShutdownAsync()
+    {
+        try
+        {
+            Ready();
+            _client!.SendCloseNotify();
+            InnerStream.Flush();
+            return Task.CompletedTask;
+        }
+        catch (Exception e) { return Task.FromException(e); }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_closed)
+        {
+            _closed = true;
+            try { if (_client != null) _client.Close(); }
+            catch (IOException) { }
+        }
+        base.Dispose(disposing);
+    }
+}
+
+/// The engine's source of bytes: the stream under. A failure is kept for
+/// the exception SslStream throws.
+internal sealed class SslStreamSource : CorsacSecureTls_ByteSource
+{
+    readonly Stream _stream;
+    public Exception? Failure;
+
+    public SslStreamSource(Stream stream) { _stream = stream; }
+
+    public override long Read(byte[] output, int offset, int count)
+    {
+        try { return _stream.Read(output, offset, count); }
+        catch (IOException e) { Failure = e; return -1; }
+        catch (ObjectDisposedException e) { Failure = e; return -1; }
+    }
+}
+
+/// The engine's sink: the stream under, each write flushed.
+internal sealed class SslStreamSink : CorsacSecureTls_ByteSink
+{
+    readonly Stream _stream;
+    public Exception? Failure;
+
+    public SslStreamSink(Stream stream) { _stream = stream; }
+
+    public override long Write(byte[] input, int offset, int count)
+    {
+        try { _stream.Write(input, offset, count); _stream.Flush(); return count; }
+        catch (IOException e) { Failure = e; return -1; }
+        catch (ObjectDisposedException e) { Failure = e; return -1; }
+    }
+}
+
+/// The server's certificates judged as .NET's SslStream judges them.
+internal sealed class SslStreamPolicy : CorsacSecureTls_CertificatePolicy
+{
+    readonly SslStream _stream;
+    readonly string _host;
+    readonly SslClientAuthenticationOptions _options;
+    readonly RemoteCertificateValidationCallback? _callback;
+
+    public X509Certificate2? Leaf;
+    public SslPolicyErrors Errors;
+    public string ChainText = "";
+    public bool Decided, Accepted, AskedCallback, UnsupportedKey;
+
+    public SslStreamPolicy(SslStream stream, string host, SslClientAuthenticationOptions options, RemoteCertificateValidationCallback? callback)
+    {
+        _stream = stream;
+        _host = host;
+        _options = options;
+        _callback = callback;
+    }
+
+    public X509RevocationMode RevocationMode => _options.CertificateChainPolicy?.RevocationMode ?? _options.CertificateRevocationCheckMode;
+
+    public override bool Accept(byte[][] certificates, int count, CorsacSecureTls_PeerKey key, out int alert)
+    {
+        alert = 42;
+        X509Certificate2 leaf;
+        try { leaf = new X509Certificate2(certificates[0]); }
+        catch (CryptographicException) { return false; }
+        Leaf = leaf;
+
+        X509Chain chain = new X509Chain();
+        if (_options.CertificateChainPolicy != null) chain.ChainPolicy = _options.CertificateChainPolicy.Clone();
+        else chain.ChainPolicy.RevocationMode = _options.CertificateRevocationCheckMode;
+        bool hasServerAuth = false;
+        foreach (Oid o in chain.ChainPolicy.ApplicationPolicy) if (o.Value == "1.3.6.1.5.5.7.3.1") hasServerAuth = true;
+        if (!hasServerAuth) chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
+        for (int i = 1; i < count; i++)
+        {
+            try { chain.ChainPolicy.ExtraStore.Add(new X509Certificate2(certificates[i])); }
+            catch (CryptographicException) { }
+        }
+
+        SslPolicyErrors errors = SslPolicyErrors.None;
+        X509ChainStatusFlags flags = X509ChainStatusFlags.NoError;
+        if (!chain.Build(leaf))
+        {
+            errors |= SslPolicyErrors.RemoteCertificateChainErrors;
+            foreach (X509ChainStatus s in chain.ChainStatus)
+            {
+                flags |= s.Status;
+                ChainText += (ChainText.Length > 0 ? ", " : "") + s.Status;
+            }
+        }
+        if (_host.Length > 0)
+        {
+            bool named;
+            try { named = leaf.MatchesHostname(_host); }
+            catch (ArgumentException) { named = false; }
+            if (!named) errors |= SslPolicyErrors.RemoteCertificateNameMismatch;
+        }
+        Errors = errors;
+        Decided = true;
+        AskedCallback = _callback != null;
+        Accepted = _callback != null ? _callback(_stream, leaf, chain, errors) : errors == SslPolicyErrors.None;
+        if (!Accepted)
+        {
+            alert = (flags & (X509ChainStatusFlags.UntrustedRoot | X509ChainStatusFlags.PartialChain)) != 0 ? 48
+                : (flags & X509ChainStatusFlags.NotTimeValid) != 0 ? 45 : 42;
+            return false;
+        }
+
+        PublicKey publicKey = leaf.PublicKey;
+        if (!key.Set(publicKey.Oid.Value ?? "", publicKey.EncodedParameters.RawData, publicKey.EncodedKeyValue.RawData))
+        {
+            UnsupportedKey = true;
+            alert = 43;
+            return false;
+        }
+        return true;
+    }
+}
+
+/// Whether a target host is an IP literal, which is never sent as SNI.
+internal static class X509HostAddress
+{
+    public static bool IsLiteral(string host)
+    {
+        if (host.Length == 0) return false;
+        if (host.IndexOf(':') >= 0) return true;
+        string[] parts = host.Split('.');
+        if (parts.Length != 4) return false;
+        foreach (string p in parts)
+        {
+            int value;
+            if (p.Length == 0 || p.Length > 3 || !int.TryParse(p, out value) || value > 255) return false;
+        }
+        return true;
+    }
+}

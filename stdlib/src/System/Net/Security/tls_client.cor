@@ -1,0 +1,1229 @@
+// CORSAC/SECURE TLS bounded TLS 1.3 client.
+//
+// This layer deliberately implements one small, modern, fail-closed profile:
+// TLS 1.3 with SHA-256, X25519 (and P-256 after HelloRetryRequest),
+// AES-128-GCM or ChaCha20/Poly1305, and authenticated server certificates.
+// There is no TLS 1.2 downgrade, PSK, early data or client authentication.
+// Protocol and key material is always byte[]; string is used only for the DNS
+// reference identity consumed by the X.509 policy layer.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal static class CorsacSecureTls_ClientState
+{
+    public const int Fresh = 0;
+    public const int Handshaking = 1;
+    public const int Open = 2;
+    public const int PeerClosed = 3;
+    public const int Failed = 4;
+    public const int Closed = 5;
+}
+
+internal static class CorsacSecureTls_ClientError
+{
+    public const int None = 0;
+    public const int InvalidArgument = 1;
+    public const int Malformed = 2;
+    public const int Unsupported = 3;
+    public const int Authentication = 4;
+    public const int Certificate = 5;
+    public const int ServiceIdentity = 6;
+    public const int ResourceLimit = 7;
+    public const int Io = 8;
+    public const int ProtocolState = 9;
+    public const int PeerAlert = 10;
+    public const int Closed = 11;
+}
+
+internal class CorsacSecureTls_Client
+{
+    public const int MaximumRecordContent = 16384;
+    public const int MaximumSignatureBytes = 1024;
+    public const int MaximumCertificates = 8;
+
+    private CorsacSecureTls_RecordStream _records;
+    private CorsacSecureTls_HandshakeQueue _messages;
+    private CorsacSecureTls_Transcript _transcript;
+    private CorsacSecureTls_KeySchedule _schedule;
+    private CorsacSecureCrypto_X25519Workspace? _x25519;
+    private CorsacSecureCrypto_P256Workspace? _p256;
+    private CorsacSecureCrypto_RsaWorkspace? _rsa;
+    private CorsacSecureCrypto_Ed25519Workspace? _ed25519;
+
+    private byte[] _record;
+    private byte[] _messageBody;
+    private byte[] _messageWire;
+    private byte[] _xPrivate;
+    private byte[] _pPrivate;
+    private byte[] _shared;
+    private byte[] _earlySecret;
+    private byte[] _handshakeSecret;
+    private byte[] _masterSecret;
+    private byte[] _clientHandshakeTraffic;
+    private byte[] _serverHandshakeTraffic;
+    private byte[] _clientApplicationTraffic;
+    private byte[] _serverApplicationTraffic;
+    private byte[] _hash;
+    private byte[] _verifyData;
+    private byte[] _signature;
+    private byte[] _signedContent;
+    private byte[] _selectedAlpn;
+    private byte[][] _certificates;
+    private long[] _certificateOffsets;
+    private long[] _certificateCounts;
+    // The leaf's key, from the policy that accepted the certificates; the
+    // server must prove it holds it (CertificateVerify).
+    private CorsacSecureTls_PeerKey _peerKey;
+    private CorsacSecureTls_CertificatePolicy? _policy;
+
+    private int _maximumHandshake;
+    private int _state;
+    private int _error;
+    private int _peerAlert;
+    private int _suite;
+    private bool _sentClose;
+    private bool _peerClosed;
+    private bool _failing;
+
+    public CorsacSecureTls_Client(
+        CorsacSecureTls_ByteSource source,
+        CorsacSecureTls_ByteSink sink,
+        int maximumHandshakeBytes, int maximumTranscriptBytes)
+    {
+        bool limits = maximumHandshakeBytes >= 1024
+            && maximumHandshakeBytes
+                <= CorsacSecureTls_HandshakeQueue.MaximumHandshakeBytes
+            && maximumTranscriptBytes >= 4096
+            && maximumTranscriptBytes
+                <= CorsacSecureTls_Transcript.HardMaximumBytes;
+        _maximumHandshake = limits ? maximumHandshakeBytes : 1024;
+        _records = new CorsacSecureTls_RecordStream(source, sink);
+        _messages = new CorsacSecureTls_HandshakeQueue(_maximumHandshake);
+        _transcript = new CorsacSecureTls_Transcript(
+            limits ? maximumTranscriptBytes : 0);
+        _schedule = new CorsacSecureTls_KeySchedule();
+        _x25519 = null;
+        _p256 = null;
+        _rsa = null;
+        _ed25519 = null;
+        _record = new byte[MaximumRecordContent];
+        _messageBody = new byte[_maximumHandshake];
+        _messageWire = new byte[_maximumHandshake + 4];
+        _xPrivate = new byte[32];
+        _pPrivate = new byte[32];
+        _shared = new byte[32];
+        _earlySecret = new byte[32];
+        _handshakeSecret = new byte[32];
+        _masterSecret = new byte[32];
+        _clientHandshakeTraffic = new byte[32];
+        _serverHandshakeTraffic = new byte[32];
+        _clientApplicationTraffic = new byte[32];
+        _serverApplicationTraffic = new byte[32];
+        _hash = new byte[32];
+        _verifyData = new byte[32];
+        _signature = new byte[MaximumSignatureBytes];
+        _signedContent = new byte[
+            CorsacSecureTls_CertificateVerifyView.SignedContentBytes];
+        _selectedAlpn = new byte[0];
+        _certificates = new byte[MaximumCertificates][];
+        _certificateOffsets = new long[MaximumCertificates];
+        _certificateCounts = new long[MaximumCertificates];
+        _peerKey = new CorsacSecureTls_PeerKey();
+        _policy = null;
+        _state = CorsacSecureTls_ClientState.Fresh;
+        if (!limits || source == null || sink == null
+            || _records.Error != 0 || _messages.Error != 0
+            || _transcript.Error != 0)
+            Fail(CorsacSecureTls_ClientError.InvalidArgument, 80);
+    }
+
+    public int State => _state;
+    public int Error => _error;
+    public int PeerAlert => _peerAlert;
+    public int CipherSuite => _suite;
+    public bool IsOpen => _state == CorsacSecureTls_ClientState.Open;
+    public bool PeerSentCloseNotify => _peerClosed;
+    public int SelectedAlpnLength => _selectedAlpn.Length;
+
+    public bool CopySelectedAlpn(byte[] output, long outputOffset)
+    {
+        return _state == CorsacSecureTls_ClientState.Open
+            && CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _selectedAlpn, 0,
+                _selectedAlpn.Length);
+    }
+
+    // `serverName` is the SNI sent, "" for none (an IP literal target);
+    // `policy` decides the certificates the server sends.
+    public bool Connect(
+        byte[] clientRandom, long randomOffset,
+        byte[] sessionId, long sessionOffset, long sessionCount,
+        byte[] x25519Private, long x25519Offset,
+        byte[] p256Private, long p256Offset,
+        string serverName,
+        byte[] alpn, long alpnOffset, long alpnCount,
+        CorsacSecureTls_CertificatePolicy policy)
+    {
+        byte[] dns = serverName == null || serverName.Length == 0
+            ? new byte[0] : DnsBytes(serverName);
+        if (policy == null || (serverName != null && serverName.Length != 0
+                               && dns.Length == 0))
+            return Fail(CorsacSecureTls_ClientError.InvalidArgument, 80);
+        _policy = policy;
+        return Connect(
+            clientRandom, randomOffset,
+            sessionId, sessionOffset, sessionCount,
+            x25519Private, x25519Offset,
+            p256Private, p256Offset,
+            dns, alpn, alpnOffset, alpnCount);
+    }
+
+    public bool SendApplicationData(
+        byte[] content, long contentOffset, long contentCount)
+    {
+        if (_state != CorsacSecureTls_ClientState.Open
+            || _sentClose || _peerClosed)
+            return Fail(CorsacSecureTls_ClientError.ProtocolState, 10);
+        if (!_records.Send(CorsacSecureTls_ContentType.ApplicationData,
+                           content, contentOffset, contentCount, 0))
+            return Fail(RecordError(), 80);
+        return true;
+    }
+
+    // Returns authenticated application bytes.  Post-handshake KeyUpdate and
+    // NewSessionTicket messages are consumed internally.  close_notify answers
+    // false with Error == 0 and PeerSentCloseNotify == true.
+    public bool ReceiveApplicationData(
+        byte[] output, long outputOffset, long outputCapacity,
+        out long outputCount)
+    {
+        outputCount = 0;
+        if (_state != CorsacSecureTls_ClientState.Open
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, outputCapacity))
+            return Fail(CorsacSecureTls_ClientError.InvalidArgument, 80);
+        if (_peerClosed) return false;
+
+        while (true)
+        {
+            int contentType = 0;
+            long contentCount = 0;
+            if (!_records.Receive(_record, 0, _record.Length,
+                                  out contentType, out contentCount))
+                return Fail(RecordError(), 80);
+            if (contentType == CorsacSecureTls_ContentType.ApplicationData)
+            {
+                if (_messages.Buffered != 0)
+                    return Fail(CorsacSecureTls_ClientError.Malformed, 10);
+                if (contentCount > outputCapacity)
+                    return Fail(
+                        CorsacSecureTls_ClientError.ResourceLimit, 80);
+                if (!CorsacSecureCrypto_Bytes.Copy(
+                        output, outputOffset, _record, 0, contentCount))
+                    return Fail(
+                        CorsacSecureTls_ClientError.InvalidArgument, 80);
+                CorsacSecureCrypto_Bytes.Zero(
+                    _record, 0, contentCount);
+                outputCount = contentCount;
+                return true;
+            }
+            if (contentType == CorsacSecureTls_ContentType.Alert)
+            {
+                if (!HandleAlert(_record, 0, contentCount, false))
+                    return false;
+                continue;
+            }
+            if (contentType != CorsacSecureTls_ContentType.Handshake)
+                return Fail(CorsacSecureTls_ClientError.Malformed, 10);
+            if (!_messages.Append(_record, 0, contentCount))
+                return Fail(QueueError(), 50);
+            CorsacSecureCrypto_Bytes.Zero(_record, 0, contentCount);
+            if (!ProcessPostHandshakeMessages()) return false;
+        }
+    }
+
+    public bool UpdateKeys(bool requestPeerUpdate)
+    {
+        if (_state != CorsacSecureTls_ClientState.Open
+            || _sentClose || _peerClosed)
+            return Fail(CorsacSecureTls_ClientError.ProtocolState, 10);
+        return SendKeyUpdate(requestPeerUpdate);
+    }
+
+    public bool SendCloseNotify()
+    {
+        if ((_state != CorsacSecureTls_ClientState.Open
+             && _state != CorsacSecureTls_ClientState.PeerClosed)
+            || _sentClose)
+            return false;
+        byte[] alert = new byte[] {
+            (byte)CorsacSecureTls_Alert.Warning,
+            (byte)CorsacSecureTls_Alert.CloseNotify
+        };
+        bool okay = _records.Send(
+            CorsacSecureTls_ContentType.Alert,
+            alert, 0, alert.Length, 0);
+        CorsacSecureCrypto_Bytes.Zero(alert, 0, alert.Length);
+        if (!okay) return Fail(RecordError(), 80);
+        _sentClose = true;
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_state == CorsacSecureTls_ClientState.Closed) return;
+        if (_state == CorsacSecureTls_ClientState.Open && !_sentClose)
+            SendCloseNotify();
+        _records.Close();
+        _messages.Close();
+        _transcript.Close();
+        _schedule.Close();
+        ClosePublicKeyWorkspaces();
+        EraseSecrets();
+        _state = CorsacSecureTls_ClientState.Closed;
+    }
+
+    private bool Connect(
+        byte[] clientRandom, long randomOffset,
+        byte[] sessionId, long sessionOffset, long sessionCount,
+        byte[] x25519Private, long x25519Offset,
+        byte[] p256Private, long p256Offset,
+        byte[] dns,
+        byte[] alpn, long alpnOffset, long alpnCount)
+    {
+        if (_state != CorsacSecureTls_ClientState.Fresh
+            || !CorsacSecureCrypto_Bytes.Range(
+                clientRandom, randomOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                sessionId, sessionOffset, sessionCount)
+            || sessionCount > 32
+            || !CorsacSecureCrypto_Bytes.Range(
+                x25519Private, x25519Offset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                p256Private, p256Offset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                alpn, alpnOffset, alpnCount)
+            || alpnCount > CorsacSecureTls_HelloCodec.MaximumAlpnLength)
+            return Fail(CorsacSecureTls_ClientError.InvalidArgument, 80);
+        _state = CorsacSecureTls_ClientState.Handshaking;
+        CorsacSecureCrypto_Bytes.Copy(
+            _xPrivate, 0, x25519Private, x25519Offset, 32);
+        CorsacSecureCrypto_Bytes.Copy(
+            _pPrivate, 0, p256Private, p256Offset, 32);
+
+        byte[] xPublic = new byte[32];
+        CorsacSecureCrypto_X25519Workspace xWorkspace;
+        CorsacSecureTls_ClientHelloOffer offer =
+            new CorsacSecureTls_ClientHelloOffer();
+        CorsacSecureTls_HelloState hello =
+            new CorsacSecureTls_HelloState();
+        bool okay = GetX25519(out xWorkspace)
+            && xWorkspace.PublicKey(_xPrivate, 0, xPublic, 0)
+            && offer.SetRandom(clientRandom, (int)randomOffset)
+            && offer.SetSessionId(sessionId, (int)sessionOffset,
+                                  (int)sessionCount)
+            && offer.SetServerName(dns, 0, dns.Length)
+            && offer.SetAlpnProtocols(alpn, (int)alpnOffset, (int)alpnCount)
+            && offer.SetCipherSuites(
+                CorsacSecureTls_HelloValue.SafeDefaultSuites)
+            && offer.SetKeyShare(
+                CorsacSecureTls_HelloValue.X25519,
+                xPublic, 0, xPublic.Length);
+        if (!okay)
+        {
+            CorsacSecureCrypto_Bytes.Zero(xPublic, 0, xPublic.Length);
+            hello.Reset();
+            return Fail(CorsacSecureTls_ClientError.ProtocolState, 80);
+        }
+
+        int helloCount = 0;
+        okay = CorsacSecureTls_HelloCodec.TryEncodeInitial(
+                    offer, hello, _messageWire, 0,
+                    _messageWire.Length, out helloCount);
+        if (okay)
+        {
+            helloCount = RestrictClientHelloSignatures(
+                _messageWire, helloCount);
+            okay = helloCount > 0
+                && SendHello(_messageWire, helloCount);
+        }
+        CorsacSecureCrypto_Bytes.Zero(xPublic, 0, xPublic.Length);
+        if (!okay)
+        {
+            hello.Reset();
+            return Fail(CorsacSecureTls_ClientError.ProtocolState, 80);
+        }
+
+        CorsacSecureTls_ServerHello serverHello =
+            new CorsacSecureTls_ServerHello();
+        if (!ReceiveHello(hello, serverHello))
+        {
+            hello.Reset();
+            return false;
+        }
+        if (serverHello.IsHelloRetryRequest())
+        {
+            if (!_transcript.RollupForHelloRetryRequest()
+                || !_transcript.Update(
+                    _messageWire, 0, MessageWireCount()))
+            {
+                hello.Reset();
+                return Fail(CorsacSecureTls_ClientError.ProtocolState, 80);
+            }
+            byte[] retryPublic = new byte[65];
+            int retryCount = 0;
+            if (hello.RetryGroup()
+                    == CorsacSecureTls_HelloValue.Secp256r1)
+            {
+                CorsacSecureCrypto_P256Workspace pWorkspace;
+                okay = GetP256(out pWorkspace)
+                    && pWorkspace.DerivePublicKey(
+                        _pPrivate, 0, retryPublic, 0, false);
+                retryCount = 65;
+            }
+            else if (hello.RetryGroup() == 0)
+            {
+                okay = true;
+                retryCount = 0;
+            }
+            else okay = false;
+            helloCount = 0;
+            if (okay)
+                okay = CorsacSecureTls_HelloCodec.TryEncodeRetry(
+                    hello, retryPublic, 0, retryCount,
+                    _messageWire, 0, _messageWire.Length, out helloCount);
+            if (okay)
+            {
+                helloCount = RestrictClientHelloSignatures(
+                    _messageWire, helloCount);
+                okay = helloCount > 0
+                    && SendHello(_messageWire, helloCount);
+            }
+            CorsacSecureCrypto_Bytes.Zero(
+                retryPublic, 0, retryPublic.Length);
+            if (!okay || !ReceiveHello(hello, serverHello)
+                || serverHello.IsHelloRetryRequest())
+            {
+                hello.Reset();
+                if (_error != 0) return false;
+                return Fail(CorsacSecureTls_ClientError.Malformed, 10);
+            }
+        }
+
+        if (!_transcript.Update(_messageWire, 0, MessageWireCount())
+            || !DeriveHandshakeKeys(serverHello))
+        {
+            hello.Reset();
+            if (_error != 0) return false;
+            return Fail(CorsacSecureTls_ClientError.ProtocolState, 80);
+        }
+        hello.Reset();
+        if (!ReceiveServerFlight(alpn, alpnOffset, alpnCount))
+            return false;
+        _state = CorsacSecureTls_ClientState.Open;
+        return true;
+    }
+
+    private bool ReceiveHello(
+        CorsacSecureTls_HelloState hello,
+        CorsacSecureTls_ServerHello result)
+    {
+        int type = 0;
+        int bodyCount = 0;
+        if (!ReadHandshake(out type, out bodyCount)) return false;
+        int wireCount = bodyCount + 4;
+        if (type != CorsacSecureTls_HandshakeType.ServerHello
+            || !CorsacSecureTls_HelloCodec.TryParseServerHello(
+                _messageWire, 0, wireCount, hello, result))
+            return Fail(CorsacSecureTls_ClientError.Malformed, 50);
+        return true;
+    }
+
+    private bool SendHello(byte[] hello, int count)
+    {
+        if (!_records.Send(CorsacSecureTls_ContentType.Handshake,
+                           hello, 0, count, 0))
+            return Fail(RecordError(), 80);
+        if (!_transcript.Update(hello, 0, count))
+            return Fail(CorsacSecureTls_ClientError.ResourceLimit, 80);
+        return true;
+    }
+
+    private bool DeriveHandshakeKeys(
+        CorsacSecureTls_ServerHello serverHello)
+    {
+        _suite = serverHello.CipherSuite();
+        if (_suite != CorsacSecureTls_HelloValue.TlsAes128GcmSha256
+            && _suite
+                != CorsacSecureTls_HelloValue.TlsChaCha20Poly1305Sha256)
+            return Fail(CorsacSecureTls_ClientError.Unsupported, 40);
+        byte[] peer = new byte[65];
+        int peerCount = serverHello.KeyExchangeLength();
+        bool okay = peerCount <= peer.Length
+            && serverHello.CopyKeyExchange(peer, 0);
+        if (okay && serverHello.Group()
+                == CorsacSecureTls_HelloValue.X25519)
+        {
+            CorsacSecureCrypto_X25519Workspace xWorkspace;
+            okay = GetX25519(out xWorkspace) && peerCount == 32
+                && xWorkspace.Agree(
+                    _xPrivate, 0, peer, 0, _shared, 0);
+        }
+        else if (okay && serverHello.Group()
+                     == CorsacSecureTls_HelloValue.Secp256r1)
+        {
+            CorsacSecureCrypto_P256Workspace pWorkspace;
+            okay = GetP256(out pWorkspace) && peerCount == 65
+                && pWorkspace.Agree(
+                    _pPrivate, 0, peer, 0, peerCount, _shared, 0);
+        }
+        else okay = false;
+        CorsacSecureCrypto_Bytes.Zero(peer, 0, peer.Length);
+        CorsacSecureCrypto_Bytes.Zero(_xPrivate, 0, _xPrivate.Length);
+        CorsacSecureCrypto_Bytes.Zero(_pPrivate, 0, _pPrivate.Length);
+        if (_x25519 != null) { _x25519.Close(); _x25519 = null; }
+        if (!okay) return Fail(
+            CorsacSecureTls_ClientError.Authentication, 51);
+
+        byte[] empty = new byte[0];
+        byte[] clientLabel = Bytes("c hs traffic");
+        byte[] serverLabel = Bytes("s hs traffic");
+        okay = _schedule.EarlySecret(empty, 0, 0, _earlySecret, 0)
+            && _schedule.HandshakeSecret(
+                _earlySecret, 0, _shared, 0, _shared.Length,
+                _handshakeSecret, 0)
+            && _transcript.Hash(_hash, 0)
+            && _schedule.DeriveSecret(
+                _handshakeSecret, 0,
+                clientLabel, 0, clientLabel.Length,
+                _hash, 0, _clientHandshakeTraffic, 0)
+            && _schedule.DeriveSecret(
+                _handshakeSecret, 0,
+                serverLabel, 0, serverLabel.Length,
+                _hash, 0, _serverHandshakeTraffic, 0)
+            && _schedule.MasterSecret(
+                _handshakeSecret, 0, _masterSecret, 0)
+            && _records.EnableSending(
+                _suite, _clientHandshakeTraffic, 0)
+            && _records.EnableReceiving(
+                _suite, _serverHandshakeTraffic, 0);
+        CorsacSecureCrypto_Bytes.Zero(empty, 0, empty.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            clientLabel, 0, clientLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            serverLabel, 0, serverLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(_shared, 0, _shared.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _earlySecret, 0, _earlySecret.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _handshakeSecret, 0, _handshakeSecret.Length);
+        CorsacSecureCrypto_Bytes.Zero(_hash, 0, _hash.Length);
+        if (!okay) return Fail(
+            CorsacSecureTls_ClientError.ProtocolState, 80);
+        return true;
+    }
+
+    private bool ReceiveServerFlight(
+        byte[] offeredAlpn, long offeredAlpnOffset, long offeredAlpnCount)
+    {
+        int expected = CorsacSecureTls_HandshakeType.EncryptedExtensions;
+        while (true)
+        {
+            int type = 0;
+            int bodyCount = 0;
+            if (!ReadHandshake(out type, out bodyCount)) return false;
+            int wireCount = bodyCount + 4;
+            if (type != expected)
+                return Fail(CorsacSecureTls_ClientError.Malformed, 10);
+
+            if (type == CorsacSecureTls_HandshakeType.EncryptedExtensions)
+            {
+                CorsacSecureTls_EncryptedExtensionsView view =
+                    new CorsacSecureTls_EncryptedExtensionsView();
+                if (!view.Parse(_messageBody, 0, bodyCount)
+                    || view.EarlyDataAccepted
+                    || !AcceptAlpn(view, offeredAlpn,
+                                   offeredAlpnOffset, offeredAlpnCount))
+                    return Fail(CorsacSecureTls_ClientError.Malformed, 50);
+                if (!_transcript.Update(
+                        _messageWire, 0, wireCount))
+                    return Fail(
+                        CorsacSecureTls_ClientError.ResourceLimit, 80);
+                expected = CorsacSecureTls_HandshakeType.Certificate;
+            }
+            else if (type == CorsacSecureTls_HandshakeType.Certificate)
+            {
+                if (!AcceptCertificate(_messageBody, bodyCount))
+                    return false;
+                if (!_transcript.Update(
+                        _messageWire, 0, wireCount))
+                    return Fail(
+                        CorsacSecureTls_ClientError.ResourceLimit, 80);
+                expected = CorsacSecureTls_HandshakeType.CertificateVerify;
+            }
+            else if (type
+                     == CorsacSecureTls_HandshakeType.CertificateVerify)
+            {
+                if (!AcceptCertificateVerify(_messageBody, bodyCount))
+                    return false;
+                if (!_transcript.Update(
+                        _messageWire, 0, wireCount))
+                    return Fail(
+                        CorsacSecureTls_ClientError.ResourceLimit, 80);
+                ReleaseCertificates();
+                expected = CorsacSecureTls_HandshakeType.Finished;
+            }
+            else
+            {
+                if (!AcceptServerFinished(_messageBody, bodyCount))
+                    return false;
+                if (!_transcript.Update(
+                        _messageWire, 0, wireCount))
+                    return Fail(
+                        CorsacSecureTls_ClientError.ResourceLimit, 80);
+                return SendClientFinishedAndActivateApplicationKeys();
+            }
+        }
+    }
+
+    private bool AcceptAlpn(
+        CorsacSecureTls_EncryptedExtensionsView view,
+        byte[] offered, long offeredOffset, long offeredCount)
+    {
+        _selectedAlpn = new byte[0];
+        if (!view.HasAlpn) return true;
+        int count = (int)view.AlpnLength;
+        byte[] selected = new byte[count];
+        if (!view.CopyAlpn(selected, 0)
+            || !AlpnWasOffered(
+                selected, offered, offeredOffset, offeredCount))
+        {
+            CorsacSecureCrypto_Bytes.Zero(selected, 0, selected.Length);
+            return false;
+        }
+        _selectedAlpn = selected;
+        return true;
+    }
+
+    // The certificates copied out of the message and handed to the policy;
+    // the leaf's key kept for CertificateVerify.
+    private bool AcceptCertificate(byte[] body, int bodyCount)
+    {
+        CorsacSecureTls_CertificateMessageView message =
+            new CorsacSecureTls_CertificateMessageView();
+        if (!message.ParseServer(body, 0, bodyCount)
+            || message.CertificateCount < 1
+            || message.CertificateCount > MaximumCertificates)
+            return Fail(CorsacSecureTls_ClientError.Certificate, 42);
+        ReleaseCertificates();
+        for (int i = 0; i < message.CertificateCount; i = i + 1)
+        {
+            long count = message.CertificateLength(i);
+            if (count < 1 || count > 1048576)
+                return Fail(
+                    CorsacSecureTls_ClientError.ResourceLimit, 42);
+            _certificates[i] = new byte[(int)count];
+            _certificateOffsets[i] = 0;
+            _certificateCounts[i] = count;
+            if (!message.CopyCertificate(i, _certificates[i], 0))
+                return Fail(CorsacSecureTls_ClientError.Certificate, 42);
+        }
+        int alert = 42;
+        if (_policy == null
+            || !_policy.Accept(_certificates, message.CertificateCount,
+                               _peerKey, out alert))
+            return Fail(CorsacSecureTls_ClientError.Certificate,
+                        alert > 0 && alert < 256 ? alert : 42);
+        if (_peerKey.Algorithm == CorsacSecureTls_PeerKeyAlgorithm.None)
+            return Fail(CorsacSecureTls_ClientError.Certificate, 43);
+        return true;
+    }
+
+    private bool AcceptCertificateVerify(byte[] body, int bodyCount)
+    {
+        CorsacSecureTls_CertificateVerifyView view =
+            new CorsacSecureTls_CertificateVerifyView();
+        if (_peerKey.Algorithm == CorsacSecureTls_PeerKeyAlgorithm.None
+            || !view.Parse(body, 0, bodyCount)
+            || view.SignatureLength > _signature.Length
+            || !view.CopySignature(_signature, 0)
+            || !_transcript.Hash(_hash, 0)
+            || !CorsacSecureTls_CertificateVerifyView
+                    .BuildServerSignedContent(
+                        _hash, 0, _signedContent, 0))
+            return Fail(CorsacSecureTls_ClientError.Malformed, 50);
+
+        bool okay = false;
+        if (view.Scheme
+                == CorsacSecureTls_SignatureScheme.EcdsaSecp256r1Sha256
+            && _peerKey.Algorithm
+                == CorsacSecureTls_PeerKeyAlgorithm.P256)
+        {
+            CorsacSecureCrypto_P256Workspace pWorkspace;
+            okay = GetP256(out pWorkspace)
+                && pWorkspace.VerifySha256Der(
+                _peerKey.Key, 0, _peerKey.Key.Length,
+                _signedContent, 0, _signedContent.Length,
+                _signature, 0, view.SignatureLength);
+        }
+        else if (view.Scheme == CorsacSecureTls_SignatureScheme.Ed25519
+                 && _peerKey.Algorithm
+                    == CorsacSecureTls_PeerKeyAlgorithm.Ed25519
+                 && view.SignatureLength == 64)
+        {
+            CorsacSecureCrypto_Ed25519Workspace edWorkspace;
+            okay = GetEd25519(out edWorkspace)
+                && edWorkspace.CheckSignature(
+                _peerKey.Key, 0,
+                _signedContent, 0, _signedContent.Length,
+                _signature, 0);
+        }
+        else if (view.Scheme
+                    == CorsacSecureTls_SignatureScheme.RsaPssRsaeSha256
+                 && _peerKey.Algorithm
+                    == CorsacSecureTls_PeerKeyAlgorithm.Rsa
+                 && HashOne(_signedContent, 0,
+                            _signedContent.Length, _hash))
+        {
+            CorsacSecureCrypto_RsaWorkspace rsaWorkspace;
+            okay = GetRsa(out rsaWorkspace)
+                && rsaWorkspace.VerifyPssSha256(
+                _peerKey.Key, 0,
+                _peerKey.Key.Length, _peerKey.RsaExponent,
+                _signature, 0, view.SignatureLength,
+                _hash, 0);
+        }
+        CorsacSecureCrypto_Bytes.Zero(
+            _signature, 0, _signature.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _signedContent, 0, _signedContent.Length);
+        CorsacSecureCrypto_Bytes.Zero(_hash, 0, _hash.Length);
+        ClosePublicKeyWorkspaces();
+        if (!okay) return Fail(
+            CorsacSecureTls_ClientError.Authentication, 51);
+        return true;
+    }
+
+    private bool AcceptServerFinished(byte[] body, int bodyCount)
+    {
+        bool okay = _transcript.Hash(_hash, 0)
+            && _schedule.FinishedVerifyData(
+                _serverHandshakeTraffic, 0,
+                _hash, 0, _verifyData, 0)
+            && CorsacSecureTls_Finished.Verify(
+                body, 0, bodyCount, _verifyData, 0);
+        CorsacSecureCrypto_Bytes.Zero(_hash, 0, _hash.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _verifyData, 0, _verifyData.Length);
+        if (!okay) return Fail(
+            CorsacSecureTls_ClientError.Authentication, 51);
+        return true;
+    }
+
+    private bool SendClientFinishedAndActivateApplicationKeys()
+    {
+        byte[] clientLabel = Bytes("c ap traffic");
+        byte[] serverLabel = Bytes("s ap traffic");
+        bool okay = _transcript.Hash(_hash, 0)
+            && _schedule.DeriveSecret(
+                _masterSecret, 0,
+                clientLabel, 0, clientLabel.Length,
+                _hash, 0, _clientApplicationTraffic, 0)
+            && _schedule.DeriveSecret(
+                _masterSecret, 0,
+                serverLabel, 0, serverLabel.Length,
+                _hash, 0, _serverApplicationTraffic, 0)
+            && _schedule.FinishedVerifyData(
+                _clientHandshakeTraffic, 0,
+                _hash, 0, _verifyData, 0)
+            && CorsacSecureTls_Finished.Build(
+                _verifyData, 0, _messageWire, 0)
+            && _records.ReplaceReceiving(
+                _suite, _serverApplicationTraffic, 0)
+            && _records.Send(
+                CorsacSecureTls_ContentType.Handshake,
+                _messageWire, 0, 36, 0)
+            && _transcript.Update(_messageWire, 0, 36)
+            && _records.ReplaceSending(
+                _suite, _clientApplicationTraffic, 0);
+        CorsacSecureCrypto_Bytes.Zero(
+            clientLabel, 0, clientLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            serverLabel, 0, serverLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(_hash, 0, _hash.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _verifyData, 0, _verifyData.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _messageWire, 0, 36);
+        CorsacSecureCrypto_Bytes.Zero(
+            _masterSecret, 0, _masterSecret.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _clientHandshakeTraffic, 0,
+            _clientHandshakeTraffic.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _serverHandshakeTraffic, 0,
+            _serverHandshakeTraffic.Length);
+        if (!okay) return Fail(
+            CorsacSecureTls_ClientError.ProtocolState, 80);
+        return true;
+    }
+
+    private bool ReadHandshake(out int type, out int bodyCount)
+    {
+        type = 0;
+        bodyCount = 0;
+        while (true)
+        {
+            if (_messages.TryTake(
+                    _messageBody, 0, _messageBody.Length,
+                    out type, out bodyCount))
+            {
+                _messageWire[0] = (byte)type;
+                _messageWire[1] = (byte)(bodyCount >> 16);
+                _messageWire[2] = (byte)(bodyCount >> 8);
+                _messageWire[3] = (byte)bodyCount;
+                if (!CorsacSecureCrypto_Bytes.Copy(
+                        _messageWire, 4,
+                        _messageBody, 0, bodyCount))
+                    return Fail(
+                        CorsacSecureTls_ClientError.ProtocolState, 80);
+                return true;
+            }
+            if (_messages.Error != 0) return Fail(QueueError(), 50);
+            int contentType = 0;
+            long contentCount = 0;
+            if (!_records.Receive(_record, 0, _record.Length,
+                                  out contentType, out contentCount))
+                return Fail(RecordError(), 80);
+            if (contentType == CorsacSecureTls_ContentType.ChangeCipherSpec)
+            {
+                if (contentCount != 1 || _record[0] != 1)
+                    return Fail(
+                        CorsacSecureTls_ClientError.Malformed, 10);
+                continue;
+            }
+            if (contentType == CorsacSecureTls_ContentType.Alert)
+                return HandleAlert(_record, 0, contentCount, true);
+            if (contentType != CorsacSecureTls_ContentType.Handshake)
+                return Fail(CorsacSecureTls_ClientError.Malformed, 10);
+            if (!_messages.Append(_record, 0, contentCount))
+                return Fail(QueueError(), 50);
+            CorsacSecureCrypto_Bytes.Zero(_record, 0, contentCount);
+        }
+    }
+
+    private bool ProcessPostHandshakeMessages()
+    {
+        while (true)
+        {
+            int type = 0;
+            int bodyCount = 0;
+            if (!_messages.TryTake(
+                    _messageBody, 0, _messageBody.Length,
+                    out type, out bodyCount))
+            {
+                if (_messages.Error != 0)
+                    return Fail(QueueError(), 50);
+                return true;
+            }
+            if (type == CorsacSecureTls_HandshakeType.KeyUpdate)
+            {
+                bool requested = false;
+                if (!CorsacSecureTls_KeyUpdate.Parse(
+                        _messageBody, 0, bodyCount, out requested)
+                    || !RotateReceivingKey())
+                    return Fail(
+                        CorsacSecureTls_ClientError.Malformed, 10);
+                if (requested && !SendKeyUpdate(false)) return false;
+            }
+            else if (type
+                     == CorsacSecureTls_HandshakeType.NewSessionTicket)
+            {
+                if (!ValidNewSessionTicket(_messageBody, bodyCount))
+                    return Fail(
+                        CorsacSecureTls_ClientError.Malformed, 50);
+            }
+            else return Fail(
+                CorsacSecureTls_ClientError.Malformed, 10);
+            CorsacSecureCrypto_Bytes.Zero(
+                _messageBody, 0, bodyCount);
+        }
+    }
+
+    private bool SendKeyUpdate(bool requestPeer)
+    {
+        if (!CorsacSecureTls_KeyUpdate.Build(
+                requestPeer, _messageWire, 0)
+            || !_records.Send(
+                CorsacSecureTls_ContentType.Handshake,
+                _messageWire, 0, 5, 0))
+            return Fail(RecordError(), 80);
+        byte[] next = new byte[32];
+        bool okay = _schedule.NextTrafficSecret(
+                _clientApplicationTraffic, 0, next, 0)
+            && _records.ReplaceSending(_suite, next, 0)
+            && CorsacSecureCrypto_Bytes.Copy(
+                _clientApplicationTraffic, 0, next, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(next, 0, next.Length);
+        CorsacSecureCrypto_Bytes.Zero(_messageWire, 0, 5);
+        if (!okay) return Fail(
+            CorsacSecureTls_ClientError.ProtocolState, 80);
+        return true;
+    }
+
+    private bool RotateReceivingKey()
+    {
+        byte[] next = new byte[32];
+        bool okay = _schedule.NextTrafficSecret(
+                _serverApplicationTraffic, 0, next, 0)
+            && _records.ReplaceReceiving(_suite, next, 0)
+            && CorsacSecureCrypto_Bytes.Copy(
+                _serverApplicationTraffic, 0, next, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(next, 0, next.Length);
+        return okay;
+    }
+
+    private bool HandleAlert(
+        byte[] body, long offset, long count, bool duringHandshake)
+    {
+        int level = 0;
+        int description = 0;
+        if (!CorsacSecureTls_Alert.Parse(
+                body, offset, count, out level, out description))
+            return Fail(CorsacSecureTls_ClientError.Malformed, 50);
+        if (description == CorsacSecureTls_Alert.CloseNotify
+            && !duringHandshake)
+        {
+            _peerClosed = true;
+            _state = CorsacSecureTls_ClientState.PeerClosed;
+            if (!_sentClose) SendCloseNotify();
+            return false;
+        }
+        _peerAlert = description;
+        _error = CorsacSecureTls_ClientError.PeerAlert;
+        _state = CorsacSecureTls_ClientState.Failed;
+        _records.Close();
+        ClosePublicKeyWorkspaces();
+        EraseSecrets();
+        return false;
+    }
+
+    // The Hello codec is shared with future SHA-384 providers and advertises
+    // their RSA schemes.  This SHA-256 client removes 0805 and 0806 from the
+    // exact encoded value so a peer cannot choose a verifier we do not have.
+    private static int RestrictClientHelloSignatures(
+        byte[] bytes, int count)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(bytes, 0, count)
+            || count < 45 || (bytes[0] & 255) != 1) return 0;
+        int at = 4 + 2 + 32;
+        int session = bytes[at] & 255;
+        at = at + 1 + session;
+        if (at + 2 > count) return 0;
+        int suites = U16(bytes, at);
+        at = at + 2 + suites;
+        if (at + 1 > count) return 0;
+        int compression = bytes[at] & 255;
+        at = at + 1 + compression;
+        if (at + 2 > count) return 0;
+        int extensionsLengthOffset = at;
+        int extensions = U16(bytes, at);
+        at = at + 2;
+        int end = at + extensions;
+        if (end != count) return 0;
+        while (at < end)
+        {
+            if (end - at < 4) return 0;
+            int type = U16(bytes, at);
+            int length = U16(bytes, at + 2);
+            int data = at + 4;
+            if (length > end - data) return 0;
+            if (type == 13)
+            {
+                if (length < 2 || U16(bytes, data) != length - 2)
+                    return 0;
+                int source = data + 2;
+                int sourceEnd = data + length;
+                int destination = source;
+                while (source < sourceEnd)
+                {
+                    if (sourceEnd - source < 2) return 0;
+                    int scheme = U16(bytes, source);
+                    if (scheme != 0x0805 && scheme != 0x0806)
+                    {
+                        bytes[destination] = bytes[source];
+                        bytes[destination + 1] = bytes[source + 1];
+                        destination = destination + 2;
+                    }
+                    source = source + 2;
+                }
+                int removed = sourceEnd - destination;
+                if (removed == 0) return count;
+                int tail = count - sourceEnd;
+                for (int i = 0; i < tail; i = i + 1)
+                    bytes[destination + i] = bytes[sourceEnd + i];
+                for (int i = count - removed; i < count; i = i + 1)
+                    bytes[i] = 0;
+                Put16(bytes, data, length - 2 - removed);
+                Put16(bytes, at + 2, length - removed);
+                Put16(bytes, extensionsLengthOffset,
+                      extensions - removed);
+                Put24(bytes, 1, count - 4 - removed);
+                return count - removed;
+            }
+            at = data + length;
+        }
+        return 0;
+    }
+
+    private static bool AlpnWasOffered(
+        byte[] selected, byte[] offered, long offeredOffset,
+        long offeredCount)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(
+                offered, offeredOffset, offeredCount)) return false;
+        long at = offeredOffset;
+        long end = offeredOffset + offeredCount;
+        while (at < end)
+        {
+            int count = offered[(int)at] & 255;
+            at = at + 1;
+            if (count == 0 || count > end - at) return false;
+            if (count == selected.Length
+                && CorsacSecureCrypto_Bytes.Equal(
+                    selected, 0, offered, at, count)) return true;
+            at = at + count;
+        }
+        return false;
+    }
+
+    private static bool ValidNewSessionTicket(byte[] body, int count)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(body, 0, count)
+            || count < 13) return false;
+        int at = 8;
+        int nonce = body[at] & 255;
+        at = at + 1;
+        if (nonce > count - at - 4) return false;
+        at = at + nonce;
+        int ticket = U16(body, at);
+        at = at + 2;
+        if (ticket == 0 || ticket > count - at - 2) return false;
+        at = at + ticket;
+        int extensions = U16(body, at);
+        at = at + 2;
+        if (extensions != count - at) return false;
+        int end = count;
+        int seen = 0;
+        int[] types = new int[64];
+        while (at < end)
+        {
+            if (end - at < 4 || seen >= types.Length) return false;
+            int type = U16(body, at);
+            int length = U16(body, at + 2);
+            at = at + 4;
+            if (length > end - at) return false;
+            for (int i = 0; i < seen; i = i + 1)
+                if (types[i] == type) return false;
+            types[seen] = type;
+            seen = seen + 1;
+            at = at + length;
+        }
+        return at == end;
+    }
+
+    private static byte[] DnsBytes(string text)
+    {
+        if (text == null || text.Length < 1 || text.Length > 253)
+            return new byte[0];
+        byte[] answer = new byte[text.Length];
+        for (int i = 0; i < text.Length; i = i + 1)
+        {
+            int value = (int)text[i];
+            if (value < 1 || value > 127)
+                return new byte[0];
+            answer[i] = (byte)value;
+        }
+        if (!CorsacSecureTls_HelloCodec.ValidDnsName(
+                answer, 0, answer.Length)) return new byte[0];
+        return answer;
+    }
+
+    private static byte[] Bytes(string text)
+    {
+        byte[] answer = new byte[text.Length];
+        for (int i = 0; i < text.Length; i = i + 1)
+            answer[i] = (byte)text[i];
+        return answer;
+    }
+
+    private static bool HashOne(
+        byte[] input, long offset, long count, byte[] output)
+    {
+        CorsacSecureCrypto_Hash hash = new CorsacSecureCrypto_Hash();
+        bool okay = hash.Update(input, offset, count)
+            && hash.Finish(output, 0);
+        hash.Close();
+        return okay;
+    }
+
+    private bool GetX25519(
+        out CorsacSecureCrypto_X25519Workspace workspace)
+    {
+        if (_x25519 == null)
+            _x25519 = new CorsacSecureCrypto_X25519Workspace();
+        workspace = _x25519;
+        return true;
+    }
+
+    private bool GetP256(
+        out CorsacSecureCrypto_P256Workspace workspace)
+    {
+        if (_p256 == null)
+            _p256 = new CorsacSecureCrypto_P256Workspace();
+        workspace = _p256;
+        return true;
+    }
+
+    private bool GetRsa(
+        out CorsacSecureCrypto_RsaWorkspace workspace)
+    {
+        if (_rsa == null)
+            _rsa = new CorsacSecureCrypto_RsaWorkspace();
+        workspace = _rsa;
+        return true;
+    }
+
+    private bool GetEd25519(
+        out CorsacSecureCrypto_Ed25519Workspace workspace)
+    {
+        if (_ed25519 == null)
+            _ed25519 = new CorsacSecureCrypto_Ed25519Workspace();
+        workspace = _ed25519;
+        return true;
+    }
+
+    private void ClosePublicKeyWorkspaces()
+    {
+        if (_x25519 != null) { _x25519.Close(); _x25519 = null; }
+        if (_p256 != null) { _p256.Close(); _p256 = null; }
+        if (_rsa != null) { _rsa.Close(); _rsa = null; }
+        if (_ed25519 != null) { _ed25519.Close(); _ed25519 = null; }
+    }
+
+    private int MessageWireCount()
+    {
+        return 4 + (((_messageWire[1] & 255) << 16)
+                  | ((_messageWire[2] & 255) << 8)
+                  | (_messageWire[3] & 255));
+    }
+
+    private int RecordError()
+    {
+        if (_records.Error == CorsacSecureTls_RecordStream.IoFailure)
+            return CorsacSecureTls_ClientError.Io;
+        if (_records.Error
+                == CorsacSecureTls_RecordStream.AuthenticationFailure)
+            return CorsacSecureTls_ClientError.Authentication;
+        if (_records.Error
+                == CorsacSecureTls_RecordStream.ResourceLimit)
+            return CorsacSecureTls_ClientError.ResourceLimit;
+        return CorsacSecureTls_ClientError.Malformed;
+    }
+
+    private int QueueError()
+    {
+        if (_messages.Error
+                == CorsacSecureTls_HandshakeQueue.ResourceLimit)
+            return CorsacSecureTls_ClientError.ResourceLimit;
+        return CorsacSecureTls_ClientError.Malformed;
+    }
+
+    private void ReleaseCertificates()
+    {
+        for (int i = 0; i < _certificates.Length; i = i + 1)
+        {
+            _certificates[i] = new byte[0];
+            _certificateOffsets[i] = 0;
+            _certificateCounts[i] = 0;
+        }
+        _peerKey.Clear();
+    }
+
+    private bool Fail(int error, int alertDescription)
+    {
+        if (_state == CorsacSecureTls_ClientState.Closed) return false;
+        if (_error == 0) _error = error;
+        if (_failing) return false;
+        _failing = true;
+        if (_state == CorsacSecureTls_ClientState.Handshaking
+            || _state == CorsacSecureTls_ClientState.Open)
+        {
+            byte[] alert = new byte[] { 2, (byte)alertDescription };
+            _records.Send(
+                CorsacSecureTls_ContentType.Alert,
+                alert, 0, alert.Length, 0);
+            CorsacSecureCrypto_Bytes.Zero(alert, 0, alert.Length);
+        }
+        _state = CorsacSecureTls_ClientState.Failed;
+        _records.Close();
+        ClosePublicKeyWorkspaces();
+        EraseSecrets();
+        _failing = false;
+        return false;
+    }
+
+    private void EraseSecrets()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_xPrivate, 0, _xPrivate.Length);
+        CorsacSecureCrypto_Bytes.Zero(_pPrivate, 0, _pPrivate.Length);
+        CorsacSecureCrypto_Bytes.Zero(_shared, 0, _shared.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _earlySecret, 0, _earlySecret.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _handshakeSecret, 0, _handshakeSecret.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _masterSecret, 0, _masterSecret.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _clientHandshakeTraffic, 0,
+            _clientHandshakeTraffic.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _serverHandshakeTraffic, 0,
+            _serverHandshakeTraffic.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _clientApplicationTraffic, 0,
+            _clientApplicationTraffic.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _serverApplicationTraffic, 0,
+            _serverApplicationTraffic.Length);
+        CorsacSecureCrypto_Bytes.Zero(_hash, 0, _hash.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _verifyData, 0, _verifyData.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _signature, 0, _signature.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _signedContent, 0, _signedContent.Length);
+        ReleaseCertificates();
+    }
+
+    private static int U16(byte[] bytes, int offset)
+    {
+        return ((bytes[offset] & 255) << 8)
+             | (bytes[offset + 1] & 255);
+    }
+
+    private static void Put16(byte[] bytes, int offset, int value)
+    {
+        bytes[offset] = (byte)(value >> 8);
+        bytes[offset + 1] = (byte)value;
+    }
+
+    private static void Put24(byte[] bytes, int offset, int value)
+    {
+        bytes[offset] = (byte)(value >> 16);
+        bytes[offset + 1] = (byte)(value >> 8);
+        bytes[offset + 2] = (byte)value;
+    }
+}

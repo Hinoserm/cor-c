@@ -1,0 +1,70 @@
+// CORSAC/SECURE TLS shared-library root.
+//
+// TLS imports the protocol-neutral Crypto library.  It does not import SSH;
+// these are sibling secure transports with different wire contracts.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal static class CorsacSecureTls_Info
+{
+    public const long KeySchedule = 1;
+    public const long Transcript = 2;
+    public const long ChaChaRecord = 4;
+    public const long CertificateView = 8;
+    public const long AesGcmRecord = 16;
+    public const long HandshakeMessages = 32;
+    public const long HelloNegotiation = 64;
+    public const long ChainValidation = 128;
+    public const long RecordStream = 256;
+    public const long Client = 512;
+
+    public static string Product()
+    {
+        return "CORSAC/SECURE TLS for CORSAC/OS";
+    }
+
+    public static long Capabilities()
+    {
+        long installed = CorsacSecureCrypto_Info.Capabilities();
+        long baseRequired = CorsacSecureCrypto_Info.ByteOperations
+                          | CorsacSecureCrypto_Info.Sha256
+                          | CorsacSecureCrypto_Info.HmacSha256
+                          | CorsacSecureCrypto_Info.HkdfSha256;
+        if ((installed & baseRequired) != baseRequired) return 0;
+
+        long answer = KeySchedule | Transcript | HandshakeMessages
+                    | HelloNegotiation;
+        long chachaRequired = CorsacSecureCrypto_Info.ChaCha20
+                            | CorsacSecureCrypto_Info.Poly1305
+                            | CorsacSecureCrypto_Info.ChaChaPoly;
+        if ((installed & chachaRequired) == chachaRequired)
+            answer = answer | ChaChaRecord;
+
+        long aesRequired = CorsacSecureCrypto_Info.Aes
+                         | CorsacSecureCrypto_Info.AesGcm;
+        if ((installed & aesRequired) == aesRequired)
+            answer = answer | AesGcmRecord;
+        bool hasCertificateView =
+            (installed & CorsacSecureCrypto_Info.DerPem) != 0;
+        if (hasCertificateView)
+            answer = answer | CertificateView;
+        long chainRequired = CorsacSecureCrypto_Info.DerPem
+                           | CorsacSecureCrypto_Info.Sha256
+                           | CorsacSecureCrypto_Info.Rsa
+                           | CorsacSecureCrypto_Info.P256
+                           | CorsacSecureCrypto_Info.Ed25519;
+        if ((installed & chainRequired) == chainRequired)
+            answer = answer | ChainValidation;
+        if ((answer & (ChaChaRecord | AesGcmRecord)) != 0)
+            answer = answer | RecordStream;
+        long clientCrypto = CorsacSecureCrypto_Info.X25519
+                          | CorsacSecureCrypto_Info.P256;
+        long clientTls = HelloNegotiation | ChainValidation | RecordStream;
+        if ((installed & clientCrypto) == clientCrypto
+            && (answer & clientTls) == clientTls)
+            answer = answer | Client;
+        return answer;
+    }
+}

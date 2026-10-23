@@ -1,0 +1,104 @@
+// THE SERVER'S CERTIFICATE IS DECIDED OUTSIDE THE ENGINE. The engine hands
+// the certificates the server sent to a policy (CorsacSecureTls_Certificate-
+// Policy), which says whether to go on and, when it does, gives back the
+// leaf's public key. SslStream's policy is .NET's: X509Chain over the
+// public X509Certificate2 API, the host name matched, and the program's
+// RemoteCertificateValidationCallback asked when there is one. The engine
+// itself never trusts or distrusts a certificate; it only insists that the
+// server proves it holds the key (CertificateVerify), whatever the policy
+// accepted.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal static class CorsacSecureTls_PeerKeyAlgorithm
+{
+    public const int None = 0;
+    public const int P256 = 1;
+    public const int Ed25519 = 2;
+    public const int Rsa = 3;
+}
+
+/// The leaf's public key in the form the signature checks take: a P-256
+/// point (65 bytes, uncompressed), an Ed25519 key (32 bytes), or an RSA
+/// modulus and exponent. Set from a SubjectPublicKeyInfo's algorithm,
+/// parameters and key bits, as X509Certificate2.PublicKey gives them.
+internal sealed class CorsacSecureTls_PeerKey
+{
+    const string RsaOid = "1.2.840.113549.1.1.1";
+    const string EcOid = "1.2.840.10045.2.1";
+    const string Ed25519Oid = "1.3.101.112";
+    static readonly byte[] P256Parameters = { 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 };
+
+    public int Algorithm;
+    public byte[] Key = new byte[0];
+    public long RsaExponent;
+
+    /// Whether the key is one the engine can check signatures with: P-256,
+    /// Ed25519, or RSA of 2048 to 8192 bits with an odd exponent of at least
+    /// 3, as the strict certificate reader admits them.
+    public bool Set(string oid, byte[] parameters, byte[] value)
+    {
+        Clear();
+        if (oid == EcOid)
+        {
+            if (!Same(parameters, P256Parameters) || value.Length != 65 || value[0] != 4) return false;
+            Key = (byte[])value.Clone();
+            Algorithm = CorsacSecureTls_PeerKeyAlgorithm.P256;
+            return true;
+        }
+        if (oid == Ed25519Oid)
+        {
+            if (parameters.Length != 0 || value.Length != 32) return false;
+            Key = (byte[])value.Clone();
+            Algorithm = CorsacSecureTls_PeerKeyAlgorithm.Ed25519;
+            return true;
+        }
+        if (oid == RsaOid)
+        {
+            if (parameters.Length != 0 && !(parameters.Length == 2 && parameters[0] == 5 && parameters[1] == 0)) return false;
+            CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(value, 0, value.Length);
+            long offset, count;
+            if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count) || !top.AtEnd()) return false;
+            CorsacSecureCrypto_DerCursor rsa = new CorsacSecureCrypto_DerCursor(value, offset, count);
+            long modulusOffset, modulusCount, exponentOffset, exponentCount;
+            if (!rsa.TryReadPositiveInteger(out modulusOffset, out modulusCount) || modulusCount < 256 || modulusCount > 1024) return false;
+            if (!rsa.TryReadPositiveInteger(out exponentOffset, out exponentCount) || exponentCount > 7 || !rsa.AtEnd()) return false;
+            long exponent = 0;
+            for (long i = exponentOffset; i < exponentOffset + exponentCount; i++) exponent = (exponent << 8) | value[(int)i];
+            if (exponent < 3 || (exponent & 1) == 0) return false;
+            Key = new byte[(int)modulusCount];
+            Array.Copy(value, (int)modulusOffset, Key, 0, (int)modulusCount);
+            RsaExponent = exponent;
+            Algorithm = CorsacSecureTls_PeerKeyAlgorithm.Rsa;
+            return true;
+        }
+        return false;
+    }
+
+    public void Clear()
+    {
+        CorsacSecureCrypto_Bytes.Zero(Key, 0, Key.Length);
+        Key = new byte[0];
+        RsaExponent = 0;
+        Algorithm = CorsacSecureTls_PeerKeyAlgorithm.None;
+    }
+
+    static bool Same(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+}
+
+/// Whether the server's certificates are accepted.
+internal abstract class CorsacSecureTls_CertificatePolicy
+{
+    /// The certificates the server sent, leaf first (`count` of them): yes,
+    /// with `key` set from the leaf; or no, with `alert` the alert to send
+    /// (42 bad_certificate, 43 unsupported_certificate, 45
+    /// certificate_expired, 48 unknown_ca).
+    public abstract bool Accept(byte[][] certificates, int count, CorsacSecureTls_PeerKey key, out int alert);
+}

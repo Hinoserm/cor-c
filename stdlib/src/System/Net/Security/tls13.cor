@@ -1,0 +1,787 @@
+// CORSAC/SECURE TLS cryptographic core for TLS 1.3 (RFC 8446).
+//
+// This module intentionally stops below handshake parsing, certificates and
+// sockets.  It supplies the SHA-256 key schedule, a bounded transcript, and
+// the TLS_CHACHA20_POLY1305_SHA256 record transform needed by those layers.
+// Protocol bytes are always byte[]; strings are never used as binary storage.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal static class CorsacSecureTls_ContentType
+{
+    public const int ChangeCipherSpec = 20;
+    public const int Alert = 21;
+    public const int Handshake = 22;
+    public const int ApplicationData = 23;
+
+    public static bool IsTls13(int value)
+    {
+        return value == ChangeCipherSpec || value == Alert
+            || value == Handshake || value == ApplicationData;
+    }
+}
+
+// Reusable RFC 8446 Section 7 key-schedule workspace.  It retains no caller
+// secret between calls; all intermediate PRKs and traffic keys are erased.
+internal class CorsacSecureTls_KeySchedule
+{
+    public const int HashBytes = 32;
+    public const int Aes128KeyBytes = 16;
+    public const int ChaChaKeyBytes = 32;
+    public const int IvBytes = 12;
+    public const int InvalidArgument = 1;
+    public const int ProtocolState = 9;
+
+    private byte[] _info;
+    private byte[] _zero;
+    private byte[] _emptyHash;
+    private byte[] _first;
+    private byte[] _second;
+    private byte[] _key;
+    private byte[] _iv;
+    private byte[] _derivedLabel;
+    private byte[] _finishedLabel;
+    private byte[] _keyLabel;
+    private byte[] _ivLabel;
+    private byte[] _updateLabel;
+    private byte[] _empty;
+    private bool _failed;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureTls_KeySchedule()
+    {
+        // uint16 length + uint8 full-label length + full label + uint8
+        // context length + context, at both one-octet maxima.
+        _info = new byte[514];
+        _zero = new byte[HashBytes];
+        _emptyHash = new byte[] {
+            0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,
+            0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24,
+            0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,
+            0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55
+        };
+        _first = new byte[HashBytes];
+        _second = new byte[HashBytes];
+        _key = new byte[ChaChaKeyBytes];
+        _iv = new byte[IvBytes];
+        _derivedLabel = new byte[] {
+            0x64,0x65,0x72,0x69,0x76,0x65,0x64
+        };
+        _finishedLabel = new byte[] {
+            0x66,0x69,0x6e,0x69,0x73,0x68,0x65,0x64
+        };
+        _keyLabel = new byte[] { 0x6b,0x65,0x79 };
+        _ivLabel = new byte[] { 0x69,0x76 };
+        _updateLabel = new byte[] {
+            0x74,0x72,0x61,0x66,0x66,0x69,0x63,0x20,0x75,0x70,0x64
+        };
+        _empty = new byte[0];
+    }
+
+    public int Error => _error;
+    public bool Failed => _failed;
+    public bool Closed => _closed;
+
+    // HKDF-Expand-Label(Secret, Label, Context, Length).  The label argument
+    // is the unprefixed protocol label in octets; this method supplies
+    // "tls13 ".  SHA-256 secrets are exactly 32 octets in this ABI.
+    public bool ExpandLabel(
+        byte[] secret, long secretOffset,
+        byte[] label, long labelOffset, long labelCount,
+        byte[] context, long contextOffset, long contextCount,
+        byte[] output, long outputOffset, long outputCount)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                secret, secretOffset, HashBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                label, labelOffset, labelCount)
+            || labelCount > 249
+            || !CorsacSecureCrypto_Bytes.Range(
+                context, contextOffset, contextCount)
+            || contextCount > 255
+            || outputCount > 65535
+            || outputCount > CorsacSecureCrypto_Hkdf.MaximumSha256Output
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, outputCount))
+            return Fail(InvalidArgument, false);
+
+        _info[0] = (byte)(outputCount >> 8);
+        _info[1] = (byte)outputCount;
+        _info[2] = (byte)(6 + labelCount);
+        _info[3] = 0x74; // t
+        _info[4] = 0x6c; // l
+        _info[5] = 0x73; // s
+        _info[6] = 0x31; // 1
+        _info[7] = 0x33; // 3
+        _info[8] = 0x20; // space
+        int at = 9;
+        CorsacSecureCrypto_Bytes.Copy(
+            _info, at, label, labelOffset, labelCount);
+        at = at + (int)labelCount;
+        _info[at] = (byte)contextCount;
+        at = at + 1;
+        CorsacSecureCrypto_Bytes.Copy(
+            _info, at, context, contextOffset, contextCount);
+        at = at + (int)contextCount;
+
+        bool okay = CorsacSecureCrypto_Hkdf.Expand(
+            secret, secretOffset, HashBytes,
+            _info, 0, at, output, outputOffset, outputCount);
+        CorsacSecureCrypto_Bytes.Zero(_info, 0, at);
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    // With no PSK, RFC 8446 uses a Hash.length string of zero octets rather
+    // than a zero-length IKM.  A non-empty caller PSK is accepted verbatim.
+    public bool EarlySecret(
+        byte[] psk, long pskOffset, long pskCount,
+        byte[] output, long outputOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(psk, pskOffset, pskCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, HashBytes))
+            return Fail(InvalidArgument, false);
+
+        byte[] material = pskCount == 0 ? _zero : psk;
+        long materialOffset = pskCount == 0 ? 0 : pskOffset;
+        long materialCount = pskCount == 0 ? HashBytes : pskCount;
+        bool okay = CorsacSecureCrypto_Hkdf.Extract(
+            _zero, 0, HashBytes,
+            material, materialOffset, materialCount, _first, 0);
+        if (okay)
+            okay = CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _first, 0, HashBytes);
+        EraseIntermediates();
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    public bool HandshakeSecret(
+        byte[] earlySecret, long earlyOffset,
+        byte[] sharedSecret, long sharedOffset, long sharedCount,
+        byte[] output, long outputOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                earlySecret, earlyOffset, HashBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                sharedSecret, sharedOffset, sharedCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, HashBytes))
+            return Fail(InvalidArgument, false);
+
+        byte[] material = sharedCount == 0 ? _zero : sharedSecret;
+        long materialOffset = sharedCount == 0 ? 0 : sharedOffset;
+        long materialCount = sharedCount == 0 ? HashBytes : sharedCount;
+        bool okay = DeriveInternal(
+                earlySecret, earlyOffset,
+                _derivedLabel, _emptyHash, _first)
+            && CorsacSecureCrypto_Hkdf.Extract(
+                _first, 0, HashBytes,
+                material, materialOffset, materialCount, _second, 0);
+        if (okay)
+            okay = CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _second, 0, HashBytes);
+        EraseIntermediates();
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    public bool MasterSecret(
+        byte[] handshakeSecret, long handshakeOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                handshakeSecret, handshakeOffset, HashBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, HashBytes))
+            return Fail(InvalidArgument, false);
+
+        bool okay = DeriveInternal(
+                handshakeSecret, handshakeOffset,
+                _derivedLabel, _emptyHash, _first)
+            && CorsacSecureCrypto_Hkdf.Extract(
+                _first, 0, HashBytes,
+                _zero, 0, HashBytes, _second, 0);
+        if (okay)
+            okay = CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _second, 0, HashBytes);
+        EraseIntermediates();
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    public bool DeriveSecret(
+        byte[] secret, long secretOffset,
+        byte[] label, long labelOffset, long labelCount,
+        byte[] transcriptHash, long transcriptOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                transcriptHash, transcriptOffset, HashBytes))
+            return Fail(InvalidArgument, false);
+        return ExpandLabel(secret, secretOffset,
+                           label, labelOffset, labelCount,
+                           transcriptHash, transcriptOffset, HashBytes,
+                           output, outputOffset, HashBytes);
+    }
+
+    public bool FinishedVerifyData(
+        byte[] baseKey, long baseOffset,
+        byte[] transcriptHash, long transcriptOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                baseKey, baseOffset, HashBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                transcriptHash, transcriptOffset, HashBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, HashBytes))
+            return Fail(InvalidArgument, false);
+
+        bool okay = ExpandLabel(
+                baseKey, baseOffset,
+                _finishedLabel, 0, _finishedLabel.Length,
+                _empty, 0, 0, _first, 0, HashBytes)
+            && CorsacSecureCrypto_Hmac.Sha256(
+                _first, 0, HashBytes,
+                transcriptHash, transcriptOffset, HashBytes,
+                _second, 0);
+        if (okay)
+            okay = CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _second, 0, HashBytes);
+        EraseIntermediates();
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    // Derives both outputs privately before committing either.  The output
+    // ranges therefore must be disjoint but may alias the traffic secret.
+    public bool TrafficKeyIv(
+        byte[] trafficSecret, long trafficOffset,
+        byte[] key, long keyOffset,
+        byte[] iv, long ivOffset)
+    {
+        return TrafficKeyIvSized(
+            trafficSecret, trafficOffset,
+            key, keyOffset, ChaChaKeyBytes,
+            iv, ivOffset);
+    }
+
+    // AES-128-GCM uses a 16-octet traffic key while ChaCha20/Poly1305 uses
+    // 32.  Keeping the length explicit prevents a suite change from silently
+    // deriving the wrong HKDF output.  Both outputs are staged privately
+    // before either caller range is changed.
+    public bool TrafficKeyIvSized(
+        byte[] trafficSecret, long trafficOffset,
+        byte[] key, long keyOffset, long keyCount,
+        byte[] iv, long ivOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                trafficSecret, trafficOffset, HashBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                key, keyOffset, keyCount)
+            || (keyCount != Aes128KeyBytes
+                && keyCount != ChaChaKeyBytes)
+            || !CorsacSecureCrypto_Bytes.Range(iv, ivOffset, IvBytes)
+            || Overlap(key, keyOffset, keyCount,
+                       iv, ivOffset, IvBytes))
+            return Fail(InvalidArgument, false);
+
+        bool okay = ExpandLabel(
+                trafficSecret, trafficOffset,
+                _keyLabel, 0, _keyLabel.Length,
+                _empty, 0, 0, _key, 0, keyCount)
+            && ExpandLabel(
+                trafficSecret, trafficOffset,
+                _ivLabel, 0, _ivLabel.Length,
+                _empty, 0, 0, _iv, 0, IvBytes);
+        if (okay)
+            okay = CorsacSecureCrypto_Bytes.Copy(
+                        key, keyOffset, _key, 0, keyCount)
+                 && CorsacSecureCrypto_Bytes.Copy(
+                        iv, ivOffset, _iv, 0, IvBytes);
+        CorsacSecureCrypto_Bytes.Zero(_key, 0, _key.Length);
+        CorsacSecureCrypto_Bytes.Zero(_iv, 0, _iv.Length);
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    public bool NextTrafficSecret(
+        byte[] trafficSecret, long trafficOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                trafficSecret, trafficOffset, HashBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, HashBytes))
+            return Fail(InvalidArgument, false);
+
+        bool okay = ExpandLabel(
+            trafficSecret, trafficOffset,
+            _updateLabel, 0, _updateLabel.Length,
+            _empty, 0, 0, _first, 0, HashBytes);
+        if (okay)
+            okay = CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _first, 0, HashBytes);
+        EraseIntermediates();
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        CorsacSecureCrypto_Bytes.Zero(_info, 0, _info.Length);
+        CorsacSecureCrypto_Bytes.Zero(_zero, 0, _zero.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _emptyHash, 0, _emptyHash.Length);
+        EraseIntermediates();
+        CorsacSecureCrypto_Bytes.Zero(_key, 0, _key.Length);
+        CorsacSecureCrypto_Bytes.Zero(_iv, 0, _iv.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _derivedLabel, 0, _derivedLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _finishedLabel, 0, _finishedLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(_keyLabel, 0, _keyLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(_ivLabel, 0, _ivLabel.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _updateLabel, 0, _updateLabel.Length);
+        _failed = true;
+        _closed = true;
+    }
+
+    private bool DeriveInternal(
+        byte[] secret, long secretOffset,
+        byte[] label, byte[] transcriptHash, byte[] output)
+    {
+        return ExpandLabel(
+            secret, secretOffset, label, 0, label.Length,
+            transcriptHash, 0, HashBytes, output, 0, HashBytes);
+    }
+
+    private void EraseIntermediates()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_first, 0, _first.Length);
+        CorsacSecureCrypto_Bytes.Zero(_second, 0, _second.Length);
+    }
+
+    private bool Ready()
+    {
+        if (_closed || _failed || _error != 0)
+            return Fail(ProtocolState, true);
+        return true;
+    }
+
+    private bool Fail(int error, bool terminal)
+    {
+        if (_error == 0) _error = error;
+        if (terminal) _failed = true;
+        return false;
+    }
+
+    private static bool Overlap(
+        byte[] first, long firstOffset, long firstCount,
+        byte[] second, long secondOffset, long secondCount)
+    {
+        if (firstCount == 0 || secondCount == 0
+            || Sys.Word(first) != Sys.Word(second)) return false;
+        return firstOffset < secondOffset + secondCount
+            && secondOffset < firstOffset + firstCount;
+    }
+}
+
+// A bounded transcript makes snapshots and the HelloRetryRequest message_hash
+// transform possible without adding a clone operation to the shared SHA-256
+// ABI.  Hashing a snapshot is read-only and leaves the transcript appendable.
+internal class CorsacSecureTls_Transcript
+{
+    public const int HashBytes = 32;
+    public const int MessageHash = 254;
+    public const int InvalidArgument = 1;
+    public const int ProtocolState = 9;
+    public const int HardMaximumBytes = 1048576;
+
+    private byte[] _bytes;
+    private byte[] _digest;
+    private int _count;
+    private bool _failed;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureTls_Transcript(int maximumBytes)
+    {
+        bool good = maximumBytes >= 0
+                 && maximumBytes <= HardMaximumBytes;
+        _bytes = new byte[good ? maximumBytes : 0];
+        _digest = new byte[HashBytes];
+        if (!good) _error = InvalidArgument;
+    }
+
+    public int Error => _error;
+    public int Count => _count;
+    public int Capacity => _bytes.Length;
+    public bool Failed => _failed;
+    public bool Closed => _closed;
+
+    public bool Update(byte[] bytes, long offset, long count)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(bytes, offset, count)
+            || count > _bytes.Length - _count)
+            return Fail(InvalidArgument, false);
+        if (!CorsacSecureCrypto_Bytes.Copy(
+                _bytes, _count, bytes, offset, count))
+            return Fail(ProtocolState, true);
+        _count = _count + (int)count;
+        return true;
+    }
+
+    public bool Hash(byte[] output, long outputOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, HashBytes))
+            return Fail(InvalidArgument, false);
+        bool okay = ComputeHash(_digest)
+            && CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _digest, 0, HashBytes);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    // Replaces ClientHello1 with Handshake.message_hash(Hash(ClientHello1))
+    // exactly as RFC 8446 Section 4.4.1 requires before appending an HRR.
+    public bool RollupForHelloRetryRequest()
+    {
+        if (!Ready()) return false;
+        if (_bytes.Length < 36) return Fail(InvalidArgument, false);
+        if (!ComputeHash(_digest)) return Fail(ProtocolState, true);
+
+        CorsacSecureCrypto_Bytes.Zero(_bytes, 0, _count);
+        _bytes[0] = MessageHash;
+        _bytes[1] = 0;
+        _bytes[2] = 0;
+        _bytes[3] = HashBytes;
+        CorsacSecureCrypto_Bytes.Copy(
+            _bytes, 4, _digest, 0, HashBytes);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        _count = 36;
+        return true;
+    }
+
+    public bool Reset()
+    {
+        if (!Ready()) return false;
+        CorsacSecureCrypto_Bytes.Zero(_bytes, 0, _count);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        _count = 0;
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        CorsacSecureCrypto_Bytes.Zero(_bytes, 0, _bytes.Length);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        _count = 0;
+        _failed = true;
+        _closed = true;
+    }
+
+    private bool ComputeHash(byte[] output)
+    {
+        CorsacSecureCrypto_Hash hash =
+            new CorsacSecureCrypto_Hash();
+        bool okay = hash.Update(_bytes, 0, _count)
+            && hash.Finish(output, 0);
+        hash.Close();
+        return okay;
+    }
+
+    private bool Ready()
+    {
+        if (_closed || _failed || _error != 0)
+            return Fail(ProtocolState, true);
+        return true;
+    }
+
+    private bool Fail(int error, bool terminal)
+    {
+        if (_error == 0) _error = error;
+        if (terminal) _failed = true;
+        return false;
+    }
+}
+
+// One directional TLS_CHACHA20_POLY1305_SHA256 record key.  A key update
+// creates a fresh object and resets the sequence number to zero.  This object
+// enforces RFC 8446 record bounds and the 2^36-byte ChaCha20/Poly1305 usage
+// guidance, and becomes permanently unusable after any bad record.
+internal class CorsacSecureTls_ChaChaRecord
+{
+    public const int InvalidArgument = 1;
+    public const int MalformedRecord = 2;
+    public const int AuthenticationFailure = 4;
+    public const int ProtocolState = 9;
+
+    public const int MaximumContentBytes = 16384;
+    public const int MaximumInnerBytes = 16624;
+    public const int MaximumCiphertextBytes = 16640;
+    public const int MaximumRecordBytes = 16645;
+    public const long UsageBytesLimit = 68719476736L;
+
+    private CorsacSecureCrypto_ChaChaPoly1305 _aead;
+    private byte[] _iv;
+    private byte[] _nonce;
+    private byte[] _header;
+    private byte[] _inner;
+    private bool _sending;
+    private ulong _sequence;
+    private long _bytes;
+    private bool _exhausted;
+    private bool _failed;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureTls_ChaChaRecord(
+        byte[] trafficSecret, long trafficOffset, bool sending)
+    {
+        _iv = new byte[12];
+        _nonce = new byte[12];
+        _header = new byte[5];
+        _inner = new byte[MaximumInnerBytes];
+        _sending = sending;
+
+        byte[] key = new byte[32];
+        CorsacSecureTls_KeySchedule schedule =
+            new CorsacSecureTls_KeySchedule();
+        bool okay = schedule.TrafficKeyIv(
+            trafficSecret, trafficOffset, key, 0, _iv, 0);
+        schedule.Close();
+        _aead = new CorsacSecureCrypto_ChaChaPoly1305(
+            key, 0, MaximumInnerBytes);
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        if (!okay || _aead.Error != 0) _error = InvalidArgument;
+    }
+
+    public int Error => _error;
+    public bool Sending => _sending;
+    public ulong Sequence => _sequence;
+    public long Bytes => _bytes;
+    public bool Exhausted => _exhausted;
+    public bool Failed => _failed;
+    public bool Closed => _closed;
+    public bool NeedsKeyUpdate => _exhausted || _bytes >= UsageBytesLimit;
+
+    public bool Seal(
+        int contentType,
+        byte[] content, long contentOffset, long contentCount,
+        long paddingCount,
+        byte[] record, long recordOffset, out long recordCount)
+    {
+        recordCount = 0;
+        if (!Ready(true)) return false;
+        if (!CorsacSecureTls_ContentType.IsTls13(contentType)
+            || contentCount > MaximumContentBytes
+            || !CorsacSecureCrypto_Bytes.Range(
+                content, contentOffset, contentCount)
+            || paddingCount < 0
+            || paddingCount > MaximumInnerBytes - contentCount - 1)
+            return Fail(InvalidArgument, false);
+
+        long innerCount = contentCount + 1 + paddingCount;
+        long fragmentCount = innerCount + 16;
+        long total = fragmentCount + 5;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                record, recordOffset, total)
+            || !CanAdvance(innerCount))
+            return Fail(InvalidArgument, false);
+
+        CorsacSecureCrypto_Bytes.Copy(
+            _inner, 0, content, contentOffset, contentCount);
+        _inner[(int)contentCount] = (byte)contentType;
+        CorsacSecureCrypto_Bytes.Zero(
+            _inner, contentCount + 1, paddingCount);
+
+        _header[0] = CorsacSecureTls_ContentType.ApplicationData;
+        _header[1] = 3;
+        _header[2] = 3;
+        _header[3] = (byte)(fragmentCount >> 8);
+        _header[4] = (byte)fragmentCount;
+        SetNonce();
+
+        bool okay = _aead.Seal(
+                _nonce, 0, _header, 0, 5,
+                _inner, 0, innerCount,
+                record, recordOffset + 5,
+                record, recordOffset + 5 + innerCount)
+            && CorsacSecureCrypto_Bytes.Copy(
+                record, recordOffset, _header, 0, 5);
+        EraseRecordWork(innerCount);
+        if (!okay) return Fail(ProtocolState, true);
+
+        recordCount = total;
+        Advance(innerCount);
+        return true;
+    }
+
+    public bool Open(
+        byte[] record, long recordOffset, long recordCount,
+        byte[] content, long contentOffset,
+        out int contentType, out long contentCount)
+    {
+        contentType = 0;
+        contentCount = 0;
+        if (!Ready(false)) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                record, recordOffset, recordCount))
+            return Fail(InvalidArgument, false);
+        if (recordCount < 22)
+            return Fail(MalformedRecord, true);
+
+        int at = (int)recordOffset;
+        int fragmentCount = (record[at + 3] << 8) | record[at + 4];
+        if (record[at] != CorsacSecureTls_ContentType.ApplicationData
+            || record[at + 1] != 3 || record[at + 2] != 3
+            || fragmentCount < 17
+            || fragmentCount > MaximumCiphertextBytes
+            || recordCount != fragmentCount + 5L)
+            return Fail(MalformedRecord, true);
+
+        int innerCount = fragmentCount - 16;
+        if (!CanAdvance(innerCount)) return Fail(ProtocolState, true);
+        SetNonce();
+        bool okay = _aead.Open(
+            _nonce, 0,
+            record, recordOffset, 5,
+            record, recordOffset + 5, innerCount,
+            record, recordOffset + 5 + innerCount,
+            _inner, 0);
+        CorsacSecureCrypto_Bytes.Zero(_nonce, 0, _nonce.Length);
+        if (!okay)
+        {
+            CorsacSecureCrypto_Bytes.Zero(
+                _inner, 0, innerCount);
+            return Fail(AuthenticationFailure, true);
+        }
+
+        int typeAt = innerCount - 1;
+        while (typeAt >= 0 && _inner[typeAt] == 0) typeAt = typeAt - 1;
+        if (typeAt < 0
+            || !CorsacSecureTls_ContentType.IsTls13(_inner[typeAt])
+            || typeAt > MaximumContentBytes)
+        {
+            CorsacSecureCrypto_Bytes.Zero(
+                _inner, 0, innerCount);
+            return Fail(MalformedRecord, true);
+        }
+
+        if (!CorsacSecureCrypto_Bytes.Range(
+                content, contentOffset, typeAt))
+        {
+            CorsacSecureCrypto_Bytes.Zero(
+                _inner, 0, innerCount);
+            return Fail(InvalidArgument, true);
+        }
+        okay = CorsacSecureCrypto_Bytes.Copy(
+            content, contentOffset, _inner, 0, typeAt);
+        int decodedType = _inner[typeAt];
+        CorsacSecureCrypto_Bytes.Zero(_inner, 0, innerCount);
+        if (!okay) return Fail(ProtocolState, true);
+
+        contentType = decodedType;
+        contentCount = typeAt;
+        Advance(innerCount);
+        return true;
+    }
+
+    // Public for protocol tests and future record transports.  The output is
+    // committed only after the complete XOR-derived nonce has been staged.
+    public static bool DeriveNonce(
+        byte[] iv, long ivOffset, ulong sequence,
+        byte[] output, long outputOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(iv, ivOffset, 12)
+            || !CorsacSecureCrypto_Bytes.Range(output, outputOffset, 12))
+            return false;
+        byte[] nonce = new byte[12];
+        CorsacSecureCrypto_Bytes.Copy(nonce, 0, iv, ivOffset, 12);
+        for (int i = 0; i < 8; i = i + 1)
+            nonce[4 + i] = (byte)(nonce[4 + i]
+                ^ (byte)(sequence >> ((7 - i) * 8)));
+        bool okay = CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, nonce, 0, 12);
+        CorsacSecureCrypto_Bytes.Zero(nonce, 0, nonce.Length);
+        return okay;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        _aead.Close();
+        CorsacSecureCrypto_Bytes.Zero(_iv, 0, _iv.Length);
+        CorsacSecureCrypto_Bytes.Zero(_nonce, 0, _nonce.Length);
+        CorsacSecureCrypto_Bytes.Zero(_header, 0, _header.Length);
+        CorsacSecureCrypto_Bytes.Zero(_inner, 0, _inner.Length);
+        _failed = true;
+        _closed = true;
+    }
+
+    private void SetNonce()
+    {
+        CorsacSecureCrypto_Bytes.Copy(_nonce, 0, _iv, 0, 12);
+        for (int i = 0; i < 8; i = i + 1)
+            _nonce[4 + i] = (byte)(_nonce[4 + i]
+                ^ (byte)(_sequence >> ((7 - i) * 8)));
+    }
+
+    private bool CanAdvance(long count)
+    {
+        return count >= 0 && count <= UsageBytesLimit - _bytes;
+    }
+
+    private void Advance(long count)
+    {
+        _bytes = _bytes + count;
+        if (_sequence == (ulong)0xffffffffffffffff
+            || _bytes >= UsageBytesLimit)
+            _exhausted = true;
+        else
+            _sequence = _sequence + (ulong)1;
+    }
+
+    private void EraseRecordWork(long innerCount)
+    {
+        CorsacSecureCrypto_Bytes.Zero(_inner, 0, innerCount);
+        CorsacSecureCrypto_Bytes.Zero(_header, 0, _header.Length);
+        CorsacSecureCrypto_Bytes.Zero(_nonce, 0, _nonce.Length);
+    }
+
+    private bool Ready(bool sending)
+    {
+        if (_closed || _failed || _exhausted || _error != 0)
+            return Fail(ProtocolState, true);
+        if (_sending != sending) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    private bool Fail(int error, bool terminal)
+    {
+        if (_error == 0) _error = error;
+        if (terminal) _failed = true;
+        return false;
+    }
+}

@@ -1,0 +1,659 @@
+// CORSAC/SECURE TLS bounded TLS 1.3 handshake framing and message views.
+//
+// Records and handshake messages have independent boundaries.  The queue
+// below accepts authenticated handshake record content, joins fragments, and
+// returns one exact handshake body at a time.  Message views borrow caller-
+// owned byte[] storage; no protocol octets are placed in a COR-C# string.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal static class CorsacSecureTls_HandshakeType
+{
+    public const int ClientHello = 1;
+    public const int ServerHello = 2;
+    public const int NewSessionTicket = 4;
+    public const int EndOfEarlyData = 5;
+    public const int EncryptedExtensions = 8;
+    public const int Certificate = 11;
+    public const int CertificateRequest = 13;
+    public const int CertificateVerify = 15;
+    public const int Finished = 20;
+    public const int KeyUpdate = 24;
+    public const int MessageHash = 254;
+}
+
+internal static class CorsacSecureTls_SignatureScheme
+{
+    public const int EcdsaSecp256r1Sha256 = 0x0403;
+    public const int RsaPssRsaeSha256 = 0x0804;
+    public const int Ed25519 = 0x0807;
+    public const int RsaPssPssSha256 = 0x0809;
+
+    public static bool Supported(int value)
+    {
+        return value == EcdsaSecp256r1Sha256
+            || value == RsaPssRsaeSha256
+            || value == Ed25519
+            || value == RsaPssPssSha256;
+    }
+}
+
+// One bounded FIFO for authenticated TLSPlaintext handshake content.  An
+// incomplete message is ordinary (Error remains zero); malformed framing or
+// exhaustion is sticky and erases buffered protocol data.
+internal class CorsacSecureTls_HandshakeQueue
+{
+    public const int InvalidArgument = 1;
+    public const int Malformed = 2;
+    public const int ResourceLimit = 7;
+    public const int ProtocolState = 9;
+    public const int HeaderBytes = 4;
+    public const int MaximumHandshakeBytes = 1048576;
+
+    private byte[] _buffer;
+    private int _count;
+    private int _maximumMessage;
+    private int _error;
+    private bool _closed;
+
+    public CorsacSecureTls_HandshakeQueue(int maximumMessage)
+    {
+        if (maximumMessage < 1
+            || maximumMessage > MaximumHandshakeBytes)
+        {
+            _buffer = new byte[HeaderBytes];
+            _maximumMessage = 0;
+            _error = InvalidArgument;
+            return;
+        }
+        _maximumMessage = maximumMessage;
+        _buffer = new byte[maximumMessage + HeaderBytes];
+    }
+
+    public int Error => _error;
+    public bool Failed => _error != 0;
+    public bool Closed => _closed;
+    public int Buffered => _count;
+
+    public bool Append(byte[] input, long offset, long count)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(input, offset, count))
+            return Fail(InvalidArgument);
+        if (count > _buffer.Length - _count)
+            return Fail(ResourceLimit);
+        if (!CorsacSecureCrypto_Bytes.Copy(
+                _buffer, _count, input, offset, count))
+            return Fail(InvalidArgument);
+        _count = _count + (int)count;
+        return ValidateBufferedFraming();
+    }
+
+    // Answers false with Error == 0 when more authenticated record content is
+    // needed.  On success the complete body is copied and consumed; output is
+    // unchanged on every failure.
+    public bool TryTake(byte[] output, long outputOffset, long outputCapacity,
+                        out int type, out int bodyCount)
+    {
+        type = 0;
+        bodyCount = 0;
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, outputCapacity))
+            return Fail(InvalidArgument);
+        if (_count < HeaderBytes) return false;
+
+        int length = U24(_buffer, 1);
+        if (length < 0 || length > _maximumMessage)
+            return Fail(ResourceLimit);
+        if (_count < HeaderBytes + length) return false;
+        if (length > outputCapacity) return Fail(ResourceLimit);
+        if (!CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _buffer, HeaderBytes, length))
+            return Fail(InvalidArgument);
+
+        type = _buffer[0] & 255;
+        bodyCount = length;
+        int used = HeaderBytes + length;
+        int left = _count - used;
+        for (int i = 0; i < left; i = i + 1)
+            _buffer[i] = _buffer[used + i];
+        CorsacSecureCrypto_Bytes.Zero(_buffer, left, _count - left);
+        _count = left;
+        return ValidateBufferedFraming();
+    }
+
+    public bool Reset()
+    {
+        if (_closed) return false;
+        CorsacSecureCrypto_Bytes.Zero(_buffer, 0, _buffer.Length);
+        _count = 0;
+        _error = _maximumMessage > 0 ? 0 : InvalidArgument;
+        return _error == 0;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        CorsacSecureCrypto_Bytes.Zero(_buffer, 0, _buffer.Length);
+        _count = 0;
+        _closed = true;
+    }
+
+    private bool ValidateBufferedFraming()
+    {
+        int at = 0;
+        while (_count - at >= HeaderBytes)
+        {
+            int length = U24(_buffer, at + 1);
+            if (length > _maximumMessage) return Fail(ResourceLimit);
+            if (_count - at - HeaderBytes < length) return true;
+            at = at + HeaderBytes + length;
+        }
+        return true;
+    }
+
+    private bool Ready()
+    {
+        return !_closed && _error == 0;
+    }
+
+    private bool Fail(int error)
+    {
+        if (_error == 0) _error = error;
+        CorsacSecureCrypto_Bytes.Zero(_buffer, 0, _buffer.Length);
+        _count = 0;
+        return false;
+    }
+
+    private static int U24(byte[] bytes, int offset)
+    {
+        return ((bytes[offset] & 255) << 16)
+             | ((bytes[offset + 1] & 255) << 8)
+             | (bytes[offset + 2] & 255);
+    }
+}
+
+// RFC 8446 EncryptedExtensions.  Unknown extensions are retained only by the
+// transcript and ignored here, as required for extensibility.  Extensions
+// assigned to other handshake contexts are rejected when their identity is
+// known, and duplicates are never accepted.
+internal class CorsacSecureTls_EncryptedExtensionsView
+{
+    public const int InvalidArgument = 1;
+    public const int Malformed = 2;
+    public const int Unsupported = 3;
+    public const int ResourceLimit = 7;
+    public const int MaximumExtensions = 64;
+
+    private byte[] _body;
+    private int[] _types;
+    private int _extensionCount;
+    private long _alpnOffset;
+    private long _alpnCount;
+    private bool _hasAlpn;
+    private bool _earlyData;
+    private int _error;
+    private bool _valid;
+
+    public CorsacSecureTls_EncryptedExtensionsView()
+    {
+        _types = new int[MaximumExtensions];
+        Reset();
+    }
+
+    public bool Valid => _valid;
+    public int Error => _error;
+    public bool HasAlpn => _hasAlpn;
+    public long AlpnLength => _alpnCount;
+    public bool EarlyDataAccepted => _earlyData;
+
+    public bool Parse(byte[] body, long offset, long count)
+    {
+        Reset();
+        if (!CorsacSecureCrypto_Bytes.Range(body, offset, count)
+            || count < 2 || count > 65537) return Fail(InvalidArgument);
+        int extensions = U16(body, offset);
+        if (extensions != count - 2) return Fail(Malformed);
+        long at = offset + 2;
+        long end = offset + count;
+        while (at < end)
+        {
+            if (end - at < 4 || _extensionCount >= MaximumExtensions)
+                return Fail(ResourceLimit);
+            int type = U16(body, at);
+            int length = U16(body, at + 2);
+            at = at + 4;
+            if (length > end - at || Duplicate(type))
+                return Fail(Malformed);
+            _types[_extensionCount] = type;
+            _extensionCount = _extensionCount + 1;
+
+            if (ForbiddenHere(type)) return Fail(Malformed);
+            if (type == 0) // server_name acknowledgement is empty
+            {
+                if (length != 0) return Fail(Malformed);
+            }
+            else if (type == 16) // application_layer_protocol_negotiation
+            {
+                if (!ParseAlpn(body, at, length)) return false;
+            }
+            else if (type == 42) // early_data has empty extension_data
+            {
+                if (length != 0) return Fail(Malformed);
+                _earlyData = true;
+            }
+            at = at + length;
+        }
+        if (at != end) return Fail(Malformed);
+        _body = body;
+        _valid = true;
+        return true;
+    }
+
+    public bool CopyAlpn(byte[] output, long outputOffset)
+    {
+        return _valid && _hasAlpn
+            && CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _body, _alpnOffset, _alpnCount);
+    }
+
+    private bool ParseAlpn(byte[] body, long offset, int count)
+    {
+        if (count < 3 || U16(body, offset) != count - 2)
+            return Fail(Malformed);
+        int length = body[(int)offset + 2] & 255;
+        // A server selects exactly one nonempty protocol.
+        if (length == 0 || length != count - 3) return Fail(Malformed);
+        _hasAlpn = true;
+        _alpnOffset = offset + 3;
+        _alpnCount = length;
+        return true;
+    }
+
+    private bool Duplicate(int type)
+    {
+        for (int i = 0; i < _extensionCount; i = i + 1)
+            if (_types[i] == type) return true;
+        return false;
+    }
+
+    private static bool ForbiddenHere(int type)
+    {
+        // supported_versions, cookie, signature_algorithms,
+        // signature_algorithms_cert, key_share, pre_shared_key and PSK modes.
+        return type == 43 || type == 44 || type == 13 || type == 50
+            || type == 51 || type == 41 || type == 45;
+    }
+
+    private void Reset()
+    {
+        _body = new byte[0];
+        _extensionCount = 0;
+        _alpnOffset = 0;
+        _alpnCount = 0;
+        _hasAlpn = false;
+        _earlyData = false;
+        _error = 0;
+        _valid = false;
+    }
+
+    private bool Fail(int error)
+    {
+        _error = error;
+        _valid = false;
+        return false;
+    }
+
+    private static int U16(byte[] bytes, long offset)
+    {
+        return ((bytes[(int)offset] & 255) << 8)
+             | (bytes[(int)offset + 1] & 255);
+    }
+}
+
+// A server Certificate message with an empty certificate_request_context.
+// Each DER certificate remains a checked slice of the caller's body.  Per-
+// certificate extensions are structurally validated and otherwise retained
+// in the transcript for a higher policy layer to interpret when needed.
+internal class CorsacSecureTls_CertificateMessageView
+{
+    public const int InvalidArgument = 1;
+    public const int Malformed = 2;
+    public const int ResourceLimit = 7;
+    public const int MaximumCertificates = 8;
+    public const int MaximumMessageBytes = 1048576;
+
+    private byte[] _body;
+    private long[] _certificateOffsets;
+    private long[] _certificateCounts;
+    private long[] _extensionOffsets;
+    private long[] _extensionCounts;
+    private int _certificateCount;
+    private int _error;
+    private bool _valid;
+
+    public CorsacSecureTls_CertificateMessageView()
+    {
+        _certificateOffsets = new long[MaximumCertificates];
+        _certificateCounts = new long[MaximumCertificates];
+        _extensionOffsets = new long[MaximumCertificates];
+        _extensionCounts = new long[MaximumCertificates];
+        Reset();
+    }
+
+    public bool Valid => _valid;
+    public int Error => _error;
+    public int CertificateCount => _certificateCount;
+
+    public bool ParseServer(byte[] body, long offset, long count)
+    {
+        Reset();
+        if (!CorsacSecureCrypto_Bytes.Range(body, offset, count)
+            || count < 4 || count > MaximumMessageBytes)
+            return Fail(InvalidArgument);
+        int contextLength = body[(int)offset] & 255;
+        if (contextLength != 0) return Fail(Malformed);
+        long at = offset + 1;
+        int listLength = U24(body, at);
+        at = at + 3;
+        long end = offset + count;
+        if (listLength != end - at || listLength == 0)
+            return Fail(Malformed);
+
+        while (at < end)
+        {
+            if (end - at < 5) return Fail(Malformed);
+            if (_certificateCount >= MaximumCertificates)
+                return Fail(ResourceLimit);
+            int certificateLength = U24(body, at);
+            at = at + 3;
+            if (certificateLength == 0 || certificateLength > end - at - 2)
+                return Fail(Malformed);
+            _certificateOffsets[_certificateCount] = at;
+            _certificateCounts[_certificateCount] = certificateLength;
+            at = at + certificateLength;
+            int extensionLength = U16(body, at);
+            at = at + 2;
+            if (extensionLength > end - at) return Fail(Malformed);
+            _extensionOffsets[_certificateCount] = at;
+            _extensionCounts[_certificateCount] = extensionLength;
+            if (!ValidExtensionVector(body, at, extensionLength))
+                return Fail(Malformed);
+            at = at + extensionLength;
+            _certificateCount = _certificateCount + 1;
+        }
+        if (at != end || _certificateCount == 0) return Fail(Malformed);
+        _body = body;
+        _valid = true;
+        return true;
+    }
+
+    public long CertificateLength(int index)
+    {
+        return _valid && index >= 0 && index < _certificateCount
+            ? _certificateCounts[index] : 0;
+    }
+
+    public long ExtensionLength(int index)
+    {
+        return _valid && index >= 0 && index < _certificateCount
+            ? _extensionCounts[index] : 0;
+    }
+
+    public bool CopyCertificate(int index, byte[] output, long outputOffset)
+    {
+        return _valid && index >= 0 && index < _certificateCount
+            && CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _body,
+                _certificateOffsets[index], _certificateCounts[index]);
+    }
+
+    public bool CopyExtensions(int index, byte[] output, long outputOffset)
+    {
+        return _valid && index >= 0 && index < _certificateCount
+            && CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _body,
+                _extensionOffsets[index], _extensionCounts[index]);
+    }
+
+    private static bool ValidExtensionVector(
+        byte[] body, long offset, long count)
+    {
+        long at = offset;
+        long end = offset + count;
+        int seen = 0;
+        int[] types = new int[64];
+        while (at < end)
+        {
+            if (end - at < 4 || seen >= types.Length) return false;
+            int type = U16(body, at);
+            int length = U16(body, at + 2);
+            at = at + 4;
+            if (length > end - at) return false;
+            for (int i = 0; i < seen; i = i + 1)
+                if (types[i] == type) return false;
+            types[seen] = type;
+            seen = seen + 1;
+            at = at + length;
+        }
+        return at == end;
+    }
+
+    private void Reset()
+    {
+        _body = new byte[0];
+        _certificateCount = 0;
+        _error = 0;
+        _valid = false;
+    }
+
+    private bool Fail(int error)
+    {
+        _error = error;
+        _valid = false;
+        return false;
+    }
+
+    private static int U16(byte[] bytes, long offset)
+    {
+        return ((bytes[(int)offset] & 255) << 8)
+             | (bytes[(int)offset + 1] & 255);
+    }
+
+    private static int U24(byte[] bytes, long offset)
+    {
+        return ((bytes[(int)offset] & 255) << 16)
+             | ((bytes[(int)offset + 1] & 255) << 8)
+             | (bytes[(int)offset + 2] & 255);
+    }
+}
+
+internal class CorsacSecureTls_CertificateVerifyView
+{
+    public const int InvalidArgument = 1;
+    public const int Malformed = 2;
+    public const int Unsupported = 3;
+    public const int MaximumSignatureBytes = 1024;
+    public const int SignedContentBytes = 130;
+
+    private byte[] _body;
+    private int _scheme;
+    private long _signatureOffset;
+    private long _signatureCount;
+    private int _error;
+    private bool _valid;
+
+    public bool Valid => _valid;
+    public int Error => _error;
+    public int Scheme => _scheme;
+    public long SignatureLength => _signatureCount;
+
+    public bool Parse(byte[] body, long offset, long count)
+    {
+        Reset();
+        if (!CorsacSecureCrypto_Bytes.Range(body, offset, count)
+            || count < 5 || count > MaximumSignatureBytes + 4)
+            return Fail(InvalidArgument);
+        _scheme = U16(body, offset);
+        int signatureLength = U16(body, offset + 2);
+        if (signatureLength == 0 || signatureLength != count - 4)
+            return Fail(Malformed);
+        if (!CorsacSecureTls_SignatureScheme.Supported(_scheme))
+            return Fail(Unsupported);
+        _body = body;
+        _signatureOffset = offset + 4;
+        _signatureCount = signatureLength;
+        _valid = true;
+        return true;
+    }
+
+    public bool CopySignature(byte[] output, long outputOffset)
+    {
+        return _valid && CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, _body,
+            _signatureOffset, _signatureCount);
+    }
+
+    // RFC 8446 Section 4.4.3 input for a server CertificateVerify:
+    // 64 spaces || context-string || 0 || transcript-hash.
+    public static bool BuildServerSignedContent(
+        byte[] transcriptHash, long hashOffset,
+        byte[] output, long outputOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(
+                transcriptHash, hashOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, SignedContentBytes)) return false;
+        int at = (int)outputOffset;
+        for (int i = 0; i < 64; i = i + 1) output[at + i] = 0x20;
+        at = at + 64;
+        byte[] context = new byte[] {
+            0x54,0x4c,0x53,0x20,0x31,0x2e,0x33,0x2c,
+            0x20,0x73,0x65,0x72,0x76,0x65,0x72,0x20,
+            0x43,0x65,0x72,0x74,0x69,0x66,0x69,0x63,
+            0x61,0x74,0x65,0x56,0x65,0x72,0x69,0x66,
+            0x79
+        };
+        CorsacSecureCrypto_Bytes.Copy(
+            output, at, context, 0, context.Length);
+        at = at + context.Length;
+        output[at] = 0;
+        at = at + 1;
+        bool okay = CorsacSecureCrypto_Bytes.Copy(
+            output, at, transcriptHash, hashOffset, 32);
+        CorsacSecureCrypto_Bytes.Zero(context, 0, context.Length);
+        return okay;
+    }
+
+    private void Reset()
+    {
+        _body = new byte[0];
+        _scheme = 0;
+        _signatureOffset = 0;
+        _signatureCount = 0;
+        _error = 0;
+        _valid = false;
+    }
+
+    private bool Fail(int error)
+    {
+        _error = error;
+        _valid = false;
+        return false;
+    }
+
+    private static int U16(byte[] bytes, long offset)
+    {
+        return ((bytes[(int)offset] & 255) << 8)
+             | (bytes[(int)offset + 1] & 255);
+    }
+}
+
+internal static class CorsacSecureTls_Finished
+{
+    public const int VerifyDataBytes = 32;
+
+    public static bool Verify(byte[] body, long bodyOffset, long bodyCount,
+                              byte[] expected, long expectedOffset)
+    {
+        return bodyCount == VerifyDataBytes
+            && CorsacSecureCrypto_Bytes.Range(
+                body, bodyOffset, bodyCount)
+            && CorsacSecureCrypto_Bytes.Range(
+                expected, expectedOffset, VerifyDataBytes)
+            && CorsacSecureCrypto_Bytes.Equal(
+                body, bodyOffset, expected, expectedOffset, VerifyDataBytes);
+    }
+
+    public static bool Build(byte[] verifyData, long verifyDataOffset,
+                             byte[] output, long outputOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(
+                verifyData, verifyDataOffset, VerifyDataBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, 4 + VerifyDataBytes)) return false;
+        output[(int)outputOffset] = (byte)CorsacSecureTls_HandshakeType.Finished;
+        output[(int)outputOffset + 1] = 0;
+        output[(int)outputOffset + 2] = 0;
+        output[(int)outputOffset + 3] = VerifyDataBytes;
+        return CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset + 4,
+            verifyData, verifyDataOffset, VerifyDataBytes);
+    }
+}
+
+internal static class CorsacSecureTls_Alert
+{
+    public const int Warning = 1;
+    public const int Fatal = 2;
+    public const int CloseNotify = 0;
+
+    public static bool Parse(byte[] body, long offset, long count,
+                             out int level, out int description)
+    {
+        level = 0;
+        description = 0;
+        if (!CorsacSecureCrypto_Bytes.Range(body, offset, count)
+            || count != 2) return false;
+        int foundLevel = body[(int)offset] & 255;
+        if (foundLevel != Warning && foundLevel != Fatal) return false;
+        level = foundLevel;
+        description = body[(int)offset + 1] & 255;
+        return true;
+    }
+}
+
+internal static class CorsacSecureTls_KeyUpdate
+{
+    public const int UpdateNotRequested = 0;
+    public const int UpdateRequested = 1;
+
+    public static bool Parse(byte[] body, long offset, long count,
+                             out bool peerRequestsUpdate)
+    {
+        peerRequestsUpdate = false;
+        if (!CorsacSecureCrypto_Bytes.Range(body, offset, count)
+            || count != 1) return false;
+        int request = body[(int)offset] & 255;
+        if (request != UpdateNotRequested && request != UpdateRequested)
+            return false;
+        peerRequestsUpdate = request == UpdateRequested;
+        return true;
+    }
+
+    public static bool Build(bool requestPeer,
+                             byte[] output, long outputOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(output, outputOffset, 5))
+            return false;
+        output[(int)outputOffset] = (byte)CorsacSecureTls_HandshakeType.KeyUpdate;
+        output[(int)outputOffset + 1] = 0;
+        output[(int)outputOffset + 2] = 0;
+        output[(int)outputOffset + 3] = 1;
+        output[(int)outputOffset + 4] = requestPeer ? (byte)1 : (byte)0;
+        return true;
+    }
+}

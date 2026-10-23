@@ -1,0 +1,21 @@
+// The TLS and SSL versions, as .NET's System.Security.Authentication has
+// them (in System.Net.Primitives, which is our System.Net library). The
+// TLS client here speaks TLS 1.3 alone; the older values are the names
+// programs pass, and asking for only those is refused at the handshake.
+
+using System;
+
+namespace System.Security.Authentication;
+
+[Flags]
+public enum SslProtocols
+{
+    None = 0,
+    Ssl2 = 12,
+    Ssl3 = 48,
+    Tls = 192,
+    Default = 240,
+    Tls11 = 768,
+    Tls12 = 3072,
+    Tls13 = 12288,
+}

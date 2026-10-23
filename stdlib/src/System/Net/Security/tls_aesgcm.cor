@@ -1,0 +1,257 @@
+// CORSAC/SECURE TLS AES-128-GCM record protection for TLS 1.3.
+//
+// One instance protects one traffic direction and one traffic secret.  A TLS
+// KeyUpdate creates a fresh object.  Authentication completes in private
+// storage before Open releases any plaintext.  Any malformed or unauthentic
+// record permanently poisons the instance so callers cannot accidentally
+// continue a desynchronized connection.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal class CorsacSecureTls_AesGcmRecord
+{
+    public const int InvalidArgument = 1;
+    public const int MalformedRecord = 2;
+    public const int AuthenticationFailure = 4;
+    public const int ProtocolState = 9;
+
+    public const int MaximumContentBytes = 16384;
+    public const int MaximumInnerBytes = 16624;
+    public const int MaximumCiphertextBytes = 16640;
+    public const int MaximumRecordBytes = 16645;
+
+    // RFC 8446 Section 5.5 derives approximately 2^24.5 full-size records
+    // for AES-GCM at a 2^-57 confidentiality advantage.  Updating at 2^24 is
+    // a simple conservative boundary and is far below sequence exhaustion.
+    public const long UsageRecordLimit = 16777216L;
+
+    private CorsacSecureCrypto_Gcm _aead;
+    private byte[] _iv;
+    private byte[] _nonce;
+    private byte[] _header;
+    private byte[] _inner;
+    private bool _sending;
+    private ulong _sequence;
+    private long _records;
+    private bool _exhausted;
+    private bool _failed;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureTls_AesGcmRecord(
+        byte[] trafficSecret, long trafficOffset, bool sending)
+    {
+        _iv = new byte[12];
+        _nonce = new byte[12];
+        _header = new byte[5];
+        _inner = new byte[MaximumInnerBytes];
+        _sending = sending;
+
+        byte[] key = new byte[16];
+        CorsacSecureTls_KeySchedule schedule =
+            new CorsacSecureTls_KeySchedule();
+        bool okay = schedule.TrafficKeyIvSized(
+            trafficSecret, trafficOffset,
+            key, 0, key.Length, _iv, 0);
+        schedule.Close();
+        _aead = new CorsacSecureCrypto_Gcm(key, 0, key.Length);
+        CorsacSecureCrypto_Bytes.Zero(key, 0, key.Length);
+        if (!okay || _aead.Error != 0) _error = InvalidArgument;
+    }
+
+    public int Error => _error;
+    public bool Sending => _sending;
+    public ulong Sequence => _sequence;
+    public long Records => _records;
+    public bool Exhausted => _exhausted;
+    public bool Failed => _failed;
+    public bool Closed => _closed;
+    public bool NeedsKeyUpdate => _exhausted
+        || _records >= UsageRecordLimit;
+
+    public bool Seal(
+        int contentType,
+        byte[] content, long contentOffset, long contentCount,
+        long paddingCount,
+        byte[] record, long recordOffset, out long recordCount)
+    {
+        recordCount = 0;
+        if (!Ready(true)) return false;
+        if (!CorsacSecureTls_ContentType.IsTls13(contentType)
+            || contentCount > MaximumContentBytes
+            || !CorsacSecureCrypto_Bytes.Range(
+                content, contentOffset, contentCount)
+            || paddingCount < 0
+            || paddingCount > MaximumInnerBytes - contentCount - 1)
+            return Fail(InvalidArgument, false);
+
+        long innerCount = contentCount + 1 + paddingCount;
+        long fragmentCount = innerCount + 16;
+        long total = fragmentCount + 5;
+        if (!CorsacSecureCrypto_Bytes.Range(record, recordOffset, total)
+            || !CanAdvance())
+            return Fail(InvalidArgument, false);
+
+        CorsacSecureCrypto_Bytes.Copy(
+            _inner, 0, content, contentOffset, contentCount);
+        _inner[(int)contentCount] = (byte)contentType;
+        CorsacSecureCrypto_Bytes.Zero(
+            _inner, contentCount + 1, paddingCount);
+
+        _header[0] = CorsacSecureTls_ContentType.ApplicationData;
+        _header[1] = 3;
+        _header[2] = 3;
+        _header[3] = (byte)(fragmentCount >> 8);
+        _header[4] = (byte)fragmentCount;
+        SetNonce();
+
+        bool okay = _aead.Seal(
+                _nonce, 0, _nonce.Length,
+                _header, 0, _header.Length,
+                _inner, 0, innerCount,
+                record, recordOffset + 5,
+                record, recordOffset + 5 + innerCount, 16)
+            && CorsacSecureCrypto_Bytes.Copy(
+                record, recordOffset, _header, 0, _header.Length);
+        EraseRecordWork(innerCount);
+        if (!okay) return Fail(ProtocolState, true);
+
+        recordCount = total;
+        Advance();
+        return true;
+    }
+
+    public bool Open(
+        byte[] record, long recordOffset, long recordCount,
+        byte[] content, long contentOffset,
+        out int contentType, out long contentCount)
+    {
+        contentType = 0;
+        contentCount = 0;
+        if (!Ready(false)) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                record, recordOffset, recordCount))
+            return Fail(InvalidArgument, false);
+        if (recordCount < 22)
+            return Fail(MalformedRecord, true);
+
+        int at = (int)recordOffset;
+        int fragmentCount = (record[at + 3] << 8) | record[at + 4];
+        if (record[at] != CorsacSecureTls_ContentType.ApplicationData
+            || record[at + 1] != 3 || record[at + 2] != 3
+            || fragmentCount < 17
+            || fragmentCount > MaximumCiphertextBytes
+            || recordCount != fragmentCount + 5L)
+            return Fail(MalformedRecord, true);
+
+        int innerCount = fragmentCount - 16;
+        if (!CanAdvance()) return Fail(ProtocolState, true);
+        SetNonce();
+        bool okay = _aead.Open(
+            _nonce, 0, _nonce.Length,
+            record, recordOffset, 5,
+            record, recordOffset + 5, innerCount,
+            record, recordOffset + 5 + innerCount, 16,
+            _inner, 0);
+        CorsacSecureCrypto_Bytes.Zero(_nonce, 0, _nonce.Length);
+        if (!okay)
+        {
+            CorsacSecureCrypto_Bytes.Zero(_inner, 0, innerCount);
+            return Fail(AuthenticationFailure, true);
+        }
+
+        int typeAt = innerCount - 1;
+        while (typeAt >= 0 && _inner[typeAt] == 0) typeAt = typeAt - 1;
+        if (typeAt < 0
+            || !CorsacSecureTls_ContentType.IsTls13(_inner[typeAt])
+            || typeAt > MaximumContentBytes)
+        {
+            CorsacSecureCrypto_Bytes.Zero(_inner, 0, innerCount);
+            return Fail(MalformedRecord, true);
+        }
+
+        if (!CorsacSecureCrypto_Bytes.Range(
+                content, contentOffset, typeAt))
+        {
+            CorsacSecureCrypto_Bytes.Zero(_inner, 0, innerCount);
+            return Fail(InvalidArgument, true);
+        }
+        okay = CorsacSecureCrypto_Bytes.Copy(
+            content, contentOffset, _inner, 0, typeAt);
+        int decodedType = _inner[typeAt];
+        CorsacSecureCrypto_Bytes.Zero(_inner, 0, innerCount);
+        if (!okay) return Fail(ProtocolState, true);
+
+        contentType = decodedType;
+        contentCount = typeAt;
+        Advance();
+        return true;
+    }
+
+    public static bool DeriveNonce(
+        byte[] iv, long ivOffset, ulong sequence,
+        byte[] output, long outputOffset)
+    {
+        return CorsacSecureTls_ChaChaRecord.DeriveNonce(
+            iv, ivOffset, sequence, output, outputOffset);
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        _aead.Close();
+        CorsacSecureCrypto_Bytes.Zero(_iv, 0, _iv.Length);
+        CorsacSecureCrypto_Bytes.Zero(_nonce, 0, _nonce.Length);
+        CorsacSecureCrypto_Bytes.Zero(_header, 0, _header.Length);
+        CorsacSecureCrypto_Bytes.Zero(_inner, 0, _inner.Length);
+        _failed = true;
+        _closed = true;
+    }
+
+    private void SetNonce()
+    {
+        CorsacSecureCrypto_Bytes.Copy(_nonce, 0, _iv, 0, 12);
+        for (int i = 0; i < 8; i = i + 1)
+            _nonce[4 + i] = (byte)(_nonce[4 + i]
+                ^ (byte)(_sequence >> ((7 - i) * 8)));
+    }
+
+    private bool CanAdvance()
+    {
+        return _records < UsageRecordLimit;
+    }
+
+    private void Advance()
+    {
+        _records = _records + 1;
+        if (_sequence == (ulong)0xffffffffffffffff
+            || _records >= UsageRecordLimit)
+            _exhausted = true;
+        else
+            _sequence = _sequence + (ulong)1;
+    }
+
+    private void EraseRecordWork(long innerCount)
+    {
+        CorsacSecureCrypto_Bytes.Zero(_inner, 0, innerCount);
+        CorsacSecureCrypto_Bytes.Zero(_header, 0, _header.Length);
+        CorsacSecureCrypto_Bytes.Zero(_nonce, 0, _nonce.Length);
+    }
+
+    private bool Ready(bool sending)
+    {
+        if (_closed || _failed || _exhausted || _error != 0)
+            return Fail(ProtocolState, true);
+        if (_sending != sending) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    private bool Fail(int error, bool terminal)
+    {
+        if (_error == 0) _error = error;
+        if (terminal) _failed = true;
+        return false;
+    }
+}

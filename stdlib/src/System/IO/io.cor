@@ -99,6 +99,22 @@ abstract class Stream : IDisposable, IAsyncDisposable
         throw new NotSupportedException("this stream cannot be resized");
     }
 
+    /// Whether ReadTimeout and WriteTimeout mean anything: not for a stream
+    /// that does not say so (a NetworkStream does), as .NET's base has it.
+    public virtual bool CanTimeout => false;
+
+    public virtual int ReadTimeout
+    {
+        get { throw new InvalidOperationException("Timeouts are not supported on this stream."); }
+        set { throw new InvalidOperationException("Timeouts are not supported on this stream."); }
+    }
+
+    public virtual int WriteTimeout
+    {
+        get { throw new InvalidOperationException("Timeouts are not supported on this stream."); }
+        set { throw new InvalidOperationException("Timeouts are not supported on this stream."); }
+    }
+
     // ONE BYTE AT A TIME THROUGH THE ARRAY METHODS, with an array the
     // stream keeps for it rather than one made each time -- .NET's default
     // rents one from the shared pool. A stream that writes a byte at a time
@@ -199,15 +215,30 @@ abstract class Stream : IDisposable, IAsyncDisposable
         Write(buffer, 0, buffer.Length);
     }
 
-    public virtual Task<int> ReadAsync(byte[] buffer, int offset, int count)
+    public Task<int> ReadAsync(byte[] buffer, int offset, int count)
     {
-        return Task.FromResult(Read(buffer, offset, count));
+        return ReadAsync(buffer, offset, count, CancellationToken.None);
     }
 
-    public virtual Task WriteAsync(byte[] buffer, int offset, int count)
+    /// .NET's: what a stream overrides to read asynchronously; the forms
+    /// without a token come here. A failure is the task's, not thrown.
+    public virtual Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        Write(buffer, offset, count);
-        return Task.CompletedTask;
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<int>(cancellationToken);
+        try { return Task.FromResult(Read(buffer, offset, count)); }
+        catch (Exception e) { return Task.FromException<int>(e); }
+    }
+
+    public Task WriteAsync(byte[] buffer, int offset, int count)
+    {
+        return WriteAsync(buffer, offset, count, CancellationToken.None);
+    }
+
+    public virtual Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
+        try { Write(buffer, offset, count); return Task.CompletedTask; }
+        catch (Exception e) { return Task.FromException(e); }
     }
 
     /// Into a window of memory, as many bytes as are ready; 0 at the end.

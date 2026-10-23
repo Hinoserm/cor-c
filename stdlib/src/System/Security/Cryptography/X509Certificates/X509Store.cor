@@ -67,36 +67,92 @@ public enum X509FindType
     FindBySubjectKeyIdentifier = 14,
 }
 
-/// Certificates in order.
-public class X509Certificate2Collection : IList, IEnumerable<X509Certificate2>
+/// Certificates in order, as .NET's first collection holds them.
+public class X509CertificateCollection : IList
 {
-    readonly List<X509Certificate2> _items = new List<X509Certificate2>();
+    internal readonly List<X509Certificate> Items = new List<X509Certificate>();
 
+    public X509CertificateCollection() { }
+    public X509CertificateCollection(X509Certificate[] value) { AddRange(value); }
+    public X509CertificateCollection(X509CertificateCollection value) { AddRange(value); }
+
+    public int Count => Items.Count;
+    public X509Certificate this[int index] { get { return Items[index]; } set { Items[index] = value ?? throw new ArgumentNullException(nameof(value)); } }
+
+    public int Add(X509Certificate value)
+    {
+        if (value == null) throw new ArgumentNullException(nameof(value));
+        Items.Add(value);
+        return Items.Count - 1;
+    }
+
+    public void AddRange(X509Certificate[] value) { if (value == null) throw new ArgumentNullException(nameof(value)); foreach (X509Certificate c in value) Add(c); }
+    public void AddRange(X509CertificateCollection value) { if (value == null) throw new ArgumentNullException(nameof(value)); for (int i = 0; i < value.Count; i++) Add(value.Items[i]); }
+    public bool Contains(X509Certificate value) => IndexOf(value) >= 0;
+    public void CopyTo(X509Certificate[] array, int index) { Items.CopyTo(array, index); }
+    public int IndexOf(X509Certificate value) { for (int i = 0; i < Items.Count; i++) if (Items[i].Equals(value)) return i; return -1; }
+    public void Insert(int index, X509Certificate value) { Items.Insert(index, value); }
+    public void Remove(X509Certificate value) { int at = IndexOf(value); if (at >= 0) Items.RemoveAt(at); }
+    public void Clear() { Items.Clear(); }
+    public void RemoveAt(int index) { Items.RemoveAt(index); }
+    public IEnumerator GetEnumerator() => Items.GetEnumerator();
+
+    public override int GetHashCode()
+    {
+        int hash = 0;
+        foreach (X509Certificate c in Items) hash += c.GetHashCode();
+        return hash;
+    }
+
+    bool IList.IsFixedSize => false;
+    bool IList.IsReadOnly => false;
+    object? IList.this[int index] { get { return Items[index]; } set { Items[index] = (X509Certificate)value!; } }
+    int IList.Add(object? value) => Add((X509Certificate)value!);
+    bool IList.Contains(object? value) => value is X509Certificate c && Contains(c);
+    int IList.IndexOf(object? value) => value is X509Certificate c ? IndexOf(c) : -1;
+    void IList.Insert(int index, object? value) { Insert(index, (X509Certificate)value!); }
+    void IList.Remove(object? value) { if (value is X509Certificate c) Remove(c); }
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => this;
+    void ICollection.CopyTo(Array array, int index)
+    {
+        if (array is X509Certificate[] typed) { Items.CopyTo(typed, index); return; }
+        if (array is object[] objects) { for (int i = 0; i < Items.Count; i++) objects[index + i] = Items[i]; return; }
+        throw new ArgumentException("Target array type is not compatible with the type of items in the collection.", nameof(array));
+    }
+}
+
+/// X509Certificate2s in order: the first collection, typed.
+public class X509Certificate2Collection : X509CertificateCollection, IEnumerable<X509Certificate2>
+{
     public X509Certificate2Collection() { }
     public X509Certificate2Collection(X509Certificate2 certificate) { Add(certificate); }
     public X509Certificate2Collection(X509Certificate2[] certificates) { AddRange(certificates); }
     public X509Certificate2Collection(X509Certificate2Collection certificates) { AddRange(certificates); }
 
-    public int Count => _items.Count;
-    public X509Certificate2 this[int index] { get { return _items[index]; } set { _items[index] = value ?? throw new ArgumentNullException(nameof(value)); } }
+    public new X509Certificate2 this[int index] { get { return (X509Certificate2)Items[index]; } set { Items[index] = value ?? throw new ArgumentNullException(nameof(value)); } }
 
     public int Add(X509Certificate2 certificate)
     {
         if (certificate == null) throw new ArgumentNullException(nameof(certificate));
-        _items.Add(certificate);
-        return _items.Count - 1;
+        Items.Add(certificate);
+        return Items.Count - 1;
     }
 
     public void AddRange(X509Certificate2[] certificates) { foreach (X509Certificate2 c in certificates) Add(c); }
     public void AddRange(X509Certificate2Collection certificates) { foreach (X509Certificate2 c in certificates) Add(c); }
-    public bool Contains(X509Certificate2 certificate) { foreach (X509Certificate2 c in _items) if (c.Equals(certificate)) return true; return false; }
-    public void Insert(int index, X509Certificate2 certificate) { _items.Insert(index, certificate); }
-    public void Remove(X509Certificate2 certificate) { for (int i = 0; i < _items.Count; i++) if (_items[i].Equals(certificate)) { _items.RemoveAt(i); return; } }
+    public bool Contains(X509Certificate2 certificate) => IndexOf(certificate) >= 0;
+    public void Insert(int index, X509Certificate2 certificate) { Items.Insert(index, certificate); }
+    public void Remove(X509Certificate2 certificate) { int at = IndexOf(certificate); if (at >= 0) Items.RemoveAt(at); }
     public void RemoveRange(X509Certificate2[] certificates) { foreach (X509Certificate2 c in certificates) Remove(c); }
     public void RemoveRange(X509Certificate2Collection certificates) { foreach (X509Certificate2 c in certificates) Remove(c); }
-    public void Clear() { _items.Clear(); }
-    public void RemoveAt(int index) { _items.RemoveAt(index); }
-    public int IndexOf(X509Certificate2 certificate) { for (int i = 0; i < _items.Count; i++) if (_items[i].Equals(certificate)) return i; return -1; }
+
+    public new IEnumerator<X509Certificate2> GetEnumerator()
+    {
+        List<X509Certificate2> typed = new List<X509Certificate2>();
+        foreach (X509Certificate c in Items) typed.Add((X509Certificate2)c);
+        return typed.GetEnumerator();
+    }
 
     /// Certificates from DER bytes or PEM text.
     public void Import(byte[] rawData)
@@ -119,7 +175,7 @@ public class X509Certificate2Collection : IList, IEnumerable<X509Certificate2>
     public string ExportCertificatePems()
     {
         StringBuilder text = new StringBuilder();
-        for (int i = 0; i < _items.Count; i++) { if (i > 0) text.Append('\n'); text.Append(_items[i].ExportCertificatePem()); }
+        for (int i = 0; i < Count; i++) { if (i > 0) text.Append('\n'); text.Append(this[i].ExportCertificatePem()); }
         return text.ToString();
     }
 
@@ -131,7 +187,7 @@ public class X509Certificate2Collection : IList, IEnumerable<X509Certificate2>
     {
         if (findValue == null) throw new ArgumentNullException(nameof(findValue));
         X509Certificate2Collection found = new X509Certificate2Collection();
-        foreach (X509Certificate2 c in _items)
+        foreach (X509Certificate2 c in this)
         {
             bool match;
             switch (findType)
@@ -166,26 +222,7 @@ public class X509Certificate2Collection : IList, IEnumerable<X509Certificate2>
     static string Hex(object value) => Text(value).Replace(" ", "");
     static DateTime Time(object value) => value is DateTime t ? t : throw new CryptographicException("A DateTime is required for this kind of find.");
 
-    public IEnumerator<X509Certificate2> GetEnumerator() => _items.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _items.GetEnumerator();
 
-    // IList, as .NET's collection is one.
-    bool IList.IsFixedSize => false;
-    bool IList.IsReadOnly => false;
-    object? IList.this[int index] { get { return _items[index]; } set { _items[index] = (X509Certificate2)value!; } }
-    int IList.Add(object? value) => Add((X509Certificate2)value!);
-    bool IList.Contains(object? value) => value is X509Certificate2 c && Contains(c);
-    int IList.IndexOf(object? value) => value is X509Certificate2 c ? IndexOf(c) : -1;
-    void IList.Insert(int index, object? value) { Insert(index, (X509Certificate2)value!); }
-    void IList.Remove(object? value) { if (value is X509Certificate2 c) Remove(c); }
-    bool ICollection.IsSynchronized => false;
-    object ICollection.SyncRoot => this;
-    void ICollection.CopyTo(Array array, int index)
-    {
-        if (array is X509Certificate2[] typed) { _items.CopyTo(typed, index); return; }
-        if (array is object[] objects) { for (int i = 0; i < _items.Count; i++) objects[index + i] = _items[i]; return; }
-        throw new ArgumentException("Target array type is not compatible with the type of items in the collection.", nameof(array));
-    }
 }
 
 /// One of the named certificate stores.

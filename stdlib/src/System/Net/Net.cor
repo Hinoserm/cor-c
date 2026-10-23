@@ -1707,36 +1707,89 @@ class NetworkStream : Stream
         get { return _socket; }
     }
 
-    public override bool CanRead { get { return true; } }
-    public override bool CanWrite { get { return true; } }
+    bool _disposed;
+
+    public override bool CanRead { get { return !_disposed; } }
+    public override bool CanWrite { get { return !_disposed; } }
     public override bool CanSeek { get { return false; } }
+    public override bool CanTimeout { get { return true; } }
+
+    /// The socket's receive timeout in milliseconds, -1 (Timeout.Infinite)
+    /// for none, as .NET's NetworkStream gives and takes it.
+    public override int ReadTimeout
+    {
+        get { int t = _socket.ReceiveTimeout; return t == 0 ? -1 : t; }
+        set
+        {
+            if (value <= 0 && value != -1) throw new ArgumentOutOfRangeException(nameof(value), "Timeout can be only be set to 'System.Threading.Timeout.Infinite' or a value > 0.");
+            _socket.ReceiveTimeout = value == -1 ? 0 : value;
+        }
+    }
+
+    public override int WriteTimeout
+    {
+        get { int t = _socket.SendTimeout; return t == 0 ? -1 : t; }
+        set
+        {
+            if (value <= 0 && value != -1) throw new ArgumentOutOfRangeException(nameof(value), "Timeout can be only be set to 'System.Threading.Timeout.Infinite' or a value > 0.");
+            _socket.SendTimeout = value == -1 ? 0 : value;
+        }
+    }
 
     /// Whether Read would return without waiting, as .NET's DataAvailable.
     public bool DataAvailable
     {
-        get { return _socket.Poll(0, SelectMode.SelectRead); }
+        get { Live(); return _socket.Poll(0, SelectMode.SelectRead); }
     }
 
+    void Live()
+    {
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+    }
+
+    static void CheckRange(byte[] buffer, int offset, int count)
+    {
+        if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+        if (offset < 0 || offset > buffer.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (count < 0 || count > buffer.Length - offset) throw new ArgumentOutOfRangeException(nameof(count));
+    }
+
+    /// A socket's failure comes out as .NET's does: an IOException, the
+    /// SocketException inside it.
     public override int Read(byte[] buffer, int offset, int count)
     {
-        return _socket.Receive(buffer, offset, count);
+        CheckRange(buffer, offset, count);
+        Live();
+        try { return _socket.Receive(buffer, offset, count); }
+        catch (SocketException e) { throw new IOException("Unable to read data from the transport connection: " + e.Message + ".", e); }
     }
 
     public override void Write(byte[] buffer, int offset, int count)
     {
-        int done = 0;
-        while (done < count)
+        CheckRange(buffer, offset, count);
+        Live();
+        try
         {
-            done = done + _socket.Send(buffer, offset + done, count - done);
+            int done = 0;
+            while (done < count)
+            {
+                done = done + _socket.Send(buffer, offset + done, count - done);
+            }
         }
+        catch (SocketException e) { throw new IOException("Unable to write data to the transport connection: " + e.Message + ".", e); }
     }
 
-    public override void Dispose()
+    protected override void Dispose(bool disposing)
     {
-        if (_owns)
+        if (!_disposed)
         {
-            _socket.Dispose();
+            _disposed = true;
+            if (disposing && _owns)
+            {
+                _socket.Dispose();
+            }
         }
+        base.Dispose(disposing);
     }
 }
 
