@@ -287,6 +287,38 @@ absent, special folders from the shell (SHGetFolderPath where shfolder.dll
 is, the registry's shell folders below that: to verify on 95),
 `Microsoft.Win32.Registry` over advapi32 (CORSAC's registry is CORSAC's).
 
+## Forms today: CORSAC's, over a seat in the program
+
+WHAT RUNS NOW (2026-10-23) is CORSAC's own Windows Forms, unchanged: the
+library that draws its controls itself and talks to the GUI kernel's seat.
+On Windows the seat is in the program (stdlib/src/Corsac/GUI/WinSeat.cor):
+Corsac.GUI.Seat makes the same three calls -- a drawing batch written, events
+read, an ioctl -- and WinSeat answers them over user32 and gdi32.
+
+- A seat window is a Windows window with Windows' own frame: the WS_* bits
+  the form gives SetFrame are the window's style. Its picture, frame
+  included, is a 32-bit DIB section; the client part goes to the screen at
+  Present and on WM_PAINT.
+- Drawing is the seat's: rectangles, copies, lines, pictures and glyphs on
+  the DIB; paths, regions and strokes by the GUI kernel's own engine and its
+  scroll bars by the kernel's model, copied into
+  stdlib/src/Corsac/GUI/Engine from the corsac86 tree, so a Graphics draws
+  the same pixels on both.
+- Events are window messages turned into the seat's records: keys with the
+  character their translation typed, the pointer in window coordinates,
+  paint, activation, close, the end of Windows' move and size loops,
+  timers, hot keys, WM_SETCURSOR.
+- The font store is the registry's font list (and FontSubstitutes); the
+  theme is GetSysColor, GetSystemMetrics and the non-client fonts.
+- Not yet: the seat's menus, the clipboard, drag and drop, layered windows,
+  printing pages, the shell's feeds; those ioctls answer ENOSYS.
+
+`corc compile --windows app.cor -o app.exe` makes a GUI-subsystem program;
+`--subsystem console` a console one. Every call they import is in Windows
+2000's DLLs.
+
+The plan below -- Forms over Windows' own controls -- is the later step.
+
 ## Forms
 
 A Control is a window of Windows' own class, created with CreateWindowEx,
@@ -405,4 +437,6 @@ decoders wherever GDI+ is absent.
    a console "hello" that runs on 95 and on 11.
 2. The platform layer: the language suite passing on Windows.
 3. System.Drawing over GDI, then the run-time upgrades.
-4. Forms over Windows' controls.
+4. CORSAC's Forms over a seat in the program (done 2026-10-23: a Forms
+   program and a console program run under Wine; Windows 2000's imports).
+5. Forms over Windows' controls.
