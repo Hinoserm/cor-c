@@ -21945,6 +21945,15 @@ interface IFormattable
     string ToString(string? format, IFormatProvider? formatProvider);
 }
 
+/// .NET's ISpanFormattable: a value that writes its text into chars, as
+/// IPAddress and the like declare it. (The numbers' TryFormat into a span
+/// is theirs as members; a boxed number answering it through the
+/// interface is not yet one of its BoxedFaces.)
+interface ISpanFormattable : IFormattable
+{
+    bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider);
+}
+
 /// What a provider hands composite formatting to write every argument its
 /// own way, .NET's ICustomFormatter: String.Format and AppendFormat ask the
 /// provider for one (GetFormat(typeof(ICustomFormatter))) once, and an

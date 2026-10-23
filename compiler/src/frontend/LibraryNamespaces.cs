@@ -36,7 +36,7 @@ internal static class LibraryNamespaces
             "DuplicateWaitObjectException", "Environment", "Exception", "FormatException", "Func`1", "Func`2",
             "Func`3", "Func`4", "Func`5", "Func`6", "Func`7", "Func`8", "Func`9", "Guid", "Half", "HashCode",
             "ICloneable", "IComparable", "IComparable`1", "ICustomFormatter", "IDisposable", "IEquatable`1",
-            "IFormatProvider", "IFormattable", "Index", "IndexOutOfRangeException", "Int128", "Int16", "Int32",
+            "IFormatProvider", "IFormattable", "ISpanFormattable", "Index", "IndexOutOfRangeException", "Int128", "Int16", "Int32",
             "Int64", "IntPtr", "InvalidCastException", "InvalidOperationException", "InvalidTimeZoneException",
             "Lazy`1", "Math", "MathF", "MemberAccessException", "MemoryExtensions", "Memory`1", "MidpointRounding", "Nullable",
             "MissingMemberException", "MissingMethodException", "NotImplementedException", "NotSupportedException",
