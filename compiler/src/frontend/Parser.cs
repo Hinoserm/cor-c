@@ -8988,7 +8988,12 @@ public sealed class Parser
                 // `s is not null and not Slot` meant `not (null and not Slot)`
                 // -- true for a Slot and for null, both of which it refuses.
                 // ParsePrimaryPattern reads it, where each operand is read.
+                Expr tested = left;
                 left = ParseIsPattern(left, at);
+                // Its root says what it tests, for whether it can match at all
+                // (Binder.PatternVerdict: CS8518, CS8794).
+                if (left is BinaryExpr or UnaryExpr or PatternExpr)
+                    (left.Facts ??= new ExprFacts()).PatternOf = left is PatternExpr hoisted ? hoisted.Subject : tested;
                 continue;
             }
 

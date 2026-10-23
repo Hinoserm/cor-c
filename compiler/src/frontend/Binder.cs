@@ -11460,6 +11460,27 @@ public sealed partial class Binder
          : subject.Prim == Prim.Char && subject.Symbol is null ? ((char)value).ToString()
          : subject.IsUnsigned ? ((ulong)value).ToString() : value.ToString();
 
+    /// <summary>
+    /// C#'s CS8518 and CS8794 for an `is` pattern over an integer: one that
+    /// takes no value of its subject's type (`x is > 5 and < 3`) is refused,
+    /// and one that takes every value (`x is < 0 or >= 0`, `x is not 1 or not
+    /// 2`) warned of, as Roslyn says them. Judged from the ranges its tests
+    /// add up to (Ranges), where they are only comparisons with constants;
+    /// not in a generic's copy, whose subject is the copy's.
+    /// </summary>
+    private void PatternVerdict(Expr root, Expr subject)
+    {
+        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true) return;
+        if (!_r.ExprType.TryGetValue(subject, out Type? type) || type.IsError || type.Nullable || type.IsNullableValue) return;
+        if (IntegerDomain(type) is not { } domain) return;
+        Expr test = root is PatternExpr hoisted ? hoisted.Test : root;
+        if (Ranges(test, domain, subject) is not { } accepted) return;
+        if (accepted.Count == 0)
+            Error(subject, $"CS8518: An expression of type '{type}' can never match the provided pattern.");
+        else if (accepted.Count == 1 && accepted[0].Lo == domain.Lo && accepted[0].Hi == domain.Hi)
+            Warning(subject, "CS8794", $"An expression of type '{type}' always matches the provided pattern.");
+    }
+
     private static bool Derives(TypeSymbol derived, TypeSymbol baseClass)
     {
         for (TypeSymbol? at = derived.Base; at is not null; at = at.Base)
@@ -11501,19 +11522,22 @@ public sealed partial class Binder
     /// not touch, when it is only comparisons of the subject with constants
     /// joined by `and`, `or` and `not`; null when anything else decides it.
     /// </summary>
-    private List<(long Lo, long Hi)>? Ranges(Expr test, (long Lo, long Hi, bool Unsigned64) domain)
+    private List<(long Lo, long Hi)>? Ranges(Expr test, (long Lo, long Hi, bool Unsigned64) domain, Expr? subject = null)
     {
         switch (test)
         {
             case BinaryExpr { Op: BinOp.AndAlso } both:
-                return Ranges(both.Left, domain) is { } left && Ranges(both.Right, domain) is { } right
+                return Ranges(both.Left, domain, subject) is { } left && Ranges(both.Right, domain, subject) is { } right
                     ? Complement(Union(Complement(left, domain), Complement(right, domain)), domain) : null;
             case BinaryExpr { Op: BinOp.OrElse } either:
-                return Ranges(either.Left, domain) is { } one && Ranges(either.Right, domain) is { } other ? Union(one, other) : null;
+                return Ranges(either.Left, domain, subject) is { } one && Ranges(either.Right, domain, subject) is { } other ? Union(one, other) : null;
             case UnaryExpr { Op: UnOp.Not } not:
-                return Ranges(not.Operand, domain) is { } inner ? Complement(inner, domain) : null;
-            case BinaryExpr { Op: BinOp.Eq or BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge, Left: SubjectExpr { Outer: 0 } } compare
-                when ConstantValue(compare.Right, _thisType) is long written:
+                return Ranges(not.Operand, domain, subject) is { } inner ? Complement(inner, domain) : null;
+            // Over the subject: a switch's SubjectExpr, or the `is` operand
+            // the parser wrote each test over (PatternVerdict).
+            case BinaryExpr { Op: BinOp.Eq or BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge } compare
+                when (compare.Left is SubjectExpr { Outer: 0 } || subject is not null && ReferenceEquals(compare.Left, subject))
+                     && ConstantValue(compare.Right, _thisType) is long written:
             {
                 long c = Biased(written, domain);
                 (long lo, long hi) = compare.Op switch
@@ -15502,6 +15526,8 @@ public sealed partial class Binder
     private Type CheckExpr(Expr e)
     {
         Type t = CheckExprCore(e);
+        // AN `is` PATTERN THAT CAN NEVER, OR MUST ALWAYS, MATCH (PatternVerdict).
+        if (e.Facts?.PatternOf is { } patternSubject) PatternVerdict(e, patternSubject);
         // A DECIMAL CONSTANT EXPRESSION IS ITS VALUE: `Rate * 12m` folded, as
         // C# folds it (Binder.Decimal).
         if (e is BinaryExpr or UnaryExpr or CastExpr && IsDecimalType(t))

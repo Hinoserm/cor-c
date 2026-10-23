@@ -1167,6 +1167,13 @@ internal sealed class ExprFacts
     /// </summary>
     internal TypeRef? Natural;
 
+    /// <summary>
+    /// What an `is` pattern rooted here tests, as the parser wrote it (the
+    /// subject, or the SubjectExpr a hoisted one reads): syntax, kept as
+    /// Natural is, for the pattern's verdict (Binder.PatternVerdict).
+    /// </summary>
+    internal Expr? PatternOf;
+
     /// <summary>This binding's facts about e, or null when it has written none.</summary>
     internal static ExprFacts? Read(Expr e, NodeBinding binding)
         => e.Facts is { } facts && facts.By == binding.Current ? facts : null;
