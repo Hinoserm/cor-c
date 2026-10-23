@@ -100,6 +100,7 @@ static class Win32
     /// The slot taken, plus one: 0, none. No initialiser, so touching the
     /// class runs nothing before the thread has a block.
     static int _slotTaken;
+
     static long _imageStart;
     static long _imageEnd;
     static long _nullStub;
@@ -227,11 +228,87 @@ static class Win32
         // Ours: this image's code, or code of an image over it that the
         // runtime knows by its frames (Runtime.KnowsCode).
         if ((pc < _imageStart || pc >= _imageEnd) && !Runtime.KnowsCode(pc)) return ContinueSearch;
-        if (!Runtime.NullFaultCatchable(Sys.PeekWord(rec + 24) & 0xFFFFFFFF)) return ContinueSearch;
+        // The address read or written. Windows 9x gives -1 there, and the
+        // faulting instruction says it instead (FaultAddress).
+        long address = Sys.PeekWord(rec + 24) & 0xFFFFFFFF;
+        if (address == 0xFFFFFFFF) address = FaultAddress(ctx, pc);
+        if (address < 0 || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
+
         Sys.Poke(ctx + 0xB0, pc);
         Sys.Poke(ctx + 0xA8, Sys.PeekWord(ctx + 0xB4));
         Sys.Poke(ctx + 0xB8, _nullStub);
         return ContinueExecution;
+    }
+
+    /// THE ADDRESS AN INSTRUCTION FAULTED ON, read from the instruction itself
+    /// where Windows 9x does not say it (its access violation's address is
+    /// -1): the memory operand's base, index times scale and displacement,
+    /// with the registers the context holds. For the forms this compiler's
+    /// code uses -- a ModRM operand after a one- or two-byte opcode, or the
+    /// accumulator's absolute moves (A0-A3) -- and -1 for anything else, or
+    /// for an operand through FS or GS, which is never a null reference's.
+    static long FaultAddress(long ctx, long pc)
+    {
+        long at = pc;
+        int b = (int)Sys.PeekByte(at);
+        // Prefixes: operand size, repeats, lock, the segments but FS and GS.
+        while (b is 0x66 or 0x67 or 0xF0 or 0xF2 or 0xF3 or 0x26 or 0x2E or 0x36 or 0x3E)
+        {
+            at++;
+            b = (int)Sys.PeekByte(at);
+        }
+        if (b is 0x64 or 0x65) return -1;
+        if (b is >= 0xA0 and <= 0xA3) return Sys.PeekWord(at + 1) & 0xFFFFFFFF;
+        bool modrm;
+        if (b == 0x0F)
+        {
+            at++;
+            int c = (int)Sys.PeekByte(at);
+            modrm = c is (>= 0x10 and <= 0x17) or (>= 0x28 and <= 0x2F) or (>= 0x40 and <= 0x4F) or (>= 0x90 and <= 0x9F)
+                or 0xA3 or 0xA4 or 0xA5 or 0xAB or 0xAC or 0xAD or 0xAF or (>= 0xB0 and <= 0xB7) or (>= 0xBA and <= 0xBF)
+                or 0xC0 or 0xC1 or 0xC7;
+        }
+        else
+        {
+            modrm = (b < 0x40 && (b & 7) < 4) || b is 0x62 or 0x63 or 0x69 or 0x6B or (>= 0x80 and <= 0x8F) or 0xC0 or 0xC1
+                or (>= 0xC4 and <= 0xC7) or (>= 0xD0 and <= 0xD3) or (>= 0xD8 and <= 0xDF) or 0xF6 or 0xF7 or 0xFE or 0xFF;
+        }
+        if (!modrm) return -1;
+        at++;
+        int m = (int)Sys.PeekByte(at);
+        int mod = m >> 6, rm = m & 7;
+        if (mod == 3) return -1;
+        at++;
+        long address = 0;
+        if (rm == 4)
+        {
+            int sib = (int)Sys.PeekByte(at);
+            at++;
+            int scale = sib >> 6, index = (sib >> 3) & 7, bas = sib & 7;
+            if (index != 4) address = Register(ctx, index) << scale;
+            if (bas == 5 && mod == 0)
+            {
+                address = address + (Sys.PeekWord(at) & 0xFFFFFFFF);
+                at = at + 4;
+            }
+            else address = address + Register(ctx, bas);
+        }
+        else if (rm == 5 && mod == 0)
+        {
+            address = Sys.PeekWord(at) & 0xFFFFFFFF;
+            at = at + 4;
+        }
+        else address = Register(ctx, rm);
+        if (mod == 1) address = address + (long)(sbyte)Sys.PeekByte(at);
+        else if (mod == 2) address = address + (long)(int)Sys.PeekWord(at);
+        return address & 0xFFFFFFFF;
+    }
+
+    /// A general register as CONTEXT holds it, by its encoding: EAX ECX EDX EBX ESP EBP ESI EDI.
+    static long Register(long ctx, int number)
+    {
+        long offset = number switch { 0 => 0xB0, 1 => 0xAC, 2 => 0xA8, 3 => 0xA4, 4 => 0xC4, 5 => 0xB4, 6 => 0xA0, _ => 0x9C };
+        return Sys.PeekWord(ctx + offset) & 0xFFFFFFFF;
     }
 
     /// The runtime is running: what wants it.

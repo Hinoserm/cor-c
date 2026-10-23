@@ -53,6 +53,7 @@ public sealed class UnitBackend : IUnitBackend
         // this object's native content then, and read again it was every
         // unit's whole object written out and hashed a second time.
         archive ??= IrArchive.Read(original) ?? throw new InvalidDataException("Backend input has no IR archive");
+        Corsac.Lang.Lto.LinkTimings.Memory("backend archive read");
         var visibility = original.Symbols.Where(symbol => symbol.IsDefined && symbol.IsFunction)
             .ToDictionary(symbol => symbol.Name, symbol => symbol.Global, StringComparer.Ordinal);
         // AN ARCHIVE TAKEN BEFORE THE LATE PASSES (one with settings) holds
@@ -76,9 +77,19 @@ public sealed class UnitBackend : IUnitBackend
         // handed to Add was the collector's in the compiler's own build,
         // freed when it was linked open (1080). What the image does not keep
         // goes after them (PruneAfterLate).
+        // WHOLE MEANS WHAT THE KEPT CODE CAN REACH IN THE UNIT, not the unit:
+        // what the image keeps of it, every entry those reach by the
+        // archive's references -- the unit's own copies of what another unit
+        // owns among them, which is what the late passes need beside it -- and
+        // the runtime's routines, whose calls those passes add (the frees, the
+        // allocators, the regions, the barriers). Decoded whole, a unit
+        // holding the class library was 21,000 functions and 320 MB of IR for
+        // a program that used fifty, and the link ran out of memory.
+        IReadOnlySet<string>? decode = preLate ? ReachableInUnit(archive, retained) : retained;
         var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? PreLateDecodeLimit : 64L * 1024 * 1024,
-            retained: preLate ? null : retained, functionHeaders: preLate ? null : visibility);
+            retained: decode, functionHeaders: preLate ? null : visibility);
         var unit = (read.Module, StackMaps: read.StackMaps, read.AccountedBytes);
+        Corsac.Lang.Lto.LinkTimings.Memory("backend decoded");
         Console.Error.WriteLine("IR backend: retained functions=" + unit.Module.Functions.Count + ", data=" + unit.Module.Data.Count
             + ", accounted decode bytes=" + unit.AccountedBytes + (preLate ? ", late passes at link" : ""));
         Module module = unit.Module;
@@ -138,6 +149,7 @@ public sealed class UnitBackend : IUnitBackend
                     .SelectMany(symbol => new[] { "F:" + symbol.Name, "D:" + symbol.Name }).ToHashSet(StringComparer.Ordinal));
             lateDone = Environment.TickCount64;
         }
+        Corsac.Lang.Lto.LinkTimings.Memory("backend late passes");
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
         Dictionary<string, byte[]> semantics = CoalescingContract.Read(original);
         foreach (IrImport import in imports)
@@ -464,6 +476,41 @@ public sealed class UnitBackend : IUnitBackend
     /// locals, which nothing reached in the IR the link judged. An exported
     /// one is the copy another unit keeps.
     /// </summary>
+    /// <summary>
+    /// What a unit's late passes need of it (Recompile): the entries the
+    /// image keeps, those they reach through the archive's references within
+    /// the unit, and the runtime's routines the passes call by name, whose
+    /// calls they may add (RuntimeAbi). Null -- the whole unit -- where
+    /// the link kept nothing of it to start from.
+    /// </summary>
+    /// <summary>The routines the late passes call by name (RuntimeAbi's every name).</summary>
+    private static readonly string[] RuntimeHelpers = typeof(RuntimeAbi)
+        .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+        .Where(field => field.IsLiteral && field.FieldType == typeof(string))
+        .Select(field => (string)field.GetRawConstantValue()!)
+        .Where(name => name.StartsWith("m_", StringComparison.Ordinal) || name.StartsWith("__", StringComparison.Ordinal)).ToArray();
+
+    private static HashSet<string>? ReachableInUnit(IrArchive archive, IReadOnlySet<string>? retained)
+    {
+        if (retained is null) return null;
+        HashSet<string> wanted = new(StringComparer.Ordinal);
+        Stack<string> pending = new();
+        void Want(string key)
+        {
+            if (archive.Entries.ContainsKey(key) && wanted.Add(key)) pending.Push(key);
+        }
+        foreach (string key in retained) Want(key);
+        foreach (string helper in RuntimeHelpers) { Want("F:" + helper); Want("D:" + helper); }
+        while (pending.Count > 0)
+            foreach (string named in archive.Entries[pending.Pop()].References)
+            {
+                string symbol = IrArchiveEntry.Named(named);
+                Want("F:" + symbol);
+                Want("D:" + symbol);
+            }
+        return wanted;
+    }
+
     private static void PruneAfterLate(Module module, IrArchive archive, IReadOnlySet<string> retained)
     {
         bool Kept(string key) => !archive.Entries.ContainsKey(key) || retained.Contains(key);

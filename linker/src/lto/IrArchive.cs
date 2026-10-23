@@ -150,7 +150,7 @@ public sealed class IrArchive
             byte[] native = reader.ReadBytes(32);
             byte[] directoryHash = reader.ReadBytes(32);
             if (count < 0 || count > 100000 || total != bytesCount || directoryBytes < 0 || directoryBytes > bytesCount - 84
-                || !NativeHash(obj).SequenceEqual(native)) throw new ElfFormatException("IR archive header/native integrity mismatch");
+                || !obj.NativeOmitted && !NativeHash(obj).SequenceEqual(native)) throw new ElfFormatException("IR archive header/native integrity mismatch");
             if (!HashDirectory(stream, directoryBytes).SequenceEqual(directoryHash))
                 throw new ElfFormatException("IR directory integrity mismatch");
             int bodyStart = 84 + directoryBytes, next = bodyStart;

@@ -3942,6 +3942,15 @@ static class Runtime
         long next = Sys.Peek(frame);
         if (Sys.Peek(frame + WordSize.Bytes) == 0) { return -1; }
         if (next != 0 && next <= frame) { return -1; }
+        // NOR PAST THE TOP OF THIS THREAD'S STACK: a frame in it whose link
+        // leaves it is C's, built without a frame pointer, its EBP any value
+        // at all. Read on, Windows 98's chain went into memory that was not
+        // there, and building a NullReferenceException's trace faulted. A
+        // frame not in the stack the thread's block records -- an interrupt's
+        // stack, say -- is followed as before.
+        long block = Sys.ThreadBlock();
+        long top = block == 0 ? 0 : Sys.Peek(block + Tls.StackBase);
+        if (top != 0 && frame < top && next >= top) { return -1; }
         return next;
     }
 

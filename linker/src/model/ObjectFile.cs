@@ -8,6 +8,13 @@ namespace Corsac.Lang.Ir;
 /// </summary>
 public sealed class ObjectFile
 {
+    /// <summary>
+    /// Read without its code and data (ElfReader.ReadObjectMetadata), for a
+    /// unit backend: its IR archive's hash of them is the link's to check,
+    /// which has the whole object, not this reader's.
+    /// </summary>
+    public bool NativeOmitted { get; set; }
+
     public List<Section> Sections { get; } = new();
     /// <summary>The file it was read from, unchanged since (ElfReader.ReadObjectFile); null for one made in memory.</summary>
     public string? SourcePath { get; set; }

@@ -28,7 +28,9 @@ public static class BackendCommand
             try
             {
                 if (Path.GetFullPath(request.Input) == Path.GetFullPath(request.Output)) throw new InvalidDataException("Backend output would overwrite input");
-                var original = ElfReader.ReadObjectFile(request.Input, leaveInFile: false);
+                // Only what is made again from: its symbols, notes and IR, the
+                // IR read a record at a time from the file (ElfReader.ReadObjectMetadata).
+                var original = ElfReader.ReadObjectMetadata(request.Input);
                 var result = backend.Recompile(original, request.Imports, request.Retained, request.Facts);
                 ElfWriter.WriteObjectFile(result, request.Output);
                 BackendProtocol.WriteResponse(writer, null);

@@ -181,6 +181,30 @@ public static class ElfReader
     /// <summary>The file ReadObjectFile is reading, on this thread: its IR sections are left there.</summary>
     [ThreadStatic] internal static string? BackingPath;
 
+    /// <summary>A read for what a unit backend needs of its input (ReadObjectMetadata): no code, no data, no relocations of either.</summary>
+    [ThreadStatic] private static bool MetadataOnly;
+
+    /// <summary>
+    /// WHAT A UNIT BACKEND READS OF ITS INPUT: the symbols, the notes and the
+    /// IR, left in the file (ReadObjectFile with leaveInFile), and none of the
+    /// code or data or their relocations -- the backend makes those again
+    /// from the IR, and a unit holding the class library carried millions of
+    /// relocations it never looked at, held in memory beside everything else.
+    /// Each code and data section is there, its size and no bytes, for the
+    /// symbols naming it.
+    /// </summary>
+    public static ObjectFile ReadObjectMetadata(string path)
+    {
+        MetadataOnly = true;
+        try
+        {
+            ObjectFile obj = ReadObjectFile(path, leaveInFile: true);
+            obj.NativeOmitted = true;
+            return obj;
+        }
+        finally { MetadataOnly = false; }
+    }
+
     /// <summary>
     /// WHAT A LINK LEAVES IN THE FILE: a unit's IR, and the notes the link
     /// reads once or twice and takes out before the image is laid out -- the
@@ -413,6 +437,12 @@ public static class ElfReader
                     src.Check(h.Offset, h.Size, $"section '{names[i]}'");
                     s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
                 }
+                else if (MetadataOnly && kind.Value != SectionKind.Note)
+                {
+                    // Its size and no bytes, for the symbols in it.
+                    src.Check(h.Offset, h.Size, $"section '{names[i]}'");
+                    s.SizeOnly(checked((int)h.Size));
+                }
                 else src.ReadInto(s.Bytes, h.Offset, h.Size, $"section '{names[i]}'");
             }
             obj.Sections.Add(s);
@@ -545,9 +575,10 @@ public static class ElfReader
                 throw new ElfFormatException($"'{names[i]}' relocates section {h.Info}, which does not exist");
             }
             Section? target = bySh[h.Info];
-            if (target is null)
+            if (target is null || MetadataOnly && target.Kind != SectionKind.Note)
             {
-                // Relocations for a section we dropped (a .group, say) go with it.
+                // Relocations for a section we dropped (a .group, say) go with
+                // it, and a metadata read's code and data have none.
                 continue;
             }
             if ((int)h.Link != symtabIndex)

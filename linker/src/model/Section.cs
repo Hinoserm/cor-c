@@ -40,6 +40,9 @@ public sealed class Section
     /// and in the placed copy it relocates. The chunks themselves move, so
     /// nothing is copied and no section is ever one array.
     /// </summary>
+    /// <summary>A section read for its size alone (ElfReader.ReadObjectMetadata): no bytes, that many said.</summary>
+    public void SizeOnly(int bytes) => HandedOver = bytes;
+
     public ChunkedBytes HandOver()
     {
         HandedOver = Bytes.Count;

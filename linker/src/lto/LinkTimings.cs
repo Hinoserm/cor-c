@@ -38,6 +38,14 @@ public static class LinkTimings
         last = Clock.ElapsedMilliseconds;
     }
 
+    /// <summary>Where memory stands at a step of a unit backend, said like a phase's (--timings).</summary>
+    public static void Memory(string where)
+    {
+        if (!Enabled) return;
+        (long rss, long peak, long _) = Resident();
+        Console.Error.WriteLine(where + ": rss=" + rss / (1024 * 1024) + "M peak=" + peak / (1024 * 1024) + "M live=" + GC.GetTotalMemory(true) / (1024 * 1024) + "M");
+    }
+
     private static (long Rss, long Peak, long Swap) Resident()
     {
         long rss = 0, peak = 0, swap = 0;

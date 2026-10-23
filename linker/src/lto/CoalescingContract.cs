@@ -55,7 +55,10 @@ public static class CoalescingContract
                 if (name.Contains('\0') || !seen.Add(name)) throw new ElfFormatException("Invalid or duplicate coalescing name");
                 if (obj.SuppressedDefinitions.Contains(name)) continue;
                 IReadOnlyList<Symbol> symbols = index.Globals(name);
-                if (symbols.Count != 1 || !DefinitionFingerprint.Compute(index, symbols[0]).SequenceEqual(native))
+                // Checked against the definition's bytes where they were read:
+                // a unit backend's input has none (NativeOmitted), and the link
+                // that handed it over checked them in the whole object.
+                if (symbols.Count != 1 || !obj.NativeOmitted && !DefinitionFingerprint.Compute(index, symbols[0]).SequenceEqual(native))
                     throw new ElfFormatException("Coalescing definition integrity mismatch: " + name);
                 result.Add(name, semantic);
             }
