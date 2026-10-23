@@ -151,7 +151,14 @@ public sealed class CardMarks : IModulePass
                 }
             }
             Instr? found = null;
-            HashSet<Block> seen = new(ReferenceEqualityComparer.Instance) { block };
+            // THE BLOCK ITSELF IS NOT SEEN YET: a loop comes back into it, and
+            // a definition after `before` -- the latch's `l = l.Next` in the
+            // block of a loop's store -- reaches the point that way. Counted
+            // seen from the start, the store's local settled to its value on
+            // entry while the barrier's, a block earlier, saw both: the slots
+            // differed and a loop's `l.Engine = e` was not made one sequence
+            // (Win32kD3d.TextureOf).
+            HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
             Stack<Block> work = new();
             if (preds.TryGetValue(block, out var first)) foreach (Block p in first) work.Push(p);
             else return null;

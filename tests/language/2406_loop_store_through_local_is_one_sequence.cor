@@ -1,0 +1,53 @@
+// test: a loop's reference store through its local is made one sequence
+// flags: --store-sequences
+// expect-exit: 0
+// expect-output:
+// engine 3 levels 3 refreshed 3
+//
+// `l.Engine = e` in a loop whose `l` is assigned on entry and again at the
+// latch, in the store's own block: the barrier's slot and the store's are the
+// same `l + 8`, and the store is made one sequence with its barrier. The
+// walk that settles a local to the copy reaching it counted the store's block
+// as seen before it started, missed the latch's assignment coming round the
+// loop, settled the store's `l` to its entry value and not the barrier's, and
+// the compile stopped with "1 reference store(s) not made one sequence"
+// (corsac86-gui's Win32kD3d.TextureOf).
+
+using System;
+
+sealed class Gfx3dSurface { public int Kind; public int Levels; }
+sealed class DdSurface { public Gfx3dSurface? Engine; public int Level; public DdSurface? Next; public int Format; }
+
+static class Program
+{
+    static int _refreshed;
+    static void Refresh(DdSurface s) { _refreshed += 1; }
+
+    static Gfx3dSurface? MakeSurface(int format, int levels) => format == 99 ? null : new Gfx3dSurface { Kind = 3, Levels = levels };
+
+    static Gfx3dSurface? TextureOf(DdSurface top)
+    {
+        if (top.Engine != null) return top.Engine.Kind == 3 ? top.Engine : null;
+        int levels = 1;
+        for (DdSurface? l = top.Next; l != null && levels < 12; l = l.Next) levels++;
+        Gfx3dSurface? e = MakeSurface(top.Format, levels);
+        if (e == null) return null;
+        int i = 0;
+        for (DdSurface? l = top; l != null && i < e.Levels; l = l.Next, i++)
+        {
+            l.Engine = e;
+            l.Level = i;
+            Refresh(l);
+        }
+        return e;
+    }
+
+    static int Main()
+    {
+        DdSurface a = new DdSurface { Format = 5, Next = new DdSurface { Next = new DdSurface() } };
+        Gfx3dSurface? e = TextureOf(a);
+        GC.Collect();
+        Console.WriteLine("engine " + e!.Kind + " levels " + e.Levels + " refreshed " + _refreshed);
+        return a.Next!.Next!.Engine == e && a.Next.Next.Level == 2 ? 0 : 1;
+    }
+}
