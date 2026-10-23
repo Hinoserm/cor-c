@@ -14,7 +14,7 @@
 // 3,4,2 | 1,2 | 2,3 | 2,4,3,2,1 | -1
 // 1,4 | two,five | 1 | x,x,x | TrueTrue
 // bad cast
-// 40 Bob 152 30.4 18.75 2 Cid
+// 40 Bob 152 30.4 18.75 2 Cid []
 // 40 Ann,Eve 0A,1B,2C,3D,4E
 //
 // A whole small program of LINQ's semantics: deferred execution and the
@@ -63,7 +63,7 @@ static class Program
         object[] mixed = { 1, "two", 3.0, 4, "five", null! };
         Console.WriteLine(string.Join(",", mixed.OfType<int>()) + " | " + string.Join(",", mixed.OfType<string>()) + " | " + mixed.Count(o => o is null) + " | " + string.Join(",", Enumerable.Repeat("x", 3)) + " | " + people.Any(p => p.Age > 35) + people.All(p => p.Age > 20));
         try { var bad = mixed.Cast<int>().ToList(); } catch (InvalidCastException) { Console.WriteLine("bad cast"); }
-        Console.WriteLine(people.Max(p => p.Age) + " " + people.MinBy(p => p.Age)!.Name + " " + people.Sum(p => p.Age) + " " + people.Average(p => p.Age) + " " + orders.Sum(o => o.Total) + " " + people.Count(p => p.City == "Oslo") + " " + people.ElementAt(2).Name + " " + people.LastOrDefault(p => p.Age > 100)?.Name);
+        Console.WriteLine(people.Max(p => p.Age) + " " + people.MinBy(p => p.Age)!.Name + " " + people.Sum(p => p.Age) + " " + people.Average(p => p.Age) + " " + orders.Sum(o => o.Total) + " " + people.Count(p => p.City == "Oslo") + " " + people.ElementAt(2).Name + " [" + people.LastOrDefault(p => p.Age > 100)?.Name + "]");
         var dict = people.ToDictionary(p => p.Name, p => p.Age);
         Console.WriteLine(dict["Dee"] + " " + string.Join(",", dict.Where(kv => kv.Value == 31).Select(kv => kv.Key)) + " " + string.Join(",", people.Select((p, i) => i + p.Name[0].ToString())));
         return 0;
