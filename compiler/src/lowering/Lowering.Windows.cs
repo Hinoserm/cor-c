@@ -74,25 +74,95 @@ public sealed partial class Lowering
         return exports;
     }
 
+    /// <summary>The platform library's class (runtime/src/platforms/win32/win32.cor).</summary>
+    private const string Win32Type = "Win32";
+
+    /// <summary>A static method of the Windows platform library, or null when it is not linked.</summary>
+    private MethodSymbol? Win32Method(string name)
+        => _b.Types.TryGetValue(Win32Type, out TypeSymbol? t)
+            ? t.Methods.FirstOrDefault(m => m.Name == name && m.Static && m.Params.Count == 0)
+            : null;
+
     /// <summary>
     /// A DLL'S ENTRY: DllMain(instance, reason, reserved), stdcall, which the
-    /// loader calls as a process and its threads come and go and which
-    /// answers TRUE. It takes the address of every export, the way a program
-    /// hands C a callback, so each is kept and is analysed as what it is: a
-    /// function called by code the compiler never sees.
+    /// loader calls as a process and its threads come and go. At
+    /// DLL_PROCESS_ATTACH the platform library takes a TLS slot and puts this
+    /// thread's block in it (Win32.Attach) -- answering FALSE, which fails the
+    /// load, when it cannot -- and the thread is the collector's, the module
+    /// initialisers run, and what wants the heap is made (Win32.Started);
+    /// then the thread goes back to C counted as in C, as an export leaves
+    /// it. At DLL_PROCESS_DETACH the slot is given back. It takes the address
+    /// of every export, the way a program hands C a callback, so each is kept
+    /// and is analysed as what it is: a function called by code the compiler
+    /// never sees.
     /// </summary>
     private void EmitDllEntry(List<MethodSymbol> exports)
     {
         Function f = new(DllEntryName, IrTypes.Word) { CalleePops = 3 * Target.Current.WordSize };
         f.Params.Add(f.NewReg(IrTypes.Word, "instance"));
-        f.Params.Add(f.NewReg(IrTypes.Word, "reason"));
+        VReg reason = f.NewReg(IrTypes.Word, "reason");
+        f.Params.Add(reason);
         f.Params.Add(f.NewReg(IrTypes.Word, "reserved"));
         Builder e = new(f, f.NewBlock("entry"));
         foreach (MethodSymbol m in exports)
         {
             e.Call(MachineIntrinsics.KeepAlive, IrType.Void, RegOperand.Of(e.Address(CallLabel(m))));
         }
+        var attach = f.NewBlock("attach");
+        var other = f.NewBlock("other");
+        var detach = f.NewBlock("detach");
+        var yes = f.NewBlock("yes");
+        var no = f.NewBlock("no");
+        e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(1, IrTypes.Word), IrTypes.Word), attach, other);
+
+        e.SetBlock(attach);
+        if (Win32Method("Attach") is not MethodSymbol take || Win32Method("Started") is not MethodSymbol started)
+        {
+            Error(new Block(), "a DLL needs the Windows platform library (runtime/src/platforms/win32/win32.cor)");
+            e.Jump(no);
+        }
+        else
+        {
+            Require(take);
+            var run = f.NewBlock("run");
+            VReg ok = e.Call(CallLabel(take), IrType.I32)!;
+            e.Branch(ok, run, no);
+            e.SetBlock(run);
+            if (RuntimeKnobs.Count > 0 && RuntimeMethod("UseKnobs", 1) is MethodSymbol knobs)
+            {
+                Require(knobs);
+                e.Call(CallLabel(knobs), IrType.Void, R(e.Address(InternString(string.Join('\0', RuntimeKnobs) + "\0"))));
+            }
+            if (RuntimeMethod("StartThread", 0) is MethodSymbol join)
+            {
+                Require(join);
+                e.Call(CallLabel(join), IrType.Void);
+            }
+            e.Call(Corsac.Lang.Elf.Linker.ProgramInitName, IrType.Void);
+            Require(started);
+            e.Call(CallLabel(started), IrType.Void);
+            if (RuntimeMethod("EnterNative", 0) is MethodSymbol enter)
+            {
+                Require(enter);
+                e.Call(CallLabel(enter), IrType.Void);
+            }
+            e.Jump(yes);
+        }
+
+        e.SetBlock(other);
+        e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(0, IrTypes.Word), IrTypes.Word), detach, yes);
+        e.SetBlock(detach);
+        if (Win32Method("Detach") is MethodSymbol let)
+        {
+            Require(let);
+            e.Call(CallLabel(let), IrType.Void);
+        }
+        e.Jump(yes);
+
+        e.SetBlock(yes);
         e.Ret(new ImmOperand(1, IrTypes.Word));
+        e.SetBlock(no);
+        e.Ret(new ImmOperand(0, IrTypes.Word));
         _m.Functions.Add(f);
         _m.Entry = DllEntryName;
     }

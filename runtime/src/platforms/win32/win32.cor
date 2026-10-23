@@ -1,0 +1,168 @@
+// The Windows platform library (--windows): the bare-metal runtime
+// (runtime/src/arch/x86/baremetal.cor) with its hooks answered by kernel32.
+//
+// A Windows image is a guest in a process, as a ring-1 kernel's image is a
+// guest of the kernel below it, and the bare-metal Platform already asks a
+// host for everything a host has: memory (MapHook, UnmapHook), the time
+// (NanosHook), an exit (ExitHook) and a console (Platform.Console). This file
+// fills those in from kernel32 and owns what only Windows has: the TLS slot
+// every thread's block is found by (fs:[0xE10 + slot*4], Lowering.Windows),
+// and the stack top the TEB records for each thread.
+//
+// Only kernel32 functions Windows 95 and NT 3.51 already had are called, so
+// one image runs on every 32-bit Windows (docs/WIN32-TARGET.md).
+//
+// NOTHING HERE ALLOCATES until Started: the heap is what Attach sets up.
+
+static class Win32
+{
+    const int MemCommit = 0x1000;
+    const int MemReserve = 0x2000;
+    const int MemDecommit = 0x4000;
+    const int PageReadWrite = 0x04;
+    const int StdErrorHandle = -12;
+    const int TlsOutOfIndexes = -1;
+
+    /// The TEB's TlsSlots hold 64; a slot past them is in the expansion
+    /// array (Windows 2000 on), which fs:[0xE10 + slot*4] does not reach.
+    const int TlsSlotsInTeb = 64;
+
+    // Every call made before the thread has a block is SuppressGCTransition:
+    // the transition reads the block.
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int TlsAlloc();
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int TlsFree(int slot);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nint VirtualAlloc(nint at, nint bytes, int type, int protect);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int VirtualFree(nint at, nint bytes, int type);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nint VirtualQuery(nint at, nint info, nint bytes);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern void ExitProcess(int code);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nint GetStdHandle(int which);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int WriteFile(nint file, nint bytes, int count, nint written, nint overlapped);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int QueryPerformanceCounter(nint count);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int QueryPerformanceFrequency(nint frequency);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int GetTickCount();
+
+    static int _slot = TlsOutOfIndexes;
+    static long _frequency;
+    static long _count;
+
+    /// THE PROCESS TAKES THE IMAGE IN (DllMain, DLL_PROCESS_ATTACH, before
+    /// anything else of the image runs): a TLS slot for the threads' blocks,
+    /// this thread's block in it, and the hooks. False -- the load fails --
+    /// when there is no slot the TEB holds.
+    public static bool Attach()
+    {
+        int slot = TlsAlloc();
+        if (slot == TlsOutOfIndexes) return false;
+        if (slot >= TlsSlotsInTeb)
+        {
+            TlsFree(slot);
+            return false;
+        }
+        _slot = slot;
+        Sys.SetThreadBlockSlot(slot);
+
+        long block = Sys.MainThreadBlock();
+        Sys.Poke(block + Tls.Self, block);
+        Sys.SetThreadBlock(block);
+        Sys.Poke(block + Tls.StackBase, StackTop());
+
+        Platform.MapHook = Sys.AddressOf(Map);
+        Platform.UnmapHook = Sys.AddressOf(Unmap);
+        Platform.NanosHook = Sys.AddressOf(Nanos);
+        Platform.ExitHook = Sys.AddressOf(Exit);
+        return true;
+    }
+
+    /// The image may allocate now: what wants the heap.
+    public static void Started()
+    {
+        Platform.Console = new StdErrConsole();
+    }
+
+    /// The process lets the image go (DLL_PROCESS_DETACH): the slot back.
+    public static void Detach()
+    {
+        if (_slot != TlsOutOfIndexes) TlsFree(_slot);
+        _slot = TlsOutOfIndexes;
+    }
+
+    /// THE TOP OF THIS THREAD'S STACK, where a scan of it ends: the end of
+    /// the committed region the stack pointer is in, which is the stack's
+    /// top whatever made the thread (MEMORY_BASIC_INFORMATION: BaseAddress
+    /// at 0, RegionSize at 12).
+    static unsafe long StackTop()
+    {
+        int* info = stackalloc int[8];
+        long here = Sys.FramePointer();
+        VirtualQuery((nint)here, (nint)info, 28);
+        return (long)(uint)info[0] + (long)(uint)info[3];
+    }
+
+    /// Zeroed pages, or 0: VirtualAlloc's are zeroed.
+    static long Map(long bytes, long b, long c)
+    {
+        return (long)(nuint)VirtualAlloc(0, (nint)bytes, MemCommit | MemReserve, PageReadWrite);
+    }
+
+    /// Given back by DECOMMIT: the heap gives back pieces of what it was
+    /// mapped, and only a whole reservation can be released.
+    static long Unmap(long at, long bytes, long c)
+    {
+        VirtualFree((nint)at, (nint)bytes, MemDecommit);
+        return 0;
+    }
+
+    /// The performance counter as nanoseconds, or the tick count's
+    /// milliseconds on a machine without one.
+    static long Nanos(long a, long b, long c)
+    {
+        if (_frequency == 0 && QueryPerformanceFrequency((nint)Sys.AddressOf(ref _frequency)) == 0) _frequency = -1;
+        if (_frequency < 0) return (long)(uint)GetTickCount() * 1000000;
+        QueryPerformanceCounter((nint)Sys.AddressOf(ref _count));
+        long seconds = _count / _frequency;
+        return seconds * 1000000000 + (_count - seconds * _frequency) * 1000000000 / _frequency;
+    }
+
+    static long Exit(long code, long b, long c)
+    {
+        ExitProcess((int)code);
+        return 0;
+    }
+
+    /// What the runtime prints -- an unhandled exception's report -- goes to
+    /// the process's standard error, when it has one.
+    public static void WriteError(long address, long count)
+    {
+        nint handle = GetStdHandle(StdErrorHandle);
+        if (handle == 0 || handle == -1) return;
+        int written = 0;
+        WriteFile(handle, (nint)address, (int)count, (nint)Sys.AddressOf(ref written), 0);
+    }
+}
+
+sealed class StdErrConsole : IConsole
+{
+    public void Write(long address, long count) => Win32.WriteError(address, count);
+}

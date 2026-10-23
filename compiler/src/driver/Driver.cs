@@ -748,7 +748,9 @@ public static class Driver
         if (windows && (flat || args.Contains("--shared") || kernelPath is not null || args.Contains("--obj")))
             return Fail("--windows links a PE image whole: not with --flat, --shared, --obj or --kernel");
         if (windows && !dll) return Fail("--windows makes DLLs only so far (--dll): a program's start comes with the Windows platform layer");
-        if (windows && !freestanding) return Fail("--dll needs --freestanding until the Windows platform layer (runtime/src/platforms/win32) is in");
+        // Its runtime is the bare-metal one with kernel32 answering its hooks
+        // (runtime/src/platforms/win32/win32.cor).
+        freestanding |= windows;
         Corsac.Lang.Lower.Lowering.Windows = windows;
         Corsac.Lang.Lower.Lowering.Dll = dll;
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
@@ -895,7 +897,7 @@ public static class Driver
         // command and memory management is nobody's business but the
         // library's. Found relative to the compiler's own location, which is
         // where the repository keeps stdlib/ and runtime/.
-        List<string> classLibrary = DefaultLibraries(target, freestanding);
+        List<string> classLibrary = DefaultLibraries(target, freestanding, windows);
         if (!args.Contains("--nostdlib") && classLibrary.Count > 0)
         {
             List<string> added = classLibrary.Where(d => !files.Any(f => Path.GetFullPath(f) == Path.GetFullPath(d))).ToList();
@@ -1730,7 +1732,7 @@ public static class Driver
         return root;
     }
 
-    public static List<string> DefaultLibraries(Target target, bool freestanding = false)
+    public static List<string> DefaultLibraries(Target target, bool freestanding = false, bool windows = false)
     {
         string? root = LibraryRoot();
         if (root is null)
@@ -1770,6 +1772,10 @@ public static class Driver
         if (File.Exists(system))
         {
             libs.Add(system);
+        }
+        if (windows)
+        {
+            libs.Add(Path.Combine(root, "runtime", "src", "platforms", "win32", "win32.cor"));
         }
         if (!freestanding)
         {
