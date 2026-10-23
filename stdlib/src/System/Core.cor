@@ -19683,11 +19683,18 @@ abstract class Array : IList, ICollection {
         if (destinationIndex < 0) throw new ArgumentOutOfRangeException("destinationIndex", "Number was less than the array's lower bound in the first dimension.");
         if (sourceArray.Length - sourceIndex < length) throw new ArgumentException("Source array was not long enough. Check the source index, length, and the array's lower bounds.", "sourceArray");
         if (destinationArray.Length - destinationIndex < length) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
-        if (ReferenceEquals(sourceArray, destinationArray) && sourceIndex < destinationIndex) {
-            for (int i = length - 1; i >= 0; i--) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
-            return;
+        // A PRIMITIVE THAT DOES NOT WIDEN to the destination's is refused at
+        // the first element, before anything is copied, and is .NET's
+        // ArrayTypeMismatchException rather than SetValue's ArgumentException.
+        try {
+            if (ReferenceEquals(sourceArray, destinationArray) && sourceIndex < destinationIndex) {
+                for (int i = length - 1; i >= 0; i--) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
+                return;
+            }
+            for (int i = 0; i < length; i++) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
+        } catch (ArgumentException) {
+            throw new ArrayTypeMismatchException("Source array type cannot be assigned to destination array type.");
         }
-        for (int i = 0; i < length; i++) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
     }
     public static void Copy(Array sourceArray, long sourceIndex, Array destinationArray, long destinationIndex, long length) {
         Copy(sourceArray, Index(sourceIndex), destinationArray, Index(destinationIndex), Index(length));
