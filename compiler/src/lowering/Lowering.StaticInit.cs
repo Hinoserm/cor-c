@@ -54,7 +54,7 @@ public sealed partial class Lowering
     /// Run <paramref name="owner"/>'s static initialisers if they have not
     /// run, before whatever is about to touch the type.
     /// </summary>
-    private void TouchType(TypeSymbol? owner)
+    private void TouchType(TypeSymbol? owner, bool fromOutside = false)
     {
         if (owner is null)
         {
@@ -71,7 +71,9 @@ public sealed partial class Lowering
         // branch, and a run that did not take it read T's statics unwritten.
         // os/bin/uniq printed nothing at all. A load and a branch is what this
         // costs, and the optimiser folds the repeats within a block.
-        if (ReferenceEquals(owner, _method?.Owner))
+        // Unless the method is a way in from outside (fromOutside): one C
+        // calls is the first of its type to run as often as not.
+        if (!fromOutside && ReferenceEquals(owner, _method?.Owner))
         {
             return;
         }

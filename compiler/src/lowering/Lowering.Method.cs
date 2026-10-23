@@ -464,6 +464,15 @@ public sealed partial class Lowering
             _f.CalleePops = pops;
         }
 
+        // ITS OWN TYPE IS TOUCHED, as Main's is (EmitRunMain): C enters here
+        // from outside, so no other method of the type need have run first,
+        // and a DLL's export is the first code of its type that runs. Its
+        // static arrays had no storage until this was done.
+        if (fromC is not null)
+        {
+            TouchType(m.Owner, fromOutside: true);
+        }
+
         if (NativeImportOf(m) is NativeImport native)
         {
             EmitNativeBody(m, native);
