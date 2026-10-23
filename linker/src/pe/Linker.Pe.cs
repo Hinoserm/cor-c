@@ -189,6 +189,46 @@ public static partial class Linker
             importSection.Content = new byte[importSection.Size];
             layout.Extra.Add(importSection);
         }
+        // THE GOT IS THE IMPORT ADDRESS TABLE. Code reaches another image's
+        // data through a slot holding its address (RelocKind.GotAddr), and an
+        // import's slot is that: the loader fills it. A symbol this image
+        // defines gets a slot of its own, in a small table beside the
+        // constants. Each such relocation becomes an absolute one to its slot.
+        Dictionary<string, uint> importSlots = ImportSlotOffsets(imports);
+        Dictionary<string, (Input Input, string Symbol, uint Offset)> ownSlots = new(StringComparer.Ordinal);
+        OutputSection? ownGot = null;
+        for (int n = 0; n < inputs.Count; n++)
+        {
+            Input input = inputs[n];
+            foreach (Section section in input.Object.Sections)
+            {
+                for (int i = 0; i < section.Relocs.Count; i++)
+                {
+                    Relocation r = section.Relocs[i];
+                    if (r.Kind != RelocKind.GotAddr) continue;
+                    bool local = input.Locals.ContainsKey(r.Symbol);
+                    string slot;
+                    if (!local && importSlots.TryGetValue(r.Symbol, out uint offset))
+                    {
+                        slot = "got$" + r.Symbol;
+                        layout.Globals[slot] = new Definition("the import directory", importSection!, offset, null);
+                    }
+                    else
+                    {
+                        slot = "got$" + (local ? n + "$" : "") + r.Symbol;
+                        if (!ownSlots.ContainsKey(slot)) ownSlots[slot] = (input, r.Symbol, (uint)ownSlots.Count * 4);
+                    }
+                    section.Relocs[i] = r with { Kind = RelocKind.Abs32, Symbol = slot };
+                }
+            }
+        }
+        if (ownSlots.Count > 0)
+        {
+            ownGot = new OutputSection(".rdata$got", SectionKind.ReadOnlyData) { Align = 4, Size = (uint)ownSlots.Count * 4 };
+            ownGot.Content = new byte[ownGot.Size];
+            foreach ((string slot, (Input _, string _, uint offset)) in ownSlots)
+                layout.Globals[slot] = new Definition("the image's GOT", ownGot, offset, null);
+        }
         if (errors.Count != 0)
         {
             throw new LinkException(errors);
@@ -197,7 +237,7 @@ public static partial class Linker
         List<PeSection> sections = new()
         {
             new PeSection(".text", PeSectionFlags.Code | PeSectionFlags.Execute | PeSectionFlags.Read, layout.Text, thunks),
-            new PeSection(".rdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, layout.ReadOnlyData, dataImportTable, exportSection),
+            new PeSection(".rdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, layout.ReadOnlyData, ownGot, dataImportTable, exportSection),
             new PeSection(".data", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, layout.Numbers, layout.Data, layout.Bss),
             new PeSection(".idata", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, importSection),
         };
@@ -239,6 +279,21 @@ public static partial class Linker
         }
 
         // THE TABLES, now that everything has an address.
+        // The image's own GOT slots: each its symbol's address, moved by .reloc.
+        List<uint> ownGotFixups = new();
+        if (ownGot is not null)
+        {
+            foreach ((string slot, (Input input, string symbol, uint offset)) in ownSlots)
+            {
+                if (Lookup(input, layout, symbol) is not Definition d)
+                {
+                    errors.Add($"'{symbol}' is reached through the GOT from {input.Name}, and nothing defines it");
+                    continue;
+                }
+                BinaryPrimitives.WriteUInt32LittleEndian(ownGot.Content!.AsSpan((int)offset), checked((uint)d.Address));
+                ownGotFixups.Add(checked((uint)(ownGot.Addr - options.ImageBase + offset)));
+            }
+        }
         Dictionary<string, uint> slots = new(StringComparer.Ordinal);
         if (thunks is not null && importSection is not null)
         {
@@ -285,6 +340,7 @@ public static partial class Linker
                 }
             }
         }
+        fixups.AddRange(ownGotFixups);
         if (thunks is not null)
         {
             for (int i = 0; i < imports.Count; i++)
@@ -503,6 +559,22 @@ public static partial class Linker
         }
         // Each import's slot in the IAT, by address.
         return slotOf.ToDictionary(kv => kv.Key, kv => checked((uint)(idata.Addr + addresses + kv.Value * 4)), StringComparer.Ordinal);
+    }
+
+    /// <summary>Each import's IAT slot, as an offset in the import section (FillImports lays them out so).</summary>
+    private static Dictionary<string, uint> ImportSlotOffsets(List<PeImport> imports)
+    {
+        Dictionary<string, uint> offsets = new(StringComparer.Ordinal);
+        List<string> dlls = imports.Select(i => i.Dll).Distinct(StringComparer.Ordinal).ToList();
+        uint lookups = (uint)(dlls.Count + 1) * PeFormat.ImportDescriptorBytes;
+        uint addresses = lookups + 4 * (uint)(imports.Count + dlls.Count);
+        uint slot = 0;
+        foreach (string dll in dlls)
+        {
+            foreach (PeImport import in imports.Where(i => i.Dll == dll)) offsets[import.Symbol] = addresses + slot++ * 4;
+            slot++;
+        }
+        return offsets;
     }
 
     /// <summary>The ends of the table of words an import's address goes in (DataImports), which the entry hands the runtime.</summary>

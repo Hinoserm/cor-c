@@ -147,25 +147,50 @@ runtime one of two ways, chosen when it is compiled:
   PLT), and CORSAC's image builder already builds its runtime and class
   libraries so.
 
-On Windows the dynamic form is still to be made. A runtime DLL, its
-functions imported by name through the import directory as any DLL's are,
-is the easy half. The other half is data: code that names a static, a type's
-descriptor or a string literal another image defines. Windows' loader fills
-only the import address table, with functions' addresses, and has no
-relocation that names another image's symbol. The plan is the ELF one,
-carried in the image: the same position-independent code generation, a GOT
-of the image's own, and a table of the GOT's entries by DLL and name, which
-the runtime DLL fills before anything else of the image runs -- its own
-DllMain runs first, the loader's order for an import -- with GetProcAddress,
-which every Windows has. One thread block for the process, the runtime
-DLL's, through its TLS slot. Each image keeps its own frames and statics
-and introduces them to the runtime as a shared object does on Linux
-(Runtime.BeginImage).
+ON WINDOWS (made 2026-10-23):
+
+    corc compile --windows --shared -o corsacrt.dll
+    corc compile --dll --dynamic --libdir DIR-WITH-corsacrt.dll mine.cor -o mine.dll
+
+`--windows --shared` makes the runtime DLL: the freestanding class library
+and the Windows platform library compiled as its own sources (as the kernel
+compiles them, whole), every global exported by its own name, functions and
+data alike -- 9,080 names -- and a DllMain that starts the runtime as a
+static DLL's does. 2.9 MB of code; built in 16 seconds.
+
+`--dynamic` on Windows reads the export directory of each DLL in the library
+directory (PeReader) and drops every definition one of them makes, as it
+drops what a shared object exports on Linux. What the image still names of
+the runtime is imported from it:
+
+- A CALL goes through an import thunk, as any DLL's function does.
+- DATA, which code reaches through a GOT slot (RelocKind.GotAddr, the code
+  generation a program over shared objects already has): the import's IAT
+  slot is that GOT slot, filled by the loader -- it fills a data export's
+  slot with the data's address as it fills a function's. A symbol the image
+  defines itself gets a slot in a small GOT of its own.
+- A WORD HOLDING an imported address -- a vtable's method, a descriptor's
+  ancestor -- has no relocation Windows can apply. The link lists each, by
+  RVA, with its import's slot (DataImports); the word keeps the addend, and
+  the image's DllMain has the runtime add the slot's value before anything
+  else of the image runs (Win32.FillImports), each section made writable
+  for the while and given its protection back.
+
+The image's DllMain then introduces it to the runtime (Runtime.BeginImage:
+its statics, its frames), runs its module initialisers, and pins it; the
+runtime's TLS slot, heap, threads and fault handling are the runtime DLL's,
+and a fault in the image's code is one the runtime knows by its frames
+(Runtime.KnowsCode). Measured: the test DLL 2.9 KB of code (186 static),
+cards.dll 15.5 KB (160 static), and Solitaire draws with it; four threads
+with collections, a NullReferenceException caught, statics only a DLL holds
+kept across collections, and two DLLs over one runtime in one process
+(tests/integration/windows-wine.sh). A Windows program (EXE) over it comes
+with the Windows EXE.
 
 The switch is the one the compiler has: static unless `--dynamic` says
 otherwise, which takes the runtime and the class library from the shared
-objects in the library directory (`--libdir`). With `--windows` it is
-refused, plainly, until the runtime DLL is made.
+libraries in the library directory (`--libdir`): .so files on Linux and in
+CORSAC, the runtime DLL on Windows.
 
 ## Calling Windows
 

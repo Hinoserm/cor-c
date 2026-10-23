@@ -1,0 +1,47 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+// Objects held only by this image's statics, across collections the shared
+// runtime makes: the runtime scans an image over it as it scans its own.
+static class Keep
+{
+    static List<int[]>? _held;
+    static string? _name;
+
+    [UnmanagedCallersOnly(EntryPoint = "Fill", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Fill(int n)
+    {
+        _held = new List<int[]>();
+        for (int i = 0; i < n; i++) _held.Add(new int[] { i, i * 3 });
+        _name = "kept " + n;
+        return _held.Count;
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Churn", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Churn(int rounds)
+    {
+        int made = 0;
+        for (int r = 0; r < rounds; r++)
+        {
+            object[] junk = new object[64];
+            for (int i = 0; i < junk.Length; i++) junk[i] = new int[32];
+            made += junk.Length;
+            if (r % 50 == 49) GC.Collect();
+        }
+        return made;
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Check", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Check()
+    {
+        if (_held == null || _name == null) return -1;
+        int bad = 0;
+        for (int i = 0; i < _held.Count; i++) if (_held[i][0] != i || _held[i][1] != i * 3) bad++;
+        return _name == "kept " + _held.Count ? bad : 1000 + bad;
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "Collections", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Collections() => GC.CollectionCount(0);
+}
