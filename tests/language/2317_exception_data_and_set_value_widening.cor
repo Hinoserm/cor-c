@@ -1,0 +1,93 @@
+// test: exception_data_and_set_value_widening
+// expect-exit: 0
+// expect-output:
+// 2 1 True True
+// k=1
+// j=v
+// ArgumentException
+// ArgumentNullException
+// 1
+// http://x
+// v
+// 1 0 True
+// u2->char ok A
+// char->u2 ok 66
+// i1->u2 ArgumentException
+// u4->i8 ok 7
+// u8->i8 ArgumentException
+// i4->u4 ArgumentException
+// u1->char ok C
+// i4->r4 ok 9
+// i8->r8 ok 10
+// r4->r8 ok 1.5
+// r8->r4 ArgumentException
+// bool->int ArgumentException
+// string->int InvalidCastException
+// int->bool ArgumentException
+// i4->decimal InvalidCastException
+// null->int ok 0
+// i4->i4 ok 4
+// 5,6
+// 9
+//
+// Exception.Data, a dictionary of what a thrower or handler adds (keys in
+// the order added, a null key refused, a duplicate ArgumentException), and
+// HelpLink. And a boxed primitive written into an array of a wider one, as
+// .NET's SetValue widens it -- an int into a long[], a char into an int[],
+// a float into a double[] -- with ArgumentException for one that does not
+// widen and InvalidCastException for anything not a primitive; CopyTo
+// widens the same way. Both were missing.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+
+static class P
+{
+    static void Try(string what, Array a, object? v)
+    {
+        try { a.SetValue(v, 0); Console.WriteLine($"{what} ok {a.GetValue(0)}"); }
+        catch (Exception e) { Console.WriteLine($"{what} {e.GetType().Name}"); }
+    }
+
+    static void Main()
+    {
+        var e = new InvalidOperationException("x");
+        e.Data["k"] = 1;
+        e.Data.Add("j", "v");
+        Console.WriteLine($"{e.Data.Count} {e.Data["k"]} {e.Data.Contains("j")} {e.Data["none"] == null}");
+        foreach (DictionaryEntry d in e.Data) Console.WriteLine(d.Key + "=" + d.Value);
+        try { e.Data.Add("k", 2); } catch (ArgumentException x) { Console.WriteLine(x.GetType().Name); }
+        try { e.Data[null!] = 1; } catch (ArgumentNullException x) { Console.WriteLine(x.GetType().Name); }
+        e.Data.Remove("k");
+        Console.WriteLine(e.Data.Count);
+        e.HelpLink = "http://x";
+        Console.WriteLine(e.HelpLink);
+        try { throw e; } catch (Exception c) { Console.WriteLine(c.Data["j"]); }
+        ICollection keys = e.Data.Keys;
+        Console.WriteLine($"{keys.Count} {new Exception().Data.Count} {new Exception().HelpLink == null}");
+
+        Try("u2->char", new char[1], (ushort)65);
+        Try("char->u2", new ushort[1], 'B');
+        Try("i1->u2", new ushort[1], (sbyte)5);
+        Try("u4->i8", new long[1], 7u);
+        Try("u8->i8", new long[1], 7ul);
+        Try("i4->u4", new uint[1], 7);
+        Try("u1->char", new char[1], (byte)67);
+        Try("i4->r4", new float[1], 9);
+        Try("i8->r8", new double[1], 10L);
+        Try("r4->r8", new double[1], 1.5f);
+        Try("r8->r4", new float[1], 1.5);
+        Try("bool->int", new int[1], true);
+        Try("string->int", new int[1], "x");
+        Try("int->bool", new bool[1], 1);
+        Try("i4->decimal", new decimal[1], 3);
+        Try("null->int", new int[1], null);
+        Try("i4->i4", new int[1], 4);
+        long[] longs = new long[2];
+        new int[] { 5, 6 }.CopyTo(longs, 0);
+        Console.WriteLine(string.Join(",", longs));
+        ((IList)longs)[1] = (byte)9;
+        Console.WriteLine(longs[1]);
+    }
+}

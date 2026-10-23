@@ -1,0 +1,54 @@
+// test: non_generic_array_copy_clear_index_of_reverse
+// expect-exit: 0
+// expect-output:
+// 1,2,3,0,0
+// 1,2,2,3,4
+// 1,2,3,4
+// 1,1,2,3
+// z 1 -1
+// True
+// 5,0,7
+// 7,0,5 2
+// ArrayTypeMismatchException
+// ArgumentException
+// IndexOutOfRangeException
+//
+// System.Array's non-generic statics, as .NET has them: Copy from any array
+// into any other (an int[] into a long[] widened, into an object[] boxed,
+// an overlap within one array as memmove does), ArrayTypeMismatchException
+// for a primitive that does not widen, Clear, IndexOf and Reverse over an
+// Array. Typed arrays still take the generic forms, the better match.
+// Expected output from .NET 10.
+
+using System;
+
+static class P
+{
+    static void Main()
+    {
+        int[] ints = { 1, 2, 3, 4 };
+        long[] longs = new long[5];
+        Array.Copy(ints, longs, 3);
+        Console.WriteLine(string.Join(",", longs));
+        Array.Copy(ints, 1, longs, 2, 3);
+        Console.WriteLine(string.Join(",", longs));
+        object[] boxes = new object[4];
+        Array.Copy(ints, boxes, 4);
+        Console.WriteLine(string.Join(",", boxes));
+        Array.Copy(ints, 0, ints, 1, 3);
+        Console.WriteLine(string.Join(",", ints));
+        Array a = new string[] { "x", "y", "z" };
+        Array.Reverse(a);
+        Console.WriteLine($"{a.GetValue(0)} {Array.IndexOf(a, "y")} {Array.IndexOf(a, "q")}");
+        Array.Clear(a);
+        Console.WriteLine(a.GetValue(1) == null);
+        int[] typed = { 5, 6, 7 };
+        Array.Clear(typed, 1, 1);
+        Console.WriteLine(string.Join(",", typed));
+        Array.Reverse(typed);
+        Console.WriteLine($"{string.Join(",", typed)} {Array.IndexOf(typed, 5)}");
+        try { Array.Copy(longs, ints, 2); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        try { Array.Copy(ints, longs, 9); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        try { Array.Clear(typed, 2, 5); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+    }
+}

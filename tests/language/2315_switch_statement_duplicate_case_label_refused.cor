@@ -1,0 +1,26 @@
+// test: switch_statement_duplicate_case_label_refused
+// expect-compile-error: CS0152: The switch statement contains multiple cases with the label value '1'
+//
+// C#'s CS0152: two case labels of one constant in a switch statement.
+// The second was compiled as a label nothing reaches.
+
+using System;
+
+static class Program
+{
+    static int Pick(int x)
+    {
+        switch (x)
+        {
+            case 1: return 1;
+            case 1: return 2;
+            default: return 3;
+        }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Pick(1));
+        return 0;
+    }
+}
