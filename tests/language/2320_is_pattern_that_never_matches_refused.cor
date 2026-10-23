@@ -1,0 +1,18 @@
+// test: is_pattern_that_never_matches_refused
+// expect-compile-error: (15,27): error: CS8518: An expression of type 'int' can never match the provided pattern.
+//
+// C#'s CS8518: an `is` pattern over an integer that takes no value of its
+// type -- `x is > 5 and < 3` -- is refused. It compiled to a test that is
+// always false.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        int x = DateTime.Now.Second;
+        Console.WriteLine(x is > 5 and < 3);
+        return 0;
+    }
+}

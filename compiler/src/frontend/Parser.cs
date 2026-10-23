@@ -8294,7 +8294,10 @@ public sealed class Parser
                 // subject after each guard and each property load, which for a
                 // subject that DID something was three calls for one switch.
                 _caseLabel = true;
-                label = ParseIsPattern(new SubjectExpr { Line = caseAt.Line, Col = caseAt.Col }, caseAt);
+                // Placed where the pattern starts, as C# places what it says of
+                // a label (CS0152, CS8120), not at `case`.
+                Token patternAt = Cur;
+                label = ParseIsPattern(new SubjectExpr { Line = caseAt.Line, Col = caseAt.Col }, patternAt);
                 _caseLabel = false;
             }
             else if (!Take(Tok.KwDefault))

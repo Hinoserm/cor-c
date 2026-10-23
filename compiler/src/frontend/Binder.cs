@@ -11408,7 +11408,7 @@ public sealed partial class Binder
             {
                 if (sawNullLabel)
                 {
-                    Error(c.Pattern, "CS0152: The switch statement contains multiple cases with the label value 'null'");
+                    Error(c, "CS0152: The switch statement contains multiple cases with the label value 'null'");
                     continue;
                 }
                 sawNullLabel = true;
@@ -11434,7 +11434,7 @@ public sealed partial class Binder
                 subsumed = all || texts.Contains(quoted);
                 if (texts.Contains(quoted))
                 {
-                    Error(c.Pattern, $"CS0152: The switch statement contains multiple cases with the label value '\"{quoted}\"'");
+                    Error(c, $"CS0152: The switch statement contains multiple cases with the label value '\"{quoted}\"'");
                     continue;
                 }
                 texts.Add(quoted);
@@ -11450,7 +11450,7 @@ public sealed partial class Binder
             // has said since its first switch.
             if (single is long value && !constants.Add(value))
             {
-                Error(c.Pattern, $"CS0152: The switch statement contains multiple cases with the label value '{LabelText(subject, value)}'");
+                Error(c, $"CS0152: The switch statement contains multiple cases with the label value '{LabelText(subject, value)}'");
                 continue;
             }
             if (subsumed) Error(c.Pattern, "CS8120: The switch case is unreachable. It has already been handled by a previous case or it is impossible to match.");
@@ -11474,15 +11474,30 @@ public sealed partial class Binder
     private void PatternVerdict(Expr root, Expr subject)
     {
         if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true) return;
-        if (!_r.ExprType.TryGetValue(subject, out Type? type) || type.IsError || type.Nullable || type.IsNullableValue) return;
-        if (IntegerDomain(type) is not { } domain) return;
+        // The subject as checked: a hoisted one the PatternExpr's own, a plain
+        // one the first test's operand of its path (the body checked is a
+        // copy, whose nodes are not the parser's).
+        string? path = root is PatternExpr ? null : Path(subject);
         Expr test = root is PatternExpr hoisted ? hoisted.Test : root;
-        if (Ranges(test, domain, subject) is not { } accepted) return;
+        Expr? read = root is PatternExpr outer ? outer.Subject : path is null ? null : FirstReadOf(test, path);
+        if (read is null || !_r.ExprType.TryGetValue(read, out Type? type) || type.IsError || type.Nullable || type.IsNullableValue) return;
+        if (IntegerDomain(type) is not { } domain) return;
+        if (Ranges(test, domain, path) is not { } accepted) return;
+        subject = read;
         if (accepted.Count == 0)
             Error(subject, $"CS8518: An expression of type '{type}' can never match the provided pattern.");
         else if (accepted.Count == 1 && accepted[0].Lo == domain.Lo && accepted[0].Hi == domain.Hi)
             Warning(subject, "CS8794", $"An expression of type '{type}' always matches the provided pattern.");
     }
+
+    /// <summary>The first comparison's operand in a pattern's tests that reads this path.</summary>
+    private Expr? FirstReadOf(Expr test, string path) => test switch
+    {
+        BinaryExpr { Op: BinOp.AndAlso or BinOp.OrElse } both => FirstReadOf(both.Left, path) ?? FirstReadOf(both.Right, path),
+        UnaryExpr { Op: UnOp.Not } not => FirstReadOf(not.Operand, path),
+        BinaryExpr compare when Path(compare.Left) == path => compare.Left,
+        _ => null,
+    };
 
     private static bool Derives(TypeSymbol derived, TypeSymbol baseClass)
     {
@@ -11525,21 +11540,21 @@ public sealed partial class Binder
     /// not touch, when it is only comparisons of the subject with constants
     /// joined by `and`, `or` and `not`; null when anything else decides it.
     /// </summary>
-    private List<(long Lo, long Hi)>? Ranges(Expr test, (long Lo, long Hi, bool Unsigned64) domain, Expr? subject = null)
+    private List<(long Lo, long Hi)>? Ranges(Expr test, (long Lo, long Hi, bool Unsigned64) domain, string? subjectPath = null)
     {
         switch (test)
         {
             case BinaryExpr { Op: BinOp.AndAlso } both:
-                return Ranges(both.Left, domain, subject) is { } left && Ranges(both.Right, domain, subject) is { } right
+                return Ranges(both.Left, domain, subjectPath) is { } left && Ranges(both.Right, domain, subjectPath) is { } right
                     ? Complement(Union(Complement(left, domain), Complement(right, domain)), domain) : null;
             case BinaryExpr { Op: BinOp.OrElse } either:
-                return Ranges(either.Left, domain, subject) is { } one && Ranges(either.Right, domain, subject) is { } other ? Union(one, other) : null;
+                return Ranges(either.Left, domain, subjectPath) is { } one && Ranges(either.Right, domain, subjectPath) is { } other ? Union(one, other) : null;
             case UnaryExpr { Op: UnOp.Not } not:
-                return Ranges(not.Operand, domain, subject) is { } inner ? Complement(inner, domain) : null;
+                return Ranges(not.Operand, domain, subjectPath) is { } inner ? Complement(inner, domain) : null;
             // Over the subject: a switch's SubjectExpr, or the `is` operand
-            // the parser wrote each test over (PatternVerdict).
+            // the parser wrote each test over, by its path (PatternVerdict).
             case BinaryExpr { Op: BinOp.Eq or BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge } compare
-                when (compare.Left is SubjectExpr { Outer: 0 } || subject is not null && ReferenceEquals(compare.Left, subject))
+                when (compare.Left is SubjectExpr { Outer: 0 } || subjectPath is not null && Path(compare.Left) == subjectPath)
                      && ConstantValue(compare.Right, _thisType) is long written:
             {
                 long c = Biased(written, domain);

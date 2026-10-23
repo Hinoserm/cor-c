@@ -3719,6 +3719,12 @@ public sealed class Monomorphiser
         {
             copied.CaptureOf = captured.CaptureOf;
         }
+        // An `is` pattern's root keeps what it tests (Binder.PatternVerdict):
+        // a hoisted subject as copied, a plain one as the name it is.
+        if (e.Facts?.PatternOf is { } tested && !ReferenceEquals(made, e))
+        {
+            (made.Facts ??= new ExprFacts()).PatternOf = made is PatternExpr hoisted ? hoisted.Subject : tested;
+        }
         return made;
     }
 

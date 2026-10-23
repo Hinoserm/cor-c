@@ -1,0 +1,26 @@
+// test: is_pattern_that_always_matches_warned
+// expect-exit: 0
+// expect-compile-warning: (20,18): warning CS8794
+// expect-compile-warning: (21,18): warning CS8794
+// expect-no-compile-warning: (22,
+// expect-output:
+// True True True
+//
+// C#'s CS8794: an `is` pattern over an integer that takes every value of
+// its type -- `x is < 0 or >= 0`, `x is not 1 or not 2` -- is warned of,
+// and is true. `x is >= 0 and < 10 or >= 10` is not every int and is not.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        int x = DateTime.Now.Second;
+        bool a = x is < 0 or >= 0;
+        bool b = x is not 1 or not 2;
+        bool c = x is >= 0 and < 10 or >= 10;
+        Console.WriteLine(a + " " + b + " " + c);
+        return 0;
+    }
+}
