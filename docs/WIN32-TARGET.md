@@ -125,6 +125,48 @@ time slice (Sleep(0)). A read through null in the DLL is caught as
 NullReferenceException (Wine's trace shows the access violation and the
 handler). It stays loaded once loaded: a FreeLibrary leaves it in place.
 
+## The runtime, static or dynamic
+
+Hino, 2026-10-23: every kind of image the compiler makes -- Linux programs
+and libraries, CORSAC's own programs, Windows programs and DLLs -- takes its
+runtime one of two ways, chosen when it is compiled:
+
+- STATIC: the runtime and the class library compiled into the image, and of
+  them ONLY WHAT THE IMAGE USES. A vtable slot's method is compiled once
+  something reads the slot (Lowering.Slots); a runtime knob the compile was
+  not given is off where it is asked, and what only it turns on -- the
+  collector's checked modes, census, sampling -- is not compiled; the
+  runtime makes nothing on the heap for itself, so an image that allocates
+  nothing carries no collector. `corc compile --why NAME` says what required
+  a method, and `--map FILE` lists an image's symbols, largest first.
+  Measured 2026-10-23: a freestanding `Main() => 3` 36 KB of code (was 149),
+  a Linux one 180 (was 224), cards.dll 160 (was 195).
+- DYNAMIC: one runtime library the images share. On Linux and in CORSAC
+  this is what `--link-shared` already does (docs/SEPARATE-SHARED-LIBRARIES.md:
+  position-independent code, data through the GOT, functions through the
+  PLT), and CORSAC's image builder already builds its runtime and class
+  libraries so.
+
+On Windows the dynamic form is still to be made. A runtime DLL, its
+functions imported by name through the import directory as any DLL's are,
+is the easy half. The other half is data: code that names a static, a type's
+descriptor or a string literal another image defines. Windows' loader fills
+only the import address table, with functions' addresses, and has no
+relocation that names another image's symbol. The plan is the ELF one,
+carried in the image: the same position-independent code generation, a GOT
+of the image's own, and a table of the GOT's entries by DLL and name, which
+the runtime DLL fills before anything else of the image runs -- its own
+DllMain runs first, the loader's order for an import -- with GetProcAddress,
+which every Windows has. One thread block for the process, the runtime
+DLL's, through its TLS slot. Each image keeps its own frames and statics
+and introduces them to the runtime as a shared object does on Linux
+(Runtime.BeginImage).
+
+The switch is the one the compiler has: static unless `--dynamic` says
+otherwise, which takes the runtime and the class library from the shared
+objects in the library directory (`--libdir`). With `--windows` it is
+refused, plainly, until the runtime DLL is made.
+
 ## Calling Windows
 
 - `[DllImport]` gains stdcall (WINAPI, Windows' default) on the caller's

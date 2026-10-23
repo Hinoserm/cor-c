@@ -564,6 +564,13 @@ public sealed partial class Lowering
         {
             EmitDllEntry(exports);
         }
+        // THE RUNTIME DLL (--windows --shared): a DllMain that starts the
+        // runtime, and no export of its own choosing -- the link exports
+        // every global.
+        else if (Dll && _library && Windows)
+        {
+            EmitDllEntry(new List<MethodSymbol>());
+        }
         if ((entry is not null || exports is not null) && !_library)
         {
             if (exports is null)

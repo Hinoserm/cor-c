@@ -688,7 +688,7 @@ public static class Driver
         {
             if (args[i].StartsWith('-'))
             {
-                if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map" or "--why"
+                if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map" or "--why" or "--debug-keep-object"
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type" or "--runtime-knob"
@@ -701,7 +701,8 @@ public static class Driver
             files.Add(args[i]);
         }
 
-        if (files.Count == 0)
+        // The runtime DLL (--windows --shared) is the library set alone.
+        if (files.Count == 0 && !(args.Contains("--shared") && (args.Contains("--windows") || args.Contains("--dll"))))
         {
             return Fail("compile needs at least one source file");
         }
@@ -745,8 +746,13 @@ public static class Driver
         bool dll = args.Contains("--dll");
         bool windows = dll || args.Contains("--windows");
         if (windows && longMode) return Fail("--windows makes an i386 image: x86-64's PE32+ is not made yet");
-        if (windows && (flat || args.Contains("--shared") || kernelPath is not null || args.Contains("--obj")))
-            return Fail("--windows links a PE image whole: not with --flat, --shared, --obj or --kernel");
+        if (windows && (flat || kernelPath is not null || args.Contains("--obj")))
+            return Fail("--windows links a PE image whole: not with --flat, --obj or --kernel");
+        // --windows --shared: THE RUNTIME DLL, the runtime and its library
+        // with every global exported, which --windows --dynamic images import.
+        bool runtimeDll = windows && args.Contains("--shared");
+        if (runtimeDll && args.Contains("--dynamic")) return Fail("--windows --shared makes the runtime DLL, which imports no runtime: not with --dynamic");
+        dll |= runtimeDll;
         if (windows && !dll) return Fail("--windows makes DLLs only so far (--dll): a program's start comes with the Windows platform layer");
         // Its runtime is the bare-metal one with kernel32 answering its hooks
         // (runtime/src/platforms/win32/win32.cor).
@@ -855,7 +861,7 @@ public static class Driver
         if (shared && Value(args, "--unused-report") is not null)
             return Fail("--unused-report judges a program; a shared object is library code");
         List<string> sharedLibs = Values(args, "--link-shared");
-        string name = Path.GetFileName(files[0]);
+        string name = Path.GetFileName(files.Count > 0 ? files[0] : Value(args, "-o") ?? "runtime");
 
         // --ref: sources given for their declarations, whose code is in a
         // shared object this one links. How one library of several is built
@@ -885,7 +891,7 @@ public static class Driver
             {
                 return Fail($"--dynamic: no shared library directory{(dir is null ? "" : $" at {dir}")} (build one, or name it with --libdir)");
             }
-            List<string> found = Directory.GetFiles(dir, "*.so").OrderBy(f => f, StringComparer.Ordinal).ToList();
+            List<string> found = Directory.GetFiles(dir, windows ? "*.dll" : "*.so").OrderBy(f => f, StringComparer.Ordinal).ToList();
             if (found.Count == 0)
             {
                 return Fail($"--dynamic: {dir} holds no shared objects");
@@ -912,7 +918,9 @@ public static class Driver
             // every method, and the compile stopped on a body first wanted
             // after binding ('List$byte') or ran out of memory. A class
             // library source named on the command line stays this one's own.
-            if (shared)
+            // THE RUNTIME DLL is the class library, so its sources are its own
+            // (as the freestanding set compiled whole for the kernel is).
+            if (shared && !runtimeDll)
             {
                 references.AddRange(added.Where(d => !references.Any(r => Path.GetFullPath(r) == Path.GetFullPath(d))));
             }
@@ -945,7 +953,9 @@ public static class Driver
         // shadowing a library one be kept.
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
-        Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj");
+        // The runtime DLL is lowered as the library's own objects are (--obj),
+        // which is how the class library has always been compiled whole.
+        Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj") || runtimeDll;
         // Literals shared across the objects a link puts together, except in
         // position-independent code, where a global one is reached through the
         // GOT (Lowering.SharedLiterals).
@@ -1224,9 +1234,10 @@ public static class Driver
                 HashSet<string> mine;
                 try
                 {
-                    mine = new HashSet<string>(ElfReader.ExportsOf(File.ReadAllBytes(lib)), StringComparer.Ordinal);
+                    byte[] image = File.ReadAllBytes(lib);
+                    mine = new HashSet<string>(windows ? Corsac.Lang.Pe.PeReader.ExportsOf(image) : ElfReader.ExportsOf(image), StringComparer.Ordinal);
                 }
-                catch (ElfFormatException e)
+                catch (Exception e) when (e is ElfFormatException or InvalidDataException)
                 {
                     return Fail($"--link-shared '{lib}': {e.Message}");
                 }
@@ -1261,7 +1272,9 @@ public static class Driver
             // A relocatable dynamic unit must use standard ELF GOT relocations.
             // Absolute GOT-slot addresses exist only inside a final executable
             // link and cannot be serialized as relocatable object relocations.
-            PositionIndependent = shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj")),
+            // A Windows image moves by its .reloc, not by position-independent
+            // code, the runtime DLL and the images over it alike.
+            PositionIndependent = !windows && (shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj"))),
             WindowsTls = windows,
             Workers = workers,
             EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),
@@ -1438,7 +1451,7 @@ public static class Driver
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {ko.Length} bytes module of {kernel.Name}");
             return 0;
         }
-        if (shared && !args.Contains("--obj"))
+        if (shared && !args.Contains("--obj") && !windows)
         {
             // DT_SONAME is the name the loader will look for, so it is the
             // name the file is being given here and not the path it sits at.
@@ -1448,7 +1461,7 @@ public static class Driver
             return 0;
         }
 
-        if (args.Contains("--obj") || library)
+        if ((args.Contains("--obj") || library) && !windows)
         {
             // A module's unit only with the IR taken before the late passes,
             // whose settings say it is position-independent: regenerated
@@ -1476,7 +1489,8 @@ public static class Driver
         // it (--asm-entry): the stub is what its startup calls, and entered
         // straight from the loader it ran on the loader's stack with .bss
         // never cleared (EntryClearsBss) and no GS for --tls-gs.
-        string entry = Value(args, "--entry") ?? (Value(args, "--asm-entry") is not null ? "_start" : module.Entry) ?? "_start";
+        string entry = Value(args, "--entry") ?? (Value(args, "--asm-entry") is not null ? "_start" : module.Entry)
+            ?? (runtimeDll ? Corsac.Lang.Lower.Lowering.DllEntryName : "_start");
         List<(string, ObjectFile)> link = new() { (name, obj) };
         // And the objects --with named, read before optimising.
         link.AddRange(withObjects);
@@ -1533,6 +1547,7 @@ public static class Driver
                 if (given % 0x10000 != 0) return Fail($"--base 0x{given:x}: a Windows image's base is a multiple of 64 KiB");
                 imageBase = (uint)given;
             }
+            if (Value(args, "--debug-keep-object") is string keepObject) ElfWriter.WriteObjectFile(obj, keepObject);
             TargetContract.Validate(link);
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
@@ -1545,6 +1560,10 @@ public static class Driver
                 Subsystem = Value(args, "--subsystem") == "console" ? Corsac.Lang.Pe.PeSubsystem.WindowsConsole : Corsac.Lang.Pe.PeSubsystem.WindowsGui,
                 Name = Path.GetFileName(output),
                 MapPath = Value(args, "--map"),
+                ExportAll = runtimeDll,
+                RuntimeSymbols = sharedLibs.Count == 0 ? null
+                    : exports.SelectMany(lib => lib.Value.Select(symbol => (symbol, dll: Path.GetFileName(lib.Key))))
+                        .GroupBy(e => e.symbol, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First().dll, StringComparer.Ordinal),
             });
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {new FileInfo(output).Length} bytes {(dll ? "DLL" : "program")}");
             return 0;

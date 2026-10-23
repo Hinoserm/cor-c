@@ -3689,6 +3689,14 @@ static class Runtime
         return pool + Sys.PeekWord(pool + 16 + i * 4);
     }
 
+    /// Whether `pc` is in a function some image described to the runtime --
+    /// its own or one that introduced itself (BeginImage). Allocates nothing:
+    /// a fault handler asks it.
+    public static bool KnowsCode(long pc) {
+        long name, file, pool, line, offset;
+        return Lookup(pc, out name, out file, out pool, out line, out offset, false);
+    }
+
     /// THE TABLE ENTRY AN ADDRESS FALLS IN: where its name and its source
     /// file are spelled, the source line the address is on (0 for none, and
     /// left at 0 unless `lines` asks, since a line is its function's line

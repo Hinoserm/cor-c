@@ -45,6 +45,21 @@ public static partial class Linker
 
         /// <summary>The image's own name, which its export directory carries: the file's.</summary>
         public string Name { get; init; } = "";
+
+        /// <summary>
+        /// THE RUNTIME DLL (--windows --shared): every global the image
+        /// defines exported by its own name, functions and data alike, for
+        /// the images over it to import.
+        /// </summary>
+        public bool ExportAll { get; init; }
+
+        /// <summary>
+        /// AN IMAGE OVER A RUNTIME DLL (--windows --dynamic): each name a runtime
+        /// DLL exports, and the DLL. An undefined symbol among them is imported
+        /// from it -- a call through a thunk as any import, and a word holding
+        /// its address filled at start from the import's slot (DataImports).
+        /// </summary>
+        public IReadOnlyDictionary<string, string>? RuntimeSymbols { get; init; }
     }
 
     /// <summary>One section of the image: the link's output sections it holds, in address order.</summary>
@@ -122,7 +137,7 @@ public static partial class Linker
         // THE IMPORTS: every `dll!export` an object names and none defines. A
         // thunk each, at the end of the code, and the symbol defined there, so
         // the relocation phase reaches it as it reaches any other function.
-        List<PeImport> imports = PeImportsOf(inputs, layout, errors);
+        List<PeImport> imports = PeImportsOf(inputs, layout, errors, options.RuntimeSymbols);
         OutputSection? thunks = null;
         if (imports.Count > 0)
         {
@@ -135,7 +150,29 @@ public static partial class Linker
                 layout.GlobalOrder.Add(imports[i].Symbol);
             }
         }
-        List<(Input Input, string Export, string Symbol)> exports = PeExportsOf(inputs, errors);
+        List<(Input Input, string Export, string Symbol)> exports = options.ExportAll ? EveryGlobal(inputs, layout) : PeExportsOf(inputs, errors);
+
+        // THE WORDS AN IMPORT'S ADDRESS GOES IN (DataImports): every absolute
+        // reference to a runtime DLL's symbol, in code or in data, listed in a
+        // table of the image's own that the runtime fills from the import's
+        // slot as the image starts. Laid down beside the constants, its ends
+        // named for the entry that hands it over.
+        HashSet<string> runtimeImports = new(imports.Where(i => options.RuntimeSymbols?.ContainsKey(i.Symbol) == true).Select(i => i.Symbol), StringComparer.Ordinal);
+        List<(Placed Placed, Relocation Reloc)> dataImports = new();
+        foreach (Input input in inputs)
+            foreach (Placed p in input.Placed)
+                if (p.Output.IsAllocated)
+                    foreach (Relocation r in p.Section.Relocs)
+                        if (r.Kind == RelocKind.Abs32 && runtimeImports.Contains(r.Symbol) && !input.Locals.ContainsKey(r.Symbol))
+                            dataImports.Add((p, r));
+        OutputSection? dataImportTable = null;
+        if (options.RuntimeSymbols is not null)
+        {
+            dataImportTable = new OutputSection(".rdata$corsac_imports", SectionKind.ReadOnlyData) { Align = 4, Size = (uint)(dataImports.Count * 8) };
+            dataImportTable.Content = new byte[dataImportTable.Size];
+            layout.Globals[DataImportsStart] = new Definition("the data imports", dataImportTable, 0, null);
+            layout.Globals[DataImportsEnd] = new Definition("the data imports", dataImportTable, dataImportTable.Size, null);
+        }
         OutputSection? exportSection = null;
         if (exports.Count > 0)
         {
@@ -160,7 +197,7 @@ public static partial class Linker
         List<PeSection> sections = new()
         {
             new PeSection(".text", PeSectionFlags.Code | PeSectionFlags.Execute | PeSectionFlags.Read, layout.Text, thunks),
-            new PeSection(".rdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, layout.ReadOnlyData, exportSection),
+            new PeSection(".rdata", PeSectionFlags.InitializedData | PeSectionFlags.Read, layout.ReadOnlyData, dataImportTable, exportSection),
             new PeSection(".data", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, layout.Numbers, layout.Data, layout.Bss),
             new PeSection(".idata", PeSectionFlags.InitializedData | PeSectionFlags.Read | PeSectionFlags.Write, importSection),
         };
@@ -202,13 +239,26 @@ public static partial class Linker
         }
 
         // THE TABLES, now that everything has an address.
+        Dictionary<string, uint> slots = new(StringComparer.Ordinal);
         if (thunks is not null && importSection is not null)
         {
-            FillImports(imports, importSection, thunks, options.ImageBase);
+            slots = FillImports(imports, importSection, thunks, options.ImageBase);
+        }
+        // Each word's place and its import's slot, as RVAs; the word itself
+        // keeps only the addend, which the runtime adds the slot's value to.
+        HashSet<ulong> filledAtStart = new();
+        for (int i = 0; i < dataImports.Count; i++)
+        {
+            (Placed p, Relocation r) = dataImports[i];
+            ulong site = p.Output.Addr + p.Offset + (ulong)r.Offset;
+            p.Bytes.WriteUInt32((int)r.Offset, unchecked((uint)r.Addend));
+            filledAtStart.Add(site);
+            BinaryPrimitives.WriteUInt32LittleEndian(dataImportTable!.Content!.AsSpan(i * 8), checked((uint)(site - options.ImageBase)));
+            BinaryPrimitives.WriteUInt32LittleEndian(dataImportTable.Content.AsSpan(i * 8 + 4), checked(slots[r.Symbol] - options.ImageBase));
         }
         if (exportSection is not null)
         {
-            FillExports(exports, exportSection, layout, options.ImageBase, options.Name, errors);
+            FillExports(exports, exportSection, layout, options.ImageBase, options.Name, errors, options.ExportAll);
             if (errors.Count != 0)
             {
                 throw new LinkException(errors);
@@ -228,7 +278,7 @@ public static partial class Linker
                 }
                 foreach (Relocation r in p.Section.Relocs)
                 {
-                    if (r.Kind == RelocKind.Abs32)
+                    if (r.Kind == RelocKind.Abs32 && !filledAtStart.Contains(p.Output.Addr + p.Offset + (ulong)r.Offset))
                     {
                         fixups.Add(checked((uint)(p.Output.Addr - options.ImageBase + p.Offset + (uint)r.Offset)));
                     }
@@ -293,7 +343,7 @@ public static partial class Linker
     /// uses and that is spelt `dll!export`, sorted by DLL and then by name so
     /// that the same objects make the same image.
     /// </summary>
-    private static List<PeImport> PeImportsOf(List<Input> inputs, Layout layout, List<string> errors)
+    private static List<PeImport> PeImportsOf(List<Input> inputs, Layout layout, List<string> errors, IReadOnlyDictionary<string, string>? runtime)
     {
         SortedDictionary<string, PeImport> found = new(StringComparer.Ordinal);
         foreach (Input input in inputs)
@@ -302,8 +352,14 @@ public static partial class Linker
             {
                 foreach (Relocation r in s.Relocs)
                 {
-                    if (found.ContainsKey(r.Symbol) || input.Locals.ContainsKey(r.Symbol)
-                        || !WindowsImports.TryParse(r.Symbol, out string dll, out string? export, out ushort ordinal))
+                    if (found.ContainsKey(r.Symbol) || input.Locals.ContainsKey(r.Symbol)) continue;
+                    // What a runtime DLL defines and this image does not.
+                    if (runtime is not null && !layout.Globals.ContainsKey(r.Symbol) && runtime.TryGetValue(r.Symbol, out string? from))
+                    {
+                        found[r.Symbol] = new PeImport(from, r.Symbol, 0, r.Symbol);
+                        continue;
+                    }
+                    if (!WindowsImports.TryParse(r.Symbol, out string dll, out string? export, out ushort ordinal))
                     {
                         continue;
                     }
@@ -388,7 +444,7 @@ public static partial class Linker
     private static uint HintNameBytes(string export) => PeFormat.AlignUp(2 + (uint)export.Length + 1, 2);
 
     /// <summary>The import directory's bytes, and each thunk's jump through its IAT slot.</summary>
-    private static void FillImports(List<PeImport> imports, OutputSection idata, OutputSection thunks, uint imageBase)
+    private static Dictionary<string, uint> FillImports(List<PeImport> imports, OutputSection idata, OutputSection thunks, uint imageBase)
     {
         byte[] b = idata.Content!;
         uint rva = checked((uint)(idata.Addr - imageBase));
@@ -445,10 +501,25 @@ public static partial class Linker
             t[at + 1] = 0x25;
             BinaryPrimitives.WriteUInt32LittleEndian(t.AsSpan(at + 2), checked((uint)(idata.Addr + addresses + slotOf[imports[i].Symbol] * 4)));
         }
+        // Each import's slot in the IAT, by address.
+        return slotOf.ToDictionary(kv => kv.Key, kv => checked((uint)(idata.Addr + addresses + kv.Value * 4)), StringComparer.Ordinal);
     }
 
+    /// <summary>The ends of the table of words an import's address goes in (DataImports), which the entry hands the runtime.</summary>
+    public const string DataImportsStart = "__corsac_dimports", DataImportsEnd = "__corsac_dimports_end";
+
+    /// <summary>
+    /// The runtime DLL's exports: every global the link defines, but the
+    /// linker's own (NotExported), by name, sorted as the loader searches them.
+    /// </summary>
+    private static List<(Input Input, string Export, string Symbol)> EveryGlobal(List<Input> inputs, Layout layout)
+        => layout.GlobalOrder.Where(name => !layout.NotExported.Contains(name) && !WindowsImports.TryParse(name, out _, out _, out _)
+                && name.All(c => c > ' ' && c < 0x7F) && layout.Globals[name].Section is { } section && section.IsAllocated)
+            .Distinct(StringComparer.Ordinal).OrderBy(name => name, StringComparer.Ordinal)
+            .Select(name => (inputs[0], name, name)).ToList();
+
     /// <summary>The export directory's bytes: ordinals from 1, in the order of the names.</summary>
-    private static void FillExports(List<(Input Input, string Export, string Symbol)> exports, OutputSection edata, Layout layout, uint imageBase, string name, List<string> errors)
+    private static void FillExports(List<(Input Input, string Export, string Symbol)> exports, OutputSection edata, Layout layout, uint imageBase, string name, List<string> errors, bool allData = false)
     {
         byte[] b = edata.Content!;
         uint rva = checked((uint)(edata.Addr - imageBase));
@@ -471,7 +542,7 @@ public static partial class Linker
         for (int i = 0; i < exports.Count; i++)
         {
             (Input input, string export, string symbol) = exports[i];
-            if (Lookup(input, layout, symbol) is not { Section: { Kind: SectionKind.Code } } d)
+            if (Lookup(input, layout, symbol) is not { Section: { } section } d || !(section.Kind == SectionKind.Code || allData && section.IsAllocated))
             {
                 errors.Add($"export '{export}' names '{symbol}', which is not a function {input.Name} defines");
                 continue;

@@ -94,6 +94,9 @@ static class Win32
     [DllImport("kernel32"), SuppressGCTransition]
     static extern nint LoadLibraryA(nint name);
 
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int VirtualProtect(nint at, nint bytes, int protect, nint old);
+
     /// The slot taken, plus one: 0, none. No initialiser, so touching the
     /// class runs nothing before the thread has a block.
     static int _slotTaken;
@@ -221,7 +224,9 @@ static class Win32
         if ((Sys.PeekWord(rec + 4) & Unwinding) != 0) return ContinueSearch;
         if ((int)Sys.PeekWord(rec) != AccessViolation || _nullStub == 0 || Sys.PeekWord(rec + 16) < 2) return ContinueSearch;
         long pc = Sys.PeekWord(ctx + 0xB8) & 0xFFFFFFFF;
-        if (pc < _imageStart || pc >= _imageEnd) return ContinueSearch;
+        // Ours: this image's code, or code of an image over it that the
+        // runtime knows by its frames (Runtime.KnowsCode).
+        if ((pc < _imageStart || pc >= _imageEnd) && !Runtime.KnowsCode(pc)) return ContinueSearch;
         if (!Runtime.NullFaultCatchable(Sys.PeekWord(rec + 24) & 0xFFFFFFFF)) return ContinueSearch;
         Sys.Poke(ctx + 0xB0, pc);
         Sys.Poke(ctx + 0xA8, Sys.PeekWord(ctx + 0xB4));
@@ -242,13 +247,55 @@ static class Win32
     /// already loaded only counts it again (GetModuleHandleEx's pin is XP's).
     /// The name in a page of its own, given back after: nothing here asks the
     /// heap, so a DLL that allocates nothing carries no collector.
-    static void Pin()
+    static void Pin() => PinImage(_imageStart);
+
+    /// An image loaded for good: its own name loaded once more (Pin). An
+    /// image over the runtime DLL pins itself so (Lowering.EmitImageAttach):
+    /// the runtime holds its statics and frames from then on.
+    public static void PinImage(long instance)
     {
         long name = (long)(nuint)VirtualAlloc(0, 264, MemCommit | MemReserve, PageReadWrite);
         if (name == 0) return;
-        int length = GetModuleFileNameA((nint)_imageStart, (nint)name, 260);
+        int length = GetModuleFileNameA((nint)instance, (nint)name, 260);
         if (length > 0 && length < 260) LoadLibraryA((nint)name);
         VirtualFree((nint)name, 0, MemRelease);
+    }
+
+    /// THE WORDS AN IMPORT'S ADDRESS GOES IN, filled as an image over the
+    /// runtime DLL starts and before any of its code runs (Linker DataImports):
+    /// each entry of the table from `table` to `end` is two RVAs, a word of the
+    /// image and the import address table slot the loader filled with what
+    /// the word names, and the word, which holds only the addend, gets that
+    /// address added. Windows' loader fills the slots, data's as well as
+    /// functions'; it has no relocation that names another image's symbol,
+    /// and this is that relocation. Every section is made writable for the
+    /// while, and each is given back the protection it had.
+    public static void FillImports(long instance, long table, long end)
+    {
+        if (table == end) return;
+        long pe = instance + (Sys.PeekWord(instance + 0x3C) & 0xFFFFFFFF);
+        long sections = Sys.PeekWord(pe + 6) & 0xFFFF;
+        long headers = pe + 24 + (Sys.PeekWord(pe + 20) & 0xFFFF);
+        // A word of protection kept for each section, in a page of its own.
+        long kept = (long)(nuint)VirtualAlloc(0, (nint)(sections * 4 + 4), MemCommit | MemReserve, PageReadWrite);
+        if (kept == 0) ExitProcess(137);
+        for (long i = 0; i < sections; i++)
+        {
+            long header = headers + i * 40;
+            VirtualProtect((nint)(instance + (Sys.PeekWord(header + 12) & 0xFFFFFFFF)), (nint)(Sys.PeekWord(header + 8) & 0xFFFFFFFF), PageExecuteReadWrite, (nint)(kept + i * 4));
+        }
+        for (long at = table; at < end; at = at + 8)
+        {
+            long word = instance + (Sys.PeekWord(at) & 0xFFFFFFFF);
+            long slot = instance + (Sys.PeekWord(at + 4) & 0xFFFFFFFF);
+            Sys.Poke(word, (Sys.PeekWord(word) + Sys.PeekWord(slot)) & 0xFFFFFFFF);
+        }
+        for (long i = 0; i < sections; i++)
+        {
+            long header = headers + i * 40;
+            VirtualProtect((nint)(instance + (Sys.PeekWord(header + 12) & 0xFFFFFFFF)), (nint)(Sys.PeekWord(header + 8) & 0xFFFFFFFF), (int)Sys.PeekWord(kept + i * 4), (nint)(kept + sections * 4));
+        }
+        VirtualFree((nint)kept, 0, MemRelease);
     }
 
     /// THE TOP OF THIS THREAD'S STACK, where a scan of it ends: the end of

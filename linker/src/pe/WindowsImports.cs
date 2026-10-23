@@ -30,6 +30,15 @@ public static class WindowsImports
             return false;
         }
         dll = symbol[..bang];
+        // A DLL'S NAME, as DllName spells one: a file name with an extension
+        // (kernel32.dll, msvcrt.dll, glide2x.dll). A managed symbol may hold a
+        // `!` of its own -- a nullable reference's mark in a generic copy's
+        // name -- and is no import.
+        if (dll.IndexOf('.') <= 0 || dll.EndsWith('.') || dll.Any(c => c is '$' or '?' or '!' or ' ' or '<' or '>'))
+        {
+            dll = "";
+            return false;
+        }
         string rest = symbol[(bang + 1)..];
         if (rest[0] == '#')
         {

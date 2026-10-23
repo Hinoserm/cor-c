@@ -154,7 +154,12 @@ public sealed partial class Lowering
         e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(1, IrTypes.Word), IrTypes.Word), attach, other);
 
         e.SetBlock(attach);
-        if (Win32Method("Attach", 1) is not MethodSymbol take || Win32Method("Started") is not MethodSymbol started)
+        if (Dynamic)
+        {
+            EmitImageAttach(e, instance);
+            e.Jump(yes);
+        }
+        else if (Win32Method("Attach", 1) is not MethodSymbol take || Win32Method("Started") is not MethodSymbol started)
         {
             Error(new Block(), "a DLL needs the Windows platform library (runtime/src/platforms/win32/win32.cor)");
             e.Jump(no);
@@ -176,6 +181,8 @@ public sealed partial class Lowering
                 Require(join);
                 e.Call(CallLabel(join), IrType.Void);
             }
+            // THE RUNTIME DLL introduces itself as a shared object does.
+            if (SharedObject) e.Call(SharedInitName, IrType.Void);
             e.Call(Corsac.Lang.Elf.Linker.ProgramInitName, IrType.Void);
             Require(started);
             e.Call(CallLabel(started), IrType.Void);
@@ -192,7 +199,7 @@ public sealed partial class Lowering
         var notProcess = f.NewBlock("not_process");
         e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(0, IrTypes.Word), IrTypes.Word), detach, notProcess);
         e.SetBlock(detach);
-        if (Win32Method("Detach") is MethodSymbol let)
+        if (!Dynamic && Win32Method("Detach") is MethodSymbol let)
         {
             Require(let);
             e.Call(CallLabel(let), IrType.Void);
@@ -203,7 +210,7 @@ public sealed partial class Lowering
         e.SetBlock(notProcess);
         e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(3, IrTypes.Word), IrTypes.Word), threadGoes, yes);
         e.SetBlock(threadGoes);
-        if (Win32Method("ThreadDetach") is MethodSymbol leave)
+        if (!Dynamic && Win32Method("ThreadDetach") is MethodSymbol leave)
         {
             Require(leave);
             e.Call(CallLabel(leave), IrType.Void);
@@ -215,6 +222,35 @@ public sealed partial class Lowering
         e.SetBlock(no);
         e.Ret(new ImmOperand(0, IrTypes.Word));
         _m.Functions.Add(f);
-        _m.Entry = DllEntryName;
+        // The runtime DLL is a library to every pass, which keeps all of it;
+        // the link alone is told where the loader enters (Driver).
+        if (!_library) _m.Entry = DllEntryName;
+    }
+
+    /// <summary>
+    /// AN IMAGE OVER THE RUNTIME DLL STARTS (--windows --dynamic): the runtime
+    /// DLL's DllMain has already run -- the loader starts an image's imports
+    /// first -- and owns the TLS slot, the heap and the threads. This image
+    /// has the words its imports' addresses go in filled first, before any
+    /// of its code reads one (Win32.FillImports, Linker DataImports); then
+    /// introduces its statics and frames to the runtime, as a shared object
+    /// does (Runtime.BeginImage); runs its module initialisers; and stays
+    /// loaded, as the runtime does, since the runtime now holds its statics.
+    /// </summary>
+    private void EmitImageAttach(Builder e, VReg instance)
+    {
+        if (Win32Method("FillImports", 3) is not MethodSymbol fill || Win32Method("PinImage", 1) is not MethodSymbol pin)
+        {
+            Error(new Block(), "an image over the runtime DLL needs Win32.FillImports and Win32.PinImage (runtime/src/platforms/win32/win32.cor)");
+            return;
+        }
+        VReg image = e.Unary(Opcode.ZExt32, instance);
+        Require(fill);
+        e.Call(CallLabel(fill), IrType.Void, RegOperand.Of(image),
+            RegOperand.Of(WordAddress(e, Corsac.Lang.Elf.Linker.DataImportsStart)), RegOperand.Of(WordAddress(e, Corsac.Lang.Elf.Linker.DataImportsEnd)));
+        EmitBeginImage(e);
+        e.Call(Corsac.Lang.Elf.Linker.ProgramInitName, IrType.Void);
+        Require(pin);
+        e.Call(CallLabel(pin), IrType.Void, RegOperand.Of(image));
     }
 }
