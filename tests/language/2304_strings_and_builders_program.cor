@@ -6,7 +6,7 @@
 // 2 3 3 4 0 31 -1 False
 // [007][ab  ][trim][hi][abc-def][abef][abcd][a/b/c][bbbbbb]
 // TITLE CASE WORDS mixed ell ell 2 **** True True True
-// > [   ab|FF]1,2,3\nccc 21 > [
+// > [   ab|FF]1,2,3\nccc 21 > <[  >
 // 12.5Truexyz 1
 // True 7 True ß True True True 113 True 1F600 A
 // 3 line1|line2|line3 3 1,234.50|ab    |25 %|0042|{x}
@@ -41,7 +41,7 @@ static class Program
         Console.WriteLine("Title Case words".ToUpperInvariant() + " " + "MiXeD".ToLowerInvariant() + " " + "hello"[1..^1] + " " + "hello".Substring(1, 3) + " " + "a\u0301".Length + " " + new string('*', 4) + " " + string.IsNullOrWhiteSpace(" \t") + " " + "abc".Contains('b') + " " + "abc".StartsWith('a'));
         var sb = new StringBuilder("start");
         sb.AppendFormat(" [{0,5}|{1:X2}]", "ab", 255).AppendJoin(",", 1, 2, 3).AppendLine().Append('c', 3).Insert(0, ">").Replace("start", "S").Remove(1, 1);
-        Console.WriteLine(sb.ToString().Replace("\n", "\\n").Replace("\r", "\\r") + " " + sb.Length + " " + sb[0] + " " + sb.ToString(2, 3));
+        Console.WriteLine(sb.ToString().Replace("\n", "\\n").Replace("\r", "\\r") + " " + sb.Length + " " + sb[0] + " <" + sb.ToString(2, 3) + ">");
         sb.Clear().Append(12.5).Append(true).Append((object?)null).Append('x').Append(new char[] { 'y', 'z' });
         Console.WriteLine(sb + " " + sb.Capacity.ToString().Length.ToString().Length);
         Console.WriteLine(char.IsDigit('7') + " " + char.GetNumericValue('7') + " " + char.IsLetter('é') + " " + char.ToUpper('ß') + " " + char.IsPunctuation('!') + " " + char.IsSymbol('+') + " " + char.IsSeparator(' ') + " " + (int)char.ToLowerInvariant('Q') + " " + char.IsHighSurrogate("😀"[0]) + " " + char.ConvertToUtf32("😀", 0).ToString("X") + " " + char.ConvertFromUtf32(0x41));
