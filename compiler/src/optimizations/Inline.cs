@@ -1223,6 +1223,7 @@ public sealed class Inline : IParallelModulePass
         Reach(Corsac.Lang.X86.X86Backend.MarkingFlag);
         Reach(Corsac.Lang.Lower.Lowering.ThreadBlock0);
         Reach(Corsac.Lang.Lower.Lowering.ThreadBlockSelf);
+        Reach(Corsac.Lang.X86.Selector.TlsSlotSymbol);
         // And what the objects linked in beside this one name (--with): an
         // entry stub's write to a static, its call into the program.
         foreach (string name in m.ObjectNames) Reach(name);

@@ -64,6 +64,12 @@ public sealed class X86Backend : IBackend
     public bool PositionIndependent { get; set; }
 
     /// <summary>
+    /// A Windows image (docs/WIN32-TARGET.md): the thread block is read from
+    /// the TLS slot the runtime took, in the TEB, never through GS.
+    /// </summary>
+    public bool WindowsTls { get; set; }
+
+    /// <summary>
     /// Names a shared library will supply at load time, which this object
     /// must not reach by absolute address. Empty for a static link, and for
     /// a shared object, where the GOT already answers everything.
@@ -821,7 +827,7 @@ public sealed class X86Backend : IBackend
         if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent);
+        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls);
         if (errors.Count > before)
         {
             return null;

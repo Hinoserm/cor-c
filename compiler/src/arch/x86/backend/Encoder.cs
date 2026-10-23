@@ -865,6 +865,28 @@ internal sealed class Encoder
                 B(0x00, 0x00, 0x00, 0x00);
                 break;
             }
+            case MOp.FsTlsSlot:
+            {
+                // 64 8B /r with mod 00, r/m 100 and a SIB of scale 4, the
+                // register as index and no base: [disp32 + r*4] in FS. The
+                // displacement is TlsSlots' place in NT's TEB.
+                int r = ((MReg)i.Operands[0]).Id;
+                B(0x64, 0x8B);
+                _out.Add((byte)(0x04 | (r << 3)));
+                _out.Add((byte)(0x85 | (r << 3)));
+                B(0x10, 0x0E, 0x00, 0x00);
+                break;
+            }
+            case MOp.FsTlsSlotStore:
+            {
+                // 64 89 /r: the same [0xE10 + index*4] in FS, stored to.
+                int index = ((MReg)i.Operands[0]).Id, value = ((MReg)i.Operands[1]).Id;
+                B(0x64, 0x89);
+                _out.Add((byte)(0x04 | (value << 3)));
+                _out.Add((byte)(0x85 | (index << 3)));
+                B(0x10, 0x0E, 0x00, 0x00);
+                break;
+            }
             case MOp.GetGs:
             {
                 // xor r, r; then 66 8C /r, mov r16, gs: a 32-bit move from a

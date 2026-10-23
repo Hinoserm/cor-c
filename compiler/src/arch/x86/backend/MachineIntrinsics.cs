@@ -41,6 +41,8 @@ internal static class MachineIntrinsics
     public const string WriteCr = Prefix + "writecr";
     public const string LoadSegments = Prefix + "loadsegments";
     public const string ThreadBlock = Prefix + "threadblock";
+    /// <summary>Windows: this thread's block put in the runtime's TLS slot (the TEB's), as TlsSetValue would.</summary>
+    public const string SetTlsBlock = Prefix + "settls";
     /// <summary>The card for a slot the generational barrier marks (CardMarks), set by the object's stub.</summary>
     public const string CardMark = Prefix + "cardmark";
     /// <summary>The snapshot barrier's slow path, slot and value, through the object's stub.</summary>

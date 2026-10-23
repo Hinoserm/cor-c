@@ -37,12 +37,18 @@ public sealed class TargetContract
     /// is.
     /// </summary>
     public const uint NoTlsClaim = 3;
+
+    /// <summary>
+    /// A Windows image's (docs/WIN32-TARGET.md): the thread block in a TLS
+    /// slot of the thread's TEB, read through FS; never mixed with a GS one.
+    /// </summary>
+    public const uint WindowsTlsSlot = 4;
     public const uint Amd64Machine = 0x8664, Amd64Convention = 2;
     public TargetContract(uint tlsModel, bool requiresManagedLayouts = false, bool requiresCodeGenerationContract = false, bool longMode = false, bool storeSequences = false)
     {
         LongMode = longMode;
         StoreSequences = storeSequences;
-        if (tlsModel > NoTlsClaim) throw new ElfFormatException("unsupported TLS/platform contract");
+        if (tlsModel > WindowsTlsSlot) throw new ElfFormatException("unsupported TLS/platform contract");
         TlsModel = tlsModel;
         RequiresManagedLayouts = requiresManagedLayouts;
         RequiresCodeGenerationContract = requiresCodeGenerationContract;
@@ -66,6 +72,19 @@ public sealed class TargetContract
         obj.Sections.Add(section);
     }
     /// <summary>Whether an object says it is long-mode code: eight-byte pointers, System V AMD64.</summary>
+    /// <summary>Whether an object was made for a Windows image (WindowsTlsSlot).</summary>
+    public static bool IsWindows(ObjectFile obj)
+    {
+        foreach (Section s in obj.Sections)
+        {
+            if (s.Name == SectionName && s.Bytes.Count == Size)
+            {
+                return BinaryPrimitives.ReadUInt32LittleEndian(s.Bytes.ToArray().AsSpan(20)) == WindowsTlsSlot;
+            }
+        }
+        return false;
+    }
+
     public static bool IsLongMode(ObjectFile obj)
     {
         foreach (Section s in obj.Sections)
@@ -117,7 +136,7 @@ public sealed class TargetContract
                 throw new ElfFormatException(input.Name + ": required CPU/FPU code-generation contract is missing");
             if ((required & 1) != 0 && !input.Object.Sections.Any(section => section.Name == ManagedLayoutContract.SectionName))
                 throw new ElfFormatException(input.Name + ": required managed layout contract is missing");
-            if (current > NoTlsClaim) throw new ElfFormatException(input.Name + ": unsupported TLS/platform contract");
+            if (current > WindowsTlsSlot) throw new ElfFormatException(input.Name + ": unsupported TLS/platform contract");
             if ((BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28)) & ~1u) != 0) throw new ElfFormatException(input.Name + ": unknown code flags in its native ABI contract");
             // Assembly makes no claim: it stores through no barrier of the compiler's.
             if (current == NoTlsClaim) continue;

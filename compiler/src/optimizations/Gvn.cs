@@ -59,7 +59,7 @@ public sealed class Gvn : IPass
         // this one, with its block, but code after its own SetGs does not.
         _threadBlockFixed = f.Async is null && !f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Store && i.Operands.Count > 0
             && i.Operands[0] is SymOperand { Name: ThreadBlockSelf }
-            || i.Op == Opcode.Call && i.Callee is "__x86.i.setgs" or "__x86.i.swapgs" or "__x86.i.loadsegments"));
+            || i.Op == Opcode.Call && i.Callee is "__x86.i.setgs" or "__x86.i.swapgs" or "__x86.i.loadsegments" or "__x86.i.settls"));
         _leader.Clear();
         _exprs.Clear();
 

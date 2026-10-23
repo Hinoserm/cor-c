@@ -60,7 +60,10 @@ public static class Roles
             case MOp.Shrd:
                 return operand == 0 ? Role.UseDef : Role.Use;
             case MOp.Xchg:
+            case MOp.FsTlsSlot:
                 return Role.UseDef;
+            case MOp.FsTlsSlotStore:
+                return Role.Use;
             case MOp.Cmov:
                 // A CONDITIONAL WRITE READS WHAT IT MAY KEEP: where the
                 // condition fails the register's old value is the result, so

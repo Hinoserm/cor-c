@@ -44,6 +44,9 @@ public sealed class DeadStatics : IModulePass
 
         // What an object linked in beside this one names, it may read.
         read.UnionWith(m.ObjectNames);
+        // And what the backend reads that no IR names: a Windows image's
+        // TLS slot, which every read of the thread block goes through.
+        read.Add(Corsac.Lang.X86.Selector.TlsSlotSymbol);
         foreach (DataItem d in m.Data)
         {
             if (m.PreserveExports && d.Exported) read.Add(d.Name);

@@ -60,6 +60,12 @@ internal sealed partial class Selector
     /// </summary>
     private bool _positionIndependent;
 
+    /// <summary>A Windows image: the thread block is in a TLS slot of the TEB, not behind GS.</summary>
+    private bool _windowsTls;
+
+    /// <summary>The word holding that slot's number, which the Windows runtime fills from TlsAlloc.</summary>
+    public const string TlsSlotSymbol = "__corsac_tls_slot";
+
     private Selector(Function f, List<string> errors, bool automaticPacked)
     {
         _f = f;
@@ -89,9 +95,9 @@ internal sealed partial class Selector
             }
     }
 
-    public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false)
+    public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false)
     {
-        Selector s = new(f, errors, automaticPacked) { _positionIndependent = positionIndependent };
+        Selector s = new(f, errors, automaticPacked) { _positionIndependent = positionIndependent, _windowsTls = windowsTls };
         s.Select();
         return s._m;
     }
@@ -2419,7 +2425,16 @@ internal sealed partial class Selector
                 // ordinary load because nothing before here knows that GS is
                 // not DS, and a pass that hoisted it above a SetGs would read
                 // another thread's block.
-                if (i.Dest is not null)
+                if (i.Dest is not null && _windowsTls)
+                {
+                    // WINDOWS: user code has no GS, and FS is the thread's
+                    // TEB. The block is in the TLS slot the runtime took
+                    // (TlsAlloc), whose number is a word of the image.
+                    MReg r = Lo(i.Dest);
+                    Emit(MOp.Mov, r, SymbolMem(TlsSlotSymbol, 0));
+                    Emit(MOp.FsTlsSlot, r);
+                }
+                else if (i.Dest is not null)
                 {
                     Emit(MOp.GsSelf, Lo(i.Dest));
                 }
@@ -2531,6 +2546,13 @@ internal sealed partial class Selector
                 return;
             case MachineIntrinsics.SetGs:
                 Emit(MOp.SetGs, R(i.Operands[0]));
+                return;
+            case MachineIntrinsics.SetTlsBlock:
+                // WINDOWS: the block into the runtime's TLS slot, the slot's
+                // number into ECX first.
+                Mov(Edx, R(i.Operands[0]));
+                Emit(MOp.Mov, Ecx, SymbolMem(TlsSlotSymbol, 0));
+                Emit(MOp.FsTlsSlotStore, Ecx, Edx);
                 return;
             case MachineIntrinsics.LoadSegments:
                 // DS, ES, FS, GS and SS all take the one data selector, which

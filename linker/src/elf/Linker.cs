@@ -140,6 +140,7 @@ public static partial class Linker
         }
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
+        RefuseWindowsObjects(inputs.Select(i => (i.Name, i.Object)));
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
         List<string> errors = new();
@@ -238,6 +239,7 @@ public static partial class Linker
         }
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
+        RefuseWindowsObjects(inputs.Select(i => (i.Name, i.Object)));
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
         List<string> errors = new();
@@ -309,6 +311,22 @@ public static partial class Linker
             : checked(layout.Bss.Addr + layout.Bss.Size - baseAddress - size)));
         return new FlatImage(image, baseAddress, entry.Address,
                              layout.Text.Size, layout.ReadOnlyData.Size, layout.Numbers.Size + layout.Data.Size, zeroBytes);
+    }
+
+    /// <summary>
+    /// AN ELF IMAGE HAS NO TEB: an object compiled for Windows (--dll) finds
+    /// its thread block through FS in one, and is linked only into a PE image
+    /// (Linker.LinkPe).
+    /// </summary>
+    internal static void RefuseWindowsObjects(IEnumerable<(string Name, ObjectFile Object)> inputs)
+    {
+        foreach ((string name, ObjectFile o) in inputs)
+        {
+            if (TargetContract.IsWindows(o))
+            {
+                throw new LinkException(new[] { $"{name} was compiled for Windows; it links only into a Windows image" });
+            }
+        }
     }
 
     /// <summary>

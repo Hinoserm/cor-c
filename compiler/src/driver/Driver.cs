@@ -1252,6 +1252,7 @@ public static class Driver
             // Absolute GOT-slot addresses exist only inside a final executable
             // link and cannot be serialized as relocatable object relocations.
             PositionIndependent = shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj")),
+            WindowsTls = windows,
             Workers = workers,
             EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),
             // Only a collector reads stack maps: a program found to need none
@@ -1323,7 +1324,7 @@ public static class Driver
         if (preinitRecords is not null) PreinitMachine.Remember(obj, preinitRecords);
         Phase("codegen");
         Corsac.Lang.Opt.Pipeline.ReportAccounts();
-        new TargetContract(freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode,
+        new TargetContract(windows ? TargetContract.WindowsTlsSlot : freestanding ? (Lowering.TlsGs ? 2u : 1u) : 0u, requiresManagedLayouts: true, requiresCodeGenerationContract: true, longMode: longMode,
             storeSequences: module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore)).Attach(obj);
         // The C libraries its [DllImport]s call, for the link to need.
         NativeLibraries.Attach(obj, module.NativeLibraries);

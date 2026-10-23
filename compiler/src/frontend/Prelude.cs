@@ -881,6 +881,9 @@ public static class Prelude
             // register to keep it in. A system library that has GS uses SetGs
             // instead, after making the descriptor.
             public static void SetThreadBlock(long block) { }
+            // Windows: the TLS slot (TlsAlloc's) where ThreadBlock and
+            // SetThreadBlock find this thread's block in the TEB.
+            public static void SetThreadBlockSlot(long slot) { }
             public static void SetGs(long selector) { }
             public static long GetGs() { return 0; }
             // The bounds of the program's static data, for a collector that

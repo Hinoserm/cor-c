@@ -179,6 +179,7 @@ public static partial class Linker
         else if (!dyn.Shared && ProgramInitializers(inputs, isLongMode) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
         Layout layout = new(loadAddress) { Dyn = dyn, LongMode = isLongMode };
         TargetContract.Validate(inputs.Select(input => (input.Name, input.Object)));
+        RefuseWindowsObjects(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(input => (input.Name, input.Object)).ToArray());
         // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's

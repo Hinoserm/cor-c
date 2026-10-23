@@ -95,6 +95,14 @@ public static partial class Linker
         {
             throw new LinkException(new[] { "a Windows image is made for i386 only: x86-64's PE32+ is not made yet" });
         }
+        // EVERY UNIT FINDS ITS THREAD BLOCK IN THE TEB: one compiled for GS
+        // (Linux) or for one global word (bare metal) reads the wrong place.
+        if (inputs.FirstOrDefault(i => !TargetContract.IsWindows(i.Object) && i.Object.Sections.Any(s => s.Name == TargetContract.SectionName)
+                && !i.Object.Sections.Any(s => s.Name == TargetContract.SectionName && s.Bytes.Count == TargetContract.Size
+                    && BinaryPrimitives.ReadUInt32LittleEndian(s.Bytes.ToArray().AsSpan(20)) == TargetContract.NoTlsClaim)) is { } other)
+        {
+            throw new LinkException(new[] { $"{other.Name} was not compiled for Windows (--windows or --dll); its thread block is not in the TEB" });
+        }
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
         List<string> errors = new();

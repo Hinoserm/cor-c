@@ -374,9 +374,25 @@ public sealed partial class Lowering
             case "MainThreadBlock":
                 return Widen(_e.Address(ThreadBlock0));
             case "SetThreadBlock":
+                // WINDOWS: into the runtime's TLS slot of the TEB.
+                if (Windows)
+                {
+                    _e.Call(MachineIntrinsics.SetTlsBlock, IrType.Void, R(ToWord(Arg(call, target, 0))));
+                    return Void();
+                }
                 // The fallback for a target with no segment of its own: the
                 // word that ThreadBlock reads when there is no GS.
                 _e.Store(new SymOperand(ThreadBlockSelf), R(ToWord(Arg(call, target, 0))));
+                return Void();
+            case "SetThreadBlockSlot":
+                // Windows: the slot TlsAlloc answered, which every read of the
+                // block names (Selector.TlsSlotSymbol).
+                if (!Windows)
+                {
+                    Error(call, "Sys.SetThreadBlockSlot is for a Windows image (--windows, --dll)");
+                    return Void();
+                }
+                _e.Store(new SymOperand(Corsac.Lang.X86.Selector.TlsSlotSymbol), R(ToWord(Arg(call, target, 0))));
                 return Void();
             case "GetGs":
                 // The selector GS holds now: on Linux, before the runtime
