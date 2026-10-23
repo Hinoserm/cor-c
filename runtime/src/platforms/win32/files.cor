@@ -722,4 +722,15 @@ static partial class Os
         }
         return CryptGenRandom((nint)_cryptContext, count, (nint)(Sys.ArrayData(buffer) + at)) != 0 ? count : Failed();
     }
+
+    [DllImport("kernel32")] static extern int GetComputerNameW(nint name, nint size);
+
+    /// The machine's name, as GetComputerName answers it.
+    public static string? NodeName()
+    {
+        char[] room = new char[64];
+        int size = room.Length;
+        if (GetComputerNameW(At(room), (nint)Sys.AddressOf(ref size)) == 0) return null;
+        return new string(room, 0, size);
+    }
 }

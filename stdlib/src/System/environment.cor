@@ -395,7 +395,8 @@ static partial class Environment
             long uid = Os.EffectiveUserId();
             if (uid < 0)
             {
-                string? user = GetEnvironmentVariable("USER");
+                // USER on a Unix with none in its files, USERNAME on Windows.
+                string? user = GetEnvironmentVariable("USER") ?? GetEnvironmentVariable("USERNAME");
                 return user == null ? "" : user;
             }
             // READ BY THE RUNTIME'S OWN CALLS (ReadSmallFile): File is

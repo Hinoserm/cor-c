@@ -1192,7 +1192,9 @@ static partial class Os
     public static int Getpid() { return 1; }
 
     /// No name on a network: nothing has given the machine one.
+#if !TARGET_WINDOWS
     public static string? NodeName() { return null; }
+#endif
 
     /// No users: -1, and Environment.UserName reads what the image was given.
     public static long EffectiveUserId() { return -1; }

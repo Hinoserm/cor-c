@@ -132,6 +132,7 @@ static class Win32
         Platform.NanosHook = Sys.AddressOf(Nanos);
         Platform.ExitHook = Sys.AddressOf(Exit);
         Platform.WriteHook = Sys.AddressOf(Write);
+        Platform.ProcessorCountHook = Sys.AddressOf(Processors);
         Platform.WaitHook = Sys.AddressOf(Yield);
         Platform.YieldHook = Sys.AddressOf(Yield);
         if (!MakeParking()) return false;
@@ -496,6 +497,16 @@ static class Win32
     {
         Sleep(0);
         return 0;
+    }
+
+    [DllImport("kernel32")] static extern void GetSystemInfo(nint info);
+
+    /// How many processors (Os.ProcessorCount): SYSTEM_INFO's count, at 20.
+    static long Processors(long a, long b, long c)
+    {
+        byte[] info = new byte[36];
+        GetSystemInfo((nint)Sys.ArrayData(info));
+        return info[20] | (info[21] << 8) | (info[22] << 16) | (info[23] << 24);
     }
 
     static long Exit(long code, long b, long c)
