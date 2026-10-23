@@ -67,6 +67,9 @@ static class Win32
     [DllImport("kernel32"), SuppressGCTransition]
     static extern int GetTickCount();
 
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern void Sleep(int milliseconds);
+
     /// The slot taken, plus one: 0, none. No initialiser, so touching the
     /// class runs nothing before the thread has a block.
     static int _slotTaken;
@@ -85,6 +88,8 @@ static class Win32
         Platform.UnmapHook = Sys.AddressOf(Unmap);
         Platform.NanosHook = Sys.AddressOf(Nanos);
         Platform.ExitHook = Sys.AddressOf(Exit);
+        Platform.WaitHook = Sys.AddressOf(Yield);
+        Platform.YieldHook = Sys.AddressOf(Yield);
         int slot = TlsAlloc();
         if (slot == TlsOutOfIndexes) return false;
         if (slot >= TlsSlotsInTeb)
@@ -124,6 +129,19 @@ static class Win32
         Sys.Poke(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
         Runtime.RegisterThread(block, top);
+    }
+
+    /// A THREAD GOING AWAY (DLL_THREAD_DETACH): one this image gave a block
+    /// to is the collector's no longer, and its block goes back. The loading
+    /// thread's block is static memory, and stays.
+    public static void ThreadDetach()
+    {
+        long block = Sys.ThreadBlock();
+        if (block == 0) return;
+        Runtime.EndBlocking();
+        Runtime.EndThread();
+        Sys.SetThreadBlock(0);
+        if (block != Sys.MainThreadBlock()) VirtualFree((nint)block, 0, MemRelease);
     }
 
     /// The image may allocate now: what wants the heap.
@@ -174,6 +192,17 @@ static class Win32
         QueryPerformanceCounter((nint)Sys.AddressOf(ref _count));
         long seconds = _count / _frequency;
         return seconds * 1000000000 + (_count - seconds * _frequency) * 1000000000 / _frequency;
+    }
+
+    /// A TURN OF A WAIT (Platform.WaitHook), and a spin's offer to the others
+    /// (Platform.YieldHook): the word waited for is another thread's to
+    /// change, so this one gives up the rest of its time slice.
+    /// Sleep(0), which every Windows has; nothing wakes a sleeper, which
+    /// looks again on its next turn.
+    static long Yield(long at, long value, long c)
+    {
+        Sleep(0);
+        return 0;
     }
 
     static long Exit(long code, long b, long c)

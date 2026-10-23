@@ -110,10 +110,11 @@ thunks, checksum, and a second link at another base moving exactly the words
 program loads the DLL under Wine, calls each export and checks its answer).
 examples/windows-cards is cards.dll in C#: Windows 2000's own sol.exe and
 freecell.exe draw every card through it, and FreeCell's game 1 deals as the
-published one. Not yet: an SEH frame turning faults into
-NullReferenceException, collections while a second thread runs managed code
-(nothing stops it; one thread at a time is safe), freeing an adopted
-thread's block at DLL_THREAD_DETACH, and pinning the DLL.
+published one. Four Windows threads at once in a DLL, with collections while
+they all run and each block freed at DLL_THREAD_DETACH, pass five runs in
+five: the collector's stop is cooperative, and a wait gives up the thread's
+time slice (Sleep(0)). Not yet: an SEH frame turning faults into
+NullReferenceException, and pinning the DLL.
 
 ## Calling Windows
 
@@ -313,9 +314,9 @@ decoders wherever GDI+ is absent.
 
 0. DLLs first (2026-10-23): the PE32 link with exports, imports and
    `.reloc`, the thread block through a TLS slot, threads that are not
-   ours, the platform layer's floor and DllMain (done, and cards.dll runs
-   Solitaire); then faults, collections with several threads, thread
-   detach, and opengl32/Glide.
+   ours, the platform layer's floor, DllMain, several threads and thread
+   detach (done, and cards.dll runs Solitaire); then faults, pinning, and
+   opengl32/Glide.
 1. The image, stdcall and A/W imports, the thread block, struct layout:
    a console "hello" that runs on 95 and on 11.
 2. The platform layer: the language suite passing on Windows.

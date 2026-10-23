@@ -1,0 +1,39 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+// Called on several Windows threads at once, none of them the one that
+// loaded the DLL: each is given a block on its first call, and each makes
+// garbage enough for many collections while the others run.
+static class Threads
+{
+    // Where every thread's lists go for a while, so the collector, not the
+    // compiler, is the one that frees them.
+    static readonly object[] Ring = new object[256];
+
+    [UnmanagedCallersOnly(EntryPoint = "Churn", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Churn(int seed, int rounds)
+    {
+        int sum = 0;
+        for (int r = 0; r < rounds; r++)
+        {
+            List<int[]> kept = new List<int[]>();
+            for (int i = 0; i < 200; i++)
+            {
+                int[] a = new int[16 + (i & 31)];
+                a[0] = seed + i;
+                kept.Add(a);
+            }
+            for (int i = 0; i < kept.Count; i++) sum += kept[i][0] & 7;
+            Ring[(seed / 1000 * 64 + r) & 255] = kept;
+            // A collection asked for while the other threads are running.
+            if (r % 100 == 99) GC.Collect();
+        }
+        return sum;
+    }
+
+    /// How many collections ran: the test wants several while the threads did.
+    [UnmanagedCallersOnly(EntryPoint = "Collections", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Collections() => GC.CollectionCount(0);
+}

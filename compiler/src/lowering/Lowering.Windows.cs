@@ -91,7 +91,8 @@ public sealed partial class Lowering
     /// load, when it cannot -- and the thread is the collector's, the module
     /// initialisers run, and what wants the heap is made (Win32.Started);
     /// then the thread goes back to C counted as in C, as an export leaves
-    /// it. At DLL_PROCESS_DETACH the slot is given back. It takes the address
+    /// it. At DLL_THREAD_DETACH a thread's block goes back, and at
+    /// DLL_PROCESS_DETACH the slot. It takes the address
     /// of every export, the way a program hands C a callback, so each is kept
     /// and is analysed as what it is: a function called by code the compiler
     /// never sees.
@@ -150,12 +151,25 @@ public sealed partial class Lowering
         }
 
         e.SetBlock(other);
-        e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(0, IrTypes.Word), IrTypes.Word), detach, yes);
+        var threadGoes = f.NewBlock("thread_detach");
+        var notProcess = f.NewBlock("not_process");
+        e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(0, IrTypes.Word), IrTypes.Word), detach, notProcess);
         e.SetBlock(detach);
         if (Win32Method("Detach") is MethodSymbol let)
         {
             Require(let);
             e.Call(CallLabel(let), IrType.Void);
+        }
+        e.Jump(yes);
+
+        // DLL_THREAD_DETACH: a thread given a block lets it go (Win32.ThreadDetach).
+        e.SetBlock(notProcess);
+        e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(3, IrTypes.Word), IrTypes.Word), threadGoes, yes);
+        e.SetBlock(threadGoes);
+        if (Win32Method("ThreadDetach") is MethodSymbol leave)
+        {
+            Require(leave);
+            e.Call(CallLabel(leave), IrType.Void);
         }
         e.Jump(yes);
 
