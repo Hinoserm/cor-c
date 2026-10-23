@@ -1194,6 +1194,13 @@ static partial class Os
     /// No name on a network: nothing has given the machine one.
 #if !TARGET_WINDOWS
     public static string? NodeName() { return null; }
+
+    /// No operating system to name: Environment.OSVersion is PlatformID.Other, 0.0.0.0.
+    public static int[] SystemVersion(out string servicePack)
+    {
+        servicePack = "";
+        return new int[] { 7, 0, 0, 0, 0 };
+    }
 #endif
 
     /// No users: -1, and Environment.UserName reads what the image was given.

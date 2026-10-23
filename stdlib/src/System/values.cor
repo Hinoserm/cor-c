@@ -646,3 +646,102 @@ namespace System.Buffers.Text
         }
     }
 }
+
+// Environment.OSVersion and what it answers, beside Version, which they are
+// made of: environment.cor is in the ring-1 kernels' set and this file is not.
+namespace System
+{
+    /// Which operating system's line a version is of (System.PlatformID).
+    enum PlatformID
+    {
+        Win32S = 0, Win32Windows = 1, Win32NT = 2, WinCE = 3, Unix = 4, Xbox = 5, MacOSX = 6, Other = 7,
+    }
+
+    /// System.OperatingSystem -- a platform and its version, as
+    /// Environment.OSVersion answers; and which one this is, asked the way .NET
+    /// 5 added. The second is settled at compile time: Windows for an image
+    /// built for it (TARGET_WINDOWS), Linux when hosted otherwise.
+    sealed class OperatingSystem
+    {
+        public PlatformID Platform { get; }
+        public Version Version { get; }
+        public string ServicePack { get; }
+
+        public OperatingSystem(PlatformID platform, Version version) : this(platform, version, "") { }
+
+        internal OperatingSystem(PlatformID platform, Version version, string servicePack)
+        {
+            if (version == null) throw new ArgumentNullException(nameof(version));
+            Platform = platform;
+            Version = version;
+            ServicePack = servicePack ?? "";
+        }
+
+        /// "Microsoft Windows NT 5.0.2195.0 Service Pack 4", "Unix 6.6.87.2", as .NET writes it.
+        public string VersionString
+        {
+            get
+            {
+                string name = Platform switch
+                {
+                    PlatformID.Win32NT => "Microsoft Windows NT ",
+                    PlatformID.Win32Windows => "Microsoft Windows ",
+                    PlatformID.Win32S => "Microsoft Win32S ",
+                    PlatformID.WinCE => "Microsoft Windows CE ",
+                    PlatformID.Unix => "Unix ",
+                    PlatformID.MacOSX => "Mac OS X ",
+                    _ => "<unknown> ",
+                };
+                return ServicePack.Length > 0 ? name + Version + " " + ServicePack : name + Version;
+            }
+        }
+
+        public override string ToString() => VersionString;
+
+        public object Clone() => new OperatingSystem(Platform, Version, ServicePack);
+
+    #if TARGET_WINDOWS
+        public static bool IsLinux() { return false; }
+        public static bool IsWindows() { return true; }
+        public static bool IsUnix() { return false; }
+        public static bool IsOSPlatform(string platform) { return string.Equals(platform, "Windows", StringComparison.OrdinalIgnoreCase); }
+        /// Windows at least major.minor.build (Environment.OSVersion's numbers).
+        public static bool IsWindowsVersionAtLeast(int major, int minor = 0, int build = 0, int revision = 0)
+        {
+            return Environment.OSVersion.Version >= new Version(major, minor, build, revision);
+        }
+    #else
+        public static bool IsLinux() { return true; }
+        public static bool IsWindows() { return false; }
+        public static bool IsUnix() { return true; }
+        public static bool IsOSPlatform(string platform) { return string.Equals(platform, "Linux", StringComparison.OrdinalIgnoreCase); }
+        public static bool IsWindowsVersionAtLeast(int major, int minor = 0, int build = 0, int revision = 0) { return false; }
+    #endif
+        public static bool IsMacOS() { return false; }
+        public static bool IsFreeBSD() { return false; }
+        public static bool IsAndroid() { return false; }
+        public static bool IsIOS() { return false; }
+        public static bool IsBrowser() { return false; }
+    }
+}
+
+static partial class Environment
+{
+    static System.OperatingSystem? _osVersion;
+
+    /// The operating system and its version: Windows' GetVersionEx, or the
+    /// kernel's release under uname. Asked once.
+    public static System.OperatingSystem OSVersion
+    {
+        get
+        {
+            if (_osVersion == null)
+            {
+                string servicePack;
+                int[] v = Os.SystemVersion(out servicePack);
+                _osVersion = new System.OperatingSystem((System.PlatformID)v[0], new System.Version(v[1], v[2], v[3], v[4]), servicePack);
+            }
+            return _osVersion;
+        }
+    }
+}
