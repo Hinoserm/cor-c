@@ -276,6 +276,13 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? EnterFromC(Node at)
     {
+        // A WINDOWS DLL is called on threads it never saw start: one without
+        // a block is given one first (Win32.Enter).
+        if (Dll && Win32Method("Enter") is MethodSymbol adopt)
+        {
+            Require(adopt);
+            _e.Call(CallLabel(adopt), IrType.Void);
+        }
         if (RequireRuntime(at, "ReturnFromC", 0, "a method C calls") is MethodSymbol back)
         {
             _e.Call(CallLabel(back), IrType.Void);

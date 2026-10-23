@@ -95,6 +95,25 @@ static class Win32
         return true;
     }
 
+    /// A THREAD C CALLS IN FROM is given a block the first time it comes
+    /// (every export's way in, Lowering.EnterFromC): one the loading thread
+    /// already has, and one made by the program the image was loaded into
+    /// does not. Registered stopped, as a thread another starts is; the
+    /// export's ReturnFromC says it is running.
+    public static void Enter()
+    {
+        if (Sys.ThreadBlock() == 0) Adopt();
+    }
+
+    static void Adopt()
+    {
+        long block = (long)(nuint)VirtualAlloc(0, (nint)Tls.Bytes, MemCommit | MemReserve, PageReadWrite);
+        if (block == 0) ExitProcess(137);
+        Sys.Poke(block + Tls.Self, block);
+        Sys.SetThreadBlock(block);
+        Runtime.RegisterThread(block, StackTop());
+    }
+
     /// The image may allocate now: what wants the heap.
     public static void Started()
     {
