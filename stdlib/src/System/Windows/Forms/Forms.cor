@@ -3472,18 +3472,20 @@ public class ListBox : Control
     public ListBox()
     {
         _items = new ObjectCollection(this);
-        Width = 120;
-        Height = 95;
-        BackColor = SystemColors.Window;
 
         // THE BAR IS A CHILD OF THE LIST, not something the program has to
         // put beside it: a list that overflows grows one and a list that
-        // does not has none, which is what every list in Windows does.
+        // does not has none, which is what every list in Windows does. Made
+        // before the list's size is set, which lays the bar out.
         _bar = new VScrollBar();
         _bar.TabStop = false;
         _bar.Visible = false;
         _bar.ValueChanged += BarMoved;
         Controls.Add(_bar);
+
+        Width = 120;
+        Height = 95;
+        BackColor = SystemColors.Window;
         Layout();
     }
 

@@ -396,6 +396,9 @@ public class Font : IDisposable
         Style = style;
     }
 
+    /// The same font in another style.
+    public Font(Font prototype, FontStyle newStyle) : this(prototype.FontFamily, prototype.Size, newStyle) { }
+
     public Font(FontFamily family, float size) : this(family, size, FontStyle.Regular) { }
 
     public Font(FontFamily family, float size, FontStyle style)

@@ -1510,6 +1510,25 @@ static partial class Os
         return Utf8Transcoder.Decode(names, 65, end - 65);
     }
 
+    /// The kernel's version for Environment.OSVersion: Unix (4), and the
+    /// leading numbers of uname(2)'s release; no service pack.
+    public static int[] SystemVersion(out string servicePack)
+    {
+        servicePack = "";
+        int[] made = new int[] { 4, 0, 0, 0, 0 };
+        byte[] names = new byte[65 * 6];
+        if (Platform.Result(Sys.Syscall(Call.Uname, Sys.ArrayData(names), 0, 0)) < 0) return made;
+        int at = 130, field = 1;
+        while (at < 195 && field < 5 && names[at] >= '0' && names[at] <= '9')
+        {
+            int n = 0;
+            while (at < 195 && names[at] >= '0' && names[at] <= '9') { n = n * 10 + (names[at] - '0'); at++; }
+            made[field++] = n;
+            if (at < 195 && names[at] == '.') at++; else break;
+        }
+        return made;
+    }
+
     public static int Chdir(string path)
     {
         byte[] c = CString(path);

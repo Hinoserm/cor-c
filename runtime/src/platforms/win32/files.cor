@@ -831,6 +831,28 @@ static partial class Os
         return CryptGenRandom((nint)_cryptContext, count, (nint)(Sys.ArrayData(buffer) + at)) != 0 ? count : Failed();
     }
 
+    [DllImport("kernel32")] static extern int GetVersionExW(nint info);
+
+    /// Windows' version for Environment.OSVersion (GetVersionEx): the
+    /// platform -- 2 NT, 1 the 9x line -- major, minor, build, and the
+    /// service pack's name.
+    public static int[] SystemVersion(out string servicePack)
+    {
+        byte[] info = new byte[276];                          // OSVERSIONINFOW
+        Raw.SetU32(info, 0, 276);
+        servicePack = "";
+        if (GetVersionExW(At(info)) == 0) return new int[] { 2, 5, 0, 0, 0 };
+        int platform = (int)Raw.U32(info, 16);
+        int build = (int)Raw.U32(info, 12);
+        if (platform == 1) build &= 0xFFFF;                   // 9x keeps the version in the high word
+        int n = 0;
+        while (n < 128 && Raw.U16(info, 20 + n * 2) != 0) n++;
+        char[] text = new char[n];
+        for (int i = 0; i < n; i++) text[i] = (char)Raw.U16(info, 20 + i * 2);
+        servicePack = new string(text).Trim();
+        return new int[] { platform, (int)Raw.U32(info, 4), (int)Raw.U32(info, 8), build, 0 };
+    }
+
     [DllImport("kernel32")] static extern int GetComputerNameW(nint name, nint size);
 
     /// The machine's name, as GetComputerName answers it.
