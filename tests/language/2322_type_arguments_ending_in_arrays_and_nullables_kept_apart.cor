@@ -1,0 +1,48 @@
+// test: type_arguments_ending_in_arrays_and_nullables_kept_apart
+// expect-exit: 0
+// expect-output:
+// k=x,y
+// a:b
+// 1 2 3 4 5 6
+// True True True
+//
+// A generic's name over an argument that is an array or a nullable keeps
+// where that argument's own list ends: KeyValuePair<string, string[]> and
+// an array of KeyValuePair<string, string>, IBox<int[]> inside and
+// IBox<int> as the element, Pair<int, int?> and Pair<int, int>?. Both of
+// each pair were one name, so a program with both -- the compiler's own
+// Dictionary<string, string[]> beside X.509's attribute lists -- had one
+// class for two types, and neither's members.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections.Generic;
+
+interface IBox<T> { int Put(T x); }
+class Box<T> : IBox<T> { public int Tag; int IBox<T>.Put(T x) => Tag; }
+struct Pair<A, B> { public A First; public B Second; }
+
+static class P
+{
+    static List<KeyValuePair<string, string>[]> Rows()
+    {
+        var rows = new List<KeyValuePair<string, string>[]>();
+        rows.Add(new[] { new KeyValuePair<string, string>("a", "b") });
+        return rows;
+    }
+
+    static void Main()
+    {
+        var map = new Dictionary<string, string[]> { ["k"] = new[] { "x", "y" } };
+        foreach ((string key, string[] values) in map) Console.WriteLine(key + "=" + string.Join(",", values));
+        foreach (var row in Rows()) foreach (var pair in row) Console.WriteLine(pair.Key + ":" + pair.Value);
+        IBox<Pair<string, string[]>> one = new Box<Pair<string, string[]>> { Tag = 1 };
+        IBox<Pair<string, string>[]> two = new Box<Pair<string, string>[]> { Tag = 2 };
+        IBox<IBox<int[]>> three = new Box<IBox<int[]>> { Tag = 3 };
+        IBox<IBox<int>[]> four = new Box<IBox<int>[]> { Tag = 4 };
+        IBox<Pair<int, int?>> five = new Box<Pair<int, int?>> { Tag = 5 };
+        IBox<Pair<int, int>?> six = new Box<Pair<int, int>?> { Tag = 6 };
+        Console.WriteLine($"{one.Put(default)} {two.Put(null!)} {three.Put(null!)} {four.Put(null!)} {five.Put(default)} {six.Put(null)}");
+        Console.WriteLine($"{one.GetType() != two.GetType()} {three.GetType() != four.GetType()} {five.GetType() != six.GetType()}");
+    }
+}
