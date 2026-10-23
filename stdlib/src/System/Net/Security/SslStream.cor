@@ -159,6 +159,7 @@ public class SslStream : AuthenticatedStream
     bool _authenticated;
     bool _failed;
     bool _closed;
+    bool _ended;
     string _targetHost = "";
     SslApplicationProtocol _protocol;
     X509Certificate2? _remote;
@@ -272,7 +273,9 @@ public class SslStream : AuthenticatedStream
         {
             if (_policy.AskedCallback)
                 return new AuthenticationException("The remote certificate was rejected by the provided RemoteCertificateValidationCallback.");
-            return new AuthenticationException("The remote certificate is invalid according to the validation procedure: " + _policy.Errors + (_policy.ChainText.Length > 0 ? " (" + _policy.ChainText + ")" : "") + ".");
+            if (_policy.Errors == SslPolicyErrors.RemoteCertificateChainErrors && _policy.ChainFlags != X509ChainStatusFlags.NoError)
+                return new AuthenticationException("The remote certificate is invalid because of errors in the certificate chain: " + _policy.ChainFlags);
+            return new AuthenticationException("The remote certificate is invalid according to the validation procedure: " + _policy.Errors);
         }
         if (_policy != null && _policy.UnsupportedKey)
             return new AuthenticationException("The remote certificate's key is of a kind this TLS client cannot check.");
@@ -398,13 +401,16 @@ public class SslStream : AuthenticatedStream
         if (count == 0) return 0;
         while (_held == 0)
         {
+            // The end, once seen, is the answer from then on: the engine
+            // takes no reads after close_notify.
+            if (_ended) return 0;
             CorsacSecureTls_Client c = _client!;
             long got;
             if (!c.ReceiveApplicationData(_record, 0, _record.Length, out got))
             {
-                if (c.Error == 0 && c.PeerSentCloseNotify) return 0;
+                if (c.Error == 0 && c.PeerSentCloseNotify) { _ended = true; return 0; }
                 if (_source != null && _source.Failure != null) throw new IOException("Unable to read data from the transport connection.", _source.Failure);
-                if (c.Error == CorsacSecureTls_ClientError.Io) return 0;
+                if (c.Error == CorsacSecureTls_ClientError.Io) { _ended = true; return 0; }
                 throw new IOException("Unable to read data from the transport connection: " + (c.Error == CorsacSecureTls_ClientError.PeerAlert
                     ? "the remote party sent a TLS alert: '" + AlertName(c.PeerAlert) + "'" : ErrorName(c.Error)) + ".");
             }
@@ -520,7 +526,7 @@ internal sealed class SslStreamPolicy : CorsacSecureTls_CertificatePolicy
 
     public X509Certificate2? Leaf;
     public SslPolicyErrors Errors;
-    public string ChainText = "";
+    public X509ChainStatusFlags ChainFlags;
     public bool Decided, Accepted, AskedCallback, UnsupportedKey;
 
     public SslStreamPolicy(SslStream stream, string host, SslClientAuthenticationOptions options, RemoteCertificateValidationCallback? callback)
@@ -558,12 +564,9 @@ internal sealed class SslStreamPolicy : CorsacSecureTls_CertificatePolicy
         if (!chain.Build(leaf))
         {
             errors |= SslPolicyErrors.RemoteCertificateChainErrors;
-            foreach (X509ChainStatus s in chain.ChainStatus)
-            {
-                flags |= s.Status;
-                ChainText += (ChainText.Length > 0 ? ", " : "") + s.Status;
-            }
+            foreach (X509ChainStatus s in chain.ChainStatus) flags |= s.Status;
         }
+        ChainFlags = flags;
         if (_host.Length > 0)
         {
             bool named;

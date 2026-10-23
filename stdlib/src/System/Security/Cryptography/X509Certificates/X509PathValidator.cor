@@ -203,8 +203,14 @@ internal class X509PathValidator
         }
 
         X509CertificateView leaf = _path[0];
-        if (_serverAuth && (leaf.IsCa || !leaf.AllowsDigitalSignature()
-            || !leaf.AllowsServerAuthentication))
+        // The engine's own identity check takes only an end-entity key
+        // that may sign; X509Chain's serverAuth, as .NET's, asks only the
+        // extended key usage (a CA's certificate serves, as OpenSSL's
+        // self-signed ones do).
+        if (_serverAuth && (_identity
+                ? leaf.IsCa || !leaf.AllowsDigitalSignature()
+                  || !leaf.AllowsServerAuthentication
+                : !leaf.AllowsServerAuthentication))
             return Fail(X509PathError.KeyUsage);
         if (_identity)
         {
