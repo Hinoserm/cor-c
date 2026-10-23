@@ -19,6 +19,7 @@ static class Win32
     const int MemCommit = 0x1000;
     const int MemReserve = 0x2000;
     const int MemDecommit = 0x4000;
+    const int MemRelease = 0x8000;
     const int PageReadWrite = 0x04;
     const int StdErrorHandle = -12;
     const int TlsOutOfIndexes = -1;
@@ -26,6 +27,9 @@ static class Win32
     /// The TEB's TlsSlots hold 64; a slot past them is in the expansion
     /// array (Windows 2000 on), which fs:[0xE10 + slot*4] does not reach.
     const int TlsSlotsInTeb = 64;
+
+    /// MEMORY_BASIC_INFORMATION's size on i386.
+    const int InfoBytes = 28;
 
     // Every call made before the thread has a block is SuppressGCTransition:
     // the transition reads the block.
@@ -63,7 +67,9 @@ static class Win32
     [DllImport("kernel32"), SuppressGCTransition]
     static extern int GetTickCount();
 
-    static int _slot = TlsOutOfIndexes;
+    /// The slot taken, plus one: 0, none. No initialiser, so touching the
+    /// class runs nothing before the thread has a block.
+    static int _slotTaken;
     static long _frequency;
     static long _count;
 
@@ -73,6 +79,12 @@ static class Win32
     /// when there is no slot the TEB holds.
     public static bool Attach()
     {
+        // The hooks first: with none, the bare-metal answers are the
+        // machine's -- a port write and a HLT -- which a process may not make.
+        Platform.MapHook = Sys.AddressOf(Map);
+        Platform.UnmapHook = Sys.AddressOf(Unmap);
+        Platform.NanosHook = Sys.AddressOf(Nanos);
+        Platform.ExitHook = Sys.AddressOf(Exit);
         int slot = TlsAlloc();
         if (slot == TlsOutOfIndexes) return false;
         if (slot >= TlsSlotsInTeb)
@@ -80,18 +92,16 @@ static class Win32
             TlsFree(slot);
             return false;
         }
-        _slot = slot;
+        _slotTaken = slot + 1;
         Sys.SetThreadBlockSlot(slot);
 
         long block = Sys.MainThreadBlock();
         Sys.Poke(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
-        Sys.Poke(block + Tls.StackBase, StackTop());
-
-        Platform.MapHook = Sys.AddressOf(Map);
-        Platform.UnmapHook = Sys.AddressOf(Unmap);
-        Platform.NanosHook = Sys.AddressOf(Nanos);
-        Platform.ExitHook = Sys.AddressOf(Exit);
+        long scratch = (long)(nuint)VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
+        if (scratch == 0) return false;
+        Sys.Poke(block + Tls.StackBase, StackTop(scratch));
+        VirtualFree((nint)scratch, 0, MemRelease);
         return true;
     }
 
@@ -107,11 +117,13 @@ static class Win32
 
     static void Adopt()
     {
-        long block = (long)(nuint)VirtualAlloc(0, (nint)Tls.Bytes, MemCommit | MemReserve, PageReadWrite);
+        // The block, and after it the scratch StackTop fills.
+        long block = (long)(nuint)VirtualAlloc(0, (nint)(Tls.Bytes + InfoBytes), MemCommit | MemReserve, PageReadWrite);
         if (block == 0) ExitProcess(137);
+        long top = StackTop(block + Tls.Bytes);
         Sys.Poke(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
-        Runtime.RegisterThread(block, StackTop());
+        Runtime.RegisterThread(block, top);
     }
 
     /// The image may allocate now: what wants the heap.
@@ -123,20 +135,20 @@ static class Win32
     /// The process lets the image go (DLL_PROCESS_DETACH): the slot back.
     public static void Detach()
     {
-        if (_slot != TlsOutOfIndexes) TlsFree(_slot);
-        _slot = TlsOutOfIndexes;
+        if (_slotTaken != 0) TlsFree(_slotTaken - 1);
+        _slotTaken = 0;
     }
 
     /// THE TOP OF THIS THREAD'S STACK, where a scan of it ends: the end of
     /// the committed region the stack pointer is in, which is the stack's
-    /// top whatever made the thread (MEMORY_BASIC_INFORMATION: BaseAddress
-    /// at 0, RegionSize at 12).
-    static unsafe long StackTop()
+    /// top whatever made the thread. VirtualQuery fills MEMORY_BASIC_INFORMATION
+    /// at `scratch` (28 bytes; BaseAddress first, RegionSize the fourth word),
+    /// which is memory the heap never handed out: this runs before the
+    /// thread may allocate.
+    static long StackTop(long scratch)
     {
-        int* info = stackalloc int[8];
-        long here = Sys.FramePointer();
-        VirtualQuery((nint)here, (nint)info, 28);
-        return (long)(uint)info[0] + (long)(uint)info[3];
+        VirtualQuery((nint)Sys.FramePointer(), (nint)scratch, InfoBytes);
+        return (Sys.Peek(scratch) & 0xFFFFFFFF) + (Sys.Peek(scratch + 12) & 0xFFFFFFFF);
     }
 
     /// Zeroed pages, or 0: VirtualAlloc's are zeroed.
