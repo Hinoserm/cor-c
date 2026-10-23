@@ -158,8 +158,52 @@ public sealed class UnitBackend : IUnitBackend
         Dictionary<string, IrImport> available = imports.ToDictionary(import => import.Symbol, StringComparer.Ordinal);
         // A function the late passes made has no record of its own: it calls
         // nothing imported and costs what a small function does.
-        IrImport[] Selected(int index) => archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record)
-            ? record.Calls.Where(available.ContainsKey).Select(name => available[name]).ToArray() : Array.Empty<IrImport>();
+        // WHAT EACH IMPORT CALLS, read once before the workers start: a
+        // function takes the imports its own calls name, and the forwarders
+        // those bodies call -- a body that calls nothing and is no bigger than
+        // its call (IrLinkOptimizer.ForwarderBody), which the link brought in
+        // for them -- so a body inlined here brings a one-line wrapper of an
+        // intrinsic along. Only those: offered every import the unit had,
+        // through its imports, a function took in bodies it never called and
+        // the image grew by a hundredth.
+        Dictionary<string, string[]> forwarders = new(StringComparer.Ordinal);
+        HashSet<string> forwarding = new(StringComparer.Ordinal);
+        foreach (IrImport import in imports)
+        {
+            if (import.ReadOnly) continue;
+            Function body = IrFunctionCodec.Read(import.Body, new IrReadBudget(import.DecodeBytes));
+            Instr[] instructions = body.Blocks.SelectMany(block => block.Instrs).ToArray();
+            string[] calls = instructions.Where(instruction => instruction.Op == Opcode.Call && instruction.Callee is not null)
+                .Select(instruction => instruction.Callee!).Distinct(StringComparer.Ordinal).ToArray();
+            forwarders[import.Symbol] = calls;
+            if (calls.Length == 0 && instructions.Length <= IrLinkOptimizer.ForwarderBody) forwarding.Add(import.Symbol);
+        }
+        IrImport[] Selected(int index)
+        {
+            if (!archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record)) return Array.Empty<IrImport>();
+            List<IrImport> chosen = new();
+            HashSet<string> seen = new(StringComparer.Ordinal);
+            // ITS FORWARDERS AS IT STANDS, as well as its record's calls: the late passes
+            // run here inline the unit's own functions first, and what those
+            // call is this function's call now -- ComFrame.GetR8 took in
+            // ComMarshal.ReadR8 and with it BitConverter.Int64BitsToDouble,
+            // which the record, made before, never named, and which stayed a
+            // call though its body was among the unit's imports.
+            // Only its forwarders: offered every import its calls now name,
+            // a function took in bodies its compile had judged and kept as
+            // calls, and the image grew by a twentieth.
+            foreach (string name in record.Calls)
+                if (available.TryGetValue(name, out IrImport? import) && seen.Add(name)) chosen.Add(import);
+            if (preLate)
+                foreach (Instr instruction in module.Functions[index].Blocks.SelectMany(block => block.Instrs))
+                    if (instruction.Op == Opcode.Call && instruction.Callee is string callee && forwarding.Contains(callee) && seen.Add(callee))
+                        chosen.Add(available[callee]);
+            for (int at = 0; at < chosen.Count; at++)
+                if (forwarders.TryGetValue(chosen[at].Symbol, out string[]? calls))
+                    foreach (string callee in calls)
+                        if (forwarding.Contains(callee) && seen.Add(callee)) chosen.Add(available[callee]);
+            return chosen.ToArray();
+        }
         long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record) ? record.DecodeBytes : 0)
             + Selected(index).Sum(import => import.DecodeBytes)) + 512 * 1024);
         // The unit's read-only items, made once before any worker asks for

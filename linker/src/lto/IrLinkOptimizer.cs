@@ -9,6 +9,17 @@ public static class IrLinkOptimizer
     /// <summary>A body this small is imported into every unit that calls it, however many (the byte budget still holds).</summary>
     public const int TinyBody = 24;
 
+    /// <summary>
+    /// A body this small that calls nothing -- a wrapper of an intrinsic, a
+    /// getter -- is no bigger inlined than the call it replaces, so an
+    /// imported body brings it along (the step after the first-level
+    /// imports). Followed further -- the tiny bodies taken at the first
+    /// level, or small ones with calls of their own -- the imports pulled
+    /// whole chains in behind them and grew the image by a twentieth, and
+    /// by a hundredth at this size with calls.
+    /// </summary>
+    public const int ForwarderBody = 8;
+
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
         string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
@@ -356,6 +367,26 @@ public static class IrLinkOptimizer
                     imports.Add((call, provider, body)); used += body.Length;
                     if (!tiny) counted++;
                 }
+                // AND WHAT THOSE CALL, WHEN IT IS NO BIGGER THAN ITS CALL AND
+                // CALLS NOTHING ITSELF (ForwarderBody): a body
+                // brought in brings its calls with it, and they are this
+                // unit's calls once it is inlined. Taken one level only, a
+                // one-line wrapper of an intrinsic in a third unit
+                // (BitConverter.SingleToInt32Bits around Sys.SingleBits) stayed
+                // a call in every body that reached it through another unit's
+                // helper -- 6.7% of Half-Life's time in the GUI kernel's 3D.
+                HashSet<string> taken = imports.Select(import => import.Symbol).ToHashSet(StringComparer.Ordinal);
+                for (int at = 0; at < imports.Count; at++)
+                    foreach (string call in imports[at].Body.Calls)
+                    {
+                        if (taken.Contains(call) || defined.Contains(call) || !owners.TryGetValue(call, out ObjectFile? owner)
+                            || !archives.TryGetValue(owner, out IrArchive? provider) || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body)
+                            || !body.Importable || body.Instructions > ForwarderBody || body.Calls.Count > 0
+                            || body.Length > importBytes - used || imports.Count >= BackendProtocol.MostImports - 2) continue;
+                        if (noCollector && body.Calls.Any(callee => callee is RuntimeAbi.Alloc or RuntimeAbi.AllocLeaf or RuntimeAbi.AllocObject)) continue;
+                        imports.Add((call, provider, body)); used += body.Length;
+                        taken.Add(call);
+                    }
                 // BODIES BROUGHT IN TO BE READ, NEVER INLINED: another unit's
                 // function a pending condition of this unit names, whose argument
                 // the whole program finds kept. The link's per-function rules ask

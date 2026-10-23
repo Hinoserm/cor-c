@@ -1,0 +1,6 @@
+// A helper in another unit that reaches the wrapper (IrLinkOptimizer's
+// forwarders): imported into its caller, it brings Wrap.Bits along.
+public static class Helper
+{
+    public static int Mark(float value) => Wrap.Bits(value) == 0x3FC00000 ? 42 : 1;
+}

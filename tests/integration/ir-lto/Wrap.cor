@@ -1,0 +1,5 @@
+// A one-line wrapper of an intrinsic, as BitConverter.SingleToInt32Bits is.
+public static class Wrap
+{
+    public static int Bits(float value) => Sys.SingleBits(value);
+}

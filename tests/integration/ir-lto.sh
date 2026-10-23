@@ -48,4 +48,18 @@ if corlink "$work/missing-cpu.o" "$work/compute.o" -o "$work/invalid" 2> "$work/
     echo 'Linker accepted a removed required CPU contract' >&2; exit 1
 fi
 grep -q 'CPU/FPU code-generation contract is missing' "$work/missing-cpu.log"
-printf 'PASS IR imports, cross-unit inlining/constant propagation, native execution and budgets: %s\n' "$work"
+# A FORWARDER TWO UNITS AWAY: the program calls Helper, whose body calls
+# Wrap's one-line wrapper of an intrinsic. The link imports Helper and, with
+# it, the wrapper, and the image calls neither (the GUI kernel's 3D paths
+# called BitConverter.SingleToInt32Bits this way).
+cp tests/integration/ir-lto/Wrap.cor tests/integration/ir-lto/Helper.cor tests/integration/ir-lto/Chain.cor "$work/"
+"$corc" compile --cpu="$cpu" --nostdlib --lib "$work/Wrap.cor" --obj -o "$work/wrap.o"
+"$corc" compile --cpu="$cpu" --nostdlib --lib "$work/Helper.cor" --ref "$work/Wrap.cor" --obj -o "$work/helper.o"
+"$corc" compile --cpu="$cpu" --nostdlib "$work/Chain.cor" --ref "$work/Helper.cor" --ref "$work/Wrap.cor" --obj -o "$work/chain.o"
+corlink --cpu="$cpu" "$work/chain.o" "$work/helper.o" "$work/wrap.o" -o "$work/chain" 2> "$work/chain.link.log"
+status=0
+"$work/chain" || status=$?
+test "$status" = 42
+objdump -d "$work/chain" > "$work/chain.disassembly"
+if grep -Eq 'call.*<m_Wrap_Bits' "$work/chain.disassembly"; then echo 'A forwarder reached through an imported body stayed a call' >&2; exit 1; fi
+printf 'PASS IR imports, cross-unit inlining/constant propagation, forwarders through imports, native execution and budgets: %s\n' "$work"
