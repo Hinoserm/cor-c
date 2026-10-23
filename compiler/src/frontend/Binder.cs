@@ -6007,8 +6007,11 @@ public sealed partial class Binder
                     Resolve(r.Args[^1], context), r.Name == TypeRef.UnmanagedFunction),
             }
             // Nullable<T> WRITTEN OUT is T? (C#'s own spelling of it), unless
-            // the program declares a type of that name.
-            : r.Name is "Nullable" or "System.Nullable" && r.Args.Count == 1 && !_r.Types.ContainsKey("Nullable")
+            // the program declares a generic type of that name. The class
+            // library's own static Nullable (Compare, Equals) is no such one:
+            // taken for one, `x as Nullable<long>` was a Nullable<long>?.
+            : r.Name is "Nullable" or "System.Nullable" && r.Args.Count == 1
+              && !(_r.Types.TryGetValue("Nullable", out TypeSymbol? declaredNullable) && declaredNullable.Decl is { TypeParams.Count: 1 })
                 ? Resolve(r.Args[0], context).AsNullable()
             : ResolveCore(r, context);
         // A SHARED METHOD COPY'S HIDDEN ARGUMENT MADE OVER ITS CALLER'S WORDS
