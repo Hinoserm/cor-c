@@ -385,14 +385,16 @@ public sealed partial class Lowering
                 _e.Store(new SymOperand(ThreadBlockSelf), R(ToWord(Arg(call, target, 0))));
                 return Void();
             case "SetThreadBlockSlot":
-                // Windows: the slot TlsAlloc answered, which every read of the
-                // block names (Selector.TlsSlotSymbol).
+                // Windows: where the runtime's TLS slot is -- the word of the
+                // thread's block to start from and what to add to it -- which
+                // every read of the block names (Selector.TlsBaseSymbol).
                 if (!Windows)
                 {
                     Error(call, "Sys.SetThreadBlockSlot is for a Windows image (--windows, --dll)");
                     return Void();
                 }
-                _e.Store(new SymOperand(Corsac.Lang.X86.Selector.TlsSlotSymbol), R(ToWord(Arg(call, target, 0))));
+                _e.Store(new SymOperand(Corsac.Lang.X86.Selector.TlsBaseSymbol), R(ToWord(Arg(call, target, 0))));
+                _e.Store(new SymOperand(Corsac.Lang.X86.Selector.TlsOffsetSymbol), R(ToWord(Arg(call, target, 1))));
                 return Void();
             case "GetGs":
                 // The selector GS holds now: on Linux, before the runtime

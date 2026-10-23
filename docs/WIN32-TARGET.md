@@ -87,7 +87,8 @@ A DLL is the same image as a program, with these differences.
 - THREADS THAT ARE NOT OURS: a game's thread calling an export gets a
   runtime thread block on its first call, and loses it at
   `DLL_THREAD_DETACH`. The block is found through a TLS slot (TlsAlloc) read
-  straight from the TEB, `fs:[0xE10 + 4 * slot]`, not through static TLS:
+  straight from the thread's own block (see "The thread block"), not through
+  static TLS:
   Windows 2000's and XP's loaders give a DLL loaded by LoadLibrary no static
   TLS, and Quake's engines load opengl32 that way.
 - IT STAYS LOADED once loaded (it pins itself, as native AOT's do), so a
@@ -163,11 +164,22 @@ handler). It stays loaded once loaded: a FreeLibrary leaves it in place.
 The runtime finds a thread's block through GS on Linux. Windows' 32-bit
 systems give user code no GS of its own and FS is the thread's Windows block,
 which must not change. The block is in a TLS slot the runtime takes with
-TlsAlloc, read straight from the TEB: `fs:[0xE10 + 4 * slot]`, one
-instruction (Selector, `FsTlsSlot`), written by Sys.SetThreadBlock. Static
-TLS (`fs:[0x2C]` and the image's TLS directory) is not used: Windows 2000's
-and XP's loaders give a DLL that LoadLibrary loads none. A slot past the
-TEB's 64 is refused at DllMain. Calls into C swap nothing.
+TlsAlloc, read straight from where the system keeps the slots. NT keeps them
+in the TEB, at 0xE10, and the TEB's address is at fs:[0x18]; Windows 9x keeps
+them in an array its thread block points to from fs:[0x2C]. Two words of
+the image say which (Selector.TlsBaseSymbol), filled by DllMain from
+GetVersion, and one sequence serves both with no branch:
+
+    mov r, [tls_base]       ; 0x18 on NT, 0x2C on 9x
+    mov r, fs:[r]
+    add r, [tls_offset]     ; 0xE10 + 4 * slot on NT, 4 * slot on 9x
+    mov r, [r]
+
+Written by Sys.SetThreadBlock the same way. Static TLS (NT's fs:[0x2C] and
+the image's TLS directory) is not used: Windows 2000's and XP's loaders give
+a DLL that LoadLibrary loads none. On NT a slot past the TEB's 64 is refused
+at DllMain. Calls into C swap nothing. The 9x path is not yet run on 9x:
+Wine is NT.
 
 ## The platform layer: runtime/src/platforms/win32
 
@@ -299,15 +311,12 @@ them.
 
 ## Open decisions
 
-For the DLLs (asked 2026-10-23):
-
-- Whether DLLs must load on 9x too, or the NT family only (the TEB's TLS
-  slots above are NT's).
-- One runtime in each DLL (as native AOT) or one shared runtime DLL.
-- OpenGL as a replacement opengl32.dll (369 exports in 2000 SP4) or as an
-  ICD under Microsoft's (docs/software/GRAPHICS-3D.md 6.3 in the OS
-  repository).
-- Which Glide: glide2x.dll, glide3x.dll, glide.dll; and when.
+Decided for the DLLs (Hino, 2026-10-23): they load on 9x too. The runtime
+is linked statically or dynamically as the compile says, for every kind of
+image the compiler makes -- Linux programs and libraries, Windows programs
+and DLLs, CORSAC's own programs: static carries only what the image reaches,
+dynamic shares one runtime library. OpenGL (a replacement opengl32.dll or an
+ICD) and Glide are not decided here; the compiler builds whichever is chosen.
 
 For the programs:
 

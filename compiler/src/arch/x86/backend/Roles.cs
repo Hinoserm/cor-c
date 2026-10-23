@@ -60,9 +60,8 @@ public static class Roles
             case MOp.Shrd:
                 return operand == 0 ? Role.UseDef : Role.Use;
             case MOp.Xchg:
-            case MOp.FsTlsSlot:
+            case MOp.FsLoad:
                 return Role.UseDef;
-            case MOp.FsTlsSlotStore:
             case MOp.FsSehChainStore:
                 return Role.Use;
             case MOp.FsSehChain:

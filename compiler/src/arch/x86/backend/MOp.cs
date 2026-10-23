@@ -104,16 +104,11 @@ public enum MOp : byte
     /// <summary>mov r32, gs:[0] -- this thread's block, by the self pointer.</summary>
     GsSelf,
     /// <summary>
-    /// mov r32, fs:[0xE10 + r32*4] -- on Windows, the TLS slot whose number
-    /// the register holds, read from the thread's TEB as NT's TlsGetValue
-    /// reads a slot below 64: where a Windows image keeps the block.
+    /// mov r32, fs:[r32] -- on Windows, a word of the thread's own block, at
+    /// the offset the register holds: the step that finds the TLS slots
+    /// (Select.TlsBaseSymbol).
     /// </summary>
-    FsTlsSlot,
-    /// <summary>
-    /// mov fs:[0xE10 + r0*4], r1 -- the block put in that slot: r0 holds the
-    /// slot's number, r1 the block. What TlsSetValue does for a slot below 64.
-    /// </summary>
-    FsTlsSlotStore,
+    FsLoad,
     /// <summary>
     /// mov r32, fs:[0] -- on Windows, the innermost SEH registration of the
     /// thread, the head of the chain the TEB starts with.

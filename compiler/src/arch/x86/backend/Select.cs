@@ -64,7 +64,17 @@ internal sealed partial class Selector
     private bool _windowsTls;
 
     /// <summary>The word holding that slot's number, which the Windows runtime fills from TlsAlloc.</summary>
-    public const string TlsSlotSymbol = "__corsac_tls_slot";
+    /// <summary>
+    /// WINDOWS' TLS SLOTS, wherever the system keeps them: the offset in the
+    /// thread's own block (FS) of the word to start from, and what to add to
+    /// that word to reach the runtime's slot. NT keeps the slots in the TEB,
+    /// so the word is the TEB's own address (0x18) and the offset 0xE10 + 4 *
+    /// slot; Windows 9x keeps them in an array the thread block points to
+    /// (0x2C) and the offset is 4 * slot. The runtime fills both as it takes
+    /// its slot (Sys.SetThreadBlockSlot), and one sequence serves either.
+    /// </summary>
+    public const string TlsBaseSymbol = "__corsac_tls_base";
+    public const string TlsOffsetSymbol = "__corsac_tls_offset";
 
     private Selector(Function f, List<string> errors, bool automaticPacked)
     {
@@ -2431,8 +2441,10 @@ internal sealed partial class Selector
                     // TEB. The block is in the TLS slot the runtime took
                     // (TlsAlloc), whose number is a word of the image.
                     MReg r = Lo(i.Dest);
-                    Emit(MOp.Mov, r, SymbolMem(TlsSlotSymbol, 0));
-                    Emit(MOp.FsTlsSlot, r);
+                    Emit(MOp.Mov, r, SymbolMem(TlsBaseSymbol, 0));
+                    Emit(MOp.FsLoad, r);
+                    Emit(MOp.Add, r, SymbolMem(TlsOffsetSymbol, 0));
+                    Emit(MOp.Mov, r, new MMem(r, 0));
                 }
                 else if (i.Dest is not null)
                 {
@@ -2548,11 +2560,13 @@ internal sealed partial class Selector
                 Emit(MOp.SetGs, R(i.Operands[0]));
                 return;
             case MachineIntrinsics.SetTlsBlock:
-                // WINDOWS: the block into the runtime's TLS slot, the slot's
-                // number into ECX first.
+                // WINDOWS: the block into the runtime's TLS slot, found as
+                // ThreadBlock finds it (TlsBaseSymbol).
                 Mov(Edx, R(i.Operands[0]));
-                Emit(MOp.Mov, Ecx, SymbolMem(TlsSlotSymbol, 0));
-                Emit(MOp.FsTlsSlotStore, Ecx, Edx);
+                Emit(MOp.Mov, Ecx, SymbolMem(TlsBaseSymbol, 0));
+                Emit(MOp.FsLoad, Ecx);
+                Emit(MOp.Add, Ecx, SymbolMem(TlsOffsetSymbol, 0));
+                Emit(MOp.Mov, new MMem(Ecx, 0), Edx);
                 return;
             case MachineIntrinsics.SehChain:
                 if (i.Dest is not null) Emit(MOp.FsSehChain, Lo(i.Dest));

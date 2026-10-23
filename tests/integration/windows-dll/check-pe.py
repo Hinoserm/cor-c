@@ -89,7 +89,7 @@ while u32(m, d + 12):
     d += 20
 # The program's GetTickCount, and the platform library's kernel32 calls:
 # only kernel32, and only what Windows 95 and NT 3.51 already exported.
-win95 = {'ExitProcess', 'GetStdHandle', 'GetTickCount', 'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'Sleep', 'GetModuleFileNameA', 'LoadLibraryA',
+win95 = {'ExitProcess', 'GetStdHandle', 'GetTickCount', 'QueryPerformanceCounter', 'QueryPerformanceFrequency', 'Sleep', 'GetModuleFileNameA', 'LoadLibraryA', 'GetVersion',
          'TlsAlloc', 'TlsFree', 'VirtualAlloc', 'VirtualFree', 'VirtualQuery', 'WriteFile'}
 if set(imports) != {'kernel32.dll'} or 'GetTickCount' not in imports['kernel32.dll'] or not set(imports['kernel32.dll']) <= win95:
     fail('imports %r' % imports)

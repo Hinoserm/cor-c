@@ -712,8 +712,12 @@ public sealed partial class Lowering
             _m.Data.Add(new DataItem(ThreadBlock0, new byte[TlsBytes / 4 * _t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             _m.Data.Add(new DataItem(ThreadBlockSelf, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
             // Windows: the TLS slot's number, which every read of the block
-            // names (Selector.TlsSlotSymbol) and the runtime fills from TlsAlloc.
-            if (Windows) _m.Data.Add(new DataItem(Corsac.Lang.X86.Selector.TlsSlotSymbol, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
+            // names (Selector.TlsBaseSymbol) and the runtime fills from TlsAlloc.
+            if (Windows)
+            {
+                _m.Data.Add(new DataItem(Corsac.Lang.X86.Selector.TlsBaseSymbol, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
+                _m.Data.Add(new DataItem(Corsac.Lang.X86.Selector.TlsOffsetSymbol, new byte[_t.WordSize]) { Zero = true, Align = _t.WordSize, FromLibrary = true });
+            }
         }
 
         // STATICS MADE WHILE THE STATICS ARE LAID DOWN, laid down in turn: a

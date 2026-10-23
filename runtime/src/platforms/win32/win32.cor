@@ -6,7 +6,8 @@
 // host for everything a host has: memory (MapHook, UnmapHook), the time
 // (NanosHook), an exit (ExitHook) and a console (Platform.Console). This file
 // fills those in from kernel32 and owns what only Windows has: the TLS slot
-// every thread's block is found by (fs:[0xE10 + slot*4], Lowering.Windows),
+// every thread's block is found by (Selector.TlsBaseSymbol: in NT's TEB, or in
+// the array 9x's thread block points to),
 // and the stack top the TEB records for each thread.
 //
 // Only kernel32 functions Windows 95 and NT 3.51 already had are called, so
@@ -31,9 +32,16 @@ static class Win32
     const int StdErrorHandle = -12;
     const int TlsOutOfIndexes = -1;
 
-    /// The TEB's TlsSlots hold 64; a slot past them is in the expansion
-    /// array (Windows 2000 on), which fs:[0xE10 + slot*4] does not reach.
+    /// WHERE THE TLS SLOTS ARE. NT keeps 64 in the TEB, at 0xE10 of it, and
+    /// a slot past them in an expansion array (Windows 2000 on) this does not
+    /// follow; the TEB's own address is at fs:[0x18]. Windows 9x keeps 80 in
+    /// an array the thread's block points to from fs:[0x2C].
     const int TlsSlotsInTeb = 64;
+    const int TebSelf = 0x18;
+    const int TebTlsSlots = 0xE10;
+    const int TibTlsArray9x = 0x2C;
+    /// GetVersion's top bit: Windows 9x (and Win32s), not NT.
+    const uint NotNt = 0x80000000;
 
     /// MEMORY_BASIC_INFORMATION's size on i386.
     const int InfoBytes = 28;
@@ -43,6 +51,9 @@ static class Win32
 
     [DllImport("kernel32"), SuppressGCTransition]
     static extern int TlsAlloc();
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern uint GetVersion();
 
     [DllImport("kernel32"), SuppressGCTransition]
     static extern int TlsFree(int slot);
@@ -108,13 +119,15 @@ static class Win32
         Platform.YieldHook = Sys.AddressOf(Yield);
         int slot = TlsAlloc();
         if (slot == TlsOutOfIndexes) return false;
-        if (slot >= TlsSlotsInTeb)
+        bool nt = (GetVersion() & NotNt) == 0;
+        if (nt && slot >= TlsSlotsInTeb)
         {
             TlsFree(slot);
             return false;
         }
         _slotTaken = slot + 1;
-        Sys.SetThreadBlockSlot(slot);
+        if (nt) Sys.SetThreadBlockSlot(TebSelf, TebTlsSlots + 4 * slot);
+        else Sys.SetThreadBlockSlot(TibTlsArray9x, 4 * slot);
 
         // The image's own extent, which a fault must be in to be ours:
         // SizeOfImage from the PE header e_lfanew names.
