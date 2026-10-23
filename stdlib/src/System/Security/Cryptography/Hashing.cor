@@ -298,6 +298,17 @@ sealed class Sha256Implementation : SHA256
 
     public Sha256Implementation() { Initialize(); }
 
+    /// The state, the held block and the schedule zeroed, and started
+    /// again: what CorsacSecureCrypto_Hash leaves behind after a digest of a
+    /// key or a secret.
+    internal void Wipe()
+    {
+        for (int i = 0; i < _block.Length; i++) _block[i] = 0;
+        for (int i = 0; i < _w.Length; i++) _w[i] = 0;
+        for (int i = 0; i < _state.Length; i++) _state[i] = 0;
+        Initialize();
+    }
+
     public override HashAlgorithm Snapshot()
     {
         Sha256Implementation copy = new Sha256Implementation();
@@ -910,6 +921,15 @@ sealed class Sha512Implementation : SHA512
     public Sha512Implementation(bool asSha384)
     {
         _short = asSha384;
+        Initialize();
+    }
+
+    /// As Sha256Implementation.Wipe.
+    internal void Wipe()
+    {
+        for (int i = 0; i < _block.Length; i++) _block[i] = 0;
+        for (int i = 0; i < _w.Length; i++) _w[i] = 0;
+        for (int i = 0; i < _state.Length; i++) _state[i] = 0;
         Initialize();
     }
 

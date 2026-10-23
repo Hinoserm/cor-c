@@ -74,63 +74,35 @@ public static class CorsacSecureCrypto_Bytes
 }
 
 /// A reentrant, memory-authoritative SHA-256 streaming context.
+/// SHA-256 with the primitives' contract -- offsets and counts checked
+/// before anything moves, errors sticky, a finished context reused only
+/// through Reset, and the state wiped after a digest and at Close -- over
+/// the class library's one SHA-256 (System.Security.Cryptography's,
+/// Sha256Implementation).
 public class CorsacSecureCrypto_Hash
 {
     public const int Sha256 = 2;
     public const int InvalidArgument = 1;
     public const int ProtocolState = 9;
 
-    private const long Mask32 = 0xffffffffL;
     private const long MaximumBytes = 0x1fffffffffffffff;
 
-    private byte[] _block;
-    private int _held;
+    private readonly System.Security.Cryptography.Sha256Implementation _engine = new System.Security.Cryptography.Sha256Implementation();
     private long _total;
-    private uint[] _state;
-    // Schedule words are reduced modulo 2^32 before storage. Keep their
-    // actual width so every context does not allocate unused high halves.
-    private uint[] _work;
-    // Public algorithm constants, shared once. They are not message/key
-    // material and must not be erased when one independent context closes.
-    private static readonly uint[] _round = new uint[] {
-            0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
-            0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-            0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,
-            0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,
-            0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-            0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,
-            0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,
-            0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-            0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,
-            0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,
-            0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-            0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,
-            0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-        };
     private bool _finished;
     private bool _closed;
     private int _error;
 
-    public CorsacSecureCrypto_Hash()
-    {
-        _block = new byte[64];
-        _state = new uint[8];
-        _work = new uint[64];
-        Initialize();
-    }
-
     public int Error => _error;
 
-    /// Reuses the allocated schedule after a successful Finish.  A failed
-    /// context retains its stable error and must instead be closed.
+    /// Reuses the context after a successful Finish.  A failed context
+    /// retains its stable error and must instead be closed.
     public bool Reset()
     {
         if (_closed || _error != 0) return false;
-        EraseState();
-        Initialize();
+        _engine.Wipe();
+        _total = 0;
+        _finished = false;
         return true;
     }
 
@@ -141,33 +113,8 @@ public class CorsacSecureCrypto_Hash
         if (!CorsacSecureCrypto_Bytes.Range(buffer, offset, count)
             || count > MaximumBytes - _total)
             return Fail(InvalidArgument);
-
         _total = _total + count;
-        while (count > 0)
-        {
-            // The complete caller range was validated above. Full blocks
-            // need no scratch copy in either the selected or scalar path;
-            // only an unfinished block is assembled in private storage.
-            if (_held == 0 && count >= 64)
-            {
-                Compress(buffer, (int)offset);
-                offset = offset + 64;
-                count = count - 64;
-                continue;
-            }
-            int room = 64 - _held;
-            int take = (int)(count < room ? count : room);
-            CorsacSecureCrypto_Bytes.Copy(
-                _block, _held, buffer, offset, take);
-            _held = _held + take;
-            offset = offset + take;
-            count = count - take;
-            if (_held == 64)
-            {
-                Compress(_block, 0);
-                _held = 0;
-            }
-        }
+        if (count > 0) _engine.Append(buffer, (int)offset, (int)count);
         return true;
     }
 
@@ -179,131 +126,26 @@ public class CorsacSecureCrypto_Hash
             return Fail(ProtocolState);
         if (!CorsacSecureCrypto_Bytes.Range(output, outputOffset, 32))
             return Fail(InvalidArgument);
-
-        _block[_held] = 0x80;
-        _held = _held + 1;
-        if (_held > 56)
-        {
-            CorsacSecureCrypto_Bytes.Zero(_block, _held, 64 - _held);
-            Compress(_block, 0);
-            CorsacSecureCrypto_Bytes.Zero(_block, 0, 56);
-        }
-        else
-        {
-            CorsacSecureCrypto_Bytes.Zero(_block, _held, 56 - _held);
-        }
-
-        long bits = _total << 3;
-        for (int i = 0; i < 8; i = i + 1)
-            _block[63 - i] = (byte)(LogicalRight(bits, i * 8) & 255);
-        Compress(_block, 0);
-
-        for (int word = 0; word < 8; word = word + 1)
-        {
-            for (int at = 0; at < 4; at = at + 1)
-                output[(int)outputOffset + word * 4 + at] =
-                    (byte)(LogicalRight(_state[word], (3 - at) * 8) & 255);
-        }
-
+        byte[] digest = _engine.HashAndReset();
+        CorsacSecureCrypto_Bytes.Copy(output, outputOffset, digest, 0, 32);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        _engine.Wipe();
         _finished = true;
-        EraseState();
         return true;
     }
 
     public void Close()
     {
         if (_closed) return;
-        EraseState();
-        _closed = true;
-        _finished = true;
-    }
-
-    private void Initialize()
-    {
-        _state[0] = 0x6a09e667; _state[1] = 0xbb67ae85;
-        _state[2] = 0x3c6ef372; _state[3] = 0xa54ff53a;
-        _state[4] = 0x510e527f; _state[5] = 0x9b05688c;
-        _state[6] = 0x1f83d9ab; _state[7] = 0x5be0cd19;
-        _held = 0;
+        _engine.Wipe();
         _total = 0;
-        _finished = false;
+        _closed = true;
     }
 
     private bool Fail(int error)
     {
         if (_error == 0) _error = error;
         return false;
-    }
-
-    private void EraseState()
-    {
-        CorsacSecureCrypto_Bytes.Zero(_block, 0, _block.Length);
-        for (int i = 0; i < 8; i = i + 1) _state[i] = 0;
-        for (int i = 0; i < 64; i = i + 1) _work[i] = 0;
-        _held = 0;
-        _total = 0;
-    }
-
-    // Every caller has validated one complete source block. Read-only source
-    // bytes may be unaligned; both paths consume them without modifying them.
-    private void Compress(byte[] block, int offset)
-    {
-        // (no hardware assist on this machine: the software path follows)
-        for (int i = 0; i < 16; i = i + 1)
-        {
-            long value = 0;
-            for (int at = 0; at < 4; at = at + 1)
-                value = (value << 8) | (block[offset + i * 4 + at] & 255);
-            _work[i] = (uint)value;
-        }
-        for (int i = 16; i < 64; i = i + 1)
-        {
-            long x = _work[i - 15], y = _work[i - 2];
-            long s0 = RotateRight32(x, 7) ^ RotateRight32(x, 18)
-                    ^ LogicalRight(x, 3);
-            long s1 = RotateRight32(y, 17) ^ RotateRight32(y, 19)
-                    ^ LogicalRight(y, 10);
-            _work[i] = (uint)((_work[i - 16] + s0 + _work[i - 7] + s1)
-                     & Mask32);
-        }
-
-        long a = _state[0], b = _state[1], c = _state[2], d = _state[3];
-        long e = _state[4], f = _state[5], g = _state[6], h = _state[7];
-        for (int i = 0; i < 64; i = i + 1)
-        {
-            long s1 = RotateRight32(e, 6) ^ RotateRight32(e, 11)
-                    ^ RotateRight32(e, 25);
-            long choose = (e & f) ^ ((~e) & g);
-            long t1 = (h + s1 + choose + _round[i] + _work[i]) & Mask32;
-            long s0 = RotateRight32(a, 2) ^ RotateRight32(a, 13)
-                    ^ RotateRight32(a, 22);
-            long majority = (a & b) ^ (a & c) ^ (b & c);
-            long t2 = (s0 + majority) & Mask32;
-            h = g; g = f; f = e; e = (d + t1) & Mask32;
-            d = c; c = b; b = a; a = (t1 + t2) & Mask32;
-        }
-        _state[0] = (uint)((_state[0] + a) & Mask32);
-        _state[1] = (uint)((_state[1] + b) & Mask32);
-        _state[2] = (uint)((_state[2] + c) & Mask32);
-        _state[3] = (uint)((_state[3] + d) & Mask32);
-        _state[4] = (uint)((_state[4] + e) & Mask32);
-        _state[5] = (uint)((_state[5] + f) & Mask32);
-        _state[6] = (uint)((_state[6] + g) & Mask32);
-        _state[7] = (uint)((_state[7] + h) & Mask32);
-    }
-
-    private static long LogicalRight(long value, int bits)
-    {
-        if (bits == 0) return value;
-        return (value >> bits) & (0x7fffffffffffffff >> (bits - 1));
-    }
-
-    private static long RotateRight32(long value, int bits)
-    {
-        // ror.w operates on the low word and, as documented for narrow word
-        // results, sign-extends that word back to the native register width.
-        // Masking preserves SHA-256's unsigned 32-bit value in an Int64.
-        return (((value & Mask32) >> bits) | ((value & Mask32) << (32 - bits))) & Mask32;
     }
 }
 
