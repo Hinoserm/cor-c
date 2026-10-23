@@ -388,16 +388,59 @@ static partial class Marshal
         if (error == 39) { return "Directory not empty"; }
         if (error == 40) { return "Too many levels of symbolic links"; }
         if (error == 42) { return "No message of desired type"; }
+        if (error == 43) { return "Identifier removed"; }
+        if (error == 44) { return "Channel number out of range"; }
+        if (error == 45) { return "Level 2 not synchronized"; }
+        if (error == 46) { return "Level 3 halted"; }
+        if (error == 47) { return "Level 3 reset"; }
+        if (error == 48) { return "Link number out of range"; }
+        if (error == 49) { return "Protocol driver not attached"; }
+        if (error == 50) { return "No CSI structure available"; }
+        if (error == 51) { return "Level 2 halted"; }
+        if (error == 52) { return "Invalid exchange"; }
+        if (error == 53) { return "Invalid request descriptor"; }
+        if (error == 54) { return "Exchange full"; }
+        if (error == 55) { return "No anode"; }
+        if (error == 56) { return "Invalid request code"; }
+        if (error == 57) { return "Invalid slot"; }
+        if (error == 59) { return "Bad font file format"; }
+        if (error == 60) { return "Device not a stream"; }
         if (error == 61) { return "No data available"; }
         if (error == 62) { return "Timer expired"; }
-        if (error == 63) { return "Too many references: cannot splice"; }
+        if (error == 63) { return "Out of streams resources"; }
+        if (error == 64) { return "Machine is not on the network"; }
+        if (error == 65) { return "Package not installed"; }
+        if (error == 66) { return "Object is remote"; }
+        if (error == 67) { return "Link has been severed"; }
+        if (error == 68) { return "Advertise error"; }
+        if (error == 69) { return "Srmount error"; }
+        if (error == 70) { return "Communication error on send"; }
         if (error == 71) { return "Protocol error"; }
+        if (error == 72) { return "Multihop attempted"; }
+        if (error == 73) { return "RFS specific error"; }
+        if (error == 74) { return "Bad message"; }
         if (error == 75) { return "Value too large for defined data type"; }
+        if (error == 76) { return "Name not unique on network"; }
+        if (error == 77) { return "File descriptor in bad state"; }
+        if (error == 78) { return "Remote address changed"; }
+        if (error == 79) { return "Can not access a needed shared library"; }
+        if (error == 80) { return "Accessing a corrupted shared library"; }
+        if (error == 81) { return ".lib section in a.out corrupted"; }
+        if (error == 82) { return "Attempting to link in too many shared libraries"; }
+        if (error == 83) { return "Cannot exec a shared library directly"; }
         if (error == 84) { return "Invalid or incomplete multibyte or wide character"; }
+        if (error == 85) { return "Interrupted system call should be restarted"; }
+        if (error == 86) { return "Streams pipe error"; }
+        if (error == 87) { return "Too many users"; }
         if (error == 88) { return "Socket operation on non-socket"; }
         if (error == 89) { return "Destination address required"; }
         if (error == 90) { return "Message too long"; }
+        if (error == 91) { return "Protocol wrong type for socket"; }
+        if (error == 92) { return "Protocol not available"; }
+        if (error == 93) { return "Protocol not supported"; }
+        if (error == 94) { return "Socket type not supported"; }
         if (error == 95) { return "Operation not supported"; }
+        if (error == 96) { return "Protocol family not supported"; }
         if (error == 97) { return "Address family not supported by protocol"; }
         if (error == 98) { return "Address already in use"; }
         if (error == 99) { return "Cannot assign requested address"; }
@@ -409,12 +452,32 @@ static partial class Marshal
         if (error == 105) { return "No buffer space available"; }
         if (error == 106) { return "Transport endpoint is already connected"; }
         if (error == 107) { return "Transport endpoint is not connected"; }
+        if (error == 108) { return "Cannot send after transport endpoint shutdown"; }
+        if (error == 109) { return "Too many references: cannot splice"; }
         if (error == 110) { return "Connection timed out"; }
         if (error == 111) { return "Connection refused"; }
+        if (error == 112) { return "Host is down"; }
         if (error == 113) { return "No route to host"; }
         if (error == 114) { return "Operation already in progress"; }
         if (error == 115) { return "Operation now in progress"; }
-
+        if (error == 116) { return "Stale file handle"; }
+        if (error == 117) { return "Structure needs cleaning"; }
+        if (error == 118) { return "Not a XENIX named type file"; }
+        if (error == 119) { return "No XENIX semaphores available"; }
+        if (error == 120) { return "Is a named type file"; }
+        if (error == 121) { return "Remote I/O error"; }
+        if (error == 122) { return "Disk quota exceeded"; }
+        if (error == 123) { return "No medium found"; }
+        if (error == 124) { return "Wrong medium type"; }
+        if (error == 125) { return "Operation canceled"; }
+        if (error == 126) { return "Required key not available"; }
+        if (error == 127) { return "Key has expired"; }
+        if (error == 128) { return "Key has been revoked"; }
+        if (error == 129) { return "Key was rejected by service"; }
+        if (error == 130) { return "Owner died"; }
+        if (error == 131) { return "State not recoverable"; }
+        if (error == 132) { return "Operation not possible due to RF-kill"; }
+        if (error == 133) { return "Memory page has hardware error"; }
         return "Unknown error " + error.ToString();
     }
 }

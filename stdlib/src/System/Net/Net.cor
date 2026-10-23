@@ -81,6 +81,8 @@ enum SocketShutdown
 enum SocketError
 {
     Success = 0,
+    IOPending = 997,
+    OperationAborted = 995,
     SocketError = -1,
     Interrupted = 10004,
     AccessDenied = 10013,
@@ -127,20 +129,49 @@ enum SocketError
     NoData = 11004,
 }
 
-class SocketException : IOException
+/// .NET's SocketException on Unix: a Win32Exception whose NativeErrorCode
+/// (and ErrorCode) is the errno and whose words are strerror's, its
+/// SocketErrorCode the SocketError that errno is. new SocketException(int)
+/// takes a SocketError, as .NET's does; the class library's own system calls
+/// make theirs from the errno (FromErrno).
+class SocketException : Win32Exception
 {
     internal override int Code => unchecked((int)0x80004005);
-    /// The errno, which is what .NET's NativeErrorCode is on Unix.
-    public int ErrorCode;
-    public int NativeErrorCode;
-    public SocketError SocketErrorCode;
+    readonly SocketError _error;
 
-    public SocketException(int errorCode) : base(Describe(errorCode))
+    /// The last error a system call of this thread reported.
+    public SocketException() : this(Marshal.GetLastPInvokeError(), Map(Marshal.GetLastPInvokeError()), null) { }
+
+    public SocketException(int errorCode) : this(NativeOf((SocketError)errorCode), (SocketError)errorCode, null) { }
+
+    public SocketException(int errorCode, string? message) : this(NativeOf((SocketError)errorCode), (SocketError)errorCode, message) { }
+
+    SocketException(int native, SocketError error, string? message) : base(native, message ?? Words(native, error))
     {
-        ErrorCode = errorCode;
-        NativeErrorCode = errorCode;
-        SocketErrorCode = Map(errorCode);
-        HResult = errorCode;
+        _error = error;
+    }
+
+    /// The failure a system call's errno is.
+    internal static SocketException FromErrno(long errno) => new SocketException((int)errno, Map((int)errno), null);
+
+    /// The same for a connection to `endPoint`, which .NET names after the
+    /// error's words.
+    internal static SocketException FromErrno(long errno, IPEndPoint endPoint) =>
+        new SocketException((int)errno, Map((int)errno), Words((int)errno, Map((int)errno)) + " " + endPoint);
+
+    public override int ErrorCode => NativeErrorCode;
+    public SocketError SocketErrorCode => _error;
+
+    // Two that are not errnos: getaddrinfo's EAI_NONAME, and no error known,
+    // as .NET's Unix PAL numbers them.
+    const int NoName = -131073;
+    const int Unknown = -131074;
+
+    static string Words(int native, SocketError error)
+    {
+        if (native == NoName) return "Name or service not known";
+        if (native == Unknown) return "Unknown socket error";
+        return Marshal.GetPInvokeErrorMessage(native);
     }
 
     /// errno to SocketError, the table .NET keeps on Unix.
@@ -151,18 +182,25 @@ class SocketException : IOException
         if (errno == Err.Access || errno == Err.Perm) { return SocketError.AccessDenied; }
         if (errno == Err.Fault) { return SocketError.Fault; }
         if (errno == Err.Inval) { return SocketError.InvalidArgument; }
-        if (errno == Err.MFile) { return SocketError.TooManyOpenSockets; }
+        if (errno == Err.MFile || errno == 23) { return SocketError.TooManyOpenSockets; }          // ENFILE
         if (errno == Err.Again) { return SocketError.WouldBlock; }
         if (errno == Err.InProgress) { return SocketError.InProgress; }
         if (errno == Err.Already) { return SocketError.AlreadyInProgress; }
         if (errno == Err.NotSock) { return SocketError.NotSocket; }
+        if (errno == 89) { return SocketError.DestinationAddressRequired; }                          // EDESTADDRREQ
         if (errno == Err.MsgSize) { return SocketError.MessageSize; }
+        if (errno == 91) { return SocketError.ProtocolType; }                                        // EPROTOTYPE
+        if (errno == 92) { return SocketError.ProtocolOption; }                                      // ENOPROTOOPT
         if (errno == Err.ProtoNoSupport) { return SocketError.ProtocolNotSupported; }
+        if (errno == 94) { return SocketError.SocketNotSupported; }                                  // ESOCKTNOSUPPORT
         if (errno == Err.NotSup) { return SocketError.OperationNotSupported; }
+        if (errno == 96) { return SocketError.ProtocolFamilyNotSupported; }                          // EPFNOSUPPORT
         if (errno == Err.AFNoSupport) { return SocketError.AddressFamilyNotSupported; }
         if (errno == Err.AddrInUse) { return SocketError.AddressAlreadyInUse; }
+        if (errno == 99 || errno == 2) { return SocketError.AddressNotAvailable; }                   // EADDRNOTAVAIL, ENOENT
         if (errno == Err.NetDown) { return SocketError.NetworkDown; }
         if (errno == Err.NetUnreach) { return SocketError.NetworkUnreachable; }
+        if (errno == 102) { return SocketError.NetworkReset; }                                       // ENETRESET
         if (errno == Err.ConnAborted) { return SocketError.ConnectionAborted; }
         if (errno == Err.ConnReset) { return SocketError.ConnectionReset; }
         if (errno == Err.NoBufs) { return SocketError.NoBufferSpaceAvailable; }
@@ -170,14 +208,63 @@ class SocketException : IOException
         if (errno == Err.NotConn) { return SocketError.NotConnected; }
         if (errno == Err.TimedOut) { return SocketError.TimedOut; }
         if (errno == Err.ConnRefused) { return SocketError.ConnectionRefused; }
+        if (errno == 112) { return SocketError.HostDown; }                                           // EHOSTDOWN
         if (errno == Err.HostUnreach) { return SocketError.HostUnreachable; }
         if (errno == Err.Pipe) { return SocketError.Shutdown; }
+        if (errno == 9 || errno == 125) { return SocketError.OperationAborted; }                     // EBADF, ECANCELED
+        if (errno == 6) { return SocketError.HostNotFound; }                                         // ENXIO
+        if (errno == 61) { return SocketError.NoData; }                                              // ENODATA
+        if (errno == NoName) { return SocketError.HostNotFound; }
         return SocketError.SocketError;
     }
 
-    static string Describe(int errno)
+    /// SocketError to the errno it is said by, .NET's table on Unix; one
+    /// it has none for keeps its own number.
+    static int NativeOf(SocketError error)
     {
-        return Marshal.GetPInvokeErrorMessage(errno);
+        switch (error)
+        {
+            case SocketError.Success: return 0;
+            case SocketError.AccessDenied: return 13;
+            case SocketError.AddressAlreadyInUse: return 98;
+            case SocketError.AddressNotAvailable: return 99;
+            case SocketError.AddressFamilyNotSupported: return 97;
+            case SocketError.AlreadyInProgress: return 114;
+            case SocketError.ConnectionAborted: return 103;
+            case SocketError.ConnectionRefused: return 111;
+            case SocketError.ConnectionReset: return 104;
+            case SocketError.DestinationAddressRequired: return 89;
+            case SocketError.Fault: return 14;
+            case SocketError.HostDown: return 112;
+            case SocketError.HostNotFound: return NoName;
+            case SocketError.HostUnreachable: return 113;
+            case SocketError.InProgress: return 115;
+            case SocketError.Interrupted: return 4;
+            case SocketError.InvalidArgument: return 22;
+            case SocketError.IOPending: return 115;
+            case SocketError.IsConnected: return 106;
+            case SocketError.MessageSize: return 90;
+            case SocketError.NetworkDown: return 100;
+            case SocketError.NetworkReset: return 102;
+            case SocketError.NetworkUnreachable: return 101;
+            case SocketError.NoBufferSpaceAvailable: return 105;
+            case SocketError.NoData: return 61;
+            case SocketError.NotConnected: return 107;
+            case SocketError.NotSocket: return 88;
+            case SocketError.OperationAborted: return 125;
+            case SocketError.OperationNotSupported: return 95;
+            case SocketError.ProtocolFamilyNotSupported: return 96;
+            case SocketError.ProtocolNotSupported: return 93;
+            case SocketError.ProtocolOption: return 92;
+            case SocketError.ProtocolType: return 91;
+            case SocketError.Shutdown: return 32;
+            case SocketError.SocketNotSupported: return 94;
+            case SocketError.TimedOut: return 110;
+            case SocketError.TooManyOpenSockets: return 23;
+            case SocketError.WouldBlock: return 11;
+            case SocketError.SocketError: return Unknown;
+            default: return (int)error;
+        }
     }
 }
 
@@ -238,12 +325,12 @@ class IPAddress
     {
         get
         {
-            if (IsIPv6) throw new SocketException((int)Err.NotSup);
+            if (IsIPv6) throw new SocketException((int)SocketError.OperationNotSupported);
             return (long)_bytes[0] | ((long)_bytes[1] << 8) | ((long)_bytes[2] << 16) | ((long)_bytes[3] << 24);
         }
         set
         {
-            if (IsIPv6) throw new SocketException((int)Err.NotSup);
+            if (IsIPv6) throw new SocketException((int)SocketError.OperationNotSupported);
             if (value < 0 || value > 0xFFFFFFFFL) throw new ArgumentOutOfRangeException(nameof(value));
             _bytes[0] = (byte)value; _bytes[1] = (byte)(value >> 8); _bytes[2] = (byte)(value >> 16); _bytes[3] = (byte)(value >> 24);
         }
@@ -253,12 +340,12 @@ class IPAddress
     {
         get
         {
-            if (!IsIPv6) throw new SocketException((int)Err.NotSup);
+            if (!IsIPv6) throw new SocketException((int)SocketError.OperationNotSupported);
             return _scope;
         }
         set
         {
-            if (!IsIPv6) throw new SocketException((int)Err.NotSup);
+            if (!IsIPv6) throw new SocketException((int)SocketError.OperationNotSupported);
             if (value < 0 || value > 0xFFFFFFFFL) throw new ArgumentOutOfRangeException(nameof(value));
             _scope = value;
         }
@@ -404,7 +491,7 @@ class IPAddress
     public static IPAddress Parse(ReadOnlySpan<char> ipSpan)
     {
         IPAddress? address = Read(ipSpan);
-        if (address == null) throw new FormatException("An invalid IP address was specified.", new SocketException((int)Err.Inval));
+        if (address == null) throw new FormatException("An invalid IP address was specified.", new SocketException((int)SocketError.InvalidArgument));
         return address;
     }
 
@@ -1539,7 +1626,7 @@ static class Dns
             }
         }
 
-        throw new SocketException((int)Err.HostUnreach);
+        throw new SocketException((int)SocketError.HostNotFound);
     }
 
     public static IPHostEntry GetHostEntry(string hostNameOrAddress)
@@ -1606,7 +1693,7 @@ static class Dns
             }
         }
 
-        throw new SocketException((int)Err.HostUnreach);
+        throw new SocketException((int)SocketError.HostNotFound);
     }
 }
 
@@ -1627,7 +1714,7 @@ class Socket : IDisposable
         _fd = Os.Socket(family == AddressFamily.InterNetworkV6 ? 10 : (int)family, (int)type, (int)protocol);
         if (_fd < 0)
         {
-            throw new SocketException(-_fd);
+            throw SocketException.FromErrno(-_fd);
         }
     }
 
@@ -1664,7 +1751,7 @@ class Socket : IDisposable
         int r = Os.Connect(_fd, endPoint.Serialize());
         if (r < 0)
         {
-            throw new SocketException(-r);
+            throw SocketException.FromErrno(-r, endPoint);
         }
         _connected = true;
     }
@@ -1678,9 +1765,11 @@ class Socket : IDisposable
     {
         IPAddress[] addresses = Dns.GetHostAddresses(host);
         int last = 0;
+        IPEndPoint? tried = null;
         for (int i = 0; i < addresses.Length; i++)
         {
-            int r = Os.Connect(_fd, new IPEndPoint(addresses[i], port).Serialize());
+            tried = new IPEndPoint(addresses[i], port);
+            int r = Os.Connect(_fd, tried.Serialize());
             if (r >= 0)
             {
                 _connected = true;
@@ -1688,7 +1777,7 @@ class Socket : IDisposable
             }
             last = -r;
         }
-        throw new SocketException(last);
+        throw tried == null ? new SocketException((int)SocketError.HostNotFound) : SocketException.FromErrno(last, tried);
     }
 
     public void Bind(IPEndPoint endPoint)
@@ -1696,7 +1785,7 @@ class Socket : IDisposable
         int r = Os.Bind(_fd, endPoint.Serialize());
         if (r < 0)
         {
-            throw new SocketException(-r);
+            throw SocketException.FromErrno(-r);
         }
     }
 
@@ -1705,7 +1794,7 @@ class Socket : IDisposable
         int r = Os.Listen(_fd, backlog);
         if (r < 0)
         {
-            throw new SocketException(-r);
+            throw SocketException.FromErrno(-r);
         }
     }
 
@@ -1723,7 +1812,7 @@ class Socket : IDisposable
         }
         if (fd < 0)
         {
-            throw new SocketException(-fd);
+            throw SocketException.FromErrno(-fd);
         }
         return new Socket(fd);
     }
@@ -1739,7 +1828,7 @@ class Socket : IDisposable
             }
             if (n < 0)
             {
-                throw new SocketException(-n);
+                throw SocketException.FromErrno(-n);
             }
             return n;
         }
@@ -1761,7 +1850,7 @@ class Socket : IDisposable
             }
             if (n < 0)
             {
-                throw new SocketException(-n);
+                throw SocketException.FromErrno(-n);
             }
             return n;
         }
@@ -1784,7 +1873,7 @@ class Socket : IDisposable
             }
             if (n < 0)
             {
-                throw new SocketException(-n);
+                throw SocketException.FromErrno(-n);
             }
             return n;
         }
@@ -1808,7 +1897,7 @@ class Socket : IDisposable
             }
             if (n < 0)
             {
-                throw new SocketException(-n);
+                throw SocketException.FromErrno(-n);
             }
             remote = IPEndPoint.FromSockaddr(from);
             return n;
@@ -1976,7 +2065,7 @@ class Socket : IDisposable
 
         if (r < 0)
         {
-            throw new SocketException((int)(0 - r));
+            throw SocketException.FromErrno((int)(0 - r));
         }
 
         if (optionOutValue != null && optionInValue != null && optionOutValue != optionInValue)
@@ -2006,7 +2095,7 @@ class Socket : IDisposable
     public void SetSocketOption(int level, int name, byte[] value)
     {
         int result = Os.SetSockOpt(_fd, level, name, value);
-        if (result < 0) { throw new SocketException(-result); }
+        if (result < 0) { throw SocketException.FromErrno(-result); }
     }
 
     public void Close()
@@ -2298,7 +2387,7 @@ class UdpClient : IDisposable
         IPAddress[] addresses = Dns.GetHostAddresses(host);
         if (addresses.Length == 0)
         {
-            throw new SocketException((int)Err.HostUnreach);
+            throw new SocketException((int)SocketError.HostNotFound);
         }
         Connect(new IPEndPoint(addresses[0], port));
     }
@@ -2336,7 +2425,7 @@ class UdpClient : IDisposable
         IPAddress[] addresses = Dns.GetHostAddresses(hostname);
         if (addresses.Length == 0)
         {
-            throw new SocketException((int)Err.HostUnreach);
+            throw new SocketException((int)SocketError.HostNotFound);
         }
         return Send(dgram, bytes, new IPEndPoint(addresses[0], port));
     }
