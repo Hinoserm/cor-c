@@ -425,17 +425,39 @@ internal static class X509Der
     }
 
     /// Whether bytes look like PEM text rather than DER.
+    /// Whether `data` is PEM text rather than DER: not one whole DER element,
+    /// and a "-----BEGIN" line somewhere in it. Text before the first one
+    /// -- a bundle's "# ACCVRAIZ1" comments -- is passed over, as OpenSSL's
+    /// PEM reader (and so .NET's) passes over it.
     public static bool IsPem(byte[] data)
     {
-        string marker = "-----BEGIN";
-        for (int start = 0; start < data.Length && start < 4096; start++)
+        if (WholeDer(data)) return false;
+        byte[] marker = Encoding.ASCII.GetBytes("-----BEGIN");
+        for (int start = 0; start + marker.Length <= data.Length; start++)
         {
-            if (data[start] == ' ' || data[start] == '\t' || data[start] == '\r' || data[start] == '\n') continue;
-            if (data.Length - start < marker.Length) return false;
-            for (int i = 0; i < marker.Length; i++) if (data[start + i] != (byte)marker[i]) return false;
-            return true;
+            int i = 0;
+            while (i < marker.Length && data[start + i] == marker[i]) i++;
+            if (i == marker.Length) return true;
         }
         return false;
+    }
+
+    static bool WholeDer(byte[] data)
+    {
+        if (data.Length < 2 || data[0] != 0x30) return false;
+        int first = data[1];
+        long length;
+        int header;
+        if (first < 0x80) { length = first; header = 2; }
+        else
+        {
+            int count = first & 0x7F;
+            if (count == 0 || count > 4 || data.Length < 2 + count) return false;
+            length = 0;
+            for (int i = 0; i < count; i++) length = (length << 8) | data[2 + i];
+            header = 2 + count;
+        }
+        return header + length == data.Length;
     }
 
     /// DER as PEM text, 64 columns a line.

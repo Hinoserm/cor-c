@@ -27,14 +27,21 @@ internal static class CorsacSecureTls_HandshakeType
 internal static class CorsacSecureTls_SignatureScheme
 {
     public const int EcdsaSecp256r1Sha256 = 0x0403;
+    public const int EcdsaSecp384r1Sha384 = 0x0503;
     public const int RsaPssRsaeSha256 = 0x0804;
+    public const int RsaPssRsaeSha384 = 0x0805;
+    public const int RsaPssRsaeSha512 = 0x0806;
     public const int Ed25519 = 0x0807;
     public const int RsaPssPssSha256 = 0x0809;
 
+    /// The schemes a CertificateVerify may use here.
     public static bool Supported(int value)
     {
         return value == EcdsaSecp256r1Sha256
+            || value == EcdsaSecp384r1Sha384
             || value == RsaPssRsaeSha256
+            || value == RsaPssRsaeSha384
+            || value == RsaPssRsaeSha512
             || value == Ed25519
             || value == RsaPssPssSha256;
     }

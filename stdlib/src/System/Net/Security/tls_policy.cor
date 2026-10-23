@@ -18,6 +18,7 @@ internal static class CorsacSecureTls_PeerKeyAlgorithm
     public const int P256 = 1;
     public const int Ed25519 = 2;
     public const int Rsa = 3;
+    public const int P384 = 4;
 }
 
 /// The leaf's public key in the form the signature checks take: a P-256
@@ -30,22 +31,24 @@ internal sealed class CorsacSecureTls_PeerKey
     const string EcOid = "1.2.840.10045.2.1";
     const string Ed25519Oid = "1.3.101.112";
     static readonly byte[] P256Parameters = { 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 };
+    static readonly byte[] P384Parameters = { 0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22 };
 
     public int Algorithm;
     public byte[] Key = new byte[0];
     public long RsaExponent;
 
     /// Whether the key is one the engine can check signatures with: P-256,
-    /// Ed25519, or RSA of 2048 to 8192 bits with an odd exponent of at least
-    /// 3, as the strict certificate reader admits them.
+    /// P-384, Ed25519, or RSA of 2048 to 8192 bits with an odd exponent of at
+    /// least 3, as the strict certificate reader admits them.
     public bool Set(string oid, byte[] parameters, byte[] value)
     {
         Clear();
         if (oid == EcOid)
         {
-            if (!Same(parameters, P256Parameters) || value.Length != 65 || value[0] != 4) return false;
+            bool p256 = Same(parameters, P256Parameters), p384 = Same(parameters, P384Parameters);
+            if (!(p256 && value.Length == 65 || p384 && value.Length == 97) || value[0] != 4) return false;
             Key = (byte[])value.Clone();
-            Algorithm = CorsacSecureTls_PeerKeyAlgorithm.P256;
+            Algorithm = p256 ? CorsacSecureTls_PeerKeyAlgorithm.P256 : CorsacSecureTls_PeerKeyAlgorithm.P384;
             return true;
         }
         if (oid == Ed25519Oid)

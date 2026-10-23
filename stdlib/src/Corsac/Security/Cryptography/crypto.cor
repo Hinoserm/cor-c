@@ -23,6 +23,8 @@ public static class CorsacSecureCrypto_Info
     public const long DerPem = 4096;
     public const long P256 = 8192;
     public const long Rsa = 16384;
+    public const long Sha384 = 32768;
+    public const long P384 = 65536;
 
     // Independent monotonic latches: a late successful test cannot overwrite
     // another thread's failure. Volatile publishes/releases each result and
@@ -52,7 +54,8 @@ public static class CorsacSecureCrypto_Info
         return _portableProviderFailed ? 0
             : ByteOperations | Sha256 | HmacSha256 | HkdfSha256
             | ChaCha20 | Poly1305 | Sha512 | X25519 | Ed25519
-            | Aes | AesGcm | ChaChaPoly | DerPem | P256 | Rsa;
+            | Aes | AesGcm | ChaChaPoly | DerPem | P256 | Rsa
+            | Sha384 | P384;
     }
 
     private static bool SelfTest()
@@ -63,9 +66,11 @@ public static class CorsacSecureCrypto_Info
             && SelfTestChaCha20()
             && SelfTestPoly1305()
             && SelfTestSha512()
+            && SelfTestSha384()
             && SelfTestX25519()
             && SelfTestEd25519()
             && SelfTestP256()
+            && SelfTestP384()
             && SelfTestRsa()
             && SelfTestAes()
             && SelfTestAesGcm()
@@ -236,6 +241,45 @@ public static class CorsacSecureCrypto_Info
         return okay;
     }
 
+    private static bool SelfTestSha384()
+    {
+        byte[] message = Ascii("abc");
+        byte[] digest = new byte[48];
+        CorsacSecureCrypto_Sha512 hash =
+            new CorsacSecureCrypto_Sha512(true);
+        bool okay = hash.Update(message, 0, message.Length)
+            && hash.Finish(digest, 0)
+            && MatchesHex(digest,
+                "cb00753f45a35e8bb5a03d699ac65007"
+              + "272c32ab0eded1631a8b605a43ff5bed"
+              + "8086072ba1e7cc2358baeca134c825a7");
+        hash.Close();
+        CorsacSecureCrypto_Bytes.Zero(message, 0, message.Length);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        return okay;
+    }
+
+    // A signature .NET 10 (OpenSSL 3.5) made over a SHA-384 digest.
+    private static bool SelfTestP384()
+    {
+        byte[] publicKey = FromHex(
+            "04f912b15fe76f9a6ee2df28832cb245bb4376dca9173dd81e951616496d6667"
+          + "bb0e86c179417f67353f7dc4b310bbaf7660328e7300518864fc47f37a67addf"
+          + "96d6a5d691bd6619acc6ac4fe7c09b8da193b0698a15a7a8e2ee5408a90a4d870f");
+        byte[] digest = FromHex(
+            "774b24b28e2b66782feff7c669fadcffa693274b20dca93f6aae7242c8a698a3"
+          + "0b420569932f6223794ca52cf582a3ec");
+        byte[] signature = FromHex(
+            "1b57b95c249d71c0d92fb838d3736f4f7cdc47d7335c0ae2889a3d5989e8077b"
+          + "1e2655a545afffd619e2afb8d76bbd8e97f47ac07af803c51bc60b1ed09d9119"
+          + "706561c96359687c244b5dd6be42e3b2cd22f6ed18a37857960eb47d84a4d6b1");
+        CorsacSecureCrypto_P384 curve = new CorsacSecureCrypto_P384();
+        bool okay = curve.VerifyDigestRaw(publicKey, 0, publicKey.Length, digest, 0, digest.Length, signature, 0);
+        signature[0] ^= 1;
+        okay = okay && !curve.VerifyDigestRaw(publicKey, 0, publicKey.Length, digest, 0, digest.Length, signature, 0);
+        return okay;
+    }
+
     private static bool SelfTestX25519()
     {
         byte[] scalar = FromHex(
@@ -362,12 +406,12 @@ public static class CorsacSecureCrypto_Info
           + "a6dc94033124e2d53ac0593e80852ef8a8b0b9251ad94eb2a4cce7978c9c5210c4");
         CorsacSecureCrypto_RsaWorkspace workspace =
             new CorsacSecureCrypto_RsaWorkspace();
-        bool okay = workspace.VerifyPkcs1Sha256(
+        bool okay = workspace.VerifyPkcs1(
                 modulus, 0, modulus.Length, 3,
-                pkcs1, 0, pkcs1.Length, digest, 0)
-            && workspace.VerifyPssSha256(
+                pkcs1, 0, pkcs1.Length, digest, 0, digest.Length)
+            && workspace.VerifyPss(
                 modulus, 0, modulus.Length, 3,
-                pss, 0, pss.Length, digest, 0);
+                pss, 0, pss.Length, digest, 0, digest.Length);
         workspace.Close();
         CorsacSecureCrypto_Bytes.Zero(modulus, 0, modulus.Length);
         CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);

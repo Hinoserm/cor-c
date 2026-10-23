@@ -66,6 +66,7 @@ internal class CorsacSecureTls_Client
     private byte[] _clientApplicationTraffic;
     private byte[] _serverApplicationTraffic;
     private byte[] _hash;
+    private byte[] _wideDigest;
     private byte[] _verifyData;
     private byte[] _signature;
     private byte[] _signedContent;
@@ -122,6 +123,7 @@ internal class CorsacSecureTls_Client
         _clientApplicationTraffic = new byte[32];
         _serverApplicationTraffic = new byte[32];
         _hash = new byte[32];
+        _wideDigest = new byte[64];
         _verifyData = new byte[32];
         _signature = new byte[MaximumSignatureBytes];
         _signedContent = new byte[
@@ -681,25 +683,46 @@ internal class CorsacSecureTls_Client
                 _signature, 0);
         }
         else if (view.Scheme
-                    == CorsacSecureTls_SignatureScheme.RsaPssRsaeSha256
+                    == CorsacSecureTls_SignatureScheme.EcdsaSecp384r1Sha384
                  && _peerKey.Algorithm
-                    == CorsacSecureTls_PeerKeyAlgorithm.Rsa
-                 && HashOne(_signedContent, 0,
-                            _signedContent.Length, _hash))
+                    == CorsacSecureTls_PeerKeyAlgorithm.P384
+                 && HashWide(_signedContent, 0,
+                             _signedContent.Length, 48, _wideDigest))
         {
+            okay = new CorsacSecureCrypto_P384().VerifyDigestDer(
+                _peerKey.Key, 0, _peerKey.Key.Length,
+                _wideDigest, 0, 48,
+                _signature, 0, view.SignatureLength);
+        }
+        else if ((view.Scheme
+                    == CorsacSecureTls_SignatureScheme.RsaPssRsaeSha256
+                  || view.Scheme
+                    == CorsacSecureTls_SignatureScheme.RsaPssRsaeSha384
+                  || view.Scheme
+                    == CorsacSecureTls_SignatureScheme.RsaPssRsaeSha512)
+                 && _peerKey.Algorithm
+                    == CorsacSecureTls_PeerKeyAlgorithm.Rsa)
+        {
+            int digestBytes = view.Scheme
+                    == CorsacSecureTls_SignatureScheme.RsaPssRsaeSha256 ? 32
+                : view.Scheme
+                    == CorsacSecureTls_SignatureScheme.RsaPssRsaeSha384 ? 48 : 64;
             CorsacSecureCrypto_RsaWorkspace rsaWorkspace;
-            okay = GetRsa(out rsaWorkspace)
-                && rsaWorkspace.VerifyPssSha256(
+            okay = HashWide(_signedContent, 0, _signedContent.Length,
+                            digestBytes, _wideDigest)
+                && GetRsa(out rsaWorkspace)
+                && rsaWorkspace.VerifyPss(
                 _peerKey.Key, 0,
                 _peerKey.Key.Length, _peerKey.RsaExponent,
                 _signature, 0, view.SignatureLength,
-                _hash, 0);
+                _wideDigest, 0, digestBytes);
         }
         CorsacSecureCrypto_Bytes.Zero(
             _signature, 0, _signature.Length);
         CorsacSecureCrypto_Bytes.Zero(
             _signedContent, 0, _signedContent.Length);
         CorsacSecureCrypto_Bytes.Zero(_hash, 0, _hash.Length);
+        CorsacSecureCrypto_Bytes.Zero(_wideDigest, 0, _wideDigest.Length);
         ClosePublicKeyWorkspaces();
         if (!okay) return Fail(
             CorsacSecureTls_ClientError.Authentication, 51);
@@ -1059,14 +1082,22 @@ internal class CorsacSecureTls_Client
         return answer;
     }
 
-    private static bool HashOne(
-        byte[] input, long offset, long count, byte[] output)
+    /// `input` hashed with SHA-256 (32), SHA-384 (48) or SHA-512 (64).
+    private static bool HashWide(
+        byte[] input, long offset, long count, int bytes, byte[] output)
     {
-        CorsacSecureCrypto_Hash hash = new CorsacSecureCrypto_Hash();
-        bool okay = hash.Update(input, offset, count)
-            && hash.Finish(output, 0);
-        hash.Close();
-        return okay;
+        if (bytes == 32)
+        {
+            CorsacSecureCrypto_Hash hash = new CorsacSecureCrypto_Hash();
+            bool okay = hash.Update(input, offset, count)
+                && hash.Finish(output, 0);
+            hash.Close();
+            return okay;
+        }
+        CorsacSecureCrypto_Sha512 wide = new CorsacSecureCrypto_Sha512(bytes == 48);
+        bool done = wide.Update(input, offset, count) && wide.Finish(output, 0);
+        wide.Close();
+        return done;
     }
 
     private bool GetX25519(

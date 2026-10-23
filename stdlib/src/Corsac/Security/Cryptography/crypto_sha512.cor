@@ -11,6 +11,7 @@ namespace Corsac.Security.Cryptography;
 public class CorsacSecureCrypto_Sha512
 {
     public const int Sha512 = 3;
+    public const int Sha384 = 4;
     public const int InvalidArgument = 1;
     public const int ProtocolState = 9;
 
@@ -28,9 +29,14 @@ public class CorsacSecureCrypto_Sha512
     private bool _finished;
     private bool _closed;
     private int _error;
+    // SHA-384 is SHA-512 from its own starting words, cut to six of them.
+    private readonly bool _sha384;
 
-    public CorsacSecureCrypto_Sha512()
+    public CorsacSecureCrypto_Sha512() : this(false) { }
+
+    public CorsacSecureCrypto_Sha512(bool sha384)
     {
+        _sha384 = sha384;
         _block = new byte[128];
         _state = new long[8];
         _work = new long[80];
@@ -79,9 +85,9 @@ public class CorsacSecureCrypto_Sha512
         Initialize();
     }
 
-    public int Algorithm => Sha512;
+    public int Algorithm => _sha384 ? Sha384 : Sha512;
     public int BlockBytes => 128;
-    public int DigestBytes => 64;
+    public int DigestBytes => _sha384 ? 48 : 64;
     public int Error => _error;
     public bool Finished => _finished;
 
@@ -140,7 +146,7 @@ public class CorsacSecureCrypto_Sha512
     {
         if (_closed || _finished || _error != 0)
             return Fail(ProtocolState);
-        if (!CorsacSecureCrypto_Bytes.Range(output, outputOffset, 64))
+        if (!CorsacSecureCrypto_Bytes.Range(output, outputOffset, DigestBytes))
             return Fail(InvalidArgument);
 
         _block[_held] = 0x80;
@@ -165,7 +171,7 @@ public class CorsacSecureCrypto_Sha512
         WriteBigEndian(_block, 120, low);
         Compress(_block, 0);
 
-        for (int word = 0; word < 8; word = word + 1)
+        for (int word = 0; word < DigestBytes / 8; word = word + 1)
         {
             for (int at = 0; at < 8; at = at + 1)
                 output[(int)outputOffset + word * 8 + at] =
@@ -188,6 +194,21 @@ public class CorsacSecureCrypto_Sha512
 
     private void Initialize()
     {
+        if (_sha384)
+        {
+            _state[0] = unchecked((long)0xcbbb9d5dc1059ed8);
+            _state[1] = 0x629a292a367cd507;
+            _state[2] = unchecked((long)0x9159015a3070dd17);
+            _state[3] = 0x152fecd8f70e5939;
+            _state[4] = 0x67332667ffc00b31;
+            _state[5] = unchecked((long)0x8eb44a8768581511);
+            _state[6] = unchecked((long)0xdb0c2e0d64f98fa7);
+            _state[7] = 0x47b5481dbefa4fa4;
+            _held = 0;
+            _total = 0;
+            _finished = false;
+            return;
+        }
         _state[0] = 0x6a09e667f3bcc908;
         _state[1] = unchecked((long)0xbb67ae8584caa73b);
         _state[2] = 0x3c6ef372fe94f82b;

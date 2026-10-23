@@ -17,15 +17,37 @@ internal static class X509KeyAlgorithm
     public const int Rsa = 1;
     public const int P256 = 2;
     public const int Ed25519 = 3;
+    public const int P384 = 4;
 }
 
+/// A signature algorithm: its scheme (RSA PKCS#1 v1.5, RSA-PSS, ECDSA on
+/// whichever curve the signer's key is, Ed25519) and its hash.
 internal static class X509SignatureAlgorithm
 {
     public const int Unknown = 0;
     public const int RsaPkcs1Sha256 = 1;
     public const int RsaPssSha256 = 2;
-    public const int EcdsaP256Sha256 = 3;
+    public const int EcdsaSha256 = 3;
     public const int Ed25519 = 4;
+    public const int RsaPkcs1Sha384 = 5;
+    public const int RsaPkcs1Sha512 = 6;
+    public const int RsaPssSha384 = 7;
+    public const int RsaPssSha512 = 8;
+    public const int EcdsaSha384 = 9;
+    public const int EcdsaSha512 = 10;
+
+    public static bool IsPkcs1(int a) => a == RsaPkcs1Sha256 || a == RsaPkcs1Sha384 || a == RsaPkcs1Sha512;
+    public static bool IsPss(int a) => a == RsaPssSha256 || a == RsaPssSha384 || a == RsaPssSha512;
+    public static bool IsEcdsa(int a) => a == EcdsaSha256 || a == EcdsaSha384 || a == EcdsaSha512;
+
+    /// The digest's length in bytes, 0 for Ed25519 (which hashes itself).
+    public static int DigestBytes(int a)
+    {
+        if (a == RsaPkcs1Sha256 || a == RsaPssSha256 || a == EcdsaSha256) return 32;
+        if (a == RsaPkcs1Sha384 || a == RsaPssSha384 || a == EcdsaSha384) return 48;
+        if (a == RsaPkcs1Sha512 || a == RsaPssSha512 || a == EcdsaSha512) return 64;
+        return 0;
+    }
 }
 
 internal class X509CertificateView
@@ -600,6 +622,10 @@ internal class X509CertificateView
             return (_publicKeyCount == 65
                 && _der[(int)_publicKeyOffset] == (byte)4)
                 || Fail(Malformed);
+        if (_publicKeyAlgorithm == X509KeyAlgorithm.P384)
+            return (_publicKeyCount == 97
+                && _der[(int)_publicKeyOffset] == (byte)4)
+                || Fail(Malformed);
         if (_publicKeyAlgorithm == X509KeyAlgorithm.Ed25519)
             return (_publicKeyCount == 32) || Fail(Malformed);
         if (_publicKeyAlgorithm != X509KeyAlgorithm.Rsa)
@@ -647,10 +673,13 @@ internal class X509CertificateView
         {
             long curveOffset = 0, curveCount = 0;
             if (!identifier.TryReadObjectIdentifier(
-                    out curveOffset, out curveCount)
-                || !Oid(curveOffset, curveCount, "2a8648ce3d030107"))
+                    out curveOffset, out curveCount))
                 return Fail(Unsupported);
-            algorithm = X509KeyAlgorithm.P256;
+            if (Oid(curveOffset, curveCount, "2a8648ce3d030107"))
+                algorithm = X509KeyAlgorithm.P256;
+            else if (Oid(curveOffset, curveCount, "2b81040022"))
+                algorithm = X509KeyAlgorithm.P384;
+            else return Fail(Unsupported);
         }
         else if (Oid(oidOffset, oidCount, "2b6570"))
         {
@@ -677,27 +706,46 @@ internal class X509CertificateView
         long oidOffset = 0, oidCount = 0;
         if (!identifier.TryReadObjectIdentifier(out oidOffset, out oidCount))
             return Fail(Malformed);
+        bool pkcs1 = true;
         if (Oid(oidOffset, oidCount, "2a864886f70d01010b"))
-        {
             algorithm = X509SignatureAlgorithm.RsaPkcs1Sha256;
+        else if (Oid(oidOffset, oidCount, "2a864886f70d01010c"))
+            algorithm = X509SignatureAlgorithm.RsaPkcs1Sha384;
+        else if (Oid(oidOffset, oidCount, "2a864886f70d01010d"))
+            algorithm = X509SignatureAlgorithm.RsaPkcs1Sha512;
+        else pkcs1 = false;
+        if (pkcs1)
+        {
             if (!identifier.AtEnd() && !identifier.TryReadNull())
                 return Fail(Malformed);
         }
         else if (Oid(oidOffset, oidCount, "2a864886f70d01010a"))
         {
-            if (!ParsePssSha256(identifier)) return false;
-            algorithm = X509SignatureAlgorithm.RsaPssSha256;
+            int digest;
+            if (!ParsePss(identifier, out digest)) return false;
+            algorithm = digest == 32 ? X509SignatureAlgorithm.RsaPssSha256
+                : digest == 48 ? X509SignatureAlgorithm.RsaPssSha384
+                : X509SignatureAlgorithm.RsaPssSha512;
         }
         else if (Oid(oidOffset, oidCount, "2a8648ce3d040302"))
-            algorithm = X509SignatureAlgorithm.EcdsaP256Sha256;
+            algorithm = X509SignatureAlgorithm.EcdsaSha256;
+        else if (Oid(oidOffset, oidCount, "2a8648ce3d040303"))
+            algorithm = X509SignatureAlgorithm.EcdsaSha384;
+        else if (Oid(oidOffset, oidCount, "2a8648ce3d040304"))
+            algorithm = X509SignatureAlgorithm.EcdsaSha512;
         else if (Oid(oidOffset, oidCount, "2b6570"))
             algorithm = X509SignatureAlgorithm.Ed25519;
         else return Fail(Unsupported);
         return identifier.AtEnd() || Fail(Malformed);
     }
 
-    private bool ParsePssSha256(CorsacSecureCrypto_DerCursor identifier)
+    /// RSASSA-PSS-params naming SHA-256, -384 or -512, MGF1 with the same
+    /// hash, and a salt as long as the digest (the profile RFC 8446 and the
+    /// CA/Browser Forum ask): its digest length into `digest`.
+    private bool ParsePss(CorsacSecureCrypto_DerCursor identifier, out int digest)
     {
+        digest = 0;
+        int maskDigest = 0;
         long offset = 0, count = 0;
         if (!identifier.TryReadUniversal(
                 CorsacSecureCrypto_DerCursor.Sequence, true,
@@ -722,19 +770,19 @@ internal class X509CertificateView
                 new CorsacSecureCrypto_DerCursor(_der, at, n);
             if (tag == 0 && !hash)
             {
-                hash = ReadSha256Algorithm(explicitValue);
+                hash = ReadHashAlgorithm(explicitValue, out digest);
                 if (!hash) return false;
             }
             else if (tag == 1 && !mask)
             {
-                mask = ReadMgf1Sha256(explicitValue);
+                mask = ReadMgf1(explicitValue, out maskDigest);
                 if (!mask) return false;
             }
             else if (tag == 2 && !salt)
             {
                 long width = 0;
                 if (!ReadPositiveLong(explicitValue, out width)
-                    || width != 32) return Fail(Unsupported);
+                    || width != digest) return Fail(Unsupported);
                 salt = true;
             }
             else if (tag == 3)
@@ -748,11 +796,13 @@ internal class X509CertificateView
             else return Fail(Malformed);
             if (!explicitValue.AtEnd()) return Fail(Malformed);
         }
-        return hash && mask && salt && trailer == 1 || Fail(Unsupported);
+        return hash && mask && salt && trailer == 1 && maskDigest == digest
+            || Fail(Unsupported);
     }
 
-    private bool ReadSha256Algorithm(CorsacSecureCrypto_DerCursor wrapper)
+    private bool ReadHashAlgorithm(CorsacSecureCrypto_DerCursor wrapper, out int digest)
     {
+        digest = 0;
         long offset = 0, count = 0;
         if (!wrapper.TryReadUniversal(
                 CorsacSecureCrypto_DerCursor.Sequence, true,
@@ -761,16 +811,20 @@ internal class X509CertificateView
         CorsacSecureCrypto_DerCursor algorithm =
             new CorsacSecureCrypto_DerCursor(_der, offset, count);
         long oidOffset = 0, oidCount = 0;
-        if (!algorithm.TryReadObjectIdentifier(out oidOffset, out oidCount)
-            || !Oid(oidOffset, oidCount, "608648016503040201"))
+        if (!algorithm.TryReadObjectIdentifier(out oidOffset, out oidCount))
             return Fail(Unsupported);
+        if (Oid(oidOffset, oidCount, "608648016503040201")) digest = 32;
+        else if (Oid(oidOffset, oidCount, "608648016503040202")) digest = 48;
+        else if (Oid(oidOffset, oidCount, "608648016503040203")) digest = 64;
+        else return Fail(Unsupported);
         if (!algorithm.AtEnd() && !algorithm.TryReadNull())
             return Fail(Malformed);
         return algorithm.AtEnd() || Fail(Malformed);
     }
 
-    private bool ReadMgf1Sha256(CorsacSecureCrypto_DerCursor wrapper)
+    private bool ReadMgf1(CorsacSecureCrypto_DerCursor wrapper, out int digest)
     {
+        digest = 0;
         long offset = 0, count = 0;
         if (!wrapper.TryReadUniversal(
                 CorsacSecureCrypto_DerCursor.Sequence, true,
@@ -782,7 +836,7 @@ internal class X509CertificateView
         if (!algorithm.TryReadObjectIdentifier(out oidOffset, out oidCount)
             || !Oid(oidOffset, oidCount, "2a864886f70d010108"))
             return Fail(Unsupported);
-        return ReadSha256Algorithm(algorithm) && algorithm.AtEnd();
+        return ReadHashAlgorithm(algorithm, out digest) && algorithm.AtEnd();
     }
 
     private bool ParseExtensions(long offset, long count)

@@ -1,8 +1,9 @@
 // CORSAC/SECURE Crypto portable RSA public verification.
 //
 // This provider deliberately exposes only the public operation and the two
-// SHA-256 signature encodings required by contemporary TLS.  It contains no
-// private-key operation.  Moduli and representatives are unsigned, fixed-
+// signature encodings TLS and X.509 use, EMSA-PKCS1-v1_5 and EMSA-PSS, each
+// with SHA-256, SHA-384 or SHA-512 (the digest's length says which).  It
+// contains no private-key operation.  Moduli and representatives are unsigned, fixed-
 // width, big-endian byte arrays; binary values never pass through string.
 //
 // Arithmetic uses at most 128 little-endian 64-bit limbs.  The public
@@ -18,22 +19,24 @@ public static class CorsacSecureCrypto_Rsa
     public const int MinimumModulusBits = 2048;
     public const int MaximumModulusBits = 8192;
     public const int Sha256Bytes = 32;
-    public const int TlsPssSaltBytes = 32;
+    public const int Sha384Bytes = 48;
+    public const int Sha512Bytes = 64;
 
-    /// Strict EMSA-PKCS1-v1_5 verification for SHA-256.  DigestInfo must use
-    /// the canonical SHA-256 AlgorithmIdentifier including its NULL value.
-    public static bool VerifyPkcs1Sha256(
+    /// Strict EMSA-PKCS1-v1_5 verification of a SHA-256, SHA-384 or SHA-512
+    /// digest.  DigestInfo must use the canonical AlgorithmIdentifier
+    /// including its NULL value.
+    public static bool VerifyPkcs1(
         byte[] modulus, long modulusOffset, long modulusCount,
         long publicExponent,
         byte[] signature, long signatureOffset, long signatureCount,
-        byte[] digest, long digestOffset)
+        byte[] digest, long digestOffset, long digestCount)
     {
         CorsacSecureCrypto_RsaWorkspace workspace =
             new CorsacSecureCrypto_RsaWorkspace();
-        bool answer = workspace.VerifyPkcs1Sha256(
+        bool answer = workspace.VerifyPkcs1(
             modulus, modulusOffset, modulusCount, publicExponent,
             signature, signatureOffset, signatureCount,
-            digest, digestOffset);
+            digest, digestOffset, digestCount);
         workspace.Close();
         return answer;
     }
@@ -41,7 +44,7 @@ public static class CorsacSecureCrypto_Rsa
 }
 
 /// Reusable bounded workspace.  All operation state is erased before an
-/// operation returns; Close additionally retires the SHA-256 context.
+/// operation returns; Close additionally retires the hash contexts.
 public class CorsacSecureCrypto_RsaWorkspace
 {
     private const int MaximumWords = 128;
@@ -66,6 +69,9 @@ public class CorsacSecureCrypto_RsaWorkspace
     private byte[] _counter;
     private byte[] _pkcsPrefix;
     private CorsacSecureCrypto_Hash _hash;
+    private CorsacSecureCrypto_Sha512 _sha384;
+    private CorsacSecureCrypto_Sha512 _sha512;
+    private int _hashBytes;
     private int _words;
     private int _bytes;
     private int _modulusBits;
@@ -87,14 +93,19 @@ public class CorsacSecureCrypto_RsaWorkspace
         _divisionNumerator = new uint[MaximumNumeratorDigits];
         _encoded = new byte[MaximumBytes];
         _mask = new byte[MaximumBytes];
-        _hashResult = new byte[32];
-        _messagePrime = new byte[72];
+        _hashResult = new byte[64];
+        _messagePrime = new byte[8 + 64 + 64];
         _counter = new byte[4];
+        // DigestInfo's prefix: SEQUENCE { AlgorithmIdentifier { id-sha256,
+        // NULL }, OCTET STRING[32] }; SHA-384's and SHA-512's differ in the
+        // lengths, the OID's last arc and the digest's length.
         _pkcsPrefix = new byte[] {
             0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
             0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20
         };
         _hash = new CorsacSecureCrypto_Hash();
+        _sha384 = new CorsacSecureCrypto_Sha512(true);
+        _sha512 = new CorsacSecureCrypto_Sha512(false);
     }
 
     public bool PublicOperation(
@@ -118,14 +129,14 @@ public class CorsacSecureCrypto_RsaWorkspace
         return answer;
     }
 
-    public bool VerifyPkcs1Sha256(
+    public bool VerifyPkcs1(
         byte[] modulus, long modulusOffset, long modulusCount,
         long publicExponent,
         byte[] signature, long signatureOffset, long signatureCount,
-        byte[] digest, long digestOffset)
+        byte[] digest, long digestOffset, long digestCount)
     {
-        if (_closed
-            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, 32))
+        if (_closed || !KnownDigest(digestCount)
+            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, digestCount))
             return false;
         if (!PublicCore(
                 modulus, modulusOffset, modulusCount, publicExponent,
@@ -135,10 +146,17 @@ public class CorsacSecureCrypto_RsaWorkspace
             return false;
         }
 
-        // DER DigestInfo prefix for SHA-256:
-        // SEQUENCE { AlgorithmIdentifier { id-sha256, NULL }, OCTET STRING[32] }
-        int digestInfoBytes = _pkcsPrefix.Length + 32;
+        int h = (int)digestCount;
+        _pkcsPrefix[1] = (byte)(0x11 + h);
+        _pkcsPrefix[14] = (byte)(h == 32 ? 1 : h == 48 ? 2 : 3);
+        _pkcsPrefix[18] = (byte)h;
+        int digestInfoBytes = _pkcsPrefix.Length + h;
         int separator = _bytes - digestInfoBytes - 1;
+        if (separator < 10)
+        {
+            ClearOperation();
+            return false;
+        }
         int difference = 0;
         difference = difference | _encoded[0];
         difference = difference | (_encoded[1] ^ 1);
@@ -148,27 +166,30 @@ public class CorsacSecureCrypto_RsaWorkspace
         for (int i = 0; i < _pkcsPrefix.Length; i = i + 1)
             difference = difference
                        | (_encoded[separator + 1 + i] ^ _pkcsPrefix[i]);
-        for (int i = 0; i < 32; i = i + 1)
+        for (int i = 0; i < h; i = i + 1)
             difference = difference
-                       | (_encoded[_bytes - 32 + i]
+                       | (_encoded[_bytes - h + i]
                         ^ digest[(int)digestOffset + i]);
 
         // A 2048-bit key leaves far more than RFC 8017's minimum eight FF
         // octets, but keep the structural condition explicit.
-        bool answer = separator >= 10 && difference == 0;
+        bool answer = difference == 0;
         ClearOperation();
         return answer;
     }
 
-    public bool VerifyPssSha256(
+    /// EMSA-PSS with MGF1 of the same hash and a salt as long as the digest,
+    /// as TLS 1.3's rsa_pss_rsae schemes and X.509's RSASSA-PSS ask it.
+    public bool VerifyPss(
         byte[] modulus, long modulusOffset, long modulusCount,
         long publicExponent,
         byte[] signature, long signatureOffset, long signatureCount,
-        byte[] digest, long digestOffset)
+        byte[] digest, long digestOffset, long digestCount)
     {
-        if (_closed
-            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, 32))
+        if (_closed || !KnownDigest(digestCount)
+            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, digestCount))
             return false;
+        int h = (int)digestCount;
         if (!PublicCore(
                 modulus, modulusOffset, modulusCount, publicExponent,
                 signature, signatureOffset, signatureCount))
@@ -176,16 +197,18 @@ public class CorsacSecureCrypto_RsaWorkspace
             ClearOperation();
             return false;
         }
+        // After PublicCore, which begins by clearing the operation's state.
+        _hashBytes = h;
 
         int encodedBits = _modulusBits - 1;
         int encodedBytes = (encodedBits + 7) / 8;
         int leadingBytes = _bytes - encodedBytes;
-        int databaseBytes = encodedBytes - 32 - 1;
+        int databaseBytes = encodedBytes - h - 1;
         int hashOffset = leadingBytes + databaseBytes;
         int unusedBits = encodedBytes * 8 - encodedBits;
-        int paddingBytes = encodedBytes - 32 - 32 - 2;
+        int paddingBytes = encodedBytes - h - h - 2;
         if (leadingBytes < 0 || leadingBytes > 1
-            || databaseBytes < 33 || paddingBytes < 0)
+            || databaseBytes < h + 1 || paddingBytes < 0)
         {
             ClearOperation();
             return false;
@@ -202,7 +225,7 @@ public class CorsacSecureCrypto_RsaWorkspace
                    | (_encoded[leadingBytes] & forbidden);
 
         bool generated = MaskGenerationFunction(
-            _encoded, hashOffset, 32, _mask, 0, databaseBytes);
+            _encoded, hashOffset, h, _mask, 0, databaseBytes);
         if (generated)
         {
             for (int i = 0; i < databaseBytes; i = i + 1)
@@ -217,14 +240,14 @@ public class CorsacSecureCrypto_RsaWorkspace
 
             CorsacSecureCrypto_Bytes.Zero(_messagePrime, 0, 8);
             CorsacSecureCrypto_Bytes.Copy(
-                _messagePrime, 8, digest, digestOffset, 32);
+                _messagePrime, 8, digest, digestOffset, h);
             CorsacSecureCrypto_Bytes.Copy(
-                _messagePrime, 40, _mask, paddingBytes + 1, 32);
+                _messagePrime, 8 + h, _mask, paddingBytes + 1, h);
             generated = Hash(
-                _messagePrime, 0, 72, null, 0, 0, _hashResult, 0);
+                _messagePrime, 0, 8 + h + h, null, 0, 0, _hashResult, 0);
             if (generated)
             {
-                for (int i = 0; i < 32; i = i + 1)
+                for (int i = 0; i < h; i = i + 1)
                     difference = difference
                                | (_hashResult[i]
                                 ^ _encoded[hashOffset + i]);
@@ -243,6 +266,8 @@ public class CorsacSecureCrypto_RsaWorkspace
         CorsacSecureCrypto_Bytes.Zero(
             _pkcsPrefix, 0, _pkcsPrefix.Length);
         _hash.Close();
+        _sha384.Close();
+        _sha512.Close();
         _closed = true;
     }
 
@@ -608,7 +633,8 @@ public class CorsacSecureCrypto_RsaWorkspace
     {
         if (!CorsacSecureCrypto_Bytes.Range(seed, seedOffset, seedCount)
             || !CorsacSecureCrypto_Bytes.Range(
-                    output, outputOffset, outputCount))
+                    output, outputOffset, outputCount)
+            || !KnownDigest(_hashBytes))
             return false;
         int made = 0;
         int counter = 0;
@@ -622,7 +648,7 @@ public class CorsacSecureCrypto_RsaWorkspace
                       _counter, 0, 4, _hashResult, 0))
                 return false;
             int take = outputCount - made;
-            if (take > 32) take = 32;
+            if (take > _hashBytes) take = _hashBytes;
             CorsacSecureCrypto_Bytes.Copy(
                 output, outputOffset + made, _hashResult, 0, take);
             made = made + take;
@@ -631,18 +657,34 @@ public class CorsacSecureCrypto_RsaWorkspace
         return true;
     }
 
+    /// The PSS operation's hash (SHA-256, -384 or -512, as _hashBytes says)
+    /// of `first` and then `second`.
     private bool Hash(
         byte[] first, long firstOffset, long firstCount,
         byte[]? second, long secondOffset, long secondCount,
         byte[] output, long outputOffset)
     {
-        if (!_hash.Reset()
-            || !_hash.Update(first, firstOffset, firstCount))
+        if (_hashBytes == 32)
+        {
+            if (!_hash.Reset()
+                || !_hash.Update(first, firstOffset, firstCount))
+                return false;
+            if (second != null
+                && !_hash.Update(second, secondOffset, secondCount))
+                return false;
+            return _hash.Finish(output, outputOffset);
+        }
+        CorsacSecureCrypto_Sha512 wide = _hashBytes == 48 ? _sha384 : _sha512;
+        if (!wide.Reset() || !wide.Update(first, firstOffset, firstCount))
             return false;
-        if (second != null
-            && !_hash.Update(second, secondOffset, secondCount))
+        if (second != null && !wide.Update(second, secondOffset, secondCount))
             return false;
-        return _hash.Finish(output, outputOffset);
+        return wide.Finish(output, outputOffset);
+    }
+
+    private static bool KnownDigest(long count)
+    {
+        return count == 32 || count == 48 || count == 64;
     }
 
     private void ClearOperation()
@@ -668,5 +710,6 @@ public class CorsacSecureCrypto_RsaWorkspace
         _modulusBits = 0;
         _factor = 0;
         _exponent = 0;
+        _hashBytes = 0;
     }
 }

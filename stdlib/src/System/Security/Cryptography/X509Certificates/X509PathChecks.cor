@@ -3,7 +3,8 @@
 // fault, as .NET's X509Chain on Linux has OpenSSL make them: an element is
 // told all of its own faults, not the first of the path. Whether a
 // certificate's signature verifies under its issuer's key (RSA PKCS#1 v1.5
-// and PSS with SHA-256, ECDSA P-256 with SHA-256, Ed25519); whether an
+// and PSS, ECDSA on P-256 and P-384, each with SHA-256, SHA-384 or SHA-512;
+// Ed25519); whether an
 // issuer may issue (a CA, its path length, keyCertSign); and whether the
 // CAs' name constraints permit the names below them. Time, trust,
 // revocation and the application policy are X509Chain's own.
@@ -35,6 +36,9 @@ internal sealed class X509PathChecks
     private readonly CorsacSecureCrypto_RsaWorkspace _rsa;
     private readonly CorsacSecureCrypto_P256Workspace _p256;
     private readonly CorsacSecureCrypto_Ed25519Workspace _ed25519;
+    private readonly CorsacSecureCrypto_P384 _p384;
+    private readonly CorsacSecureCrypto_Sha512 _sha384;
+    private readonly CorsacSecureCrypto_Sha512 _sha512;
     private readonly byte[] _digest;
     private readonly byte[] _empty;
 
@@ -47,7 +51,10 @@ internal sealed class X509PathChecks
         _rsa = new CorsacSecureCrypto_RsaWorkspace();
         _p256 = new CorsacSecureCrypto_P256Workspace();
         _ed25519 = new CorsacSecureCrypto_Ed25519Workspace();
-        _digest = new byte[32];
+        _p384 = new CorsacSecureCrypto_P384();
+        _sha384 = new CorsacSecureCrypto_Sha512(true);
+        _sha512 = new CorsacSecureCrypto_Sha512(false);
+        _digest = new byte[64];
         _empty = new byte[0];
     }
 
@@ -109,56 +116,63 @@ internal sealed class X509PathChecks
         return answer;
     }
 
+    /// Whether `child`'s signature verifies under `issuer`'s key: the TBS
+    /// hashed with the algorithm's hash, then checked by the issuer's kind
+    /// of key -- RSA (PKCS#1 v1.5 or PSS), ECDSA on P-256 or P-384, Ed25519.
     private bool VerifySignature(
         X509CertificateView child, byte[] childBytes,
         X509CertificateView issuer, byte[] issuerBytes)
     {
         int algorithm = child.SignatureAlgorithm;
-        if ((algorithm == X509SignatureAlgorithm
-                             .RsaPkcs1Sha256
-             || algorithm == X509SignatureAlgorithm
-                             .RsaPssSha256)
-            && issuer.PublicKeyAlgorithm
-                == X509KeyAlgorithm.Rsa)
-        {
-            bool hashed = _hash.Update(
-                    childBytes, child.TbsOffset, child.TbsCount)
-                && _hash.Finish(_digest, 0);
-            if (!hashed) return false;
-            bool valid = algorithm
-                    == X509SignatureAlgorithm.RsaPkcs1Sha256
-                ? _rsa.VerifyPkcs1Sha256(
-                    issuerBytes, issuer.RsaModulusOffset,
-                    issuer.RsaModulusCount, issuer.RsaExponent,
-                    childBytes, child.SignatureOffset,
-                    child.SignatureCount, _digest, 0)
-                : _rsa.VerifyPssSha256(
-                    issuerBytes, issuer.RsaModulusOffset,
-                    issuer.RsaModulusCount, issuer.RsaExponent,
-                    childBytes, child.SignatureOffset,
-                    child.SignatureCount, _digest, 0);
-            CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
-            return _hash.Reset() && valid;
-        }
-        if (algorithm
-                == X509SignatureAlgorithm.EcdsaP256Sha256
-            && issuer.PublicKeyAlgorithm
-                == X509KeyAlgorithm.P256)
-            return _p256.VerifySha256Der(
-                issuerBytes, issuer.PublicKeyOffset,
-                issuer.PublicKeyCount,
-                childBytes, child.TbsOffset, child.TbsCount,
+        int key = issuer.PublicKeyAlgorithm;
+        if (algorithm == X509SignatureAlgorithm.Ed25519)
+            return key == X509KeyAlgorithm.Ed25519
+                && child.SignatureCount == 64
+                && _ed25519.CheckSignature(
+                    issuerBytes, issuer.PublicKeyOffset,
+                    childBytes, child.TbsOffset, child.TbsCount,
+                    childBytes, child.SignatureOffset);
+
+        int digestBytes = X509SignatureAlgorithm.DigestBytes(algorithm);
+        if (digestBytes == 0 || !Digest(digestBytes, childBytes, child.TbsOffset, child.TbsCount))
+            return false;
+        bool valid = false;
+        if (X509SignatureAlgorithm.IsPkcs1(algorithm) && key == X509KeyAlgorithm.Rsa)
+            valid = _rsa.VerifyPkcs1(
+                issuerBytes, issuer.RsaModulusOffset,
+                issuer.RsaModulusCount, issuer.RsaExponent,
                 childBytes, child.SignatureOffset,
-                child.SignatureCount);
-        if (algorithm == X509SignatureAlgorithm.Ed25519
-            && issuer.PublicKeyAlgorithm
-                == X509KeyAlgorithm.Ed25519
-            && child.SignatureCount == 64)
-            return _ed25519.CheckSignature(
-                issuerBytes, issuer.PublicKeyOffset,
-                childBytes, child.TbsOffset, child.TbsCount,
-                childBytes, child.SignatureOffset);
-        return false;
+                child.SignatureCount, _digest, 0, digestBytes);
+        else if (X509SignatureAlgorithm.IsPss(algorithm) && key == X509KeyAlgorithm.Rsa)
+            valid = _rsa.VerifyPss(
+                issuerBytes, issuer.RsaModulusOffset,
+                issuer.RsaModulusCount, issuer.RsaExponent,
+                childBytes, child.SignatureOffset,
+                child.SignatureCount, _digest, 0, digestBytes);
+        // P-256 takes the digest's leftmost 256 bits (bits2int), the first
+        // 32 bytes of a longer one.
+        else if (X509SignatureAlgorithm.IsEcdsa(algorithm) && key == X509KeyAlgorithm.P256)
+            valid = _p256.VerifyDigestDer(
+                issuerBytes, issuer.PublicKeyOffset, issuer.PublicKeyCount,
+                _digest, 0,
+                childBytes, child.SignatureOffset, child.SignatureCount);
+        else if (X509SignatureAlgorithm.IsEcdsa(algorithm) && key == X509KeyAlgorithm.P384)
+            valid = _p384.VerifyDigestDer(
+                issuerBytes, issuer.PublicKeyOffset, issuer.PublicKeyCount,
+                _digest, 0, digestBytes,
+                childBytes, child.SignatureOffset, child.SignatureCount);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        return valid;
+    }
+
+    /// `count` bytes of `data` hashed into _digest with SHA-256 (32),
+    /// SHA-384 (48) or SHA-512 (64).
+    private bool Digest(int bytes, byte[] data, long offset, long count)
+    {
+        if (bytes == 32)
+            return _hash.Update(data, offset, count) && _hash.Finish(_digest, 0) && _hash.Reset();
+        CorsacSecureCrypto_Sha512 wide = bytes == 48 ? _sha384 : _sha512;
+        return wide.Update(data, offset, count) && wide.Finish(_digest, 0) && wide.Reset();
     }
 
     public void Close()
@@ -170,5 +184,7 @@ internal sealed class X509PathChecks
         _rsa.Close();
         _p256.Close();
         _ed25519.Close();
+        _sha384.Close();
+        _sha512.Close();
     }
 }
