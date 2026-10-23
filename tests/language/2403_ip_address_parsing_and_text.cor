@@ -1,0 +1,140 @@
+// test: ip_address_parsing_and_text
+// expect-exit: 0
+// expect-output:
+// [0.0.0.0] 0.0.0.0 InterNetwork 00-00-00-00 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.0 v6=::ffff:0:0
+// [127.0.0.1] 127.0.0.1 InterNetwork 7F-00-00-01 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=True v4=127.0.0.1 v6=::ffff:127.0.0.1
+// [255.255.255.255] 255.255.255.255 InterNetwork FF-FF-FF-FF ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=255.255.255.255 v6=::ffff:255.255.255.255
+// [192.168.1.10] 192.168.1.10 InterNetwork C0-A8-01-0A ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=192.168.1.10 v6=::ffff:192.168.1.10
+// [1] 0.0.0.1 InterNetwork 00-00-00-01 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.1 v6=::ffff:0:1
+// [1.2] 1.0.0.2 InterNetwork 01-00-00-02 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=1.0.0.2 v6=::ffff:1.0.0.2
+// [1.2.3] 1.2.0.3 InterNetwork 01-02-00-03 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=1.2.0.3 v6=::ffff:1.2.0.3
+// [0x7f.1] 127.0.0.1 InterNetwork 7F-00-00-01 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=True v4=127.0.0.1 v6=::ffff:127.0.0.1
+// [010.0.0.1] 8.0.0.1 InterNetwork 08-00-00-01 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=8.0.0.1 v6=::ffff:8.0.0.1
+// [0x7f000001] 127.0.0.1 InterNetwork 7F-00-00-01 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=True v4=127.0.0.1 v6=::ffff:127.0.0.1
+// [4294967295] 255.255.255.255 InterNetwork FF-FF-FF-FF ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=255.255.255.255 v6=::ffff:255.255.255.255
+// [4294967296] no
+// [256.1.1.1] no
+// [1.2.3.4.5] no
+// [1..2.3] no
+// [ 1.2.3.4] no
+// [1.2.3.4 ] no
+// [] no
+// [abc] no
+// [1.2.3.-4] no
+// [::] :: InterNetworkV6 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.0 v6=::
+// [::1] ::1 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=True v4=0.0.0.1 v6=::1
+// [1::] 1:: InterNetworkV6 00-01-00-00-00-00-00-00-00-00-00-00-00-00-00-00 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.0 v6=1::
+// [2001:db8::5] 2001:db8::5 InterNetworkV6 20-01-0D-B8-00-00-00-00-00-00-00-00-00-00-00-05 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.5 v6=2001:db8::5
+// [2001:DB8:0:0:0:0:0:5] 2001:db8::5 InterNetworkV6 20-01-0D-B8-00-00-00-00-00-00-00-00-00-00-00-05 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.5 v6=2001:db8::5
+// [2001:db8:0:0:1:0:0:1] 2001:db8::1:0:0:1 InterNetworkV6 20-01-0D-B8-00-00-00-00-00-01-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.1 v6=2001:db8::1:0:0:1
+// [2001:0:0:1:0:0:0:1] 2001:0:0:1::1 InterNetworkV6 20-01-00-00-00-00-00-01-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=True ula=False mapped=False loop=False v4=0.0.0.1 v6=2001:0:0:1::1
+// [fe80::1%3] fe80::1%3 InterNetworkV6 FE-80-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=3 ll=True sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.1 v6=fe80::1%3
+// [[::1]] ::1 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=True v4=0.0.0.1 v6=::1
+// [[::1]:80] ::1 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=True v4=0.0.0.1 v6=::1
+// [::ffff:1.2.3.4] ::ffff:1.2.3.4 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-FF-FF-01-02-03-04 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=True loop=False v4=1.2.3.4 v6=::ffff:1.2.3.4
+// [::1.2.3.4] ::1.2.3.4 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-00-00-01-02-03-04 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=1.2.3.4 v6=::1.2.3.4
+// [::ffff:0:1.2.3.4] ::ffff:0:1.2.3.4 InterNetworkV6 00-00-00-00-00-00-00-00-FF-FF-00-00-01-02-03-04 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=1.2.3.4 v6=::ffff:0:1.2.3.4
+// [fec0::1] fec0::1 InterNetworkV6 FE-C0-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=True mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.1 v6=fec0::1
+// [ff02::1] ff02::1 InterNetworkV6 FF-02-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=True teredo=False ula=False mapped=False loop=False v4=0.0.0.1 v6=ff02::1
+// [fd00::1] fd00::1 InterNetworkV6 FD-00-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=False ula=True mapped=False loop=False v4=0.0.0.1 v6=fd00::1
+// [2001::1] 2001::1 InterNetworkV6 20-01-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=True ula=False mapped=False loop=False v4=0.0.0.1 v6=2001::1
+// [1:2:3:4:5:6:7:8] 1:2:3:4:5:6:7:8 InterNetworkV6 00-01-00-02-00-03-00-04-00-05-00-06-00-07-00-08 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.7.0.8 v6=1:2:3:4:5:6:7:8
+// [1:2:3:4:5:6:7:8:9] no
+// [1:2:3:4:5:6:7] no
+// [1::2::3] no
+// [:::] no
+// [::ffff:127.0.0.1] ::ffff:127.0.0.1 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-FF-FF-7F-00-00-01 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=True loop=True v4=127.0.0.1 v6=::ffff:127.0.0.1
+// [0:0:0:0:0:0:0:1] ::1 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-01 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=True v4=0.0.0.1 v6=::1
+// [1:0:0:0:1:0:0:0] 1::1:0:0:0 InterNetworkV6 00-01-00-00-00-00-00-00-00-01-00-00-00-00-00-00 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.0 v6=1::1:0:0:0
+// [0:0:1:0:0:0:0:0] 0:0:1:: InterNetworkV6 00-00-00-00-00-01-00-00-00-00-00-00-00-00-00-00 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.0 v6=0:0:1::
+// [abcd:ef01:2345:6789:abcd:ef01:2345:6789] abcd:ef01:2345:6789:abcd:ef01:2345:6789 InterNetworkV6 AB-CD-EF-01-23-45-67-89-AB-CD-EF-01-23-45-67-89 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=35.69.103.137 v6=abcd:ef01:2345:6789:abcd:ef01:2345:6789
+// [1:2:3:4:5:6:1.2.3.4] 1:2:3:4:5:6:102:304 InterNetworkV6 00-01-00-02-00-03-00-04-00-05-00-06-01-02-03-04 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=1.2.3.4 v6=1:2:3:4:5:6:102:304
+// [::0.0.0.2] ::2 InterNetworkV6 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-02 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=0.0.0.2 v6=::2
+// [64:ff9b::1.2.3.4] 64:ff9b::102:304 InterNetworkV6 00-64-FF-9B-00-00-00-00-00-00-00-00-01-02-03-04 scope=0 ll=False sl=False mc=False teredo=False ula=False mapped=False loop=False v4=1.2.3.4 v6=64:ff9b::102:304
+// long 127.0.0.1 1.0.0.127 0.0.0.0 255.255.255.255
+// long too big: ArgumentOutOfRangeException
+// long negative: ArgumentOutOfRangeException
+// 5 bytes: ArgumentException: An invalid IP address was specified. (Parameter 'address')
+// 4 bytes scoped: ArgumentException: An invalid IP address was specified. (Parameter 'address')
+// parse: FormatException: An invalid IP address was specified. / SocketException
+// parse null: ArgumentNullException
+// scoped 2001:db8::5%7 7
+// Address 16777343 4294967295
+// v6 Address: SocketException
+// v4 ScopeId: SocketException
+// statics 0.0.0.0 127.0.0.1 255.255.255.255 255.255.255.255 :: ::1 ::
+// equal True False False True
+// valid True True False
+// format True 2001:db8::5 False 0
+// write True 4 False 0
+// order 13330 2018915346 578437695752307201
+// endpoint [::1]:443 [fe80::1%4]:80 127.0.0.1:8080 InterNetworkV6
+//
+// IPAddress as .NET 10 has it: IPv4 in inet_aton's forms, IPv6 with "::",
+// a dotted quad, brackets, a port and a scope, RFC 5952's text with the
+// dotted forms .NET keeps, the IPv6 properties, mapping both ways, the long
+// constructor's byte order, the failures, Address and ScopeId across the
+// families, TryFormat, TryWriteBytes, the byte-order helpers and IPEndPoint's
+// text. Expected output from .NET 10.
+
+using System;
+using System.Net;
+using System.Net.Sockets;
+
+static class Program
+{
+    static string Bytes(IPAddress a) => BitConverter.ToString(a.GetAddressBytes());
+
+    static void Show(string text)
+    {
+        IPAddress? a;
+        bool ok = IPAddress.TryParse(text, out a);
+        if (!ok || a == null) { Console.WriteLine("[" + text + "] no"); return; }
+        string scope = a.AddressFamily == AddressFamily.InterNetworkV6 ? " scope=" + a.ScopeId : "";
+        Console.WriteLine("[" + text + "] " + a + " " + a.AddressFamily + " " + Bytes(a) + scope
+            + " ll=" + a.IsIPv6LinkLocal + " sl=" + a.IsIPv6SiteLocal + " mc=" + a.IsIPv6Multicast + " teredo=" + a.IsIPv6Teredo
+            + " ula=" + a.IsIPv6UniqueLocal + " mapped=" + a.IsIPv4MappedToIPv6 + " loop=" + IPAddress.IsLoopback(a)
+            + " v4=" + a.MapToIPv4() + " v6=" + a.MapToIPv6());
+    }
+
+    static int Main()
+    {
+        string[] inputs = {
+            "0.0.0.0", "127.0.0.1", "255.255.255.255", "192.168.1.10", "1", "1.2", "1.2.3", "0x7f.1", "010.0.0.1", "0x7f000001",
+            "4294967295", "4294967296", "256.1.1.1", "1.2.3.4.5", "1..2.3", " 1.2.3.4", "1.2.3.4 ", "", "abc", "1.2.3.-4",
+            "::", "::1", "1::", "2001:db8::5", "2001:DB8:0:0:0:0:0:5", "2001:db8:0:0:1:0:0:1", "2001:0:0:1:0:0:0:1", "fe80::1%3",
+            "[::1]", "[::1]:80", "::ffff:1.2.3.4", "::1.2.3.4", "::ffff:0:1.2.3.4", "fec0::1", "ff02::1", "fd00::1",
+            "2001::1", "1:2:3:4:5:6:7:8", "1:2:3:4:5:6:7:8:9", "1:2:3:4:5:6:7", "1::2::3", ":::", "::ffff:127.0.0.1", "0:0:0:0:0:0:0:1",
+            "1:0:0:0:1:0:0:0", "0:0:1:0:0:0:0:0", "abcd:ef01:2345:6789:abcd:ef01:2345:6789", "1:2:3:4:5:6:1.2.3.4", "::0.0.0.2", "64:ff9b::1.2.3.4" };
+        foreach (string s in inputs) Show(s);
+
+        Console.WriteLine("long " + new IPAddress(0x0100007F) + " " + new IPAddress(0x7F000001) + " " + new IPAddress(0) + " " + new IPAddress(0xFFFFFFFFL));
+        try { new IPAddress(0x100000000L); } catch (Exception e) { Console.WriteLine("long too big: " + e.GetType().Name); }
+        try { new IPAddress(-1L); } catch (Exception e) { Console.WriteLine("long negative: " + e.GetType().Name); }
+        try { new IPAddress(new byte[5]); } catch (Exception e) { Console.WriteLine("5 bytes: " + e.GetType().Name + ": " + e.Message); }
+        try { new IPAddress(new byte[4], 1); } catch (Exception e) { Console.WriteLine("4 bytes scoped: " + e.GetType().Name + ": " + e.Message); }
+        try { IPAddress.Parse("nope"); } catch (Exception e) { Console.WriteLine("parse: " + e.GetType().Name + ": " + e.Message + " / " + e.InnerException?.GetType().Name); }
+        try { IPAddress.Parse((string)null!); } catch (Exception e) { Console.WriteLine("parse null: " + e.GetType().Name); }
+        IPAddress six = new IPAddress(new byte[] { 0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5 }, 7);
+        Console.WriteLine("scoped " + six + " " + six.ScopeId);
+#pragma warning disable CS0618
+        Console.WriteLine("Address " + IPAddress.Loopback.Address + " " + IPAddress.Broadcast.Address);
+        try { long x = IPAddress.IPv6Loopback.Address; } catch (Exception e) { Console.WriteLine("v6 Address: " + e.GetType().Name); }
+#pragma warning restore CS0618
+        try { long x = IPAddress.Loopback.ScopeId; } catch (Exception e) { Console.WriteLine("v4 ScopeId: " + e.GetType().Name); }
+        Console.WriteLine("statics " + IPAddress.Any + " " + IPAddress.Loopback + " " + IPAddress.Broadcast + " " + IPAddress.None + " "
+            + IPAddress.IPv6Any + " " + IPAddress.IPv6Loopback + " " + IPAddress.IPv6None);
+        Console.WriteLine("equal " + IPAddress.Parse("::1").Equals(IPAddress.IPv6Loopback) + " " + IPAddress.Parse("1.2.3.4").Equals(IPAddress.Parse("::ffff:1.2.3.4"))
+            + " " + (IPAddress.Parse("fe80::1%1").Equals(IPAddress.Parse("fe80::1%2"))) + " " + (IPAddress.Parse("10.0.0.1").GetHashCode() == IPAddress.Parse("10.0.0.1").GetHashCode()));
+        Console.WriteLine("valid " + IPAddress.IsValid("1.2.3.4") + " " + IPAddress.IsValid("::1") + " " + IPAddress.IsValid("x"));
+        Span<char> buffer = stackalloc char[64];
+        Console.WriteLine("format " + IPAddress.Parse("2001:db8::5").TryFormat(buffer, out int written) + " " + new string(buffer.Slice(0, written))
+            + " " + IPAddress.Parse("2001:db8::5").TryFormat(buffer.Slice(0, 5), out written) + " " + written);
+        Span<byte> raw = stackalloc byte[16];
+        Console.WriteLine("write " + IPAddress.Loopback.TryWriteBytes(raw, out written) + " " + written + " " + IPAddress.IPv6Loopback.TryWriteBytes(raw.Slice(0, 4), out written) + " " + written);
+        Console.WriteLine("order " + IPAddress.HostToNetworkOrder((short)0x1234) + " " + IPAddress.HostToNetworkOrder(0x12345678) + " " + IPAddress.NetworkToHostOrder(0x0102030405060708L));
+        Console.WriteLine("endpoint " + new IPEndPoint(IPAddress.Parse("::1"), 443) + " " + new IPEndPoint(IPAddress.Parse("fe80::1%4"), 80) + " " + new IPEndPoint(IPAddress.Loopback, 8080)
+            + " " + new IPEndPoint(IPAddress.IPv6Any, 0).AddressFamily);
+        return 0;
+    }
+}

@@ -1,0 +1,608 @@
+// test: ssl_stream_in_memory_server
+// expect-exit: 0
+// expect-output:
+// alpn: h2 http/1.1 True False 0xff 0x01 True
+// before: InvalidOperationException: This operation is only allowed using a successfully authenticated context.
+// handshake: True Tls13 TLS_CHACHA20_POLY1305_SHA256 h2 CN=server.test server.test
+//   offered: sni=server.test alpn=h2,http/1.1 shares=x25519 chacha=True
+//   client finished: True
+//   flags: encrypted=True signed=True server=False mutual=False read=True write=True seek=False timeout=False local=none
+//   read: hello| from| the |serve|r
+//   after key update: after the key update; client updated its keys: 1
+//   server got: ping in 1 record, then 20000 bytes in 2 records, intact True
+//   async: 5 bytes read, server got 7 more
+//   end: 0 0
+//   client close_notify: True
+//   disposed: read=False ObjectDisposedException inner disposed=True
+// retry: True TLS_CHACHA20_POLY1305_SHA256 retried=True share=secp256r1
+// ip: True target=192.0.2.1 sni=none
+// untrusted: AuthenticationException: The remote certificate is invalid because of errors in the certificate chain: UntrustedRoot
+//   alert from client: 48
+//   callback: RemoteCertificateChainErrors CN=server.test elements=1 [UntrustedRoot]
+// callback: True
+// mismatch: AuthenticationException: The remote certificate is invalid according to the validation procedure: RemoteCertificateNameMismatch
+//   alert from client: 42
+// expired: AuthenticationException: The remote certificate is invalid because of errors in the certificate chain: NotTimeValid
+//   alert from client: 45
+// rejected: AuthenticationException: The remote certificate was rejected by the provided RemoteCertificateValidationCallback.
+//   alert from client: 42
+// corrupt: AuthenticationException: Authentication failed, see inner exception.
+// eof: IOException: Received an unexpected EOF or 0 bytes from the transport stream.
+// tls12: AuthenticationException, hello sent=False
+// async handshake: True h2
+//
+// SslStream (System.Net.Security) as a .NET client uses it, against a TLS
+// 1.3 server written here from the public primitives -- X25519, P-256,
+// Ed25519 and ChaCha20-Poly1305 from Corsac.Security.Cryptography, SHA-256
+// and HMAC from System.Security.Cryptography -- that decrypts and checks
+// what the client sends: its Finished, its application data, its answer
+// to a KeyUpdate, its alerts and its close_notify. The server's certificate
+// is a self-signed Ed25519 one for server.test and 192.0.2.1, valid from
+// 2025 to 2035, trusted through X509ChainPolicy.CustomTrustStore. The
+// exception messages are .NET 10's, as it gives them against OpenSSL's
+// s_server for the same cases; the protocol is RFC 8446's.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Security;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using Corsac.Security.Cryptography;
+
+/// One direction's record protection: ChaCha20-Poly1305 with the key and
+/// IV of a traffic secret, the sequence number in the nonce.
+sealed class Protection
+{
+    public readonly byte[] Secret;
+    readonly byte[] _iv;
+    readonly CorsacSecureCrypto_ChaChaPoly1305 _aead;
+    long _sequence;
+
+    public Protection(byte[] secret)
+    {
+        Secret = secret;
+        _iv = Tls.ExpandLabel(secret, "iv", new byte[0], 12);
+        _aead = new CorsacSecureCrypto_ChaChaPoly1305(Tls.ExpandLabel(secret, "key", new byte[0], 32), 0, 17000);
+    }
+
+    byte[] Nonce()
+    {
+        byte[] nonce = (byte[])_iv.Clone();
+        for (int i = 0; i < 8; i++) nonce[11 - i] ^= (byte)(_sequence >> (8 * i));
+        _sequence++;
+        return nonce;
+    }
+
+    public byte[] Seal(int type, byte[] content)
+    {
+        byte[] inner = new byte[content.Length + 1];
+        Array.Copy(content, inner, content.Length);
+        inner[content.Length] = (byte)type;
+        int length = inner.Length + 16;
+        byte[] record = new byte[5 + length];
+        record[0] = 23; record[1] = 3; record[2] = 3; record[3] = (byte)(length >> 8); record[4] = (byte)length;
+        byte[] header = Tls.Slice(record, 0, 5);
+        if (!_aead.Seal(Nonce(), 0, header, 0, 5, inner, 0, inner.Length, record, 5, record, 5 + inner.Length))
+            throw new InvalidOperationException("seal");
+        return record;
+    }
+
+    /// The record's content and its true type, or null when it does not open.
+    public byte[]? Open(byte[] record, out int type)
+    {
+        type = 0;
+        int length = record.Length - 5;
+        if (length < 17) return null;
+        byte[] inner = new byte[length - 16];
+        if (!_aead.Open(Nonce(), 0, record, 0, 5, record, 5, length - 16, record, record.Length - 16, inner, 0)) return null;
+        int end = inner.Length;
+        while (end > 0 && inner[end - 1] == 0) end--;
+        if (end == 0) return null;
+        type = inner[end - 1];
+        return Tls.Slice(inner, 0, end - 1);
+    }
+}
+
+/// RFC 8446's key schedule over HMAC-SHA256.
+static class Tls
+{
+    public static byte[] Extract(byte[] salt, byte[] ikm) => HMACSHA256.HashData(salt, ikm);
+
+    public static byte[] ExpandLabel(byte[] secret, string label, byte[] context, int length)
+    {
+        byte[] name = Encoding.ASCII.GetBytes("tls13 " + label);
+        MemoryStream info = new MemoryStream();
+        info.WriteByte((byte)(length >> 8)); info.WriteByte((byte)length);
+        info.WriteByte((byte)name.Length); info.Write(name, 0, name.Length);
+        info.WriteByte((byte)context.Length); info.Write(context, 0, context.Length);
+        info.WriteByte(1);
+        return Slice(HMACSHA256.HashData(secret, info.ToArray()), 0, length);
+    }
+
+    public static byte[] Derive(byte[] secret, string label, byte[] hash) => ExpandLabel(secret, label, hash, 32);
+
+    public static byte[] Slice(byte[] source, int offset, int count)
+    {
+        byte[] answer = new byte[count];
+        Array.Copy(source, offset, answer, 0, count);
+        return answer;
+    }
+
+    public static int U16(byte[] b, int at) => (b[at] << 8) | b[at + 1];
+    public static int U24(byte[] b, int at) => (b[at] << 16) | (b[at + 1] << 8) | b[at + 2];
+
+    public static byte[] Message(int type, byte[] body)
+    {
+        byte[] m = new byte[4 + body.Length];
+        m[0] = (byte)type; m[1] = (byte)(body.Length >> 16); m[2] = (byte)(body.Length >> 8); m[3] = (byte)body.Length;
+        Array.Copy(body, 0, m, 4, body.Length);
+        return m;
+    }
+
+    public static byte[] FromHex(string text)
+    {
+        byte[] answer = new byte[text.Length / 2];
+        for (int i = 0; i < answer.Length; i++) answer[i] = Convert.ToByte(text.Substring(i * 2, 2), 16);
+        return answer;
+    }
+}
+
+/// A TLS 1.3 server in memory: what the client writes is taken a record at
+/// a time and answered; what it reads is what the server has queued.
+sealed class TestServer
+{
+    public static readonly byte[] Certificate = Tls.FromHex(
+        "3082012d3081e0a003020102020101300506032b65703016311430120603"
+      + "5504030c0b7365727665722e74657374301e170d32353031303130303030"
+      + "30305a170d3335303130313030303030305a30163114301206035504030c"
+      + "0b7365727665722e74657374302a300506032b657003210003a107bff3ce"
+      + "10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8a353305"
+      + "1300c0603551d130101ff04023000300e0603551d0f0101ff040403020780"
+      + "30130603551d25040c300a06082b06010505070301301c0603551d110415"
+      + "3013820b7365727665722e746573748704c0000201300506032b65700341"
+      + "00aa40c401bb1640075dd09e5de97d77f5744f1cf3ddae61f742c8977397"
+      + "5505c3e311de45ab9702a79738cdddc463555edcfcbdb9ff063372fd947e"
+      + "28b150bb09");
+    static readonly byte[] RetryRandom = Tls.FromHex("cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c");
+
+    readonly bool _retry, _corrupt, _hangUp;
+    readonly MemoryStream _in = new MemoryStream();
+    int _inAt;
+    readonly MemoryStream _out = new MemoryStream();
+    int _outAt;
+    IncrementalHash _transcript = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    byte[] _handshakeSecret = new byte[0], _master = new byte[0], _clientHandshake = new byte[0];
+    Protection? _send, _receive;
+    int _phase;   // 0 the first hello, 1 the hello after a retry, 2 the client's Finished, 3 open
+
+    public string Sni = "none", Alpn = "none";
+    public bool OfferedChaCha, HelloSeen, Retried, ClientFinished, ClientClosed;
+    public string Shares = "";
+    public string Share = "";
+    public int ClientAlert = -1, ClientKeyUpdates;
+    public readonly MemoryStream Received = new MemoryStream();
+    public readonly List<int> RecordSizes = new List<int>();
+
+    public TestServer(bool retry, bool corrupt, bool hangUp) { _retry = retry; _corrupt = corrupt; _hangUp = hangUp; }
+
+    // ---- the bytes between the two -----------------------------------------------------
+
+    public int Read(byte[] buffer, int offset, int count)
+    {
+        byte[] all = _out.GetBuffer();
+        int n = Math.Min(count, (int)_out.Length - _outAt);
+        Array.Copy(all, _outAt, buffer, offset, n);
+        _outAt += n;
+        return n;
+    }
+
+    public void Write(byte[] buffer, int offset, int count)
+    {
+        _in.Write(buffer, offset, count);
+        byte[] all = _in.GetBuffer();
+        while (_in.Length - _inAt >= 5)
+        {
+            int length = Tls.U16(all, _inAt + 3);
+            if (_in.Length - _inAt < 5 + length) break;
+            byte[] record = Tls.Slice(all, _inAt, 5 + length);
+            _inAt += 5 + length;
+            Take(record);
+        }
+    }
+
+    void Queue(byte[] bytes) { _out.Write(bytes, 0, bytes.Length); }
+
+    void QueuePlain(int type, byte[] content)
+    {
+        Queue(new byte[] { (byte)type, 3, 3, (byte)(content.Length >> 8), (byte)content.Length });
+        Queue(content);
+    }
+
+    // ---- what the client sends -----------------------------------------------------------
+
+    void Take(byte[] record)
+    {
+        int type = record[0];
+        if (type == 20) return;                                  // change_cipher_spec, for middleboxes
+        if (_phase < 2)
+        {
+            if (type == 22) Hello(Tls.Slice(record, 5, record.Length - 5));
+            return;
+        }
+        int inner;
+        byte[]? content = _receive!.Open(record, out inner);
+        if (content == null) throw new IOException("a client record did not open");
+        if (inner == 21) { if (content[1] == 0) ClientClosed = true; else ClientAlert = content[1]; return; }
+        if (inner == 23) { Received.Write(content, 0, content.Length); RecordSizes.Add(content.Length); return; }
+        if (inner != 22) throw new IOException("a client record of type " + inner);
+        if (_phase == 2)
+        {
+            byte[] finishedKey = Tls.ExpandLabel(_clientHandshake, "finished", new byte[0], 32);
+            byte[] wanted = HMACSHA256.HashData(finishedKey, _transcript.GetCurrentHash());
+            ClientFinished = content.Length == 36 && content[0] == 20 && Same(Tls.Slice(content, 4, 32), wanted);
+            _transcript.AppendData(content);
+            _receive = new Protection(Tls.Derive(_master, "c ap traffic", _serverFinishedHash));
+            _phase = 3;
+            return;
+        }
+        if (content[0] == 24)
+        {
+            ClientKeyUpdates++;
+            _receive = new Protection(Tls.ExpandLabel(_receive.Secret, "traffic upd", new byte[0], 32));
+        }
+    }
+
+    byte[] _serverFinishedHash = new byte[0];
+
+    void Hello(byte[] hello)
+    {
+        HelloSeen = true;
+        int at = 4 + 2 + 32;
+        byte[] session = Tls.Slice(hello, at + 1, hello[at]);
+        at += 1 + hello[at];
+        int suites = Tls.U16(hello, at);
+        for (int i = 0; i < suites; i += 2) if (Tls.U16(hello, at + 2 + i) == 0x1303) OfferedChaCha = true;
+        at += 2 + suites;
+        at += 1 + hello[at];
+        int end = at + 2 + Tls.U16(hello, at);
+        at += 2;
+        byte[] x25519 = new byte[0], p256 = new byte[0];
+        List<string> alpn = new List<string>();
+        while (at < end)
+        {
+            int ext = Tls.U16(hello, at), length = Tls.U16(hello, at + 2);
+            int body = at + 4;
+            if (ext == 0) Sni = Encoding.ASCII.GetString(hello, body + 5, Tls.U16(hello, body + 3));
+            if (ext == 16)
+                for (int p = body + 2; p < body + length; p += 1 + hello[p]) alpn.Add(Encoding.ASCII.GetString(hello, p + 1, hello[p]));
+            if (ext == 51)
+                for (int s = body + 2; s < body + length; s += 4 + Tls.U16(hello, s + 2))
+                {
+                    int group = Tls.U16(hello, s);
+                    byte[] key = Tls.Slice(hello, s + 4, Tls.U16(hello, s + 2));
+                    if (group == 0x001d) x25519 = key;
+                    if (group == 0x0017) p256 = key;
+                    if (_phase == 0) Shares += (Shares.Length > 0 ? "," : "") + (group == 0x001d ? "x25519" : group == 0x0017 ? "secp256r1" : group.ToString());
+                }
+            at = body + length;
+        }
+        if (alpn.Count > 0) Alpn = string.Join(",", alpn);
+
+        if (_retry && _phase == 0)
+        {
+            // A HelloRetryRequest for secp256r1: the first hello's hash
+            // stands for it in the transcript from here on.
+            byte[] first = SHA256.HashData(hello);
+            _transcript.AppendData(Tls.Message(254, first));
+            byte[] hrr = ServerHello(RetryRandom, session, 0x0017, null);
+            _transcript.AppendData(hrr);
+            QueuePlain(22, hrr);
+            Retried = true;
+            _phase = 1;
+            return;
+        }
+        _transcript.AppendData(hello);
+
+        byte[] shared = new byte[32], serverShare;
+        byte[] secret = new byte[32];
+        for (int i = 0; i < 32; i++) secret[i] = (byte)(0x80 + i);
+        if (_retry)
+        {
+            Share = "secp256r1";
+            serverShare = new byte[65];
+            CorsacSecureCrypto_P256Workspace p = new CorsacSecureCrypto_P256Workspace();
+            if (!p.DerivePublicKey(secret, 0, serverShare, 0, false) || !p.Agree(secret, 0, p256, 0, p256.Length, shared, 0))
+                throw new InvalidOperationException("p256");
+            p.Close();
+        }
+        else
+        {
+            Share = "x25519";
+            serverShare = new byte[32];
+            if (!CorsacSecureCrypto_X25519.PublicKey(secret, 0, serverShare, 0) || !CorsacSecureCrypto_X25519.Agree(secret, 0, x25519, 0, shared, 0))
+                throw new InvalidOperationException("x25519");
+        }
+        byte[] random = new byte[32];
+        for (int i = 0; i < 32; i++) random[i] = (byte)(0x40 + i);
+        byte[] serverHello = ServerHello(random, session, _retry ? 0x0017 : 0x001d, serverShare);
+        _transcript.AppendData(serverHello);
+        QueuePlain(22, serverHello);
+        QueuePlain(20, new byte[] { 1 });
+        if (_hangUp) return;
+
+        byte[] empty = SHA256.HashData(new byte[0]);
+        byte[] early = Tls.Extract(new byte[32], new byte[32]);
+        _handshakeSecret = Tls.Extract(Tls.Derive(early, "derived", empty), shared);
+        byte[] hash = _transcript.GetCurrentHash();
+        _clientHandshake = Tls.Derive(_handshakeSecret, "c hs traffic", hash);
+        byte[] serverHandshake = Tls.Derive(_handshakeSecret, "s hs traffic", hash);
+        _master = Tls.Extract(Tls.Derive(_handshakeSecret, "derived", empty), new byte[32]);
+        _send = new Protection(serverHandshake);
+        _receive = new Protection(_clientHandshake);
+
+        // EncryptedExtensions: h2 chosen when the client offered it.
+        byte[] extensions = alpn.Contains("h2") ? Tls.FromHex("001000050003026832") : new byte[0];
+        byte[] ee = new byte[2 + extensions.Length];
+        ee[0] = (byte)(extensions.Length >> 8); ee[1] = (byte)extensions.Length;
+        Array.Copy(extensions, 0, ee, 2, extensions.Length);
+        byte[] encrypted = Tls.Message(8, ee);
+        _transcript.AppendData(encrypted);
+
+        byte[] list = new byte[1 + 3 + 3 + Certificate.Length + 2];
+        int certs = 3 + Certificate.Length + 2;
+        list[1] = (byte)(certs >> 16); list[2] = (byte)(certs >> 8); list[3] = (byte)certs;
+        list[4] = (byte)(Certificate.Length >> 16); list[5] = (byte)(Certificate.Length >> 8); list[6] = (byte)Certificate.Length;
+        Array.Copy(Certificate, 0, list, 7, Certificate.Length);
+        byte[] certificate = Tls.Message(11, list);
+        _transcript.AppendData(certificate);
+
+        MemoryStream signed = new MemoryStream();
+        for (int i = 0; i < 64; i++) signed.WriteByte(0x20);
+        byte[] context = Encoding.ASCII.GetBytes("TLS 1.3, server CertificateVerify");
+        signed.Write(context, 0, context.Length);
+        signed.WriteByte(0);
+        byte[] transcriptHash = _transcript.GetCurrentHash();
+        signed.Write(transcriptHash, 0, transcriptHash.Length);
+        byte[] seed = new byte[32];
+        for (int i = 0; i < 32; i++) seed[i] = (byte)i;
+        byte[] signature = new byte[64];
+        byte[] message = signed.ToArray();
+        CorsacSecureCrypto_Ed25519Workspace ed = new CorsacSecureCrypto_Ed25519Workspace();
+        if (!CorsacSecureCrypto_Ed25519.Sign(seed, 0, message, 0, message.Length, signature, 0, ed)) throw new InvalidOperationException("ed25519");
+        ed.Close();
+        byte[] verifyBody = new byte[4 + 64];
+        verifyBody[0] = 0x08; verifyBody[1] = 0x07; verifyBody[2] = 0; verifyBody[3] = 64;
+        Array.Copy(signature, 0, verifyBody, 4, 64);
+        byte[] verify = Tls.Message(15, verifyBody);
+        _transcript.AppendData(verify);
+
+        byte[] finishedKey = Tls.ExpandLabel(serverHandshake, "finished", new byte[0], 32);
+        byte[] finished = Tls.Message(20, HMACSHA256.HashData(finishedKey, _transcript.GetCurrentHash()));
+        _transcript.AppendData(finished);
+        _serverFinishedHash = _transcript.GetCurrentHash();
+
+        MemoryStream flight = new MemoryStream();
+        foreach (byte[] m in new[] { encrypted, certificate, verify, finished }) flight.Write(m, 0, m.Length);
+        byte[] record = _send.Seal(22, flight.ToArray());
+        if (_corrupt) record[record.Length - 1] ^= 1;
+        Queue(record);
+        _send = new Protection(Tls.Derive(_master, "s ap traffic", _serverFinishedHash));
+        _phase = 2;
+    }
+
+    static byte[] ServerHello(byte[] random, byte[] session, int group, byte[]? share)
+    {
+        MemoryStream b = new MemoryStream();
+        b.WriteByte(3); b.WriteByte(3);
+        b.Write(random, 0, 32);
+        b.WriteByte((byte)session.Length); b.Write(session, 0, session.Length);
+        b.WriteByte(0x13); b.WriteByte(0x03); b.WriteByte(0);
+        int shareLength = share == null ? 2 : 4 + share.Length;
+        int extensions = 6 + 4 + shareLength;
+        b.WriteByte((byte)(extensions >> 8)); b.WriteByte((byte)extensions);
+        b.Write(new byte[] { 0, 43, 0, 2, 3, 4 }, 0, 6);
+        b.WriteByte(0); b.WriteByte(51); b.WriteByte((byte)(shareLength >> 8)); b.WriteByte((byte)shareLength);
+        b.WriteByte((byte)(group >> 8)); b.WriteByte((byte)group);
+        if (share != null) { b.WriteByte((byte)(share.Length >> 8)); b.WriteByte((byte)share.Length); b.Write(share, 0, share.Length); }
+        return Tls.Message(2, b.ToArray());
+    }
+
+    // ---- what the server sends once open --------------------------------------------------
+
+    public void SendApplication(string text) { Queue(_send!.Seal(23, Encoding.ASCII.GetBytes(text))); }
+
+    public void SendKeyUpdate(bool requestClient)
+    {
+        Queue(_send!.Seal(22, new byte[] { 24, 0, 0, 1, (byte)(requestClient ? 1 : 0) }));
+        _send = new Protection(Tls.ExpandLabel(_send.Secret, "traffic upd", new byte[0], 32));
+    }
+
+    public void SendCloseNotify() { Queue(_send!.Seal(21, new byte[] { 1, 0 })); }
+
+    static bool Same(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+}
+
+/// The client's side of the connection, as a NetworkStream would be: reads
+/// of at most `readChunk` bytes, writes handed over `writeChunk` at a time.
+sealed class TestStream : Stream
+{
+    readonly TestServer _server;
+    readonly int _readChunk, _writeChunk;
+    public bool Disposed;
+
+    public TestStream(TestServer server, int readChunk, int writeChunk) { _server = server; _readChunk = readChunk; _writeChunk = writeChunk; }
+
+    public override bool CanRead => !Disposed;
+    public override bool CanWrite => !Disposed;
+    public override bool CanSeek => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Flush() { }
+
+    public override int Read(byte[] buffer, int offset, int count) => _server.Read(buffer, offset, Math.Min(count, _readChunk));
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        for (int at = 0; at < count; at += _writeChunk) _server.Write(buffer, offset + at, Math.Min(_writeChunk, count - at));
+    }
+
+    protected override void Dispose(bool disposing) { Disposed = true; base.Dispose(disposing); }
+}
+
+static class Program
+{
+    static X509Certificate2 Root = new X509Certificate2(TestServer.Certificate);
+
+    static SslClientAuthenticationOptions Options(string host, bool trusted)
+    {
+        SslClientAuthenticationOptions o = new SslClientAuthenticationOptions();
+        o.TargetHost = host;
+        o.ApplicationProtocols = new List<SslApplicationProtocol> { SslApplicationProtocol.Http2, SslApplicationProtocol.Http11 };
+        if (trusted)
+        {
+            X509ChainPolicy policy = new X509ChainPolicy();
+            policy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            policy.CustomTrustStore.Add(Root);
+            o.CertificateChainPolicy = policy;
+        }
+        return o;
+    }
+
+    static string Failure(Exception e) => e.GetType().Name + ": " + e.Message;
+
+    static int Main()
+    {
+        SslApplicationProtocol odd = new SslApplicationProtocol(new byte[] { 0xff, 0x01 });
+        Console.WriteLine("alpn: " + SslApplicationProtocol.Http2 + " " + SslApplicationProtocol.Http11 + " "
+            + (new SslApplicationProtocol("h2") == SslApplicationProtocol.Http2) + " " + SslApplicationProtocol.Http2.Equals(SslApplicationProtocol.Http11)
+            + " " + odd + " " + (default(SslApplicationProtocol).ToString() == ""));
+
+        TestServer server = new TestServer(false, false, false);
+        TestStream stream = new TestStream(server, 1, 2);
+        SslStream ssl = new SslStream(stream, false);
+        byte[] buffer = new byte[64];
+        try { ssl.Read(buffer, 0, 1); }
+        catch (Exception e) { Console.WriteLine("before: " + Failure(e)); }
+
+        ssl.AuthenticateAsClient(Options("server.test", true));
+        Console.WriteLine("handshake: " + ssl.IsAuthenticated + " " + ssl.SslProtocol + " " + ssl.NegotiatedCipherSuite + " " + ssl.NegotiatedApplicationProtocol
+            + " " + ssl.RemoteCertificate!.Subject + " " + ssl.TargetHostName);
+        Console.WriteLine("  offered: sni=" + server.Sni + " alpn=" + server.Alpn + " shares=" + server.Shares + " chacha=" + server.OfferedChaCha);
+        Console.WriteLine("  client finished: " + server.ClientFinished);
+        Console.WriteLine("  flags: encrypted=" + ssl.IsEncrypted + " signed=" + ssl.IsSigned + " server=" + ssl.IsServer + " mutual=" + ssl.IsMutuallyAuthenticated
+            + " read=" + ssl.CanRead + " write=" + ssl.CanWrite + " seek=" + ssl.CanSeek + " timeout=" + ssl.CanTimeout + " local=" + (ssl.LocalCertificate == null ? "none" : "some"));
+
+        server.SendApplication("hello from the server");
+        StringBuilder pieces = new StringBuilder();
+        for (int i = 0; i < 5; i++)
+        {
+            int n = ssl.Read(buffer, 0, 5);
+            pieces.Append(i == 0 ? "" : "|").Append(Encoding.ASCII.GetString(buffer, 0, n));
+        }
+        Console.WriteLine("  read: " + pieces);
+
+        server.SendKeyUpdate(true);
+        server.SendApplication("after the key update");
+        int got = ssl.Read(buffer, 0, buffer.Length);
+        Console.WriteLine("  after key update: " + Encoding.ASCII.GetString(buffer, 0, got) + "; client updated its keys: " + server.ClientKeyUpdates);
+
+        ssl.Write(Encoding.ASCII.GetBytes("ping"));
+        byte[] big = new byte[20000];
+        for (int i = 0; i < big.Length; i++) big[i] = (byte)(i * 7 + 3);
+        ssl.Write(big, 0, big.Length);
+        byte[] received = server.Received.ToArray();
+        bool intact = received.Length == 4 + big.Length && Encoding.ASCII.GetString(received, 0, 4) == "ping";
+        for (int i = 0; intact && i < big.Length; i++) intact = received[4 + i] == big[i];
+        Console.WriteLine("  server got: ping in 1 record, then " + (received.Length - 4) + " bytes in " + (server.RecordSizes.Count - 1) + " records, intact " + intact);
+
+        server.SendApplication("async");
+        int asyncRead = ssl.ReadAsync(buffer, 0, buffer.Length).GetAwaiter().GetResult();
+        long before = server.Received.Length;
+        ssl.WriteAsync(Encoding.ASCII.GetBytes("goodbye"), 0, 7).GetAwaiter().GetResult();
+        Console.WriteLine("  async: " + asyncRead + " bytes read, server got " + (server.Received.Length - before) + " more");
+
+        server.SendCloseNotify();
+        Console.WriteLine("  end: " + ssl.Read(buffer, 0, buffer.Length) + " " + ssl.Read(buffer, 0, buffer.Length));
+        ssl.ShutdownAsync().GetAwaiter().GetResult();
+        Console.WriteLine("  client close_notify: " + server.ClientClosed);
+        ssl.Dispose();
+        string afterDispose = "";
+        try { ssl.Read(buffer, 0, 1); }
+        catch (Exception e) { afterDispose = e.GetType().Name; }
+        Console.WriteLine("  disposed: read=" + ssl.CanRead + " " + afterDispose + " inner disposed=" + stream.Disposed);
+
+        TestServer retry = new TestServer(true, false, false);
+        SslStream retried = new SslStream(new TestStream(retry, 7, 3));
+        retried.AuthenticateAsClient(Options("server.test", true));
+        Console.WriteLine("retry: " + retried.IsAuthenticated + " " + retried.NegotiatedCipherSuite + " retried=" + retry.Retried + " share=" + retry.Share);
+
+        TestServer ip = new TestServer(false, false, false);
+        SslStream byAddress = new SslStream(new TestStream(ip, 4096, 4096));
+        byAddress.AuthenticateAsClient(Options("192.0.2.1", true));
+        Console.WriteLine("ip: " + byAddress.IsAuthenticated + " target=" + byAddress.TargetHostName + " sni=" + ip.Sni);
+
+        Refused("untrusted", Options("server.test", false), null);
+        TestServer accepted = new TestServer(false, false, false);
+        SslStream withCallback = new SslStream(new TestStream(accepted, 4096, 4096), false, (sender, certificate, chain, errors) =>
+        {
+            StringBuilder s = new StringBuilder("  callback: " + errors + " " + (certificate == null ? "none" : certificate.Subject));
+            if (chain != null)
+            {
+                s.Append(" elements=" + chain.ChainElements.Count);
+                foreach (X509ChainStatus status in chain.ChainStatus) s.Append(" [" + status.Status + "]");
+            }
+            Console.WriteLine(s.ToString());
+            return true;
+        });
+        withCallback.AuthenticateAsClient(Options("server.test", false));
+        Console.WriteLine("callback: " + withCallback.IsAuthenticated);
+
+        Refused("mismatch", Options("wrong.test", true), null);
+        SslClientAuthenticationOptions late = Options("server.test", true);
+        late.CertificateChainPolicy!.VerificationTime = new DateTime(2036, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        late.CertificateChainPolicy.VerificationTimeIgnored = false;
+        Refused("expired", late, null);
+        Refused("rejected", Options("server.test", true), (sender, certificate, chain, errors) => false);
+
+        try { new SslStream(new TestStream(new TestServer(false, true, false), 4096, 4096)).AuthenticateAsClient(Options("server.test", true)); }
+        catch (Exception e) { Console.WriteLine("corrupt: " + Failure(e)); }
+        try { new SslStream(new TestStream(new TestServer(false, false, true), 4096, 4096)).AuthenticateAsClient(Options("server.test", true)); }
+        catch (Exception e) { Console.WriteLine("eof: " + Failure(e)); }
+
+        TestServer old = new TestServer(false, false, false);
+        SslClientAuthenticationOptions tls12 = Options("server.test", true);
+        tls12.EnabledSslProtocols = SslProtocols.Tls12;
+        try { new SslStream(new TestStream(old, 4096, 4096)).AuthenticateAsClient(tls12); }
+        catch (Exception e) { Console.WriteLine("tls12: " + e.GetType().Name + ", hello sent=" + old.HelloSeen); }
+
+        SslStream later = new SslStream(new TestStream(new TestServer(false, false, false), 4096, 4096));
+        later.AuthenticateAsClientAsync(Options("server.test", true)).GetAwaiter().GetResult();
+        Console.WriteLine("async handshake: " + later.IsAuthenticated + " " + later.NegotiatedApplicationProtocol);
+        return 0;
+    }
+
+    static void Refused(string name, SslClientAuthenticationOptions options, RemoteCertificateValidationCallback? callback)
+    {
+        TestServer server = new TestServer(false, false, false);
+        try
+        {
+            new SslStream(new TestStream(server, 4096, 4096), false, callback).AuthenticateAsClient(options);
+            Console.WriteLine(name + ": accepted");
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(name + ": " + Failure(e));
+            if (server.ClientAlert >= 0) Console.WriteLine("  alert from client: " + server.ClientAlert);
+        }
+    }
+}

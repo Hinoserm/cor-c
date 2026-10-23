@@ -1,0 +1,403 @@
+// test: x509_certificate_fields_and_extensions
+// expect-exit: 0
+// expect-output:
+// == chain-root
+// Subject CN=Chain Root, O=CORSAC Test
+// Issuer CN=Chain Root, O=CORSAC Test
+// SerialNumber 01 Thumbprint 0E7437E68AED6F152757E4A5FA9C98D35F67C133
+// NotBefore 2026-01-01 00:00:00Z NotAfter 2046-01-01 00:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName Chain Root | DnsName Chain Root | IssuerSimpleName Chain Root
+// SubjectName CN=Chain Root, O=CORSAC Test |  45 bytes
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 6DB8DEB36B5A9375624838E3CBD7D2EC9AA1EB35 6DB8DEB36B5A9375624838E3CBD7D2EC9AA1EB35
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=6DB8DEB36B5A9375624838E3CBD7D2EC9AA1EB35 issuer=none raw=none serial=none
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == chain-intermediate
+// Subject CN=Chain Intermediate, O=CORSAC Test
+// Issuer CN=Chain Root, O=CORSAC Test
+// SerialNumber 02 Thumbprint 6705E19C2B4866475F7961923DF0C014008EA2B4
+// NotBefore 2026-01-01 00:00:00Z NotAfter 2044-01-01 00:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName Chain Intermediate | DnsName Chain Intermediate | IssuerSimpleName Chain Root
+// SubjectName CN=Chain Intermediate, O=CORSAC Test |  53 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=True len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension CF9691950153A96047BCEE8AC591BA2E9B332320 CF9691950153A96047BCEE8AC591BA2E9B332320
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=6DB8DEB36B5A9375624838E3CBD7D2EC9AA1EB35 issuer=none raw=none serial=none
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == chain-leaf
+// Subject CN=chain.test, O=CORSAC Test
+// Issuer CN=Chain Intermediate, O=CORSAC Test
+// SerialNumber 03 Thumbprint AF8B5813574665D45E4294432E016EE0F05F4EF4
+// NotBefore 2026-01-01 00:00:00Z NotAfter 2040-01-01 00:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName chain.test | DnsName chain.test | IssuerSimpleName Chain Intermediate
+// SubjectName CN=chain.test, O=CORSAC Test |  45 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension DigitalSignature
+// ext 2.5.29.37 X509v3 Extended Key Usage critical False X509EnhancedKeyUsageExtension 1.3.6.1.5.5.7.3.1(TLS Web Server Authentication)
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:chain.test
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 272F7946D400CFBFCFF514299B18C372BE95C3A6 272F7946D400CFBFCFF514299B18C372BE95C3A6
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=CF9691950153A96047BCEE8AC591BA2E9B332320 issuer=none raw=none serial=none
+// hosts YYY YYY nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == client-leaf
+// Subject CN=chain.test, O=CORSAC Test
+// Issuer CN=Chain Intermediate, O=CORSAC Test
+// SerialNumber 04 Thumbprint CB5BD1B97A4A8DF195587865DD76F5B3DB2B6DE4
+// NotBefore 2026-01-01 00:00:00Z NotAfter 2040-01-01 00:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName chain.test | DnsName chain.test | IssuerSimpleName Chain Intermediate
+// SubjectName CN=chain.test, O=CORSAC Test |  45 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension DigitalSignature
+// ext 2.5.29.37 X509v3 Extended Key Usage critical False X509EnhancedKeyUsageExtension 1.3.6.1.5.5.7.3.2(TLS Web Client Authentication)
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:chain.test
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 1D042DA646C2EFD4C730539B30CA971C5DDB86B1 1D042DA646C2EFD4C730539B30CA971C5DDB86B1
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=CF9691950153A96047BCEE8AC591BA2E9B332320 issuer=none raw=none serial=none
+// hosts YYY YYY nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == short-leaf
+// Subject CN=chain.test, O=CORSAC Test
+// Issuer CN=Chain Intermediate, O=CORSAC Test
+// SerialNumber 05 Thumbprint AAE0F704B08CDDF9ED8FF589B18DE9EB152355C8
+// NotBefore 2026-01-01 00:00:00Z NotAfter 2027-01-01 00:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName chain.test | DnsName chain.test | IssuerSimpleName Chain Intermediate
+// SubjectName CN=chain.test, O=CORSAC Test |  45 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension DigitalSignature
+// ext 2.5.29.37 X509v3 Extended Key Usage critical False X509EnhancedKeyUsageExtension 1.3.6.1.5.5.7.3.1(TLS Web Server Authentication)
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:chain.test
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension D3B670943C922F776ACCDAD699C643F07E5D1B0C D3B670943C922F776ACCDAD699C643F07E5D1B0C
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=CF9691950153A96047BCEE8AC591BA2E9B332320 issuer=none raw=none serial=none
+// hosts YYY YYY nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == rsa-leaf
+// Subject CN=ignored.example.test, O=Vulpecula Industries, C=US
+// Issuer CN=CORSAC RSA Intermediate, O=Vulpecula Industries, C=US
+// SerialNumber 1003 Thumbprint 747456917C1E0962BDDE7C3F5A94E910B2FAED40
+// NotBefore 2026-08-31 15:26:08Z NotAfter 2036-08-28 15:26:08Z
+// Version 3 SignatureAlgorithm 1.2.840.113549.1.1.11 sha256RSA
+// PublicKey 1.3.101.112 ED25519 32 bytes, parameters null
+// SimpleName ignored.example.test | DnsName www.example.test | IssuerSimpleName CORSAC RSA Intermediate
+// SubjectName CN=ignored.example.test, O=Vulpecula Industries, C=US |  77 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension DigitalSignature
+// ext 2.5.29.37 X509v3 Extended Key Usage critical False X509EnhancedKeyUsageExtension 1.3.6.1.5.5.7.3.1(TLS Web Server Authentication)
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:www.example.test dns:*.service.example.test ip:192.0.2.4
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension BB36BE19AD3EC84C8C3F396BE8F5900E32694574 BB36BE19AD3EC84C8C3F396BE8F5900E32694574
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=5F122882D68AB4ACC276B9098F8D3050CBF290B0 issuer=none raw=none serial=none
+// hosts nnn nnn nnn YYY nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == pss-leaf
+// Subject CN=ignored.example.test, O=Vulpecula Industries, C=US
+// Issuer CN=CORSAC RSA Intermediate, O=Vulpecula Industries, C=US
+// SerialNumber 1004 Thumbprint AB924488E8C91B813010224A380F0D9008B3F09E
+// NotBefore 2026-08-31 15:26:08Z NotAfter 2036-08-28 15:26:08Z
+// Version 3 SignatureAlgorithm 1.2.840.113549.1.1.10 RSASSA-PSS
+// PublicKey 1.3.101.112 ED25519 32 bytes, parameters null
+// SimpleName ignored.example.test | DnsName www.example.test | IssuerSimpleName CORSAC RSA Intermediate
+// SubjectName CN=ignored.example.test, O=Vulpecula Industries, C=US |  77 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension DigitalSignature
+// ext 2.5.29.37 X509v3 Extended Key Usage critical False X509EnhancedKeyUsageExtension 1.3.6.1.5.5.7.3.1(TLS Web Server Authentication)
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:www.example.test dns:*.service.example.test ip:192.0.2.4
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension BB36BE19AD3EC84C8C3F396BE8F5900E32694574 BB36BE19AD3EC84C8C3F396BE8F5900E32694574
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=5F122882D68AB4ACC276B9098F8D3050CBF290B0 issuer=none raw=none serial=none
+// hosts nnn nnn nnn YYY nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == rsa-intermediate
+// Subject CN=CORSAC RSA Intermediate, O=Vulpecula Industries, C=US
+// Issuer CN=CORSAC P256 Intermediate, O=Vulpecula Industries, C=US
+// SerialNumber 1002 Thumbprint BD02D0A7A8D84B42E0C17AC3A23A97BE466AC207
+// NotBefore 2026-08-31 15:26:08Z NotAfter 2045-10-30 15:26:08Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.113549.1.1.1 RSA 270 bytes, parameters 0500
+// SimpleName CORSAC RSA Intermediate | DnsName CORSAC RSA Intermediate | IssuerSimpleName CORSAC P256 Intermediate
+// SubjectName CN=CORSAC RSA Intermediate, O=Vulpecula Industries, C=US |  80 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=True len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 5F122882D68AB4ACC276B9098F8D3050CBF290B0 5F122882D68AB4ACC276B9098F8D3050CBF290B0
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=1D8A48B3EB6936DA55A4718FF4A94E70F5938854 issuer=none raw=none serial=none
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == p256-intermediate
+// Subject CN=CORSAC P256 Intermediate, O=Vulpecula Industries, C=US
+// Issuer CN=CORSAC Test Root, O=Vulpecula Industries, C=US
+// SerialNumber 1001 Thumbprint 9329604D01E55064D3DDE2296B75D1422B664CE6
+// NotBefore 2026-08-31 15:26:08Z NotAfter 2048-07-26 15:26:08Z
+// Version 3 SignatureAlgorithm 1.3.101.112 ED25519
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName CORSAC P256 Intermediate | DnsName CORSAC P256 Intermediate | IssuerSimpleName CORSAC Test Root
+// SubjectName CN=CORSAC P256 Intermediate, O=Vulpecula Industries, C=US |  81 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=True len=1
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 1D8A48B3EB6936DA55A4718FF4A94E70F5938854 1D8A48B3EB6936DA55A4718FF4A94E70F5938854
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=BEBD2B73D7974BFC80D912FA22933F9AAAE88582 issuer=none raw=none serial=none
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == test-root
+// Subject CN=CORSAC Test Root, O=Vulpecula Industries, C=US
+// Issuer CN=CORSAC Test Root, O=Vulpecula Industries, C=US
+// SerialNumber 419D5B4AF1AA84C713CA9E27D7D7506FEF3654A0 Thumbprint 1EA8CF5A2156A7E8CB88D26217D6A4BBFAB43642
+// NotBefore 2026-08-31 15:26:08Z NotAfter 2051-04-22 15:26:08Z
+// Version 3 SignatureAlgorithm 1.3.101.112 ED25519
+// PublicKey 1.3.101.112 ED25519 32 bytes, parameters null
+// SimpleName CORSAC Test Root | DnsName CORSAC Test Root | IssuerSimpleName CORSAC Test Root
+// SubjectName CN=CORSAC Test Root, O=Vulpecula Industries, C=US |  73 bytes
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension BEBD2B73D7974BFC80D912FA22933F9AAAE88582 BEBD2B73D7974BFC80D912FA22933F9AAAE88582
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=BEBD2B73D7974BFC80D912FA22933F9AAAE88582 issuer=none raw=none serial=none
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=True len=2
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == isrg-root-x1
+// Subject CN=ISRG Root X1, O=Internet Security Research Group, C=US
+// Issuer CN=ISRG Root X1, O=Internet Security Research Group, C=US
+// SerialNumber 008210CFB0D240E3594463E0BB63828B00 Thumbprint CABD2A79A1076A31F21D253635CB039D4329A5E8
+// NotBefore 2015-06-04 11:04:38Z NotAfter 2035-06-04 11:04:38Z
+// Version 3 SignatureAlgorithm 1.2.840.113549.1.1.11 sha256RSA
+// PublicKey 1.2.840.113549.1.1.1 RSA 526 bytes, parameters 0500
+// SimpleName ISRG Root X1 | DnsName ISRG Root X1 | IssuerSimpleName ISRG Root X1
+// SubjectName CN=ISRG Root X1, O=Internet Security Research Group, C=US |  81 bytes
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=False len=0
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 79B459E67BB6E5E40173800888C81A58F6E99B6E 79B459E67BB6E5E40173800888C81A58F6E99B6E
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == isrg-root-x2
+// Subject CN=ISRG Root X2, O=Internet Security Research Group, C=US
+// Issuer CN=ISRG Root X2, O=Internet Security Research Group, C=US
+// SerialNumber 41D29DD172EAEEA780C12C6CE92F8752 Thumbprint BDB1B93CD5978D45C6261455F8DB95C75AD153AF
+// NotBefore 2020-09-04 00:00:00Z NotAfter 2040-09-17 16:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.3 sha384ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 97 bytes, parameters 06052B81040022
+// SimpleName ISRG Root X2 | DnsName ISRG Root X2 | IssuerSimpleName ISRG Root X2
+// SubjectName CN=ISRG Root X2, O=Internet Security Research Group, C=US |  81 bytes
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=False len=0
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 7C4296AEDE4B483BFA92F89E8CCF6D8BA9723795 7C4296AEDE4B483BFA92F89E8CCF6D8BA9723795
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == digicert-g2
+// Subject CN=DigiCert Global Root G2, OU=www.digicert.com, O=DigiCert Inc, C=US
+// Issuer CN=DigiCert Global Root G2, OU=www.digicert.com, O=DigiCert Inc, C=US
+// SerialNumber 033AF1E6A711A9A0BB2864B11D09FAE5 Thumbprint DF3C24F9BFD666761B268073FE06D1CC8D4F82A4
+// NotBefore 2013-08-01 12:00:00Z NotAfter 2038-01-15 12:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.113549.1.1.11 sha256RSA
+// PublicKey 1.2.840.113549.1.1.1 RSA 270 bytes, parameters 0500
+// SimpleName DigiCert Global Root G2 | DnsName DigiCert Global Root G2 | IssuerSimpleName DigiCert Global Root G2
+// SubjectName CN=DigiCert Global Root G2, OU=www.digicert.com, O=DigiCert Inc, C=US |  99 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign, DigitalSignature
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 4E2254201895E6E36EE60FFAFAB912ED06178F39 4E2254201895E6E36EE60FFAFAB912ED06178F39
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == amazon-root-3
+// Subject CN=Amazon Root CA 3, O=Amazon, C=US
+// Issuer CN=Amazon Root CA 3, O=Amazon, C=US
+// SerialNumber 066C9FD5749736663F3B0B9AD9E89E7603F24A Thumbprint 0D44DD8C3C8C1A1A58756481E90F2E2AFFB3D26E
+// NotBefore 2015-05-26 00:00:00Z NotAfter 2040-05-26 00:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName Amazon Root CA 3 | DnsName Amazon Root CA 3 | IssuerSimpleName Amazon Root CA 3
+// SubjectName CN=Amazon Root CA 3, O=Amazon, C=US |  59 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension CrlSign, KeyCertSign, DigitalSignature
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension ABB6DBD7069E37AC3086079170C79CC419B178C0 ABB6DBD7069E37AC3086079170C79CC419B178C0
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == aki-leaf
+// Subject CN=aki.test
+// Issuer CN=Chain Intermediate, O=CORSAC Test
+// SerialNumber 00A1B2 Thumbprint 8CBB73E8EC6F688A01C4EDD813BF2574D4B3EE89
+// NotBefore 2026-01-01 00:00:00Z NotAfter 2040-01-01 00:00:00Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName aki.test | DnsName aki.test | IssuerSimpleName Chain Intermediate
+// SubjectName CN=aki.test |  21 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension C30F599518690CA7D7F096957D528A0A844AEB1C C30F599518690CA7D7F096957D528A0A844AEB1C
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=CF9691950153A96047BCEE8AC591BA2E9B332320 issuer=CN=Chain Root, O=CORSAC Test raw=A12FA42D302B31143012060355040A0C0B434F5253414320546573743113301106035504030C0A436861696E20526F6F74 serial=02
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:aki.test ip:10.0.0.1 ip:2001:db8::5
+// hosts nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn nnn ! nnn nnn ! ! !
+// == ed25519-leaf
+// Subject CN=server.test
+// Issuer CN=server.test
+// SerialNumber 01 Thumbprint 287C7C183AF0F3141C3B34A87E1A653FC17B4AD6
+// NotBefore 2025-01-01 00:00:00Z NotAfter 2035-01-01 00:00:00Z
+// Version 3 SignatureAlgorithm 1.3.101.112 ED25519
+// PublicKey 1.3.101.112 ED25519 32 bytes, parameters null
+// SimpleName server.test | DnsName server.test | IssuerSimpleName server.test
+// SubjectName CN=server.test |  24 bytes
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// ext 2.5.29.15 X509v3 Key Usage critical True X509KeyUsageExtension DigitalSignature
+// ext 2.5.29.37 X509v3 Extended Key Usage critical False X509EnhancedKeyUsageExtension 1.3.6.1.5.5.7.3.1(TLS Web Server Authentication)
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:server.test ip:192.0.2.1
+// hosts nnn nnn YYY nnn nnn nnn nnn YYY nnn nnn nnn ! nnn nnn ! ! !
+// == openssl-p256
+// Subject O=CORSAC Test, CN=server.test
+// Issuer O=CORSAC Test, CN=server.test
+// SerialNumber 4DF446C07D0794220D048AB084565CDFAA26A635 Thumbprint 6D161B41C2CBF081A97FC16F87D63FD962EC4419
+// NotBefore 2026-10-23 00:15:01Z NotAfter 2036-10-20 00:15:01Z
+// Version 3 SignatureAlgorithm 1.2.840.10045.4.3.2 sha256ECDSA
+// PublicKey 1.2.840.10045.2.1 ECC 65 bytes, parameters 06082A8648CE3D030107
+// SimpleName server.test | DnsName server.test | IssuerSimpleName server.test
+// SubjectName O=CORSAC Test, CN=server.test |  46 bytes
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension 13980E334FCCB905D940440DF0DAB2E7F6748604 13980E334FCCB905D940440DF0DAB2E7F6748604
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=13980E334FCCB905D940440DF0DAB2E7F6748604 issuer=none raw=none serial=none
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:server.test ip:127.0.0.1
+// ext 2.5.29.37 X509v3 Extended Key Usage critical False X509EnhancedKeyUsageExtension 1.3.6.1.5.5.7.3.1(TLS Web Server Authentication)
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=False haslen=False len=0
+// hosts nnn nnn YYY nnn nnn nnn YYY nnn nnn nnn nnn ! nnn nnn ! ! !
+// same as loaded True, PEM round trip True
+// == openssl-rsa
+// Subject CN=server.test
+// Issuer CN=server.test
+// SerialNumber 31E1D5AC0FCEDD5CC22F2B36AF631C43766D92B8 Thumbprint CE291BBF9FEF79DA3C5957955F3FC50C39BFFBC8
+// NotBefore 2026-10-23 00:15:01Z NotAfter 2036-10-20 00:15:01Z
+// Version 3 SignatureAlgorithm 1.2.840.113549.1.1.11 sha256RSA
+// PublicKey 1.2.840.113549.1.1.1 RSA 270 bytes, parameters 0500
+// SimpleName server.test | DnsName server.test | IssuerSimpleName server.test
+// SubjectName CN=server.test |  24 bytes
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension BB65E4ABA628C182D9A653D5435D6A8C8C3BFBEC BB65E4ABA628C182D9A653D5435D6A8C8C3BFBEC
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=BB65E4ABA628C182D9A653D5435D6A8C8C3BFBEC issuer=none raw=none serial=none
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=False len=0
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:server.test ip:127.0.0.1
+// hosts nnn nnn YYY nnn nnn nnn YYY nnn nnn nnn nnn ! nnn nnn ! ! !
+// same as loaded True, PEM round trip True
+// == openssl-ed25519
+// Subject CN=server.test
+// Issuer CN=server.test
+// SerialNumber 7EB1B4854CFCF97DEFE08EC60D29EEEDDDA4AFFF Thumbprint 0314833722E36FBB01A93762EEABB808E12A171F
+// NotBefore 2026-10-23 00:15:01Z NotAfter 2036-10-20 00:15:01Z
+// Version 3 SignatureAlgorithm 1.3.101.112 ED25519
+// PublicKey 1.3.101.112 ED25519 32 bytes, parameters null
+// SimpleName server.test | DnsName server.test | IssuerSimpleName server.test
+// SubjectName CN=server.test |  24 bytes
+// ext 2.5.29.14 X509v3 Subject Key Identifier critical False X509SubjectKeyIdentifierExtension B395E16D1F7BC7E403C23C85DBC0A0BE7595E99A B395E16D1F7BC7E403C23C85DBC0A0BE7595E99A
+// ext 2.5.29.35 X509v3 Authority Key Identifier critical False X509AuthorityKeyIdentifierExtension key=B395E16D1F7BC7E403C23C85DBC0A0BE7595E99A issuer=none raw=none serial=none
+// ext 2.5.29.19 X509v3 Basic Constraints critical True X509BasicConstraintsExtension ca=True haslen=False len=0
+// ext 2.5.29.17 X509v3 Subject Alternative Name critical False X509SubjectAlternativeNameExtension dns:server.test ip:127.0.0.1
+// hosts nnn nnn YYY nnn nnn nnn YYY nnn nnn nnn nnn ! nnn nnn ! ! !
+// same as loaded True, PEM round trip True
+// aki from key 30058003010203
+// aki from issuer 3034A12FA42D302B31143012060355040A0C0B434F5253414320546573743113301106035504030C0A436861696E20526F6F74820102
+// aki full 303980020908A12FA42D302B31143012060355040A0C0B434F5253414320546573743113301106035504030C0A436861696E20526F6F74820200A1
+// aki from certificate 304A80146DB8DEB36B5A9375624838E3CBD7D2EC9AA1EB35A12FA42D302B31143012060355040A0C0B434F5253414320546573743113301106035504030C0A436861696E20526F6F74820101 False 2.5.29.35
+// aki read back 6DB8DEB36B5A9375624838E3CBD7D2EC9AA1EB35 CN=Chain Root, O=CORSAC Test 01
+// bad: CryptographicException
+// null: ArgumentNullException
+//
+// X509Certificate2 and its extensions read as .NET reads them, over
+// eighteen certificates: a test PKI's, OpenSSL's self-signed P-256, RSA and
+// Ed25519 ones (from PEM), RSA-PSS ones, and four public roots (ISRG Root
+// X1 and X2, DigiCert Global Root G2, Amazon Root CA 3): names, serial,
+// thumbprint, times, algorithms, the public key, every extension and its
+// decoded form (basic constraints, key usage, EKU, subject and authority key
+// identifiers, alternative names with their addresses), MatchesHostname,
+// X509CertificateLoader, and X509AuthorityKeyIdentifierExtension's Create
+// forms. Expected output from .NET 10 on Linux.
+
+using System;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+
+static class Program
+{
+    static readonly (string Name, string Base64)[] Der =
+    {
+        ("chain-root", "MIIBqDCCAU6gAwIBAgIBATAKBggqhkjOPQQDAjArMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDETMBEGA1UEAwwKQ2hhaW4gUm9vdDAeFw0yNjAxMDEwMDAwMDBaFw00NjAxMDEwMDAwMDBaMCsxFDASBgNVBAoMC0NPUlNBQyBUZXN0MRMwEQYDVQQDDApDaGFpbiBSb290MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEvmPLEYooS53j2QIfV7Rr50/U/j05Jr9ixRYKK2//1G6NtRGUP01951pFEtOZrqWTwsgScenSwXHlPa/XkOMaZqNjMGEwHQYDVR0OBBYEFG243rNrWpN1Ykg448vX0uyaoes1MB8GA1UdIwQYMBaAFG243rNrWpN1Ykg448vX0uyaoes1MA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49BAMCA0gAMEUCIHVTRn+rQpqF3ZADVwqKQ3ySNEppmJjRPqVpEe2Zis+MAiEAz3J7Veun0t4QPyhsa5aNkyA7ygqJMegPDH1bHkKE/YU="),
+        ("chain-intermediate", "MIIBsjCCAVmgAwIBAgIBAjAKBggqhkjOPQQDAjArMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDETMBEGA1UEAwwKQ2hhaW4gUm9vdDAeFw0yNjAxMDEwMDAwMDBaFw00NDAxMDEwMDAwMDBaMDMxFDASBgNVBAoMC0NPUlNBQyBUZXN0MRswGQYDVQQDDBJDaGFpbiBJbnRlcm1lZGlhdGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATkBhhga9ftrnRDYIGTcyqv9yQR6seSJD2bXG3jhAIDvCLQPpl5/pq5o/NY354hLJIVvOvgW8YoKsrUzbOKrWxUo2YwZDASBgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUz5aRlQFTqWBHvO6KxZG6LpszIyAwHwYDVR0jBBgwFoAUbbjes2tak3ViSDjjy9fS7Jqh6zUwCgYIKoZIzj0EAwIDRwAwRAIgDz7eb0YIWsiZm9ALbA/w/mz92a+nOvOkCMQUda/XZNsCIASup9KGtxwPDAZq9ZbN6wcHRJ3FsTUkWcEUyCkJyoJB"),
+        ("chain-leaf", "MIIB2jCCAYGgAwIBAgIBAzAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTQwMDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARGaentOmBpMyc1/cX5NPfOWMzeUpO4ZIwzz+Laxu1IGO7nD/SQBtlF+c1Awg2ljSOz91MtM4AVD68ExW8xKexbo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFCcveUbUAM+/z/UUKZsYw3K+lcOmMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0cAMEQCICQaMu2UXw+PBjcIQXNLnAxnrLlF+W66/tp9/ZtCGSjEAiAyVjCwKg/to3d8jusImCMM+T5vXWpzEtpz2dOyNotAEQ=="),
+        ("client-leaf", "MIIB2jCCAYGgAwIBAgIBBDAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTQwMDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT20QrY771WDCYBS7cbPzGhGOFajlk/iTZxToZj4LZWJBD2zBto1YBhoZfpTznEWfN4iJI82AkX16cr6RL2bLzmo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMCMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFB0ELaZGwu/UxzBTmzDKlxxd24axMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0cAMEQCIGz6qhR6In0dUwYBxXf/31RFF/IkbfQ805B1mIiyuV/3AiBTDy2PpqcyeYfeJDlxh7+Om+73n7beCRMt2V2HFyIKQQ=="),
+        ("short-leaf", "MIIB2zCCAYGgAwIBAgIBBTAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTI3MDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQd2ODr8F6Jv3TgexUkY4VAHDZFTrBPMHlbHi4ii89PQBuA+fPZxkKFI+nlWiTfVkRbGY80EJhYAbQTn73CISEbo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFNO2cJQ8ki93asza1pnGQ/B+XRsMMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0gAMEUCIBetxmvU43ekReb9Or1kKpvN0wAYQ1IcntpFc3fzdu0mAiEAz9aN+v+37L9/S0tKa8FJE+M64gZEQBKUvg63ZeEZsrM="),
+        ("rsa-leaf", "MIICzTCCAbWgAwIBAgICEAMwDQYJKoZIhvcNAQELBQAwTjELMAkGA1UEBhMCVVMxHTAbBgNVBAoMFFZ1bHBlY3VsYSBJbmR1c3RyaWVzMSAwHgYDVQQDDBdDT1JTQUMgUlNBIEludGVybWVkaWF0ZTAeFw0yNjA4MzExNTI2MDhaFw0zNjA4MjgxNTI2MDhaMEsxCzAJBgNVBAYTAlVTMR0wGwYDVQQKDBRWdWxwZWN1bGEgSW5kdXN0cmllczEdMBsGA1UEAwwUaWdub3JlZC5leGFtcGxlLnRlc3QwKjAFBgMrZXADIQCd/s5Kb6My2t9nIkxGkKqcv8iOstO3vMOXKZZ7bOTAD6OBsTCBrjAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDATA5BgNVHREEMjAwghB3d3cuZXhhbXBsZS50ZXN0ghYqLnNlcnZpY2UuZXhhbXBsZS50ZXN0hwTAAAIEMB0GA1UdDgQWBBS7Nr4ZrT7ITIw/OWvo9ZAOMmlFdDAfBgNVHSMEGDAWgBRfEiiC1oq0rMJ2uQmPjTBQy/KQsDANBgkqhkiG9w0BAQsFAAOCAQEAftnJCvPFbCM+0mXDR5fwkgrB0Da74bFs5/oSx0s9YA3T/bNuM1TRWYOVXtbdBmUoVoxnWeEHpkYgHYB/9Xe7YRS219eWH7he7DeFgFp/kRkIq+6zdAefUy3NSaYRzi3Eh8t9L/es/CCe7aHT5nwGh+oaI6x/8VvZ3TomQ6dpjj2yBTw30FkQoU556MHggo+3gPqKigY28wvic1GQqpzp9xsXVANnchV07/a+7hOI7q7geNwTcvKiVnSNCDhtrzB4/NCwJLIZOiSpgOjrZRJJeCcaRuNrBNoxTwzHyzodIxKPLFdIhHL4IKmUyt3eCiVQ86Lx3mXkoqxYwcumd3uZ6w=="),
+        ("pss-leaf", "MIIDNTCCAemgAwIBAgICEAQwQQYJKoZIhvcNAQEKMDSgDzANBglghkgBZQMEAgEFAKEcMBoGCSqGSIb3DQEBCDANBglghkgBZQMEAgEFAKIDAgEgME4xCzAJBgNVBAYTAlVTMR0wGwYDVQQKDBRWdWxwZWN1bGEgSW5kdXN0cmllczEgMB4GA1UEAwwXQ09SU0FDIFJTQSBJbnRlcm1lZGlhdGUwHhcNMjYwODMxMTUyNjA4WhcNMzYwODI4MTUyNjA4WjBLMQswCQYDVQQGEwJVUzEdMBsGA1UECgwUVnVscGVjdWxhIEluZHVzdHJpZXMxHTAbBgNVBAMMFGlnbm9yZWQuZXhhbXBsZS50ZXN0MCowBQYDK2VwAyEAnf7OSm+jMtrfZyJMRpCqnL/IjrLTt7zDlymWe2zkwA+jgbEwga4wDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwEwOQYDVR0RBDIwMIIQd3d3LmV4YW1wbGUudGVzdIIWKi5zZXJ2aWNlLmV4YW1wbGUudGVzdIcEwAACBDAdBgNVHQ4EFgQUuza+Ga0+yEyMPzlr6PWQDjJpRXQwHwYDVR0jBBgwFoAUXxIogtaKtKzCdrkJj40wUMvykLAwQQYJKoZIhvcNAQEKMDSgDzANBglghkgBZQMEAgEFAKEcMBoGCSqGSIb3DQEBCDANBglghkgBZQMEAgEFAKIDAgEgA4IBAQBLQcX8GG5+GUjK0khqGlXuJLNFjb8btCO2OYn7wCDDEshgG4Ay9y7kcwkhc+9i4RC08zZBWVDwm3w0V0oQBfOfLyu8PxxYtIM/lkd4RRrWOfNI8draQmXVliIpc/6Ui1UKmIQ70qUD0PL2MRx6uENmNpp+AHF+TDlHSrENDbr3tFXdQCnR8MV2EJGh4V0y8/wXeq0S62cZyhg3vOQn8S2pMkaOMEmt2EINudBYdF2l5Idhzp/+R7G8q0ff6Ym6yMFr7KaYg00nSNYNs/c3fpW/WVEi9ZW9WbdAbU6aTJFgO9b9roH0nLjqpMsrY+2kVhQhwg5g0NjiP/mXbXK5tSpE"),
+        ("rsa-intermediate", "MIICvjCCAmSgAwIBAgICEAIwCgYIKoZIzj0EAwIwTzELMAkGA1UEBhMCVVMxHTAbBgNVBAoMFFZ1bHBlY3VsYSBJbmR1c3RyaWVzMSEwHwYDVQQDDBhDT1JTQUMgUDI1NiBJbnRlcm1lZGlhdGUwHhcNMjYwODMxMTUyNjA4WhcNNDUxMDMwMTUyNjA4WjBOMQswCQYDVQQGEwJVUzEdMBsGA1UECgwUVnVscGVjdWxhIEluZHVzdHJpZXMxIDAeBgNVBAMMF0NPUlNBQyBSU0EgSW50ZXJtZWRpYXRlMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6UA0fowDX3k69FVV6YQlr6ePf4nkkkj3S8RwVhJXG1TBReruJZfdWAfa3Bms8vVUgF32HEYRyPDVlvu5cwnmG2bGdAWW1refJ22PuR2+jlUZiP0hbPykhEfAT072BnbmPInlCc2afT73xOQGx2wU0yNsGFuwsDCgo3ERx5SgmGOY9uoJV7u042xhhuTJQFqMHSAOtOjjHUf/0StFkWk1kjG9aUI2sSfEyl0bJvwWdcEut4bVQpt3of5Lj36Cxz9ydGqwvwREhZ1Mo5HUV7A4KlvlygQVjz8h+NeZGKnrvcF4bkTFY/rDigcnwrKsjF65tuIf9KQGiw+Ek6L4cM1acQIDAQABo2YwZDASBgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUXxIogtaKtKzCdrkJj40wUMvykLAwHwYDVR0jBBgwFoAUHYpIs+tpNtpVpHGP9KlOcPWTiFQwCgYIKoZIzj0EAwIDSAAwRQIgJ4PnCII0r9V89IvRTAjOnVZTe2zSiWe/VtcAjihq4x0CIQCymTdOVcnnT95/JX3JXk3ZWxJj/CW6OAcN+JVzmnlNwQ=="),
+        ("p256-intermediate", "MIIB2zCCAY2gAwIBAgICEAEwBQYDK2VwMEcxCzAJBgNVBAYTAlVTMR0wGwYDVQQKDBRWdWxwZWN1bGEgSW5kdXN0cmllczEZMBcGA1UEAwwQQ09SU0FDIFRlc3QgUm9vdDAeFw0yNjA4MzExNTI2MDhaFw00ODA3MjYxNTI2MDhaME8xCzAJBgNVBAYTAlVTMR0wGwYDVQQKDBRWdWxwZWN1bGEgSW5kdXN0cmllczEhMB8GA1UEAwwYQ09SU0FDIFAyNTYgSW50ZXJtZWRpYXRlMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7BKobvOezviFaaox1pJI0N9ruaq+6JIbX3BvL9yvDaODeRSDtCfAtfrdPU2Q25dOwTES7rY0/eUUEbcd9ciPD6NmMGQwEgYDVR0TAQH/BAgwBgEB/wIBATAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYEFB2KSLPraTbaVaRxj/SpTnD1k4hUMB8GA1UdIwQYMBaAFL69K3PXl0v8gNkS+iKTP5qq6IWCMAUGAytlcANBABWHHIpAXhjCVMgoIRSMnj+d2vZm0MrnuSEQR8Rl0tamT/PvJUTJ2VNIIDH7heyN84YCDW0sZPRZIOj5r2TEVwU="),
+        ("test-root", "MIIBuDCCAWqgAwIBAgIUQZ1bSvGqhMcTyp4n19dQb+82VKAwBQYDK2VwMEcxCzAJBgNVBAYTAlVTMR0wGwYDVQQKDBRWdWxwZWN1bGEgSW5kdXN0cmllczEZMBcGA1UEAwwQQ09SU0FDIFRlc3QgUm9vdDAgFw0yNjA4MzExNTI2MDhaGA8yMDUxMDQyMjE1MjYwOFowRzELMAkGA1UEBhMCVVMxHTAbBgNVBAoMFFZ1bHBlY3VsYSBJbmR1c3RyaWVzMRkwFwYDVQQDDBBDT1JTQUMgVGVzdCBSb290MCowBQYDK2VwAyEAydQPDO80fb2DX9uolUZQDSuDE065+q8on9rSpdVhKrmjZjBkMB0GA1UdDgQWBBS+vStz15dL/IDZEvoikz+aquiFgjAfBgNVHSMEGDAWgBS+vStz15dL/IDZEvoikz+aquiFgjASBgNVHRMBAf8ECDAGAQH/AgECMA4GA1UdDwEB/wQEAwIBBjAFBgMrZXADQQCF9hRthZNEUsFvF+D8iSMOcq+CA73gDIT1y5QnL9vWINPXx+4g2kBr2QAvjrZHI60QDxbFpxOvaZYA8PD+C6QD"),
+        ("isrg-root-x1", "MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAwTzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2VhcmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygch77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6UA5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sWT8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyHB5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UCB5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUvKBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWnOlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTnjh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbwqHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CIrU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkqhkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZLubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KKNFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7UrTkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdCjNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVcoyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPAmRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57demyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc="),
+        ("isrg-root-x2", "MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBTZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW+1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZIzj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdWtL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1/q4AaOeMSQ+2b1tbFfLn"),
+        ("digicert-g2", "MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBhMQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBHMjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVTMRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQq2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5WztCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQvIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NGFdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ918rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTepLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTflMrY="),
+        ("amazon-root-3", "MIIBtjCCAVugAwIBAgITBmyf1XSXNmY/Owua2eiedgPySjAKBggqhkjOPQQDAjA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6b24gUm9vdCBDQSAzMB4XDTE1MDUyNjAwMDAwMFoXDTQwMDUyNjAwMDAwMFowOTELMAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJvb3QgQ0EgMzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCmXp8ZBf8ANm+gBG1bG8lKlui2yEujSLtf6ycXYqm0fc4E7O5hrOXwzpcVOho6AF2hiRVd9RFgdszflZwjrZt6jQjBAMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMB0GA1UdDgQWBBSrttvXBp43rDCGB5Fwx5zEGbF4wDAKBggqhkjOPQQDAgNJADBGAiEA4IWSoxe3jfkrBqWTrBqYaGFy+uGh0PsceGCmQ5nFuMQCIQCcAu/xlJyzlvnrxir4tiz+OpAUFteMYyRIHN8wfdVoOw=="),
+        ("aki-leaf", "MIIB6jCCAZCgAwIBAgIDAKGyMAoGCCqGSM49BAMCMDMxFDASBgNVBAoMC0NPUlNBQyBUZXN0MRswGQYDVQQDDBJDaGFpbiBJbnRlcm1lZGlhdGUwHhcNMjYwMTAxMDAwMDAwWhcNNDAwMTAxMDAwMDAwWjATMREwDwYDVQQDDAhha2kudGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABGvkWj5PfAjN6rw14sUmCsppybAdWndJYUbmnZQUpGaNm54ICdgQEyVtaZ8m7rOWo/WQP6mcqiHqJG/LjEORZBujgbIwga8wDAYDVR0TAQH/BAIwADAdBgNVHQ4EFgQUww9ZlRhpDKfX8JaVfVKKCoRK6xwwUwYDVR0jBEwwSoAUz5aRlQFTqWBHvO6KxZG6LpszIyChL6QtMCsxFDASBgNVBAoMC0NPUlNBQyBUZXN0MRMwEQYDVQQDDApDaGFpbiBSb290ggECMCsGA1UdEQQkMCKCCGFraS50ZXN0hwQKAAABhxAgAQ24AAAAAAAAAAAAAAAFMAoGCCqGSM49BAMCA0gAMEUCIQCFIxCutBKZUvYEl89QODZQhiiafO+Tk7MsekZZfDjstQIgUcTlNngg/pqmbmMahw9/oGn1iS6ed5ce7tYtYwIU6cM="),
+        ("ed25519-leaf", "MIIBLTCB4KADAgECAgEBMAUGAytlcDAWMRQwEgYDVQQDDAtzZXJ2ZXIudGVzdDAeFw0yNTAxMDEwMDAwMDBaFw0zNTAxMDEwMDAwMDBaMBYxFDASBgNVBAMMC3NlcnZlci50ZXN0MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbijUzBRMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBwGA1UdEQQVMBOCC3NlcnZlci50ZXN0hwTAAAIBMAUGAytlcANBAKpAxAG7FkAHXdCeXel9d/V0Txzz3a5h90LIl3OXVQXD4xHeRauXAqeXOM3dxGNVXtz8vbn/BjNy/ZR+KLFQuwk="),
+    };
+
+    static readonly (string Name, string Pem)[] Pem =
+    {
+        ("openssl-p256", "-----BEGIN CERTIFICATE-----\nMIIB3zCCAYWgAwIBAgIUTfRGwH0HlCINBIqwhFZc36ompjUwCgYIKoZIzj0EAwIw\nLDEUMBIGA1UEAwwLc2VydmVyLnRlc3QxFDASBgNVBAoMC0NPUlNBQyBUZXN0MB4X\nDTI2MTAyMzAwMTUwMVoXDTM2MTAyMDAwMTUwMVowLDEUMBIGA1UEAwwLc2VydmVy\nLnRlc3QxFDASBgNVBAoMC0NPUlNBQyBUZXN0MFkwEwYHKoZIzj0CAQYIKoZIzj0D\nAQcDQgAEItPctpPJM2o3LBMy0b/SHVr/ZD+vCQ/XPa799/wWb3wD9CX+2i/3XSu4\naME3x7w6Q9a3hdxQ1QoOCGrI9jvLPKOBhDCBgTAdBgNVHQ4EFgQUE5gOM0/MuQXZ\nQEQN8Nqy5/Z0hgQwHwYDVR0jBBgwFoAUE5gOM0/MuQXZQEQN8Nqy5/Z0hgQwHAYD\nVR0RBBUwE4ILc2VydmVyLnRlc3SHBH8AAAEwEwYDVR0lBAwwCgYIKwYBBQUHAwEw\nDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiBfyskzmSZZHT9JVyexh/gk\nwU21F1sc49C711Ct4rR5UAIhANvITSOOKRLvEfETeHOkLyB+T6zwSm+h+0AFTmSD\nP/qO\n-----END CERTIFICATE-----"),
+        ("openssl-rsa", "-----BEGIN CERTIFICATE-----\nMIIDKzCCAhOgAwIBAgIUMeHVrA/O3VzCLys2r2McQ3ZtkrgwDQYJKoZIhvcNAQEL\nBQAwFjEUMBIGA1UEAwwLc2VydmVyLnRlc3QwHhcNMjYxMDIzMDAxNTAxWhcNMzYx\nMDIwMDAxNTAxWjAWMRQwEgYDVQQDDAtzZXJ2ZXIudGVzdDCCASIwDQYJKoZIhvcN\nAQEBBQADggEPADCCAQoCggEBAOtQGklmaOFwTenvVNs55VWpnsGCjhvhxsy/NqGJ\nvjg2FY4NKBhBWew57eVv6rk6TT0WqzvppoAMpNw03l7ZibxajgW+cikotzjaTHge\nRIQ8zdPMfo/yODHlqUz/aJi8lle4pMd4yNDJw3bJ9r3x7D2qelQ+So6Wjr9iK5Tj\nwSDJqOn5v6x9kDTehai0WWa472m7XB9QDaIL76vIdj6JqvGFH/oHX+jwxvCFiUy4\naCiQqYoUpvZ1cFtAxe70NX51Oi0QR+2cvVyOTrNp0TM03ccIhXdujHnpt3SxIWkr\nT2n5fbsYPpqS6mWh6VhNNEfwWqO33KG6tcvr0Q5t0w5KVFcCAwEAAaNxMG8wHQYD\nVR0OBBYEFLtl5KumKMGC2aZT1UNdaoyMO/vsMB8GA1UdIwQYMBaAFLtl5KumKMGC\n2aZT1UNdaoyMO/vsMA8GA1UdEwEB/wQFMAMBAf8wHAYDVR0RBBUwE4ILc2VydmVy\nLnRlc3SHBH8AAAEwDQYJKoZIhvcNAQELBQADggEBAKPe+/G4ItUx3sXBBl6mKNZY\nXO9RnFNkJAEqZd0BveFNAK9zgl3NF2/8hXzwZKNBKzlNGeA3jRCWV7QLMmOay0kK\nhVhfELGpgIQz74EHG903W3q+N/AI3Itz4G62Cp+mDfjSLmqco1+AvoFDsGlELXft\neHDXk5aEs2OIzHoH895I/OWlp2t89KVxmca8X91Rd6KRXQx97VO1H8W/uFlFxjqZ\nrFTwwRm0Q7rPwBNN8cvMSluCtDnrKpzTdNGVoEkMBTgh/GmcPurZ1x5aA2SqA67x\n5fzKy1xny8+cy/7OmWph1QZ33hHqRi1EOW7mSArhPY2TFo60M0eBU/vCQNWc0NU=\n-----END CERTIFICATE-----"),
+        ("openssl-ed25519", "-----BEGIN CERTIFICATE-----\nMIIBXzCCARGgAwIBAgIUfrG0hUz8+X3v4I7GDSnu7d2kr/8wBQYDK2VwMBYxFDAS\nBgNVBAMMC3NlcnZlci50ZXN0MB4XDTI2MTAyMzAwMTUwMVoXDTM2MTAyMDAwMTUw\nMVowFjEUMBIGA1UEAwwLc2VydmVyLnRlc3QwKjAFBgMrZXADIQBsr2PcTR8Vl/sN\naIJIkyrI6ofkeLGJCs3bxXIJZwThNaNxMG8wHQYDVR0OBBYEFLOV4W0fe8fkA8I8\nhdvAoL51lemaMB8GA1UdIwQYMBaAFLOV4W0fe8fkA8I8hdvAoL51lemaMA8GA1Ud\nEwEB/wQFMAMBAf8wHAYDVR0RBBUwE4ILc2VydmVyLnRlc3SHBH8AAAEwBQYDK2Vw\nA0EAscr9Fofd3nsmMj12g8NIZlWcAkAe4XjyEHARPd2RTy7QB9iK+t7MrpTNJSRu\n/L7qTx2qGVCNSc18wBa1nh6aAA==\n-----END CERTIFICATE-----"),
+    };
+
+    static readonly string[] Hosts = { "chain.test", "CHAIN.Test.", "server.test", "www.example.test", "a.example.test", "ignored.example.test",
+        "127.0.0.1", "192.0.2.1", "2001:db8::1", "[2001:db8::1]", "under_score.example.test", "-x.example.test", "x-.example.test", "1.2.3", "a..b", "*.example.test", "" };
+
+    static void Show(string name, X509Certificate2 c)
+    {
+        Console.WriteLine("== " + name);
+        Console.WriteLine("Subject " + c.Subject);
+        Console.WriteLine("Issuer " + c.Issuer);
+        Console.WriteLine("SerialNumber " + c.SerialNumber + " Thumbprint " + c.Thumbprint);
+        Console.WriteLine("NotBefore " + c.NotBefore.ToUniversalTime().ToString("u") + " NotAfter " + c.NotAfter.ToUniversalTime().ToString("u"));
+        Console.WriteLine("Version " + c.Version + " SignatureAlgorithm " + c.SignatureAlgorithm.Value + " " + c.SignatureAlgorithm.FriendlyName);
+        Console.WriteLine("PublicKey " + c.PublicKey.Oid.Value + " " + c.PublicKey.Oid.FriendlyName + " " + c.PublicKey.EncodedKeyValue.RawData.Length
+            + " bytes, parameters " + (c.PublicKey.EncodedParameters == null ? "null" : Convert.ToHexString(c.PublicKey.EncodedParameters.RawData)));
+        Console.WriteLine("SimpleName " + c.GetNameInfo(X509NameType.SimpleName, false) + " | DnsName " + c.GetNameInfo(X509NameType.DnsName, false)
+            + " | IssuerSimpleName " + c.GetNameInfo(X509NameType.SimpleName, true));
+        Console.WriteLine("SubjectName " + c.SubjectName.Name + " | " + (c.SubjectName.Oid == null ? "null" : c.SubjectName.Oid.Value) + " " + c.SubjectName.RawData.Length + " bytes");
+        foreach (X509Extension e in c.Extensions)
+        {
+            StringBuilder s = new StringBuilder("ext " + e.Oid?.Value + " " + e.Oid?.FriendlyName + " critical " + e.Critical + " " + e.GetType().Name);
+            if (e is X509BasicConstraintsExtension bc) s.Append(" ca=" + bc.CertificateAuthority + " haslen=" + bc.HasPathLengthConstraint + " len=" + bc.PathLengthConstraint);
+            if (e is X509KeyUsageExtension ku) s.Append(" " + ku.KeyUsages);
+            if (e is X509EnhancedKeyUsageExtension eku) foreach (Oid o in eku.EnhancedKeyUsages) s.Append(" " + o.Value + "(" + o.FriendlyName + ")");
+            if (e is X509SubjectKeyIdentifierExtension ski) s.Append(" " + ski.SubjectKeyIdentifier + " " + Convert.ToHexString(ski.SubjectKeyIdentifierBytes.Span));
+            if (e is X509SubjectAlternativeNameExtension san)
+            {
+                foreach (string d in san.EnumerateDnsNames()) s.Append(" dns:" + d);
+                foreach (System.Net.IPAddress a in san.EnumerateIPAddresses()) s.Append(" ip:" + a);
+            }
+            if (e is X509AuthorityKeyIdentifierExtension aki)
+                s.Append(" key=" + (aki.KeyIdentifier.HasValue ? Convert.ToHexString(aki.KeyIdentifier.Value.Span) : "none")
+                    + " issuer=" + (aki.NamedIssuer == null ? "none" : aki.NamedIssuer.Name)
+                    + " raw=" + (aki.RawIssuer.HasValue ? Convert.ToHexString(aki.RawIssuer.Value.Span) : "none")
+                    + " serial=" + (aki.SerialNumber.HasValue ? Convert.ToHexString(aki.SerialNumber.Value.Span) : "none"));
+            Console.WriteLine(s.ToString());
+        }
+        StringBuilder hosts = new StringBuilder("hosts");
+        foreach (string h in Hosts)
+        {
+            string r;
+            try { r = (c.MatchesHostname(h) ? "Y" : "n") + (c.MatchesHostname(h, false, true) ? "Y" : "n") + (c.MatchesHostname(h, true, false) ? "Y" : "n"); }
+            catch (ArgumentException) { r = "!"; }
+            hosts.Append(" " + r);
+        }
+        Console.WriteLine(hosts.ToString());
+    }
+
+    static int Main()
+    {
+        foreach ((string name, string base64) in Der) Show(name, X509CertificateLoader.LoadCertificate(Convert.FromBase64String(base64)));
+        foreach ((string name, string pem) in Pem)
+        {
+            X509Certificate2 fromPem = X509Certificate2.CreateFromPem(pem);
+            X509Certificate2 loaded = X509CertificateLoader.LoadCertificate(Encoding.ASCII.GetBytes(pem));
+            Show(name, fromPem);
+            Console.WriteLine("same as loaded " + (fromPem.Thumbprint == loaded.Thumbprint) + ", PEM round trip " + (fromPem.ExportCertificatePem() == pem));
+        }
+        X509Certificate2 root = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(Der[0].Base64));
+        X509Certificate2 leaf = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(Der[2].Base64));
+        Console.WriteLine("aki from key " + Convert.ToHexString(X509AuthorityKeyIdentifierExtension.CreateFromSubjectKeyIdentifier(new byte[] { 1, 2, 3 }).RawData));
+        Console.WriteLine("aki from issuer " + Convert.ToHexString(X509AuthorityKeyIdentifierExtension.CreateFromIssuerNameAndSerialNumber(root.SubjectName, new byte[] { 0x02 }).RawData));
+        Console.WriteLine("aki full " + Convert.ToHexString(X509AuthorityKeyIdentifierExtension.Create(new byte[] { 9, 8 }, root.SubjectName, new byte[] { 0x00, 0xa1 }).RawData));
+        X509AuthorityKeyIdentifierExtension fromCert = X509AuthorityKeyIdentifierExtension.CreateFromCertificate(root, true, true);
+        Console.WriteLine("aki from certificate " + Convert.ToHexString(fromCert.RawData) + " " + fromCert.Critical + " " + fromCert.Oid!.Value);
+        X509AuthorityKeyIdentifierExtension again = new X509AuthorityKeyIdentifierExtension(fromCert.RawData);
+        Console.WriteLine("aki read back " + Convert.ToHexString(again.KeyIdentifier!.Value.Span) + " " + again.NamedIssuer!.Name + " " + Convert.ToHexString(again.SerialNumber!.Value.Span));
+        try { X509CertificateLoader.LoadCertificate(new byte[] { 0x30, 0x03, 0x02, 0x01, 0x01 }); }
+        catch (Exception e) { Console.WriteLine("bad: " + e.GetType().Name); }
+        try { X509CertificateLoader.LoadCertificate((byte[])null!); }
+        catch (Exception e) { Console.WriteLine("null: " + e.GetType().Name); }
+        return 0;
+    }
+}
