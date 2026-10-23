@@ -11380,7 +11380,10 @@ public sealed partial class Binder
             bool subsumed = false;
             Expr? written = p is BinaryExpr { Op: BinOp.Eq, PatternConstant: true, Left: SubjectExpr { Outer: 0 } } eq
                             && eq.Right is not LiteralExpr { Kind: Lit.Null or Lit.Str } ? eq.Right : null;
-            long? single = written is not null && ConstantValue(written, _thisType) is long v ? v : null;
+            // ONE TYPE'S CONSTANTS ONLY: over an object, `case 1:` and
+            // `case 1L:` are an int and a long, two labels.
+            long? single = written is not null && (domain is not null || subject.Prim == Prim.Bool && subject.Symbol is null)
+                           && ConstantValue(written, _thisType) is long v ? v : null;
             List<(long Lo, long Hi)>? accepted = domain is { } d ? Ranges(p, d) : null;
 
             if (p is IsExpr { Operand: SubjectExpr { Outer: 0 } } every
