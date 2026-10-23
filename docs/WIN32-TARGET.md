@@ -75,9 +75,15 @@ A DLL is the same image as a program, with these differences.
   every absolute address, so the loader can put the DLL wherever its base is
   taken, which for a DLL is usual. The base is Microsoft's linker's,
   0x10000000, unless `--base` names another.
-- DllMain DOES ALMOST NOTHING: the loader lock is held while it runs, so it
-  starts no thread and loads nothing. The runtime starts on the first call
-  into an export, as native AOT's does.
+- DllMain STARTS THE RUNTIME AND NOTHING ELSE: the loader lock is held
+  while it runs, so it starts no thread and loads nothing. At
+  DLL_PROCESS_ATTACH the platform library (Win32.Attach) installs its
+  kernel32 hooks, takes the TLS slot and puts the loading thread's block in
+  it; the module initialisers run; DllMain answers FALSE, failing the load,
+  when the TEB has no slot left. At DLL_PROCESS_DETACH the slot goes back.
+- AN EXPORT IS ITS TYPE'S FIRST CODE: like Main, it touches its own type on
+  the way in, so the type's statics are initialised before its body reads
+  them.
 - THREADS THAT ARE NOT OURS: a game's thread calling an export gets a
   runtime thread block on its first call, and loses it at
   `DLL_THREAD_DETACH`. The block is found through a TLS slot (TlsAlloc) read
@@ -95,12 +101,19 @@ A DLL is the same image as a program, with these differences.
   the whole process and Microsoft's DLLs live with it; conversions already
   save and restore the word around themselves.
 
-STATE (2026-10-23): the PE32 link, exports and imports, `.reloc` and the
-DllMain that roots the exports are in, tested structurally
+STATE (2026-10-23): the PE32 link, exports and imports, `.reloc`, DllMain,
+the TLS-slot thread block, threads that are not ours (a block on the first
+call) and the platform layer's floor are in. Tested structurally
 (tests/integration/windows-dll.sh: headers, export and import directories,
 thunks, checksum, and a second link at another base moving exactly the words
-`.reloc` lists). `--dll` needs `--freestanding` until the platform layer
-below is in; nothing has run on Windows yet.
+`.reloc` lists) and by running (tests/integration/windows-wine.sh: a 32-bit
+program loads the DLL under Wine, calls each export and checks its answer).
+examples/windows-cards is cards.dll in C#: Windows 2000's own sol.exe and
+freecell.exe draw every card through it, and FreeCell's game 1 deals as the
+published one. Not yet: an SEH frame turning faults into
+NullReferenceException, collections while a second thread runs managed code
+(nothing stops it; one thread at a time is safe), freeing an adopted
+thread's block at DLL_THREAD_DETACH, and pinning the DLL.
 
 ## Calling Windows
 
@@ -138,13 +151,14 @@ below is in; nothing has run on Windows yet.
 
 ## The thread block
 
-The runtime finds a thread's block through GS. Windows' 32-bit systems give
-user code no GS of its own and FS is the thread's Windows block, which must
-not change. The block is found instead the way MSVC's `__declspec(thread)`
-finds static thread-local storage, which the same instructions do on 9x and
-NT: `fs:[0x2C]`, the thread's array, indexed by the image's TLS index (the
-image's TLS directory). To verify on Windows 95 itself before it is relied
-on. Calls into C stop swapping GS: there is nothing to swap.
+The runtime finds a thread's block through GS on Linux. Windows' 32-bit
+systems give user code no GS of its own and FS is the thread's Windows block,
+which must not change. The block is in a TLS slot the runtime takes with
+TlsAlloc, read straight from the TEB: `fs:[0xE10 + 4 * slot]`, one
+instruction (Selector, `FsTlsSlot`), written by Sys.SetThreadBlock. Static
+TLS (`fs:[0x2C]` and the image's TLS directory) is not used: Windows 2000's
+and XP's loaders give a DLL that LoadLibrary loads none. A slot past the
+TEB's 64 is refused at DllMain. Calls into C swap nothing.
 
 ## The platform layer: runtime/src/platforms/win32
 
@@ -167,6 +181,13 @@ call where the system has it:
 
 The collector already stops threads cooperatively (a thread in C counts as
 stopped), so nothing suspends threads from outside.
+
+STATE (2026-10-23): runtime/src/platforms/win32/win32.cor is the bare-metal
+runtime (baremetal.cor) with its hooks answered by kernel32: memory
+(VirtualAlloc, VirtualFree), the time (QueryPerformanceCounter, GetTickCount
+without one), the exit (ExitProcess) and standard error. `--windows` links
+it in place of `--freestanding`. Every call it makes is in Windows 95's and
+NT 3.51's kernel32.
 
 ## What .NET shows on Windows
 
@@ -253,6 +274,15 @@ for that profile): a compiler feature of its own, not part of this target.
 
 ## Testing
 
+Wine on the build host first (Hino, 2026-10-23), the Windows host where Wine
+is not enough. Fedora's Wine 11 runs 32-bit programs through its WoW64 build
+(/usr/lib64/wine-wow64); a prefix it makes has an empty syswow64 when its
+first boot is cut short, and a 32-bit program then stops with "could not
+load kernel32.dll": copying /usr/lib64/wine-wow64/wine/i386-windows into the
+prefix's syswow64 mends it. With no desktop, Xvfb on a TCP display
+(`Xvfb :57 -nolisten unix -listen tcp`, DISPLAY=localhost:57) runs the GUI
+programs, and ImageMagick's `import -window root` takes their picture.
+
 Each system in the list is its own test: 95, 98, ME, NT 4, 2000, XP, Vista,
 7, 8, 10 and 11, and the WOW64 ones. They run on real machines and VMs, and
 CORSAC's NT personality, which runs real Windows 2000 programs, is one of
@@ -262,9 +292,6 @@ them.
 
 For the DLLs (asked 2026-10-23):
 
-- Where each fix's test runs: Wine on the build host (its server keeps a
-  socket in /tmp), the Windows host through WSL, a Windows 2000 machine in
-  86Box, or CORSAC's NT personality.
 - Whether DLLs must load on 9x too, or the NT family only (the TEB's TLS
   slots above are NT's).
 - One runtime in each DLL (as native AOT) or one shared runtime DLL.
@@ -285,9 +312,10 @@ decoders wherever GDI+ is absent.
 ## Order of work
 
 0. DLLs first (2026-10-23): the PE32 link with exports, imports and
-   `.reloc` (done); then the thread block through a TLS slot and threads
-   that are not ours, the platform layer's floor (memory, waits, threads,
-   faults), DllMain, and a DLL whose exports run on Windows.
+   `.reloc`, the thread block through a TLS slot, threads that are not
+   ours, the platform layer's floor and DllMain (done, and cards.dll runs
+   Solitaire); then faults, collections with several threads, thread
+   detach, and opengl32/Glide.
 1. The image, stdcall and A/W imports, the thread block, struct layout:
    a console "hello" that runs on 95 and on 11.
 2. The platform layer: the language suite passing on Windows.

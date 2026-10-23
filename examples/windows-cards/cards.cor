@@ -1,0 +1,294 @@
+// cards.dll in COR-C#: the card drawing Solitaire and FreeCell ask Windows
+// for, drawn with GDI alone (no bitmaps). The exports, their arguments and
+// their stdcall are cards.dll's: cdtInit, cdtDraw, cdtDrawExt, cdtAnimate,
+// cdtTerm, and WEP, a Windows 3.x leftover.
+//
+// A card is rank * 4 + suit: rank 0 the ace to 12 the king, suit 0 clubs,
+// 1 diamonds, 2 hearts, 3 spades. Face down, the number is the back's.
+
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+static class Cards
+{
+    const int Width = 71;
+    const int Height = 96;
+
+    // How a card is drawn: the mode argument.
+    const int FaceUp = 0;
+    const int FaceDown = 1;
+    const int Hilite = 2;
+    const int Ghost = 3;
+    const int Remove = 4;
+    const int InvisibleGhost = 5;
+    const int DeckX = 6;
+    const int DeckO = 7;
+
+    const uint Black = 0x000000;
+    const uint White = 0xFFFFFF;
+    const uint Red = 0x0000C0;
+    const uint Green = 0x008000;
+    const uint Grey = 0x808080;
+
+    const int Transparent = 1;
+    const int NullBrush = 5;
+    const int DstInvert = 0x00550009;
+    const int PatCopy = 0x00F00021;
+    const int DiagCross = 5;
+
+    static readonly string[] Ranks = { "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K" };
+
+    // The backs' colours, by the back's number less 53.
+    static readonly uint[] Backs = { 0x800000, 0x000080, 0x008000, 0x808000, 0x800080, 0x008080, 0x404040, 0x0040C0 };
+
+    static readonly int[] Points = new int[16];
+
+    static nint _rankFont;
+    static nint _bigFont;
+
+    [UnmanagedCallersOnly(EntryPoint = "cdtInit", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static unsafe int Init(int* width, int* height)
+    {
+        *width = Width;
+        *height = Height;
+        if (_rankFont == 0) _rankFont = CreateFontA(-12, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0, "Arial");
+        if (_bigFont == 0) _bigFont = CreateFontA(-28, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0, "Times New Roman");
+        return 1;
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "cdtTerm", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static void Term()
+    {
+        if (_rankFont != 0) DeleteObject(_rankFont);
+        if (_bigFont != 0) DeleteObject(_bigFont);
+        _rankFont = 0;
+        _bigFont = 0;
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "cdtDraw", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Draw(nint dc, int x, int y, int card, int mode, uint color)
+        => DrawCard(dc, x, y, Width, Height, card, mode, color);
+
+    [UnmanagedCallersOnly(EntryPoint = "cdtDrawExt", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int DrawExt(nint dc, int x, int y, int dx, int dy, int card, int mode, uint color)
+        => DrawCard(dc, x, y, dx, dy, card, mode, color);
+
+    /// The deck's animated backs: these backs do not move.
+    [UnmanagedCallersOnly(EntryPoint = "cdtAnimate", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Animate(nint dc, int back, int x, int y, int frame) => 1;
+
+    [UnmanagedCallersOnly(EntryPoint = "WEP", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Wep(int reason) => 1;
+
+    static int DrawCard(nint dc, int x, int y, int dx, int dy, int card, int mode, uint color)
+    {
+        switch (mode)
+        {
+            case FaceUp:
+                Face(dc, x, y, dx, dy, card);
+                break;
+            case Hilite:
+                Face(dc, x, y, dx, dy, card);
+                PatBlt(dc, x, y, dx, dy, DstInvert);
+                break;
+            case FaceDown:
+                Back(dc, x, y, dx, dy, card);
+                break;
+            case Remove:
+                Fill(dc, x, y, dx, dy, color);
+                break;
+            case Ghost:
+                Fill(dc, x, y, dx, dy, color);
+                Outline(dc, x, y, dx, dy, Grey);
+                break;
+            case InvisibleGhost:
+                Outline(dc, x, y, dx, dy, Grey);
+                break;
+            case DeckX:
+            case DeckO:
+                Fill(dc, x, y, dx, dy, color);
+                Outline(dc, x, y, dx, dy, Green);
+                Mark(dc, x, y, dx, dy, mode == DeckX);
+                break;
+            default:
+                return 0;
+        }
+        return 1;
+    }
+
+    static void Face(nint dc, int x, int y, int dx, int dy, int card)
+    {
+        int rank = card / 4;
+        int suit = card % 4;
+        if (rank < 0 || rank > 12) rank = 0;
+        uint ink = suit == 1 || suit == 2 ? Red : Black;
+
+        RoundCard(dc, x, y, dx, dy, White, Black);
+
+        int oldMode = SetBkMode(dc, Transparent);
+        uint oldColor = SetTextColor(dc, ink);
+        nint oldFont = SelectObject(dc, _rankFont);
+        string r = Ranks[rank];
+        TextOutA(dc, x + 4, y + 3, r, r.Length);
+        // The small sign beside the rank, both inside the strip a fanned
+        // column leaves showing.
+        Suit(dc, x + (r.Length > 1 ? 25 : 18), y + 10, 4, suit, ink);
+        Suit(dc, x + dx - 10, y + dy - 12, 5, suit, ink);
+
+        if (rank >= 10)
+        {
+            // A court card: its letter, large, over its suit.
+            SelectObject(dc, _bigFont);
+            TextOutA(dc, x + dx / 2 - 9, y + dy / 2 - 30, r, r.Length);
+            Suit(dc, x + dx / 2, y + dy / 2 + 14, 12, suit, ink);
+        }
+        else
+        {
+            Suit(dc, x + dx / 2, y + dy / 2, rank == 0 ? 16 : 11, suit, ink);
+        }
+
+        SelectObject(dc, oldFont);
+        SetTextColor(dc, oldColor);
+        SetBkMode(dc, oldMode);
+    }
+
+    static void Back(nint dc, int x, int y, int dx, int dy, int back)
+    {
+        int n = back - 53;
+        uint tint = Backs[n < 0 || n >= Backs.Length ? 0 : n];
+        RoundCard(dc, x, y, dx, dy, White, Black);
+        nint hatch = CreateHatchBrush(DiagCross, tint);
+        nint pen = CreatePen(0, 1, tint);
+        nint oldBrush = SelectObject(dc, hatch);
+        nint oldPen = SelectObject(dc, pen);
+        Rectangle(dc, x + 4, y + 4, x + dx - 4, y + dy - 4);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(hatch);
+        DeleteObject(pen);
+    }
+
+    static void RoundCard(nint dc, int x, int y, int dx, int dy, uint paper, uint edge)
+    {
+        nint brush = CreateSolidBrush(paper);
+        nint pen = CreatePen(0, 1, edge);
+        nint oldBrush = SelectObject(dc, brush);
+        nint oldPen = SelectObject(dc, pen);
+        RoundRect(dc, x, y, x + dx, y + dy, 8, 8);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(brush);
+        DeleteObject(pen);
+    }
+
+    static void Fill(nint dc, int x, int y, int dx, int dy, uint color)
+    {
+        nint brush = CreateSolidBrush(color);
+        nint old = SelectObject(dc, brush);
+        PatBlt(dc, x, y, dx, dy, PatCopy);
+        SelectObject(dc, old);
+        DeleteObject(brush);
+    }
+
+    static void Outline(nint dc, int x, int y, int dx, int dy, uint edge)
+    {
+        nint pen = CreatePen(0, 1, edge);
+        nint oldBrush = SelectObject(dc, GetStockObject(NullBrush));
+        nint oldPen = SelectObject(dc, pen);
+        RoundRect(dc, x, y, x + dx, y + dy, 8, 8);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    static void Mark(nint dc, int x, int y, int dx, int dy, bool cross)
+    {
+        nint pen = CreatePen(0, 4, Green);
+        nint oldPen = SelectObject(dc, pen);
+        nint oldBrush = SelectObject(dc, GetStockObject(NullBrush));
+        int cx = x + dx / 2, cy = y + dy / 2, r = dx / 3;
+        if (cross)
+        {
+            MoveToEx(dc, cx - r, cy - r, 0);
+            LineTo(dc, cx + r, cy + r);
+            MoveToEx(dc, cx + r, cy - r, 0);
+            LineTo(dc, cx - r, cy + r);
+        }
+        else
+        {
+            Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
+        }
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    /// A suit's sign, centred on (cx, cy), about 2s across, in ink: circles
+    /// and polygons, so no font has to have the glyph.
+    static void Suit(nint dc, int cx, int cy, int s, int suit, uint ink)
+    {
+        nint brush = CreateSolidBrush(ink);
+        nint pen = CreatePen(0, 1, ink);
+        nint oldBrush = SelectObject(dc, brush);
+        nint oldPen = SelectObject(dc, pen);
+        int h = s / 2;
+        switch (suit)
+        {
+            case 0: // clubs: three leaves and a stem
+                Ellipse(dc, cx - h, cy - s, cx + h + 1, cy + 1);
+                Ellipse(dc, cx - s, cy - h + 1, cx + 1, cy + h + 2);
+                Ellipse(dc, cx, cy - h + 1, cx + s + 1, cy + h + 2);
+                Shape(dc, cx, cy, cx - h, cy + s, cx + h, cy + s);
+                break;
+            case 1: // diamonds
+                Points[0] = cx; Points[1] = cy - s;
+                Points[2] = cx + s * 3 / 4; Points[3] = cy;
+                Points[4] = cx; Points[5] = cy + s;
+                Points[6] = cx - s * 3 / 4; Points[7] = cy;
+                Polygon(dc, Points, 4);
+                break;
+            case 2: // hearts: two lobes over a point
+                Ellipse(dc, cx - s, cy - s + 1, cx + 1, cy + 1);
+                Ellipse(dc, cx, cy - s + 1, cx + s + 1, cy + 1);
+                Shape(dc, cx - s, cy - h + 1, cx + s, cy - h + 1, cx, cy + s);
+                break;
+            default: // spades: a point over two lobes, and a stem
+                Shape(dc, cx, cy - s, cx + s, cy + h - 1, cx - s, cy + h - 1);
+                Ellipse(dc, cx - s, cy - 1, cx + 1, cy + h + 2);
+                Ellipse(dc, cx, cy - 1, cx + s + 1, cy + h + 2);
+                Shape(dc, cx, cy, cx - h, cy + s, cx + h, cy + s);
+                break;
+        }
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(brush);
+        DeleteObject(pen);
+    }
+
+    static void Shape(nint dc, int x0, int y0, int x1, int y1, int x2, int y2)
+    {
+        Points[0] = x0; Points[1] = y0;
+        Points[2] = x1; Points[3] = y1;
+        Points[4] = x2; Points[5] = y2;
+        Polygon(dc, Points, 3);
+    }
+
+    [DllImport("gdi32")] static extern nint CreateSolidBrush(uint color);
+    [DllImport("gdi32")] static extern nint CreateHatchBrush(int style, uint color);
+    [DllImport("gdi32")] static extern nint CreatePen(int style, int width, uint color);
+    [DllImport("gdi32")] static extern nint CreateFontA(int height, int width, int escapement, int orientation, int weight,
+        int italic, int underline, int strikeOut, int charSet, int outPrecision, int clipPrecision, int quality, int pitchAndFamily, string face);
+    [DllImport("gdi32")] static extern nint GetStockObject(int which);
+    [DllImport("gdi32")] static extern nint SelectObject(nint dc, nint obj);
+    [DllImport("gdi32")] static extern int DeleteObject(nint obj);
+    [DllImport("gdi32")] static extern int RoundRect(nint dc, int left, int top, int right, int bottom, int w, int h);
+    [DllImport("gdi32")] static extern int Rectangle(nint dc, int left, int top, int right, int bottom);
+    [DllImport("gdi32")] static extern int Ellipse(nint dc, int left, int top, int right, int bottom);
+    [DllImport("gdi32")] static extern int Polygon(nint dc, int[] points, int count);
+    [DllImport("gdi32")] static extern int MoveToEx(nint dc, int x, int y, nint previous);
+    [DllImport("gdi32")] static extern int LineTo(nint dc, int x, int y);
+    [DllImport("gdi32")] static extern int PatBlt(nint dc, int x, int y, int w, int h, int rop);
+    [DllImport("gdi32")] static extern int SetBkMode(nint dc, int mode);
+    [DllImport("gdi32")] static extern uint SetTextColor(nint dc, uint color);
+    [DllImport("gdi32")] static extern int TextOutA(nint dc, int x, int y, string text, int count);
+}
