@@ -115,6 +115,7 @@ static class Win32
         Platform.UnmapHook = Sys.AddressOf(Unmap);
         Platform.NanosHook = Sys.AddressOf(Nanos);
         Platform.ExitHook = Sys.AddressOf(Exit);
+        Platform.WriteHook = Sys.AddressOf(Write);
         Platform.WaitHook = Sys.AddressOf(Yield);
         Platform.YieldHook = Sys.AddressOf(Yield);
         int slot = TlsAlloc();
@@ -228,10 +229,9 @@ static class Win32
         return ContinueExecution;
     }
 
-    /// The image may allocate now: what wants the heap.
+    /// The runtime is running: what wants it.
     public static void Started()
     {
-        Platform.Console = new StdErrConsole();
         Pin();
     }
 
@@ -240,20 +240,15 @@ static class Win32
     /// FreeLibrary and LoadLibrary pair -- Quake 2's vid_restart -- would leak
     /// both every time. Its own name loaded once more, which for a module
     /// already loaded only counts it again (GetModuleHandleEx's pin is XP's).
+    /// The name in a page of its own, given back after: nothing here asks the
+    /// heap, so a DLL that allocates nothing carries no collector.
     static void Pin()
     {
-        byte[] name = new byte[262];
-        int length = GetModuleFileNameA((nint)_imageStart, (nint)Sys.ArrayData(name), 260);
-        if (length <= 0 || length >= 260) return;
-        LoadLibraryA((nint)Sys.ArrayData(name));
-        System.GC.KeepAlive(name);
-    }
-
-    /// The process lets the image go (DLL_PROCESS_DETACH): the slot back.
-    public static void Detach()
-    {
-        if (_slotTaken != 0) TlsFree(_slotTaken - 1);
-        _slotTaken = 0;
+        long name = (long)(nuint)VirtualAlloc(0, 264, MemCommit | MemReserve, PageReadWrite);
+        if (name == 0) return;
+        int length = GetModuleFileNameA((nint)_imageStart, (nint)name, 260);
+        if (length > 0 && length < 260) LoadLibraryA((nint)name);
+        VirtualFree((nint)name, 0, MemRelease);
     }
 
     /// THE TOP OF THIS THREAD'S STACK, where a scan of it ends: the end of
@@ -311,17 +306,13 @@ static class Win32
     }
 
     /// What the runtime prints -- an unhandled exception's report -- goes to
-    /// the process's standard error, when it has one.
-    public static void WriteError(long address, long count)
+    /// the process's standard error, when it has one (Platform.WriteHook).
+    static long Write(long fd, long address, long count)
     {
         nint handle = GetStdHandle(StdErrorHandle);
-        if (handle == 0 || handle == -1) return;
-        int written = 0;
+        if (handle == 0 || handle == -1) return 0;
+        long written = 0;
         WriteFile(handle, (nint)address, (int)count, (nint)Sys.AddressOf(ref written), 0);
+        return count;
     }
-}
-
-sealed class StdErrConsole : IConsole
-{
-    public void Write(long address, long count) => Win32.WriteError(address, count);
 }

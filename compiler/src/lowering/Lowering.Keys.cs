@@ -23,7 +23,7 @@ public sealed partial class Lowering
     /// <summary>object.GetHashCode: which object it is. Shared by every class that declares none.</summary>
     private string ObjectHashStub()
     {
-        const string name = "__object_gethashcode";
+        const string name = ObjectHashName;
 
         if (!_hasObjectHash)
         {
@@ -121,6 +121,9 @@ public sealed partial class Lowering
         return new Function(name, IrType.I32) { Coalescible = !local, Exported = !local };
     }
 
+    private const string ObjectHashName = "__object_gethashcode", ObjectCompareName = "__object_compareto";
+    private const string ObjectEqualsName = "__object_equals", ObjectToStringName = "__object_tostring";
+
     /// <summary>What fills slot `slot` of a class's vtable when `filled` is the method its chain puts there (ClassDescriptor).</summary>
     private string? SlotTarget(TypeSymbol t, int slot, MethodSymbol? filled)
     {
@@ -140,10 +143,10 @@ public sealed partial class Lowering
         // Rooted): a slot that still holds one -- `new object()`, or a
         // class that overrides none of them -- gets the stub below, as a
         // slot nobody filled does.
+        // Each compiled only once the slot is read (SlotNamed).
         if (OwnSlotMethod(filled) is MethodSymbol m)
         {
-            Require(m);
-            return CallLabel(m);
+            return SlotNamed(slot, CallLabel(m), () => Require(m));
         }
         if (t.Kind != TypeKind.Class)
         {
@@ -151,10 +154,10 @@ public sealed partial class Lowering
         }
         // A closure's are its delegate's: the same method on the same target
         // is equal, whichever closure class made it (DelegateEqualsStub).
-        if (slot == _b.EqualsSlot) return (DelegateClosure(t) ? DelegateEqualsStub(t) : null) ?? ObjectEqualsStub();
-        if (slot == _b.HashSlot) return (DelegateClosure(t) ? DelegateHashStub(t) : null) ?? ObjectHashStub();
-        if (slot == _b.CompareSlot) return OwnCompare(t) ?? ObjectCompareStub();
-        if (slot == _b.ToStringSlot) return ObjectToStringStub();
+        if (slot == _b.EqualsSlot) return (DelegateClosure(t) ? DelegateEqualsStub(t) : null) ?? SlotNamed(slot, ObjectEqualsName, () => ObjectEqualsStub());
+        if (slot == _b.HashSlot) return (DelegateClosure(t) ? DelegateHashStub(t) : null) ?? SlotNamed(slot, ObjectHashName, () => ObjectHashStub());
+        if (slot == _b.CompareSlot) return OwnCompare(t) ?? SlotNamed(slot, ObjectCompareName, () => ObjectCompareStub());
+        if (slot == _b.ToStringSlot) return SlotNamed(slot, ObjectToStringName, () => ObjectToStringStub());
         return null;      // abstract: calling it is a null call, which traps
     }
 
@@ -239,6 +242,7 @@ public sealed partial class Lowering
         {
             return e.Call(direct, returns, args)!;
         }
+        SlotCalled((int)slot);
         VReg fn = e.Load(IrTypes.Word, vt, (long)slot * _t.WordSize);
         VReg answered = e.CallIndirect(R(fn), returns, args)!;
         e.Block.Instrs[^1].DispatchType = KeyDispatch(narrow);
@@ -357,6 +361,7 @@ public sealed partial class Lowering
                 e.Ret(RegOperand.Of(AskSlot(e, a, vt, _b.EqualsSlot, narrow, IrType.I32, R(a), R(b))));
             }
             e.SetBlock(typed);
+            SlotCalled((int)typedSlot);
             VReg fn = e.Load(IrTypes.Word, vt, (long)typedSlot * _t.WordSize);
             VReg answered = e.CallIndirect(R(fn), IrType.I32, new Operand[] { R(a), R(b) })!;
             e.Block.Instrs[^1].DispatchType = KeyDispatch(narrow);
@@ -563,6 +568,7 @@ public sealed partial class Lowering
                 // plain class went through the slot to three instructions.
                 // Where the slot holds another copy of the stub (a library of
                 // its own), the call answers as it did.
+                SlotCalled((int)_b.HashSlot);
                 VReg fn = e.Load(IrTypes.Word, vt, (long)_b.HashSlot * _t.WordSize);
                 Block call = f.NewBlock("khcall");
                 e.Branch(e.Binary(Opcode.Eq, R(fn), R(e.Address(ObjectHashStub())), IrType.I32), word, call);
@@ -1004,6 +1010,8 @@ public sealed partial class Lowering
         f.Params.Add(self);
         f.Params.Add(other);
         Builder e = new(f, f.NewBlock("entry"));
+        // The routine reads the Equals slot it is handed.
+        if (group) SlotCalled(_b.EqualsSlot);
         VReg said = group
             ? e.Call(CallLabel(same), IrType.I32, R(self), R(other), new ImmOperand((long)_b.EqualsSlot * _t.WordSize, IrType.I32))!
             : e.Call(CallLabel(same), IrType.I32, R(self), R(other))!;
@@ -1173,7 +1181,7 @@ public sealed partial class Lowering
     /// </summary>
     private string ObjectCompareStub()
     {
-        const string name = "__object_compareto";
+        const string name = ObjectCompareName;
 
         if (!_hasObjectCompare)
         {
@@ -1208,6 +1216,7 @@ public sealed partial class Lowering
             Refuse(e, "Object must be of type String.");
 
             e.SetBlock(slotted);
+            SlotCalled((int)_b.CompareSlot);
             VReg fn = e.Load(IrTypes.Word, vt, (long)_b.CompareSlot * _t.WordSize);
             e.Branch(e.Binary(Opcode.Eq, fn, e.Address(name)), none, ask);
             e.SetBlock(ask);

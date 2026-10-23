@@ -688,7 +688,7 @@ public static class Driver
         {
             if (args[i].StartsWith('-'))
             {
-                if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map"
+                if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map" or "--why"
                     or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type" or "--runtime-knob"
@@ -955,6 +955,14 @@ public static class Driver
         // check of handlers across units (InterruptNotes).
         Binder.CollectInterruptFacts = args.Contains("--obj") || library;
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
+        // A CLOSED WORLD: everything that can call through a vtable is in this
+        // compile, so a slot's method is compiled only once something reads
+        // the slot (Lowering.Slots). Not for an object another link takes,
+        // a library or shared object, a program over shared ones, or a
+        // kernel whose modules derive from its classes; nor under --no-rta.
+        Corsac.Lang.Lower.Lowering.Why = Value(args, "--why");
+        Corsac.Lang.Lower.Lowering.ClosedWorld = !args.Contains("--obj") && !library && sharedLibs.Count == 0
+            && Value(args, "--kernel") is null && Value(args, "--exports") is null && !args.Contains("--no-rta");
         // Native task workers serve parsing, optimization and code generation.
         // Initialize once before publishing work in any compilation phase:
         // .NET's call, the scheduler's workers in a native corc (an #if !NET
@@ -1536,6 +1544,7 @@ public static class Driver
                 Entry = entry,
                 Subsystem = Value(args, "--subsystem") == "console" ? Corsac.Lang.Pe.PeSubsystem.WindowsConsole : Corsac.Lang.Pe.PeSubsystem.WindowsGui,
                 Name = Path.GetFileName(output),
+                MapPath = Value(args, "--map"),
             });
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {new FileInfo(output).Length} bytes {(dll ? "DLL" : "program")}");
             return 0;

@@ -231,6 +231,8 @@ public sealed partial class Lowering
     {
         Lowering l = new(bound, file, library);
         l.Run(unit);
+        l.FillUnreachedSlots();
+        l.SayWhy();
         l._m.InterruptFacts = bound.InterruptFacts;
         l._m.Preinit = l.PreinitNotes();
         // The frees the lifetime passes may add (Escape), by the label they
@@ -963,8 +965,30 @@ public sealed partial class Lowering
         MethodSymbol m = Canonical(call);
         if (Emits(m) && _required.Add(m))
         {
+            if (Why is not null) _requiredBy[m] = _method;
             _work.Enqueue(m);
         }
+    }
+
+    /// <summary>--why NAME: the chain of methods that required the method whose label is NAME, said once lowering is done.</summary>
+    public static string? Why { get; set; }
+
+    private readonly Dictionary<MethodSymbol, MethodSymbol?> _requiredBy = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The chain --why asks for, from the method named to the root that first required it.</summary>
+    private void SayWhy()
+    {
+        if (Why is null) return;
+        MethodSymbol? m = _requiredBy.Keys.FirstOrDefault(r => CallLabel(r) == Why || r.Owner.Name + "." + r.Name == Why);
+        if (m is null)
+        {
+            Console.Error.WriteLine("why: " + Why + " was not required");
+            return;
+        }
+        HashSet<MethodSymbol> seen = new(ReferenceEqualityComparer.Instance);
+        for (MethodSymbol? at = m; at is not null && seen.Add(at); at = _requiredBy.GetValueOrDefault(at))
+            Console.Error.WriteLine("why: " + at.Owner.Name + "." + at.Name + "  (" + CallLabel(at) + ")");
+        Console.Error.WriteLine("why: (a root)");
     }
 
     /// <summary>
@@ -3265,7 +3289,7 @@ public sealed partial class Lowering
     /// <summary>object.Equals: the same object or not. Shared by every class that declares none.</summary>
     private string ObjectEqualsStub()
     {
-        const string name = "__object_equals";
+        const string name = ObjectEqualsName;
         if (!_hasObjectEquals)
         {
             _hasObjectEquals = true;
@@ -3284,7 +3308,7 @@ public sealed partial class Lowering
     /// <summary>object.ToString: the type's name, read out of the object's own descriptor.</summary>
     private string ObjectToStringStub()
     {
-        const string name = "__object_tostring";
+        const string name = ObjectToStringName;
         if (!_hasObjectToString)
         {
             _hasObjectToString = true;

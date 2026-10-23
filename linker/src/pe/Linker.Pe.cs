@@ -40,6 +40,9 @@ public static partial class Linker
 
         public PeSubsystem Subsystem { get; init; } = PeSubsystem.WindowsGui;
 
+        /// <summary>--map FILE: every symbol of the image, largest first, as the flat link writes it.</summary>
+        public string? MapPath { get; init; }
+
         /// <summary>The image's own name, which its export directory carries: the file's.</summary>
         public string Name { get; init; } = "";
     }
@@ -174,6 +177,8 @@ public static partial class Linker
         BelowFourGigabytes(layout);
         DefineLinkerSymbols(layout);
         Relocate(inputs, layout, errors);
+
+        if (options.MapPath is not null) WriteMap(layout, inputs, options.MapPath);
 
         uint entryRva = 0;
         if (options.Entry is not null)

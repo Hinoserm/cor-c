@@ -982,12 +982,22 @@ static class Platform
     /// are both it.
     public static IConsole? Console;
 
+    /// WHERE THE BYTES GO WITHOUT AN OBJECT: a host's routine, called with
+    /// the descriptor, the address and the count -- a Windows image's
+    /// standard error (Win32.Write) -- so that writing needs nothing made.
+    public static long WriteHook;
+
     /// Returns the count, always: a console that is not there swallows bytes
     /// rather than failing, and there is nowhere to report a failure to.
     /// The heap's own reports come here -- out of memory among them -- so a
     /// console driver's Write may not allocate either.
     public static long WriteBytes(int fd, long address, long count)
     {
+        if (WriteHook != 0)
+        {
+            Sys.Call(WriteHook, fd, address, count);
+            return count;
+        }
         if (Console != null)
         {
             Console.Write(address, count);

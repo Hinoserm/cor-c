@@ -397,6 +397,7 @@ public sealed partial class Lowering
                     : m.Owner.Name == "object" ? null : m.Owner);
             }
             VReg vt = _e.Load(IrTypes.Word, receiver, 0);
+            SlotCalled(m.VtableSlot);
             VReg fn = _e.Load(IrTypes.Word, vt, (long)m.VtableSlot * _t.WordSize);
             VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
             if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
@@ -524,6 +525,11 @@ public sealed partial class Lowering
         if (_b.PointerCalls.TryGetValue(call, out FunctionPointer? pointer))
         {
             return EmitPointerCall(call, pointer);
+        }
+
+        if (KnobNotGiven(call) is VReg off)
+        {
+            return off;
         }
 
         // Enum.HasFlag: (value & flag) == flag.

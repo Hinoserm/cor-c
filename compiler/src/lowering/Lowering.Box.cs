@@ -697,6 +697,7 @@ public sealed partial class Lowering
         if (of.Symbol is { Kind: TypeKind.Enum } && StringRoutine("FormatEnum", 4) is MethodSymbol enumFormat)
         {
             VReg vt = e.Load(IrTypes.Word, self, 0);
+            SlotCalled(_b.ToStringSlot);
             VReg fn = e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
             VReg name = e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(self) })!;
             e.Block.Instrs[^1].DispatchType = ObjectDispatch;
@@ -714,6 +715,7 @@ public sealed partial class Lowering
         else
         {
             VReg vt = e.Load(IrTypes.Word, self, 0);
+            SlotCalled(_b.ToStringSlot);
             VReg fn = e.Load(IrTypes.Word, vt, (long)_b.ToStringSlot * _t.WordSize);
             VReg said = e.CallIndirect(R(fn), IrTypes.Word, new Operand[] { R(self) })!;
             e.Block.Instrs[^1].DispatchType = ObjectDispatch;
