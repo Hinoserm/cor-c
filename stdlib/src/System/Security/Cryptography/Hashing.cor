@@ -6,12 +6,14 @@
 // same reason: a hash of a Stream reads the stream.
 
 /// Something went wrong in a cryptographic operation.
-class CryptographicException : Exception
+class CryptographicException : SystemException
 {
     internal override int Code => unchecked((int)0x80131501);
     public CryptographicException() : base("Error occurred during a cryptographic operation.") { }
+    public CryptographicException(int hr) : this() { HResult = hr; }
     public CryptographicException(string? message) : base(message ?? "Error occurred during a cryptographic operation.") { }
     public CryptographicException(string? message, Exception? innerException) : base(message ?? "Error occurred during a cryptographic operation.", innerException) { }
+    public CryptographicException(string format, string? insert) : base(string.Format(format, insert)) { }
 }
 
 /// A hash algorithm: data in, in as many pieces as it comes in, and a hash
@@ -297,6 +299,17 @@ sealed class Sha256Implementation : SHA256
     long _length;
 
     public Sha256Implementation() { Initialize(); }
+
+    /// The state, the held block and the schedule zeroed, and started
+    /// again: what CorsacSecureCrypto_Hash leaves behind after a digest of a
+    /// key or a secret.
+    internal void Wipe()
+    {
+        for (int i = 0; i < _block.Length; i++) _block[i] = 0;
+        for (int i = 0; i < _w.Length; i++) _w[i] = 0;
+        for (int i = 0; i < _state.Length; i++) _state[i] = 0;
+        Initialize();
+    }
 
     public override HashAlgorithm Snapshot()
     {
@@ -910,6 +923,15 @@ sealed class Sha512Implementation : SHA512
     public Sha512Implementation(bool asSha384)
     {
         _short = asSha384;
+        Initialize();
+    }
+
+    /// As Sha256Implementation.Wipe.
+    internal void Wipe()
+    {
+        for (int i = 0; i < _block.Length; i++) _block[i] = 0;
+        for (int i = 0; i < _w.Length; i++) _w[i] = 0;
+        for (int i = 0; i < _state.Length; i++) _state[i] = 0;
         Initialize();
     }
 

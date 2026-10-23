@@ -1,4 +1,4 @@
-// CORSAC/SECURE Crypto portable AES-128 and AES-256.
+// CORSAC/SECURE Crypto portable AES-128, AES-192 and AES-256.
 //
 // Binary keys and blocks are byte arrays.  The expanded key and all working
 // state belong to this heap object, so independent contexts remain correct
@@ -19,6 +19,7 @@ public class CorsacSecureCrypto_Aes
 {
     public const int BlockBytes = 16;
     public const int Key128Bytes = 16;
+    public const int Key192Bytes = 24;
     public const int Key256Bytes = 32;
     public const int InvalidArgument = 1;
     public const int ProtocolState = 9;
@@ -33,7 +34,7 @@ public class CorsacSecureCrypto_Aes
     private int _error;
     private bool _closed;
 
-    /// Copies and expands a 16-byte or 32-byte key.  No caller-owned key
+    /// Copies and expands a 16-, 24- or 32-byte key.  No caller-owned key
     /// storage is retained after the constructor returns.
     public CorsacSecureCrypto_Aes(
         byte[] key, long keyOffset, long keyCount)
@@ -43,7 +44,7 @@ public class CorsacSecureCrypto_Aes
         _sbox = new byte[0];
         _inverseSbox = new byte[0];
 
-        if ((keyCount != Key128Bytes && keyCount != Key256Bytes)
+        if ((keyCount != Key128Bytes && keyCount != Key192Bytes && keyCount != Key256Bytes)
             || !CorsacSecureCrypto_Bytes.Range(key, keyOffset, keyCount))
         {
             _error = InvalidArgument;
@@ -106,8 +107,7 @@ public class CorsacSecureCrypto_Aes
         _closed = true;
     }
 
-    /// One-shot AES block encryption.  It accepts only AES-128 and AES-256;
-    /// AES-192 is deliberately outside the Crypto interface.
+    /// One-shot AES block encryption with a 16-, 24- or 32-byte key.
     public static bool Encrypt(
         byte[] key, long keyOffset, long keyCount,
         byte[] input, long inputOffset,
@@ -131,7 +131,7 @@ public class CorsacSecureCrypto_Aes
         byte[] input, long inputOffset,
         byte[] output, long outputOffset)
     {
-        return (keyCount == Key128Bytes || keyCount == Key256Bytes)
+        return (keyCount == Key128Bytes || keyCount == Key192Bytes || keyCount == Key256Bytes)
             && CorsacSecureCrypto_Bytes.Range(
                 key, keyOffset, keyCount)
             && CorsacSecureCrypto_Bytes.Range(
@@ -157,13 +157,15 @@ public class CorsacSecureCrypto_Aes
         for (int i = 0; i < keyBytes; i = i + 1)
             _roundKeys[i] = key[(int)keyOffset + i];
 
-        _rounds = keyBytes == Key128Bytes ? 10 : 14;
+        _rounds = keyBytes == Key128Bytes ? 10 : keyBytes == Key192Bytes ? 12 : 14;
         int expandedBytes = (_rounds + 1) * BlockBytes;
         int generated = keyBytes;
         int rcon = 1;
         // The rolling schedule is always stored in the existing binary
         // array. A later CPU can fall back without an opaque accelerator key.
-        while (generated < expandedBytes)
+        // AES-192's six-word schedule has no assisted step: it is expanded
+        // by the portable loop below.
+        while (keyBytes != Key192Bytes && generated < expandedBytes)
         {
             long output = Sys.ArrayData(_roundKeys) + generated;
             bool rotated = (generated % keyBytes) == 0;

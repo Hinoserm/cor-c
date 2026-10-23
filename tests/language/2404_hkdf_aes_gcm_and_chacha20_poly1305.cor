@@ -1,0 +1,131 @@
+// test: hkdf_aes_gcm_and_chacha20_poly1305
+// expect-exit: 0
+// expect-output:
+// hkdf MD5 prk=17700A7E4E55811307BD3CC3B6BAE2E7 okm=AE676BFE4FA318EEDB07BCD10651C8F6377DA83BE8B2AADAD7E23CB1C069DC21A844732555D77B2AFCD8 same=True nosalt=0034A15E9BB4DB59
+// hkdf SHA1 prk=7BF4CF5CF243873DCB9F7D426D10D7AF9366EDA2 okm=96FFC03E4C0F711340759778BFE4E3D1744EB081B5F6B9E0B9AB64C3CF640565CB900BAAA7FBC65B6F38 same=True nosalt=460C07E6C0A3E93E
+// hkdf SHA256 prk=BDD4D4E7DF9EA7C360B3E613D017E14B8CAC7E40A6917B7B05A699633878CBFC okm=370EF5B2AC0377057A656F7D8C661E4C8C97ADA0B1345C6E2AAB04EF5ED67A4F689962BCD4C419AE576F same=True nosalt=68041BF9FD1B496B
+// hkdf SHA384 prk=D1D692628E3E2F099E566A36F1A37BA2AE4D53216CC551E86956F6223C668C971C968F3060AF17C4A845F2BC88F2D881 okm=63F40545D7B14421CDA4C688A02E35E38637D20D3E74F8D000EC6B8D7F543C7F57E32A5327C72547266E same=True nosalt=A4C4B330A1EC427F
+// hkdf SHA512 prk=03F2B9BF535587F6AE29A163818F29E4C75620AAE2B1BA71EE603ECBAC7D7C6F544F56CA3094B5BD9918A0048EF671CCDD494D85B3B928910D477028EFB6DFBE okm=4C556E40F910A81C081BE7D07B57868964201ED82199FC29DDDCE17D938D3539C03BD7FC64527034672E same=True nosalt=1263BA2330683979
+// hkdf span 370EF5B2AC0377057A656F7D8C661E4C8C97ADA0
+// hkdf too long: ArgumentOutOfRangeException: Output keying material length can be at most 8160 bytes (255 * hash length). (Parameter 'outputLength')
+// hkdf zero length: ArgumentOutOfRangeException: outputLength ('0') must be a non-negative and non-zero value. (Parameter 'outputLength')
+// Actual value was 0.
+// hkdf short prk: ArgumentException: The pseudo-random key length must be at least 32 bytes. (Parameter 'prk')
+// hkdf unknown hash: ArgumentOutOfRangeException: Specified argument was out of the range of valid values. (Parameter 'hashAlgorithmName')
+// hkdf null ikm: ArgumentNullException: Value cannot be null. (Parameter 'ikm')
+// gcm supported True nonce 12/12/1 tag 12/16/1
+// gcm 16/16 size=16 c=3E38D7DA0D0378FC4C8199CA8C401583B18897CF9BDFF97AA65F6190 t=EE66A49EA753B50587D57C3B39BFCF23 back=attack at dawn, bring snacks
+// gcm tampered 16/16: AuthenticationTagMismatchException: The computed authentication tag did not match the input authentication tag.
+//   cleared True
+// gcm 16/12 size=12 c=3E38D7DA0D0378FC4C8199CA8C401583B18897CF9BDFF97AA65F6190 t=EE66A49EA753B50587D57C3B back=attack at dawn, bring snacks
+// gcm tampered 16/12: AuthenticationTagMismatchException: The computed authentication tag did not match the input authentication tag.
+//   cleared True
+// gcm 24/16 size=16 c=CDDA6BF7CAAFB2ABCAEDD9355282BEA42602FBCDB956A573A7F120DA t=FCD716CE7078F7E27FC30F2E304DA410 back=attack at dawn, bring snacks
+// gcm tampered 24/16: AuthenticationTagMismatchException: The computed authentication tag did not match the input authentication tag.
+//   cleared True
+// gcm 24/12 size=12 c=CDDA6BF7CAAFB2ABCAEDD9355282BEA42602FBCDB956A573A7F120DA t=FCD716CE7078F7E27FC30F2E back=attack at dawn, bring snacks
+// gcm tampered 24/12: AuthenticationTagMismatchException: The computed authentication tag did not match the input authentication tag.
+//   cleared True
+// gcm 32/16 size=16 c=C6641CDC969A2469A2F271A05FBC5BF4090513C0FE1D790C7B429922 t=77415F1EC7592661A0BE20567A3E027D back=attack at dawn, bring snacks
+// gcm tampered 32/16: AuthenticationTagMismatchException: The computed authentication tag did not match the input authentication tag.
+//   cleared True
+// gcm 32/12 size=12 c=C6641CDC969A2469A2F271A05FBC5BF4090513C0FE1D790C7B429922 t=77415F1EC7592661A0BE2056 back=attack at dawn, bring snacks
+// gcm tampered 32/12: AuthenticationTagMismatchException: The computed authentication tag did not match the input authentication tag.
+//   cleared True
+// gcm empty t=7985CF4D72246A8C853BA3E1D229CFF2
+// gcm key 20: CryptographicException: Specified key is not a valid size for this algorithm.
+// gcm tag 11: ArgumentException: The specified tag is not a valid size for this algorithm. (Parameter 'tagSizeInBytes')
+// gcm nonce 8: ArgumentException: The specified nonce is not a valid size for this algorithm. (Parameter 'nonce')
+// gcm tag buffer 15: ArgumentException: The size of the specified tag does not match the expected size of 16. (Parameter 'tag')
+// gcm cipher buffer short: ArgumentException: Plaintext and ciphertext must have the same length.
+// chacha supported True
+// chacha c=B00F17A0D576192180D8632FCD2F6EE6AB3289EF7FF0978E483B4B1E7C94EAEA8C47569D314AD95F t=95AA695E606DA0BE37AF711DC1B120F2 back=Ladies and Gentlemen of the class of '99
+// chacha tampered: AuthenticationTagMismatchException: The computed authentication tag did not match the input authentication tag.
+// chacha key 16: CryptographicException: Specified key is not a valid size for this algorithm.
+// chacha tag 12: ArgumentException: The specified tag is not a valid size for this algorithm. (Parameter 'tag')
+// chacha nonce 8: ArgumentException: The specified nonce is not a valid size for this algorithm. (Parameter 'nonce')
+// disposed: ObjectDisposedException
+// exceptions True True
+//
+// HKDF over MD5, SHA-1, SHA-256, SHA-384 and SHA-512; AesGcm with 128-, 192-
+// and 256-bit keys and 16- and 12-byte tags; ChaCha20Poly1305: outputs for
+// fixed inputs, a spoiled tag refused and the plaintext cleared, and the
+// argument checks in .NET's order and words. Expected output from .NET 10
+// (the disposed case by its type: .NET names its OpenSSL handle there).
+
+using System;
+using System.Security.Cryptography;
+using System.Text;
+
+static class Program
+{
+    static byte[] Pattern(int n, int seed) { byte[] b = new byte[n]; for (int i = 0; i < n; i++) b[i] = (byte)(i * 13 + seed); return b; }
+    static string H(byte[] b) => Convert.ToHexString(b);
+    static void Fail(string name, Action a) { try { a(); Console.WriteLine(name + ": no failure"); } catch (Exception e) { Console.WriteLine(name + ": " + e.GetType().Name + ": " + e.Message); } }
+
+    static int Main()
+    {
+        byte[] ikm = Pattern(22, 11), salt = Pattern(13, 0), info = Pattern(10, 0xf0);
+        foreach (HashAlgorithmName h in new[] { HashAlgorithmName.MD5, HashAlgorithmName.SHA1, HashAlgorithmName.SHA256, HashAlgorithmName.SHA384, HashAlgorithmName.SHA512 })
+        {
+            byte[] prk = HKDF.Extract(h, ikm, salt);
+            byte[] okm = HKDF.Expand(h, prk, 42, info);
+            byte[] both = HKDF.DeriveKey(h, ikm, 42, salt, info);
+            Console.WriteLine("hkdf " + h + " prk=" + H(prk) + " okm=" + H(okm) + " same=" + (H(okm) == H(both)) + " nosalt=" + H(HKDF.Extract(h, ikm)).Substring(0, 16));
+        }
+        Span<byte> outSpan = stackalloc byte[20];
+        HKDF.DeriveKey(HashAlgorithmName.SHA256, ikm, outSpan, salt, info);
+        Console.WriteLine("hkdf span " + Convert.ToHexString(outSpan));
+        Fail("hkdf too long", () => HKDF.Expand(HashAlgorithmName.SHA256, new byte[32], 255 * 32 + 1));
+        Fail("hkdf zero length", () => HKDF.Expand(HashAlgorithmName.SHA256, new byte[32], 0));
+        Fail("hkdf short prk", () => HKDF.Expand(HashAlgorithmName.SHA256, new byte[16], 10));
+        Fail("hkdf unknown hash", () => HKDF.Extract(new HashAlgorithmName("FOO"), ikm));
+        Fail("hkdf null ikm", () => HKDF.Extract(HashAlgorithmName.SHA256, null!));
+
+        Console.WriteLine("gcm supported " + AesGcm.IsSupported + " nonce " + AesGcm.NonceByteSizes.MinSize + "/" + AesGcm.NonceByteSizes.MaxSize + "/" + AesGcm.NonceByteSizes.SkipSize
+            + " tag " + AesGcm.TagByteSizes.MinSize + "/" + AesGcm.TagByteSizes.MaxSize + "/" + AesGcm.TagByteSizes.SkipSize);
+        foreach (int keySize in new[] { 16, 24, 32 })
+            foreach (int tagSize in new[] { 16, 12 })
+            {
+                using AesGcm gcm = new AesGcm(Pattern(keySize, 1), tagSize);
+                byte[] nonce = Pattern(12, 2), plain = Encoding.ASCII.GetBytes("attack at dawn, bring snacks"), aad = Pattern(9, 3);
+                byte[] cipher = new byte[plain.Length], tag = new byte[tagSize], back = new byte[plain.Length];
+                gcm.Encrypt(nonce, plain, cipher, tag, aad);
+                gcm.Decrypt(nonce, cipher, tag, back, aad);
+                Console.WriteLine("gcm " + keySize + "/" + tagSize + " size=" + gcm.TagSizeInBytes + " c=" + H(cipher) + " t=" + H(tag) + " back=" + Encoding.ASCII.GetString(back));
+                tag[0] ^= 1;
+                Fail("gcm tampered " + keySize + "/" + tagSize, () => gcm.Decrypt(nonce, cipher, tag, back, aad));
+                Console.WriteLine("  cleared " + (back[0] == 0 && back[back.Length - 1] == 0));
+            }
+        using (AesGcm empty = new AesGcm(Pattern(16, 1), 16))
+        {
+            byte[] tag = new byte[16];
+            empty.Encrypt(new byte[12], new byte[0], new byte[0], tag);
+            Console.WriteLine("gcm empty t=" + H(tag));
+        }
+        Fail("gcm key 20", () => new AesGcm(new byte[20], 16));
+        Fail("gcm tag 11", () => new AesGcm(new byte[16], 11));
+        Fail("gcm nonce 8", () => { using AesGcm g = new AesGcm(new byte[16], 16); g.Encrypt(new byte[8], new byte[4], new byte[4], new byte[16]); });
+        Fail("gcm tag buffer 15", () => { using AesGcm g = new AesGcm(new byte[16], 16); g.Encrypt(new byte[12], new byte[4], new byte[4], new byte[15]); });
+        Fail("gcm cipher buffer short", () => { using AesGcm g = new AesGcm(new byte[16], 16); g.Encrypt(new byte[12], new byte[4], new byte[3], new byte[16]); });
+
+        Console.WriteLine("chacha supported " + ChaCha20Poly1305.IsSupported);
+        using (ChaCha20Poly1305 cc = new ChaCha20Poly1305(Pattern(32, 5)))
+        {
+            byte[] nonce = Pattern(12, 6), plain = Encoding.ASCII.GetBytes("Ladies and Gentlemen of the class of '99"), aad = Pattern(12, 7);
+            byte[] cipher = new byte[plain.Length], tag = new byte[16], back = new byte[plain.Length];
+            cc.Encrypt(nonce, plain, cipher, tag, aad);
+            cc.Decrypt(nonce, cipher, tag, back, aad);
+            Console.WriteLine("chacha c=" + H(cipher) + " t=" + H(tag) + " back=" + Encoding.ASCII.GetString(back));
+            cipher[3] ^= 0x40;
+            Fail("chacha tampered", () => cc.Decrypt(nonce, cipher, tag, back, aad));
+        }
+        Fail("chacha key 16", () => new ChaCha20Poly1305(new byte[16]));
+        Fail("chacha tag 12", () => { using ChaCha20Poly1305 c = new ChaCha20Poly1305(new byte[32]); c.Encrypt(new byte[12], new byte[4], new byte[4], new byte[12]); });
+        Fail("chacha nonce 8", () => { using ChaCha20Poly1305 c = new ChaCha20Poly1305(new byte[32]); c.Encrypt(new byte[8], new byte[4], new byte[4], new byte[16]); });
+        try { ChaCha20Poly1305 c = new ChaCha20Poly1305(new byte[32]); c.Dispose(); c.Encrypt(new byte[12], new byte[4], new byte[4], new byte[16]); Console.WriteLine("disposed: no failure"); }
+        catch (Exception e) { Console.WriteLine("disposed: " + e.GetType().Name); }
+        Console.WriteLine("exceptions " + (new AuthenticationTagMismatchException() is CryptographicException) + " " + (new CryptographicException() is SystemException));
+        return 0;
+    }
+}

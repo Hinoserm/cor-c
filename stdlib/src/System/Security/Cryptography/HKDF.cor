@@ -1,0 +1,111 @@
+// HKDF (RFC 5869) as .NET 5 and later have it, over this library's HMACs:
+// Extract, Expand and the two together, with MD5, SHA-1, SHA-256, SHA-384
+// and SHA-512, in byte-array and span forms, failing as .NET's does.
+
+using System;
+
+namespace System.Security.Cryptography;
+
+public static class HKDF
+{
+    /// PRK = HMAC(salt, ikm): an empty salt is the hash's length of zeros,
+    /// which HMAC's padding makes the same key.
+    public static byte[] Extract(HashAlgorithmName hashAlgorithmName, byte[] ikm, byte[]? salt = null)
+    {
+        if (ikm == null) throw new ArgumentNullException(nameof(ikm));
+        HashLength(hashAlgorithmName);
+        return Mac(hashAlgorithmName, salt ?? new byte[0], ikm);
+    }
+
+    public static int Extract(HashAlgorithmName hashAlgorithmName, ReadOnlySpan<byte> ikm, ReadOnlySpan<byte> salt, Span<byte> prk)
+    {
+        int length = HashLength(hashAlgorithmName);
+        if (prk.Length < length) throw new ArgumentException("Destination is too short.", nameof(prk));
+        byte[] made = Mac(hashAlgorithmName, salt.ToArray(), ikm.ToArray());
+        made.AsSpan().CopyTo(prk);
+        return length;
+    }
+
+    /// OKM: T(1) | T(2) | ..., T(i) = HMAC(prk, T(i-1) | info | i), cut to
+    /// `outputLength`, at most 255 hashes.
+    public static byte[] Expand(HashAlgorithmName hashAlgorithmName, byte[] prk, int outputLength, byte[]? info = null)
+    {
+        if (prk == null) throw new ArgumentNullException(nameof(prk));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(outputLength);
+        int length = HashLength(hashAlgorithmName);
+        if (outputLength > 255 * length)
+            throw new ArgumentOutOfRangeException(nameof(outputLength), "Output keying material length can be at most " + (255 * length) + " bytes (255 * hash length).");
+        if (prk.Length < length) throw new ArgumentException("The pseudo-random key length must be at least " + length + " bytes.", nameof(prk));
+        return Made(hashAlgorithmName, prk, outputLength, info ?? new byte[0]);
+    }
+
+    public static void Expand(HashAlgorithmName hashAlgorithmName, ReadOnlySpan<byte> prk, Span<byte> output, ReadOnlySpan<byte> info)
+    {
+        int length = HashLength(hashAlgorithmName);
+        if (output.Length == 0) throw new ArgumentException("Destination is too short.", nameof(output));
+        if (output.Length > 255 * length)
+            throw new ArgumentException("Output keying material length can be at most " + (255 * length) + " bytes (255 * hash length).", nameof(output));
+        if (prk.Length < length) throw new ArgumentException("The pseudo-random key length must be at least " + length + " bytes.", nameof(prk));
+        Made(hashAlgorithmName, prk.ToArray(), output.Length, info.ToArray()).AsSpan().CopyTo(output);
+    }
+
+    public static byte[] DeriveKey(HashAlgorithmName hashAlgorithmName, byte[] ikm, int outputLength, byte[]? salt = null, byte[]? info = null)
+    {
+        if (ikm == null) throw new ArgumentNullException(nameof(ikm));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(outputLength);
+        int length = HashLength(hashAlgorithmName);
+        if (outputLength > 255 * length)
+            throw new ArgumentOutOfRangeException(nameof(outputLength), "Output keying material length can be at most " + (255 * length) + " bytes (255 * hash length).");
+        byte[] prk = Mac(hashAlgorithmName, salt ?? new byte[0], ikm);
+        return Made(hashAlgorithmName, prk, outputLength, info ?? new byte[0]);
+    }
+
+    public static void DeriveKey(HashAlgorithmName hashAlgorithmName, ReadOnlySpan<byte> ikm, Span<byte> output, ReadOnlySpan<byte> salt, ReadOnlySpan<byte> info)
+    {
+        int length = HashLength(hashAlgorithmName);
+        if (output.Length == 0) throw new ArgumentException("Destination is too short.", nameof(output));
+        if (output.Length > 255 * length)
+            throw new ArgumentException("Output keying material length can be at most " + (255 * length) + " bytes (255 * hash length).", nameof(output));
+        byte[] prk = Mac(hashAlgorithmName, salt.ToArray(), ikm.ToArray());
+        Made(hashAlgorithmName, prk, output.Length, info.ToArray()).AsSpan().CopyTo(output);
+    }
+
+    static byte[] Made(HashAlgorithmName name, byte[] prk, int outputLength, byte[] info)
+    {
+        int length = HashLength(name);
+        byte[] output = new byte[outputLength];
+        byte[] previous = new byte[0];
+        int at = 0;
+        for (int i = 1; at < outputLength; i++)
+        {
+            byte[] input = new byte[previous.Length + info.Length + 1];
+            previous.CopyTo(input, 0);
+            info.CopyTo(input, previous.Length);
+            input[input.Length - 1] = (byte)i;
+            previous = Mac(name, prk, input);
+            int take = Math.Min(length, outputLength - at);
+            Array.Copy(previous, 0, output, at, take);
+            at += take;
+        }
+        return output;
+    }
+
+    static byte[] Mac(HashAlgorithmName name, byte[] key, byte[] data)
+    {
+        using IncrementalHash mac = IncrementalHash.CreateHMAC(name, key);
+        mac.AppendData(data);
+        return mac.GetHashAndReset();
+    }
+
+    /// The hash's length in bytes; .NET's refusal for one it does not know.
+    static int HashLength(HashAlgorithmName name)
+    {
+        if (name == HashAlgorithmName.SHA256) return 32;
+        if (name == HashAlgorithmName.SHA384) return 48;
+        if (name == HashAlgorithmName.SHA512) return 64;
+        if (name == HashAlgorithmName.SHA1) return 20;
+        if (name == HashAlgorithmName.MD5) return 16;
+        if (string.IsNullOrEmpty(name.Name)) throw new ArgumentException("The hash algorithm name cannot be null or empty.", "hashAlgorithmName");
+        throw new ArgumentOutOfRangeException("hashAlgorithmName");
+    }
+}
