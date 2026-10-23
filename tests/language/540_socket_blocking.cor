@@ -46,7 +46,7 @@ class Program
 
         Console.WriteLine("accepted");
         Console.WriteLine(answered.LocalEndPoint.Port == port
-                       && answered.RemoteEndPoint.Address.HostOrder == IPAddress.Loopback.HostOrder
+                       && answered.RemoteEndPoint.Address.Equals(IPAddress.Loopback)
                        && caller.RemoteEndPoint.Port == port ? "endpoints ok" : "endpoints bad");
 
         // The socket a program is handed on a descriptor, which is what inetd

@@ -1,0 +1,16 @@
+// What is wrong with a TLS peer's certificate, as .NET's System.Net.Security
+// has it (in System.Net.Primitives, which is our System.Net library):
+// RemoteCertificateValidationCallback is told these.
+
+using System;
+
+namespace System.Net.Security;
+
+[Flags]
+public enum SslPolicyErrors
+{
+    None = 0,
+    RemoteCertificateNotAvailable = 1,
+    RemoteCertificateNameMismatch = 2,
+    RemoteCertificateChainErrors = 4,
+}

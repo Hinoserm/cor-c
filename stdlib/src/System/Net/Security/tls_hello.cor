@@ -1,0 +1,1273 @@
+// CORSAC/SECURE TLS 1.3 ClientHello and ServerHello codec.
+//
+// Protocol values remain byte[] throughout.  In particular, DNS A-labels,
+// ALPN protocol identifiers, cookies and key shares are never converted to a
+// COR-C# string.  Encoders build into private temporary storage and parsers
+// commit state only after the complete handshake message has been checked.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal static class CorsacSecureTls_HelloValue
+{
+    public const int ClientHello = 1;
+    public const int ServerHello = 2;
+
+    public const int Tls12 = 0x0303;
+    public const int Tls13 = 0x0304;
+
+    public const int TlsAes128GcmSha256 = 0x1301;
+    public const int TlsAes256GcmSha384 = 0x1302;
+    public const int TlsChaCha20Poly1305Sha256 = 0x1303;
+
+    public const long OfferAes128GcmSha256 = 1;
+    public const long OfferAes256GcmSha384 = 2;
+    public const long OfferChaCha20Poly1305Sha256 = 4;
+    public const long SafeDefaultSuites = 5;
+    public const long AllSuites = 7;
+
+    public const int Secp256r1 = 0x0017;
+    public const int X25519 = 0x001d;
+    public const long ShareSecp256r1 = 1;
+    public const long ShareX25519 = 2;
+
+    public const int EcdsaSecp256r1Sha256 = 0x0403;
+    public const int EcdsaSecp384r1Sha384 = 0x0503;
+    public const int RsaPkcs1Sha256 = 0x0401;
+    public const int RsaPkcs1Sha384 = 0x0501;
+    public const int RsaPkcs1Sha512 = 0x0601;
+    public const int RsaPssRsaeSha256 = 0x0804;
+    public const int RsaPssRsaeSha384 = 0x0805;
+    public const int RsaPssRsaeSha512 = 0x0806;
+    public const int Ed25519 = 0x0807;
+
+    public const int ExtensionServerName = 0;
+    public const int ExtensionSupportedGroups = 10;
+    public const int ExtensionSignatureAlgorithms = 13;
+    public const int ExtensionAlpn = 16;
+    public const int ExtensionSupportedVersions = 43;
+    public const int ExtensionCookie = 44;
+    public const int ExtensionKeyShare = 51;
+}
+
+internal class CorsacSecureTls_ClientHelloOffer
+{
+    private byte[] _empty;
+    private byte[] _random;
+    private int _randomOffset;
+    private byte[] _session;
+    private int _sessionOffset;
+    private int _sessionCount;
+    private byte[] _serverName;
+    private int _serverNameOffset;
+    private int _serverNameCount;
+    private byte[] _alpn;
+    private int _alpnOffset;
+    private int _alpnCount;
+    private byte[] _x25519;
+    private int _x25519Offset;
+    private int _x25519Count;
+    private byte[] _p256;
+    private int _p256Offset;
+    private int _p256Count;
+    private long _suites;
+
+    public CorsacSecureTls_ClientHelloOffer()
+    {
+        _empty = new byte[0];
+        _random = _empty;
+        _session = _empty;
+        _serverName = _empty;
+        _alpn = _empty;
+        _x25519 = _empty;
+        _p256 = _empty;
+        _suites = CorsacSecureTls_HelloValue.SafeDefaultSuites;
+    }
+
+    public bool SetRandom(byte[] bytes, int offset)
+    {
+        if (!Range(bytes, offset, 32)) return false;
+        _random = bytes;
+        _randomOffset = offset;
+        return true;
+    }
+
+    public bool SetSessionId(byte[] bytes, int offset, int count)
+    {
+        if (count > 32 || !Range(bytes, offset, count)) return false;
+        _session = bytes;
+        _sessionOffset = offset;
+        _sessionCount = count;
+        return true;
+    }
+
+    // The caller supplies an ASCII DNS A-label sequence without a trailing
+    // dot.  International names therefore arrive in their xn-- wire form.
+    // An empty name sends no server_name at all, as for an IP literal
+    // target (RFC 6066 3: a literal address is never a HostName).
+    public bool SetServerName(byte[] bytes, int offset, int count)
+    {
+        if (count != 0 && !CorsacSecureTls_HelloCodec.ValidDnsName(
+                bytes, offset, count)) return false;
+        _serverName = bytes;
+        _serverNameOffset = offset;
+        _serverNameCount = count;
+        return true;
+    }
+
+    // `bytes` is the content of ProtocolNameList: one or more one-byte-length
+    // protocol identifiers.  The codec adds the enclosing uint16 itself.
+    // Passing a zero-length slice disables ALPN.
+    public bool SetAlpnProtocols(byte[] bytes, int offset, int count)
+    {
+        if (!Range(bytes, offset, count)
+            || !CorsacSecureTls_HelloCodec.ValidAlpn(
+                   bytes, offset, count)) return false;
+        _alpn = bytes;
+        _alpnOffset = offset;
+        _alpnCount = count;
+        return true;
+    }
+
+    public bool SetCipherSuites(long mask)
+    {
+        if (mask == 0
+            || (mask & ~CorsacSecureTls_HelloValue.AllSuites) != 0)
+            return false;
+        _suites = mask;
+        return true;
+    }
+
+    public bool SetKeyShare(int group, byte[] bytes, int offset, int count)
+    {
+        if (!CorsacSecureTls_HelloCodec.ValidKeyShare(
+                group, bytes, offset, count)) return false;
+        if (group == CorsacSecureTls_HelloValue.X25519)
+        {
+            _x25519 = bytes;
+            _x25519Offset = offset;
+            _x25519Count = count;
+            return true;
+        }
+        if (group == CorsacSecureTls_HelloValue.Secp256r1)
+        {
+            _p256 = bytes;
+            _p256Offset = offset;
+            _p256Count = count;
+            return true;
+        }
+        return false;
+    }
+
+    public void ClearKeyShare(int group)
+    {
+        if (group == CorsacSecureTls_HelloValue.X25519)
+        {
+            _x25519 = _empty;
+            _x25519Offset = 0;
+            _x25519Count = 0;
+        }
+        else if (group == CorsacSecureTls_HelloValue.Secp256r1)
+        {
+            _p256 = _empty;
+            _p256Offset = 0;
+            _p256Count = 0;
+        }
+    }
+
+    public byte[] RandomBytes() { return _random; }
+    public int RandomOffset() { return _randomOffset; }
+    public byte[] SessionBytes() { return _session; }
+    public int SessionOffset() { return _sessionOffset; }
+    public int SessionLength() { return _sessionCount; }
+    public byte[] ServerNameBytes() { return _serverName; }
+    public int ServerNameOffset() { return _serverNameOffset; }
+    public int ServerNameLength() { return _serverNameCount; }
+    public byte[] AlpnBytes() { return _alpn; }
+    public int AlpnOffset() { return _alpnOffset; }
+    public int AlpnLength() { return _alpnCount; }
+    public long CipherSuiteMask() { return _suites; }
+
+    public byte[] ShareBytes(int group)
+    {
+        if (group == CorsacSecureTls_HelloValue.X25519) return _x25519;
+        if (group == CorsacSecureTls_HelloValue.Secp256r1) return _p256;
+        return _empty;
+    }
+
+    public int ShareOffset(int group)
+    {
+        if (group == CorsacSecureTls_HelloValue.X25519)
+            return _x25519Offset;
+        if (group == CorsacSecureTls_HelloValue.Secp256r1)
+            return _p256Offset;
+        return 0;
+    }
+
+    public int ShareLength(int group)
+    {
+        if (group == CorsacSecureTls_HelloValue.X25519)
+            return _x25519Count;
+        if (group == CorsacSecureTls_HelloValue.Secp256r1)
+            return _p256Count;
+        return 0;
+    }
+
+    public long ShareMask()
+    {
+        long answer = 0;
+        if (_p256Count != 0)
+            answer = answer | CorsacSecureTls_HelloValue.ShareSecp256r1;
+        if (_x25519Count != 0)
+            answer = answer | CorsacSecureTls_HelloValue.ShareX25519;
+        return answer;
+    }
+
+    private static bool Range(byte[] bytes, int offset, int count)
+    {
+        return bytes != null && offset >= 0 && count >= 0
+            && offset <= bytes.Length && count <= bytes.Length - offset;
+    }
+}
+
+// One instance describes one ClientHello/ServerHello exchange.  It snapshots
+// the first ClientHello so an HRR response cannot be applied to a mutated
+// caller-side offer.  Status changes happen only after a complete encoding or
+// parse has succeeded.
+internal class CorsacSecureTls_HelloState
+{
+    public const int Fresh = 0;
+    public const int InitialSent = 1;
+    public const int RetryReceived = 2;
+    public const int RetrySent = 3;
+    public const int Complete = 4;
+
+    private byte[] _empty;
+    private byte[] _random;
+    private byte[] _session;
+    private byte[] _serverName;
+    private byte[] _alpn;
+    private byte[] _x25519;
+    private byte[] _p256;
+    private byte[] _retryShare;
+    private byte[] _cookie;
+    private long _suites;
+    private long _initialShares;
+    private int _status;
+    private int _retrySuite;
+    private int _retryGroup;
+    private int _selectedSuite;
+    private int _selectedGroup;
+
+    public CorsacSecureTls_HelloState()
+    {
+        _empty = new byte[0];
+        _random = _empty;
+        _session = _empty;
+        _serverName = _empty;
+        _alpn = _empty;
+        _x25519 = _empty;
+        _p256 = _empty;
+        _retryShare = _empty;
+        _cookie = _empty;
+        _status = Fresh;
+    }
+
+    public int Status() { return _status; }
+    public bool RetryWasRequested() { return _retrySuite != 0; }
+    public int RetryCipherSuite() { return _retrySuite; }
+    public int RetryGroup() { return _retryGroup; }
+    public int SelectedCipherSuite() { return _selectedSuite; }
+    public int SelectedGroup() { return _selectedGroup; }
+    public long CipherSuiteMask() { return _suites; }
+    public long InitialShareMask() { return _initialShares; }
+    public int CookieLength() { return _cookie.Length; }
+
+    public void Reset()
+    {
+        Zero(_random);
+        Zero(_session);
+        Zero(_cookie);
+        _random = _empty;
+        _session = _empty;
+        _serverName = _empty;
+        _alpn = _empty;
+        _x25519 = _empty;
+        _p256 = _empty;
+        _retryShare = _empty;
+        _cookie = _empty;
+        _suites = 0;
+        _initialShares = 0;
+        _status = Fresh;
+        _retrySuite = 0;
+        _retryGroup = 0;
+        _selectedSuite = 0;
+        _selectedGroup = 0;
+    }
+
+    public bool SessionMatches(byte[] bytes, int offset, int count)
+    {
+        return count == _session.Length
+            && Equal(_session, 0, bytes, offset, count);
+    }
+
+    public bool SuiteWasOffered(int suite)
+    {
+        long bit = CorsacSecureTls_HelloCodec.SuiteBit(suite);
+        return bit != 0 && (_suites & bit) != 0;
+    }
+
+    public bool InitialShareWasSent(int group)
+    {
+        long bit = CorsacSecureTls_HelloCodec.GroupBit(group);
+        return bit != 0 && (_initialShares & bit) != 0;
+    }
+
+    public bool CurrentShareWasSent(int group)
+    {
+        if (_status == RetrySent && _retryGroup != 0)
+            return group == _retryGroup;
+        return InitialShareWasSent(group);
+    }
+
+    // Return defensive copies.  These are the immutable snapshot which makes
+    // the second ClientHello a faithful update of the first, not mutable
+    // scratch space for a caller.
+    public byte[] RandomBytes() { return Copy(_random, 0, _random.Length); }
+    public byte[] SessionBytes() { return Copy(_session, 0, _session.Length); }
+    public byte[] ServerNameBytes()
+    {
+        return Copy(_serverName, 0, _serverName.Length);
+    }
+    public byte[] AlpnBytes() { return Copy(_alpn, 0, _alpn.Length); }
+    public byte[] CookieBytes() { return Copy(_cookie, 0, _cookie.Length); }
+
+    public byte[] InitialShareBytes(int group)
+    {
+        if (group == CorsacSecureTls_HelloValue.X25519)
+            return Copy(_x25519, 0, _x25519.Length);
+        if (group == CorsacSecureTls_HelloValue.Secp256r1)
+            return Copy(_p256, 0, _p256.Length);
+        return new byte[0];
+    }
+
+    public byte[] RetryShareBytes()
+    {
+        return Copy(_retryShare, 0, _retryShare.Length);
+    }
+
+    public bool CommitInitial(CorsacSecureTls_ClientHelloOffer offer)
+    {
+        if (_status != Fresh
+            || !CorsacSecureTls_HelloCodec.ValidOffer(offer)) return false;
+        byte[] random = Copy(offer.RandomBytes(), offer.RandomOffset(), 32);
+        byte[] session = Copy(offer.SessionBytes(), offer.SessionOffset(),
+                              offer.SessionLength());
+        byte[] serverName = Copy(offer.ServerNameBytes(),
+                                 offer.ServerNameOffset(),
+                                 offer.ServerNameLength());
+        byte[] alpn = Copy(offer.AlpnBytes(), offer.AlpnOffset(),
+                           offer.AlpnLength());
+        byte[] x = Copy(offer.ShareBytes(
+                            CorsacSecureTls_HelloValue.X25519),
+                        offer.ShareOffset(
+                            CorsacSecureTls_HelloValue.X25519),
+                        offer.ShareLength(
+                            CorsacSecureTls_HelloValue.X25519));
+        byte[] p = Copy(offer.ShareBytes(
+                            CorsacSecureTls_HelloValue.Secp256r1),
+                        offer.ShareOffset(
+                            CorsacSecureTls_HelloValue.Secp256r1),
+                        offer.ShareLength(
+                            CorsacSecureTls_HelloValue.Secp256r1));
+        _random = random;
+        _session = session;
+        _serverName = serverName;
+        _alpn = alpn;
+        _x25519 = x;
+        _p256 = p;
+        _suites = offer.CipherSuiteMask();
+        _initialShares = offer.ShareMask();
+        _status = InitialSent;
+        return true;
+    }
+
+    public bool CommitRetryRequest(int suite, int group,
+                                   byte[] bytes, int offset, int count)
+    {
+        if (_status != InitialSent || !SuiteWasOffered(suite)
+            || !Range(bytes, offset, count)
+            || (group == 0 && count == 0)
+            || (group != 0
+                && (CorsacSecureTls_HelloCodec.GroupBit(group) == 0
+                    || InitialShareWasSent(group)))) return false;
+        byte[] cookie = Copy(bytes, offset, count);
+        _retrySuite = suite;
+        _retryGroup = group;
+        _cookie = cookie;
+        _status = RetryReceived;
+        return true;
+    }
+
+    public bool CommitRetrySent(byte[] bytes, int offset, int count)
+    {
+        if (_status != RetryReceived || !Range(bytes, offset, count))
+            return false;
+        if (_retryGroup == 0 && count != 0) return false;
+        if (_retryGroup != 0
+            && !CorsacSecureTls_HelloCodec.ValidKeyShare(
+                   _retryGroup, bytes, offset, count)) return false;
+        _retryShare = Copy(bytes, offset, count);
+        _status = RetrySent;
+        return true;
+    }
+
+    public bool CommitComplete(int suite, int group)
+    {
+        if ((_status != InitialSent && _status != RetrySent)
+            || !SuiteWasOffered(suite) || !CurrentShareWasSent(group)
+            || (_status == RetrySent && suite != _retrySuite)) return false;
+        _selectedSuite = suite;
+        _selectedGroup = group;
+        _status = Complete;
+        return true;
+    }
+
+    private static byte[] Copy(byte[] bytes, int offset, int count)
+    {
+        byte[] answer = new byte[count];
+        for (int i = 0; i < count; i = i + 1)
+            answer[i] = bytes[offset + i];
+        return answer;
+    }
+
+    private static bool Range(byte[] bytes, int offset, int count)
+    {
+        return bytes != null && offset >= 0 && count >= 0
+            && offset <= bytes.Length && count <= bytes.Length - offset;
+    }
+
+    private static bool Equal(byte[] left, int leftOffset,
+                              byte[] right, int rightOffset, int count)
+    {
+        if (left == null || right == null || leftOffset < 0
+            || rightOffset < 0 || count < 0
+            || leftOffset > left.Length || count > left.Length - leftOffset
+            || rightOffset > right.Length
+            || count > right.Length - rightOffset) return false;
+        int different = 0;
+        for (int i = 0; i < count; i = i + 1)
+            different = different | (int)(left[leftOffset + i]
+                                        ^ right[rightOffset + i]);
+        return different == 0;
+    }
+
+    private static void Zero(byte[] bytes)
+    {
+        for (int i = 0; i < bytes.Length; i = i + 1)
+            bytes[i] = (byte)0;
+    }
+}
+
+internal class CorsacSecureTls_ServerHello
+{
+    private byte[] _empty;
+    private bool _retry;
+    private int _version;
+    private int _suite;
+    private int _group;
+    private byte[] _wire;
+    private int _keyOffset;
+    private int _keyCount;
+    private int _cookieOffset;
+    private int _cookieCount;
+
+    public CorsacSecureTls_ServerHello()
+    {
+        _empty = new byte[0];
+        _wire = _empty;
+    }
+
+    public bool IsHelloRetryRequest() { return _retry; }
+    public int SelectedVersion() { return _version; }
+    public int CipherSuite() { return _suite; }
+    public int Group() { return _group; }
+    public byte[] WireBytes() { return _wire; }
+    public int KeyExchangeOffset() { return _keyOffset; }
+    public int KeyExchangeLength() { return _keyCount; }
+    public int CookieOffset() { return _cookieOffset; }
+    public int CookieLength() { return _cookieCount; }
+
+    public bool CopyKeyExchange(byte[] output, int offset)
+    {
+        if (_retry || !Range(output, offset, _keyCount)) return false;
+        byte[] copy = new byte[_keyCount];
+        for (int i = 0; i < _keyCount; i = i + 1)
+            copy[i] = _wire[_keyOffset + i];
+        for (int i = 0; i < _keyCount; i = i + 1)
+            output[offset + i] = copy[i];
+        return true;
+    }
+
+    public bool CopyCookie(byte[] output, int offset)
+    {
+        if (!_retry || !Range(output, offset, _cookieCount)) return false;
+        byte[] copy = new byte[_cookieCount];
+        for (int i = 0; i < _cookieCount; i = i + 1)
+            copy[i] = _wire[_cookieOffset + i];
+        for (int i = 0; i < _cookieCount; i = i + 1)
+            output[offset + i] = copy[i];
+        return true;
+    }
+
+    public void Commit(bool retry, int version, int suite, int group,
+                       byte[] wire, int keyOffset, int keyCount,
+                       int cookieOffset, int cookieCount)
+    {
+        _retry = retry;
+        _version = version;
+        _suite = suite;
+        _group = group;
+        _wire = wire;
+        _keyOffset = keyOffset;
+        _keyCount = keyCount;
+        _cookieOffset = cookieOffset;
+        _cookieCount = cookieCount;
+    }
+
+    private static bool Range(byte[] bytes, int offset, int count)
+    {
+        return bytes != null && offset >= 0 && count >= 0
+            && offset <= bytes.Length && count <= bytes.Length - offset;
+    }
+}
+
+internal static class CorsacSecureTls_HelloCodec
+{
+    public const int MaximumHandshakeLength = 32768;
+    public const int MaximumAlpnLength = 1024;
+
+    public static bool TryMeasureInitial(
+        CorsacSecureTls_ClientHelloOffer offer, out int length)
+    {
+        length = 0;
+        if (!ValidOffer(offer)) return false;
+        int needed = Measure(
+            offer.SessionLength(), offer.ServerNameLength(),
+            offer.AlpnLength(), offer.CipherSuiteMask(),
+            offer.ShareLength(CorsacSecureTls_HelloValue.X25519),
+            offer.ShareLength(CorsacSecureTls_HelloValue.Secp256r1), 0);
+        if (needed <= 0) return false;
+        length = needed;
+        return true;
+    }
+
+    public static bool TryMeasureRetry(
+        CorsacSecureTls_HelloState state,
+        byte[] retryShare, int retryOffset, int retryCount,
+        out int length)
+    {
+        length = 0;
+        if (state == null
+            || state.Status() != CorsacSecureTls_HelloState.RetryReceived)
+            return false;
+        int group = state.RetryGroup();
+        int xCount = state.InitialShareBytes(
+            CorsacSecureTls_HelloValue.X25519).Length;
+        int pCount = state.InitialShareBytes(
+            CorsacSecureTls_HelloValue.Secp256r1).Length;
+        if (group != 0)
+        {
+            if (!ValidKeyShare(group, retryShare, retryOffset, retryCount))
+                return false;
+            if (group == CorsacSecureTls_HelloValue.X25519)
+            {
+                xCount = retryCount;
+                pCount = 0;
+            }
+            else
+            {
+                xCount = 0;
+                pCount = retryCount;
+            }
+        }
+        else if (!Range(retryShare, retryOffset, retryCount)
+                 || retryCount != 0) return false;
+        int needed = Measure(
+            state.SessionBytes().Length, state.ServerNameBytes().Length,
+            state.AlpnBytes().Length, state.CipherSuiteMask(),
+            xCount, pCount, state.CookieLength());
+        if (needed <= 0) return false;
+        length = needed;
+        return true;
+    }
+
+    // Encode the complete Handshake value, including its type and uint24
+    // length.  SHA-384 is never implicit: a fresh offer uses only the two
+    // SHA-256 suites which the current provider can execute.
+    public static bool TryEncodeInitial(
+        CorsacSecureTls_ClientHelloOffer offer,
+        CorsacSecureTls_HelloState state,
+        byte[] output, int offset, int count, out int written)
+    {
+        written = 0;
+        if (state == null || state.Status() != CorsacSecureTls_HelloState.Fresh
+            || !ValidOffer(offer) || !Range(output, offset, count))
+            return false;
+
+        int needed = 0;
+        if (!TryMeasureInitial(offer, out needed) || needed > count)
+            return false;
+
+        byte[] temporary = new byte[needed];
+        byte[] noCookie = new byte[0];
+        if (!Encode(
+                offer.RandomBytes(), offer.RandomOffset(),
+                offer.SessionBytes(), offer.SessionOffset(),
+                offer.SessionLength(),
+                offer.ServerNameBytes(), offer.ServerNameOffset(),
+                offer.ServerNameLength(),
+                offer.AlpnBytes(), offer.AlpnOffset(), offer.AlpnLength(),
+                offer.CipherSuiteMask(),
+                offer.ShareBytes(CorsacSecureTls_HelloValue.X25519),
+                offer.ShareOffset(CorsacSecureTls_HelloValue.X25519),
+                offer.ShareLength(CorsacSecureTls_HelloValue.X25519),
+                offer.ShareBytes(CorsacSecureTls_HelloValue.Secp256r1),
+                offer.ShareOffset(CorsacSecureTls_HelloValue.Secp256r1),
+                offer.ShareLength(CorsacSecureTls_HelloValue.Secp256r1),
+                noCookie, 0, 0, temporary)) return false;
+        if (!state.CommitInitial(offer)) return false;
+        Copy(temporary, 0, output, offset, needed);
+        written = needed;
+        return true;
+    }
+
+    // After an HRR selecting a group, `retryShare` is the newly generated
+    // share for that group.  For a cookie-only HRR, pass an empty slice and
+    // the exact original key_share extension is repeated.
+    public static bool TryEncodeRetry(
+        CorsacSecureTls_HelloState state,
+        byte[] retryShare, int retryOffset, int retryCount,
+        byte[] output, int offset, int count, out int written)
+    {
+        written = 0;
+        if (state == null
+            || state.Status() != CorsacSecureTls_HelloState.RetryReceived
+            || !Range(output, offset, count)) return false;
+
+        int retryGroup = state.RetryGroup();
+        byte[] random = state.RandomBytes();
+        byte[] session = state.SessionBytes();
+        byte[] serverName = state.ServerNameBytes();
+        byte[] alpn = state.AlpnBytes();
+        byte[] cookie = state.CookieBytes();
+        byte[] x = state.InitialShareBytes(
+            CorsacSecureTls_HelloValue.X25519);
+        byte[] p = state.InitialShareBytes(
+            CorsacSecureTls_HelloValue.Secp256r1);
+        int xCount = x.Length;
+        int pCount = p.Length;
+        if (retryGroup != 0)
+        {
+            if (!ValidKeyShare(retryGroup, retryShare,
+                               retryOffset, retryCount)) return false;
+            if (retryGroup == CorsacSecureTls_HelloValue.X25519)
+            {
+                x = retryShare;
+                xCount = retryCount;
+                p = new byte[0];
+                pCount = 0;
+            }
+            else
+            {
+                p = retryShare;
+                pCount = retryCount;
+                x = new byte[0];
+                xCount = 0;
+            }
+        }
+        else if (!Range(retryShare, retryOffset, retryCount)
+                 || retryCount != 0) return false;
+
+        int needed = Measure(
+            session.Length, serverName.Length, alpn.Length,
+            state.CipherSuiteMask(), xCount, pCount, cookie.Length);
+        if (needed <= 0 || needed > count) return false;
+        byte[] temporary = new byte[needed];
+        if (!Encode(
+                random, 0,
+                session, 0, session.Length,
+                serverName, 0, serverName.Length,
+                alpn, 0, alpn.Length,
+                state.CipherSuiteMask(),
+                x, retryGroup == CorsacSecureTls_HelloValue.X25519
+                       ? retryOffset : 0, xCount,
+                p, retryGroup == CorsacSecureTls_HelloValue.Secp256r1
+                       ? retryOffset : 0, pCount,
+                cookie, 0, cookie.Length,
+                temporary)) return false;
+        if (!state.CommitRetrySent(retryShare, retryOffset, retryCount))
+            return false;
+        Copy(temporary, 0, output, offset, needed);
+        written = needed;
+        return true;
+    }
+
+    // Strict TLS-1.3-only receive path.  Unknown or unsolicited ServerHello
+    // extensions are rejected: the client did not offer PSK, and SNI/ALPN
+    // responses belong in EncryptedExtensions rather than ServerHello.
+    public static bool TryParseServerHello(
+        byte[] bytes, int offset, int count,
+        CorsacSecureTls_HelloState state,
+        CorsacSecureTls_ServerHello result)
+    {
+        if (state == null || result == null
+            || (state.Status() != CorsacSecureTls_HelloState.InitialSent
+                && state.Status() != CorsacSecureTls_HelloState.RetrySent)
+            || !Range(bytes, offset, count) || count < 46
+            || count > MaximumHandshakeLength) return false;
+
+        int at = offset;
+        int end = offset + count;
+        if ((int)bytes[at] != CorsacSecureTls_HelloValue.ServerHello)
+            return false;
+        at = at + 1;
+        int bodyCount = Read24(bytes, at);
+        at = at + 3;
+        if (bodyCount != count - 4) return false;
+
+        int legacyVersion = Read16(bytes, at);
+        at = at + 2;
+        if (legacyVersion != CorsacSecureTls_HelloValue.Tls12)
+            return false;
+        int randomOffset = at;
+        at = at + 32;
+        bool retry = IsHelloRetryRandom(bytes, randomOffset);
+        if (!retry && IsDowngradeSentinel(bytes, randomOffset)) return false;
+        if (retry
+            && state.Status() != CorsacSecureTls_HelloState.InitialSent)
+            return false;
+
+        int sessionCount = (int)bytes[at];
+        at = at + 1;
+        if (sessionCount > 32 || sessionCount > end - at
+            || !state.SessionMatches(bytes, at, sessionCount)) return false;
+        at = at + sessionCount;
+        if (end - at < 5) return false;
+        int suite = Read16(bytes, at);
+        at = at + 2;
+        if (!state.SuiteWasOffered(suite)) return false;
+        if (state.Status() == CorsacSecureTls_HelloState.RetrySent
+            && suite != state.RetryCipherSuite()) return false;
+        if ((int)bytes[at] != 0) return false;
+        at = at + 1;
+        int extensionsCount = Read16(bytes, at);
+        at = at + 2;
+        if (extensionsCount < 6 || extensionsCount != end - at) return false;
+
+        bool sawVersion = false;
+        bool sawKeyShare = false;
+        bool sawCookie = false;
+        int selectedVersion = 0;
+        int group = 0;
+        int keyOffset = 0;
+        int keyCount = 0;
+        int cookieOffset = 0;
+        int cookieCount = 0;
+        while (at < end)
+        {
+            if (end - at < 4) return false;
+            int extension = Read16(bytes, at);
+            int extensionCount = Read16(bytes, at + 2);
+            at = at + 4;
+            if (extensionCount > end - at) return false;
+
+            if (extension == CorsacSecureTls_HelloValue.ExtensionSupportedVersions)
+            {
+                if (sawVersion || extensionCount != 2) return false;
+                sawVersion = true;
+                selectedVersion = Read16(bytes, at);
+            }
+            else if (extension == CorsacSecureTls_HelloValue.ExtensionKeyShare)
+            {
+                if (sawKeyShare) return false;
+                sawKeyShare = true;
+                if (retry)
+                {
+                    if (extensionCount != 2) return false;
+                    group = Read16(bytes, at);
+                }
+                else
+                {
+                    if (extensionCount < 5) return false;
+                    group = Read16(bytes, at);
+                    keyCount = Read16(bytes, at + 2);
+                    keyOffset = at + 4;
+                    if (keyCount < 1 || keyCount != extensionCount - 4
+                        || !ValidKeyShare(group, bytes,
+                                          keyOffset, keyCount)) return false;
+                }
+            }
+            else if (extension == CorsacSecureTls_HelloValue.ExtensionCookie)
+            {
+                if (!retry || sawCookie || extensionCount < 3) return false;
+                sawCookie = true;
+                cookieCount = Read16(bytes, at);
+                cookieOffset = at + 2;
+                if (cookieCount < 1 || cookieCount != extensionCount - 2)
+                    return false;
+            }
+            else
+            {
+                // This includes known extensions in the wrong message and
+                // unknown extensions which the client never offered.
+                return false;
+            }
+            at = at + extensionCount;
+        }
+        if (at != end || !sawVersion
+            || selectedVersion != CorsacSecureTls_HelloValue.Tls13)
+            return false;
+
+        if (retry)
+        {
+            if (sawKeyShare)
+            {
+                if (GroupBit(group) == 0
+                    || state.InitialShareWasSent(group)) return false;
+            }
+            // The HRR must change the second ClientHello.  A cookie and a
+            // group request are the only changes this no-PSK profile accepts.
+            if (!sawCookie && !sawKeyShare) return false;
+            if (!state.CommitRetryRequest(
+                    suite, sawKeyShare ? group : 0,
+                    bytes, cookieOffset, cookieCount)) return false;
+            result.Commit(true, selectedVersion, suite,
+                          sawKeyShare ? group : 0,
+                          bytes, 0, 0, cookieOffset, cookieCount);
+            return true;
+        }
+
+        if (!sawKeyShare || sawCookie || !state.CurrentShareWasSent(group))
+            return false;
+        if (state.Status() == CorsacSecureTls_HelloState.RetrySent
+            && state.RetryGroup() != 0 && group != state.RetryGroup())
+            return false;
+        if (!state.CommitComplete(suite, group)) return false;
+        result.Commit(false, selectedVersion, suite, group,
+                      bytes, keyOffset, keyCount, 0, 0);
+        return true;
+    }
+
+    public static bool ValidOffer(CorsacSecureTls_ClientHelloOffer offer)
+    {
+        if (offer == null
+            || !Range(offer.RandomBytes(), offer.RandomOffset(), 32)
+            || offer.SessionLength() > 32
+            || !Range(offer.SessionBytes(), offer.SessionOffset(),
+                      offer.SessionLength())
+            || (offer.ServerNameLength() != 0
+                && !ValidDnsName(offer.ServerNameBytes(),
+                                 offer.ServerNameOffset(),
+                                 offer.ServerNameLength()))
+            || !ValidAlpn(offer.AlpnBytes(), offer.AlpnOffset(),
+                          offer.AlpnLength())
+            || offer.CipherSuiteMask() == 0
+            || (offer.CipherSuiteMask()
+                & ~CorsacSecureTls_HelloValue.AllSuites) != 0
+            || offer.ShareMask() == 0) return false;
+        int xCount = offer.ShareLength(CorsacSecureTls_HelloValue.X25519);
+        int pCount = offer.ShareLength(
+            CorsacSecureTls_HelloValue.Secp256r1);
+        if (xCount != 0 && !ValidKeyShare(
+                CorsacSecureTls_HelloValue.X25519,
+                offer.ShareBytes(CorsacSecureTls_HelloValue.X25519),
+                offer.ShareOffset(CorsacSecureTls_HelloValue.X25519),
+                xCount)) return false;
+        if (pCount != 0 && !ValidKeyShare(
+                CorsacSecureTls_HelloValue.Secp256r1,
+                offer.ShareBytes(CorsacSecureTls_HelloValue.Secp256r1),
+                offer.ShareOffset(CorsacSecureTls_HelloValue.Secp256r1),
+                pCount)) return false;
+        return true;
+    }
+
+    public static bool ValidDnsName(byte[] bytes, int offset, int count)
+    {
+        if (!Range(bytes, offset, count) || count < 1 || count > 253)
+            return false;
+        if (IsIpv4Literal(bytes, offset, count)) return false;
+        int labelStart = 0;
+        for (int i = 0; i <= count; i = i + 1)
+        {
+            if (i == count || bytes[offset + i] == (byte)'.')
+            {
+                int labelCount = i - labelStart;
+                if (labelCount < 1 || labelCount > 63
+                    || bytes[offset + labelStart] == (byte)'-'
+                    || bytes[offset + i - 1] == (byte)'-') return false;
+                labelStart = i + 1;
+            }
+            else
+            {
+                int value = (int)bytes[offset + i];
+                bool alpha = (value >= 65 && value <= 90)
+                          || (value >= 97 && value <= 122);
+                bool digit = value >= 48 && value <= 57;
+                if (!alpha && !digit && value != 45) return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool IsIpv4Literal(byte[] bytes, int offset, int count)
+    {
+        int components = 0;
+        int digits = 0;
+        int value = 0;
+        for (int i = 0; i <= count; i = i + 1)
+        {
+            if (i == count || bytes[offset + i] == (byte)'.')
+            {
+                if (digits < 1 || digits > 3 || value > 255) return false;
+                components = components + 1;
+                digits = 0;
+                value = 0;
+            }
+            else
+            {
+                int one = (int)bytes[offset + i];
+                if (one < 48 || one > 57) return false;
+                value = value * 10 + one - 48;
+                digits = digits + 1;
+            }
+        }
+        return components == 4;
+    }
+
+    public static bool ValidAlpn(byte[] bytes, int offset, int count)
+    {
+        if (!Range(bytes, offset, count) || count > MaximumAlpnLength)
+            return false;
+        if (count == 0) return true;
+        int at = offset;
+        int end = offset + count;
+        while (at < end)
+        {
+            int nameCount = (int)bytes[at];
+            at = at + 1;
+            if (nameCount < 1 || nameCount > end - at) return false;
+            at = at + nameCount;
+        }
+        return at == end;
+    }
+
+    public static bool ValidKeyShare(int group, byte[] bytes,
+                                     int offset, int count)
+    {
+        if (!Range(bytes, offset, count)) return false;
+        if (group == CorsacSecureTls_HelloValue.X25519)
+            return count == 32;
+        if (group == CorsacSecureTls_HelloValue.Secp256r1)
+            return count == 65 && bytes[offset] == (byte)4;
+        return false;
+    }
+
+    public static long SuiteBit(int suite)
+    {
+        if (suite == CorsacSecureTls_HelloValue.TlsAes128GcmSha256)
+            return CorsacSecureTls_HelloValue.OfferAes128GcmSha256;
+        if (suite == CorsacSecureTls_HelloValue.TlsAes256GcmSha384)
+            return CorsacSecureTls_HelloValue.OfferAes256GcmSha384;
+        if (suite == CorsacSecureTls_HelloValue.TlsChaCha20Poly1305Sha256)
+            return CorsacSecureTls_HelloValue.OfferChaCha20Poly1305Sha256;
+        return 0;
+    }
+
+    public static long GroupBit(int group)
+    {
+        if (group == CorsacSecureTls_HelloValue.X25519)
+            return CorsacSecureTls_HelloValue.ShareX25519;
+        if (group == CorsacSecureTls_HelloValue.Secp256r1)
+            return CorsacSecureTls_HelloValue.ShareSecp256r1;
+        return 0;
+    }
+
+    private static int Measure(int sessionCount, int serverNameCount,
+                               int alpnCount, long suites,
+                               int xCount, int pCount, int cookieCount)
+    {
+        int suiteCount = SuiteCount(suites);
+        int entries = 0;
+        if (xCount != 0) entries = entries + 4 + xCount;
+        if (pCount != 0) entries = entries + 4 + pCount;
+        if (suiteCount == 0 || entries == 0) return 0;
+
+        int extensions = serverNameCount == 0 ? 0 : 9 + serverNameCount;
+        extensions = extensions + 10; // supported_groups
+        extensions = extensions + 24; // nine signature schemes
+        if (alpnCount != 0) extensions = extensions + 6 + alpnCount;
+        extensions = extensions + 7;  // supported_versions
+        if (cookieCount != 0) extensions = extensions + 6 + cookieCount;
+        extensions = extensions + 6 + entries;
+        if (extensions < 8 || extensions > 65535) return 0;
+
+        int body = 41 + sessionCount + suiteCount * 2 + extensions;
+        int total = 4 + body;
+        if (body > 0x00ffffff || total > MaximumHandshakeLength) return 0;
+        return total;
+    }
+
+    private static bool Encode(
+        byte[] random, int randomOffset,
+        byte[] session, int sessionOffset, int sessionCount,
+        byte[] serverName, int serverNameOffset, int serverNameCount,
+        byte[] alpn, int alpnOffset, int alpnCount,
+        long suites,
+        byte[] x, int xOffset, int xCount,
+        byte[] p, int pOffset, int pCount,
+        byte[] cookie, int cookieOffset, int cookieCount,
+        byte[] output)
+    {
+        int needed = Measure(sessionCount, serverNameCount, alpnCount,
+                             suites, xCount, pCount, cookieCount);
+        if (needed != output.Length) return false;
+        CorsacSecureTls_HelloWriter writer =
+            new CorsacSecureTls_HelloWriter(output);
+        int extensions = needed - 4
+                       - (41 + sessionCount + SuiteCount(suites) * 2);
+        int entries = 0;
+        if (xCount != 0) entries = entries + 4 + xCount;
+        if (pCount != 0) entries = entries + 4 + pCount;
+
+        if (!writer.Write8(CorsacSecureTls_HelloValue.ClientHello)
+            || !writer.Write24(needed - 4)
+            || !writer.Write16(CorsacSecureTls_HelloValue.Tls12)
+            || !writer.WriteBytes(random, randomOffset, 32)
+            || !writer.Write8(sessionCount)
+            || !writer.WriteBytes(session, sessionOffset, sessionCount)
+            || !writer.Write16(SuiteCount(suites) * 2)
+            || !WriteSuites(writer, suites)
+            || !writer.Write8(1) || !writer.Write8(0)
+            || !writer.Write16(extensions)) return false;
+
+        // server_name, when there is one
+        if (serverNameCount != 0
+            && (!writer.Write16(CorsacSecureTls_HelloValue.ExtensionServerName)
+                || !writer.Write16(5 + serverNameCount)
+                || !writer.Write16(3 + serverNameCount)
+                || !writer.Write8(0) || !writer.Write16(serverNameCount)
+                || !writer.WriteBytes(serverName, serverNameOffset,
+                                      serverNameCount))) return false;
+
+        // supported_groups: preference order X25519, then secp256r1.
+        if (!writer.Write16(
+                CorsacSecureTls_HelloValue.ExtensionSupportedGroups)
+            || !writer.Write16(6) || !writer.Write16(4)
+            || !writer.Write16(CorsacSecureTls_HelloValue.X25519)
+            || !writer.Write16(CorsacSecureTls_HelloValue.Secp256r1))
+            return false;
+
+        // signature_algorithms also governs certificate signatures (there is
+        // no signature_algorithms_cert): every scheme here is one the client
+        // verifies, in a CertificateVerify or, for rsa_pkcs1_* (which TLS 1.3
+        // allows only in certificates), in an X.509 chain.
+        if (!writer.Write16(
+                CorsacSecureTls_HelloValue.ExtensionSignatureAlgorithms)
+            || !writer.Write16(20) || !writer.Write16(18)
+            || !writer.Write16(
+                CorsacSecureTls_HelloValue.EcdsaSecp256r1Sha256)
+            || !writer.Write16(
+                CorsacSecureTls_HelloValue.EcdsaSecp384r1Sha384)
+            || !writer.Write16(CorsacSecureTls_HelloValue.Ed25519)
+            || !writer.Write16(
+                CorsacSecureTls_HelloValue.RsaPssRsaeSha256)
+            || !writer.Write16(
+                CorsacSecureTls_HelloValue.RsaPssRsaeSha384)
+            || !writer.Write16(
+                CorsacSecureTls_HelloValue.RsaPssRsaeSha512)
+            || !writer.Write16(CorsacSecureTls_HelloValue.RsaPkcs1Sha256)
+            || !writer.Write16(CorsacSecureTls_HelloValue.RsaPkcs1Sha384)
+            || !writer.Write16(CorsacSecureTls_HelloValue.RsaPkcs1Sha512))
+            return false;
+
+        if (alpnCount != 0
+            && (!writer.Write16(CorsacSecureTls_HelloValue.ExtensionAlpn)
+                || !writer.Write16(2 + alpnCount)
+                || !writer.Write16(alpnCount)
+                || !writer.WriteBytes(alpn, alpnOffset, alpnCount)))
+            return false;
+
+        if (!writer.Write16(
+                CorsacSecureTls_HelloValue.ExtensionSupportedVersions)
+            || !writer.Write16(3) || !writer.Write8(2)
+            || !writer.Write16(CorsacSecureTls_HelloValue.Tls13))
+            return false;
+
+        if (cookieCount != 0
+            && (!writer.Write16(CorsacSecureTls_HelloValue.ExtensionCookie)
+                || !writer.Write16(2 + cookieCount)
+                || !writer.Write16(cookieCount)
+                || !writer.WriteBytes(cookie, cookieOffset, cookieCount)))
+            return false;
+
+        if (!writer.Write16(CorsacSecureTls_HelloValue.ExtensionKeyShare)
+            || !writer.Write16(2 + entries) || !writer.Write16(entries))
+            return false;
+        if (xCount != 0
+            && (!writer.Write16(CorsacSecureTls_HelloValue.X25519)
+                || !writer.Write16(xCount)
+                || !writer.WriteBytes(x, xOffset, xCount))) return false;
+        if (pCount != 0
+            && (!writer.Write16(CorsacSecureTls_HelloValue.Secp256r1)
+                || !writer.Write16(pCount)
+                || !writer.WriteBytes(p, pOffset, pCount))) return false;
+        return !writer.Failed() && writer.Written() == needed;
+    }
+
+    private static bool WriteSuites(CorsacSecureTls_HelloWriter writer,
+                                    long suites)
+    {
+        if ((suites & CorsacSecureTls_HelloValue.OfferAes128GcmSha256) != 0
+            && !writer.Write16(
+                CorsacSecureTls_HelloValue.TlsAes128GcmSha256)) return false;
+        if ((suites & CorsacSecureTls_HelloValue.OfferAes256GcmSha384) != 0
+            && !writer.Write16(
+                CorsacSecureTls_HelloValue.TlsAes256GcmSha384)) return false;
+        if ((suites
+             & CorsacSecureTls_HelloValue.OfferChaCha20Poly1305Sha256) != 0
+            && !writer.Write16(
+                CorsacSecureTls_HelloValue.TlsChaCha20Poly1305Sha256))
+            return false;
+        return true;
+    }
+
+    private static int SuiteCount(long suites)
+    {
+        int count = 0;
+        if ((suites & CorsacSecureTls_HelloValue.OfferAes128GcmSha256) != 0)
+            count = count + 1;
+        if ((suites & CorsacSecureTls_HelloValue.OfferAes256GcmSha384) != 0)
+            count = count + 1;
+        if ((suites
+             & CorsacSecureTls_HelloValue.OfferChaCha20Poly1305Sha256) != 0)
+            count = count + 1;
+        return count;
+    }
+
+    private static bool IsHelloRetryRandom(byte[] bytes, int offset)
+    {
+        byte[] value = new byte[] {
+            0xcf,0x21,0xad,0x74,0xe5,0x9a,0x61,0x11,
+            0xbe,0x1d,0x8c,0x02,0x1e,0x65,0xb8,0x91,
+            0xc2,0xa2,0x11,0x16,0x7a,0xbb,0x8c,0x5e,
+            0x07,0x9e,0x09,0xe2,0xc8,0xa8,0x33,0x9c
+        };
+        return Equal(bytes, offset, value, 0, value.Length);
+    }
+
+    private static bool IsDowngradeSentinel(byte[] bytes, int offset)
+    {
+        byte[] one = new byte[] {
+            0x44,0x4f,0x57,0x4e,0x47,0x52,0x44,0x01
+        };
+        byte[] zero = new byte[] {
+            0x44,0x4f,0x57,0x4e,0x47,0x52,0x44,0x00
+        };
+        return Equal(bytes, offset + 24, one, 0, 8)
+            || Equal(bytes, offset + 24, zero, 0, 8);
+    }
+
+    private static int Read16(byte[] bytes, int offset)
+    {
+        return ((int)bytes[offset] << 8) | (int)bytes[offset + 1];
+    }
+
+    private static int Read24(byte[] bytes, int offset)
+    {
+        return ((int)bytes[offset] << 16)
+             | ((int)bytes[offset + 1] << 8)
+             | (int)bytes[offset + 2];
+    }
+
+    private static void Copy(byte[] source, int sourceOffset,
+                             byte[] output, int outputOffset, int count)
+    {
+        for (int i = 0; i < count; i = i + 1)
+            output[outputOffset + i] = source[sourceOffset + i];
+    }
+
+    private static bool Equal(byte[] left, int leftOffset,
+                              byte[] right, int rightOffset, int count)
+    {
+        if (!Range(left, leftOffset, count)
+            || !Range(right, rightOffset, count)) return false;
+        int different = 0;
+        for (int i = 0; i < count; i = i + 1)
+            different = different | (int)(left[leftOffset + i]
+                                        ^ right[rightOffset + i]);
+        return different == 0;
+    }
+
+    private static bool Range(byte[] bytes, int offset, int count)
+    {
+        return bytes != null && offset >= 0 && count >= 0
+            && offset <= bytes.Length && count <= bytes.Length - offset;
+    }
+}
+
+internal class CorsacSecureTls_HelloWriter
+{
+    private byte[] _bytes;
+    private int _at;
+    private bool _failed;
+
+    public CorsacSecureTls_HelloWriter(byte[] bytes)
+    {
+        _bytes = bytes;
+    }
+
+    public bool Write8(int value)
+    {
+        if (_failed || value < 0 || value > 255 || _at >= _bytes.Length)
+        {
+            _failed = true;
+            return false;
+        }
+        _bytes[_at] = (byte)value;
+        _at = _at + 1;
+        return true;
+    }
+
+    public bool Write16(int value)
+    {
+        return value >= 0 && value <= 65535
+            && Write8((value >> 8) & 255) && Write8(value & 255);
+    }
+
+    public bool Write24(int value)
+    {
+        return value >= 0 && value <= 0x00ffffff
+            && Write8((value >> 16) & 255)
+            && Write8((value >> 8) & 255) && Write8(value & 255);
+    }
+
+    public bool WriteBytes(byte[] bytes, int offset, int count)
+    {
+        if (_failed || bytes == null || offset < 0 || count < 0
+            || offset > bytes.Length || count > bytes.Length - offset
+            || count > _bytes.Length - _at)
+        {
+            _failed = true;
+            return false;
+        }
+        for (int i = 0; i < count; i = i + 1)
+            _bytes[_at + i] = bytes[offset + i];
+        _at = _at + count;
+        return true;
+    }
+
+    public int Written() { return _at; }
+    public bool Failed() { return _failed; }
+}

@@ -1,0 +1,20 @@
+// A failed authentication, as .NET's System.Security.Authentication has it
+// (in System.Net.Security, with SslStream, which throws it).
+
+using System;
+
+namespace System.Security.Authentication;
+
+public class AuthenticationException : SystemException
+{
+    public AuthenticationException() : base("A call to SSPI failed, see inner exception.") { }
+    public AuthenticationException(string? message) : base(message) { }
+    public AuthenticationException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+public class InvalidCredentialException : AuthenticationException
+{
+    public InvalidCredentialException() : base("Authentication failed because the credentials were not valid.") { }
+    public InvalidCredentialException(string? message) : base(message) { }
+    public InvalidCredentialException(string? message, Exception? innerException) : base(message, innerException) { }
+}

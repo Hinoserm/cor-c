@@ -1,0 +1,771 @@
+// CORSAC/SECURE Crypto portable NIST P-256 provider.
+//
+// Private scalars, SEC1 points, ECDH secrets, digests and signatures are byte
+// arrays.  Text strings are not accepted as binary containers.  Public-key
+// derivation and ECDH use a fixed 256-step multiply with constant-time point
+// selection.  Complete exceptional-case selection around the Jacobian add
+// formula prevents a scalar bit from choosing an infinity/equality branch.
+//
+// Public SEC1 input accepts only the standard compressed (02/03) and
+// uncompressed (04) encodings at their exact lengths.  Coordinates must be
+// canonical field elements, compressed roots are checked, and every point is
+// checked against y^2 = x^3 - 3x + b.  P-256 has cofactor one, so this is also
+// full subgroup validation.
+
+namespace Corsac.Security.Cryptography;
+
+public static class CorsacSecureCrypto_P256
+{
+    public const int PrivateKeyBytes = 32;
+    public const int CompressedPublicKeyBytes = 33;
+    public const int UncompressedPublicKeyBytes = 65;
+    public const int SharedSecretBytes = 32;
+    public const int DigestBytes = 32;
+    public const int RawSignatureBytes = 64;
+
+    public static bool PublicKeyWithWorkspace(
+        byte[] privateKey, long privateOffset,
+        byte[] output, long outputOffset, bool compressed,
+        CorsacSecureCrypto_P256Workspace workspace)
+    {
+        return workspace != null && workspace.DerivePublicKey(
+            privateKey, privateOffset, output, outputOffset, compressed);
+    }
+
+    public static bool AgreeWithWorkspace(
+        byte[] privateKey, long privateOffset,
+        byte[] peerPublic, long peerOffset, long peerCount,
+        byte[] output, long outputOffset,
+        CorsacSecureCrypto_P256Workspace workspace)
+    {
+        return workspace != null && workspace.Agree(
+            privateKey, privateOffset,
+            peerPublic, peerOffset, peerCount,
+            output, outputOffset);
+    }
+
+    public static bool ValidatePublicKey(
+        byte[] publicKey, long publicOffset, long publicCount,
+        CorsacSecureCrypto_P256Workspace workspace)
+    {
+        return workspace != null && workspace.ValidatePublicKey(
+            publicKey, publicOffset, publicCount);
+    }
+
+    public static bool VerifyDigestDer(
+        byte[] publicKey, long publicOffset, long publicCount,
+        byte[] digest, long digestOffset,
+        byte[] signature, long signatureOffset, long signatureCount,
+        CorsacSecureCrypto_P256Workspace workspace)
+    {
+        return workspace != null && workspace.VerifyDigestDer(
+            publicKey, publicOffset, publicCount,
+            digest, digestOffset,
+            signature, signatureOffset, signatureCount);
+    }
+
+    public static bool VerifyDigestRaw(
+        byte[] publicKey, long publicOffset, long publicCount,
+        byte[] digest, long digestOffset,
+        byte[] signature, long signatureOffset,
+        CorsacSecureCrypto_P256Workspace workspace)
+    {
+        return workspace != null && workspace.VerifyDigestRaw(
+            publicKey, publicOffset, publicCount,
+            digest, digestOffset, signature, signatureOffset);
+    }
+
+    public static bool VerifySha256Der(
+        byte[] publicKey, long publicOffset, long publicCount,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] signature, long signatureOffset, long signatureCount,
+        CorsacSecureCrypto_P256Workspace workspace)
+    {
+        return workspace != null && workspace.VerifySha256Der(
+            publicKey, publicOffset, publicCount,
+            message, messageOffset, messageCount,
+            signature, signatureOffset, signatureCount);
+    }
+}
+
+public class CorsacSecureCrypto_P256Workspace
+{
+    private CorsacSecureCrypto_P256Montgomery _field;
+    private CorsacSecureCrypto_P256Montgomery _order;
+    private CorsacSecureCrypto_P256Point _basePoint;
+    private CorsacSecureCrypto_P256Point _parsedPoint;
+    private CorsacSecureCrypto_P256Point _multiplicand;
+    private CorsacSecureCrypto_P256Point _multiplyResult;
+    private CorsacSecureCrypto_P256Point _multiplyDouble;
+    private CorsacSecureCrypto_P256Point _multiplyAdd;
+    private CorsacSecureCrypto_P256Point _addDouble;
+    private CorsacSecureCrypto_P256Point _verifyPoint0;
+    private CorsacSecureCrypto_P256Point _verifyPoint1;
+    private CorsacSecureCrypto_P256Point _verifySum;
+    private CorsacSecureCrypto_P256Point _zeroPoint;
+    private CorsacSecureCrypto_P256Point[] _windowTable;
+    private CorsacSecureCrypto_P256Number _curveB;
+    private CorsacSecureCrypto_P256Number _decodeX;
+    private CorsacSecureCrypto_P256Number _decodeY;
+    private CorsacSecureCrypto_P256Number[] _f;
+    private CorsacSecureCrypto_P256Number[] _n;
+    private byte[] _fieldInverseExponent;
+    private byte[] _fieldSqrtExponent;
+    private byte[] _orderInverseExponent;
+    private byte[] _scalar;
+    private byte[] _secondScalar;
+    private byte[] _encoded;
+    private byte[] _digest;
+    private byte[] _signatureParts;
+    private CorsacSecureCrypto_Hash _hash;
+    private bool _closed;
+
+    public CorsacSecureCrypto_P256Workspace()
+    {
+        // p = FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+        _field = new CorsacSecureCrypto_P256Montgomery(
+            unchecked((long)0xffffffffffffffff), 0x00000000ffffffff,
+            0x0000000000000000, unchecked((long)0xffffffff00000001),
+            0x0000000000000001,
+            0x0000000000000001, unchecked((long)0xffffffff00000000),
+            unchecked((long)0xffffffffffffffff), 0x00000000fffffffe,
+            0x0000000000000003, unchecked((long)0xfffffffbffffffff),
+            unchecked((long)0xfffffffffffffffe), 0x00000004fffffffd);
+        // n = FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+        _order = new CorsacSecureCrypto_P256Montgomery(
+            unchecked((long)0xf3b9cac2fc632551), unchecked((long)0xbce6faada7179e84),
+            unchecked((long)0xffffffffffffffff), unchecked((long)0xffffffff00000000),
+            unchecked((long)0xccd1c8aaee00bc4f),
+            0x0c46353d039cdaaf, 0x4319055258e8617b,
+            0x0000000000000000, 0x00000000ffffffff,
+            unchecked((long)0x83244c95be79eea2), 0x4699799c49bd6fa6,
+            0x2845b2392b6bec59, 0x66e12d94f3d95620);
+
+        _basePoint = NewPoint();
+        _parsedPoint = NewPoint();
+        _multiplicand = NewPoint();
+        _multiplyResult = NewPoint();
+        _multiplyDouble = NewPoint();
+        _multiplyAdd = NewPoint();
+        _addDouble = NewPoint();
+        _verifyPoint0 = NewPoint();
+        _verifyPoint1 = NewPoint();
+        _verifySum = NewPoint();
+        _zeroPoint = NewPoint();
+        _windowTable = new CorsacSecureCrypto_P256Point[16];
+        for (int i = 0; i < _windowTable.Length; i = i + 1)
+            _windowTable[i] = NewPoint();
+        _curveB = NewNumber();
+        _decodeX = NewNumber();
+        _decodeY = NewNumber();
+        _f = new CorsacSecureCrypto_P256Number[20];
+        for (int i = 0; i < _f.Length; i = i + 1) _f[i] = NewNumber();
+        _n = new CorsacSecureCrypto_P256Number[8];
+        for (int i = 0; i < _n.Length; i = i + 1) _n[i] = NewNumber();
+
+        _fieldInverseExponent = new byte[] {
+            0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x01,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,
+            0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfd
+        };
+        _fieldSqrtExponent = new byte[] {
+            0x3f,0xff,0xff,0xff,0xc0,0x00,0x00,0x00,
+            0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x40,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        };
+        _orderInverseExponent = new byte[] {
+            0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x00,
+            0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+            0xbc,0xe6,0xfa,0xad,0xa7,0x17,0x9e,0x84,
+            0xf3,0xb9,0xca,0xc2,0xfc,0x63,0x25,0x4f
+        };
+        _scalar = new byte[32];
+        _secondScalar = new byte[32];
+        _encoded = new byte[65];
+        _digest = new byte[32];
+        _signatureParts = new byte[64];
+        _hash = new CorsacSecureCrypto_Hash();
+        LoadCurveConstants();
+    }
+
+    public bool DerivePublicKey(
+        byte[] privateKey, long privateOffset,
+        byte[] output, long outputOffset, bool compressed)
+    {
+        int outputCount = compressed ? 33 : 65;
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(
+                   privateKey, privateOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   output, outputOffset, outputCount))
+            return false;
+        if (!_order.DecodeStrict(
+                _n[0], privateKey, privateOffset, true))
+            return FailedOperation();
+        SnapshotScalar(privateKey, privateOffset, _scalar);
+        MultiplyPoint(_verifyPoint0, _basePoint, _scalar);
+        bool okay = EncodePoint(_verifyPoint0, compressed);
+        if (okay)
+            CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _encoded, 0, outputCount);
+        ClearOperation();
+        return okay;
+    }
+
+    public bool Agree(
+        byte[] privateKey, long privateOffset,
+        byte[] peerPublic, long peerOffset, long peerCount,
+        byte[] output, long outputOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(
+                   privateKey, privateOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   peerPublic, peerOffset, peerCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   output, outputOffset, 32))
+            return false;
+        if (!ParsePoint(peerPublic, peerOffset, peerCount, _parsedPoint)
+            || !_order.DecodeStrict(
+                   _n[0], privateKey, privateOffset, true))
+            return FailedOperation();
+        SnapshotScalar(privateKey, privateOffset, _scalar);
+        MultiplyPoint(_verifyPoint0, _parsedPoint, _scalar);
+        bool okay = PointToAffine(
+            _decodeX, _decodeY, _verifyPoint0)
+            && _field.Encode(_encoded, 0, _decodeX);
+        if (okay)
+            CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _encoded, 0, 32);
+        ClearOperation();
+        return okay;
+    }
+
+    public bool ValidatePublicKey(
+        byte[] publicKey, long publicOffset, long publicCount)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(
+                   publicKey, publicOffset, publicCount))
+            return false;
+        bool okay = ParsePoint(
+            publicKey, publicOffset, publicCount, _parsedPoint);
+        ClearOperation();
+        return okay;
+    }
+
+    public bool VerifyDigestDer(
+        byte[] publicKey, long publicOffset, long publicCount,
+        byte[] digest, long digestOffset,
+        byte[] signature, long signatureOffset, long signatureCount)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   signature, signatureOffset, signatureCount)
+            || !ParseDerSignature(
+                   signature, signatureOffset, signatureCount))
+            return false;
+        return VerifyDecodedSignature(
+            publicKey, publicOffset, publicCount,
+            digest, digestOffset);
+    }
+
+    public bool VerifyDigestRaw(
+        byte[] publicKey, long publicOffset, long publicCount,
+        byte[] digest, long digestOffset,
+        byte[] signature, long signatureOffset)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(digest, digestOffset, 32)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   signature, signatureOffset, 64))
+            return false;
+        CorsacSecureCrypto_Bytes.Copy(
+            _signatureParts, 0, signature, signatureOffset, 64);
+        return VerifyDecodedSignature(
+            publicKey, publicOffset, publicCount,
+            digest, digestOffset);
+    }
+
+    public bool VerifySha256Der(
+        byte[] publicKey, long publicOffset, long publicCount,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] signature, long signatureOffset, long signatureCount)
+    {
+        if (_closed
+            || !CorsacSecureCrypto_Bytes.Range(
+                   message, messageOffset, messageCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   publicKey, publicOffset, publicCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                   signature, signatureOffset, signatureCount))
+            return false;
+        bool hashed = _hash.Update(message, messageOffset, messageCount)
+                   && _hash.Finish(_digest, 0);
+        if (!hashed) return false;
+        bool okay = VerifyDigestDer(
+            publicKey, publicOffset, publicCount,
+            _digest, 0, signature, signatureOffset, signatureCount);
+        _hash.Reset();
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, 32);
+        return okay;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        ClearOperation();
+        _basePoint.Clear();
+        _curveB.Clear();
+        CorsacSecureCrypto_Bytes.Zero(
+            _fieldInverseExponent, 0, _fieldInverseExponent.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _fieldSqrtExponent, 0, _fieldSqrtExponent.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _orderInverseExponent, 0, _orderInverseExponent.Length);
+        _field.Close();
+        _order.Close();
+        _hash.Close();
+        _closed = true;
+    }
+
+    private bool VerifyDecodedSignature(
+        byte[] publicKey, long publicOffset, long publicCount,
+        byte[] digest, long digestOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(
+                publicKey, publicOffset, publicCount)
+            || !ParsePoint(
+                   publicKey, publicOffset, publicCount, _parsedPoint)
+            || !_order.DecodeStrict(
+                   _n[0], _signatureParts, 0, true)
+            || !_order.DecodeStrict(
+                   _n[1], _signatureParts, 32, true)
+            || !_order.DecodeReduced(_n[2], digest, digestOffset))
+            return FailedOperation();
+
+        // w = s^-1, u1 = z*w, u2 = r*w.
+        _order.Pow(
+            _n[3], _n[1], _orderInverseExponent, _n[4], _n[5]);
+        _order.Multiply(_n[6], _n[2], _n[3]);
+        _order.Multiply(_n[7], _n[0], _n[3]);
+        _order.Encode(_scalar, 0, _n[6]);
+        _order.Encode(_secondScalar, 0, _n[7]);
+
+        MultiplyPoint(_verifyPoint0, _basePoint, _scalar);
+        MultiplyPoint(_verifyPoint1, _parsedPoint, _secondScalar);
+        PointAdd(_verifySum, _verifyPoint0, _verifyPoint1);
+        bool okay = PointToAffine(_decodeX, _decodeY, _verifySum)
+            && _field.Encode(_encoded, 0, _decodeX)
+            && _order.DecodeReduced(_n[2], _encoded, 0)
+            && _order.Equal(_n[2], _n[0]);
+        ClearOperation();
+        return okay;
+    }
+
+    private bool ParseDerSignature(
+        byte[] input, long offset, long count)
+    {
+        CorsacSecureCrypto_Bytes.Zero(_signatureParts, 0, 64);
+        if (count < 8 || count > 72) return false;
+        long end = offset + count;
+        long cursor = offset;
+        if (input[(int)cursor] != 0x30) return false;
+        cursor = cursor + 1;
+        // Every legal P-256 ECDSA sequence is shorter than 128 octets, so DER
+        // requires this one-octet length form.
+        int sequenceLength = input[(int)cursor];
+        cursor = cursor + 1;
+        if ((sequenceLength & 128) != 0
+            || sequenceLength != count - 2) return false;
+        if (!ReadDerInteger(
+                input, ref cursor, end, _signatureParts, 0)) return false;
+        if (!ReadDerInteger(
+                input, ref cursor, end, _signatureParts, 32)) return false;
+        return cursor == end;
+    }
+
+    private bool ReadDerInteger(
+        byte[] input, ref long cursor, long end,
+        byte[] output, long outputOffset)
+    {
+        if (cursor > end - 2 || input[(int)cursor] != 0x02)
+            return false;
+        cursor = cursor + 1;
+        int count = input[(int)cursor];
+        cursor = cursor + 1;
+        if (count < 1 || count > 33 || cursor > end - count)
+            return false;
+        int first = input[(int)cursor];
+        if ((first & 128) != 0) return false;
+        if (count > 1 && first == 0
+            && (input[(int)(cursor + 1)] & 128) == 0)
+            return false;
+        if (count == 33 && first != 0) return false;
+        int skip = first == 0 ? 1 : 0;
+        int magnitude = count - skip;
+        if (magnitude > 32) return false;
+        CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset + 32 - magnitude,
+            input, cursor + skip, magnitude);
+        cursor = cursor + count;
+        return true;
+    }
+
+    private bool ParsePoint(
+        byte[] input, long offset, long count,
+        CorsacSecureCrypto_P256Point output)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(input, offset, count))
+            return false;
+        int prefix = count > 0 ? input[(int)offset] : -1;
+        if (count == 65 && prefix == 4)
+        {
+            if (!_field.DecodeStrict(_decodeX, input, offset + 1, false)
+                || !_field.DecodeStrict(
+                       _decodeY, input, offset + 33, false)
+                || !OnCurve(_decodeX, _decodeY)) return false;
+            SetAffine(output, _decodeX, _decodeY);
+            return true;
+        }
+        if (count == 33 && (prefix == 2 || prefix == 3))
+        {
+            if (!_field.DecodeStrict(_decodeX, input, offset + 1, false))
+                return false;
+            CurveRight(_f[18], _decodeX);
+            _field.Pow(
+                _decodeY, _f[18], _fieldSqrtExponent, _f[16], _f[17]);
+            _field.Square(_f[19], _decodeY);
+            if (!_field.Equal(_f[19], _f[18])) return false;
+            bool wantedOdd = prefix == 3;
+            bool actualOdd = _field.IsOdd(_decodeY);
+            _field.Negate(_f[19], _decodeY);
+            _field.ConditionalMove(
+                _decodeY, _f[19], actualOdd != wantedOdd);
+            if (_field.IsOdd(_decodeY) != wantedOdd) return false;
+            SetAffine(output, _decodeX, _decodeY);
+            return true;
+        }
+        return false;
+    }
+
+    private bool OnCurve(
+        CorsacSecureCrypto_P256Number x,
+        CorsacSecureCrypto_P256Number y)
+    {
+        _field.Square(_f[19], y);
+        CurveRight(_f[18], x);
+        return _field.Equal(_f[19], _f[18]);
+    }
+
+    private void CurveRight(
+        CorsacSecureCrypto_P256Number output,
+        CorsacSecureCrypto_P256Number x)
+    {
+        _field.Square(_f[15], x);
+        _field.Multiply(_f[15], _f[15], x);
+        _field.Subtract(_f[15], _f[15], x);
+        _field.Subtract(_f[15], _f[15], x);
+        _field.Subtract(_f[15], _f[15], x);
+        _field.Add(output, _f[15], _curveB);
+    }
+
+    private void MultiplyPoint(
+        CorsacSecureCrypto_P256Point output,
+        CorsacSecureCrypto_P256Point input,
+        byte[] scalar)
+    {
+        _windowTable[0].Clear();
+        CopyPoint(_windowTable[1], input);
+        PointDouble(_windowTable[2], input);
+        for (int i = 3; i < 16; i = i + 1)
+            PointAdd(_windowTable[i], _windowTable[i - 1], input);
+        _multiplyResult.Clear();
+        for (int window = 0; window < 64; window = window + 1)
+        {
+            PointDouble(_multiplyDouble, _multiplyResult);
+            PointDouble(_multiplyResult, _multiplyDouble);
+            PointDouble(_multiplyDouble, _multiplyResult);
+            PointDouble(_multiplyResult, _multiplyDouble);
+            int shift = (1 - (window & 1)) * 4;
+            int digit = (scalar[window >> 1] >> shift) & 15;
+            _multiplicand.Clear();
+            for (int i = 0; i < 16; i = i + 1)
+                ConditionalMovePoint(
+                    _multiplicand, _windowTable[i], i == digit);
+            PointAddWindow(
+                _multiplyAdd, _multiplyResult, _multiplicand);
+            CopyPoint(_multiplyResult, _multiplyAdd);
+        }
+        CopyPoint(output, _multiplyResult);
+    }
+
+    // The fixed-window recurrence is R' = 16R + dP with 0 <= d < 16.
+    // Apart from infinity when R or d is zero, its operands cannot be equal or
+    // opposite for a canonical scalar below the prime group order.  This lets
+    // the hot loop omit PointAdd's otherwise necessary doubling fallback.
+    private void PointAddWindow(
+        CorsacSecureCrypto_P256Point output,
+        CorsacSecureCrypto_P256Point left,
+        CorsacSecureCrypto_P256Point right)
+    {
+        bool leftInfinity = _field.IsZero(left.Z);
+        bool rightInfinity = _field.IsZero(right.Z);
+        _field.Square(_f[0], left.Z);
+        _field.Square(_f[1], right.Z);
+        _field.Multiply(_f[2], left.X, _f[1]);
+        _field.Multiply(_f[3], right.X, _f[0]);
+        _field.Multiply(_f[4], right.Z, _f[1]);
+        _field.Multiply(_f[4], left.Y, _f[4]);
+        _field.Multiply(_f[5], left.Z, _f[0]);
+        _field.Multiply(_f[5], right.Y, _f[5]);
+        _field.Subtract(_f[6], _f[3], _f[2]);
+        _field.Subtract(_f[7], _f[5], _f[4]);
+        _field.Add(_f[7], _f[7], _f[7]);
+        _field.Add(_f[8], _f[6], _f[6]);
+        _field.Square(_f[8], _f[8]);
+        _field.Multiply(_f[9], _f[6], _f[8]);
+        _field.Multiply(_f[10], _f[2], _f[8]);
+        _field.Square(_f[11], _f[7]);
+        _field.Subtract(_f[11], _f[11], _f[9]);
+        _field.Subtract(_f[11], _f[11], _f[10]);
+        _field.Subtract(_f[11], _f[11], _f[10]);
+        _field.Subtract(_f[12], _f[10], _f[11]);
+        _field.Multiply(_f[12], _f[7], _f[12]);
+        _field.Multiply(_f[13], _f[4], _f[9]);
+        _field.Add(_f[13], _f[13], _f[13]);
+        _field.Subtract(_f[12], _f[12], _f[13]);
+        _field.Add(_f[14], left.Z, right.Z);
+        _field.Square(_f[14], _f[14]);
+        _field.Subtract(_f[14], _f[14], _f[0]);
+        _field.Subtract(_f[14], _f[14], _f[1]);
+        _field.Multiply(_f[14], _f[14], _f[6]);
+        _field.Copy(output.X, _f[11]);
+        _field.Copy(output.Y, _f[12]);
+        _field.Copy(output.Z, _f[14]);
+        ConditionalMovePoint(output, left, rightInfinity);
+        ConditionalMovePoint(output, right, leftInfinity);
+    }
+
+    private void PointDouble(
+        CorsacSecureCrypto_P256Point output,
+        CorsacSecureCrypto_P256Point input)
+    {
+        // dbl-2001-b for a=-3, in Jacobian coordinates.
+        _field.Square(_f[0], input.Z);             // ZZ
+        _field.Subtract(_f[1], input.X, _f[0]);
+        _field.Add(_f[2], input.X, _f[0]);
+        _field.Multiply(_f[1], _f[1], _f[2]);
+        _field.Add(_f[2], _f[1], _f[1]);
+        _field.Add(_f[1], _f[2], _f[1]);          // M = 3*(X-ZZ)*(X+ZZ)
+        _field.Square(_f[3], input.Y);             // YY
+        _field.Multiply(_f[4], input.X, _f[3]);
+        _field.Add(_f[4], _f[4], _f[4]);
+        _field.Add(_f[4], _f[4], _f[4]);          // S = 4*X*YY
+        _field.Square(_f[5], _f[3]);               // YYYY
+        _field.Square(_f[6], _f[1]);
+        _field.Subtract(_f[6], _f[6], _f[4]);
+        _field.Subtract(_f[6], _f[6], _f[4]);     // X3
+        _field.Subtract(_f[7], _f[4], _f[6]);
+        _field.Multiply(_f[7], _f[1], _f[7]);
+        _field.Add(_f[5], _f[5], _f[5]);
+        _field.Add(_f[5], _f[5], _f[5]);
+        _field.Add(_f[5], _f[5], _f[5]);
+        _field.Subtract(_f[7], _f[7], _f[5]);     // Y3
+        _field.Multiply(_f[8], input.Y, input.Z);
+        _field.Add(_f[8], _f[8], _f[8]);          // Z3
+        _field.Copy(output.X, _f[6]);
+        _field.Copy(output.Y, _f[7]);
+        _field.Copy(output.Z, _f[8]);
+    }
+
+    private void PointAdd(
+        CorsacSecureCrypto_P256Point output,
+        CorsacSecureCrypto_P256Point left,
+        CorsacSecureCrypto_P256Point right)
+    {
+        bool leftInfinity = _field.IsZero(left.Z);
+        bool rightInfinity = _field.IsZero(right.Z);
+        _field.Square(_f[0], left.Z);              // Z1Z1
+        _field.Square(_f[1], right.Z);             // Z2Z2
+        _field.Multiply(_f[2], left.X, _f[1]);     // U1
+        _field.Multiply(_f[3], right.X, _f[0]);    // U2
+        _field.Multiply(_f[4], right.Z, _f[1]);
+        _field.Multiply(_f[4], left.Y, _f[4]);     // S1
+        _field.Multiply(_f[5], left.Z, _f[0]);
+        _field.Multiply(_f[5], right.Y, _f[5]);    // S2
+        _field.Subtract(_f[6], _f[3], _f[2]);     // H
+        _field.Subtract(_f[7], _f[5], _f[4]);
+        _field.Add(_f[7], _f[7], _f[7]);          // r
+        bool hZero = _field.IsZero(_f[6]);
+        bool rZero = _field.IsZero(_f[7]);
+        _field.Add(_f[8], _f[6], _f[6]);
+        _field.Square(_f[8], _f[8]);               // I
+        _field.Multiply(_f[9], _f[6], _f[8]);     // J
+        _field.Multiply(_f[10], _f[2], _f[8]);    // V
+        _field.Square(_f[11], _f[7]);
+        _field.Subtract(_f[11], _f[11], _f[9]);
+        _field.Subtract(_f[11], _f[11], _f[10]);
+        _field.Subtract(_f[11], _f[11], _f[10]);  // X3
+        _field.Subtract(_f[12], _f[10], _f[11]);
+        _field.Multiply(_f[12], _f[7], _f[12]);
+        _field.Multiply(_f[13], _f[4], _f[9]);
+        _field.Add(_f[13], _f[13], _f[13]);
+        _field.Subtract(_f[12], _f[12], _f[13]);  // Y3
+        _field.Add(_f[14], left.Z, right.Z);
+        _field.Square(_f[14], _f[14]);
+        _field.Subtract(_f[14], _f[14], _f[0]);
+        _field.Subtract(_f[14], _f[14], _f[1]);
+        _field.Multiply(_f[14], _f[14], _f[6]);   // Z3
+
+        _field.Copy(output.X, _f[11]);
+        _field.Copy(output.Y, _f[12]);
+        _field.Copy(output.Z, _f[14]);
+        PointDouble(_addDouble, left);
+        bool same = hZero & rZero;
+        bool opposite = hZero & !rZero;
+        ConditionalMovePoint(output, _addDouble, same);
+        ConditionalMovePoint(output, _zeroPoint, opposite);
+        ConditionalMovePoint(output, left, rightInfinity);
+        ConditionalMovePoint(output, right, leftInfinity);
+    }
+
+    private bool PointToAffine(
+        CorsacSecureCrypto_P256Number x,
+        CorsacSecureCrypto_P256Number y,
+        CorsacSecureCrypto_P256Point input)
+    {
+        bool present = !_field.IsZero(input.Z);
+        _field.Pow(
+            _f[0], input.Z, _fieldInverseExponent, _f[1], _f[2]);
+        _field.Square(_f[1], _f[0]);
+        _field.Multiply(_f[2], _f[1], _f[0]);
+        _field.Multiply(_f[3], input.X, _f[1]);
+        _field.Multiply(_f[4], input.Y, _f[2]);
+        _field.Copy(x, _f[3]);
+        _field.Copy(y, _f[4]);
+        return present;
+    }
+
+    private bool EncodePoint(
+        CorsacSecureCrypto_P256Point point, bool compressed)
+    {
+        if (!PointToAffine(_decodeX, _decodeY, point)) return false;
+        if (compressed)
+        {
+            _encoded[0] = _field.IsOdd(_decodeY) ? (byte)3 : (byte)2;
+            return _field.Encode(_encoded, 1, _decodeX);
+        }
+        _encoded[0] = 4;
+        return _field.Encode(_encoded, 1, _decodeX)
+            && _field.Encode(_encoded, 33, _decodeY);
+    }
+
+    private void SetAffine(
+        CorsacSecureCrypto_P256Point output,
+        CorsacSecureCrypto_P256Number x,
+        CorsacSecureCrypto_P256Number y)
+    {
+        _field.Copy(output.X, x);
+        _field.Copy(output.Y, y);
+        _field.SetOne(output.Z);
+    }
+
+    private void CopyPoint(
+        CorsacSecureCrypto_P256Point output,
+        CorsacSecureCrypto_P256Point input)
+    {
+        _field.Copy(output.X, input.X);
+        _field.Copy(output.Y, input.Y);
+        _field.Copy(output.Z, input.Z);
+    }
+
+    private void ConditionalMovePoint(
+        CorsacSecureCrypto_P256Point output,
+        CorsacSecureCrypto_P256Point source, bool condition)
+    {
+        _field.ConditionalMove(output.X, source.X, condition);
+        _field.ConditionalMove(output.Y, source.Y, condition);
+        _field.ConditionalMove(output.Z, source.Z, condition);
+    }
+
+    private void LoadCurveConstants()
+    {
+        byte[] gx = new byte[] {
+            0x6b,0x17,0xd1,0xf2,0xe1,0x2c,0x42,0x47,
+            0xf8,0xbc,0xe6,0xe5,0x63,0xa4,0x40,0xf2,
+            0x77,0x03,0x7d,0x81,0x2d,0xeb,0x33,0xa0,
+            0xf4,0xa1,0x39,0x45,0xd8,0x98,0xc2,0x96
+        };
+        byte[] gy = new byte[] {
+            0x4f,0xe3,0x42,0xe2,0xfe,0x1a,0x7f,0x9b,
+            0x8e,0xe7,0xeb,0x4a,0x7c,0x0f,0x9e,0x16,
+            0x2b,0xce,0x33,0x57,0x6b,0x31,0x5e,0xce,
+            0xcb,0xb6,0x40,0x68,0x37,0xbf,0x51,0xf5
+        };
+        byte[] curve = new byte[] {
+            0x5a,0xc6,0x35,0xd8,0xaa,0x3a,0x93,0xe7,
+            0xb3,0xeb,0xbd,0x55,0x76,0x98,0x86,0xbc,
+            0x65,0x1d,0x06,0xb0,0xcc,0x53,0xb0,0xf6,
+            0x3b,0xce,0x3c,0x3e,0x27,0xd2,0x60,0x4b
+        };
+        _field.DecodeStrict(_basePoint.X, gx, 0, false);
+        _field.DecodeStrict(_basePoint.Y, gy, 0, false);
+        _field.SetOne(_basePoint.Z);
+        _field.DecodeStrict(_curveB, curve, 0, false);
+        CorsacSecureCrypto_Bytes.Zero(gx, 0, gx.Length);
+        CorsacSecureCrypto_Bytes.Zero(gy, 0, gy.Length);
+        CorsacSecureCrypto_Bytes.Zero(curve, 0, curve.Length);
+    }
+
+    private void SnapshotScalar(byte[] source, long offset, byte[] target)
+    {
+        for (int i = 0; i < 32; i = i + 1)
+            target[i] = source[(int)offset + i];
+    }
+
+    private bool FailedOperation()
+    {
+        ClearOperation();
+        return false;
+    }
+
+    private void ClearOperation()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_scalar, 0, _scalar.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _secondScalar, 0, _secondScalar.Length);
+        CorsacSecureCrypto_Bytes.Zero(_encoded, 0, _encoded.Length);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _signatureParts, 0, _signatureParts.Length);
+        _parsedPoint.Clear();
+        _multiplicand.Clear();
+        _multiplyResult.Clear();
+        _multiplyDouble.Clear();
+        _multiplyAdd.Clear();
+        _addDouble.Clear();
+        _verifyPoint0.Clear();
+        _verifyPoint1.Clear();
+        _verifySum.Clear();
+        for (int i = 0; i < _windowTable.Length; i = i + 1)
+            _windowTable[i].Clear();
+        _decodeX.Clear();
+        _decodeY.Clear();
+        for (int i = 0; i < _f.Length; i = i + 1) _f[i].Clear();
+        for (int i = 0; i < _n.Length; i = i + 1) _n[i].Clear();
+    }
+
+    private static CorsacSecureCrypto_P256Number NewNumber()
+    {
+        return new CorsacSecureCrypto_P256Number();
+    }
+
+    private static CorsacSecureCrypto_P256Point NewPoint()
+    {
+        return new CorsacSecureCrypto_P256Point();
+    }
+}

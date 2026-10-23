@@ -1,0 +1,218 @@
+// System.Security.Cryptography's object identifiers, as .NET has them on
+// Linux: Oid (a value and its friendly name), OidCollection, and
+// AsnEncodedData (an identifier and the bytes it labels). The friendly
+// names are .NET 10's on Linux, read off it: the algorithms by .NET's own
+// names (sha256RSA, ECC), the extensions and key purposes by OpenSSL's
+// long names (X509v3 Key Usage, TLS Web Server Authentication), the name
+// attributes by their short names (CN, O).
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Text;
+
+namespace System.Security.Cryptography;
+
+/// Which kind of identifier a lookup by name may find.
+public enum OidGroup
+{
+    All = 0,
+    HashAlgorithm = 1,
+    EncryptionAlgorithm = 2,
+    PublicKeyAlgorithm = 3,
+    SignatureAlgorithm = 4,
+    Attribute = 5,
+    ExtensionOrAttribute = 6,
+    EnhancedKeyUsage = 7,
+    Policy = 8,
+    Template = 9,
+    KeyDerivationFunction = 10,
+}
+
+/// An object identifier: its dotted value and its friendly name.
+public sealed class Oid
+{
+    string? _value;
+    string? _friendlyName;
+
+    public Oid() { }
+
+    /// A dotted value, or a friendly name the table knows.
+    public Oid(string oid)
+    {
+        string? value = OidNames.ValueOf(oid);
+        if (value != null) { _value = value; _friendlyName = oid; }
+        else { _value = oid; _friendlyName = OidNames.NameOf(oid); }
+    }
+
+    public Oid(string? value, string? friendlyName) { _value = value; _friendlyName = friendlyName; }
+
+    public Oid(Oid oid) { _value = oid._value; _friendlyName = oid._friendlyName; }
+
+    public string? Value { get { return _value; } set { _value = value; } }
+
+    /// The friendly name, looked up from the value when none was given.
+    public string? FriendlyName
+    {
+        get { if (_friendlyName == null && _value != null) _friendlyName = OidNames.NameOf(_value); return _friendlyName; }
+        set { _friendlyName = value; if (value != null) { string? v = OidNames.ValueOf(value); if (v != null) _value = v; } }
+    }
+
+    public static Oid FromOidValue(string oidValue, OidGroup group)
+    {
+        if (oidValue == null) throw new ArgumentNullException(nameof(oidValue));
+        string? name = OidNames.NameOf(oidValue);
+        if (name == null) throw new CryptographicException("The OID value is invalid.");
+        return new Oid(oidValue, name);
+    }
+
+    public static Oid FromFriendlyName(string friendlyName, OidGroup group)
+    {
+        if (friendlyName == null) throw new ArgumentNullException(nameof(friendlyName));
+        string? value = OidNames.ValueOf(friendlyName);
+        if (value == null) throw new CryptographicException("The OID value is invalid.");
+        return new Oid(value, OidNames.NameOf(value) ?? friendlyName);
+    }
+}
+
+/// Object identifiers in order.
+public sealed class OidCollection : ICollection, IEnumerable<Oid>
+{
+    readonly List<Oid> _items = new List<Oid>();
+
+    public int Add(Oid oid) { _items.Add(oid); return _items.Count - 1; }
+    public int Count => _items.Count;
+    public Oid this[int index] => _items[index];
+
+    /// The first whose value or friendly name is `oid`; null for none.
+    public Oid? this[string oid]
+    {
+        get
+        {
+            foreach (Oid o in _items) if (o.Value == oid || o.FriendlyName == oid) return o;
+            return null;
+        }
+    }
+
+    public bool IsSynchronized => false;
+    public object SyncRoot => this;
+    public void CopyTo(Oid[] array, int index) { _items.CopyTo(array, index); }
+    void ICollection.CopyTo(Array array, int index)
+    {
+        if (array is Oid[] typed) { _items.CopyTo(typed, index); return; }
+        if (array is object[] objects) { for (int i = 0; i < _items.Count; i++) objects[index + i] = _items[i]; return; }
+        throw new ArgumentException("Target array type is not compatible with the type of items in the collection.", nameof(array));
+    }
+    public IEnumerator<Oid> GetEnumerator() => _items.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => _items.GetEnumerator();
+}
+
+/// An identifier and the encoded bytes it labels.
+public class AsnEncodedData
+{
+    Oid? _oid;
+    byte[] _rawData;
+
+    protected AsnEncodedData() { _rawData = new byte[0]; }
+    public AsnEncodedData(byte[] rawData) : this((Oid?)null, rawData) { }
+    public AsnEncodedData(Oid? oid, byte[] rawData)
+    {
+        if (rawData == null) throw new ArgumentNullException(nameof(rawData));
+        _oid = oid == null ? null : new Oid(oid);
+        _rawData = (byte[])rawData.Clone();
+    }
+    public AsnEncodedData(string oid, byte[] rawData) : this(new Oid(oid), rawData) { }
+    public AsnEncodedData(AsnEncodedData asnEncodedData) : this(asnEncodedData._oid, asnEncodedData._rawData) { }
+
+    public Oid? Oid { get { return _oid; } set { _oid = value == null ? null : new Oid(value); } }
+    public byte[] RawData { get { return _rawData; } set { if (value == null) throw new ArgumentNullException(nameof(value)); _rawData = (byte[])value.Clone(); } }
+
+    public virtual void CopyFrom(AsnEncodedData asnEncodedData)
+    {
+        if (asnEncodedData == null) throw new ArgumentNullException(nameof(asnEncodedData));
+        _oid = asnEncodedData._oid == null ? null : new Oid(asnEncodedData._oid);
+        _rawData = (byte[])asnEncodedData._rawData.Clone();
+    }
+
+    /// The bytes as hexadecimal pairs, as .NET formats data it has no
+    /// better reading of.
+    public virtual string Format(bool multiLine)
+    {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < _rawData.Length; i++)
+        {
+            if (i > 0) text.Append(' ');
+            text.Append(_rawData[i].ToString("x2"));
+        }
+        return text.ToString();
+    }
+}
+
+/// .NET 10's friendly names on Linux, both ways.
+internal static class OidNames
+{
+    static readonly string[] Table = {
+        "1.2.840.113549.1.1.1", "RSA",
+        "1.2.840.10045.2.1", "ECC",
+        "1.3.101.112", "ED25519",
+        "1.3.101.110", "X25519",
+        "1.2.840.113549.1.1.5", "sha1RSA",
+        "1.2.840.113549.1.1.11", "sha256RSA",
+        "1.2.840.113549.1.1.12", "sha384RSA",
+        "1.2.840.113549.1.1.13", "sha512RSA",
+        "1.2.840.113549.1.1.10", "RSASSA-PSS",
+        "1.2.840.10045.4.3.2", "sha256ECDSA",
+        "1.2.840.10045.4.3.3", "sha384ECDSA",
+        "1.2.840.10045.4.3.4", "sha512ECDSA",
+        "1.2.840.10045.3.1.7", "ECDSA_P256",
+        "1.3.132.0.34", "ECDSA_P384",
+        "1.3.132.0.35", "ECDSA_P521",
+        "2.16.840.1.101.3.4.2.1", "sha256",
+        "2.16.840.1.101.3.4.2.2", "sha384",
+        "2.16.840.1.101.3.4.2.3", "sha512",
+        "1.3.14.3.2.26", "sha1",
+        "1.2.840.113549.2.5", "md5",
+        "2.5.29.14", "X509v3 Subject Key Identifier",
+        "2.5.29.15", "X509v3 Key Usage",
+        "2.5.29.17", "X509v3 Subject Alternative Name",
+        "2.5.29.18", "X509v3 Issuer Alternative Name",
+        "2.5.29.19", "X509v3 Basic Constraints",
+        "2.5.29.30", "X509v3 Name Constraints",
+        "2.5.29.31", "X509v3 CRL Distribution Points",
+        "2.5.29.32", "X509v3 Certificate Policies",
+        "2.5.29.35", "X509v3 Authority Key Identifier",
+        "2.5.29.37", "X509v3 Extended Key Usage",
+        "1.3.6.1.5.5.7.1.1", "Authority Information Access",
+        "1.3.6.1.4.1.11129.2.4.2", "CT Precertificate SCTs",
+        "1.3.6.1.5.5.7.3.1", "TLS Web Server Authentication",
+        "1.3.6.1.5.5.7.3.2", "TLS Web Client Authentication",
+        "1.3.6.1.5.5.7.3.3", "Code Signing",
+        "1.3.6.1.5.5.7.3.4", "E-mail Protection",
+        "1.3.6.1.5.5.7.3.8", "Time Stamping",
+        "1.3.6.1.5.5.7.3.9", "OCSP Signing",
+        "2.5.4.3", "CN",
+        "2.5.4.6", "C",
+        "2.5.4.7", "L",
+        "2.5.4.8", "S",
+        "2.5.4.10", "O",
+        "2.5.4.11", "OU",
+        "1.2.840.113549.1.9.1", "E",
+        "0.9.2342.19200300.100.1.25", "DC",
+    };
+
+    // Names .NET also takes for a value, beside the one it gives back.
+    static readonly string[] Aliases = { "nistP256", "1.2.840.10045.3.1.7", "nistP384", "1.3.132.0.34", "nistP521", "1.3.132.0.35" };
+
+    public static string? NameOf(string value)
+    {
+        for (int i = 0; i < Table.Length; i += 2) if (Table[i] == value) return Table[i + 1];
+        return null;
+    }
+
+    public static string? ValueOf(string name)
+    {
+        for (int i = 0; i < Table.Length; i += 2) if (string.Equals(Table[i + 1], name, StringComparison.OrdinalIgnoreCase)) return Table[i];
+        for (int i = 0; i < Aliases.Length; i += 2) if (string.Equals(Aliases[i], name, StringComparison.OrdinalIgnoreCase)) return Aliases[i + 1];
+        return null;
+    }
+}

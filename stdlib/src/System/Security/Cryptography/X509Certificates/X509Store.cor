@@ -1,0 +1,376 @@
+// CERTIFICATE COLLECTIONS AND STORES, as .NET has them on Linux.
+//
+// X509Certificate2Collection holds certificates and finds among them.
+// X509Store opens one of the named stores:
+//   LocalMachine Root                the system's trusted roots: the bundle
+//                                    /etc/ssl/certs/ca-certificates.crt, or
+//                                    every PEM or DER file in /etc/ssl/certs
+//                                    when there is no bundle; self-signed ones
+//   LocalMachine CertificateAuthority the same files' other certificates
+//   CurrentUser <any>                the user's own, one DER file each under
+//                                    ~/.dotnet/corefx/cryptography/x509stores/
+//                                    <name>/, where .NET keeps them on Linux
+// Every LocalMachine store is read-only, as it is for .NET on Linux.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+namespace System.Security.Cryptography.X509Certificates;
+
+public enum StoreName
+{
+    AddressBook = 1,
+    AuthRoot = 2,
+    CertificateAuthority = 3,
+    Disallowed = 4,
+    My = 5,
+    Root = 6,
+    TrustedPeople = 7,
+    TrustedPublisher = 8,
+}
+
+public enum StoreLocation
+{
+    CurrentUser = 1,
+    LocalMachine = 2,
+}
+
+[Flags]
+public enum OpenFlags
+{
+    ReadOnly = 0,
+    ReadWrite = 1,
+    MaxAllowed = 2,
+    OpenExistingOnly = 4,
+    IncludeArchived = 8,
+}
+
+public enum X509FindType
+{
+    FindByThumbprint = 0,
+    FindBySubjectName = 1,
+    FindBySubjectDistinguishedName = 2,
+    FindByIssuerName = 3,
+    FindByIssuerDistinguishedName = 4,
+    FindBySerialNumber = 5,
+    FindByTimeValid = 6,
+    FindByTimeNotYetValid = 7,
+    FindByTimeExpired = 8,
+    FindByTemplateName = 9,
+    FindByApplicationPolicy = 10,
+    FindByCertificatePolicy = 11,
+    FindByExtension = 12,
+    FindByKeyUsage = 13,
+    FindBySubjectKeyIdentifier = 14,
+}
+
+/// Certificates in order, as .NET's first collection holds them.
+public class X509CertificateCollection : IList
+{
+    internal readonly List<X509Certificate> Items = new List<X509Certificate>();
+
+    public X509CertificateCollection() { }
+    public X509CertificateCollection(X509Certificate[] value) { AddRange(value); }
+    public X509CertificateCollection(X509CertificateCollection value) { AddRange(value); }
+
+    public int Count => Items.Count;
+    public X509Certificate this[int index] { get { return Items[index]; } set { Items[index] = value ?? throw new ArgumentNullException(nameof(value)); } }
+
+    public int Add(X509Certificate value)
+    {
+        if (value == null) throw new ArgumentNullException(nameof(value));
+        Items.Add(value);
+        return Items.Count - 1;
+    }
+
+    public void AddRange(X509Certificate[] value) { if (value == null) throw new ArgumentNullException(nameof(value)); foreach (X509Certificate c in value) Add(c); }
+    public void AddRange(X509CertificateCollection value) { if (value == null) throw new ArgumentNullException(nameof(value)); for (int i = 0; i < value.Count; i++) Add(value.Items[i]); }
+    public bool Contains(X509Certificate value) => IndexOf(value) >= 0;
+    public void CopyTo(X509Certificate[] array, int index) { Items.CopyTo(array, index); }
+    public int IndexOf(X509Certificate value) { for (int i = 0; i < Items.Count; i++) if (Items[i].Equals(value)) return i; return -1; }
+    public void Insert(int index, X509Certificate value) { Items.Insert(index, value); }
+    public void Remove(X509Certificate value) { int at = IndexOf(value); if (at >= 0) Items.RemoveAt(at); }
+    public void Clear() { Items.Clear(); }
+    public void RemoveAt(int index) { Items.RemoveAt(index); }
+    public IEnumerator GetEnumerator() => Items.GetEnumerator();
+
+    public override int GetHashCode()
+    {
+        int hash = 0;
+        foreach (X509Certificate c in Items) hash += c.GetHashCode();
+        return hash;
+    }
+
+    bool IList.IsFixedSize => false;
+    bool IList.IsReadOnly => false;
+    object? IList.this[int index] { get { return Items[index]; } set { Items[index] = (X509Certificate)value!; } }
+    int IList.Add(object? value) => Add((X509Certificate)value!);
+    bool IList.Contains(object? value) => value is X509Certificate c && Contains(c);
+    int IList.IndexOf(object? value) => value is X509Certificate c ? IndexOf(c) : -1;
+    void IList.Insert(int index, object? value) { Insert(index, (X509Certificate)value!); }
+    void IList.Remove(object? value) { if (value is X509Certificate c) Remove(c); }
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => this;
+    void ICollection.CopyTo(Array array, int index)
+    {
+        if (array is X509Certificate[] typed) { Items.CopyTo(typed, index); return; }
+        if (array is object[] objects) { for (int i = 0; i < Items.Count; i++) objects[index + i] = Items[i]; return; }
+        throw new ArgumentException("Target array type is not compatible with the type of items in the collection.", nameof(array));
+    }
+}
+
+/// X509Certificate2s in order: the first collection, typed.
+public class X509Certificate2Collection : X509CertificateCollection, IEnumerable<X509Certificate2>
+{
+    public X509Certificate2Collection() { }
+    public X509Certificate2Collection(X509Certificate2 certificate) { Add(certificate); }
+    public X509Certificate2Collection(X509Certificate2[] certificates) { AddRange(certificates); }
+    public X509Certificate2Collection(X509Certificate2Collection certificates) { AddRange(certificates); }
+
+    public new X509Certificate2 this[int index] { get { return (X509Certificate2)Items[index]; } set { Items[index] = value ?? throw new ArgumentNullException(nameof(value)); } }
+
+    public int Add(X509Certificate2 certificate)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        Items.Add(certificate);
+        return Items.Count - 1;
+    }
+
+    public void AddRange(X509Certificate2[] certificates) { foreach (X509Certificate2 c in certificates) Add(c); }
+    public void AddRange(X509Certificate2Collection certificates) { foreach (X509Certificate2 c in certificates) Add(c); }
+    public bool Contains(X509Certificate2 certificate) => IndexOf(certificate) >= 0;
+    public void Insert(int index, X509Certificate2 certificate) { Items.Insert(index, certificate); }
+    public void Remove(X509Certificate2 certificate) { int at = IndexOf(certificate); if (at >= 0) Items.RemoveAt(at); }
+    public void RemoveRange(X509Certificate2[] certificates) { foreach (X509Certificate2 c in certificates) Remove(c); }
+    public void RemoveRange(X509Certificate2Collection certificates) { foreach (X509Certificate2 c in certificates) Remove(c); }
+
+    public new IEnumerator<X509Certificate2> GetEnumerator()
+    {
+        List<X509Certificate2> typed = new List<X509Certificate2>();
+        foreach (X509Certificate c in Items) typed.Add((X509Certificate2)c);
+        return typed.GetEnumerator();
+    }
+
+    /// Certificates from DER bytes or PEM text.
+    public void Import(byte[] rawData)
+    {
+        if (rawData == null) throw new ArgumentNullException(nameof(rawData));
+        if (X509Der.IsPem(rawData)) { foreach (byte[] der in X509Der.PemCertificates(rawData)) Add(new X509Certificate2(der)); }
+        else Add(new X509Certificate2(rawData));
+    }
+
+    public void Import(string fileName) { Import(File.ReadAllBytes(fileName)); }
+
+    public void ImportFromPem(string certPem)
+    {
+        if (certPem == null) throw new ArgumentNullException(nameof(certPem));
+        foreach (byte[] der in X509Der.PemCertificates(Encoding.ASCII.GetBytes(certPem))) Add(new X509Certificate2(der));
+    }
+
+    public void ImportFromPemFile(string certPemFilePath) { ImportFromPem(File.ReadAllText(certPemFilePath)); }
+
+    public string ExportCertificatePems()
+    {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < Count; i++) { if (i > 0) text.Append('\n'); text.Append(this[i].ExportCertificatePem()); }
+        return text.ToString();
+    }
+
+    /// The certificates that answer `findValue`, as .NET's Find matches:
+    /// a thumbprint or serial number in hexadecimal (spaces ignored), a
+    /// name as a case-insensitive substring, a distinguished name whole, a
+    /// time by validity. validOnly keeps those whose chains build.
+    public X509Certificate2Collection Find(X509FindType findType, object findValue, bool validOnly)
+    {
+        if (findValue == null) throw new ArgumentNullException(nameof(findValue));
+        X509Certificate2Collection found = new X509Certificate2Collection();
+        foreach (X509Certificate2 c in this)
+        {
+            bool match;
+            switch (findType)
+            {
+                case X509FindType.FindByThumbprint:
+                    match = string.Equals(Hex(findValue), c.Thumbprint, StringComparison.OrdinalIgnoreCase); break;
+                case X509FindType.FindBySerialNumber:
+                    match = string.Equals(Hex(findValue), c.SerialNumber, StringComparison.OrdinalIgnoreCase); break;
+                case X509FindType.FindBySubjectName:
+                    match = c.Subject.IndexOf(Text(findValue), StringComparison.OrdinalIgnoreCase) >= 0; break;
+                case X509FindType.FindByIssuerName:
+                    match = c.Issuer.IndexOf(Text(findValue), StringComparison.OrdinalIgnoreCase) >= 0; break;
+                case X509FindType.FindBySubjectDistinguishedName:
+                    match = string.Equals(c.Subject, Text(findValue), StringComparison.OrdinalIgnoreCase); break;
+                case X509FindType.FindByIssuerDistinguishedName:
+                    match = string.Equals(c.Issuer, Text(findValue), StringComparison.OrdinalIgnoreCase); break;
+                case X509FindType.FindByTimeValid:
+                    { DateTime t = Time(findValue); match = c.NotBefore <= t && t <= c.NotAfter; break; }
+                case X509FindType.FindByTimeNotYetValid:
+                    { DateTime t = Time(findValue); match = t < c.NotBefore; break; }
+                case X509FindType.FindByTimeExpired:
+                    { DateTime t = Time(findValue); match = t > c.NotAfter; break; }
+                default:
+                    throw new CryptographicException("The value of 'findType' is not supported.");
+            }
+            if (match && (!validOnly || c.Verify())) found.Add(c);
+        }
+        return found;
+    }
+
+    static string Text(object value) => value as string ?? throw new CryptographicException("A string is required for this kind of find.");
+    static string Hex(object value) => Text(value).Replace(" ", "");
+    static DateTime Time(object value) => value is DateTime t ? t : throw new CryptographicException("A DateTime is required for this kind of find.");
+
+
+}
+
+/// One of the named certificate stores.
+public sealed class X509Store : IDisposable
+{
+    const string SystemBundle = "/etc/ssl/certs/ca-certificates.crt";
+    const string SystemDirectory = "/etc/ssl/certs";
+
+    readonly string? _name;
+    readonly StoreLocation _location;
+    readonly X509Certificate2Collection _certificates = new X509Certificate2Collection();
+    bool _open;
+    bool _writable;
+
+    public X509Store() : this(StoreName.My, StoreLocation.CurrentUser) { }
+    public X509Store(StoreName storeName) : this(storeName, StoreLocation.CurrentUser) { }
+    public X509Store(StoreLocation storeLocation) : this(StoreName.My, storeLocation) { }
+    public X509Store(StoreName storeName, StoreLocation storeLocation) : this(storeName.ToString(), storeLocation) { }
+    public X509Store(StoreName storeName, StoreLocation storeLocation, OpenFlags flags) : this(storeName, storeLocation) { Open(flags); }
+
+    public X509Store(string storeName, StoreLocation storeLocation)
+    {
+        if (storeLocation != StoreLocation.CurrentUser && storeLocation != StoreLocation.LocalMachine)
+            throw new ArgumentException("The value of 'storeLocation' is invalid.", nameof(storeLocation));
+        _name = storeName;
+        _location = storeLocation;
+    }
+
+    public string? Name => _name;
+    public StoreLocation Location => _location;
+    public bool IsOpen => _open;
+    public IntPtr StoreHandle => IntPtr.Zero;
+
+    /// The store's certificates, a copy, as .NET hands them out.
+    public X509Certificate2Collection Certificates
+    {
+        get { X509Certificate2Collection copy = new X509Certificate2Collection(); if (_open) copy.AddRange(_certificates); return copy; }
+    }
+
+    public void Open(OpenFlags flags)
+    {
+        Close();
+        _certificates.Clear();
+        _writable = (flags & (OpenFlags.ReadWrite | OpenFlags.MaxAllowed)) != 0;
+        if (_location == StoreLocation.LocalMachine)
+        {
+            if (_writable && (flags & OpenFlags.MaxAllowed) == 0)
+                throw new CryptographicException("The X509 certificate store is read-only.");
+            _writable = false;
+            bool root = string.Equals(_name, "Root", StringComparison.OrdinalIgnoreCase);
+            bool authority = string.Equals(_name, "CertificateAuthority", StringComparison.OrdinalIgnoreCase);
+            if (root || authority)
+                foreach (X509Certificate2 c in SystemCertificates())
+                    if (SelfIssued(c) == root) _certificates.Add(c);
+        }
+        else
+        {
+            string directory = UserDirectory();
+            if (Directory.Exists(directory))
+                foreach (string file in Directory.GetFiles(directory))
+                {
+                    try { _certificates.Add(new X509Certificate2(File.ReadAllBytes(file))); }
+                    catch (CryptographicException) { }
+                }
+            else if ((flags & OpenFlags.OpenExistingOnly) != 0)
+                throw new CryptographicException("The X509 certificate store does not exist.");
+        }
+        _open = true;
+    }
+
+    public void Close() { _open = false; }
+    public void Dispose() { Close(); }
+
+    public void Add(X509Certificate2 certificate)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        Writable();
+        if (_certificates.Contains(certificate)) return;
+        string directory = UserDirectory();
+        Directory.CreateDirectory(directory);
+        File.WriteAllBytes(Path.Combine(directory, certificate.Thumbprint + ".cer"), certificate.RawData);
+        _certificates.Add(certificate);
+    }
+
+    public void AddRange(X509Certificate2Collection certificates) { foreach (X509Certificate2 c in certificates) Add(c); }
+
+    public void Remove(X509Certificate2 certificate)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        Writable();
+        string file = Path.Combine(UserDirectory(), certificate.Thumbprint + ".cer");
+        if (File.Exists(file)) File.Delete(file);
+        _certificates.Remove(certificate);
+    }
+
+    public void RemoveRange(X509Certificate2Collection certificates) { foreach (X509Certificate2 c in certificates) Remove(c); }
+
+    void Writable()
+    {
+        if (!_open) throw new CryptographicException("The X509 certificate store has not been opened.");
+        if (!_writable) throw new CryptographicException("The X509 certificate store is read-only.");
+    }
+
+    string UserDirectory()
+    {
+        string home = Environment.GetEnvironmentVariable("HOME") ?? "/";
+        return Path.Combine(home, ".dotnet", "corefx", "cryptography", "x509stores", (_name ?? "my").ToLowerInvariant());
+    }
+
+    internal static bool SelfIssued(X509Certificate2 c) => c.Fields.Subject.AsSpan().SequenceEqual(c.Fields.Issuer);
+
+    /// The system's certificates: the bundle, else each file of the
+    /// directory, read once and kept.
+    static X509Certificate2Collection? _system;
+
+    internal static X509Certificate2Collection SystemCertificates()
+    {
+        X509Certificate2Collection? kept = _system;
+        if (kept != null) return kept;
+        X509Certificate2Collection made = new X509Certificate2Collection();
+        if (File.Exists(SystemBundle)) AddFile(made, SystemBundle);
+        else if (Directory.Exists(SystemDirectory))
+            foreach (string file in Directory.GetFiles(SystemDirectory)) AddFile(made, file);
+        _system = made;
+        return made;
+    }
+
+    static void AddFile(X509Certificate2Collection into, string file)
+    {
+        try
+        {
+            byte[] data = File.ReadAllBytes(file);
+            if (X509Der.IsPem(data))
+            {
+                foreach (byte[] der in X509Der.PemCertificates(data))
+                {
+                    try { X509Certificate2 c = new X509Certificate2(der); if (!into.Contains(c)) into.Add(c); }
+                    catch (CryptographicException) { }
+                }
+            }
+            else
+            {
+                X509Certificate2 c = new X509Certificate2(data);
+                if (!into.Contains(c)) into.Add(c);
+            }
+        }
+        catch (CryptographicException) { }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+}

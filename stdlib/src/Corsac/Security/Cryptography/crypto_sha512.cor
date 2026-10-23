@@ -1,0 +1,95 @@
+// CORSAC/SECURE Crypto SHA-512 and SHA-384, with the primitives' contract --
+// offsets and counts checked before anything moves, errors sticky, a
+// finished context reused only through Reset, the state wiped after a digest
+// and at Close -- over the class library's one SHA-512
+// (System.Security.Cryptography's Sha512Implementation, which is SHA-384
+// too, from its own starting words cut to six of them).
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_Sha512
+{
+    public const int Sha512 = 3;
+    public const int Sha384 = 4;
+    public const int InvalidArgument = 1;
+    public const int ProtocolState = 9;
+
+    // The public ABI uses signed Int64 offsets and lengths; a nonnegative
+    // Int64 byte count keeps the bit count representable.
+    private const long MaximumBytes = 0x7fffffffffffffff;
+
+    private readonly System.Security.Cryptography.Sha512Implementation _engine;
+    private readonly bool _sha384;
+    private long _total;
+    private bool _finished;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureCrypto_Sha512() : this(false) { }
+
+    public CorsacSecureCrypto_Sha512(bool sha384)
+    {
+        _sha384 = sha384;
+        _engine = new System.Security.Cryptography.Sha512Implementation(sha384);
+    }
+
+    public int Algorithm => _sha384 ? Sha384 : Sha512;
+    public int BlockBytes => 128;
+    public int DigestBytes => _sha384 ? 48 : 64;
+    public int Error => _error;
+    public bool Finished => _finished;
+
+    /// Discards a healthy context's current transcript or reuses it after a
+    /// successful Finish.  Errors are sticky, so a failed context is closed
+    /// rather than silently revived with ambiguous protocol state.
+    public bool Reset()
+    {
+        if (_closed || _error != 0) return false;
+        _engine.Wipe();
+        _total = 0;
+        _finished = false;
+        return true;
+    }
+
+    public bool Update(byte[] buffer, long offset, long count)
+    {
+        if (_closed || _finished || _error != 0)
+            return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(buffer, offset, count)
+            || count > MaximumBytes - _total)
+            return Fail(InvalidArgument);
+        _total = _total + count;
+        if (count > 0) _engine.Append(buffer, (int)offset, (int)count);
+        return true;
+    }
+
+    /// Writes the digest only after validating the complete output range.
+    /// Invalid output therefore remains byte-for-byte unchanged.
+    public bool Finish(byte[] output, long outputOffset)
+    {
+        if (_closed || _finished || _error != 0)
+            return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(output, outputOffset, DigestBytes))
+            return Fail(InvalidArgument);
+        byte[] digest = _engine.HashAndReset();
+        CorsacSecureCrypto_Bytes.Copy(output, outputOffset, digest, 0, DigestBytes);
+        CorsacSecureCrypto_Bytes.Zero(digest, 0, digest.Length);
+        _engine.Wipe();
+        _finished = true;
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        _engine.Wipe();
+        _total = 0;
+        _closed = true;
+    }
+
+    private bool Fail(int error)
+    {
+        if (_error == 0) _error = error;
+        return false;
+    }
+}

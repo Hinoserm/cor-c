@@ -1,0 +1,43 @@
+// The keys a certificate carries, as .NET hands them out: GetECDsaPublicKey
+// and GetRSAPublicKey (ECDsaCertificateExtensions, RSACertificateExtensions),
+// null when the certificate's key is of the other kind.
+
+using System;
+
+namespace System.Security.Cryptography.X509Certificates;
+
+public static class ECDsaCertificateExtensions
+{
+    public static ECDsa? GetECDsaPublicKey(this X509Certificate2 certificate)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        if (certificate.PublicKey.Oid.Value != "1.2.840.10045.2.1") return null;
+        ECDsa key = ECDsa.Create();
+        key.ImportSubjectPublicKeyInfo(certificate.PublicKey.ExportSubjectPublicKeyInfo(), out _);
+        return key;
+    }
+
+    public static ECDsa? GetECDsaPrivateKey(this X509Certificate2 certificate)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        return null;
+    }
+}
+
+public static class RSACertificateExtensions
+{
+    public static RSA? GetRSAPublicKey(this X509Certificate2 certificate)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        if (certificate.PublicKey.Oid.Value != "1.2.840.113549.1.1.1") return null;
+        RSA key = RSA.Create();
+        key.ImportSubjectPublicKeyInfo(certificate.PublicKey.ExportSubjectPublicKeyInfo(), out _);
+        return key;
+    }
+
+    public static RSA? GetRSAPrivateKey(this X509Certificate2 certificate)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        return null;
+    }
+}

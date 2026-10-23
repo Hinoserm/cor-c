@@ -1,0 +1,450 @@
+// CORSAC/SECURE Crypto AES-GCM authenticated encryption.
+//
+// This implementation follows NIST SP 800-38D.  It accepts arbitrary
+// nonempty IV byte strings, 96- through 128-bit tags in whole-byte steps, and
+// AES-128 or AES-256 keys.  All public ranges are validated before output is
+// touched.  Open authenticates into private storage before releasing any
+// plaintext, and tag comparison always examines every requested tag byte.
+//
+// GHASH selects the stateless GHash block assist on each call. Older CPUs
+// retain the existing reversed-bit CLMul/polynomial reduction path, with
+// fixed-work scalar multiplication when Crypto is absent. The same byte-array
+// hash state remains authoritative on every path; no hidden accelerator state.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_Gcm
+{
+    public const int BlockBytes = 16;
+    public const int MinimumTagBytes = 12;
+    public const int MaximumTagBytes = 16;
+    public const int InvalidArgument = 1;
+    public const int AuthenticationFailure = 4;
+    public const int ProtocolState = 9;
+
+    // SP 800-38D permits at most 2^32-2 counter blocks per invocation.
+    private const long MaximumPayloadBytes = 68719476704L;
+
+    private CorsacSecureCrypto_Aes _aes;
+    private byte[] _hashKey;
+    private byte[] _hash;
+    private byte[] _j0;
+    private byte[] _counter;
+    private byte[] _block;
+    private byte[] _stream;
+    private byte[] _tag;
+    private long[] _product;
+    private int _error;
+    private bool _closed;
+
+    /// Copies and expands an AES-128 or AES-256 key, then derives the GHASH
+    /// subkey.  Caller-owned key storage is borrowed only for this call.
+    public CorsacSecureCrypto_Gcm(
+        byte[] key, long keyOffset, long keyCount)
+    {
+        _hashKey = new byte[BlockBytes];
+        _hash = new byte[BlockBytes];
+        _j0 = new byte[BlockBytes];
+        _counter = new byte[BlockBytes];
+        _block = new byte[BlockBytes];
+        _stream = new byte[BlockBytes];
+        _tag = new byte[BlockBytes];
+        _product = new long[4];
+        _aes = new CorsacSecureCrypto_Aes(
+            key, keyOffset, keyCount);
+
+        if (_aes.Error != 0)
+        {
+            _error = InvalidArgument;
+            return;
+        }
+
+        byte[] zero = new byte[BlockBytes];
+        if (!_aes.EncryptBlock(zero, 0, _hashKey, 0))
+            _error = ProtocolState;
+        CorsacSecureCrypto_Bytes.Zero(zero, 0, zero.Length);
+    }
+
+    public int Error => _error;
+
+    /// Encrypts and authenticates one message.  Ciphertext may overlap any
+    /// input, including in either partial-overlap direction.  Ciphertext and
+    /// tag output ranges may not overlap each other.  A failed call changes
+    /// neither output range.
+    public bool Seal(
+        byte[] iv, long ivOffset, long ivCount,
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] plaintext, long plaintextOffset, long plaintextCount,
+        byte[] ciphertext, long ciphertextOffset,
+        byte[] tag, long tagOffset, long tagCount)
+    {
+        if (!Ready()) return Fail(ProtocolState);
+        if (!ValidOperation(
+                iv, ivOffset, ivCount,
+                additionalData, additionalOffset, additionalCount,
+                plaintext, plaintextOffset, plaintextCount,
+                ciphertext, ciphertextOffset, tag, tagOffset, tagCount)
+            || OutputRangesOverlap(
+                ciphertext, ciphertextOffset, plaintextCount,
+                tag, tagOffset, tagCount))
+            return Fail(InvalidArgument);
+
+        byte[] result = new byte[(int)plaintextCount];
+        EraseOperationState();
+        if (!MakeInitialCounter(iv, ivOffset, ivCount)
+            || !Crypt(plaintext, plaintextOffset, plaintextCount,
+                      result, 0))
+        {
+            CorsacSecureCrypto_Bytes.Zero(result, 0, result.Length);
+            EraseOperationState();
+            return Fail(ProtocolState);
+        }
+
+        HashRange(additionalData, additionalOffset, additionalCount);
+        HashRange(result, 0, result.Length);
+        HashLengths(additionalCount, plaintextCount);
+        if (!_aes.EncryptBlock(_j0, 0, _stream, 0))
+        {
+            CorsacSecureCrypto_Bytes.Zero(result, 0, result.Length);
+            EraseOperationState();
+            return Fail(ProtocolState);
+        }
+        for (int i = 0; i < BlockBytes; i = i + 1)
+            _tag[i] = (byte)(_stream[i] ^ _hash[i]);
+
+        bool copied = CorsacSecureCrypto_Bytes.Copy(
+                ciphertext, ciphertextOffset, result, 0, result.Length)
+            && CorsacSecureCrypto_Bytes.Copy(
+                tag, tagOffset, _tag, 0, tagCount);
+        CorsacSecureCrypto_Bytes.Zero(result, 0, result.Length);
+        EraseOperationState();
+        return copied;
+    }
+
+    /// Authenticates before decrypting.  On a bad tag the full tag prefix is
+    /// compared, AuthenticationFailure becomes the stable context error, and
+    /// caller plaintext remains byte-for-byte unchanged.
+    public bool Open(
+        byte[] iv, long ivOffset, long ivCount,
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] ciphertext, long ciphertextOffset, long ciphertextCount,
+        byte[] tag, long tagOffset, long tagCount,
+        byte[] plaintext, long plaintextOffset)
+    {
+        if (!Ready()) return Fail(ProtocolState);
+        if (!ValidOperation(
+                iv, ivOffset, ivCount,
+                additionalData, additionalOffset, additionalCount,
+                ciphertext, ciphertextOffset, ciphertextCount,
+                plaintext, plaintextOffset, tag, tagOffset, tagCount))
+            return Fail(InvalidArgument);
+
+        EraseOperationState();
+        if (!MakeInitialCounter(iv, ivOffset, ivCount))
+        {
+            EraseOperationState();
+            return Fail(ProtocolState);
+        }
+
+        HashRange(additionalData, additionalOffset, additionalCount);
+        HashRange(ciphertext, ciphertextOffset, ciphertextCount);
+        HashLengths(additionalCount, ciphertextCount);
+        if (!_aes.EncryptBlock(_j0, 0, _stream, 0))
+        {
+            EraseOperationState();
+            return Fail(ProtocolState);
+        }
+        for (int i = 0; i < BlockBytes; i = i + 1)
+            _tag[i] = (byte)(_stream[i] ^ _hash[i]);
+
+        bool authentic = CorsacSecureCrypto_Bytes.Equal(
+            _tag, 0, tag, tagOffset, tagCount);
+        if (!authentic)
+        {
+            EraseOperationState();
+            return Fail(AuthenticationFailure);
+        }
+
+        byte[] result = new byte[(int)ciphertextCount];
+        if (!Crypt(ciphertext, ciphertextOffset, ciphertextCount,
+                   result, 0))
+        {
+            CorsacSecureCrypto_Bytes.Zero(result, 0, result.Length);
+            EraseOperationState();
+            return Fail(ProtocolState);
+        }
+        bool copied = CorsacSecureCrypto_Bytes.Copy(
+            plaintext, plaintextOffset, result, 0, result.Length);
+        CorsacSecureCrypto_Bytes.Zero(result, 0, result.Length);
+        EraseOperationState();
+        return copied;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        _aes.Close();
+        CorsacSecureCrypto_Bytes.Zero(
+            _hashKey, 0, _hashKey.Length);
+        EraseOperationState();
+        _closed = true;
+    }
+
+    /// One-shot seal helper.  It retains no key material after returning.
+    public static bool Encrypt(
+        byte[] key, long keyOffset, long keyCount,
+        byte[] iv, long ivOffset, long ivCount,
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] plaintext, long plaintextOffset, long plaintextCount,
+        byte[] ciphertext, long ciphertextOffset,
+        byte[] tag, long tagOffset, long tagCount)
+    {
+        CorsacSecureCrypto_Gcm context =
+            new CorsacSecureCrypto_Gcm(key, keyOffset, keyCount);
+        bool okay = context.Error == 0
+            && context.Seal(
+                iv, ivOffset, ivCount,
+                additionalData, additionalOffset, additionalCount,
+                plaintext, plaintextOffset, plaintextCount,
+                ciphertext, ciphertextOffset,
+                tag, tagOffset, tagCount);
+        context.Close();
+        return okay;
+    }
+
+    private bool ValidOperation(
+        byte[] iv, long ivOffset, long ivCount,
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] input, long inputOffset, long inputCount,
+        byte[] output, long outputOffset,
+        byte[] providedTag, long tagOffset, long tagCount)
+    {
+        return ivCount > 0
+            && inputCount <= MaximumPayloadBytes
+            && tagCount >= MinimumTagBytes
+            && tagCount <= MaximumTagBytes
+            && CorsacSecureCrypto_Bytes.Range(iv, ivOffset, ivCount)
+            && CorsacSecureCrypto_Bytes.Range(
+                additionalData, additionalOffset, additionalCount)
+            && CorsacSecureCrypto_Bytes.Range(
+                input, inputOffset, inputCount)
+            && CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, inputCount)
+            && CorsacSecureCrypto_Bytes.Range(
+                providedTag, tagOffset, tagCount);
+    }
+
+    private bool Ready()
+    {
+        return !_closed && _error == 0 && _aes.Error == 0;
+    }
+
+    private bool Fail(int error)
+    {
+        EraseOperationState();
+        if (_error == 0) _error = error;
+        return false;
+    }
+
+    private bool MakeInitialCounter(
+        byte[] iv, long ivOffset, long ivCount)
+    {
+        CorsacSecureCrypto_Bytes.Zero(_j0, 0, BlockBytes);
+        if (ivCount == 12)
+        {
+            CorsacSecureCrypto_Bytes.Copy(
+                _j0, 0, iv, ivOffset, 12);
+            _j0[15] = 1;
+        }
+        else
+        {
+            CorsacSecureCrypto_Bytes.Zero(_hash, 0, BlockBytes);
+            HashRange(iv, ivOffset, ivCount);
+            CorsacSecureCrypto_Bytes.Zero(_block, 0, BlockBytes);
+            WriteBig64(_block, 8, ivCount << 3);
+            HashBlock(_block);
+            CorsacSecureCrypto_Bytes.Copy(
+                _j0, 0, _hash, 0, BlockBytes);
+        }
+        CorsacSecureCrypto_Bytes.Copy(
+            _counter, 0, _j0, 0, BlockBytes);
+        CorsacSecureCrypto_Bytes.Zero(_hash, 0, BlockBytes);
+        return true;
+    }
+
+    private bool Crypt(
+        byte[] input, long inputOffset, long inputCount,
+        byte[] output, long outputOffset)
+    {
+        long done = 0;
+        while (done < inputCount)
+        {
+            IncrementCounter();
+            if (!_aes.EncryptBlock(_counter, 0, _stream, 0))
+                return false;
+            int take = (int)(inputCount - done < BlockBytes
+                ? inputCount - done : BlockBytes);
+            for (int i = 0; i < take; i = i + 1)
+                output[(int)(outputOffset + done) + i] = (byte)(
+                    input[(int)(inputOffset + done) + i] ^ _stream[i]);
+            CorsacSecureCrypto_Bytes.Zero(
+                _stream, 0, _stream.Length);
+            done = done + take;
+        }
+        return true;
+    }
+
+    private void IncrementCounter()
+    {
+        int carry = 1;
+        for (int i = 15; i >= 12; i = i - 1)
+        {
+            int sum = (_counter[i] & 255) + carry;
+            _counter[i] = (byte)sum;
+            carry = (sum >> 8) & 1;
+        }
+    }
+
+    private void HashRange(byte[] bytes, long offset, long count)
+    {
+        while (count >= BlockBytes)
+        {
+            HashBlockAt(bytes, offset);
+            offset = offset + BlockBytes;
+            count = count - BlockBytes;
+        }
+        if (count != 0)
+        {
+            CorsacSecureCrypto_Bytes.Zero(_block, 0, BlockBytes);
+            CorsacSecureCrypto_Bytes.Copy(
+                _block, 0, bytes, offset, count);
+            HashBlock(_block);
+        }
+    }
+
+    private void HashLengths(long additionalCount, long cipherCount)
+    {
+        CorsacSecureCrypto_Bytes.Zero(_block, 0, BlockBytes);
+        WriteBig64(_block, 0, additionalCount << 3);
+        WriteBig64(_block, 8, cipherCount << 3);
+        HashBlock(_block);
+    }
+
+    private void HashBlock(byte[] block)
+    {
+        HashBlockAt(block, 0);
+    }
+
+    private void HashBlockAt(byte[] block, long offset)
+    {
+        // All callers supply validated complete/padded blocks. Per-call
+        // discovery handles old/absent units, including after migration.
+        // Network bytes are already exactly the instruction's representation.
+        // (no hardware assist on this machine: the software path follows)
+        for (int i = 0; i < BlockBytes; i = i + 1)
+            _hash[i] = (byte)(_hash[i] ^ block[(int)offset + i]);
+        MultiplyHash();
+    }
+
+    private void MultiplyHash()
+    {
+        // NIST numbers GHASH bits most-significant first.  Reverse the full
+        // 128-bit operands into CLMul's coefficient-bit order, multiply and
+        // reduce there, then reverse the result back.
+        long leftHigh = ReadBig64(_hash, 0);
+        long leftLow = ReadBig64(_hash, 8);
+        long rightHigh = ReadBig64(_hashKey, 0);
+        long rightLow = ReadBig64(_hashKey, 8);
+        long a0 = Sys.ReverseBits(leftHigh);
+        long a1 = Sys.ReverseBits(leftLow);
+        long b0 = Sys.ReverseBits(rightHigh);
+        long b1 = Sys.ReverseBits(rightLow);
+
+        long p0 = Sys.CarrylessMultiply(a0, b0, out long p0High);
+        long p1 = Sys.CarrylessMultiply(a0, b1, out long p1High);
+        long p2 = Sys.CarrylessMultiply(a1, b0, out long p2High);
+        long p3 = Sys.CarrylessMultiply(a1, b1, out long p3High);
+        _product[0] = p0;
+        _product[1] = p0High ^ p1 ^ p2;
+        _product[2] = p1High ^ p2High ^ p3;
+        _product[3] = p3High;
+
+        // Reduce modulo x^128 + x^7 + x^2 + x + 1.  Each iteration does the
+        // same five masked toggles regardless of the secret product bit.
+        for (int exponent = 255; exponent >= 128;
+             exponent = exponent - 1)
+        {
+            int word = exponent >> 6;
+            int bit = exponent & 63;
+            long selected = LogicalRight(_product[word], bit) & 1;
+            long mask = 0 - selected;
+            ToggleProductBit(exponent, mask);
+            int baseExponent = exponent - 128;
+            ToggleProductBit(baseExponent, mask);
+            ToggleProductBit(baseExponent + 1, mask);
+            ToggleProductBit(baseExponent + 2, mask);
+            ToggleProductBit(baseExponent + 7, mask);
+        }
+
+        long resultHigh = Sys.ReverseBits(_product[0]);
+        long resultLow = Sys.ReverseBits(_product[1]);
+        WriteBig64(_hash, 0, resultHigh);
+        WriteBig64(_hash, 8, resultLow);
+        EraseProduct();
+    }
+
+    private void ToggleProductBit(int exponent, long mask)
+    {
+        int word = exponent >> 6;
+        int bit = exponent & 63;
+        _product[word] = _product[word]
+            ^ ((1L << bit) & mask);
+    }
+
+    private static long ReadBig64(byte[] bytes, int offset)
+    {
+        long value = 0;
+        for (int i = 0; i < 8; i = i + 1)
+            value = (value << 8) | ((long)bytes[offset + i] & 255);
+        return value;
+    }
+
+    private static void WriteBig64(byte[] bytes, int offset, long value)
+    {
+        for (int i = 0; i < 8; i = i + 1)
+            bytes[offset + i] = (byte)(
+                LogicalRight(value, (7 - i) * 8) & 255);
+    }
+
+    private static long LogicalRight(long value, int count)
+    {
+        return (long)((ulong)value >> count);
+    }
+
+    private static bool OutputRangesOverlap(
+        byte[] left, long leftOffset, long leftCount,
+        byte[] right, long rightOffset, long rightCount)
+    {
+        if (left != right || leftCount == 0 || rightCount == 0)
+            return false;
+        return leftOffset < rightOffset + rightCount
+            && rightOffset < leftOffset + leftCount;
+    }
+
+    private void EraseProduct()
+    {
+        for (int i = 0; i < _product.Length; i = i + 1)
+            _product[i] = 0;
+    }
+
+    private void EraseOperationState()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_hash, 0, _hash.Length);
+        CorsacSecureCrypto_Bytes.Zero(_j0, 0, _j0.Length);
+        CorsacSecureCrypto_Bytes.Zero(_counter, 0, _counter.Length);
+        CorsacSecureCrypto_Bytes.Zero(_block, 0, _block.Length);
+        CorsacSecureCrypto_Bytes.Zero(_stream, 0, _stream.Length);
+        CorsacSecureCrypto_Bytes.Zero(_tag, 0, _tag.Length);
+        EraseProduct();
+    }
+}

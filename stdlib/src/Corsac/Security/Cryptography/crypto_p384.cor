@@ -1,0 +1,453 @@
+// CORSAC/SECURE Crypto NIST P-384 (secp384r1): ECDSA verification and
+// public-key validation, which is what TLS and X.509 ask of it -- most of the
+// public Web's chains are P-384 keys signing with SHA-384 (ISRG Root X2 and
+// Let's Encrypt's ECDSA intermediates, Google Trust Services' R4, Sectigo's
+// E46, SSL.com's ECC roots).
+//
+// Everything here is public: a key, a digest and a signature. So the
+// arithmetic is written for clarity and speed on a 32-bit machine rather than
+// for constant time: twelve 32-bit limbs, whose products fit an unsigned
+// 64-bit word with room for the carries, in Montgomery form for both the
+// field prime p and the group order n. Points are homogeneous projective and
+// added with the complete formulas for a = -3 (Renes, Costello and Batina,
+// "Complete addition formulas for prime order elliptic curves", 2015,
+// algorithm 4), which have no special cases: doubling, the identity and a
+// point added to its inverse all go through the same steps.
+
+namespace Corsac.Security.Cryptography;
+
+/// Arithmetic modulo an odd 384-bit number, in Montgomery form (x R mod m,
+/// R = 2^384), twelve little-endian 32-bit limbs held in longs.
+public sealed class CorsacSecureCrypto_P384Field
+{
+    public const int Limbs = 12;
+
+    readonly long[] _modulus = new long[Limbs];
+    readonly long[] _r2 = new long[Limbs];       // R^2 mod m
+    readonly long[] _one = new long[Limbs];      // R mod m: one, in Montgomery form
+    readonly long[] _work = new long[Limbs + 2];
+    readonly long[] _difference = new long[Limbs];
+    readonly long[] _unit = new long[Limbs];
+    readonly long _factor;                       // -m^-1 mod 2^32
+
+    /// `modulus` as 48 big-endian bytes.
+    public CorsacSecureCrypto_P384Field(byte[] modulus)
+    {
+        Load(_modulus, modulus, 0);
+        long inverse = 1;
+        for (int i = 0; i < 5; i++) inverse = (inverse * (2 - _modulus[0] * inverse)) & 0xFFFFFFFFL;
+        _factor = (-inverse) & 0xFFFFFFFFL;
+        // R mod m and R^2 mod m by doubling 1, 384 and 768 times.
+        long[] x = new long[Limbs];
+        x[0] = 1;
+        for (int i = 0; i < 768; i++)
+        {
+            Add(x, x, x);
+            if (i == 383) Array.Copy(x, _one, Limbs);
+        }
+        Array.Copy(x, _r2, Limbs);
+    }
+
+    public long[] New() => new long[Limbs];
+
+    /// 48 big-endian bytes into limbs, unreduced.
+    public static void Load(long[] output, byte[] input, long offset)
+    {
+        for (int i = 0; i < Limbs; i++)
+        {
+            int at = (int)offset + 44 - 4 * i;
+            output[i] = ((long)input[at] << 24) | ((long)input[at + 1] << 16) | ((long)input[at + 2] << 8) | input[at + 3];
+        }
+    }
+
+    public static void Store(byte[] output, long offset, long[] input)
+    {
+        for (int i = 0; i < Limbs; i++)
+        {
+            int at = (int)offset + 44 - 4 * i;
+            output[at] = (byte)(input[i] >> 24); output[at + 1] = (byte)(input[i] >> 16);
+            output[at + 2] = (byte)(input[i] >> 8); output[at + 3] = (byte)input[i];
+        }
+    }
+
+    /// Whether `x` (normal form, limbs) is less than the modulus.
+    public bool Below(long[] x)
+    {
+        for (int i = Limbs - 1; i >= 0; i--)
+        {
+            if (x[i] != _modulus[i]) return x[i] < _modulus[i];
+        }
+        return false;
+    }
+
+    public static bool IsZero(long[] x)
+    {
+        long any = 0;
+        for (int i = 0; i < Limbs; i++) any |= x[i];
+        return any == 0;
+    }
+
+    public static bool Equal(long[] a, long[] b)
+    {
+        long any = 0;
+        for (int i = 0; i < Limbs; i++) any |= a[i] ^ b[i];
+        return any == 0;
+    }
+
+    public void SetOne(long[] output) => Array.Copy(_one, output, Limbs);
+
+    /// Normal form to Montgomery form; `input` must be below the modulus.
+    public void ToMontgomery(long[] output, long[] input) => Multiply(output, input, _r2);
+
+    public void FromMontgomery(long[] output, long[] input)
+    {
+        _unit[0] = 1;
+        Multiply(output, input, _unit);
+    }
+
+    /// (a + b) mod m, for a and b below m.
+    public void Add(long[] output, long[] a, long[] b)
+    {
+        long carry = 0;
+        for (int i = 0; i < Limbs; i++)
+        {
+            long sum = a[i] + b[i] + carry;
+            _work[i] = sum & 0xFFFFFFFFL;
+            carry = sum >> 32;
+        }
+        _work[Limbs] = carry;
+        ReduceOnce(output);
+    }
+
+    /// (a - b) mod m, for a and b below m.
+    public void Subtract(long[] output, long[] a, long[] b)
+    {
+        long borrow = 0;
+        for (int i = 0; i < Limbs; i++)
+        {
+            long difference = a[i] - b[i] - borrow;
+            _work[i] = difference & 0xFFFFFFFFL;
+            borrow = (difference >> 32) & 1;
+        }
+        if (borrow != 0)
+        {
+            long carry = 0;
+            for (int i = 0; i < Limbs; i++)
+            {
+                long sum = _work[i] + _modulus[i] + carry;
+                _work[i] = sum & 0xFFFFFFFFL;
+                carry = sum >> 32;
+            }
+        }
+        Array.Copy(_work, output, Limbs);
+    }
+
+    /// a b R^-1 mod m (CIOS Montgomery multiplication); output may be a or b.
+    public void Multiply(long[] output, long[] a, long[] b)
+    {
+        long[] t = _work;
+        for (int i = 0; i < Limbs + 2; i++) t[i] = 0;
+        for (int i = 0; i < Limbs; i++)
+        {
+            ulong bi = (ulong)b[i];
+            ulong carry = 0;
+            for (int j = 0; j < Limbs; j++)
+            {
+                ulong v = (ulong)t[j] + (ulong)a[j] * bi + carry;
+                t[j] = (long)(v & 0xFFFFFFFFUL);
+                carry = v >> 32;
+            }
+            ulong top = (ulong)t[Limbs] + carry;
+            t[Limbs] = (long)(top & 0xFFFFFFFFUL);
+            t[Limbs + 1] = (long)(top >> 32);
+
+            ulong m = ((ulong)t[0] * (ulong)_factor) & 0xFFFFFFFFUL;
+            ulong c = ((ulong)t[0] + m * (ulong)_modulus[0]) >> 32;
+            for (int j = 1; j < Limbs; j++)
+            {
+                ulong v = (ulong)t[j] + m * (ulong)_modulus[j] + c;
+                t[j - 1] = (long)(v & 0xFFFFFFFFUL);
+                c = v >> 32;
+            }
+            ulong last = (ulong)t[Limbs] + c;
+            t[Limbs - 1] = (long)(last & 0xFFFFFFFFUL);
+            t[Limbs] = t[Limbs + 1] + (long)(last >> 32);
+            t[Limbs + 1] = 0;
+        }
+        ReduceOnce(output);
+    }
+
+    /// base^exponent, `exponent` 48 big-endian bytes, in Montgomery form.
+    public void Power(long[] output, long[] input, byte[] exponent)
+    {
+        long[] result = new long[Limbs], square = new long[Limbs];
+        SetOne(result);
+        Array.Copy(input, square, Limbs);
+        for (int bit = 0; bit < 384; bit++)
+        {
+            if (((exponent[47 - (bit >> 3)] >> (bit & 7)) & 1) != 0) Multiply(result, result, square);
+            Multiply(square, square, square);
+        }
+        Array.Copy(result, output, Limbs);
+    }
+
+    /// The modulus less two, for an inverse by Fermat (the modulus is prime).
+    public byte[] ModulusLessTwo()
+    {
+        long[] e = new long[Limbs];
+        Array.Copy(_modulus, e, Limbs);
+        long borrow = 2;
+        for (int i = 0; i < Limbs && borrow != 0; i++)
+        {
+            long d = e[i] - borrow;
+            e[i] = d & 0xFFFFFFFFL;
+            borrow = d < 0 ? 1 : 0;
+        }
+        byte[] bytes = new byte[48];
+        Store(bytes, 0, e);
+        return bytes;
+    }
+
+    /// The work words (Limbs + 1 of them, the last the carry) less the
+    /// modulus once if they are at least the modulus, into `output`.
+    void ReduceOnce(long[] output)
+    {
+        long borrow = 0;
+        long[] d = _difference;
+        for (int i = 0; i < Limbs; i++)
+        {
+            long difference = _work[i] - _modulus[i] - borrow;
+            d[i] = difference & 0xFFFFFFFFL;
+            borrow = (difference >> 32) & 1;
+        }
+        bool keep = _work[Limbs] == 0 && borrow != 0;
+        for (int i = 0; i < Limbs; i++) output[i] = keep ? _work[i] : d[i];
+    }
+}
+
+/// A point (X : Y : Z), homogeneous projective; Z = 0 is the identity.
+public sealed class CorsacSecureCrypto_P384Point
+{
+    public readonly long[] X = new long[CorsacSecureCrypto_P384Field.Limbs];
+    public readonly long[] Y = new long[CorsacSecureCrypto_P384Field.Limbs];
+    public readonly long[] Z = new long[CorsacSecureCrypto_P384Field.Limbs];
+}
+
+public sealed class CorsacSecureCrypto_P384
+{
+    public const int PublicKeyBytes = 97;     // 04 || X || Y
+    public const int ScalarBytes = 48;
+
+    static readonly byte[] P = Hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff");
+    static readonly byte[] N = Hex("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973");
+    static readonly byte[] B = Hex("b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef");
+    static readonly byte[] Gx = Hex("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7");
+    static readonly byte[] Gy = Hex("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f");
+
+    readonly CorsacSecureCrypto_P384Field _p = new CorsacSecureCrypto_P384Field(P);
+    readonly CorsacSecureCrypto_P384Field _n = new CorsacSecureCrypto_P384Field(N);
+    readonly long[] _b;
+    readonly CorsacSecureCrypto_P384Point _g = new CorsacSecureCrypto_P384Point();
+    readonly long[] _t0, _t1, _t2, _t3, _t4, _x3, _y3, _z3;
+
+    public CorsacSecureCrypto_P384()
+    {
+        _b = _p.New();
+        long[] b = _p.New();
+        CorsacSecureCrypto_P384Field.Load(b, B, 0);
+        _p.ToMontgomery(_b, b);
+        long[] x = _p.New(), y = _p.New();
+        CorsacSecureCrypto_P384Field.Load(x, Gx, 0);
+        CorsacSecureCrypto_P384Field.Load(y, Gy, 0);
+        _p.ToMontgomery(_g.X, x);
+        _p.ToMontgomery(_g.Y, y);
+        _p.SetOne(_g.Z);
+        _t0 = _p.New(); _t1 = _p.New(); _t2 = _p.New(); _t3 = _p.New(); _t4 = _p.New();
+        _x3 = _p.New(); _y3 = _p.New(); _z3 = _p.New();
+    }
+
+    /// Whether `key` (97 bytes, uncompressed) is a point of the curve, and
+    /// into `point` when it is.
+    public bool DecodePublicKey(byte[] key, long offset, long count, CorsacSecureCrypto_P384Point point)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(key, offset, count) || count != PublicKeyBytes || key[(int)offset] != 4) return false;
+        long[] x = _p.New(), y = _p.New();
+        CorsacSecureCrypto_P384Field.Load(x, key, offset + 1);
+        CorsacSecureCrypto_P384Field.Load(y, key, offset + 49);
+        if (!_p.Below(x) || !_p.Below(y)) return false;
+        _p.ToMontgomery(point.X, x);
+        _p.ToMontgomery(point.Y, y);
+        _p.SetOne(point.Z);
+        // y^2 = x^3 - 3x + b
+        long[] left = _p.New(), right = _p.New(), three = _p.New();
+        _p.Multiply(left, point.Y, point.Y);
+        _p.Multiply(right, point.X, point.X);
+        _p.Multiply(right, right, point.X);
+        _p.Add(three, point.X, point.X);
+        _p.Add(three, three, point.X);
+        _p.Subtract(right, right, three);
+        _p.Add(right, right, _b);
+        return CorsacSecureCrypto_P384Field.Equal(left, right);
+    }
+
+    public bool ValidatePublicKey(byte[] key, long offset, long count) => DecodePublicKey(key, offset, count, new CorsacSecureCrypto_P384Point());
+
+    /// ECDSA: whether `r || s` (96 bytes) signs `digest` under `key`. A
+    /// digest longer than 48 bytes is taken by its leftmost 384 bits.
+    public bool VerifyDigestRaw(byte[] key, long keyOffset, long keyCount,
+                                byte[] digest, long digestOffset, long digestCount,
+                                byte[] signature, long signatureOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(signature, signatureOffset, 96)) return false;
+        long[] r = _n.New(), s = _n.New();
+        CorsacSecureCrypto_P384Field.Load(r, signature, signatureOffset);
+        CorsacSecureCrypto_P384Field.Load(s, signature, signatureOffset + 48);
+        return Verify(key, keyOffset, keyCount, digest, digestOffset, digestCount, r, s);
+    }
+
+    /// The same for a DER signature, SEQUENCE { INTEGER r, INTEGER s }.
+    public bool VerifyDigestDer(byte[] key, long keyOffset, long keyCount,
+                                byte[] digest, long digestOffset, long digestCount,
+                                byte[] signature, long signatureOffset, long signatureCount)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(signature, signatureOffset, signatureCount)) return false;
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(signature, signatureOffset, signatureCount);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count) || !top.AtEnd()) return false;
+        CorsacSecureCrypto_DerCursor pair = new CorsacSecureCrypto_DerCursor(signature, offset, count);
+        long rOffset, rCount, sOffset, sCount;
+        if (!pair.TryReadPositiveInteger(out rOffset, out rCount) || !pair.TryReadPositiveInteger(out sOffset, out sCount) || !pair.AtEnd()
+            || rCount > 48 || sCount > 48) return false;
+        byte[] raw = new byte[96];
+        Array.Copy(signature, (int)rOffset, raw, (int)(48 - rCount), (int)rCount);
+        Array.Copy(signature, (int)sOffset, raw, (int)(96 - sCount), (int)sCount);
+        return VerifyDigestRaw(key, keyOffset, keyCount, digest, digestOffset, digestCount, raw, 0);
+    }
+
+    bool Verify(byte[] key, long keyOffset, long keyCount, byte[] digest, long digestOffset, long digestCount, long[] r, long[] s)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(digest, digestOffset, digestCount) || digestCount < 1) return false;
+        if (CorsacSecureCrypto_P384Field.IsZero(r) || CorsacSecureCrypto_P384Field.IsZero(s) || !_n.Below(r) || !_n.Below(s)) return false;
+        CorsacSecureCrypto_P384Point q = new CorsacSecureCrypto_P384Point();
+        if (!DecodePublicKey(key, keyOffset, keyCount, q)) return false;
+
+        // e: the digest's leftmost 384 bits as a number, less n once if it
+        // is past it (it is below 2n, n having its top bit set).
+        byte[] wide = new byte[48];
+        long take = digestCount < 48 ? digestCount : 48;
+        Array.Copy(digest, (int)digestOffset, wide, (int)(48 - take), (int)take);
+        long[] e = _n.New(), zero = _n.New();
+        CorsacSecureCrypto_P384Field.Load(e, wide, 0);
+        if (!_n.Below(e)) { long[] m = _n.New(); CorsacSecureCrypto_P384Field.Load(m, N, 0); SubtractPlain(e, e, m); }
+
+        // u1 = e / s, u2 = r / s (mod n).
+        long[] sm = _n.New(), w = _n.New(), em = _n.New(), rm = _n.New(), u1 = _n.New(), u2 = _n.New();
+        _n.ToMontgomery(sm, s);
+        _n.Power(w, sm, _n.ModulusLessTwo());
+        _n.ToMontgomery(em, e);
+        _n.ToMontgomery(rm, r);
+        _n.Multiply(u1, em, w);
+        _n.Multiply(u2, rm, w);
+        _n.FromMontgomery(u1, u1);
+        _n.FromMontgomery(u2, u2);
+
+        // u1 G + u2 Q, the two scalars' bits taken together (Shamir).
+        CorsacSecureCrypto_P384Point both = new CorsacSecureCrypto_P384Point(), sum = new CorsacSecureCrypto_P384Point();
+        AddPoints(both, _g, q);
+        _p.SetOne(sum.Y);                       // the identity, (0 : 1 : 0)
+        for (int bit = 383; bit >= 0; bit--)
+        {
+            AddPoints(sum, sum, sum);
+            int limb = bit >> 5, shift = bit & 31;
+            bool a = ((u1[limb] >> shift) & 1) != 0, b = ((u2[limb] >> shift) & 1) != 0;
+            if (a && b) AddPoints(sum, sum, both);
+            else if (a) AddPoints(sum, sum, _g);
+            else if (b) AddPoints(sum, sum, q);
+        }
+        if (CorsacSecureCrypto_P384Field.IsZero(sum.Z)) return false;
+
+        // x = X / Z, as a number mod n, against r.
+        long[] inverse = _p.New(), x = _p.New();
+        _p.Power(inverse, sum.Z, _p.ModulusLessTwo());
+        _p.Multiply(x, sum.X, inverse);
+        _p.FromMontgomery(x, x);
+        if (!_n.Below(x)) { long[] m = _n.New(); CorsacSecureCrypto_P384Field.Load(m, N, 0); SubtractPlain(x, x, m); }
+        return CorsacSecureCrypto_P384Field.Equal(x, r);
+    }
+
+    static void SubtractPlain(long[] output, long[] a, long[] b)
+    {
+        long borrow = 0;
+        for (int i = 0; i < CorsacSecureCrypto_P384Field.Limbs; i++)
+        {
+            long d = a[i] - b[i] - borrow;
+            output[i] = d & 0xFFFFFFFFL;
+            borrow = (d >> 32) & 1;
+        }
+    }
+
+    /// output = p1 + p2 (any of them the same point), complete for a = -3.
+    void AddPoints(CorsacSecureCrypto_P384Point output, CorsacSecureCrypto_P384Point p1, CorsacSecureCrypto_P384Point p2)
+    {
+        CorsacSecureCrypto_P384Field f = _p;
+        long[] t0 = _t0, t1 = _t1, t2 = _t2, t3 = _t3, t4 = _t4, x3 = _x3, y3 = _y3, z3 = _z3;
+        f.Multiply(t0, p1.X, p2.X);
+        f.Multiply(t1, p1.Y, p2.Y);
+        f.Multiply(t2, p1.Z, p2.Z);
+        f.Add(t3, p1.X, p1.Y);
+        f.Add(t4, p2.X, p2.Y);
+        f.Multiply(t3, t3, t4);
+        f.Add(t4, t0, t1);
+        f.Subtract(t3, t3, t4);
+        f.Add(t4, p1.Y, p1.Z);
+        f.Add(x3, p2.Y, p2.Z);
+        f.Multiply(t4, t4, x3);
+        f.Add(x3, t1, t2);
+        f.Subtract(t4, t4, x3);
+        f.Add(x3, p1.X, p1.Z);
+        f.Add(y3, p2.X, p2.Z);
+        f.Multiply(x3, x3, y3);
+        f.Add(y3, t0, t2);
+        f.Subtract(y3, x3, y3);
+        f.Multiply(z3, _b, t2);
+        f.Subtract(x3, y3, z3);
+        f.Add(z3, x3, x3);
+        f.Add(x3, x3, z3);
+        f.Subtract(z3, t1, x3);
+        f.Add(x3, t1, x3);
+        f.Multiply(y3, _b, y3);
+        f.Add(t1, t2, t2);
+        f.Add(t2, t1, t2);
+        f.Subtract(y3, y3, t2);
+        f.Subtract(y3, y3, t0);
+        f.Add(t1, y3, y3);
+        f.Add(y3, t1, y3);
+        f.Add(t1, t0, t0);
+        f.Add(t0, t1, t0);
+        f.Subtract(t0, t0, t2);
+        f.Multiply(t1, t4, y3);
+        f.Multiply(t2, t0, y3);
+        f.Multiply(y3, x3, z3);
+        f.Add(y3, y3, t2);
+        f.Multiply(x3, t3, x3);
+        f.Subtract(x3, x3, t1);
+        f.Multiply(z3, t4, z3);
+        f.Multiply(t1, t3, t0);
+        f.Add(z3, z3, t1);
+        Array.Copy(x3, output.X, CorsacSecureCrypto_P384Field.Limbs);
+        Array.Copy(y3, output.Y, CorsacSecureCrypto_P384Field.Limbs);
+        Array.Copy(z3, output.Z, CorsacSecureCrypto_P384Field.Limbs);
+    }
+
+    static byte[] Hex(string text)
+    {
+        byte[] answer = new byte[text.Length / 2];
+        for (int i = 0; i < answer.Length; i++)
+        {
+            int high = text[2 * i] <= '9' ? text[2 * i] - '0' : text[2 * i] - 'a' + 10;
+            int low = text[2 * i + 1] <= '9' ? text[2 * i + 1] - '0' : text[2 * i + 1] - 'a' + 10;
+            answer[i] = (byte)((high << 4) | low);
+        }
+        return answer;
+    }
+}
