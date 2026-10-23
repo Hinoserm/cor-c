@@ -2,16 +2,16 @@
 // reports. Build walks up from the certificate through the policy's extra
 // store and the system's intermediates to a trusted root -- the system's
 // (X509Store LocalMachine Root and CurrentUser Root) or the policy's own
-// with CustomRootTrust -- and hands that path to X509PathValidator, the
-// strict checker, whose verdict becomes .NET's status flags.
+// with CustomRootTrust -- and judges each element of that path by itself,
+// as .NET on Linux has OpenSSL judge it (X509PathChecks takes the
+// signatures, basic constraints, key usage and name constraints): every
+// element is told all of its faults, in the order .NET gives them.
 //
 // What is not done here: revocation. Nothing is fetched or looked up, so
 // a policy that asks for it (RevocationMode Online, .NET's default, or
 // Offline) gets RevocationStatusUnknown and OfflineRevocation on every
-// element, as .NET reports when it cannot reach the answer; NoCheck asks
-// for none. And the validator stops at the first fault, so a chain reports
-// one fault, on the end certificate, where .NET might report several on
-// several elements.
+// element below the root, as .NET reports when it cannot reach the
+// answer; NoCheck asks for none.
 
 using System;
 using System.Collections;
@@ -187,7 +187,7 @@ public sealed class X509ChainElementCollection : ICollection, IEnumerable<X509Ch
 /// A certificate's chain to a trusted root, built and checked.
 public class X509Chain : IDisposable
 {
-    const string ServerAuthentication = "1.3.6.1.5.5.7.3.1";
+    const string AnyExtendedKeyUsage = "2.5.29.37.0";
     const int MostCertificates = 8;
 
     X509ChainPolicy _policy = new X509ChainPolicy();
@@ -252,70 +252,85 @@ public class X509Chain : IDisposable
             current = up;
         }
 
-        byte[][] certificates = new byte[path.Count][];
-        long[] offsets = new long[path.Count], counts = new long[path.Count];
-        for (int i = 0; i < path.Count; i++) { certificates[i] = path[i].Fields.Raw; counts[i] = certificates[i].Length; }
-        // The trusted root is the path's own last certificate; the validator
-        // takes it as the anchor by its exact bytes.
-        int anchors = anchor == null ? 0 : 1;
-        byte[][] anchorBytes = new byte[anchors][];
-        long[] anchorOffsets = new long[anchors], anchorCounts = new long[anchors];
-        if (anchor != null) { anchorBytes[0] = anchor.Fields.Raw; anchorCounts[0] = anchorBytes[0].Length; }
+        // EACH ELEMENT JUDGED BY ITSELF, as .NET on Linux has OpenSSL judge
+        // it, the judging going on past a fault: an element is told all of
+        // its own, in OpenSSL's order (revocation unknown, signature, time,
+        // trust, basic constraints, key usage, name constraints), with
+        // OfflineRevocation after them, and a usage the application policy
+        // asks that the chain does not give after that, on every element.
+        // The chain's own status is its elements', in their order, the
+        // usage last. A chain that stops short of a root (partial) is not
+        // asked about revocation, and nothing is fetched: Online and
+        // Offline find every non-root certificate's status unknown, as .NET
+        // reports when it cannot reach the answer.
+        int count = path.Count;
+        byte[][] certificates = new byte[count][];
+        for (int i = 0; i < count; i++) certificates[i] = path[i].Fields.Raw;
+        int[] faults = new int[count];
+        X509PathChecks checks = new X509PathChecks();
+        checks.Inspect(certificates, count, faults);
+        checks.Close();
 
-        bool serverAuth = false;
-        foreach (Oid o in _policy.ApplicationPolicy) if (o.Value == ServerAuthentication) serverAuth = true;
-        bool checkTime = (_policy.VerificationFlags & X509VerificationFlags.IgnoreNotTimeValid) == 0;
         DateTime when = _policy.VerificationTimeIgnored ? DateTime.Now : _policy.VerificationTime;
+        bool topSelfIssued = X509Store.SelfIssued(path[count - 1]);
+        bool partial = anchor == null && !topSelfIssued;
+        bool asked = _policy.RevocationMode != X509RevocationMode.NoCheck && !partial;
+        bool usable = Usable(path);
 
-        X509PathValidator validator = new X509PathValidator();
-        bool valid = validator.ValidateChain(certificates, offsets, counts, path.Count, anchorBytes, anchorOffsets, anchorCounts,
-                                             anchors, X509Der.Packed(when), serverAuth, checkTime);
-        int error = validator.Error;
-        validator.Close();
-
-        // VALIDITY IN TIME, judged for each certificate by itself, so a
-        // fault the policy ignores is still reported, as .NET reports it.
-        List<bool> expired = new List<bool>();
-        foreach (X509Certificate2 c in path) expired.Add(when < c.NotBefore || when > c.NotAfter);
-
-        List<X509ChainStatus> faults = new List<X509ChainStatus>();
-        if (!valid && error != X509PathError.Time)
-        {
-            X509ChainStatusFlags flag = Flag(error);
-            if (error == X509PathError.Untrusted)
-                flag = anchor == null && !X509Store.SelfIssued(path[path.Count - 1]) ? X509ChainStatusFlags.PartialChain : X509ChainStatusFlags.UntrustedRoot;
-            faults.Add(Status(flag));
-        }
-        List<X509ChainStatus> revocation = new List<X509ChainStatus>();
-        if (_policy.RevocationMode != X509RevocationMode.NoCheck)
-        {
-            revocation.Add(Status(X509ChainStatusFlags.RevocationStatusUnknown));
-            revocation.Add(Status(X509ChainStatusFlags.OfflineRevocation));
-        }
-
-        List<X509Certificate2> elements = path;
-        bool anyExpired = false;
-        for (int i = 0; i < elements.Count; i++)
-        {
-            List<X509ChainStatus> own = new List<X509ChainStatus>();
-            if (expired[i]) { own.Add(Status(X509ChainStatusFlags.NotTimeValid)); anyExpired = true; }
-            if (i == 0) own.AddRange(faults);
-            bool root = i == elements.Count - 1 && anchor != null;
-            if (!(root && _policy.RevocationFlag == X509RevocationFlag.ExcludeRoot) && (i == 0 || _policy.RevocationFlag != X509RevocationFlag.EndCertificateOnly))
-                own.AddRange(revocation);
-            _elements.Add(new X509ChainElement(elements[i], own.ToArray()));
-        }
         List<X509ChainStatus> all = new List<X509ChainStatus>();
-        if (anyExpired) all.Add(Status(X509ChainStatusFlags.NotTimeValid));
-        all.AddRange(faults);
-        all.AddRange(revocation);
+        bool valid = true;
+        for (int i = 0; i < count; i++)
+        {
+            X509Certificate2 c = path[i];
+            bool top = i == count - 1;
+            bool revocation = asked && !(top && topSelfIssued)
+                && (i == 0 || _policy.RevocationFlag != X509RevocationFlag.EndCertificateOnly);
+            List<X509ChainStatus> own = new List<X509ChainStatus>();
+            if (revocation) own.Add(Status(X509ChainStatusFlags.RevocationStatusUnknown));
+            if ((faults[i] & X509PathFault.Signature) != 0) own.Add(Status(X509ChainStatusFlags.NotSignatureValid));
+            if (when < c.NotBefore || when > c.NotAfter) own.Add(Status(X509ChainStatusFlags.NotTimeValid));
+            if (top && anchor == null) own.Add(Status(partial ? X509ChainStatusFlags.PartialChain : X509ChainStatusFlags.UntrustedRoot));
+            if ((faults[i] & X509PathFault.BasicConstraints) != 0) own.Add(Status(X509ChainStatusFlags.InvalidBasicConstraints));
+            if ((faults[i] & X509PathFault.KeyUsage) != 0) own.Add(Status(X509ChainStatusFlags.NotValidForUsage));
+            if ((faults[i] & X509PathFault.NameConstraints) != 0) own.Add(Status(X509ChainStatusFlags.HasNotPermittedNameConstraint));
+            if (revocation) own.Add(Status(X509ChainStatusFlags.OfflineRevocation));
+            foreach (X509ChainStatus st in own) Join(all, st);
+            if (!usable) Join(own, Status(X509ChainStatusFlags.NotValidForUsage));
+            foreach (X509ChainStatus st in own) if (!Ignored(st.Status, i == 0)) valid = false;
+            _elements.Add(new X509ChainElement(c, own.ToArray()));
+        }
+        if (!usable) Join(all, Status(X509ChainStatusFlags.NotValidForUsage));
         _status = all.ToArray();
+        return valid;
+    }
 
-        foreach (X509ChainStatus s in _status) if (!Ignored(s.Status)) return false;
+    static void Join(List<X509ChainStatus> list, X509ChainStatus status)
+    {
+        foreach (X509ChainStatus s in list) if (s.Status == status.Status) return;
+        list.Add(status);
+    }
+
+    /// Whether the chain gives every usage the application policy asks: a
+    /// certificate with an extended key usage gives only what it names (or
+    /// anything, with anyExtendedKeyUsage); one without, anything.
+    bool Usable(List<X509Certificate2> path)
+    {
+        foreach (Oid wanted in _policy.ApplicationPolicy)
+            foreach (X509Certificate2 c in path)
+            {
+                X509EnhancedKeyUsageExtension? eku = null;
+                foreach (X509Extension e in c.Extensions) if (e is X509EnhancedKeyUsageExtension u) eku = u;
+                if (eku == null) continue;
+                bool gives = false;
+                foreach (Oid o in eku.EnhancedKeyUsages) if (o.Value == wanted.Value || o.Value == AnyExtendedKeyUsage) gives = true;
+                if (!gives) return false;
+            }
         return true;
     }
 
-    bool Ignored(X509ChainStatusFlags status)
+    /// Whether the policy's VerificationFlags let `status` stand, on the end
+    /// certificate (`end`) or one above it.
+    bool Ignored(X509ChainStatusFlags status, bool end)
     {
         X509VerificationFlags f = _policy.VerificationFlags;
         switch (status)
@@ -326,27 +341,13 @@ public class X509Chain : IDisposable
             case X509ChainStatusFlags.NotValidForUsage: return (f & X509VerificationFlags.IgnoreWrongUsage) != 0;
             case X509ChainStatusFlags.InvalidBasicConstraints: return (f & X509VerificationFlags.IgnoreInvalidBasicConstraints) != 0;
             case X509ChainStatusFlags.HasNotPermittedNameConstraint: return (f & X509VerificationFlags.IgnoreInvalidName) != 0;
+            // A root is never asked about revocation, so its flag has
+            // nothing to let stand.
             case X509ChainStatusFlags.RevocationStatusUnknown:
             case X509ChainStatusFlags.OfflineRevocation:
-                return (f & X509VerificationFlags.IgnoreEndRevocationUnknown) != 0
-                    && (f & X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown) != 0
-                    && (f & X509VerificationFlags.IgnoreRootRevocationUnknown) != 0;
+                return (f & (end ? X509VerificationFlags.IgnoreEndRevocationUnknown
+                                 : X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown)) != 0;
             default: return false;
-        }
-    }
-
-    static X509ChainStatusFlags Flag(int error)
-    {
-        switch (error)
-        {
-            case X509PathError.Time: return X509ChainStatusFlags.NotTimeValid;
-            case X509PathError.Signature: return X509ChainStatusFlags.NotSignatureValid;
-            case X509PathError.KeyUsage: return X509ChainStatusFlags.NotValidForUsage;
-            case X509PathError.Path: return X509ChainStatusFlags.InvalidBasicConstraints;
-            case X509PathError.NameConstraints: return X509ChainStatusFlags.HasNotPermittedNameConstraint;
-            case X509PathError.Unsupported: return X509ChainStatusFlags.NotSignatureValid;
-            case X509PathError.Untrusted: return X509ChainStatusFlags.UntrustedRoot;
-            default: return X509ChainStatusFlags.InvalidExtension;
         }
     }
 

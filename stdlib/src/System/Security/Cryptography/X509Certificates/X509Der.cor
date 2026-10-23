@@ -230,6 +230,19 @@ internal static class X509Der
     }
 
     /// Bytes as upper-case hexadecimal, as Thumbprint and SerialNumber are.
+    /// One DER element: its tag, its length (definite, shortest form) and
+    /// its content.
+    public static void Write(MemoryStream output, int tag, byte[] content)
+    {
+        output.WriteByte((byte)tag);
+        int n = content.Length;
+        if (n < 128) output.WriteByte((byte)n);
+        else if (n < 256) { output.WriteByte(0x81); output.WriteByte((byte)n); }
+        else if (n < 65536) { output.WriteByte(0x82); output.WriteByte((byte)(n >> 8)); output.WriteByte((byte)n); }
+        else { output.WriteByte(0x83); output.WriteByte((byte)(n >> 16)); output.WriteByte((byte)(n >> 8)); output.WriteByte((byte)n); }
+        output.Write(content, 0, n);
+    }
+
     public static string Hex(byte[] bytes)
     {
         const string digits = "0123456789ABCDEF";

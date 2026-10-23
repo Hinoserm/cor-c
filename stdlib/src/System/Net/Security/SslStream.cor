@@ -586,7 +586,7 @@ internal sealed class SslStreamPolicy : CorsacSecureTls_CertificatePolicy
         }
 
         PublicKey publicKey = leaf.PublicKey;
-        if (!key.Set(publicKey.Oid.Value ?? "", publicKey.EncodedParameters.RawData, publicKey.EncodedKeyValue.RawData))
+        if (!key.Set(publicKey.Oid.Value ?? "", publicKey.EncodedParameters?.RawData ?? new byte[0], publicKey.EncodedKeyValue.RawData))
         {
             UnsupportedKey = true;
             alert = 43;

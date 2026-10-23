@@ -1,0 +1,174 @@
+// THE CHECKS X509Chain REPORTS THAT TAKE THE CERTIFICATES' BYTES, each
+// certificate of a path judged by itself and the judging going on past a
+// fault, as .NET's X509Chain on Linux has OpenSSL make them: an element is
+// told all of its own faults, not the first of the path. Whether a
+// certificate's signature verifies under its issuer's key (RSA PKCS#1 v1.5
+// and PSS with SHA-256, ECDSA P-256 with SHA-256, Ed25519); whether an
+// issuer may issue (a CA, its path length, keyCertSign); and whether the
+// CAs' name constraints permit the names below them. Time, trust,
+// revocation and the application policy are X509Chain's own.
+//
+// A certificate is read by the strict reader (X509CertificateView), which
+// admits only the algorithms above and refuses an unknown critical
+// extension; one it refuses cannot be checked, and is reported as a
+// signature that does not verify: the one it signs, and its own when its
+// issuer is in the path.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Security.Cryptography.X509Certificates;
+
+internal static class X509PathFault
+{
+    public const int Signature = 1;          // its signature does not verify under the next certificate's key
+    public const int BasicConstraints = 2;   // an issuer that is not a CA, or whose path length is exceeded
+    public const int KeyUsage = 4;           // an issuer whose key usage does not allow certificate signing
+    public const int NameConstraints = 8;    // a name an issuer above it does not permit
+}
+
+internal sealed class X509PathChecks
+{
+    public const int MaximumCertificates = 8;
+
+    private readonly X509CertificateView[] _path;
+    private readonly CorsacSecureCrypto_Hash _hash;
+    private readonly CorsacSecureCrypto_RsaWorkspace _rsa;
+    private readonly CorsacSecureCrypto_P256Workspace _p256;
+    private readonly CorsacSecureCrypto_Ed25519Workspace _ed25519;
+    private readonly byte[] _digest;
+    private readonly byte[] _empty;
+
+    public X509PathChecks()
+    {
+        _path = new X509CertificateView[MaximumCertificates];
+        for (int i = 0; i < _path.Length; i = i + 1)
+            _path[i] = new X509CertificateView();
+        _hash = new CorsacSecureCrypto_Hash();
+        _rsa = new CorsacSecureCrypto_RsaWorkspace();
+        _p256 = new CorsacSecureCrypto_P256Workspace();
+        _ed25519 = new CorsacSecureCrypto_Ed25519Workspace();
+        _digest = new byte[32];
+        _empty = new byte[0];
+    }
+
+    /// The faults of each certificate of a path, leaf first: faults[i] the
+    /// X509PathFault bits of certificates[i]. The last certificate's own
+    /// signature is not checked (a root's is its own business, as OpenSSL
+    /// leaves it).
+    public void Inspect(byte[][] certificates, int count, int[] faults)
+    {
+        bool[] read = new bool[count];
+        for (int i = 0; i < count; i = i + 1)
+            read[i] = _path[i].Parse(certificates[i], 0, certificates[i].Length);
+        for (int i = 1; i < count; i = i + 1)
+        {
+            if (!read[i] || !read[i - 1]
+                || !VerifySignature(_path[i - 1], certificates[i - 1],
+                                    _path[i], certificates[i]))
+                faults[i - 1] |= X509PathFault.Signature;
+            if (!read[i]) continue;
+            X509CertificateView issuer = _path[i];
+            if (!issuer.BasicConstraintsPresent || !issuer.IsCa
+                || (issuer.PathLength >= 0
+                    && CaCertificatesBelow(i) > issuer.PathLength))
+                faults[i] |= X509PathFault.BasicConstraints;
+            else if (!issuer.AllowsCertificateSigning())
+                faults[i] |= X509PathFault.KeyUsage;
+        }
+
+        // Every CA's constraints apply on their own: each must permit a
+        // name, any exclusion refuses it (RFC 5280's permitted-subtree
+        // intersection and excluded-subtree union). A self-issued
+        // certificate's own names are not judged, except the leaf's.
+        for (int subject = 0; subject < count; subject = subject + 1)
+        {
+            if (!read[subject]
+                || (subject > 0 && _path[subject].IssuerMatches(_path[subject])))
+                continue;
+            for (int authority = subject + 1; authority < count;
+                 authority = authority + 1)
+                if (read[authority]
+                    && !_path[authority].PermitsSubjectAlternativeNames(
+                        _path[subject]))
+                    faults[subject] |= X509PathFault.NameConstraints;
+        }
+
+        // The views borrow the caller's arrays only for this call.
+        for (int i = 0; i < _path.Length; i = i + 1)
+            _path[i].Parse(_empty, 0, 0);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+    }
+
+    private int CaCertificatesBelow(int issuerIndex)
+    {
+        int answer = 0;
+        // The leaf at zero is never counted.  RFC 5280 pathLenConstraint also
+        // excludes self-issued intermediate certificates.
+        for (int i = 1; i < issuerIndex; i = i + 1)
+            if (!_path[i].IssuerMatches(_path[i])) answer = answer + 1;
+        return answer;
+    }
+
+    private bool VerifySignature(
+        X509CertificateView child, byte[] childBytes,
+        X509CertificateView issuer, byte[] issuerBytes)
+    {
+        int algorithm = child.SignatureAlgorithm;
+        if ((algorithm == X509SignatureAlgorithm
+                             .RsaPkcs1Sha256
+             || algorithm == X509SignatureAlgorithm
+                             .RsaPssSha256)
+            && issuer.PublicKeyAlgorithm
+                == X509KeyAlgorithm.Rsa)
+        {
+            bool hashed = _hash.Update(
+                    childBytes, child.TbsOffset, child.TbsCount)
+                && _hash.Finish(_digest, 0);
+            if (!hashed) return false;
+            bool valid = algorithm
+                    == X509SignatureAlgorithm.RsaPkcs1Sha256
+                ? _rsa.VerifyPkcs1Sha256(
+                    issuerBytes, issuer.RsaModulusOffset,
+                    issuer.RsaModulusCount, issuer.RsaExponent,
+                    childBytes, child.SignatureOffset,
+                    child.SignatureCount, _digest, 0)
+                : _rsa.VerifyPssSha256(
+                    issuerBytes, issuer.RsaModulusOffset,
+                    issuer.RsaModulusCount, issuer.RsaExponent,
+                    childBytes, child.SignatureOffset,
+                    child.SignatureCount, _digest, 0);
+            CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+            return _hash.Reset() && valid;
+        }
+        if (algorithm
+                == X509SignatureAlgorithm.EcdsaP256Sha256
+            && issuer.PublicKeyAlgorithm
+                == X509KeyAlgorithm.P256)
+            return _p256.VerifySha256Der(
+                issuerBytes, issuer.PublicKeyOffset,
+                issuer.PublicKeyCount,
+                childBytes, child.TbsOffset, child.TbsCount,
+                childBytes, child.SignatureOffset,
+                child.SignatureCount);
+        if (algorithm == X509SignatureAlgorithm.Ed25519
+            && issuer.PublicKeyAlgorithm
+                == X509KeyAlgorithm.Ed25519
+            && child.SignatureCount == 64)
+            return _ed25519.CheckSignature(
+                issuerBytes, issuer.PublicKeyOffset,
+                childBytes, child.TbsOffset, child.TbsCount,
+                childBytes, child.SignatureOffset);
+        return false;
+    }
+
+    public void Close()
+    {
+        for (int i = 0; i < _path.Length; i = i + 1)
+            _path[i].Parse(_empty, 0, 0);
+        CorsacSecureCrypto_Bytes.Zero(_digest, 0, _digest.Length);
+        _hash.Close();
+        _rsa.Close();
+        _p256.Close();
+        _ed25519.Close();
+    }
+}

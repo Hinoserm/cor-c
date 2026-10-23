@@ -132,6 +132,10 @@ public class X509Certificate : IDisposable
     }
 
     public virtual string GetSerialNumberString() => X509Der.Hex(Fields.Serial);
+
+    /// The serial number as it is encoded, most significant byte first
+    /// (GetSerialNumber gives it least significant first).
+    public ReadOnlyMemory<byte> SerialNumberBytes => new ReadOnlyMemory<byte>((byte[])Fields.Serial.Clone());
     public virtual string GetKeyAlgorithm() => Fields.KeyAlgorithm;
     public virtual byte[] GetKeyAlgorithmParameters() => (byte[])Fields.KeyParameters.Clone();
     public virtual string GetKeyAlgorithmParametersString() => X509Der.Hex(Fields.KeyParameters);
@@ -325,6 +329,26 @@ public class X509Certificate2 : X509Certificate
     public override void Reset() { _extensions = null; base.Reset(); }
 }
 
+/// .NET 9's loader, which .NET 10 asks for in place of X509Certificate2's
+/// byte and file constructors: one certificate from its DER or PEM bytes.
+/// PKCS#12 (LoadPkcs12) is not read here.
+public static class X509CertificateLoader
+{
+    public static X509Certificate2 LoadCertificate(byte[] data)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        return new X509Certificate2(data);
+    }
+
+    public static X509Certificate2 LoadCertificate(ReadOnlySpan<byte> data) => new X509Certificate2(data.ToArray());
+
+    public static X509Certificate2 LoadCertificateFromFile(string path)
+    {
+        if (path == null) throw new ArgumentNullException(nameof(path));
+        return new X509Certificate2(File.ReadAllBytes(path));
+    }
+}
+
 /// A distinguished name: its encoding and its text.
 public sealed class X500DistinguishedName : AsnEncodedData
 {
@@ -351,14 +375,15 @@ public sealed class PublicKey
 {
     readonly Oid _oid;
     readonly AsnEncodedData _value;
-    readonly AsnEncodedData _parameters;
+    readonly AsnEncodedData? _parameters;
     readonly byte[] _spki;
 
     internal PublicKey(X509Fields fields)
     {
         _oid = new Oid(fields.KeyAlgorithm);
         _value = new AsnEncodedData(_oid, fields.KeyValue);
-        _parameters = new AsnEncodedData(_oid, fields.KeyParameters);
+        // No parameters (Ed25519's) is null, not empty, as .NET has it.
+        _parameters = fields.KeyParameters.Length == 0 ? null : new AsnEncodedData(_oid, fields.KeyParameters);
         _spki = fields.SubjectPublicKeyInfo;
     }
 
@@ -366,13 +391,13 @@ public sealed class PublicKey
     {
         _oid = new Oid(oid);
         _value = new AsnEncodedData(keyValue);
-        _parameters = parameters == null ? new AsnEncodedData(_oid, new byte[0]) : new AsnEncodedData(parameters);
+        _parameters = parameters == null ? null : new AsnEncodedData(parameters);
         _spki = new byte[0];
     }
 
     public Oid Oid => _oid;
     public AsnEncodedData EncodedKeyValue => _value;
-    public AsnEncodedData EncodedParameters => _parameters;
+    public AsnEncodedData? EncodedParameters => _parameters;
     public byte[] ExportSubjectPublicKeyInfo() => (byte[])_spki.Clone();
 }
 
@@ -407,6 +432,7 @@ public class X509Extension : AsnEncodedData
             case "2.5.29.37": made = new X509EnhancedKeyUsageExtension(); break;
             case "2.5.29.14": made = new X509SubjectKeyIdentifierExtension(); break;
             case "2.5.29.17": made = new X509SubjectAlternativeNameExtension(); break;
+            case "2.5.29.35": made = new X509AuthorityKeyIdentifierExtension(); break;
             default: made = new X509Extension(); break;
         }
         made.Set(e.Oid, e.Value, e.Critical);
@@ -504,6 +530,18 @@ public sealed class X509SubjectKeyIdentifierExtension : X509Extension
             return X509Der.Hex(X509Fields.Slice(raw, offset, count));
         }
     }
+
+    public ReadOnlyMemory<byte> SubjectKeyIdentifierBytes
+    {
+        get
+        {
+            byte[] raw = RawData;
+            CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(raw, 0, raw.Length);
+            long offset, count;
+            if (!top.TryReadOctetString(out offset, out count)) throw new CryptographicException("ASN1 corrupted data.");
+            return new ReadOnlyMemory<byte>(X509Fields.Slice(raw, offset, count));
+        }
+    }
 }
 
 /// subjectAltName (.NET 7's type): the certificate's other names.
@@ -539,6 +577,135 @@ public sealed class X509SubjectAlternativeNameExtension : X509Extension
         List<string> names = new List<string>();
         foreach (KeyValuePair<int, byte[]> entry in Entries) if (entry.Key == 2) names.Add(Encoding.ASCII.GetString(entry.Value));
         return names;
+    }
+
+    public IEnumerable<System.Net.IPAddress> EnumerateIPAddresses()
+    {
+        List<System.Net.IPAddress> addresses = new List<System.Net.IPAddress>();
+        foreach (KeyValuePair<int, byte[]> entry in Entries)
+            if (entry.Key == 7 && (entry.Value.Length == 4 || entry.Value.Length == 16)) addresses.Add(new System.Net.IPAddress(entry.Value));
+        return addresses;
+    }
+}
+
+/// authorityKeyIdentifier (.NET 7): the issuing key's identifier, and the
+/// issuer's own issuer and serial number, each there or not.
+public sealed class X509AuthorityKeyIdentifierExtension : X509Extension
+{
+    const string Identifier = "2.5.29.35";
+
+    public X509AuthorityKeyIdentifierExtension() { Oid = new Oid(Identifier); }
+
+    public X509AuthorityKeyIdentifierExtension(byte[] rawData, bool critical = false) : base(Identifier, rawData ?? throw new ArgumentNullException(nameof(rawData)), critical)
+    {
+        if (!Read(out _, out _, out _, out _)) throw new CryptographicException("ASN1 corrupted data.");
+    }
+
+    public X509AuthorityKeyIdentifierExtension(ReadOnlySpan<byte> rawData, bool critical = false) : this(rawData.ToArray(), critical) { }
+
+    public ReadOnlyMemory<byte>? KeyIdentifier { get { Read(out byte[]? key, out _, out _, out _); return key == null ? null : new ReadOnlyMemory<byte>(key); } }
+    public ReadOnlyMemory<byte>? RawIssuer { get { Read(out _, out byte[]? raw, out _, out _); return raw == null ? null : new ReadOnlyMemory<byte>(raw); } }
+    public X500DistinguishedName? NamedIssuer { get { Read(out _, out _, out byte[]? name, out _); return name == null ? null : new X500DistinguishedName(name); } }
+    public ReadOnlyMemory<byte>? SerialNumber { get { Read(out _, out _, out _, out byte[]? serial); return serial == null ? null : new ReadOnlyMemory<byte>(serial); } }
+
+    /// The value's parts: [0] the key identifier, [1] the issuer as encoded
+    /// (its tag with it) and, when it is one directoryName, that name, and
+    /// [2] the serial number.
+    bool Read(out byte[]? key, out byte[]? rawIssuer, out byte[]? namedIssuer, out byte[]? serial)
+    {
+        key = rawIssuer = namedIssuer = serial = null;
+        byte[] raw = RawData;
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(raw, 0, raw.Length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count) || !top.AtEnd()) return false;
+        CorsacSecureCrypto_DerCursor fields = new CorsacSecureCrypto_DerCursor(raw, offset, count);
+        while (!fields.AtEnd())
+        {
+            long start = fields.AbsolutePosition(), cls, tag, at, n;
+            bool constructed;
+            if (!fields.TryReadElement(out cls, out constructed, out tag, out at, out n) || cls != CorsacSecureCrypto_DerCursor.Context) return false;
+            if (tag == 0 && !constructed) key = X509Fields.Slice(raw, at, n);
+            else if (tag == 1 && constructed)
+            {
+                rawIssuer = X509Fields.Slice(raw, start, at + n - start);
+                CorsacSecureCrypto_DerCursor names = new CorsacSecureCrypto_DerCursor(raw, at, n);
+                long nameClass, nameTag, nameAt, nameCount;
+                bool nameConstructed;
+                if (names.TryReadElement(out nameClass, out nameConstructed, out nameTag, out nameAt, out nameCount) && names.AtEnd()
+                    && nameClass == CorsacSecureCrypto_DerCursor.Context && nameTag == 4 && nameConstructed)
+                    namedIssuer = X509Fields.Slice(raw, nameAt, nameCount);
+            }
+            else if (tag == 2 && !constructed) serial = X509Fields.Slice(raw, at, n);
+            else return false;
+        }
+        return true;
+    }
+
+    public override void CopyFrom(AsnEncodedData asnEncodedData)
+    {
+        base.CopyFrom(asnEncodedData);
+        if (!Read(out _, out _, out _, out _)) throw new CryptographicException("ASN1 corrupted data.");
+    }
+
+    public static X509AuthorityKeyIdentifierExtension Create(byte[] keyIdentifier, X500DistinguishedName issuerName, byte[] serialNumber)
+    {
+        if (keyIdentifier == null) throw new ArgumentNullException(nameof(keyIdentifier));
+        if (issuerName == null) throw new ArgumentNullException(nameof(issuerName));
+        if (serialNumber == null) throw new ArgumentNullException(nameof(serialNumber));
+        return Made(keyIdentifier, issuerName, serialNumber);
+    }
+
+    public static X509AuthorityKeyIdentifierExtension Create(ReadOnlySpan<byte> keyIdentifier, X500DistinguishedName issuerName, ReadOnlySpan<byte> serialNumber)
+        => Create(keyIdentifier.ToArray(), issuerName, serialNumber.ToArray());
+
+    public static X509AuthorityKeyIdentifierExtension CreateFromSubjectKeyIdentifier(byte[] subjectKeyIdentifier)
+        => Made(subjectKeyIdentifier ?? throw new ArgumentNullException(nameof(subjectKeyIdentifier)), null, null);
+
+    public static X509AuthorityKeyIdentifierExtension CreateFromSubjectKeyIdentifier(ReadOnlySpan<byte> subjectKeyIdentifier)
+        => Made(subjectKeyIdentifier.ToArray(), null, null);
+
+    public static X509AuthorityKeyIdentifierExtension CreateFromSubjectKeyIdentifier(X509SubjectKeyIdentifierExtension subjectKeyIdentifier)
+        => Made((subjectKeyIdentifier ?? throw new ArgumentNullException(nameof(subjectKeyIdentifier))).SubjectKeyIdentifierBytes.ToArray(), null, null);
+
+    public static X509AuthorityKeyIdentifierExtension CreateFromIssuerNameAndSerialNumber(X500DistinguishedName issuerName, byte[] serialNumber)
+    {
+        if (issuerName == null) throw new ArgumentNullException(nameof(issuerName));
+        if (serialNumber == null) throw new ArgumentNullException(nameof(serialNumber));
+        return Made(null, issuerName, serialNumber);
+    }
+
+    public static X509AuthorityKeyIdentifierExtension CreateFromIssuerNameAndSerialNumber(X500DistinguishedName issuerName, ReadOnlySpan<byte> serialNumber)
+        => CreateFromIssuerNameAndSerialNumber(issuerName, serialNumber.ToArray());
+
+    /// What a certificate issued by `certificate` carries: its subject key
+    /// identifier, and its issuer and serial number.
+    public static X509AuthorityKeyIdentifierExtension CreateFromCertificate(X509Certificate2 certificate, bool includeKeyIdentifier, bool includeIssuerAndSerial)
+    {
+        if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+        byte[]? key = null;
+        if (includeKeyIdentifier)
+        {
+            foreach (X509Extension e in certificate.Extensions)
+                if (e is X509SubjectKeyIdentifierExtension ski) key = ski.SubjectKeyIdentifierBytes.ToArray();
+            if (key == null) throw new CryptographicException("The provided certificate does not have a Subject Key Identifier extension.");
+        }
+        return includeIssuerAndSerial ? Made(key, certificate.IssuerName, certificate.SerialNumberBytes.ToArray()) : Made(key, null, null);
+    }
+
+    static X509AuthorityKeyIdentifierExtension Made(byte[]? key, X500DistinguishedName? issuer, byte[]? serial)
+    {
+        MemoryStream fields = new MemoryStream();
+        if (key != null) X509Der.Write(fields, 0x80, key);
+        if (issuer != null)
+        {
+            MemoryStream name = new MemoryStream();
+            X509Der.Write(name, 0xA4, issuer.RawData);
+            X509Der.Write(fields, 0xA1, name.ToArray());
+        }
+        if (serial != null) X509Der.Write(fields, 0x82, serial);
+        MemoryStream value = new MemoryStream();
+        X509Der.Write(value, 0x30, fields.ToArray());
+        return new X509AuthorityKeyIdentifierExtension(value.ToArray(), false);
     }
 }
 
