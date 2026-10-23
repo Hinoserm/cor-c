@@ -92,7 +92,9 @@ A DLL is the same image as a program, with these differences.
   TLS, and Quake's engines load opengl32 that way.
 - IT STAYS LOADED once loaded (it pins itself, as native AOT's do), so a
   FreeLibrary and LoadLibrary pair -- Quake 2's `vid_restart` -- finds the
-  same runtime again.
+  same runtime again rather than leaking a heap each time. GetModuleHandleEx's
+  pin is XP's; on 2000 the DLL loads its own name once more, which only counts
+  a loaded module again (Win32.Pin).
 - FAULTS: Windows 2000 has no vectored handlers, so each entry from Windows
   puts an SEH registration in a slot of its frame and at the head of the
   chain, fs:[0] (Lowering.SehEnter), and takes it off on the way out. Its
@@ -120,7 +122,7 @@ they all run and each block freed at DLL_THREAD_DETACH, pass five runs in
 five: the collector's stop is cooperative, and a wait gives up the thread's
 time slice (Sleep(0)). A read through null in the DLL is caught as
 NullReferenceException (Wine's trace shows the access violation and the
-handler). Not yet: pinning the DLL.
+handler). It stays loaded once loaded: a FreeLibrary leaves it in place.
 
 ## Calling Windows
 
@@ -321,8 +323,8 @@ decoders wherever GDI+ is absent.
 0. DLLs first (2026-10-23): the PE32 link with exports, imports and
    `.reloc`, the thread block through a TLS slot, threads that are not
    ours, the platform layer's floor, DllMain, several threads and thread
-   detach, faults (done, and cards.dll runs Solitaire); then pinning, and
-   opengl32/Glide.
+   detach, faults, pinning (done, and cards.dll runs Solitaire); then
+   opengl32 and Glide.
 1. The image, stdcall and A/W imports, the thread block, struct layout:
    a console "hello" that runs on 95 and on 11.
 2. The platform layer: the language suite passing on Windows.

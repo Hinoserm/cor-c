@@ -77,6 +77,12 @@ static class Win32
     [DllImport("kernel32"), SuppressGCTransition]
     static extern void Sleep(int milliseconds);
 
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern int GetModuleFileNameA(nint module, nint name, int size);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nint LoadLibraryA(nint name);
+
     /// The slot taken, plus one: 0, none. No initialiser, so touching the
     /// class runs nothing before the thread has a block.
     static int _slotTaken;
@@ -213,6 +219,21 @@ static class Win32
     public static void Started()
     {
         Platform.Console = new StdErrConsole();
+        Pin();
+    }
+
+    /// LOADED ONCE, LOADED FOR GOOD, as native AOT's DLLs are: the runtime
+    /// cannot give back its heap or the blocks of threads still alive, so a
+    /// FreeLibrary and LoadLibrary pair -- Quake 2's vid_restart -- would leak
+    /// both every time. Its own name loaded once more, which for a module
+    /// already loaded only counts it again (GetModuleHandleEx's pin is XP's).
+    static void Pin()
+    {
+        byte[] name = new byte[262];
+        int length = GetModuleFileNameA((nint)_imageStart, (nint)Sys.ArrayData(name), 260);
+        if (length <= 0 || length >= 260) return;
+        LoadLibraryA((nint)Sys.ArrayData(name));
+        System.GC.KeepAlive(name);
     }
 
     /// The process lets the image go (DLL_PROCESS_DETACH): the slot back.
