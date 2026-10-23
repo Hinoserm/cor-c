@@ -6,12 +6,14 @@
 // same reason: a hash of a Stream reads the stream.
 
 /// Something went wrong in a cryptographic operation.
-class CryptographicException : Exception
+class CryptographicException : SystemException
 {
     internal override int Code => unchecked((int)0x80131501);
     public CryptographicException() : base("Error occurred during a cryptographic operation.") { }
+    public CryptographicException(int hr) : this() { HResult = hr; }
     public CryptographicException(string? message) : base(message ?? "Error occurred during a cryptographic operation.") { }
     public CryptographicException(string? message, Exception? innerException) : base(message ?? "Error occurred during a cryptographic operation.", innerException) { }
+    public CryptographicException(string format, string? insert) : base(string.Format(format, insert)) { }
 }
 
 /// A hash algorithm: data in, in as many pieces as it comes in, and a hash

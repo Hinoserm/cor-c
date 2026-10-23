@@ -1,0 +1,222 @@
+// The authenticated ciphers as .NET has them: AesGcm (AES-128, -192 and -256,
+// tags of 12 to 16 bytes) and ChaCha20Poly1305, over the CORSAC/SECURE
+// primitives, with .NET's checks, words and AuthenticationTagMismatchException;
+// and KeySizes, which says the sizes they take.
+
+using System;
+using Corsac.Security.Cryptography;
+
+namespace System.Security.Cryptography;
+
+/// The sizes an algorithm takes: MinSize to MaxSize in steps of SkipSize.
+public sealed class KeySizes
+{
+    public KeySizes(int minSize, int maxSize, int skipSize)
+    {
+        MinSize = minSize;
+        MaxSize = maxSize;
+        SkipSize = skipSize;
+    }
+
+    public int MinSize { get; }
+    public int MaxSize { get; }
+    public int SkipSize { get; }
+
+    internal bool Allows(int size)
+    {
+        if (size < MinSize || size > MaxSize) return false;
+        return SkipSize == 0 ? size == MinSize : (size - MinSize) % SkipSize == 0;
+    }
+}
+
+/// .NET 8's: a tag that did not verify.
+public class AuthenticationTagMismatchException : CryptographicException
+{
+    const string Words = "The computed authentication tag did not match the input authentication tag.";
+    public AuthenticationTagMismatchException() : base(Words) { }
+    public AuthenticationTagMismatchException(string? message) : base(message ?? Words) { }
+    public AuthenticationTagMismatchException(string? message, Exception? inner) : base(message ?? Words, inner) { }
+}
+
+internal static class Aead
+{
+    public const string BadKey = "Specified key is not a valid size for this algorithm.";
+    public const string BadNonce = "The specified nonce is not a valid size for this algorithm.";
+    public const string BadTag = "The specified tag is not a valid size for this algorithm.";
+
+    /// .NET's checks, in its order.
+    public static void Check(int plaintext, int ciphertext, int nonce, KeySizes nonces, int tag, int? tagSize, KeySizes tags)
+    {
+        if (plaintext != ciphertext) throw new ArgumentException("Plaintext and ciphertext must have the same length.");
+        if (!nonces.Allows(nonce)) throw new ArgumentException(BadNonce, "nonce");
+        if (tagSize is int expected && expected != tag)
+            throw new ArgumentException("The size of the specified tag does not match the expected size of " + expected + ".", "tag");
+        if (!tags.Allows(tag)) throw new ArgumentException(BadTag, "tag");
+    }
+}
+
+public sealed class AesGcm : IDisposable
+{
+    CorsacSecureCrypto_Gcm? _gcm;
+
+    public static bool IsSupported => true;
+    public static KeySizes NonceByteSizes { get; } = new KeySizes(12, 12, 1);
+    public static KeySizes TagByteSizes { get; } = new KeySizes(12, 16, 1);
+
+    /// The tag size this object takes, or null when it was not said.
+    public int? TagSizeInBytes { get; }
+
+    [Obsolete("AesGcm should indicate the required tag size for encryption and decryption. Use a constructor that accepts the tag size.")]
+    public AesGcm(byte[] key) : this(new ReadOnlySpan<byte>(key ?? throw new ArgumentNullException(nameof(key))), null) { }
+
+    [Obsolete("AesGcm should indicate the required tag size for encryption and decryption. Use a constructor that accepts the tag size.")]
+    public AesGcm(ReadOnlySpan<byte> key) : this(key, null) { }
+
+    public AesGcm(byte[] key, int tagSizeInBytes) : this(new ReadOnlySpan<byte>(key ?? throw new ArgumentNullException(nameof(key))), (int?)tagSizeInBytes) { }
+
+    public AesGcm(ReadOnlySpan<byte> key, int tagSizeInBytes) : this(key, (int?)tagSizeInBytes) { }
+
+    AesGcm(ReadOnlySpan<byte> key, int? tagSizeInBytes)
+    {
+        if (key.Length != 16 && key.Length != 24 && key.Length != 32) throw new CryptographicException(Aead.BadKey);
+        if (tagSizeInBytes is int size && !TagByteSizes.Allows(size)) throw new ArgumentException(Aead.BadTag, "tagSizeInBytes");
+        byte[] copy = key.ToArray();
+        _gcm = new CorsacSecureCrypto_Gcm(copy, 0, copy.Length);
+        CorsacSecureCrypto_Bytes.Zero(copy, 0, copy.Length);
+        TagSizeInBytes = tagSizeInBytes;
+    }
+
+    public void Encrypt(byte[] nonce, byte[] plaintext, byte[] ciphertext, byte[] tag, byte[]? associatedData = null)
+    {
+        if (nonce == null) throw new ArgumentNullException(nameof(nonce));
+        if (plaintext == null) throw new ArgumentNullException(nameof(plaintext));
+        if (ciphertext == null) throw new ArgumentNullException(nameof(ciphertext));
+        if (tag == null) throw new ArgumentNullException(nameof(tag));
+        Encrypt(new ReadOnlySpan<byte>(nonce), new ReadOnlySpan<byte>(plaintext), new Span<byte>(ciphertext), new Span<byte>(tag),
+                new ReadOnlySpan<byte>(associatedData));
+    }
+
+    public void Encrypt(ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> plaintext, Span<byte> ciphertext, Span<byte> tag, ReadOnlySpan<byte> associatedData = default)
+    {
+        CorsacSecureCrypto_Gcm gcm = Live();
+        Aead.Check(plaintext.Length, ciphertext.Length, nonce.Length, NonceByteSizes, tag.Length, TagSizeInBytes, TagByteSizes);
+        byte[] n = nonce.ToArray(), p = plaintext.ToArray(), a = associatedData.ToArray();
+        byte[] c = new byte[p.Length], t = new byte[tag.Length];
+        if (!gcm.Seal(n, 0, n.Length, a, 0, a.Length, p, 0, p.Length, c, 0, t, 0, t.Length))
+            throw new CryptographicException();
+        c.AsSpan().CopyTo(ciphertext);
+        t.AsSpan().CopyTo(tag);
+        CorsacSecureCrypto_Bytes.Zero(p, 0, p.Length);
+    }
+
+    public void Decrypt(byte[] nonce, byte[] ciphertext, byte[] tag, byte[] plaintext, byte[]? associatedData = null)
+    {
+        if (nonce == null) throw new ArgumentNullException(nameof(nonce));
+        if (ciphertext == null) throw new ArgumentNullException(nameof(ciphertext));
+        if (tag == null) throw new ArgumentNullException(nameof(tag));
+        if (plaintext == null) throw new ArgumentNullException(nameof(plaintext));
+        Decrypt(new ReadOnlySpan<byte>(nonce), new ReadOnlySpan<byte>(ciphertext), new ReadOnlySpan<byte>(tag), new Span<byte>(plaintext),
+                new ReadOnlySpan<byte>(associatedData));
+    }
+
+    /// The plaintext, or AuthenticationTagMismatchException with the
+    /// plaintext zeroed.
+    public void Decrypt(ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> ciphertext, ReadOnlySpan<byte> tag, Span<byte> plaintext, ReadOnlySpan<byte> associatedData = default)
+    {
+        CorsacSecureCrypto_Gcm gcm = Live();
+        Aead.Check(plaintext.Length, ciphertext.Length, nonce.Length, NonceByteSizes, tag.Length, TagSizeInBytes, TagByteSizes);
+        byte[] n = nonce.ToArray(), c = ciphertext.ToArray(), t = tag.ToArray(), a = associatedData.ToArray();
+        byte[] p = new byte[c.Length];
+        if (!gcm.Open(n, 0, n.Length, a, 0, a.Length, c, 0, c.Length, t, 0, t.Length, p, 0))
+        {
+            plaintext.Clear();
+            throw new AuthenticationTagMismatchException();
+        }
+        p.AsSpan().CopyTo(plaintext);
+        CorsacSecureCrypto_Bytes.Zero(p, 0, p.Length);
+    }
+
+    CorsacSecureCrypto_Gcm Live() => _gcm ?? throw new ObjectDisposedException(nameof(AesGcm));
+
+    public void Dispose()
+    {
+        if (_gcm != null) { _gcm.Close(); _gcm = null; }
+    }
+}
+
+public sealed class ChaCha20Poly1305 : IDisposable
+{
+    byte[]? _key;
+    static readonly KeySizes Nonces = new KeySizes(12, 12, 1);
+    static readonly KeySizes Tags = new KeySizes(16, 16, 1);
+
+    public static bool IsSupported => true;
+
+    public ChaCha20Poly1305(byte[] key) : this(new ReadOnlySpan<byte>(key ?? throw new ArgumentNullException(nameof(key)))) { }
+
+    public ChaCha20Poly1305(ReadOnlySpan<byte> key)
+    {
+        if (key.Length != 32) throw new CryptographicException(Aead.BadKey);
+        _key = key.ToArray();
+    }
+
+    public void Encrypt(byte[] nonce, byte[] plaintext, byte[] ciphertext, byte[] tag, byte[]? associatedData = null)
+    {
+        if (nonce == null) throw new ArgumentNullException(nameof(nonce));
+        if (plaintext == null) throw new ArgumentNullException(nameof(plaintext));
+        if (ciphertext == null) throw new ArgumentNullException(nameof(ciphertext));
+        if (tag == null) throw new ArgumentNullException(nameof(tag));
+        Encrypt(new ReadOnlySpan<byte>(nonce), new ReadOnlySpan<byte>(plaintext), new Span<byte>(ciphertext), new Span<byte>(tag),
+                new ReadOnlySpan<byte>(associatedData));
+    }
+
+    public void Encrypt(ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> plaintext, Span<byte> ciphertext, Span<byte> tag, ReadOnlySpan<byte> associatedData = default)
+    {
+        byte[] key = Live();
+        Aead.Check(plaintext.Length, ciphertext.Length, nonce.Length, Nonces, tag.Length, null, Tags);
+        byte[] n = nonce.ToArray(), p = plaintext.ToArray(), a = associatedData.ToArray();
+        byte[] c = new byte[p.Length], t = new byte[16];
+        CorsacSecureCrypto_ChaChaPoly1305 cipher = new CorsacSecureCrypto_ChaChaPoly1305(key, 0, p.Length);
+        bool sealedOk = cipher.Seal(n, 0, a, 0, a.Length, p, 0, p.Length, c, 0, t, 0);
+        cipher.Close();
+        CorsacSecureCrypto_Bytes.Zero(p, 0, p.Length);
+        if (!sealedOk) throw new CryptographicException();
+        c.AsSpan().CopyTo(ciphertext);
+        t.AsSpan().CopyTo(tag);
+    }
+
+    public void Decrypt(byte[] nonce, byte[] ciphertext, byte[] tag, byte[] plaintext, byte[]? associatedData = null)
+    {
+        if (nonce == null) throw new ArgumentNullException(nameof(nonce));
+        if (ciphertext == null) throw new ArgumentNullException(nameof(ciphertext));
+        if (tag == null) throw new ArgumentNullException(nameof(tag));
+        if (plaintext == null) throw new ArgumentNullException(nameof(plaintext));
+        Decrypt(new ReadOnlySpan<byte>(nonce), new ReadOnlySpan<byte>(ciphertext), new ReadOnlySpan<byte>(tag), new Span<byte>(plaintext),
+                new ReadOnlySpan<byte>(associatedData));
+    }
+
+    public void Decrypt(ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> ciphertext, ReadOnlySpan<byte> tag, Span<byte> plaintext, ReadOnlySpan<byte> associatedData = default)
+    {
+        byte[] key = Live();
+        Aead.Check(plaintext.Length, ciphertext.Length, nonce.Length, Nonces, tag.Length, null, Tags);
+        byte[] n = nonce.ToArray(), c = ciphertext.ToArray(), t = tag.ToArray(), a = associatedData.ToArray();
+        byte[] p = new byte[c.Length];
+        CorsacSecureCrypto_ChaChaPoly1305 cipher = new CorsacSecureCrypto_ChaChaPoly1305(key, 0, c.Length);
+        bool opened = cipher.Open(n, 0, a, 0, a.Length, c, 0, c.Length, t, 0, p, 0);
+        cipher.Close();
+        if (!opened)
+        {
+            plaintext.Clear();
+            throw new AuthenticationTagMismatchException();
+        }
+        p.AsSpan().CopyTo(plaintext);
+        CorsacSecureCrypto_Bytes.Zero(p, 0, p.Length);
+    }
+
+    byte[] Live() => _key ?? throw new ObjectDisposedException(nameof(ChaCha20Poly1305));
+
+    public void Dispose()
+    {
+        if (_key != null) { CorsacSecureCrypto_Bytes.Zero(_key, 0, _key.Length); _key = null; }
+    }
+}
