@@ -1607,24 +1607,8 @@ class PriorityQueue<TElement, TPriority> {
 // the non-generic surface over it -- a Hashtable's missing key reads null,
 // where a Dictionary's throws.
 
-interface ICollection : IEnumerable {
-    int Count { get; }
-    bool IsSynchronized { get; }
-    object SyncRoot { get; }
-}
-
-interface IList : ICollection {
-    object? this[int index] { get; set; }
-    bool IsFixedSize { get; }
-    bool IsReadOnly { get; }
-    int Add(object? value);
-    void Clear();
-    bool Contains(object? value);
-    int IndexOf(object? value);
-    void Insert(int index, object? value);
-    void Remove(object? value);
-    void RemoveAt(int index);
-}
+// ICollection and IList are Core.cor's, as .NET's are CoreLib's: an array
+// and List<T> are them too.
 
 interface IDictionaryEnumerator : IEnumerator {
     DictionaryEntry Entry { get; }
@@ -1683,6 +1667,7 @@ sealed class ObjectCollection : ICollection {
     public bool IsSynchronized { get { return false; } }
     public object SyncRoot { get { return this; } }
     public IEnumerator GetEnumerator() { return new ObjectWalk(_items); }
+    public void CopyTo(Array array, int index) { ((ICollection)_items).CopyTo(array, index); }
 }
 
 class ArrayList : IList {
@@ -1700,6 +1685,9 @@ class ArrayList : IList {
     public virtual bool IsReadOnly { get { return false; } }
     public virtual bool IsSynchronized { get { return false; } }
     public virtual object SyncRoot { get { return this; } }
+
+    public virtual void CopyTo(Array array) { CopyTo(array, 0); }
+    public virtual void CopyTo(Array array, int arrayIndex) { ((ICollection)_items).CopyTo(array, arrayIndex); }
 
     public virtual object? this[int index] { get { return _items[index]; } set { _items[index] = value; } }
 
@@ -1747,6 +1735,15 @@ class Hashtable : IDictionary {
     public virtual bool IsReadOnly { get { return false; } }
     public virtual bool IsSynchronized { get { return false; } }
     public virtual object SyncRoot { get { return this; } }
+
+    // Each entry a DictionaryEntry, as .NET's Hashtable copies them.
+    public virtual void CopyTo(Array array, int arrayIndex) {
+        if (array == null) throw new ArgumentNullException("array");
+        if (arrayIndex < 0) throw new ArgumentOutOfRangeException("arrayIndex");
+        if (array.Length - arrayIndex < Count) throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length.");
+        IDictionaryEnumerator walk = GetEnumerator();
+        while (walk.MoveNext()) array.SetValue(walk.Entry, arrayIndex++);
+    }
 
     // A KEY NOT THERE READS NULL, where a Dictionary's throws; written, it
     // is added.
@@ -1820,9 +1817,27 @@ class Hashtable : IDictionary {
 class Stack : ICollection {
     private readonly List<object?> _items = new List<object?>();
 
+    public Stack() { }
+    public Stack(int initialCapacity) {
+        if (initialCapacity < 0) throw new ArgumentOutOfRangeException("initialCapacity", "Non-negative number required.");
+    }
+    // Each of the collection's pushed in its order, so the last is on top.
+    public Stack(ICollection col) {
+        if (col == null) throw new ArgumentNullException("col");
+        foreach (object? item in col) _items.Add(item);
+    }
+
     public virtual int Count { get { return _items.Count; } }
     public virtual bool IsSynchronized { get { return false; } }
     public virtual object SyncRoot { get { return this; } }
+
+    // The top first, in the order Pop hands them out, as .NET's Stack copies.
+    public virtual void CopyTo(Array array, int index) {
+        if (array == null) throw new ArgumentNullException("array");
+        if (index < 0) throw new ArgumentOutOfRangeException("index");
+        if (array.Length - index < _items.Count) throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection.");
+        for (int i = _items.Count - 1; i >= 0; i--) array.SetValue(_items[i], index++);
+    }
 
     public virtual void Push(object? obj) { _items.Add(obj); }
     public virtual object? Pop() {
@@ -1844,9 +1859,23 @@ class Stack : ICollection {
 class Queue : ICollection {
     private readonly List<object?> _items = new List<object?>();
 
+    public Queue() { }
+    public Queue(int capacity) {
+        if (capacity < 0) throw new ArgumentOutOfRangeException("capacity", "Non-negative number required.");
+    }
+    public Queue(int capacity, float growFactor) : this(capacity) {
+        if (growFactor < 1.0f || growFactor > 10.0f) throw new ArgumentOutOfRangeException("growFactor", "Queue grow factor must be between 1.0 and 10.0.");
+    }
+    public Queue(ICollection col) {
+        if (col == null) throw new ArgumentNullException("col");
+        foreach (object? item in col) _items.Add(item);
+    }
+
     public virtual int Count { get { return _items.Count; } }
     public virtual bool IsSynchronized { get { return false; } }
     public virtual object SyncRoot { get { return this; } }
+
+    public virtual void CopyTo(Array array, int index) { ((ICollection)_items).CopyTo(array, index); }
 
     public virtual void Enqueue(object? obj) { _items.Add(obj); }
     public virtual object? Dequeue() {

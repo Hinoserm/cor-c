@@ -1,0 +1,100 @@
+// test: non_generic_collection_faces_of_every_element_kind
+// expect-exit: 0
+// expect-output:
+// (3,4) 1 False
+// (7,8) (0,0)
+// Blue Hue
+// Green
+// 1 [] 2 1
+// False
+// 2 False False
+// InvalidCastException
+// IndexOutOfRangeException
+// IndexOutOfRangeException
+// 6
+// 1|two 3|2|1 4|5
+// k=1
+// x|y a|b|c
+// ,7,8
+// InvalidCastException
+// ArgumentException
+// 2 1
+// ArgumentNullException
+// System.Collections.ICollection System.Collections.IList System.Array
+// True True False
+// 0,0,0
+// True 2
+//
+// The non-generic IList of arrays of structs, enums, nullables and strings:
+// a null written to a value element is its default and another type's value
+// InvalidCastException, as Array.SetValue has them; an index outside
+// IndexOutOfRangeException, as GetValue's; IndexOf and Contains by Equals
+// of the boxed element; Clear. The non-generic collections copy into any
+// array (Hashtable its DictionaryEntry values), Stack and Queue take an
+// ICollection, and ICollection, IList and Array are named as .NET names
+// them.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+struct Pt { public int X; public int Y; public Pt(int x, int y) { X = x; Y = y; } public override string ToString() => $"({X},{Y})"; }
+enum Hue { Red, Green, Blue }
+
+static class P
+{
+    static int Total(Array a) { int n = 0; foreach (object? o in a) n += o is int i ? i : 0; return n; }
+    static string Show(ICollection c) { object?[] all = new object?[c.Count]; c.CopyTo(all, 0); return string.Join("|", all); }
+
+    static void Main()
+    {
+        Pt[] pts = { new Pt(1, 2), new Pt(3, 4) };
+        IList ip = pts;
+        Console.WriteLine($"{ip[1]} {ip.IndexOf(new Pt(3, 4))} {ip.Contains(new Pt(9, 9))}");
+        ip[0] = new Pt(7, 8);
+        ip[1] = null;
+        Console.WriteLine($"{pts[0]} {pts[1]}");
+        Hue[] hues = { Hue.Red, Hue.Blue };
+        Array ha = hues;
+        Console.WriteLine($"{ha.GetValue(1)} {ha.GetValue(1)!.GetType().Name}");
+        ha.SetValue(Hue.Green, 0);
+        Console.WriteLine(hues[0]);
+        int?[] maybe = { 1, null, 3 };
+        IList im = maybe;
+        Console.WriteLine($"{im[0]} [{im[1]}] {im.IndexOf(3)} {im.IndexOf(null)}");
+        im[0] = null;
+        Console.WriteLine(maybe[0].HasValue);
+        string[] words = { "a", "b", "c" };
+        IList iw = words;
+        Console.WriteLine($"{iw.IndexOf("c")} {iw.Contains("z")} {iw.Contains(null)}");
+        try { iw[0] = 5; } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        try { ((IList)new int[2])[5] = 1; } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        try { new int[2].GetValue(3); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        Console.WriteLine(Total(new[] { 1, 2, 3 }));
+        Console.WriteLine(Show(new ArrayList { 1, "two" }) + " " + Show(new Stack(new[] { 1, 2, 3 })) + " " + Show(new Queue(new[] { 4, 5 })));
+        var table = new Hashtable { { "k", 1 } };
+        DictionaryEntry[] entries = new DictionaryEntry[1];
+        table.CopyTo(entries, 0);
+        Console.WriteLine($"{entries[0].Key}={entries[0].Value}");
+        Console.WriteLine(Show(new List<string> { "x", "y" }) + " " + Show(words));
+        object[] boxes = new object[3];
+        new int[] { 7, 8 }.CopyTo(boxes, 1);
+        Console.WriteLine(string.Join(",", boxes));
+        int[] back = new int[2];
+        try { new object[] { 1, "s" }.CopyTo(back, 0); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        try { new int[3].CopyTo(new int[2], 0); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        List<string?> names = new() { "p" };
+        IList inames = names;
+        inames.Add(null);
+        Console.WriteLine($"{names.Count} {inames.IndexOf(null)}");
+        try { ((IList)new List<int>()).Add(null); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        Console.WriteLine($"{typeof(ICollection).FullName} {typeof(IList).FullName} {typeof(Array).FullName}");
+        Console.WriteLine($"{new int[0] is ICollection} {(object)new List<int>() is IList} {(object)new List<int>() is Array}");
+        int[] filled = { 1, 2, 3 };
+        ((IList)filled).Clear();
+        Console.WriteLine(string.Join(",", filled));
+        Array none = new string[2];
+        Console.WriteLine($"{none.GetValue(0) == null} {none.Length}");
+    }
+}

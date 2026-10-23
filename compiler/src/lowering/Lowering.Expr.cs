@@ -2407,6 +2407,10 @@ public sealed partial class Lowering
         return shared && want.TemplateArgTypes.Any(a => a.Prim == Prim.Any && a.Symbol is null || a.Symbol is TypeSymbol named && "t_" + TypeKey(named) == ObjectDispatch);
     }
 
+    /// <summary>The class library's System.Array (Core.cor), which every array is.</summary>
+    private static bool SystemArrayClass(TypeSymbol t)
+        => t is { Kind: TypeKind.Class, Name: "Array", Decl: { Outer: null, TypeParams.Count: 0, Template: null } } && IsLibrary(t);
+
     private VReg TypeTest(VReg obj, TypeSymbol want)
     {
         VReg result = _f.NewReg(IrType.I32, "is");
@@ -2493,6 +2497,14 @@ public sealed partial class Lowering
             _e.SetBlock(advance);
             _e.CopyTo(cursor, R(_e.Binary(Opcode.Add, cursor, w)));
             _e.Jump(loop);
+        }
+        else if (SystemArrayClass(want))
+        {
+            // System.Array IS EVERY ARRAY (C# 10.2.8), which no array's
+            // descriptor names among its bases: asked of the descriptor's
+            // kind, an array's 1 in its low bits (Runtime.DescribedAs).
+            VReg kind = _e.Binary(Opcode.And, _e.Load(IrTypes.Word, desc, DescFlags * w), 3);
+            _e.Branch(_e.Binary(Opcode.Eq, kind, 1), yes, no);
         }
         else
         {

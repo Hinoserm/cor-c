@@ -10574,6 +10574,36 @@ class EmptyArray<T> {
 /// an object's Equals, a value's bits. Each is written against the span's
 /// memory through Data, the one place that knows how a span holds it.
 public static class MemoryExtensions {
+    // .NET's MemoryExtensions.AsMemory: an array's window as a Memory.
+    public static Memory<T> AsMemory<T>(this T[]? items) { return new Memory<T>(items); }
+
+    public static Memory<T> AsMemory<T>(this T[]? items, int start) {
+        return new Memory<T>(items, start, (items == null ? 0 : items.Length) - start);
+    }
+
+    public static Memory<T> AsMemory<T>(this T[]? items, int start, int length) {
+        return new Memory<T>(items, start, length);
+    }
+
+    // .NET's MemoryExtensions.AsSpan, which is how an array is handed to
+    // something that takes a span without the conversion being implicit.
+    // No array is an empty span, and a window that is not the array's is
+    // ArgumentOutOfRangeException, as the span's own constructor has them.
+    public static Span<T> AsSpan<T>(this T[] items) { return new Span<T>(items); }
+
+    public static Span<T> AsSpan<T>(this T[] items, int start) {
+        if (items == null) {
+            if (start != 0) { throw new ArgumentOutOfRangeException(); }
+            return default;
+        }
+        if ((uint)start > (uint)items.Length) { throw new ArgumentOutOfRangeException(); }
+        return new Span<T>(items, start, items.Length - start);
+    }
+
+    public static Span<T> AsSpan<T>(this T[] items, int start, int length) {
+        return new Span<T>(items, start, length);
+    }
+
     // .NET's AsSpan over a string is this extension, on `string?`: a null
     // string is an empty span. String.AsSpan answers the same for a string
     // known not to be null; both view the string's units, copying nothing.
@@ -11913,6 +11943,29 @@ interface IEnumerable {
     IEnumerator GetEnumerator();
 }
 
+/// .NET's non-generic ICollection and IList (System.Collections): what an
+/// array is (Lowering.ArrayFaces) and List<T> too, besides ArrayList and
+/// the rest of the non-generic collections (Collections.cor).
+interface ICollection : IEnumerable {
+    int Count { get; }
+    bool IsSynchronized { get; }
+    object SyncRoot { get; }
+    void CopyTo(Array array, int index);
+}
+
+interface IList : ICollection {
+    object? this[int index] { get; set; }
+    bool IsFixedSize { get; }
+    bool IsReadOnly { get; }
+    int Add(object? value);
+    void Clear();
+    bool Contains(object? value);
+    int IndexOf(object? value);
+    void Insert(int index, object? value);
+    void Remove(object? value);
+    void RemoveAt(int index);
+}
+
 /// .NET's IEnumerator<T>, which is an IDisposable and an IEnumerator: a
 /// foreach disposes the enumerator it walked, however the loop ended.
 interface IEnumerator<out T> : IDisposable, IEnumerator {
@@ -12590,9 +12643,47 @@ static class OutgrownStorage {
     }
 }
 
-class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
+class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    // THE NON-GENERIC IList AND ICollection, as .NET's List<T> is them: an
+    // object in and out -- a null where T takes none is ArgumentNullException,
+    // another type's value ArgumentException, as .NET says them.
+    bool IList.IsFixedSize => false;
+    bool IList.IsReadOnly => false;
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => this;
+    object? IList.this[int index] {
+        get { return this[index]; }
+        set { this[index] = Item(value); }
+    }
+    int IList.Add(object? value) { Add(Item(value)); return count - 1; }
+    bool IList.Contains(object? value) { return Compatible(value) && Contains((T)value!); }
+    int IList.IndexOf(object? value) { return Compatible(value) ? IndexOf((T)value!) : -1; }
+    void IList.Insert(int index, object? value) { Insert(index, Item(value)); }
+    void IList.Remove(object? value) { if (Compatible(value)) Remove((T)value!); }
+    void ICollection.CopyTo(Array array, int index) {
+        if (array == null) throw new ArgumentNullException("array");
+        if (array is T[] same) { CopyTo(same, index); return; }
+        if (index < 0) throw new ArgumentOutOfRangeException("index");
+        if (array.Length - index < count) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
+        for (int i = 0; i < count; i++) array.SetValue(items[i], index + i);
+    }
+
+    // A value T can be, null included where T is a reference or a nullable.
+    private static bool Compatible(object? value) {
+        if (value is T) return true;
+        if (value != null) return false;
+        T none = default!;
+        return (object?)none == null;
+    }
+
+    private static T Item(object? value) {
+        if (Compatible(value)) return (T)value!;
+        if (value == null) throw new ArgumentNullException("value");
+        throw new ArgumentException("The value \"" + value.ToString() + "\" is not of type \"" + typeof(T).FullName + "\" and cannot be used in this generic collection.", "value");
+    }
 
 
     bool ICollection<T>.IsReadOnly => false;
@@ -19430,27 +19521,96 @@ static class RuntimeHelpers {
     }
 }
 
-/// THE ARRAY HELPERS, as .NET spells them.
-static class Array {
+/// .NET'S System.Array: what every array is, beside the helpers .NET keeps
+/// on it. No array is made through it -- an array is its element's -- so
+/// its own members are what every array answers through the non-generic
+/// IList and ICollection it is (Lowering.ArrayFaces): an element as an
+/// object, written from one, and the array copied into another whatever
+/// their elements. Its explicit IList and ICollection members are never
+/// reached, every Array being an array whose descriptor answers them.
+abstract class Array : IList, ICollection {
+    private Array() { }
+
+    public int Length => ((ICollection)(object)this).Count;
+    public long LongLength => Length;
+    public int Rank => 1;
+    public bool IsFixedSize => true;
+    public bool IsReadOnly => false;
+    public bool IsSynchronized => false;
+    public object SyncRoot => this;
+
+    public int GetLength(int dimension) {
+        if (dimension != 0) throw new IndexOutOfRangeException();
+        return Length;
+    }
+    public long GetLongLength(int dimension) { return GetLength(dimension); }
+    public int GetLowerBound(int dimension) {
+        if (dimension != 0) throw new IndexOutOfRangeException();
+        return 0;
+    }
+    public int GetUpperBound(int dimension) { return GetLength(dimension) - 1; }
+
+    public object? GetValue(int index) { return ((IList)(object)this)[index]; }
+    public object? GetValue(long index) { return GetValue(Index(index)); }
+    public object? GetValue(params int[] indices) { return GetValue(Index(indices)); }
+    public void SetValue(object? value, int index) { ((IList)(object)this)[index] = value; }
+    public void SetValue(object? value, long index) { SetValue(value, Index(index)); }
+    public void SetValue(object? value, params int[] indices) { SetValue(value, Index(indices)); }
+
+    public void CopyTo(Array array, int index) { ((ICollection)(object)this).CopyTo(array, index); }
+    public void CopyTo(Array array, long index) { CopyTo(array, Index(index)); }
+    public IEnumerator GetEnumerator() { return ((IEnumerable)(object)this).GetEnumerator(); }
+
+    private static int Index(long index) {
+        if (index < int.MinValue || index > int.MaxValue) throw new ArgumentOutOfRangeException("index", "Arrays larger than 2GB are not supported.");
+        return (int)index;
+    }
+    private static int Index(int[] indices) {
+        if (indices == null) throw new ArgumentNullException("indices");
+        if (indices.Length != 1) throw new ArgumentException("Indices length does not match the array rank.", "indices");
+        return indices[0];
+    }
+
+    // WHAT AN ARRAY ANSWERS THROUGH IList AND ICollection that is not its
+    // element's to say (Lowering.ArrayFaces): written once, over the boxed
+    // GetValue and SetValue its descriptor answers. A null written to an
+    // element of a value type is its default, as .NET's SetValue has it.
+    internal static int FaceIndexOf(Array array, object? value) {
+        int n = array.Length;
+        for (int i = 0; i < n; i++) {
+            object? held = array.GetValue(i);
+            if (held == null ? value == null : held.Equals(value)) return i;
+        }
+        return -1;
+    }
+    internal static bool FaceContains(Array array, object? value) { return FaceIndexOf(array, value) >= 0; }
+    internal static void FaceClear(Array array) {
+        int n = array.Length;
+        for (int i = 0; i < n; i++) array.SetValue(null, i);
+    }
+    internal static void FaceCopyTo(Array source, Array destination, int index) {
+        if (destination == null) throw new ArgumentNullException("destinationArray");
+        if (index < 0) throw new ArgumentOutOfRangeException("destinationIndex", "Number was less than the array's lower bound in the first dimension.");
+        int n = source.Length;
+        if (destination.Length - index < n) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
+        for (int i = 0; i < n; i++) destination.SetValue(source.GetValue(i), index + i);
+    }
+
+    int ICollection.Count => ((ICollection)(object)this).Count;
+    void ICollection.CopyTo(Array array, int index) { CopyTo(array, index); }
+    object? IList.this[int index] { get { return GetValue(index); } set { SetValue(value, index); } }
+    int IList.Add(object? value) { return ((IList)(object)this).Add(value); }
+    void IList.Clear() { ((IList)(object)this).Clear(); }
+    bool IList.Contains(object? value) { return ((IList)(object)this).Contains(value); }
+    int IList.IndexOf(object? value) { return ((IList)(object)this).IndexOf(value); }
+    void IList.Insert(int index, object? value) { ((IList)(object)this).Insert(index, value); }
+    void IList.Remove(object? value) { ((IList)(object)this).Remove(value); }
+    void IList.RemoveAt(int index) { ((IList)(object)this).RemoveAt(index); }
+
     /// An array of no elements. .NET returns a shared singleton; this one
     /// allocates, because there is nowhere to cache it per type yet and a
     /// zero-length array costs one word.
     public static T[] Empty<T>() { return EmptyArray<T>.Value; }
-
-    /// A SHALLOW COPY, which is what .NET's Array.Clone answers: a new array
-    /// with the same elements, and elements that are references still pointing
-    /// at the same things.
-    ///
-    /// .NET declares it on System.Array and returns object, so every caller
-    /// casts; here it is an extension over the array itself, typed, because a
-    /// cast back from object would be the only difference and there is nothing
-    /// for it to protect against.
-    public static T[] Clone<T>(this T[] items) {
-        T[] made = new T[items.Length];
-
-        for (int i = 0; i < items.Length; i++) { made[i] = items[i]; }
-        return made;
-    }
 
     public static int IndexOf<T>(T[] items, T value) {
         return IndexOf(items, value, 0, items.Length);
@@ -19484,10 +19644,6 @@ static class Array {
         return Sys.IsObject(a) ? Sys.KeyEquals(a, b) : Sys.EqualValues(a, b);
     }
 
-    public static bool Contains<T>(this T[] items, T value) {
-        return IndexOf(items, value) >= 0;
-    }
-
     /// Replace every element with one value. This overload is the primitive
     /// array form used by the compiler's ISA tables; wider and reference-array
     /// overloads can use the same loop as their source reaches self-hosting.
@@ -19497,43 +19653,6 @@ static class Array {
             items[i] = value;
             i = i + 1;
         }
-    }
-
-    // ARRAY.COPY'S, as .NET's array copies itself: its refusals in its words.
-    public static void CopyTo<T>(this T[] items, T[] into) { Array.Copy(items, 0, into, 0, items.Length); }
-
-    public static void CopyTo<T>(this T[] items, T[] into, int at) { Array.Copy(items, 0, into, at, items.Length); }
-
-    public static void CopyTo<T>(this T[] items, Span<T> into) { new ReadOnlySpan<T>(items).CopyTo(into); }
-
-    // .NET's MemoryExtensions.AsMemory: an array's window as a Memory.
-    public static Memory<T> AsMemory<T>(this T[]? items) { return new Memory<T>(items); }
-
-    public static Memory<T> AsMemory<T>(this T[]? items, int start) {
-        return new Memory<T>(items, start, (items == null ? 0 : items.Length) - start);
-    }
-
-    public static Memory<T> AsMemory<T>(this T[]? items, int start, int length) {
-        return new Memory<T>(items, start, length);
-    }
-
-    // .NET's MemoryExtensions.AsSpan, which is how an array is handed to
-    // something that takes a span without the conversion being implicit.
-    // No array is an empty span, and a window that is not the array's is
-    // ArgumentOutOfRangeException, as the span's own constructor has them.
-    public static Span<T> AsSpan<T>(this T[] items) { return new Span<T>(items); }
-
-    public static Span<T> AsSpan<T>(this T[] items, int start) {
-        if (items == null) {
-            if (start != 0) { throw new ArgumentOutOfRangeException(); }
-            return default;
-        }
-        if ((uint)start > (uint)items.Length) { throw new ArgumentOutOfRangeException(); }
-        return new Span<T>(items, start, items.Length - start);
-    }
-
-    public static Span<T> AsSpan<T>(this T[] items, int start, int length) {
-        return new Span<T>(items, start, length);
     }
 
     public static int LastIndexOf<T>(T[] items, T value) {
@@ -19832,6 +19951,37 @@ static class Array {
         if (items.Length - index < length) { throw new ArgumentException("Offset and length were out of bounds for the array or count is greater than the number of elements from index to the end of the source collection."); }
         return Sorting.Search(items, index, length, value, comparer ?? Comparer<T>.Default);
     }
+}
+
+/// AN ARRAY'S OWN EXTENSIONS, which were Array's while Array was a static
+/// class: a typed Clone, Contains and CopyTo into an array or a span of its
+/// element. Array's own CopyTo(Array, int) is any array's into any other.
+static class __ArrayExtensions {
+    /// A SHALLOW COPY, which is what .NET's Array.Clone answers: a new array
+    /// with the same elements, and elements that are references still pointing
+    /// at the same things.
+    ///
+    /// .NET declares it on System.Array and returns object, so every caller
+    /// casts; here it is an extension over the array itself, typed, because a
+    /// cast back from object would be the only difference and there is nothing
+    /// for it to protect against.
+    public static T[] Clone<T>(this T[] items) {
+        T[] made = new T[items.Length];
+
+        for (int i = 0; i < items.Length; i++) { made[i] = items[i]; }
+        return made;
+    }
+
+    public static bool Contains<T>(this T[] items, T value) {
+        return Array.IndexOf(items, value) >= 0;
+    }
+
+    // ARRAY.COPY'S, as .NET's array copies itself: its refusals in its words.
+    public static void CopyTo<T>(this T[] items, T[] into) { Array.Copy(items, 0, into, 0, items.Length); }
+
+    public static void CopyTo<T>(this T[] items, T[] into, int at) { Array.Copy(items, 0, into, at, items.Length); }
+
+    public static void CopyTo<T>(this T[] items, Span<T> into) { new ReadOnlySpan<T>(items).CopyTo(into); }
 }
 
 /// A HASH BUILT FROM SEVERAL VALUES, spelt as .NET spells it since Core 2.1.

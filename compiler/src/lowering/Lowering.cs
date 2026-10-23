@@ -1977,7 +1977,7 @@ public sealed partial class Lowering
         // so the unit declaring a kernel's global type named it System.X and
         // every other unit, reading it from the index, plain X: List<X> was
         // two certificates, and the link refused the shared instance.
-        string space = d.Namespace.Length > 0 ? d.Namespace : SystemType(t) ? LibraryHome(t.Name) : "";
+        string space = d.Namespace.Length > 0 ? d.Namespace : SystemType(t) ? LibraryHome(t.Name, d.TypeParams.Count > 0) : "";
         // The outer types: the declaration's path less its namespace, and less
         // the program's home, which no name shows (TypeDecl.ProgramHome).
         string outer = TypeDecl.Unaside(d.Outer ?? "");
@@ -2053,6 +2053,16 @@ public sealed partial class Lowering
     /// object.ToString say of them.
     /// </summary>
     private static string LibraryHome(string name) => LibraryHomes.TryGetValue(name, out string? home) ? home : "System";
+
+    /// <summary>
+    /// LibraryHome of a type declared with or without type parameters: the
+    /// non-generic interfaces and collections of the generic ones' names are
+    /// System.Collections' -- IEnumerable, ICollection, IList, Stack, Queue --
+    /// as .NET has them, not System.Collections.Generic's.
+    /// </summary>
+    private static string LibraryHome(string name, bool generic)
+        => !generic && name is "IEnumerable" or "IEnumerator" or "ICollection" or "IList" or "IComparer" or "IEqualityComparer"
+            or "IDictionary" or "Stack" or "Queue" ? "System.Collections" : LibraryHome(name);
 
     /// <summary>The class library's global types not in System, by .NET's namespace for each (LibraryHome).</summary>
     private static readonly Dictionary<string, string> LibraryHomes = HomesOf(new (string, string)[]

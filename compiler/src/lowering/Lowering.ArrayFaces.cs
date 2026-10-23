@@ -57,6 +57,8 @@ public sealed partial class Lowering
         ("ICollection", 1, ArrayFace.Sequence), ("IList", 1, ArrayFace.Sequence),
         ("IReadOnlyCollection", 1, ArrayFace.Sequence), ("IReadOnlyList", 1, ArrayFace.Sequence),
         ("IEnumerator", 1, ArrayFace.Walker),
+        // The non-generic ICollection and IList, which System.Array is.
+        ("ICollection", 0, ArrayFace.Sequence), ("IList", 0, ArrayFace.Sequence),
     };
 
     /// <summary>The library's interface of one of these families, or None for any other type.</summary>
@@ -128,6 +130,8 @@ public sealed partial class Lowering
         ("IReadOnlyList", 1) => new() { "get_Item" },
         ("IEnumerator", 1) => new() { "get_Current" },
         ("IEnumerator", 0) => new() { "get_Current", "MoveNext", "Reset" },
+        ("ICollection", 0) => new() { "get_Count", "get_IsSynchronized", "get_SyncRoot", "CopyTo" },
+        ("IList", 0) => new() { "get_Item", "set_Item", "get_IsFixedSize", "get_IsReadOnly", "Add", "Clear", "Contains", "IndexOf", "Insert", "Remove", "RemoveAt" },
         ("IDisposable", 0) => new() { "Dispose" },
         _ => new(),
     };
@@ -208,7 +212,154 @@ public sealed partial class Lowering
             "RemoveAt" => ArrayRefusal("removeat", Type.Void, "ArrayFixedSize", Type.I32),
             _ => null,
         });
+        // THE NON-GENERIC ONES, System.Array's: an element in and out as an
+        // object -- boxed by its own type, so each element type has its own
+        // read and write, every reference sharing one -- and the rest
+        // Array's own (Core.cor, Array.Face*) over them.
+        (Type exact, string exactKey) = ReferenceElements(element) || element.ParamName is not null ? (Type.Any, "ref") : (element, key);
+        Fill("ICollection", 0, member => member switch
+        {
+            "get_Count" => ArrayCount(),
+            "get_IsSynchronized" => ArrayAnswer("__array_false", false),
+            "get_SyncRoot" => ArraySelf(),
+            "CopyTo" => ArrayCopyToAny(code, shared),
+            _ => null,
+        });
+        Fill("IList", 0, member => member switch
+        {
+            "get_Item" => ArrayGetObject(exact, exactKey),
+            "set_Item" => ArraySetObject(exact, exactKey),
+            "get_IsFixedSize" => ArrayAnswer("__array_true", true),
+            "get_IsReadOnly" => ArrayAnswer("__array_false", false),
+            "Add" => ArrayRefusal("addobject", Type.I32, "ArrayFixedSize", Type.Any),
+            "Clear" => ArrayOfLibrary("__array_clearall", "FaceClear", Type.Void),
+            "Contains" => ArrayOfLibrary("__array_containsobject", "FaceContains", Type.Bool, Type.Any),
+            "IndexOf" => ArrayOfLibrary("__array_indexofobject", "FaceIndexOf", Type.I32, Type.Any),
+            "Insert" => ArrayRefusal("insertobject", Type.Void, "ArrayFixedSize", Type.I32, Type.Any),
+            "Remove" => ArrayRefusal("removeobject", Type.Void, "ArrayFixedSize", Type.Any),
+            "RemoveAt" => ArrayRefusal("removeat", Type.Void, "ArrayFixedSize", Type.I32),
+            _ => null,
+        });
         return filled;
+    }
+
+    /// <summary>A constant answer of every array's: IsFixedSize's true, IsReadOnly's and IsSynchronized's false.</summary>
+    private string ArrayAnswer(string name, bool answer)
+        => ArrayRoutine(name, Type.Bool, Array.Empty<Type>(), (f, self, args, buffer) => _e.Ret(Imm(answer ? 1 : 0, IrTypes.Of(Type.Bool))));
+
+    /// <summary>SyncRoot, of every array: the array itself, as .NET's.</summary>
+    private string ArraySelf()
+        => ArrayRoutine("__array_self", Type.Any, Array.Empty<Type>(), (f, self, args, buffer) => _e.Ret(R(self)));
+
+    /// <summary>One of System.Array's own (Core.cor, Array.Face*), called with the array and the member's arguments.</summary>
+    private string ArrayOfLibrary(string name, string method, Type returns, params Type[] parameters)
+        => ArrayRoutine(name, returns, parameters, (f, self, args, buffer) =>
+        {
+            if (_b.Types.TryGetValue("Array", out TypeSymbol? array)
+                && array.FindMethods(method).FirstOrDefault(m => m.Static && m.Params.Count == parameters.Length + 1) is MethodSymbol answer)
+            {
+                Require(answer);
+                Operand[] passed = new Operand[parameters.Length + 1];
+                passed[0] = R(AsParam(self, answer.Params[0].Type));
+                for (int i = 0; i < parameters.Length; i++) passed[i + 1] = R(AsParam(args[i], answer.Params[i + 1].Type));
+                VReg? result = _e.Call(CallLabel(answer), IrTypes.Of(returns), passed);
+                _e.Ret(result is null ? null : R(result));
+                return;
+            }
+            Fail(ArrayAt(name), $"System.Array has no {method} for an array's {name}");
+            _e.Ret(returns.Prim == Prim.Void && returns.Symbol is null ? null : Imm(0, IrTypes.Of(returns)));
+        });
+
+    /// <summary>
+    /// IList's indexer read, the element as an object: boxed by its own type,
+    /// a reference as it is; an index outside the array IndexOutOfRangeException,
+    /// as Array.GetValue's is (the generic indexer's is ArgumentOutOfRange).
+    /// </summary>
+    private string ArrayGetObject(Type element, string key)
+    {
+        string name = "__array_getobject$" + key;
+        return ArrayRoutine(name, Type.Any, new[] { Type.I32 }, (f, self, args, buffer) =>
+        {
+            ArrayIndexChecked(self, args[0], "IndexOutOfRange");
+            VReg value = LoadElement(self, args[0], element, ArrayAt(name));
+            _e.Ret(R(element.Prim == Prim.Any && element.Symbol is null ? value : Convert(ArrayAt(name), value, element, Type.Any)));
+        });
+    }
+
+    /// <summary>
+    /// IList's indexer written from an object: unboxed to the element's type
+    /// -- another type's box InvalidCastException, as SetValue's -- a null an
+    /// element of a value type's default, as .NET's SetValue has it, and a
+    /// reference of a type the array cannot hold InvalidCastException too,
+    /// where a store's is ArrayTypeMismatchException (ArrayCopyCheck).
+    /// </summary>
+    private string ArraySetObject(Type element, string key)
+    {
+        string name = "__array_setobject$" + key;
+        return ArrayRoutine(name, Type.Void, new[] { Type.I32, Type.Any }, (f, self, args, buffer) =>
+        {
+            ArrayIndexChecked(self, args[0], "IndexOutOfRange");
+            if (element.Prim == Prim.Any && element.Symbol is null)
+            {
+                ArrayStore(self, args[0], args[1], element, name, "ArrayCopyCheck");
+                _e.Ret(null);
+                return;
+            }
+            if (element.IsNullableValue)
+            {
+                ArrayStore(self, args[0], Convert(ArrayAt(name), args[1], Type.Any, element), element, name);
+                _e.Ret(null);
+                return;
+            }
+            Block some = f.NewBlock("setsome");
+            Block none = f.NewBlock("setnone");
+            _e.Branch(args[1], some, none);
+            _e.SetBlock(none);
+            ArrayStore(self, args[0], ElementDefault(element, name), element, name);
+            _e.Ret(null);
+            _e.SetBlock(some);
+            ArrayStore(self, args[0], Convert(ArrayAt(name), args[1], Type.Any, element), element, name);
+            _e.Ret(null);
+        });
+    }
+
+    /// <summary>An element's default: a zeroed struct, else zero of its machine type.</summary>
+    private VReg ElementDefault(Type element, string name)
+    {
+        if (IsStructValue(element)) return NewStruct(ArrayAt(name), StructOf(element));
+        IrType t = IrTypes.Of(element);
+        if (t.IsFloat()) return _e.Unary(Opcode.Bits, R(_e.Const(0, t == IrType.F32 ? IrType.I32 : IrType.I64)), t);
+        return _e.Const(0, t);
+    }
+
+    /// <summary>
+    /// ICollection.CopyTo(Array, int): into an array of the same type as
+    /// ICollection&lt;T&gt;'s CopyTo copies (ArrayCopyTo); into any other
+    /// element by element through each one's GetValue and SetValue, as
+    /// System.Array's CopyTo has it (Array.FaceCopyTo).
+    /// </summary>
+    private string ArrayCopyToAny(Type code, string key)
+    {
+        string name = "__array_copytoany$" + key;
+        string same = ArrayCopyTo(code, key);
+        string other = ArrayOfLibrary("__array_copytoother", "FaceCopyTo", Type.Void, Type.Any, Type.I32);
+        return ArrayRoutine(name, Type.Void, new[] { Type.Any, Type.I32 }, (f, self, args, buffer) =>
+        {
+            Block present = f.NewBlock("copyany");
+            Block alike = f.NewBlock("copyalike");
+            Block unlike = f.NewBlock("copyunlike");
+            _e.Branch(args[0], present, unlike);
+            _e.SetBlock(present);
+            VReg theirs = _e.Load(IrTypes.Word, args[0], 0);
+            VReg ours = _e.Load(IrTypes.Word, self, 0);
+            _e.Branch(_e.Binary(Opcode.Eq, R(theirs), R(ours), IrType.I32), alike, unlike);
+            _e.SetBlock(alike);
+            _e.Call(same, IrType.Void, R(self), R(args[0]), R(args[1]));
+            _e.Ret(null);
+            _e.SetBlock(unlike);
+            _e.Call(other, IrType.Void, R(self), R(args[0]), R(args[1]));
+            _e.Ret(null);
+        });
     }
 
     /// <summary>
@@ -368,13 +519,13 @@ public sealed partial class Lowering
     }
 
     /// <summary>Refuses an index outside the array as IList&lt;T&gt;'s indexer does (Runtime.ArrayFaceIndex).</summary>
-    private void ArrayIndexChecked(VReg array, VReg index)
+    private void ArrayIndexChecked(VReg array, VReg index, string refusal = "ArrayFaceIndex")
     {
         Block good = _f.NewBlock("faceinrange");
         Block bad = _f.NewBlock("faceoutofrange");
         _e.Branch(_e.Binary(Opcode.LtU, R(index), R(CountOf(_e, array)), IrType.I32), good, bad);
         _e.SetBlock(bad);
-        ArrayThrow("ArrayFaceIndex");
+        ArrayThrow(refusal);
         _e.SetBlock(good);
     }
 

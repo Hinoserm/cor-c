@@ -9106,6 +9106,13 @@ public sealed partial class Binder
             return true;
         }
 
+        // AND A System.Array, with the non-generic ICollection and IList it
+        // implements (C# 10.2.8): `Array a = ints;`, `IList list = ints;`.
+        if (from.IsArray && (SystemArray(to) || NonGenericArrayFace(to)))
+        {
+            return true;
+        }
+
         // A SPECIALISATION GOES WHERE ITS CANONICAL COPY IS WANTED.
         //
         // `List<TypeRef>` and `List<__canon>` are one compiled routine already
@@ -13033,6 +13040,27 @@ public sealed partial class Binder
         return element.IsReference && (wanted.IsReference || wanted.Prim == Prim.Any && wanted.Symbol is null && !wanted.IsNullableValue)
             && ReferenceConvertible(element, wanted) ? wanted : null;
     }
+
+    /// <summary>
+    /// .NET's System.Array: the class library's own Array class, which every
+    /// array is (Core.cor) -- not an Array of the program's.
+    /// </summary>
+    private static bool SystemArray(Type t)
+        => !t.IsArray && !t.IsPointer && t.ParamName is null
+        && t.Symbol is { Kind: TypeKind.Class, Name: "Array", Decl: { Outer: null, TypeParams.Count: 0, Template: null } } array && IsLibraryType(array);
+
+    /// <summary>The class library's System.Array class, when this compilation has it.</summary>
+    private TypeSymbol? SystemArrayClass()
+        => _r.Types.TryGetValue("Array", out TypeSymbol? array) && SystemArray(Type.Plain(array, Prim.Void)) ? array : null;
+
+    /// <summary>
+    /// The non-generic ICollection or IList, which every array is besides
+    /// its element's sequence interfaces (Lowering.ArrayFaces).
+    /// </summary>
+    private static bool NonGenericArrayFace(Type t)
+        => !t.IsArray && !t.IsPointer
+        && t.AsNonNullable().Symbol is { Kind: TypeKind.Interface, Decl: { Outer: null, TypeParams.Count: 0, Template: null } } face
+        && Bare(face.Name) is "ICollection" or "IList" && IsLibraryType(face);
 
     private TypeDecl? ArrayFace(Type from, Type to)
     {
@@ -21311,6 +21339,27 @@ public sealed partial class Binder
                     _r.Resolved[m] = new MethodGroupSym(onString);
                     _r.Receivers[m] = true;
                     return Type.Void;
+                }
+            }
+
+            // AN ARRAY IS A System.Array (C# 10.2.8): what Array declares and
+            // the array itself does not -- GetValue, SetValue, Rank, GetLength,
+            // CopyTo(Array, int) -- reached as any class's members are, `this`
+            // the array. Before the extensions, as an instance member comes
+            // before them, unless none of Array's takes the call: `ints.CopyTo(
+            // span)` is MemoryExtensions' (C# 12.8.10.3).
+            if (target.IsArray && !target.IsPointer && SystemArrayClass() is { } arrayClass)
+            {
+                List<MethodSymbol> instance = arrayClass.FindMethods(m.Name).Where(x => !x.Static && x.ExplicitInterface is null).ToList();
+                if (instance.Count > 0 && (!ReferenceEquals(m, _callee) || _calleeArgs < 0 || instance.Any(x => MayTake(x, _calleeArgs))))
+                {
+                    _r.Resolved[m] = new MethodGroupSym(instance);
+                    return Type.Void;
+                }
+                if (arrayClass.FindMethods("get_" + m.Name).FirstOrDefault(x => !x.Static && x.ExplicitInterface is null) is { } arrayGetter)
+                {
+                    _r.Resolved[m] = new PropertyGetSym(arrayGetter);
+                    return conditional ? arrayGetter.Returns.AsNullable() : arrayGetter.Returns;
                 }
             }
 

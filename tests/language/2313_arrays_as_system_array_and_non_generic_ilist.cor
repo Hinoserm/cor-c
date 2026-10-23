@@ -1,0 +1,85 @@
+// test: arrays_as_system_array_and_non_generic_ilist
+// expect-exit: 0
+// expect-output:
+// 4 1 True 2 False False
+// 3 6 1 3 3
+// 9
+// 7 True 2 3 True False
+// 8
+// 0,1,2,3,4,0
+// ,9,8,7
+// True True True False
+// 8
+// 7 1 3 2
+// z a
+// x
+// 0,4,5
+// ArgumentException
+// NotSupportedException
+// InvalidCastException
+// 9;8;7;
+// 0,0,0
+//
+// An array is a System.Array and the non-generic IList and ICollection it
+// implements, as .NET's (C# 10.2.8): GetValue and SetValue, Rank,
+// GetLength, CopyTo(Array, int) into an array of another element, `o is
+// Array`, `(int[])(Array)o`, an element boxed by its own type and unboxed
+// back. Array was a static class of helpers, so no value could be one;
+// List<T> is the non-generic IList and ICollection too.
+// Expected output from .NET 10.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+static class P
+{
+    static void Main()
+    {
+        List<int> l = new() { 1, 2, 3 };
+        IList il = l;
+        il.Add(4);
+        Console.WriteLine($"{il.Count} {il[0]} {il.Contains(2)} {il.IndexOf(3)} {il.Contains("2")} {il.IsFixedSize}");
+        int[] arr = { 5, 6, 7 };
+        Array a = arr;
+        Console.WriteLine($"{a.Length} {a.GetValue(1)} {a.Rank} {a.GetLength(0)} {a.LongLength}");
+        a.SetValue(9, 0);
+        Console.WriteLine(arr[0]);
+        IList ia = arr;
+        Console.WriteLine($"{ia[2]} {ia.Contains(6)} {ia.IndexOf(7)} {ia.Count} {ia.IsFixedSize} {ia.IsReadOnly}");
+        ia[1] = 8;
+        Console.WriteLine(arr[1]);
+        ICollection c = l;
+        int[] dest = new int[6];
+        c.CopyTo(dest, 1);
+        Console.WriteLine(string.Join(",", dest));
+        object[] objs = new object[4];
+        ((ICollection)arr).CopyTo(objs, 1);
+        Console.WriteLine(string.Join(",", objs));
+        object o = arr;
+        Console.WriteLine($"{o is Array} {o is IList} {o is ICollection} {(object)"s" is Array}");
+        Array back = (Array)o;
+        int[] again = (int[])back;
+        Console.WriteLine(again[1]);
+        Console.WriteLine($"{arr.GetValue(2)} {arr.Rank} {arr.GetLength(0)} {arr.GetUpperBound(0)}");
+        string[] words = { "a", "b" };
+        Array wa = words;
+        wa.SetValue("z", 1);
+        Console.WriteLine($"{words[1]} {wa.GetValue(0)}");
+        var al = new ArrayList { 1, "x" };
+        object[] copy = new object[2];
+        al.CopyTo(copy, 0);
+        Console.WriteLine(copy[1]);
+        Array target = new long[3];
+        new List<long> { 4, 5 }.ForEach(_ => { });
+        ((ICollection)new List<long> { 4, 5 }).CopyTo(target, 1);
+        Console.WriteLine(string.Join(",", (long[])target));
+        try { il.Add("no"); } catch (ArgumentException e) { Console.WriteLine(e.GetType().Name); }
+        try { ia.Add(1); } catch (NotSupportedException e) { Console.WriteLine(e.GetType().Name); }
+        try { a.SetValue("x", 0); } catch (InvalidCastException e) { Console.WriteLine(e.GetType().Name); }
+        foreach (object? each in a) Console.Write(each + ";");
+        Console.WriteLine();
+        ia.Clear();
+        Console.WriteLine(string.Join(",", arr));
+    }
+}
