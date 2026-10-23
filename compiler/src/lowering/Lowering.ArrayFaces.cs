@@ -318,9 +318,57 @@ public sealed partial class Lowering
             ArrayStore(self, args[0], ElementDefault(element, name), element, name);
             _e.Ret(null);
             _e.SetBlock(some);
+            // A BOX OF ANOTHER PRIMITIVE IS WIDENED, as SetValue widens it
+            // (Array.FaceWidenedWhole and FaceWidenedReal, which refuse what
+            // does not widen): a box of the element's own type is unboxed.
+            if (WidenKind(element) is int kind)
+            {
+                Block exact = f.NewBlock("setexact");
+                Block widen = f.NewBlock("setwiden");
+                _e.Branch(BoxTest(args[1], element, ArrayAt(name)), exact, widen);
+                _e.SetBlock(widen);
+                bool real = kind is 9 or 10;
+                Type held = real ? Type.F64 : Type.I64;
+                VReg widened = CallArrayLibrary(real ? "FaceWidenedReal" : "FaceWidenedWhole", held, name, args[1], _e.Const(kind, IrType.I32));
+                if (kind == 11)
+                {
+                    // Nothing widens to a bool: the helper has refused it.
+                    _e.Emit(Opcode.Trap, null);
+                    _e.Unreachable();
+                }
+                else
+                {
+                    ArrayStore(self, args[0], Convert(ArrayAt(name), widened, held, element), element, name);
+                    _e.Ret(null);
+                }
+                _e.SetBlock(exact);
+            }
             ArrayStore(self, args[0], Convert(ArrayAt(name), args[1], Type.Any, element), element, name);
             _e.Ret(null);
         });
+    }
+
+    /// <summary>A primitive element's kind as Array.FaceWidened* numbers it, or null for any other element.</summary>
+    private static int? WidenKind(Type element)
+        => element.Symbol is not null || element.IsNullableValue || element.IsArray || element.IsPointer ? null : element.Prim switch
+        {
+            Prim.Char => 0, Prim.I8 => 1, Prim.U8 => 2, Prim.I16 => 3, Prim.U16 => 4, Prim.I32 => 5, Prim.U32 => 6,
+            Prim.I64 => 7, Prim.U64 => 8, Prim.F32 => 9, Prim.F64 => 10, Prim.Bool => 11,
+            _ => null,
+        };
+
+    /// <summary>One of System.Array's own statics (Core.cor) called from an array's routine: its result.</summary>
+    private VReg CallArrayLibrary(string method, Type returns, string routine, params VReg[] args)
+    {
+        if (_b.Types.TryGetValue("Array", out TypeSymbol? array)
+            && array.FindMethods(method).FirstOrDefault(m => m.Static && m.Params.Count == args.Length) is MethodSymbol answer)
+        {
+            Require(answer);
+            Operand[] passed = new Operand[args.Length];
+            for (int i = 0; i < args.Length; i++) passed[i] = R(AsParam(args[i], answer.Params[i].Type));
+            return _e.Call(CallLabel(answer), IrTypes.Of(returns), passed)!;
+        }
+        return Fail(ArrayAt(routine), $"System.Array has no {method} for an array's {routine}");
     }
 
     /// <summary>An element's default: a zeroed struct, else zero of its machine type.</summary>

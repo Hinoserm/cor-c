@@ -11966,6 +11966,100 @@ interface IList : ICollection {
     void RemoveAt(int index);
 }
 
+/// .NET's non-generic IDictionary (System.Collections), with its walker and
+/// entry: what Hashtable is (Collections.cor), and an exception's Data.
+interface IDictionaryEnumerator : IEnumerator {
+    DictionaryEntry Entry { get; }
+    object Key { get; }
+    object? Value { get; }
+}
+
+interface IDictionary : ICollection {
+    object? this[object key] { get; set; }
+    ICollection Keys { get; }
+    ICollection Values { get; }
+    bool IsFixedSize { get; }
+    bool IsReadOnly { get; }
+    void Add(object key, object? value);
+    void Clear();
+    bool Contains(object key);
+    new IDictionaryEnumerator GetEnumerator();
+    void Remove(object key);
+}
+
+struct DictionaryEntry {
+    private object _key;
+    private object? _value;
+
+    public DictionaryEntry(object key, object? value) { _key = key; _value = value; }
+
+    public object Key { get { return _key; } set { _key = value; } }
+    public object? Value { get { return _value; } set { _value = value; } }
+
+    public void Deconstruct(out object key, out object? value) { key = _key; value = _value; }
+}
+
+/// AN EXCEPTION'S Data, as .NET's ListDictionaryInternal is: a few entries
+/// kept in the order added, found by the key's Equals, a null key refused.
+sealed class __ListDictionary : IDictionary {
+    private readonly List<DictionaryEntry> _entries = new List<DictionaryEntry>();
+
+    private int Find(object key) {
+        if (key == null) throw new ArgumentNullException("key");
+        for (int i = 0; i < _entries.Count; i++) { if (_entries[i].Key.Equals(key)) return i; }
+        return -1;
+    }
+
+    public object? this[object key] {
+        get { int at = Find(key); return at < 0 ? null : _entries[at].Value; }
+        set {
+            int at = Find(key);
+            if (at < 0) _entries.Add(new DictionaryEntry(key, value));
+            else _entries[at] = new DictionaryEntry(key, value);
+        }
+    }
+    public ICollection Keys { get { List<object> keys = new List<object>(); foreach (DictionaryEntry e in _entries) keys.Add(e.Key); return keys; } }
+    public ICollection Values { get { List<object?> values = new List<object?>(); foreach (DictionaryEntry e in _entries) values.Add(e.Value); return values; } }
+    public bool IsFixedSize => false;
+    public bool IsReadOnly => false;
+    public bool IsSynchronized => false;
+    public object SyncRoot => this;
+    public int Count => _entries.Count;
+
+    public void Add(object key, object? value) {
+        if (Find(key) >= 0) throw new ArgumentException("An item with the same key has already been added. Key: " + key.ToString());
+        _entries.Add(new DictionaryEntry(key, value));
+    }
+    public void Clear() { _entries.Clear(); }
+    public bool Contains(object key) { return Find(key) >= 0; }
+    public void Remove(object key) { int at = Find(key); if (at >= 0) _entries.RemoveAt(at); }
+    public void CopyTo(Array array, int index) {
+        if (array == null) throw new ArgumentNullException("array");
+        if (index < 0) throw new ArgumentOutOfRangeException("index");
+        if (array.Length - index < _entries.Count) throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length.");
+        for (int i = 0; i < _entries.Count; i++) array.SetValue(_entries[i], index + i);
+    }
+    public IDictionaryEnumerator GetEnumerator() { return new Walk(new List<DictionaryEntry>(_entries)); }
+    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+
+    private sealed class Walk : IDictionaryEnumerator {
+        private readonly List<DictionaryEntry> _entries;
+        private int _at = -1;
+        public Walk(List<DictionaryEntry> entries) { _entries = entries; }
+        public DictionaryEntry Entry {
+            get {
+                if (_at < 0 || _at >= _entries.Count) throw new InvalidOperationException("Enumeration has either not started or has already finished.");
+                return _entries[_at];
+            }
+        }
+        public object Key => Entry.Key;
+        public object? Value => Entry.Value;
+        public object Current => Entry;
+        public bool MoveNext() { _at = _at + 1; return _at < _entries.Count; }
+        public void Reset() { _at = -1; }
+    }
+}
+
 /// .NET's IEnumerator<T>, which is an IDisposable and an IEnumerator: a
 /// foreach disposes the enumerator it walked, however the loop ended.
 interface IEnumerator<out T> : IDisposable, IEnumerator {
@@ -19571,6 +19665,55 @@ abstract class Array : IList, ICollection {
         return indices[0];
     }
 
+    // THE NON-GENERIC FORMS, .NET's own: any array into any other, an
+    // element at a time through GetValue and SetValue -- widened as SetValue
+    // widens, an overlap within one array copied as a memmove would. Arrays
+    // of one element type take the generic forms below, the better match.
+    public static void Copy(Array sourceArray, Array destinationArray, int length) {
+        Copy(sourceArray, 0, destinationArray, 0, length);
+    }
+    public static void Copy(Array sourceArray, Array destinationArray, long length) {
+        Copy(sourceArray, 0, destinationArray, 0, Index(length));
+    }
+    public static void Copy(Array sourceArray, int sourceIndex, Array destinationArray, int destinationIndex, int length) {
+        if (sourceArray == null) throw new ArgumentNullException("sourceArray");
+        if (destinationArray == null) throw new ArgumentNullException("destinationArray");
+        if (length < 0) throw new ArgumentOutOfRangeException("length", "Non-negative number required.");
+        if (sourceIndex < 0) throw new ArgumentOutOfRangeException("sourceIndex", "Number was less than the array's lower bound in the first dimension.");
+        if (destinationIndex < 0) throw new ArgumentOutOfRangeException("destinationIndex", "Number was less than the array's lower bound in the first dimension.");
+        if (sourceArray.Length - sourceIndex < length) throw new ArgumentException("Source array was not long enough. Check the source index, length, and the array's lower bounds.", "sourceArray");
+        if (destinationArray.Length - destinationIndex < length) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
+        if (ReferenceEquals(sourceArray, destinationArray) && sourceIndex < destinationIndex) {
+            for (int i = length - 1; i >= 0; i--) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
+            return;
+        }
+        for (int i = 0; i < length; i++) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
+    }
+    public static void Copy(Array sourceArray, long sourceIndex, Array destinationArray, long destinationIndex, long length) {
+        Copy(sourceArray, Index(sourceIndex), destinationArray, Index(destinationIndex), Index(length));
+    }
+    public static void Clear(Array array) {
+        if (array == null) throw new ArgumentNullException("array");
+        Clear(array, 0, array.Length);
+    }
+    public static void Clear(Array array, int index, int length) {
+        if (array == null) throw new ArgumentNullException("array");
+        if (index < 0 || length < 0 || index > array.Length - length) throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
+        for (int i = 0; i < length; i++) array.SetValue(null, index + i);
+    }
+    public static int IndexOf(Array array, object? value) {
+        if (array == null) throw new ArgumentNullException("array");
+        return FaceIndexOf(array, value);
+    }
+    public static void Reverse(Array array) {
+        if (array == null) throw new ArgumentNullException("array");
+        for (int i = 0, j = array.Length - 1; i < j; i++, j--) {
+            object? held = array.GetValue(i);
+            array.SetValue(array.GetValue(j), i);
+            array.SetValue(held, j);
+        }
+    }
+
     // WHAT AN ARRAY ANSWERS THROUGH IList AND ICollection that is not its
     // element's to say (Lowering.ArrayFaces): written once, over the boxed
     // GetValue and SetValue its descriptor answers. A null written to an
@@ -19584,6 +19727,47 @@ abstract class Array : IList, ICollection {
         return -1;
     }
     internal static bool FaceContains(Array array, object? value) { return FaceIndexOf(array, value) >= 0; }
+
+    // A BOXED PRIMITIVE WRITTEN INTO AN ARRAY OF A WIDER ONE, as .NET's
+    // SetValue widens it (its InvokeUtil table): `longs.SetValue(5, 0)`,
+    // a char into an int[], an int into a double[]. `to` and each source
+    // are kinds: 0 char, 1 sbyte, 2 byte, 3 short, 4 ushort, 5 int, 6 uint,
+    // 7 long, 8 ulong, 9 float, 10 double, 11 bool; a primitive that does
+    // not widen is ArgumentException, anything else InvalidCastException.
+    private static int FaceKind(object value, out long whole, out double real) {
+        whole = 0;
+        real = 0;
+        switch (value) {
+            case char c: whole = c; real = c; return 0;
+            case sbyte v: whole = v; real = v; return 1;
+            case byte v: whole = v; real = v; return 2;
+            case short v: whole = v; real = v; return 3;
+            case ushort v: whole = v; real = v; return 4;
+            case int v: whole = v; real = v; return 5;
+            case uint v: whole = v; real = v; return 6;
+            case long v: whole = v; real = v; return 7;
+            case ulong v: whole = (long)v; real = v; return 8;
+            case float v: real = v; return 9;
+            case double v: real = v; return 10;
+            case bool v: whole = v ? 1 : 0; return 11;
+            default: return -1;
+        }
+    }
+
+    private static int Widening(int from) => from switch {
+        0 => 2033, 1 => 1706, 2 => 2045, 3 => 1704, 4 => 2033, 5 => 1696,
+        6 => 1984, 7 => 1664, 8 => 1792, 9 => 1536, 10 => 1024, _ => 2048,
+    };
+
+    private static int Widened(object value, int to, out long whole, out double real) {
+        int from = FaceKind(value, out whole, out real);
+        if (from < 0) throw new InvalidCastException("Object cannot be stored in an array of this type.");
+        if ((Widening(from) & (1 << to)) == 0) throw new ArgumentException("Cannot widen from source type to target type either because the source type is a not a primitive type or the conversion cannot be accomplished.");
+        return from;
+    }
+
+    internal static long FaceWidenedWhole(object value, int to) { Widened(value, to, out long whole, out double real); return whole; }
+    internal static double FaceWidenedReal(object value, int to) { Widened(value, to, out long whole, out double real); return real; }
     internal static void FaceClear(Array array) {
         int n = array.Length;
         for (int i = 0; i < n; i++) array.SetValue(null, i);
@@ -21674,6 +21858,13 @@ class Exception
 
     /// The exception this one was raised in response to, or null.
     public Exception? InnerException => _inner;
+
+    // .NET's Data: what a thrower or a handler on the way adds about the
+    // failure, keyed by any non-null object, made when first asked for.
+    private IDictionary? _data;
+    public virtual IDictionary Data => _data ??= new __ListDictionary();
+
+    public virtual string? HelpLink { get; set; }
 
     /// THE ROOT CAUSE: the innermost exception down the InnerException chain,
     /// this one when there is none. Virtual, as .NET's is, so that an

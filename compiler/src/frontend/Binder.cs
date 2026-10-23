@@ -7865,6 +7865,8 @@ public sealed partial class Binder
                     PopScope();
                 }
 
+                ReportUnreachableCases(sw, subject);
+
                 // A switch with no default may match no arm at all; that path
                 // carries only what was assigned before the switch. Otherwise
                 // the intersection of every arm that reaches the following
@@ -11352,6 +11354,108 @@ public sealed partial class Binder
             if (subsumed) Error(arm, "CS8510: The pattern has already been handled by a previous arm of the switch expression");
         }
     }
+
+    /// <summary>
+    /// C#'s CS0152 and CS8120 for a switch statement: a case label of a
+    /// constant an earlier one has is CS0152 ("multiple cases with the label
+    /// value"), and one every value of which earlier cases took -- or that
+    /// takes none -- CS8120. Read as ReportSubsumed reads a switch
+    /// expression's arms; a label's `when` is folded into it here, so a
+    /// guarded label is neither judged nor counted as covering.
+    /// </summary>
+    private void ReportUnreachableCases(SwitchStmt sw, Type subject)
+    {
+        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true || subject.ParamName is not null || subject.IsError) return;
+        bool canBeNull = subject.IsReference || subject.Prim == Prim.Any || subject.IsNullableValue;
+        (long Lo, long Hi, bool Unsigned64)? domain = IntegerDomain(subject, enums: true);
+        bool all = false, none = false, sawTrue = false, sawFalse = false;
+        List<(long Lo, long Hi)> taken = [];
+        HashSet<string> texts = new(StringComparer.Ordinal);
+        HashSet<long> constants = new();
+        List<TypeSymbol> types = [];
+        bool sawNullLabel = false;
+        foreach (SwitchCase c in sw.Cases)
+        {
+            if (c.Pattern is not Expr p) continue;
+            bool subsumed = false;
+            Expr? written = p is BinaryExpr { Op: BinOp.Eq, PatternConstant: true, Left: SubjectExpr { Outer: 0 } } eq
+                            && eq.Right is not LiteralExpr { Kind: Lit.Null or Lit.Str } ? eq.Right : null;
+            long? single = written is not null && ConstantValue(written, _thisType) is long v ? v : null;
+            List<(long Lo, long Hi)>? accepted = domain is { } d ? Ranges(p, d) : null;
+
+            if (p is IsExpr { Operand: SubjectExpr { Outer: 0 } } every
+                && (every.Type.Name == TypeRef.Anything || _r.ValuePatterns.Contains(every) || _r.BoxPatterns.Contains(every)))
+            {
+                subsumed = all && (none || !canBeNull);
+                all = true;
+                none = true;
+            }
+            else if (p is BinaryExpr { Op: BinOp.Ne, PatternNullTest: true, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } }
+                     or UnaryExpr { Op: UnOp.Not, Operand: BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } } }
+                     || p is IsExpr { Operand: SubjectExpr { Outer: 0 } } some
+                        && (some.Type.Name == TypeRef.Same || _r.NullablePatterns.Contains(some) || _r.NonNullPatterns.Contains(some)))
+            {
+                subsumed = all;
+                all = true;
+            }
+            else if (canBeNull && p is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Null } })
+            {
+                if (sawNullLabel)
+                {
+                    Error(c.Pattern, "CS0152: The switch statement contains multiple cases with the label value 'null'");
+                    continue;
+                }
+                sawNullLabel = true;
+                subsumed = none;
+                none = true;
+            }
+            else if (subject.Prim == Prim.Bool && subject.Symbol is null && single is long truth)
+            {
+                subsumed = all || (truth != 0 ? sawTrue : sawFalse);
+                if (truth != 0) sawTrue = true;
+                else sawFalse = true;
+                all |= sawTrue && sawFalse;
+            }
+            else if (domain is { } whole && accepted is not null)
+            {
+                List<(long Lo, long Hi)> joined = Union(taken, accepted);
+                subsumed = all || joined.SequenceEqual(taken);
+                taken = joined;
+                all |= taken.Count == 1 && taken[0].Lo == whole.Lo && taken[0].Hi == whole.Hi;
+            }
+            else if (p is BinaryExpr { Op: BinOp.Eq, Left: SubjectExpr { Outer: 0 }, Right: LiteralExpr { Kind: Lit.Str, Text: { } quoted } })
+            {
+                subsumed = all || texts.Contains(quoted);
+                if (texts.Contains(quoted))
+                {
+                    Error(c.Pattern, $"CS0152: The switch statement contains multiple cases with the label value '\"{quoted}\"'");
+                    continue;
+                }
+                texts.Add(quoted);
+            }
+            else if (p is IsExpr { Operand: SubjectExpr { Outer: 0 } } tested && tested.Type.Args.Count == 0 && tested.Type.ArrayRank == 0
+                     && _r.TestedTypes.TryGetValue(tested, out TypeSymbol? testedType))
+            {
+                subsumed = all || types.Any(before => ReferenceEquals(before, testedType) || before.Kind == TypeKind.Class && Derives(testedType, before));
+                types.Add(testedType);
+            }
+
+            // TWO LABELS OF ONE CONSTANT are CS0152 rather than CS8120, as C#
+            // has said since its first switch.
+            if (single is long value && !constants.Add(value))
+            {
+                Error(c.Pattern, $"CS0152: The switch statement contains multiple cases with the label value '{LabelText(subject, value)}'");
+                continue;
+            }
+            if (subsumed) Error(c.Pattern, "CS8120: The switch case is unreachable. It has already been handled by a previous case or it is impossible to match.");
+        }
+    }
+
+    /// <summary>A case label's constant as CS0152 spells it: True, a char itself, an unsigned number unsigned, an enum's number.</summary>
+    private static string LabelText(Type subject, long value)
+        => subject.Prim == Prim.Bool && subject.Symbol is null ? (value != 0 ? "True" : "False")
+         : subject.Prim == Prim.Char && subject.Symbol is null ? ((char)value).ToString()
+         : subject.IsUnsigned ? ((ulong)value).ToString() : value.ToString();
 
     private static bool Derives(TypeSymbol derived, TypeSymbol baseClass)
     {

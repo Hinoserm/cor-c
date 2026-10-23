@@ -1610,39 +1610,11 @@ class PriorityQueue<TElement, TPriority> {
 // ICollection and IList are Core.cor's, as .NET's are CoreLib's: an array
 // and List<T> are them too.
 
-interface IDictionaryEnumerator : IEnumerator {
-    DictionaryEntry Entry { get; }
-    object Key { get; }
-    object? Value { get; }
-}
-
-interface IDictionary : ICollection {
-    object? this[object key] { get; set; }
-    ICollection Keys { get; }
-    ICollection Values { get; }
-    bool IsFixedSize { get; }
-    bool IsReadOnly { get; }
-    void Add(object key, object? value);
-    void Clear();
-    bool Contains(object key);
-    new IDictionaryEnumerator GetEnumerator();
-    void Remove(object key);
-}
+// IDictionary, IDictionaryEnumerator and DictionaryEntry are Core.cor's
+// too: an exception's Data is one.
 
 interface IComparer {
     int Compare(object? x, object? y);
-}
-
-struct DictionaryEntry {
-    private object _key;
-    private object? _value;
-
-    public DictionaryEntry(object key, object? value) { _key = key; _value = value; }
-
-    public object Key { get { return _key; } set { _key = value; } }
-    public object? Value { get { return _value; } set { _value = value; } }
-
-    public void Deconstruct(out object key, out object? value) { key = _key; value = _value; }
 }
 
 /// What ArrayList, Hashtable, Stack and Queue walk with: the objects of a
