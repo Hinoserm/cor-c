@@ -1,0 +1,140 @@
+// test: ecdsa_and_rsa_verification_and_public_keys
+// expect-exit: 0
+// expect-output:
+// curves nistP256 1.2.840.10045.3.1.7 nistP384 1.3.132.0.34 1.3.132.0.35 1.2.840.10045.3.1.7 ECDSA_P384 Named Rfc3279DerSequence
+// p256 size=256 curve=ECDSA_P256/1.2.840.10045.3.1.7 named=True max=64/72
+//   p1363 sha256 True spoiled False other hash False
+//   der sha384 True as p1363 False
+//   hash True span True
+//   spki same True
+//   imported 91 bytes, size 256, verifies True
+//   private export: CryptographicException: Object contains only the public half of a key pair. A private key must also be provided.
+//   sign without private key: a CryptographicException
+// p384 size=384 curve=ECDSA_P384/1.3.132.0.34 named=True max=96/104
+//   p1363 sha256 True spoiled False other hash False
+//   der sha384 True as p1363 False
+//   hash True span True
+//   spki same True
+//   imported 120 bytes, size 384, verifies True
+//   private export: CryptographicException: Object contains only the public half of a key pair. A private key must also be provided.
+//   sign without private key: a CryptographicException
+// rsa size=2048 spki same True pkcs1 same True
+//   pkcs1 sha256 True spoiled False as pss False sha512 True
+//   pss sha256 True sha384 True wrong hash False hash True
+//   exported n True e 010001 d True
+//   private export: CryptographicException: Object contains only the public half of a key pair. A private key must also be provided.
+//   sign without private key: a CryptographicException
+//   null padding: ArgumentNullException: Value cannot be null. (Parameter 'padding')
+// rsa imported 294/270 bytes, verifies True
+// paddings Pkcs1 Pss Pkcs1 True
+// cert ec True 256 True rsa True
+// cert rsa True 2048 ec True has private False
+//
+// ECDsa (P-256, P-384) and RSA as .NET has them, the public half: keys
+// imported from parameters, SubjectPublicKeyInfo and RSAPublicKey and
+// exported again; signatures .NET 10 made verified in both ECDSA formats
+// and both RSA paddings, spoiled ones and the wrong hash or padding
+// refused; the curves' names; and the keys certificates carry
+// (GetECDsaPublicKey, GetRSAPublicKey). Expected output from .NET 10.
+
+using System;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+
+static class Program
+{
+    const string P256_SPKI = "3059301306072A8648CE3D020106082A8648CE3D030107034200049F21483322126A96EF2EB77B775A1E5646A6B66475837B45C53EFB86CF407D13B83D14433EAE74BC8F2F17D2F5912695680D338B489825F54D309B662D04BDE2";
+    const string P256_QX = "9F21483322126A96EF2EB77B775A1E5646A6B66475837B45C53EFB86CF407D13";
+    const string P256_QY = "B83D14433EAE74BC8F2F17D2F5912695680D338B489825F54D309B662D04BDE2";
+    const string P256_SIG256_P1363 = "D5454F6869EE03005DF775F05520C9CDBA3176D82CEB9D3F4CE11342CB6778597D13E0F4F458BDE7714BB145B32B23A928F3E09D307A5D73F0338AF97B8D5450";
+    const string P256_SIG384_DER = "3045022100D98A3F290A2E68DE017333FC172A9DDC8E10B4F510E49C1D9B5938BC096658CE02207B36BD26D750C4EABA1494C9EFE9A964D97FDCF2E244C840211CB593FE44C6B4";
+    const string P256_SIGHASH = "ECCBEEBF8D3B06D1C9067F2FCE17E708163BC4992D9B1167845F3C97EFAE98A9604EAFB1D657D4B8B59686AE1CAA73351FA7610998A5F605E3A367D4DC36C810";
+    const string P384_SPKI = "3076301006072A8648CE3D020106052B8104002203620004CCE12601B3362DBCE5D63D275DF30915137CB05AAE3A88F4BF5A1A839D5D58B704AE5861FDB1E17C536DAA8FD1D2CF4DEF1A2197012CDDA29BF4F90A1D72CFB1AE989F2CD1FD25CC07E6CF8CE2B8A9928DD9CB6D77C5723755C3AAD1AAE67E04";
+    const string P384_QX = "CCE12601B3362DBCE5D63D275DF30915137CB05AAE3A88F4BF5A1A839D5D58B704AE5861FDB1E17C536DAA8FD1D2CF4D";
+    const string P384_QY = "EF1A2197012CDDA29BF4F90A1D72CFB1AE989F2CD1FD25CC07E6CF8CE2B8A9928DD9CB6D77C5723755C3AAD1AAE67E04";
+    const string P384_SIG256_P1363 = "95041B06344298069DDB2E1415D36E15CC0B3901432AA4A8FB6C5241B139EE3F5AA5A342733E5AB0F8CD53A1998AD84812194C6C97282A4F32265AA0BFC3439E8364EF08F88424FC6CA52CE115F99FC0E86D25BA03C51C3A568F42AD0F61DA14";
+    const string P384_SIG384_DER = "3065023078ABAF409572777EE6EC54A6B2C575915523812E97670F152E13F1307030EDBE3B47FC2E40F7651E62DD3E4ECDD47EB8023100DEED1BB0C5ECD9A5DDBF8DE7F25AF6F1FBD9CA2AACF353023DB425CAD7EAA435F4FEF2A17607359A865E34849280475A";
+    const string P384_SIGHASH = "C39AF9473B1B79095F3D24ED39B89342EB44A9DE02C04F1FB7BB7C58C33BDD69B140D8896DE3B34305EAF40CA076E5BDF9B546169541CFCFC0F8EEC09C7FFA086196FFDD027090419CE05F3AA9EFECBEB205B4233A6E07C70887EE55BA4B1CE3";
+    const string RSA_SPKI = "30820122300D06092A864886F70D01010105000382010F003082010A0282010100A6AD01D5D95EC561BFB40F159CD82B30B5B75D04DEADFDB15722A26D74D3B2B1016F6505893DB1CCE2F19F23FA516116EC2BD23642F00EEFCEB02AF87463156BBCA83B872735698E3A5F424A9E2B960201BDF54B25EEDC18C8934D673DEBB53FCCD3227AE7214B942C7B0EFC0C37AEAF4F93B032DD2A71D1B9DE01DA01D72511EEA40A8BDC70E451B7596EB4C37C4BEAAD37E59C81267BD269B5FE6F6D4FCD92595C660BC85D0F9FB7367178268B1728A73FE9D4A53380096455F13DD45032594FD3285DF1433851C4460FFB722C64581A8262C2BAD8DD2C7F50EC9D95E823EC9DFB4ACF669284155D25C3CFDE0C89F35DBAABEF606B052DEB15F612C59C7EB90203010001";
+    const string RSA_PKCS1 = "3082010A0282010100A6AD01D5D95EC561BFB40F159CD82B30B5B75D04DEADFDB15722A26D74D3B2B1016F6505893DB1CCE2F19F23FA516116EC2BD23642F00EEFCEB02AF87463156BBCA83B872735698E3A5F424A9E2B960201BDF54B25EEDC18C8934D673DEBB53FCCD3227AE7214B942C7B0EFC0C37AEAF4F93B032DD2A71D1B9DE01DA01D72511EEA40A8BDC70E451B7596EB4C37C4BEAAD37E59C81267BD269B5FE6F6D4FCD92595C660BC85D0F9FB7367178268B1728A73FE9D4A53380096455F13DD45032594FD3285DF1433851C4460FFB722C64581A8262C2BAD8DD2C7F50EC9D95E823EC9DFB4ACF669284155D25C3CFDE0C89F35DBAABEF606B052DEB15F612C59C7EB90203010001";
+    const string RSA_N = "A6AD01D5D95EC561BFB40F159CD82B30B5B75D04DEADFDB15722A26D74D3B2B1016F6505893DB1CCE2F19F23FA516116EC2BD23642F00EEFCEB02AF87463156BBCA83B872735698E3A5F424A9E2B960201BDF54B25EEDC18C8934D673DEBB53FCCD3227AE7214B942C7B0EFC0C37AEAF4F93B032DD2A71D1B9DE01DA01D72511EEA40A8BDC70E451B7596EB4C37C4BEAAD37E59C81267BD269B5FE6F6D4FCD92595C660BC85D0F9FB7367178268B1728A73FE9D4A53380096455F13DD45032594FD3285DF1433851C4460FFB722C64581A8262C2BAD8DD2C7F50EC9D95E823EC9DFB4ACF669284155D25C3CFDE0C89F35DBAABEF606B052DEB15F612C59C7EB9";
+    const string RSA_E = "010001";
+    const string RSA_PKCS1_SHA256 = "052275C23D604410E40BF2F53DEDF45F5237B99E60684CA5AECB467074039328BC6783BAD2CDB456773FC4476BE75E749A52495D0A214B1BB56449F69D17A8AF2840C478FA38A112E496999F2EB331FDF22BE7D4A9473E9E735379846FD7341C0D8951997F6F83EE773C1B2C710AD53F4DFE25E61C36FFCEDC555741944F65B79AC8D3812824D98F7A07B9CD495AB38A2C4C4F4872C81EB57965321F5D0FF7954DF8A59D16A9D287194F3206970F3EE54391A97BDAFF24529F34483BA56C51064311817AE0246E494B01E5470E8E71A73E81327E25BDEC8C953512643FBFE2A9BB3C6E8F711F52A5FF231DCCC9D935D8B5ED2F69937A0965D7AC35F950AF47DB";
+    const string RSA_PKCS1_SHA512 = "1CF3A3B319CEF062FCF8B134ED8E0E7DBF7F49A5AA914A41C801343E6A2077F23DFB87F7254668654E109D301CC151A261139AF6A1DF7A6A32332CC7CC26363BDF3B14979185BD1ADFB7D8FDD2E6E7584A009112DD2269637DF41995BEC5C900DFA99E1DAEBD51C56AEC03D865ACD7929706DFA480799E58F8407BE63C31A66CFD6AABB62FA0BE0F45E63D94D9D406B3778D46180ED816AA80D7DDD28E5DFBEB645EAE2B4D6E6E9CAAA8EC916E6E63A0BEF6E015D4E9582B49DCDEAB29F54DDCB115840995A4BA3AC1A251197CCFA38FDB563674D614474498CC7C19BDD663C2F12A07D1BDECB62962860463F43EABBC7C098293152532B4FD7C14EAAC13D5EE";
+    const string RSA_PSS_SHA256 = "33AE80A3688FF0513D21F8F1E4BE8B17C7C83FC353EF43F9B63290339FF9B730F7D2E12FF96FEB9F0020147083E576C6C9B3DB3BAD5199CCE4F710E83522B781E516AAD4F9CC19D37CDB84CB98D3899C7A114065BA272F460A3FCC280BC75658ED1BD275C9BF7CA06B2D354831441C4267A826E192D7761CAB254E7D37F4C603549ACE4B345302DBD717F855C168167C4B7D7EABD5A258BEEFD030FC1E0A76B823DFF164FA3944C3C0BE4DF5578DA87E1B3E65353E2FF4D6DE5F9AAD076B246B414AFC0BBBA96FF7C34D73413FD545AA2E4AFE311A408F0F1AFA06409A844196122DF68E531F690A05017A79EF30C15D9137A1A3A5D545CDD653437334862AC8";
+    const string RSA_PSS_SHA384 = "8048F0670E81AC59259B6CDCD65B0229F8BF285B4C771DEEEE7D7CA84D5093847C91F560EA19EB6ED9E74D41515AB525970059C3EF69AB530569EFBB6574EB97922DB64F425F73C090C8A4A3AFF969342543ADB65EB741B59498EBBC6624D55CCF579C76A15DA71CAFB7A92FD440F8592872F3C37CAEECADA503506A4F86D3D662C502F593108E5D761B66B1BE2E883EC6FE3DE7610A0A98C2BE56FCA92FAB43A799768D996EA51E67A07588865FA0CACC8927F53B74E551DED42510941DE75E841EB9305BB1F48FED9609371191EF071FD590FA301A4EA1D26D077CEF92F5CF4100D5AB9EFEF2CCF66E12E32B94878545D19383113A415D66B794D7CBCD64EA";
+    const string RSA_PKCS1_HASH384 = "28FDA77CDD01C9A59C70B8D0057B6251768C0CA72EAA16EE3C25F29BFB35857E567AEF468270AE6ADA2C5B797BB976B33F557E193CD8FBC52434AE21B14A25599A426667D9C2CF4A383C046A3749AFCFD5918C38BA68E0FBC89674BF73CE77C34DC124CE52BADE76C893996EE35772ED7F0491A4F00AE93BAF1639058D64E1B15546FB41DD0A7384F30D1EBCA08E3C3B00C40CAFECBA6763C10731408ED3126B0D29DA6765A45144704A4BC206386251B15F3CF725092ABA4E7ED2A5C95318F9085D2AE0193362799179C792BA5E2C9DAD1E6B3D3C3864368ED819E5AD6E58F41540514550DF3A6F0D9920982ACEC3FFA7B4B5B9DF8940093C98C756D55B6E35";
+    const string LEAF = "MIIB2jCCAYGgAwIBAgIBAzAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTQwMDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARGaentOmBpMyc1/cX5NPfOWMzeUpO4ZIwzz+Laxu1IGO7nD/SQBtlF+c1Awg2ljSOz91MtM4AVD68ExW8xKexbo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFCcveUbUAM+/z/UUKZsYw3K+lcOmMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0cAMEQCICQaMu2UXw+PBjcIQXNLnAxnrLlF+W66/tp9/ZtCGSjEAiAyVjCwKg/to3d8jusImCMM+T5vXWpzEtpz2dOyNotAEQ==";
+    const string RSALEAF = "MIICvjCCAmSgAwIBAgICEAIwCgYIKoZIzj0EAwIwTzELMAkGA1UEBhMCVVMxHTAbBgNVBAoMFFZ1bHBlY3VsYSBJbmR1c3RyaWVzMSEwHwYDVQQDDBhDT1JTQUMgUDI1NiBJbnRlcm1lZGlhdGUwHhcNMjYwODMxMTUyNjA4WhcNNDUxMDMwMTUyNjA4WjBOMQswCQYDVQQGEwJVUzEdMBsGA1UECgwUVnVscGVjdWxhIEluZHVzdHJpZXMxIDAeBgNVBAMMF0NPUlNBQyBSU0EgSW50ZXJtZWRpYXRlMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6UA0fowDX3k69FVV6YQlr6ePf4nkkkj3S8RwVhJXG1TBReruJZfdWAfa3Bms8vVUgF32HEYRyPDVlvu5cwnmG2bGdAWW1refJ22PuR2+jlUZiP0hbPykhEfAT072BnbmPInlCc2afT73xOQGx2wU0yNsGFuwsDCgo3ERx5SgmGOY9uoJV7u042xhhuTJQFqMHSAOtOjjHUf/0StFkWk1kjG9aUI2sSfEyl0bJvwWdcEut4bVQpt3of5Lj36Cxz9ydGqwvwREhZ1Mo5HUV7A4KlvlygQVjz8h+NeZGKnrvcF4bkTFY/rDigcnwrKsjF65tuIf9KQGiw+Ek6L4cM1acQIDAQABo2YwZDASBgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUXxIogtaKtKzCdrkJj40wUMvykLAwHwYDVR0jBBgwFoAUHYpIs+tpNtpVpHGP9KlOcPWTiFQwCgYIKoZIzj0EAwIDSAAwRQIgJ4PnCII0r9V89IvRTAjOnVZTe2zSiWe/VtcAjihq4x0CIQCymTdOVcnnT95/JX3JXk3ZWxJj/CW6OAcN+JVzmnlNwQ==";
+
+    static byte[] X(string hex) => Convert.FromHexString(hex);
+    static byte[] Spoiled(byte[] b) { byte[] c = (byte[])b.Clone(); c[c.Length / 2] ^= 1; return c; }
+    static void Fail(string name, Action a) { try { a(); Console.WriteLine(name + ": no failure"); } catch (Exception e) { Console.WriteLine(name + ": " + e.GetType().Name + ": " + e.Message); } }
+
+    static void Ec(string name, ECCurve curve, string spki, string qx, string qy, string p1363, string der, string hashSig)
+    {
+        byte[] data = Encoding.ASCII.GetBytes("the quick brown fox signs over the lazy dog");
+        ECParameters p = new ECParameters { Curve = curve, Q = new ECPoint { X = X(qx), Y = X(qy) } };
+        using ECDsa key = ECDsa.Create(p);
+        Console.WriteLine(name + " size=" + key.KeySize + " curve=" + key.ExportParameters(false).Curve.Oid.FriendlyName + "/" + key.ExportParameters(false).Curve.Oid.Value
+            + " named=" + key.ExportParameters(false).Curve.IsNamed + " max=" + key.GetMaxSignatureSize(DSASignatureFormat.IeeeP1363FixedFieldConcatenation) + "/" + key.GetMaxSignatureSize(DSASignatureFormat.Rfc3279DerSequence));
+        Console.WriteLine("  p1363 sha256 " + key.VerifyData(data, X(p1363), HashAlgorithmName.SHA256) + " spoiled " + key.VerifyData(data, Spoiled(X(p1363)), HashAlgorithmName.SHA256)
+            + " other hash " + key.VerifyData(data, X(p1363), HashAlgorithmName.SHA384));
+        Console.WriteLine("  der sha384 " + key.VerifyData(data, X(der), HashAlgorithmName.SHA384, DSASignatureFormat.Rfc3279DerSequence)
+            + " as p1363 " + key.VerifyData(data, X(der), HashAlgorithmName.SHA384));
+        Console.WriteLine("  hash " + key.VerifyHash(SHA512.HashData(data), X(hashSig)) + " span " + key.VerifyHash(new ReadOnlySpan<byte>(SHA512.HashData(data)), new ReadOnlySpan<byte>(X(hashSig))));
+        Console.WriteLine("  spki same " + (Convert.ToHexString(key.ExportSubjectPublicKeyInfo()) == spki));
+        using ECDsa again = ECDsa.Create();
+        again.ImportSubjectPublicKeyInfo(X(spki), out int read);
+        Console.WriteLine("  imported " + read + " bytes, size " + again.KeySize + ", verifies " + again.VerifyData(data, X(p1363), HashAlgorithmName.SHA256));
+        Fail("  private export", () => key.ExportParameters(true));
+        try { key.SignData(data, HashAlgorithmName.SHA256); Console.WriteLine("  sign without private key: no failure"); }
+        catch (CryptographicException) { Console.WriteLine("  sign without private key: a CryptographicException"); }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("curves " + ECCurve.NamedCurves.nistP256.Oid.FriendlyName + " " + ECCurve.NamedCurves.nistP256.Oid.Value + " " + ECCurve.NamedCurves.nistP384.Oid.FriendlyName + " "
+            + ECCurve.NamedCurves.nistP384.Oid.Value + " " + ECCurve.NamedCurves.nistP521.Oid.Value + " " + ECCurve.CreateFromFriendlyName("nistP256").Oid.Value + " " + ECCurve.CreateFromValue("1.3.132.0.34").Oid.FriendlyName
+            + " " + ECCurve.NamedCurves.nistP256.CurveType + " " + DSASignatureFormat.Rfc3279DerSequence);
+        Ec("p256", ECCurve.NamedCurves.nistP256, P256_SPKI, P256_QX, P256_QY, P256_SIG256_P1363, P256_SIG384_DER, P256_SIGHASH);
+        Ec("p384", ECCurve.NamedCurves.nistP384, P384_SPKI, P384_QX, P384_QY, P384_SIG256_P1363, P384_SIG384_DER, P384_SIGHASH);
+
+        byte[] data = Encoding.ASCII.GetBytes("the quick brown fox signs over the lazy dog");
+        using (RSA rsa = RSA.Create())
+        {
+            rsa.ImportParameters(new RSAParameters { Modulus = X(RSA_N), Exponent = X(RSA_E) });
+            Console.WriteLine("rsa size=" + rsa.KeySize + " spki same " + (Convert.ToHexString(rsa.ExportSubjectPublicKeyInfo()) == RSA_SPKI) + " pkcs1 same " + (Convert.ToHexString(rsa.ExportRSAPublicKey()) == RSA_PKCS1));
+            Console.WriteLine("  pkcs1 sha256 " + rsa.VerifyData(data, X(RSA_PKCS1_SHA256), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+                + " spoiled " + rsa.VerifyData(data, Spoiled(X(RSA_PKCS1_SHA256)), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
+                + " as pss " + rsa.VerifyData(data, X(RSA_PKCS1_SHA256), HashAlgorithmName.SHA256, RSASignaturePadding.Pss)
+                + " sha512 " + rsa.VerifyData(data, X(RSA_PKCS1_SHA512), HashAlgorithmName.SHA512, RSASignaturePadding.Pkcs1));
+            Console.WriteLine("  pss sha256 " + rsa.VerifyData(data, X(RSA_PSS_SHA256), HashAlgorithmName.SHA256, RSASignaturePadding.Pss)
+                + " sha384 " + rsa.VerifyData(data, X(RSA_PSS_SHA384), HashAlgorithmName.SHA384, RSASignaturePadding.Pss)
+                + " wrong hash " + rsa.VerifyData(data, X(RSA_PSS_SHA384), HashAlgorithmName.SHA256, RSASignaturePadding.Pss)
+                + " hash " + rsa.VerifyHash(SHA384.HashData(data), X(RSA_PKCS1_HASH384), HashAlgorithmName.SHA384, RSASignaturePadding.Pkcs1));
+            RSAParameters back = rsa.ExportParameters(false);
+            Console.WriteLine("  exported n " + (Convert.ToHexString(back.Modulus!) == RSA_N) + " e " + Convert.ToHexString(back.Exponent!) + " d " + (back.D == null));
+            Fail("  private export", () => rsa.ExportParameters(true));
+            try { rsa.SignData(data, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1); Console.WriteLine("  sign without private key: no failure"); }
+            catch (CryptographicException) { Console.WriteLine("  sign without private key: a CryptographicException"); }
+            Fail("  null padding", () => rsa.VerifyData(data, X(RSA_PSS_SHA256), HashAlgorithmName.SHA256, null!));
+        }
+        using (RSA again = RSA.Create())
+        {
+            again.ImportSubjectPublicKeyInfo(X(RSA_SPKI), out int read);
+            again.ImportRSAPublicKey(X(RSA_PKCS1), out int read2);
+            Console.WriteLine("rsa imported " + read + "/" + read2 + " bytes, verifies " + again.VerifyData(data, X(RSA_PSS_SHA256), HashAlgorithmName.SHA256, RSASignaturePadding.Pss));
+        }
+        Console.WriteLine("paddings " + RSASignaturePadding.Pkcs1 + " " + RSASignaturePadding.Pss + " " + RSASignaturePadding.Pkcs1.Mode + " " + (RSASignaturePadding.Pss == RSASignaturePadding.Pss));
+
+        X509Certificate2 ec = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(LEAF));
+        X509Certificate2 rs = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(RSALEAF));
+        using (ECDsa? fromCert = ec.GetECDsaPublicKey())
+            Console.WriteLine("cert ec " + (fromCert != null) + " " + fromCert!.KeySize + " " + (Convert.ToHexString(fromCert.ExportSubjectPublicKeyInfo()) == Convert.ToHexString(ec.PublicKey.ExportSubjectPublicKeyInfo())) + " rsa " + (ec.GetRSAPublicKey() == null));
+        using (RSA? fromCert = rs.GetRSAPublicKey())
+            Console.WriteLine("cert rsa " + (fromCert != null) + " " + fromCert!.KeySize + " ec " + (rs.GetECDsaPublicKey() == null) + " has private " + rs.HasPrivateKey);
+        return 0;
+    }
+}

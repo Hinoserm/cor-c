@@ -1,0 +1,874 @@
+// THE ASYMMETRIC ALGORITHMS AS .NET HAS THEM: AsymmetricAlgorithm, ECDsa over
+// NIST P-256 and P-384, RSA, their parameters and key formats
+// (SubjectPublicKeyInfo, RSAPublicKey, PEM), the signature formats and
+// paddings -- over the CORSAC/SECURE primitives.
+//
+// What is here so far is the public half: keys imported every way .NET
+// imports a public key, signatures verified in both ECDSA formats and both
+// RSA paddings with SHA-256, SHA-384 and SHA-512, the keys exported again.
+// Making keys, signing and ECDH are not yet done: they refuse with .NET's
+// words for a key that holds no private half.
+
+using System;
+using System.IO;
+using System.Text;
+using System.Security.Cryptography.X509Certificates;
+using Corsac.Security.Cryptography;
+
+namespace System.Security.Cryptography;
+
+public abstract class AsymmetricAlgorithm : IDisposable
+{
+    protected int KeySizeValue;
+    protected KeySizes[]? LegalKeySizesValue;
+
+    protected AsymmetricAlgorithm() { }
+
+    public virtual int KeySize
+    {
+        get { return KeySizeValue; }
+        set
+        {
+            bool legal = false;
+            foreach (KeySizes sizes in LegalKeySizes) if (sizes.Allows(value)) legal = true;
+            if (!legal) throw new CryptographicException("Specified key is not a valid size for this algorithm.");
+            KeySizeValue = value;
+        }
+    }
+
+    public virtual KeySizes[] LegalKeySizes => (KeySizes[])(LegalKeySizesValue ?? new KeySizes[0]).Clone();
+    public virtual string? SignatureAlgorithm => throw new NotImplementedException("The method or operation is not implemented.");
+    public virtual string? KeyExchangeAlgorithm => throw new NotImplementedException("The method or operation is not implemented.");
+
+    public void Clear() => Dispose();
+    public void Dispose() { Dispose(true); GC.SuppressFinalize(this); }
+    protected virtual void Dispose(bool disposing) { }
+
+    public virtual byte[] ExportSubjectPublicKeyInfo() => throw new NotImplementedException("The method or operation is not implemented.");
+    public virtual void ImportSubjectPublicKeyInfo(ReadOnlySpan<byte> source, out int bytesRead) => throw new NotImplementedException("The method or operation is not implemented.");
+
+    public virtual bool TryExportSubjectPublicKeyInfo(Span<byte> destination, out int bytesWritten)
+    {
+        byte[] made = ExportSubjectPublicKeyInfo();
+        bytesWritten = 0;
+        if (destination.Length < made.Length) return false;
+        made.AsSpan().CopyTo(destination);
+        bytesWritten = made.Length;
+        return true;
+    }
+
+    public string ExportSubjectPublicKeyInfoPem() => X509Der.Pem("PUBLIC KEY", ExportSubjectPublicKeyInfo());
+
+    /// A PUBLIC KEY block (and, for RSA, an RSA PUBLIC KEY one) read.
+    public virtual void ImportFromPem(ReadOnlySpan<char> input)
+    {
+        byte[]? der = PemBlock(input.ToString(), "PUBLIC KEY");
+        if (der == null) throw new ArgumentException("No supported key formats were found. Check that the input represents the contents of a PEM-encoded key file, not the path to such a file.", nameof(input));
+        ImportSubjectPublicKeyInfo(der, out _);
+    }
+
+    /// The first block labelled `label`, decoded, or null.
+    internal static byte[]? PemBlock(string text, string label)
+    {
+        string begin = "-----BEGIN " + label + "-----", end = "-----END " + label + "-----";
+        int a = text.IndexOf(begin, StringComparison.Ordinal);
+        if (a < 0) return null;
+        int b = text.IndexOf(end, a + begin.Length, StringComparison.Ordinal);
+        if (b < 0) return null;
+        try { return Convert.FromBase64String(text.Substring(a + begin.Length, b - a - begin.Length).Replace("\r", "").Replace("\n", "").Trim()); }
+        catch (FormatException) { return null; }
+    }
+}
+
+public enum DSASignatureFormat
+{
+    IeeeP1363FixedFieldConcatenation = 0,
+    Rfc3279DerSequence = 1,
+}
+
+public struct ECPoint
+{
+    public byte[]? X;
+    public byte[]? Y;
+}
+
+/// A curve: named by its OID, or given by its parameters (which are read
+/// and kept, though only named NIST curves are used here).
+public struct ECCurve
+{
+    public enum ECCurveType
+    {
+        Implicit = 0,
+        PrimeShortWeierstrass = 1,
+        PrimeTwistedEdwards = 2,
+        PrimeMontgomery = 3,
+        Characteristic2 = 4,
+        Named = 5,
+    }
+
+    public byte[]? A;
+    public byte[]? B;
+    public byte[]? Cofactor;
+    public ECCurveType CurveType;
+    public ECPoint G;
+    public HashAlgorithmName? Hash;
+    public byte[]? Order;
+    public byte[]? Polynomial;
+    public byte[]? Prime;
+    public byte[]? Seed;
+    Oid? _oid;
+
+    public Oid Oid { get { return _oid!; } private set { _oid = value; } }
+
+    public bool IsCharacteristic2 => CurveType == ECCurveType.Characteristic2;
+    public bool IsExplicit => IsPrime || IsCharacteristic2;
+    public bool IsNamed => CurveType == ECCurveType.Named;
+    public bool IsPrime => CurveType == ECCurveType.PrimeShortWeierstrass || CurveType == ECCurveType.PrimeMontgomery || CurveType == ECCurveType.PrimeTwistedEdwards;
+
+    public static ECCurve CreateFromOid(Oid curveOid)
+    {
+        if (curveOid == null) throw new ArgumentNullException(nameof(curveOid));
+        if (string.IsNullOrEmpty(curveOid.Value) && string.IsNullOrEmpty(curveOid.FriendlyName))
+            throw new ArgumentException("The specified Oid is not valid. The Oid.FriendlyName or Oid.Value property must be set.", nameof(curveOid));
+        ECCurve curve = new ECCurve();
+        curve.CurveType = ECCurveType.Named;
+        curve.Oid = curveOid;
+        return curve;
+    }
+
+    public static ECCurve CreateFromFriendlyName(string oidFriendlyName)
+    {
+        if (oidFriendlyName == null) throw new ArgumentNullException(nameof(oidFriendlyName));
+        return CreateFromOid(Oid.FromFriendlyName(oidFriendlyName, OidGroup.All));
+    }
+
+    public static ECCurve CreateFromValue(string oidValue)
+    {
+        if (oidValue == null) throw new ArgumentNullException(nameof(oidValue));
+        return CreateFromOid(new Oid(oidValue));
+    }
+
+    public void Validate()
+    {
+        if (IsNamed)
+        {
+            if (_oid == null || (string.IsNullOrEmpty(_oid.Value) && string.IsNullOrEmpty(_oid.FriendlyName)))
+                throw new CryptographicException("The specified Oid is not valid. The Oid.FriendlyName or Oid.Value property must be set.");
+            return;
+        }
+        if (IsPrime && (Prime == null || A == null || B == null || G.X == null || G.Y == null || Order == null || Cofactor == null))
+            throw new CryptographicException("The specified prime curve parameters are not valid. Prime, A, B, G.X, G.Y and Order are required and must be the same length, except for Order which may be different. If specified, Seed, Cofactor and Hash are optional.");
+        if (CurveType == ECCurveType.Implicit) throw new CryptographicException("The specified curve 'Implicit' or its parameters are not valid for this platform.");
+    }
+
+    public static class NamedCurves
+    {
+        public static ECCurve brainpoolP160r1 => Named("1.3.36.3.3.2.8.1.1.1", "brainpoolP160r1");
+        public static ECCurve brainpoolP160t1 => Named("1.3.36.3.3.2.8.1.1.2", "brainpoolP160t1");
+        public static ECCurve brainpoolP192r1 => Named("1.3.36.3.3.2.8.1.1.3", "brainpoolP192r1");
+        public static ECCurve brainpoolP192t1 => Named("1.3.36.3.3.2.8.1.1.4", "brainpoolP192t1");
+        public static ECCurve brainpoolP224r1 => Named("1.3.36.3.3.2.8.1.1.5", "brainpoolP224r1");
+        public static ECCurve brainpoolP224t1 => Named("1.3.36.3.3.2.8.1.1.6", "brainpoolP224t1");
+        public static ECCurve brainpoolP256r1 => Named("1.3.36.3.3.2.8.1.1.7", "brainpoolP256r1");
+        public static ECCurve brainpoolP256t1 => Named("1.3.36.3.3.2.8.1.1.8", "brainpoolP256t1");
+        public static ECCurve brainpoolP320r1 => Named("1.3.36.3.3.2.8.1.1.9", "brainpoolP320r1");
+        public static ECCurve brainpoolP320t1 => Named("1.3.36.3.3.2.8.1.1.10", "brainpoolP320t1");
+        public static ECCurve brainpoolP384r1 => Named("1.3.36.3.3.2.8.1.1.11", "brainpoolP384r1");
+        public static ECCurve brainpoolP384t1 => Named("1.3.36.3.3.2.8.1.1.12", "brainpoolP384t1");
+        public static ECCurve brainpoolP512r1 => Named("1.3.36.3.3.2.8.1.1.13", "brainpoolP512r1");
+        public static ECCurve brainpoolP512t1 => Named("1.3.36.3.3.2.8.1.1.14", "brainpoolP512t1");
+        public static ECCurve nistP256 => Named("1.2.840.10045.3.1.7", "nistP256");
+        public static ECCurve nistP384 => Named("1.3.132.0.34", "nistP384");
+        public static ECCurve nistP521 => Named("1.3.132.0.35", "nistP521");
+
+        static ECCurve Named(string value, string name) => CreateFromOid(new Oid(value, name));
+    }
+}
+
+public struct ECParameters
+{
+    public ECCurve Curve;
+    public byte[]? D;
+    public ECPoint Q;
+
+    public void Validate()
+    {
+        bool hasErrors = false;
+        if (Q.X == null || Q.Y == null || Q.X.Length != Q.Y.Length) hasErrors = true;
+        if (!hasErrors && D != null && D.Length != Q.X!.Length && Curve.IsNamed) hasErrors = true;
+        if (hasErrors) throw new CryptographicException("The specified key parameters are not valid. Q.X and Q.Y are required fields. Q.X, Q.Y must be the same length. If D is specified it must be the same length as Q.X and Q.Y for named curves or the same length as Order for explicit curves.");
+        Curve.Validate();
+    }
+}
+
+public abstract class ECAlgorithm : AsymmetricAlgorithm
+{
+    public virtual ECParameters ExportParameters(bool includePrivateParameters) => throw new NotSupportedException("Method not supported.");
+    public virtual ECParameters ExportExplicitParameters(bool includePrivateParameters) => throw new NotSupportedException("Method not supported.");
+    public virtual void ImportParameters(ECParameters parameters) => throw new NotSupportedException("Method not supported.");
+    public virtual void GenerateKey(ECCurve curve) => throw new NotSupportedException("Method not supported.");
+
+    /// SubjectPublicKeyInfo { id-ecPublicKey, the named curve, 04 || X || Y }.
+    public override byte[] ExportSubjectPublicKeyInfo()
+    {
+        ECParameters p = ExportParameters(false);
+        string oid = EcKeys.CurveValue(p.Curve);
+        MemoryStream algorithm = new MemoryStream();
+        X509Der.Write(algorithm, 0x06, EcKeys.EncodeOid("1.2.840.10045.2.1"));
+        X509Der.Write(algorithm, 0x06, EcKeys.EncodeOid(oid));
+        byte[] point = new byte[1 + p.Q.X!.Length * 2];
+        point[0] = 4;
+        Array.Copy(p.Q.X, 0, point, 1, p.Q.X.Length);
+        Array.Copy(p.Q.Y!, 0, point, 1 + p.Q.X.Length, p.Q.Y!.Length);
+        byte[] bits = new byte[point.Length + 1];
+        Array.Copy(point, 0, bits, 1, point.Length);
+        MemoryStream body = new MemoryStream();
+        X509Der.Write(body, 0x30, algorithm.ToArray());
+        X509Der.Write(body, 0x03, bits);
+        MemoryStream spki = new MemoryStream();
+        X509Der.Write(spki, 0x30, body.ToArray());
+        return spki.ToArray();
+    }
+
+    public override void ImportSubjectPublicKeyInfo(ReadOnlySpan<byte> source, out int bytesRead)
+    {
+        byte[] der = source.ToArray();
+        string curve;
+        byte[] point;
+        if (!EcKeys.ReadSpki(der, out curve, out point, out bytesRead)) throw new CryptographicException("ASN1 corrupted data.");
+        int half = (point.Length - 1) / 2;
+        ECParameters p = new ECParameters();
+        p.Curve = ECCurve.CreateFromValue(curve);
+        p.Q.X = new byte[half];
+        p.Q.Y = new byte[half];
+        Array.Copy(point, 1, p.Q.X, 0, half);
+        Array.Copy(point, 1 + half, p.Q.Y, 0, half);
+        ImportParameters(p);
+    }
+}
+
+public abstract class ECDsa : ECAlgorithm
+{
+    protected ECDsa() { }
+
+    public static new ECDsa Create() => new ECDsaImplementation();
+
+    public static ECDsa Create(ECCurve curve)
+    {
+        ECDsaImplementation made = new ECDsaImplementation();
+        made.GenerateKey(curve);
+        return made;
+    }
+
+    public static ECDsa Create(ECParameters parameters)
+    {
+        ECDsaImplementation made = new ECDsaImplementation();
+        made.ImportParameters(parameters);
+        return made;
+    }
+
+    public override string? KeyExchangeAlgorithm => null;
+    public override string? SignatureAlgorithm => "ECDsa";
+
+    public abstract byte[] SignHash(byte[] hash);
+    public abstract bool VerifyHash(byte[] hash, byte[] signature);
+
+    public virtual bool VerifyHash(ReadOnlySpan<byte> hash, ReadOnlySpan<byte> signature) => VerifyHash(hash.ToArray(), signature.ToArray());
+
+    public bool VerifyHash(byte[] hash, byte[] signature, DSASignatureFormat signatureFormat)
+    {
+        if (hash == null) throw new ArgumentNullException(nameof(hash));
+        if (signature == null) throw new ArgumentNullException(nameof(signature));
+        return VerifyHash(new ReadOnlySpan<byte>(hash), new ReadOnlySpan<byte>(signature), signatureFormat);
+    }
+
+    public bool VerifyHash(ReadOnlySpan<byte> hash, ReadOnlySpan<byte> signature, DSASignatureFormat signatureFormat)
+    {
+        Formats.Check(signatureFormat);
+        if (signatureFormat == DSASignatureFormat.IeeeP1363FixedFieldConcatenation) return VerifyHash(hash, signature);
+        byte[]? raw = Formats.FromDer(signature.ToArray(), FieldBytes());
+        return raw != null && VerifyHash(hash, raw);
+    }
+
+    public bool VerifyData(byte[] data, byte[] signature, HashAlgorithmName hashAlgorithm)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        return VerifyData(data, 0, data.Length, signature, hashAlgorithm);
+    }
+
+    public bool VerifyData(byte[] data, byte[] signature, HashAlgorithmName hashAlgorithm, DSASignatureFormat signatureFormat)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        if (signature == null) throw new ArgumentNullException(nameof(signature));
+        return VerifyData(new ReadOnlySpan<byte>(data), new ReadOnlySpan<byte>(signature), hashAlgorithm, signatureFormat);
+    }
+
+    public virtual bool VerifyData(byte[] data, int offset, int count, byte[] signature, HashAlgorithmName hashAlgorithm)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        if (signature == null) throw new ArgumentNullException(nameof(signature));
+        if (offset < 0 || offset > data.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (count < 0 || count > data.Length - offset) throw new ArgumentOutOfRangeException(nameof(count));
+        return VerifyHash(Hashes.Of(hashAlgorithm, new ReadOnlySpan<byte>(data, offset, count)), signature);
+    }
+
+    public virtual bool VerifyData(ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature, HashAlgorithmName hashAlgorithm) =>
+        VerifyHash(Hashes.Of(hashAlgorithm, data), signature);
+
+    public bool VerifyData(ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature, HashAlgorithmName hashAlgorithm, DSASignatureFormat signatureFormat) =>
+        VerifyHash(Hashes.Of(hashAlgorithm, data), signature, signatureFormat);
+
+    public bool VerifyData(Stream data, byte[] signature, HashAlgorithmName hashAlgorithm)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        MemoryStream all = new MemoryStream();
+        data.CopyTo(all);
+        return VerifyData(all.ToArray(), signature, hashAlgorithm);
+    }
+
+    public byte[] SignData(byte[] data, HashAlgorithmName hashAlgorithm)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        return SignHash(Hashes.Of(hashAlgorithm, data));
+    }
+
+    public byte[] SignData(byte[] data, HashAlgorithmName hashAlgorithm, DSASignatureFormat signatureFormat)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        Formats.Check(signatureFormat);
+        byte[] raw = SignHash(Hashes.Of(hashAlgorithm, data));
+        return signatureFormat == DSASignatureFormat.IeeeP1363FixedFieldConcatenation ? raw : Formats.ToDer(raw);
+    }
+
+    public byte[] SignHash(byte[] hash, DSASignatureFormat signatureFormat)
+    {
+        Formats.Check(signatureFormat);
+        byte[] raw = SignHash(hash);
+        return signatureFormat == DSASignatureFormat.IeeeP1363FixedFieldConcatenation ? raw : Formats.ToDer(raw);
+    }
+
+    /// The longest signature of this key in `signatureFormat`: two field
+    /// elements, or their DER SEQUENCE with a sign byte each.
+    public int GetMaxSignatureSize(DSASignatureFormat signatureFormat)
+    {
+        Formats.Check(signatureFormat);
+        int field = FieldBytes();
+        if (signatureFormat == DSASignatureFormat.IeeeP1363FixedFieldConcatenation) return 2 * field;
+        int integer = 2 + field + 1;
+        int content = 2 * integer;
+        return content + (content < 128 ? 2 : 3);
+    }
+
+    int FieldBytes() => (KeySize + 7) / 8;
+}
+
+/// ECDsa.Create's: P-256 or P-384, the public key, and the private one when
+/// imported.
+internal sealed class ECDsaImplementation : ECDsa
+{
+    string _curve = "";
+    byte[]? _x, _y, _d;
+
+    public ECDsaImplementation()
+    {
+        LegalKeySizesValue = new KeySizes[] { new KeySizes(256, 384, 128), new KeySizes(521, 521, 0) };
+        KeySizeValue = 521;
+    }
+
+    public override void ImportParameters(ECParameters parameters)
+    {
+        parameters.Validate();
+        if (!parameters.Curve.IsNamed) throw new PlatformNotSupportedException("The specified curve 'ECDSA_P256' or its parameters are not valid for this platform.");
+        string value = EcKeys.CurveValue(parameters.Curve);
+        int bytes = EcKeys.FieldBytes(value);
+        if (bytes == 0) throw new PlatformNotSupportedException("The specified curve '" + (parameters.Curve.Oid.FriendlyName ?? value) + "' or its parameters are not valid for this platform.");
+        if (parameters.Q.X!.Length != bytes) throw new CryptographicException("The specified key parameters are not valid. Q.X and Q.Y are required fields. Q.X, Q.Y must be the same length. If D is specified it must be the same length as Q.X and Q.Y for named curves or the same length as Order for explicit curves.");
+        byte[] point = new byte[1 + 2 * bytes];
+        point[0] = 4;
+        Array.Copy(parameters.Q.X, 0, point, 1, bytes);
+        Array.Copy(parameters.Q.Y!, 0, point, 1 + bytes, bytes);
+        if (!EcKeys.OnCurve(value, point)) throw new CryptographicException("The specified key parameters are not valid. Q.X and Q.Y are required fields. Q.X, Q.Y must be the same length. If D is specified it must be the same length as Q.X and Q.Y for named curves or the same length as Order for explicit curves.");
+        _curve = value;
+        _x = (byte[])parameters.Q.X.Clone();
+        _y = (byte[])parameters.Q.Y!.Clone();
+        _d = parameters.D == null ? null : (byte[])parameters.D.Clone();
+        KeySizeValue = bytes * 8;
+    }
+
+    public override ECParameters ExportParameters(bool includePrivateParameters)
+    {
+        if (_x == null) throw new CryptographicException("Making a key is not done here yet: import one.");
+        if (includePrivateParameters && _d == null) throw new CryptographicException("Object contains only the public half of a key pair. A private key must also be provided.");
+        ECParameters p = new ECParameters();
+        p.Curve = ECCurve.CreateFromValue(_curve);
+        p.Q.X = (byte[])_x.Clone();
+        p.Q.Y = (byte[])_y!.Clone();
+        p.D = includePrivateParameters ? (byte[])_d!.Clone() : null;
+        return p;
+    }
+
+    public override void GenerateKey(ECCurve curve) => throw new PlatformNotSupportedException("Making an EC key is not done here yet.");
+
+    public override byte[] SignHash(byte[] hash)
+    {
+        if (hash == null) throw new ArgumentNullException(nameof(hash));
+        throw new CryptographicException("Object contains only the public half of a key pair. A private key must also be provided.");
+    }
+
+    public override bool VerifyHash(byte[] hash, byte[] signature)
+    {
+        if (hash == null) throw new ArgumentNullException(nameof(hash));
+        if (signature == null) throw new ArgumentNullException(nameof(signature));
+        if (_x == null) throw new CryptographicException("Making a key is not done here yet: import one.");
+        int bytes = _x.Length;
+        if (signature.Length != 2 * bytes) return false;
+        byte[] point = new byte[1 + 2 * bytes];
+        point[0] = 4;
+        Array.Copy(_x, 0, point, 1, bytes);
+        Array.Copy(_y!, 0, point, 1 + bytes, bytes);
+        if (bytes == 32)
+        {
+            // bits2int: the hash's leftmost 256 bits, a shorter one as it is.
+            byte[] digest = new byte[32];
+            if (hash.Length >= 32) Array.Copy(hash, 0, digest, 0, 32);
+            else Array.Copy(hash, 0, digest, 32 - hash.Length, hash.Length);
+            CorsacSecureCrypto_P256Workspace p = new CorsacSecureCrypto_P256Workspace();
+            bool valid = p.VerifyDigestRaw(point, 0, point.Length, digest, 0, signature, 0);
+            p.Close();
+            return valid;
+        }
+        return new CorsacSecureCrypto_P384().VerifyDigestRaw(point, 0, point.Length, hash, 0, hash.Length, signature, 0);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (_d != null) CorsacSecureCrypto_Bytes.Zero(_d, 0, _d.Length);
+        _d = null;
+        base.Dispose(disposing);
+    }
+}
+
+public enum RSASignaturePaddingMode
+{
+    Pkcs1 = 0,
+    Pss = 1,
+}
+
+public sealed class RSASignaturePadding : IEquatable<RSASignaturePadding>
+{
+    static readonly RSASignaturePadding _pkcs1 = new RSASignaturePadding(RSASignaturePaddingMode.Pkcs1);
+    static readonly RSASignaturePadding _pss = new RSASignaturePadding(RSASignaturePaddingMode.Pss);
+
+    RSASignaturePadding(RSASignaturePaddingMode mode) { Mode = mode; }
+
+    public static RSASignaturePadding Pkcs1 => _pkcs1;
+    public static RSASignaturePadding Pss => _pss;
+    public RSASignaturePaddingMode Mode { get; }
+
+    public bool Equals(RSASignaturePadding? other) => other is not null && other.Mode == Mode;
+    public override bool Equals(object? obj) => Equals(obj as RSASignaturePadding);
+    public override int GetHashCode() => Mode.GetHashCode();
+    public override string ToString() => Mode.ToString();
+    public static bool operator ==(RSASignaturePadding? left, RSASignaturePadding? right) => left is null ? right is null : left.Equals(right);
+    public static bool operator !=(RSASignaturePadding? left, RSASignaturePadding? right) => !(left == right);
+}
+
+public struct RSAParameters
+{
+    public byte[]? D;
+    public byte[]? DP;
+    public byte[]? DQ;
+    public byte[]? Exponent;
+    public byte[]? InverseQ;
+    public byte[]? Modulus;
+    public byte[]? P;
+    public byte[]? Q;
+}
+
+public abstract class RSA : AsymmetricAlgorithm
+{
+    protected RSA() { }
+
+    public static new RSA Create() => new RSAImplementation();
+
+    public static RSA Create(int keySizeInBits)
+    {
+        RSAImplementation made = new RSAImplementation();
+        made.KeySize = keySizeInBits;
+        return made;
+    }
+
+    public static RSA Create(RSAParameters parameters)
+    {
+        RSAImplementation made = new RSAImplementation();
+        made.ImportParameters(parameters);
+        return made;
+    }
+
+    public override string? KeyExchangeAlgorithm => "RSA";
+    public override string? SignatureAlgorithm => "RSA";
+
+    public abstract RSAParameters ExportParameters(bool includePrivateParameters);
+    public abstract void ImportParameters(RSAParameters parameters);
+
+    public virtual byte[] SignHash(byte[] hash, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding) => throw new NotImplementedException("The method or operation is not implemented.");
+    public virtual bool VerifyHash(byte[] hash, byte[] signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding) => throw new NotImplementedException("The method or operation is not implemented.");
+
+    public virtual bool VerifyHash(ReadOnlySpan<byte> hash, ReadOnlySpan<byte> signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding) =>
+        VerifyHash(hash.ToArray(), signature.ToArray(), hashAlgorithm, padding);
+
+    public bool VerifyData(byte[] data, byte[] signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        return VerifyData(data, 0, data.Length, signature, hashAlgorithm, padding);
+    }
+
+    public virtual bool VerifyData(byte[] data, int offset, int count, byte[] signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        if (signature == null) throw new ArgumentNullException(nameof(signature));
+        if (padding == null) throw new ArgumentNullException(nameof(padding));
+        if (offset < 0 || offset > data.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (count < 0 || count > data.Length - offset) throw new ArgumentOutOfRangeException(nameof(count));
+        return VerifyHash(Hashes.Of(hashAlgorithm, new ReadOnlySpan<byte>(data, offset, count)), signature, hashAlgorithm, padding);
+    }
+
+    public virtual bool VerifyData(ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+    {
+        if (padding == null) throw new ArgumentNullException(nameof(padding));
+        return VerifyHash(Hashes.Of(hashAlgorithm, data), signature.ToArray(), hashAlgorithm, padding);
+    }
+
+    public bool VerifyData(Stream data, byte[] signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        MemoryStream all = new MemoryStream();
+        data.CopyTo(all);
+        return VerifyData(all.ToArray(), signature, hashAlgorithm, padding);
+    }
+
+    public byte[] SignData(byte[] data, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+    {
+        if (data == null) throw new ArgumentNullException(nameof(data));
+        if (padding == null) throw new ArgumentNullException(nameof(padding));
+        return SignHash(Hashes.Of(hashAlgorithm, data), hashAlgorithm, padding);
+    }
+
+    /// RSAPublicKey: SEQUENCE { INTEGER modulus, INTEGER publicExponent }.
+    public virtual byte[] ExportRSAPublicKey()
+    {
+        RSAParameters p = ExportParameters(false);
+        MemoryStream body = new MemoryStream();
+        X509Der.Write(body, 0x02, RsaKeys.Integer(p.Modulus!));
+        X509Der.Write(body, 0x02, RsaKeys.Integer(p.Exponent!));
+        MemoryStream key = new MemoryStream();
+        X509Der.Write(key, 0x30, body.ToArray());
+        return key.ToArray();
+    }
+
+    public virtual void ImportRSAPublicKey(ReadOnlySpan<byte> source, out int bytesRead)
+    {
+        byte[] der = source.ToArray();
+        byte[] modulus, exponent;
+        if (!RsaKeys.ReadPublicKey(der, 0, der.Length, out modulus, out exponent, out bytesRead)) throw new CryptographicException("ASN1 corrupted data.");
+        RSAParameters p = new RSAParameters();
+        p.Modulus = modulus;
+        p.Exponent = exponent;
+        ImportParameters(p);
+    }
+
+    /// SubjectPublicKeyInfo { rsaEncryption, NULL, RSAPublicKey }.
+    public override byte[] ExportSubjectPublicKeyInfo()
+    {
+        MemoryStream algorithm = new MemoryStream();
+        X509Der.Write(algorithm, 0x06, EcKeys.EncodeOid("1.2.840.113549.1.1.1"));
+        X509Der.Write(algorithm, 0x05, new byte[0]);
+        byte[] key = ExportRSAPublicKey();
+        byte[] bits = new byte[key.Length + 1];
+        Array.Copy(key, 0, bits, 1, key.Length);
+        MemoryStream body = new MemoryStream();
+        X509Der.Write(body, 0x30, algorithm.ToArray());
+        X509Der.Write(body, 0x03, bits);
+        MemoryStream spki = new MemoryStream();
+        X509Der.Write(spki, 0x30, body.ToArray());
+        return spki.ToArray();
+    }
+
+    public override void ImportSubjectPublicKeyInfo(ReadOnlySpan<byte> source, out int bytesRead)
+    {
+        byte[] der = source.ToArray();
+        byte[] modulus, exponent;
+        if (!RsaKeys.ReadSpki(der, out modulus, out exponent, out bytesRead)) throw new CryptographicException("ASN1 corrupted data.");
+        RSAParameters p = new RSAParameters();
+        p.Modulus = modulus;
+        p.Exponent = exponent;
+        ImportParameters(p);
+    }
+
+    public override void ImportFromPem(ReadOnlySpan<char> input)
+    {
+        string text = input.ToString();
+        byte[]? pkcs1 = PemBlock(text, "RSA PUBLIC KEY");
+        if (pkcs1 != null) { ImportRSAPublicKey(pkcs1, out _); return; }
+        base.ImportFromPem(input);
+    }
+}
+
+/// RSA.Create's: the public key, and the private parts when imported.
+internal sealed class RSAImplementation : RSA
+{
+    byte[]? _modulus, _exponent;
+    RSAParameters _private;
+    bool _hasPrivate;
+
+    public RSAImplementation()
+    {
+        LegalKeySizesValue = new KeySizes[] { new KeySizes(512, 16384, 8) };
+        KeySizeValue = 2048;
+    }
+
+    public override void ImportParameters(RSAParameters parameters)
+    {
+        if (parameters.Modulus == null || parameters.Exponent == null || parameters.Modulus.Length == 0 || parameters.Exponent.Length == 0)
+            throw new CryptographicException("The specified RSA parameters are not valid. Exponent and Modulus are required. If D is present, it must have the same length as Modulus. If D is present, P, Q, DP, DQ, and InverseQ are required and must have half the length of Modulus, rounded up, otherwise they must be omitted.");
+        _modulus = (byte[])parameters.Modulus.Clone();
+        _exponent = (byte[])parameters.Exponent.Clone();
+        _hasPrivate = parameters.D != null;
+        _private = parameters;
+        int leading = 0;
+        while (leading < _modulus.Length && _modulus[leading] == 0) leading++;
+        int bits = (_modulus.Length - leading) * 8;
+        if (leading < _modulus.Length) for (int b = 7; b >= 0 && ((_modulus[leading] >> b) & 1) == 0; b--) bits--;
+        KeySizeValue = bits;
+    }
+
+    public override RSAParameters ExportParameters(bool includePrivateParameters)
+    {
+        if (_modulus == null) throw new CryptographicException("Making a key is not done here yet: import one.");
+        if (includePrivateParameters && !_hasPrivate) throw new CryptographicException("Object contains only the public half of a key pair. A private key must also be provided.");
+        RSAParameters p = includePrivateParameters ? _private : new RSAParameters();
+        p.Modulus = (byte[])_modulus.Clone();
+        p.Exponent = (byte[])_exponent!.Clone();
+        return p;
+    }
+
+    public override byte[] SignHash(byte[] hash, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+    {
+        if (hash == null) throw new ArgumentNullException(nameof(hash));
+        if (padding == null) throw new ArgumentNullException(nameof(padding));
+        throw new CryptographicException("Object contains only the public half of a key pair. A private key must also be provided.");
+    }
+
+    public override bool VerifyHash(byte[] hash, byte[] signature, HashAlgorithmName hashAlgorithm, RSASignaturePadding padding)
+    {
+        if (hash == null) throw new ArgumentNullException(nameof(hash));
+        if (signature == null) throw new ArgumentNullException(nameof(signature));
+        if (padding == null) throw new ArgumentNullException(nameof(padding));
+        if (_modulus == null) throw new CryptographicException("Making a key is not done here yet: import one.");
+        if (hash.Length != Hashes.Length(hashAlgorithm)) return false;
+        byte[] e = _exponent!;
+        long exponent = 0;
+        int start = 0;
+        while (start < e.Length && e[start] == 0) start++;
+        if (e.Length - start > 7) return false;
+        for (int i = start; i < e.Length; i++) exponent = (exponent << 8) | e[i];
+        CorsacSecureCrypto_RsaWorkspace rsa = new CorsacSecureCrypto_RsaWorkspace();
+        bool valid = padding.Mode == RSASignaturePaddingMode.Pkcs1
+            ? rsa.VerifyPkcs1(_modulus, 0, _modulus.Length, exponent, signature, 0, signature.Length, hash, 0, hash.Length)
+            : rsa.VerifyPss(_modulus, 0, _modulus.Length, exponent, signature, 0, signature.Length, hash, 0, hash.Length);
+        rsa.Close();
+        return valid;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        foreach (byte[]? part in new[] { _private.D, _private.DP, _private.DQ, _private.InverseQ, _private.P, _private.Q })
+            if (part != null) CorsacSecureCrypto_Bytes.Zero(part, 0, part.Length);
+        _private = new RSAParameters();
+        _hasPrivate = false;
+        base.Dispose(disposing);
+    }
+}
+
+/// The two ECDSA signature formats, converted.
+internal static class Formats
+{
+    public static void Check(DSASignatureFormat format)
+    {
+        if (format != DSASignatureFormat.IeeeP1363FixedFieldConcatenation && format != DSASignatureFormat.Rfc3279DerSequence)
+            throw new ArgumentOutOfRangeException("signatureFormat", "Specified argument was out of the range of valid values.");
+    }
+
+    /// SEQUENCE { INTEGER r, INTEGER s } as r || s, each `field` bytes; null
+    /// when it is not one, or a number is too long.
+    public static byte[]? FromDer(byte[] der, int field)
+    {
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(der, 0, der.Length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count) || !top.AtEnd()) return null;
+        CorsacSecureCrypto_DerCursor pair = new CorsacSecureCrypto_DerCursor(der, offset, count);
+        long rOffset, rCount, sOffset, sCount;
+        if (!pair.TryReadPositiveInteger(out rOffset, out rCount) || !pair.TryReadPositiveInteger(out sOffset, out sCount) || !pair.AtEnd()) return null;
+        if (rCount > field || sCount > field) return null;
+        byte[] raw = new byte[2 * field];
+        Array.Copy(der, (int)rOffset, raw, (int)(field - rCount), (int)rCount);
+        Array.Copy(der, (int)sOffset, raw, (int)(2 * field - sCount), (int)sCount);
+        return raw;
+    }
+
+    public static byte[] ToDer(byte[] raw)
+    {
+        int field = raw.Length / 2;
+        byte[] r = new byte[field], s = new byte[field];
+        Array.Copy(raw, 0, r, 0, field);
+        Array.Copy(raw, field, s, 0, field);
+        MemoryStream body = new MemoryStream();
+        X509Der.Write(body, 0x02, RsaKeys.Integer(r));
+        X509Der.Write(body, 0x02, RsaKeys.Integer(s));
+        MemoryStream der = new MemoryStream();
+        X509Der.Write(der, 0x30, body.ToArray());
+        return der.ToArray();
+    }
+}
+
+/// The hashes VerifyData and SignData take by name.
+internal static class Hashes
+{
+    public static byte[] Of(HashAlgorithmName name, ReadOnlySpan<byte> data)
+    {
+        if (name == HashAlgorithmName.SHA256) return SHA256.HashData(data);
+        if (name == HashAlgorithmName.SHA384) return SHA384.HashData(data);
+        if (name == HashAlgorithmName.SHA512) return SHA512.HashData(data);
+        if (name == HashAlgorithmName.SHA1) return SHA1.HashData(data);
+        if (name == HashAlgorithmName.MD5) return MD5.HashData(data);
+        if (string.IsNullOrEmpty(name.Name)) throw new ArgumentException("The hash algorithm name cannot be null or empty.", "hashAlgorithm");
+        throw new CryptographicException("'" + name.Name + "' is not a known hash algorithm.");
+    }
+
+    public static int Length(HashAlgorithmName name)
+    {
+        if (name == HashAlgorithmName.SHA256) return 32;
+        if (name == HashAlgorithmName.SHA384) return 48;
+        if (name == HashAlgorithmName.SHA512) return 64;
+        if (name == HashAlgorithmName.SHA1) return 20;
+        if (name == HashAlgorithmName.MD5) return 16;
+        if (string.IsNullOrEmpty(name.Name)) throw new ArgumentException("The hash algorithm name cannot be null or empty.", "hashAlgorithm");
+        throw new CryptographicException("'" + name.Name + "' is not a known hash algorithm.");
+    }
+}
+
+/// EC keys' encodings.
+internal static class EcKeys
+{
+    /// The named curve's OID value, from its value or its friendly name.
+    public static string CurveValue(ECCurve curve)
+    {
+        Oid oid = curve.Oid;
+        if (!string.IsNullOrEmpty(oid.Value)) return oid.Value!;
+        return Oid.FromFriendlyName(oid.FriendlyName!, OidGroup.All).Value!;
+    }
+
+    /// The field's bytes for a curve this library computes on, 0 for others.
+    public static int FieldBytes(string curve) => curve == "1.2.840.10045.3.1.7" ? 32 : curve == "1.3.132.0.34" ? 48 : 0;
+
+    public static bool OnCurve(string curve, byte[] point)
+    {
+        if (curve == "1.2.840.10045.3.1.7")
+        {
+            CorsacSecureCrypto_P256Workspace p = new CorsacSecureCrypto_P256Workspace();
+            bool ok = p.ValidatePublicKey(point, 0, point.Length);
+            p.Close();
+            return ok;
+        }
+        return new CorsacSecureCrypto_P384().ValidatePublicKey(point, 0, point.Length);
+    }
+
+    /// SubjectPublicKeyInfo of an EC key: its curve's OID, its point, and the
+    /// SEQUENCE's whole length.
+    public static bool ReadSpki(byte[] der, out string curve, out byte[] point, out int bytesRead)
+    {
+        curve = ""; point = new byte[0]; bytesRead = 0;
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(der, 0, der.Length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return false;
+        bytesRead = (int)top.AbsolutePosition();
+        CorsacSecureCrypto_DerCursor body = new CorsacSecureCrypto_DerCursor(der, offset, count);
+        long aOffset, aCount;
+        if (!body.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out aOffset, out aCount)) return false;
+        CorsacSecureCrypto_DerCursor algorithm = new CorsacSecureCrypto_DerCursor(der, aOffset, aCount);
+        long oOffset, oCount, cOffset, cCount;
+        if (!algorithm.TryReadObjectIdentifier(out oOffset, out oCount) || X509Der.OidText(der, oOffset, oCount) != "1.2.840.10045.2.1") return false;
+        if (!algorithm.TryReadObjectIdentifier(out cOffset, out cCount) || !algorithm.AtEnd()) return false;
+        curve = X509Der.OidText(der, cOffset, cCount);
+        long bOffset, bCount, unused;
+        if (!body.TryReadBitString(out bOffset, out bCount, out unused) || unused != 0 || !body.AtEnd()) return false;
+        point = X509Fields.Slice(der, bOffset, bCount);
+        return point.Length >= 3 && point[0] == 4 && (point.Length - 1) % 2 == 0;
+    }
+
+    public static byte[] EncodeOid(string value)
+    {
+        string[] parts = value.Split('.');
+        MemoryStream o = new MemoryStream();
+        o.WriteByte((byte)(int.Parse(parts[0]) * 40 + int.Parse(parts[1])));
+        for (int i = 2; i < parts.Length; i++)
+        {
+            long n = long.Parse(parts[i]);
+            byte[] groups = new byte[10];
+            int k = 0;
+            do { groups[k++] = (byte)(n & 0x7F); n >>= 7; } while (n > 0);
+            for (int j = k - 1; j >= 0; j--) o.WriteByte((byte)(groups[j] | (j > 0 ? 0x80 : 0)));
+        }
+        return o.ToArray();
+    }
+}
+
+/// RSA keys' encodings.
+internal static class RsaKeys
+{
+    /// An unsigned big-endian number as a DER INTEGER's content: its leading
+    /// zeros dropped, and one put back when the top bit is set.
+    public static byte[] Integer(byte[] unsigned)
+    {
+        int start = 0;
+        while (start < unsigned.Length - 1 && unsigned[start] == 0) start++;
+        bool pad = (unsigned[start] & 0x80) != 0;
+        byte[] content = new byte[unsigned.Length - start + (pad ? 1 : 0)];
+        Array.Copy(unsigned, start, content, pad ? 1 : 0, unsigned.Length - start);
+        return content;
+    }
+
+    public static bool ReadPublicKey(byte[] der, long at, long length, out byte[] modulus, out byte[] exponent, out int bytesRead)
+    {
+        modulus = new byte[0]; exponent = new byte[0]; bytesRead = 0;
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(der, at, length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return false;
+        bytesRead = (int)(top.AbsolutePosition() - at);
+        CorsacSecureCrypto_DerCursor body = new CorsacSecureCrypto_DerCursor(der, offset, count);
+        long mOffset, mCount, eOffset, eCount;
+        if (!body.TryReadPositiveInteger(out mOffset, out mCount) || !body.TryReadPositiveInteger(out eOffset, out eCount) || !body.AtEnd()) return false;
+        modulus = X509Fields.Slice(der, mOffset, mCount);
+        exponent = X509Fields.Slice(der, eOffset, eCount);
+        return true;
+    }
+
+    public static bool ReadSpki(byte[] der, out byte[] modulus, out byte[] exponent, out int bytesRead)
+    {
+        modulus = new byte[0]; exponent = new byte[0]; bytesRead = 0;
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(der, 0, der.Length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return false;
+        bytesRead = (int)top.AbsolutePosition();
+        CorsacSecureCrypto_DerCursor body = new CorsacSecureCrypto_DerCursor(der, offset, count);
+        long aOffset, aCount;
+        if (!body.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out aOffset, out aCount)) return false;
+        CorsacSecureCrypto_DerCursor algorithm = new CorsacSecureCrypto_DerCursor(der, aOffset, aCount);
+        long oOffset, oCount;
+        if (!algorithm.TryReadObjectIdentifier(out oOffset, out oCount) || X509Der.OidText(der, oOffset, oCount) != "1.2.840.113549.1.1.1") return false;
+        long bOffset, bCount, unused;
+        if (!body.TryReadBitString(out bOffset, out bCount, out unused) || unused != 0 || !body.AtEnd()) return false;
+        int ignored;
+        return ReadPublicKey(der, bOffset, bCount, out modulus, out exponent, out ignored);
+    }
+}
