@@ -11946,9 +11946,10 @@ interface IEnumerable {
 /// .NET's non-generic ICollection and IList (System.Collections): what an
 /// array is (Lowering.ArrayFaces), besides ArrayList and the rest of the
 /// non-generic collections (Collections.cor). NOT YET List<T>'s, as .NET's
-/// is: every List<T> made roots those members through its descriptor, and
-/// the lifetime solver's work in a cycle using lists grew fivefold (test
-/// 1211) -- it waits for the solver to leave uncalled interface slots out.
+/// is: with those members in every List<T>, the link's escape graphs for a
+/// cycle of walks over lists grew fivefold and past their bound (test 1211),
+/// and the walks' lists were left to the collector -- why, in the solver,
+/// is still to be found.
 interface ICollection : IEnumerable {
     int Count { get; }
     bool IsSynchronized { get; }
