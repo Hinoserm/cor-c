@@ -2001,14 +2001,21 @@ public sealed class Monomorphiser
             a.AppendTo(b);
             Mangle(b, start);
         }
+        // ENDED, WHERE THE LAST ARGUMENT ENDS IN `]`, `?` OR `!`, by one more
+        // `!`, as Mangle keeps the `>` that closes such a list:
+        // `KeyValuePair<string, string[]>` is `KeyValuePair$string$string[]!`,
+        // never the text of an array of `KeyValuePair$string$string`, and
+        // `IBox<Pair<string, string[]>>` (`...[]!!`) never `IBox<Pair<string,
+        // string>[]>` (`...[]!`).
+        if (args.Count > 0 && b.Length > 0 && b[^1] is ']' or '?' or '!') b.Append('!');
         return Interned.Return(b);
     }
 
 
     /// <summary>
     /// A type's text from <paramref name="start"/> on, mangled in place as a
-    /// specialisation's name spells it: `<` as `_`, `>` dropped, `, ` as `_`
-    /// and `.` as `$` -- the chain of Replaces this does in one walk.
+    /// specialisation's name spells it: `<` as `_`, a closing `>` dropped (or
+    /// `!` after an array or nullable argument), `, ` as `_` and `.` as `$`.
     ///
     /// AN ARGUMENT THAT IS A SPECIALISATION ALREADY keeps its own `$`s as
     /// `_`, the spelling its written form has: `Func<Task<int>>`, its
@@ -2023,7 +2030,19 @@ public sealed class Monomorphiser
         for (int from = start; from < b.Length; from++)
         {
             char c = b[from];
-            if (c == '>') continue;
+            // A `>` CLOSING A LIST WHOSE LAST ARGUMENT ENDS IN `]`, `?` OR AN
+            // EARLIER `!` -- an array, a nullable, such a list -- is kept as
+            // `!`, as Spelled ends such a name; any other is dropped. Dropped there too, `KeyValuePair<string, string[]>`
+            // and `KeyValuePair<string, string>[]` were both
+            // `KeyValuePair_string_string[]` -- and the settled name of the
+            // first, `KeyValuePair$string$string[]`, the second's text -- so a
+            // program with both, the compiler's own sources beside X.509's
+            // attributes, had one class for two types and neither's members.
+            if (c == '>')
+            {
+                if (to == start || b[to - 1] is not (']' or '?' or '!')) continue;
+                c = '!';
+            }
             if (c == '<' || c == '$') c = '_';
             // A NESTED ARGUMENT KEEPS ITS OUTER, spelled with the separator
             // this name already uses: the dot is how a nested type is KEYED,
